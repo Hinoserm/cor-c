@@ -27,6 +27,8 @@ using System.Collections.Generic;
 
 namespace Corsac.GUI.Engine;
 
+
+
 /// A region's pixels, in the banded form.
 sealed class RegionShape
 {

@@ -15,8 +15,10 @@
 // an exponent, which is what win32k itself uses on x86 (FLOATOBJ).
 
 using System;
+using System.Collections.Generic;
 
 namespace Corsac.GUI.Engine;
+
 
 /// win32k's EFLOAT: the value is Mant x 2^(Exp - 32), the mantissa's
 /// magnitude normalised to have bit 30 as its top bit. 1.0 is

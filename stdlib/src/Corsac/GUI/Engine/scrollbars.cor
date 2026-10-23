@@ -1,0 +1,450 @@
+// THE GUI KERNEL'S DRAWING ENGINE, as the corsac86 tree has it in
+// os/gui/scrollbars.cor: the same code, in a namespace of its own, for a seat that
+// draws in its own process (WinSeat.cor, the Windows target). A change
+// to the engine is made there and copied here, so both draw alike.
+
+// SCROLL BARS, the GUI kernel's (TODO-GUI-AND-NT-KERNELS.md item 11): a
+// bar's state and the rules for changing it, where its arrows and thumb lie,
+// how it is drawn, and what a press on it starts -- as Windows 2000 SP4's
+// win32k has them (~/tmp/win32k-calc/R-notepad-1-scroll.md). One model for
+// every bar: the seat's own, in a frame or as a widget in a window
+// (seatscroll.cor), and Windows programs' through win32k, which keeps
+// SBINFO and SCROLLINFO and the SCROLLBAR class over these
+// (win32kscroll.cor). Drawn through a NonClientTarget, in the theme's
+// metrics and colours.
+
+using System;
+using System.Collections.Generic;
+
+namespace Corsac.GUI.Engine;
+
+
+
+/// One bar's state: SBDATA's posMin, posMax, page and pos, and whether its
+/// thumb is being dragged -- TrackPos where (SBTRACK+0x38).
+sealed class ScrollBar
+{
+    public int Min, Max = 100, Page, Pos;
+    public bool Tracking;
+    public int TrackPos;
+}
+
+/// CalcSBStuff's answer (SBCALC): a bar laid out along its axis -- top and
+/// bottom along it (x for a horizontal bar), left and right across -- in
+/// the coordinates of whatever it is drawn on.
+sealed class ScrollBarCalc
+{
+    public int PosMin, PosMax, Page, Pos;
+    public int PxTop, PxBottom, PxLeft, PxRight;
+    public int CpxThumb, PxUpArrow, PxDownArrow, PxThumbTop, PxThumbBottom, Cpx, PxMin;
+    public bool Vertical;
+}
+
+/// SBTRACK (xxxSBTrackInit's, pti+0x98): the bar being tracked -- whose it
+/// is (Owner: a Win32kWindow, a seat window's bar) -- what the press was on,
+/// and the box or drag rectangle, along and across the bar.
+sealed class ScrollBarTrack
+{
+    public object? Owner;
+    public bool Vertical, Thumb, Hit;
+    public int Command;
+    public int From, To, CrossFrom, CrossTo;
+    public int Offset, PxStart, PosOld, PosNew;
+    public ScrollBarCalc Calc = null!;
+}
+
+static class ScrollBars
+{
+    // SB_ commands (WM_HSCROLL, WM_VSCROLL), SIF_ masks, ESB_ arrows.
+    public const int SbLineUp = 0, SbLineDown = 1, SbPageUp = 2, SbPageDown = 3, SbThumbPosition = 4, SbThumbTrack = 5;
+    public const int SbTop = 6, SbBottom = 7, SbEndScroll = 8;
+    public const long SifRange = 1, SifPage = 2, SifPos = 4, SifDisableNoScroll = 8, SifTrackPos = 0x10, SifReturnOldPos = 0x1000;
+    public const long EsbEnableBoth = 0, EsbDisableBoth = 3;
+
+    // System metrics (aiSysMet indexes).
+    public const int SmCxVScroll = 2, SmCyHScroll = 3, SmCyVThumb = 9, SmCxHThumb = 10, SmCyVScroll = 20, SmCxHScroll = 21;
+
+    static int Metric(int index) { return Theme.Metric(index); }
+
+    // ---- the rules ----------------------------------------------------------------------
+
+    /// SBSetParms (0xA0011D42): the fields fMask names stored, kept in
+    /// range, and whether the bar should show -- a range that is not one
+    /// value with a page that does not cover it. Whether anything changed;
+    /// `answer` the new position, or the old one for SIF_RETURNOLDPOS.
+    public static bool SetParms(ScrollBar s, long mask, int min, int max, long page, int pos, ref bool visible, out long answer)
+    {
+        bool changed = false;
+        answer = (mask & SifReturnOldPos) != 0 ? s.Pos : 0;
+        if ((mask & SifRange) != 0)
+        {
+            if (max < min) max = min;
+            if (min != s.Min || max != s.Max)
+            {
+                s.Min = min; s.Max = max;
+                if ((mask & SifPage) == 0) { mask = mask | SifPage; page = s.Page; }
+                if ((mask & SifPos) == 0) { mask = mask | SifPos; pos = s.Pos; }
+                changed = true;
+            }
+        }
+        if ((mask & SifPage) != 0)
+        {
+            long limit = Math.Abs((long)s.Max - s.Min) + 1;
+            if (page > limit) page = limit;
+            if ((int)page != s.Page)
+            {
+                s.Page = (int)page;
+                if ((mask & SifPos) == 0) { mask = mask | SifPos; pos = s.Pos; }
+                changed = true;
+            }
+        }
+        if ((mask & SifPos) != 0)
+        {
+            int top = s.Max - (s.Page != 0 ? s.Page - 1 : 0);
+            if (pos < s.Min) pos = s.Min;
+            else if (pos > top) pos = top;
+            if (pos != s.Pos) { s.Pos = pos; changed = true; }
+        }
+        if ((mask & SifReturnOldPos) == 0) answer = s.Pos;
+        if ((mask & SifRange) != 0) visible = s.Min != s.Max && s.Page <= s.Max - s.Min;
+        else if ((mask & SifPage) != 0) visible = s.Page <= s.Max - s.Min;
+        return changed;
+    }
+
+    /// The scroll delay (gpsi dtScroll): four fifths of the double-click
+    /// time, in milliseconds. The arrows and page areas repeat after it, then
+    /// every eighth of it.
+    public static long DelayMillis()
+    {
+        long doubleClick = Theme.DoubleClickMillis();
+        return doubleClick > 0 ? doubleClick * 4 / 5 : 400;
+    }
+
+    // ---- geometry -------------------------------------------------------------------------
+
+    /// Windows' MulDiv as EngMulDiv (0xA003A948) does it: rounded to the
+    /// nearest, half away from nought.
+    public static int MulDiv(long a, long b, long c)
+    {
+        if (c == 0) return 0x7FFFFFFF;
+        long p = a * b;
+        bool negative = (p < 0) != (c < 0);
+        long q = (Math.Abs(p) + Math.Abs(c) / 2) / Math.Abs(c);
+        if (q > 0x7FFFFFFF) q = 0x7FFFFFFF;
+        return (int)(negative ? -q : q);
+    }
+
+    /// CalcSBStuff2 (0xA003AA3D) on a rectangle: the bar laid across (left,
+    /// top)-(right, bottom), the positions as given.
+    public static ScrollBarCalc CalcIn(int left, int top, int right, int bottom, int min, int max, int page, int pos, bool vertical)
+    {
+        ScrollBarCalc c = new ScrollBarCalc { Vertical = vertical };
+        c.PosMin = min; c.PosMax = max; c.Page = page; c.Pos = pos;
+        if (vertical) { c.PxLeft = left; c.PxRight = right; c.PxTop = top; c.PxBottom = bottom; }
+        else { c.PxLeft = top; c.PxRight = bottom; c.PxTop = left; c.PxBottom = right; }
+        Arrange(c, vertical);
+        return c;
+    }
+
+    /// The same for a bar's state.
+    public static ScrollBarCalc CalcIn(int left, int top, int right, int bottom, ScrollBar s, bool vertical)
+    {
+        return CalcIn(left, top, right, bottom, s.Min, s.Max, s.Page, s.Pos, vertical);
+    }
+
+    /// CalcSBStuff2's arithmetic along the bar: the arrows, the thumb's
+    /// size and place.
+    public static void Arrange(ScrollBarCalc c, bool vertical)
+    {
+        int arrowMetric = vertical ? Metric(SmCyVScroll) : Metric(SmCxHScroll);
+        int arrow = Math.Min((c.PxBottom - c.PxTop) / 2, arrowMetric);
+        c.PxUpArrow = c.PxTop + arrow;
+        c.PxDownArrow = c.PxBottom - arrow;
+        long range = (long)c.PosMax - c.PosMin + 1;
+        c.CpxThumb = c.Page != 0 && range != 0
+            ? Math.Max(MulDiv(c.PxDownArrow - c.PxUpArrow, c.Page, range), arrowMetric / 2)
+            : arrowMetric;
+        c.PxMin = c.PxUpArrow;
+        c.Cpx = c.PxDownArrow - c.CpxThumb - c.PxMin;
+        long denom = range - Math.Max(c.Page, 1);
+        c.PxThumbTop = denom != 0 ? c.PxMin + MulDiv(c.Pos - c.PosMin, c.Cpx, denom) : c.PxMin - 1;
+        c.PxThumbBottom = c.PxThumbTop + c.CpxThumb;
+    }
+
+    /// SBPosFromPx (0xA00E1EFB): the position a thumb at `px` stands for.
+    public static int PosFromPx(ScrollBarCalc c, int px)
+    {
+        int top = c.PosMax - (c.Page != 0 ? c.Page - 1 : 0);
+        if (px < c.PxMin) return c.PosMin;
+        if (px >= c.PxMin + c.Cpx) return top;
+        if (c.Cpx == 0) return c.PosMin - 1;
+        return c.PosMin + MulDiv(top - c.PosMin, px - c.PxMin, c.Cpx);
+    }
+
+    // ---- drawing --------------------------------------------------------------------------
+
+    /// xxxDrawScrollBar (0xA003B014) and xxxDrawSB2 (0xA003ACE2): the
+    /// arrows, then the track and thumb -- an arrow the track holds drawn
+    /// pushed, its page area inverted. A bar whose thumb is being dragged is
+    /// drawn with the thumb where the pointer holds it (the track's Calc).
+    public static void Paint(NonClientTarget t, ScrollBarCalc c, long disabled, ScrollBarTrack? track)
+    {
+        int arrow = c.PxUpArrow - c.PxTop;
+        if (arrow <= 0 || c.PxRight - c.PxLeft <= 0) return;
+        bool pushedUp = track != null && track.Hit && track.Command == SbLineUp;
+        bool pushedDown = track != null && track.Hit && track.Command == SbLineDown;
+        PaintArrow(t, c, true, (disabled & 1) != 0, pushedUp);
+        PaintArrow(t, c, false, (disabled & 2) != 0, pushedDown);
+        PaintThumb(t, c, disabled, track);
+    }
+
+    /// One arrow of the bar: the up (or left) one, or the down (or right),
+    /// as the OEM bitmaps OBI_UPARROW 0x2E, OBI_DNARROW 0x32, OBI_LFARROW
+    /// 0x3A, OBI_RGARROW 0x36 have it -- a raised button with a black
+    /// triangle; the _I ones grey and embossed; the _D ones pushed, flat,
+    /// the triangle a pixel down and right.
+    public static void PaintArrow(NonClientTarget t, ScrollBarCalc c, bool first, bool disabled, bool pushed)
+    {
+        int x, y, width, height;
+        int arrow = c.PxUpArrow - c.PxTop;
+        if (c.Vertical)
+        {
+            x = c.PxLeft; width = c.PxRight - c.PxLeft; height = arrow;
+            y = first ? c.PxTop : c.PxBottom - arrow;
+        }
+        else
+        {
+            y = c.PxLeft; height = c.PxRight - c.PxLeft; width = arrow;
+            x = first ? c.PxTop : c.PxBottom - arrow;
+        }
+        int direction = c.Vertical ? (first ? 0 : 1) : (first ? 2 : 3);
+        if (pushed)
+        {
+            long face = Theme.Colour(15), shadow = Theme.Colour(16);
+            Fill(t, x, y, width, height, face);
+            Fill(t, x, y, width, 1, shadow); Fill(t, x, y, 1, height, shadow);
+            Fill(t, x, y + height - 1, width, 1, shadow); Fill(t, x + width - 1, y, 1, height, shadow);
+            Triangle(t, x + 1, y + 1, width, height, direction, Theme.Colour(18));
+            return;
+        }
+        PushButton(t, x, y, width, height);
+        if (disabled)
+        {
+            Triangle(t, x + 1, y + 1, width, height, direction, Theme.Colour(20));
+            Triangle(t, x, y, width, height, direction, Theme.Colour(16));
+        }
+        else Triangle(t, x, y, width, height, direction, Theme.Colour(18));
+    }
+
+    /// The arrow's glyph: seven pixels wide at its base, four deep, in the
+    /// middle of the button.
+    static void Triangle(NonClientTarget t, int x, int y, int width, int height, int direction, long colour)
+    {
+        int cx = x + width / 2, cy = y + height / 2;
+        for (int k = 0; k < 4; k++)
+        {
+            if (direction == 0) Fill(t, cx - k, cy - 2 + k, 2 * k + 1, 1, colour);
+            else if (direction == 1) Fill(t, cx - k, cy + 1 - k, 2 * k + 1, 1, colour);
+            else if (direction == 2) Fill(t, cx - 2 + k, cy - k, 1, 2 * k + 1, colour);
+            else Fill(t, cx + 1 - k, cy - k, 1, 2 * k + 1, colour);
+        }
+    }
+
+    /// DrawPushButton (0xA001143E): DrawEdge EDGE_RAISED with BF_ADJUST, and
+    /// the inside in COLOR_BTNFACE.
+    static void PushButton(NonClientTarget t, int x, int y, int width, int height)
+    {
+        long face = Theme.Colour(15), light = Theme.Colour(22), hilight = Theme.Colour(20);
+        long shadow = Theme.Colour(16), dark = Theme.Colour(21);
+        Fill(t, x, y, width, height, face);
+        Fill(t, x, y, width - 1, 1, light); Fill(t, x, y, 1, height - 1, light);
+        Fill(t, x, y + height - 1, width, 1, dark); Fill(t, x + width - 1, y, 1, height, dark);
+        Fill(t, x + 1, y + 1, width - 3, 1, hilight); Fill(t, x + 1, y + 1, 1, height - 3, hilight);
+        Fill(t, x + 1, y + height - 2, width - 2, 1, shadow); Fill(t, x + width - 2, y + 1, 1, height - 2, shadow);
+    }
+
+    /// DrawThumb2 (0xA003AB62): the track, and the thumb as a push button --
+    /// none, the whole track filled, when both arrows are disabled or the
+    /// track is shorter than the thumb. The page area a track holds is drawn
+    /// inverted (0xA00BD647).
+    public static void PaintThumb(NonClientTarget t, ScrollBarCalc c, long disabled, ScrollBarTrack? track)
+    {
+        if (c.PxRight - c.PxLeft <= 0 || c.PxDownArrow <= c.PxUpArrow) return;
+        if (disabled == 3 || c.PxDownArrow - c.PxUpArrow < c.CpxThumb)
+        {
+            Track(t, c, c.PxUpArrow, c.PxDownArrow, false);
+            return;
+        }
+        bool held = track != null && track.Hit && !track.Thumb;
+        if (c.PxThumbTop > c.PxUpArrow) Track(t, c, c.PxUpArrow, c.PxThumbTop, held && track!.Command == SbPageUp);
+        if (c.PxThumbBottom < c.PxDownArrow) Track(t, c, c.PxThumbBottom, c.PxDownArrow, held && track!.Command == SbPageDown);
+        if (c.Vertical) PushButton(t, c.PxLeft, c.PxThumbTop, c.PxRight - c.PxLeft, c.CpxThumb);
+        else PushButton(t, c.PxThumbTop, c.PxLeft, c.CpxThumb, c.PxRight - c.PxLeft);
+    }
+
+    /// Windows' hbrGray (gpsi's): the checkerboard, a row a byte, set bits
+    /// the brush's background.
+    public static readonly byte[] GrayRows = new byte[] { 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA };
+
+    /// A stretch of the track, [from, to) along the bar, in the brush
+    /// xxxGetColorObjects (0xA003A910) finds for a window's bars:
+    /// DefWindowProc's WM_CTLCOLORSCROLLBAR, asked directly (0xA00897CE) --
+    /// solid COLOR_3DHILIGHT when that is COLOR_SCROLLBAR and not
+    /// COLOR_WINDOW at 8 bits or more, else hbrGray in COLOR_3DHILIGHT over
+    /// COLOR_BTNFACE, the checkerboard of the default scheme, its origin the
+    /// target's. `inverted`: as InvertRect leaves it, every colour's
+    /// complement.
+    static void Track(NonClientTarget t, ScrollBarCalc c, int from, int to, bool inverted)
+    {
+        if (to <= from) return;
+        int x = c.Vertical ? c.PxLeft : from, y = c.Vertical ? from : c.PxLeft;
+        int width = c.Vertical ? c.PxRight - c.PxLeft : to - from, height = c.Vertical ? to - from : c.PxRight - c.PxLeft;
+        long flip = inverted ? 0xFFFFFF : 0;
+        long hilight = Theme.Colour(20);
+        if (Theme.ScreenBits >= 8 && hilight == Theme.Colour(0) && hilight != Theme.Colour(5))
+        {
+            Fill(t, x, y, width, height, hilight ^ flip);
+            return;
+        }
+        Fill(t, x, y, width, height, Theme.Colour(15) ^ flip);
+        int stride = (width + 7) / 8;
+        byte[] bits = new byte[stride * height];
+        for (int row = 0; row < height; row++)
+            for (int col = 0; col < width; col++)
+                if (((GrayRows[(y + row) & 7] >> (7 - ((x + col) & 7))) & 1) != 0)
+                    bits[row * stride + (col >> 3)] = (byte)(bits[row * stride + (col >> 3)] | (0x80 >> (col & 7)));
+        t.Mask(x, y, width, height, bits, stride, hilight ^ flip, x, y, width, height);
+    }
+
+    /// DrawSize (0xA002A94D): the square where the bars meet -- the size
+    /// grip (OBI_NCGRIP 0x2D) when the window it sits in the corner of can
+    /// be sized from there, else COLOR_BTNFACE.
+    public static void PaintCorner(NonClientTarget t, int x, int y, int width, int height, bool grip)
+    {
+        Fill(t, x, y, width, height, Theme.Colour(15));
+        if (grip) PaintGrip(t, x, y, width, height);
+    }
+
+    /// The grip's glyph: three ridges across the corner, each a line of
+    /// COLOR_3DHILIGHT and two of COLOR_3DSHADOW, running down to the right.
+    public static void PaintGrip(NonClientTarget t, int x, int y, int width, int height)
+    {
+        long hilight = Theme.Colour(20), shadow = Theme.Colour(16);
+        for (int ridge = 0; ridge < 3; ridge++)
+        {
+            int start = 4 + ridge * 4;
+            for (int line = 0; line < 3; line++)
+            {
+                long colour = line == 0 ? hilight : shadow;
+                int d = start + line;
+                for (int i = 0; i < width && d - i >= 0; i++)
+                {
+                    int px = x + width - 1 - (d - i), py = y + height - 1 - i;
+                    if (px >= x && py >= y && d - i < width) Fill(t, px, py, 1, 1, colour);
+                }
+            }
+        }
+    }
+
+    static void Fill(NonClientTarget t, int x, int y, int width, int height, long colour)
+    {
+        if (width <= 0 || height <= 0) return;
+        t.Fill(x, y, width, height, colour);
+    }
+
+    // ---- tracking ---------------------------------------------------------------------------
+
+    /// xxxSBTrackInit (0xA00E2858): a press `px` along the bar laid out as
+    /// `c`, its arrows `disabled` (ESB_ bits): what it holds -- an arrow, a
+    /// page area, or (or with Shift on a page area) the thumb -- and the box
+    /// or drag rectangle. The thumb's track starts the bar's tracking
+    /// position. Null when the press does nothing (a disabled arrow, a thumb
+    /// with no room to move). The caller sends the first command: the box's,
+    /// or SB_THUMBTRACK at the position.
+    public static ScrollBarTrack? Begin(ScrollBarCalc c, ScrollBar s, int px, bool shift, long disabled, object? owner)
+    {
+        if (disabled == 3) return null;
+        bool vertical = c.Vertical;
+        ScrollBarTrack t = new ScrollBarTrack { Owner = owner, Vertical = vertical, Calc = c };
+        bool thumb = false;
+        if (px < c.PxUpArrow)
+        {
+            if ((disabled & 1) != 0) return null;
+            t.Command = SbLineUp; t.From = c.PxTop; t.To = c.PxUpArrow;
+        }
+        else if (px >= c.PxDownArrow)
+        {
+            if ((disabled & 2) != 0) return null;
+            t.Command = SbLineDown; t.From = c.PxDownArrow; t.To = c.PxBottom;
+        }
+        else if (px < c.PxThumbTop)
+        {
+            if (shift) thumb = true;
+            else { t.Command = SbPageUp; t.From = c.PxUpArrow; t.To = c.PxThumbTop; }
+        }
+        else if (px < c.PxThumbBottom) thumb = true;
+        else
+        {
+            if (shift) thumb = true;
+            else { t.Command = SbPageDown; t.From = c.PxThumbBottom; t.To = c.PxDownArrow; }
+        }
+        if (!thumb)
+        {
+            t.CrossFrom = c.PxLeft; t.CrossTo = c.PxRight;
+            t.Hit = true;
+            return t;
+        }
+        if (c.PxDownArrow - c.PxUpArrow <= c.CpxThumb) return null;
+        t.Thumb = true;
+        t.Command = SbThumbPosition;
+        // The drag rectangle: the bar, eight widths wider each side across
+        // it, and two thumb lengths longer each end.
+        int across = c.PxRight - c.PxLeft;
+        int along = vertical ? Metric(SmCyVThumb) : Metric(SmCxHThumb);
+        t.CrossFrom = c.PxLeft - 8 * across; t.CrossTo = c.PxRight + 8 * across;
+        t.From = c.PxTop - 2 * along; t.To = c.PxBottom + 2 * along;
+        t.Offset = shift && (px < c.PxThumbTop || px >= c.PxThumbBottom) ? -c.CpxThumb / 2 : c.PxThumbTop - px;
+        t.PxStart = c.PxThumbTop;
+        t.PosOld = s.Pos; t.PosNew = s.Pos;
+        s.Tracking = true; s.TrackPos = s.Pos;
+        return t;
+    }
+
+    /// Whether the pointer, `along` and `across` the bar, is inside the
+    /// track's box or drag rectangle.
+    public static bool Inside(ScrollBarTrack t, int along, int across)
+    {
+        return along >= t.From && along < t.To && across >= t.CrossFrom && across < t.CrossTo;
+    }
+
+    /// xxxTrackThumb (0xA00E2699) and xxxMoveThumb (0xA00E1FF4): inside the
+    /// drag rectangle the thumb follows the pointer, kept to its travel;
+    /// outside it goes back where it started. Whether the position changed
+    /// (to be sent, SB_THUMBTRACK at t.PosNew); the thumb's place moved in
+    /// the track's Calc for drawing either way.
+    public static bool MoveThumb(ScrollBarTrack t, ScrollBar s, int along, bool inside)
+    {
+        ScrollBarCalc c = t.Calc;
+        int px = inside ? along + t.Offset : t.PxStart;
+        if (px < c.PxMin) px = c.PxMin;
+        if (px > c.PxMin + c.Cpx) px = c.PxMin + c.Cpx;
+        int pos = PosFromPx(c, px);
+        bool changed = pos != t.PosOld;
+        if (changed)
+        {
+            t.PosOld = pos; t.PosNew = pos;
+            s.TrackPos = pos;
+        }
+        c.PxThumbTop = px;
+        c.PxThumbBottom = px + c.CpxThumb;
+        return changed;
+    }
+
+    /// The command a key is on a bar that has the keyboard (xxxSBWndProc's
+    /// WM_KEYDOWN): Page Up and Down, Home and End, the arrows; -1 for none.
+    public static int KeyCommand(long vk)
+    {
+        return vk == 0x21 ? SbPageUp : vk == 0x22 ? SbPageDown : vk == 0x24 ? SbTop : vk == 0x23 ? SbBottom
+             : vk == 0x25 || vk == 0x26 ? SbLineUp : vk == 0x27 || vk == 0x28 ? SbLineDown : -1;
+    }
+}

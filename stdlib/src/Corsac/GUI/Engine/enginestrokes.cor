@@ -19,6 +19,8 @@ using System.Collections.Generic;
 
 namespace Corsac.GUI.Engine;
 
+
+
 /// What a pen strokes with: its colour (the target's), width in pixels,
 /// ends and joins (PS_ENDCAP_*, PS_JOIN_*), and a thin pen's dashes.
 class StrokeStyle

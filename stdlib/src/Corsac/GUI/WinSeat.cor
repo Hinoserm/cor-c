@@ -35,6 +35,29 @@ using Corsac.GUI.Engine;
 
 namespace Corsac.GUI;
 
+/// The theme as the GUI kernel's scroll bars ask it (Engine/scrollbars.cor):
+/// Windows' own colours (COLORREFs, as the kernel's Theme.Colour gives
+/// them), metrics and double-click time.
+static class Theme
+{
+    [DllImport("user32")] static extern int GetSysColor(int index);
+    [DllImport("user32")] static extern int GetSystemMetrics(int index);
+    [DllImport("user32")] static extern int GetDoubleClickTime();
+
+    public static long Colour(int index) { return GetSysColor(index) & 0xFFFFFF; }
+    public static int Metric(int index) { return GetSystemMetrics(index); }
+    public static int ScreenBits { get { return 32; } }
+    public static long DoubleClickMillis() { return GetDoubleClickTime(); }
+}
+
+/// What the kernel's scroll bars draw on: rectangles and one-bit masks in a
+/// COLORREF (the GUI kernel's nonclient.cor has the same).
+interface NonClientTarget
+{
+    void Fill(int x, int y, int width, int height, long colour);
+    void Mask(int x, int y, int width, int height, byte[] bits, int stride, long colour, int clipX, int clipY, int clipWidth, int clipHeight);
+}
+
 static class WinSeat
 {
     const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
@@ -94,11 +117,13 @@ static class WinSeat
     [DllImport("user32")] static extern int RegisterHotKey(nint hwnd, int id, int mods, int vk);
     [DllImport("user32")] static extern int UnregisterHotKey(nint hwnd, int id);
     [DllImport("user32")] static extern int TrackMouseEvent(nint track);
+    [DllImport("user32")] static extern int SetScrollInfo(nint hwnd, int bar, nint info, int redraw);
+    [DllImport("user32")] static extern int GetScrollInfo(nint hwnd, int bar, nint info);
+    [DllImport("user32")] static extern int EnableScrollBar(nint hwnd, int bar, int arrows);
     [DllImport("user32")] static extern int IsIconic(nint hwnd);
     [DllImport("user32")] static extern nint CreateIconIndirect(nint info);
     [DllImport("user32")] static extern nint CreateIconFromResourceEx(nint bits, int size, int icon, int version, int w, int h, int flags);
     [DllImport("user32")] static extern int DestroyIcon(nint icon);
-    [DllImport("kernel32")] static extern int GetCurrentThreadId();
 
     [DllImport("gdi32")] static extern nint CreateCompatibleDC(nint dc);
     [DllImport("gdi32")] static extern nint CreateDIBSection(nint dc, nint info, int usage, nint bits, nint section, int offset);
@@ -115,6 +140,7 @@ static class WinSeat
     [DllImport("gdi32")] static extern int TextOutW(nint dc, int x, int y, nint text, int count);
 
     [DllImport("kernel32")] static extern nint GetModuleHandleW(nint name);
+    [DllImport("kernel32")] static extern int GetCurrentThreadId();
     [DllImport("kernel32")] static extern int GetWindowsDirectoryW(nint into, int room);
 
     [DllImport("advapi32")] static extern int RegOpenKeyExW(nint key, nint sub, int options, int access, nint result);
@@ -132,7 +158,7 @@ static class WinSeat
     const int WmRButtonDown = 0x204, WmRButtonUp = 0x205, WmRButtonDblClk = 0x206;
     const int WmMButtonDown = 0x207, WmMButtonUp = 0x208, WmMButtonDblClk = 0x209, WmMouseWheel = 0x20A, WmMouseHWheel = 0x20E;
     const int WmCaptureChanged = 0x215, WmEnterSizeMove = 0x231, WmExitSizeMove = 0x232;
-    const int WmMouseLeave = 0x2A3, WmHotKey = 0x312;
+    const int WmMouseLeave = 0x2A3, WmHotKey = 0x312, WmHScroll = 0x114, WmVScroll = 0x115;
 
     const int WsPopup = unchecked((int)0x80000000), WsVisible = 0x10000000, WsChild = 0x40000000, WsDisabled = 0x08000000;
     const int WsCaption = 0x00C00000, WsClipChildren = 0x02000000;
@@ -152,6 +178,19 @@ static class WinSeat
         public long Bits;                       // the DIB's pixels: W * H words, 0x00RRGGBB, top row first
         public int DirtyL, DirtyT, DirtyR, DirtyB;
         public nint Icon;
+        public List<Bar>? Bars;
+    }
+
+    /// A scroll bar the seat draws in a window and tracks (the GUI kernel's
+    /// SeatScrollBar): 2 and up a program's widget; 0 and 1, the frame's
+    /// horizontal and vertical, are Windows' own (WS_HSCROLL, WS_VSCROLL).
+    sealed class Bar
+    {
+        public int Id;
+        public bool Vertical, Shown = true;
+        public int X, Y, Width, Height;
+        public readonly ScrollBar State = new ScrollBar();
+        public long Disabled;
     }
 
     static readonly Dictionary<int, Window> _windows = new Dictionary<int, Window>();
@@ -424,6 +463,7 @@ static class WinSeat
                 }
                 int wx, wy, sx, sy;
                 Points(w, lParam, out wx, out wy, out sx, out sy);
+                if (_scroll != null) { ScrollMoved(wx, wy); return 0; }
                 Queue(3, id, Pack(wx, wy), Pack(sx, sy));
                 return 0;
             }
@@ -438,6 +478,7 @@ static class WinSeat
                 bool twice = msg == WmLButtonDblClk || msg == WmRButtonDblClk || msg == WmMButtonDblClk;
                 int wx, wy, sx, sy;
                 Points(w, lParam, out wx, out wy, out sx, out sy);
+                if (button == 1 && ScrollPress(w, wx, wy, ((int)wParam & 4) != 0)) return 0;
                 // The button holds the pointer for its window until it comes up, as the seat does.
                 if (GetCapture() == 0) { _implicit = true; SetCapture(hwnd); }
                 Queue(twice && w.DoubleClicks ? 180 : 4, id, button, Pack(wx, wy));
@@ -446,6 +487,7 @@ static class WinSeat
             case WmLButtonUp: case WmRButtonUp: case WmMButtonUp:
             {
                 int button = msg == WmLButtonUp ? 1 : msg == WmRButtonUp ? 2 : 3;
+                if (button == 1 && _scroll != null) { ScrollEnded(); return 0; }
                 int wx, wy, sx, sy;
                 Points(w, lParam, out wx, out wy, out sx, out sy);
                 Queue(5, id, button, Pack(wx, wy));
@@ -463,8 +505,22 @@ static class WinSeat
                 _implicit = false;
                 return 0;
             case WmTimer:
+                if ((int)wParam == ScrollTimer) { ScrollTick(); return 0; }
                 TimerFired((int)wParam);
                 return 0;
+            case WmHScroll: case WmVScroll:
+                if (lParam == 0)
+                {
+                    // The frame's own bar, Windows': its step, at the thumb's place while dragged.
+                    int bar = msg == WmVScroll ? 1 : 0, command = (int)wParam & 0xFFFF;
+                    byte[] info = new byte[28];
+                    Put(info, 0, 28); Put(info, 4, 0x17);                    // SIF_ALL
+                    GetScrollInfo(hwnd, bar, At(info));
+                    int pos = command == 4 || command == 5 ? Word(info, 24) : Word(info, 20);
+                    Queue(220, id, bar | (command << 16), pos);
+                    return 0;
+                }
+                break;
             case WmHotKey:
                 Queue(35, id, (int)wParam, (int)lParam);
                 return 0;
@@ -1106,6 +1162,237 @@ static class WinSeat
         if (_timerWindow.TryGetValue(id, out window)) Queue(34, window, id, 0);
     }
 
+    // ---- scroll bars --------------------------------------------------------------
+    //
+    // THE GUI KERNEL'S (seatscroll.cor over Engine/scrollbars.cor): a widget
+    // bar drawn in the window's picture as Windows 2000 draws one, a press
+    // on it the seat's -- an arrow or page area repeating while held, the
+    // thumb following the pointer -- and each step told to the program as a
+    // ScrollEvent (220: A the bar | the SB_ command << 16, B the position).
+
+    const int ScrollTimer = 0x7FFF5C01;
+
+    sealed class Track
+    {
+        public Window Window = null!;
+        public Bar Bar = null!;
+        public ScrollBarTrack Calc = null!;
+        public bool Repeating;
+    }
+
+    static Track? _scroll;
+
+    static Bar? BarOf(Window w, int id, bool make)
+    {
+        if (w.Bars != null) foreach (Bar b in w.Bars) if (b.Id == id) return b;
+        if (!make) return null;
+        if (w.Bars == null) w.Bars = new List<Bar>();
+        Bar made = new Bar { Id = id };
+        w.Bars.Add(made);
+        return made;
+    }
+
+    static ScrollBarCalc CalcOf(Bar b) { return ScrollBars.CalcIn(b.X, b.Y, b.X + b.Width, b.Y + b.Height, b.State, b.Vertical); }
+
+    /// A bar drawn as it stands, or as the pointer holds it, and put on the screen.
+    static void PaintBar(Window w, Bar b)
+    {
+        if (!b.Shown || b.Width <= 0 || b.Height <= 0 || w.Bits == 0) return;
+        Track? s = _scroll;
+        ScrollBarTrack? track = s != null && s.Window == w && s.Bar == b ? s.Calc : null;
+        ScrollBarCalc c = track != null && track.Thumb ? track.Calc : CalcOf(b);
+        _barTarget.W = w;
+        ScrollBars.Paint(_barTarget, c, b.Disabled, track);
+        Present();
+    }
+
+    static readonly BarTarget _barTarget = new BarTarget();
+
+    /// The window's picture as the bars' target: whole pixels, no clip but its edges.
+    sealed class BarTarget : NonClientTarget
+    {
+        public Window W = null!;
+
+        public void Fill(int x, int y, int width, int height, long colour)
+        {
+            bool clipped = _clipped;
+            _clipped = false;
+            if (ClipTo(W, ref x, ref y, ref width, ref height)) WinSeat.Fill(W, x, y, width, height, Swap((int)colour));
+            _clipped = clipped;
+        }
+
+        public void Mask(int x, int y, int width, int height, byte[] bits, int stride, long colour, int clipX, int clipY, int clipWidth, int clipHeight)
+        {
+            int pixel = Swap((int)colour);
+            for (int row = 0; row < height; row++)
+                for (int col = 0; col < width; col++)
+                {
+                    if ((bits[row * stride + (col >> 3)] & (0x80 >> (col & 7))) == 0) continue;
+                    int px = x + col, py = y + row;
+                    if (px < clipX || py < clipY || px >= clipX + clipWidth || py >= clipY + clipHeight) continue;
+                    if (px < 0 || py < 0 || px >= W.W || py >= W.H) continue;
+                    Sys.PokeWord(W.Bits + ((long)py * W.W + px) * 4, pixel);
+                }
+            Dirty(W, x, y, width, height);
+        }
+    }
+
+    /// The main button pressed at (x, y) in the window: on one of its bars
+    /// (the last placed first), which the seat tracks from here. Whether it was.
+    static bool ScrollPress(Window w, int x, int y, bool shift)
+    {
+        if (w.Bars == null) return false;
+        Bar? hit = null;
+        for (int i = w.Bars.Count - 1; i >= 0 && hit == null; i--)
+        {
+            Bar b = w.Bars[i];
+            if (b.Id > 1 && b.Shown && x >= b.X && x < b.X + b.Width && y >= b.Y && y < b.Y + b.Height) hit = b;
+        }
+        if (hit == null) return false;
+        ScrollBarTrack? t = ScrollBars.Begin(CalcOf(hit), hit.State, hit.Vertical ? y : x, shift, hit.Disabled, hit);
+        if (t == null) return true;
+        Track s = new Track { Window = w, Bar = hit, Calc = t };
+        _scroll = s;
+        SetCapture(w.Hwnd);
+        if (t.Thumb) ScrollTell(s, ScrollBars.SbThumbTrack, hit.State.Pos);
+        else
+        {
+            PaintBar(w, hit);
+            ScrollTell(s, t.Command, hit.State.Pos);
+            SetTimer(w.Hwnd, ScrollTimer, (int)ScrollBars.DelayMillis(), 0);
+        }
+        return true;
+    }
+
+    static void ScrollTell(Track s, int command, int pos) { Queue(220, s.Window.Id, s.Bar.Id | (command << 16), pos); }
+
+    /// The pointer moved while a bar is held: the thumb follows it, or the
+    /// box held is pushed or let go as the pointer is on it or not.
+    static void ScrollMoved(int x, int y)
+    {
+        Track? s = _scroll;
+        if (s == null) return;
+        ScrollBarTrack t = s.Calc;
+        int along = t.Vertical ? y : x, across = t.Vertical ? x : y;
+        bool inside = ScrollBars.Inside(t, along, across);
+        if (t.Thumb)
+        {
+            if (ScrollBars.MoveThumb(t, s.Bar.State, along, inside)) ScrollTell(s, ScrollBars.SbThumbTrack, t.PosNew);
+            PaintBar(s.Window, s.Bar);
+            return;
+        }
+        if (inside == t.Hit) return;
+        t.Hit = inside;
+        PaintBar(s.Window, s.Bar);
+    }
+
+    /// An arrow or page area held repeats: after the delay, then every eighth of it.
+    static void ScrollTick()
+    {
+        Track? s = _scroll;
+        if (s == null) return;
+        if (!s.Repeating)
+        {
+            s.Repeating = true;
+            SetTimer(s.Window.Hwnd, ScrollTimer, Math.Max(1, (int)ScrollBars.DelayMillis() / 8), 0);
+        }
+        if (!s.Calc.Thumb && s.Calc.Hit) ScrollTell(s, s.Calc.Command, s.Bar.State.Pos);
+    }
+
+    /// The main button let go: the thumb's last place, the bar drawn as the
+    /// program has left it, and SB_ENDSCROLL.
+    static void ScrollEnded()
+    {
+        Track? s = _scroll;
+        if (s == null) return;
+        _scroll = null;
+        KillTimer(s.Window.Hwnd, ScrollTimer);
+        if (_captured == 0) ReleaseCapture();
+        s.Bar.State.Tracking = false;
+        if (s.Calc.Thumb) ScrollTell(s, ScrollBars.SbThumbPosition, s.Calc.PosNew);
+        PaintBar(s.Window, s.Bar);
+        ScrollTell(s, ScrollBars.SbEndScroll, s.Bar.State.Pos);
+    }
+
+    /// The bar requests: eight words, the window, the bar's id, then the request's own.
+    static long ScrollRequest(long request, long arg)
+    {
+        Window? w;
+        if (!_windows.TryGetValue((int)Sys.PeekWord(arg), out w)) return -2;
+        int id = (int)Sys.PeekWord(arg + 4);
+        if (id < 0) return -Inval;
+        long a2 = Sys.PeekWord(arg + 8), a3 = Sys.PeekWord(arg + 12), a4 = Sys.PeekWord(arg + 16), a5 = Sys.PeekWord(arg + 20);
+        long a6 = Sys.PeekWord(arg + 24), a7 = Sys.PeekWord(arg + 28);
+        if (id <= 1) return FrameScroll(w, id, request, arg, a2, a3, a4, a5, a6, a7);
+        if (request == (long)SeatIoctl.ScrollBarPlace)
+        {
+            Bar made = BarOf(w, id, true)!;
+            made.X = (int)a2; made.Y = (int)a3; made.Width = (int)a4; made.Height = (int)a5;
+            made.Vertical = (a6 & 1) != 0; made.Shown = (a6 & 2) == 0;
+            return 0;
+        }
+        Bar? b = BarOf(w, id, false);
+        if (b == null) return -2;
+        if (request == (long)SeatIoctl.ScrollBarSet)
+        {
+            bool visible = b.Shown;
+            long result;
+            bool changed = ScrollBars.SetParms(b.State, a2, (int)a3, (int)a4, a5, (int)a6, ref visible, out result);
+            if (changed && a7 != 0 && !b.State.Tracking) PaintBar(w, b);
+            return result & 0xFFFFFFFF;
+        }
+        if (request == (long)SeatIoctl.ScrollBarGet)
+        {
+            Sys.PokeWord(arg + 8, b.State.Min); Sys.PokeWord(arg + 12, b.State.Max);
+            Sys.PokeWord(arg + 16, b.State.Page); Sys.PokeWord(arg + 20, b.State.Pos);
+            Sys.PokeWord(arg + 24, b.State.Tracking ? b.State.TrackPos : b.State.Pos);
+            Sys.PokeWord(arg + 28, (int)b.Disabled);
+            return 0;
+        }
+        if (request == (long)SeatIoctl.ScrollBarEnable)
+        {
+            long arrows = a2 & 3;
+            if (arrows == b.Disabled) return 0;
+            b.Disabled = arrows;
+            PaintBar(w, b);
+            return 1;
+        }
+        if (request == (long)SeatIoctl.ScrollBarDestroy)
+        {
+            if (_scroll != null && _scroll.Bar == b) _scroll = null;
+            w.Bars!.Remove(b);
+            return 0;
+        }
+        PaintBar(w, b);
+        return 0;
+    }
+
+    /// The frame's bars are Windows' own: SetScrollInfo and the rest on the window.
+    static long FrameScroll(Window w, int id, long request, long arg, long a2, long a3, long a4, long a5, long a6, long a7)
+    {
+        byte[] info = new byte[28];
+        Put(info, 0, 28);
+        if (request == (long)SeatIoctl.ScrollBarSet)
+        {
+            long old = 0;
+            if ((a2 & 0x1000) != 0) { Put(info, 4, 4); GetScrollInfo(w.Hwnd, id, At(info)); old = Word(info, 20); }
+            Put(info, 4, a2 & 0x1F); Put(info, 8, a3); Put(info, 12, a4); Put(info, 16, a5); Put(info, 20, a6);
+            int now = SetScrollInfo(w.Hwnd, id, At(info), a7 != 0 ? 1 : 0);
+            return (a2 & 0x1000) != 0 ? old : now;
+        }
+        if (request == (long)SeatIoctl.ScrollBarGet)
+        {
+            Put(info, 4, 0x17);
+            if (GetScrollInfo(w.Hwnd, id, At(info)) == 0) return -Inval;
+            Sys.PokeWord(arg + 8, Word(info, 8)); Sys.PokeWord(arg + 12, Word(info, 12));
+            Sys.PokeWord(arg + 16, Word(info, 16)); Sys.PokeWord(arg + 20, Word(info, 20));
+            Sys.PokeWord(arg + 24, Word(info, 24)); Sys.PokeWord(arg + 28, 0);
+            return 0;
+        }
+        if (request == (long)SeatIoctl.ScrollBarEnable) return EnableScrollBar(w.Hwnd, id, (int)(a2 & 3)) != 0 ? 1 : 0;
+        return 0;
+    }
+
     // ---- the ioctls ---------------------------------------------------------------
 
     static Window? Selected() { Window? w; _windows.TryGetValue(_selected, out w); return w; }
@@ -1398,6 +1685,9 @@ static class WinSeat
             }
             case SeatIoctl.FontFamilies: return FontFamilies(arg);
             case SeatIoctl.FontMatch: return FontMatch(arg);
+            case SeatIoctl.ScrollBarPlace: case SeatIoctl.ScrollBarSet: case SeatIoctl.ScrollBarGet:
+            case SeatIoctl.ScrollBarEnable: case SeatIoctl.ScrollBarDestroy: case SeatIoctl.ScrollBarPaint:
+                return ScrollRequest(request, arg);
             case SeatIoctl.WindowPixels:
             {
                 if (!_windows.TryGetValue((int)Sys.PeekWord(arg), out w)) return -BadF;

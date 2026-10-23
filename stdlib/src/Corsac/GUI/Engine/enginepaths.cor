@@ -26,6 +26,8 @@ using System.Collections.Generic;
 
 namespace Corsac.GUI.Engine;
 
+
+
 /// PATHDATA's and PATHRECORD's flags.
 enum PathRecordFlags
 {

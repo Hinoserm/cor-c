@@ -1827,7 +1827,7 @@ public static class Driver
                 "System/Drawing/Drawing.cor", "System/Drawing/Drawing2D.cor", "System/Drawing/FontEngine.cor", "System/Drawing/TrueType.cor",
                 "System/Drawing/BitmapFont.cor", "System/Drawing/Text.cor", "System/Drawing/Imaging.cor",
                 "Corsac/GUI/Engine/enginedraw.cor", "Corsac/GUI/Engine/enginepaths.cor", "Corsac/GUI/Engine/engineregions.cor",
-                "Corsac/GUI/Engine/enginestrokes.cor", "Corsac/GUI/Engine/enginexform.cor",
+                "Corsac/GUI/Engine/enginestrokes.cor", "Corsac/GUI/Engine/enginexform.cor", "Corsac/GUI/Engine/scrollbars.cor",
                 "Corsac/GUI/Gui.cor", "Corsac/GUI/WinSeat.cor",
                 "System/Windows/Forms/Forms.cor", "Microsoft/Win32/SystemEvents.cor",
                 "System/Drawing/Printing/SpoolWire.cor", "System/Drawing/Printing/Printing.cor",

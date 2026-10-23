@@ -35,6 +35,8 @@ using System.Collections.Generic;
 
 namespace Corsac.GUI.Engine;
 
+
+
 /// The rules a drawing is made by. DrawMode.Gdi is GDI's; a native
 /// Graphics's state makes its own.
 sealed class DrawMode
