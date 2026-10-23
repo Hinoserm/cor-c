@@ -17577,6 +17577,28 @@ public sealed partial class Binder
                     return Type.Any;
                 }
 
+                // A BARE `default` TAKES THE OTHER ARM'S TYPE, which is then the
+                // conditional's (C# 12.18: the literal converts to it): `data ==
+                // null ? default : new ReadOnlySpan<byte>(data)`, wherever it is
+                // written. With nothing waiting for it, it had no type at all,
+                // and was lowered as a zero of no type.
+                static bool BareDefault(Expr arm) => (arm is SuppressExpr suppressed ? suppressed.Operand : arm) is DefaultExpr { Type.Name.Length: 0 };
+                Type TakesOther(Expr arm, Type other)
+                {
+                    Type? wantedWas = _wanted;
+                    _wanted = other;
+                    try { return CheckExpr(arm); }
+                    finally { _wanted = wantedWas; }
+                }
+                if (a2.IsError && BareDefault(c2.Then) && !b2.IsError && !b2.IsVoid && b2.Prim != Prim.NullLiteral)
+                {
+                    a2 = TakesOther(c2.Then, b2);
+                }
+                else if (b2.IsError && BareDefault(c2.Else) && !a2.IsError && !a2.IsVoid && a2.Prim != Prim.NullLiteral)
+                {
+                    b2 = TakesOther(c2.Else, a2);
+                }
+
                 // A METHOD GROUP WITH NOTHING TO SAY WHICH DELEGATE it is has
                 // no type yet (void): the call checks this again once its
                 // overload says (FunctionSource). Nothing is decided now -- a
