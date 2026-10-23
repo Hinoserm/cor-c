@@ -868,13 +868,17 @@ static class Platform
                 Sys.Poke(uc + 168, entry);
 #else
                 // gregs from 20: EBP 7th, ESP 8th, EIP 15th; the arguments
-                // on the stack above the return address.
+                // on the stack above the return address, each a long and so
+                // two words, the low one first. Aligned as a call leaves it:
+                // the return address at 12 past a multiple of 16.
                 long faultPc = Sys.Peek(uc + 76) & WordSize.AddressMask;
                 long faultFrame = Sys.Peek(uc + 44) & WordSize.AddressMask;
-                long sp = ((Sys.Peek(uc + 48) & WordSize.AddressMask) - 64 & ~15L) - 4;
+                long sp = ((Sys.Peek(uc + 48) & WordSize.AddressMask) - 64 & ~15L) - 20;
                 Sys.Poke(sp, faultPc);
                 Sys.Poke(sp + 4, faultFrame);
-                Sys.Poke(sp + 8, faultPc);
+                Sys.Poke(sp + 8, 0);
+                Sys.Poke(sp + 12, faultPc);
+                Sys.Poke(sp + 16, 0);
                 Sys.Poke(uc + 48, sp);
                 Sys.Poke(uc + 76, entry);
 #endif
