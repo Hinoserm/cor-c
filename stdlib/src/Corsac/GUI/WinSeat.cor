@@ -98,7 +98,7 @@ static class WinSeat
     [DllImport("user32")] static extern nint CreateIconIndirect(nint info);
     [DllImport("user32")] static extern nint CreateIconFromResourceEx(nint bits, int size, int icon, int version, int w, int h, int flags);
     [DllImport("user32")] static extern int DestroyIcon(nint icon);
-    [DllImport("user32")] static extern int GetCurrentThreadId();
+    [DllImport("kernel32")] static extern int GetCurrentThreadId();
 
     [DllImport("gdi32")] static extern nint CreateCompatibleDC(nint dc);
     [DllImport("gdi32")] static extern nint CreateDIBSection(nint dc, nint info, int usage, nint bits, nint section, int offset);
@@ -1613,6 +1613,7 @@ static class WinSeat
                         changed = true;
                     }
             }
+            if (family.StartsWith("@")) continue;                         // a face turned for vertical text
             f.Family = family;
             f.Style = style.Length > 0 ? style : "Regular";
             string s = f.Style.ToLowerInvariant();
@@ -1669,15 +1670,21 @@ static class WinSeat
         for (int i = 0; i < chars.Length; i++) chars[i] = (char)Sys.PeekHalf(text + i * 2);
         string family = new string(chars);
         Face? best = Nearest(family, weight, italic);
+        // A name Windows stands for another (FontSubstitutes: MS Shell Dlg
+        // is Tahoma, Helv is MS Sans Serif), then the generic families.
+        string? alias = Substitute(family);
+        if (best == null && alias != null) best = Nearest(alias, weight, italic);
         if (best == null)
         {
-            string lower = family.ToLowerInvariant();
-            string[] instead = lower.Contains("mono") || lower.Contains("courier") || lower.Contains("fixed") ? new[] { "Courier New", "Lucida Console" }
-                : lower.Contains("serif") && !lower.Contains("sans") || lower.Contains("times") || lower.Contains("roman") ? new[] { "Times New Roman" }
-                : new[] { "Tahoma", "Microsoft Sans Serif", "Arial", "Verdana" };
+            string lower = (alias ?? family).ToLowerInvariant();
+            string[] instead = lower.Contains("mono") || lower.Contains("courier") || lower.Contains("fixed") || lower.Contains("console")
+                ? new[] { "Courier New", "Lucida Console", "Liberation Mono", "DejaVu Sans Mono" }
+                : lower.Contains("serif") && !lower.Contains("sans") || lower.Contains("times") || lower.Contains("roman")
+                ? new[] { "Times New Roman", "Liberation Serif", "DejaVu Serif" }
+                : new[] { "Tahoma", "Microsoft Sans Serif", "Arial", "Verdana", "Liberation Sans", "DejaVu Sans" };
             foreach (string other in instead) { best = Nearest(other, weight, italic); if (best != null) break; }
         }
-        if (best == null && Faces().Count > 0) best = Faces()[0];
+        if (best == null) foreach (Face f in Faces()) if (!f.Family.StartsWith("@")) { best = f; break; }
         if (best == null) return 0;
         List<byte> r = new List<byte>();
         AddWord(r, best.Weight);
@@ -1690,6 +1697,39 @@ static class WinSeat
         AddText(r, best.Family); AddText(r, best.Style); AddText(r, best.FullName); AddText(r, best.Path);
         if (at != 0 && room >= r.Count) for (int i = 0; i < r.Count; i++) Sys.PokeByte(at + i, r[i]);
         return r.Count;
+    }
+
+    static Dictionary<string, string>? _substitutes;
+
+    /// What Windows' FontSubstitutes says `family` is, or null.
+    static string? Substitute(string family)
+    {
+        if (_substitutes == null)
+        {
+            _substitutes = new Dictionary<string, string>();
+            char[] key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes\0".ToCharArray();
+            int handle = 0;
+            if (RegOpenKeyExW(unchecked((nint)0x80000002), (nint)Sys.ArrayData(key), 0, 0x20019, (nint)Sys.AddressOf(ref handle)) == 0)
+            {
+                char[] name = new char[256];
+                byte[] data = new byte[512];
+                for (int index = 0; ; index++)
+                {
+                    int nameLength = name.Length, dataLength = data.Length, type = 0;
+                    if (RegEnumValueW((nint)handle, index, (nint)Sys.ArrayData(name), (nint)Sys.AddressOf(ref nameLength), 0,
+                                      (nint)Sys.AddressOf(ref type), (nint)Sys.ArrayData(data), (nint)Sys.AddressOf(ref dataLength)) != 0) break;
+                    if (type != 1) continue;
+                    string from = new string(name, 0, nameLength), to = Unicode(data, dataLength);
+                    // "Arial,0" = "Arial,161": the character set after a comma.
+                    int comma = from.IndexOf(','); if (comma >= 0) from = from.Substring(0, comma);
+                    comma = to.IndexOf(','); if (comma >= 0) to = to.Substring(0, comma);
+                    _substitutes[from.ToLowerInvariant()] = to;
+                }
+                RegCloseKey((nint)handle);
+            }
+        }
+        string? made;
+        return _substitutes.TryGetValue(family.ToLowerInvariant(), out made) ? made : null;
     }
 
     static Face? Nearest(string family, int weight, bool italic)

@@ -703,6 +703,15 @@ public class ControlCollection
 
 public class Control
 {
+    // THE SEAT'S FONTS AND THEME BEFORE THE FIRST CONTROL'S OWN: a control
+    // takes the system's colours and font as it is made, and a program
+    // makes its form before Application.Run -- which is where they were
+    // linked, so the first form drew in the bitmap font and classic colours.
+    // Asking for the store opens the seat, which sets the theme; a program
+    // with no seat gets none, as before.
+    static readonly bool _seatLinked = LinkSeat();
+    static bool LinkSeat() { Corsac.GUI.Seat.LinkFontStore(); return FontStores.Current != null; }
+
     int _x, _y, _width = 100, _height = 23;
     string _text = "";
     Color _back = SystemColors.Control;
