@@ -12022,8 +12022,13 @@ sealed class __ListDictionary : IDictionary {
             else _entries[at] = new DictionaryEntry(key, value);
         }
     }
-    public ICollection Keys { get { List<object> keys = new List<object>(); foreach (DictionaryEntry e in _entries) keys.Add(e.Key); return keys; } }
-    public ICollection Values { get { List<object?> values = new List<object?>(); foreach (DictionaryEntry e in _entries) values.Add(e.Value); return values; } }
+    // Each an array, which is an ICollection (a List<T> is not one yet).
+    public ICollection Keys {
+        get { object[] keys = new object[_entries.Count]; for (int i = 0; i < keys.Length; i++) keys[i] = _entries[i].Key; return keys; }
+    }
+    public ICollection Values {
+        get { object?[] values = new object?[_entries.Count]; for (int i = 0; i < values.Length; i++) values[i] = _entries[i].Value; return values; }
+    }
     public bool IsFixedSize => false;
     public bool IsReadOnly => false;
     public bool IsSynchronized => false;
