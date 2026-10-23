@@ -1,0 +1,1532 @@
+// CORSAC/SECURE TLS bounded X.509 certificate view.
+//
+// The view borrows one caller-owned DER byte array and exposes only checked
+// slices.  It validates the complete Certificate/TBSCertificate structure,
+// canonical DER, signature-algorithm agreement, public-key encoding, validity
+// times and the security-critical leaf/CA extensions used by TLS.  Unknown
+// critical extensions and duplicate extensions fail closed.  Service identity
+// uses subjectAltName DNS-ID/IP-ID only; Common Name is deliberately ignored.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Security.Cryptography.X509Certificates;
+
+internal static class X509KeyAlgorithm
+{
+    public const int Unknown = 0;
+    public const int Rsa = 1;
+    public const int P256 = 2;
+    public const int Ed25519 = 3;
+    public const int P384 = 4;
+}
+
+/// A signature algorithm: its scheme (RSA PKCS#1 v1.5, RSA-PSS, ECDSA on
+/// whichever curve the signer's key is, Ed25519) and its hash.
+internal static class X509SignatureAlgorithm
+{
+    public const int Unknown = 0;
+    public const int RsaPkcs1Sha256 = 1;
+    public const int RsaPssSha256 = 2;
+    public const int EcdsaSha256 = 3;
+    public const int Ed25519 = 4;
+    public const int RsaPkcs1Sha384 = 5;
+    public const int RsaPkcs1Sha512 = 6;
+    public const int RsaPssSha384 = 7;
+    public const int RsaPssSha512 = 8;
+    public const int EcdsaSha384 = 9;
+    public const int EcdsaSha512 = 10;
+
+    public static bool IsPkcs1(int a) => a == RsaPkcs1Sha256 || a == RsaPkcs1Sha384 || a == RsaPkcs1Sha512;
+    public static bool IsPss(int a) => a == RsaPssSha256 || a == RsaPssSha384 || a == RsaPssSha512;
+    public static bool IsEcdsa(int a) => a == EcdsaSha256 || a == EcdsaSha384 || a == EcdsaSha512;
+
+    /// The digest's length in bytes, 0 for Ed25519 (which hashes itself).
+    public static int DigestBytes(int a)
+    {
+        if (a == RsaPkcs1Sha256 || a == RsaPssSha256 || a == EcdsaSha256) return 32;
+        if (a == RsaPkcs1Sha384 || a == RsaPssSha384 || a == EcdsaSha384) return 48;
+        if (a == RsaPkcs1Sha512 || a == RsaPssSha512 || a == EcdsaSha512) return 64;
+        return 0;
+    }
+}
+
+internal class X509CertificateView
+{
+    public const int InvalidArgument = 1;
+    public const int Malformed = 2;
+    public const int Unsupported = 3;
+    public const int ResourceLimit = 7;
+
+    public const long KeyUsageDigitalSignature = 1;
+    public const long KeyUsageKeyEncipherment = 4;
+    public const long KeyUsageKeyAgreement = 16;
+    public const long KeyUsageCertificateSign = 32;
+    public const long MaximumCertificateBytes = 1048576;
+    public const int MaximumExtensions = 64;
+    public const int MaximumSubjectAlternativeNames = 64;
+    public const int MaximumNameConstraintSubtrees = 64;
+
+    private const int PermittedDnsConstraint = 1;
+    private const int ExcludedDnsConstraint = 2;
+    private const int PermittedIpConstraint = 3;
+    private const int ExcludedIpConstraint = 4;
+
+    private byte[] _der;
+    private bool _valid;
+    private int _error;
+    private int _version;
+
+    private long _tbsOffset;
+    private long _tbsCount;
+    private long _serialOffset;
+    private long _serialCount;
+    private long _issuerOffset;
+    private long _issuerCount;
+    private long _subjectOffset;
+    private long _subjectCount;
+    private long _notBefore;
+    private long _notAfter;
+
+    private int _signatureAlgorithm;
+    private long _signatureOffset;
+    private long _signatureCount;
+    private int _publicKeyAlgorithm;
+    private long _publicKeyOffset;
+    private long _publicKeyCount;
+    private long _rsaModulusOffset;
+    private long _rsaModulusCount;
+    private long _rsaExponent;
+
+    private bool _basicConstraintsPresent;
+    private bool _isCa;
+    private long _pathLength;
+    private bool _keyUsagePresent;
+    private long _keyUsage;
+    private bool _extendedKeyUsagePresent;
+    private bool _serverAuthentication;
+    private bool _subjectAlternativeNamePresent;
+    private long _subjectAlternativeNameOffset;
+    private long _subjectAlternativeNameCount;
+    private int _subjectAlternativeNameEntryCount;
+
+    private bool _nameConstraintsPresent;
+    private long[] _nameConstraintOffsets;
+    private long[] _nameConstraintCounts;
+    private int[] _nameConstraintKinds;
+    private int _nameConstraintCount;
+
+    private long[] _extensionOidOffsets;
+    private long[] _extensionOidCounts;
+    private int _extensionCount;
+
+    public X509CertificateView()
+    {
+        _extensionOidOffsets = new long[MaximumExtensions];
+        _extensionOidCounts = new long[MaximumExtensions];
+        _nameConstraintOffsets =
+            new long[MaximumNameConstraintSubtrees];
+        _nameConstraintCounts =
+            new long[MaximumNameConstraintSubtrees];
+        _nameConstraintKinds =
+            new int[MaximumNameConstraintSubtrees];
+        ResetState();
+    }
+
+    public bool Valid => _valid;
+    public int Error => _error;
+    public int Version => _version;
+    public long TbsOffset => _tbsOffset;
+    public long TbsCount => _tbsCount;
+    public long SerialOffset => _serialOffset;
+    public long SerialCount => _serialCount;
+    public long IssuerOffset => _issuerOffset;
+    public long IssuerCount => _issuerCount;
+    public long SubjectOffset => _subjectOffset;
+    public long SubjectCount => _subjectCount;
+    public long NotBefore => _notBefore;
+    public long NotAfter => _notAfter;
+    public int SignatureAlgorithm => _signatureAlgorithm;
+    public long SignatureOffset => _signatureOffset;
+    public long SignatureCount => _signatureCount;
+    public int PublicKeyAlgorithm => _publicKeyAlgorithm;
+    public long PublicKeyOffset => _publicKeyOffset;
+    public long PublicKeyCount => _publicKeyCount;
+    public long RsaModulusOffset => _rsaModulusOffset;
+    public long RsaModulusCount => _rsaModulusCount;
+    public long RsaExponent => _rsaExponent;
+    public bool BasicConstraintsPresent => _basicConstraintsPresent;
+    public bool IsCa => _isCa;
+    public long PathLength => _pathLength;
+    public bool KeyUsagePresent => _keyUsagePresent;
+    public long KeyUsage => _keyUsage;
+    public bool ExtendedKeyUsagePresent => _extendedKeyUsagePresent;
+    public bool AllowsServerAuthentication =>
+        !_extendedKeyUsagePresent || _serverAuthentication;
+    public bool SubjectAlternativeNamePresent =>
+        _subjectAlternativeNamePresent;
+    public int SubjectAlternativeNameCount =>
+        _valid ? _subjectAlternativeNameEntryCount : 0;
+    public bool NameConstraintsPresent => _nameConstraintsPresent;
+
+    public bool Parse(byte[] der, long offset, long count)
+    {
+        ResetState();
+        if (!CorsacSecureCrypto_Bytes.Range(der, offset, count)
+            || count == 0 || count > MaximumCertificateBytes)
+            return Fail(InvalidArgument);
+        _der = der;
+
+        CorsacSecureCrypto_DerCursor root =
+            new CorsacSecureCrypto_DerCursor(der, offset, count);
+        long certificateOffset = 0;
+        long certificateCount = 0;
+        if (!root.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out certificateOffset, out certificateCount)
+            || !root.AtEnd()) return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor certificate =
+            new CorsacSecureCrypto_DerCursor(
+                der, certificateOffset, certificateCount);
+
+        long tbsStart = certificate.AbsolutePosition();
+        long tbsContentOffset = 0;
+        long tbsContentCount = 0;
+        if (!certificate.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out tbsContentOffset, out tbsContentCount))
+            return Fail(Malformed);
+        _tbsOffset = tbsStart;
+        _tbsCount = certificate.AbsolutePosition() - tbsStart;
+
+        CorsacSecureCrypto_DerCursor tbs =
+            new CorsacSecureCrypto_DerCursor(
+                der, tbsContentOffset, tbsContentCount);
+        long innerAlgorithmOffset = 0;
+        long innerAlgorithmCount = 0;
+        if (!ParseTbs(tbs, out innerAlgorithmOffset,
+                      out innerAlgorithmCount)) return false;
+
+        long outerAlgorithmOffset = 0;
+        long outerAlgorithmCount = 0;
+        int outerAlgorithm = 0;
+        if (!ReadSignatureAlgorithm(certificate, out outerAlgorithm,
+                out outerAlgorithmOffset, out outerAlgorithmCount)
+            || outerAlgorithm != _signatureAlgorithm
+            || innerAlgorithmCount != outerAlgorithmCount
+            || !CorsacSecureCrypto_Bytes.Equal(
+                der, innerAlgorithmOffset,
+                der, outerAlgorithmOffset, innerAlgorithmCount))
+            return Fail(Malformed);
+
+        long unusedBits = 0;
+        if (!certificate.TryReadBitString(
+                out _signatureOffset, out _signatureCount, out unusedBits)
+            || unusedBits != 0 || _signatureCount == 0
+            || !certificate.AtEnd()) return Fail(Malformed);
+
+        _valid = true;
+        return true;
+    }
+
+    public bool CopyTbs(byte[] output, long outputOffset)
+    {
+        return _valid && CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, _der, _tbsOffset, _tbsCount);
+    }
+
+    public bool CopySignature(byte[] output, long outputOffset)
+    {
+        return _valid && CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset,
+            _der, _signatureOffset, _signatureCount);
+    }
+
+    public bool CopyPublicKey(byte[] output, long outputOffset)
+    {
+        return _valid && CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset,
+            _der, _publicKeyOffset, _publicKeyCount);
+    }
+
+    // Time is YYYYMMDDhhmmss packed as an integer in UTC.
+    public bool ValidAt(long packedUtc)
+    {
+        return _valid && packedUtc >= _notBefore && packedUtc <= _notAfter;
+    }
+
+    public bool AllowsDigitalSignature()
+    {
+        return _valid && (!_keyUsagePresent
+            || (_keyUsage & KeyUsageDigitalSignature) != 0);
+    }
+
+    public bool AllowsCertificateSigning()
+    {
+        return _valid && _isCa && (!_keyUsagePresent
+            || (_keyUsage & KeyUsageCertificateSign) != 0);
+    }
+
+    public bool IssuerMatches(X509CertificateView issuer)
+    {
+        return _valid && issuer != null && issuer._valid
+            && _issuerCount == issuer._subjectCount
+            && CorsacSecureCrypto_Bytes.Equal(
+                _der, _issuerOffset,
+                issuer._der, issuer._subjectOffset, _issuerCount);
+    }
+
+    public bool MatchesDnsName(string reference)
+    {
+        if (!_valid || !_subjectAlternativeNamePresent
+            || !ValidReferenceDns(reference)) return false;
+        int referenceCount = reference.Length;
+        if (referenceCount > 0 && reference[referenceCount - 1] == '.')
+            referenceCount = referenceCount - 1;
+
+        CorsacSecureCrypto_DerCursor wrapper =
+            new CorsacSecureCrypto_DerCursor(
+                _der, _subjectAlternativeNameOffset,
+                _subjectAlternativeNameCount);
+        long namesOffset = 0;
+        long namesCount = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out namesOffset, out namesCount) || !wrapper.AtEnd())
+            return false;
+        CorsacSecureCrypto_DerCursor names =
+            new CorsacSecureCrypto_DerCursor(_der, namesOffset, namesCount);
+        while (!names.AtEnd())
+        {
+            long tagClass = 0, tag = 0, at = 0, count = 0;
+            bool constructed = false;
+            if (!names.TryReadElement(out tagClass, out constructed,
+                    out tag, out at, out count)) return false;
+            if (tagClass == CorsacSecureCrypto_DerCursor.Context
+                && tag == 2 && !constructed
+                && PresentedDnsMatches(at, (int)count,
+                                       reference, referenceCount))
+                return true;
+        }
+        return false;
+    }
+
+    public bool MatchesIpAddress(byte[] address,
+                                 long addressOffset, long addressCount)
+    {
+        if (!_valid || !_subjectAlternativeNamePresent
+            || (addressCount != 4 && addressCount != 16)
+            || !CorsacSecureCrypto_Bytes.Range(
+                address, addressOffset, addressCount)) return false;
+        CorsacSecureCrypto_DerCursor wrapper =
+            new CorsacSecureCrypto_DerCursor(
+                _der, _subjectAlternativeNameOffset,
+                _subjectAlternativeNameCount);
+        long namesOffset = 0, namesCount = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out namesOffset, out namesCount) || !wrapper.AtEnd())
+            return false;
+        CorsacSecureCrypto_DerCursor names =
+            new CorsacSecureCrypto_DerCursor(_der, namesOffset, namesCount);
+        while (!names.AtEnd())
+        {
+            long tagClass = 0, tag = 0, at = 0, count = 0;
+            bool constructed = false;
+            if (!names.TryReadElement(out tagClass, out constructed,
+                    out tag, out at, out count)) return false;
+            if (tagClass == CorsacSecureCrypto_DerCursor.Context
+                && tag == 7 && !constructed && count == addressCount
+                && CorsacSecureCrypto_Bytes.Equal(
+                    _der, at, address, addressOffset, addressCount))
+                return true;
+        }
+        return false;
+    }
+
+    // Evaluates one DNS service identity against this certificate's complete
+    // permitted/excluded DNS subtree set.  Excluded subtrees take precedence;
+    // if no permitted DNS subtree is present, the DNS name form is unrestricted.
+    public bool PermitsDnsName(string reference)
+    {
+        if (!_valid || !ValidReferenceDns(reference)) return false;
+        int referenceCount = reference.Length;
+        if (reference[referenceCount - 1] == '.')
+            referenceCount = referenceCount - 1;
+        bool constrained = false;
+        bool permitted = false;
+        for (int i = 0; i < _nameConstraintCount; i = i + 1)
+        {
+            int kind = _nameConstraintKinds[i];
+            if (kind != PermittedDnsConstraint
+                && kind != ExcludedDnsConstraint) continue;
+            bool matches = DnsConstraintMatches(
+                _nameConstraintOffsets[i],
+                (int)_nameConstraintCounts[i],
+                reference, referenceCount);
+            if (kind == ExcludedDnsConstraint && matches) return false;
+            if (kind == PermittedDnsConstraint)
+            {
+                constrained = true;
+                if (matches) permitted = true;
+            }
+        }
+        return !constrained || permitted;
+    }
+
+    // IP name constraints carry address || mask (8 bytes for IPv4, 32 for
+    // IPv6).  IPv4 and IPv6 are encodings of the same iPAddress name form: if
+    // any permitted IP subtree exists, an address of either family must match
+    // at least one same-family subtree.
+    public bool PermitsIpAddress(byte[] address,
+                                 long addressOffset, long addressCount)
+    {
+        if (!_valid || (addressCount != 4 && addressCount != 16)
+            || !CorsacSecureCrypto_Bytes.Range(
+                address, addressOffset, addressCount)) return false;
+        bool constrained = false;
+        bool permitted = false;
+        for (int i = 0; i < _nameConstraintCount; i = i + 1)
+        {
+            int kind = _nameConstraintKinds[i];
+            if (kind != PermittedIpConstraint
+                && kind != ExcludedIpConstraint) continue;
+            if (kind == PermittedIpConstraint) constrained = true;
+            if (_nameConstraintCounts[i] != addressCount * 2) continue;
+            bool matches = IpConstraintMatches(
+                _nameConstraintOffsets[i], address,
+                addressOffset, addressCount);
+            if (kind == ExcludedIpConstraint && matches) return false;
+            if (kind == PermittedIpConstraint)
+            {
+                if (matches) permitted = true;
+            }
+        }
+        return !constrained || permitted;
+    }
+
+    // Enumerates the subject's bounded SAN sequence without exporting binary
+    // certificate storage or converting iPAddress octets to text.  Only the
+    // DNS and IP GeneralName forms supported by this TLS profile are subject
+    // to this authority's corresponding nameConstraints; other SAN forms are
+    // structurally checked by Parse but have no supported constraint form.
+    public bool PermitsSubjectAlternativeNames(
+        X509CertificateView subject)
+    {
+        if (!_valid || subject == null || !subject._valid) return false;
+        if (!subject._subjectAlternativeNamePresent) return true;
+
+        CorsacSecureCrypto_DerCursor wrapper =
+            new CorsacSecureCrypto_DerCursor(
+                subject._der, subject._subjectAlternativeNameOffset,
+                subject._subjectAlternativeNameCount);
+        long namesOffset = 0, namesCount = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out namesOffset, out namesCount) || !wrapper.AtEnd())
+            return false;
+        CorsacSecureCrypto_DerCursor names =
+            new CorsacSecureCrypto_DerCursor(
+                subject._der, namesOffset, namesCount);
+        int seen = 0;
+        while (!names.AtEnd())
+        {
+            long tagClass = 0, tag = 0, at = 0, count = 0;
+            bool constructed = false;
+            if (!names.TryReadElement(out tagClass, out constructed,
+                    out tag, out at, out count)
+                || tagClass != CorsacSecureCrypto_DerCursor.Context
+                || seen >= MaximumSubjectAlternativeNames) return false;
+            seen = seen + 1;
+            if (tag == 2 && !constructed
+                && !PermitsDnsBytes(subject._der, at, (int)count))
+                return false;
+            if (tag == 7 && !constructed
+                && !PermitsIpAddress(subject._der, at, count))
+                return false;
+        }
+        return seen == subject._subjectAlternativeNameEntryCount;
+    }
+
+    private bool ParseTbs(CorsacSecureCrypto_DerCursor tbs,
+                          out long algorithmOffset,
+                          out long algorithmCount)
+    {
+        algorithmOffset = 0;
+        algorithmCount = 0;
+        long tagClass = 0, tag = 0, at = 0, count = 0;
+        bool constructed = false;
+        if (!tbs.TryPeekElement(out tagClass, out constructed,
+                out tag, out at, out count)) return Fail(Malformed);
+        _version = 0;
+        if (tagClass == CorsacSecureCrypto_DerCursor.Context
+            && tag == 0)
+        {
+            if (!constructed || !tbs.TryReadElement(
+                    out tagClass, out constructed, out tag,
+                    out at, out count)) return Fail(Malformed);
+            CorsacSecureCrypto_DerCursor explicitVersion =
+                new CorsacSecureCrypto_DerCursor(_der, at, count);
+            long version = 0;
+            if (!ReadPositiveLong(explicitVersion, out version)
+                || !explicitVersion.AtEnd() || version > 2)
+                return Fail(Malformed);
+            _version = (int)version;
+        }
+
+        if (!tbs.TryReadPositiveInteger(
+                out _serialOffset, out _serialCount)
+            || _serialCount < 1 || _serialCount > 20
+            || AllZero(_serialOffset, _serialCount)) return Fail(Malformed);
+
+        if (!ReadSignatureAlgorithm(tbs, out _signatureAlgorithm,
+                out algorithmOffset, out algorithmCount)) return false;
+        if (!ReadName(tbs, true, out _issuerOffset, out _issuerCount))
+            return Fail(Malformed);
+        if (!ReadValidity(tbs)) return Fail(Malformed);
+        if (!ReadName(tbs, false, out _subjectOffset, out _subjectCount))
+            return Fail(Malformed);
+        if (!ReadPublicKey(tbs)) return false;
+
+        bool extensionsSeen = false;
+        long lastOptionalTag = 0;
+        while (!tbs.AtEnd())
+        {
+            if (!tbs.TryReadElement(out tagClass, out constructed,
+                    out tag, out at, out count)
+                || tagClass != CorsacSecureCrypto_DerCursor.Context)
+                return Fail(Malformed);
+            if ((tag == 1 || tag == 2) && !constructed)
+            {
+                // issuerUniqueID and subjectUniqueID were added in v2 and are
+                // ordered IMPLICIT BIT STRING fields.  Validate the unused-bit
+                // octet and the DER-required zero padding even though TLS does
+                // not otherwise consume these legacy identifiers.
+                int unused = count < 1 ? 8 : _der[(int)at] & 255;
+                if (_version < 1 || tag <= lastOptionalTag || unused > 7
+                    || (count == 1 && unused != 0)
+                    || (count > 1 && unused > 0
+                        && ((_der[(int)(at + count - 1)] & 255)
+                            & ((1 << unused) - 1)) != 0))
+                    return Fail(Malformed);
+                lastOptionalTag = tag;
+                continue;
+            }
+            if (tag == 3 && constructed && !extensionsSeen && _version == 2
+                && tag > lastOptionalTag)
+            {
+                extensionsSeen = true;
+                lastOptionalTag = tag;
+                if (!ParseExtensions(at, count)) return false;
+                continue;
+            }
+            return Fail(Malformed);
+        }
+        return true;
+    }
+
+    private bool ReadName(CorsacSecureCrypto_DerCursor parent,
+                          bool requireNonempty,
+                          out long offset, out long count)
+    {
+        offset = parent.AbsolutePosition();
+        long contentOffset = 0, contentCount = 0;
+        if (!parent.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out contentOffset, out contentCount)
+            || (requireNonempty && contentCount == 0))
+        {
+            offset = 0;
+            count = 0;
+            return false;
+        }
+        count = parent.AbsolutePosition() - offset;
+        return true;
+    }
+
+    private bool ReadValidity(CorsacSecureCrypto_DerCursor parent)
+    {
+        long offset = 0, count = 0;
+        if (!parent.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out offset, out count)) return false;
+        CorsacSecureCrypto_DerCursor validity =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        return ReadTime(validity, out _notBefore)
+            && ReadTime(validity, out _notAfter)
+            && validity.AtEnd() && _notBefore <= _notAfter;
+    }
+
+    private bool ReadTime(CorsacSecureCrypto_DerCursor cursor,
+                          out long packed)
+    {
+        packed = 0;
+        long tagClass = 0, tag = 0, offset = 0, count = 0;
+        bool constructed = false;
+        if (!cursor.TryReadElement(out tagClass, out constructed,
+                out tag, out offset, out count)
+            || tagClass != CorsacSecureCrypto_DerCursor.Universal
+            || constructed || (tag != 23 && tag != 24)) return false;
+        int expected = tag == 23 ? 13 : 15;
+        if (count != expected
+            || _der[(int)(offset + count - 1)] != (byte)'Z') return false;
+        int at = (int)offset;
+        int year = 0;
+        if (tag == 23)
+        {
+            int shortYear = Digits(at, 2);
+            if (shortYear < 0) return false;
+            year = shortYear >= 50 ? 1900 + shortYear : 2000 + shortYear;
+            at = at + 2;
+        }
+        else
+        {
+            year = Digits(at, 4);
+            // RFC 5280 requires UTCTime through 2049 and GeneralizedTime from
+            // 2050 onward.  Accepting the longer form early would accept a
+            // non-canonical certificate encoding.
+            if (year < 2050) return false;
+            at = at + 4;
+        }
+        int month = Digits(at, 2);
+        int day = Digits(at + 2, 2);
+        int hour = Digits(at + 4, 2);
+        int minute = Digits(at + 6, 2);
+        int second = Digits(at + 8, 2);
+        if (month < 1 || month > 12 || hour < 0 || hour > 23
+            || minute < 0 || minute > 59 || second < 0 || second > 59
+            || day < 1 || day > DaysInMonth(year, month)) return false;
+        packed = (long)year * 10000000000L
+               + (long)month * 100000000L
+               + (long)day * 1000000L
+               + (long)hour * 10000L
+               + (long)minute * 100L + second;
+        return true;
+    }
+
+    private bool ReadPublicKey(CorsacSecureCrypto_DerCursor parent)
+    {
+        long offset = 0, count = 0;
+        if (!parent.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out offset, out count)) return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor spki =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        if (!ReadPublicKeyAlgorithm(spki, out _publicKeyAlgorithm))
+            return false;
+        long unused = 0;
+        if (!spki.TryReadBitString(
+                out _publicKeyOffset, out _publicKeyCount, out unused)
+            || unused != 0 || !spki.AtEnd()) return Fail(Malformed);
+
+        if (_publicKeyAlgorithm == X509KeyAlgorithm.P256)
+            return (_publicKeyCount == 65
+                && _der[(int)_publicKeyOffset] == (byte)4)
+                || Fail(Malformed);
+        if (_publicKeyAlgorithm == X509KeyAlgorithm.P384)
+            return (_publicKeyCount == 97
+                && _der[(int)_publicKeyOffset] == (byte)4)
+                || Fail(Malformed);
+        if (_publicKeyAlgorithm == X509KeyAlgorithm.Ed25519)
+            return (_publicKeyCount == 32) || Fail(Malformed);
+        if (_publicKeyAlgorithm != X509KeyAlgorithm.Rsa)
+            return Fail(Unsupported);
+
+        CorsacSecureCrypto_DerCursor keyWrapper =
+            new CorsacSecureCrypto_DerCursor(
+                _der, _publicKeyOffset, _publicKeyCount);
+        long keyOffset = 0, keyCount = 0;
+        if (!keyWrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out keyOffset, out keyCount) || !keyWrapper.AtEnd())
+            return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor rsa =
+            new CorsacSecureCrypto_DerCursor(_der, keyOffset, keyCount);
+        if (!rsa.TryReadPositiveInteger(
+                out _rsaModulusOffset, out _rsaModulusCount)
+            || _rsaModulusCount < 256 || _rsaModulusCount > 1024
+            || !ReadPositiveLong(rsa, out _rsaExponent)
+            || _rsaExponent < 3 || (_rsaExponent & 1) == 0
+            || !rsa.AtEnd()) return Fail(Malformed);
+        return true;
+    }
+
+    private bool ReadPublicKeyAlgorithm(
+        CorsacSecureCrypto_DerCursor parent, out int algorithm)
+    {
+        algorithm = X509KeyAlgorithm.Unknown;
+        long offset = 0, count = 0;
+        if (!parent.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out offset, out count)) return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor identifier =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long oidOffset = 0, oidCount = 0;
+        if (!identifier.TryReadObjectIdentifier(out oidOffset, out oidCount))
+            return Fail(Malformed);
+        if (Oid(oidOffset, oidCount, "2a864886f70d010101"))
+        {
+            algorithm = X509KeyAlgorithm.Rsa;
+            if (!identifier.AtEnd() && !identifier.TryReadNull())
+                return Fail(Malformed);
+        }
+        else if (Oid(oidOffset, oidCount, "2a8648ce3d0201"))
+        {
+            long curveOffset = 0, curveCount = 0;
+            if (!identifier.TryReadObjectIdentifier(
+                    out curveOffset, out curveCount))
+                return Fail(Unsupported);
+            if (Oid(curveOffset, curveCount, "2a8648ce3d030107"))
+                algorithm = X509KeyAlgorithm.P256;
+            else if (Oid(curveOffset, curveCount, "2b81040022"))
+                algorithm = X509KeyAlgorithm.P384;
+            else return Fail(Unsupported);
+        }
+        else if (Oid(oidOffset, oidCount, "2b6570"))
+        {
+            algorithm = X509KeyAlgorithm.Ed25519;
+        }
+        else return Fail(Unsupported);
+        return identifier.AtEnd() || Fail(Malformed);
+    }
+
+    private bool ReadSignatureAlgorithm(
+        CorsacSecureCrypto_DerCursor parent, out int algorithm,
+        out long fullOffset, out long fullCount)
+    {
+        algorithm = X509SignatureAlgorithm.Unknown;
+        fullOffset = parent.AbsolutePosition();
+        fullCount = 0;
+        long offset = 0, count = 0;
+        if (!parent.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out offset, out count)) return Fail(Malformed);
+        fullCount = parent.AbsolutePosition() - fullOffset;
+        CorsacSecureCrypto_DerCursor identifier =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long oidOffset = 0, oidCount = 0;
+        if (!identifier.TryReadObjectIdentifier(out oidOffset, out oidCount))
+            return Fail(Malformed);
+        bool pkcs1 = true;
+        if (Oid(oidOffset, oidCount, "2a864886f70d01010b"))
+            algorithm = X509SignatureAlgorithm.RsaPkcs1Sha256;
+        else if (Oid(oidOffset, oidCount, "2a864886f70d01010c"))
+            algorithm = X509SignatureAlgorithm.RsaPkcs1Sha384;
+        else if (Oid(oidOffset, oidCount, "2a864886f70d01010d"))
+            algorithm = X509SignatureAlgorithm.RsaPkcs1Sha512;
+        else pkcs1 = false;
+        if (pkcs1)
+        {
+            if (!identifier.AtEnd() && !identifier.TryReadNull())
+                return Fail(Malformed);
+        }
+        else if (Oid(oidOffset, oidCount, "2a864886f70d01010a"))
+        {
+            int digest;
+            if (!ParsePss(identifier, out digest)) return false;
+            algorithm = digest == 32 ? X509SignatureAlgorithm.RsaPssSha256
+                : digest == 48 ? X509SignatureAlgorithm.RsaPssSha384
+                : X509SignatureAlgorithm.RsaPssSha512;
+        }
+        else if (Oid(oidOffset, oidCount, "2a8648ce3d040302"))
+            algorithm = X509SignatureAlgorithm.EcdsaSha256;
+        else if (Oid(oidOffset, oidCount, "2a8648ce3d040303"))
+            algorithm = X509SignatureAlgorithm.EcdsaSha384;
+        else if (Oid(oidOffset, oidCount, "2a8648ce3d040304"))
+            algorithm = X509SignatureAlgorithm.EcdsaSha512;
+        else if (Oid(oidOffset, oidCount, "2b6570"))
+            algorithm = X509SignatureAlgorithm.Ed25519;
+        else return Fail(Unsupported);
+        return identifier.AtEnd() || Fail(Malformed);
+    }
+
+    /// RSASSA-PSS-params naming SHA-256, -384 or -512, MGF1 with the same
+    /// hash, and a salt as long as the digest (the profile RFC 8446 and the
+    /// CA/Browser Forum ask): its digest length into `digest`.
+    private bool ParsePss(CorsacSecureCrypto_DerCursor identifier, out int digest)
+    {
+        digest = 0;
+        int maskDigest = 0;
+        long offset = 0, count = 0;
+        if (!identifier.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out offset, out count) || !identifier.AtEnd())
+            return Fail(Unsupported);
+        CorsacSecureCrypto_DerCursor parameters =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        bool hash = false, mask = false, salt = false;
+        long trailer = 1;
+        long previousTag = -1;
+        while (!parameters.AtEnd())
+        {
+            long tagClass = 0, tag = 0, at = 0, n = 0;
+            bool constructed = false;
+            if (!parameters.TryReadElement(out tagClass, out constructed,
+                    out tag, out at, out n)
+                || tagClass != CorsacSecureCrypto_DerCursor.Context
+                || !constructed || tag <= previousTag || tag > 3)
+                return Fail(Malformed);
+            previousTag = tag;
+            CorsacSecureCrypto_DerCursor explicitValue =
+                new CorsacSecureCrypto_DerCursor(_der, at, n);
+            if (tag == 0 && !hash)
+            {
+                hash = ReadHashAlgorithm(explicitValue, out digest);
+                if (!hash) return false;
+            }
+            else if (tag == 1 && !mask)
+            {
+                mask = ReadMgf1(explicitValue, out maskDigest);
+                if (!mask) return false;
+            }
+            else if (tag == 2 && !salt)
+            {
+                long width = 0;
+                if (!ReadPositiveLong(explicitValue, out width)
+                    || width != digest) return Fail(Unsupported);
+                salt = true;
+            }
+            else if (tag == 3)
+            {
+                if (!ReadPositiveLong(explicitValue, out trailer)
+                    || trailer != 1) return Fail(Unsupported);
+                // trailerField has DEFAULT 1.  DER omits a field carrying its
+                // default value, so an explicit 1 is not canonical.
+                return Fail(Malformed);
+            }
+            else return Fail(Malformed);
+            if (!explicitValue.AtEnd()) return Fail(Malformed);
+        }
+        return hash && mask && salt && trailer == 1 && maskDigest == digest
+            || Fail(Unsupported);
+    }
+
+    private bool ReadHashAlgorithm(CorsacSecureCrypto_DerCursor wrapper, out int digest)
+    {
+        digest = 0;
+        long offset = 0, count = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out offset, out count) || !wrapper.AtEnd())
+            return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor algorithm =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long oidOffset = 0, oidCount = 0;
+        if (!algorithm.TryReadObjectIdentifier(out oidOffset, out oidCount))
+            return Fail(Unsupported);
+        if (Oid(oidOffset, oidCount, "608648016503040201")) digest = 32;
+        else if (Oid(oidOffset, oidCount, "608648016503040202")) digest = 48;
+        else if (Oid(oidOffset, oidCount, "608648016503040203")) digest = 64;
+        else return Fail(Unsupported);
+        if (!algorithm.AtEnd() && !algorithm.TryReadNull())
+            return Fail(Malformed);
+        return algorithm.AtEnd() || Fail(Malformed);
+    }
+
+    private bool ReadMgf1(CorsacSecureCrypto_DerCursor wrapper, out int digest)
+    {
+        digest = 0;
+        long offset = 0, count = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out offset, out count) || !wrapper.AtEnd())
+            return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor algorithm =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long oidOffset = 0, oidCount = 0;
+        if (!algorithm.TryReadObjectIdentifier(out oidOffset, out oidCount)
+            || !Oid(oidOffset, oidCount, "2a864886f70d010108"))
+            return Fail(Unsupported);
+        return ReadHashAlgorithm(algorithm, out digest) && algorithm.AtEnd();
+    }
+
+    private bool ParseExtensions(long offset, long count)
+    {
+        CorsacSecureCrypto_DerCursor explicitExtensions =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long sequenceOffset = 0, sequenceCount = 0;
+        if (!explicitExtensions.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out sequenceOffset, out sequenceCount)
+            || !explicitExtensions.AtEnd() || sequenceCount == 0)
+            return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor extensions =
+            new CorsacSecureCrypto_DerCursor(
+                _der, sequenceOffset, sequenceCount);
+        while (!extensions.AtEnd())
+        {
+            if (_extensionCount >= MaximumExtensions)
+                return Fail(ResourceLimit);
+            long extensionOffset = 0, extensionCount = 0;
+            if (!extensions.TryReadUniversal(
+                    CorsacSecureCrypto_DerCursor.Sequence, true,
+                    out extensionOffset, out extensionCount))
+                return Fail(Malformed);
+            CorsacSecureCrypto_DerCursor extension =
+                new CorsacSecureCrypto_DerCursor(
+                    _der, extensionOffset, extensionCount);
+            long oidOffset = 0, oidCount = 0;
+            if (!extension.TryReadObjectIdentifier(
+                    out oidOffset, out oidCount)) return Fail(Malformed);
+            for (int i = 0; i < _extensionCount; i = i + 1)
+                if (oidCount == _extensionOidCounts[i]
+                    && CorsacSecureCrypto_Bytes.Equal(
+                        _der, oidOffset, _der,
+                        _extensionOidOffsets[i], oidCount))
+                    return Fail(Malformed);
+            _extensionOidOffsets[_extensionCount] = oidOffset;
+            _extensionOidCounts[_extensionCount] = oidCount;
+            _extensionCount = _extensionCount + 1;
+
+            bool critical = false;
+            long tagClass = 0, tag = 0, at = 0, n = 0;
+            bool constructed = false;
+            if (!extension.AtEnd()
+                && extension.TryPeekElement(out tagClass, out constructed,
+                    out tag, out at, out n)
+                && tagClass == CorsacSecureCrypto_DerCursor.Universal
+                && tag == CorsacSecureCrypto_DerCursor.Boolean)
+            {
+                if (!extension.TryReadBoolean(out critical))
+                    return Fail(Malformed);
+                // critical is DEFAULT FALSE and DER must omit a default value.
+                if (!critical) return Fail(Malformed);
+            }
+            long valueOffset = 0, valueCount = 0;
+            if (!extension.TryReadOctetString(
+                    out valueOffset, out valueCount) || !extension.AtEnd())
+                return Fail(Malformed);
+            if (!ProcessExtension(oidOffset, oidCount, critical,
+                                  valueOffset, valueCount)) return false;
+        }
+        // RFC 5280 permits nameConstraints only in CA certificates.  Extension
+        // order is arbitrary, so this relationship is checked after parsing
+        // the complete extension sequence rather than while either extension
+        // is still potentially unseen.
+        if (_nameConstraintsPresent
+            && (!_basicConstraintsPresent || !_isCa))
+            return Fail(Malformed);
+        return true;
+    }
+
+    private bool ProcessExtension(long oidOffset, long oidCount,
+                                  bool critical,
+                                  long valueOffset, long valueCount)
+    {
+        if (Oid(oidOffset, oidCount, "551d13"))
+            return ParseBasicConstraints(valueOffset, valueCount);
+        if (Oid(oidOffset, oidCount, "551d0f"))
+            return ParseKeyUsage(valueOffset, valueCount);
+        if (Oid(oidOffset, oidCount, "551d25"))
+            return ParseExtendedKeyUsage(valueOffset, valueCount);
+        if (Oid(oidOffset, oidCount, "551d11"))
+            return ParseSubjectAlternativeName(valueOffset, valueCount);
+        if (Oid(oidOffset, oidCount, "551d1e"))
+            return ParseNameConstraints(valueOffset, valueCount);
+
+        // Unknown and path-processing extensions are safe to ignore only when
+        // non-critical.  A critical one is never silently accepted.
+        if (critical) return Fail(Unsupported);
+        return true;
+    }
+
+    private bool ParseNameConstraints(long offset, long count)
+    {
+        CorsacSecureCrypto_DerCursor wrapper =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long contentOffset = 0, contentCount = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out contentOffset, out contentCount)
+            || !wrapper.AtEnd() || contentCount == 0)
+            return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor constraints =
+            new CorsacSecureCrypto_DerCursor(
+                _der, contentOffset, contentCount);
+        bool permitted = false;
+        bool excluded = false;
+        long previousTag = -1;
+        while (!constraints.AtEnd())
+        {
+            long tagClass = 0, tag = 0, at = 0, n = 0;
+            bool constructed = false;
+            if (!constraints.TryReadElement(
+                    out tagClass, out constructed, out tag, out at, out n)
+                || tagClass != CorsacSecureCrypto_DerCursor.Context
+                || !constructed || tag > 1 || tag <= previousTag || n == 0)
+                return Fail(Malformed);
+            previousTag = tag;
+            if (tag == 0)
+            {
+                permitted = true;
+                if (!ParseGeneralSubtrees(at, n, true)) return false;
+            }
+            else
+            {
+                excluded = true;
+                if (!ParseGeneralSubtrees(at, n, false)) return false;
+            }
+        }
+        if (!permitted && !excluded) return Fail(Malformed);
+        _nameConstraintsPresent = true;
+        return true;
+    }
+
+    // permittedSubtrees/excludedSubtrees are IMPLICIT GeneralSubtrees: their
+    // context-specific wrapper contains one or more GeneralSubtree SEQUENCEs
+    // directly, without another universal SEQUENCE wrapper.
+    private bool ParseGeneralSubtrees(long offset, long count,
+                                      bool permitted)
+    {
+        CorsacSecureCrypto_DerCursor subtrees =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        int before = _nameConstraintCount;
+        while (!subtrees.AtEnd())
+        {
+            long subtreeOffset = 0, subtreeCount = 0;
+            if (!subtrees.TryReadUniversal(
+                    CorsacSecureCrypto_DerCursor.Sequence, true,
+                    out subtreeOffset, out subtreeCount)
+                || subtreeCount == 0) return Fail(Malformed);
+            if (!ParseGeneralSubtree(
+                    subtreeOffset, subtreeCount, permitted)) return false;
+        }
+        return _nameConstraintCount > before || Fail(Malformed);
+    }
+
+    private bool ParseGeneralSubtree(long offset, long count,
+                                     bool permitted)
+    {
+        if (_nameConstraintCount >= MaximumNameConstraintSubtrees)
+            return Fail(ResourceLimit);
+        CorsacSecureCrypto_DerCursor subtree =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long tagClass = 0, tag = 0, at = 0, n = 0;
+        bool constructed = false;
+        if (!subtree.TryReadElement(out tagClass, out constructed,
+                out tag, out at, out n)
+            || tagClass != CorsacSecureCrypto_DerCursor.Context
+            || constructed || n == 0) return Fail(Malformed);
+
+        int kind = 0;
+        if (tag == 2)
+        {
+            if (!ValidDnsConstraint(at, (int)n)) return Fail(Malformed);
+            kind = permitted
+                ? PermittedDnsConstraint : ExcludedDnsConstraint;
+        }
+        else if (tag == 7)
+        {
+            if (!ValidIpConstraint(at, n)) return Fail(Malformed);
+            kind = permitted
+                ? PermittedIpConstraint : ExcludedIpConstraint;
+        }
+        else
+        {
+            // This bounded TLS profile has no safe partial interpretation for
+            // a subtree imposed on another GeneralName form.
+            return Fail(Unsupported);
+        }
+
+        long previousTag = -1;
+        while (!subtree.AtEnd())
+        {
+            long distanceClass = 0, distanceTag = 0;
+            long distanceOffset = 0, distanceCount = 0;
+            bool distanceConstructed = false;
+            if (!subtree.TryReadElement(
+                    out distanceClass, out distanceConstructed,
+                    out distanceTag, out distanceOffset, out distanceCount)
+                || distanceClass != CorsacSecureCrypto_DerCursor.Context
+                || distanceConstructed || distanceTag > 1
+                || distanceTag <= previousTag
+                || !ValidImplicitNonnegativeInteger(
+                    distanceOffset, distanceCount))
+                return Fail(Malformed);
+            previousTag = distanceTag;
+            if (distanceTag == 0
+                && distanceCount == 1
+                && _der[(int)distanceOffset] == (byte)0)
+            {
+                // minimum has DEFAULT 0.  DER requires the default to be
+                // omitted, so an explicit zero is non-canonical.
+                return Fail(Malformed);
+            }
+            // RFC 5280's Internet profile uses only minimum=0 and an absent
+            // maximum.  Every encoded non-default distance is unsupported.
+            return Fail(Unsupported);
+        }
+
+        _nameConstraintOffsets[_nameConstraintCount] = at;
+        _nameConstraintCounts[_nameConstraintCount] = n;
+        _nameConstraintKinds[_nameConstraintCount] = kind;
+        _nameConstraintCount = _nameConstraintCount + 1;
+        return true;
+    }
+
+    private bool ValidImplicitNonnegativeInteger(long offset, long count)
+    {
+        if (count < 1) return false;
+        int first = _der[(int)offset] & 255;
+        if ((first & 128) != 0) return false;
+        return count == 1
+            || first != 0
+            || (_der[(int)offset + 1] & 128) != 0;
+    }
+
+    private bool ParseBasicConstraints(long offset, long count)
+    {
+        CorsacSecureCrypto_DerCursor wrapper =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long contentOffset = 0, contentCount = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out contentOffset, out contentCount) || !wrapper.AtEnd())
+            return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor value =
+            new CorsacSecureCrypto_DerCursor(
+                _der, contentOffset, contentCount);
+        _basicConstraintsPresent = true;
+        _isCa = false;
+        _pathLength = -1;
+        if (!value.AtEnd())
+        {
+            long tagClass = 0, tag = 0, at = 0, n = 0;
+            bool constructed = false;
+            if (!value.TryPeekElement(out tagClass, out constructed,
+                    out tag, out at, out n)) return Fail(Malformed);
+            if (tagClass == CorsacSecureCrypto_DerCursor.Universal
+                && tag == CorsacSecureCrypto_DerCursor.Boolean)
+            {
+                if (!value.TryReadBoolean(out _isCa) || !_isCa)
+                    return Fail(Malformed);
+            }
+        }
+        if (!value.AtEnd())
+        {
+            if (!ReadPositiveLong(value, out _pathLength) || !_isCa)
+                return Fail(Malformed);
+        }
+        return value.AtEnd() || Fail(Malformed);
+    }
+
+    private bool ParseKeyUsage(long offset, long count)
+    {
+        CorsacSecureCrypto_DerCursor value =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long bitsOffset = 0, bitsCount = 0, unused = 0;
+        if (!value.TryReadBitString(
+                out bitsOffset, out bitsCount, out unused)
+            || !value.AtEnd() || bitsCount == 0) return Fail(Malformed);
+        _keyUsagePresent = true;
+        _keyUsage = 0;
+        long bitCount = bitsCount * 8 - unused;
+        for (int bit = 0; bit < 9 && bit < bitCount; bit = bit + 1)
+            if ((_der[(int)(bitsOffset + bit / 8)]
+                 & (1 << (7 - bit % 8))) != 0)
+                _keyUsage = _keyUsage | (1L << bit);
+        for (long bit = 9; bit < bitCount; bit = bit + 1)
+            if ((_der[(int)(bitsOffset + bit / 8)]
+                 & (1 << (7 - (int)(bit % 8)))) != 0)
+                return Fail(Unsupported);
+        return true;
+    }
+
+    private bool ParseExtendedKeyUsage(long offset, long count)
+    {
+        CorsacSecureCrypto_DerCursor wrapper =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long contentOffset = 0, contentCount = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out contentOffset, out contentCount)
+            || !wrapper.AtEnd() || contentCount == 0)
+            return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor purposes =
+            new CorsacSecureCrypto_DerCursor(
+                _der, contentOffset, contentCount);
+        _extendedKeyUsagePresent = true;
+        _serverAuthentication = false;
+        while (!purposes.AtEnd())
+        {
+            long oidOffset = 0, oidCount = 0;
+            if (!purposes.TryReadObjectIdentifier(
+                    out oidOffset, out oidCount)) return Fail(Malformed);
+            if (Oid(oidOffset, oidCount, "2b06010505070301")
+                || Oid(oidOffset, oidCount, "551d2500"))
+                _serverAuthentication = true;
+        }
+        return true;
+    }
+
+    private bool ParseSubjectAlternativeName(long offset, long count)
+    {
+        CorsacSecureCrypto_DerCursor wrapper =
+            new CorsacSecureCrypto_DerCursor(_der, offset, count);
+        long namesOffset = 0, namesCount = 0;
+        if (!wrapper.TryReadUniversal(
+                CorsacSecureCrypto_DerCursor.Sequence, true,
+                out namesOffset, out namesCount)
+            || !wrapper.AtEnd() || namesCount == 0)
+            return Fail(Malformed);
+        CorsacSecureCrypto_DerCursor names =
+            new CorsacSecureCrypto_DerCursor(_der, namesOffset, namesCount);
+        int entries = 0;
+        while (!names.AtEnd())
+        {
+            long tagClass = 0, tag = 0, at = 0, n = 0;
+            bool constructed = false;
+            if (!names.TryReadElement(out tagClass, out constructed,
+                    out tag, out at, out n)
+                || tagClass != CorsacSecureCrypto_DerCursor.Context
+                || tag > 8 || n == 0) return Fail(Malformed);
+            if (entries >= MaximumSubjectAlternativeNames)
+                return Fail(ResourceLimit);
+            entries = entries + 1;
+            bool mustConstruct = tag == 0 || tag == 3 || tag == 4 || tag == 5;
+            if (constructed != mustConstruct) return Fail(Malformed);
+            if (tag == 2 && (constructed || !ValidPresentedDns(at, (int)n)))
+                return Fail(Malformed);
+            if (tag == 7 && (constructed || (n != 4 && n != 16)))
+                return Fail(Malformed);
+        }
+        _subjectAlternativeNamePresent = true;
+        _subjectAlternativeNameOffset = offset;
+        _subjectAlternativeNameCount = count;
+        _subjectAlternativeNameEntryCount = entries;
+        return true;
+    }
+
+    private bool PresentedDnsMatches(long offset, int count,
+                                     string reference, int referenceCount)
+    {
+        if (!ValidPresentedDns(offset, count)) return false;
+        bool wildcard = count > 2
+            && _der[(int)offset] == (byte)'*'
+            && _der[(int)offset + 1] == (byte)'.';
+        if (!wildcard)
+        {
+            if (count != referenceCount) return false;
+            for (int i = 0; i < count; i = i + 1)
+                if (reference[i] > 0x7F || Lower(_der[(int)offset + i])
+                    != Lower((byte)reference[i])) return false;
+            return true;
+        }
+
+        int firstDot = -1;
+        for (int i = 0; i < referenceCount; i = i + 1)
+            if (reference[i] == '.' && firstDot < 0) firstDot = i;
+        if (firstDot < 1) return false;
+        int suffixCount = count - 1; // includes the certificate's dot
+        if (referenceCount - firstDot != suffixCount) return false;
+        for (int i = 0; i < suffixCount; i = i + 1)
+            if (Lower((byte)reference[firstDot + i])
+                != Lower(_der[(int)offset + 1 + i])) return false;
+        return true;
+    }
+
+    private bool DnsConstraintMatches(long offset, int count,
+                                      string reference, int referenceCount)
+    {
+        bool subdomainsOnly = _der[(int)offset] == (byte)'.';
+        if (subdomainsOnly)
+        {
+            // The leading period is part of the suffix comparison.  It makes
+            // .example.test match a.example.test but not example.test.
+            if (referenceCount < count) return false;
+        }
+        else if (referenceCount < count)
+        {
+            return false;
+        }
+
+        int start = referenceCount - count;
+        if (!subdomainsOnly && start > 0
+            && reference[start - 1] != '.') return false;
+        for (int i = 0; i < count; i = i + 1)
+            if (LowerReference(reference[start + i])
+                != Lower(_der[(int)offset + i])) return false;
+        return true;
+    }
+
+    private bool PermitsDnsBytes(byte[] reference,
+                                 long referenceOffset, int referenceCount)
+    {
+        bool constrained = false;
+        bool permitted = false;
+        for (int i = 0; i < _nameConstraintCount; i = i + 1)
+        {
+            int kind = _nameConstraintKinds[i];
+            if (kind != PermittedDnsConstraint
+                && kind != ExcludedDnsConstraint) continue;
+            bool matches = DnsConstraintMatchesBytes(
+                _nameConstraintOffsets[i],
+                (int)_nameConstraintCounts[i],
+                reference, referenceOffset, referenceCount);
+            if (kind == ExcludedDnsConstraint && matches) return false;
+            if (kind == PermittedDnsConstraint)
+            {
+                constrained = true;
+                if (matches) permitted = true;
+            }
+        }
+        return !constrained || permitted;
+    }
+
+    private bool DnsConstraintMatchesBytes(
+        long offset, int count, byte[] reference,
+        long referenceOffset, int referenceCount)
+    {
+        bool subdomainsOnly = _der[(int)offset] == (byte)'.';
+        if (referenceCount < count) return false;
+        int start = referenceCount - count;
+        if (!subdomainsOnly && start > 0
+            && reference[(int)referenceOffset + start - 1] != (byte)'.')
+            return false;
+        for (int i = 0; i < count; i = i + 1)
+            if (Lower(reference[(int)referenceOffset + start + i])
+                != Lower(_der[(int)offset + i])) return false;
+        return true;
+    }
+
+    private bool IpConstraintMatches(long offset,
+                                     byte[] address, long addressOffset,
+                                     long addressCount)
+    {
+        long maskOffset = offset + addressCount;
+        long difference = 0;
+        for (long i = 0; i < addressCount; i = i + 1)
+        {
+            int mask = _der[(int)(maskOffset + i)] & 255;
+            difference = difference
+                | (((address[(int)(addressOffset + i)] & 255) & mask)
+                    ^ (_der[(int)(offset + i)] & 255));
+        }
+        return difference == 0;
+    }
+
+    private bool ValidDnsConstraint(long offset, int count)
+    {
+        if (count < 1 || count > 254) return false;
+        int labelStart = _der[(int)offset] == (byte)'.' ? 1 : 0;
+        if (labelStart == count) return false;
+        for (int i = labelStart; i <= count; i = i + 1)
+        {
+            int value = i == count
+                ? '.' : _der[(int)offset + i] & 255;
+            if (value == '.')
+            {
+                int width = i - labelStart;
+                if (width < 1 || width > 63) return false;
+                if (_der[(int)offset + labelStart] == (byte)'-'
+                    || _der[(int)offset + i - 1] == (byte)'-') return false;
+                labelStart = i + 1;
+            }
+            else if (!DnsCharacter(value)) return false;
+        }
+        return count - (_der[(int)offset] == (byte)'.' ? 1 : 0) <= 253;
+    }
+
+    private bool ValidIpConstraint(long offset, long count)
+    {
+        if (count != 8 && count != 32) return false;
+        int width = (int)(count / 2);
+        bool zeroSeen = false;
+        for (int i = 0; i < width; i = i + 1)
+        {
+            int address = _der[(int)offset + i] & 255;
+            int mask = _der[(int)offset + width + i] & 255;
+            if ((address & ((~mask) & 255)) != 0) return false;
+            for (int bit = 7; bit >= 0; bit = bit - 1)
+            {
+                bool one = (mask & (1 << bit)) != 0;
+                if (zeroSeen && one) return false;
+                if (!one) zeroSeen = true;
+            }
+        }
+        return true;
+    }
+
+    private bool ValidPresentedDns(long offset, int count)
+    {
+        if (count < 1 || count > 253) return false;
+        int labelStart = 0;
+        int wildcards = 0;
+        for (int i = 0; i <= count; i = i + 1)
+        {
+            bool end = i == count;
+            int value = end ? '.' : _der[(int)offset + i] & 255;
+            if (value == '.')
+            {
+                int width = i - labelStart;
+                if (width < 1 || width > 63) return false;
+                if (_der[(int)offset + labelStart] == (byte)'-'
+                    || _der[(int)offset + i - 1] == (byte)'-') return false;
+                labelStart = i + 1;
+            }
+            else if (value == '*')
+            {
+                if (i != 0 || count < 3
+                    || _der[(int)offset + 1] != (byte)'.') return false;
+                wildcards = wildcards + 1;
+            }
+            else if (!DnsCharacter(value)) return false;
+        }
+        return wildcards <= 1;
+    }
+
+    private bool ValidReferenceDns(string reference)
+    {
+        if (reference == null || reference.Length < 1
+            || reference.Length > 254) return false;
+        int count = reference.Length;
+        if (reference[count - 1] == '.') count = count - 1;
+        if (count < 1 || count > 253) return false;
+        int labelStart = 0;
+        for (int i = 0; i <= count; i = i + 1)
+        {
+            int value = i == count ? '.' : reference[i];
+            if (value == '.')
+            {
+                int width = i - labelStart;
+                if (width < 1 || width > 63) return false;
+                if (reference[labelStart] == '-'
+                    || reference[i - 1] == '-') return false;
+                labelStart = i + 1;
+            }
+            else if (!DnsCharacter(value)) return false;
+        }
+        return true;
+    }
+
+    private bool ReadPositiveLong(CorsacSecureCrypto_DerCursor cursor,
+                                  out long value)
+    {
+        value = 0;
+        long offset = 0, count = 0;
+        if (!cursor.TryReadPositiveInteger(out offset, out count)
+            || count > 8) return false;
+        for (int i = 0; i < count; i = i + 1)
+        {
+            if (value > (long.MaxValue >> 8)) return false;
+            value = (value << 8) | (_der[(int)offset + i] & 255);
+        }
+        return true;
+    }
+
+    private bool Oid(long offset, long count, string hex)
+    {
+        if (count * 2 != hex.Length) return false;
+        long difference = 0;
+        for (int i = 0; i < count; i = i + 1)
+            difference = difference | ((_der[(int)offset + i] & 255)
+                ^ ((Nibble(hex[i * 2]) << 4) | Nibble(hex[i * 2 + 1])));
+        return difference == 0;
+    }
+
+    private int Digits(int offset, int count)
+    {
+        int value = 0;
+        for (int i = 0; i < count; i = i + 1)
+        {
+            int digit = _der[offset + i] - (byte)'0';
+            if (digit < 0 || digit > 9) return -1;
+            value = value * 10 + digit;
+        }
+        return value;
+    }
+
+    private static int DaysInMonth(int year, int month)
+    {
+        if (month == 2)
+        {
+            bool leap = (year % 4 == 0 && year % 100 != 0)
+                     || year % 400 == 0;
+            return leap ? 29 : 28;
+        }
+        return month == 4 || month == 6 || month == 9 || month == 11
+            ? 30 : 31;
+    }
+
+    private static bool DnsCharacter(int value)
+    {
+        return (value >= 'A' && value <= 'Z')
+            || (value >= 'a' && value <= 'z')
+            || (value >= '0' && value <= '9') || value == '-';
+    }
+
+    private static int Lower(byte value)
+    {
+        int answer = value & 255;
+        return answer >= 'A' && answer <= 'Z' ? answer + 32 : answer;
+    }
+
+    private static int LowerReference(int value)
+    {
+        return value >= 'A' && value <= 'Z' ? value + 32 : value;
+    }
+
+    private bool AllZero(long offset, long count)
+    {
+        long value = 0;
+        for (long i = 0; i < count; i = i + 1)
+            value = value | _der[(int)(offset + i)];
+        return value == 0;
+    }
+
+    private static int Nibble(char value)
+    {
+        if (value >= '0' && value <= '9') return value - '0';
+        return value - 'a' + 10;
+    }
+
+    private void ResetState()
+    {
+        // Keep the borrowed-storage field non-null between parses.  An empty
+        // sentinel cannot expose data and lets every checked view retain the
+        // ABI's non-null byte[] contract without nullable dereferences.
+        _der = new byte[0];
+        _valid = false;
+        _error = 0;
+        _version = 0;
+        _tbsOffset = 0;
+        _tbsCount = 0;
+        _serialOffset = 0;
+        _serialCount = 0;
+        _issuerOffset = 0;
+        _issuerCount = 0;
+        _subjectOffset = 0;
+        _subjectCount = 0;
+        _notBefore = 0;
+        _notAfter = 0;
+        _signatureAlgorithm = 0;
+        _signatureOffset = 0;
+        _signatureCount = 0;
+        _publicKeyAlgorithm = 0;
+        _publicKeyOffset = 0;
+        _publicKeyCount = 0;
+        _rsaModulusOffset = 0;
+        _rsaModulusCount = 0;
+        _rsaExponent = 0;
+        _basicConstraintsPresent = false;
+        _isCa = false;
+        _pathLength = -1;
+        _keyUsagePresent = false;
+        _keyUsage = 0;
+        _extendedKeyUsagePresent = false;
+        _serverAuthentication = false;
+        _subjectAlternativeNamePresent = false;
+        _subjectAlternativeNameOffset = 0;
+        _subjectAlternativeNameCount = 0;
+        _subjectAlternativeNameEntryCount = 0;
+        _nameConstraintsPresent = false;
+        _nameConstraintCount = 0;
+        _extensionCount = 0;
+    }
+
+    private bool Fail(int error)
+    {
+        if (_error == 0) _error = error;
+        _valid = false;
+        return false;
+    }
+}

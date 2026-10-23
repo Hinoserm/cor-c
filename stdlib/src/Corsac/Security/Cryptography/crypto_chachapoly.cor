@@ -1,0 +1,279 @@
+// CORSAC/SECURE Crypto generic RFC 8439 ChaCha20-Poly1305 AEAD.
+//
+// This is the IETF AEAD construction used by TLS, not OpenSSH's distinct
+// chacha20-poly1305@openssh.com packet format.  All wire data is byte[] and a
+// configured context owns reusable bounded scratch.  Successful calls may be
+// repeated with distinct nonces; nonce uniqueness remains the protocol's
+// responsibility.  Every failure is sticky so callers cannot accidentally
+// continue a connection after an authentication or state error.
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_ChaChaPoly1305
+{
+    public const int KeyBytes = 32;
+    public const int NonceBytes = 12;
+    public const int TagBytes = 16;
+    public const int InvalidArgument = 1;
+    public const int AuthenticationFailure = 4;
+    public const int ProtocolState = 9;
+
+    // A deliberately finite allocation contract for small CORSAC machines.
+    // Protocols with tighter limits (TLS has one) configure a smaller bound.
+    public const int HardMaximumMessageBytes = 16777216;
+
+    private CorsacSecureCrypto_ChaCha20Context _cipher;
+    private byte[] _scratch;
+    private byte[] _polyBlock;
+    private byte[] _tag;
+    private byte[] _lengths;
+    private byte[] _zeroPad;
+    private int _maximumMessageBytes;
+    private bool _failed;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureCrypto_ChaChaPoly1305(
+        byte[] key, long keyOffset, int maximumMessageBytes)
+    {
+        _polyBlock = new byte[64];
+        _tag = new byte[TagBytes];
+        _lengths = new byte[16];
+        _zeroPad = new byte[16];
+
+        bool goodMaximum = maximumMessageBytes >= 0
+                        && maximumMessageBytes <= HardMaximumMessageBytes;
+        _maximumMessageBytes = goodMaximum ? maximumMessageBytes : 0;
+        _scratch = new byte[goodMaximum ? maximumMessageBytes : 0];
+
+        // Always construct a closable cipher object, even for bad input, and
+        // erase the temporary key immediately after the schedule copies it.
+        byte[] keyCopy = new byte[KeyBytes];
+        bool goodKey = CorsacSecureCrypto_Bytes.Range(
+            key, keyOffset, KeyBytes);
+        if (goodKey)
+            CorsacSecureCrypto_Bytes.Copy(
+                keyCopy, 0, key, keyOffset, KeyBytes);
+        _cipher = new CorsacSecureCrypto_ChaCha20Context(keyCopy, 0);
+        CorsacSecureCrypto_Bytes.Zero(keyCopy, 0, keyCopy.Length);
+
+        if (!goodKey || !goodMaximum || _cipher.Error != 0)
+            _error = InvalidArgument;
+    }
+
+    public int Error => _error;
+    public bool Failed => _failed;
+
+    // Ciphertext and tag are separate so a caller can place them directly in
+    // its protocol framing.  Their output ranges must not overlap each other;
+    // either may alias any input because the complete result is staged first.
+    public bool Seal(
+        byte[] nonce, long nonceOffset,
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] plaintext, long plaintextOffset, long plaintextCount,
+        byte[] ciphertext, long ciphertextOffset,
+        byte[] tag, long tagOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                nonce, nonceOffset, NonceBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                additionalData, additionalOffset, additionalCount)
+            || plaintextCount > _maximumMessageBytes
+            || !CorsacSecureCrypto_Bytes.Range(
+                plaintext, plaintextOffset, plaintextCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                ciphertext, ciphertextOffset, plaintextCount)
+            || !CorsacSecureCrypto_Bytes.Range(tag, tagOffset, TagBytes)
+            || Overlap(ciphertext, ciphertextOffset, plaintextCount,
+                       tag, tagOffset, TagBytes))
+            return Fail(InvalidArgument, false);
+
+        bool okay = MakePolyKey(nonce, nonceOffset)
+            && _cipher.Xor(1, nonce, nonceOffset,
+                           plaintext, plaintextOffset,
+                           _scratch, 0, plaintextCount)
+            && Authenticate(additionalData, additionalOffset,
+                            additionalCount,
+                            _scratch, 0, plaintextCount, _tag, 0);
+        ErasePolyKey();
+        if (!okay)
+        {
+            EraseWork(plaintextCount);
+            return Fail(ProtocolState, true);
+        }
+
+        // Both destinations were checked before either commit.  The second
+        // copy therefore cannot expose a half-committed successful result.
+        okay = CorsacSecureCrypto_Bytes.Copy(
+                    ciphertext, ciphertextOffset,
+                    _scratch, 0, plaintextCount)
+             && CorsacSecureCrypto_Bytes.Copy(
+                    tag, tagOffset, _tag, 0, TagBytes);
+        EraseWork(plaintextCount);
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    // Authentication consumes only caller input.  Plaintext remains entirely
+    // private until the fixed-work tag comparison and decryption both succeed.
+    public bool Open(
+        byte[] nonce, long nonceOffset,
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] ciphertext, long ciphertextOffset, long ciphertextCount,
+        byte[] tag, long tagOffset,
+        byte[] plaintext, long plaintextOffset)
+    {
+        if (!Ready()) return false;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                nonce, nonceOffset, NonceBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                additionalData, additionalOffset, additionalCount)
+            || ciphertextCount > _maximumMessageBytes
+            || !CorsacSecureCrypto_Bytes.Range(
+                ciphertext, ciphertextOffset, ciphertextCount)
+            || !CorsacSecureCrypto_Bytes.Range(tag, tagOffset, TagBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                plaintext, plaintextOffset, ciphertextCount))
+            return Fail(InvalidArgument, false);
+
+        bool okay = MakePolyKey(nonce, nonceOffset)
+            && Verify(additionalData, additionalOffset, additionalCount,
+                      ciphertext, ciphertextOffset, ciphertextCount,
+                      tag, tagOffset);
+        ErasePolyKey();
+        if (!okay)
+        {
+            EraseWork(ciphertextCount);
+            return Fail(AuthenticationFailure, true);
+        }
+
+        okay = _cipher.Xor(1, nonce, nonceOffset,
+                           ciphertext, ciphertextOffset,
+                           _scratch, 0, ciphertextCount)
+             && CorsacSecureCrypto_Bytes.Copy(
+                    plaintext, plaintextOffset,
+                    _scratch, 0, ciphertextCount);
+        EraseWork(ciphertextCount);
+        if (!okay) return Fail(ProtocolState, true);
+        return true;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        _cipher.Close();
+        CorsacSecureCrypto_Bytes.Zero(
+            _scratch, 0, _scratch.Length);
+        CorsacSecureCrypto_Bytes.Zero(
+            _polyBlock, 0, _polyBlock.Length);
+        CorsacSecureCrypto_Bytes.Zero(_tag, 0, _tag.Length);
+        CorsacSecureCrypto_Bytes.Zero(_lengths, 0, _lengths.Length);
+        CorsacSecureCrypto_Bytes.Zero(_zeroPad, 0, _zeroPad.Length);
+        _failed = true;
+        _closed = true;
+    }
+
+    private bool MakePolyKey(byte[] nonce, long nonceOffset)
+    {
+        return _cipher.Block(0, nonce, nonceOffset, _polyBlock, 0);
+    }
+
+    private bool Authenticate(
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] ciphertext, long ciphertextOffset, long ciphertextCount,
+        byte[] output, long outputOffset)
+    {
+        CorsacSecureCrypto_Poly1305 poly =
+            new CorsacSecureCrypto_Poly1305(_polyBlock, 0);
+        bool okay = poly.Error == 0
+            && UpdateMac(poly, additionalData, additionalOffset,
+                         additionalCount,
+                         ciphertext, ciphertextOffset, ciphertextCount)
+            && poly.Finish(output, outputOffset);
+        poly.Close();
+        CorsacSecureCrypto_Bytes.Zero(
+            _lengths, 0, _lengths.Length);
+        return okay;
+    }
+
+    private bool Verify(
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] ciphertext, long ciphertextOffset, long ciphertextCount,
+        byte[] expected, long expectedOffset)
+    {
+        CorsacSecureCrypto_Poly1305 poly =
+            new CorsacSecureCrypto_Poly1305(_polyBlock, 0);
+        bool okay = poly.Error == 0
+            && UpdateMac(poly, additionalData, additionalOffset,
+                         additionalCount,
+                         ciphertext, ciphertextOffset, ciphertextCount)
+            && poly.Verify(expected, expectedOffset);
+        poly.Close();
+        CorsacSecureCrypto_Bytes.Zero(
+            _lengths, 0, _lengths.Length);
+        return okay;
+    }
+
+    private bool UpdateMac(
+        CorsacSecureCrypto_Poly1305 poly,
+        byte[] additionalData, long additionalOffset, long additionalCount,
+        byte[] ciphertext, long ciphertextOffset, long ciphertextCount)
+    {
+        int additionalPad = (int)((16 - (additionalCount & 15)) & 15);
+        int ciphertextPad = (int)((16 - (ciphertextCount & 15)) & 15);
+        WriteLittle64(_lengths, 0, (ulong)additionalCount);
+        WriteLittle64(_lengths, 8, (ulong)ciphertextCount);
+
+        return poly.Update(
+                    additionalData, additionalOffset, additionalCount)
+            && poly.Update(_zeroPad, 0, additionalPad)
+            && poly.Update(ciphertext, ciphertextOffset, ciphertextCount)
+            && poly.Update(_zeroPad, 0, ciphertextPad)
+            && poly.Update(_lengths, 0, 16);
+    }
+
+    private bool Ready()
+    {
+        if (_closed || _failed || _error != 0)
+            return Fail(ProtocolState, true);
+        return true;
+    }
+
+    private bool Fail(int error, bool terminal)
+    {
+        if (_error == 0) _error = error;
+        if (terminal) _failed = true;
+        return false;
+    }
+
+    private void ErasePolyKey()
+    {
+        CorsacSecureCrypto_Bytes.Zero(
+            _polyBlock, 0, _polyBlock.Length);
+    }
+
+    private void EraseWork(long count)
+    {
+        long take = count < _scratch.Length ? count : _scratch.Length;
+        CorsacSecureCrypto_Bytes.Zero(_scratch, 0, take);
+        CorsacSecureCrypto_Bytes.Zero(_tag, 0, _tag.Length);
+        CorsacSecureCrypto_Bytes.Zero(_lengths, 0, _lengths.Length);
+    }
+
+    private static bool Overlap(
+        byte[] first, long firstOffset, long firstCount,
+        byte[] second, long secondOffset, long secondCount)
+    {
+        if (firstCount == 0 || secondCount == 0
+            || Sys.Word(first) != Sys.Word(second)) return false;
+        return firstOffset < secondOffset + secondCount
+            && secondOffset < firstOffset + firstCount;
+    }
+
+    private static void WriteLittle64(byte[] output, int offset, ulong value)
+    {
+        for (int i = 0; i < 8; i = i + 1)
+            output[offset + i] = (byte)(value >> (i * 8));
+    }
+}

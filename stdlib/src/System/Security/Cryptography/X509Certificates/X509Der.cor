@@ -1,0 +1,473 @@
+// THE CERTIFICATE AS X509Certificate2 SEES IT: every field read, whatever
+// its algorithms. X509CertificateView (beside this) is the strict reader
+// path validation uses, and refuses a key or a critical extension it cannot
+// check; a certificate it refuses is still a certificate, with a subject,
+// an issuer and a validity to show, so X509Certificate2 reads through this
+// one and validation reads through the other.
+//
+// Also the shared pieces of DER the public types need: object identifiers
+// as dotted text, times, names as .NET writes them ("CN=..., O=..., C=US",
+// most specific first), PEM and hexadecimal.
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using Corsac.Security.Cryptography;
+
+namespace System.Security.Cryptography.X509Certificates;
+
+/// One extension: its identifier, whether critical, and its value's bytes
+/// (the OCTET STRING's content).
+internal sealed class X509FieldExtension
+{
+    public string Oid = "";
+    public bool Critical;
+    public byte[] Value = new byte[0];
+}
+
+/// A certificate's fields, read leniently (RFC 5280's structure, any
+/// algorithm). Byte arrays are copies; the caller's array is not kept.
+internal sealed class X509Fields
+{
+    public byte[] Raw = new byte[0];
+    public int Version = 1;
+    public byte[] Serial = new byte[0];
+    public string SignatureAlgorithm = "";
+    public byte[] Issuer = new byte[0];
+    public byte[] Subject = new byte[0];
+    public DateTime NotBefore, NotAfter;            // UTC
+    public byte[] SubjectPublicKeyInfo = new byte[0];
+    public string KeyAlgorithm = "";
+    public byte[] KeyParameters = new byte[0];      // the AlgorithmIdentifier's parameters, as DER
+    public byte[] KeyValue = new byte[0];           // the BIT STRING's content
+    public List<X509FieldExtension> Extensions = new List<X509FieldExtension>();
+
+    /// A DER certificate read; null when it is not one.
+    public static X509Fields? Read(byte[] der)
+    {
+        X509Fields f = new X509Fields();
+        f.Raw = (byte[])der.Clone();
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(f.Raw, 0, f.Raw.Length);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count) || !top.AtEnd()) return null;
+        CorsacSecureCrypto_DerCursor certificate = new CorsacSecureCrypto_DerCursor(f.Raw, offset, count);
+        long tbsOffset, tbsCount;
+        if (!certificate.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out tbsOffset, out tbsCount)) return null;
+        CorsacSecureCrypto_DerCursor tbs = new CorsacSecureCrypto_DerCursor(f.Raw, tbsOffset, tbsCount);
+
+        long cls, tag, at, n;
+        bool constructed;
+        // version [0] EXPLICIT INTEGER DEFAULT v1
+        if (tbs.TryPeekElement(out cls, out constructed, out tag, out at, out n) && cls == CorsacSecureCrypto_DerCursor.Context && tag == 0)
+        {
+            if (!tbs.TryReadElement(out cls, out constructed, out tag, out at, out n)) return null;
+            CorsacSecureCrypto_DerCursor v = new CorsacSecureCrypto_DerCursor(f.Raw, at, n);
+            long vo, vc;
+            if (!v.TryReadInteger(out vo, out vc) || vc != 1) return null;
+            f.Version = f.Raw[(int)vo] + 1;
+        }
+        if (!tbs.TryReadInteger(out at, out n)) return null;
+        f.Serial = Slice(f.Raw, at, n);
+        if (!ReadAlgorithm(tbs, f.Raw, out f.SignatureAlgorithm, out _)) return null;
+        if (!ReadWhole(tbs, f.Raw, CorsacSecureCrypto_DerCursor.Sequence, out f.Issuer)) return null;
+        long vOffset, vCount;
+        if (!tbs.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out vOffset, out vCount)) return null;
+        CorsacSecureCrypto_DerCursor validity = new CorsacSecureCrypto_DerCursor(f.Raw, vOffset, vCount);
+        if (!ReadTime(validity, f.Raw, out f.NotBefore) || !ReadTime(validity, f.Raw, out f.NotAfter)) return null;
+        if (!ReadWhole(tbs, f.Raw, CorsacSecureCrypto_DerCursor.Sequence, out f.Subject)) return null;
+        long spkiStart = tbs.AbsolutePosition();
+        long sOffset, sCount;
+        if (!tbs.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out sOffset, out sCount)) return null;
+        f.SubjectPublicKeyInfo = Slice(f.Raw, spkiStart, sOffset + sCount - spkiStart);
+        CorsacSecureCrypto_DerCursor spki = new CorsacSecureCrypto_DerCursor(f.Raw, sOffset, sCount);
+        if (!ReadAlgorithm(spki, f.Raw, out f.KeyAlgorithm, out f.KeyParameters)) return null;
+        long kOffset, kCount, unused;
+        if (!spki.TryReadBitString(out kOffset, out kCount, out unused)) return null;
+        f.KeyValue = Slice(f.Raw, kOffset, kCount);
+
+        // issuerUniqueID [1], subjectUniqueID [2], extensions [3]
+        while (!tbs.AtEnd())
+        {
+            if (!tbs.TryReadElement(out cls, out constructed, out tag, out at, out n)) return null;
+            if (cls != CorsacSecureCrypto_DerCursor.Context || tag != 3) continue;
+            CorsacSecureCrypto_DerCursor wrapper = new CorsacSecureCrypto_DerCursor(f.Raw, at, n);
+            long eOffset, eCount;
+            if (!wrapper.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out eOffset, out eCount)) return null;
+            CorsacSecureCrypto_DerCursor list = new CorsacSecureCrypto_DerCursor(f.Raw, eOffset, eCount);
+            while (!list.AtEnd())
+            {
+                long oneOffset, oneCount;
+                if (!list.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out oneOffset, out oneCount)) return null;
+                CorsacSecureCrypto_DerCursor one = new CorsacSecureCrypto_DerCursor(f.Raw, oneOffset, oneCount);
+                long oOffset, oCount;
+                if (!one.TryReadObjectIdentifier(out oOffset, out oCount)) return null;
+                X509FieldExtension e = new X509FieldExtension();
+                e.Oid = OidText(f.Raw, oOffset, oCount);
+                if (one.TryPeekElement(out cls, out constructed, out tag, out at, out n) && cls == CorsacSecureCrypto_DerCursor.Universal && tag == CorsacSecureCrypto_DerCursor.Boolean)
+                {
+                    if (!one.TryReadBoolean(out e.Critical)) return null;
+                }
+                long valueOffset, valueCount;
+                if (!one.TryReadOctetString(out valueOffset, out valueCount)) return null;
+                e.Value = Slice(f.Raw, valueOffset, valueCount);
+                f.Extensions.Add(e);
+            }
+        }
+        return f;
+    }
+
+    /// The extension with `oid`, or null.
+    public X509FieldExtension? Find(string oid)
+    {
+        foreach (X509FieldExtension e in Extensions) if (e.Oid == oid) return e;
+        return null;
+    }
+
+    static bool ReadAlgorithm(CorsacSecureCrypto_DerCursor parent, byte[] raw, out string oid, out byte[] parameters)
+    {
+        oid = "";
+        parameters = new byte[0];
+        long offset, count;
+        if (!parent.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count)) return false;
+        CorsacSecureCrypto_DerCursor algorithm = new CorsacSecureCrypto_DerCursor(raw, offset, count);
+        long oOffset, oCount;
+        if (!algorithm.TryReadObjectIdentifier(out oOffset, out oCount)) return false;
+        oid = OidText(raw, oOffset, oCount);
+        long start = algorithm.AbsolutePosition();
+        parameters = Slice(raw, start, offset + count - start);
+        return true;
+    }
+
+    /// The next element, a `tag` SEQUENCE, as its whole encoding.
+    static bool ReadWhole(CorsacSecureCrypto_DerCursor parent, byte[] raw, long tag, out byte[] whole)
+    {
+        whole = new byte[0];
+        long start = parent.AbsolutePosition();
+        long offset, count;
+        if (!parent.TryReadUniversal(tag, true, out offset, out count)) return false;
+        whole = Slice(raw, start, offset + count - start);
+        return true;
+    }
+
+    static bool ReadTime(CorsacSecureCrypto_DerCursor parent, byte[] raw, out DateTime when)
+    {
+        when = DateTime.MinValue;
+        long cls, tag, offset, count;
+        bool constructed;
+        if (!parent.TryReadElement(out cls, out constructed, out tag, out offset, out count)) return false;
+        if (cls != CorsacSecureCrypto_DerCursor.Universal || (tag != 23 && tag != 24)) return false;
+        return X509Der.ParseTime(raw, offset, count, tag == 23, out when);
+    }
+
+    internal static byte[] Slice(byte[] raw, long offset, long count)
+    {
+        byte[] made = new byte[(int)count];
+        Array.Copy(raw, (int)offset, made, 0, (int)count);
+        return made;
+    }
+
+    internal static string OidText(byte[] raw, long offset, long count) => X509Der.OidText(raw, offset, count);
+}
+
+/// The DER, PEM and text pieces the public types share.
+internal static class X509Der
+{
+    /// An OBJECT IDENTIFIER's content as dotted text.
+    public static string OidText(byte[] raw, long offset, long count)
+    {
+        StringBuilder text = new StringBuilder();
+        long value = 0;
+        bool first = true;
+        for (long i = offset; i < offset + count; i++)
+        {
+            int b = raw[(int)i];
+            value = (value << 7) | (long)(b & 0x7F);
+            if ((b & 0x80) != 0) continue;
+            if (first)
+            {
+                long top = value < 40 ? 0 : value < 80 ? 1 : 2;
+                text.Append(top).Append('.').Append(value - top * 40);
+                first = false;
+            }
+            else text.Append('.').Append(value);
+            value = 0;
+        }
+        return text.ToString();
+    }
+
+    /// UTCTime (yyMMddHHmmssZ, 1950-2049) or GeneralizedTime
+    /// (yyyyMMddHHmmssZ), as UTC.
+    public static bool ParseTime(byte[] raw, long offset, long count, bool utcTime, out DateTime when)
+    {
+        when = DateTime.MinValue;
+        int at = (int)offset;
+        int digits = utcTime ? 12 : 14;
+        if (count < digits + 1 || raw[at + (int)count - 1] != (byte)'Z') return false;
+        int[] d = new int[digits];
+        for (int i = 0; i < digits; i++)
+        {
+            int c = raw[at + i];
+            if (c < '0' || c > '9') return false;
+            d[i] = c - '0';
+        }
+        int k = 0;
+        int year;
+        if (utcTime) { year = d[0] * 10 + d[1]; year = year >= 50 ? 1900 + year : 2000 + year; k = 2; }
+        else { year = d[0] * 1000 + d[1] * 100 + d[2] * 10 + d[3]; k = 4; }
+        int month = d[k] * 10 + d[k + 1], day = d[k + 2] * 10 + d[k + 3];
+        int hour = d[k + 4] * 10 + d[k + 5], minute = d[k + 6] * 10 + d[k + 7], second = d[k + 8] * 10 + d[k + 9];
+        if (month < 1 || month > 12 || day < 1 || day > DateTime.DaysInMonth(year, month) || hour > 23 || minute > 59 || second > 59) return false;
+        when = new DateTime(year, month, day, hour, minute, second, DateTimeKind.Utc);
+        return true;
+    }
+
+    /// A UTC time as the engine packs it: yyyyMMddHHmmss in decimal.
+    public static long Packed(DateTime when)
+    {
+        DateTime u = when.Kind == DateTimeKind.Local ? when.ToUniversalTime() : when;
+        return (long)u.Year * 10000000000L + (long)u.Month * 100000000L + (long)u.Day * 1000000L
+             + (long)u.Hour * 10000L + (long)u.Minute * 100L + u.Second;
+    }
+
+    /// Bytes as upper-case hexadecimal, as Thumbprint and SerialNumber are.
+    /// One DER element: its tag, its length (definite, shortest form) and
+    /// its content.
+    public static void Write(MemoryStream output, int tag, byte[] content)
+    {
+        output.WriteByte((byte)tag);
+        int n = content.Length;
+        if (n < 128) output.WriteByte((byte)n);
+        else if (n < 256) { output.WriteByte(0x81); output.WriteByte((byte)n); }
+        else if (n < 65536) { output.WriteByte(0x82); output.WriteByte((byte)(n >> 8)); output.WriteByte((byte)n); }
+        else { output.WriteByte(0x83); output.WriteByte((byte)(n >> 16)); output.WriteByte((byte)(n >> 8)); output.WriteByte((byte)n); }
+        output.Write(content, 0, n);
+    }
+
+    public static string Hex(byte[] bytes)
+    {
+        const string digits = "0123456789ABCDEF";
+        char[] text = new char[bytes.Length * 2];
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            text[i * 2] = digits[bytes[i] >> 4];
+            text[i * 2 + 1] = digits[bytes[i] & 15];
+        }
+        return new string(text);
+    }
+
+    /// A Name's attribute types by .NET's short names (X500NameEncoder).
+    static string? ShortName(string oid)
+    {
+        switch (oid)
+        {
+            case "2.5.4.3": return "CN";
+            case "2.5.4.6": return "C";
+            case "2.5.4.7": return "L";
+            case "2.5.4.8": return "S";
+            case "2.5.4.10": return "O";
+            case "2.5.4.11": return "OU";
+            case "2.5.4.9": return "STREET";
+            case "2.5.4.12": return "T";
+            case "2.5.4.42": return "G";
+            case "2.5.4.4": return "SN";
+            case "2.5.4.43": return "I";
+            case "2.5.4.5": return "SERIALNUMBER";
+            case "1.2.840.113549.1.9.1": return "E";
+            case "0.9.2342.19200300.100.1.25": return "DC";
+            // The rest by the names .NET gives them on Linux (OpenSSL's, but
+            // for four of its own), read off .NET 10.
+            case "2.5.4.97": return "organizationIdentifier";
+            case "2.5.4.15": return "businessCategory";
+            case "2.5.4.17": return "PostalCode";
+            case "2.5.4.46": return "dnQualifier";
+            case "2.5.4.65": return "pseudonym";
+            case "2.5.4.44": return "generationQualifier";
+            case "2.5.4.13": return "Description";
+            case "2.5.4.16": return "postalAddress";
+            case "2.5.4.18": return "POBox";
+            case "2.5.4.20": return "Phone";
+            case "2.5.4.41": return "name";
+            case "2.5.4.45": return "x500UniqueIdentifier";
+            case "2.5.4.51": return "houseIdentifier";
+            case "2.5.4.54": return "dmdName";
+            case "2.5.4.72": return "role";
+            case "0.9.2342.19200300.100.1.1": return "userId";
+            case "0.9.2342.19200300.100.1.3": return "rfc822Mailbox";
+            case "1.3.6.1.4.1.311.60.2.1.1": return "jurisdictionLocalityName";
+            case "1.3.6.1.4.1.311.60.2.1.2": return "jurisdictionStateOrProvinceName";
+            case "1.3.6.1.4.1.311.60.2.1.3": return "jurisdictionCountryName";
+            case "1.2.840.113549.1.9.2": return "unstructuredName";
+            case "1.2.840.113549.1.9.8": return "unstructuredAddress";
+            default: return null;
+        }
+    }
+
+    /// One attribute value's text: the string types decoded, anything else
+    /// '#' and its whole encoding in hexadecimal, as .NET writes it.
+    static string Value(byte[] raw, long tag, long offset, long count, long elementStart, long elementEnd)
+    {
+        switch (tag)
+        {
+            case 12: return Encoding.UTF8.GetString(raw, (int)offset, (int)count);              // UTF8String
+            case 19: case 22: case 26:                                                        // Printable, IA5, Visible
+            case 20: return Latin1(raw, offset, count);                                       // Teletex, as Latin-1
+            case 30: return Encoding.BigEndianUnicode.GetString(raw, (int)offset, (int)count); // BMPString
+            case 28:                                                                          // UniversalString
+            {
+                StringBuilder s = new StringBuilder();
+                for (long i = offset; i + 3 < offset + count; i += 4)
+                {
+                    int cp = (raw[(int)i] << 24) | (raw[(int)i + 1] << 16) | (raw[(int)i + 2] << 8) | raw[(int)i + 3];
+                    s.Append(char.ConvertFromUtf32(cp));
+                }
+                return s.ToString();
+            }
+            default:
+                return "#" + Hex(X509Fields.Slice(raw, elementStart, elementEnd - elementStart));
+        }
+    }
+
+    static string Latin1(byte[] raw, long offset, long count)
+    {
+        char[] text = new char[(int)count];
+        for (int i = 0; i < count; i++) text[i] = (char)raw[(int)offset + i];
+        return new string(text);
+    }
+
+    /// A value quoted as .NET quotes one: when it holds , + = " < > # ; or
+    /// a line break, or starts or ends with a space; quotes doubled.
+    static string Quoted(string value)
+    {
+        bool quote = value.Length > 0 && (value[0] == ' ' || value[value.Length - 1] == ' ');
+        foreach (char c in value)
+            if (c == ',' || c == '+' || c == '=' || c == '"' || c == '\n' || c == '\r' || c == '<' || c == '>' || c == '#' || c == ';') quote = true;
+        if (!quote) return value;
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
+    }
+
+    /// One relative distinguished name's attributes: its type's short name
+    /// (or "OID." and the identifier) and its value's text, in order.
+    public static List<KeyValuePair<string, string>[]> Attributes(byte[] name)
+    {
+        List<KeyValuePair<string, string>[]> rdns = new List<KeyValuePair<string, string>[]>();
+        CorsacSecureCrypto_DerCursor top = new CorsacSecureCrypto_DerCursor(name, 0, name.Length);
+        long offset, count;
+        if (!top.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out offset, out count)) return rdns;
+        CorsacSecureCrypto_DerCursor sequence = new CorsacSecureCrypto_DerCursor(name, offset, count);
+        while (!sequence.AtEnd())
+        {
+            long setOffset, setCount;
+            if (!sequence.TryReadUniversal(CorsacSecureCrypto_DerCursor.Set, true, out setOffset, out setCount)) break;
+            CorsacSecureCrypto_DerCursor set = new CorsacSecureCrypto_DerCursor(name, setOffset, setCount);
+            List<KeyValuePair<string, string>> parts = new List<KeyValuePair<string, string>>();
+            while (!set.AtEnd())
+            {
+                long aOffset, aCount;
+                if (!set.TryReadUniversal(CorsacSecureCrypto_DerCursor.Sequence, true, out aOffset, out aCount)) break;
+                CorsacSecureCrypto_DerCursor attribute = new CorsacSecureCrypto_DerCursor(name, aOffset, aCount);
+                long oOffset, oCount;
+                if (!attribute.TryReadObjectIdentifier(out oOffset, out oCount)) break;
+                string oid = OidText(name, oOffset, oCount);
+                long start = attribute.AbsolutePosition();
+                long cls, tag, vOffset, vCount;
+                bool constructed;
+                if (!attribute.TryReadElement(out cls, out constructed, out tag, out vOffset, out vCount)) break;
+                string key = ShortName(oid) ?? "OID." + oid;
+                parts.Add(new KeyValuePair<string, string>(key, Value(name, cls == 0 ? tag : -1, vOffset, vCount, start, vOffset + vCount)));
+            }
+            rdns.Add(parts.ToArray());
+        }
+        return rdns;
+    }
+
+    /// A Name as .NET's Subject and Issuer write it: most specific first,
+    /// ", " between names, " + " within one.
+    public static string NameText(byte[] name, bool reversed, string separator)
+    {
+        List<KeyValuePair<string, string>[]> rdns = Attributes(name);
+        if (reversed) rdns.Reverse();
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < rdns.Count; i++)
+        {
+            if (i > 0) text.Append(separator);
+            for (int j = 0; j < rdns[i].Length; j++)
+            {
+                if (j > 0) text.Append(" + ");
+                text.Append(rdns[i][j].Key).Append('=').Append(Quoted(rdns[i][j].Value));
+            }
+        }
+        return text.ToString();
+    }
+
+    /// The first value of an attribute (by short name) in a Name, or null.
+    public static string? FirstValue(byte[] name, string key)
+    {
+        foreach (KeyValuePair<string, string>[] rdn in Attributes(name))
+            foreach (KeyValuePair<string, string> part in rdn)
+                if (part.Key == key) return part.Value;
+        return null;
+    }
+
+    /// Every certificate in PEM text (CERTIFICATE blocks), DER each.
+    public static List<byte[]> PemCertificates(byte[] text)
+    {
+        List<byte[]> found = new List<byte[]>();
+        long at = 0;
+        while (at < text.Length)
+        {
+            byte[] room = new byte[text.Length];
+            long written, consumed;
+            if (!CorsacSecureCrypto_Pem.Decode(text, at, text.Length - at, "CERTIFICATE", room, 0, room.Length, out written, out consumed) || consumed <= 0) break;
+            found.Add(X509Fields.Slice(room, 0, written));
+            at += consumed;
+        }
+        return found;
+    }
+
+    /// Whether bytes look like PEM text rather than DER.
+    /// Whether `data` is PEM text rather than DER: not one whole DER element,
+    /// and a "-----BEGIN" line somewhere in it. Text before the first one
+    /// -- a bundle's "# ACCVRAIZ1" comments -- is passed over, as OpenSSL's
+    /// PEM reader (and so .NET's) passes over it.
+    public static bool IsPem(byte[] data)
+    {
+        if (WholeDer(data)) return false;
+        byte[] marker = Encoding.ASCII.GetBytes("-----BEGIN");
+        for (int start = 0; start + marker.Length <= data.Length; start++)
+        {
+            int i = 0;
+            while (i < marker.Length && data[start + i] == marker[i]) i++;
+            if (i == marker.Length) return true;
+        }
+        return false;
+    }
+
+    static bool WholeDer(byte[] data)
+    {
+        if (data.Length < 2 || data[0] != 0x30) return false;
+        int first = data[1];
+        long length;
+        int header;
+        if (first < 0x80) { length = first; header = 2; }
+        else
+        {
+            int count = first & 0x7F;
+            if (count == 0 || count > 4 || data.Length < 2 + count) return false;
+            length = 0;
+            for (int i = 0; i < count; i++) length = (length << 8) | data[2 + i];
+            header = 2 + count;
+        }
+        return header + length == data.Length;
+    }
+
+    /// DER as PEM text, 64 columns a line.
+    public static string Pem(string label, byte[] der)
+    {
+        string body = Convert.ToBase64String(der);
+        StringBuilder text = new StringBuilder();
+        text.Append("-----BEGIN ").Append(label).Append("-----\n");
+        for (int i = 0; i < body.Length; i += 64) text.Append(body, i, Math.Min(64, body.Length - i)).Append('\n');
+        text.Append("-----END ").Append(label).Append("-----");
+        return text.ToString();
+    }
+}

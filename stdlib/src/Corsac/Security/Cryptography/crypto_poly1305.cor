@@ -1,0 +1,432 @@
+// CORSAC/SECURE Crypto Poly1305, with a per-block optional CPU assist.
+//
+// Binary keys, messages and tags are byte arrays.  The five 26-bit limb
+// representation is deliberately narrower than the machine word: after a
+// block h0, h2, h3 and h4 are below 2^26, and h1 is at most 2^26 + 37.  With
+// the clamped r masks below, every five-term product/carry sum is below 2^57,
+// so no signed Int64 operation can overflow.
+
+/// A single-use streaming Poly1305 context.  The 32-byte one-time key is
+/// copied into private numeric state at construction and erased by Finish,
+/// Verify or Close.  There is intentionally no Reset: reusing a Poly1305 key
+/// is cryptographically unsound.
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_Poly1305
+{
+    public const int KeyBytes = 32;
+    public const int TagBytes = 16;
+    public const int InvalidArgument = 1;
+    public const int AuthenticationFailure = 4;
+    public const int ProtocolState = 9;
+
+    private const long LimbMask = 0x3ffffff;
+    private const long WordMask = 0xffffffffL;
+
+    private byte[] _block;
+    private int _held;
+
+    private long _r0;
+    private long _r1;
+    private long _r2;
+    private long _r3;
+    private long _r4;
+    private long _s1;
+    private long _s2;
+    private long _s3;
+    private long _s4;
+
+    private long _h0;
+    private long _h1;
+    private long _h2;
+    private long _h3;
+    private long _h4;
+
+    private long _pad0;
+    private long _pad1;
+    private long _pad2;
+    private long _pad3;
+
+    private bool _finished;
+    private bool _closed;
+    private int _error;
+
+    public CorsacSecureCrypto_Poly1305(byte[] key, long keyOffset)
+    {
+        // Keep the published object's field layout intact. The existing
+        // private byte buffer holds 16 pending message bytes, room for a
+        // 32-byte-aligned 24-byte accumulator, and clamped r at offset 72.
+        // The accumulator never crosses a 64-byte cache line. Keep r at a
+        // fixed array offset: relocating an array must not change its key
+        // layout. No per-block allocation; all 96 bytes are erased on close.
+        _block = new byte[96];
+        if (!CorsacSecureCrypto_Bytes.Range(key, keyOffset, KeyBytes))
+        {
+            _error = InvalidArgument;
+            return;
+        }
+
+        // These overlapping loads are the 0ffffffc0ffffffc0ffffffc0fffffff
+        // clamp expressed directly in radix 2^26.  No unclamped copy of r is
+        // retained by the context.
+        _r0 = Load32(key, keyOffset) & 0x3ffffff;
+        _r1 = (Load32(key, keyOffset + 3) >> 2) & 0x3ffff03;
+        _r2 = (Load32(key, keyOffset + 6) >> 4) & 0x3ffc0ff;
+        _r3 = (Load32(key, keyOffset + 9) >> 6) & 0x3f03fff;
+        _r4 = (Load32(key, keyOffset + 12) >> 8) & 0x00fffff;
+        _s1 = _r1 * 5;
+        _s2 = _r2 * 5;
+        _s3 = _r3 * 5;
+        _s4 = _r4 * 5;
+
+        long assistKey = Sys.ArrayData(_block) + 72;
+        Sys.Poke(assistKey, _r0 | ((_r1 & 0x3ffff) << 26));
+        Sys.Poke(assistKey + 8, (_r1 >> 18) | (_r2 << 8)
+                                | ((_r3 & 0x3ff) << 34));
+        Sys.Poke(assistKey + 16, (_r3 >> 10) | (_r4 << 16));
+
+        _pad0 = Load32(key, keyOffset + 16);
+        _pad1 = Load32(key, keyOffset + 20);
+        _pad2 = Load32(key, keyOffset + 24);
+        _pad3 = Load32(key, keyOffset + 28);
+    }
+
+    public int Error => _error;
+
+    /// Borrows message bytes only until this call returns.  The amount of
+    /// work depends on the public byte count, never on message or key values.
+    public bool Update(byte[] message, long messageOffset, long messageCount)
+    {
+        if (_closed || _finished || _error != 0)
+            return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(
+                message, messageOffset, messageCount))
+            return Fail(InvalidArgument);
+
+        if (_held != 0 && messageCount != 0)
+        {
+            int room = 16 - _held;
+            int take = (int)(messageCount < room ? messageCount : room);
+            CorsacSecureCrypto_Bytes.Copy(
+                _block, _held, message, messageOffset, take);
+            _held = _held + take;
+            messageOffset = messageOffset + take;
+            messageCount = messageCount - take;
+            if (_held == 16)
+            {
+                ProcessBlock(_block, 0, true);
+                _held = 0;
+            }
+        }
+
+        while (messageCount >= 16)
+        {
+            ProcessBlock(message, messageOffset, true);
+            messageOffset = messageOffset + 16;
+            messageCount = messageCount - 16;
+        }
+
+        if (messageCount != 0)
+        {
+            CorsacSecureCrypto_Bytes.Copy(
+                _block, 0, message, messageOffset, messageCount);
+            _held = (int)messageCount;
+        }
+        return true;
+    }
+
+    /// Commits exactly one 16-byte tag after the complete output range has
+    /// been validated.  The temporary prevents a future internal failure from
+    /// ever exposing a partial caller-visible tag.
+    public bool Finish(byte[] output, long outputOffset)
+    {
+        if (_closed || _finished || _error != 0)
+            return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, TagBytes))
+            return Fail(InvalidArgument);
+
+        byte[] tag = new byte[TagBytes];
+        Complete(tag);
+        bool copied = CorsacSecureCrypto_Bytes.Copy(
+            output, outputOffset, tag, 0, TagBytes);
+        CorsacSecureCrypto_Bytes.Zero(tag, 0, TagBytes);
+        return copied;
+    }
+
+    /// Finishes and compares all 16 bytes.  A mismatch is recorded as the
+    /// common authentication-failure class only after the fixed-work compare.
+    public bool Verify(byte[] expected, long expectedOffset)
+    {
+        if (_closed || _finished || _error != 0)
+            return Fail(ProtocolState);
+        if (!CorsacSecureCrypto_Bytes.Range(
+                expected, expectedOffset, TagBytes))
+            return Fail(InvalidArgument);
+
+        byte[] actual = new byte[TagBytes];
+        Complete(actual);
+        bool matches = CorsacSecureCrypto_Bytes.Equal(
+            actual, 0, expected, expectedOffset, TagBytes);
+        CorsacSecureCrypto_Bytes.Zero(actual, 0, TagBytes);
+        if (!matches) return Fail(AuthenticationFailure);
+        return true;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        EraseState();
+        _finished = true;
+        _closed = true;
+    }
+
+    /// One-shot authentication.  Key and message may alias output: every
+    /// input is consumed before the result is committed.
+    public static bool Authenticate(
+        byte[] key, long keyOffset,
+        byte[] message, long messageOffset, long messageCount,
+        byte[] output, long outputOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(key, keyOffset, KeyBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                    message, messageOffset, messageCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                    output, outputOffset, TagBytes))
+            return false;
+
+        CorsacSecureCrypto_Poly1305 context =
+            new CorsacSecureCrypto_Poly1305(key, keyOffset);
+        bool okay = context.Error == 0
+                 && context.Update(message, messageOffset, messageCount)
+                 && context.Finish(output, outputOffset);
+        context.Close();
+        return okay;
+    }
+
+    /// One-shot authentication and fixed-work tag comparison.
+    public static bool Verify(
+        byte[] key, long keyOffset,
+        byte[] message, long messageOffset, long messageCount,
+        byte[] expected, long expectedOffset)
+    {
+        if (!CorsacSecureCrypto_Bytes.Range(key, keyOffset, KeyBytes)
+            || !CorsacSecureCrypto_Bytes.Range(
+                    message, messageOffset, messageCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                    expected, expectedOffset, TagBytes))
+            return false;
+
+        CorsacSecureCrypto_Poly1305 context =
+            new CorsacSecureCrypto_Poly1305(key, keyOffset);
+        bool okay = context.Error == 0
+                 && context.Update(message, messageOffset, messageCount)
+                 && context.Verify(expected, expectedOffset);
+        context.Close();
+        return okay;
+    }
+
+    private bool Fail(int error)
+    {
+        if (_error == 0) _error = error;
+        return false;
+    }
+
+    private void Complete(byte[] tag)
+    {
+        if (_held != 0)
+        {
+            // The RFC's mandatory one bit is the byte 0x01 immediately after
+            // the partial message, followed by zero padding to 16 bytes.
+            _block[_held] = 1;
+            CorsacSecureCrypto_Bytes.Zero(
+                _block, _held + 1, 15 - _held);
+            ProcessBlock(_block, 0, false);
+        }
+
+        FinalReduce();
+        WriteTag(tag);
+        _finished = true;
+        EraseState();
+    }
+
+    private void ProcessBlock(byte[] block, long offset, bool complete)
+    {
+        if (TryProcessBlock(block, offset, complete)) return;
+
+        _h0 = _h0 + (Load32(block, offset) & LimbMask);
+        _h1 = _h1 + ((Load32(block, offset + 3) >> 2) & LimbMask);
+        _h2 = _h2 + ((Load32(block, offset + 6) >> 4) & LimbMask);
+        _h3 = _h3 + ((Load32(block, offset + 9) >> 6) & LimbMask);
+        _h4 = _h4 + (Load32(block, offset + 12) >> 8)
+                    + (complete ? 0x1000000 : 0);
+
+        // At entry to the products, h0..h3 are at most about 2^27 and h4 is
+        // below 3*2^25.  Clamping makes the largest sum d0 < 2^57; the other
+        // sums and all propagated carries are smaller.
+        long d0 = _h0 * _r0 + _h1 * _s4 + _h2 * _s3
+                + _h3 * _s2 + _h4 * _s1;
+        long d1 = _h0 * _r1 + _h1 * _r0 + _h2 * _s4
+                + _h3 * _s3 + _h4 * _s2;
+        long d2 = _h0 * _r2 + _h1 * _r1 + _h2 * _r0
+                + _h3 * _s4 + _h4 * _s3;
+        long d3 = _h0 * _r3 + _h1 * _r2 + _h2 * _r1
+                + _h3 * _r0 + _h4 * _s4;
+        long d4 = _h0 * _r4 + _h1 * _r3 + _h2 * _r2
+                + _h3 * _r1 + _h4 * _r0;
+
+        long carry = d0 >> 26;
+        _h0 = d0 & LimbMask;
+        d1 = d1 + carry;
+        carry = d1 >> 26;
+        _h1 = d1 & LimbMask;
+        d2 = d2 + carry;
+        carry = d2 >> 26;
+        _h2 = d2 & LimbMask;
+        d3 = d3 + carry;
+        carry = d3 >> 26;
+        _h3 = d3 & LimbMask;
+        d4 = d4 + carry;
+        carry = d4 >> 26;
+        _h4 = d4 & LimbMask;
+        _h0 = _h0 + carry * 5;
+        carry = _h0 >> 26;
+        _h0 = _h0 & LimbMask;
+        _h1 = _h1 + carry;
+    }
+
+    private bool TryProcessBlock(byte[] block, long offset, bool complete)
+    {
+        // Avoid packing on absent/older units and in --no-units builds. The
+        // actual operation checks again: migration is not an affinity lock.
+        if ((0 & 16) == 0) return false;
+
+        // The scalar accumulator has only one loose limb: h1 <= 2^26+37.
+        // ADD its excess carry (OR would lose it at a boundary). The whole
+        // value is below 2^130+38*2^26. If the top carries, the residual low
+        // value is below 38*2^26, so adding five cannot overflow the low 44
+        // bits. This yields tight 44/44/42 limbs without data-dependent work.
+        long h0 = _h0 | ((_h1 & 0x3ffff) << 26);
+        long h1 = (_h1 >> 18) + (_h2 << 8) + ((_h3 & 0x3ff) << 34);
+        long h2 = (_h3 >> 10) + (_h4 << 16) + (h1 >> 44);
+        h1 = h1 & 0xfffffffffffL;
+        h0 = h0 + (h2 >> 42) * 5;
+        h2 = h2 & 0x3ffffffffffL;
+        // Repack on every call, so the scratch position need not survive a
+        // relocation. Rounding up after the pending message needs at most
+        // 31 padding bytes: the accumulator ends before fixed key offset 72.
+        long scratch = (Sys.ArrayData(_block) + 16 + 31) & -32L;
+        Sys.Poke(scratch, h0);
+        Sys.Poke(scratch + 8, h1);
+        Sys.Poke(scratch + 16, h2);
+        return false;
+
+        // Keep the original five-limb scalar state authoritative after EVERY
+        // block, so a following call can freely take the portable path.
+        h0 = Sys.Peek(scratch);
+        h1 = Sys.Peek(scratch + 8);
+        h2 = Sys.Peek(scratch + 16);
+        _h0 = h0 & LimbMask;
+        _h1 = ((h0 >> 26) | (h1 << 18)) & LimbMask;
+        _h2 = (h1 >> 8) & LimbMask;
+        _h3 = ((h1 >> 34) | (h2 << 10)) & LimbMask;
+        _h4 = h2 >> 16;
+        return true;
+    }
+
+    private void FinalReduce()
+    {
+        // Propagate once through every limb.  The post-block bounds make every
+        // carry here at most one except the already-folded 5*h carry.
+        long carry = _h1 >> 26;
+        _h1 = _h1 & LimbMask;
+        _h2 = _h2 + carry;
+        carry = _h2 >> 26;
+        _h2 = _h2 & LimbMask;
+        _h3 = _h3 + carry;
+        carry = _h3 >> 26;
+        _h3 = _h3 & LimbMask;
+        _h4 = _h4 + carry;
+        carry = _h4 >> 26;
+        _h4 = _h4 & LimbMask;
+        _h0 = _h0 + carry * 5;
+        carry = _h0 >> 26;
+        _h0 = _h0 & LimbMask;
+        _h1 = _h1 + carry;
+
+        // g = h + 5 - 2^130.  g4 is nonnegative exactly when h >= p.
+        // ConstantTimeSelect is a branch-free mask operation both in the
+        // Crypto-unit instruction and in the compiler's portable fallback.
+        long g0 = _h0 + 5;
+        carry = g0 >> 26;
+        g0 = g0 & LimbMask;
+        long g1 = _h1 + carry;
+        carry = g1 >> 26;
+        g1 = g1 & LimbMask;
+        long g2 = _h2 + carry;
+        carry = g2 >> 26;
+        g2 = g2 & LimbMask;
+        long g3 = _h3 + carry;
+        carry = g3 >> 26;
+        g3 = g3 & LimbMask;
+        long g4 = _h4 + carry - 0x4000000;
+        bool useReduced = g4 >= 0;
+
+        _h0 = CorsacSecureCrypto_Bytes.Select(g0, _h0, useReduced);
+        _h1 = CorsacSecureCrypto_Bytes.Select(g1, _h1, useReduced);
+        _h2 = CorsacSecureCrypto_Bytes.Select(g2, _h2, useReduced);
+        _h3 = CorsacSecureCrypto_Bytes.Select(g3, _h3, useReduced);
+        _h4 = CorsacSecureCrypto_Bytes.Select(g4, _h4, useReduced);
+    }
+
+    private void WriteTag(byte[] tag)
+    {
+        long f0 = (_h0 | (_h1 << 26)) & WordMask;
+        long f1 = ((_h1 >> 6) | (_h2 << 20)) & WordMask;
+        long f2 = ((_h2 >> 12) | (_h3 << 14)) & WordMask;
+        long f3 = ((_h3 >> 18) | (_h4 << 8)) & WordMask;
+
+        f0 = f0 + _pad0;
+        f1 = f1 + _pad1 + (f0 >> 32);
+        f0 = f0 & WordMask;
+        f2 = f2 + _pad2 + (f1 >> 32);
+        f1 = f1 & WordMask;
+        f3 = f3 + _pad3 + (f2 >> 32);
+        f2 = f2 & WordMask;
+        f3 = f3 & WordMask;
+
+        Store32(tag, 0, f0);
+        Store32(tag, 4, f1);
+        Store32(tag, 8, f2);
+        Store32(tag, 12, f3);
+    }
+
+    private void EraseState()
+    {
+        CorsacSecureCrypto_Bytes.Zero(_block, 0, _block.Length);
+        _held = 0;
+        _r0 = 0; _r1 = 0; _r2 = 0; _r3 = 0; _r4 = 0;
+        _s1 = 0; _s2 = 0; _s3 = 0; _s4 = 0;
+        _h0 = 0; _h1 = 0; _h2 = 0; _h3 = 0; _h4 = 0;
+        _pad0 = 0; _pad1 = 0; _pad2 = 0; _pad3 = 0;
+    }
+
+    private static long Load32(byte[] bytes, long offset)
+    {
+        long value = 0;
+        for (int i = 0; i < 4; i = i + 1)
+            value = value
+                | (((long)bytes[(int)(offset + i)] & 255) << (i * 8));
+        return value;
+    }
+
+    private static void Store32(byte[] bytes, int offset, long value)
+    {
+        for (int i = 0; i < 4; i = i + 1)
+        {
+            bytes[offset + i] = (byte)(value & 255);
+            value = value >> 8;
+        }
+    }
+}

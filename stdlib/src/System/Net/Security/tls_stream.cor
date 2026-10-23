@@ -1,0 +1,465 @@
+// CORSAC/SECURE TLS record stream and CORSAC/OS descriptor adapters.
+//
+// The stream owns record framing and exact I/O; SslStream gives it its
+// source and sink over the stream it wraps (the descriptor adapters that
+// were here belong to no .NET type, and went with the move).
+//
+// The stream owns record framing and exact I/O.  Handshake state owns when
+// traffic secrets become active.  A direction changes keys explicitly and
+// independently, as TLS 1.3 requires.  Authenticated plaintext is copied to a
+// caller only after the selected record provider has accepted the whole tag.
+
+using Corsac.Security.Cryptography;
+
+namespace System.Net.Security;
+
+internal class CorsacSecureTls_ByteSource
+{
+    public virtual long Read(byte[] output, int offset, int count) { return -1; }
+}
+
+internal class CorsacSecureTls_ByteSink
+{
+    public virtual long Write(byte[] input, int offset, int count) { return -1; }
+}
+
+internal class CorsacSecureTls_RecordStream
+{
+    public const int InvalidArgument = 1;
+    public const int MalformedRecord = 2;
+    public const int AuthenticationFailure = 4;
+    public const int ResourceLimit = 7;
+    public const int IoFailure = 8;
+    public const int ProtocolState = 9;
+
+    public const int TlsAes128GcmSha256 = 0x1301;
+    public const int TlsChaCha20Poly1305Sha256 = 0x1303;
+    public const int HeaderBytes = 5;
+    public const int MaximumPlaintextBytes = 16384;
+    public const int MaximumCiphertextBytes = 16640;
+    public const int MaximumRecordBytes = 16645;
+
+    private CorsacSecureTls_ByteSource _source;
+    private CorsacSecureTls_ByteSink _sink;
+    private byte[] _wire;
+    private byte[] _plain;
+    private CorsacSecureTls_ChaChaRecord? _sendChaCha;
+    private CorsacSecureTls_ChaChaRecord? _receiveChaCha;
+    private CorsacSecureTls_AesGcmRecord? _sendAes;
+    private CorsacSecureTls_AesGcmRecord? _receiveAes;
+    private int _sendSuite;
+    private int _receiveSuite;
+    private int _plainRecordsSent;
+    private int _error;
+    private bool _failed;
+    private bool _closed;
+
+    public CorsacSecureTls_RecordStream(
+        CorsacSecureTls_ByteSource source,
+        CorsacSecureTls_ByteSink sink)
+    {
+        _source = source;
+        _sink = sink;
+        _wire = new byte[MaximumRecordBytes];
+        _plain = new byte[MaximumPlaintextBytes];
+        _sendChaCha = null;
+        _receiveChaCha = null;
+        _sendAes = null;
+        _receiveAes = null;
+        if (source == null || sink == null)
+            Fail(InvalidArgument, true);
+    }
+
+    public int Error => _error;
+    public bool Failed => _failed;
+    public bool Closed => _closed;
+    public bool SendingProtected => _sendSuite != 0;
+    public bool ReceivingProtected => _receiveSuite != 0;
+    public int SendingSuite => _sendSuite;
+    public int ReceivingSuite => _receiveSuite;
+
+    public bool EnableSending(int suite,
+                              byte[] trafficSecret, long secretOffset)
+    {
+        if (!Ready() || _sendSuite != 0
+            || !CorsacSecureCrypto_Bytes.Range(
+                trafficSecret, secretOffset, 32))
+            return Fail(InvalidArgument, false);
+        if (suite == TlsChaCha20Poly1305Sha256)
+        {
+            _sendChaCha = new CorsacSecureTls_ChaChaRecord(
+                trafficSecret, secretOffset, true);
+            if (_sendChaCha.Error != 0)
+            {
+                _sendChaCha.Close();
+                _sendChaCha = null;
+                return Fail(ProtocolState, true);
+            }
+        }
+        else if (suite == TlsAes128GcmSha256)
+        {
+            _sendAes = new CorsacSecureTls_AesGcmRecord(
+                trafficSecret, secretOffset, true);
+            if (_sendAes.Error != 0)
+            {
+                _sendAes.Close();
+                _sendAes = null;
+                return Fail(ProtocolState, true);
+            }
+        }
+        else return Fail(InvalidArgument, false);
+        _sendSuite = suite;
+        return true;
+    }
+
+    public bool EnableReceiving(int suite,
+                                byte[] trafficSecret, long secretOffset)
+    {
+        if (!Ready() || _receiveSuite != 0
+            || !CorsacSecureCrypto_Bytes.Range(
+                trafficSecret, secretOffset, 32))
+            return Fail(InvalidArgument, false);
+        if (suite == TlsChaCha20Poly1305Sha256)
+        {
+            _receiveChaCha = new CorsacSecureTls_ChaChaRecord(
+                trafficSecret, secretOffset, false);
+            if (_receiveChaCha.Error != 0)
+            {
+                _receiveChaCha.Close();
+                _receiveChaCha = null;
+                return Fail(ProtocolState, true);
+            }
+        }
+        else if (suite == TlsAes128GcmSha256)
+        {
+            _receiveAes = new CorsacSecureTls_AesGcmRecord(
+                trafficSecret, secretOffset, false);
+            if (_receiveAes.Error != 0)
+            {
+                _receiveAes.Close();
+                _receiveAes = null;
+                return Fail(ProtocolState, true);
+            }
+        }
+        else return Fail(InvalidArgument, false);
+        _receiveSuite = suite;
+        return true;
+    }
+
+    // Replaces an active sending key after the caller has sent KeyUpdate and
+    // derived the next traffic secret.  Sequence numbering restarts at zero.
+    public bool ReplaceSending(int suite,
+                               byte[] trafficSecret, long secretOffset)
+    {
+        if (!Ready() || _sendSuite == 0) return Fail(ProtocolState, false);
+        CloseSendingKey();
+        _sendSuite = 0;
+        return EnableSending(suite, trafficSecret, secretOffset);
+    }
+
+    public bool ReplaceReceiving(int suite,
+                                 byte[] trafficSecret, long secretOffset)
+    {
+        if (!Ready() || _receiveSuite == 0)
+            return Fail(ProtocolState, false);
+        CloseReceivingKey();
+        _receiveSuite = 0;
+        return EnableReceiving(suite, trafficSecret, secretOffset);
+    }
+
+    public bool Send(int contentType,
+                     byte[] content, long contentOffset, long contentCount,
+                     long paddingCount)
+    {
+        if (!Ready()
+            || !CorsacSecureTls_ContentType.IsTls13(contentType)
+            || !CorsacSecureCrypto_Bytes.Range(
+                content, contentOffset, contentCount)
+            || contentCount > MaximumPlaintextBytes)
+            return Fail(InvalidArgument, false);
+
+        long wireCount = 0;
+        bool framed;
+        if (_sendSuite == TlsChaCha20Poly1305Sha256)
+        {
+            if (_sendChaCha == null) return Fail(ProtocolState, true);
+            framed = _sendChaCha.Seal(
+                contentType, content, contentOffset, contentCount,
+                paddingCount, _wire, 0, out wireCount);
+        }
+        else if (_sendSuite == TlsAes128GcmSha256)
+        {
+            if (_sendAes == null) return Fail(ProtocolState, true);
+            framed = _sendAes.Seal(
+                contentType, content, contentOffset, contentCount,
+                paddingCount, _wire, 0, out wireCount);
+        }
+        else
+        {
+            if (paddingCount != 0 || contentCount == 0)
+                return Fail(InvalidArgument, false);
+            framed = FramePlaintext(
+                contentType, content, contentOffset, contentCount,
+                _wire, out wireCount);
+        }
+        if (!framed) return Fail(ProtocolState, true);
+        if (!WriteAll(_wire, 0, (int)wireCount))
+        {
+            CorsacSecureCrypto_Bytes.Zero(_wire, 0, wireCount);
+            return Fail(IoFailure, true);
+        }
+        CorsacSecureCrypto_Bytes.Zero(_wire, 0, wireCount);
+        if (_sendSuite == 0) _plainRecordsSent = _plainRecordsSent + 1;
+        return true;
+    }
+
+    public bool Receive(byte[] output, long outputOffset, long outputCapacity,
+                        out int contentType, out long contentCount)
+    {
+        contentType = 0;
+        contentCount = 0;
+        if (!Ready()
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, outputCapacity))
+            return Fail(InvalidArgument, false);
+        if (!ReadExact(_wire, 0, HeaderBytes))
+            return Fail(IoFailure, true);
+        int fragmentCount = ((_wire[3] & 255) << 8) | (_wire[4] & 255);
+        if (fragmentCount == 0 || fragmentCount > MaximumCiphertextBytes)
+        {
+            CorsacSecureCrypto_Bytes.Zero(_wire, 0, HeaderBytes);
+            return Fail(MalformedRecord, true);
+        }
+        if (!ReadExact(_wire, HeaderBytes, fragmentCount))
+        {
+            CorsacSecureCrypto_Bytes.Zero(
+                _wire, 0, HeaderBytes + fragmentCount);
+            return Fail(IoFailure, true);
+        }
+        long total = HeaderBytes + fragmentCount;
+
+        bool okay;
+        if (_receiveSuite == 0)
+        {
+            if (fragmentCount > outputCapacity)
+            {
+                CorsacSecureCrypto_Bytes.Zero(_wire, 0, total);
+                return Fail(ResourceLimit, true);
+            }
+            okay = OpenPlaintext(
+                output, outputOffset, outputCapacity,
+                out contentType, out contentCount);
+        }
+        else if (IsCompatibilityChangeCipherSpec(fragmentCount))
+        {
+            if (outputCapacity < 1) okay = false;
+            else
+            {
+                output[(int)outputOffset] = 1;
+                contentType = CorsacSecureTls_ContentType.ChangeCipherSpec;
+                contentCount = 1;
+                okay = true;
+            }
+        }
+        else if (_receiveSuite == TlsChaCha20Poly1305Sha256)
+        {
+            if (_receiveChaCha == null) return Fail(ProtocolState, true);
+            okay = _receiveChaCha.Open(
+                _wire, 0, total, _plain, 0,
+                out contentType, out contentCount);
+        }
+        else
+        {
+            if (_receiveAes == null) return Fail(ProtocolState, true);
+            okay = _receiveAes.Open(
+                _wire, 0, total, _plain, 0,
+                out contentType, out contentCount);
+        }
+
+        CorsacSecureCrypto_Bytes.Zero(_wire, 0, total);
+        if (!okay)
+        {
+            CorsacSecureCrypto_Bytes.Zero(_plain, 0, _plain.Length);
+            contentType = 0;
+            contentCount = 0;
+            return Fail(ReceiveProviderError(), true);
+        }
+        if (_receiveSuite != 0
+            && contentType != CorsacSecureTls_ContentType.ChangeCipherSpec)
+        {
+            if (contentCount > outputCapacity
+                || !CorsacSecureCrypto_Bytes.Copy(
+                    output, outputOffset, _plain, 0, contentCount))
+            {
+                CorsacSecureCrypto_Bytes.Zero(_plain, 0, _plain.Length);
+                contentType = 0;
+                contentCount = 0;
+                return Fail(ResourceLimit, true);
+            }
+            CorsacSecureCrypto_Bytes.Zero(_plain, 0, contentCount);
+        }
+        return true;
+    }
+
+    public bool SendingNeedsKeyUpdate()
+    {
+        if (_sendSuite == TlsChaCha20Poly1305Sha256)
+            return _sendChaCha != null && _sendChaCha.NeedsKeyUpdate;
+        if (_sendSuite == TlsAes128GcmSha256)
+            return _sendAes != null && _sendAes.NeedsKeyUpdate;
+        return false;
+    }
+
+    public bool ReceivingNeedsKeyUpdate()
+    {
+        if (_receiveSuite == TlsChaCha20Poly1305Sha256)
+            return _receiveChaCha != null && _receiveChaCha.NeedsKeyUpdate;
+        if (_receiveSuite == TlsAes128GcmSha256)
+            return _receiveAes != null && _receiveAes.NeedsKeyUpdate;
+        return false;
+    }
+
+    public void Close()
+    {
+        if (_closed) return;
+        CloseSendingKey();
+        CloseReceivingKey();
+        CorsacSecureCrypto_Bytes.Zero(_wire, 0, _wire.Length);
+        CorsacSecureCrypto_Bytes.Zero(_plain, 0, _plain.Length);
+        _sendSuite = 0;
+        _receiveSuite = 0;
+        _failed = true;
+        _closed = true;
+    }
+
+    private bool FramePlaintext(
+        int contentType, byte[] content, long contentOffset, long contentCount,
+        byte[] output, out long outputCount)
+    {
+        outputCount = 0;
+        long total = HeaderBytes + contentCount;
+        if (!CorsacSecureCrypto_Bytes.Range(output, 0, total)) return false;
+        output[0] = (byte)contentType;
+        // The first client ClientHello retains the RFC 8446 compatibility
+        // record version.  Every subsequent plaintext record uses 0x0303.
+        bool firstHello = _plainRecordsSent == 0
+            && contentType == CorsacSecureTls_ContentType.Handshake;
+        output[1] = 3;
+        output[2] = firstHello ? (byte)1 : (byte)3;
+        output[3] = (byte)(contentCount >> 8);
+        output[4] = (byte)contentCount;
+        if (!CorsacSecureCrypto_Bytes.Copy(
+                output, HeaderBytes, content, contentOffset, contentCount))
+            return false;
+        outputCount = total;
+        return true;
+    }
+
+    private bool OpenPlaintext(
+        byte[] output, long outputOffset, long outputCapacity,
+        out int contentType, out long contentCount)
+    {
+        contentType = 0;
+        contentCount = 0;
+        int type = _wire[0] & 255;
+        int count = ((_wire[3] & 255) << 8) | (_wire[4] & 255);
+        if (_wire[1] != 3 || _wire[2] != 3
+            || (type != CorsacSecureTls_ContentType.Handshake
+                && type != CorsacSecureTls_ContentType.Alert
+                && type != CorsacSecureTls_ContentType.ChangeCipherSpec)
+            || count > MaximumPlaintextBytes || count > outputCapacity)
+            return false;
+        if (type == CorsacSecureTls_ContentType.ChangeCipherSpec
+            && (count != 1 || _wire[5] != 1)) return false;
+        if (!CorsacSecureCrypto_Bytes.Copy(
+                output, outputOffset, _wire, HeaderBytes, count)) return false;
+        contentType = type;
+        contentCount = count;
+        return true;
+    }
+
+    private bool IsCompatibilityChangeCipherSpec(int fragmentCount)
+    {
+        return fragmentCount == 1
+            && _wire[0] == CorsacSecureTls_ContentType.ChangeCipherSpec
+            && _wire[1] == 3 && _wire[2] == 3 && _wire[5] == 1;
+    }
+
+    private int ReceiveProviderError()
+    {
+        if (_receiveSuite == 0) return MalformedRecord;
+        int provider = 0;
+        if (_receiveSuite == TlsChaCha20Poly1305Sha256)
+        {
+            if (_receiveChaCha == null) return ProtocolState;
+            provider = _receiveChaCha.Error;
+        }
+        else
+        {
+            if (_receiveAes == null) return ProtocolState;
+            provider = _receiveAes.Error;
+        }
+        if (provider == CorsacSecureTls_ChaChaRecord.AuthenticationFailure
+            || provider
+               == CorsacSecureTls_AesGcmRecord.AuthenticationFailure)
+            return AuthenticationFailure;
+        if (provider == CorsacSecureTls_ChaChaRecord.MalformedRecord
+            || provider == CorsacSecureTls_AesGcmRecord.MalformedRecord)
+            return MalformedRecord;
+        return ProtocolState;
+    }
+
+    private bool ReadExact(byte[] output, int offset, int count)
+    {
+        int transferred = 0;
+        while (transferred < count)
+        {
+            int left = count - transferred;
+            long got = _source.Read(output, offset + transferred, left);
+            if (got <= 0 || got > left) return false;
+            transferred = transferred + (int)got;
+        }
+        return true;
+    }
+
+    private bool WriteAll(byte[] input, int offset, int count)
+    {
+        int transferred = 0;
+        while (transferred < count)
+        {
+            int left = count - transferred;
+            long put = _sink.Write(input, offset + transferred, left);
+            if (put <= 0 || put > left) return false;
+            transferred = transferred + (int)put;
+        }
+        return true;
+    }
+
+    private void CloseSendingKey()
+    {
+        if (_sendChaCha != null) { _sendChaCha.Close(); _sendChaCha = null; }
+        if (_sendAes != null) { _sendAes.Close(); _sendAes = null; }
+    }
+
+    private void CloseReceivingKey()
+    {
+        if (_receiveChaCha != null)
+        {
+            _receiveChaCha.Close();
+            _receiveChaCha = null;
+        }
+        if (_receiveAes != null) { _receiveAes.Close(); _receiveAes = null; }
+    }
+
+    private bool Ready()
+    {
+        return !_closed && !_failed && _error == 0;
+    }
+
+    private bool Fail(int error, bool terminal)
+    {
+        if (_error == 0) _error = error;
+        if (terminal) _failed = true;
+        return false;
+    }
+}

@@ -1,0 +1,502 @@
+// CORSAC/SECURE Crypto strict DER and PEM decoding primitives.
+//
+// DER is parsed as borrowed byte-array slices.  No parser operation allocates
+// or returns an interior pointer, and every length is validated before it is
+// converted to an array index.  BER's indefinite form and every non-canonical
+// DER length, identifier, integer, boolean, bit string and OID encoding are
+// rejected.  The PEM decoder measures and validates the complete payload
+// before writing, so malformed input or a short output buffer changes nothing.
+
+namespace Corsac.Security.Cryptography;
+
+public class CorsacSecureCrypto_DerCursor
+{
+    public const long Universal = 0;
+    public const long Application = 1;
+    public const long Context = 2;
+    public const long Private = 3;
+
+    public const long Boolean = 1;
+    public const long Integer = 2;
+    public const long BitString = 3;
+    public const long OctetString = 4;
+    public const long Null = 5;
+    public const long ObjectIdentifier = 6;
+    public const long Sequence = 16;
+    public const long Set = 17;
+
+    private byte[] _bytes;
+    private int _at;
+    private int _limit;
+    private bool _failed;
+
+    public CorsacSecureCrypto_DerCursor(byte[] bytes,
+                                          long offset, long count)
+    {
+        _bytes = bytes;
+        Reset(bytes, offset, count);
+    }
+
+    public bool Reset(byte[] bytes, long offset, long count)
+    {
+        _bytes = bytes;
+        _at = 0;
+        _limit = 0;
+        _failed = true;
+        if (!CorsacSecureCrypto_Bytes.Range(bytes, offset, count)
+            || offset > 2147483647 || count > 2147483647
+            || offset + count > 2147483647) return false;
+        _at = (int)offset;
+        _limit = (int)(offset + count);
+        _failed = false;
+        return true;
+    }
+
+    public long AbsolutePosition() { return _at; }
+    public bool Failed() { return _failed; }
+    public bool AtEnd() { return !_failed && _at == _limit; }
+
+    // Reads one complete TLV and returns a borrowed content slice.  tagNumber
+    // is the decoded tag independent of its class and constructed bit.
+    public bool TryReadElement(out long tagClass, out bool constructed,
+                               out long tagNumber, out long contentOffset,
+                               out long contentCount)
+    {
+        tagClass = 0;
+        constructed = false;
+        tagNumber = 0;
+        contentOffset = 0;
+        contentCount = 0;
+        if (_failed || _at >= _limit) return Fail();
+
+        int identifier = _bytes[_at] & 255;
+        _at = _at + 1;
+        tagClass = (identifier >> 6) & 3;
+        constructed = (identifier & 32) != 0;
+        tagNumber = identifier & 31;
+
+        if (tagNumber == 31)
+        {
+            tagNumber = 0;
+            bool first = true;
+            bool more = true;
+            while (more)
+            {
+                if (_at >= _limit) return Fail();
+                int part = _bytes[_at] & 255;
+                _at = _at + 1;
+                if (first && (part & 127) == 0) return Fail();
+                if (tagNumber > (0x7fffffffffffffffL >> 7)) return Fail();
+                tagNumber = (tagNumber << 7) | (part & 127);
+                more = (part & 128) != 0;
+                first = false;
+            }
+            if (tagNumber < 31) return Fail();
+        }
+
+        if (_at >= _limit) return Fail();
+        int lengthByte = _bytes[_at] & 255;
+        _at = _at + 1;
+        long length = 0;
+        if ((lengthByte & 128) == 0)
+        {
+            length = lengthByte;
+        }
+        else
+        {
+            int octets = lengthByte & 127;
+            // 0 is BER indefinite length.  Four octets cover every array this
+            // implementation can index and bound parser work on hostile input.
+            if (octets == 0 || octets > 4 || octets > _limit - _at)
+                return Fail();
+            if (_bytes[_at] == (byte)0) return Fail();
+            for (int i = 0; i < octets; i = i + 1)
+                length = (length << 8) | (_bytes[_at + i] & 255);
+            _at = _at + octets;
+            if (length < 128) return Fail();
+        }
+
+        if (length > 2147483647 || length > _limit - _at) return Fail();
+        contentOffset = _at;
+        contentCount = length;
+        _at = _at + (int)length;
+        return true;
+    }
+
+    // Validates and describes the next complete element without consuming it.
+    // Invalid input still makes the cursor fail-sticky, just as a read does.
+    public bool TryPeekElement(out long tagClass, out bool constructed,
+                               out long tagNumber, out long contentOffset,
+                               out long contentCount)
+    {
+        int before = _at;
+        if (!TryReadElement(out tagClass, out constructed, out tagNumber,
+                            out contentOffset, out contentCount)) return false;
+        _at = before;
+        return true;
+    }
+
+    public bool TryReadUniversal(long expectedTag, bool expectedConstructed,
+                                 out long contentOffset,
+                                 out long contentCount)
+    {
+        contentOffset = 0;
+        contentCount = 0;
+        long tagClass = 0;
+        long tagNumber = 0;
+        bool constructed = false;
+        if (!TryReadElement(out tagClass, out constructed, out tagNumber,
+                            out contentOffset, out contentCount)) return false;
+        if (tagClass != Universal || tagNumber != expectedTag
+            || constructed != expectedConstructed)
+        {
+            contentOffset = 0;
+            contentCount = 0;
+            return Fail();
+        }
+        return true;
+    }
+
+    public bool TryEnterSequence(CorsacSecureCrypto_DerCursor child)
+    {
+        long offset = 0;
+        long count = 0;
+        if (child == null
+            || !TryReadUniversal(Sequence, true, out offset, out count))
+            return Fail();
+        return child.Reset(_bytes, offset, count);
+    }
+
+    // Returns the canonical signed INTEGER content unchanged.
+    public bool TryReadInteger(out long offset, out long count)
+    {
+        offset = 0;
+        count = 0;
+        if (!TryReadUniversal(Integer, false, out offset, out count))
+            return false;
+        if (count < 1) return FailSlice(out offset, out count);
+        int first = _bytes[(int)offset] & 255;
+        if (count > 1)
+        {
+            int second = _bytes[(int)offset + 1] & 255;
+            if ((first == 0 && (second & 128) == 0)
+                || (first == 255 && (second & 128) != 0))
+                return FailSlice(out offset, out count);
+        }
+        return true;
+    }
+
+    // Returns a nonnegative magnitude, removing only DER's required sign zero.
+    public bool TryReadPositiveInteger(out long offset, out long count)
+    {
+        if (!TryReadInteger(out offset, out count)) return false;
+        if ((_bytes[(int)offset] & 128) != 0)
+            return FailSlice(out offset, out count);
+        if (count > 1 && _bytes[(int)offset] == (byte)0)
+        {
+            offset = offset + 1;
+            count = count - 1;
+        }
+        return true;
+    }
+
+    public bool TryReadBoolean(out bool value)
+    {
+        value = false;
+        long offset = 0;
+        long count = 0;
+        if (!TryReadUniversal(Boolean, false, out offset, out count)
+            || count != 1) return Fail();
+        int encoded = _bytes[(int)offset] & 255;
+        if (encoded != 0 && encoded != 255) return Fail();
+        value = encoded == 255;
+        return true;
+    }
+
+    public bool TryReadNull()
+    {
+        long offset = 0;
+        long count = 0;
+        return TryReadUniversal(Null, false, out offset, out count)
+            && (count == 0 || Fail());
+    }
+
+    public bool TryReadOctetString(out long offset, out long count)
+    {
+        return TryReadUniversal(OctetString, false, out offset, out count);
+    }
+
+    public bool TryReadBitString(out long offset, out long count,
+                                 out long unusedBits)
+    {
+        offset = 0;
+        count = 0;
+        unusedBits = 0;
+        long encodedOffset = 0;
+        long encodedCount = 0;
+        if (!TryReadUniversal(BitString, false,
+                              out encodedOffset, out encodedCount)
+            || encodedCount < 1) return Fail();
+        unusedBits = _bytes[(int)encodedOffset] & 255;
+        if (unusedBits > 7) return FailSlice3(
+            out offset, out count, out unusedBits);
+        offset = encodedOffset + 1;
+        count = encodedCount - 1;
+        if (count == 0 && unusedBits != 0) return FailSlice3(
+            out offset, out count, out unusedBits);
+        if (count > 0 && unusedBits > 0)
+        {
+            int mask = (1 << (int)unusedBits) - 1;
+            if (((_bytes[(int)(offset + count - 1)] & 255) & mask) != 0)
+                return FailSlice3(out offset, out count, out unusedBits);
+        }
+        return true;
+    }
+
+    public bool TryReadObjectIdentifier(out long offset, out long count)
+    {
+        offset = 0;
+        count = 0;
+        if (!TryReadUniversal(ObjectIdentifier, false, out offset, out count)
+            || count < 1) return FailSlice(out offset, out count);
+
+        long at = offset;
+        long limit = offset + count;
+        while (at < limit)
+        {
+            bool first = true;
+            bool more = true;
+            while (more)
+            {
+                if (at >= limit) return FailSlice(out offset, out count);
+                int value = _bytes[(int)at] & 255;
+                at = at + 1;
+                if (first && value == 128)
+                    return FailSlice(out offset, out count);
+                more = (value & 128) != 0;
+                first = false;
+            }
+        }
+        return true;
+    }
+
+    private bool Fail()
+    {
+        _failed = true;
+        return false;
+    }
+
+    private bool FailSlice(out long offset, out long count)
+    {
+        offset = 0;
+        count = 0;
+        return Fail();
+    }
+
+    private bool FailSlice3(out long offset, out long count,
+                            out long unusedBits)
+    {
+        offset = 0;
+        count = 0;
+        unusedBits = 0;
+        return Fail();
+    }
+}
+
+public static class CorsacSecureCrypto_Pem
+{
+    // Decodes one named textual PEM block.  consumed includes the closing
+    // marker and its line terminator, measured from inputOffset.
+    public static bool Decode(byte[] input, long inputOffset, long inputCount,
+                              string label,
+                              byte[] output, long outputOffset,
+                              long outputCount,
+                              out long written, out long consumed)
+    {
+        written = 0;
+        consumed = 0;
+        if (!CorsacSecureCrypto_Bytes.Range(
+                input, inputOffset, inputCount)
+            || !CorsacSecureCrypto_Bytes.Range(
+                output, outputOffset, outputCount)
+            || label == null || label.Length < 1
+            || inputOffset > 2147483647 || inputCount > 2147483647
+            || inputOffset + inputCount > 2147483647
+            || outputOffset > 2147483647 || outputCount > 2147483647)
+            return false;
+        bool priorSeparator = false;
+        for (int i = 0; i < label.Length; i = i + 1)
+        {
+            char value = label[i];
+            bool separator = value == ' ' || value == '-';
+            if (value < 32 || value > 126
+                || (separator && (i == 0 || i + 1 == label.Length
+                                   || priorSeparator))) return false;
+            priorSeparator = separator;
+        }
+
+        int start = (int)inputOffset;
+        int limit = (int)(inputOffset + inputCount);
+        int bodyStart = 0;
+        int bodyEnd = 0;
+        int afterEnd = 0;
+        if (!FindBlock(input, start, limit, label,
+                       out bodyStart, out bodyEnd, out afterEnd)) return false;
+
+        long needed = 0;
+        if (!DecodeBody(input, bodyStart, bodyEnd,
+                        output, (int)outputOffset, false, out needed)
+            || needed > outputCount) return false;
+
+        // An in-place destination may not overwrite Base64 which has not yet
+        // been consumed.  Disjoint ranges in the same array remain supported.
+        if (input == output && needed > 0
+            && outputOffset < bodyEnd && outputOffset + needed > bodyStart)
+            return false;
+
+        long actual = 0;
+        if (!DecodeBody(input, bodyStart, bodyEnd,
+                        output, (int)outputOffset, true, out actual)
+            || actual != needed) return false;
+        written = actual;
+        consumed = afterEnd - start;
+        return true;
+    }
+
+    private static bool FindBlock(byte[] input, int start, int limit,
+                                  string label,
+                                  out int bodyStart, out int bodyEnd,
+                                  out int afterEnd)
+    {
+        bodyStart = 0;
+        bodyEnd = 0;
+        afterEnd = 0;
+        int at = start;
+        bool began = false;
+        while (at < limit)
+        {
+            int lineStart = at;
+            while (at < limit && input[at] != (byte)'\n') at = at + 1;
+            int lineEnd = at;
+            if (lineEnd > lineStart && input[lineEnd - 1] == (byte)'\r')
+                lineEnd = lineEnd - 1;
+            int next = at < limit ? at + 1 : at;
+
+            if (!began)
+            {
+                if (Marker(input, lineStart, lineEnd, label, true))
+                {
+                    began = true;
+                    bodyStart = next;
+                }
+            }
+            else if (Marker(input, lineStart, lineEnd, label, false))
+            {
+                bodyEnd = lineStart;
+                afterEnd = next;
+                return true;
+            }
+            at = next;
+        }
+        return false;
+    }
+
+    private static bool Marker(byte[] input, int start, int end,
+                               string label, bool begin)
+    {
+        string prefix = begin ? "-----BEGIN " : "-----END ";
+        string suffix = "-----";
+        if (end - start != prefix.Length + label.Length + suffix.Length)
+            return false;
+        int at = start;
+        if (!Text(input, at, prefix)) return false;
+        at = at + prefix.Length;
+        if (!Text(input, at, label)) return false;
+        at = at + label.Length;
+        return Text(input, at, suffix);
+    }
+
+    private static bool Text(byte[] input, int offset, string expected)
+    {
+        for (int i = 0; i < expected.Length; i = i + 1)
+            if (input[offset + i] != (byte)expected[i]) return false;
+        return true;
+    }
+
+    private static bool DecodeBody(byte[] input, int start, int limit,
+                                   byte[] output, int outputOffset,
+                                   bool write, out long written)
+    {
+        written = 0;
+        int q0 = 0, q1 = 0, q2 = 0, q3 = 0, held = 0;
+        bool padded = false;
+        for (int at = start; at < limit; at = at + 1)
+        {
+            int encoded = input[at] & 255;
+            if (encoded == 32 || encoded == 9
+                || encoded == 13 || encoded == 10) continue;
+            if (padded) return false;
+            int value = Base64Value(encoded);
+            if (value < -1) value = -2;
+            else if (value < 0) return false;
+            if (held == 0) q0 = value;
+            else if (held == 1) q1 = value;
+            else if (held == 2) q2 = value;
+            else q3 = value;
+            held = held + 1;
+            if (held != 4) continue;
+
+            if (q0 < 0 || q1 < 0) return false;
+            if (q2 == -2)
+            {
+                if (q3 != -2 || (q1 & 15) != 0) return false;
+                Put(output, outputOffset, written,
+                    (q0 << 2) | (q1 >> 4), write);
+                written = written + 1;
+                padded = true;
+            }
+            else if (q2 < 0) return false;
+            else if (q3 == -2)
+            {
+                if ((q2 & 3) != 0) return false;
+                Put(output, outputOffset, written,
+                    (q0 << 2) | (q1 >> 4), write);
+                Put(output, outputOffset, written + 1,
+                    (q1 << 4) | (q2 >> 2), write);
+                written = written + 2;
+                padded = true;
+            }
+            else
+            {
+                if (q3 < 0) return false;
+                Put(output, outputOffset, written,
+                    (q0 << 2) | (q1 >> 4), write);
+                Put(output, outputOffset, written + 1,
+                    (q1 << 4) | (q2 >> 2), write);
+                Put(output, outputOffset, written + 2,
+                    (q2 << 6) | q3, write);
+                written = written + 3;
+            }
+            held = 0;
+        }
+        return held == 0;
+    }
+
+    private static void Put(byte[] output, int outputOffset,
+                            long relative, int value, bool write)
+    {
+        if (write) output[outputOffset + (int)relative] = (byte)value;
+    }
+
+    // -2 is padding, -1 is invalid.
+    private static int Base64Value(int encoded)
+    {
+        if (encoded >= 'A' && encoded <= 'Z') return encoded - 'A';
+        if (encoded >= 'a' && encoded <= 'z') return encoded - 'a' + 26;
+        if (encoded >= '0' && encoded <= '9') return encoded - '0' + 52;
+        if (encoded == '+') return 62;
+        if (encoded == '/') return 63;
+        if (encoded == '=') return -2;
+        return -1;
+    }
+}

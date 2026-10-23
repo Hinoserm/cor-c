@@ -1,0 +1,154 @@
+// test: x509_chain_status_of_every_element
+// expect-exit: 0
+// expect-output:
+// good: True | | [chain.test] [Chain Intermediate] [Chain Root]
+// good online: False | RevocationStatusUnknown OfflineRevocation | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// good offline entire: False | RevocationStatusUnknown OfflineRevocation | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// good online end only: False | RevocationStatusUnknown OfflineRevocation | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate] [Chain Root]
+// root alone online: True | | [Chain Root]
+// intermediate as leaf online: False | RevocationStatusUnknown OfflineRevocation | [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// no intermediate: False | PartialChain | [chain.test PartialChain]
+// no intermediate online: False | PartialChain | [chain.test PartialChain]
+// untrusted root: False | UntrustedRoot | [chain.test] [Chain Intermediate] [Chain Root UntrustedRoot]
+// untrusted root online: False | RevocationStatusUnknown OfflineRevocation UntrustedRoot | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root UntrustedRoot]
+// untrusted root allowed: True | UntrustedRoot | [chain.test] [Chain Intermediate] [Chain Root UntrustedRoot]
+// leaf trusted directly: False | PartialChain | [chain.test PartialChain]
+// intermediate as root: False | PartialChain | [chain.test] [Chain Intermediate PartialChain]
+// expired leaf: False | NotTimeValid | [chain.test NotTimeValid] [Chain Intermediate] [Chain Root]
+// expired leaf ignored: True | NotTimeValid | [chain.test NotTimeValid] [Chain Intermediate] [Chain Root]
+// expired leaf online: False | RevocationStatusUnknown NotTimeValid OfflineRevocation | [chain.test RevocationStatusUnknown NotTimeValid OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// everything expired: False | NotTimeValid | [chain.test NotTimeValid] [Chain Intermediate NotTimeValid] [Chain Root NotTimeValid]
+// not yet valid: False | NotTimeValid | [chain.test NotTimeValid] [Chain Intermediate NotTimeValid] [Chain Root NotTimeValid]
+// client leaf for a server: False | NotValidForUsage | [chain.test NotValidForUsage] [Chain Intermediate NotValidForUsage] [Chain Root NotValidForUsage]
+// client leaf, no policy: True | | [chain.test] [Chain Intermediate] [Chain Root]
+// client leaf, wrong usage ignored: True | NotValidForUsage | [chain.test NotValidForUsage] [Chain Intermediate NotValidForUsage] [Chain Root NotValidForUsage]
+// bad signature: False | NotSignatureValid | [chain.test NotSignatureValid] [Chain Intermediate] [Chain Root]
+// bad signature online: False | RevocationStatusUnknown NotSignatureValid OfflineRevocation | [chain.test RevocationStatusUnknown NotSignatureValid OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// expired and untrusted: False | NotTimeValid UntrustedRoot | [chain.test NotTimeValid] [Chain Intermediate] [Chain Root UntrustedRoot]
+// expired, no intermediate: False | NotTimeValid PartialChain | [chain.test NotTimeValid PartialChain]
+// intermediate as root online: False | PartialChain | [chain.test] [Chain Intermediate PartialChain]
+// client leaf online: False | RevocationStatusUnknown OfflineRevocation NotValidForUsage | [chain.test RevocationStatusUnknown OfflineRevocation NotValidForUsage] [Chain Intermediate RevocationStatusUnknown OfflineRevocation NotValidForUsage] [Chain Root NotValidForUsage]
+// client leaf untrusted: False | UntrustedRoot NotValidForUsage | [chain.test NotValidForUsage] [Chain Intermediate NotValidForUsage] [Chain Root UntrustedRoot NotValidForUsage]
+// bad signature untrusted: False | NotSignatureValid UntrustedRoot | [chain.test NotSignatureValid] [Chain Intermediate] [Chain Root UntrustedRoot]
+// bad signature, no intermediate: False | PartialChain | [chain.test PartialChain]
+// bad signature expired: False | NotSignatureValid NotTimeValid | [chain.test NotSignatureValid NotTimeValid] [Chain Intermediate] [Chain Root]
+// leaf as its own root: True | | [chain.test] [Chain Intermediate] [Chain Root]
+// root and intermediate trusted: True | | [chain.test] [Chain Intermediate] [Chain Root]
+// online, end unknown ignored: False | RevocationStatusUnknown OfflineRevocation | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// online, end and CA unknown ignored: True | RevocationStatusUnknown OfflineRevocation | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// online, CA and root unknown ignored: False | RevocationStatusUnknown OfflineRevocation | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// online, all unknown ignored: True | RevocationStatusUnknown OfflineRevocation | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// end only online, end ignored: True | RevocationStatusUnknown OfflineRevocation | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate] [Chain Root]
+// no intermediate, unknown CA allowed: True | PartialChain | [chain.test PartialChain]
+// untrusted online, unknown CA allowed: True | RevocationStatusUnknown OfflineRevocation UntrustedRoot | [chain.test RevocationStatusUnknown OfflineRevocation] [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root UntrustedRoot]
+// intermediate as leaf, CA unknown ignored: False | RevocationStatusUnknown OfflineRevocation | [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// intermediate as leaf, end unknown ignored: True | RevocationStatusUnknown OfflineRevocation | [Chain Intermediate RevocationStatusUnknown OfflineRevocation] [Chain Root]
+// everything expired online: False | RevocationStatusUnknown NotTimeValid OfflineRevocation | [chain.test RevocationStatusUnknown NotTimeValid OfflineRevocation] [Chain Intermediate RevocationStatusUnknown NotTimeValid OfflineRevocation] [Chain Root NotTimeValid]
+//
+// X509Chain as .NET builds and reports one, every element's statuses in
+// .NET's order: over a test PKI made with OpenSSL (a P-256 root, an
+// intermediate, a server leaf, a client-only leaf, one that expired in 2027,
+// one with its signature spoiled) -- trusted, partial, untrusted, expired,
+// not yet valid, the wrong usage, a bad signature, the revocation modes and
+// flags (nothing is fetched: Online and Offline find the status unknown below
+// the root), and the verification flags that let faults stand.
+// Expected output from .NET 10 on Linux.
+
+using System;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+
+static class Program
+{
+    const string Root = "MIIBqDCCAU6gAwIBAgIBATAKBggqhkjOPQQDAjArMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDETMBEGA1UEAwwKQ2hhaW4gUm9vdDAeFw0yNjAxMDEwMDAwMDBaFw00NjAxMDEwMDAwMDBaMCsxFDASBgNVBAoMC0NPUlNBQyBUZXN0MRMwEQYDVQQDDApDaGFpbiBSb290MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEvmPLEYooS53j2QIfV7Rr50/U/j05Jr9ixRYKK2//1G6NtRGUP01951pFEtOZrqWTwsgScenSwXHlPa/XkOMaZqNjMGEwHQYDVR0OBBYEFG243rNrWpN1Ykg448vX0uyaoes1MB8GA1UdIwQYMBaAFG243rNrWpN1Ykg448vX0uyaoes1MA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoGCCqGSM49BAMCA0gAMEUCIHVTRn+rQpqF3ZADVwqKQ3ySNEppmJjRPqVpEe2Zis+MAiEAz3J7Veun0t4QPyhsa5aNkyA7ygqJMegPDH1bHkKE/YU=";
+    const string Inter = "MIIBsjCCAVmgAwIBAgIBAjAKBggqhkjOPQQDAjArMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDETMBEGA1UEAwwKQ2hhaW4gUm9vdDAeFw0yNjAxMDEwMDAwMDBaFw00NDAxMDEwMDAwMDBaMDMxFDASBgNVBAoMC0NPUlNBQyBUZXN0MRswGQYDVQQDDBJDaGFpbiBJbnRlcm1lZGlhdGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATkBhhga9ftrnRDYIGTcyqv9yQR6seSJD2bXG3jhAIDvCLQPpl5/pq5o/NY354hLJIVvOvgW8YoKsrUzbOKrWxUo2YwZDASBgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUz5aRlQFTqWBHvO6KxZG6LpszIyAwHwYDVR0jBBgwFoAUbbjes2tak3ViSDjjy9fS7Jqh6zUwCgYIKoZIzj0EAwIDRwAwRAIgDz7eb0YIWsiZm9ALbA/w/mz92a+nOvOkCMQUda/XZNsCIASup9KGtxwPDAZq9ZbN6wcHRJ3FsTUkWcEUyCkJyoJB";
+    const string Leaf = "MIIB2jCCAYGgAwIBAgIBAzAKBggqhkjOPQQDAjAzMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDEbMBkGA1UEAwwSQ2hhaW4gSW50ZXJtZWRpYXRlMB4XDTI2MDEwMTAwMDAwMFoXDTQwMDEwMTAwMDAwMFowKzEUMBIGA1UECgwLQ09SU0FDIFRlc3QxEzARBgNVBAMMCmNoYWluLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARGaentOmBpMyc1/cX5NPfOWMzeUpO4ZIwzz+Laxu1IGO7nD/SQBtlF+c1Awg2ljSOz91MtM4AVD68ExW8xKexbo4GNMIGKMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBUGA1UdEQQOMAyCCmNoYWluLnRlc3QwHQYDVR0OBBYEFCcveUbUAM+/z/UUKZsYw3K+lcOmMB8GA1UdIwQYMBaAFM+WkZUBU6lgR7zuisWRui6bMyMgMAoGCCqGSM49BAMCA0cAMEQCICQaMu2UXw+PBjcIQXNLnAxnrLlF+W66/tp9/ZtCGSjEAiAyVjCwKg/to3d8jusImCMM+T5vXWpzEtpz2dOyNotAEQ==";
+    const string Client = "MIIB2jCCAYGgAwIBAgIBBDAKBggqhkjOPQQDAjAzMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDEbMBkGA1UEAwwSQ2hhaW4gSW50ZXJtZWRpYXRlMB4XDTI2MDEwMTAwMDAwMFoXDTQwMDEwMTAwMDAwMFowKzEUMBIGA1UECgwLQ09SU0FDIFRlc3QxEzARBgNVBAMMCmNoYWluLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAT20QrY771WDCYBS7cbPzGhGOFajlk/iTZxToZj4LZWJBD2zBto1YBhoZfpTznEWfN4iJI82AkX16cr6RL2bLzmo4GNMIGKMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMCMBUGA1UdEQQOMAyCCmNoYWluLnRlc3QwHQYDVR0OBBYEFB0ELaZGwu/UxzBTmzDKlxxd24axMB8GA1UdIwQYMBaAFM+WkZUBU6lgR7zuisWRui6bMyMgMAoGCCqGSM49BAMCA0cAMEQCIGz6qhR6In0dUwYBxXf/31RFF/IkbfQ805B1mIiyuV/3AiBTDy2PpqcyeYfeJDlxh7+Om+73n7beCRMt2V2HFyIKQQ==";
+    const string Old = "MIIB2zCCAYGgAwIBAgIBBTAKBggqhkjOPQQDAjAzMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDEbMBkGA1UEAwwSQ2hhaW4gSW50ZXJtZWRpYXRlMB4XDTI2MDEwMTAwMDAwMFoXDTI3MDEwMTAwMDAwMFowKzEUMBIGA1UECgwLQ09SU0FDIFRlc3QxEzARBgNVBAMMCmNoYWluLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQd2ODr8F6Jv3TgexUkY4VAHDZFTrBPMHlbHi4ii89PQBuA+fPZxkKFI+nlWiTfVkRbGY80EJhYAbQTn73CISEbo4GNMIGKMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBUGA1UdEQQOMAyCCmNoYWluLnRlc3QwHQYDVR0OBBYEFNO2cJQ8ki93asza1pnGQ/B+XRsMMB8GA1UdIwQYMBaAFM+WkZUBU6lgR7zuisWRui6bMyMgMAoGCCqGSM49BAMCA0gAMEUCIBetxmvU43ekReb9Or1kKpvN0wAYQ1IcntpFc3fzdu0mAiEAz9aN+v+37L9/S0tKa8FJE+M64gZEQBKUvg63ZeEZsrM=";
+    const string Badsig = "MIIB2jCCAYGgAwIBAgIBAzAKBggqhkjOPQQDAjAzMRQwEgYDVQQKDAtDT1JTQUMgVGVzdDEbMBkGA1UEAwwSQ2hhaW4gSW50ZXJtZWRpYXRlMB4XDTI2MDEwMTAwMDAwMFoXDTQwMDEwMTAwMDAwMFowKzEUMBIGA1UECgwLQ09SU0FDIFRlc3QxEzARBgNVBAMMCmNoYWluLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARGaentOmBpMyc1/cX5NPfOWMzeUpO4ZIwzz+Laxu1IGO7nD/SQBtlF+c1Awg2ljSOz91MtM4AVD68ExW8xKexbo4GNMIGKMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMBMBUGA1UdEQQOMAyCCmNoYWluLnRlc3QwHQYDVR0OBBYEFCcveUbUAM+/z/UUKZsYw3K+lcOmMB8GA1UdIwQYMBaAFM+WkZUBU6lgR7zuisWRui6bMyMgMAoGCCqGSM49BAMCA0cAMEQCICQaMu2UXw+PBjcIQXNLnAxnrLlF+W66/tp9/ZtCGSjEAiAyVjCwKg/to3d8jusImCMM+T5vXWpzEtpz2dOyNotAEA==";
+
+    static X509Certificate2 Load(string base64) => X509CertificateLoader.LoadCertificate(Convert.FromBase64String(base64));
+
+    static readonly X509Certificate2 RootCert = Load(Root), InterCert = Load(Inter), LeafCert = Load(Leaf), ClientCert = Load(Client), OldCert = Load(Old), BadCert = Load(Badsig);
+    static readonly DateTime In2030 = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    static string Name(X509Certificate2 c) => c.GetNameInfo(X509NameType.SimpleName, false);
+
+    static void Run(string name, X509Certificate2 leaf, X509Certificate2[] extra, X509Certificate2[]? roots, DateTime when,
+                    X509RevocationMode revocation, X509RevocationFlag flag, X509VerificationFlags flags, bool serverAuth)
+    {
+        X509Chain chain = new X509Chain();
+        chain.ChainPolicy.ExtraStore.AddRange(extra);
+        if (roots != null) { chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust; chain.ChainPolicy.CustomTrustStore.AddRange(roots); }
+        chain.ChainPolicy.VerificationTime = when;
+        chain.ChainPolicy.VerificationTimeIgnored = false;
+        chain.ChainPolicy.RevocationMode = revocation;
+        chain.ChainPolicy.RevocationFlag = flag;
+        chain.ChainPolicy.VerificationFlags = flags;
+        if (serverAuth) chain.ChainPolicy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.1"));
+        bool ok = chain.Build(leaf);
+        string status = "";
+        foreach (X509ChainStatus s in chain.ChainStatus) status += " " + s.Status;
+        string elements = "";
+        foreach (X509ChainElement e in chain.ChainElements)
+        {
+            elements += " [" + Name(e.Certificate);
+            foreach (X509ChainStatus s in e.ChainElementStatus) elements += " " + s.Status;
+            elements += "]";
+        }
+        Console.WriteLine(name + ": " + ok + " |" + status + " |" + elements);
+    }
+
+    static int Main()
+    {
+        X509Certificate2[] inter = { InterCert }, root = { RootCert }, none = new X509Certificate2[0];
+        X509RevocationMode no = X509RevocationMode.NoCheck, online = X509RevocationMode.Online, offline = X509RevocationMode.Offline;
+        X509RevocationFlag ex = X509RevocationFlag.ExcludeRoot;
+        X509VerificationFlags plain = X509VerificationFlags.NoFlag;
+        Run("good", LeafCert, inter, root, In2030, no, ex, plain, true);
+        Run("good online", LeafCert, inter, root, In2030, online, ex, plain, true);
+        Run("good offline entire", LeafCert, inter, root, In2030, offline, X509RevocationFlag.EntireChain, plain, true);
+        Run("good online end only", LeafCert, inter, root, In2030, online, X509RevocationFlag.EndCertificateOnly, plain, true);
+        Run("root alone online", RootCert, none, root, In2030, online, X509RevocationFlag.EntireChain, plain, false);
+        Run("intermediate as leaf online", InterCert, none, root, In2030, online, ex, plain, false);
+        Run("no intermediate", LeafCert, none, root, In2030, no, ex, plain, true);
+        Run("no intermediate online", LeafCert, none, root, In2030, online, ex, plain, true);
+        Run("untrusted root", LeafCert, new[] { InterCert, RootCert }, null, In2030, no, ex, plain, true);
+        Run("untrusted root online", LeafCert, new[] { InterCert, RootCert }, null, In2030, online, ex, plain, true);
+        Run("untrusted root allowed", LeafCert, new[] { InterCert, RootCert }, null, In2030, no, ex, X509VerificationFlags.AllowUnknownCertificateAuthority, true);
+        Run("leaf trusted directly", LeafCert, none, new[] { LeafCert }, In2030, no, ex, plain, true);
+        Run("intermediate as root", LeafCert, none, inter, In2030, no, ex, plain, true);
+        Run("expired leaf", OldCert, inter, root, In2030, no, ex, plain, true);
+        Run("expired leaf ignored", OldCert, inter, root, In2030, no, ex, X509VerificationFlags.IgnoreNotTimeValid, true);
+        Run("expired leaf online", OldCert, inter, root, In2030, online, ex, plain, true);
+        Run("everything expired", LeafCert, inter, root, new DateTime(2099, 1, 1, 0, 0, 0, DateTimeKind.Utc), no, ex, plain, true);
+        Run("not yet valid", LeafCert, inter, root, new DateTime(2025, 6, 1, 0, 0, 0, DateTimeKind.Utc), no, ex, plain, true);
+        Run("client leaf for a server", ClientCert, inter, root, In2030, no, ex, plain, true);
+        Run("client leaf, no policy", ClientCert, inter, root, In2030, no, ex, plain, false);
+        Run("client leaf, wrong usage ignored", ClientCert, inter, root, In2030, no, ex, X509VerificationFlags.IgnoreWrongUsage, true);
+        Run("bad signature", BadCert, inter, root, In2030, no, ex, plain, true);
+        Run("bad signature online", BadCert, inter, root, In2030, online, ex, plain, true);
+        Run("expired and untrusted", OldCert, new[] { InterCert, RootCert }, null, In2030, no, ex, plain, true);
+        Run("expired, no intermediate", OldCert, none, root, In2030, online, ex, plain, true);
+        Run("intermediate as root online", LeafCert, none, inter, In2030, online, ex, plain, true);
+        Run("client leaf online", ClientCert, inter, root, In2030, online, ex, plain, true);
+        Run("client leaf untrusted", ClientCert, new[] { InterCert, RootCert }, null, In2030, no, ex, plain, true);
+        Run("bad signature untrusted", BadCert, new[] { InterCert, RootCert }, null, In2030, no, ex, plain, true);
+        Run("bad signature, no intermediate", BadCert, none, root, In2030, no, ex, plain, true);
+        Run("bad signature expired", BadCert, inter, root, new DateTime(2041, 1, 1, 0, 0, 0, DateTimeKind.Utc), no, ex, plain, true);
+        Run("leaf as its own root", LeafCert, inter, new[] { LeafCert, RootCert }, In2030, no, ex, plain, true);
+        Run("root and intermediate trusted", LeafCert, none, new[] { InterCert, RootCert }, In2030, no, ex, plain, true);
+        Run("online, end unknown ignored", LeafCert, inter, root, In2030, online, ex, X509VerificationFlags.IgnoreEndRevocationUnknown, true);
+        Run("online, end and CA unknown ignored", LeafCert, inter, root, In2030, online, ex, X509VerificationFlags.IgnoreEndRevocationUnknown | X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown, true);
+        Run("online, CA and root unknown ignored", LeafCert, inter, root, In2030, online, ex, X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown | X509VerificationFlags.IgnoreRootRevocationUnknown, true);
+        Run("online, all unknown ignored", LeafCert, inter, root, In2030, online, ex, X509VerificationFlags.AllFlags, true);
+        Run("end only online, end ignored", LeafCert, inter, root, In2030, online, X509RevocationFlag.EndCertificateOnly, X509VerificationFlags.IgnoreEndRevocationUnknown, true);
+        Run("no intermediate, unknown CA allowed", LeafCert, none, root, In2030, no, ex, X509VerificationFlags.AllowUnknownCertificateAuthority, true);
+        Run("untrusted online, unknown CA allowed", LeafCert, new[] { InterCert, RootCert }, null, In2030, online, ex, X509VerificationFlags.AllowUnknownCertificateAuthority | X509VerificationFlags.IgnoreEndRevocationUnknown | X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown, true);
+        Run("intermediate as leaf, CA unknown ignored", InterCert, none, root, In2030, online, ex, X509VerificationFlags.IgnoreCertificateAuthorityRevocationUnknown, false);
+        Run("intermediate as leaf, end unknown ignored", InterCert, none, root, In2030, online, ex, X509VerificationFlags.IgnoreEndRevocationUnknown, false);
+        Run("everything expired online", LeafCert, inter, root, new DateTime(2099, 1, 1, 0, 0, 0, DateTimeKind.Utc), online, ex, plain, true);
+        return 0;
+    }
+}
