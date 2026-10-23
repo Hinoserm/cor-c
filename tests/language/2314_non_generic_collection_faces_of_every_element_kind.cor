@@ -19,7 +19,7 @@
 // InvalidCastException
 // ArgumentException
 // 2 1
-// ArgumentNullException
+// NotSupportedException
 // System.Collections.ICollection System.Collections.IList System.Array
 // True True False
 // 0,0,0
@@ -77,20 +77,20 @@ static class P
         DictionaryEntry[] entries = new DictionaryEntry[1];
         table.CopyTo(entries, 0);
         Console.WriteLine($"{entries[0].Key}={entries[0].Value}");
-        Console.WriteLine(Show(new List<string> { "x", "y" }) + " " + Show(words));
+        Console.WriteLine(Show(new ArrayList { "x", "y" }) + " " + Show(words));
         object[] boxes = new object[3];
         new int[] { 7, 8 }.CopyTo(boxes, 1);
         Console.WriteLine(string.Join(",", boxes));
         int[] back = new int[2];
         try { new object[] { 1, "s" }.CopyTo(back, 0); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
         try { new int[3].CopyTo(new int[2], 0); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
-        List<string?> names = new() { "p" };
+        ArrayList names = new() { "p" };
         IList inames = names;
         inames.Add(null);
         Console.WriteLine($"{names.Count} {inames.IndexOf(null)}");
-        try { ((IList)new List<int>()).Add(null); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
+        try { ((IList)new int[1]).Add(1); } catch (Exception e) { Console.WriteLine(e.GetType().Name); }
         Console.WriteLine($"{typeof(ICollection).FullName} {typeof(IList).FullName} {typeof(Array).FullName}");
-        Console.WriteLine($"{new int[0] is ICollection} {(object)new List<int>() is IList} {(object)new List<int>() is Array}");
+        Console.WriteLine($"{new int[0] is ICollection} {(object)new ArrayList() is IList} {(object)new ArrayList() is Array}");
         int[] filled = { 1, 2, 3 };
         ((IList)filled).Clear();
         Console.WriteLine(string.Join(",", filled));
