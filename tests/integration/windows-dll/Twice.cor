@@ -1,0 +1,10 @@
+using System.Runtime.InteropServices;
+
+static class Twice
+{
+    [UnmanagedCallersOnly(EntryPoint = "Same")]
+    static int First() => 1;
+
+    [UnmanagedCallersOnly(EntryPoint = "Same")]
+    static int Second() => 2;
+}

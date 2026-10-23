@@ -555,10 +555,20 @@ public sealed partial class Lowering
             }
         }
 
-        if (entry is not null && !_library)
+        // A DLL IS ENTERED AT DllMain AND AT ITS EXPORTS (Lowering.Windows),
+        // never at a Main it may also have.
+        List<MethodSymbol>? exports = Dll && !_library ? RootExports() : null;
+        if (exports is not null)
         {
-            _m.Main = CallLabel(entry);
-            EmitEntry(entry);
+            EmitDllEntry(exports);
+        }
+        if ((entry is not null || exports is not null) && !_library)
+        {
+            if (exports is null)
+            {
+                _m.Main = CallLabel(entry!);
+                EmitEntry(entry!);
+            }
             // The frees the lifetime passes may call (Escape) have bodies in
             // the program: the passes run after lowering, and a call they add
             // to a routine nothing else reached would name a symbol no one
@@ -586,7 +596,7 @@ public sealed partial class Lowering
         ModuleInitializers();
 
         // Roots: a library publishes everything; a program starts at Main.
-        if (_library || PartOfALibrary || entry is null)
+        if (_library || PartOfALibrary || entry is null && exports is null)
         {
             // A COPY OF THE TABLE: a descriptor made here can declare a type's
             // members on first use, whose signatures may make a tuple shape

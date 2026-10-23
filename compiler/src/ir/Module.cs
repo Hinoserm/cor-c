@@ -251,6 +251,13 @@ public sealed class Module
     public HashSet<string> NativeLibraries { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// What a DLL offers C: each export's name and the function's symbol
+    /// (Lowering.RootExports). The object records them (.corsac.exports) and
+    /// the link makes them the export directory.
+    /// </summary>
+    public List<(string Export, string Symbol)> NativeExports { get; } = new();
+
+    /// <summary>
     /// What calls each of this unit's [ModuleInitializer] methods, its type
     /// touched first, in the order they were declared: what a shared object's
     /// DT_INIT calls after __corsac_init (Lowering.ModuleInitializers,

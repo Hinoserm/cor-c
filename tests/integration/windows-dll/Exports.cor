@@ -1,0 +1,30 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+static class Exports
+{
+    static int _calls;
+    static readonly int[] Table = { 10, 20, 30, 40 };
+
+    [UnmanagedCallersOnly(EntryPoint = "Add", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static int Add(int a, int b)
+    {
+        _calls++;
+        return a + b + Table[_calls & 3];
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "_grDrawTriangle@12", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static void DrawTriangle(nint a, nint b, nint c)
+    {
+        _calls += (int)(a + b + c);
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "glVertex3f", CallConvs = new[] { typeof(CallConvStdcall) })]
+    static float Vertex(float x, float y, float z) => x * y + z;
+
+    [UnmanagedCallersOnly(EntryPoint = "Calls")]
+    static int Calls() => _calls + (int)GetTickCount();
+
+    [DllImport("kernel32")]
+    static extern uint GetTickCount();
+}

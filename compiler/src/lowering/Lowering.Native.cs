@@ -153,12 +153,20 @@ public sealed partial class Lowering
         {
             Error(at, $"'{m.Name}': C cannot return a {ret}; return nint (IntPtr) and read it with Marshal");
         }
-        VReg? result = _e.Call(NativeCall.Of(import.Symbol), returns, args.ToArray());
+        // ON WINDOWS THROUGH THE IMPORT DIRECTORY: the DLL's function by the
+        // symbol that names both (Lowering.Windows).
+        string symbol = Windows ? WindowsImport(import.Library, import.Symbol) : import.Symbol;
+        VReg? result = _e.Call(NativeCall.Of(symbol), returns, args.ToArray());
 
         // errno is the C library's, per thread, behind its thread pointer:
-        // read while GS is still the C library's on i386.
+        // read while GS is still the C library's on i386. Windows' is the
+        // thread's last error, which kernel32 answers.
         VReg? errno = null;
-        if (import.SetLastError)
+        if (import.SetLastError && Windows)
+        {
+            errno = _e.Call(NativeCall.Of(WindowsImport("kernel32", "GetLastError")), IrType.I32);
+        }
+        else if (import.SetLastError)
         {
             _m.NativeLibraries.Add("libc.so.6");
             VReg? location = _e.Call(NativeCall.Of("__errno_location"), IrTypes.Word);

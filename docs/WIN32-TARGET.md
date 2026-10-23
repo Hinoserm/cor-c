@@ -53,6 +53,55 @@ separate units do not change, only the final image does.
   `dpiAwareness`, per-monitor v2 where the system knows it). Icon and
   version information as the program declares them.
 
+## DLLs
+
+Hino, 2026-10-23: COR-C# builds 32-bit Windows DLLs, first of all CORSAC's
+own OpenGL and Glide for the Windows 2000 programs its NT personality runs.
+A DLL is the same image as a program, with these differences.
+
+- EXPORTS ARE .NET's: `[UnmanagedCallersOnly(EntryPoint = "glVertex3f",
+  CallConvs = new[] { typeof(CallConvStdcall) })]`, as native AOT exports
+  them. The name is any the DLL must answer to, a decorated one included
+  (Glide's `_grDrawTriangle@12`); the export directory lists them sorted,
+  ordinals from 1. `corc compile --dll` roots a DLL at its exports, not at a
+  Main: the entry it generates, DllMain, takes each export's address the way
+  a program hands C a callback, so the optimiser keeps every one and treats
+  it as called by code it never sees.
+- IMPORTS ARE THE IMPORT DIRECTORY'S, by name, straight from `[DllImport]`:
+  no import library. An object names one as `kernel32.dll!GetTickCount`
+  (Pe.WindowsImports); the link gives each a `jmp [IAT]` thunk.
+  `SetLastError = true` reads GetLastError.
+- THE IMAGE MOVES. The code is not position-independent; `.reloc` lists
+  every absolute address, so the loader can put the DLL wherever its base is
+  taken, which for a DLL is usual. The base is Microsoft's linker's,
+  0x10000000, unless `--base` names another.
+- DllMain DOES ALMOST NOTHING: the loader lock is held while it runs, so it
+  starts no thread and loads nothing. The runtime starts on the first call
+  into an export, as native AOT's does.
+- THREADS THAT ARE NOT OURS: a game's thread calling an export gets a
+  runtime thread block on its first call, and loses it at
+  `DLL_THREAD_DETACH`. The block is found through a TLS slot (TlsAlloc) read
+  straight from the TEB, `fs:[0xE10 + 4 * slot]`, not through static TLS:
+  Windows 2000's and XP's loaders give a DLL loaded by LoadLibrary no static
+  TLS, and Quake's engines load opengl32 that way.
+- IT STAYS LOADED once loaded (it pins itself, as native AOT's do), so a
+  FreeLibrary and LoadLibrary pair -- Quake 2's `vid_restart` -- finds the
+  same runtime again.
+- FAULTS: Windows 2000 has no vectored handlers, so each entry from Windows
+  puts an SEH frame on the chain that turns an access violation in our code
+  into NullReferenceException, and takes it off on the way out. An exception
+  that escapes an export ends the process, as .NET's does.
+- THE CALLER'S FPU CONTROL WORD STAYS: Direct3D sets single precision for
+  the whole process and Microsoft's DLLs live with it; conversions already
+  save and restore the word around themselves.
+
+STATE (2026-10-23): the PE32 link, exports and imports, `.reloc` and the
+DllMain that roots the exports are in, tested structurally
+(tests/integration/windows-dll.sh: headers, export and import directories,
+thunks, checksum, and a second link at another base moving exactly the words
+`.reloc` lists). `--dll` needs `--freestanding` until the platform layer
+below is in; nothing has run on Windows yet.
+
 ## Calling Windows
 
 - `[DllImport]` gains stdcall (WINAPI, Windows' default) on the caller's
@@ -211,6 +260,21 @@ them.
 
 ## Open decisions
 
+For the DLLs (asked 2026-10-23):
+
+- Where each fix's test runs: Wine on the build host (its server keeps a
+  socket in /tmp), the Windows host through WSL, a Windows 2000 machine in
+  86Box, or CORSAC's NT personality.
+- Whether DLLs must load on 9x too, or the NT family only (the TEB's TLS
+  slots above are NT's).
+- One runtime in each DLL (as native AOT) or one shared runtime DLL.
+- OpenGL as a replacement opengl32.dll (369 exports in 2000 SP4) or as an
+  ICD under Microsoft's (docs/software/GRAPHICS-3D.md 6.3 in the OS
+  repository).
+- Which Glide: glide2x.dll, glide3x.dll, glide.dll; and when.
+
+For the programs:
+
 - What stands in for DateTimePicker and MonthCalendar on comctl32 4.00
   (Windows 95 without Internet Explorer 3).
 
@@ -220,6 +284,10 @@ decoders wherever GDI+ is absent.
 
 ## Order of work
 
+0. DLLs first (2026-10-23): the PE32 link with exports, imports and
+   `.reloc` (done); then the thread block through a TLS slot and threads
+   that are not ours, the platform layer's floor (memory, waits, threads,
+   faults), DllMain, and a DLL whose exports run on Windows.
 1. The image, stdcall and A/W imports, the thread block, struct layout:
    a console "hello" that runs on 95 and on 11.
 2. The platform layer: the language suite passing on Windows.

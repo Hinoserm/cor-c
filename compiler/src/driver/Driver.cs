@@ -326,6 +326,12 @@ public static class Driver
               --ring1-syscalls   with --freestanding: Sys.Syscall traps to 0x83, the
                                  CORSAC ring-1 kernels' gate for Linux's file
                                  calls, instead of 0x80
+              --dll              a 32-bit Windows DLL (PE32): entered at DllMain and at
+                                 each [UnmanagedCallersOnly(EntryPoint = "Name")]
+                                 method, which it exports by that name; its
+                                 [DllImport]s go through the import directory.
+                                 With --freestanding until the Windows platform
+                                 layer is in; --base is 0x10000000 unless given
               --store-sequences  every reference store one sequence no thread is
                                  stopped inside, as a kernel's images are built;
                                  a ring-1 kernel's always are
@@ -733,6 +739,18 @@ public static class Driver
         // that touches nothing the loader did not give it.
         bool freestanding = args.Contains("--freestanding");
         bool flat = args.Contains("--flat");
+        // WINDOWS (docs/WIN32-TARGET.md): a PE32 image whose calls into C go
+        // through its import directory; --dll makes it a DLL, entered at
+        // DllMain and at the methods it exports (Lowering.Windows).
+        bool dll = args.Contains("--dll");
+        bool windows = dll || args.Contains("--windows");
+        if (windows && longMode) return Fail("--windows makes an i386 image: x86-64's PE32+ is not made yet");
+        if (windows && (flat || args.Contains("--shared") || kernelPath is not null || args.Contains("--obj")))
+            return Fail("--windows links a PE image whole: not with --flat, --shared, --obj or --kernel");
+        if (windows && !dll) return Fail("--windows makes DLLs only so far (--dll): a program's start comes with the Windows platform layer");
+        if (windows && !freestanding) return Fail("--dll needs --freestanding until the Windows platform layer (runtime/src/platforms/win32) is in");
+        Corsac.Lang.Lower.Lowering.Windows = windows;
+        Corsac.Lang.Lower.Lowering.Dll = dll;
         Corsac.Lang.Lower.Lowering.Freestanding = freestanding;
         Corsac.Lang.Lower.Lowering.TlsGs = freestanding && args.Contains("--tls-gs");
         Corsac.Lang.Lower.Lowering.Ring1Syscalls = freestanding && args.Contains("--ring1-syscalls");
@@ -1309,6 +1327,8 @@ public static class Driver
             storeSequences: module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore)).Attach(obj);
         // The C libraries its [DllImport]s call, for the link to need.
         NativeLibraries.Attach(obj, module.NativeLibraries);
+        // And what a DLL exports, for its link's export directory.
+        NativeExports.Attach(obj, module.NativeExports);
         ManagedLayoutContract.Attach(obj, layouts);
         if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
         // What the link checks interrupt handlers' calls into other units by.
@@ -1489,6 +1509,32 @@ public static class Driver
                 + $"(text {image.TextSize}, rodata {image.ReadOnlySize}, data {image.DataSize}), "
                 + $"bss {image.BssSize} bytes to zero at 0x{image.Base + (ulong)image.Bytes.Length:x}, "
                 + $"{image.MemorySize} bytes of memory");
+            return 0;
+        }
+
+        if (windows)
+        {
+            // A WINDOWS IMAGE: the same link with a PE32 file around it
+            // (Linker.LinkPe), based where Microsoft's linker bases one.
+            uint imageBase = dll ? Corsac.Lang.Pe.PeFormat.DefaultDllBase : Corsac.Lang.Pe.PeFormat.DefaultImageBase;
+            if (loadBase is { } given)
+            {
+                if (given % 0x10000 != 0) return Fail($"--base 0x{given:x}: a Windows image's base is a multiple of 64 KiB");
+                imageBase = (uint)given;
+            }
+            TargetContract.Validate(link);
+            Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
+            Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
+            Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
+            Linker.LinkPeTo(output, link, new Linker.PeOptions
+            {
+                Dll = dll,
+                ImageBase = imageBase,
+                Entry = entry,
+                Subsystem = Value(args, "--subsystem") == "console" ? Corsac.Lang.Pe.PeSubsystem.WindowsConsole : Corsac.Lang.Pe.PeSubsystem.WindowsGui,
+                Name = Path.GetFileName(output),
+            });
+            Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {new FileInfo(output).Length} bytes {(dll ? "DLL" : "program")}");
             return 0;
         }
 
