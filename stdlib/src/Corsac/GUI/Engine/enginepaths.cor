@@ -1,0 +1,668 @@
+// THE GUI KERNEL'S DRAWING ENGINE, as the corsac86 tree has it in
+// os/gui/enginepaths.cor: the same code, in a namespace of its own, for a seat that
+// draws in its own process (WinSeat.cor, the Windows target). A change
+// to the engine is made there and copied here, so both draw alike.
+
+// THE ENGINE'S PATHS (TODO-GUI-AND-NT-KERNELS.md, "Drawing"): figures of
+// lines and Beziers in 28.4 device points, flattened, widened by a pen,
+// filled by a fill mode -- what native programs' GraphicsPath is drawn as
+// (DrawEngine, through the seat batch), and what GDI's paths are
+// (Win32kPaths: BeginPath to EndPath, what the line and shape calls add in
+// between) -- kept and worked as win32k.sys keeps and works them.
+//
+// A PATH IS RECORDS OF 28.4 DEVICE POINTS (PATHRECORD): each a run of lines
+// or of Bezier control points, flagged as a figure's first
+// (PD_BEGINSUBPATH), last (PD_ENDSUBPATH) and closed (PD_CLOSEFIGURE). The
+// points were taken through the transform as they were added, so the path
+// does not move when the transform changes after. A figure's start is kept
+// apart (ptfxSubPathStart) until a point follows it: a MoveTo alone adds
+// nothing.
+//
+// NO FLOATING POINT (engineregions.cor): Beziers are flattened by win32k's
+// own fixed-point forward differencing (BEZIER 0xA0050AE9).
+
+using System;
+using System.Collections.Generic;
+
+namespace Corsac.GUI.Engine;
+
+/// PATHDATA's and PATHRECORD's flags.
+enum PathRecordFlags
+{
+    BeginSubpath = 0x1,
+    EndSubpath = 0x2,
+    ResetStyle = 0x4,
+    CloseFigure = 0x8,
+    Beziers = 0x10,
+}
+
+/// PATH.flags (+0x34): the next point starts a figure at the start point,
+/// and that figure restarts the line style. A new path has both set and
+/// bit 1 (PATHMEMOBJ 0xA0034588: 3).
+enum PathState
+{
+    NewFigure = 0x1,
+    Owned = 0x2,
+    ResetStyle = 0x4,
+}
+
+/// One PATHRECORD: its flags and its points, 28.4 device.
+sealed class PathRecord
+{
+    public int Flags;
+    public long[] X = new long[8], Y = new long[8];
+    public int Count;
+
+    public void Add(long x, long y)
+    {
+        if (Count == X.Length)
+        {
+            long[] nx = new long[Count * 2], ny = new long[Count * 2];
+            Array.Copy(X, nx, Count); Array.Copy(Y, ny, Count);
+            X = nx; Y = ny;
+        }
+        X[Count] = x; Y[Count] = y; Count++;
+    }
+
+    public PathRecord Clone()
+    {
+        PathRecord r = new PathRecord { Flags = Flags, Count = Count, X = new long[Math.Max(8, Count)], Y = new long[Math.Max(8, Count)] };
+        Array.Copy(X, r.X, Count); Array.Copy(Y, r.Y, Count);
+        return r;
+    }
+}
+
+/// A path (PATH, with its PATHOBJ's fl and cCurves).
+sealed class DevicePath
+{
+    public readonly List<PathRecord> Records = new List<PathRecord>();
+    /// ptfxSubPathStart: where the next figure starts.
+    public long StartX, StartY;
+    public int State = (int)PathState.NewFigure | (int)PathState.Owned;
+    /// cCurves: lines, Beziers and closings in it; PO_BEZIERS.
+    public long Curves;
+    public bool HasBeziers;
+
+    public DevicePath Clone()
+    {
+        DevicePath p = new DevicePath { StartX = StartX, StartY = StartY, State = State, Curves = Curves, HasBeziers = HasBeziers };
+        foreach (PathRecord r in Records) p.Records.Add(r.Clone());
+        return p;
+    }
+
+    PathRecord? Last { get { return Records.Count == 0 ? null : Records[Records.Count - 1]; } }
+
+    /// EPATHOBJ::bMoveTo (0xA0097D51): the next figure's start; nothing is
+    /// added until a point follows.
+    public void MoveTo(long fx, long fy)
+    {
+        StartX = fx; StartY = fy;
+        State |= (int)PathState.NewFigure | (int)PathState.ResetStyle;
+    }
+
+    /// Points added (bAddPoints 0xA00982EA): onto the last record when no
+    /// figure is pending and its kind is the same (0xA00760B5), else as a
+    /// new record (0xA0098341) -- which, starting a figure, begins with the
+    /// start point and takes PD_BEGINSUBPATH and PD_RESETSTYLE from the
+    /// state, or, continuing one, takes PD_ENDSUBPATH from the record
+    /// before it.
+    void Add(int kind, long[] xs, long[] ys, int n)
+    {
+        if (n == 0) return;
+        PathRecord? last = Last;
+        PathRecord target;
+        if ((State & (int)PathState.NewFigure) == 0 && last != null && (last.Flags & ~3) == kind) target = last;
+        else
+        {
+            target = new PathRecord { Flags = kind | (int)PathRecordFlags.EndSubpath };
+            if ((State & (int)PathState.NewFigure) != 0)
+            {
+                target.Add(StartX, StartY);
+                target.Flags |= State & ((int)PathState.NewFigure | (int)PathState.ResetStyle);
+                State &= ~((int)PathState.NewFigure | (int)PathState.ResetStyle);
+            }
+            else if (last != null) last.Flags &= ~(int)PathRecordFlags.EndSubpath;
+            Records.Add(target);
+        }
+        for (int i = 0; i < n; i++) target.Add(xs[i], ys[i]);
+        if ((kind & (int)PathRecordFlags.Beziers) != 0) HasBeziers = true;
+    }
+
+    /// EPATHOBJ::bPolyLineTo (0xA0097D12): lines to each point; a curve
+    /// each.
+    public void PolyLineTo(long[] xs, long[] ys, int n)
+    {
+        Add(0, xs, ys, n);
+        Curves += n;
+    }
+
+    /// EPATHOBJ::bPolyBezierTo (0xA0050F71): Beziers, three points each; a
+    /// curve each.
+    public void PolyBezierTo(long[] xs, long[] ys, int n)
+    {
+        Add((int)PathRecordFlags.Beziers, xs, ys, n);
+        Curves += n / 3;
+    }
+
+    /// EPATHOBJ::bCloseFigure (0xA0097DF5): the last record closed (a curve
+    /// more), whichever figure it is, and the next point a new figure at
+    /// the start point.
+    public void CloseFigure()
+    {
+        PathRecord? last = Last;
+        if (last != null && (last.Flags & (int)PathRecordFlags.CloseFigure) == 0)
+        {
+            last.Flags |= (int)PathRecordFlags.CloseFigure;
+            Curves++;
+        }
+        State |= (int)PathState.NewFigure;
+    }
+
+    /// EPATHOBJ::vCloseAllFigures (0xA0097DC3): every figure's end closed.
+    public void CloseAll()
+    {
+        foreach (PathRecord r in Records)
+            if ((r.Flags & (int)PathRecordFlags.EndSubpath) != 0 && (r.Flags & (int)PathRecordFlags.CloseFigure) == 0)
+            {
+                r.Flags |= (int)PathRecordFlags.CloseFigure;
+                Curves++;
+            }
+    }
+
+    /// Where the path is (0xA006B7C4): the start point while a figure is
+    /// pending, else the last point.
+    public void Current(out long fx, out long fy)
+    {
+        PathRecord? last = Last;
+        if ((State & (int)PathState.NewFigure) != 0 || last == null) { fx = StartX; fy = StartY; return; }
+        fx = last.X[last.Count - 1]; fy = last.Y[last.Count - 1];
+    }
+
+    /// Every point (cCount 0xA0108573).
+    public int PointCount
+    {
+        get { int n = 0; foreach (PathRecord r in Records) n += r.Count; return n; }
+    }
+
+    /// EPATHOBJ::bFlatten (0xA0050FC0): each Bezier record replaced by a
+    /// line record of the points win32k's forward differencing steps to
+    /// (0xA0050B29): the record's flags less PD_BEZIERS, its figure's start
+    /// kept first when it begins one, each Bezier a curve less and each
+    /// point a curve more.
+    public void Flatten()
+    {
+        for (int i = 0; i < Records.Count; i++)
+        {
+            PathRecord r = Records[i];
+            if ((r.Flags & (int)PathRecordFlags.Beziers) == 0) continue;
+            PathRecord lines = new PathRecord { Flags = r.Flags & ~(int)PathRecordFlags.Beziers };
+            long px, py;
+            int at;
+            if ((r.Flags & (int)PathRecordFlags.BeginSubpath) != 0)
+            {
+                lines.Add(r.X[0], r.Y[0]);
+                px = r.X[0]; py = r.Y[0]; at = 1;
+            }
+            else
+            {
+                PathRecord before = Records[i - 1];
+                px = before.X[before.Count - 1]; py = before.Y[before.Count - 1]; at = 0;
+            }
+            for (; at + 2 < r.Count; at += 3)
+            {
+                long[] bx = new long[] { px, r.X[at], r.X[at + 1], r.X[at + 2] };
+                long[] by = new long[] { py, r.Y[at], r.Y[at + 1], r.Y[at + 2] };
+                Curves--;
+                BezierFlattener f = new BezierFlattener(bx, by);
+                long fx, fy;
+                bool more;
+                do
+                {
+                    more = f.Next(out fx, out fy);
+                    lines.Add(fx, fy);
+                    Curves++;
+                } while (more);
+                px = r.X[at + 2]; py = r.Y[at + 2];
+            }
+            Records[i] = lines;
+        }
+        HasBeziers = false;
+    }
+
+    /// The pixels of a path as a region (RGNMEMOBJ::vCreate 0xA0097F6A):
+    /// its Beziers flattened and its figures closed, in place; null for
+    /// fewer than two curves. A pixel is in when its centre -- an integer
+    /// device point, (16x, 16y) in 28.4 -- is inside by the fill mode, a
+    /// left or top edge in and a right or bottom one out: the scanlines
+    /// from (y + 15) >> 4 (0xA0096F0A) and each span's first pixel at or
+    /// after the edge. RegionShape.Polygons puts a centre half a pixel in,
+    /// so the points go in moved by eight.
+    public RegionShape? ToShape(int mode) { return ToShape(mode, int.MinValue, int.MaxValue); }
+
+    /// The same, only rows `fromRow` to `toRow` made (RegionShape.Polygons).
+    public RegionShape? ToShape(int mode, int fromRow, int toRow)
+    {
+        if (HasBeziers) Flatten();
+        CloseAll();
+        if (Curves < 2) return null;
+        List<int> xs = new List<int>(), ys = new List<int>(), counts = new List<int>();
+        foreach (PathFigure f in Figures())
+        {
+            if (f.X.Count == 0) continue;
+            for (int i = 0; i < f.X.Count; i++) { xs.Add((int)f.X[i] + 8); ys.Add((int)f.Y[i] + 8); }
+            counts.Add(f.X.Count);
+        }
+        return RegionShape.Polygons(xs.ToArray(), ys.ToArray(), counts.ToArray(), mode == RegionShape.Winding ? RegionShape.Winding : RegionShape.Alternate, 16, fromRow, toRow);
+    }
+
+    /// The figures, for filling and stroking: each one's points and whether
+    /// it is closed; Bezier records must have been flattened.
+    public List<PathFigure> Figures()
+    {
+        List<PathFigure> made = new List<PathFigure>();
+        PathFigure? f = null;
+        foreach (PathRecord r in Records)
+        {
+            if ((r.Flags & (int)PathRecordFlags.BeginSubpath) != 0 || f == null) { f = new PathFigure(); made.Add(f); }
+            for (int i = 0; i < r.Count; i++) { f.X.Add(r.X[i]); f.Y.Add(r.Y[i]); }
+            if ((r.Flags & (int)PathRecordFlags.CloseFigure) != 0) f.Closed = true;
+            if ((r.Flags & (int)PathRecordFlags.EndSubpath) != 0) f = null;
+        }
+        return made;
+    }
+}
+
+/// A figure of a flattened path: 28.4 device points.
+sealed class PathFigure
+{
+    public readonly List<long> X = new List<long>(), Y = new List<long>();
+    public bool Closed;
+}
+
+/// One axis of win32k's hybrid forward differencing in 32 bits
+/// (HfdBasis32: e0 the value, e1..e3 the differences, 0xA0050D04 on).
+sealed class Hfd32
+{
+    public int E0, E1, E2, E3;
+
+    /// 0xA0050982: from the four control values relative to the box's
+    /// corner, each under 0x4000.
+    public void Init(int p0, int p1, int p2, int p3)
+    {
+        E0 = p0 << 10;
+        E1 = (p3 - p0) << 10;
+        E2 = (3 * (p1 - p2 - p2 + p3)) << 11;
+        E3 = (3 * (p0 - p1 - p1 + p2)) << 11;
+    }
+
+    static int Abs(int v) { return v < 0 ? -v : v; }
+
+    /// lError (0xA0050D04).
+    public int Error { get { int a = Abs(E2), b = Abs(E3); return a > b ? a : b; } }
+
+    /// lParentErrorDividedBy4 (0xA0029948).
+    public int ParentError
+    {
+        get
+        {
+            int a = Abs(E3);
+            int d = E2 * 2 - E3;
+            int b = d >= 0 ? d : E3 - E2 * 2;
+            return a > b ? a : b;
+        }
+    }
+
+    public int Value { get { return (E0 + 0x1000) >> 13; } }
+
+    public void Step() { E0 += E1; E1 += E2; int t = E2; E2 = E2 * 2 - E3; E3 = t; }     // 0xA0050D5E
+
+    public void SteadyState(int shift)                                                   // 0xA0050D37
+    {
+        E0 <<= 3; E1 <<= 3;
+        shift -= 3;
+        if (shift < 0) { E2 <<= -shift; E3 <<= -shift; }
+        else { E2 >>= shift; E3 >>= shift; }
+    }
+
+    public void LazyHalve(int shift) { E2 = (E2 + E3) >> 1; E1 = (E1 - (E2 >> shift)) >> 1; }   // 0xA0050D79
+    public void Halve() { E2 = (E2 + E3) >> 3; E1 = (E1 - E2) >> 1; E3 >>= 2; }                // 0xA0077029
+    public void Double() { E1 = E1 * 2 + E2; E3 <<= 2; E2 = (E2 << 3) - E3; }                  // 0xA007700D
+}
+
+/// The same in 64 bits (HfdBasis64, 0xA0149323 on), for a Bezier too big
+/// for the 32-bit one.
+sealed class Hfd64
+{
+    public long E0, E1, E2, E3;
+
+    public void Init(long p1, long p2, long p3, long p4)                                 // 0xA0149323
+    {
+        E0 = p1 << 28;
+        E1 = (p4 - p1) << 28;
+        E2 = ((p2 - p3 - p3 + p4) * 3) << 29;
+        E3 = ((p1 - p2 - p2 + p3) * 3) << 29;
+    }
+
+    static long Abs(long v) { return v < 0 ? -v : v; }
+    public long Error { get { long a = Abs(E2), b = Abs(E3); return a > b ? a : b; } }  // 0xA0149796
+
+    /// vParentError (0xA0149B20): 4 e3 against 8 e2 - 4 e3.
+    public long ParentError
+    {
+        get { long a = Abs(E3 << 2), b = Abs(E2 * 8 - (E3 << 2)); return a > b ? a : b; }
+    }
+
+    public long Value { get { return (E0 + 0x8000000) >> 28; } }
+
+    public void Step() { E0 += E1; E1 += E2; long t = E2; E2 = E2 * 2 - E3; E3 = t; }    // 0xA0149670
+    public void Halve() { E2 = (E2 + E3) >> 3; E1 = (E1 - E2) >> 1; E3 >>= 2; }           // 0xA01495BB
+    public void Double() { E1 = (E1 << 1) + E2; E3 <<= 2; E2 = (E2 << 3) - E3; }          // 0xA0149615
+
+    /// vUntransform (0xA014942F): the current step's four control values,
+    /// rounded from 36.28.
+    public void Untransform(long[] out4)
+    {
+        long t1 = (E1 * 6 - E2 - E3 * 2) / 18;
+        long t2 = (E1 * 12 - E2 * 2 - E3) / 18;
+        out4[0] = (E0 + 0x8000000) >> 28;
+        out4[1] = (E0 + t1 + 0x8000000) >> 28;
+        out4[2] = (E0 + t2 + 0x8000000) >> 28;
+        out4[3] = (E0 + E1 + 0x8000000) >> 28;
+    }
+}
+
+/// win32k's BEZIER (0xA0050AE9): a cubic stepped to points within its
+/// error tolerance -- Bezier32 when the curve's box is under 0x4000 in
+/// 28.4 (1024 pixels), else Bezier64 with its two levels. Each Next gives
+/// the point after a step; the last is the end point, with false.
+sealed class BezierFlattener
+{
+    // Bezier32 (0xA0050982, 0xA0050E70).
+    readonly Hfd32 _x = new Hfd32(), _y = new Hfd32();
+    int _steps;
+    long _offX, _offY;
+    readonly bool _small;
+    // Bezier64 (0xA01496B8, 0xA014982E): the low level stepping a piece of
+    // the high one; tolerances 4 << 32 (0xA0185720) and 0x3000 << 32
+    // (0xA018DA38).
+    const long LowTolerance = 4L << 32, HighTolerance = 0x3000L << 32;
+    readonly Hfd64 _xl = new Hfd64(), _yl = new Hfd64(), _xh = new Hfd64(), _yh = new Hfd64();
+    long _stepsLow, _stepsHigh;
+
+    public BezierFlattener(long[] px, long[] py)
+    {
+        _small = Init32(px, py);
+        if (!_small) Init64(px, py);
+    }
+
+    bool Init32(long[] px, long[] py)
+    {
+        _steps = 1;
+        // The box's top-left (0xA0050D99), taken off every point.
+        _offX = Math.Min(Math.Min(px[0], px[1]), Math.Min(px[2], px[3]));
+        _offY = Math.Min(Math.Min(py[0], py[1]), Math.Min(py[2], py[3]));
+        long any = 0;
+        int[] rx = new int[4], ry = new int[4];
+        for (int i = 0; i < 4; i++) { rx[i] = (int)(px[i] - _offX); ry[i] = (int)(py[i] - _offY); any |= (rx[i] | ry[i]) & 0xFFFFFFFFL; }
+        if ((any & 0xFFFFC000L) != 0) return false;
+        _x.Init(rx[0], rx[1], rx[2], rx[3]);
+        _y.Init(ry[0], ry[1], ry[2], ry[3]);
+        int shift = 0;
+        while (true)
+        {
+            int limit = 0xFFC0 << shift;
+            if (_x.Error > limit || _y.Error > limit)
+            {
+                shift += 2;
+                _x.LazyHalve(shift); _y.LazyHalve(shift);
+                _steps <<= 1;
+                continue;
+            }
+            break;
+        }
+        _x.SteadyState(shift); _y.SteadyState(shift);
+        _x.Step(); _y.Step();
+        _steps--;
+        return true;
+    }
+
+    void Init64(long[] px, long[] py)
+    {
+        _stepsLow = 0; _stepsHigh = 1;
+        _xh.Init(px[0], px[1], px[2], px[3]);
+        _yh.Init(py[0], py[1], py[2], py[3]);
+        while (_xh.Error > HighTolerance || _yh.Error > HighTolerance)
+        {
+            _stepsHigh <<= 1;
+            _xh.Halve(); _yh.Halve();
+        }
+    }
+
+    public bool Next(out long fx, out long fy)
+    {
+        if (_small)
+        {
+            fx = _x.Value + _offX; fy = _y.Value + _offY;
+            if (_steps == 0) return false;
+            if (Math.Max(_x.Error, _y.Error) > 0x7FE00)
+            {
+                _x.Halve(); _y.Halve();
+                _steps <<= 1;
+            }
+            while ((_steps & 1) == 0 && _x.ParentError <= 0x1FF80 && _y.ParentError <= 0x1FF80)
+            {
+                _x.Double(); _y.Double();
+                _steps >>= 1;
+            }
+            _steps--;
+            _x.Step(); _y.Step();
+            return true;
+        }
+        if (_stepsLow == 0)
+        {
+            long[] cx = new long[4], cy = new long[4];
+            _xh.Untransform(cx); _yh.Untransform(cy);
+            _xl.Init(cx[0], cx[1], cx[2], cx[3]);
+            _yl.Init(cy[0], cy[1], cy[2], cy[3]);
+            _stepsLow = 1;
+            while (_xl.Error > LowTolerance || _yl.Error > LowTolerance) { _stepsLow <<= 1; _xl.Halve(); _yl.Halve(); }
+            if (--_stepsHigh != 0)
+            {
+                _xh.Step(); _yh.Step();
+                if (_xh.Error > HighTolerance || _yh.Error > HighTolerance) { _stepsHigh <<= 1; _xh.Halve(); _yh.Halve(); }
+                while ((_stepsHigh & 1) == 0 && _xh.ParentError <= HighTolerance && _yh.ParentError <= HighTolerance)
+                {
+                    _xh.Double(); _yh.Double();
+                    _stepsHigh >>= 1;
+                }
+            }
+        }
+        _xl.Step(); _yl.Step();
+        fx = (int)_xl.Value; fy = (int)_yl.Value;
+        if (--_stepsLow == 0)
+        {
+            // Done with this piece: the last point of the curve, or the next
+            // Next starts the next piece. (win32k goes on adapting the
+            // finished low level here, 0xA0149A59; nothing reads it again.)
+            return _stepsHigh != 0;
+        }
+        if (_xl.Error > LowTolerance || _yl.Error > LowTolerance) { _stepsLow <<= 1; _xl.Halve(); _yl.Halve(); }
+        while ((_stepsLow & 1) == 0 && _xl.ParentError <= LowTolerance && _yl.ParentError <= LowTolerance)
+        {
+            _xl.Double(); _yl.Double();
+            _stepsLow >>= 1;
+        }
+        return true;
+    }
+}
+
+/// WidenPath's outline: each flattened figure made the closed outline of
+/// its stroke -- an open figure one figure along one side, round its end,
+/// back along the other and round its start; a closed figure two, one
+/// each side -- with the pen's joins on the outer side of each corner (the
+/// inner side through the corner point itself) and its ends. A width of 0
+/// makes both sides the figure itself. [?] win32k's WIDENER (0xA004F466,
+/// 0xA004E8D0) makes the pen a polygon of its own and its vertices are not
+/// these: the area stroked is the same, the points GetPath gives are not.
+/// A round join or end here is the circle's 16 compass points.
+static class Widener
+{
+    // cos(k * 22.5 degrees) in 16.16, k 0..4.
+    static readonly long[] _cos = new long[] { 65536, 60547, 46341, 25080, 0 };
+
+    static long DirX(int k) { k &= 15; int q = k / 4, m = k % 4; long c = _cos[m], s = _cos[4 - m]; return q == 0 ? c : q == 1 ? -s : q == 2 ? -c : s; }
+    static long DirY(int k) { k &= 15; int q = k / 4, m = k % 4; long c = _cos[m], s = _cos[4 - m]; return q == 0 ? s : q == 1 ? c : q == 2 ? -s : -c; }
+
+    /// The path's figures widened; `fixWidth` the pen's width in 28.4
+    /// device units, `cap` and `join` PS_ENDCAP_* and PS_JOIN_*,
+    /// `miterBits` the DC's miter limit (IEEE bits).
+    public static DevicePath? Widen(DevicePath src, long fixWidth, int cap, int join, long miterBits)
+    {
+        if (src.HasBeziers) src.Flatten();
+        long hw = Math.Max(0, fixWidth) / 2;
+        long miter16 = EFloats.Fixed16(miterBits);
+        DevicePath made = new DevicePath();
+        foreach (PathFigure f in src.Figures())
+        {
+            List<long> xs = new List<long>(), ys = new List<long>();
+            for (int i = 0; i < f.X.Count; i++)
+                if (xs.Count == 0 || xs[xs.Count - 1] != f.X[i] || ys[ys.Count - 1] != f.Y[i]) { xs.Add(f.X[i]); ys.Add(f.Y[i]); }
+            if (f.Closed && xs.Count > 1 && xs[0] == xs[xs.Count - 1] && ys[0] == ys[ys.Count - 1]) { xs.RemoveAt(xs.Count - 1); ys.RemoveAt(ys.Count - 1); }
+            if (xs.Count == 0) continue;
+            if (xs.Count == 1)
+            {
+                if (cap == 0x200 || hw == 0) continue;                              // PS_ENDCAP_FLAT: a point makes nothing
+                List<long> dx = new List<long>(), dy = new List<long>();
+                if (cap == 0x100) { dx.AddRange(new long[] { xs[0] - hw, xs[0] + hw, xs[0] + hw, xs[0] - hw }); dy.AddRange(new long[] { ys[0] - hw, ys[0] - hw, ys[0] + hw, ys[0] + hw }); }
+                else for (int k = 0; k < 16; k++) { dx.Add(xs[0] + ((DirX(k) * hw) >> 16)); dy.Add(ys[0] + ((DirY(k) * hw) >> 16)); }
+                Emit(made, dx, dy);
+                continue;
+            }
+            int n = xs.Count;
+            if (f.Closed && n > 2)
+            {
+                List<long> ax = new List<long>(), ay = new List<long>(), bx = new List<long>(), by = new List<long>();
+                for (int i = 0; i < n; i++)
+                {
+                    int p = (i + n - 1) % n, q = (i + 1) % n;
+                    Corner(ax, ay, xs[p], ys[p], xs[i], ys[i], xs[q], ys[q], hw, 1, join, miter16);
+                    Corner(bx, by, xs[p], ys[p], xs[i], ys[i], xs[q], ys[q], hw, -1, join, miter16);
+                }
+                bx.Reverse(); by.Reverse();
+                Emit(made, ax, ay);
+                Emit(made, bx, by);
+                continue;
+            }
+            // Open: one side forward, the end, the other side back, the start.
+            List<long> ox = new List<long>(), oy = new List<long>(), rx = new List<long>(), ry = new List<long>();
+            long nx, ny;
+            Normal(xs[0], ys[0], xs[1], ys[1], hw, out nx, out ny);
+            ox.Add(xs[0] + nx); oy.Add(ys[0] + ny);
+            rx.Add(xs[0] - nx); ry.Add(ys[0] - ny);
+            for (int i = 1; i < n - 1; i++)
+            {
+                Corner(ox, oy, xs[i - 1], ys[i - 1], xs[i], ys[i], xs[i + 1], ys[i + 1], hw, 1, join, miter16);
+                Corner(rx, ry, xs[i - 1], ys[i - 1], xs[i], ys[i], xs[i + 1], ys[i + 1], hw, -1, join, miter16);
+            }
+            Normal(xs[n - 2], ys[n - 2], xs[n - 1], ys[n - 1], hw, out nx, out ny);
+            ox.Add(xs[n - 1] + nx); oy.Add(ys[n - 1] + ny);
+            End(ox, oy, xs[n - 2], ys[n - 2], xs[n - 1], ys[n - 1], hw, cap);
+            rx.Add(xs[n - 1] - nx); ry.Add(ys[n - 1] - ny);
+            rx.Reverse(); ry.Reverse();
+            ox.AddRange(rx); oy.AddRange(ry);
+            End(ox, oy, xs[1], ys[1], xs[0], ys[0], hw, cap);
+            Emit(made, ox, oy);
+        }
+        return made;
+    }
+
+    static void Emit(DevicePath made, List<long> xs, List<long> ys)
+    {
+        if (xs.Count < 2) return;
+        made.MoveTo(xs[0], ys[0]);
+        long[] px = new long[xs.Count - 1], py = new long[xs.Count - 1];
+        for (int i = 1; i < xs.Count; i++) { px[i - 1] = xs[i]; py[i - 1] = ys[i]; }
+        made.PolyLineTo(px, py, px.Length);
+        made.CloseFigure();
+    }
+
+    /// The half-width normal of the segment a to b, on its "+" side.
+    static void Normal(long ax, long ay, long bx, long by, long hw, out long nx, out long ny)
+    {
+        long dx = bx - ax, dy = by - ay;
+        long length = RegionShape.Root(dx * dx + dy * dy);
+        if (length == 0) { nx = 0; ny = 0; return; }
+        nx = dy * hw / length; ny = -dx * hw / length;
+    }
+
+    /// The corner at v on side `side` (+1, -1): outer -- the next segment
+    /// turns away from it -- the join; inner, through v.
+    static void Corner(List<long> xs, List<long> ys, long px, long py, long vx, long vy, long qx, long qy, long hw, int side, int join, long miter16)
+    {
+        long ax, ay, bx, by;
+        Normal(px, py, vx, vy, hw, out ax, out ay);
+        Normal(vx, vy, qx, qy, hw, out bx, out by);
+        ax *= side; ay *= side; bx *= side; by *= side;
+        long turn = ax * (qx - vx) + ay * (qy - vy);
+        if (turn >= 0)
+        {
+            xs.Add(vx + ax); ys.Add(vy + ay);
+            xs.Add(vx); ys.Add(vy);
+            xs.Add(vx + bx); ys.Add(vy + by);
+            return;
+        }
+        if (join == 0x2000)
+        {
+            // PS_JOIN_MITER: where the two edges meet, v + (a + b) h^2 /
+            // (h^2 + a.b), when it is within the limit, else a bevel.
+            long h2 = hw * hw, dot = ax * bx + ay * by, denominator = h2 + dot;
+            if (denominator > 0)
+            {
+                long mx = (ax + bx) * h2 / denominator, my = (ay + by) * h2 / denominator;
+                long reach = RegionShape.Root(mx * mx + my * my);
+                if (reach * 65536 <= miter16 * hw) { xs.Add(vx + mx); ys.Add(vy + my); return; }
+            }
+        }
+        xs.Add(vx + ax); ys.Add(vy + ay);
+        if (join == 0) Arc(xs, ys, vx, vy, ax, ay, bx, by, hw);                   // PS_JOIN_ROUND
+        xs.Add(vx + bx); ys.Add(vy + by);
+    }
+
+    /// The compass points strictly between the directions of u and w
+    /// (under half a turn), the short way round.
+    static void Arc(List<long> xs, List<long> ys, long cx, long cy, long ux, long uy, long wx, long wy, long hw)
+    {
+        long sense = ux * wy - uy * wx;
+        if (sense == 0) return;
+        int s = sense > 0 ? 1 : -1;
+        int start = Nearest(ux, uy);
+        for (int step = 0, k = start; step < 16; step++, k += s)
+        {
+            long dx = DirX(k), dy = DirY(k);
+            if ((ux * dy - uy * dx) * s > 0 && (dx * wy - dy * wx) * s > 0) { xs.Add(cx + ((dx * hw) >> 16)); ys.Add(cy + ((dy * hw) >> 16)); }
+        }
+    }
+
+    static int Nearest(long x, long y)
+    {
+        int best = 0; long most = long.MinValue;
+        for (int k = 0; k < 16; k++) { long d = x * DirX(k) + y * DirY(k); if (d > most) { most = d; best = k; } }
+        return best;
+    }
+
+    /// The end at b of the segment a to b, from its "+" side to its "-":
+    /// round, square (PS_ENDCAP_SQUARE 0x100) or flat (0x200).
+    static void End(List<long> xs, List<long> ys, long ax, long ay, long bx, long by, long hw, int cap)
+    {
+        long nx, ny;
+        Normal(ax, ay, bx, by, hw, out nx, out ny);
+        long dx = bx - ax, dy = by - ay;
+        long length = RegionShape.Root(dx * dx + dy * dy);
+        long ex = length == 0 ? 0 : dx * hw / length, ey = length == 0 ? 0 : dy * hw / length;
+        if (cap == 0x200) return;
+        if (cap == 0x100) { xs.Add(bx + nx + ex); ys.Add(by + ny + ey); xs.Add(bx - nx + ex); ys.Add(by - ny + ey); return; }
+        Arc(xs, ys, bx, by, nx, ny, ex, ey, hw);
+        xs.Add(bx + ex); ys.Add(by + ey);
+        Arc(xs, ys, bx, by, ex, ey, -nx, -ny, hw);
+    }
+}

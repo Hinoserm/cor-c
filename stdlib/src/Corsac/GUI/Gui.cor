@@ -301,6 +301,11 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     /// answer, on a start that has not changed, is handed back as it is.
     long Call(long call, long a, long b, long c)
     {
+#if TARGET_WINDOWS
+        // ON WINDOWS THE SEAT IS IN THIS PROCESS (WinSeat.cor): the same
+        // calls, answered over user32 and gdi32.
+        return WinSeat.Call(call, a, b, c);
+#else
         while (true)
         {
             long answer = Platform.Result(Sys.GuiCall(call, a, b, c));
@@ -312,6 +317,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
             lock (_keep) { now = _start; }
             if (answer == -Io && now == was) return answer;
         }
+#endif
     }
 
     /// This thread into the GUI kernel, waiting up to half a minute for it
@@ -325,6 +331,9 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     /// kernel starts yet again meanwhile, it is all done once more.
     bool Attach()
     {
+#if TARGET_WINDOWS
+        return true;
+#else
         // HALF A MINUTE IN ALL, whatever the GUI kernel does meanwhile: a tenth
         // of a second a try while it is not up, and a try for every start
         // that a restore finds overtaken by another -- a GUI kernel that keeps
@@ -349,6 +358,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
             if (after == start || after <= 0) return true;
         }
         return false;
+#endif
     }
 
     long Ioctl(SeatIoctl request, long argument)
@@ -541,8 +551,12 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
 
     public Seat(string path)
     {
+#if TARGET_WINDOWS
+        _fd = -1;                           // no device: the seat is WinSeat
+#else
         _fd = Os.Open(path, 2, 0);          // O_RDWR
         if (_fd < 0) throw new IOException("cannot open seat " + path);
+#endif
         // THIS THREAD ATTACHED BEFORE ITS FIRST CALL. A call from a thread
         // that is not is refused at the gate, and the kernel says so on the
         // console as a refusal; Call's attach on ENOSYS is for a thread the
@@ -2808,7 +2822,11 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     public bool Poll(int timeoutMs)
     {
         Present();
+#if TARGET_WINDOWS
+        return WinSeat.Poll(timeoutMs);
+#else
         return Os.Poll(_fd, 1, timeoutMs) > 0;
+#endif
     }
 
     /// Wait for the seat or any of `others`, whichever first. Returns the
@@ -2817,6 +2835,9 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     public int WaitAny(int[] others, int count, int timeoutMs)
     {
         Present();
+#if TARGET_WINDOWS
+        return WinSeat.WaitAny(others, count, timeoutMs);
+#else
         int[] fds = new int[count + 1];
         bool[] ready = new bool[count + 1];
         fds[0] = _fd;
@@ -2825,6 +2846,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         if (n <= 0) return -1;
         for (int i = 0; i < count; i++) if (ready[i + 1]) return i;
         return -1;
+#endif
     }
 
     int Int(int at) { return _event[at] | (_event[at + 1] << 8) | (_event[at + 2] << 16) | (_event[at + 3] << 24); }

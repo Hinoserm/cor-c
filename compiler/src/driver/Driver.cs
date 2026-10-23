@@ -1817,7 +1817,21 @@ public static class Driver
             foreach (string dotnet in new[] {
                 "System/interop.cor", "System/IO/io.cor", "System/Collections/Collections.cor", "System/IO/io-streams.cor",
                 "System/IO/timezone.cor", "System/time.cor", "System/values.cor", "System/console.cor", "System/environment.cor",
-                "System/signals.cor" })
+                "System/signals.cor",
+                // Windows Forms and System.Drawing over the seat, which on
+                // Windows is in the program (WinSeat.cor) and draws with the
+                // GUI kernel's engine; and what Forms reaches for besides.
+                "System/IO/compression.cor", "System/ServiceProcess/ServiceWire.cor",
+                "System/Runtime/InteropServices/ComInterop.cor", "System/Runtime/InteropServices/ComNdr.cor",
+                "System/Runtime/InteropServices/ComRemote.cor", "System/Runtime/InteropServices/ComOle.cor",
+                "System/Drawing/Drawing.cor", "System/Drawing/Drawing2D.cor", "System/Drawing/FontEngine.cor", "System/Drawing/TrueType.cor",
+                "System/Drawing/BitmapFont.cor", "System/Drawing/Text.cor", "System/Drawing/Imaging.cor",
+                "Corsac/GUI/Engine/enginedraw.cor", "Corsac/GUI/Engine/enginepaths.cor", "Corsac/GUI/Engine/engineregions.cor",
+                "Corsac/GUI/Engine/enginestrokes.cor", "Corsac/GUI/Engine/enginexform.cor",
+                "Corsac/GUI/Gui.cor", "Corsac/GUI/WinSeat.cor",
+                "System/Windows/Forms/Forms.cor", "Microsoft/Win32/SystemEvents.cor",
+                "System/Drawing/Printing/SpoolWire.cor", "System/Drawing/Printing/Printing.cor",
+                "System/Windows/Forms/PrintDialogs.cor", "System/Windows/Forms/PrintPreview.cor" })
             {
                 libs.Add(Path.Combine(root, "stdlib", "src", dotnet));
             }

@@ -1,0 +1,597 @@
+// THE GUI KERNEL'S DRAWING ENGINE, as the corsac86 tree has it in
+// os/gui/enginexform.cor: the same code, in a namespace of its own, for a seat that
+// draws in its own process (WinSeat.cor, the Windows target). A change
+// to the engine is made there and copied here, so both draw alike.
+
+// THE ENGINE'S TRANSFORMS (TODO-GUI-AND-NT-KERNELS.md, "Drawing"): a world
+// transform taken to device points, for native programs' Graphics.Transform
+// (DrawEngine, through the seat batch) and for GDI's world and page
+// transforms (Win32kXform), worked as win32k.sys works them, in its EFLOAT,
+// so a matrix gdi32 reads and a point a program gets back are Windows 2000's
+// own numbers, rounding and all.
+//
+// NO FLOATING POINT (engineregions.cor): an XFORM's floats arrive as their
+// bits and leave as bits; everything between is EFLOAT, a 32-bit mantissa and
+// an exponent, which is what win32k itself uses on x86 (FLOATOBJ).
+
+using System;
+
+namespace Corsac.GUI.Engine;
+
+/// win32k's EFLOAT: the value is Mant x 2^(Exp - 32), the mantissa's
+/// magnitude normalised to have bit 30 as its top bit. 1.0 is
+/// {0x40000000, 2}; 16.0 {0x40000000, 6}; zero is {0, 0}.
+struct EFloat
+{
+    public int Mant, Exp;
+    public EFloat(int mant, int exp) { Mant = mant; Exp = exp; }
+    public bool IsZero { get { return Mant == 0 && Exp == 0; } }
+    public bool Same(EFloat o) { return Mant == o.Mant && Exp == o.Exp; }
+}
+
+/// EFLOAT's operations, each the routine of win32k's named beside it, bit for
+/// bit: the same truncations, the same half-up roundings, the same overflow
+/// behaviour (an operation whose exponent overflows stores nothing, as the
+/// `jo` past each one skips the store).
+static class EFloats
+{
+    /// An IEEE single's value in 16.16 fixed point, from its bits.
+    public static long Fixed16(long bits)
+    {
+        bits &= 0xFFFFFFFF;
+        int exponent = (int)((bits >> 23) & 0xFF);
+        if (exponent == 0) return 0;
+        long mantissa = (bits & 0x7FFFFF) | 0x800000;                     // 1.23 fixed
+        int shift = exponent - 127 - 23 + 16;
+        long v = shift >= 0 ? (shift > 30 ? 0x7FFFFFFFFFFF : mantissa << shift) : shift <= -40 ? 0 : mantissa >> -shift;
+        return (bits & 0x80000000) != 0 ? -v : v;
+    }
+
+    public static readonly EFloat Zero = new EFloat(0, 0);
+    public static readonly EFloat One = new EFloat(0x40000000, 2);                 // 0xA0185D30
+    public static readonly EFloat Sixteen = new EFloat(0x40000000, 6);             // 0xA01837B8
+    public static readonly EFloat Sixteenth = new EFloat(0x40000000, -2);          // bInverse's unity (0xA0037109)
+    public static readonly EFloat Three = new EFloat(0x60000000, 3);               // 0xA0188FB8
+    public static readonly EFloat FourThirds = new EFloat(0x55555555, 2);          // 0xA0189138
+    public static readonly EFloat Tiny = new EFloat(0x40000000, -14);              // 2^-16, 0xA0189140
+    public static readonly EFloat Ninety = new EFloat(0x5A000000, 8);              // 0xA0185870
+    public static readonly EFloat OneEighty = new EFloat(0x5A000000, 9);           // 0xA01890D0
+    public static readonly EFloat TwoSeventy = new EFloat(0x43800000, 10);         // 0xA01890D8
+    public static readonly EFloat ThreeSixty = new EFloat(0x5A000000, 10);         // 0xA01890E0
+    public static readonly EFloat ThirtyTwo = new EFloat(0x40000000, 7);           // 0xA01890E8
+    public static readonly EFloat ThirtySixHundred = new EFloat(0x70800000, 13);   // 0xA018E198
+    public static readonly EFloat MinusThirtySixHundred = new EFloat(-0x70800000, 13);           // 0x8F800000, 0xA018E1A0
+    public static readonly EFloat OneNinetieth = new EFloat(0x5B05B05B, -5);       // 0xA018E1A8
+    public static readonly EFloat DegreesToTable = new EFloat(0x5B05B05B, 0);      // 32/90, 0xA0185980
+    public static readonly EFloat Two = new EFloat(0x40000000, 3);                 // 0xA018BA88
+    public static readonly EFloat Pi = new EFloat(0x6487ED51, 3);                  // 0xA018BA90
+
+    /// The normalising shift (0xA0085633): x moved until its magnitude's top
+    /// bit is bit 30, its sign kept, and by how much; 0x80000000 is halved
+    /// instead (the shift -1). False, x 0 and the shift 0, for zero.
+    public static bool Normalise(ref int x, out int shift)
+    {
+        shift = 0;
+        if (x == 0) return false;
+        if (x == int.MinValue) { x = -0x40000000; shift = -1; return true; }
+        bool negative = x < 0;
+        long m = negative ? -(long)x : x;
+        int zeros = 0;
+        while ((m & 0x80000000L) == 0) { m <<= 1; zeros++; }
+        shift = zeros - 1;
+        long made = (negative ? -(long)x : x) << shift;
+        x = negative ? -(int)made : (int)made;
+        return true;
+    }
+
+    /// A LONG as an EFLOAT (0xA00855C1): exact.
+    public static EFloat FromLong(long v)
+    {
+        int x = (int)v, shift;
+        if (!Normalise(ref x, out shift)) return Zero;
+        return new EFloat(x, 32 - shift);
+    }
+
+    /// An IEEE single's bits as an EFLOAT (0xA00170BF): the fraction under
+    /// the implicit one as the mantissa, the exponent less 125; a zero or
+    /// denormal exponent is zero. NaNs and infinities go through as numbers.
+    public static EFloat FromIeee(long bits)
+    {
+        bits &= 0xFFFFFFFF;
+        int e = (int)((bits >> 23) & 0xFF);
+        if (e == 0) return Zero;
+        int m = (int)(((bits & 0x7FFFFF) << 7) | 0x40000000);
+        if ((bits & 0x80000000) != 0) m = -m;
+        return new EFloat(m, e - 0x7D);
+    }
+
+    /// An EFLOAT as an IEEE single's bits (0xA00855E5): the mantissa's low 30
+    /// bits over 7, rounded half up by the bit shifted out (adc); a round
+    /// that carries into bit 23 bumps the exponent. 0x7FFFFFFF for an
+    /// exponent that overflows.
+    public static long ToIeee(EFloat f)
+    {
+        long m = f.Mant;
+        if (m == 0) return 0;
+        long sign = 0;
+        if (m < 0) { sign = 0x80000000; m = (-m) & 0xFFFFFFFF; }
+        long low = m & 0x3FFFFFFF;
+        long fraction = (low >> 7) + ((low >> 6) & 1);
+        long e = f.Exp;
+        if ((fraction & 0x800000) != 0) { fraction = 0; e = e + 1; if (e > int.MaxValue) return 0x7FFFFFFF; }
+        e = e + 0x7D;
+        if (e > int.MaxValue) return 0x7FFFFFFF;
+        return (sign | ((e << 23) & 0xFFFFFFFF) | fraction) & 0xFFFFFFFF;
+    }
+
+    // The multiply's normalising shift by the product's top nibble
+    // (0xA000E080): 1 needs two, 2 and 3 one. A product of two normalised
+    // mantissas has no other.
+    static readonly int[] _nibbleShift = new int[] { 0, 2, 1, 1 };
+
+    /// dst = a * b (0xA000E084, core 0xA000E01F): the 64-bit product
+    /// normalised by its top nibble, rounded half up at bit 31 of the low
+    /// word; a carry into the sign halves it again. dst unchanged when the
+    /// exponent overflows.
+    public static void Mul(ref EFloat dst, EFloat a, EFloat b)
+    {
+        long e = (long)a.Exp + b.Exp;
+        if (e > int.MaxValue || e < int.MinValue) return;
+        long p = (long)a.Mant * b.Mant;
+        int hi = (int)(p >> 32);
+        if (hi == 0) { dst = new EFloat((int)p, 0); return; }
+        bool negative = hi < 0;
+        if (negative) p = -p;
+        int nibble = (int)((p >> 60) & 0xF);
+        int shift = nibble < 4 ? _nibbleShift[nibble] : 0;
+        long v = (p << shift) + 0x80000000L;
+        long top = (v >> 32) & 0xFFFFFFFF;
+        if ((top & 0x80000000) != 0) { top = top >> 1; shift--; }
+        int m = (int)top;
+        dst = new EFloat(negative ? -m : m, (int)(e - shift));
+    }
+
+    public static EFloat Mul(EFloat a, EFloat b) { EFloat r = Zero; Mul(ref r, a, b); return r; }
+
+    /// The add's core (0xA0017008): the larger exponent's operand kept, the
+    /// other shifted down to it (truncated), both halved (truncated), summed
+    /// and normalised. An operand 30 or more places smaller is dropped.
+    static bool AddCore(EFloat x, EFloat y, out EFloat r)
+    {
+        r = Zero;
+        if (y.Mant == 0) { r = x; return true; }
+        if (x.Mant == 0) { r = y; return true; }
+        if (x.Exp < y.Exp) { EFloat k = x; x = y; y = k; }
+        long d = (long)x.Exp - y.Exp;
+        if (d > 30) { r = x; return true; }
+        int sum = (x.Mant >> 1) + ((y.Mant >> (int)d) >> 1);
+        int shift;
+        if (!Normalise(ref sum, out shift)) { r = Zero; return true; }
+        long e = (long)x.Exp + 1 - shift;
+        if (e > int.MaxValue || e < int.MinValue) return false;
+        r = new EFloat(sum, (int)e);
+        return true;
+    }
+
+    /// dst = a + b (0xA0017040).
+    public static void Add(ref EFloat dst, EFloat a, EFloat b)
+    {
+        EFloat r;
+        if (AddCore(a, b, out r)) dst = r;
+    }
+
+    public static EFloat Add(EFloat a, EFloat b) { EFloat r = Zero; Add(ref r, a, b); return r; }
+
+    /// dst = a - b (0xA008C9B7): b's mantissa negated as a 32-bit word
+    /// (0x80000000 stays itself: int arithmetic wraps), then added.
+    public static void Sub(ref EFloat dst, EFloat a, EFloat b)
+    {
+        EFloat r;
+        if (AddCore(new EFloat(-b.Mant, b.Exp), a, out r)) dst = r;
+    }
+
+    public static EFloat Sub(EFloat a, EFloat b) { EFloat r = Zero; Sub(ref r, a, b); return r; }
+
+    /// dst = a / b (0xA00856F0): |a| * 2^31 / |b| in 32 bits, rounded up when
+    /// the remainder is more than half; a quotient of 32 bits halved with its
+    /// low bit added instead. A zero a is zero; a zero b, or an exponent that
+    /// overflows, stores nothing.
+    public static void Div(ref EFloat dst, EFloat a, EFloat b)
+    {
+        if (a.Mant == 0) { dst = Zero; return; }
+        long e = (long)a.Exp - b.Exp;
+        if (e > int.MaxValue || e < int.MinValue) return;
+        bool negative = (a.Mant < 0) != (b.Mant < 0);
+        long ma = a.Mant < 0 ? -(long)a.Mant : a.Mant;
+        long mb = b.Mant < 0 ? -(long)b.Mant : b.Mant;
+        long twice = (mb * 2) & 0xFFFFFFFF;
+        if (twice == 0) return;
+        long dividend = ma << 32;
+        long q = dividend / twice, rem = dividend % twice;
+        long up = mb < rem ? 1 : 0;
+        int extra;
+        if (q >= 0x80000000L) { q = (q >> 1) + (q & 1); extra = 2; }
+        else { q = q + up; extra = 1; }
+        e = e + extra;
+        if (e > int.MaxValue || e < int.MinValue) return;
+        int m = (int)(q & 0xFFFFFFFF);
+        dst = new EFloat(negative ? -m : m, (int)e);
+    }
+
+    public static EFloat Div(EFloat a, EFloat b) { EFloat r = Zero; Div(ref r, a, b); return r; }
+
+    /// -a (0xA0028DA1): 0x80000000 becomes 0x40000000 a place up.
+    public static EFloat Neg(EFloat a)
+    {
+        if (a.Mant == int.MinValue) return new EFloat(0x40000000, a.Exp + 1);
+        return new EFloat(-a.Mant, a.Exp);
+    }
+
+    /// A LONG from an EFLOAT (0xA008C993, core 0xA008C970): with `round` 1
+    /// half up, with 0 the floor. False past 32 bits of integer (the value
+    /// then the bare mantissa, as the word is stored anyway).
+    public static bool ToLong(EFloat f, int round, out long value)
+    {
+        value = 0;
+        if (f.Exp < 1) return true;
+        if (f.Exp > 32) { value = f.Mant; return false; }
+        if (f.Exp == 32) { value = f.Mant; return true; }
+        long v = (long)(f.Mant >> (31 - f.Exp)) + round;
+        if (v > int.MaxValue) { value = (v & 0xFFFFFFFF) >> 1; return true; }   // 0xA0163B54
+        value = v >> 1;
+        return true;
+    }
+
+    public static long Round(EFloat f) { long v; ToLong(f, 1, out v); return v; }
+    public static long Floor(EFloat f) { long v; ToLong(f, 0, out v); return v; }
+
+    /// The fraction (0xA004A635): the integer bits shifted out of the top,
+    /// the rest renormalised; a positive value under one is itself.
+    public static EFloat Frac(EFloat f)
+    {
+        if (f.Exp > 0)
+        {
+            if (f.Exp >= 32) return Zero;
+            int m = (int)((((long)f.Mant << f.Exp) & 0xFFFFFFFF) >> 1);
+            int shift;
+            if (!Normalise(ref m, out shift)) return Zero;
+            return new EFloat(m, 1 - shift);
+        }
+        if (f.Mant >= 0) return f;
+        int n = (int)(((long)(f.Mant >> -f.Exp) & 0xFFFFFFFF) >> 1);               // 0xA0163B62
+        return new EFloat(n, f.Exp + 1);
+    }
+
+    /// a > b (0xA0050026): by sign, then exponent, then mantissa; a zero's
+    /// exponent does not count.
+    public static bool Greater(EFloat a, EFloat b)
+    {
+        int sa = a.Mant >> 31, sb = b.Mant >> 31;
+        if (sb < sa) return true;
+        if (sb > sa) return false;
+        if (a.Exp == b.Exp) return a.Mant > b.Mant;
+        if (sb != 0) return a.Exp < b.Exp;
+        if (a.Exp > b.Exp) return a.Mant != 0 || b.Mant == 0;
+        return b.Mant == 0;
+    }
+
+    /// v * f rounded to a LONG, as the transforms multiply (0xA0096C19 on):
+    /// the 64-bit product shifted down by 32 - Exp with the last bit out
+    /// added; false when it will not fit in 32 bits or the exponent is past
+    /// 32. An exponent of 32 takes the low word as it is.
+    public static bool MulRound(long v, EFloat f, out long r) { return MulRound(v, f.Mant, f.Exp, out r); }
+
+    /// The same with the EFLOAT's two words: a struct handed to a call is a
+    /// copy made on the heap, and a DC's scale (Win32kGdi.ScaleX) is asked
+    /// for on every line a game draws.
+    public static bool MulRound(long v, int mant, int exp, out long r)
+    {
+        r = 0;
+        long p = (long)mant * (long)(int)v;
+        int shift = 32 - exp;
+        if (shift == 0) { r = (int)p; return true; }
+        if (shift < 0) return false;
+        if (shift >= 63) { r = 0; return true; }
+        long q = p >> shift;
+        long bit = (p >> (shift - 1)) & 1;
+        if (q > int.MaxValue || q < int.MinValue) return false;
+        if (q == int.MaxValue && bit != 0) return false;
+        r = q + bit;
+        return true;
+    }
+}
+
+/// A MATRIX's flAccel.
+enum XformAccel : long
+{
+    Scale = 0x1,
+    Unity = 0x2,
+    YNegative = 0x4,
+    LongToFix = 0x8,
+    FixToLong = 0x10,
+    LongToLong = 0x20,
+    NoTranslation = 0x40,
+    Identity = 0x43,
+}
+
+/// win32k's MATRIX (0x3C bytes): M11 M12 M21 M22 Dx Dy as EFLOATs, the
+/// translation rounded (FIX or LONG as the format says), flAccel. DC_ATTR
+/// holds three (world to device +0x94, device to world +0xD0, world to page
+/// +0x10C) and the kernel its own copies beside them.
+class XformMatrix
+{
+    public EFloat M11, M12, M21, M22, Dx, Dy;
+    public int FxDx, FxDy;
+    public long Accel;
+
+    /// The world transform win32k starts every DC with (0xA0185D38): unity
+    /// in LTOL form, flAccel 0x63.
+    public static XformMatrix Identity()
+    {
+        return new XformMatrix { M11 = EFloats.One, M22 = EFloats.One, Accel = 0x63 };
+    }
+
+    /// MM_TEXT's world to device (DC template 0xA0182900): 16 on the
+    /// diagonal, LTOFX, flAccel 0x4B.
+    public static XformMatrix TextDevice()
+    {
+        return new XformMatrix { M11 = EFloats.Sixteen, M22 = EFloats.Sixteen, Accel = 0x4B };
+    }
+
+    /// Made a diagonal matrix in place -- M11 and M22 the given EFLOATs,
+    /// the rest zero, flAccel `accel` -- the fields' blocks written, none
+    /// made: a DC's release (Win32kGdi.Clean) puts its three matrices back
+    /// to their defaults thousands of times a second in a game that takes
+    /// and gives back its window's DC around every blit, and three new
+    /// matrices each time were eighteen EFLOATs made and dropped.
+    public void SetDiagonal(int mant, int exp, long accel)
+    {
+        M11.Mant = mant; M11.Exp = exp; M22.Mant = mant; M22.Exp = exp;
+        M12.Mant = 0; M12.Exp = 0; M21.Mant = 0; M21.Exp = 0;
+        Dx.Mant = 0; Dx.Exp = 0; Dy.Mant = 0; Dy.Exp = 0;
+        FxDx = 0; FxDy = 0;
+        Accel = accel;
+    }
+
+    public XformMatrix Clone()
+    {
+        return new XformMatrix { M11 = M11, M12 = M12, M21 = M21, M22 = M22, Dx = Dx, Dy = Dy, FxDx = FxDx, FxDy = FxDy, Accel = Accel };
+    }
+
+    public bool ScaleOnly { get { return M12.IsZero && M21.IsZero; } }
+
+    /// The first `bytes` of the matrix at `at` (0x38 without flAccel, 0x3C
+    /// with), as win32k copies it with rep movsd.
+    public void Store(long at, int bytes)
+    {
+        EFloat[] e = new EFloat[] { M11, M12, M21, M22, Dx, Dy };
+        for (int i = 0; i < 6; i++) { Sys.PokeWord(at + i * 8, e[i].Mant & 0xFFFFFFFFL); Sys.PokeWord(at + i * 8 + 4, e[i].Exp & 0xFFFFFFFFL); }
+        Sys.PokeWord(at + 0x30, FxDx & 0xFFFFFFFFL);
+        Sys.PokeWord(at + 0x34, FxDy & 0xFFFFFFFFL);
+        if (bytes >= 0x3C) Sys.PokeWord(at + 0x38, Accel);
+    }
+
+    public bool SameAs(XformMatrix o)
+    {
+        return M11.Same(o.M11) && M12.Same(o.M12) && M21.Same(o.M21) && M22.Same(o.M22) && Dx.Same(o.Dx) && Dy.Same(o.Dy)
+               && FxDx == o.FxDx && FxDy == o.FxDy;
+    }
+
+    /// An XFORM's six floats (bits) as a matrix (0xA0054A8D): each converted,
+    /// the translation rounded to LONG, flAccel LTOL with NO_TRANSLATION,
+    /// SCALE and UNITY as they hold.
+    public static XformMatrix FromXform(long[] bits)
+    {
+        XformMatrix m = new XformMatrix
+        {
+            M11 = EFloats.FromIeee(bits[0]), M12 = EFloats.FromIeee(bits[1]), M21 = EFloats.FromIeee(bits[2]),
+            M22 = EFloats.FromIeee(bits[3]), Dx = EFloats.FromIeee(bits[4]), Dy = EFloats.FromIeee(bits[5]),
+        };
+        long v;
+        EFloats.ToLong(m.Dx, 1, out v); m.FxDx = (int)v;
+        EFloats.ToLong(m.Dy, 1, out v); m.FxDy = (int)v;
+        m.Accel = (long)XformAccel.LongToLong;
+        // 0xA0054AFE: NO_TRANSLATION when Dx equals Dy and Dy is exactly zero.
+        if (m.Dx.Same(m.Dy) && m.Dy.IsZero) m.Accel = 0x60;
+        if (m.M12.IsZero && m.M21.IsZero)
+        {
+            m.Accel |= (long)XformAccel.Scale;
+            if (m.M11.Same(EFloats.One) && m.M22.Same(EFloats.One)) m.Accel |= (long)XformAccel.Unity;
+        }
+        return m;
+    }
+
+    /// The matrix as an XFORM's float bits (0xA003150F): an LTOFX matrix
+    /// divided by 16 and an FXTOL one multiplied (each non-zero exponent
+    /// moved by four) first.
+    public long[] ToXform()
+    {
+        EFloat[] e = new EFloat[] { M11, M12, M21, M22, Dx, Dy };
+        int by = (Accel & (long)XformAccel.LongToFix) != 0 ? -4 : (Accel & (long)XformAccel.FixToLong) != 0 ? 4 : 0;
+        long[] made = new long[6];
+        for (int i = 0; i < 6; i++)
+        {
+            EFloat f = e[i];
+            if (by != 0 && f.Mant != 0) f = new EFloat(f.Mant, f.Exp + by);
+            made[i] = EFloats.ToIeee(f);
+        }
+        return made;
+    }
+
+    /// Whether a world transform is one win32k accepts (0xA00545A4): no
+    /// exponent past 0x34, and not singular -- a scale with a zero on its
+    /// diagonal, a pure shear with a zero off it, or a zero determinant.
+    public bool Valid()
+    {
+        EFloat[] e = new EFloat[] { M11, M12, M21, M22, Dx, Dy };
+        foreach (EFloat f in e) if (f.Exp > 0x34) return false;
+        if (M12.IsZero && M21.IsZero) return !M11.IsZero && !M22.IsZero;
+        if (M11.IsZero && M22.IsZero) return !M12.IsZero && !M21.IsZero;
+        EFloat det = EFloats.Sub(EFloats.Mul(M11, M22), EFloats.Mul(M12, M21));
+        return !det.IsZero;
+    }
+
+    /// flAccel from the matrix (vComputeAccelFlags 0xA0085772): the format,
+    /// NO_TRANSLATION when both rounded translations are 0, SCALE when the
+    /// off-diagonal is zero, and UNITY when the diagonal is the format's one
+    /// (16 for LTOFX, 1 for LTOL, 1/16 for FXTOL).
+    public void ComputeAccel(long format)
+    {
+        Accel = format;
+        if (FxDx == 0 && FxDy == 0) Accel |= (long)XformAccel.NoTranslation;
+        if (!(M12.IsZero && M21.IsZero)) return;
+        Accel |= (long)XformAccel.Scale;
+        int unity = format == (long)XformAccel.LongToFix ? 6 : format == (long)XformAccel.LongToLong ? 2 : -2;
+        if (M11.Mant == 0x40000000 && M11.Exp == unity && M22.Mant == 0x40000000 && M22.Exp == unity) Accel |= (long)XformAccel.Unity;
+    }
+
+    /// left x right (EXFORMOBJ::bMultiply 0xA00374A5): into a new matrix;
+    /// null when a translation will not round. `accel`'s bit 0 asks for the
+    /// flags computed in `accel & 0x38`'s format; else flAccel is left 0.
+    public static XformMatrix? Multiply(XformMatrix l, XformMatrix r, long accel)
+    {
+        XformMatrix m = new XformMatrix();
+        if (l.ScaleOnly && r.ScaleOnly)
+        {
+            m.M11 = EFloats.Mul(l.M11, r.M11);
+            m.M22 = EFloats.Mul(l.M22, r.M22);
+        }
+        else
+        {
+            m.M11 = EFloats.Add(EFloats.Mul(l.M11, r.M11), EFloats.Mul(l.M12, r.M21));
+            m.M12 = EFloats.Add(EFloats.Mul(l.M11, r.M12), EFloats.Mul(l.M12, r.M22));
+            m.M21 = EFloats.Add(EFloats.Mul(l.M21, r.M11), EFloats.Mul(l.M22, r.M21));
+            m.M22 = EFloats.Add(EFloats.Mul(l.M21, r.M12), EFloats.Mul(l.M22, r.M22));
+        }
+        if (l.Dx.IsZero && l.Dy.IsZero)
+        {
+            // 0xA0037554: the right's translation as it is.
+            m.Dx = r.Dx; m.Dy = r.Dy; m.FxDx = r.FxDx; m.FxDy = r.FxDy;
+        }
+        else
+        {
+            m.Dx = EFloats.Add(EFloats.Mul(l.Dx, r.M11), EFloats.Add(EFloats.Mul(l.Dy, r.M21), r.Dx));
+            m.Dy = EFloats.Add(EFloats.Mul(l.Dx, r.M12), EFloats.Add(EFloats.Mul(l.Dy, r.M22), r.Dy));
+            long v;
+            if (!EFloats.ToLong(m.Dx, 1, out v)) return null;
+            m.FxDx = (int)v;
+            if (!EFloats.ToLong(m.Dy, 1, out v)) return null;
+            m.FxDy = (int)v;
+        }
+        if ((accel & 1) != 0) m.ComputeAccel(accel & 0x38);
+        return m;
+    }
+
+    /// The inverse (EXFORMOBJ::bInverse 0xA00370E7), LTOFX in, FXTOL out;
+    /// null for a zero determinant or a translation that will not round.
+    public XformMatrix? Invert()
+    {
+        XformMatrix m = new XformMatrix { Accel = (Accel & ~(long)XformAccel.LongToFix) | (long)XformAccel.FixToLong };
+        if ((Accel & (long)XformAccel.Unity) != 0)
+        {
+            m.M11 = EFloats.Sixteenth; m.M22 = EFloats.Sixteenth;
+            m.Dx = EFloats.Neg(Dx); m.Dy = EFloats.Neg(Dy);
+            if (m.Dx.Mant != 0) m.Dx = new EFloat(m.Dx.Mant, m.Dx.Exp - 4);
+            if (m.Dy.Mant != 0) m.Dy = new EFloat(m.Dy.Mant, m.Dy.Exp - 4);
+            m.FxDx = -(FxDx >> 4);
+            m.FxDy = -(FxDy >> 4);
+            return m;
+        }
+        EFloat det = EFloats.Sub(EFloats.Mul(M11, M22), EFloats.Mul(M12, M21));
+        if (det.IsZero) return null;
+        if ((Accel & (long)XformAccel.Scale) == 0)
+        {
+            m.M12 = EFloats.Neg(EFloats.Div(M12, det));
+            m.M21 = EFloats.Neg(EFloats.Div(M21, det));
+        }
+        m.M11 = EFloats.Div(M22, det);
+        m.M22 = EFloats.Div(M11, det);
+        if ((Accel & (long)XformAccel.NoTranslation) != 0) return m;
+        if ((Accel & (long)XformAccel.Scale) != 0)
+        {
+            m.Dx = EFloats.Neg(EFloats.Mul(Dx, m.M11));
+            m.Dy = EFloats.Neg(EFloats.Mul(Dy, m.M22));
+        }
+        else
+        {
+            m.Dx = EFloats.Neg(EFloats.Add(EFloats.Mul(Dx, m.M11), EFloats.Mul(Dy, m.M21)));
+            m.Dy = EFloats.Neg(EFloats.Add(EFloats.Mul(Dx, m.M12), EFloats.Mul(Dy, m.M22)));
+        }
+        long v;
+        if (!EFloats.ToLong(m.Dx, 1, out v)) return null;
+        m.FxDx = (int)v;
+        if (!EFloats.ToLong(m.Dy, 1, out v)) return null;
+        m.FxDy = (int)v;
+        return m;
+    }
+
+    /// Points through the matrix (EXFORMOBJ::bXform 0xA0096BCC), in place:
+    /// by flAccel's low four bits, each product rounded (MulRound), the
+    /// rounded translation added. False when a product will not fit, or for
+    /// a form win32k has no case for.
+    public bool Transform(long[] xs, long[] ys, int count)
+    {
+        long c = Accel & 0xF;
+        for (int i = 0; i < count; i++)
+        {
+            long x = xs[i], y = ys[i], a, b, cc, d;
+            switch (c)
+            {
+                case 0: case 8:
+                    if (!EFloats.MulRound(x, M11, out a) || !EFloats.MulRound(y, M21, out b)) return false;
+                    if (!EFloats.MulRound(x, M12, out cc) || !EFloats.MulRound(y, M22, out d)) return false;
+                    xs[i] = (int)(a + b + FxDx); ys[i] = (int)(cc + d + FxDy);
+                    break;
+                case 1: case 9:
+                    if (!EFloats.MulRound(x, M11, out a) || !EFloats.MulRound(y, M22, out d)) return false;
+                    xs[i] = (int)(a + FxDx); ys[i] = (int)(d + FxDy);
+                    break;
+                case 3:  xs[i] = (int)(((x + 8) >> 4) + FxDx); ys[i] = (int)(((y + 8) >> 4) + FxDy); break;
+                case 0xB: xs[i] = (int)((x << 4) + FxDx); ys[i] = (int)((y << 4) + FxDy); break;
+                case 7:  xs[i] = (int)(((x + 8) >> 4) + FxDx); ys[i] = (int)(((-y + 8) >> 4) + FxDy); break;
+                case 0xF: xs[i] = (int)((x << 4) + FxDx); ys[i] = (int)(-(y << 4) + FxDy); break;
+                default: return false;
+            }
+        }
+        return true;
+    }
+
+    /// LONG to LONG, rounded (EXFORMOBJ::bXformRound 0xA003728E): LPtoDP
+    /// through an LTOFX matrix -- the FIX result rounded half up to a pixel
+    /// -- and DPtoLP through an FXTOL one -- the input taken as FIX first.
+    /// The identity leaves them.
+    public bool TransformRound(long[] xs, long[] ys, int count)
+    {
+        if ((Accel & 0x43) == 0x43) return true;
+        long c = Accel & 0xB;
+        for (int i = 0; i < count; i++)
+        {
+            long x = xs[i], y = ys[i], a, b, cc, d;
+            switch (c)
+            {
+                case 9:
+                    if (!EFloats.MulRound(x, M11, out a) || !EFloats.MulRound(y, M22, out d)) return false;
+                    xs[i] = (int)((a + FxDx + 8) >> 4); ys[i] = (int)((d + FxDy + 8) >> 4);
+                    break;
+                case 0xB: xs[i] = (int)(x + ((FxDx + 8) >> 4)); ys[i] = (int)(y + ((FxDy + 8) >> 4)); break;
+                case 1:
+                    if (!EFloats.MulRound(x << 4, M11, out a) || !EFloats.MulRound(y << 4, M22, out d)) return false;
+                    xs[i] = (int)(a + FxDx); ys[i] = (int)(d + FxDy);
+                    break;
+                case 3: xs[i] = (int)(x + FxDx); ys[i] = (int)(y + FxDy); break;
+                case 8:
+                    if (!EFloats.MulRound(x, M11, out a) || !EFloats.MulRound(y, M21, out b)) return false;
+                    if (!EFloats.MulRound(x, M12, out cc) || !EFloats.MulRound(y, M22, out d)) return false;
+                    xs[i] = (int)((a + b + FxDx + 8) >> 4); ys[i] = (int)((cc + d + FxDy + 8) >> 4);
+                    break;
+                case 0:
+                    if (!EFloats.MulRound(x << 4, M11, out a) || !EFloats.MulRound(y << 4, M21, out b)) return false;
+                    if (!EFloats.MulRound(x << 4, M12, out cc) || !EFloats.MulRound(y << 4, M22, out d)) return false;
+                    xs[i] = (int)(a + b + FxDx); ys[i] = (int)(cc + d + FxDy);
+                    break;
+                default: return false;
+            }
+        }
+        return true;
+    }
+}

@@ -1,0 +1,1734 @@
+// THE SEAT ON WINDOWS: the GUI kernel's seat (os/gui/seat.cor in the corsac86
+// tree) answered inside the program, over user32 and gdi32, so that Corsac.GUI
+// and Windows Forms on top of it run as a Windows program unchanged. Seat
+// (Gui.cor) makes the same three calls it makes to the GUI kernel -- a write
+// of a drawing batch, a read of events, an ioctl -- and this answers them.
+//
+// A SEAT WINDOW IS A WINDOWS WINDOW with Windows' own frame: the style the
+// program gives its frame (SetFrame, WS_* and WS_EX_* bits) is the window's
+// style, so the caption, the borders, moving, sizing and the caption buttons
+// are Windows'. What the program draws goes into a picture of the whole
+// window, frame included, as the seat keeps one: a 32-bit DIB section. Its
+// client part is put on the screen at Present and whenever Windows asks for
+// it again (WM_PAINT); the frame's part is never shown, since Windows draws
+// the frame. Coordinates are the seat's, the window's top left the origin:
+// the client area's offset in the window is where Windows put it.
+//
+// THE DRAWING is the seat's: rectangles, copies, lines, bitmaps and glyphs
+// done here on the DIB's pixels; paths, regions and strokes by the GUI
+// kernel's own engine (Corsac.GUI.Engine), so a Graphics draws the same
+// pixels on both.
+//
+// EVENTS are Windows' messages, as the seat's 16-byte records: the window
+// procedure turns each into the event the GUI kernel would have sent and
+// queues it, and a read takes it, pumping messages while none waits.
+//
+// Windows 2000 is the floor. Not here yet: the seat's own menus, scroll
+// bars, the clipboard, drag and drop, the shell's feeds, input taps, layered
+// windows and printing pages; those ioctls are refused (ENOSYS), and Forms
+// carries on without them.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using Corsac.GUI.Engine;
+
+namespace Corsac.GUI;
+
+static class WinSeat
+{
+    const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
+    const long NoSys = 38, Inval = 22, BadF = 9;
+
+    // ---- user32, gdi32 and the rest ------------------------------------------
+
+    [DllImport("user32")] static extern int RegisterClassExW(nint wc);
+    [DllImport("user32")] static extern nint CreateWindowExW(int ex, nint cls, nint title, int style, int x, int y, int w, int h, nint parent, nint menu, nint instance, nint param);
+    [DllImport("user32")] static extern nint DefWindowProcW(nint hwnd, int msg, nint wParam, nint lParam);
+    [DllImport("user32")] static extern int GetMessageW(nint msg, nint hwnd, int min, int max);
+    [DllImport("user32")] static extern int PeekMessageW(nint msg, nint hwnd, int min, int max, int remove);
+    [DllImport("user32")] static extern int TranslateMessage(nint msg);
+    [DllImport("user32")] static extern nint DispatchMessageW(nint msg);
+    [DllImport("user32")] static extern int MsgWaitForMultipleObjects(int count, nint handles, int all, int ms, int wake);
+    [DllImport("user32")] static extern int ShowWindow(nint hwnd, int how);
+    [DllImport("user32")] static extern int SetWindowPos(nint hwnd, nint after, int x, int y, int w, int h, int flags);
+    [DllImport("user32")] static extern int DestroyWindow(nint hwnd);
+    [DllImport("user32")] static extern int SetWindowLongW(nint hwnd, int index, int value);
+    [DllImport("user32")] static extern int GetWindowLongW(nint hwnd, int index);
+    [DllImport("user32")] static extern int AdjustWindowRectEx(nint rect, int style, int menu, int ex);
+    [DllImport("user32")] static extern int SetWindowTextW(nint hwnd, nint text);
+    [DllImport("user32")] static extern nint GetDC(nint hwnd);
+    [DllImport("user32")] static extern int ReleaseDC(nint hwnd, nint dc);
+    [DllImport("user32")] static extern nint BeginPaint(nint hwnd, nint ps);
+    [DllImport("user32")] static extern int EndPaint(nint hwnd, nint ps);
+    [DllImport("user32")] static extern int GetWindowRect(nint hwnd, nint rect);
+    [DllImport("user32")] static extern int ClientToScreen(nint hwnd, nint point);
+    [DllImport("user32")] static extern nint SetFocus(nint hwnd);
+    [DllImport("user32")] static extern int SetForegroundWindow(nint hwnd);
+    [DllImport("user32")] static extern int PostMessageW(nint hwnd, int msg, nint wParam, nint lParam);
+    [DllImport("user32")] static extern nint SendMessageW(nint hwnd, int msg, nint wParam, nint lParam);
+    [DllImport("user32")] static extern int GetSystemMetrics(int index);
+    [DllImport("user32")] static extern int SystemParametersInfoW(int action, int param, nint value, int flags);
+    [DllImport("user32")] static extern int GetSysColor(int index);
+    [DllImport("user32")] static extern nint LoadCursorW(nint instance, nint name);
+    [DllImport("user32")] static extern nint LoadIconW(nint instance, nint name);
+    [DllImport("user32")] static extern nint SetCursor(nint cursor);
+    [DllImport("user32")] static extern int GetCursorPos(nint point);
+    [DllImport("user32")] static extern int SetCursorPos(int x, int y);
+    [DllImport("user32")] static extern nint SetCapture(nint hwnd);
+    [DllImport("user32")] static extern int ReleaseCapture();
+    [DllImport("user32")] static extern nint GetCapture();
+    [DllImport("user32")] static extern short GetKeyState(int vk);
+    [DllImport("user32")] static extern short GetAsyncKeyState(int vk);
+    [DllImport("user32")] static extern int GetKeyboardState(nint into);
+    [DllImport("user32")] static extern short VkKeyScanW(char c);
+    [DllImport("user32")] static extern nint SetTimer(nint hwnd, nint id, int ms, nint proc);
+    [DllImport("user32")] static extern int KillTimer(nint hwnd, nint id);
+    [DllImport("user32")] static extern int CreateCaret(nint hwnd, nint bitmap, int w, int h);
+    [DllImport("user32")] static extern int ShowCaret(nint hwnd);
+    [DllImport("user32")] static extern int HideCaret(nint hwnd);
+    [DllImport("user32")] static extern int SetCaretPos(int x, int y);
+    [DllImport("user32")] static extern int DestroyCaret();
+    [DllImport("user32")] static extern int GetCaretBlinkTime();
+    [DllImport("user32")] static extern int SetCaretBlinkTime(int ms);
+    [DllImport("user32")] static extern int RegisterHotKey(nint hwnd, int id, int mods, int vk);
+    [DllImport("user32")] static extern int UnregisterHotKey(nint hwnd, int id);
+    [DllImport("user32")] static extern int TrackMouseEvent(nint track);
+    [DllImport("user32")] static extern int IsIconic(nint hwnd);
+    [DllImport("user32")] static extern nint CreateIconIndirect(nint info);
+    [DllImport("user32")] static extern nint CreateIconFromResourceEx(nint bits, int size, int icon, int version, int w, int h, int flags);
+    [DllImport("user32")] static extern int DestroyIcon(nint icon);
+    [DllImport("user32")] static extern int GetCurrentThreadId();
+
+    [DllImport("gdi32")] static extern nint CreateCompatibleDC(nint dc);
+    [DllImport("gdi32")] static extern nint CreateDIBSection(nint dc, nint info, int usage, nint bits, nint section, int offset);
+    [DllImport("gdi32")] static extern nint CreateBitmap(int w, int h, int planes, int bits, nint data);
+    [DllImport("gdi32")] static extern nint SelectObject(nint dc, nint obj);
+    [DllImport("gdi32")] static extern int DeleteObject(nint obj);
+    [DllImport("gdi32")] static extern int DeleteDC(nint dc);
+    [DllImport("gdi32")] static extern int BitBlt(nint dst, int x, int y, int w, int h, nint src, int sx, int sy, int rop);
+    [DllImport("gdi32")] static extern int GdiFlush();
+    [DllImport("gdi32")] static extern nint GetStockObject(int which);
+    [DllImport("gdi32")] static extern int SetTextColor(nint dc, int colour);
+    [DllImport("gdi32")] static extern int SetBkColor(nint dc, int colour);
+    [DllImport("gdi32")] static extern int SetBkMode(nint dc, int mode);
+    [DllImport("gdi32")] static extern int TextOutW(nint dc, int x, int y, nint text, int count);
+
+    [DllImport("kernel32")] static extern nint GetModuleHandleW(nint name);
+    [DllImport("kernel32")] static extern int GetWindowsDirectoryW(nint into, int room);
+
+    [DllImport("advapi32")] static extern int RegOpenKeyExW(nint key, nint sub, int options, int access, nint result);
+    [DllImport("advapi32")] static extern int RegEnumValueW(nint key, int index, nint name, nint nameLength, nint reserved, nint type, nint data, nint dataLength);
+    [DllImport("advapi32")] static extern int RegCloseKey(nint key);
+
+    // Windows' messages.
+    const int WmMove = 0x3, WmSize = 0x5, WmActivate = 0x6, WmPaint = 0xF, WmClose = 0x10, WmEraseBkgnd = 0x14;
+    const int WmSysColorChange = 0x15, WmSettingChange = 0x1A, WmSetCursor = 0x20, WmGetMinMaxInfo = 0x24;
+    const int WmWindowPosChanged = 0x47, WmDisplayChange = 0x7E, WmSetIcon = 0x80;
+    const int WmKeyDown = 0x100, WmKeyUp = 0x101, WmChar = 0x102, WmDeadChar = 0x103;
+    const int WmSysKeyDown = 0x104, WmSysKeyUp = 0x105, WmSysChar = 0x106, WmSysDeadChar = 0x107;
+    const int WmSysCommand = 0x112, WmTimer = 0x113;
+    const int WmMouseMove = 0x200, WmLButtonDown = 0x201, WmLButtonUp = 0x202, WmLButtonDblClk = 0x203;
+    const int WmRButtonDown = 0x204, WmRButtonUp = 0x205, WmRButtonDblClk = 0x206;
+    const int WmMButtonDown = 0x207, WmMButtonUp = 0x208, WmMButtonDblClk = 0x209, WmMouseWheel = 0x20A, WmMouseHWheel = 0x20E;
+    const int WmCaptureChanged = 0x215, WmEnterSizeMove = 0x231, WmExitSizeMove = 0x232;
+    const int WmMouseLeave = 0x2A3, WmHotKey = 0x312;
+
+    const int WsPopup = unchecked((int)0x80000000), WsVisible = 0x10000000, WsChild = 0x40000000, WsDisabled = 0x08000000;
+    const int WsCaption = 0x00C00000, WsClipChildren = 0x02000000;
+    const int SwpNoSize = 1, SwpNoMove = 2, SwpNoZOrder = 4, SwpNoActivate = 0x10, SwpFrameChanged = 0x20;
+
+    // ---- a seat window --------------------------------------------------------
+
+    sealed class Window
+    {
+        public int Id;
+        public nint Hwnd;
+        public int X, Y, W, H;                  // where and how big, the frame included
+        public int Style, ExStyle;
+        public bool Shown, Painted, DoubleClicks, Tracking, Sizing;
+        public int MinW, MinH;
+        public nint Dib, Dc;
+        public long Bits;                       // the DIB's pixels: W * H words, 0x00RRGGBB, top row first
+        public int DirtyL, DirtyT, DirtyR, DirtyB;
+        public nint Icon;
+    }
+
+    static readonly Dictionary<int, Window> _windows = new Dictionary<int, Window>();
+    static readonly Dictionary<long, Window> _byHwnd = new Dictionary<long, Window>();
+    static int _nextWindow = 1;
+    static int _selected;
+    static nint _instance;
+    static char[]? _className;
+    static nint _helper;                         // timers and hot keys of no window
+
+    // ---- the event queue --------------------------------------------------------
+
+    static int[] _events = new int[256 * 4];
+    static int _head, _count;
+
+    static void Queue(int kind, int window, int a, int b)
+    {
+        if (_count * 4 == _events.Length)
+        {
+            int[] more = new int[_events.Length * 2];
+            for (int i = 0; i < _count * 4; i++) more[i] = _events[(_head * 4 + i) % _events.Length];
+            _events = more;
+            _head = 0;
+        }
+        int at = ((_head + _count) * 4) % _events.Length;
+        _events[at] = kind; _events[at + 1] = window; _events[at + 2] = a; _events[at + 3] = b;
+        _count++;
+    }
+
+    // ---- the three calls --------------------------------------------------------
+
+    public static long Call(long call, long a, long b, long c)
+    {
+        Start();
+        if (call == CallWrite) return Batch(a, b);
+        if (call == CallRead) return Read(a, b);
+        if (call == CallIoctl) return Ioctl(a, (b & 0xFFFFFFFF) | (c << 32));
+        return -NoSys;
+    }
+
+    static bool _started;
+
+    static void Start()
+    {
+        if (_started) return;
+        _started = true;
+        _instance = GetModuleHandleW(0);
+        _className = "CorsacSeatWindow\0".ToCharArray();
+        byte[] wc = new byte[48];
+        Put(wc, 0, 48);
+        Put(wc, 4, 8);                                            // CS_DBLCLKS
+        Put(wc, 8, Sys.AddressOf(WindowProcedure));
+        Put(wc, 20, (long)_instance);
+        Put(wc, 28, (long)LoadCursorW(0, 32512));                 // IDC_ARROW
+        Put(wc, 40, Sys.ArrayData(_className));
+        RegisterClassExW(At(wc));
+        _helper = CreateWindowExW(0, At(_className), 0, WsPopup, 0, 0, 0, 0, 0, 0, _instance, 0);
+        _cursor = LoadCursorW(0, 32512);
+    }
+
+    // ---- reading events ---------------------------------------------------------
+
+    static byte[] _msg = new byte[28];
+
+    /// Events into the caller's buffer, whole ones only, waiting for one.
+    static long Read(long into, long room)
+    {
+        if (room < 16) return -Inval;
+        while (_count == 0)
+        {
+            int got = GetMessageW(At(_msg), 0, 0, 0);
+            if (got <= 0) return 0;
+            Pump();
+        }
+        int given = 0;
+        while (_count > 0 && given + 16 <= room)
+        {
+            int at = (_head * 4) % _events.Length;
+            for (int i = 0; i < 4; i++) Sys.PokeWord(into + given + i * 4, _events[at + i]);
+            _head = (_head + 1) % (_events.Length / 4);
+            _count--;
+            given += 16;
+        }
+        return given;
+    }
+
+    /// The message in _msg handed on, as a message loop does.
+    static void Pump()
+    {
+        TranslateMessage(At(_msg));
+        DispatchMessageW(At(_msg));
+    }
+
+    /// Every message waiting dispatched; true when an event is queued.
+    static bool Drain()
+    {
+        while (PeekMessageW(At(_msg), 0, 0, 0, 1) != 0)          // PM_REMOVE
+        {
+            if (Word(_msg, 4) == 0x12) { PostQuit(); break; }     // WM_QUIT: put back for Read
+            Pump();
+        }
+        return _count > 0;
+    }
+
+    static void PostQuit() { Queue(10, 0, 0, 0); }
+
+    public static bool Poll(int timeoutMs)
+    {
+        Start();
+        long deadline = timeoutMs < 0 ? long.MaxValue : Win32.NowNanos() + (long)timeoutMs * 1000000;
+        while (true)
+        {
+            if (Drain()) return true;
+            long left = deadline - Win32.NowNanos();
+            if (left <= 0) return false;
+            int ms = timeoutMs < 0 ? -1 : (int)(left / 1000000 + 1);
+            MsgWaitForMultipleObjects(0, 0, 0, ms, 0x4FF);         // QS_ALLINPUT
+        }
+    }
+
+    /// The seat or one of `others` (descriptors), whichever first: the
+    /// index into `others`, or -1 for the seat or the time up.
+    public static int WaitAny(int[] others, int count, int timeoutMs)
+    {
+        Start();
+        long deadline = timeoutMs < 0 ? long.MaxValue : Win32.NowNanos() + (long)timeoutMs * 1000000;
+        long written = Os.PipeWritten();
+        int[] handle = new int[] { (int)written };
+        while (true)
+        {
+            if (written != 0) ResetEvent((nint)written);
+            if (Drain()) return -1;
+            for (int i = 0; i < count; i++) if (Os.Readable(others[i])) return i;
+            long left = deadline - Win32.NowNanos();
+            if (left <= 0) return -1;
+            // A pipe written in another process is asked about again after a slice.
+            int ms = (int)Math.Min(left / 1000000 + 1, 50);
+            MsgWaitForMultipleObjects(written != 0 ? 1 : 0, (nint)Sys.ArrayData(handle), 0, ms, 0x4FF);
+        }
+    }
+
+    [DllImport("kernel32")] static extern int ResetEvent(nint handle);
+
+    // ---- the window procedure ---------------------------------------------------
+
+    static nint _cursor;                  // what the pointer wears over our windows' client areas
+    static int _captured;                 // the window the program captured the pointer for (SetCapture), 0 none
+    static bool _implicit;                // a button holds the pointer for its window
+    static byte[] _peek = new byte[28];
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    static nint WindowProcedure(nint hwnd, int msg, nint wParam, nint lParam)
+    {
+        Window? w;
+        _byHwnd.TryGetValue((long)hwnd, out w);
+        if (w == null)
+        {
+            if (hwnd == _helper)
+            {
+                if (msg == WmTimer) { TimerFired((int)wParam); return 0; }
+                if (msg == WmHotKey) { Queue(35, 0, (int)wParam, (int)lParam); return 0; }
+                if (msg == WmSettingChange || msg == WmSysColorChange) { Queue(36, 0, 1 | 2 | 4, 0); Queue(17, 0, 0, 0); return 0; }
+                if (msg == WmDisplayChange) { Queue(15, 0, (GetSystemMetrics(0) & 0xFFFF) | (GetSystemMetrics(1) << 16), 0); return 0; }
+            }
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
+        }
+        int id = w.Id;
+        switch (msg)
+        {
+            case WmPaint:
+            {
+                byte[] ps = new byte[64];
+                nint dc = BeginPaint(hwnd, At(ps));
+                int l = Word(ps, 8), t = Word(ps, 12), r = Word(ps, 16), b = Word(ps, 20);
+                int ox, oy;
+                ClientOffset(w, out ox, out oy);
+                if (r > l && b > t && w.Dc != 0) BitBlt(dc, l, t, r - l, b - t, w.Dc, l + ox, t + oy, 0xCC0020);
+                EndPaint(hwnd, At(ps));
+                return 0;
+            }
+            case WmEraseBkgnd:
+                return 1;
+            case WmClose:
+                Queue(10, id, 0, 0);
+                return 0;
+            case WmActivate:
+                Queue(9, id, ((int)wParam & 0xFFFF) != 0 ? 1 : 0, 0);
+                return 0;
+            case WmEnterSizeMove:
+                w.Sizing = true;
+                break;
+            case WmExitSizeMove:
+                w.Sizing = false;
+                Settled(w);
+                break;
+            case WmWindowPosChanged:
+            {
+                byte[] r = new byte[16];
+                GetWindowRect(hwnd, At(r));
+                int nx = Word(r, 0), ny = Word(r, 4), nw = Word(r, 8) - nx, nh = Word(r, 12) - ny;
+                if (IsIconic(hwnd) != 0) return 0;
+                bool resized = nw != w.W || nh != w.H;
+                if (resized) Resize(w, nw, nh);
+                bool moved = nx != w.X || ny != w.Y;
+                w.X = nx; w.Y = ny;
+                if (!w.Sizing && (resized || moved)) Settled(w, resized, moved);
+                else if (resized || moved) { _settleSize |= resized; _settleMove |= moved; }
+                return 0;
+            }
+            case WmGetMinMaxInfo:
+                if (w.MinW > 0 || w.MinH > 0)
+                {
+                    if (w.MinW > 0) Sys.PokeWord((long)lParam + 24, w.MinW);
+                    if (w.MinH > 0) Sys.PokeWord((long)lParam + 28, w.MinH);
+                }
+                return 0;
+            case WmSetCursor:
+                if (((int)lParam & 0xFFFF) == 1 && wParam == hwnd)      // HTCLIENT, ours
+                {
+                    SetCursor(_cursor);
+                    byte[] p = new byte[8];
+                    GetCursorPos(At(p));
+                    int sx = Word(p, 0), sy = Word(p, 4);
+                    Queue(184, id, 1, Pack(sx - w.X, sy - w.Y));
+                    return 1;
+                }
+                break;
+            case WmSysCommand:
+            {
+                int command = (int)wParam & 0xFFF0;
+                // Minimize, maximize and restore are the form's (its
+                // WindowState); everything else -- the move and size loops,
+                // the system menu, close -- Windows does.
+                if (command == 0xF020 || command == 0xF030 || command == 0xF120) { Queue(22, id, (int)wParam, 0); return 0; }
+                break;
+            }
+            case WmKeyDown: case WmSysKeyDown: case WmKeyUp: case WmSysKeyUp:
+            {
+                bool down = msg == WmKeyDown || msg == WmSysKeyDown;
+                int vk = (int)wParam & 0xFF;
+                int mods = (GetKeyState(0x10) < 0 ? 1 : 0) | (GetKeyState(0x11) < 0 ? 2 : 0) | (GetKeyState(0x12) < 0 ? 4 : 0);
+                int ch = 0;
+                if (down)
+                {
+                    // The character the press types: the WM_CHAR its translation
+                    // queued right behind it.
+                    int charMsg = msg == WmKeyDown ? WmChar : WmSysChar;
+                    if (PeekMessageW(At(_peek), hwnd, charMsg, charMsg, 1) != 0) ch = Word(_peek, 8) & 0xFFFF;
+                }
+                Queue(1, id, (int)lParam, vk | (mods << 8) | (ch << 16));
+                // Alt+F4 and Alt+Space are still Windows' (close, the system menu).
+                if (msg == WmSysKeyDown && (vk == 0x73 || vk == 0x20)) break;
+                return 0;
+            }
+            case WmChar: case WmSysChar:
+                Queue(101, id, (int)wParam & 0xFFFF, 0);
+                return 0;
+            case WmDeadChar: case WmSysDeadChar:
+                Queue(101, id, (int)wParam & 0xFFFF, 1);
+                return 0;
+            case WmMouseMove:
+            {
+                if (!w.Tracking)
+                {
+                    w.Tracking = true;
+                    byte[] tme = new byte[16];
+                    Put(tme, 0, 16); Put(tme, 4, 2); Put(tme, 8, (long)hwnd);    // TME_LEAVE
+                    TrackMouseEvent(At(tme));
+                    Queue(181, id, 0, 0);
+                }
+                int wx, wy, sx, sy;
+                Points(w, lParam, out wx, out wy, out sx, out sy);
+                Queue(3, id, Pack(wx, wy), Pack(sx, sy));
+                return 0;
+            }
+            case WmMouseLeave:
+                w.Tracking = false;
+                Queue(182, id, 0, 0);
+                return 0;
+            case WmLButtonDown: case WmRButtonDown: case WmMButtonDown:
+            case WmLButtonDblClk: case WmRButtonDblClk: case WmMButtonDblClk:
+            {
+                int button = msg == WmLButtonDown || msg == WmLButtonDblClk ? 1 : msg == WmRButtonDown || msg == WmRButtonDblClk ? 2 : 3;
+                bool twice = msg == WmLButtonDblClk || msg == WmRButtonDblClk || msg == WmMButtonDblClk;
+                int wx, wy, sx, sy;
+                Points(w, lParam, out wx, out wy, out sx, out sy);
+                // The button holds the pointer for its window until it comes up, as the seat does.
+                if (GetCapture() == 0) { _implicit = true; SetCapture(hwnd); }
+                Queue(twice && w.DoubleClicks ? 180 : 4, id, button, Pack(wx, wy));
+                return 0;
+            }
+            case WmLButtonUp: case WmRButtonUp: case WmMButtonUp:
+            {
+                int button = msg == WmLButtonUp ? 1 : msg == WmRButtonUp ? 2 : 3;
+                int wx, wy, sx, sy;
+                Points(w, lParam, out wx, out wy, out sx, out sy);
+                Queue(5, id, button, Pack(wx, wy));
+                if (_implicit && ((int)wParam & 0x13) == 0) { _implicit = false; if (_captured == 0) ReleaseCapture(); }
+                return 0;
+            }
+            case WmMouseWheel:
+                Queue(6, id, (short)(((int)wParam >> 16) & 0xFFFF), 0);
+                return 0;
+            case WmMouseHWheel:
+                Queue(7, id, (short)(((int)wParam >> 16) & 0xFFFF), 0);
+                return 0;
+            case WmCaptureChanged:
+                if (_captured == id && lParam != hwnd) { _captured = 0; Queue(183, id, 0, 0); }
+                _implicit = false;
+                return 0;
+            case WmTimer:
+                TimerFired((int)wParam);
+                return 0;
+            case WmHotKey:
+                Queue(35, id, (int)wParam, (int)lParam);
+                return 0;
+        }
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    static bool _settleSize, _settleMove;
+
+    /// The end of Windows' move or size loop: the program told where the
+    /// window went and how big it is, as the seat tells it after its own.
+    static void Settled(Window w) { Settled(w, _settleSize, _settleMove); _settleSize = false; _settleMove = false; }
+
+    static void Settled(Window w, bool resized, bool moved)
+    {
+        if (resized) Queue(21, w.Id, Pack(w.X, w.Y), Pack(w.W, w.H));
+        else if (moved) Queue(20, w.Id, Pack(w.X, w.Y), 0);
+    }
+
+    static int Pack(int x, int y) { return (x & 0xFFFF) | (y << 16); }
+
+    /// A mouse message's point: in the window (the frame's top left the
+    /// origin) and on the screen.
+    static void Points(Window w, nint lParam, out int wx, out int wy, out int sx, out int sy)
+    {
+        int cx = (short)((int)lParam & 0xFFFF), cy = (short)(((int)lParam >> 16) & 0xFFFF);
+        int ox, oy;
+        ClientOffset(w, out ox, out oy);
+        wx = cx + ox; wy = cy + oy;
+        sx = w.X + wx; sy = w.Y + wy;
+    }
+
+    /// Where Windows put the client area in the window.
+    static void ClientOffset(Window w, out int x, out int y)
+    {
+        byte[] r = new byte[16];
+        byte[] p = new byte[8];
+        GetWindowRect(w.Hwnd, At(r));
+        ClientToScreen(w.Hwnd, At(p));
+        x = Word(p, 0) - Word(r, 0);
+        y = Word(p, 4) - Word(r, 4);
+    }
+
+    // ---- the window's picture ---------------------------------------------------
+
+    /// The DIB made `width` by `height`, what it held kept where it still fits.
+    static void Resize(Window w, int width, int height)
+    {
+        if (width < 1) width = 1;
+        if (height < 1) height = 1;
+        byte[] info = new byte[40];
+        Put(info, 0, 40); Put(info, 4, width); Put(info, 8, -height);
+        info[12] = 1; info[14] = 32;                               // one plane, 32 bits, BI_RGB
+        int bits = 0;
+        nint screen = GetDC(0);
+        nint dib = CreateDIBSection(screen, At(info), 0, (nint)Sys.AddressOf(ref bits), 0, 0);
+        if (w.Dc == 0) w.Dc = CreateCompatibleDC(screen);
+        ReleaseDC(0, screen);
+        if (dib == 0) return;
+        long now = bits & 0xFFFFFFFF;
+        GdiFlush();
+        if (w.Bits != 0)
+        {
+            int rows = Math.Min(height, w.H), cols = Math.Min(width, w.W);
+            for (int y = 0; y < rows; y++) Sys.MemoryCopy(now + (long)y * width * 4, w.Bits + (long)y * w.W * 4, cols * 4);
+        }
+        nint old = SelectObject(w.Dc, dib);
+        if (w.Dib != 0) DeleteObject(w.Dib);
+        w.Dib = dib;
+        w.Bits = now;
+        w.W = width;
+        w.H = height;
+    }
+
+    /// What was drawn since the last Present, onto the screen.
+    static void Present()
+    {
+        foreach (Window w in _windows.Values)
+        {
+            if (w.DirtyR <= w.DirtyL || w.DirtyB <= w.DirtyT) continue;
+            if (w.Shown && w.Dc != 0)
+            {
+                int ox, oy;
+                ClientOffset(w, out ox, out oy);
+                nint dc = GetDC(w.Hwnd);
+                HideCaret(w.Hwnd);
+                BitBlt(dc, w.DirtyL - ox, w.DirtyT - oy, w.DirtyR - w.DirtyL, w.DirtyB - w.DirtyT, w.Dc, w.DirtyL, w.DirtyT, 0xCC0020);
+                ShowCaret(w.Hwnd);
+                ReleaseDC(w.Hwnd, dc);
+            }
+            w.DirtyL = 0; w.DirtyT = 0; w.DirtyR = 0; w.DirtyB = 0;
+        }
+    }
+
+    static void Dirty(Window w, int x, int y, int width, int height)
+    {
+        if (width <= 0 || height <= 0) return;
+        int r = x + width, b = y + height;
+        if (w.DirtyR <= w.DirtyL || w.DirtyB <= w.DirtyT) { w.DirtyL = x; w.DirtyT = y; w.DirtyR = r; w.DirtyB = b; return; }
+        if (x < w.DirtyL) w.DirtyL = x; if (y < w.DirtyT) w.DirtyT = y;
+        if (r > w.DirtyR) w.DirtyR = r; if (b > w.DirtyB) w.DirtyB = b;
+    }
+
+    // ---- the drawing batch -------------------------------------------------------
+
+    sealed class Picture { public int W, H; public int[] Argb = new int[0]; }
+    sealed class Glyph { public int W, H, Stride; public byte[] Bits = new byte[0]; }
+
+    static readonly Dictionary<int, Picture> _pictures = new Dictionary<int, Picture>();
+    static readonly Dictionary<int, Glyph> _glyphs = new Dictionary<int, Glyph>();
+    static readonly Dictionary<int, nint> _pointers = new Dictionary<int, nint>();
+
+    // The batch's state: it lasts the batch, as the seat's does.
+    static Window? _w;
+    static bool _clipped;
+    static int _clipX, _clipY, _clipW, _clipH;
+    static DrawTransform? _transform;
+    static DrawMode _mode = DrawMode.Of(0);
+    static RegionShape? _clip;
+    const int RegionSlots = 10;
+    static readonly RegionShape?[] _slots = new RegionShape?[RegionSlots];
+    static readonly Paint _paint = new Paint();
+
+    static void ResetGeometry()
+    {
+        _transform = null; _mode = DrawMode.Of(0); _clip = null;
+        for (int i = 0; i < RegionSlots; i++) _slots[i] = null;
+    }
+
+    static int Arity(long op)
+    {
+        switch (op)
+        {
+            case 1: return 5; case 2: return 6; case 3: return 5; case 4: return 4; case 5: return 6; case 6: return 4;
+            case 7: return 5; case 8: return 7; case 9: return 2; case 10: return 1; case 11: return 5; case 12: return 1;
+            case 13: return 0; case 14: return 6; case 15: return 1; case 16: return 3; case 17: return 6; case 18: return 4;
+            case 19: return 1; case 20: return 3; case 21: return 5;
+        }
+        return -1;
+    }
+
+    /// A batch, op by op (the GUI kernel's WriteBatch): the count taken, or
+    /// EINVAL for one that cannot be read.
+    static long Batch(long source, long count)
+    {
+        long at = 0;
+        _w = null; _clipped = false;
+        ResetGeometry();
+        while (at + 4 <= count)
+        {
+            long op = Peek(source + at);
+            int need = Arity(op);
+            if (need < 0 || at + 4 + need * 4 > count) return -Inval;
+            long a0 = need > 0 ? Peek(source + at + 4) : 0, a1 = need > 1 ? Peek(source + at + 8) : 0;
+            long a2 = need > 2 ? Peek(source + at + 12) : 0, a3 = need > 3 ? Peek(source + at + 16) : 0;
+            long a4 = need > 4 ? Peek(source + at + 20) : 0, a5 = need > 5 ? Peek(source + at + 24) : 0;
+            long a6 = need > 6 ? Peek(source + at + 28) : 0;
+            at += 4 + need * 4;
+            if (op == 13) { Present(); continue; }
+            if (op == 12)
+            {
+                Window? named;
+                _windows.TryGetValue((int)a0, out named);
+                _w = named; _clipped = false;
+                ResetGeometry();
+                continue;
+            }
+            if (op == 4 || op == 7 || op == 11)
+            {
+                long bytes = op == 4 ? a3 : a4;
+                long padded = (bytes + 3) & ~3;
+                if (bytes < 0 || at + padded > count) return -Inval;
+                if (op == 4) DefineGlyph((int)a0, (int)a1, (int)a2, source + at, (int)bytes);
+                else if (op == 7) DefinePicture((int)a0, (int)a1, (int)a2, source + at, (int)bytes);
+                else DefinePointer((int)a0, (int)a1, (int)a2, Signed16(a3), Signed16(a3 >> 16), source + at, (int)bytes);
+                at += padded;
+                continue;
+            }
+            long payload = 0;
+            long carried = Payload(op, a2, a3, a4, a5);
+            if (carried != -1)
+            {
+                if (carried < 0 || at + carried > count) return -Inval;
+                payload = source + at;
+                at += carried;
+            }
+            if (op == 9 || op == 10) continue;
+            if (op == 14) { DrawTransform t = DrawTransform.Of(a0, a1, a2, a3, a4, a5); _transform = t.IsIdentity ? null : t; continue; }
+            if (op == 15) { _mode = DrawMode.Of(a0); continue; }
+            Window? w = _w;
+            if (w == null || w.Bits == 0) continue;
+            if (op == 6) { _clipX = (int)a0; _clipY = (int)a1; _clipW = (int)a2; _clipH = (int)a3; _clipped = true; continue; }
+            if (op == 18) { ClipPath(w, a0, a1, a2, a3, payload); continue; }
+            if (op == 20) { CombineRegion(w, a0, a1, a2); continue; }
+            if (op == 16 || op == 17 || op == 19) { Geometry(w, op, a0, a1, a2, a3, a4, a5, payload); continue; }
+            if (op == 1) FillOp(w, (int)a0, (int)a1, (int)a2, (int)a3, (int)a4);
+            else if (op == 2) CopyOp(w, (int)a0, (int)a1, (int)a2, (int)a3, (int)a4, (int)a5);
+            else if (op == 3) LineOp(w, (int)a0, (int)a1, (int)a2, (int)a3, (int)a4);
+            else if (op == 5) GlyphOp(w, (int)a0, (int)a1, (int)a2, (int)a3, (int)a4, (a5 & 1) != 0);
+            else if (op == 8) BlitOp(w, (int)a0, (int)a1, (int)a2, (int)a3, (int)a4, (int)a5, (int)a6);
+        }
+        return count;
+    }
+
+    static long Peek(long at) { return Sys.PeekWord(at) & 0xFFFFFFFF; }
+
+    static int Signed16(long v) { int n = (int)(v & 0xFFFF); return n >= 0x8000 ? n - 0x10000 : n; }
+
+    static long Payload(long op, long a2, long a3, long a4, long a5)
+    {
+        if (op == 16) return Points(a2);
+        if (op == 17)
+        {
+            long points = Points(a5);
+            if (points < 0 || a4 < 0 || a4 > 64) return -2;
+            return points + (a4 > 0 ? (a4 + 1) * 4 : 0);
+        }
+        if (op == 18) return Points(a3);
+        return -1;
+    }
+
+    static long Points(long count) { return count < 0 || count > 65536 ? -2 : count * 12; }
+
+    /// A rectangle cut to the window and the batch's clip; false when nothing is left.
+    static bool ClipTo(Window w, ref int x, ref int y, ref int width, ref int height)
+    {
+        int x0 = x, y0 = y, x1 = x + width, y1 = y + height;
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+        if (x1 > w.W) x1 = w.W; if (y1 > w.H) y1 = w.H;
+        if (_clipped)
+        {
+            if (x0 < _clipX) x0 = _clipX; if (y0 < _clipY) y0 = _clipY;
+            if (x1 > _clipX + _clipW) x1 = _clipX + _clipW; if (y1 > _clipY + _clipH) y1 = _clipY + _clipH;
+        }
+        x = x0; y = y0; width = x1 - x0; height = y1 - y0;
+        return width > 0 && height > 0;
+    }
+
+    static void FillOp(Window w, int x, int y, int width, int height, int rgb)
+    {
+        if (_clip != null)
+        {
+            _paint.Start(w); _paint.Argb = 0xFF000000 | ((long)rgb & 0xFFFFFF);
+            DrawEngine.FillRectangle(_paint, x, y, width, height, _clip);
+            return;
+        }
+        if (!ClipTo(w, ref x, ref y, ref width, ref height)) return;
+        Fill(w, x, y, width, height, rgb & 0xFFFFFF);
+    }
+
+    static void Fill(Window w, int x, int y, int width, int height, int pixel)
+    {
+        for (int row = 0; row < height; row++)
+        {
+            long at = w.Bits + ((long)(y + row) * w.W + x) * 4;
+            for (int k = 0; k < width; k++) Sys.PokeWord(at + k * 4, pixel);
+        }
+        Dirty(w, x, y, width, height);
+    }
+
+    static void CopyOp(Window w, int sx, int sy, int dx, int dy, int width, int height)
+    {
+        if (sx < 0 || sy < 0 || sx + width > w.W || sy + height > w.H) return;
+        int cx = dx, cy = dy, cw = width, ch = height;
+        if (!ClipTo(w, ref cx, ref cy, ref cw, ref ch)) return;
+        sx += cx - dx; sy += cy - dy;
+        // Rows in the order that reads none a row before it wrote.
+        bool down = sy >= cy;
+        for (int k = 0; k < ch; k++)
+        {
+            int row = down ? k : ch - 1 - k;
+            long to = w.Bits + ((long)(cy + row) * w.W + cx) * 4, from = w.Bits + ((long)(sy + row) * w.W + sx) * 4;
+            if (sy != cy) { Sys.MemoryCopy(to, from, cw * 4); continue; }
+            // Along one row the two may overlap: through a row of its own.
+            if (_row.Length < cw) _row = new int[cw];
+            Sys.MemoryCopy(Sys.ArrayData(_row), from, cw * 4);
+            Sys.MemoryCopy(to, Sys.ArrayData(_row), cw * 4);
+        }
+        Dirty(w, cx, cy, cw, ch);
+    }
+
+    static int[] _row = new int[0];
+
+    static void LineOp(Window w, int x0, int y0, int x1, int y1, int rgb)
+    {
+        if (_clip == null && (x0 == x1 || y0 == y1))
+        {
+            int lx = Math.Min(x0, x1), ly = Math.Min(y0, y1), lw = Math.Abs(x1 - x0) + 1, lh = Math.Abs(y1 - y0) + 1;
+            if (ClipTo(w, ref lx, ref ly, ref lw, ref lh)) Fill(w, lx, ly, lw, lh, rgb & 0xFFFFFF);
+            return;
+        }
+        // A slanted line, both ends drawn, as the seat draws one through a clip region.
+        _paint.Start(w); _paint.Argb = 0xFF000000 | ((long)rgb & 0xFFFFFF);
+        DevicePath path = new DevicePath();
+        path.MoveTo((long)x0 << 4, (long)y0 << 4);
+        path.PolyLineTo(new long[] { (long)x1 << 4 }, new long[] { (long)y1 << 4 }, 1);
+        DrawEngine.StrokePath(_paint, path, new DrawPen(), DrawMode.Of(0), _clip);
+    }
+
+    // ---- glyphs ---------------------------------------------------------------
+
+    static void DefineGlyph(int id, int width, int height, long at, int bytes)
+    {
+        if (id < 256 || width <= 0 || height <= 0) return;
+        Glyph g = new Glyph();
+        g.W = width; g.H = height; g.Stride = (width + 7) / 8;
+        g.Bits = new byte[bytes];
+        for (int i = 0; i < bytes; i++) g.Bits[i] = (byte)Sys.PeekByte(at + i);
+        _glyphs[id] = g;
+    }
+
+    static nint _systemFont;
+    static char[] _one = new char[1];
+
+    static void GlyphOp(Window w, int id, int x, int y, int fg, int bg, bool transparent)
+    {
+        if (id < 256)
+        {
+            // THE SYSTEM FONT'S CHARACTER `id`: Windows' own fixed system
+            // font draws it, through the batch's clip.
+            if (_systemFont == 0) _systemFont = GetStockObject(16);       // SYSTEM_FIXED_FONT
+            int gw = 8, gh = 16;
+            int cx = x, cy = y, cw = gw, ch = gh;
+            if (!ClipTo(w, ref cx, ref cy, ref cw, ref ch)) return;
+            GdiFlush();
+            nint old = SelectObject(w.Dc, _systemFont);
+            SetTextColor(w.Dc, Swap(fg));
+            SetBkColor(w.Dc, Swap(bg));
+            SetBkMode(w.Dc, transparent ? 1 : 2);
+            _one[0] = (char)id;
+            TextOutW(w.Dc, x, y, (nint)Sys.ArrayData(_one), 1);
+            SelectObject(w.Dc, old);
+            GdiFlush();
+            Dirty(w, cx, cy, cw, ch);
+            return;
+        }
+        Glyph? g;
+        if (!_glyphs.TryGetValue(id, out g)) return;
+        long bits = Sys.ArrayData(g.Bits);
+        _paint.Start(w); _paint.Argb = 0xFF000000 | ((long)fg & 0xFFFFFF);
+        DrawEngine.Bits(_paint, bits, g.Stride, x, y, g.W, g.H, true, _clip);
+        if (!transparent)
+        {
+            _paint.Start(w); _paint.Argb = 0xFF000000 | ((long)bg & 0xFFFFFF);
+            DrawEngine.Bits(_paint, bits, g.Stride, x, y, g.W, g.H, false, _clip);
+        }
+        GC.KeepAlive(g.Bits);
+    }
+
+    /// 0x00RRGGBB and a COLORREF, either way.
+    static int Swap(int c) { return ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF); }
+
+    // ---- pictures ---------------------------------------------------------------
+
+    static void DefinePicture(int id, int width, int height, long at, int bytes)
+    {
+        if (width <= 0 || height <= 0 || bytes < width * height * 4) return;
+        Picture p = new Picture();
+        p.W = width; p.H = height;
+        p.Argb = new int[width * height];
+        Sys.MemoryCopy(Sys.ArrayData(p.Argb), at, width * height * 4);
+        _pictures[id] = p;
+    }
+
+    static void BlitOp(Window w, int id, int sx, int sy, int x, int y, int width, int height)
+    {
+        Picture? p;
+        if (!_pictures.TryGetValue(id, out p)) return;
+        if (_clip == null) { BlitRect(w, p, sx, sy, x, y, width, height, -1, -1, -1, -1); return; }
+        int[] c = _clip.R;
+        for (int i = 0; i + 3 < c.Length; i += 4) BlitRect(w, p, sx, sy, x, y, width, height, c[i], c[i + 1], c[i + 2], c[i + 3]);
+    }
+
+    /// Part of a picture onto the window, through the clip and a rectangle
+    /// of the clip region (l < 0: none); its alpha blended, as a picture's
+    /// see-through pixels are left.
+    static void BlitRect(Window w, Picture p, int sx, int sy, int x, int y, int width, int height, int l, int t, int r, int b)
+    {
+        int cx = x, cy = y, cw = width, ch = height;
+        if (!ClipTo(w, ref cx, ref cy, ref cw, ref ch)) return;
+        if (l >= 0)
+        {
+            int x0 = Math.Max(cx, l), y0 = Math.Max(cy, t), x1 = Math.Min(cx + cw, r), y1 = Math.Min(cy + ch, b);
+            cx = x0; cy = y0; cw = x1 - x0; ch = y1 - y0;
+            if (cw <= 0 || ch <= 0) return;
+        }
+        int[] argb = p.Argb;
+        for (int row = 0; row < ch; row++)
+        {
+            int py = sy + (cy - y) + row;
+            if (py < 0 || py >= p.H) continue;
+            long at = w.Bits + ((long)(cy + row) * w.W + cx) * 4;
+            for (int k = 0; k < cw; k++, at += 4)
+            {
+                int px = sx + (cx - x) + k;
+                if (px < 0 || px >= p.W) continue;
+                int c = argb[py * p.W + px];
+                int a = (c >> 24) & 0xFF;
+                if (a == 0) continue;
+                if (a == 255) { Sys.PokeWord(at, c & 0xFFFFFF); continue; }
+                int under = (int)Sys.PeekWord(at);
+                Sys.PokeWord(at, Blend(c, under, a));
+            }
+        }
+        Dirty(w, cx, cy, cw, ch);
+    }
+
+    static int Blend(int c, int under, int a)
+    {
+        int r = (((c >> 16) & 0xFF) * a + ((under >> 16) & 0xFF) * (255 - a) + 127) / 255;
+        int g = (((c >> 8) & 0xFF) * a + ((under >> 8) & 0xFF) * (255 - a) + 127) / 255;
+        int bl = ((c & 0xFF) * a + (under & 0xFF) * (255 - a) + 127) / 255;
+        return (r << 16) | (g << 8) | bl;
+    }
+
+    // ---- the engine's geometry -------------------------------------------------------
+
+    static void Geometry(Window w, long op, long a0, long a1, long a2, long a3, long a4, long a5, long payload)
+    {
+        RegionShape within = _clip ?? RegionShape.Rect(0, 0, w.W, w.H);
+        if (_clipped) within = within.Combine(RegionShape.Rect(_clipX, _clipY, _clipX + _clipW, _clipY + _clipH), RegionShape.And);
+        _paint.Start(w);
+        _paint.Argb = a0 & 0xFFFFFFFF;
+        if (op == 16)
+        {
+            DevicePath path = DrawEngine.FromPoints(payload, (int)a2, _transform);
+            DrawEngine.FillPath(_paint, path, FillMode(a1), _mode, within);
+        }
+        else if (op == 17)
+        {
+            DrawPen pen = new DrawPen
+            {
+                Width = _transform != null ? _transform.Width(a1 & 0xFFFFFFFF) : a1 & 0xFFFFFFFF,
+                Cap = (int)(a2 & 0x300), Join = (int)(a2 & 0x3000), MiterBits = a3 & 0xFFFFFFFF,
+            };
+            int dashes = (int)a4;
+            long at = payload;
+            if (dashes > 0)
+            {
+                long offset = Sys.PeekWord(at) & 0xFFFFFFFF;
+                if (offset >= 0x80000000) offset -= 0x100000000;
+                long[] pattern = new long[dashes];
+                for (int i = 0; i < dashes; i++) pattern[i] = Sys.PeekWord(at + 4 + i * 4) & 0xFFFFFFFF;
+                if (_transform != null)
+                {
+                    offset = _transform.Width(offset);
+                    for (int i = 0; i < dashes; i++) pattern[i] = _transform.Width(pattern[i]);
+                }
+                pen.Dashes = pattern; pen.DashOffset = offset;
+                at += (dashes + 1) * 4;
+            }
+            DevicePath path = DrawEngine.FromPoints(at, (int)a5, _transform);
+            DrawEngine.StrokePath(_paint, path, pen, _mode, within);
+        }
+        else
+        {
+            RegionShape? fill = _slots[1];
+            if (fill != null) DrawEngine.FillShape(_paint, fill, within);
+        }
+    }
+
+    static int FillMode(long word) { return word == RegionShape.Winding ? RegionShape.Winding : RegionShape.Alternate; }
+
+    const long CombineReplace = 0, CombineIntersect = 1, CombineUnion = 2, CombineXor = 3, CombineExclude = 4,
+               CombineComplement = 5, CombineReset = 6, CombineAll = 7;
+
+    static void ClipPath(Window w, long slot, long mode, long fillMode, long count, long payload)
+    {
+        if (slot < 0 || slot >= RegionSlots) return;
+        RegionShape? shape = null;
+        if (mode == CombineAll) { mode = CombineReplace; shape = RegionShape.Rect(0, 0, w.W, w.H); }
+        else if (mode != CombineReset)
+        {
+            shape = RegionShape.Empty;
+            if (count > 0)
+            {
+                DevicePath path = DrawEngine.FromPoints(payload, (int)count, _transform);
+                RegionShape? s = DrawEngine.PathShape(path, FillMode(fillMode), _mode, 0, w.H);
+                if (s != null) shape = s.Combine(RegionShape.Rect(0, 0, w.W, w.H), RegionShape.And);
+            }
+        }
+        Combine(w, (int)slot, mode, shape);
+    }
+
+    static void CombineRegion(Window w, long into, long mode, long from)
+    {
+        if (into < 0 || into >= RegionSlots || from < 0 || from >= RegionSlots || mode == CombineReset) return;
+        RegionShape? source = from == 0 ? _clip : _slots[(int)from];
+        Combine(w, (int)into, mode, source ?? (from == 0 ? RegionShape.Rect(0, 0, w.W, w.H) : RegionShape.Empty));
+    }
+
+    static void Combine(Window w, int slot, long mode, RegionShape? shape)
+    {
+        bool clip = slot == 0;
+        RegionShape? now = clip ? _clip : _slots[slot];
+        RegionShape? made;
+        if (mode == CombineReset || shape == null) made = null;
+        else
+        {
+            RegionShape all = RegionShape.Rect(0, 0, w.W, w.H);
+            RegionShape before = now ?? (clip ? all : RegionShape.Empty);
+            if (mode == CombineReplace) made = shape;
+            else if (mode == CombineIntersect) made = before.Combine(shape, RegionShape.And);
+            else if (mode == CombineUnion) made = before.Combine(shape, RegionShape.Or);
+            else if (mode == CombineXor) made = before.Combine(shape, RegionShape.Xor);
+            else if (mode == CombineExclude) made = before.Combine(shape, RegionShape.Diff);
+            else if (mode == CombineComplement) made = shape.Combine(before, RegionShape.Diff);
+            else made = now;
+            if (clip && made != null) made = made.Combine(all, RegionShape.And);
+        }
+        if (clip) _clip = made; else _slots[slot] = made;
+    }
+
+    /// A WINDOW AS THE ENGINE'S TARGET (the seat's SeatPaint): rectangles
+    /// filled, rows of coverage blended by SourceOver, on the DIB, through
+    /// the window's edges and the batch's clip rectangle.
+    sealed class Paint : DrawTarget
+    {
+        public long Argb;
+        Window _w = null!;
+        bool _none, _blend;
+        int _alpha, _pixel;
+
+        public void Start(Window w) { _w = w; }
+
+        public void Open(int left, int top, int right, int bottom, bool coverage)
+        {
+            _alpha = (int)((Argb >> 24) & 0xFF);
+            _none = _alpha == 0;
+            _pixel = (int)(Argb & 0xFFFFFF);
+            _blend = coverage || _alpha < 255;
+        }
+
+        public void Rectangle(int x, int y, int width, int height)
+        {
+            if (_none) return;
+            if (_blend) { for (int row = 0; row < height; row++) Row(x, y + row, width, null, 0); return; }
+            int fx = x, fy = y, fw = width, fh = height;
+            if (ClipTo(_w, ref fx, ref fy, ref fw, ref fh)) Fill(_w, fx, fy, fw, fh, _pixel);
+        }
+
+        public void Coverage(int x, int y, byte[] coverage, int from, int count)
+        {
+            if (_none || !_blend) return;
+            Row(x, y, count, coverage, from);
+        }
+
+        public void Close() { }
+
+        void Row(int x, int y, int count, byte[]? coverage, int from)
+        {
+            int cx = x, cy = y, cw = count, ch = 1;
+            if (!ClipTo(_w, ref cx, ref cy, ref cw, ref ch)) return;
+            long at = _w.Bits + ((long)cy * _w.W + cx) * 4;
+            for (int k = 0; k < cw; k++, at += 4)
+            {
+                int a = coverage == null ? 255 : coverage[from + (cx - x) + k];
+                if (_alpha < 255) a = (a * _alpha + 127) / 255;
+                if (a == 0) continue;
+                if (a >= 255) { Sys.PokeWord(at, _pixel); continue; }
+                Sys.PokeWord(at, Blend(_pixel, (int)Sys.PeekWord(at), a));
+            }
+            Dirty(_w, cx, cy, cw, 1);
+        }
+    }
+
+    // ---- pointer shapes -------------------------------------------------------------
+
+    /// A cursor of the program's own, from 0xAARRGGBB pixels: a colour
+    /// picture and a mask of its clear pixels, as CreateIconIndirect takes.
+    static nint MakeCursor(bool icon, int width, int height, int hotX, int hotY, long argb)
+    {
+        byte[] info = new byte[40];
+        Put(info, 0, 40); Put(info, 4, width); Put(info, 8, -height);
+        info[12] = 1; info[14] = 32;
+        int bits = 0;
+        nint screen = GetDC(0);
+        nint colour = CreateDIBSection(screen, At(info), 0, (nint)Sys.AddressOf(ref bits), 0, 0);
+        ReleaseDC(0, screen);
+        if (colour == 0) return 0;
+        int stride = ((width + 15) / 16) * 2;
+        byte[] mask = new byte[stride * height];
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                int c = (int)Sys.PeekWord(argb + ((long)y * width + x) * 4);
+                bool clear = ((c >> 24) & 0xFF) < 128;
+                Sys.PokeWord((bits & 0xFFFFFFFF) + ((long)y * width + x) * 4, clear ? 0 : c);
+                if (clear) mask[y * stride + x / 8] |= (byte)(0x80 >> (x % 8));
+            }
+        nint maskBitmap = CreateBitmap(width, height, 1, 1, At(mask));
+        byte[] ii = new byte[20];
+        Put(ii, 0, icon ? 1 : 0); Put(ii, 4, hotX); Put(ii, 8, hotY); Put(ii, 12, (long)maskBitmap); Put(ii, 16, (long)colour);
+        nint made = CreateIconIndirect(At(ii));
+        DeleteObject(maskBitmap);
+        DeleteObject(colour);
+        return made;
+    }
+
+    static void DefinePointer(int id, int width, int height, int hotX, int hotY, long at, int bytes)
+    {
+        if (width <= 0 || height <= 0 || bytes < width * height * 4) return;
+        nint made = MakeCursor(false, width, height, hotX, hotY, at);
+        nint old;
+        if (_pointers.TryGetValue(id, out old) && old != 0) DestroyIcon(old);
+        _pointers[id] = made;
+    }
+
+    /// The seat's standard shape `shape` (CursorShapes) as Windows' IDC_ number.
+    static int Standard(int shape)
+    {
+        switch (shape)
+        {
+            case 1: return 32644; case 2: return 32645; case 3: return 32642; case 4: return 32643;
+            case 5: return 32513; case 6: return 32514; case 7: return 32651; case 8: return 32648;
+            case 9: return 32646; case 10: return 32649; case 11: return 32515; case 12: return 32516;
+            case 13: return 32650;
+        }
+        return 32512;
+    }
+
+    static void Wear(nint cursor)
+    {
+        _cursor = cursor;
+        // At once when the pointer is over one of our client areas: the next
+        // WM_SETCURSOR would otherwise be the next move.
+        byte[] p = new byte[8];
+        GetCursorPos(At(p));
+        SetCursor(cursor);
+    }
+
+    // ---- timers -------------------------------------------------------------------
+
+    static readonly Dictionary<int, int> _timerWindow = new Dictionary<int, int>();
+
+    static void TimerFired(int id)
+    {
+        int window;
+        if (_timerWindow.TryGetValue(id, out window)) Queue(34, window, id, 0);
+    }
+
+    // ---- the ioctls ---------------------------------------------------------------
+
+    static Window? Selected() { Window? w; _windows.TryGetValue(_selected, out w); return w; }
+
+    static long Ioctl(long request, long arg)
+    {
+        Window? w;
+        switch ((SeatIoctl)request)
+        {
+            case SeatIoctl.Width: return GetSystemMetrics(0);
+            case SeatIoctl.Height: return GetSystemMetrics(1);
+            case SeatIoctl.Format: return 4;
+            case SeatIoctl.Refresh: return 0;
+            case SeatIoctl.Start: return 1;
+            case SeatIoctl.Whoami: return GetCurrentThreadId();
+            case SeatIoctl.Select: _selected = (int)arg; return 0;
+            case SeatIoctl.Shown:
+            {
+                int n = 0;
+                foreach (Window each in _windows.Values) if (each.Shown) n++;
+                return n;
+            }
+            case SeatIoctl.WorkAreaHeight:
+            {
+                byte[] r = new byte[16];
+                if (SystemParametersInfoW(0x30, 0, At(r), 0) == 0) return GetSystemMetrics(1);   // SPI_GETWORKAREA
+                return Word(r, 12) - Word(r, 4);
+            }
+            case SeatIoctl.Create: return CreateWindow(Signed16(arg), Signed16(arg >> 16));
+            case SeatIoctl.Size:
+                w = Selected();
+                if (w == null) return -BadF;
+                SetWindowPos(w.Hwnd, 0, 0, 0, Math.Max(1, (int)(arg & 0xFFFF)), Math.Max(1, (int)((arg >> 16) & 0xFFFF)), SwpNoMove | SwpNoZOrder | SwpNoActivate);
+                return 0;
+            case SeatIoctl.Move:
+                w = Selected();
+                if (w == null) return -BadF;
+                SetWindowPos(w.Hwnd, 0, Signed16(arg), Signed16(arg >> 16), 0, 0, SwpNoSize | SwpNoZOrder | SwpNoActivate);
+                return 0;
+            case SeatIoctl.Show:
+                w = Selected();
+                if (w == null) return -BadF;
+                ShowWindow(w.Hwnd, 5);                       // SW_SHOW
+                if (!w.Shown && !w.Painted) { w.Painted = true; Queue(8, w.Id, 0, Pack(w.W, w.H)); }
+                w.Shown = true;
+                return 0;
+            case SeatIoctl.Hide:
+                w = Selected();
+                if (w == null) return -BadF;
+                ShowWindow(w.Hwnd, 0);
+                w.Shown = false;
+                return 0;
+            case SeatIoctl.Minimized:
+                w = Selected();
+                if (w == null) return -BadF;
+                ShowWindow(w.Hwnd, arg != 0 ? 6 : 9);       // SW_MINIMIZE, SW_RESTORE
+                return 0;
+            case SeatIoctl.MinimizeWindow:
+                if (_windows.TryGetValue((int)arg, out w)) ShowWindow(w.Hwnd, 6);
+                return 0;
+            case SeatIoctl.Raise:
+                w = Selected();
+                if (w == null) return -BadF;
+                SetWindowPos(w.Hwnd, 0, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
+                return 0;
+            case SeatIoctl.Focus:
+                w = Selected();
+                if (w != null) { SetForegroundWindow(w.Hwnd); SetFocus(w.Hwnd); }
+                return 0;
+            case SeatIoctl.Activate:
+                if (_windows.TryGetValue((int)arg, out w)) { SetForegroundWindow(w.Hwnd); SetFocus(w.Hwnd); }
+                return 0;
+            case SeatIoctl.CloseWindow:
+                if (_windows.TryGetValue((int)arg, out w)) PostMessageW(w.Hwnd, WmClose, 0, 0);
+                return 0;
+            case SeatIoctl.Destroy:
+                w = Selected();
+                if (w == null) return -BadF;
+                DestroySeatWindow(w);
+                return 0;
+            case SeatIoctl.TopMost:
+                w = Selected();
+                if (w != null) SetWindowPos(w.Hwnd, arg != 0 ? -1 : -2, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
+                return 0;
+            case SeatIoctl.Desktop: case SeatIoctl.NoTaskbar: case SeatIoctl.ReserveBottom: case SeatIoctl.BindCursor:
+            case SeatIoctl.HitCursor: case SeatIoctl.ClickActivation: case SeatIoctl.ReloadSettings: case SeatIoctl.VanishPointer:
+            case SeatIoctl.MenuReady: case SeatIoctl.MenuEnd: case SeatIoctl.WatchWindows: case SeatIoctl.WatchPointer:
+            case SeatIoctl.ForegroundAllow: case SeatIoctl.ForegroundLock:
+                return 0;
+            case SeatIoctl.Title:
+            {
+                w = Selected();
+                if (w == null) return -BadF;
+                string title = Utf8At(arg, 64);
+                char[] text = (title + "\0").ToCharArray();
+                SetWindowTextW(w.Hwnd, (nint)Sys.ArrayData(text));
+                return 0;
+            }
+            case SeatIoctl.Title16:
+            {
+                w = Selected();
+                if (w == null) return -BadF;
+                long at = Sys.PeekWord(arg) & 0xFFFFFFFF;
+                int n = (int)Sys.PeekWord(arg + 4);
+                char[] text = new char[n + 1];
+                for (int i = 0; i < n; i++) text[i] = (char)Sys.PeekHalf(at + i * 2);
+                SetWindowTextW(w.Hwnd, (nint)Sys.ArrayData(text));
+                return 0;
+            }
+            case SeatIoctl.FrameStyle:
+                w = Selected();
+                if (w == null) return -BadF;
+                w.Style = (int)arg;
+                Restyle(w);
+                return 0;
+            case SeatIoctl.FrameExStyle:
+                w = Selected();
+                if (w == null) return -BadF;
+                w.ExStyle = (int)arg;
+                Restyle(w);
+                return 0;
+            case SeatIoctl.FrameMinimum:
+                w = Selected();
+                if (w == null) return -BadF;
+                w.MinW = (int)(arg & 0xFFFF); w.MinH = (int)((arg >> 16) & 0xFFFF);
+                return 0;
+            case SeatIoctl.FrameInsets:
+            {
+                int style = (int)Sys.PeekWord(arg), ex = (int)Sys.PeekWord(arg + 4), menu = (int)Sys.PeekByte(arg + 8);
+                byte[] r = new byte[16];
+                AdjustWindowRectEx(At(r), Windowed(style), menu, Windowed2(ex));
+                long l = -Word(r, 0), t = -Word(r, 4), rr = Word(r, 8), b = Word(r, 12);
+                return (l & 0xFF) | ((t & 0xFF) << 8) | ((rr & 0xFF) << 16) | ((b & 0xFF) << 24);
+            }
+            case SeatIoctl.FrameIcon:
+            {
+                w = Selected();
+                if (w == null) return -BadF;
+                if (arg == 0) { SetIcon(w, 0); return 0; }
+                // 16x16 COLORREFs, -1 clear: made 0xAARRGGBB for MakeCursor.
+                int[] argb = new int[256];
+                for (int i = 0; i < 256; i++)
+                {
+                    int c = (int)Sys.PeekWord(arg + i * 4);
+                    argb[i] = c == -1 ? 0 : unchecked((int)0xFF000000) | Swap(c);
+                }
+                SetIcon(w, MakeCursor(true, 16, 16, 0, 0, Sys.ArrayData(argb)));
+                GC.KeepAlive(argb);
+                return 0;
+            }
+            case SeatIoctl.FrameIconImage:
+                w = Selected();
+                if (w != null) SendMessageW(w.Hwnd, WmSetIcon, 0, (nint)arg);
+                return 0;
+            case SeatIoctl.TrackMove: case SeatIoctl.TrackSize:
+                return -Inval;                               // Windows runs its own loops
+            case SeatIoctl.Cursor:
+            {
+                int shape = (int)arg;
+                nint made;
+                if (shape >= 256) Wear(_pointers.TryGetValue(shape - 256, out made) ? made : LoadCursorW(0, 32512));
+                else Wear(LoadCursorW(0, Standard(shape)));
+                return 0;
+            }
+            case SeatIoctl.CursorWear: Wear((nint)arg); return 0;
+            case SeatIoctl.CursorAt:
+            {
+                byte[] p = new byte[8];
+                GetCursorPos(At(p));
+                return (Word(p, 0) & 0xFFFF) | ((long)(Word(p, 4) & 0xFFFF) << 16);
+            }
+            case SeatIoctl.CursorTo: SetCursorPos(Signed16(arg), Signed16(arg >> 16)); return 0;
+            case SeatIoctl.ImageSystem:
+            {
+                int id = (int)(arg & 0xFFFF), kind = (int)(arg >> 32);
+                nint h = kind == 1 ? LoadIconW(0, id) : LoadCursorW(0, id);
+                return h == 0 ? -Inval : (long)h & 0xFFFFFFFF;
+            }
+            case SeatIoctl.ImageCreate:
+            {
+                int kind = (int)Sys.PeekWord(arg), width = (int)Sys.PeekWord(arg + 4), height = (int)Sys.PeekWord(arg + 8);
+                int hotX = (int)Sys.PeekWord(arg + 12), hotY = (int)Sys.PeekWord(arg + 16);
+                long pixels = Sys.PeekWord(arg + 20) & 0xFFFFFFFF;
+                if (width <= 0 || height <= 0) return -Inval;
+                nint h = MakeCursor(kind != 2, width, height, hotX, hotY, pixels);
+                return h == 0 ? -Inval : (long)h & 0xFFFFFFFF;
+            }
+            case SeatIoctl.ImageLoad: return LoadImage(arg);
+            case SeatIoctl.ImageDestroy: DestroyIcon((nint)arg); return 0;
+            case SeatIoctl.SystemMetric: return GetSystemMetrics((int)arg);
+            case SeatIoctl.ParameterInfo:
+            {
+                int value = 0;
+                if (SystemParametersInfoW((int)arg, 0, (nint)Sys.AddressOf(ref value), 0) == 0) return 0;
+                return value;
+            }
+            case SeatIoctl.ModeCount: return 0;
+            case SeatIoctl.MonitorInfo:
+            {
+                int index = (int)Sys.PeekWord(arg);
+                if (index != 0) return 1;
+                byte[] r = new byte[16];
+                SystemParametersInfoW(0x30, 0, At(r), 0);
+                int[] words = { 0, 0, 0, GetSystemMetrics(0), GetSystemMetrics(1), Word(r, 0), Word(r, 4), Word(r, 8) - Word(r, 0), Word(r, 12) - Word(r, 4), 32, 0, 1 };
+                for (int i = 1; i < words.Length; i++) Sys.PokeWord(arg + i * 4, words[i]);
+                return 1;
+            }
+            case SeatIoctl.TimerSet:
+            {
+                int window = (int)Sys.PeekWord(arg), id = (int)Sys.PeekWord(arg + 4), ms = (int)Sys.PeekWord(arg + 8);
+                if (id == 0) { id = 1; while (_timerWindow.ContainsKey(id)) id++; }
+                _timerWindow[id] = window;
+                SetTimer(_helper, id, Math.Max(ms, 1), 0);
+                return id;
+            }
+            case SeatIoctl.TimerKill:
+            {
+                int id = (int)Sys.PeekWord(arg + 4);
+                _timerWindow.Remove(id);
+                return KillTimer(_helper, id) != 0 ? 0 : -Inval;
+            }
+            case SeatIoctl.CaretCreate:
+            {
+                int window = (int)Sys.PeekWord(arg);
+                if (!_windows.TryGetValue(window, out w)) return -BadF;
+                _caretWindow = w;
+                return CreateCaret(w.Hwnd, 0, (int)Sys.PeekWord(arg + 4), (int)Sys.PeekWord(arg + 8)) != 0 ? 0 : -Inval;
+            }
+            case SeatIoctl.CaretShow:
+                if (_caretWindow == null) return -Inval;
+                if (arg != 0) ShowCaret(_caretWindow.Hwnd); else HideCaret(_caretWindow.Hwnd);
+                return 0;
+            case SeatIoctl.CaretMove:
+            {
+                if (_caretWindow == null) return -Inval;
+                int ox, oy;
+                ClientOffset(_caretWindow, out ox, out oy);
+                SetCaretPos(Signed16(arg) - ox, Signed16(arg >> 16) - oy);
+                return 0;
+            }
+            case SeatIoctl.CaretDestroy: _caretWindow = null; DestroyCaret(); return 0;
+            case SeatIoctl.CaretBlinkTime:
+                if (arg != 0) SetCaretBlinkTime((int)arg);
+                return GetCaretBlinkTime();
+            case SeatIoctl.HotKeyRegister:
+            {
+                int window = (int)Sys.PeekWord(arg);
+                nint hwnd = _windows.TryGetValue(window, out w) ? w.Hwnd : _helper;
+                return RegisterHotKey(hwnd, (int)Sys.PeekWord(arg + 4), (int)Sys.PeekWord(arg + 8), (int)Sys.PeekWord(arg + 12)) != 0 ? 0 : -Inval;
+            }
+            case SeatIoctl.HotKeyUnregister:
+            {
+                int window = (int)Sys.PeekWord(arg);
+                nint hwnd = _windows.TryGetValue(window, out w) ? w.Hwnd : _helper;
+                return UnregisterHotKey(hwnd, (int)Sys.PeekWord(arg + 4)) != 0 ? 0 : -Inval;
+            }
+            case SeatIoctl.KeyState: return GetKeyState((int)arg) & 0xFFFF;
+            case SeatIoctl.AsyncKeyState: return GetAsyncKeyState((int)arg) & 0xFFFF;
+            case SeatIoctl.KeyboardState: return GetKeyboardState((nint)arg) != 0 ? 0 : -Inval;
+            case SeatIoctl.KeyboardMapKey: return VkKeyScanW((char)(arg & 0xFFFF)) & 0xFFFF;
+            case SeatIoctl.Capture:
+            {
+                int before = _captured;
+                if (_windows.TryGetValue((int)arg, out w)) { _captured = w.Id; SetCapture(w.Hwnd); }
+                else { _captured = 0; if (!_implicit) ReleaseCapture(); }
+                return before;
+            }
+            case SeatIoctl.GetCapture: return _captured;
+            case SeatIoctl.DoubleClicks:
+                if (_windows.TryGetValue((int)Sys.PeekWord(arg), out w)) w.DoubleClicks = Sys.PeekWord(arg + 4) != 0;
+                return 0;
+            case SeatIoctl.ThemeColours: case SeatIoctl.ThemeMetrics:
+            {
+                bool colours = request == (long)SeatIoctl.ThemeColours;
+                int count = colours ? 29 : 83;
+                long at = Sys.PeekWord(arg) & 0xFFFFFFFF;
+                long room = Sys.PeekWord(arg + 4);
+                int n = (int)Math.Min(room, (long)count);
+                if (at != 0) for (int i = 0; i < n; i++) Sys.PokeWord(at + i * 4, colours ? Swap(GetSysColor(i)) : GetSystemMetrics(i));
+                return count;
+            }
+            case SeatIoctl.ThemeFont: return ThemeFont(arg);
+            case SeatIoctl.ThemeSetting:
+            {
+                int setting = (int)Sys.PeekWord(arg);
+                int value = 0;
+                int action = setting == 4 ? 0x26 : setting == 6 ? 0x4A : setting == 7 ? 0x1008 : 0;   // drag full windows, font smoothing, gradient captions
+                if (action != 0) SystemParametersInfoW(action, 0, (nint)Sys.AddressOf(ref value), 0);
+                return value != 0 ? 1 : 0;
+            }
+            case SeatIoctl.FontFamilies: return FontFamilies(arg);
+            case SeatIoctl.FontMatch: return FontMatch(arg);
+            case SeatIoctl.WindowPixels:
+            {
+                if (!_windows.TryGetValue((int)Sys.PeekWord(arg), out w)) return -BadF;
+                int x = (int)Sys.PeekWord(arg + 4), y = (int)Sys.PeekWord(arg + 8), width = (int)Sys.PeekWord(arg + 12), height = (int)Sys.PeekWord(arg + 16);
+                long into = Sys.PeekWord(arg + 20) & 0xFFFFFFFF;
+                if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > w.W || y + height > w.H) return -Inval;
+                for (int row = 0; row < height; row++)
+                    for (int k = 0; k < width; k++)
+                        Sys.PokeWord(into + ((long)row * width + k) * 4, unchecked((int)0xFF000000) | (int)Sys.PeekWord(w.Bits + ((long)(y + row) * w.W + x + k) * 4));
+                return (long)width * height;
+            }
+        }
+        return -NoSys;
+    }
+
+    static Window? _caretWindow;
+
+    // ---- windows ----------------------------------------------------------------
+
+    static long CreateWindow(int x, int y)
+    {
+        Window w = new Window();
+        w.Id = _nextWindow++;
+        w.X = x; w.Y = y;
+        w.Hwnd = CreateWindowExW(0, At(_className!), 0, WsPopup | WsClipChildren, x, y, 1, 1, 0, 0, _instance, 0);
+        if (w.Hwnd == 0) return -Inval;
+        _windows[w.Id] = w;
+        _byHwnd[(long)w.Hwnd] = w;
+        Resize(w, 1, 1);
+        return w.Id;
+    }
+
+    static void DestroySeatWindow(Window w)
+    {
+        _windows.Remove(w.Id);
+        _byHwnd.Remove((long)w.Hwnd);
+        if (_caretWindow == w) { _caretWindow = null; DestroyCaret(); }
+        if (_captured == w.Id) _captured = 0;
+        DestroyWindow(w.Hwnd);
+        if (w.Dc != 0) DeleteDC(w.Dc);
+        if (w.Dib != 0) DeleteObject(w.Dib);
+        if (w.Icon != 0) DestroyIcon(w.Icon);
+        w.Dc = 0; w.Dib = 0; w.Bits = 0;
+    }
+
+    /// The frame's style as a window's: what a seat frame of none is, a
+    /// popup; never a child, and shown or not as the window is.
+    static int Windowed(int style)
+    {
+        style &= ~(WsVisible | WsChild | WsDisabled);
+        if ((style & WsCaption) != WsCaption) style |= WsPopup;
+        return style;
+    }
+
+    static int Windowed2(int ex) { return ex & ~0x80000; }          // never layered here
+
+    static void Restyle(Window w)
+    {
+        int style = Windowed(w.Style) | WsClipChildren | (w.Shown ? WsVisible : 0);
+        SetWindowLongW(w.Hwnd, -16, style);
+        SetWindowLongW(w.Hwnd, -20, Windowed2(w.ExStyle));
+        SetWindowPos(w.Hwnd, 0, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
+    }
+
+    static void SetIcon(Window w, nint icon)
+    {
+        SendMessageW(w.Hwnd, WmSetIcon, 0, icon);
+        SendMessageW(w.Hwnd, WmSetIcon, 1, icon);
+        if (w.Icon != 0) DestroyIcon(w.Icon);
+        w.Icon = icon;
+    }
+
+    /// An icon or cursor file's first picture (.ico, .cur), made a Windows
+    /// one: the ImageLoad ioctl.
+    static long LoadImage(long arg)
+    {
+        long bytes = Sys.PeekWord(arg) & 0xFFFFFFFF;
+        int length = (int)Sys.PeekWord(arg + 4);
+        if (length < 22) return -Inval;
+        int type = (int)Sys.PeekHalf(bytes + 2), count = (int)Sys.PeekHalf(bytes + 4);
+        if ((type != 1 && type != 2) || count < 1) return -Inval;
+        long entry = bytes + 6;
+        int size = (int)Sys.PeekWord(entry + 8), offset = (int)Sys.PeekWord(entry + 12);
+        if (offset < 0 || size <= 0 || offset + size > length) return -Inval;
+        nint made;
+        if (type == 1) made = CreateIconFromResourceEx((nint)(bytes + offset), size, 1, 0x30000, 0, 0, 0);
+        else
+        {
+            // A cursor's resource leads with its hot spot.
+            byte[] res = new byte[size + 4];
+            res[0] = (byte)Sys.PeekByte(entry + 4); res[1] = (byte)Sys.PeekByte(entry + 5);
+            res[2] = (byte)Sys.PeekByte(entry + 6); res[3] = (byte)Sys.PeekByte(entry + 7);
+            for (int i = 0; i < size; i++) res[4 + i] = (byte)Sys.PeekByte(bytes + offset + i);
+            made = CreateIconFromResourceEx(At(res), res.Length, 0, 0x30000, 0, 0, 0);
+        }
+        return made == 0 ? -Inval : (long)made & 0xFFFFFFFF;
+    }
+
+    // ---- the theme's fonts ----------------------------------------------------------
+
+    /// A non-client font (0 caption, 1 small caption, 2 menu, 3 status, 4
+    /// message, 5 icon title) as the seat's record: NONCLIENTMETRICS' LOGFONTs.
+    static long ThemeFont(long arg)
+    {
+        int kind = (int)Sys.PeekWord(arg);
+        long at = Sys.PeekWord(arg + 4) & 0xFFFFFFFF;
+        long room = Sys.PeekWord(arg + 8);
+        const int RecordBytes = 96;
+        if (kind < 0 || kind > 5) return -Inval;
+        if (at == 0 || room < RecordBytes) return RecordBytes;
+        byte[] logfont = new byte[92];
+        bool found = false;
+        if (kind == 5) found = SystemParametersInfoW(0x1F, 92, At(logfont), 0) != 0;      // SPI_GETICONTITLELOGFONT
+        else
+        {
+            // NONCLIENTMETRICSW as Windows 2000 has it, 500 bytes: the LOGFONTs
+            // (92 bytes each) for the caption at 24, the small caption at
+            // 124, the menu at 224, the status bar at 316, messages at 408.
+            byte[] ncm = new byte[500];
+            Put(ncm, 0, 500);
+            if (SystemParametersInfoW(0x29, 500, At(ncm), 0) != 0)                         // SPI_GETNONCLIENTMETRICS
+            {
+                int offset = kind == 0 ? 24 : kind == 1 ? 124 : kind == 2 ? 224 : kind == 3 ? 316 : 408;
+                for (int i = 0; i < 92; i++) logfont[i] = ncm[offset + i];
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            Put(logfont, 0, -11); Put(logfont, 16, kind == 0 ? 700 : 400);
+            string face = "Tahoma";
+            for (int i = 0; i < face.Length; i++) { logfont[28 + i * 2] = (byte)face[i]; }
+        }
+        int n = 0;
+        while (n < 31 && (logfont[28 + n * 2] | logfont[29 + n * 2]) != 0) n++;
+        byte[] record = new byte[RecordBytes];
+        Put(record, 0, Word(logfont, 0));                 // height
+        Put(record, 4, Word(logfont, 4));                 // width
+        Put(record, 8, Word(logfont, 16));                // weight
+        Put(record, 12, (logfont[20] != 0 ? 1 : 0) | (logfont[21] != 0 ? 2 : 0) | (logfont[22] != 0 ? 4 : 0));
+        Put(record, 16, logfont[23]); Put(record, 20, logfont[26]); Put(record, 24, logfont[27]);
+        Put(record, 28, n);
+        for (int i = 0; i < n * 2; i++) record[32 + i] = logfont[28 + i];
+        for (int i = 0; i < RecordBytes; i++) Sys.PokeByte(at + i, record[i]);
+        return RecordBytes;
+    }
+
+    // ---- the font store ---------------------------------------------------------------
+    //
+    // THE FACES WINDOWS HAS: its registry's list of font files
+    // (HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts, "Arial Bold
+    // (TrueType)" = "arialbd.ttf"), the TrueType ones, each file a family and
+    // a style. System.Drawing's font engine reads the file itself.
+
+    sealed class Face
+    {
+        public string Family = "", Style = "", FullName = "", Path = "";
+        public int Weight = 400;
+        public bool Italic, Monospace, Symbol;
+    }
+
+    static List<Face>? _faces;
+
+    static List<Face> Faces()
+    {
+        if (_faces != null) return _faces;
+        List<Face> faces = new List<Face>();
+        _faces = faces;
+        char[] dir = new char[260];
+        int n = GetWindowsDirectoryW((nint)Sys.ArrayData(dir), dir.Length);
+        string fonts = new string(dir, 0, Math.Max(0, n)) + "\\Fonts\\";
+        char[] key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts\0".ToCharArray();
+        int handle = 0;
+        if (RegOpenKeyExW(unchecked((nint)0x80000002), (nint)Sys.ArrayData(key), 0, 0x20019, (nint)Sys.AddressOf(ref handle)) != 0)
+        {
+            char[] key9x = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Fonts\0".ToCharArray();
+            if (RegOpenKeyExW(unchecked((nint)0x80000002), (nint)Sys.ArrayData(key9x), 0, 0x20019, (nint)Sys.AddressOf(ref handle)) != 0) return faces;
+        }
+        char[] name = new char[256];
+        byte[] data = new byte[1024];
+        for (int index = 0; ; index++)
+        {
+            int nameLength = name.Length, dataLength = data.Length, type = 0;
+            if (RegEnumValueW((nint)handle, index, (nint)Sys.ArrayData(name), (nint)Sys.AddressOf(ref nameLength), 0,
+                              (nint)Sys.AddressOf(ref type), (nint)Sys.ArrayData(data), (nint)Sys.AddressOf(ref dataLength)) != 0) break;
+            if (type != 1) continue;                                          // REG_SZ
+            string entry = new string(name, 0, nameLength);
+            string file = Unicode(data, dataLength);
+            int paren = entry.IndexOf(" (");
+            if (paren < 0) continue;
+            string kind = entry.Substring(paren);
+            if (kind != " (TrueType)" && kind != " (OpenType)") continue;
+            string lower = file.ToLowerInvariant();
+            if (!lower.EndsWith(".ttf") && !lower.EndsWith(".otf")) continue;
+            string full = entry.Substring(0, paren);
+            int amp = full.IndexOf(" & ");
+            if (amp >= 0) full = full.Substring(0, amp);
+            Face f = new Face();
+            f.FullName = full;
+            f.Path = file.IndexOf(':') >= 0 || file.StartsWith("\\") ? file : fonts + file;
+            string family = full;
+            string style = "";
+            string[] words = { " Bold Italic", " Bold Oblique", " Italic", " Oblique", " Bold", " Regular", " Light", " Black", " Semibold", " Medium" };
+            bool changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (string word in words)
+                    if (family.EndsWith(word, StringComparison.OrdinalIgnoreCase) && family.Length > word.Length)
+                    {
+                        style = word.Substring(1) + (style.Length > 0 ? " " + style : "");
+                        family = family.Substring(0, family.Length - word.Length);
+                        changed = true;
+                    }
+            }
+            f.Family = family;
+            f.Style = style.Length > 0 ? style : "Regular";
+            string s = f.Style.ToLowerInvariant();
+            f.Italic = s.Contains("italic") || s.Contains("oblique");
+            f.Weight = s.Contains("bold") ? 700 : s.Contains("black") ? 900 : s.Contains("semibold") ? 600 : s.Contains("medium") ? 500 : s.Contains("light") ? 300 : 400;
+            string fam = family.ToLowerInvariant();
+            f.Monospace = fam.StartsWith("courier") || fam.Contains("console") || fam.Contains(" mono") || fam == "fixedsys";
+            f.Symbol = fam == "symbol" || fam.StartsWith("wingdings") || fam == "webdings" || fam == "marlett";
+            faces.Add(f);
+        }
+        RegCloseKey((nint)handle);
+        return faces;
+    }
+
+    static string Unicode(byte[] data, int length)
+    {
+        int n = length / 2;
+        while (n > 0 && (data[n * 2 - 2] | data[n * 2 - 1]) == 0) n--;
+        char[] c = new char[n];
+        for (int i = 0; i < n; i++) c[i] = (char)(data[i * 2] | (data[i * 2 + 1] << 8));
+        return new string(c);
+    }
+
+    /// The families, each once: as the seat lists them, texts one after another.
+    static long FontFamilies(long arg)
+    {
+        long at = Sys.PeekWord(arg) & 0xFFFFFFFF;
+        long room = Sys.PeekWord(arg + 4);
+        List<string> names = new List<string>();
+        foreach (Face f in Faces())
+        {
+            bool seen = false;
+            foreach (string n in names) if (string.Equals(n, f.Family, StringComparison.OrdinalIgnoreCase)) { seen = true; break; }
+            if (!seen) names.Add(f.Family);
+        }
+        List<byte> list = new List<byte>();
+        foreach (string n in names) AddText(list, n);
+        if (at != 0 && room >= list.Count) for (int i = 0; i < list.Count; i++) Sys.PokeByte(at + i, list[i]);
+        return list.Count;
+    }
+
+    /// The face nearest what is asked: the family by name -- or, for one
+    /// Windows has not, the family the generic names stand for, then Tahoma
+    /// -- and in it the nearest weight with the slant asked for.
+    static long FontMatch(long arg)
+    {
+        long text = Sys.PeekWord(arg) & 0xFFFFFFFF;
+        int length = (int)Sys.PeekWord(arg + 4);
+        int weight = (int)Sys.PeekWord(arg + 8);
+        bool italic = (Sys.PeekWord(arg + 12) & 1) != 0;
+        long at = Sys.PeekWord(arg + 24) & 0xFFFFFFFF;
+        long room = Sys.PeekWord(arg + 28);
+        char[] chars = new char[Math.Max(0, length)];
+        for (int i = 0; i < chars.Length; i++) chars[i] = (char)Sys.PeekHalf(text + i * 2);
+        string family = new string(chars);
+        Face? best = Nearest(family, weight, italic);
+        if (best == null)
+        {
+            string lower = family.ToLowerInvariant();
+            string[] instead = lower.Contains("mono") || lower.Contains("courier") || lower.Contains("fixed") ? new[] { "Courier New", "Lucida Console" }
+                : lower.Contains("serif") && !lower.Contains("sans") || lower.Contains("times") || lower.Contains("roman") ? new[] { "Times New Roman" }
+                : new[] { "Tahoma", "Microsoft Sans Serif", "Arial", "Verdana" };
+            foreach (string other in instead) { best = Nearest(other, weight, italic); if (best != null) break; }
+        }
+        if (best == null && Faces().Count > 0) best = Faces()[0];
+        if (best == null) return 0;
+        List<byte> r = new List<byte>();
+        AddWord(r, best.Weight);
+        AddWord(r, 5);                                                          // FontStretch.Normal
+        AddWord(r, (best.Italic ? 1 : 0) | (best.Monospace ? 4 : 0) | (best.Symbol ? 8 : 0) | 16);
+        AddWord(r, 0);                                                          // generic
+        AddWord(r, 0);                                                          // index in the file
+        AddWord(r, 1);                                                          // generation
+        AddWord(r, 0);                                                          // no bitmap sizes
+        AddText(r, best.Family); AddText(r, best.Style); AddText(r, best.FullName); AddText(r, best.Path);
+        if (at != 0 && room >= r.Count) for (int i = 0; i < r.Count; i++) Sys.PokeByte(at + i, r[i]);
+        return r.Count;
+    }
+
+    static Face? Nearest(string family, int weight, bool italic)
+    {
+        Face? best = null;
+        int bestScore = int.MaxValue;
+        foreach (Face f in Faces())
+        {
+            if (!string.Equals(f.Family, family, StringComparison.OrdinalIgnoreCase)) continue;
+            int score = Math.Abs(f.Weight - weight) + (f.Italic != italic ? 1000 : 0);
+            if (score < bestScore) { best = f; bestScore = score; }
+        }
+        return best;
+    }
+
+    static void AddWord(List<byte> b, int v) { b.Add((byte)v); b.Add((byte)(v >> 8)); b.Add((byte)(v >> 16)); b.Add((byte)(v >> 24)); }
+
+    static void AddText(List<byte> b, string s)
+    {
+        AddWord(b, s.Length);
+        for (int i = 0; i < s.Length; i++) { b.Add((byte)s[i]); b.Add((byte)(s[i] >> 8)); }
+        int pad = ((s.Length * 2 + 3) & ~3) - s.Length * 2;
+        for (int i = 0; i < pad; i++) b.Add(0);
+    }
+
+    // ---- small things ---------------------------------------------------------------
+
+    static nint At(byte[] b) { return (nint)Sys.ArrayData(b); }
+    static nint At(char[] c) { return (nint)Sys.ArrayData(c); }
+
+    static void Put(byte[] b, int at, long v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    static int Word(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
+
+    static string Utf8At(long at, int room)
+    {
+        byte[] bytes = new byte[room];
+        int n = 0;
+        while (n < room && (bytes[n] = (byte)Sys.PeekByte(at + n)) != 0) n++;
+        return System.Text.Encoding.UTF8.GetString(bytes, 0, n);
+    }
+}

@@ -1,0 +1,387 @@
+// THE GUI KERNEL'S DRAWING ENGINE, as the corsac86 tree has it in
+// os/gui/engineregions.cor: the same code, in a namespace of its own, for a seat that
+// draws in its own process (WinSeat.cor, the Windows target). A change
+// to the engine is made there and copied here, so both draw alike.
+
+// THE ENGINE'S REGIONS (TODO-GUI-AND-NT-KERNELS.md, "Drawing"): the one
+// drawing engine of the GUI kernel works its areas as regions -- a clip, a
+// filled shape, a stroke -- for native programs (the seat batch, DrawEngine)
+// and for GDI alike, whose region calls (Win32kRegions) are translations
+// onto these.
+//
+// A REGION IS RECTANGLES IN BANDS, as Windows keeps one: the rows of equal
+// top and bottom, top to bottom, each row's rectangles left to right and
+// never touching (touching ones are one), and two rows one on the other with
+// the same spans merged into one. That form is unique -- two regions of the
+// same pixels are the same numbers -- which is what makes EqualRgn a
+// comparison and GetRegionData the same answer every time. Every operation
+// makes a new RegionShape; one is never changed, so a DC's saved clip and a
+// region's handle can share one.
+//
+// NO FLOATING POINT: GDI runs on the calling program's thread, and the gate
+// does not save its FPU; a curve here is integer arithmetic in half pixels,
+// where a pixel's centre is an odd number and its corners even.
+
+using System;
+using System.Collections.Generic;
+
+namespace Corsac.GUI.Engine;
+
+/// A region's pixels, in the banded form.
+sealed class RegionShape
+{
+    /// Left, top, right, bottom of each rectangle.
+    public readonly int[] R;
+
+    public static readonly RegionShape Empty = new RegionShape(new int[0]);
+
+    RegionShape(int[] r) { R = r; }
+
+    public int Count { get { return R.Length / 4; } }
+    public bool IsEmpty { get { return R.Length == 0; } }
+
+    /// NULLREGION 1, SIMPLEREGION 2, COMPLEXREGION 3.
+    public long Kind { get { return R.Length == 0 ? 1 : R.Length == 4 ? 2 : 3; } }
+
+    public static RegionShape Rect(int l, int t, int r, int b)
+    {
+        if (r <= l || b <= t) return Empty;
+        return new RegionShape(new int[] { l, t, r, b });
+    }
+
+    /// The smallest rectangle around it; all 0 when it is empty.
+    public void Bounds(out int l, out int t, out int r, out int b)
+    {
+        l = 0; t = 0; r = 0; b = 0;
+        if (R.Length == 0) return;
+        l = int.MaxValue; r = int.MinValue;
+        t = R[1]; b = R[R.Length - 1];
+        for (int i = 0; i < R.Length; i += 4) { if (R[i] < l) l = R[i]; if (R[i + 2] > r) r = R[i + 2]; }
+    }
+
+    public RegionShape Offset(int dx, int dy)
+    {
+        if (R.Length == 0 || (dx == 0 && dy == 0)) return this;
+        int[] made = new int[R.Length];
+        for (int i = 0; i < R.Length; i += 4) { made[i] = R[i] + dx; made[i + 1] = R[i + 1] + dy; made[i + 2] = R[i + 2] + dx; made[i + 3] = R[i + 3] + dy; }
+        return new RegionShape(made);
+    }
+
+    public bool Contains(int x, int y)
+    {
+        for (int i = 0; i < R.Length; i += 4)
+        {
+            if (y < R[i + 1]) return false;
+            if (y < R[i + 3] && x >= R[i] && x < R[i + 2]) return true;
+        }
+        return false;
+    }
+
+    /// Whether any pixel of the rectangle is in it.
+    public bool Touches(int l, int t, int r, int b)
+    {
+        if (r <= l || b <= t) return false;
+        for (int i = 0; i < R.Length; i += 4)
+            if (R[i] < r && R[i + 2] > l && R[i + 1] < b && R[i + 3] > t) return true;
+        return false;
+    }
+
+    public bool SameAs(RegionShape o)
+    {
+        if (R.Length != o.R.Length) return false;
+        for (int i = 0; i < R.Length; i++) if (R[i] != o.R[i]) return false;
+        return true;
+    }
+
+    // ---- joining ----------------------------------------------------------------------
+
+    public const int And = 1, Or = 2, Xor = 3, Diff = 4, Copy = 5;
+
+    /// CombineRgn's operations: RGN_AND, RGN_OR, RGN_XOR, RGN_DIFF, and
+    /// RGN_COPY (this one, as it is).
+    public RegionShape Combine(RegionShape o, int op)
+    {
+        if (op == Copy) return this;
+        if (op == And && (IsEmpty || o.IsEmpty)) return Empty;
+        if (op == Diff && (IsEmpty || o.IsEmpty)) return this;
+        if ((op == Or || op == Xor) && o.IsEmpty) return this;
+        if ((op == Or || op == Xor) && IsEmpty) return o;
+
+        // Every top and bottom there is: between two, each region is the
+        // same spans all the way down.
+        List<int> ys = new List<int>();
+        for (int i = 1; i < R.Length; i += 4) { ys.Add(R[i]); ys.Add(R[i + 2]); }
+        for (int i = 1; i < o.R.Length; i += 4) { ys.Add(o.R[i]); ys.Add(o.R[i + 2]); }
+        ys.Sort();
+        RegionBuilder made = new RegionBuilder();
+        int last = int.MinValue;
+        for (int k = 0; k + 1 < ys.Count; k++)
+        {
+            int y0 = ys[k], y1 = ys[k + 1];
+            if (y0 == last || y1 == y0) continue;
+            last = y0;
+            List<int> a = SpansAt(y0), b = o.SpansAt(y0);
+            made.Add(y0, y1, Spans(a, b, op));
+        }
+        return made.Make();
+    }
+
+    /// The spans of the band that covers row y, as left, right pairs.
+    List<int> SpansAt(int y)
+    {
+        List<int> spans = new List<int>();
+        for (int i = 0; i < R.Length; i += 4)
+        {
+            if (R[i + 1] > y) break;
+            if (R[i + 3] > y) { spans.Add(R[i]); spans.Add(R[i + 2]); }
+        }
+        return spans;
+    }
+
+    /// Two rows of spans joined by `op`.
+    static List<int> Spans(List<int> a, List<int> b, int op)
+    {
+        List<int> xs = new List<int>();
+        xs.AddRange(a); xs.AddRange(b);
+        xs.Sort();
+        List<int> made = new List<int>();
+        for (int k = 0; k + 1 < xs.Count; k++)
+        {
+            int x0 = xs[k], x1 = xs[k + 1];
+            if (x1 == x0) continue;
+            bool inA = Inside(a, x0), inB = Inside(b, x0);
+            bool keep = op == And ? inA && inB : op == Or ? inA || inB : op == Xor ? inA != inB : inA && !inB;
+            if (!keep) continue;
+            if (made.Count > 0 && made[made.Count - 1] == x0) made[made.Count - 1] = x1;
+            else { made.Add(x0); made.Add(x1); }
+        }
+        return made;
+    }
+
+    static bool Inside(List<int> spans, int x)
+    {
+        for (int i = 0; i < spans.Count; i += 2) if (x >= spans[i] && x < spans[i + 1]) return true;
+        return false;
+    }
+
+    // ---- shapes --------------------------------------------------------------------------
+
+    /// The integer square root: the largest n with n * n <= v (Newton's
+    /// method, from above).
+    public static long Root(long v)
+    {
+        if (v <= 0) return 0;
+        long x = v;
+        while (true)
+        {
+            long y = (x + v / x) / 2;
+            if (y >= x) return x;
+            x = y;
+        }
+    }
+
+    /// The pixels whose centres are inside the ellipse that fills the box
+    /// (l, t)-(r, b), right and bottom outside it: CreateEllipticRgn.
+    /// The rows a region is built over: no surface is taller (Strokes.
+    /// MostTarget), so rows past these never show, and a shape a program
+    /// sized far past them was a band for every row of it.
+    public const int MostRow = 0x20000;
+
+    public static RegionShape Ellipse(int l, int t, int r, int b)
+    {
+        if (r < l) { int s = l; l = r; r = s; }
+        if (b < t) { int s = t; t = b; b = s; }
+        if (r - l < 1 || b - t < 1) return Empty;
+        RegionBuilder made = new RegionBuilder();
+        long cx2 = (long)l + r, cy2 = (long)t + b, rx = (long)r - l, ry = (long)b - t;          // in half pixels: centre, radii
+        for (int y = Math.Max(t, -MostRow); y < Math.Min(b, MostRow); y++)
+        {
+            long dy = 2 * y + 1 - cy2;
+            long room = ry * ry - dy * dy;
+            if (room < 0) continue;
+            long half = Root(rx * rx * room) / ry;                        // half the span, in half pixels
+            int x0 = (int)CeilDiv(cx2 - half - 1, 2), x1 = (int)FloorDiv(cx2 + half - 1, 2) + 1;
+            if (x0 < l) x0 = l;
+            if (x1 > r) x1 = r;
+            if (x1 > x0) made.Add(y, y + 1, new List<int> { x0, x1 });
+        }
+        return made.Make();
+    }
+
+    /// CreateRoundRectRgn: the box with each corner the quarter of a w by h
+    /// ellipse.
+    public static RegionShape RoundRect(int l, int t, int r, int b, int w, int h)
+    {
+        if (r < l) { int s = l; l = r; r = s; }
+        if (b < t) { int s = t; t = b; b = s; }
+        if (r - l < 1 || b - t < 1) return Empty;
+        if (w < 0) w = -w;
+        if (h < 0) h = -h;
+        if (w > r - l) w = r - l;
+        if (h > b - t) h = b - t;
+        if (w < 2 || h < 2) return Rect(l, t, r, b);
+        RegionBuilder made = new RegionBuilder();
+        long rx = w, ry = h;                                             // the corner ellipse's radii, in half pixels
+        for (int y = Math.Max(t, -MostRow); y < Math.Min(b, MostRow); y++)
+        {
+            long y2 = 2L * y + 1;
+            long cyTop = 2L * t + h, cyBottom = 2L * b - h;
+            long dy = y2 < cyTop ? y2 - cyTop : y2 > cyBottom ? y2 - cyBottom : 0;
+            int x0 = l, x1 = r;
+            if (dy != 0)
+            {
+                long room = ry * ry - dy * dy;
+                if (room < 0) continue;
+                long half = Root(rx * rx * room) / ry;
+                long cxLeft = 2L * l + w, cxRight = 2L * r - w;
+                x0 = (int)CeilDiv(cxLeft - half - 1, 2);
+                x1 = (int)FloorDiv(cxRight + half - 1, 2) + 1;
+                if (x0 < l) x0 = l;
+                if (x1 > r) x1 = r;
+            }
+            if (x1 > x0) made.Add(y, y + 1, new List<int> { x0, x1 });
+        }
+        return made.Make();
+    }
+
+    /// ALTERNATE (1) and WINDING (2), SetPolyFillMode's.
+    public const int Alternate = 1, Winding = 2;
+
+    /// The pixels whose centres are inside the polygons -- each `counts[i]`
+    /// points of `xs`, `ys`, closed -- by the fill mode: CreatePolyPolygonRgn,
+    /// and what Polygon fills. A point is a pixel's corner, so the right and
+    /// bottom edges are outside, as a rectangle's are. The points are in
+    /// 1/scale of a pixel: a wide pen's stroke is worked in sixteenths.
+    /// Only the rows from `fromRow` to `toRow` are made, when they are
+    /// given: what a drawing can show of a polygon far larger than its
+    /// target, without a pass over every row of it.
+    public static RegionShape Polygons(int[] xs, int[] ys, int[] counts, int mode, int scale = 1, int fromRow = int.MinValue, int toRow = int.MaxValue)
+    {
+        int total = 0;
+        foreach (int c in counts) total += c;
+        if (total < 2) return Empty;
+        int low = int.MaxValue, high = int.MinValue;
+        for (int i = 0; i < total; i++) { if (ys[i] < low) low = ys[i]; if (ys[i] > high) high = ys[i]; }
+        int top = (int)FloorDiv(low, scale), bottom = (int)CeilDiv(high, scale);
+        if (top < fromRow) top = fromRow;
+        if (bottom > toRow) bottom = toRow;
+        if (top < -MostRow) top = -MostRow;
+        if (bottom > MostRow) bottom = MostRow;
+        // The edges, each from its start to its end, and which way it goes.
+        List<int> ex0 = new List<int>(), ey0 = new List<int>(), ex1 = new List<int>(), ey1 = new List<int>();
+        int at = 0;
+        foreach (int c in counts)
+        {
+            for (int i = 0; i < c; i++)
+            {
+                int j = i + 1 == c ? 0 : i + 1;
+                if (ys[at + i] == ys[at + j]) continue;
+                ex0.Add(xs[at + i]); ey0.Add(ys[at + i]); ex1.Add(xs[at + j]); ey1.Add(ys[at + j]);
+            }
+            at += c;
+        }
+        RegionBuilder made = new RegionBuilder();
+        List<long> cross = new List<long>();
+        List<int> dirs = new List<int>();
+        for (int y = top; y < bottom; y++)
+        {
+            // In units of half a scale step: a pixel's centre row is
+            // (2y + 1) * scale.
+            long yc = (2L * y + 1) * scale;
+            cross.Clear(); dirs.Clear();
+            for (int e = 0; e < ex0.Count; e++)
+            {
+                long ya = 2L * ey0[e], yb = 2L * ey1[e];
+                long lo = Math.Min(ya, yb), hi = Math.Max(ya, yb);
+                if (yc < lo || yc >= hi) continue;
+                long xa = 2L * ex0[e], xb = 2L * ex1[e];
+                // Where the edge crosses the row, x = num / den, kept as a
+                // fraction.
+                long num = xa * (yb - ya) + (yc - ya) * (xb - xa), den = yb - ya;
+                if (den < 0) { num = -num; den = -den; }
+                // The first pixel whose centre, (2px + 1) * scale, is at or
+                // right of it: ceil((x - scale) / (2 * scale)).
+                cross.Add(CeilDiv(num - (long)scale * den, 2L * scale * den));
+                dirs.Add(ey1[e] > ey0[e] ? 1 : -1);
+            }
+            if (cross.Count < 2) continue;
+            // Sorted by where they cross, the directions alongside.
+            for (int i = 1; i < cross.Count; i++)
+            {
+                long cv = cross[i]; int dv = dirs[i]; int j = i - 1;
+                while (j >= 0 && cross[j] > cv) { cross[j + 1] = cross[j]; dirs[j + 1] = dirs[j]; j--; }
+                cross[j + 1] = cv; dirs[j + 1] = dv;
+            }
+            List<int> spans = new List<int>();
+            if (mode == Winding)
+            {
+                int winding = 0;
+                for (int i = 0; i < cross.Count; i++)
+                {
+                    int before = winding;
+                    winding += dirs[i];
+                    if (before == 0 && winding != 0) spans.Add((int)cross[i]);
+                    else if (before != 0 && winding == 0) spans.Add((int)cross[i]);
+                }
+            }
+            else for (int i = 0; i < cross.Count; i++) spans.Add((int)cross[i]);
+            List<int> clean = new List<int>();
+            for (int i = 0; i + 1 < spans.Count; i += 2)
+            {
+                if (spans[i + 1] <= spans[i]) continue;
+                if (clean.Count > 0 && clean[clean.Count - 1] >= spans[i]) { if (spans[i + 1] > clean[clean.Count - 1]) clean[clean.Count - 1] = spans[i + 1]; }
+                else { clean.Add(spans[i]); clean.Add(spans[i + 1]); }
+            }
+            if (clean.Count > 0) made.Add(y, y + 1, clean);
+        }
+        return made.Make();
+    }
+
+    public static long FloorDiv(long a, long b) { long q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }
+    public static long CeilDiv(long a, long b) { return -FloorDiv(-a, b); }
+
+    /// The banded form of any rectangles, overlapping or not.
+    public static RegionShape Union(List<int> rects)
+    {
+        RegionShape made = Empty;
+        for (int i = 0; i + 3 < rects.Count; i += 4) made = made.Combine(Rect(rects[i], rects[i + 1], rects[i + 2], rects[i + 3]), Or);
+        return made;
+    }
+
+    /// Made from rows the builder already put in the banded form.
+    public static RegionShape FromBands(int[] r) { return new RegionShape(r); }
+}
+
+/// Rows of spans, top to bottom, into the banded form: a row the same as
+/// the one it sits on joins it.
+sealed class RegionBuilder
+{
+    readonly List<int> _out = new List<int>();
+    int _bandStart = -1, _bandBottom;
+    List<int>? _bandSpans;
+
+    /// The spans (left, right pairs, left to right) of rows y0 to y1.
+    public void Add(int y0, int y1, List<int> spans)
+    {
+        if (spans.Count == 0 || y1 <= y0) { _bandSpans = null; return; }
+        if (_bandSpans != null && _bandBottom == y0 && Same(_bandSpans, spans))
+        {
+            for (int i = _bandStart; i < _out.Count; i += 4) _out[i + 3] = y1;
+            _bandBottom = y1;
+            return;
+        }
+        _bandStart = _out.Count;
+        _bandBottom = y1;
+        _bandSpans = spans;
+        for (int i = 0; i + 1 < spans.Count; i += 2) { _out.Add(spans[i]); _out.Add(y0); _out.Add(spans[i + 1]); _out.Add(y1); }
+    }
+
+    static bool Same(List<int> a, List<int> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    public RegionShape Make() { return _out.Count == 0 ? RegionShape.Empty : RegionShape.FromBands(_out.ToArray()); }
+}

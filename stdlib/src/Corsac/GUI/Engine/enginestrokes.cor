@@ -1,0 +1,300 @@
+// THE GUI KERNEL'S DRAWING ENGINE, as the corsac86 tree has it in
+// os/gui/enginestrokes.cor: the same code, in a namespace of its own, for a seat that
+// draws in its own process (WinSeat.cor, the Windows target). A change
+// to the engine is made there and copied here, so both draw alike.
+
+// THE ENGINE'S STROKES (TODO-GUI-AND-NT-KERNELS.md, "Drawing"): the pixels
+// a pen covers along points -- a thin pen's, stepped as Bresenham steps them
+// with the last point left out as GDI leaves it out, its style carried from
+// segment to segment; a wide one's, each segment's quadrilateral, a join at
+// every corner and the ends, as a region -- for native programs' pens
+// (DrawEngine, through the seat batch) and GDI's (Win32kDraw), which
+// realises a DC's pen as a StrokeStyle and paints what these give.
+//
+// NO FLOATING POINT (engineregions.cor): a wide stroke is worked in
+// sixteenths of a pixel.
+
+using System;
+using System.Collections.Generic;
+
+namespace Corsac.GUI.Engine;
+
+/// What a pen strokes with: its colour (the target's), width in pixels,
+/// ends and joins (PS_ENDCAP_*, PS_JOIN_*), and a thin pen's dashes.
+class StrokeStyle
+{
+    public long Colour;                // -1: the null pen
+    public int Width = 1;
+    public int Style;
+    public int EndCap, Join;
+    public bool Wide;                  // wider than a pixel
+    public bool InsideFrame;
+    public int[]? Pattern;             // on, off, on, off... in pixels, for a thin styled pen
+}
+
+/// Where a thin styled pen is in its pattern: carried from one segment
+/// to the next of a line, as GDI's style state is.
+sealed class StrokeDashes
+{
+    public int[]? Pattern;
+    public int Index, Left;
+    public bool On
+    {
+        get { return Pattern == null || (Index % 2) == 0; }
+    }
+    public void Step()
+    {
+        if (Pattern == null) return;
+        if (Left <= 0) Left = Pattern[Index];
+        Left--;
+        if (Left <= 0) { Index = (Index + 1) % Pattern.Length; Left = Pattern[Index]; }
+    }
+
+    /// `steps` Steps, whole turns of the pattern skipped at once (each part
+    /// takes as many steps as it says, and one at least): the pixels of a
+    /// line cut away (Strokes.Cut), counted as if they had been walked.
+    public void Advance(long steps)
+    {
+        if (Pattern == null || steps <= 0) return;
+        long turn = 0;
+        foreach (int part in Pattern) turn += Math.Max(1, part);
+        for (long k = steps % turn; k > 0; k--) Step();
+    }
+}
+
+static class Strokes
+{
+    /// PS_ENDCAP_* and PS_JOIN_*.
+    public const int EndRound = 0, EndSquare = 0x100, EndFlat = 0x200;
+    public const int JoinRound = 0, JoinBevel = 0x1000, JoinMiter = 0x2000;
+
+    /// Pixels, packed y << 32 | x, as a region.
+    public static RegionShape FromPixels(List<long> pixels)
+    {
+        if (pixels.Count == 0) return RegionShape.Empty;
+        pixels.Sort();
+        RegionBuilder made = new RegionBuilder();
+        int i = 0;
+        while (i < pixels.Count)
+        {
+            int y = (int)(pixels[i] >> 32);
+            List<int> spans = new List<int>();
+            while (i < pixels.Count && (int)(pixels[i] >> 32) == y)
+            {
+                int x = (int)(pixels[i] & 0xFFFFFFFF);
+                if (spans.Count > 0 && spans[spans.Count - 1] == x) spans[spans.Count - 1] = x + 1;
+                else if (spans.Count == 0 || spans[spans.Count - 1] < x) { spans.Add(x); spans.Add(x + 1); }
+                i++;
+            }
+            made.Add(y, y + 1, spans);
+        }
+        return made.Make();
+    }
+
+    public static long Pack(int x, int y) { return ((long)y << 32) | (x & 0xFFFFFFFFL); }
+
+    // ---- thin lines ------------------------------------------------------------------------
+
+    /// The widest or tallest any target is, in pixels -- a window, a
+    /// bitmap, a page. A line is walked only inside it (Cut).
+    public const int MostTarget = 0x10000;
+
+    /// `a` times q / p, q and p shifted down together until the product
+    /// fits.
+    static long MulDiv(long a, long q, long p)
+    {
+        if (p < 0) { p = -p; q = -q; }
+        while (q >= 1L << 26 || q <= -(1L << 26) || p >= 1L << 26) { q >>= 1; p >>= 1; }
+        if (p == 0) return q >= 0 ? a : 0;
+        return a * q / p;
+    }
+
+    /// THE PART OF A THIN LINE THAT CAN SHOW: (x0, y0)-(x1, y1) cut to two
+    /// pixels more than (l, t)-(r, b), each cut end the pixel nearest the
+    /// line there, so the pixels inside are Bresenham's from it, within a
+    /// pixel of the uncut line's. `before` and `after`: the steps the walk
+    /// would have taken outside, before the new start and after the new
+    /// end -- what a styled pen's pattern is moved on by. False, with all
+    /// of them in `before`, when none of it is inside. A line across a
+    /// window from far off it was every one of its pixels walked, and kept:
+    /// for one 2^31 long, the GUI kernel's heap gone.
+    public static bool Cut(ref int x0, ref int y0, ref int x1, ref int y1, int l, int t, int r, int b, out long before, out long after)
+    {
+        long dx = (long)x1 - x0, dy = (long)y1 - y0;
+        long steps = Math.Max(Math.Abs(dx), Math.Abs(dy));
+        before = 0; after = 0;
+        long bl = (long)l - 2, bt = (long)t - 2, br = (long)r + 2, bb = (long)b + 2;
+        bool inside0 = x0 >= bl && x0 < br && y0 >= bt && y0 < bb, inside1 = x1 >= bl && x1 < br && y1 >= bt && y1 < bb;
+        if (inside0 && inside1) return true;
+        long enter = 0, leave = steps;
+        long[] p = new long[] { -dx, dx, -dy, dy };
+        long[] q = new long[] { x0 - bl, br - 1 - x0, y0 - bt, bb - 1 - y0 };
+        for (int k = 0; k < 4; k++)
+        {
+            if (p[k] == 0) { if (q[k] < 0) { before = steps; return false; } continue; }
+            long place = MulDiv(steps, q[k], p[k]);
+            if (p[k] < 0) enter = Math.Max(enter, place); else leave = Math.Min(leave, place);
+        }
+        if (enter > leave || steps == 0) { before = steps; return false; }
+        int ox = x0, oy = y0;
+        if (!inside1) { x1 = (int)(ox + MulDiv(leave, dx, steps)); y1 = (int)(oy + MulDiv(leave, dy, steps)); after = steps - leave; }
+        if (!inside0) { x0 = (int)(ox + MulDiv(enter, dx, steps)); y0 = (int)(oy + MulDiv(enter, dy, steps)); before = enter; }
+        return true;
+    }
+
+    /// Bresenham's line from (x0, y0) toward (x1, y1), the last point left
+    /// out as GDI leaves it out, each pixel put in `on` or, in a gap of a
+    /// styled pen, `off`. Only what can show on a target (Cut), the pattern
+    /// moved over the rest.
+    public static void ThinLine(int x0, int y0, int x1, int y1, List<long> on, List<long> off, StrokeDashes dashes)
+    {
+        long before, after;
+        bool shows = Cut(ref x0, ref y0, ref x1, ref y1, 0, 0, MostTarget, MostTarget, out before, out after);
+        dashes.Advance(before);
+        if (!shows) return;
+        Walk(x0, y0, x1, y1, on, off, dashes);
+        dashes.Advance(after);
+    }
+
+    static void Walk(int x0, int y0, int x1, int y1, List<long> on, List<long> off, StrokeDashes dashes)
+    {
+        int dx = Math.Abs(x1 - x0), dy = Math.Abs(y1 - y0);
+        int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+        int err = dx - dy;
+        int x = x0, y = y0;
+        int steps = Math.Max(dx, dy);
+        for (int k = 0; k < steps; k++)
+        {
+            if (dashes.On) on.Add(Pack(x, y)); else off.Add(Pack(x, y));
+            dashes.Step();
+            int e2 = 2 * err;
+            if (e2 > -dy) { err -= dy; x += sx; }
+            if (e2 < dx) { err += dx; y += sy; }
+        }
+    }
+
+    /// THE SAME LINE AS RUNS ALONG ITS ROWS: Bresenham's pixels from (x0,
+    /// y0) toward (x1, y1), the last left out, gathered into runs -- from,
+    /// to (inclusive) and row, three entries each in `runs` -- each run
+    /// ended when the row changes or the next pixel does not touch it. A
+    /// single segment never meets itself, so these are exactly ThinLine's
+    /// pixels with no list of them, no sort and no region made: what GDI's
+    /// LineTo with a thin solid pen draws (Win32kDraw.Runs).
+    public static void ThinRuns(int x0, int y0, int x1, int y1, List<int> runs)
+    {
+        long before, after;
+        if (!Cut(ref x0, ref y0, ref x1, ref y1, 0, 0, MostTarget, MostTarget, out before, out after)) return;
+        int ddx = Math.Abs(x1 - x0), ddy = Math.Abs(y1 - y0);
+        int ssx = x0 < x1 ? 1 : -1, ssy = y0 < y1 ? 1 : -1;
+        int e = ddx - ddy, px = x0, py = y0, count = Math.Max(ddx, ddy);
+        int ry = 0, rf = 0, rt = 0;
+        bool have = false;
+        for (int k = 0; k < count; k++)
+        {
+            if (have && (py != ry || (px != rt + 1 && px != rf - 1))) { runs.Add(rf); runs.Add(rt); runs.Add(ry); have = false; }
+            if (!have) { have = true; ry = py; rf = px; rt = px; }
+            else if (px < rf) rf = px;
+            else rt = px;
+            int e2 = 2 * e;
+            if (e2 > -ddy) { e -= ddy; px += ssx; }
+            if (e2 < ddx) { e += ddx; py += ssy; }
+        }
+        if (have) { runs.Add(rf); runs.Add(rt); runs.Add(ry); }
+    }
+
+    // ---- wide lines ------------------------------------------------------------------------
+
+    public const int Sub = 16;                                                   // a stroke's unit: sixteenths of a pixel
+
+    /// A pixel's centre in sixteenths.
+    public static long Centre(int v) { return (long)v * Sub + Sub / 2; }
+
+    /// The stroke of a wide pen along the points (device coordinates),
+    /// closed or not, as a region: each segment's quadrilateral, a join at
+    /// every corner, and the ends.
+    public static RegionShape Wide(int[] xs, int[] ys, int n, bool closed, StrokeStyle pen)
+    {
+        RegionShape made = RegionShape.Empty;
+        long half = (long)pen.Width * Sub / 2;
+        int segments = closed ? n : n - 1;
+        // Each segment only where it can show, the pen's width more than a
+        // target (Cut): a segment from far off was a region of every row it
+        // crossed. Its ends are kept where they are inside, and so are the
+        // corners and caps there.
+        int wider = Math.Min(pen.Width, MostTarget) + 2;
+        for (int i = 0; i < segments; i++)
+        {
+            int j = (i + 1) % n;
+            int cx0 = xs[i], cy0 = ys[i], cx1 = xs[j], cy1 = ys[j];
+            long before, after;
+            if (!Cut(ref cx0, ref cy0, ref cx1, ref cy1, -wider, -wider, MostTarget + wider, MostTarget + wider, out before, out after)) continue;
+            long ax = Centre(cx0), ay = Centre(cy0), bx = Centre(cx1), by = Centre(cy1);
+            long dx = bx - ax, dy = by - ay;
+            long length = RegionShape.Root(dx * dx + dy * dy);
+            if (length == 0) continue;
+            long nx = -dy * half / length, ny = dx * half / length;
+            long ex = 0, ey = 0;
+            // A square end reaches half the width past the point.
+            if (!closed && pen.EndCap == EndSquare)
+            {
+                ex = dx * half / length; ey = dy * half / length;
+            }
+            long sax = i == 0 && !closed ? ex : 0, say = i == 0 && !closed ? ey : 0;
+            long sbx = j == n - 1 && !closed ? ex : 0, sby = j == n - 1 && !closed ? ey : 0;
+            made = made.Combine(Quad(ax - sax + nx, ay - say + ny, bx + sbx + nx, by + sby + ny,
+                                     bx + sbx - nx, by + sby - ny, ax - sax - nx, ay - say - ny), RegionShape.Or);
+        }
+        // The corners, and the round ends: only those that can show.
+        for (int i = 0; i < n; i++)
+        {
+            if (xs[i] < -wider || ys[i] < -wider || xs[i] >= MostTarget + wider || ys[i] >= MostTarget + wider) continue;
+            bool end = !closed && (i == 0 || i == n - 1);
+            if (end && pen.EndCap != EndRound) continue;
+            if (!end && pen.Join == JoinBevel) { made = made.Combine(Bevel(xs, ys, n, i, half, false), RegionShape.Or); continue; }
+            if (!end && pen.Join == JoinMiter) { made = made.Combine(Bevel(xs, ys, n, i, half, true), RegionShape.Or); continue; }
+            int l = xs[i] - (pen.Width - 1) / 2, t = ys[i] - (pen.Width - 1) / 2;
+            made = made.Combine(RegionShape.Ellipse(l, t, l + pen.Width, t + pen.Width), RegionShape.Or);
+        }
+        return made;
+    }
+
+    public static RegionShape Quad(long x0, long y0, long x1, long y1, long x2, long y2, long x3, long y3)
+    {
+        return RegionShape.Polygons(new int[] { (int)x0, (int)x1, (int)x2, (int)x3 }, new int[] { (int)y0, (int)y1, (int)y2, (int)y3 },
+                                    new int[] { 4 }, RegionShape.Winding, Sub);
+    }
+
+    /// The corner at point i filled flat (bevel) or to the point the two
+    /// edges meet (mitre, up to ten half-widths out, else a bevel).
+    public static RegionShape Bevel(int[] xs, int[] ys, int n, int i, long half, bool mitre)
+    {
+        int p = (i + n - 1) % n, q = (i + 1) % n;
+        long vx = Centre(xs[i]), vy = Centre(ys[i]);
+        long ax = vx - Centre(xs[p]), ay = vy - Centre(ys[p]), bx = Centre(xs[q]) - vx, by = Centre(ys[q]) - vy;
+        // Only the edges' directions matter here: a neighbour far off is
+        // brought nearer along its own line, so no square overflows.
+        while (Math.Abs(ax) >= 1L << 24 || Math.Abs(ay) >= 1L << 24) { ax >>= 1; ay >>= 1; }
+        while (Math.Abs(bx) >= 1L << 24 || Math.Abs(by) >= 1L << 24) { bx >>= 1; by >>= 1; }
+        long la = RegionShape.Root(ax * ax + ay * ay), lb = RegionShape.Root(bx * bx + by * by);
+        if (la == 0 || lb == 0) return RegionShape.Empty;
+        long n1x = -ay * half / la, n1y = ax * half / la, n2x = -by * half / lb, n2y = bx * half / lb;
+        // The outer side is where the turn is not.
+        long turn = ax * by - ay * bx;
+        if (turn > 0) { n1x = -n1x; n1y = -n1y; n2x = -n2x; n2y = -n2y; }
+        if (mitre)
+        {
+            // Where the two offset edges meet: v + (n1 + n2) * h^2 / (h^2 + n1.n2).
+            long dot = n1x * n2x + n1y * n2y, h2 = half * half;
+            long denominator = h2 + dot;
+            if (denominator > 0)
+            {
+                long mx = vx + (n1x + n2x) * h2 / denominator, my = vy + (n1y + n2y) * h2 / denominator;
+                long reach = RegionShape.Root((mx - vx) * (mx - vx) + (my - vy) * (my - vy));
+                if (reach <= 10 * half)
+                    return Quad(vx, vy, vx + n1x, vy + n1y, mx, my, vx + n2x, vy + n2y);
+            }
+        }
+        return RegionShape.Polygons(new int[] { (int)vx, (int)(vx + n1x), (int)(vx + n2x) }, new int[] { (int)vy, (int)(vy + n1y), (int)(vy + n2y) },
+                                    new int[] { 3 }, RegionShape.Winding, Sub);
+    }
+}

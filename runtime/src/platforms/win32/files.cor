@@ -218,6 +218,8 @@ static partial class Os
         if (fd >= 3 && _appending![fd]) SetFilePointer((nint)handle, 0, 0, 2);
         int wrote = 0;
         if (WriteFile((nint)handle, (nint)at, (int)count, (nint)Sys.AddressOf(ref wrote), 0) == 0) return Failed();
+        // A waiter on a pipe of this process's is woken (PollMany).
+        if (_pipeWritten != 0 && fd >= 3 && GetFileType((nint)handle) == FileTypePipe) SetEvent((nint)_pipeWritten);
         return wrote;
     }
 
@@ -522,14 +524,120 @@ static partial class Os
         return (columns << 16) | rows;
     }
 
-    /// poll(2) on one descriptor: readable when its handle is signalled.
-    public static int Poll(int fd, int events, int timeoutMs)
+    // ---- pipes and waiting on descriptors ---------------------------------
+    //
+    // AN ANONYMOUS PIPE IS NEVER SIGNALLED: Windows has no wait on one
+    // becoming readable. So a wait on descriptors asks each in turn --
+    // a pipe whether bytes are in it (PeekNamedPipe), anything else whether
+    // its handle is signalled -- and sleeps between asks on an event every
+    // write to a pipe of this process sets (PipeWritten): a writer here wakes
+    // the waiter at once, one in another process within a slice.
+
+    [DllImport("kernel32")] static extern int CreatePipe(nint read, nint write, nint security, int size);
+    [DllImport("kernel32")] static extern int PeekNamedPipe(nint pipe, nint buffer, int size, nint read, nint available, nint left);
+    [DllImport("kernel32")] static extern nint CreateEventW(nint security, int manual, int initial, nint name);
+    [DllImport("kernel32")] static extern int SetEvent(nint handle);
+    [DllImport("kernel32")] static extern int ResetEvent(nint handle);
+
+    /// How long a wait sleeps before asking every descriptor again, for a
+    /// pipe written from another process.
+    const int PollSlice = 50;
+
+    static long _pipeWritten;
+
+    /// The event a write to one of this process's pipes sets: a manual one,
+    /// made once. Its waiter resets it before asking the descriptors.
+    public static long PipeWritten()
+    {
+        if (_pipeWritten == 0) _pipeWritten = (long)CreateEventW(0, 1, 0, 0) & 0xFFFFFFFF;
+        return _pipeWritten;
+    }
+
+    /// pipe(2): the read end at 0 and the write end at 1, each a descriptor.
+    public static int Pipe(int[] pair)
+    {
+        if (pair.Length < 2) throw new IndexOutOfRangeException("a pipe needs two descriptors");
+        int read = 0, write = 0;
+        if (CreatePipe((nint)Sys.AddressOf(ref read), (nint)Sys.AddressOf(ref write), 0, 0) == 0) return Failed();
+        PipeWritten();
+        pair[0] = Adopt(read & 0xFFFFFFFF, false);
+        pair[1] = Adopt(write & 0xFFFFFFFF, false);
+        return 0;
+    }
+
+    /// Whether a read of `fd` would not wait: bytes in a pipe, or a pipe whose
+    /// writer has gone (the read answers its end); any other handle signalled.
+    public static bool Readable(int fd)
     {
         long handle = HandleOf(fd);
-        if (handle == 0) return (int)-Err.BadF;
-        if ((events & 1) == 0) return 1;
-        return WaitForSingleObject((nint)handle, timeoutMs < 0 ? -1 : timeoutMs) == 0 ? 1 : 0;
+        if (handle == 0) return true;
+        if (GetFileType((nint)handle) == FileTypePipe)
+        {
+            int available = 0;
+            if (PeekNamedPipe((nint)handle, 0, 0, 0, (nint)Sys.AddressOf(ref available), 0) == 0) return true;
+            return available > 0;
+        }
+        return WaitForSingleObject((nint)handle, 0) == 0;
     }
+
+    /// poll(2) on one descriptor.
+    public static int Poll(int fd, int events, int timeoutMs)
+    {
+        int[] one = new int[] { fd };
+        bool[] ready = new bool[1];
+        return PollMany(one, 1, events, timeoutMs, ready);
+    }
+
+    /// poll(2) on several descriptors, each for the same `events`: a
+    /// descriptor asked only to write is ready at once (a pipe's write
+    /// waits only when it is full). The count ready, 0 on the timeout.
+    public static int PollMany(int[] fds, int count, int events, int timeoutMs, bool[] ready)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            ready[i] = false;
+            if (HandleOf(fds[i]) == 0) return (int)-Err.BadF;
+        }
+        long deadline = timeoutMs < 0 ? long.MaxValue : Win32.NowNanos() + (long)timeoutMs * 1000000;
+        long written = PipeWritten();
+        while (true)
+        {
+            if (written != 0) ResetEvent((nint)written);
+            int n = 0;
+            for (int i = 0; i < count; i++)
+            {
+                ready[i] = (events & 1) == 0 || Readable(fds[i]);
+                if (ready[i]) n++;
+            }
+            if (n > 0) return n;
+            long left = deadline - Win32.NowNanos();
+            if (left <= 0) return 0;
+            long ms = Math.Min(left / 1000000 + 1, PollSlice);
+            Runtime.BeginBlocking();
+            if (written != 0) WaitForSingleObject((nint)written, (int)ms);
+            else Sleep((int)ms);
+            Runtime.EndBlocking();
+            if (PosixSignalRegistration.Pending) { PosixSignalRegistration.Deliver(); return (int)-Err.Intr; }
+        }
+    }
+
+    [DllImport("kernel32")] static extern void Sleep(int milliseconds);
+
+    // ---- sockets ------------------------------------------------------------
+    //
+    // Not yet: Winsock is a library of its own (ws2_32, wsock32 on 95) and
+    // comes with System.Net. Until then a socket is refused as a Linux
+    // kernel without the family refuses one, and every call on a socket
+    // finds no such descriptor.
+
+    public static int Socket(int family, int kind, int protocol) => -97;           // EAFNOSUPPORT
+    public static int Bind(int fd, byte[] address) => (int)-Err.BadF;
+    public static int Listen(int fd, int backlog) => (int)-Err.BadF;
+    public static int Accept(int fd, byte[]? address) => (int)-Err.BadF;
+    public static int Connect(int fd, byte[] address) => (int)-Err.BadF;
+    public static int Send(int fd, byte[] buffer, int at, int count, int flags) => (int)-Err.BadF;
+    public static int Recv(int fd, byte[] buffer, int at, int count, int flags) => (int)-Err.BadF;
+    public static int Shutdown(int fd, int how) => (int)-Err.BadF;
 
     /// ioctl(2): Windows has none of Linux's.
     public static long Ioctl(int fd, long request, long argument) => -25;

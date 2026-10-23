@@ -1,0 +1,615 @@
+// THE GUI KERNEL'S DRAWING ENGINE, as the corsac86 tree has it in
+// os/gui/enginedraw.cor: the same code, in a namespace of its own, for a seat that
+// draws in its own process (WinSeat.cor, the Windows target). A change
+// to the engine is made there and copied here, so both draw alike.
+
+// THE ENGINE'S DRAWING (TODO-GUI-AND-NT-KERNELS.md, "Drawing"): geometry
+// turned into pixels on a target. One engine draws for both of the GUI
+// kernel's clients: native programs' System.Drawing.Graphics, whose paths,
+// regions, transforms, pens and smoothing reach it through the seat batch
+// (seat.cor, SeatOp.Transform .. SeatOp.FillClip), and GDI, whose DCs and
+// their objects win32k translates onto it (Win32kDraw's GdiDrawTarget).
+//
+// WHAT IS DRAWN is a region (engineregions.cor), a path (enginepaths.cor)
+// filled by a fill mode, or a path stroked by a pen (enginestrokes.cor, and
+// the widener). WHERE it is drawn is a DrawTarget: the target owns the
+// colour, the brush and the raster operation, and is handed rectangles to
+// paint and, for a smoothed edge, rows of coverage to blend.
+//
+// TWO SETS OF RULES, one engine (DrawMode). GDI's are win32k.sys's, each
+// cited where its code was moved from, and a Windows program's pixels do
+// not change by coming through here: a pixel is in when its centre, an
+// integer device point, is inside; a thin line leaves its last point out;
+// nothing is blended. Native programs ask for .NET's: GDI+'s
+// PixelOffsetMode (None and Default put a pixel's centre on the integer, as
+// GDI does; Half and HighQuality put it half a pixel in), SmoothingMode
+// (AntiAlias blends an edge by how much of each pixel it covers, sixteen
+// samples a pixel), and GDI+'s line, which draws both of its ends. GDI never
+// asks for the native rules, and nothing native changes what GDI gets.
+//
+// NO FLOATING POINT (engineregions.cor): points are 28.4 device units, a
+// native transform 16.16, coverage sixteenths of a pixel.
+
+using System;
+using System.Collections.Generic;
+
+namespace Corsac.GUI.Engine;
+
+/// The rules a drawing is made by. DrawMode.Gdi is GDI's; a native
+/// Graphics's state makes its own.
+sealed class DrawMode
+{
+    /// .NET's rules: a thin line's last point drawn, dashes in the pen's
+    /// widths, a wide pen widened as GDI+ widens it (Widener) rather than
+    /// stroked segment by segment as GDI's wide pen is (Strokes.Wide).
+    public bool Native;
+    /// SmoothingMode.AntiAlias (and HighQuality): edges blended by coverage.
+    public bool AntiAlias;
+    /// PixelOffsetMode.Half (and HighQuality): pixel centres at half-integers.
+    public bool HalfPixel;
+
+    public static readonly DrawMode Gdi = new DrawMode();
+
+    /// The native mode for a batch's Mode word: bit 0 smoothing, bit 1 the
+    /// half-pixel offset. One of four kept, never made: every batch starts
+    /// with one.
+    public static DrawMode Of(long bits)
+    {
+        return _native[(int)(bits & 3)];
+    }
+
+    static readonly DrawMode[] _native = new DrawMode[]
+    {
+        new DrawMode { Native = true },
+        new DrawMode { Native = true, AntiAlias = true },
+        new DrawMode { Native = true, HalfPixel = true },
+        new DrawMode { Native = true, AntiAlias = true, HalfPixel = true },
+    };
+}
+
+/// Where the engine's pixels go. The target holds what they are painted
+/// with -- a colour, a brush, a raster operation -- and the engine says only
+/// where: Open before the first, with the bounds of everything that follows
+/// and whether coverage will come; rectangles to paint whole; rows of
+/// coverage, 0 to 255 a pixel, to blend; Close after the last.
+interface DrawTarget
+{
+    void Open(int left, int top, int right, int bottom, bool coverage);
+    void Rectangle(int x, int y, int width, int height);
+    void Coverage(int x, int y, byte[] coverage, int from, int count);
+    void Close();
+}
+
+/// A native Graphics's transform, world to device: x' = M11 x + M21 y + Dx,
+/// y' = M12 x + M22 y + Dy, as .NET's Matrix (Elements: M11, M12, M21, M22,
+/// OffsetX, OffsetY), the four factors in 16.16 and the offsets in 28.4, so
+/// that 28.4 points go through it as 28.4 points. The client works out the
+/// floats; the kernel only multiplies.
+sealed class DrawTransform
+{
+    public long M11 = 0x10000, M12, M21, M22 = 0x10000, Dx, Dy;
+
+    public bool IsIdentity { get { return M11 == 0x10000 && M22 == 0x10000 && M12 == 0 && M21 == 0 && Dx == 0 && Dy == 0; } }
+    public bool IsTranslation { get { return M11 == 0x10000 && M22 == 0x10000 && M12 == 0 && M21 == 0; } }
+
+    public static DrawTransform Of(long m11, long m12, long m21, long m22, long dx, long dy)
+    {
+        return new DrawTransform { M11 = Signed(m11), M12 = Signed(m12), M21 = Signed(m21), M22 = Signed(m22), Dx = Signed(dx), Dy = Signed(dy) };
+    }
+
+    static long Signed(long word) { word &= 0xFFFFFFFF; return word >= 0x80000000 ? word - 0x100000000 : word; }
+
+    /// Points through it, in place, each product rounded half up.
+    public void Apply(long[] xs, long[] ys, int count)
+    {
+        if (IsIdentity) return;
+        for (int i = 0; i < count; i++)
+        {
+            long x = xs[i], y = ys[i];
+            xs[i] = ((x * M11 + y * M21 + 0x8000) >> 16) + Dx;
+            ys[i] = ((x * M12 + y * M22 + 0x8000) >> 16) + Dy;
+        }
+    }
+
+    /// A pen's width (28.4) on the device: times the square root of the
+    /// determinant, the factor an area is scaled by, which for a rotation
+    /// and a uniform scale is the scale. [GDI+ transforms the pen's
+    /// cross-section as a whole; an anisotropic transform's pen is an
+    /// ellipse there, and its width here the mean of the two axes.]
+    public long Width(long width)
+    {
+        if (IsTranslation) return width;
+        long det = M11 * M22 - M12 * M21;
+        if (det < 0) det = -det;
+        long scale = RegionShape.Root(det);                                     // 16.16
+        return (width * scale + 0x8000) >> 16;
+    }
+}
+
+/// A native pen, realised: width in 28.4 device units, ends and joins as
+/// GDI's PS_ENDCAP_* and PS_JOIN_* (Strokes), the miter limit as an IEEE
+/// single's bits, and dashes, on and off, in 28.4 device units from
+/// `DashOffset` (null: solid).
+sealed class DrawPen
+{
+    public long Width = 16;
+    public int Cap = Strokes.EndFlat, Join = Strokes.JoinMiter;
+    public long MiterBits = 0x41200000;                                         // 10.0f, .NET's default
+    public long[]? Dashes;
+    public long DashOffset;
+}
+
+static class DrawEngine
+{
+    // ---- regions ---------------------------------------------------------------------------
+
+    /// A region painted, cut to `clip` first when there is one.
+    public static void FillShape(DrawTarget t, RegionShape shape, RegionShape? clip)
+    {
+        if (clip != null) shape = shape.Combine(clip, RegionShape.And);
+        if (shape.IsEmpty) return;
+        int l, tp, r, b;
+        shape.Bounds(out l, out tp, out r, out b);
+        int[] R = shape.R;
+        t.Open(l, tp, r, b, false);
+        try { for (int i = 0; i < R.Length; i += 4) t.Rectangle(R[i], R[i + 1], R[i + 2] - R[i], R[i + 3] - R[i + 1]); }
+        finally { t.Close(); }
+    }
+
+    /// A rectangle painted, cut to `clip`: what the batch's Fill is once a
+    /// clip region is set.
+    public static void FillRectangle(DrawTarget t, int x, int y, int width, int height, RegionShape? clip)
+    {
+        if (width <= 0 || height <= 0) return;
+        if (clip == null)
+        {
+            t.Open(x, y, x + width, y + height, false);
+            try { t.Rectangle(x, y, width, height); }
+            finally { t.Close(); }
+            return;
+        }
+        FillShape(t, RegionShape.Rect(x, y, x + width, y + height), clip);
+    }
+
+    /// A one-bit picture's set bits (or its clear ones, `set` false) painted
+    /// at (x, y): rows of `stride` bytes at `at`, the first pixel the top
+    /// bit, as a glyph is kept. What a glyph is drawn as through a clip
+    /// region, which the card's colour expansion cannot cut to.
+    public static void Bits(DrawTarget t, long at, int stride, int x, int y, int width, int height, bool set, RegionShape? clip)
+    {
+        List<int> rects = new List<int>();
+        for (int row = 0; row < height; row++)
+        {
+            long line = at + (long)row * stride;
+            int run = -1;
+            for (int column = 0; column <= width; column++)
+            {
+                bool on = column < width && ((Sys.PeekByte(line + (column >> 3)) & (0x80 >> (column & 7))) != 0) == set;
+                if (on && run < 0) run = column;
+                else if (!on && run >= 0) { rects.Add(x + run); rects.Add(y + row); rects.Add(x + column); rects.Add(y + row + 1); run = -1; }
+            }
+        }
+        if (rects.Count == 0) return;
+        FillShape(t, RegionShape.Union(rects), clip);
+    }
+
+    // ---- paths filled ----------------------------------------------------------------------
+
+    /// A path's pixels by a fill mode (RegionShape.Alternate or Winding),
+    /// aliased: GDI's (DevicePath.ToShape, a pixel in when its integer
+    /// centre is), or, for a native mode with the half-pixel offset, the
+    /// same with the centres half a pixel in. The path is flattened and its
+    /// figures closed in place. Null for fewer than two curves. Only rows
+    /// `fromRow` to `toRow` are made, when they are given.
+    public static RegionShape? PathShape(DevicePath path, int fillMode, DrawMode mode, int fromRow = int.MinValue, int toRow = int.MaxValue)
+    {
+        if (!mode.HalfPixel) return path.ToShape(fillMode, fromRow, toRow);
+        // A centre at (16x + 8) inside the path is the centre 16x inside
+        // the path moved back by eight.
+        return Moved(path, -8, -8).ToShape(fillMode, fromRow, toRow);
+    }
+
+    /// A path filled: by its region (PathShape), or, smoothed, by coverage.
+    /// Only the rows `clip` spans are worked, when there is one.
+    public static void FillPath(DrawTarget t, DevicePath path, int fillMode, DrawMode mode, RegionShape? clip)
+    {
+        int fromRow = int.MinValue, toRow = int.MaxValue;
+        if (clip != null)
+        {
+            if (clip.IsEmpty) return;
+            int cl, cr;
+            clip.Bounds(out cl, out fromRow, out cr, out toRow);
+        }
+        if (!mode.AntiAlias)
+        {
+            RegionShape? shape = PathShape(path, fillMode, mode, fromRow, toRow);
+            if (shape != null) FillShape(t, shape, clip);
+            return;
+        }
+        if (path.HasBeziers) path.Flatten();
+        path.CloseAll();
+        if (path.Curves < 2) return;
+        // SIXTEEN SAMPLES A PIXEL: the polygons' pixels on a grid four times
+        // as fine each way (RegionShape.Polygons in quarter pixels), each
+        // pixel's share of them its coverage. Moved by eight first, as
+        // ToShape moves them, so that pixel x is 28.4 [16x - 8, 16x + 8)
+        // with centres on the integer -- or not, with the half-pixel
+        // offset, and pixel x is [16x, 16x + 16).
+        int shift = mode.HalfPixel ? 0 : 8;
+        List<int> xs = new List<int>(), ys = new List<int>(), counts = new List<int>();
+        foreach (PathFigure f in path.Figures())
+        {
+            if (f.X.Count == 0) continue;
+            for (int i = 0; i < f.X.Count; i++) { xs.Add((int)f.X[i] + shift); ys.Add((int)f.Y[i] + shift); }
+            counts.Add(f.X.Count);
+        }
+        RegionShape fine = RegionShape.Polygons(xs.ToArray(), ys.ToArray(), counts.ToArray(),
+                                                fillMode == RegionShape.Winding ? RegionShape.Winding : RegionShape.Alternate, 4,
+                                                fromRow == int.MinValue ? fromRow : fromRow * 4, toRow == int.MaxValue ? toRow : toRow * 4);
+        Cover(t, fine, clip);
+    }
+
+    /// A region in quarter pixels painted by how much of each pixel it
+    /// covers: whole pixels as rectangles, edges as coverage.
+    static void Cover(DrawTarget t, RegionShape fine, RegionShape? clip)
+    {
+        if (fine.IsEmpty) return;
+        int fl, ft, fr, fb;
+        fine.Bounds(out fl, out ft, out fr, out fb);
+        int left = (int)RegionShape.FloorDiv(fl, 4), top = (int)RegionShape.FloorDiv(ft, 4);
+        int right = (int)RegionShape.CeilDiv(fr, 4), bottom = (int)RegionShape.CeilDiv(fb, 4);
+        if (clip != null)
+        {
+            int cl, ct, cr, cb;
+            if (clip.IsEmpty) return;
+            clip.Bounds(out cl, out ct, out cr, out cb);
+            if (cl > left) left = cl; if (ct > top) top = ct;
+            if (cr < right) right = cr; if (cb < bottom) bottom = cb;
+            if (right <= left || bottom <= top) return;
+        }
+        int width = right - left;
+        int[] sum = new int[width];
+        byte[] row = new byte[width];
+        int[] R = fine.R;
+        int first = 0;
+        t.Open(left, top, right, bottom, true);
+        try
+        {
+            for (int y = top; y < bottom; y++)
+            {
+                int y0 = y * 4, y1 = y0 + 4;
+                while (first < R.Length && R[first + 3] <= y0) first += 4;
+                bool any = false;
+                for (int i = first; i < R.Length && R[i + 1] < y1; i += 4)
+                {
+                    int rows = Math.Min(R[i + 3], y1) - Math.Max(R[i + 1], y0);
+                    if (rows <= 0) continue;
+                    int a = R[i], b = R[i + 2];
+                    int pa = Math.Max((int)RegionShape.FloorDiv(a, 4), left), pb = Math.Min((int)RegionShape.CeilDiv(b, 4), right);
+                    for (int px = pa; px < pb; px++)
+                    {
+                        int across = Math.Min(b, px * 4 + 4) - Math.Max(a, px * 4);
+                        if (across > 0) { sum[px - left] += rows * across; any = true; }
+                    }
+                }
+                if (!any) continue;
+                for (int k = 0; k < width; k++) { int s = sum[k]; row[k] = (byte)(s >= 16 ? 255 : (s * 255 + 8) / 16); sum[k] = 0; }
+                if (clip == null) { Emit(t, y, left, row, 0, width); continue; }
+                int[] C = clip.R;
+                for (int i = 0; i < C.Length; i += 4)
+                {
+                    if (C[i + 1] > y) break;
+                    if (C[i + 3] <= y) continue;
+                    int a = Math.Max(C[i], left), b = Math.Min(C[i + 2], right);
+                    if (b > a) Emit(t, y, a, row, a - left, b - a);
+                }
+            }
+        }
+        finally { t.Close(); }
+    }
+
+    /// One row's coverage given to the target: runs of whole pixels as
+    /// rectangles, runs of part-covered ones as coverage, nothing for none.
+    static void Emit(DrawTarget t, int y, int x, byte[] row, int from, int count)
+    {
+        int k = 0;
+        while (k < count)
+        {
+            int c = row[from + k];
+            if (c == 0) { k++; continue; }
+            int start = k;
+            if (c == 255)
+            {
+                while (k < count && row[from + k] == 255) k++;
+                t.Rectangle(x + start, y, k - start, 1);
+                continue;
+            }
+            while (k < count && row[from + k] != 0 && row[from + k] != 255) k++;
+            t.Coverage(x + start, y, row, from + start, k - start);
+        }
+    }
+
+    // ---- paths stroked ---------------------------------------------------------------------
+
+    /// GDI'S STROKE OF A PATH (bStrokeAndOrFill 0xA0095848, as
+    /// Win32kDraw.PaintPath strokes it): a cosmetic pen strokes each
+    /// flattened segment with the thin line, from and to the nearest pixel
+    /// [I: GIQ on the 28.4 ends is not done], its style carried along the
+    /// figure, the pixels of its gaps added to `gaps`; a geometric pen
+    /// strokes the figure as Strokes.Wide does, closed ones closed. The
+    /// path must have been flattened.
+    public static RegionShape StrokeShape(DevicePath path, StrokeStyle pen, List<long> gaps)
+    {
+        RegionShape outline = RegionShape.Empty;
+        List<long> on = new List<long>();
+        foreach (PathFigure f in path.Figures())
+        {
+            int n = f.X.Count;
+            if (n == 0) continue;
+            int[] xs = new int[n], ys = new int[n];
+            for (int i = 0; i < n; i++) { xs[i] = (int)((f.X[i] + 8) >> 4); ys[i] = (int)((f.Y[i] + 8) >> 4); }
+            if (pen.Wide)
+            {
+                if (n > 1) outline = outline.Combine(Strokes.Wide(xs, ys, n, f.Closed, pen), RegionShape.Or);
+                continue;
+            }
+            StrokeDashes dashes = new StrokeDashes { Pattern = pen.Pattern };
+            for (int i = 0; i + 1 < n; i++) Strokes.ThinLine(xs[i], ys[i], xs[i + 1], ys[i + 1], on, gaps, dashes);
+            if (f.Closed && n > 1) Strokes.ThinLine(xs[n - 1], ys[n - 1], xs[0], ys[0], on, gaps, dashes);
+        }
+        if (!pen.Wide) outline = Strokes.FromPixels(on);
+        return outline;
+    }
+
+    /// A NATIVE PEN'S STROKE: the path flattened and cut into its dashes;
+    /// then a pen a pixel wide or less, unsmoothed, steps the thin line
+    /// through the pixels nearest each point, both ends drawn as GDI+ draws
+    /// them; any other is widened (Widener, with the pen's ends, joins and
+    /// miter limit -- a smoothed hairline as a pixel wide) and the outline
+    /// filled by winding, so that where the stroke crosses itself it is
+    /// painted once.
+    public static void StrokePath(DrawTarget t, DevicePath path, DrawPen pen, DrawMode mode, RegionShape? clip)
+    {
+        // NOTHING SHOWS THROUGH AN EMPTY CLIP, and with none a line still
+        // shows no further than any target reaches (MostTarget): a thin
+        // line was a list of every one of its pixels, and a dashed one a
+        // figure for every dash, from end to end -- for a line 2^31 units
+        // long, millions of either. Each is made only where it can show,
+        // the box the pen's width (and a few pixels) wider than that.
+        if (clip != null && clip.IsEmpty) return;
+        int bl = 0, bt = 0, br = MostTarget, bb = MostTarget;
+        if (clip != null) clip.Bounds(out bl, out bt, out br, out bb);
+        if (path.HasBeziers) path.Flatten();
+        long reach = Math.Max(pen.Width, 16) + 64;
+        DevicePath line = pen.Dashes != null
+            ? Dashed(path, pen.Dashes, pen.DashOffset, ((long)bl << 4) - reach, ((long)bt << 4) - reach, ((long)br << 4) + reach, ((long)bb << 4) + reach)
+            : path;
+        if (pen.Width <= 16 && !mode.AntiAlias)
+        {
+            List<long> on = new List<long>(), none = new List<long>();
+            StrokeDashes solid = new StrokeDashes();
+            foreach (PathFigure f in line.Figures())
+            {
+                int n = f.X.Count;
+                if (n == 0) continue;
+                int[] xs = new int[n], ys = new int[n];
+                for (int i = 0; i < n; i++)
+                {
+                    // The nearest pixel: centres on the integer, or half a
+                    // pixel in.
+                    xs[i] = mode.HalfPixel ? (int)(f.X[i] >> 4) : (int)((f.X[i] + 8) >> 4);
+                    ys[i] = mode.HalfPixel ? (int)(f.Y[i] >> 4) : (int)((f.Y[i] + 8) >> 4);
+                }
+                for (int i = 0; i + 1 < n; i++) Thin(xs[i], ys[i], xs[i + 1], ys[i + 1], on, none, solid, bl, bt, br, bb);
+                if (f.Closed && n > 1) Thin(xs[n - 1], ys[n - 1], xs[0], ys[0], on, none, solid, bl, bt, br, bb);
+                else on.Add(Strokes.Pack(xs[n - 1], ys[n - 1]));
+            }
+            if (on.Count > 0) FillShape(t, Strokes.FromPixels(on), clip);
+            return;
+        }
+        long width = pen.Width < 16 ? 16 : pen.Width;
+        DevicePath? wide = Widener.Widen(line, width, pen.Cap, pen.Join, pen.MiterBits);
+        if (wide == null) return;
+        FillPath(t, wide, RegionShape.Winding, mode, clip);
+    }
+
+    /// A thin segment's pixels, the segment first cut to a little more than
+    /// `clip`'s bounds when it reaches past them: a line across a window
+    /// from far outside it is stepped only where it can show. The cut ends
+    /// are rounded to the nearest pixel, so the pixels a cut line draws
+    /// inside are Bresenham's from there, within a pixel of the uncut
+    /// line's.
+    static void Thin(int x0, int y0, int x1, int y1, List<long> on, List<long> off, StrokeDashes dashes, int l, int t, int r, int b)
+    {
+        {
+            l -= 2; t -= 2; r += 2; b += 2;
+            bool inside0 = x0 >= l && x0 < r && y0 >= t && y0 < b, inside1 = x1 >= l && x1 < r && y1 >= t && y1 < b;
+            if (!inside0 || !inside1)
+            {
+                // Liang-Barsky in fractions of the segment, kept exact as
+                // num / den with den the segment's run.
+                long dx = (long)x1 - x0, dy = (long)y1 - y0;
+                long enterN = 0, enterD = 1, leaveN = 1, leaveD = 1;
+                long[] p = new long[] { -dx, dx, -dy, dy };
+                long[] q = new long[] { (long)x0 - l, (long)r - 1 - x0, (long)y0 - t, (long)b - 1 - y0 };
+                for (int k = 0; k < 4; k++)
+                {
+                    if (p[k] == 0) { if (q[k] < 0) return; continue; }
+                    long n = q[k], d = p[k];
+                    if (d < 0) { n = -n; d = -d; if (n * enterD > enterN * d) { enterN = n; enterD = d; } }
+                    else { if (n * leaveD < leaveN * d) { leaveN = n; leaveD = d; } }
+                }
+                if (enterN * leaveD > leaveN * enterD) return;
+                if (!inside0) { x0 = (int)(x0 + Round(dx * enterN, enterD)); y0 = (int)(y0 + Round(dy * enterN, enterD)); }
+                if (!inside1) { int nx = (int)(x1 - dx + Round(dx * leaveN, leaveD)); int ny = (int)(y1 - dy + Round(dy * leaveN, leaveD)); x1 = nx; y1 = ny; }
+            }
+        }
+        Strokes.ThinLine(x0, y0, x1, y1, on, off, dashes);
+    }
+
+    static long Round(long n, long d) { return RegionShape.FloorDiv(2 * n + d, 2 * d); }
+
+    /// The widest or tallest any target is, in pixels: what a line with no
+    /// clip is drawn within (StrokePath).
+    const int MostTarget = Strokes.MostTarget;
+
+    /// `length` times q / p, the both of them shifted down together until
+    /// the product fits: the place along a segment where it meets a box's
+    /// edge. Exact for any segment a target holds; on one billions of
+    /// units long, within a few units in millions.
+    static long Along(long length, long q, long p)
+    {
+        if (p < 0) { p = -p; q = -q; }
+        while (q >= 1L << 26 || q <= -(1L << 26) || p >= 1L << 26) { q >>= 1; p >>= 1; }
+        if (p == 0) return q >= 0 ? length : 0;
+        return length * q / p;
+    }
+
+    /// A segment's length, its run and rise shifted down first when their
+    /// squares would not fit.
+    static long Hypot(long dx, long dy)
+    {
+        long x = Math.Abs(dx), y = Math.Abs(dy);
+        int shift = 0;
+        while (x >= 1L << 30 || y >= 1L << 30) { x >>= 1; y >>= 1; shift++; }
+        return RegionShape.Root(x * x + y * y) << shift;
+    }
+
+    /// The dash pattern moved `distance` on: the part it is in (`at`) and
+    /// what is left of it (`left`). Whole turns of it skipped at once.
+    static void Advance(long[] pattern, long total, ref int at, ref long left, long distance)
+    {
+        if (distance < left) { left -= distance; return; }
+        distance -= left;
+        at = (at + 1) % pattern.Length;
+        left = pattern[at];
+        distance %= total;
+        while (distance >= left) { distance -= left; at = (at + 1) % pattern.Length; left = pattern[at]; }
+        left -= distance;
+    }
+
+    /// A flattened path cut into its dashes: `pattern` on, off, on... in
+    /// 28.4 units, started `offset` in, again at each figure as GDI+ starts
+    /// it; a dash that runs past a corner turns it. Each dash an open
+    /// figure. Only inside the box (`l`, `t`) to (`r`, `b`), in 28.4: the
+    /// pattern is moved over what lies outside it without a dash made.
+    public static DevicePath Dashed(DevicePath flat, long[] pattern, long offset, long l, long t, long r, long b)
+    {
+        DevicePath made = new DevicePath();
+        if (pattern.Length == 0) return flat;
+        long total = 0;
+        for (int i = 0; i < pattern.Length; i++) { if (pattern[i] < 1) pattern[i] = 1; total += pattern[i]; }
+        long[] px = new long[1], py = new long[1];
+        foreach (PathFigure f in flat.Figures())
+        {
+            int n = f.X.Count;
+            if (n < 2) continue;
+            int at = 0;
+            long left = pattern[0];
+            long skip = offset % total;
+            if (skip < 0) skip += total;
+            while (skip > 0)
+            {
+                if (skip >= left) { skip -= left; at = (at + 1) % pattern.Length; left = pattern[at]; }
+                else { left -= skip; skip = 0; }
+            }
+            bool drawing = false;
+            int segments = f.Closed ? n : n - 1;
+            for (int s = 0; s < segments; s++)
+            {
+                long ax = f.X[s], ay = f.Y[s], bx = f.X[(s + 1) % n], by = f.Y[(s + 1) % n];
+                long dx = bx - ax, dy = by - ay;
+                long length = Hypot(dx, dy);
+                if (length == 0) continue;
+                // Where the segment is inside the box (Liang-Barsky, as
+                // places along it): none of it, and the pattern moves over
+                // it whole.
+                long enter = 0, leave = length;
+                long[] lp = new long[] { -dx, dx, -dy, dy };
+                long[] lq = new long[] { ax - l, r - ax, ay - t, b - ay };
+                for (int k = 0; k < 4 && enter <= leave; k++)
+                {
+                    if (lp[k] == 0) { if (lq[k] < 0) { enter = length; leave = -1; } continue; }
+                    long place = Along(length, lq[k], lp[k]);
+                    if (lp[k] < 0) enter = Math.Max(enter, place); else leave = Math.Min(leave, place);
+                }
+                if (enter > leave) { drawing = false; Advance(pattern, total, ref at, ref left, length); continue; }
+                long pos = 0;
+                if (enter > 0) { drawing = false; Advance(pattern, total, ref at, ref left, enter); pos = enter; }
+                while (pos < leave)
+                {
+                    long step = Math.Min(left, leave - pos);
+                    bool on = (at & 1) == 0;
+                    if (on)
+                    {
+                        if (!drawing) { made.MoveTo(ax + Along(pos, dx, length), ay + Along(pos, dy, length)); drawing = true; }
+                        px[0] = ax + Along(pos + step, dx, length); py[0] = ay + Along(pos + step, dy, length);
+                        made.PolyLineTo(px, py, 1);
+                    }
+                    pos += step;
+                    left -= step;
+                    if (left == 0)
+                    {
+                        drawing = false;
+                        at = (at + 1) % pattern.Length;
+                        left = pattern[at];
+                    }
+                }
+                if (leave < length) { drawing = false; Advance(pattern, total, ref at, ref left, length - leave); }
+            }
+        }
+        return made;
+    }
+
+    /// A copy of a path moved by (dx, dy) in 28.4.
+    public static DevicePath Moved(DevicePath path, long dx, long dy)
+    {
+        DevicePath p = path.Clone();
+        p.StartX += dx; p.StartY += dy;
+        foreach (PathRecord r in p.Records)
+            for (int i = 0; i < r.Count; i++) { r.X[i] += dx; r.Y[i] += dy; }
+        return p;
+    }
+
+    // ---- native paths from the batch -------------------------------------------------------
+
+    /// .NET's PathPointType: a figure's start, a line to the point, one of
+    /// a cubic Bezier's three points; the figure closed after the point.
+    public const int PointStart = 0, PointLine = 1, PointBezier = 3, PointTypeMask = 7, PointClose = 0x80;
+
+    /// A path from a batch's points -- (x, y, type) words, x and y 28.4
+    /// world units -- through the transform, as GraphicsPath's PathPoints
+    /// and PathTypes describe it. Beziers come in threes; a figure's points
+    /// that do not make one whole are drawn as lines.
+    public static DevicePath FromPoints(long source, int count, DrawTransform? world)
+    {
+        long[] xs = new long[count], ys = new long[count];
+        int[] types = new int[count];
+        for (int i = 0; i < count; i++)
+        {
+            xs[i] = Signed(Sys.PeekWord(source + i * 12));
+            ys[i] = Signed(Sys.PeekWord(source + i * 12 + 4));
+            types[i] = (int)(Sys.PeekWord(source + i * 12 + 8) & 0xFF);
+        }
+        if (world != null) world.Apply(xs, ys, count);
+        DevicePath path = new DevicePath();
+        long[] one = new long[1], two = new long[1], bx = new long[3], by = new long[3];
+        int k = 0;
+        while (k < count)
+        {
+            int kind = types[k] & PointTypeMask;
+            if (kind == PointStart || k == 0) { path.MoveTo(xs[k], ys[k]); k++; }
+            else if (kind == PointBezier && k + 2 < count && (types[k + 1] & PointTypeMask) == PointBezier && (types[k + 2] & PointTypeMask) == PointBezier)
+            {
+                for (int j = 0; j < 3; j++) { bx[j] = xs[k + j]; by[j] = ys[k + j]; }
+                path.PolyBezierTo(bx, by, 3);
+                k += 3;
+            }
+            else { one[0] = xs[k]; two[0] = ys[k]; path.PolyLineTo(one, two, 1); k++; }
+            if ((types[k - 1] & PointClose) != 0) path.CloseFigure();
+        }
+        return path;
+    }
+
+    static long Signed(long word) { word &= 0xFFFFFFFF; return word >= 0x80000000 ? word - 0x100000000 : word; }
+}
