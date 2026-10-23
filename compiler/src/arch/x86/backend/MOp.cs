@@ -114,6 +114,13 @@ public enum MOp : byte
     /// slot's number, r1 the block. What TlsSetValue does for a slot below 64.
     /// </summary>
     FsTlsSlotStore,
+    /// <summary>
+    /// mov r32, fs:[0] -- on Windows, the innermost SEH registration of the
+    /// thread, the head of the chain the TEB starts with.
+    /// </summary>
+    FsSehChain,
+    /// <summary>mov fs:[0], r32 -- a registration made the innermost, or taken off.</summary>
+    FsSehChainStore,
     /// <summary>mov gs, r16 -- the selector of the descriptor that block sits behind.</summary>
     SetGs,
     /// <summary>rdmsr / wrmsr: ECX the MSR, EDX:EAX the value.</summary>

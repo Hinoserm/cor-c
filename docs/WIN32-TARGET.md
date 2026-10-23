@@ -94,9 +94,14 @@ A DLL is the same image as a program, with these differences.
   FreeLibrary and LoadLibrary pair -- Quake 2's `vid_restart` -- finds the
   same runtime again.
 - FAULTS: Windows 2000 has no vectored handlers, so each entry from Windows
-  puts an SEH frame on the chain that turns an access violation in our code
-  into NullReferenceException, and takes it off on the way out. An exception
-  that escapes an export ends the process, as .NET's does.
+  puts an SEH registration in a slot of its frame and at the head of the
+  chain, fs:[0] (Lowering.SehEnter), and takes it off on the way out. Its
+  handler (Win32.Fault) sends an access violation at a null address by this
+  image's own code on into Runtime.NullFault through a stub on a page of its
+  own -- the faulting stack is where Windows put the context it hands over
+  -- and the NullReferenceException is caught as .NET catches it. A fault in
+  code that is not ours, or anything else, is searched on. An exception that
+  escapes an export ends the process, as .NET's does.
 - THE CALLER'S FPU CONTROL WORD STAYS: Direct3D sets single precision for
   the whole process and Microsoft's DLLs live with it; conversions already
   save and restore the word around themselves.
@@ -113,8 +118,9 @@ freecell.exe draw every card through it, and FreeCell's game 1 deals as the
 published one. Four Windows threads at once in a DLL, with collections while
 they all run and each block freed at DLL_THREAD_DETACH, pass five runs in
 five: the collector's stop is cooperative, and a wait gives up the thread's
-time slice (Sleep(0)). Not yet: an SEH frame turning faults into
-NullReferenceException, and pinning the DLL.
+time slice (Sleep(0)). A read through null in the DLL is caught as
+NullReferenceException (Wine's trace shows the access violation and the
+handler). Not yet: pinning the DLL.
 
 ## Calling Windows
 
@@ -315,7 +321,7 @@ decoders wherever GDI+ is absent.
 0. DLLs first (2026-10-23): the PE32 link with exports, imports and
    `.reloc`, the thread block through a TLS slot, threads that are not
    ours, the platform layer's floor, DllMain, several threads and thread
-   detach (done, and cards.dll runs Solitaire); then faults, pinning, and
+   detach, faults (done, and cards.dll runs Solitaire); then pinning, and
    opengl32/Glide.
 1. The image, stdcall and A/W imports, the thread block, struct layout:
    a console "hello" that runs on 95 and on 11.

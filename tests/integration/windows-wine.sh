@@ -1,7 +1,8 @@
 #!/bin/sh
 # A Windows DLL run: corc's DLL loaded by a 32-bit Windows program under Wine,
 # each export called and its answer checked, then four threads in a DLL at
-# once (docs/WIN32-TARGET.md).
+# once, and a read through null in the DLL caught as NullReferenceException
+# (docs/WIN32-TARGET.md).
 #
 #   tests/integration/windows-wine.sh WINEPREFIX
 #
@@ -32,7 +33,7 @@ done
 i686-w64-mingw32-gcc -O1 tests/integration/windows-wine/threads.c -o "$work/threads.exe"
 (cd "$work" && WINEPREFIX=$prefix WINEDEBUG=-all timeout 120 wine threads.exe threads.dll) > "$work/threads.log" 2>&1 || { cat "$work/threads.log"; echo 'FAIL windows-wine: the threads did not finish'; exit 1; }
 tr -d '\r' < "$work/threads.log" > "$work/threads-lines.log"
-for line in 'thread 0 ok' 'thread 1 ok' 'thread 2 ok' 'thread 3 ok' 'collected yes'; do
+for line in 'thread 0 ok' 'thread 1 ok' 'thread 2 ok' 'thread 3 ok' 'collected yes' 'null caught 3'; do
     grep -qx "$line" "$work/threads-lines.log" || { cat "$work/threads.log"; echo "FAIL windows-wine: no '$line'"; exit 1; }
 done
 echo 'PASS windows-wine'

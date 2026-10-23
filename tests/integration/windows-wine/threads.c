@@ -29,5 +29,7 @@ int main(int argc, char **argv)
     }
     count_t collections = (count_t)GetProcAddress(m, "Collections");
     printf("collected %s\n", collections && collections() > 1 ? "yes" : "no");
+    churn_t nullCaught = (churn_t)GetProcAddress(m, "NullCaught");
+    printf("null caught %d\n", nullCaught ? ((int (__stdcall *)(int))nullCaught)(3) : -1);
     return 0;
 }

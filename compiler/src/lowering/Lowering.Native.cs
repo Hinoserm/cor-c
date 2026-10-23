@@ -287,6 +287,7 @@ public sealed partial class Lowering
         {
             _e.Call(CallLabel(back), IrType.Void);
         }
+        SehEnter();
         int w = _t.WordSize;
         VReg chain = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
         ChainWrite(ThreadBlockNow(), new ImmOperand(0, IrTypes.Word), TlsHandler / 4 * w);
@@ -298,6 +299,7 @@ public sealed partial class Lowering
     {
         int w = _t.WordSize;
         ChainWrite(ThreadBlockNow(), RegOperand.Of(chain), TlsHandler / 4 * w);
+        SehLeave();
         if (RequireRuntime(at, "EnterNative", 0, "a method C calls") is MethodSymbol enter)
         {
             _e.Call(CallLabel(enter), IrType.Void);

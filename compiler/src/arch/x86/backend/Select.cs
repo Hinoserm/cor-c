@@ -2554,6 +2554,12 @@ internal sealed partial class Selector
                 Emit(MOp.Mov, Ecx, SymbolMem(TlsSlotSymbol, 0));
                 Emit(MOp.FsTlsSlotStore, Ecx, Edx);
                 return;
+            case MachineIntrinsics.SehChain:
+                if (i.Dest is not null) Emit(MOp.FsSehChain, Lo(i.Dest));
+                return;
+            case MachineIntrinsics.SetSehChain:
+                Emit(MOp.FsSehChainStore, R(i.Operands[0]));
+                return;
             case MachineIntrinsics.LoadSegments:
                 // DS, ES, FS, GS and SS all take the one data selector, which
                 // the instruction reads from AX. CS is the far jump's business

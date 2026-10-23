@@ -887,6 +887,17 @@ internal sealed class Encoder
                 B(0x10, 0x0E, 0x00, 0x00);
                 break;
             }
+            case MOp.FsSehChain:
+            case MOp.FsSehChainStore:
+            {
+                // 64 8B /r and 64 89 /r with mod 00, r/m 101: [disp32] in FS,
+                // the displacement 0, where NT_TIB keeps ExceptionList.
+                int r = ((MReg)i.Operands[0]).Id;
+                B(0x64, i.Op == MOp.FsSehChain ? (byte)0x8B : (byte)0x89);
+                _out.Add((byte)(0x05 | (r << 3)));
+                B(0x00, 0x00, 0x00, 0x00);
+                break;
+            }
             case MOp.GetGs:
             {
                 // xor r, r; then 66 8C /r, mov r16, gs: a 32-bit move from a

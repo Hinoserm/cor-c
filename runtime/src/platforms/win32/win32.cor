@@ -20,6 +20,13 @@ static class Win32
     const int MemReserve = 0x2000;
     const int MemDecommit = 0x4000;
     const int MemRelease = 0x8000;
+    const int PageExecuteReadWrite = 0x40;
+
+    const int AccessViolation = unchecked((int)0xC0000005);
+    /// EXCEPTION_UNWINDING and EXCEPTION_EXIT_UNWIND: a handler called to unwind, not to handle.
+    const int Unwinding = 6;
+    const int ContinueExecution = 0;
+    const int ContinueSearch = 1;
     const int PageReadWrite = 0x04;
     const int StdErrorHandle = -12;
     const int TlsOutOfIndexes = -1;
@@ -73,6 +80,9 @@ static class Win32
     /// The slot taken, plus one: 0, none. No initialiser, so touching the
     /// class runs nothing before the thread has a block.
     static int _slotTaken;
+    static long _imageStart;
+    static long _imageEnd;
+    static long _nullStub;
     static long _frequency;
     static long _count;
 
@@ -80,7 +90,7 @@ static class Win32
     /// anything else of the image runs): a TLS slot for the threads' blocks,
     /// this thread's block in it, and the hooks. False -- the load fails --
     /// when there is no slot the TEB holds.
-    public static bool Attach()
+    public static bool Attach(long instance)
     {
         // The hooks first: with none, the bare-metal answers are the
         // machine's -- a port write and a HLT -- which a process may not make.
@@ -99,6 +109,12 @@ static class Win32
         }
         _slotTaken = slot + 1;
         Sys.SetThreadBlockSlot(slot);
+
+        // The image's own extent, which a fault must be in to be ours:
+        // SizeOfImage from the PE header e_lfanew names.
+        _imageStart = instance;
+        _imageEnd = instance + (Sys.PeekWord(instance + Sys.PeekWord(instance + 0x3C) + 0x50) & 0xFFFFFFFF);
+        _nullStub = NullStub();
 
         long block = Sys.MainThreadBlock();
         Sys.Poke(block + Tls.Self, block);
@@ -142,6 +158,55 @@ static class Win32
         Runtime.EndThread();
         Sys.SetThreadBlock(0);
         if (block != Sys.MainThreadBlock()) VirtualFree((nint)block, 0, MemRelease);
+    }
+
+    /// THE WAY INTO Runtime.NullFault from a fault, made once: Fault cannot
+    /// build the call on the faulting stack, where Windows has just put the
+    /// context it is handing over, so it sends the thread here with the
+    /// faulting instruction in EAX and its frame in EDX, and this builds it:
+    /// NullFault(frame, pc), its return address the faulting instruction, as
+    /// if that instruction had called it; the stack aligned as a call leaves it.
+    static long NullStub()
+    {
+        long stub = (long)(nuint)VirtualAlloc(0, 32, MemCommit | MemReserve, PageExecuteReadWrite);
+        if (stub == 0) return 0;
+        long entry = Sys.AddressOf(Runtime.NullFault);
+        int at = 0;
+        Sys.PokeByte(stub + at++, 0x83); Sys.PokeByte(stub + at++, 0xE4); Sys.PokeByte(stub + at++, 0xF0); // and esp, -16
+        Sys.PokeByte(stub + at++, 0x6A); Sys.PokeByte(stub + at++, 0x00);                                 // push 0     pc, high
+        Sys.PokeByte(stub + at++, 0x50);                                                                  // push eax   pc
+        Sys.PokeByte(stub + at++, 0x6A); Sys.PokeByte(stub + at++, 0x00);                                 // push 0     frame, high
+        Sys.PokeByte(stub + at++, 0x52);                                                                  // push edx   frame
+        Sys.PokeByte(stub + at++, 0x50);                                                                  // push eax   the return address
+        Sys.PokeByte(stub + at++, 0xB9);                                                                  // mov ecx, NullFault
+        for (int i = 0; i < 4; i++) Sys.PokeByte(stub + at++, (int)(entry >> (8 * i)) & 0xFF);
+        Sys.PokeByte(stub + at++, 0xFF); Sys.PokeByte(stub + at++, 0xE1);                                 // jmp ecx
+        return stub;
+    }
+
+    /// THE SEH HANDLER every way in from C registers (Lowering.SehEnter),
+    /// called by Windows with the exception's record, the registration, the
+    /// context and the dispatcher's word. An access violation by this image's
+    /// own code at a null address (Runtime.NullFaultCatchable) goes on as a
+    /// NullReferenceException: the thread continues in NullStub. Anything
+    /// else -- another exception, a fault in code that is not ours, a fault
+    /// in the collector -- is searched on for whoever else handles it.
+    /// EXCEPTION_RECORD: ExceptionCode at 0, ExceptionFlags 4,
+    /// NumberParameters 16, the address 24. CONTEXT: Edx 0xA8, Eax 0xB0,
+    /// Ebp 0xB4, Eip 0xB8.
+    public static int Fault(nint record, nint registration, nint context, nint dispatcher)
+    {
+        long rec = (long)(nuint)record;
+        long ctx = (long)(nuint)context;
+        if ((Sys.PeekWord(rec + 4) & Unwinding) != 0) return ContinueSearch;
+        if ((int)Sys.PeekWord(rec) != AccessViolation || _nullStub == 0 || Sys.PeekWord(rec + 16) < 2) return ContinueSearch;
+        long pc = Sys.PeekWord(ctx + 0xB8) & 0xFFFFFFFF;
+        if (pc < _imageStart || pc >= _imageEnd) return ContinueSearch;
+        if (!Runtime.NullFaultCatchable(Sys.PeekWord(rec + 24) & 0xFFFFFFFF)) return ContinueSearch;
+        Sys.Poke(ctx + 0xB0, pc);
+        Sys.Poke(ctx + 0xA8, Sys.PeekWord(ctx + 0xB4));
+        Sys.Poke(ctx + 0xB8, _nullStub);
+        return ContinueExecution;
     }
 
     /// The image may allocate now: what wants the heap.

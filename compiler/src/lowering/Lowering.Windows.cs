@@ -78,10 +78,46 @@ public sealed partial class Lowering
     private const string Win32Type = "Win32";
 
     /// <summary>A static method of the Windows platform library, or null when it is not linked.</summary>
-    private MethodSymbol? Win32Method(string name)
+    private MethodSymbol? Win32Method(string name, int arity = 0)
         => _b.Types.TryGetValue(Win32Type, out TypeSymbol? t)
-            ? t.Methods.FirstOrDefault(m => m.Name == name && m.Static && m.Params.Count == 0)
+            ? t.Methods.FirstOrDefault(m => m.Name == name && m.Static && m.Params.Count == arity)
             : null;
+
+    /// <summary>The SEH registration the method being lowered made on its way in from C, or null.</summary>
+    private FrameSlot? _sehRecord;
+
+    /// <summary>
+    /// A FAULT IN OUR CODE IS AN EXCEPTION, as it is in .NET: a way in from C
+    /// on Windows puts an SEH registration -- the chain's link, then the
+    /// handler (Win32.Fault) -- in a slot of its own frame and makes it the
+    /// head of the thread's chain, fs:[0]. Windows 2000 has no vectored
+    /// handlers, so this is how an access violation in the method, or in
+    /// anything it calls, reaches the runtime, which sends a null one on as
+    /// a NullReferenceException. Taken off again on the way out (SehLeave).
+    /// </summary>
+    private void SehEnter()
+    {
+        _sehRecord = null;
+        if (!Windows || Win32Method("Fault", 4) is not MethodSymbol fault) return;
+        Require(fault);
+        int w = _t.WordSize;
+        FrameSlot slot = _f.NewSlot(2 * w, w, "seh");
+        VReg record = _e.SlotAddress(slot);
+        VReg next = _e.Call(MachineIntrinsics.SehChain, IrTypes.Word)!;
+        _e.Store(record, next, 0);
+        _e.Store(record, _e.Address(CallLabel(fault)), w);
+        _e.Call(MachineIntrinsics.SetSehChain, IrType.Void, RegOperand.Of(record));
+        _sehRecord = slot;
+    }
+
+    /// <summary>The registration SehEnter made taken off the chain: its link the head again.</summary>
+    private void SehLeave()
+    {
+        if (_sehRecord is not FrameSlot slot) return;
+        VReg next = _e.Load(IrTypes.Word, RegOperand.Of(_e.SlotAddress(slot)), 0);
+        _e.Call(MachineIntrinsics.SetSehChain, IrType.Void, RegOperand.Of(next));
+        _sehRecord = null;
+    }
 
     /// <summary>
     /// A DLL'S ENTRY: DllMain(instance, reason, reserved), stdcall, which the
@@ -100,7 +136,8 @@ public sealed partial class Lowering
     private void EmitDllEntry(List<MethodSymbol> exports)
     {
         Function f = new(DllEntryName, IrTypes.Word) { CalleePops = 3 * Target.Current.WordSize };
-        f.Params.Add(f.NewReg(IrTypes.Word, "instance"));
+        VReg instance = f.NewReg(IrTypes.Word, "instance");
+        f.Params.Add(instance);
         VReg reason = f.NewReg(IrTypes.Word, "reason");
         f.Params.Add(reason);
         f.Params.Add(f.NewReg(IrTypes.Word, "reserved"));
@@ -117,7 +154,7 @@ public sealed partial class Lowering
         e.Branch(e.Binary(Opcode.Eq, RegOperand.Of(reason), new ImmOperand(1, IrTypes.Word), IrTypes.Word), attach, other);
 
         e.SetBlock(attach);
-        if (Win32Method("Attach") is not MethodSymbol take || Win32Method("Started") is not MethodSymbol started)
+        if (Win32Method("Attach", 1) is not MethodSymbol take || Win32Method("Started") is not MethodSymbol started)
         {
             Error(new Block(), "a DLL needs the Windows platform library (runtime/src/platforms/win32/win32.cor)");
             e.Jump(no);
@@ -126,7 +163,7 @@ public sealed partial class Lowering
         {
             Require(take);
             var run = f.NewBlock("run");
-            VReg ok = e.Call(CallLabel(take), IrType.I32)!;
+            VReg ok = e.Call(CallLabel(take), IrType.I32, RegOperand.Of(e.Unary(Opcode.ZExt32, instance)))!;
             e.Branch(ok, run, no);
             e.SetBlock(run);
             if (RuntimeKnobs.Count > 0 && RuntimeMethod("UseKnobs", 1) is MethodSymbol knobs)

@@ -220,6 +220,12 @@ internal static class AsmText
             case MOp.FsTlsSlotStore:
                 yield return $"mov fs:[0xe10 + {Op(i.Operands[0], 4, false)}*4], {Op(i.Operands[1], 4, false)}";
                 yield break;
+            case MOp.FsSehChain:
+                yield return $"mov {Op(i.Operands[0], 4, false)}, fs:[0]";
+                yield break;
+            case MOp.FsSehChainStore:
+                yield return $"mov fs:[0], {Op(i.Operands[0], 4, false)}";
+                yield break;
             case MOp.SetGs:
                 yield return $"mov gs, {Op(i.Operands[0], 2, false)}";
                 yield break;
