@@ -1617,6 +1617,17 @@ interface IComparer {
     int Compare(object? x, object? y);
 }
 
+/// ICollection.CopyTo(Array, int) of the non-generic collections' objects, in
+/// order, as .NET's copies them into any array that can hold them.
+static class ObjectCopy {
+    public static void Into(List<object?> items, Array array, int index) {
+        if (array == null) throw new ArgumentNullException("array");
+        if (index < 0) throw new ArgumentOutOfRangeException("index", "Non-negative number required.");
+        if (array.Length - index < items.Count) throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length.");
+        for (int i = 0; i < items.Count; i++) array.SetValue(items[i], index + i);
+    }
+}
+
 /// What ArrayList, Hashtable, Stack and Queue walk with: the objects of a
 /// list, in order, read when the walk asks.
 sealed class ObjectWalk : IEnumerator {
@@ -1639,7 +1650,7 @@ sealed class ObjectCollection : ICollection {
     public bool IsSynchronized { get { return false; } }
     public object SyncRoot { get { return this; } }
     public IEnumerator GetEnumerator() { return new ObjectWalk(_items); }
-    public void CopyTo(Array array, int index) { ((ICollection)_items).CopyTo(array, index); }
+    public void CopyTo(Array array, int index) { ObjectCopy.Into(_items, array, index); }
 }
 
 class ArrayList : IList {
@@ -1659,7 +1670,7 @@ class ArrayList : IList {
     public virtual object SyncRoot { get { return this; } }
 
     public virtual void CopyTo(Array array) { CopyTo(array, 0); }
-    public virtual void CopyTo(Array array, int arrayIndex) { ((ICollection)_items).CopyTo(array, arrayIndex); }
+    public virtual void CopyTo(Array array, int arrayIndex) { ObjectCopy.Into(_items, array, arrayIndex); }
 
     public virtual object? this[int index] { get { return _items[index]; } set { _items[index] = value; } }
 
@@ -1847,7 +1858,7 @@ class Queue : ICollection {
     public virtual bool IsSynchronized { get { return false; } }
     public virtual object SyncRoot { get { return this; } }
 
-    public virtual void CopyTo(Array array, int index) { ((ICollection)_items).CopyTo(array, index); }
+    public virtual void CopyTo(Array array, int index) { ObjectCopy.Into(_items, array, index); }
 
     public virtual void Enqueue(object? obj) { _items.Add(obj); }
     public virtual object? Dequeue() {
