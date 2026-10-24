@@ -4,22 +4,21 @@ using System.Text;
 namespace Corsac.Lang.Ir;
 
 /// <summary>
-/// A virtual register as an operand: ONE PER REGISTER, made on its first use
-/// and kept on it (VReg.SharedOperand), never one per use. A large unit's every
-/// use had an object of its own, three hundred thousand of them live through
-/// code generation, and nothing told them apart but their register: none is
-/// ever changed after it is made, and no pass compares two by reference
-/// where two uses of one register must differ (each goes by the operand's
-/// position in its instruction instead).
+/// A virtual register as an operand: THE REGISTER ITSELF (VReg derives from
+/// this). One per register was already the rule -- none is ever changed after
+/// it is made, and no pass compares two by reference where two uses of one
+/// register must differ (each goes by the operand's position in its
+/// instruction instead) -- and as an object of its own beside the register
+/// it was 24 bytes for every register: 20 MB of the class library's unit,
+/// live through every late pass and code generation.
 /// </summary>
-public sealed class RegOperand : Operand
+public abstract class RegOperand : Operand
 {
-    public VReg Reg { get; }
-    private RegOperand(VReg reg) => Reg = reg;
+    private protected RegOperand() { }
 
-    /// <summary>The register's one operand.</summary>
-    public static RegOperand Of(VReg reg) => reg.SharedOperand ??= new RegOperand(reg);
+    /// <summary>The register this operand is: itself.</summary>
+    public VReg Reg => System.Runtime.CompilerServices.Unsafe.As<VReg>(this);
 
-    public override IrType Type => Reg.Type;
-    public override string ToString() => Reg.ToString();
+    /// <summary>The register's operand: the register.</summary>
+    public static RegOperand Of(VReg reg) => reg;
 }

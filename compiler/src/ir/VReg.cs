@@ -8,10 +8,10 @@ namespace Corsac.Lang.Ir;
 /// machine. Not SSA: one may be assigned in several places, and the
 /// allocator computes liveness rather than assuming a single definition.
 /// </summary>
-public sealed class VReg
+public sealed class VReg : RegOperand
 {
     public int Id { get; }
-    public IrType Type { get; }
+    public override IrType Type { get; }
 
     /// <summary>
     /// A parameter of a number type -- an int, a char, a double, an enum held
@@ -25,8 +25,6 @@ public sealed class VReg
     /// <summary>The source name, when there is one, for the dump and for gdb later.</summary>
     public string? Name { get; init; }
 
-    /// <summary>This register as an operand: made once, by RegOperand.Of, and shared by every use.</summary>
-    internal RegOperand? SharedOperand;
 
     internal VReg(int id, IrType type)
     {
