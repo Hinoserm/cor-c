@@ -1035,6 +1035,16 @@ public class Control
     internal void Place(int x, int y) { _x = x; _y = y; }
 
     /// The form this control lives on, which is the window the seat knows.
+    /// THE FOCUS RECTANGLE ONLY ONCE THE KEYBOARD IS IN USE (.NET's
+    /// ShowFocusCues; Windows' UISF_HIDEFOCUS): a form shows none until a
+    /// Tab, an arrow or Alt is pressed in it, as Windows 2000 hid them
+    /// (SPI_GETKEYBOARDCUES off) -- a focused button clicked with the mouse
+    /// keeps no dotted box.
+    protected internal virtual bool ShowFocusCues
+    {
+        get { Form? f = FindForm(); return f == null || f.CuesShown; }
+    }
+
     public Form? FindForm()
     {
         Control? c = this;
@@ -1398,6 +1408,9 @@ public enum FormStartPosition { Manual = 0, CenterScreen = 1, WindowsDefaultLoca
 /// does not change when it moves.
 public class Form : ScrollableControl
 {
+    /// Focus cues shown (ShowFocusCues): set by the first navigation key.
+    internal bool CuesShown;
+
     int _handle;
     bool _shown;
     bool _closed;
@@ -3041,7 +3054,7 @@ public class Button : Control
         }
         else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), EffectiveBackColor, x + picture, y, true);
 
-        if (Focused && Enabled)
+        if (Focused && Enabled && ShowFocusCues)
         {
             int inset = _default ? 4 : 3;
             ControlPaint.DrawFocusRectangle(g, inset, inset, w - inset * 2, h - inset * 2);
@@ -3239,7 +3252,7 @@ public class CheckBox : Control
         }
         else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), EffectiveBackColor, tx, ty, true);
 
-        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, tx - 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
+        if (Focused && Enabled && ShowFocusCues) ControlPaint.DrawFocusRectangle(g, tx - 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
         base.OnPaint(e);
     }
 
@@ -3356,7 +3369,7 @@ public class RadioButton : Control
         }
         else ControlPaint.DrawStringMnemonic(g, Text, Font, new SolidBrush(ForeColor), EffectiveBackColor, tx, ty, true);
 
-        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, tx - 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
+        if (Focused && Enabled && ShowFocusCues) ControlPaint.DrawFocusRectangle(g, tx - 2, ty - 1, (int)size.Width + 4, (int)size.Height + 2);
         base.OnPaint(e);
     }
 
@@ -3650,7 +3663,7 @@ public class ListBox : Control
             if (picked)
             {
                 g.FillRectangle(new SolidBrush(SystemColors.Highlight), 2, y, RowWidth, ItemHeight);
-                if (Focused) ControlPaint.DrawFocusRectangle(g, 2, y, RowWidth, ItemHeight);
+                if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(g, 2, y, RowWidth, ItemHeight);
             }
 
             g.DrawString(text, Font,
@@ -4492,7 +4505,7 @@ public class TrackBar : Control
         Ticks(g, top);
         Thumb(g, Offset, top);
 
-        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, 0, 0, Width, Height);
+        if (Focused && Enabled && ShowFocusCues) ControlPaint.DrawFocusRectangle(g, 0, 0, Width, Height);
         base.OnPaint(e);
     }
 
@@ -5303,7 +5316,7 @@ public class TabControl : Control
 
         ControlPaint.DrawStringMnemonic(g, _pages[index].Text, Font, new SolidBrush(Enabled ? ForeColor : SystemColors.GrayText), SystemColors.Control, tx, ty, true);
 
-        if (front && Focused && Enabled)
+        if (front && Focused && Enabled && ShowFocusCues)
             ControlPaint.DrawFocusRectangle(g, tx - 3, ty - 2, Font.TextWidth(shown) + 6, Font.Height + 4);
     }
 
@@ -5534,7 +5547,7 @@ public class LinkLabel : Label
         g.DrawString(shown, Font, new SolidBrush(ink), EffectiveBackColor, 0, 0);
         g.FillRectangle(new SolidBrush(ink), 0, Font.Ascent + 1, Font.TextWidth(shown), 1);
 
-        if (Focused && Enabled) ControlPaint.DrawFocusRectangle(g, -1, -1, Font.TextWidth(shown) + 2, Font.Height + 2);
+        if (Focused && Enabled && ShowFocusCues) ControlPaint.DrawFocusRectangle(g, -1, -1, Font.TextWidth(shown) + 2, Font.Height + 2);
     }
 
     protected override void OnClick(EventArgs e)
@@ -7209,6 +7222,15 @@ public static class Application
                           | ((mods & 4) != 0 ? Keys.Alt : Keys.None);
                 Form? form = target.FindForm();
                 if (form == null) form = _active;
+                // THE KEYBOARD IN USE: from now on this form shows where the
+                // focus is (WM_CHANGEUISTATE UIS_CLEAR UISF_HIDEFOCUS, which
+                // Windows' dialog manager sends on Tab, the arrows and Alt).
+                if (!up && form != null && !form.CuesShown
+                    && (vk == (int)Keys.Tab || vk == (int)Keys.Menu || (vk >= (int)Keys.Left && vk <= (int)Keys.Down)))
+                {
+                    form.CuesShown = true;
+                    target.Invalidate();
+                }
                 // KEYPREVIEW: the form first, and what it handles is its own.
                 Form? preview = form != null && form.KeyPreview && form != target ? form : null;
                 if (up)
