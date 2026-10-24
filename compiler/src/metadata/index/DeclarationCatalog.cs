@@ -54,6 +54,7 @@ public sealed class DeclarationCatalog : IDisposable
 
     /// <summary>The build stamp the index under this one had when this one was made on it, or null for an index made on none.</summary>
     public byte[]? UnderStamp => index.UnderStamp;
+    public byte[]? BaseStamp => index.BaseStamp;
 
     /// <summary>The conflicted interface forms the index records (InterfaceFamilies.ReadForms).</summary>
     public IReadOnlyDictionary<string, bool> InterfaceForms(string assembly)

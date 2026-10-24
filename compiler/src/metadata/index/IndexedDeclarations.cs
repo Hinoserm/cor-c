@@ -61,6 +61,7 @@ public sealed class IndexedDeclarations : IDisposable
 
     /// <summary>The stamp of the kernel's index this unit's index was made on (a module's), or null.</summary>
     public byte[]? UnderStamp => catalog.UnderStamp;
+    public byte[]? BaseStamp => catalog.BaseStamp;
 
     public IndexedDeclarations(string path, string assembly, IEnumerable<string> ownedFiles,
         long declarationBudgetBytes = 2 * 1024 * 1024)

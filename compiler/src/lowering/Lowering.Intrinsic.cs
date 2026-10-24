@@ -792,6 +792,21 @@ public sealed partial class Lowering
                 return Void();
 
             // ---- the operating system and function pointers --------------------
+            case "Syscall" when KernelSyscalls:
+            {
+                // RING 0: the kernel's own function, not a trap (KernelSyscalls).
+                if (KernelSyscallMethod() is not MethodSymbol served)
+                {
+                    Error(call, "--kernel-syscalls: Sys.Syscall is a call of KernelFiles.Syscall(long number, long a, long b, long c, long d, long e, long f), "
+                              + (KernelSyscallCandidates() == 0 ? "and no such static method is declared" : "and more than one type KernelFiles declares one"));
+                    return _e.Const(0, IrType.I64);
+                }
+                Require(served);
+                List<Operand> passed = new();
+                for (int i = 0; i < 7; i++)
+                    passed.Add(i < target.Params.Count ? R(Arg(call, target, i)) : Imm(0, IrType.I64));
+                return _e.Call(CallLabel(served), IrType.I64, passed.ToArray())!;
+            }
             case "Syscall":
             case "GuiCall":
             case "GuiService":
@@ -1200,4 +1215,24 @@ public sealed partial class Lowering
     }
 
     private VReg Widen(VReg v) => v.Type == IrType.I32 ? _e.Unary(Opcode.ZExt32, v) : v;
+
+    /// <summary>
+    /// The kernel's KernelFiles.Syscall(long number, long a .. f), whatever
+    /// its namespace, for --kernel-syscalls; null when no type KernelFiles
+    /// declares exactly one, or more than one does.
+    /// </summary>
+    private MethodSymbol? KernelSyscallMethod()
+    {
+        List<MethodSymbol> found = KernelSyscallFound();
+        return found.Count == 1 ? found[0] : null;
+    }
+
+    private int KernelSyscallCandidates() => KernelSyscallFound().Count;
+
+    private List<MethodSymbol> KernelSyscallFound()
+        => _b.Types.Values.Where(t => t.Name == "KernelFiles")
+            .SelectMany(t => { t.EnsureMembers(); return t.Methods; })
+            .Where(m => m.Static && m.Name == "Syscall" && m.Params.Count == 7
+                && m.Params.All(p => p.Type.Prim == Prim.I64) && m.Returns.Prim == Prim.I64)
+            .Distinct().ToList();
 }

@@ -70,6 +70,15 @@ public sealed partial class Lowering
     public static bool Ring1Syscalls { get; set; }
 
     /// <summary>
+    /// Sys.Syscall is a call of the kernel's own KernelFiles.Syscall(number,
+    /// a, b, c, d, e, f), missing arguments 0, bound by name like any other
+    /// kernel symbol (--kernel-syscalls): ring-0 code -- the kernel and its
+    /// GUI and NT modules -- has no trap to take for Linux's file calls; the
+    /// kernel serves them with a plain function. Numbers as Linux's.
+    /// </summary>
+    public static bool KernelSyscalls { get; set; }
+
+    /// <summary>
     /// THE CARD MARK BEFORE A REFERENCE STORE AS WELL AS AFTER IT: the
     /// program's threads can be stopped by its collector at ANY instruction,
     /// not only at a poll or a call. CORSAC's ring-1 kernels are: ring 0

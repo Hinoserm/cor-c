@@ -326,6 +326,10 @@ public static class Driver
               --ring1-syscalls   with --freestanding: Sys.Syscall traps to 0x83, the
                                  CORSAC ring-1 kernels' gate for Linux's file
                                  calls, instead of 0x80
+              --kernel-syscalls  with --freestanding or --kernel: Sys.Syscall is a
+                                 call of the kernel's KernelFiles.Syscall(number,
+                                 a..f), missing arguments 0 -- ring 0's Linux file
+                                 calls, served by the kernel without a trap
               --dll              a 32-bit Windows DLL (PE32): entered at DllMain and at
                                  each [UnmanagedCallersOnly(EntryPoint = "Name")]
                                  method, which it exports by that name; its
@@ -761,6 +765,13 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.Freestanding = freestanding;
         Corsac.Lang.Lower.Lowering.TlsGs = freestanding && args.Contains("--tls-gs");
         Corsac.Lang.Lower.Lowering.Ring1Syscalls = freestanding && args.Contains("--ring1-syscalls");
+        // RING 0'S FILE CALLS, served by the kernel's own function
+        // (Lowering.KernelSyscalls): the kernel and its modules.
+        Corsac.Lang.Lower.Lowering.KernelSyscalls = (freestanding || Value(args, "--kernel") is not null) && args.Contains("--kernel-syscalls");
+        if (args.Contains("--kernel-syscalls") && !Corsac.Lang.Lower.Lowering.KernelSyscalls)
+            return Fail("--kernel-syscalls is for ring-0 code: a --freestanding kernel or a --kernel module");
+        if (Corsac.Lang.Lower.Lowering.KernelSyscalls && args.Contains("--ring1-syscalls"))
+            return Fail("--kernel-syscalls and --ring1-syscalls are two ways of making Sys.Syscall: one, not both");
         // ITS THREADS ARE STOPPED AT ANY INSTRUCTION: every reference store is
         // made one sequence no thread is stopped inside (Lowering.StoreSequences):
         // a ring-1 kernel's, sent to its handshake from wherever a trap finds
@@ -1008,8 +1019,10 @@ public static class Driver
         if (declarations is not null && kernel is not null)
         {
             declarations.ModuleOfKernel = true;
-            if (moduleIndex is not null && (declarations.UnderStamp is not { } under || !under.AsSpan().SequenceEqual(kernel.Stamp)))
-                return Fail($"--module-index {moduleIndex} was not made on the index {kernel.Name} was compiled against (corc index --on {declarationIndex})");
+            // ON THE KERNEL'S INDEX AT THE BOTTOM: a module's index made on the
+            // kernel's, or on another module's made on it (nt on gui).
+            if (moduleIndex is not null && (declarations.BaseStamp is not { } under || !under.AsSpan().SequenceEqual(kernel.Stamp)))
+                return Fail($"--module-index {moduleIndex} was not made on the index {kernel.Name} was compiled against (corc index --on {declarationIndex}, or on a module's index made on it)");
         }
         // WHERE A UNIT'S TIME AND ALLOCATION GO, by phase, when asked. The
         // frontend's own line covers what happened before this point.

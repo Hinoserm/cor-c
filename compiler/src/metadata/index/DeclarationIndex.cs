@@ -98,6 +98,14 @@ public sealed class DeclarationIndex : IDisposable
     /// <summary>The build stamp of <see cref="Under"/>, as this index recorded it when it was made.</summary>
     public byte[]? UnderStamp { get; }
 
+    /// <summary>
+    /// The stamp of the index at the bottom of the chain this one is made on
+    /// -- the kernel's, under a module's, and under a module made on another
+    /// module's (nt on gui on the kernel) -- which is the build stamp every
+    /// module of the chain carries. Null for an index made on none.
+    /// </summary>
+    public byte[]? BaseStamp => Under is null ? null : Under.Under is null ? UnderStamp : Under.BaseStamp;
+
     /// <summary>Where each record starts, and where the last one ends.</summary>
     private readonly long[] offsets = Array.Empty<long>();
 

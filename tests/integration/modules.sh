@@ -224,6 +224,41 @@ if "$corc" index --assembly Kernel --ring 0 --on "$a/kernel.idx" $here/KernelTyp
 fi
 grep -q 'a module may not declare a type of its kernel' "$m/wrong-index.log" || { cat "$m/wrong-index.log"; fail "the wrong index said otherwise"; }
 
+# A MODULE ON A MODULE: Chorus's index made on the mixer's, itself made on
+# the kernel's (a chain), its units compiled against the chain -- the
+# kernel's index still the stamp -- and linked against the kernel's exports
+# and the mixer's file. It imports the mixer's names as it does the
+# kernel's, needs and depends on the mixer, and defines none of its types.
+c=$work/chorus
+mkdir -p "$c"
+"$corc" index --assembly Kernel --ring 0 --on "$m/module.idx" $here/Chorus.cor -o "$c/chorus.idx" 2> "$c/index.log" \
+    || { cat "$c/index.log"; fail "an index on a module's index"; }
+printf '%s\t%s\t%s\tentry\n' "$(realpath $here/Chorus.cor)" "$c/Chorus.o" "$c/Chorus.o.deps" > "$c/units.tsv"
+"$corc" compile-project --units "$c/units.tsv" --obj --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" \
+    --module-index "$c/chorus.idx" --assembly Kernel --ring 0 2> "$c/units.log" || { cat "$c/units.log"; fail "a module's units on a module"; }
+test "$(stamp "$c/Chorus.o")" = "$(stamp "$a/kernel")" || fail "the module on a module does not carry the kernel's stamp"
+"$corc" link "$c/Chorus.o" --kernel "$a/kernel.exports" --link-shared "$m/mixer.ko" -o "$c/chorus.ko" 2> "$c/link.log" \
+    || { cat "$c/link.log"; fail "a module linked against a module"; }
+ko=$c/chorus.ko
+test "$(stamp "$ko")" = "$(stamp "$a/kernel")" || fail "$ko does not carry the kernel's stamp"
+readelf -d "$ko" | grep -q 'Shared library: \[mixer.ko\]' || fail "$ko does not need the mixer"
+readelf -p .corsac.modinfo "$ko" | sed -n 's/^ *\[ *[0-9a-f]*\]  //p' > "$ko.modinfo"
+grep -qx 'depends=mixer' "$ko.modinfo" || { cat "$ko.modinfo"; fail "$ko does not depend on the mixer"; }
+readelf --dyn-syms -W "$ko" > "$ko.syms"
+for name in 't_Sound$002eChannel' 'm_Kernel$Log_Write_1_V$String'; do
+    awk -v n="$name" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import $name"
+done
+if readelf -s -W "$ko" | awk '$8 == "t_Sound$002eChannel" && $7 != "UND" { found = 1 } END { exit !found }'; then fail "$ko defines the mixer's Channel"; fi
+readelf -s -W "$ko" | awk '$8 == "t_Chorus$002eVoice" && $7 != "UND" { found = 1 } END { exit !found }' || fail "$ko does not define its own Voice"
+# Without the mixer's file its imports of the mixer are nobody's.
+if "$corc" link "$c/Chorus.o" --kernel "$a/kernel.exports" -o "$c/alone.ko" 2> "$c/alone.log"; then fail "a module on a module linked without it"; fi
+grep -q "neither kernel nor a module this one depends on exports it" "$c/alone.log" || { cat "$c/alone.log"; fail "the link without the mixer said otherwise"; }
+# A module on a module may not declare the other's type.
+if "$corc" index --assembly Kernel --ring 0 --on "$m/module.idx" $here/MixerAudio.cor -o "$c/wrong.idx" 2> "$c/wrong-index.log"; then
+    fail "an index on a module's declared a type of that module's"
+fi
+grep -q 'is declared by the index this one is made on' "$c/wrong-index.log" || { cat "$c/wrong-index.log"; fail "the wrong chained index said otherwise"; }
+
 # A KERNEL WHOSE DECLARATIONS DIFFER -- one more field in Driver -- has
 # another stamp; the module built for the first is refused by its loader,
 # by the link, and its index refused by the compile.

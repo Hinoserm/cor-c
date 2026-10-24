@@ -1,0 +1,30 @@
+// A module built on another module (modules.sh): its index is made on the
+// mixer module's, which is made on the kernel's (corc index --on, a chain),
+// and it names the mixer's types and the kernel's alike. Linked against the
+// kernel's exports and the mixer's file (--link-shared), it imports the
+// mixer's names as it imports the kernel's, and depends on the mixer.
+
+using System.Runtime.CompilerServices;
+using Kernel;
+
+namespace Chorus;
+
+public sealed class Voice
+{
+    readonly Sound.Channel _channel;
+
+    public Voice(Sound.Channel channel) { _channel = channel; }
+
+    public string Say() { return "chorus " + _channel.Describe(); }
+}
+
+static class ChorusModule
+{
+    [ModuleInitializer]
+    internal static void Load()
+    {
+        Sound.Channel channel = new Sound.Channel("chorus", 3);
+        Sound.Channels.All.Add(channel);
+        Log.Write(new Voice(channel).Say() + " of " + Sound.Channels.Total());
+    }
+}

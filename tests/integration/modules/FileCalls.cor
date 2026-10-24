@@ -1,0 +1,20 @@
+// A module whose Linux file calls the kernel serves itself (modules.sh,
+// --kernel-syscalls): each Sys.Syscall, of any arity, is a call of the
+// kernel's KernelFiles.Syscall with the missing arguments 0 -- no trap, and
+// no name of KernelFiles in this source.
+
+using System.Runtime.CompilerServices;
+using Kernel;
+
+namespace FileCalls;
+
+static class FileCallsModule
+{
+    [ModuleInitializer]
+    internal static void Load()
+    {
+        long four = Sys.Syscall(5, 7, 11, 13);
+        long seven = Sys.Syscall(6, 1, 2, 3, 4, 5, 6);
+        Log.Write("served " + four + " " + seven);
+    }
+}
