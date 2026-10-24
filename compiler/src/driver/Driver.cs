@@ -1157,6 +1157,9 @@ public static class Driver
                 regionHintBytes = !regions ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
                 // And the archive's edges a program without a collector lacks (HeapRecords.Gone).
                 archivedGone = Corsac.Lang.Opt.Escape.GoneOf(m);
+                // Escape writes the heap records with them as it makes them (Module.HeapRecordsAsBytes).
+                m.HeapGone = archivedGone;
+                m.HeapRecordsAsBytes = true;
                 if (Switches.ReportPhases)
                     Console.Error.WriteLine("phase snapshot: " + linkRecords.Count + " records, " + (linkRecords.Sum(r => (long)r.BodyLength) >> 10)
                         + " KiB of bodies held in " + (linkRecords.Sum(r => (long)r.Payload.Length) >> 10) + " KiB, region hints " + ((regionHintBytes?.Length ?? 0) >> 10) + " KiB");
@@ -1173,12 +1176,15 @@ public static class Driver
             // hints were, and the hints themselves let go.
             if (module.LeavesLinkHints && module.LifetimeHints is { IsEmpty: false } hints) lifetimeHintBytes = hints.Write();
             module.LifetimeHints = null;
-            if (module.LeavesLinkHints && module.HeapRecords is { } heap)
+            if (module.LeavesLinkHints && module.HeapRecordBytes is { } heapBytes) heapRecordBytes = heapBytes;
+            else if (module.LeavesLinkHints && module.HeapRecords is { } heap)
             {
                 foreach ((string function, string[] gone) in archivedGone ?? new()) heap.Gone[function] = gone;
                 heapRecordBytes = heap.Write();
             }
             module.HeapRecords = null;
+            module.HeapRecordBytes = null;
+            module.HeapGone = null;
             if (Switches.ReportPhases) Console.Error.WriteLine("phase lifetime hints " + ((lifetimeHintBytes?.Length ?? 0) >> 10) + " KiB");
             Phase("hints");
             // What the lifetime pass kept of each function between questions

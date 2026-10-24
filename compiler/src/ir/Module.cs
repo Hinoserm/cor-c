@@ -99,6 +99,17 @@ public sealed class Module
     public Corsac.Lang.Lto.HeapRecords? HeapRecords { get; set; }
 
     /// <summary>
+    /// A compile's heap records written as soon as Escape makes them, with
+    /// the edges the archive's records lack (HeapGone) already in: held as
+    /// objects to the end of the late passes, they were 20 MB of the class
+    /// library's unit through code generation. Set, Escape writes these
+    /// bytes in place of HeapRecords.
+    /// </summary>
+    public bool HeapRecordsAsBytes { get; set; }
+    public Dictionary<string, string[]>? HeapGone { get; set; }
+    public byte[]? HeapRecordBytes { get; set; }
+
+    /// <summary>
     /// The link's answer, for a unit of a closed image it makes again: false
     /// when the program needs no collector (Lto.HeapDecision), and every
     /// allocation goes to the manual heap as a whole program's would (Escape);

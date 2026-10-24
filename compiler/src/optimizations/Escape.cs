@@ -269,7 +269,17 @@ public sealed partial class Escape : IModulePass
         MarkElementsThroughFields();
         ElementSites();
         // A unit's side of the link's decision on a collector, its lifetimes now all decided.
-        if (_hinting && m.PreserveExports) m.HeapRecords = HeapRecordsOf(m, summaries);
+        if (_hinting && m.PreserveExports)
+        {
+            Lto.HeapRecords records = HeapRecordsOf(m, summaries);
+            if (m.HeapRecordsAsBytes)
+            {
+                foreach ((string function, string[] gone) in m.HeapGone ?? new()) records.Gone[function] = gone;
+                m.HeapRecordBytes = records.Write();
+                m.HeapRecords = null;
+            }
+            else m.HeapRecords = records;
+        }
         // The link's answer for a unit it makes again: no collector.
         bool linkedWithout = m.AtLink && m.LinkHeap == false;
         m.NeedsHeap = !linkedWithout && AnyAllocationReachable(m, byName);
