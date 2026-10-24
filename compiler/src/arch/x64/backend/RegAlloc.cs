@@ -333,6 +333,17 @@ internal sealed class Allocator
     private readonly List<Interval> _active = new();
     private int _seq;
 
+    // THE BLOCKS, kept from liveness for HeldBeforeSpill: each block's first
+    // instruction, successors and predecessors, the block of each
+    // instruction, and the sets its live-in is made of.
+    private int[] _blockFirst = Array.Empty<int>();
+    private int[][] _succ = Array.Empty<int[]>();
+    private int[][] _pred = Array.Empty<int[]>();
+    private int[] _blockOfInstr = Array.Empty<int>();
+    private BitSet[] _useOf = Array.Empty<BitSet>(), _defOf = Array.Empty<BitSet>(), _liveOut = Array.Empty<BitSet>();
+    /// <summary>Reads of a spilled register that its register already holds: no reload (HeldBeforeSpill).</summary>
+    private readonly HashSet<(int VReg, int Instr)> _noReload = new();
+
     private Allocator(MFunction m)
     {
         _m = m;
@@ -372,6 +383,7 @@ internal sealed class Allocator
         a.CollectOccurrences();
         a.ComputeLiveness();
         a.Scan();
+        a.HeldBeforeSpill();
         a.Rewrite();
     }
 
@@ -530,6 +542,18 @@ internal sealed class Allocator
         {
             succ[b] = _m.Successors(b).Select(s => index[s]).ToArray();
         }
+
+        List<int>[] preds = new List<int>[nb];
+        for (int b = 0; b < nb; b++) preds[b] = new List<int>();
+        for (int b = 0; b < nb; b++) foreach (int t in succ[b]) preds[t].Add(b);
+        _pred = preds.Select(p => p.ToArray()).ToArray();
+        _succ = succ;
+        _blockFirst = first;
+        _blockOfInstr = new int[_lin.Count];
+        for (int b = 0; b < nb; b++) for (int i = first[b]; i < first[b] + count[b]; i++) _blockOfInstr[i] = b;
+        _useOf = use;
+        _defOf = def;
+        _liveOut = live;
 
         BitSet tmp = new(_n);
         BitSet inS = new(_n);
@@ -1100,6 +1124,95 @@ internal sealed class Allocator
         }
     }
 
+    /// <summary>
+    /// WHERE THE REGISTER STILL HOLDS IT, NO RELOAD, as the x86 allocator
+    /// does (its HeldBeforeSpill). A register spilled from a point keeps the
+    /// register it had over every position before that point -- nothing
+    /// placed after starts there -- and every write before it stores to the
+    /// slot as well, so the slot is current on every path. A read there
+    /// reloads only where control can come in from where the register does
+    /// not hold the value: a back edge from the spilled part, a landing pad,
+    /// the entry, a block outside the stretch, or after a write that went to
+    /// the slot alone. A read folded into the slot reads the register
+    /// instead where it holds the value.
+    /// </summary>
+    private void HeldBeforeSpill()
+    {
+        for (int v = Physical; v < _n; v++)
+        {
+            int from = _spilledFrom[v];
+            List<Occurrence> occ = _occ[v];
+            if (from == int.MaxValue || _remat[v] is not null || occ.Count == 0 || occ[0].Instr >= from) continue;
+            int lo = _blockOfInstr[occ[0].Instr];
+            int hi = _blockOfInstr[Math.Min(from, _lin.Count) - 1];
+            // A block's entry holds the value while every way in holds it at
+            // its end: assumed of all, given up to a fixed point.
+            bool[] held = new bool[hi - lo + 1];
+            Stack<int> work = new();
+            for (int b = lo; b <= hi; b++)
+                if (_useOf[b].Get(v) || _liveOut[b].Get(v) && !_defOf[b].Get(v)) { held[b - lo] = true; work.Push(b); }
+            while (work.Count > 0)
+            {
+                int b = work.Pop();
+                if (!held[b - lo] || HeldOnEntry(v, b, lo, hi, from, held)) continue;
+                held[b - lo] = false;
+                foreach (int s in _succ[b]) if (s >= lo && s <= hi && held[s - lo]) work.Push(s);
+            }
+            foreach (Occurrence o in occ)
+            {
+                if (o.Instr >= from) break;
+                if ((o.Role & Roles.Role.Use) == 0 || !HeldBefore(v, o.Instr, held[_blockOfInstr[o.Instr] - lo])) continue;
+                if (_folded.Contains((o.Instr, o.Operand)))
+                {
+                    // Not a write: one folded into the slot leaves the register stale.
+                    if ((o.Role & Roles.Role.Def) != 0) continue;
+                    _folded.Remove((o.Instr, o.Operand));
+                }
+                _noReload.Add((v, o.Instr));
+            }
+        }
+    }
+
+    /// Whether every way into block `b` leaves the value in its register.
+    private bool HeldOnEntry(int v, int b, int lo, int hi, int from, bool[] held)
+    {
+        // The entry block is also entered from the caller, which no edge shows.
+        if (b == 0 || _pred[b].Length == 0 || _m.Blocks[b].Source?.IsLandingPad == true) return false;
+        foreach (int p in _pred[b])
+        {
+            int last = _blockFirst[p] + _m.Blocks[p].Instrs.Count - 1;
+            if (p < lo || p > hi || last >= from || !HeldBefore(v, last + 1, held[p - lo], p)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Whether the register holds the value just before instruction `instr`
+    /// of its block (`block`, that of `instr` unless given), entered holding
+    /// it or not: after a read or write in the register it does, after a
+    /// write folded into the slot alone it does not, and a read of the slot
+    /// leaves it as it was.
+    /// </summary>
+    private bool HeldBefore(int v, int instr, bool onEntry, int block = -1)
+    {
+        if (block < 0) block = _blockOfInstr[instr];
+        int first = _blockFirst[block];
+        List<Occurrence> occ = _occ[v];
+        int k = 0, hiOcc = occ.Count;
+        while (k < hiOcc)
+        {
+            int mid = (k + hiOcc) / 2;
+            if (occ[mid].Instr < first) k = mid + 1; else hiOcc = mid;
+        }
+        bool inReg = onEntry;
+        for (; k < occ.Count && occ[k].Instr < instr; k++)
+        {
+            if (!_folded.Contains((occ[k].Instr, occ[k].Operand))) inReg = true;
+            else if ((occ[k].Role & Roles.Role.Def) != 0) inReg = false;
+        }
+        return inReg;
+    }
+
     private void EnqueueShort(int vreg, int instr, Roles.Role role)
     {
         int p = instr * 4;
@@ -1198,7 +1311,7 @@ internal sealed class Allocator
                 else
                 {
                     MOp move = isFloat ? MOp.MovF : MOp.Mov;
-                    if ((role & Roles.Role.Use) != 0)
+                    if ((role & Roles.Role.Use) != 0 && !_noReload.Contains((r.Id, index)))
                     {
                         before.Add(new MInstr(move, PhysicalOf(reg), MMem.Spill(_slot[r.Id])) { Width = 8, Line = i.Line });
                     }

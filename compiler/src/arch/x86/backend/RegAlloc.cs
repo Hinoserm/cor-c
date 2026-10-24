@@ -201,6 +201,16 @@ internal sealed class Allocator
         a.ComputeLiveness();
         a.Scan();
         a.HeldBeforeSpill();
+        // SPLIT AT THE LOOPS THE SCAN SPILLED INTO, then allocate again: the
+        // trial above is only how the split is chosen.
+        if (a.SplitAcrossLoops())
+        {
+            a = new(m);
+            a.CollectOccurrences();
+            a.ComputeLiveness();
+            a.Scan();
+            a.HeldBeforeSpill();
+        }
         a.Rewrite();
         // What the kept tables point at goes with the function.
         Array.Clear(a._remat, 0, a._n);
@@ -1476,6 +1486,166 @@ internal sealed class Allocator
                     return false;
                 }
             }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// A VALUE SPILLED BEFORE A LOOP, READ FROM THE FRAME ROUND IT: an
+    /// interval is one register or none, so a value the scan gave up before
+    /// a loop -- a pointer, a count, a flag the loop only reads -- was
+    /// reloaded at every read in it, lap after lap. Split at the loop: a
+    /// fresh register for the loop, copied from the value once in the
+    /// loop's own preheader, and every read in the loop renamed to it. The
+    /// scan then weighs it as any other interval: given a register, the
+    /// loop reads that; spilled, the loop reads its slot as it read the
+    /// value's, for one copy a way into the loop.
+    ///
+    /// Only a value the loop never writes (one it writes is carried round
+    /// the back edge), read from the frame at least twice in the loop, and
+    /// each in the innermost such loop; not a loop entered other than
+    /// through its head, nor one headed by the entry block, nor in a
+    /// function that catches -- a landing pad is entered from anywhere in
+    /// its try, with no register but the frame's.
+    /// </summary>
+    private bool SplitAcrossLoops()
+    {
+        int nb = _blockCount;
+        for (int b = 0; b < nb; b++) if (_m.Blocks[b].Source?.IsLandingPad == true) return false;
+
+        // Back edges: an edge to a block still on the depth-first walk from the entry.
+        byte[] state = new byte[nb];
+        int[] stack = new int[nb], next = new int[nb];
+        List<(int Tail, int Head)> backs = new();
+        int top = 0;
+        stack[top++] = 0; state[0] = 1; next[0] = _succStart[0];
+        while (top > 0)
+        {
+            int b = stack[top - 1];
+            if (next[b] < _succStart[b + 1])
+            {
+                int t = _succAll[next[b]++];
+                if (state[t] == 1) backs.Add((b, t));
+                else if (state[t] == 0) { state[t] = 1; next[t] = _succStart[t]; stack[top++] = t; }
+            }
+            else { state[b] = 2; top--; }
+        }
+        if (backs.Count == 0) return false;
+
+        // Each head's loop: the blocks that reach a back edge's tail without
+        // passing the head, every back edge to the head together.
+        Dictionary<int, bool[]> loops = new();
+        foreach ((int tail, int head) in backs)
+        {
+            if (!loops.TryGetValue(head, out bool[]? body)) { body = new bool[nb]; body[head] = true; loops[head] = body; }
+            Stack<int> work = new();
+            if (!body[tail]) { body[tail] = true; work.Push(tail); }
+            while (work.Count > 0)
+            {
+                int b = work.Pop();
+                for (int e = _predStart[b]; e < _predStart[b + 1]; e++)
+                    if (state[_predAll[e]] != 0 && !body[_predAll[e]]) { body[_predAll[e]] = true; work.Push(_predAll[e]); }
+            }
+        }
+        List<(int Head, bool[] Body, int Size)> usable = new();
+        foreach ((int head, bool[] body) in loops)
+        {
+            if (head == 0) continue;
+            bool single = true;
+            int size = 0;
+            for (int b = 0; b < nb && single; b++)
+            {
+                if (!body[b]) continue;
+                size++;
+                if (b == head) continue;
+                for (int e = _predStart[b]; e < _predStart[b + 1]; e++)
+                    if (state[_predAll[e]] != 0 && !body[_predAll[e]]) { single = false; break; }
+            }
+            if (single) usable.Add((head, body, size));
+        }
+        if (usable.Count == 0) return false;
+        usable.Sort((x, y) => x.Size.CompareTo(y.Size));
+
+        // Each spilled value's innermost loop it is read from the frame in twice and never written in.
+        Dictionary<int, List<int>> chosen = new();
+        for (int v = 8; v < _n; v++)
+        {
+            int from = _spilledFrom[v];
+            if (from == int.MaxValue || _remat[v] is not null) continue;
+            int occStart = _occFirst[v], occEnd = _occFirst[v + 1];
+            for (int k = 0; k < usable.Count; k++)
+            {
+                bool[] body = usable[k].Body;
+                int memory = 0;
+                bool written = false;
+                for (int occ = occStart; occ < occEnd && !written; occ++)
+                {
+                    Occurrence o = _occAll[occ];
+                    if (!body[_blockOfInstr[o.Instr]]) continue;
+                    if ((o.Role & Role.Def) != 0) { written = true; break; }
+                    bool held = _noReload.Contains((v, o.Instr)) || o.Instr < from && _keepBefore.Contains(v);
+                    if (_folded.Contains((o.Instr, o.Operand)) || !held) memory++;
+                }
+                if (written || memory < 2) continue;
+                if (!chosen.TryGetValue(usable[k].Head, out List<int>? list)) chosen[usable[k].Head] = list = new();
+                list.Add(v);
+                break;
+            }
+        }
+        if (chosen.Count == 0) return false;
+
+        // The splits, by block, not number: a preheader each moves the rest.
+        List<(MBlock Head, MBlock[] Body, List<int> Values)> splits = new();
+        foreach ((int head, List<int> values) in chosen)
+        {
+            bool[] body = loops[head];
+            splits.Add((_m.Blocks[head], Enumerable.Range(0, nb).Where(b => body[b]).Select(b => _m.Blocks[b]).ToArray(), values));
+        }
+        foreach ((MBlock head, MBlock[] bodyBlocks, List<int> values) in splits)
+        {
+            HashSet<MBlock> body = new(bodyBlocks, ReferenceEqualityComparer.Instance);
+            Dictionary<int, int> renamed = new();
+            MBlock pre = new(head.Name + "$pre");
+            int line = head.Instrs.Count > 0 ? head.Instrs[0].Line : 0;
+            foreach (int v in values)
+            {
+                int fresh = _m.NewReg().Id;
+                renamed[v] = fresh;
+                if (_m.ByteRegs.Contains(v)) _m.ByteRegs.Add(fresh);
+                if (_m.WideHalves.Contains(v)) _m.WideHalves.Add(fresh);
+                pre.Instrs.Add(new MInstr(MOp.Mov, MReg.Of(fresh), MReg.Of(v)) { Line = line });
+            }
+            // Every way in from outside goes through the preheader; it falls
+            // into the head, so a loop block that fell into the head jumps to it.
+            int at = _m.Blocks.IndexOf(head);
+            MBlock? before = at > 0 ? _m.Blocks[at - 1] : null;
+            if (before is not null && body.Contains(before) && !before.EndsUnconditionally)
+                before.Instrs.Add(new MInstr(MOp.Jmp, new MLabel(head)) { Line = line });
+            foreach (MBlock b in _m.Blocks)
+            {
+                if (body.Contains(b)) continue;
+                foreach (MInstr i in b.Instrs)
+                {
+                    if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel { Target: var t } && ReferenceEquals(t, head))
+                        i.Operands[0] = new MLabel(pre);
+                    if (i.Table is { } table)
+                        for (int k = 0; k < table.Count; k++) if (ReferenceEquals(table[k], head)) table[k] = pre;
+                }
+            }
+            _m.Blocks.Insert(at, pre);
+            // The loop reads its own register.
+            foreach (MBlock b in bodyBlocks)
+                foreach (MInstr i in b.Instrs)
+                    for (int k = 0; k < i.Operands.Count; k++)
+                    {
+                        if (i.Operands[k] is MReg r && renamed.TryGetValue(r.Id, out int to)) i.Operands[k] = MReg.Of(to);
+                        else if (i.Operands[k] is MMem mem && (mem.Base is { } mb && renamed.ContainsKey(mb.Id) || mem.Index is { } mi && renamed.ContainsKey(mi.Id)))
+                            i.Operands[k] = new MMem(mem.Base is { } b2 && renamed.TryGetValue(b2.Id, out int nb2) ? MReg.Of(nb2) : mem.Base, mem.Disp)
+                            {
+                                Index = mem.Index is { } i2 && renamed.TryGetValue(i2.Id, out int ni2) ? MReg.Of(ni2) : mem.Index,
+                                Scale = mem.Scale, Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, IsSpill = mem.IsSpill,
+                            };
+                    }
         }
         return true;
     }
