@@ -688,32 +688,7 @@ public sealed partial class Lowering
             }
         }
 
-        while (_work.Count > 0)
-        {
-            SealFunctions();
-            MethodSymbol m = _work.Dequeue();
-
-            if (m.Decl is null && m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner))
-            {
-                if (ConcreteShape(m.Owner)) EmitTupleMethod(m);
-                continue;
-            }
-
-            if (m.Decl?.Body is null)
-            {
-                continue;       // abstract, external, or an intrinsic
-            }
-
-            // A COPY'S METHOD NOTHING BOUND TO BEFORE: its body was left
-            // unchecked until used (Binder.WantBody), and is checked now.
-            _b.BodyWantedLate?.Invoke(m);
-            EmitMethod(m, m.Decl);
-            // Its syntax and what the binder said of it, now that nothing
-            // will read them again (Lowering.Release).
-            if (m.Decl is MethodDecl lowered) ReleaseBody(m, lowered);
-        }
-
-        SealFunctions();
+        DrainWork();
         _workDrained = true;
         NoteUnlowered();
 
@@ -745,8 +720,22 @@ public sealed partial class Lowering
         // interfaces' routines then (ArrayFaces) -- one storing a reference
         // marks a card, and the card table's static was new to a unit of
         // tables alone, added to the set being walked.
+        // AND WHAT THEY REQUIRE, LOWERED IN TURN: such a descriptor's routines
+        // call the library (ArrayFaces' Array.FaceWidenedReal), required here
+        // after the methods were drained -- a call to a label no body was
+        // made for, and the link refused the program (1963). Each round of
+        // statics is followed by lowering what it required, and what that
+        // adds to the statics is the next round's.
         HashSet<FieldSymbol> laid = new();
-        for (List<FieldSymbol> next = _statics.ToList(); next.Count > 0; next = _statics.Where(f => !laid.Contains(f)).ToList())
+        for (List<FieldSymbol> next = _statics.ToList(); next.Count > 0 || _work.Count > 0; next = _statics.Where(f => !laid.Contains(f)).ToList())
+        {
+        if (next.Count == 0)
+        {
+            _workDrained = false;
+            DrainWork();
+            _workDrained = true;
+            continue;
+        }
         foreach (FieldSymbol f in next)
         {
             laid.Add(f);
@@ -803,6 +792,41 @@ public sealed partial class Lowering
                 SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
             });
         }
+        }
+    }
+
+    /// <summary>
+    /// Lowers every method required and not yet lowered, and what each of
+    /// them requires in turn, until nothing is left (Run, and the rounds of
+    /// statics after it).
+    /// </summary>
+    private void DrainWork()
+    {
+        while (_work.Count > 0)
+        {
+            SealFunctions();
+            MethodSymbol m = _work.Dequeue();
+
+            if (m.Decl is null && m.Owner.Kind == TypeKind.Struct && IsTupleShape(m.Owner))
+            {
+                if (ConcreteShape(m.Owner)) EmitTupleMethod(m);
+                continue;
+            }
+
+            if (m.Decl?.Body is null)
+            {
+                continue;       // abstract, external, or an intrinsic
+            }
+
+            // A COPY'S METHOD NOTHING BOUND TO BEFORE: its body was left
+            // unchecked until used (Binder.WantBody), and is checked now.
+            _b.BodyWantedLate?.Invoke(m);
+            EmitMethod(m, m.Decl);
+            // Its syntax and what the binder said of it, now that nothing
+            // will read them again (Lowering.Release).
+            if (m.Decl is MethodDecl lowered) ReleaseBody(m, lowered);
+        }
+        SealFunctions();
     }
 
     /// <summary>

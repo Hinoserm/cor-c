@@ -4746,6 +4746,13 @@ continue;
         HashSet<string> Ancestors(string type) =>
             ancestry.TryGetValue(type, out HashSet<string>? known) ? known : ancestry[type] = Ancestry(items, type);
         Dictionary<(string, long), string[]> bySlot = new();
+        // WHAT THE PROGRAM CAN MAKE AN OBJECT OF, worked out below (Rta):
+        // a descriptor that only data nothing reaches names -- a type kept
+        // for its own type record, as List<DictionaryEntry> -- has no
+        // objects, and answers no call.
+        HashSet<string> madeTypes = new(StringComparer.Ordinal);
+        bool Made(DataItem d) => madeTypes.Contains(d.Name);
+
         string[] Slot(string declaring, long slot)
         {
             if (bySlot.TryGetValue((declaring, slot), out string[]? known)) return known;
@@ -4759,34 +4766,80 @@ continue;
                 // table of it (VirtualTargets.MayAnswer).
                 // A shared generic's face is any instantiation's (VirtualTargets.Answers).
                 if (!everyType && !Corsac.Lang.Lto.VirtualTargets.Answers(Ancestors(d.Name), declaring) && !Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) continue;
+                // A type no code makes an object of (Made) is no call's target:
+                // List<DictionaryEntry>'s FreeStorage, reached from Runtime.Free,
+                // kept a collector for a program that needs none (1821).
+                if (!Made(d) && !Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) continue;
                 foreach (DataReloc r in d.Relocs)
                     if (r.Addend == 0 && bases.Contains(r.Offset - slot)) found.Add(r.Symbol);
             }
             return bySlot[(declaring, slot)] = found.ToArray();
         }
 
-        // WHAT THE PROGRAM CAN MAKE AN OBJECT OF: a descriptor is stamped
-        // into an object only by code that names it, or is one a data item
-        // that code reaches names -- a static object laid out in advance, a
-        // table of types. One that only data nothing reaches names --
-        // List<DictionaryEntry>'s, kept for its own type record -- has no
-        // objects, and answers no call. A box, a string or an array answers
-        // what its table does not name (VirtualTargets.MayAnswer).
-        HashSet<string> reachedData = new(StringComparer.Ordinal);
+
+        // THE TYPES MADE, BY WHAT RUNS (rapid type analysis): from the entry,
+        // the static initialisers and the runtime's own routines (the calls
+        // the lifetime passes and the backend add are to them), each function
+        // reached reaches what it calls and names. A descriptor named by
+        // reached code, or by data reached that is not a descriptor -- a
+        // static object laid out in advance, a type's record -- is made; one
+        // named only as another's ancestor is not. A descriptor's methods are
+        // reached only through the virtual calls of reached code, each to
+        // the slot of the types made so far, until nothing new is reached.
+        // Code that nothing runs makes nothing: a never-run library routine
+        // that builds a List<DictionaryEntry> kept FreeStorage a target of
+        // Runtime.Free's call, and with it a collector (1821).
         {
-            Dictionary<string, DataItem> dataByName = new(StringComparer.Ordinal);
-            foreach (DataItem d in m.Data) dataByName.TryAdd(d.Name, d);
-            Stack<string> pending = new();
+            HashSet<string> reachedNames = new(StringComparer.Ordinal);
+            Stack<string> work = new();
+            HashSet<(string, long)> virtualCalls = new();
+            void Reach(string name, bool fromDescriptor)
+            {
+                if (byName.ContainsKey(name))
+                {
+                    if (!fromDescriptor && reachedNames.Add(name)) work.Push(name);
+                    return;
+                }
+                if (!items.TryGetValue(name, out DataItem? item)) return;
+                bool descriptor = IsDescriptor(name);
+                if (descriptor && !fromDescriptor) madeTypes.Add(name);
+                if (!reachedNames.Add(name)) return;
+                foreach (DataReloc r in item.Relocs) Reach(r.Symbol, descriptor);
+            }
+            if (m.Entry is not null) Reach(m.Entry, false);
             foreach (Function f in m.Functions)
-                foreach (Block b in f.Blocks)
-                    foreach (Instr i in b.Instrs)
-                        foreach (Operand o in i.Operands)
-                            if (o is SymOperand sym && dataByName.ContainsKey(sym.Name) && reachedData.Add(sym.Name)) pending.Push(sym.Name);
-            while (pending.Count > 0)
-                foreach (DataReloc r in dataByName[pending.Pop()].Relocs)
-                    if (dataByName.ContainsKey(r.Symbol) && reachedData.Add(r.Symbol)) pending.Push(r.Symbol);
+                if (f.Name.Contains("StaticInit$", StringComparison.Ordinal)
+                    || f.Name.StartsWith("m_Runtime_", StringComparison.Ordinal) || f.Name.StartsWith("m_Gc_", StringComparison.Ordinal))
+                    Reach(f.Name, false);
+            int round = 0;
+            while (true)
+            {
+                while (work.TryPop(out string? name))
+                {
+                    Function g = byName[name];
+                    Dictionary<VReg, Instr> single = new();
+                    HashSet<VReg> many = new();
+                    foreach (Block b in g.Blocks)
+                        foreach (Instr i in b.Instrs)
+                            if (i.Dest is not null && !single.TryAdd(i.Dest, i)) many.Add(i.Dest);
+                    foreach (Block b in g.Blocks)
+                        foreach (Instr i in b.Instrs)
+                        {
+                            if (i.Callee is not null) Reach(i.Callee, false);
+                            foreach (Operand o in i.Operands) if (o is SymOperand sym) Reach(sym.Name, false);
+                            if (i.Op == Opcode.CallIndirect && VirtualSlot(i, single, many) is var (declaring, slot)) virtualCalls.Add((declaring, slot));
+                        }
+                }
+                // Each virtual call, against the types made so far.
+                int before = reachedNames.Count + madeTypes.Count;
+                bySlot.Clear();
+                foreach ((string declaring, long slot) in virtualCalls.ToList())
+                    foreach (string target in Slot(declaring, slot)) Reach(target, false);
+                if (work.Count == 0 && reachedNames.Count + madeTypes.Count == before) break;
+                if (++round > 10000) throw new InvalidOperationException(m.Name + ": the types a program makes did not settle");
+            }
+            bySlot.Clear();
         }
-        bool Made(DataItem d) => reachedData.Contains(d.Name);
 
         Dictionary<Instr, string[]> result = new(ReferenceEqualityComparer.Instance);
         Dictionary<string, bool> instantiated = new(StringComparer.Ordinal);
