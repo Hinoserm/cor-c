@@ -3176,6 +3176,52 @@ static class Gc
         GcLock.Exit();
     }
 
+    /// THE SHELF GIVEN BACK, by the thread whose block it is: every class
+    /// cache it holds for a heap but `keep` (0 or KernelHeap for the first),
+    /// or only the one of `heap` (DropShelf). A cache shelved at a switch is
+    /// kept for the next entry into its heap, its pages the block's; a kernel
+    /// whose blocks are its processors' and never end kept one page a class
+    /// of every heap a processor had entered, for good -- half a megabyte of
+    /// each small driver module's heap with nothing live in it. Under the
+    /// lock, as a thread that leaves gives its caches back (ForgetClasses):
+    /// the pages stamped first while the thread owes the round STAMP, then
+    /// nobody's, each on its heap's list, those with nothing live released
+    /// by the next sweep. The cache's table stays, empty, on the shelf: the
+    /// next entry into the heap takes it down and refills it, with no
+    /// mapping (a page a heap a block, kept for speed).
+    public static void DropShelves(long keep)
+    {
+        DropShelfOf(keep == _heap0 ? 0 : keep, -1);
+    }
+
+    public static void DropShelf(long heap)
+    {
+        DropShelfOf(-1, heap == _heap0 ? 0 : heap);
+    }
+
+    static void DropShelfOf(long keep, long only)
+    {
+        long tb = Sys.ThreadBlock();
+        long shelf = tb != 0 ? Sys.Peek(tb + Tls.Shelf) : 0;
+        if (shelf == 0 || !_ready)
+        {
+            return;
+        }
+        long keepNumber = keep < 0 ? -1 : keep == 0 ? 0 : Sys.Peek(keep + HeapNumberAt);
+        long onlyNumber = only < 0 ? -1 : only == 0 ? 0 : Sys.Peek(only + HeapNumberAt);
+        GcLock.Enter();
+        bool stamping = _stamping && !StampedAlready(tb);
+        for (long h = 0; h < ShelfUsed; h++)
+        {
+            if (h == keepNumber || onlyNumber >= 0 && h != onlyNumber) continue;
+            long cache = Sys.Peek(shelf + h * WordSize.Bytes);
+            if (cache == 0) continue;
+            if (stamping) StampCache(cache);
+            RetireCache(tb, cache);
+        }
+        GcLock.Exit();
+    }
+
     /// A thread block's shelf (Tls.Shelf): a page of the operating system's,
     /// a word a heap by its number -- the class cache the thread had in it
     /// when it left, or 0. A heap numbered past it is switched the long way.

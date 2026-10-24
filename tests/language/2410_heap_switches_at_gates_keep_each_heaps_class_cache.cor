@@ -2,6 +2,7 @@
 // expect-exit: 0
 // expect-output:
 // cheap True
+// shelf given back True
 // gate sums 4999950000 4999950000
 // main sum 499500
 // free index True
@@ -15,7 +16,8 @@
 // no lock: a hundred thousand switches back and forth take the allocator's
 // slow way a handful of times, not once a switch. Two threads do it while
 // the main thread churns and collects, every string kept is read back
-// whole, every heap's bins hold its own blocks, and the heaps go back.
+// whole, every heap's bins hold its own blocks, and the heaps go back. A
+// shelved cache given back (Gc.DropShelves) lets its heap's pages go.
 
 using System.Threading;
 
@@ -60,6 +62,18 @@ static class Program
         long slow = Gc.SlowPaths - before;
         Sys.Print("cheap ");
         Sys.Print(slow < 2000 ? "True" : "False");
+        Sys.PrintLine();
+
+        // THE SHELF GIVEN BACK (Gc.DropShelves): the cache this thread kept
+        // for the module's heap goes, and with nothing of the gates' left
+        // alive the collection gives the heap's pages back.
+        Gc.Collect();
+        Gc.HeapFigures(_heaps[0], out long live0, out long heldBefore, out long free0, out long chunks0);
+        Gc.DropShelves(Gc.KernelHeap);
+        Gc.Collect();
+        Gc.HeapFigures(_heaps[0], out long live1, out long heldAfter, out long free1, out long chunks1);
+        Sys.Print("shelf given back ");
+        Sys.Print(heldAfter < heldBefore ? "True" : "False");
         Sys.PrintLine();
 
         var a = new Thread(() => Work(0));
