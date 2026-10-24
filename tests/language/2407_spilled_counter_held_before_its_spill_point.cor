@@ -1,0 +1,104 @@
+// test: spilled_counter_held_before_its_spill_point
+// expect-exit: 0
+// expect-output:
+// 37970000 2999 4311
+// 478028572706
+// 5263
+// -10878893478
+// 0
+//
+// A VALUE SPILLED LATE IN A LOOP IS STILL IN ITS REGISTER BEFORE THAT POINT,
+// except where control comes in from where it is not. A loop counter given up
+// for a temporary near the bottom of the body keeps its register over the
+// top of the body, and every write stores to the frame as well; its reads
+// there reloaded from the frame all the same -- the GUI kernel's vertex loop
+// read its counter four times a lap. Now a read reloads only where a way in
+// does not hold the value: the back edge from the spilled part, a catch's
+// landing pad, a write that went to the frame alone. The answers are .NET's.
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Ctx { public int A, B, C, D, E, Mul; public bool Two; }
+
+static class P
+{
+    // More values live round the loop than the machine has registers: the
+    // counter is given up late in the body, and its reads before that point
+    // are reached from the loop's back edge.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Fan(Ctx c, int[] xs, int[] ys, int[] zs, int[] outv, int count, int list)
+    {
+        bool a = c.A == 1, two = c.Two, b = (c.B & 4) != 0, d = c.D != 0, strip = list == 0;
+        long sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            int at = i * 4;
+            int x = xs[i], y = ys[i], z = zs[i] * c.Mul;
+            if (a) x += 1;
+            if (two) y += 2;
+            if (b) z += 3;
+            if (d) z -= 4;
+            if (strip) x ^= 5;
+            outv[at] = x; outv[at + 1] = y; outv[at + 2] = z; outv[at + 3] = x + y + z;
+            sum += x + y + z + i;
+        }
+        return sum;
+    }
+
+    // The same, with a catch inside the loop: the landing pad is entered from
+    // anywhere in its try, and must read the counter from where it is kept.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Caught(int[] xs, int[] ys, int[] zs, int count, int k)
+    {
+        long sum = 0;
+        int p = 1, q = 2, r = 3, s = 4;
+        for (int i = 0; i < count; i++)
+        {
+            int x = xs[i], y = ys[i], z = zs[i];
+            try
+            {
+                if (i % k == 3) throw new InvalidOperationException("lap " + i);
+                p += x; q ^= y; r += z * i; s -= x + y;
+            }
+            catch (InvalidOperationException e)
+            {
+                sum += e.Message.Length * 1000 + i;
+            }
+            sum += p + q + r + s + i;
+        }
+        return sum;
+    }
+
+    // A counter written in one arm and read after the merge, under pressure:
+    // a write that may go to the frame alone must not leave a stale register.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Merged(int[] xs, int count)
+    {
+        long sum = 0;
+        int j = 0, u = 7, v = 11, w = 13, t = 17;
+        for (int i = 0; i < count; i++)
+        {
+            int x = xs[i];
+            if ((x & 3) == 1) j += x; else j = i * 2;
+            u += j ^ x; v -= j + i; w ^= u + v; t += w - j;
+            sum += j + u + v + w + t;
+        }
+        return sum + j;
+    }
+
+    static int Main()
+    {
+        int n = 1000;
+        int[] xs = new int[n], ys = new int[n], zs = new int[n], o = new int[n * 4];
+        for (int i = 0; i < n; i++) { xs[i] = i; ys[i] = i * 3; zs[i] = i * 7; }
+        Ctx c = new Ctx { A = 1, B = 4, D = 1, Two = true, Mul = 2 };
+        long total = 0;
+        for (int r = 0; r < 4; r++) total += Fan(c, xs, ys, zs, o, n, r & 1);
+        Console.WriteLine(total + " " + o[3997] + " " + o[1234]);
+        Console.WriteLine(Caught(xs, ys, zs, n, 97));
+        Console.WriteLine(Caught(xs, ys, zs, 5, 4));
+        Console.WriteLine(Merged(xs, n));
+        Console.WriteLine(Merged(ys, 0));
+        return 0;
+    }
+}

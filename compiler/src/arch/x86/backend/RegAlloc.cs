@@ -128,6 +128,8 @@ internal sealed class Allocator
     // Every block's successors, a run a block (ComputeLiveness).
     private int[] _succStart = Array.Empty<int>();
     private int[] _succAll = Array.Empty<int>();
+    private int[] _predStart = Array.Empty<int>();
+    private int[] _predAll = Array.Empty<int>();
     private int _blockCount;
     /// <summary>
     /// The first block of the straight run each block belongs to: a block
@@ -198,6 +200,7 @@ internal sealed class Allocator
         a.CollectOccurrences();
         a.ComputeLiveness();
         a.Scan();
+        a.HeldBeforeSpill();
         a.Rewrite();
         // What the kept tables point at goes with the function.
         Array.Clear(a._remat, 0, a._n);
@@ -592,6 +595,8 @@ internal sealed class Allocator
         Array.Copy(predStart, predFill, nb);
         for (int b = 0; b < nb; b++)
             for (int e = succStart[b]; e < succStart[b + 1]; e++) predAll[predFill[succ[e]]++] = b;
+        _predStart = predStart;
+        _predAll = predAll;
         // Every block owed a first look, the last laid out first, as the sweep began.
         int[] work = Table(ref _keptWork, nb, clear: false);
         bool[] owed = _keptOwed is { } keptOwed && keptOwed.Length >= nb ? keptOwed : _keptOwed = new bool[Math.Max(nb, 16)];
@@ -1473,6 +1478,126 @@ internal sealed class Allocator
             }
         }
         return true;
+    }
+
+    /// <summary>
+    /// WHERE THE REGISTER STILL HOLDS IT, NO RELOAD. A register spilled from
+    /// a point whose value flows back to code before it -- a loop's counter
+    /// given up late in the body -- keeps the register it had over every
+    /// position before that point (nothing placed after starts there), and
+    /// every write before it stores to the slot as well. Each read there
+    /// reloaded from the slot all the same, and the GUI kernel's vertex loop
+    /// read its counter from the frame four times a lap. The register is
+    /// stale only where control comes in from where it does not hold the
+    /// value: a back edge from the spilled part, a landing pad, a block
+    /// outside the stretch, or after a write that went to the slot alone. So
+    /// a read reloads only when one of those paths reaches it; the rest are
+    /// read where they are, the slot being current on every path either way.
+    /// </summary>
+    private void HeldBeforeSpill()
+    {
+        for (int v = 8; v < _n; v++)
+        {
+            int from = _spilledFrom[v];
+            int occStart = _occFirst[v], occEnd = _occFirst[v + 1];
+            if (from == int.MaxValue || _remat[v] is not null || _keepBefore.Contains(v) || occStart == occEnd
+                || _occAll[occStart].Instr >= from)
+            {
+                continue;
+            }
+            int lo = _blockOfInstr[_occAll[occStart].Instr];
+            int hi = _blockOfInstr[Math.Min(from, _lin.Count) - 1];
+            // A block's entry holds the value while every way in holds it at
+            // its end: assumed of all, given up to a fixed point.
+            if (_held.Length < hi - lo + 1) _held = new bool[Math.Max(hi - lo + 1, 2 * _held.Length)];
+            bool[] held = _held;
+            Array.Clear(held, 0, hi - lo + 1);
+            Stack<int> work = _heldWork;
+            work.Clear();
+            for (int b = lo; b <= hi; b++)
+            {
+                if (LiveInto(b, v)) { held[b - lo] = true; work.Push(b); }
+            }
+            while (work.Count > 0)
+            {
+                int b = work.Pop();
+                if (!held[b - lo] || HeldOnEntry(v, b, lo, hi, from, held)) continue;
+                held[b - lo] = false;
+                for (int e = _succStart[b]; e < _succStart[b + 1]; e++)
+                {
+                    int s = _succAll[e];
+                    if (s >= lo && s <= hi && held[s - lo]) work.Push(s);
+                }
+            }
+            for (int occ = occStart; occ < occEnd; occ++)
+            {
+                Occurrence o = _occAll[occ];
+                if (o.Instr >= from) break;
+                int b = _blockOfInstr[o.Instr];
+                bool inReg = HeldBefore(v, o.Instr, held[b - lo]);
+                if (!inReg || (o.Role & Role.Use) == 0) continue;
+                // A read folded into the slot reads the register instead
+                // where it holds the value: `mov edi, eax`, not from the frame.
+                // Not a write: one folded into the slot leaves it stale.
+                if (_folded.Contains((o.Instr, o.Operand)))
+                {
+                    if ((o.Role & Role.Def) != 0) continue;
+                    _folded.Remove((o.Instr, o.Operand));
+                }
+                _noReload.Add((v, o.Instr));
+            }
+        }
+    }
+
+    private bool[] _held = new bool[64];
+    private readonly Stack<int> _heldWork = new();
+
+    /// Whether every way into block `b` leaves the value in its register.
+    private bool HeldOnEntry(int v, int b, int lo, int hi, int from, bool[] held)
+    {
+        if (_predStart[b] == _predStart[b + 1] || _m.Blocks[b].Source?.IsLandingPad == true)
+        {
+            return false;
+        }
+        for (int e = _predStart[b]; e < _predStart[b + 1]; e++)
+        {
+            int p = _predAll[e];
+            int last = _blockFirst[p] + _m.Blocks[p].Instrs.Count - 1;
+            if (p < lo || p > hi || last >= from || !HeldBefore(v, last + 1, held[p - lo], p))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Whether the register holds the value just before instruction `instr`
+    /// of its block (`block`, that of `instr` unless given), entered holding
+    /// it or not: after a read or write in the register it does, after a
+    /// write folded into the slot alone it does not, and a read of the slot
+    /// leaves it as it was.
+    /// </summary>
+    private bool HeldBefore(int v, int instr, bool onEntry, int block = -1)
+    {
+        if (block < 0) block = _blockOfInstr[instr];
+        int first = _blockFirst[block];
+        bool inReg = onEntry;
+        // The block's first occurrence, by halves: a counter has hundreds.
+        int occ = _occFirst[v], occEnd = _occFirst[v + 1], hiOcc = occEnd;
+        while (occ < hiOcc)
+        {
+            int mid = (occ + hiOcc) / 2;
+            if (_occAll[mid].Instr < first) occ = mid + 1; else hiOcc = mid;
+        }
+        for (; occ < occEnd; occ++)
+        {
+            Occurrence o = _occAll[occ];
+            if (o.Instr >= instr) break;
+            if (!_folded.Contains((o.Instr, o.Operand))) inReg = true;
+            else if ((o.Role & Role.Def) != 0) inReg = false;
+        }
+        return inReg;
     }
 
     /// <summary>
