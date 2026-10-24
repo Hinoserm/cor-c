@@ -739,6 +739,7 @@ internal sealed class Allocator
 
     private void Scan()
     {
+        FindLoops();
         _callsBefore = Table(ref _keptCallsBefore, _lin.Count + 1, clear: false);
         _callsBefore[0] = 0;
         for (int i = 0; i < _lin.Count; i++)
@@ -976,6 +977,13 @@ internal sealed class Allocator
         int at = cur.Start / 4;
         List<Interval>? victims = null;
         int victimNext = -1;
+        // IN A LOOP, WHAT A LAP PAYS decides (LapCost), the furthest next use
+        // only between equals: by distance alone a loop's counter, next read
+        // at the bottom of the lap, was given up before a value read once in
+        // one arm, and a value written three times a lap -- each write then a
+        // store -- before one written once.
+        int loop = at < _lin.Count ? _loopOf[_blockOfInstr[at]] : -1;
+        int victimCost = int.MaxValue;
         // A register is had by evicting everything placed in it that is
         // live where the current interval is; the others sit in its holes.
         foreach (Gpr g in Preference)
@@ -1008,17 +1016,24 @@ internal sealed class Allocator
                 // Used by the very instruction the current interval starts at: not evictable.
                 continue;
             }
-            if (next > victimNext)
+            int cost = 0;
+            if (loop >= 0) foreach (Interval a in group) cost += a.Short ? LapCostServed(a, at, loop) : LapCost(a.VReg, at, loop);
+            if (loop >= 0 ? cost < victimCost || cost == victimCost && next > victimNext : next > victimNext)
             {
                 victims = group;
                 victimNext = next;
+                victimCost = cost;
             }
         }
 
         if (!cur.Short)
         {
             int curNext = NextUseAfterStart(cur);
-            if (victims is null || curNext > victimNext)
+            // The current interval read again in its own run needs a register
+            // there at once: given up, it would only take one back.
+            bool curSoon = curNext != int.MaxValue && curNext / 4 < _lin.Count && _runHead[_blockOfInstr[curNext / 4]] == _runHead[_blockOfInstr[at]];
+            int curCost = loop >= 0 ? (curSoon ? int.MaxValue : LapCost(cur.VReg, at, loop)) : 0;
+            if (victims is null || (loop >= 0 ? curCost < victimCost || curCost == victimCost && curNext > victimNext : curNext > victimNext))
             {
                 int split = SplitPrefix(cur);
                 if (split >= 0)
@@ -1478,6 +1493,100 @@ internal sealed class Allocator
             }
         }
         return true;
+    }
+
+    // ---- loops, and what a spill costs a lap ------------------------------------
+
+    /// <summary>Each block's innermost loop (-1 for none), and each loop's blocks and head.</summary>
+    private int[] _loopOf = Array.Empty<int>();
+    private readonly List<(int Head, bool[] Body)> _loops = new();
+
+    /// <summary>
+    /// The loops: an edge to a block still on the depth-first walk from the
+    /// entry is a back edge, and its loop the blocks that reach its tail
+    /// without passing its head (every back edge to a head one loop). Not
+    /// the layout: a cold block laid out before the code that jumps to it is
+    /// no loop's head.
+    /// </summary>
+    private void FindLoops()
+    {
+        int nb = _blockCount;
+        _loops.Clear();
+        _loopOf = new int[nb];
+        Array.Fill(_loopOf, -1);
+        if (nb == 0) return;
+        byte[] state = new byte[nb];
+        int[] stack = new int[nb], next = new int[nb];
+        List<(int Tail, int Head)> backs = new();
+        int top = 0;
+        stack[top++] = 0; state[0] = 1; next[0] = _succStart[0];
+        while (top > 0)
+        {
+            int b = stack[top - 1];
+            if (next[b] < _succStart[b + 1])
+            {
+                int t = _succAll[next[b]++];
+                if (state[t] == 1) backs.Add((b, t));
+                else if (state[t] == 0) { state[t] = 1; next[t] = _succStart[t]; stack[top++] = t; }
+            }
+            else { state[b] = 2; top--; }
+        }
+        Dictionary<int, bool[]> byHead = new();
+        foreach ((int tail, int head) in backs)
+        {
+            if (!byHead.TryGetValue(head, out bool[]? body)) { body = new bool[nb]; body[head] = true; byHead[head] = body; }
+            Stack<int> work = new();
+            if (!body[tail]) { body[tail] = true; work.Push(tail); }
+            while (work.Count > 0)
+            {
+                int b = work.Pop();
+                for (int e = _predStart[b]; e < _predStart[b + 1]; e++)
+                    if (state[_predAll[e]] != 0 && !body[_predAll[e]]) { body[_predAll[e]] = true; work.Push(_predAll[e]); }
+            }
+        }
+        List<(int Head, bool[] Body, int Size)> sized = byHead.Select(kv => (kv.Key, kv.Value, kv.Value.Count(x => x))).OrderBy(x => x.Item3).ToList();
+        foreach ((int head, bool[] body, int size) in sized) _loops.Add((head, body));
+        for (int l = 0; l < _loops.Count; l++)
+            for (int b = 0; b < nb; b++)
+                if (_loops[l].Body[b] && _loopOf[b] < 0) _loopOf[b] = l;
+    }
+
+    /// <summary>
+    /// WHAT GIVING UP A VALUE AT `at` COSTS EACH LAP of `loop`, in frame
+    /// accesses: a store for every write of it anywhere in the loop -- a
+    /// spilled value's every write stores, those before the spill point too,
+    /// so its slot is current wherever it is read -- a reload for each
+    /// straight run that reads it from here on (a reload's register carries
+    /// through a run), and one where the back edge comes in when the value
+    /// is carried round and read before here (HeldBeforeSpill). A constant
+    /// remade where it is read costs no store and half a load.
+    /// </summary>
+    private int LapCost(int vreg, int at, int loop)
+    {
+        bool[] body = _loops[loop].Body;
+        bool remat = _remat[vreg] is not null;
+        int cost = 0, lastRun = -1;
+        bool before = false;
+        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
+        {
+            Occurrence o = _occAll[occ];
+            int b = _blockOfInstr[o.Instr];
+            if (!body[b]) continue;
+            if ((o.Role & Role.Def) != 0 && !remat) cost += 2;
+            if (o.Instr < at) { if ((o.Role & Role.Use) != 0) before = true; continue; }
+            if ((o.Role & Role.Use) != 0 && _runHead[b] != lastRun) { cost += remat ? 1 : 2; lastRun = _runHead[b]; }
+        }
+        if (before && LiveInto(_loops[loop].Head, vreg)) cost += remat ? 1 : 2;
+        return cost;
+    }
+
+    /// <summary>A carried reload's: each of its reads from here on, in the loop, reloads again.</summary>
+    private int LapCostServed(Interval a, int at, int loop)
+    {
+        bool[] body = _loops[loop].Body;
+        int n = 0;
+        foreach ((int instr, Role role) in a.Served!) if (instr >= at && body[_blockOfInstr[instr]]) n += 2;
+        return n;
     }
 
     /// <summary>
