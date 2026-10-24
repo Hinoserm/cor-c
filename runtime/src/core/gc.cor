@@ -3086,20 +3086,85 @@ static class Gc
     public static void SwitchHeap(long tb, long heap)
     {
         if (heap == _heap0) heap = 0;
-        if (tb == 0 || Sys.Peek(tb + Tls.Heap) == heap)
+        if (tb == 0)
         {
             return;
         }
+        long was = Sys.Peek(tb + Tls.Heap);
+        if (was == heap)
+        {
+            return;
+        }
+        long w = WordSize.Bytes;
+        long from = was == 0 ? 0 : Sys.Peek(was + HeapNumberAt);
+        long to = heap == 0 ? 0 : Sys.Peek(heap + HeapNumberAt);
+        long shelf = Sys.Peek(tb + Tls.Shelf);
+
+        // THE WAY OF EVERY GATE: no lock. The class cache in use is taken
+        // out of the block in one swap, put on the shelf in the place of the
+        // heap being left, and the cache of the heap being entered put in.
+        // Inside the allocator meanwhile (Tls.InAlloc), so that an interrupt
+        // neither answers a round nor frees on top of it. The swap is how a
+        // round that is taking the cache this moment is told apart: it
+        // writes the cache aside first and takes it by compare-and-swap
+        // (GcThreads.Round); a zero found here with a cache aside is a
+        // round's, and the switch is made the long way.
+        if (shelf != 0 && from < ShelfHeaps && to < ShelfHeaps)
+        {
+            Sys.Poke(tb + Tls.InAlloc, 1);
+            long classes = Sys.AtomicSwap(tb + Tls.Classes, 0);
+            if (classes != 0 || Sys.Peek(tb + Tls.ClassesSaved) == 0)
+            {
+                Sys.Poke(shelf + from * w, classes);
+                long next = Sys.Peek(shelf + to * w);
+                Sys.Poke(shelf + to * w, Zero);
+                Sys.Poke(tb + Tls.Heap, heap);
+                Sys.AtomicSwap(tb + Tls.Classes, next);
+                Sys.Poke(tb + Tls.InAlloc, 0);
+                // A round opened while the cache was out of the block did not
+                // take it: answered now, as the slow path would before taking.
+                if (GcThreads.Owes(tb)) GcThreads.Park();
+                return;
+            }
+            Sys.Poke(tb + Tls.InAlloc, 0);
+        }
+
+        // THE LONG WAY, under the lock: the first switch, which makes the
+        // shelf, or one a round has taken the cache from. The cache in use
+        // is given back to its heap (its pages stamped first while this
+        // thread owes the round STAMP) and shelved empty; the other heap's
+        // is put in.
         GcLock.Enter();
+        if (shelf == 0)
+        {
+            shelf = Platform.Map(ShelfBytes);
+            Sys.Poke(tb + Tls.Shelf, shelf);
+        }
         if (_ready)
         {
-            Retire(tb);
             if (_stamping && !StampedAlready(tb)) StampPages(tb);
             RetireClasses(tb);
+        }
+        if (shelf != 0 && from < ShelfHeaps && to < ShelfHeaps)
+        {
+            long cache = Sys.Peek(tb + Tls.Classes);
+            if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+            Sys.Poke(shelf + from * w, cache);
+            Sys.Poke(tb + Tls.ClassesSaved, Zero);
+            Sys.Poke(tb + Tls.Classes, Sys.Peek(shelf + to * w));
+            Sys.Poke(shelf + to * w, Zero);
         }
         Sys.Poke(tb + Tls.Heap, heap);
         GcLock.Exit();
     }
+
+    /// A thread block's shelf (Tls.Shelf): a page of the operating system's,
+    /// a word a heap by its number -- the class cache the thread had in it
+    /// when it left, or 0. A heap numbered past it is switched the long way.
+    const long ShelfBytes = 4096;
+    const long ShelfHeaps = ShelfBytes / WordSize.Bytes;
+    /// The places a shelf has used at most: one a heap made so far.
+    static long ShelfUsed => _heapsMade < ShelfHeaps ? _heapsMade : ShelfHeaps;
 
     /// What a heap holds: the bytes its last sweeps found live, the bytes
     /// of its chunks and pages, of those what is not live, and how many
@@ -3159,6 +3224,23 @@ static class Gc
             GcLock.Exit();
             return false;
         }
+        // EVERY THREAD'S CACHE OF IT, from their shelves: its pages are
+        // nobody's again, and those with nothing live in them go below.
+        long number = Sys.Peek(heap + HeapNumberAt);
+        if (number < ShelfHeaps)
+        {
+            long threads = GcThreads.Count() > 0 ? GcThreads.Count() : 1;
+            for (long i = 0; i < threads; i++)
+            {
+                long tb = GcThreads.BlockAt(i);
+                long shelf = tb != 0 ? Sys.Peek(tb + Tls.Shelf) : 0;
+                long parked = shelf != 0 ? Sys.Peek(shelf + number * WordSize.Bytes) : 0;
+                if (parked == 0) continue;
+                Sys.Poke(shelf + number * WordSize.Bytes, Zero);
+                RetireCache(tb, parked);
+                Platform.Unmap(parked, 4096);
+            }
+        }
         long working = _h;
         _h = heap;
         SyncEnd();
@@ -3202,8 +3284,12 @@ static class Gc
                     // An ordinary chunk: its free blocks off this heap's
                     // bins, and the chunk back or the first heap's, its free
                     // blocks onto the first heap's bins.
+                    // NOT ONE A THREAD'S BUFFER IS IN: a thread keeps its
+                    // buffer as it changes heaps (SwitchHeap shelves only its
+                    // class cache), and bumps in it still.
                     UnlinkFreeIn(chunk);
-                    if (HeapChunks.LiveBlocks(chunk) == 0)
+                    if (HeapChunks.LiveBlocks(chunk) == 0 && HeapChunks.LiveBytes(chunk) == 0
+                        && !GcThreads.BufferWithin(HeapChunks.First(chunk), HeapChunks.Limit(chunk)))
                     {
                         ReleaseChunk(chunk);
                     }
@@ -5219,6 +5305,13 @@ static class Gc
     {
         long cache = Sys.Peek(tb + Tls.Classes);
         if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        RetireCache(tb, cache);
+    }
+
+    /// One of the thread's class caches -- the one in use, or one on its
+    /// shelf (SwitchHeap) -- given back: its pages are nobody's again.
+    static void RetireCache(long tb, long cache)
+    {
         if (cache == 0 || _classSize == 0)
         {
             return;
@@ -5323,6 +5416,20 @@ static class Gc
         Sys.Poke(tb + Tls.Classes, Zero);
         Sys.Poke(tb + Tls.ClassesSaved, Zero);
         if (cache != 0) Platform.Unmap(cache, 4096);
+        // AND THE ONES ON ITS SHELF, the heaps it had been in.
+        long shelf = Sys.Peek(tb + Tls.Shelf);
+        if (shelf != 0)
+        {
+            for (long h = 0; h < ShelfUsed; h++)
+            {
+                long parked = Sys.Peek(shelf + h * WordSize.Bytes);
+                if (parked == 0) continue;
+                RetireCache(tb, parked);
+                Platform.Unmap(parked, 4096);
+            }
+            Sys.Poke(tb + Tls.Shelf, Zero);
+            Platform.Unmap(shelf, ShelfBytes);
+        }
     }
 
     /// A block of a page freed by hand: cleared, marked free, and onto the
@@ -5719,6 +5826,19 @@ static class Gc
     {
         long cache = Sys.Peek(tb + Tls.Classes);
         if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        StampCache(cache);
+        // THE SHELF'S TOO: a cache made from since the snapshot and then
+        // shelved at a gate holds what the thread made before it answered.
+        long shelf = Sys.Peek(tb + Tls.Shelf);
+        if (shelf == 0) return;
+        for (long h = 0; h < ShelfUsed; h++)
+        {
+            StampCache(Sys.Peek(shelf + h * WordSize.Bytes));
+        }
+    }
+
+    static void StampCache(long cache)
+    {
         if (cache == 0) return;
         for (long c = 0; c < Classes; c++)
         {
@@ -5813,9 +5933,21 @@ static class Gc
 
     static void UnmarkPages(long tb)
     {
+        if (_generational) return;
         long cache = Sys.Peek(tb + Tls.Classes);
         if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
-        if (cache == 0 || _generational) return;
+        UnmarkCache(cache);
+        long shelf = Sys.Peek(tb + Tls.Shelf);
+        if (shelf == 0) return;
+        for (long h = 0; h < ShelfUsed; h++)
+        {
+            UnmarkCache(Sys.Peek(shelf + h * WordSize.Bytes));
+        }
+    }
+
+    static void UnmarkCache(long cache)
+    {
+        if (cache == 0) return;
         for (long c = 0; c < Classes; c++)
         {
             long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
@@ -5829,6 +5961,22 @@ static class Gc
     {
         long cache = Sys.Peek(tb + Tls.Classes);
         if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+        count = CaptureCache(cache, table, count, capacity);
+        // The shelf's pages are the thread's as much. Read without the
+        // thread's say -- it shelves without the lock -- a cache on its way
+        // between the shelf and the block may be missed: its pages are
+        // owned, and the sweep keeps an owned page whole all the same.
+        long shelf = Sys.Peek(tb + Tls.Shelf);
+        if (shelf == 0) return count;
+        for (long h = 0; h < ShelfUsed; h++)
+        {
+            count = CaptureCache(Sys.Peek(shelf + h * WordSize.Bytes), table, count, capacity);
+        }
+        return count;
+    }
+
+    static long CaptureCache(long cache, long table, long count, long capacity)
+    {
         if (cache == 0) return count;
         for (long c = 0; c < Classes && count < capacity; c++)
         {
@@ -15762,6 +15910,19 @@ static class GcThreads
 
     /// Registered thread `i`'s block (Gc.ShedPages), 0 past the table. The
     /// heap lock is held.
+    /// Whether any thread's buffer lies in [from, to). The heap lock is held.
+    public static bool BufferWithin(long from, long to)
+    {
+        long n = _blocks == 0 ? (_first != 0 ? 1 : 0) : _count;
+        for (long i = 0; i < n; i++)
+        {
+            long block = _blocks == 0 ? _first : At(i);
+            long start = Sys.Peek(block + Tls.AllocBase);
+            if (start != 0 && start >= from && start < to) return true;
+        }
+        return false;
+    }
+
     /// Whether any thread allocates in `heap` (Tls.Heap). The heap lock is
     /// held.
     public static bool AnyInHeap(long heap)
@@ -16053,11 +16214,19 @@ static class GcThreads
                     Sys.AtomicSwap(block + Tls.AllocLimit, 0);
                 }
                 // And its class cache: small allocations answer as well.
+                // BY COMPARE-AND-SWAP, written aside first: the thread itself
+                // may be taking the word at this moment to shelve it as it
+                // changes heaps (Gc.SwitchHeap), and the one that swaps it
+                // out has it. Lost to the thread, nothing is kept aside, and
+                // the thread answers at its next safepoint.
                 long classes = Sys.Peek(block + Tls.Classes);
                 if (classes != 0)
                 {
                     Sys.Poke(block + Tls.ClassesSaved, classes);
-                    Sys.AtomicSwap(block + Tls.Classes, 0);
+                    if ((Sys.Cas(block + Tls.Classes, classes, 0) & WordSize.AddressMask) != (classes & WordSize.AddressMask))
+                    {
+                        Sys.Poke(block + Tls.ClassesSaved, 0);
+                    }
                 }
             }
             i = i + 1;

@@ -74,13 +74,32 @@ which heap that cache belongs to is decided where the cache pointer is set.
   was. `Runtime.LeaveHeap(previous)` makes `previous` current again. The
   same heap again costs a compare. The current heap is the thread block's
   word `Tls.Heap` (0 for heap 0).
-- **Switching, as built (stage 3, first form):** a switch takes the heap
-  lock and gives the thread's allocation buffer and class pages back to the
-  heap they came from, as a thread that leaves does
-  (`GcThreads.Deregister`); its next allocation refills from the new heap
-  by the slow path. Parking a cache per heap instead, so that a gate that
-  allocates pays no refill, is the next step once the kernel measures the
-  gates.
+- **Switching, as built:** the class cache is parked per heap. Each thread
+  block has a shelf (`Tls.Shelf`, a page: one word per heap number) holding
+  the class cache it had in each heap it left. A switch takes the cache in
+  use out of the block in one atomic swap, shelves it in the old heap's
+  place and puts the new heap's in, with no lock, flagged inside the
+  allocator (`Tls.InAlloc`) so that an interrupt neither answers a round nor
+  frees on top of it. A collection round takes a thread's cache by
+  compare-and-swap after writing it aside, so the one that swaps the word out
+  has it; a switch that finds the cache taken by a round, or a thread's
+  first switch (which maps the shelf), goes the long way under the heap lock.
+  Shelved caches stay the thread's: their pages stay owned, and are stamped,
+  captured and unmarked with the cache in use, and given back when the thread
+  ends or the heap is released. A hundred thousand enter-and-leave pairs
+  take the slow path under a thousand times (test 2410), where giving the
+  cache back at every switch took it twice a pair.
+- **The thread's bump buffer is not switched.** It serves allocations above
+  the size classes and stays with the thread whatever heap it is in, so up to
+  a buffer of them land in the heap it was taken from. That is safe (rule 4);
+  `Gc.ReleaseHeap` keeps any chunk a thread's buffer is in, as the first
+  heap's.
+- **A parked call that resumes on another processor** (a kernel whose thread
+  block is the processor's): save the call's `Tls.Heap` word with it, and on
+  the processor it resumes on call `Runtime.EnterHeap(saved)`, which is the
+  switch above. Copy none of the allocator's words (`AllocPtr`, `AllocBase`,
+  `AllocLimit`, `Classes`, `Shelf`): they are the block's, and its pages are
+  owned by the block.
 - The kernel calls them at a module's gates, around its trap entries (its
   `ModuleGates` registry), its registered kernel-to-module interfaces, and
   the nt/gui dispatchers. A thread a module lends runs in that module's
@@ -142,10 +161,9 @@ Module load: `NewHeap`, kept in the module's record. Gates:
 
 ## The stages
 
-Stages 1 to 3 landed together, one batch tested once (tests 2408 and
-2409, with and without `Corsac.GC.HeapCheck`): the record, many heaps, and
-switching in its first form (above). Open: a class cache parked per heap,
-then stage 4; stage 5 is the kernel's.
+Stages 1 to 3 have landed: the record, many heaps, and switching with a
+class cache parked per heap (tests 2408, 2409 and 2410, with and without
+`Corsac.GC.HeapCheck`). Open: stage 4; stage 5 is the kernel's.
 
 1. **The heap record.** The heap's own state moves out of statics into a
    record; the program's or kernel's heap is instance 0. One heap
