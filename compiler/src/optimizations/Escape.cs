@@ -4765,20 +4765,28 @@ continue;
             return bySlot[(declaring, slot)] = found.ToArray();
         }
 
-        // Whether every descriptor that answers `declaring` had the word for
-        // `slot` emptied by lowering -- and there is one.
-        bool EmptiedEverywhere(string declaring, long slot)
+        // WHAT THE PROGRAM CAN MAKE AN OBJECT OF: a descriptor is stamped
+        // into an object only by code that names it, or is one a data item
+        // that code reaches names -- a static object laid out in advance, a
+        // table of types. One that only data nothing reaches names --
+        // List<DictionaryEntry>'s, kept for its own type record -- has no
+        // objects, and answers no call. A box, a string or an array answers
+        // what its table does not name (VirtualTargets.MayAnswer).
+        HashSet<string> reachedData = new(StringComparer.Ordinal);
         {
-            bool any = false;
-            foreach (DataItem d in descriptors)
-            {
-                if (declaring != "t_object" && !Corsac.Lang.Lto.VirtualTargets.Answers(Ancestors(d.Name), declaring)
-                    && !Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) continue;
-                if (!bases.Any(b => m.EmptiedSlots.Contains((d.Name, (int)(b + slot))))) return false;
-                any = true;
-            }
-            return any;
+            Dictionary<string, DataItem> dataByName = new(StringComparer.Ordinal);
+            foreach (DataItem d in m.Data) dataByName.TryAdd(d.Name, d);
+            Stack<string> pending = new();
+            foreach (Function f in m.Functions)
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        foreach (Operand o in i.Operands)
+                            if (o is SymOperand sym && dataByName.ContainsKey(sym.Name) && reachedData.Add(sym.Name)) pending.Push(sym.Name);
+            while (pending.Count > 0)
+                foreach (DataReloc r in dataByName[pending.Pop()].Relocs)
+                    if (dataByName.ContainsKey(r.Symbol) && reachedData.Add(r.Symbol)) pending.Push(r.Symbol);
         }
+        bool Made(DataItem d) => reachedData.Contains(d.Name);
 
         Dictionary<Instr, string[]> result = new(ReferenceEqualityComparer.Instance);
         Dictionary<string, bool> instantiated = new(StringComparer.Ordinal);
@@ -4809,13 +4817,15 @@ continue;
                         if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} no dispatch type");
                         continue;
                     }
-                    // NO OBJECT OF THE TYPE EXISTS: no descriptor in the
-                    // whole program is it or derives from it -- an interface
-                    // the library tests for and nothing implements -- so the
-                    // call is never made, and calls nothing.
+                    // NO OBJECT OF THE TYPE EXISTS: no descriptor of an
+                    // object the program can make (Made) is it or derives
+                    // from it -- an interface the library tests for and
+                    // nothing made implements -- so the call is never made,
+                    // and calls nothing.
                     if (!instantiated.TryGetValue(declaring, out bool made))
                         instantiated[declaring] = made = declaring == "t_object"
-                            || descriptors.Any(d => Corsac.Lang.Lto.VirtualTargets.Answers(Ancestors(d.Name), declaring) || Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring));
+                            || descriptors.Any(d => Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)
+                                || Made(d) && Corsac.Lang.Lto.VirtualTargets.Answers(Ancestors(d.Name), declaring));
                     if (!made)
                     {
                         if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}: no object of the type");
@@ -4823,18 +4833,6 @@ continue;
                         continue;
                     }
                     string[] targets = Slot(declaring, method.Offset);
-                    // A SLOT LOWERING EMPTIED IN EVERY TYPE THAT ANSWERS IT:
-                    // no code that runs reads it (Module.EmptiedSlots), so the
-                    // call is never made, and calls nothing. Counted unknown,
-                    // a never-run Runtime.FreeOwnedElements made every getter
-                    // that hands back a field it owns refuse that field --
-                    // and every exception thrown and caught kept its message.
-                    if (targets.Length == 0 && EmptiedEverywhere(declaring, method.Offset))
-                    {
-                        if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}+{method.Offset}: a slot lowering emptied");
-                        result[i] = Array.Empty<string>();
-                        continue;
-                    }
                     // A slot no descriptor fills is not a call this knows.
                     if (targets.Length == 0 || targets.Any(t => !byName.ContainsKey(t)))
                     {
