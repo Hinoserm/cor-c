@@ -18,6 +18,7 @@ internal static class Peephole
     {
         ForwardSpillLoadsAcrossBlocks(m);
         DeadSpillStores(m);
+        SpillStoresDeadAcrossBlocks(m);
         int[] liveOut = LiveOut(m, out int[] liveIn);
         Dictionary<MBlock, int> at = new(ReferenceEqualityComparer.Instance);
         for (int b = 0; b < m.Blocks.Count; b++) at[m.Blocks[b]] = b;
@@ -283,6 +284,104 @@ internal static class Peephole
             }
         }
     }
+
+    /// <summary>
+    /// A STORE TO A SLOT THAT NOTHING READS BEFORE IT IS WRITTEN AGAIN, on
+    /// any path from it, across blocks: a backward walk of which allocator
+    /// slots are read further on. DeadSpillStores sees a slot no instruction
+    /// reads, or one stored twice inside a block; a slot shared by two values
+    /// (FrameCompact) whose first is read only where forwarding found it in a
+    /// register (ForwardSpillLoadsAcrossBlocks) kept its first store, a lap of
+    /// fan's vertex loop writing x to a slot the array length took over a
+    /// block later. A call reads what its stack map names; a jump reads what
+    /// is read where it goes; any other EBP-based operand may read them all.
+    /// Not in a function with a handler, which may reload a slot from inside
+    /// any block.
+    /// </summary>
+    private static void SpillStoresDeadAcrossBlocks(MFunction m)
+    {
+        int nb = m.Blocks.Count;
+        if (nb == 0 || m.Blocks.Any(b => b.Source is { IsLandingPad: true })) return;
+        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+        for (int b = 0; b < nb; b++) index[m.Blocks[b]] = b;
+        bool any = false;
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                if (StoreSlot(i) is not null) { any = true; break; }
+        if (!any) return;
+
+        HashSet<int>[] liveIn = new HashSet<int>[nb];
+        for (int b = 0; b < nb; b++) liveIn[b] = new HashSet<int>();
+        HashSet<int> all = new();
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                foreach (MOperand o in i.Operands)
+                    if (o is MMem mem && PrivateSpill(mem)) all.Add(mem.Disp);
+
+        // Walks block b backwards from what is read after it, each store
+        // whose slot is not read further on removed when `remove` says so;
+        // answers what is read at its start.
+        HashSet<int> Walk(int b, bool remove)
+        {
+            MBlock block = m.Blocks[b];
+            HashSet<int> live = new();
+            if (!block.EndsUnconditionally && b + 1 < nb) live.UnionWith(liveIn[b + 1]);
+            List<MInstr> instrs = block.Instrs;
+            for (int k = instrs.Count - 1; k >= 0; k--)
+            {
+                MInstr i = instrs[k];
+                if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to })
+                {
+                    if (index.TryGetValue(to, out int t)) live.UnionWith(liveIn[t]); else live.UnionWith(all);
+                    continue;
+                }
+                if (i.Op == MOp.JmpTable && i.Table is { } table)
+                {
+                    foreach (MBlock each in table)
+                        if (index.TryGetValue(each, out int e)) live.UnionWith(liveIn[e]); else live.UnionWith(all);
+                    continue;
+                }
+                if (StoreSlot(i) is int slot)
+                {
+                    if (!live.Contains(slot))
+                    {
+                        if (remove) instrs.RemoveAt(k);
+                        continue;
+                    }
+                    live.Remove(slot);
+                    if (i.Operands[1] is MMem source && source.Base?.Id == (int)Gpr.Ebp) live.UnionWith(all);
+                    continue;
+                }
+                if (m.Safepoints.TryGetValue(i, out Safepoint? map)) live.UnionWith(map.SlotOffsets);
+                else if (i.Op is MOp.Call or MOp.CallInd) live.UnionWith(all);
+                foreach (MOperand o in i.Operands)
+                    if (o is MMem mem)
+                    {
+                        if (PrivateSpill(mem)) live.Add(mem.Disp);
+                        else if (mem.Base?.Id == (int)Gpr.Ebp || mem.Index?.Id == (int)Gpr.Ebp) live.UnionWith(all);
+                    }
+            }
+            return live;
+        }
+
+        bool changed = true;
+        int passes = 0;
+        while (changed)
+        {
+            if (++passes > 1000 + 16 * nb) throw new InvalidOperationException(m.Source.Name + ": dead spill stores did not settle");
+            changed = false;
+            for (int b = nb - 1; b >= 0; b--)
+            {
+                HashSet<int> now = Walk(b, remove: false);
+                if (!now.SetEquals(liveIn[b])) { liveIn[b] = now; changed = true; }
+            }
+        }
+        for (int b = 0; b < nb; b++) Walk(b, remove: true);
+    }
+
+    /// <summary>The allocator slot a plain store writes, or null.</summary>
+    private static int? StoreSlot(MInstr i)
+        => IsMov(i) && !i.Lock && i.Operands.Count == 2 && i.Operands[0] is MMem store && PrivateSpill(store) ? store.Disp : null;
 
     // ---- a register written and then written again before being read -------------
 
