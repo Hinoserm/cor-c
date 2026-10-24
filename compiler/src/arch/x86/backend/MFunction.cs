@@ -42,6 +42,13 @@ public sealed class MFunction
     /// </summary>
     public bool AutomaticPacked { get; init; }
 
+    /// <summary>
+    /// A value split at a loop (Allocator.SplitAcrossLoops): the loop's own
+    /// register, the value it copies, and the move in the loop's preheader
+    /// that copies it.
+    /// </summary>
+    public Dictionary<int, (int Of, MInstr Copy)> LoopCopies { get; } = new();
+
     /// <summary>Virtual registers that must land in a register with an 8-bit form (EAX..EBX).</summary>
     public HashSet<int> ByteRegs { get; } = new();
 

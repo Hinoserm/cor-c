@@ -211,6 +211,7 @@ internal sealed class Allocator
             a.Scan();
             a.HeldBeforeSpill();
         }
+        a.ShareSlots();
         a.Rewrite();
         // What the kept tables point at goes with the function.
         Array.Clear(a._remat, 0, a._n);
@@ -783,6 +784,12 @@ internal sealed class Allocator
             _active.RemoveRange(kept, _active.Count - kept);
 
             int reg = FreeRegister(cur);
+            if (reg < 0 && !cur.Short && _m.LoopCopies.ContainsKey(cur.VReg))
+            {
+                // A loop's copy takes a register to spare or none (SplitAcrossLoops).
+                Spill(cur.VReg, cur.Start / 4);
+                continue;
+            }
             if (reg < 0)
             {
                 reg = MakeRoom(cur);
@@ -1006,7 +1013,8 @@ internal sealed class Allocator
                 if (a.Reg != r || !Overlaps(a, cur)) continue;
                 group.Add(a);
                 if (a.Short && a.Served is null) { unservedShort = true; break; }
-                int use = a.Short ? NextServed(a, at) : NextUse(a.VReg, at);
+                // A loop's copy is the first given up (SplitAcrossLoops).
+                int use = a.Short ? NextServed(a, at) : _m.LoopCopies.ContainsKey(a.VReg) ? int.MaxValue - 1 : NextUse(a.VReg, at);
                 if (use < next) next = use;
             }
             if (group.Count == 0 || unservedShort)
@@ -1497,9 +1505,11 @@ internal sealed class Allocator
     /// reloaded at every read in it, lap after lap. Split at the loop: a
     /// fresh register for the loop, copied from the value once in the
     /// loop's own preheader, and every read in the loop renamed to it. The
-    /// scan then weighs it as any other interval: given a register, the
-    /// loop reads that; spilled, the loop reads its slot as it read the
-    /// value's, for one copy a way into the loop.
+    /// copy is the scan's last claim on a register (LoopCopy): it takes only
+    /// one free where it starts, evicts nothing, and is the first given up
+    /// -- so it holds a register the loop has to spare and costs nothing
+    /// hotter. Spilled, it reads the value's own slot, which every write of
+    /// the value keeps current, and the copy into it is dropped (ShareSlots).
     ///
     /// Only a value the loop never writes (one it writes is carried round
     /// the back edge), read from the frame at least twice in the loop, and
@@ -1613,7 +1623,9 @@ internal sealed class Allocator
                 renamed[v] = fresh;
                 if (_m.ByteRegs.Contains(v)) _m.ByteRegs.Add(fresh);
                 if (_m.WideHalves.Contains(v)) _m.WideHalves.Add(fresh);
-                pre.Instrs.Add(new MInstr(MOp.Mov, MReg.Of(fresh), MReg.Of(v)) { Line = line });
+                MInstr copy = new(MOp.Mov, MReg.Of(fresh), MReg.Of(v)) { Line = line };
+                pre.Instrs.Add(copy);
+                _m.LoopCopies[fresh] = (v, copy);
             }
             // Every way in from outside goes through the preheader; it falls
             // into the head, so a loop block that fell into the head jumps to it.
@@ -1770,6 +1782,34 @@ internal sealed class Allocator
         }
         return inReg;
     }
+
+    /// <summary>
+    /// A LOOP'S SPILLED COPY READS THE VALUE'S OWN SLOT: the value is never
+    /// written in the loop and every write of a spilled value stores, so its
+    /// slot holds what the copy would -- unless some other register was
+    /// given the same four bytes while the copy lives. Then the copy into
+    /// the loop's slot is no work at all (Rewrite drops it).
+    /// </summary>
+    private void ShareSlots()
+    {
+        _sharedCopies.Clear();
+        foreach ((int copy, (int of, MInstr move)) in _m.LoopCopies)
+        {
+            if (copy >= _n || _spilledFrom[copy] == int.MaxValue || _remat[copy] is not null || _remat[of] is not null) continue;
+            int at = _lin.IndexOf(move);
+            if (at < 0 || _spilledFrom[copy] > at || _spilledFrom[of] > at || _slot[of] == 0) continue;
+            int slot = _slot[of];
+            bool clash = false;
+            for (int w = 8; w < _n && !clash; w++)
+                if (w != of && w != copy && _slot[w] == slot && _end[w] >= _start[copy] && _start[w] <= _end[copy]) clash = true;
+            if (clash) continue;
+            _slot[copy] = slot;
+            _sharedCopies.Add(move);
+        }
+    }
+
+    /// <summary>The preheader copies whose loop reads the value's own slot: nothing to do (ShareSlots).</summary>
+    private readonly HashSet<MInstr> _sharedCopies = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// A spill slot for a register: one whose previous owner's interval
@@ -1957,6 +1997,12 @@ internal sealed class Allocator
             {
                 _rwRoles[r.Id] = _rwRoles.GetValueOrDefault(r.Id) | role;
             }
+        }
+
+        // A loop's copy that reads the value's own slot: nothing to copy (ShareSlots).
+        if (_sharedCopies.Contains(i))
+        {
+            return;
         }
 
         // The defining move of a spilled constant is dropped: see Spill.

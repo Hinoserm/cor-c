@@ -16,6 +16,7 @@ internal static class Peephole
 {
     public static void Run(MFunction m)
     {
+        ForwardSpillLoadsAcrossBlocks(m);
         DeadSpillStores(m);
         int[] liveOut = LiveOut(m, out int[] liveIn);
         Dictionary<MBlock, int> at = new(ReferenceEqualityComparer.Instance);
@@ -328,6 +329,169 @@ internal static class Peephole
                 if ((clobbered & (1 << (int)Gpr.Ebp)) != 0) break;
             }
         }
+    }
+
+    /// <summary>
+    /// A RELOAD OF WHAT A REGISTER STILL HOLDS, ACROSS BLOCKS. The allocator
+    /// reloads a spilled value at every read where its own register does not
+    /// hold it, and each reload's register carries the value only along a
+    /// straight run (its Reach); a value read in two blocks of a lap, past an
+    /// if's merge, was loaded twice, the register that took it the first
+    /// time still holding it the second. A forward walk over the function
+    /// says, for every allocator slot, which registers hold its current
+    /// value on every path in (one of them loaded or stored it, and nothing
+    /// has written it since): a reload of it from there becomes a move from
+    /// one of them, or nothing; a read of it folded into an instruction
+    /// reads the register. Allocator slots only: nothing takes their
+    /// address. Nothing is held into a landing pad (an unwind restores
+    /// registers to nothing) nor past a call (the collector may come to move
+    /// what a slot holds, and the stack map names only the slot).
+    /// </summary>
+    private static void ForwardSpillLoadsAcrossBlocks(MFunction m)
+    {
+        int nb = m.Blocks.Count;
+        if (nb == 0) return;
+        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+        for (int b = 0; b < nb; b++) index[m.Blocks[b]] = b;
+        List<int>[] preds = new List<int>[nb];
+        for (int b = 0; b < nb; b++) preds[b] = new List<int>();
+        List<MBlock> succ = new();
+        bool any = false;
+        for (int b = 0; b < nb; b++)
+        {
+            m.SuccessorsInto(b, succ);
+            foreach (MBlock t in succ) if (index.TryGetValue(t, out int ti)) preds[ti].Add(b);
+            foreach (MInstr i in m.Blocks[b].Instrs) any |= i.Operands.Any(o => o is MMem mm && PrivateSpill(mm));
+        }
+        if (!any) return;
+
+        // WHAT EACH EDGE CARRIES, null until a path reaches it: slot -> the
+        // registers holding its value, as it was AT THE JUMP -- a block may
+        // jump from its middle (LoopRotate's copied test, a short-circuit's
+        // test) with registers the rest of it writes -- or at the end, for
+        // the way it falls through.
+        Dictionary<(int From, int To), Dictionary<int, int>> edges = new();
+        Dictionary<int, int>? Entry(int b)
+        {
+            if (b == 0 || m.Blocks[b].Source?.IsLandingPad == true) return new();
+            Dictionary<int, int>? met = null;
+            foreach (int p in preds[b])
+            {
+                if (!edges.TryGetValue((p, b), out Dictionary<int, int>? there)) continue;
+                if (met is null) { met = new(there); continue; }
+                foreach (int slot in met.Keys.ToList())
+                {
+                    int both = there.TryGetValue(slot, out int regs) ? met[slot] & regs : 0;
+                    if (both == 0) met.Remove(slot); else met[slot] = both;
+                }
+            }
+            return met;
+        }
+        // Each edge's state, met with what an earlier walk gave it: a block's
+        // ways out shrink as more of its ways in are known.
+        bool Carry(int from, int to, Dictionary<int, int> state)
+        {
+            if (!edges.TryGetValue((from, to), out Dictionary<int, int>? was)) { edges[(from, to)] = new(state); return true; }
+            if (was.Count == state.Count && was.All(kv => state.TryGetValue(kv.Key, out int v) && v == kv.Value)) return false;
+            edges[(from, to)] = new(state);
+            return true;
+        }
+        void Walk(int b, Dictionary<int, int> state, bool rewrite, ref bool changed)
+        {
+            List<MInstr> instrs = m.Blocks[b].Instrs;
+            for (int k = 0; k < instrs.Count; k++)
+            {
+                MInstr i = instrs[k];
+                if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel { Target: var t } && index.TryGetValue(t, out int ti))
+                    changed |= Carry(b, ti, state);
+                else if (i.Op == MOp.JmpTable && i.Table is { } table)
+                    foreach (MBlock each in table) if (index.TryGetValue(each, out int ei)) changed |= Carry(b, ei, state);
+                MInstr? now = StepHeld(i, state, rewrite);
+                if (!rewrite) continue;
+                if (now is null) { instrs.RemoveAt(k); k--; }
+                else instrs[k] = now;
+            }
+            if (!m.Blocks[b].EndsUnconditionally && b + 1 < nb) changed |= Carry(b, b + 1, state);
+        }
+        bool again = true;
+        while (again)
+        {
+            again = false;
+            for (int b = 0; b < nb; b++)
+                if (Entry(b) is { } state) Walk(b, state, rewrite: false, ref again);
+        }
+        // The edges as the walk left them: the rewrite reads them only.
+        bool ignored = false;
+        Dictionary<int, int>?[] entries = new Dictionary<int, int>?[nb];
+        for (int b = 0; b < nb; b++) entries[b] = Entry(b);
+        for (int b = 0; b < nb; b++)
+            if (entries[b] is { } state) Walk(b, state, rewrite: true, ref ignored);
+    }
+
+    /// <summary>
+    /// One instruction of ForwardSpillLoadsAcrossBlocks: rewritten from what
+    /// `state` says is held (null when it does nothing), then its effect on
+    /// `state`.
+    /// </summary>
+    private static MInstr? StepHeld(MInstr i, Dictionary<int, int> state, bool rewrite)
+    {
+        int Held(MMem slot) => state.TryGetValue(slot.Disp, out int regs) ? regs : 0;
+        static int Lowest(int regs) { int r = 0; while ((regs & (1 << r)) == 0) r++; return r; }
+        if (rewrite && !i.Lock && i.Width == 4)
+        {
+            // A reload of a value a register holds.
+            if (IsMov(i) && i.Operands[0] is MReg dest && dest.Id < 8 && i.Operands[1] is MMem from && PrivateSpill(from) && Held(from) is var held && held != 0)
+            {
+                if ((held & (1 << dest.Id)) != 0) return null;
+                i = new MInstr(MOp.Mov, MReg.Of(dest.Id), MReg.Of(Lowest(held))) { Line = i.Line };
+            }
+            // A read folded into an instruction that takes a register as well.
+            else if (i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Imul or MOp.Push)
+            {
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not MMem mem || !PrivateSpill(mem) || Roles.Of(i.Op, k) != Roles.Role.Use || Held(mem) is not (not 0 and var h)) continue;
+                    MInstr copy = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed };
+                    for (int j = 0; j < i.Operands.Count; j++) copy.Operands.Add(j == k ? MReg.Of(Lowest(h)) : i.Operands[j]);
+                    i = copy;
+                    break;
+                }
+            }
+        }
+        // Its effect: a call or anything writing EBP lets go of everything.
+        if (i.Op is MOp.Call or MOp.CallInd) { state.Clear(); return i; }
+        Masks(i, out _, out long written);
+        if ((written & Bit((int)Gpr.Ebp)) != 0) { state.Clear(); return i; }
+        // A write to an allocator slot: what held it holds it no more.
+        for (int k = 0; k < i.Operands.Count; k++)
+        {
+            if (i.Operands[k] is not MMem mem) continue;
+            if ((Roles.Of(i.Op, k) & Roles.Role.Def) == 0) continue;
+            if (!PrivateSpill(mem)) continue;
+            int lo = mem.Disp, hi = mem.Disp + Math.Max(i.Width, 1);
+            foreach (int slot in state.Keys.ToList()) if (slot < hi && lo < slot + 4) state.Remove(slot);
+        }
+        // Registers written hold nothing they held.
+        int regsWritten = (int)(written & 0xFF);
+        if (regsWritten != 0)
+            foreach (int slot in state.Keys.ToList())
+            {
+                int left = state[slot] & ~regsWritten;
+                if (left == 0) state.Remove(slot); else state[slot] = left;
+            }
+        // Then what it leaves held: a load or a store of a whole slot by a move.
+        if (IsMov(i) && !i.Lock)
+        {
+            if (i.Operands[0] is MReg to && to.Id < 8 && i.Operands[1] is MMem src && PrivateSpill(src))
+                state[src.Disp] = (state.TryGetValue(src.Disp, out int h1) ? h1 : 0) | (1 << to.Id);
+            else if (i.Operands[0] is MMem dst && PrivateSpill(dst) && i.Operands[1] is MReg value && value.Id < 8)
+                state[dst.Disp] = 1 << value.Id;
+            // A move between registers copies whatever its source held.
+            else if (i.Operands[0] is MReg d2 && d2.Id < 8 && i.Operands[1] is MReg s2 && s2.Id < 8)
+                foreach (int slot in state.Keys.ToList())
+                    if ((state[slot] & (1 << s2.Id)) != 0) state[slot] |= 1 << d2.Id;
+        }
+        return i;
     }
 
     private static bool SpillTransparent(MOp op) => op is MOp.Mov or MOp.Movsx or MOp.Movzx
