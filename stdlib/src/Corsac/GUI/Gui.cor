@@ -278,7 +278,9 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
 
     // ---- the gate ---------------------------------------------------------
 
-    const long GuiAttach = 0x4000001A;
+    /// CORSAC's own call (os/kernel/syscall-table.conf): the GUI module
+    /// loaded if it is not -- the seat up.
+    const long GuiUp = 0x40000019;
     const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
     const long NoSys = 38, Io = 5;
 
@@ -293,12 +295,11 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     readonly object _keep = new object();
 
     /// A call through the gate, with the two answers that are not the
-    /// seat's: ENOSYS, this thread is not attached (or the gate is closed
-    /// while the GUI kernel restarts), and EIO, the call was cut off by a
-    /// crash. Either way the thread attaches -- waiting for the GUI kernel
-    /// to be up -- and the call is made again, after the windows have been
-    /// put back if this is a new start. An EIO that was the seat's own
-    /// answer, on a start that has not changed, is handed back as it is.
+    /// seat's: ENOSYS, the GUI module is not loaded (or is loading again),
+    /// and EIO, the call failed inside it. Either way the module is brought
+    /// up -- waiting for it -- and the call is made again, after the windows
+    /// have been put back if this is a new start. An EIO that was the seat's
+    /// own answer, on a start that has not changed, is handed back as it is.
     long Call(long call, long a, long b, long c)
     {
 #if TARGET_WINDOWS
@@ -320,9 +321,8 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
 #endif
     }
 
-    /// This thread into the GUI kernel, waiting up to half a minute for it
-    /// to be up; and what this thread had there, made again if the GUI
-    /// kernel is a new start. THE THREAD'S OWN THINGS ONLY: a window belongs
+    /// The GUI module up, waiting up to half a minute for it; and what this
+    /// thread had there, made again if the module is a new start. THE THREAD'S OWN THINGS ONLY: a window belongs
     /// to the thread that made it (its handle carries that thread's id), and
     /// only that thread may make it again, so each thread puts its own back
     /// the first time it comes in after a restart -- a thread asleep on its
@@ -334,14 +334,13 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
 #if TARGET_WINDOWS
         return true;
 #else
-        // HALF A MINUTE IN ALL, whatever the GUI kernel does meanwhile: a tenth
-        // of a second a try while it is not up, and a try for every start
-        // that a restore finds overtaken by another -- a GUI kernel that keeps
-        // crashing is given up on, not chased for ever.
+        // HALF A MINUTE IN ALL, whatever the GUI module does meanwhile: a
+        // tenth of a second a try while it is not up, and a try for every
+        // start that a restore finds overtaken by another.
         for (int tries = 0; tries < 300; tries++)
         {
-            long attached = Platform.Result(Sys.Syscall(GuiAttach, 0, 0, 0));
-            if (attached != 0) { Thread.Sleep(100); continue; }
+            long up = Platform.Result(Sys.Syscall(GuiUp, 0, 0, 0));
+            if (up != 0) { Thread.Sleep(100); continue; }
             long start = Platform.Result(Sys.GuiCall(CallIoctl, SeatIoctl.Start, 0, 0));
             if (start <= 0) return true;
             bool first;
