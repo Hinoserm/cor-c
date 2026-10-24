@@ -2,6 +2,7 @@
 // expect-exit: 0
 // expect-output:
 // made True
+// tails in their own heap True
 // first heap again True
 // the second holds True
 // kept by the first True
@@ -21,6 +22,7 @@
 // afterwards.
 
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 static class Program
 {
@@ -36,6 +38,24 @@ static class Program
         public List<string>? Kept;
     }
 
+    /// CHUNKS LEFT WITH A TAIL: what each held above its bump pointer is a
+    /// free block of the heap allocating, in that heap's bins -- asked before
+    /// any collection rebuilds them. Its own frame, so that nothing of it is
+    /// left on the stack.
+    /// Held in a static while they are asked about, so that they are the
+    /// heap's and not a region's; let go of after.
+    static byte[][]? _big;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool Tails()
+    {
+        _big = new byte[40][];
+        for (int k = 0; k < _big.Length; k++) _big[k] = new byte[40000];
+        bool own = Gc.CheckFreeIndex();
+        _big = null;
+        return own;
+    }
+
     /// Sixteen lists of strings made in the second heap, the eighth kept by
     /// the first heap's holder and the rest dropped as they are made.
     static void FillSecond(Holder holder, long second)
@@ -47,6 +67,7 @@ static class Program
             for (int i = 0; i < 4000; i++) list.Add("item " + i);
             if (l == 7) holder.Kept = list;
         }
+        Say("tails in their own heap", Tails());
         Say("first heap again", Runtime.EnterHeap(first) == second);
     }
 

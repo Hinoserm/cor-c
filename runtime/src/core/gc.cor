@@ -2893,6 +2893,11 @@ static class Gc
                     if (seen > HeapChunks.HeapBytes / Smallest || !IndexBlock(node, bin)
                         || Sys.Peek(node + HeaderBytes) != previous)
                     { BadIndex(node, 6); okay = false; }
+                    // IN ITS OWN HEAP'S BINS: a block of another heap's
+                    // chunk here is freed into this heap's memory, and the
+                    // chunk given back under it.
+                    else if (_heapCount > 1 && HeapOfBlock(node) != h)
+                    { BadIndex(node, 9); okay = false; }
                     else { previous = node; node = Sys.Peek(node + KindAt); }
                 }
                 bin = bin + 1;
@@ -3030,7 +3035,7 @@ static class Gc
     {
         if (_heapCount <= 1) return _heap0;
         long chunk = HeapChunks.Of(block);
-        return chunk != 0 ? HeapChunks.HeapOf(chunk) : _heap0;
+        return chunk != 0 ? HeapChunks.HeapOf(chunk) : _h;
     }
 
     /// The heap a chunk is of.
@@ -3294,23 +3299,38 @@ static class Gc
 
         // The tail of the chunk being left. If it cannot describe itself
         // (below Smallest) it stays unused; that is at most fifteen bytes.
+        // ITS END RAISED OVER IT FIRST: a block is found in its chunk -- and
+        // so in its heap's bins (Link) -- only below the chunk's end.
         if (_current != 0)
         {
-            long tail = _limit - _bump;
-
-            if (tail >= Smallest)
-            {
-                Stamp(_bump, tail, FlagFree);
-                Link(_bump);
-                _bump = _limit;
-            }
-            HeapChunks.SetEnd(_current, _bump);
+            LeaveCurrent();
         }
 
         _current = raw;
         _bump = HeapChunks.First(raw);
         _limit = HeapChunks.Limit(raw);
         return true;
+    }
+
+    /// The working heap's current chunk left: what it had above its bump
+    /// pointer a free block, when it can describe itself (Smallest), and its
+    /// end brought up to its limit BEFORE that block is linked. A block is
+    /// found in its chunk only below the chunk's end (HeapChunks.Of), and a
+    /// block found in none went to the first heap's bins: a module heap's
+    /// tail in the kernel heap's bins, its chunk swept back to the system,
+    /// and the next free there wrote into the unmapped page (the GUI
+    /// module's first gate calls, Gc.Link from Grow).
+    static void LeaveCurrent()
+    {
+        long tail = _limit - _bump;
+        if (tail >= Smallest)
+        {
+            HeapChunks.SetEnd(_current, _limit);
+            Stamp(_bump, tail, FlagFree);
+            Link(_bump);
+            _bump = _limit;
+        }
+        HeapChunks.SetEnd(_current, _bump);
     }
 
     // ---- handing memory out ---------------------------------------------------
@@ -7517,14 +7537,7 @@ static class Gc
                 Sys.MemorySet(HeapChunks.End(chunk), 0, HeapChunks.Limit(chunk) - HeapChunks.End(chunk));
                 if (_current != 0)
                 {
-                    long tail = _limit - _bump;
-                    if (tail >= Smallest)
-                    {
-                        Stamp(_bump, tail, FlagFree);
-                        Link(_bump);
-                        _bump = _limit;
-                    }
-                    HeapChunks.SetEnd(_current, _bump);
+                    LeaveCurrent();
                 }
                 _current = chunk;
                 _bump = HeapChunks.End(chunk);
@@ -9679,6 +9692,11 @@ static class Gc
                     if (!IndexBlock(node, bin))
                     {
                         CheckFault("gc heap check: a listed block is no free block of its bin", node, Sys.Peek(node), when);
+                        break;
+                    }
+                    if (_heapCount > 1 && HeapOfBlock(node) != h)
+                    {
+                        CheckFault("gc heap check: a listed block is another heap's", node, h, when);
                         break;
                     }
                     if (Sys.Peek(node + HeaderBytes) != previous)
