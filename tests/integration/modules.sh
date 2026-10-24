@@ -245,7 +245,9 @@ readelf -d "$ko" | grep -q 'Shared library: \[mixer.ko\]' || fail "$ko does not 
 readelf -p .corsac.modinfo "$ko" | sed -n 's/^ *\[ *[0-9a-f]*\]  //p' > "$ko.modinfo"
 grep -qx 'depends=mixer' "$ko.modinfo" || { cat "$ko.modinfo"; fail "$ko does not depend on the mixer"; }
 readelf --dyn-syms -W "$ko" > "$ko.syms"
-for name in 't_Sound$002eChannel' 'm_Kernel$Log_Write_1_V$String'; do
+# Log.Write's body comes into it from the kernel's exports (SmallBodies):
+# the kernel's name it imports is Log's line count.
+for name in 't_Sound$002eChannel' 'm_Sound$Channels_Total_0' 's_Kernel$002eLog_Lines'; do
     awk -v n="$name" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import $name"
 done
 if readelf -s -W "$ko" | awk '$8 == "t_Sound$002eChannel" && $7 != "UND" { found = 1 } END { exit !found }'; then fail "$ko defines the mixer's Channel"; fi
@@ -258,6 +260,25 @@ if "$corc" index --assembly Kernel --ring 0 --on "$m/module.idx" $here/MixerAudi
     fail "an index on a module's declared a type of that module's"
 fi
 grep -q 'is declared by the index this one is made on' "$c/wrong-index.log" || { cat "$c/wrong-index.log"; fail "the wrong chained index said otherwise"; }
+
+# RING 0'S FILE CALLS SERVED BY THE KERNEL (--kernel-syscalls): every
+# Sys.Syscall of the module, of any arity, a call of the kernel's
+# KernelFiles.Syscall with the missing arguments 0 -- no trap in it -- and
+# each argument arriving, as the kernel's answer says.
+f=$work/files
+mkdir -p "$f/run"
+"$corc" compile --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 --kernel-syscalls \
+    $here/FileCalls.cor --obj -o "$f/files.o" 2> "$f/compile.log" || { cat "$f/compile.log"; fail "a module compiled --kernel-syscalls"; }
+"$corc" link "$f/files.o" --kernel "$a/kernel.exports" -o "$f/files.ko" 2> "$f/link.log" || { cat "$f/link.log"; fail "the --kernel-syscalls module's link"; }
+readelf --dyn-syms -W "$f/files.ko" | awk '$8 ~ /KernelFiles_Syscall/ && $7 == "UND" { found = 1 } END { exit !found }' \
+    || fail "the --kernel-syscalls module does not import KernelFiles.Syscall"
+if objdump -d "$f/files.ko" | grep -q 'int *\$0x8[03]'; then fail "the --kernel-syscalls module still traps"; fi
+cp "$a/kernel" "$a/kernel.exports" "$f/run/"
+cp "$f/files.ko" "$f/run/module.ko"
+(cd "$f/run" && ./kernel) > "$f/run.out" 2>&1 || { cat "$f/run.out"; fail "the kernel did not load the --kernel-syscalls module"; }
+grep -qx 'served 5031 6021' "$f/run.out" || { cat "$f/run.out"; fail "the kernel's file calls answered other than they should"; }
+if "$corc" compile --kernel-syscalls $here/FileCalls.cor -o "$f/wrong" 2> "$f/wrong.log"; then fail "--kernel-syscalls compiled a program for Linux"; fi
+grep -q 'is for ring-0 code' "$f/wrong.log" || { cat "$f/wrong.log"; fail "the wrong --kernel-syscalls said otherwise"; }
 
 # A KERNEL WHOSE DECLARATIONS DIFFER -- one more field in Driver -- has
 # another stamp; the module built for the first is refused by its loader,

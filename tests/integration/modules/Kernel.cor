@@ -68,6 +68,17 @@ public static class Log
     }
 }
 
+// THE KERNEL'S OWN ANSWER TO A MODULE'S LINUX FILE CALLS (--kernel-syscalls):
+// a plain function every Sys.Syscall of such a module is a call of, saying
+// what it was given so the test can see every argument arrived.
+public static class KernelFiles
+{
+    public static long Syscall(long number, long a, long b, long c, long d, long e, long f)
+    {
+        return number * 1000 + a + b + c + d + e + f;
+    }
+}
+
 // A SMALL FUNCTION A MODULE CALLS: its IR goes in the exports, and the
 // module's link puts its body where the module calls it -- no call into the
 // kernel for a getter (KernelExports.SmallBodies).

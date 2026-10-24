@@ -1045,6 +1045,9 @@ public sealed partial class Binder
 
     private HashSet<string> _demanded = new(StringComparer.Ordinal);
 
+    /// <summary>Whether this pass has asked for the kernel's KernelFiles (--kernel-syscalls).</summary>
+    private bool _kernelFilesAsked;
+
     /// <summary>Whether this pass has already found declarations it must retry with.</summary>
     private bool Demanded => _declarationBatch.Any;
 
@@ -22723,6 +22726,17 @@ public sealed partial class Binder
                 _r.EnumHasFlags.Add(c);
                 return Type.Bool;
             }
+        }
+
+        // RING 0'S FILE CALLS ARE THE KERNEL'S FUNCTION (--kernel-syscalls,
+        // Lowering.KernelSyscalls): a module's source names no KernelFiles, and
+        // a unit compiled against the kernel's index would have none of it to
+        // call. Asked for here as a name the source used, once a pass.
+        if (Corsac.Lang.Lower.Lowering.KernelSyscalls && !_kernelFilesAsked
+            && c.Target is MemberExpr { Name: "Syscall", Target: NameExpr { Name: "Sys" } })
+        {
+            _kernelFilesAsked = true;
+            TypeCandidate("KernelFiles", out _);
         }
 
         // AddressOf comes first, before the arguments are given types at all: a
