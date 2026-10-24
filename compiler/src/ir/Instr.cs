@@ -18,11 +18,14 @@ public sealed class Instr : OperandList
     private byte _flags;
     private byte _size;
     private VReg? _dest;
-    private string? _callee;
-    private string? _field;
-    private string? _family;
-    // Exactly as many as there are (TargetList); null for none.
-    internal Block[]? TargetBlocks;
+    // A call's callee (a string) or a branch's targets (a Block[], exactly as
+    // many as there are; TargetList): no instruction has both, and one word
+    // holds either -- 8 bytes of each of the million and a half instructions
+    // the class library's unit holds through its late passes.
+    private object? _link;
+    // Field and Family, as one pair shared by every instruction that names
+    // them (FieldNames): the same few thousand pairs over and over.
+    private FieldNames? _names;
     private InstrRare? _rare;
     private int _offset;
     private int _line;
@@ -82,7 +85,26 @@ public sealed class Instr : OperandList
     }
 
     /// <summary>Call: who.</summary>
-    public string? Callee { get => _callee; init => _callee = value; }
+    public string? Callee
+    {
+        get => _link as string;
+        init
+        {
+            if (_link is Block[] && value is not null) throw new InvalidOperationException("an instruction with targets given a callee");
+            _link = value;
+        }
+    }
+
+    /// <summary>The targets themselves (TargetList's), null for none.</summary>
+    internal Block[]? TargetBlocks
+    {
+        get => _link as Block[];
+        set
+        {
+            if (_link is string && value is not null) throw new InvalidOperationException("a call given targets");
+            if (value is not null || _link is Block[]) _link = value;
+        }
+    }
 
     /// <summary>
     /// CallIndirect of a virtual method: the descriptor of the type that
@@ -101,7 +123,7 @@ public sealed class Instr : OperandList
     /// program's every store into a field, and every read of it, be found
     /// (the owned-field rules).
     /// </summary>
-    public string? Field { get => _field; set => _field = value; }
+    public string? Field { get => _names?.Field; set => _names = FieldNames.Of(value, _names?.Family); }
 
     /// <summary>
     /// Load: the word read is a field's, an element's or a cell's of a
@@ -124,7 +146,7 @@ public sealed class Instr : OperandList
     /// same offset (RegionConstraint.Family). Left unset it says nothing:
     /// a raw read or write, a struct's field, an element, a copy.
     /// </summary>
-    public string? Family { get => _family; set => _family = value; }
+    public string? Family { get => _names?.Family; set => _names = FieldNames.Of(_names?.Field, value); }
 
     /// <summary>
     /// An allocator call the link chose to make in the innermost open region
@@ -267,4 +289,21 @@ internal sealed class InstrRare
     public Block? Default;
     public long Offset;
     public int Size;
+}
+
+/// <summary>
+/// An instruction's Field and Family together, one object for each pair the
+/// process meets: the instructions that read and write a field all name it
+/// the same way, and two strings in every one of them were 16 bytes each.
+/// </summary>
+public sealed class FieldNames
+{
+    public readonly string? Field, Family;
+    private FieldNames(string? field, string? family) { Field = field; Family = family; }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string?, string?), FieldNames> _pairs = new();
+
+    /// <summary>The pair's one object; null for neither.</summary>
+    public static FieldNames? Of(string? field, string? family)
+        => field is null && family is null ? null : _pairs.GetOrAdd((field, family), static key => new FieldNames(key.Item1, key.Item2));
 }
