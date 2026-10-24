@@ -782,6 +782,11 @@ public static class Prelude
             // rounds every double twice. Nothing in long mode, whose doubles
             // are SSE2's, nor without an FPU.
             public static void DoublePrecision() { }
+            // Whether Sys.Syscall is the kernel's KernelFiles.Syscall
+            // (--kernel-syscalls): a call the kernel parks as it sees fit,
+            // on a thread block that is a processor's, which no runtime
+            // bracket may mark stopped (Platform.Blocking).
+            public static bool KernelSyscalls() { return false; }
 
             // The descriptor tables. Each takes the address of a six-byte
             // pseudo-descriptor -- a 16-bit limit then a 32-bit base -- that

@@ -111,6 +111,11 @@ static class Platform
     /// safepoint. Answers the kernel's raw number, as Sys.Syscall does.
     public static long Blocking(long n, long a, long b, long c, long d = 0, long e = 0, long f = 0)
     {
+        // A KERNEL'S OWN CALL (--kernel-syscalls) IS NOT BRACKETED: its
+        // thread block is a processor's, the kernel decides when the call
+        // parks and reads the parked stack itself, and a block marked
+        // stopped is one it refuses to park.
+        if (Sys.KernelSyscalls()) return Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.BeginBlocking();
         long raw = Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.EndBlocking();
@@ -218,18 +223,6 @@ static class Platform
         _start = _at;
         _limit = end & -RegionPage;
         UnlockRegion(held);
-    }
-
-    /// Where this image's data segment starts in the linear space: 0 for a
-    /// flat image, the segment's base for one that is not (CORSAC's NT
-    /// kernel, which says so before it makes a call). A kernel below is
-    /// handed linear addresses (Linear), so files.cor's calls work either way.
-    public static long SegmentBase;
-
-    /// The linear address of `at`, an address in this image's own segment.
-    public static long Linear(long at)
-    {
-        return at + SegmentBase;
     }
 
     /// Where memory comes from once there is an operating system in this

@@ -741,7 +741,7 @@ namespace System.Runtime.InteropServices
         static string Uname(int field)
         {
             byte[] names = new byte[65 * 6];
-            if (Err.Result(Sys.Syscall(Call.Uname, Sys.ArrayData(names), 0, 0)) < 0) return "";
+            if (Err.Result(Sys.Syscall(LinuxCall.Uname, Sys.ArrayData(names), 0, 0)) < 0) return "";
             int start = field * 65;
             int end = start;
             while (end < start + 65 && names[end] != 0) end++;

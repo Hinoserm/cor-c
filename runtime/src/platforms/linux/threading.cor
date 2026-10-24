@@ -9,9 +9,9 @@
 /// facts in this file -- and move there when a second target needs its own.)
 static class Clock
 {
-    const long ClockGettime = Call.ClockGetTime;      // (clockid, struct timespec *)
-    const long ClockNanosleep = Call.ClockNanosleep;  // (clockid, flags, request, remain)
-    const long Nanosleep = Call.NanoSleep;            // (request, remain)
+    const long ClockGettime = LinuxCall.ClockGetTime;      // (clockid, struct timespec *)
+    const long ClockNanosleep = LinuxCall.ClockNanosleep;  // (clockid, flags, request, remain)
+    const long Nanosleep = LinuxCall.NanoSleep;            // (request, remain)
     const long Monotonic = 1;           // CLOCK_MONOTONIC
     const long AbsoluteTime = 1;        // TIMER_ABSTIME
     const long NoSys = -38;             // -ENOSYS
@@ -62,11 +62,11 @@ static class Clock
 
         // Asleep is stopped, as far as a collection is concerned: see the note
         // on Native.Wait.
-        Runtime.BeginBlocking();
+        if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
 
         long result = Platform.Result(Sys.Syscall(ClockNanosleep, Monotonic, AbsoluteTime, at, 0, 0, 0));
 
-        Runtime.EndBlocking();
+        if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
 
         if (result == 0 - Err.Intr || PosixSignalRegistration.Pending)
         {
@@ -90,9 +90,9 @@ static class Clock
 
         Sys.Poke(at, left / NanosPerSecond);
         Sys.Poke(at + WordSize.Bytes, left % NanosPerSecond);
-        Runtime.BeginBlocking();
+        if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
         Sys.Syscall(Nanosleep, at, 0, 0);
-        Runtime.EndBlocking();
+        if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
     }
 }
 
@@ -111,12 +111,12 @@ static class Clock
 /// own stack with a zero frame pointer and jumps to a real function.
 static class Native
 {
-    const long Mmap = Call.Mmap;        // (addr, len, prot, flags, fd, offset)
-    const long Clone = Call.Clone;
-    const long Futex = Call.Futex;      // (uaddr, op, val, timeout, uaddr2, val3)
-    const long GetTid = Call.Gettid;    // () -> the caller's thread id
-    const long Exit = Call.Exit;        // (status): THIS thread only
-    const long Munmap = Call.Munmap;    // (addr, len)
+    const long Mmap = LinuxCall.Mmap;        // (addr, len, prot, flags, fd, offset)
+    const long Clone = LinuxCall.Clone;
+    const long Futex = LinuxCall.Futex;      // (uaddr, op, val, timeout, uaddr2, val3)
+    const long GetTid = LinuxCall.Gettid;    // () -> the caller's thread id
+    const long Exit = LinuxCall.Exit;        // (status): THIS thread only
+    const long Munmap = LinuxCall.Munmap;    // (addr, len)
 
     /// WHERE A THREAD'S MAPPING SAYS HOW LONG IT IS, for the trampoline to give
     /// it back as the thread ends: the last word of the block's page, which
@@ -380,9 +380,9 @@ static class Native
     /// worker would wait for the work that the collection is in the way of.
     public static void Wait(long at, long expect)
     {
-        Runtime.BeginBlocking();
+        if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
         Sys.Syscall(Futex, at, FutexWait, expect, 0, 0, 0);
-        Runtime.EndBlocking();
+        if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
     }
 
     /// As Wait, giving up after `nanoseconds` -- FUTEX_WAIT's timeout, which
@@ -395,9 +395,9 @@ static class Native
         // and 4 were a garbage timeout on every timed wait in long mode.
         Sys.Poke(timeout, nanoseconds / 1000000000);
         Sys.Poke(timeout + WordSize.Bytes, nanoseconds % 1000000000);
-        Runtime.BeginBlocking();
+        if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
         Sys.Syscall(Futex, at, FutexWait, expect, timeout, 0, 0);
-        Runtime.EndBlocking();
+        if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
     }
 
     /// Wakes up to `count` waiters on the word at `at`.

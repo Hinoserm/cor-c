@@ -105,7 +105,7 @@ static class Program
     static long Peek(long at)
     {
         _word[0] = 0;
-        Sys4(SystemCall.Ptrace, (long)Trace.PeekData, _child, at, Platform.Linear(Sys.ArrayData(_word)));
+        Sys4(SystemCall.Ptrace, (long)Trace.PeekData, _child, at, Sys.ArrayData(_word));
         return _word[0] & WordSize.AddressMask;
     }
 
@@ -119,7 +119,7 @@ static class Program
     static long Stopped()
     {
         _status[0] = 0;
-        Sys4(SystemCall.Wait4, _child, Platform.Linear(Sys.ArrayData(_status)), WaitAll, 0);
+        Sys4(SystemCall.Wait4, _child, Sys.ArrayData(_status), WaitAll, 0);
         long status = _status[0] & 0xFFFF;
         if ((status & 0xFF) != 0x7F) return -1;
         return (status >> 8) & 0xFF;

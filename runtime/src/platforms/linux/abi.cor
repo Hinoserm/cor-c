@@ -5,9 +5,9 @@
 // call is made here.
 //
 // Apart from system.cor so that code which makes Linux's file calls without
-// being a Linux process -- CORSAC's ring-1 kernels, through files.cor and a
-// gate of their own -- has the same numbers and structures by the same
-// names.
+// being a Linux process -- CORSAC's kernel and its modules, through
+// files.cor and KernelFiles.Syscall -- has the same numbers and structures
+// by the same names.
 
 #if TARGET_AMD64
 /// The x86-64 system-call numbers this library uses, from asm/unistd_64.h,
@@ -17,7 +17,7 @@
 /// and the name keeps pointing at what the code means. The calls whose
 /// ARGUMENTS differ as well (mmap's offset, statfs's size, wait4's rusage,
 /// ftruncate's length, set_thread_area) are shaped at their call sites.
-static class Call
+static class LinuxCall
 {
     public const long Exit = 60;        // (status)
     public const long Read = 0;         // (fd, address, count) -> read, or -errno
@@ -141,12 +141,10 @@ static class Call
     public const long InotifyInit1 = 294;       // (flags: IN_NONBLOCK 0x800, IN_CLOEXEC 0x80000) -> fd
 }
 #else
-/// The i386 system-call numbers this library uses, from asm/unistd_32.h. The
-/// name matches os/lib/user.cor's `Call` on purpose -- a utility that says
-/// Call.Write means the same thing here -- but the NUMBERS are Linux's and
-/// the argument conventions are Linux's, and they are not the same as the
-/// CORSAC kernel's.
-static class Call
+/// The i386 system-call numbers this library uses, from asm/unistd_32.h:
+/// Linux's numbers and argument conventions, named LinuxCall so that a
+/// kernel compiled with this library keeps `Call` for its own.
+static class LinuxCall
 {
     public const long Exit = 1;         // (status)
     public const long Read = 3;         // (fd, address, count) -> read, or -errno

@@ -2133,7 +2133,7 @@ static partial class Path
             // clock and process id: a ring-1 kernel compiles System.IO over
             // its own small Environment, and has neither.
             long serial = Sys.AtomicAdd(Sys.AddressOf(ref _tempSerial), 1) + 1;
-            long pid = Sys.Syscall(Call.Getpid, 0, 0, 0);
+            long pid = Sys.Syscall(LinuxCall.Getpid, 0, 0, 0);
             long mix = (Os.Micros() * 31 + pid) * 1000003 + serial * 7919 + attempt;
             string name = "tmp" + ((mix & 0x7FFFFFFFFFFF) % 0xFFFFFF).ToString("X6") + ".tmp";
             string full = directory + name;
@@ -3731,35 +3731,38 @@ partial static class Directory
     }
 }
 
-/// Block devices: what .NET has no API for and a partition editor or a
-/// mkfs cannot do without. Size asks the device how big it is; a file's
-/// size is its length as usual.
-static class BlockDevice
+namespace System.IO
 {
-    /// The device's size in bytes, or a regular file's length.
-    public static long Size(FileStream device)
+    /// Block devices: what .NET has no API for and a partition editor or a
+    /// mkfs cannot do without. Size asks the device how big it is; a file's
+    /// size is its length as usual.
+    static class BlockDevice
     {
-        long size = Os.SizeOf(device.Handle);
-        if (size < 0)
+        /// The device's size in bytes, or a regular file's length.
+        public static long Size(FileStream device)
         {
-            throw new IOException("cannot find the size of the device");
+            long size = Os.SizeOf(device.Handle);
+            if (size < 0)
+            {
+                throw new IOException("cannot find the size of the device");
+            }
+            return size;
         }
-        return size;
-    }
 
-    /// Asks the kernel to read the partition table again (BLKRRPART).
-    /// Throws with the reason when it will not: a partition mounted or
-    /// open, not a whole device, not the superuser.
-    public static void RereadPartitionTable(FileStream device)
-    {
-        long r = Os.Ioctl(device.Handle, 0x125F, 0);
-        if (r < 0)
+        /// Asks the kernel to read the partition table again (BLKRRPART).
+        /// Throws with the reason when it will not: a partition mounted or
+        /// open, not a whole device, not the superuser.
+        public static void RereadPartitionTable(FileStream device)
         {
-            string why = r == -16 ? "a partition is mounted or open"
-                       : r == -Err.Inval ? "the device is not a whole device"
-                       : r == -Err.Perm || r == -Err.Access ? "only the superuser may reload it"
-                       : "errno " + (-r);
-            throw new IOException(why);
+            long r = Os.Ioctl(device.Handle, 0x125F, 0);
+            if (r < 0)
+            {
+                string why = r == -16 ? "a partition is mounted or open"
+                           : r == -Err.Inval ? "the device is not a whole device"
+                           : r == -Err.Perm || r == -Err.Access ? "only the superuser may reload it"
+                           : "errno " + (-r);
+                throw new IOException(why);
+            }
         }
     }
 }
@@ -4180,12 +4183,12 @@ static class TempNames
 
     public static void Fill(byte[] into)
     {
-        long got = Sys.Syscall(Call.GetRandom, Sys.ArrayData(into), into.Length, 0);
+        long got = Sys.Syscall(LinuxCall.GetRandom, Sys.ArrayData(into), into.Length, 0);
         if (got == into.Length)
         {
             return;
         }
-        Random fallback = _fallback ??= new Random((int)(Os.Micros() ^ Sys.Syscall(Call.Getpid, 0, 0, 0)));
+        Random fallback = _fallback ??= new Random((int)(Os.Micros() ^ Sys.Syscall(LinuxCall.Getpid, 0, 0, 0)));
         fallback.NextBytes(into);
     }
 }

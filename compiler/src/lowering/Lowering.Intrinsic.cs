@@ -692,6 +692,10 @@ public sealed partial class Lowering
                 return Widen(_e.Address("_end"));
             case "BuildStamp":
                 return Widen(_e.Address(Corsac.Lang.Elf.KernelExports.StampSymbol));
+            case "KernelSyscalls":
+                // Whether this compile's Sys.Syscall is the kernel's own
+                // function (--kernel-syscalls): a constant, its tests folded.
+                return _e.Const(KernelSyscalls ? 1 : 0, IrType.I32);
 
             // ---- the I/O space and the privileged instructions -----------------
             //
