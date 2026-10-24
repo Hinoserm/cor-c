@@ -1,0 +1,98 @@
+// test: threads allocating in heaps of their own while collections run, then the heaps released
+// expect-exit: 0
+// expect-output:
+// heap 1 sum 499500 True
+// heap 2 sum 499500 True
+// main sum 499500
+// free index True
+// released True True
+// free index True
+//
+// TWO MODULES' THREADS AND THE KERNEL'S (docs/HEAPS.md): each worker makes
+// strings in a heap of its own (Runtime.EnterHeap) and keeps a ring of the
+// last thousand, switching out to the first heap and back now and then as
+// a module's thread does at a gate, while the main thread churns in the
+// first heap and collects. Every string kept is read back whole, the free
+// index of every heap is checked, and the two heaps are released.
+
+using System.Threading;
+
+static class Program
+{
+    static long[] _heaps = new long[2];
+    static long[] _sums = new long[2];
+    static bool[] _theirs = new bool[2];
+
+    static void Work(int which)
+    {
+        long previous = Runtime.EnterHeap(_heaps[which]);
+        var ring = new string[1000];
+        for (int round = 0; round < 40; round++)
+        {
+            for (int i = 0; i < 1000; i++) ring[i] = "w" + which + " " + (round * 1000 + i);
+            if (round % 8 == 3)
+            {
+                // Out to the first heap and back, as through a gate.
+                long mine = Runtime.EnterHeap(previous);
+                string between = "between " + round;
+                Runtime.EnterHeap(mine);
+                if (between.Length < 9) _sums[which] = -1;
+            }
+        }
+        long sum = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            string s = ring[i];
+            sum += long.Parse(s.Substring(s.IndexOf(' ') + 1)) - 39000;
+        }
+        _sums[which] += sum;
+        Gc.HeapFigures(_heaps[which], out long live, out long held, out long free, out long chunks);
+        _theirs[which] = held > 1000 * 16 && chunks > 0;
+        Runtime.LeaveHeap(previous);
+    }
+
+    static int Main()
+    {
+        _heaps[0] = Gc.NewHeap();
+        _heaps[1] = Gc.NewHeap();
+        var a = new Thread(() => Work(0));
+        var b = new Thread(() => Work(1));
+        a.Start();
+        b.Start();
+        var ring = new string[1000];
+        for (int round = 0; round < 40; round++)
+        {
+            for (int i = 0; i < 1000; i++) ring[i] = "m " + (round * 1000 + i);
+            if (round % 10 == 0) Gc.Collect();
+        }
+        a.Join();
+        b.Join();
+        long main = 0;
+        for (int i = 0; i < 1000; i++) main += long.Parse(ring[i].Substring(2)) - 39000;
+
+        for (int w = 0; w < 2; w++)
+        {
+            Sys.Print("heap " + (w + 1) + " sum ");
+            Sys.PrintInt(_sums[w]);
+            Sys.Print(_theirs[w] ? " True" : " False");
+            Sys.PrintLine();
+        }
+        Sys.Print("main sum ");
+        Sys.PrintInt(main);
+        Sys.PrintLine();
+        Gc.Collect();
+        Sys.Print("free index ");
+        Sys.Print(Gc.CheckFreeIndex() ? "True" : "False");
+        Sys.PrintLine();
+        bool one = Gc.ReleaseHeap(_heaps[0]);
+        bool two = Gc.ReleaseHeap(_heaps[1]);
+        Sys.Print("released ");
+        Sys.Print(one ? "True " : "False ");
+        Sys.Print(two ? "True" : "False");
+        Sys.PrintLine();
+        Sys.Print("free index ");
+        Sys.Print(Gc.CheckFreeIndex() ? "True" : "False");
+        Sys.PrintLine();
+        return 0;
+    }
+}

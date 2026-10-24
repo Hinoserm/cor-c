@@ -234,11 +234,54 @@ static class Gc
     const long Zero = 0;
     const long One = 1;
 
-    static long _current;       // the chunk the bump pointer is in
-    static long _bump;          // first untouched byte in the current chunk
-    static long _limit;         // one past the current chunk
-    static long _bins;          // Bins free-list heads, a page of the OS's, or 0
-    static long _smallFree;     // blocks in the exact-size bins, 16..256 bytes
+    // ---- heaps (docs/HEAPS.md) ---------------------------------------------
+    //
+    // ONE COLLECTOR, ANY NUMBER OF HEAPS: a kernel gives each of its modules
+    // one. The mark, the roots, the chunk index, the pacing and the cycle are
+    // every heap's; what a heap has of its own is where its memory comes
+    // from and goes back to -- its bump chunk, its free bins, its size-class
+    // pages with room and its pool of empty ones -- so that a module's
+    // memory is its own and can all be given back when it goes.
+    //
+    // A HEAP IS A PAGE OF THE OPERATING SYSTEM'S, not a managed object: its
+    // record, then its class pages' list heads, then its bins. Every chunk
+    // says in its header which heap it is of (HeapChunks.HeapOf), and a
+    // block freed or swept goes to its own chunk's heap's bins and lists
+    // whichever heap the code doing it works for (Link, ListPage,
+    // RetirePage). An allocation comes from the heap its thread is in
+    // (Tls.Heap), which the allocator works for under the heap lock (_h).
+    // A program that makes no heap has heap 0 alone, and pays one compare
+    // where a free would look up its chunk's heap (_heapCount).
+    const long HeapCurrentAt = 0 * WordSize.Bytes;      // the chunk the bump pointer is in
+    const long HeapBumpAt = 1 * WordSize.Bytes;         // first untouched byte in the current chunk
+    const long HeapLimitAt = 2 * WordSize.Bytes;        // one past the current chunk
+    const long HeapSmallFreeAt = 3 * WordSize.Bytes;    // blocks in the exact-size bins, 16..256 bytes
+    const long HeapPoolAt = 4 * WordSize.Bytes;         // empty pages, through their next-page word
+    const long HeapPoolBytesAt = 5 * WordSize.Bytes;
+    const long HeapSweepCurrentAt = 6 * WordSize.Bytes; // the chunk that was current at the sweep's stop,
+    const long HeapSweepEndAt = 7 * WordSize.Bytes;     //   and where its blocks ended then
+    const long HeapBytesAt = 8 * WordSize.Bytes;        // its chunks' sizes, summed
+    const long HeapChunksAt = 9 * WordSize.Bytes;       // and how many
+    const long HeapNextAt = 10 * WordSize.Bytes;        // the next heap made, or 0
+    const long HeapNumberAt = 11 * WordSize.Bytes;      // 0 for the first heap, then in the order made
+    const long HeapClassPagesAt = 16 * WordSize.Bytes;  // Classes words: pages with room, unowned
+    const long HeapBinsAt = (16 + 40) * WordSize.Bytes; // Bins free-list heads, then the non-empty bitmap
+    const long HeapRecordBytes = 4096;
+
+    static long _heap0;         // the first heap's record: the program's, or the kernel's
+    static long _heapCount;     // heaps made and not released
+    static long _heapsMade;
+    static long _h;             // the heap the allocator works for; the heap lock is held
+
+    /// The heap whose chunks are being taken: what HeapChunks writes in a
+    /// new chunk's header. The heap lock is held.
+    public static long WorkingHeap => _h;
+
+    static long _current { get { return Sys.Peek(_h + HeapCurrentAt); } set { Sys.Poke(_h + HeapCurrentAt, value); } }
+    static long _bump { get { return Sys.Peek(_h + HeapBumpAt); } set { Sys.Poke(_h + HeapBumpAt, value); } }
+    static long _limit { get { return Sys.Peek(_h + HeapLimitAt); } set { Sys.Poke(_h + HeapLimitAt, value); } }
+    static long _bins => _h == 0 ? 0 : _h + HeapBinsAt;
+    static long _smallFree { get { return Sys.Peek(_h + HeapSmallFreeAt); } set { Sys.Poke(_h + HeapSmallFreeAt, value); } }
 
     static long _since;         // bytes allocated since the last collection
     static long _threshold;     // collect when _since reaches this
@@ -2830,11 +2873,13 @@ static class Gc
         GcLock.Enter();
         FreeIndexErrorBlock = Zero;
         FreeIndexErrorKind = Zero;
-        long small = 0;
         long seen = 0;
         bool okay = true;
-        if (_bins != 0)
+        long working = _h;
+        for (long h = _heap0; h != 0 && okay; h = Sys.Peek(h + HeapNextAt))
         {
+            _h = h;
+            long small = 0;
             long bin = 0;
             while (bin < Bins && okay)
             {
@@ -2854,12 +2899,16 @@ static class Gc
             }
             if (okay && small != _smallFree) { BadIndex(Zero, 7); okay = false; }
         }
+        _h = working;
         GcLock.Exit();
         return okay;
     }
 
     static void Link(long block)
     {
+        // TO ITS OWN HEAP'S BINS, whichever heap the caller works for.
+        long working = _h;
+        if (_heapCount > 1) _h = HeapOfBlock(block);
         long size = SizeOfBlock(block);
         long bin = BinOf(size);
         long head = BinHead(bin);
@@ -2881,10 +2930,13 @@ static class Gc
             MarkBin(bin);
         }
         SetBinHead(bin, block);
+        _h = working;
     }
 
     static void Unlink(long block)
     {
+        long working = _h;
+        if (_heapCount > 1) _h = HeapOfBlock(block);
         long size = SizeOfBlock(block);
         long next = Sys.Peek(block + KindAt);
         long prev = Sys.Peek(block + HeaderBytes);
@@ -2912,18 +2964,292 @@ static class Gc
         {
             Sys.Poke(next + HeaderBytes, prev);
         }
+        _h = working;
     }
 
-    /// Empties every bin; the sweep rebuilds them.
+    /// Empties every heap's bins; the sweep rebuilds them.
     static void ClearBins()
     {
-        long word = 0;
-        _smallFree = 0;
-
-        while (word < Bins + MapWords)
+        for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
         {
-            Sys.Poke(_bins + word * WordSize.Bytes, Zero);
-            word = word + 1;
+            Sys.Poke(h + HeapSmallFreeAt, Zero);
+            long word = 0;
+            while (word < Bins + MapWords)
+            {
+                Sys.Poke(h + HeapBinsAt + word * WordSize.Bytes, Zero);
+                word = word + 1;
+            }
+        }
+    }
+
+    // ---- heaps (above, "heaps") --------------------------------------------
+
+    /// A heap's record, its page mapped (and so zero) and the heap put on the
+    /// list after heap 0; 0 when the operating system has no page. The heap
+    /// lock is held, or the heap is starting.
+    static long MakeHeap()
+    {
+        long h = Platform.Map(HeapRecordBytes);
+        if (h == 0)
+        {
+            return 0;
+        }
+        Sys.Poke(h + HeapNumberAt, _heapsMade);
+        _heapsMade = _heapsMade + 1;
+        if (_heap0 != 0)
+        {
+            Sys.Poke(h + HeapNextAt, Sys.Peek(_heap0 + HeapNextAt));
+            Sys.Poke(_heap0 + HeapNextAt, h);
+        }
+        _heapCount = _heapCount + 1;
+        return h;
+    }
+
+    /// A chunk of `bytes` taken for heap `h` (less than zero: given back).
+    public static void HeapGrew(long h, long bytes)
+    {
+        if (h == 0)
+        {
+            return;
+        }
+        Sys.Poke(h + HeapBytesAt, Sys.Peek(h + HeapBytesAt) + bytes);
+        Sys.Poke(h + HeapChunksAt, Sys.Peek(h + HeapChunksAt) + (bytes < 0 ? -1 : 1));
+    }
+
+    /// The heap lock taken by `tb` (1 for no thread block): the allocator
+    /// works for its heap.
+    public static void LockedFor(long tb)
+    {
+        long h = tb > 1 ? Sys.Peek(tb + Tls.Heap) : 0;
+        _h = h != 0 ? h : _heap0;
+    }
+
+    /// The heap a block of the heap is of: its chunk's. With one heap, that
+    /// one, without a lookup.
+    static long HeapOfBlock(long block)
+    {
+        if (_heapCount <= 1) return _heap0;
+        long chunk = HeapChunks.Of(block);
+        return chunk != 0 ? HeapChunks.HeapOf(chunk) : _heap0;
+    }
+
+    /// The heap a chunk is of.
+    static long HeapOfChunk(long chunk)
+    {
+        return _heapCount > 1 ? HeapChunks.HeapOf(chunk) : _heap0;
+    }
+
+    /// Whether a chunk is the one its heap's bump pointer is in.
+    static bool IsCurrentChunk(long chunk)
+    {
+        return chunk != 0 && Sys.Peek(HeapOfChunk(chunk) + HeapCurrentAt) == chunk;
+    }
+
+    /// Where a chunk's blocks end now: its heap's bump pointer, when they
+    /// are being bumped into, or its end.
+    static long ChunkEndNow(long chunk)
+    {
+        long h = HeapOfChunk(chunk);
+        return Sys.Peek(h + HeapCurrentAt) == chunk ? Sys.Peek(h + HeapBumpAt) : HeapChunks.End(chunk);
+    }
+
+    /// The first heap: the program's, or the kernel's. 0 before the heap
+    /// has started.
+    public static long KernelHeap => _heap0;
+
+    /// A heap of its own for a kernel module (docs/HEAPS.md): its record,
+    /// or 0 when the operating system has no page for one. Its first chunk
+    /// is taken at its first allocation.
+    public static long NewHeap()
+    {
+        GcLock.Enter();
+        if (!_ready)
+        {
+            Start();
+        }
+        long h = MakeHeap();
+        GcLock.Exit();
+        return h;
+    }
+
+    /// The heap the thread whose block is `tb` allocates in made `heap` (a
+    /// record; 0 or KernelHeap for the first). ITS BUFFER AND ITS CLASS
+    /// PAGES GO BACK FIRST, to the heap they came from, as a thread that
+    /// leaves gives them back (GcThreads.Deregister): what it allocates next
+    /// comes from the new heap's chunks and pages, by the slow path. The
+    /// heap lock is taken; the thread is the caller.
+    public static void SwitchHeap(long tb, long heap)
+    {
+        if (heap == _heap0) heap = 0;
+        if (tb == 0 || Sys.Peek(tb + Tls.Heap) == heap)
+        {
+            return;
+        }
+        GcLock.Enter();
+        if (_ready)
+        {
+            Retire(tb);
+            if (_stamping && !StampedAlready(tb)) StampPages(tb);
+            RetireClasses(tb);
+        }
+        Sys.Poke(tb + Tls.Heap, heap);
+        GcLock.Exit();
+    }
+
+    /// What a heap holds: the bytes its last sweeps found live, the bytes
+    /// of its chunks and pages, of those what is not live, and how many
+    /// chunks and pages.
+    public static void HeapFigures(long heap, out long live, out long held, out long free, out long chunks)
+    {
+        live = 0;
+        held = 0;
+        free = 0;
+        chunks = 0;
+        if (heap == 0 || !_ready)
+        {
+            return;
+        }
+        GcLock.Enter();
+        for (long chunk = HeapChunks.Newest(); chunk != 0; chunk = HeapChunks.Next(chunk))
+        {
+            if (HeapOfChunk(chunk) == heap && !HeapChunks.IsPooled(chunk)) live = live + HeapChunks.LiveBytes(chunk);
+        }
+        held = Sys.Peek(heap + HeapBytesAt);
+        chunks = Sys.Peek(heap + HeapChunksAt);
+        GcLock.Exit();
+        free = held - live;
+    }
+
+    /// A heap given back: every chunk and page of it that holds nothing live
+    /// goes back to the operating system, and what still holds something --
+    /// an object of the module's that the kernel still refers to, which
+    /// Gc.CountHeld and Gc.Revoke were for -- becomes the first heap's, so
+    /// that nothing still in use is ever unmapped. Then its record. Answers
+    /// false, and does nothing, while a thread is still in the heap, for
+    /// the first heap, and for one that is not a heap.
+    public static bool ReleaseHeap(long heap)
+    {
+        if (heap == 0 || heap == _heap0 || !_ready)
+        {
+            return false;
+        }
+        // WHAT IS GARBAGE NOW, FOUND: what the last sweeps found live is
+        // what stays.
+        Collect();
+        GcLock.Enter();
+        while (_collecting || _sweeping || Runtime.Marking != 0)
+        {
+            GcLock.Exit();
+            GcThreads.Park();
+            Sys.Pause();
+            GcLock.Enter();
+        }
+        bool known = false;
+        for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
+        {
+            if (Sys.Peek(h + HeapNextAt) == heap) known = true;
+        }
+        if (!known || GcThreads.AnyInHeap(heap))
+        {
+            GcLock.Exit();
+            return false;
+        }
+        long working = _h;
+        _h = heap;
+        SyncEnd();
+        // The pool first: nothing in it.
+        while (_pool != 0)
+        {
+            long page = _pool;
+            _pool = HeapChunks.PageNext(page);
+            HeapChunks.SetPageNext(page, Zero);
+            ReleaseChunk(page);
+            PagesReleased = PagesReleased + 1;
+        }
+        _poolBytes = Zero;
+        if (_recycle != 0 && HeapOfChunk(_recycle) == heap) _recycle = Zero;
+        long chunk = HeapChunks.Newest();
+        while (chunk != 0)
+        {
+            long after = HeapChunks.Next(chunk);
+            if (HeapChunks.HeapOf(chunk) == heap)
+            {
+                if (HeapChunks.PageClass(chunk) != 0)
+                {
+                    // A page: off this heap's list, and back, or onto the
+                    // first heap's.
+                    if (HeapChunks.IsListed(chunk)) UnlistPage(chunk);
+                    if (HeapChunks.LiveBlocks(chunk) == 0 && HeapChunks.Owner(chunk) == 0)
+                    {
+                        ReleaseChunk(chunk);
+                        PagesReleased = PagesReleased + 1;
+                    }
+                    else
+                    {
+                        HeapChunks.SetHeapOf(chunk, _heap0);
+                        HeapGrew(heap, -HeapChunks.PageSize(chunk));
+                        HeapGrew(_heap0, HeapChunks.PageSize(chunk));
+                        if (HeapChunks.PageFree(chunk) != 0) ListPage(chunk);
+                    }
+                }
+                else
+                {
+                    // An ordinary chunk: its free blocks off this heap's
+                    // bins, and the chunk back or the first heap's, its free
+                    // blocks onto the first heap's bins.
+                    UnlinkFreeIn(chunk);
+                    if (HeapChunks.LiveBlocks(chunk) == 0)
+                    {
+                        ReleaseChunk(chunk);
+                    }
+                    else
+                    {
+                        long size = HeapChunks.Limit(chunk) - chunk;
+                        HeapChunks.SetHeapOf(chunk, _heap0);
+                        HeapGrew(heap, -size);
+                        HeapGrew(_heap0, size);
+                        LinkFreeIn(chunk);
+                    }
+                }
+            }
+            chunk = after;
+        }
+        // Off the list of heaps, and its page back.
+        for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
+        {
+            if (Sys.Peek(h + HeapNextAt) == heap)
+            {
+                Sys.Poke(h + HeapNextAt, Sys.Peek(heap + HeapNextAt));
+                break;
+            }
+        }
+        _heapCount = _heapCount - 1;
+        _h = working == heap ? _heap0 : working;
+        Platform.Unmap(heap, HeapRecordBytes);
+        GcLock.Exit();
+        return true;
+    }
+
+    /// Every free block of a chunk onto its heap's bins (not one freed in
+    /// place, which is on none): the chunk has just become another heap's
+    /// (ReleaseHeap), and its chain is walkable end to end.
+    static void LinkFreeIn(long chunk)
+    {
+        long block = HeapChunks.First(chunk);
+        long end = HeapChunks.End(chunk);
+        while (block < end)
+        {
+            long word = Sys.Peek(block);
+            long size = word & SizeMask;
+            if (size < Smallest || block + size > end)
+            {
+                return;
+            }
+            if ((word & FlagFree) != 0 && !IsInPlace(block))
+            {
+                Link(block);
+            }
+            block = block + size;
         }
     }
 
@@ -4432,10 +4758,10 @@ static class Gc
     /// the first allocation of any kind.
     public static nint FastRegionMask;
     public static long _classOf;    // ClassMax / 8 + 1 words: need >> 3 -> class
-    static long _classPages;        // Classes words: pages with room, unowned
+    static long _classPages => _h + HeapClassPagesAt;
     static long _classStep;         // Classes words: ceil(2^32 / the class's size), for OnGrid
-    static long _pool;              // empty pages, through their next-page word
-    static long _poolBytes;
+    static long _pool { get { return Sys.Peek(_h + HeapPoolAt); } set { Sys.Poke(_h + HeapPoolAt, value); } }
+    static long _poolBytes { get { return Sys.Peek(_h + HeapPoolBytesAt); } set { Sys.Poke(_h + HeapPoolBytesAt, value); } }
     public static long PagesTaken, PagesPooled, PagesReleased, PagesRefilled;
 
     /// The heap lock's trips: requests the fast paths sent to AllocSlow, and
@@ -4457,7 +4783,6 @@ static class Gc
         }
         _classSize = tables;
         _classOf = tables + 64 * WordSize.Bytes;
-        _classPages = tables + 200 * WordSize.Bytes;
         _classStep = tables + 256 * WordSize.Bytes;
         long size = 16;
         long c = 0;
@@ -4570,7 +4895,7 @@ static class Gc
 
     static void ListPage(long page)
     {
-        long list = _classPages + (HeapChunks.PageClass(page) - 1) * WordSize.Bytes;
+        long list = HeapOfChunk(page) + HeapClassPagesAt + (HeapChunks.PageClass(page) - 1) * WordSize.Bytes;
         long head = Sys.Peek(list);
         HeapChunks.SetPageLinks(page, head, Zero);
         if (head != 0) HeapChunks.SetPagePrev(head, page);
@@ -4583,7 +4908,7 @@ static class Gc
         long next = HeapChunks.PageNext(page);
         long prev = HeapChunks.PagePrev(page);
         if (prev != 0) HeapChunks.SetPageNext(prev, next);
-        else Sys.Poke(_classPages + (HeapChunks.PageClass(page) - 1) * WordSize.Bytes, next);
+        else Sys.Poke(HeapOfChunk(page) + HeapClassPagesAt + (HeapChunks.PageClass(page) - 1) * WordSize.Bytes, next);
         if (next != 0) HeapChunks.SetPagePrev(next, prev);
         HeapChunks.SetPageLinks(page, Zero, Zero);
         HeapChunks.SetListed(page, false);
@@ -4612,12 +4937,15 @@ static class Gc
         // NOT POOLED NEAR THE CAP (OverCap, by the soft cap): a pooled page is
         // mapped and counted, and a large array -- which only a new mapping
         // can hold -- found the cap filled by pages kept for small objects.
-        if (_poolBytes + HeapChunks.PageSize(page) <= PoolLimit() && !HeapChunks.OverCap() && !MemoryShort())
+        // In its own heap's pool.
+        long h = HeapOfChunk(page);
+        long pooled = Sys.Peek(h + HeapPoolBytesAt);
+        if (pooled + HeapChunks.PageSize(page) <= PoolLimit() && !HeapChunks.OverCap() && !MemoryShort())
         {
             HeapChunks.SetPooled(page, true);
-            HeapChunks.SetPageNext(page, _pool);
-            _pool = page;
-            _poolBytes = _poolBytes + HeapChunks.PageSize(page);
+            HeapChunks.SetPageNext(page, Sys.Peek(h + HeapPoolAt));
+            Sys.Poke(h + HeapPoolAt, page);
+            Sys.Poke(h + HeapPoolBytesAt, pooled + HeapChunks.PageSize(page));
             PagesPooled = PagesPooled + 1;
             return;
         }
@@ -4650,20 +4978,25 @@ static class Gc
     /// the marker's snapshot names these chunks. The heap lock is held.
     public static bool DrainPool()
     {
-        if (_pool == 0 || _collecting || Runtime.Marking != 0)
+        if (_collecting || Runtime.Marking != 0)
         {
             return false;
         }
-        while (_pool != 0)
+        bool drained = false;
+        for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
         {
-            long page = _pool;
-            _pool = HeapChunks.PageNext(page);
-            HeapChunks.SetPageNext(page, Zero);
-            ReleaseChunk(page);
-            PagesReleased = PagesReleased + 1;
+            while (Sys.Peek(h + HeapPoolAt) != 0)
+            {
+                long page = Sys.Peek(h + HeapPoolAt);
+                Sys.Poke(h + HeapPoolAt, HeapChunks.PageNext(page));
+                HeapChunks.SetPageNext(page, Zero);
+                ReleaseChunk(page);
+                PagesReleased = PagesReleased + 1;
+                drained = true;
+            }
+            Sys.Poke(h + HeapPoolBytesAt, Zero);
         }
-        _poolBytes = Zero;
-        return true;
+        return drained;
     }
 
     /// Pages mapped a batch at a time: one answered, the rest pooled. A
@@ -6050,7 +6383,8 @@ static class Gc
     /// each step (SyncEnd keeps it there).
     static bool Recyclable(long chunk)
     {
-        if (HeapChunks.PageClass(chunk) != 0)
+        // Only the heap the allocator works for: a hole is its heap's.
+        if (HeapChunks.PageClass(chunk) != 0 || HeapOfChunk(chunk) != _h)
         {
             return false;
         }
@@ -6107,6 +6441,11 @@ static class Gc
 
         while (true)
         {
+            // ANOTHER HEAP'S CHUNK BEING RECYCLED is left to that heap.
+            if (_recycle != 0 && HeapOfChunk(_recycle) != _h)
+            {
+                return 0;
+            }
             if (_recycle == 0)
             {
                 long chunk = _recycleNext;
@@ -6336,12 +6675,16 @@ static class Gc
         }
     }
 
-    /// The current chunk's end word, brought up to the bump pointer.
+    /// Every heap's current chunk's end word, brought up to its bump pointer.
     static void SyncEnd()
     {
-        if (_current != 0)
+        for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
         {
-            HeapChunks.SetEnd(_current, _bump);
+            long current = Sys.Peek(h + HeapCurrentAt);
+            if (current != 0)
+            {
+                HeapChunks.SetEnd(current, Sys.Peek(h + HeapBumpAt));
+            }
         }
     }
 
@@ -7169,7 +7512,7 @@ static class Gc
         while (chunk != 0)
         {
             if (chunk != _current && HeapChunks.PageClass(chunk) == 0 && HeapChunks.Owner(chunk) == 0 && !HeapChunks.IsPooled(chunk)
-                && HeapChunks.Limit(chunk) - HeapChunks.End(chunk) >= need)
+                && HeapOfChunk(chunk) == _h && !IsCurrentChunk(chunk) && HeapChunks.Limit(chunk) - HeapChunks.End(chunk) >= need)
             {
                 Sys.MemorySet(HeapChunks.End(chunk), 0, HeapChunks.Limit(chunk) - HeapChunks.End(chunk));
                 if (_current != 0)
@@ -7332,7 +7675,7 @@ static class Gc
             }
             else if (c == 0)
             {
-                long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+                long end = ChunkEndNow(chunk);
                 long b = first;
                 while (b < end)
                 {
@@ -7513,9 +7856,10 @@ static class Gc
         _ready = true;
         _threshold = MinThreshold;
         _digits = Platform.Map(4096);
-        _bins = Platform.Map(BinsBytes);
+        _heap0 = MakeHeap();
+        _h = _heap0;
 
-        if (_bins == 0 || !StartClasses())
+        if (_h == 0 || !StartClasses())
         {
             OutOfMemory();
         }
@@ -8001,7 +8345,7 @@ static class Gc
         // Return it directly rather than putting it into bins where small
         // objects could occupy it and pin the former large-object mapping.
         long whole = HeapChunks.Of(block);
-        if (whole != 0 && whole != _current && block == HeapChunks.First(whole)
+        if (whole != 0 && !IsCurrentChunk(whole) && block == HeapChunks.First(whole)
             && block + size == HeapChunks.Limit(whole))
         {
             if ((SkippedFreePaths & 8) != 0)
@@ -8713,7 +9057,7 @@ static class Gc
                 continue;
             }
             long block = HeapChunks.First(chunk);
-            long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+            long end = ChunkEndNow(chunk);
             long step = 0;
             while (block < end)
             {
@@ -9110,7 +9454,7 @@ static class Gc
         {
             chunks = chunks + 1;
             long block = HeapChunks.First(chunk);
-            long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+            long end = ChunkEndNow(chunk);
             tails = tails + HeapChunks.Limit(chunk) - end;
             // Whose the tail is: a class page's (only its class can use it),
             // a thread's buffer, the pool's, or the mixed heap's.
@@ -9135,7 +9479,7 @@ static class Gc
             else
             {
                 plainTails = plainTails + tail;
-                if (chunk == _current) currentTail = tail;
+                if (IsCurrentChunk(chunk)) currentTail = tail;
             }
             long step = 0;
             while (block < end)
@@ -9219,7 +9563,7 @@ static class Gc
         while (chunk != 0)
         {
             long block = HeapChunks.First(chunk);
-            long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+            long end = ChunkEndNow(chunk);
             if (end > HeapChunks.Limit(chunk) || end < block)
             {
                 CheckFault("gc heap check: a chunk's end outside it", chunk, end, when);
@@ -9312,11 +9656,13 @@ static class Gc
             }
             i = i + 1;
         }
-        // THE LISTS.
+        // THE LISTS, every heap's.
         long nodes = 0;
-        long small = 0;
-        if (_bins != 0)
+        long working = _h;
+        for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
         {
+            _h = h;
+            long small = 0;
             long bin = 0;
             while (bin < Bins)
             {
@@ -9350,14 +9696,15 @@ static class Gc
                 }
                 bin = bin + 1;
             }
+            if (small != _smallFree)
+            {
+                CheckFault("gc heap check: the small free count is wrong", small, _smallFree, when);
+            }
         }
+        _h = working;
         if (nodes != listed)
         {
             CheckFault("gc heap check: the lists hold a different number of blocks than the walks found listed", nodes, listed, when);
-        }
-        if (small != _smallFree)
-        {
-            CheckFault("gc heap check: the small free count is wrong", small, _smallFree, when);
         }
     }
 
@@ -13276,8 +13623,10 @@ static class Gc
     //     needs the heap waits for a chunk and not for the heap.
     static bool _sweeping;
     static long _sweepAt;           // the next chunk to sweep, or 0
-    static long _sweepCurrent;      // the chunk that was current at the stop,
-    static long _sweepCurrentEnd;   //   and where its blocks ended then
+    // The chunk that was its heap's current at the stop, and where its
+    // blocks ended then: of the heap the sweep works for (SweepNext).
+    static long _sweepCurrent => Sys.Peek(_h + HeapSweepCurrentAt);
+    static long _sweepCurrentEnd => Sys.Peek(_h + HeapSweepEndAt);
     static long _sweepLive;
     static long _sweepLiveBytes;
     static bool _reuseEveryPage;    // this sweep lists every page with a free slot (SweepPage)
@@ -13296,8 +13645,12 @@ static class Gc
             || MemoryShort();
         _sweeping = true;
         _sweepAt = HeapChunks.Newest();
-        _sweepCurrent = _current;
-        _sweepCurrentEnd = _current != 0 ? HeapChunks.End(_current) : Zero;
+        for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
+        {
+            long current = Sys.Peek(h + HeapCurrentAt);
+            Sys.Poke(h + HeapSweepCurrentAt, current);
+            Sys.Poke(h + HeapSweepEndAt, current != 0 ? HeapChunks.End(current) : Zero);
+        }
         _sweepLive = Zero;
         _sweepLiveBytes = Zero;
         if (_census && !_minor)
@@ -13373,8 +13726,19 @@ static class Gc
     }
 
     /// Sweeps one chunk. The heap lock is held (or the world is stopped).
-    /// Answers whether there is another.
+    /// Answers whether there is another. FOR THE CHUNK'S OWN HEAP: what it
+    /// frees goes to that heap's bins and lists, and that heap's bump chunk
+    /// is the one left alone.
     static bool SweepNext()
+    {
+        long working = _h;
+        if (_heapCount > 1 && _sweepAt != 0) _h = HeapChunks.HeapOf(_sweepAt);
+        bool more = SweepChunk();
+        _h = working;
+        return more;
+    }
+
+    static bool SweepChunk()
     {
         long chunk = _sweepAt;
 
@@ -13652,7 +14016,11 @@ static class HeapChunks
     // The chunk before it in the list (newer), or 0 for the newest: with
     // thousands of pages, finding it by walking made every release a walk.
     const long ChunkPrevious = 13 * WordSize.Bytes;
-    const long ChunkBytes = 14 * WordSize.Bytes;
+    // THE HEAP IT IS OF (Gc, "heaps"): the record of the heap that took it,
+    // whose bins its free blocks go to and whose lists its pages are on.
+    // Sixteen words in all, so the first block stays eight-aligned.
+    const long ChunkHeap = 14 * WordSize.Bytes;
+    const long ChunkBytes = 16 * WordSize.Bytes;
     const long ChunkYoung = 1;
     const long ChunkListed = 2;     // a page on its class's list
     const long ChunkPooled = 4;     // an empty page kept for any class
@@ -14350,6 +14718,19 @@ static class HeapChunks
         return _chunks;
     }
 
+    /// The heap a chunk is of: its record (Gc, "heaps").
+    public static long HeapOf(long chunk)
+    {
+        return Sys.Peek(chunk + ChunkHeap);
+    }
+
+    /// A chunk given to another heap, by Gc.ReleaseHeap; its own lists and
+    /// bins are the caller's to move.
+    public static void SetHeapOf(long chunk, long heap)
+    {
+        Sys.Poke(chunk + ChunkHeap, heap);
+    }
+
     public static long Next(long chunk)
     {
         return Sys.Peek(chunk + ChunkNext);
@@ -14584,6 +14965,8 @@ static class HeapChunks
         Sys.Poke(page + ChunkLimit, page + size);
         Sys.Poke(page + ChunkFlags, ChunkYoung);
         Sys.Poke(page + ChunkAnchors, PageBlockLimit(page));
+        Sys.Poke(page + ChunkHeap, Gc.WorkingHeap);
+        Gc.HeapGrew(Gc.WorkingHeap, size);
         _chunks = page;
         _heapBytes = _heapBytes + size;
         IndexAdd(page);
@@ -14676,6 +15059,7 @@ static class HeapChunks
         }
 
         _heapBytes = _heapBytes - size;
+        Gc.HeapGrew(Sys.Peek(chunk + ChunkHeap), -size);
         Releases = Releases + 1;
         if (size > ChunkMost) BigReleases = BigReleases + 1;
         long anchors = Sys.Peek(chunk + ChunkAnchors);
@@ -14855,6 +15239,8 @@ static class HeapChunks
         }
         Sys.Poke(raw + ChunkPrevious, 0);
         if (_chunks != 0) Sys.Poke(_chunks + ChunkPrevious, raw);
+        Sys.Poke(raw + ChunkHeap, Gc.WorkingHeap);
+        Gc.HeapGrew(Gc.WorkingHeap, ask);
         _chunks = raw;
         _heapBytes = _heapBytes + ask;
         Gc.CommitCards(raw, ask);
@@ -15297,6 +15683,8 @@ static class GcLock
             }
             Sys.Pause();
         }
+        // THE ALLOCATOR WORKS FOR THE HOLDER'S HEAP until it lets go.
+        Gc.LockedFor(me);
     }
 
     public static void Exit()
@@ -15356,6 +15744,22 @@ static class GcThreads
 
     /// Registered thread `i`'s block (Gc.ShedPages), 0 past the table. The
     /// heap lock is held.
+    /// Whether any thread allocates in `heap` (Tls.Heap). The heap lock is
+    /// held.
+    public static bool AnyInHeap(long heap)
+    {
+        if (_blocks == 0)
+        {
+            return _first != 0 && Sys.Peek(_first + Tls.Heap) == heap;
+        }
+        for (long i = 0; i < _count; i++)
+        {
+            long block = At(i);
+            if (block != 0 && Sys.Peek(block + Tls.Heap) == heap) return true;
+        }
+        return false;
+    }
+
     public static long BlockAt(long i)
     {
         if (_blocks == 0) return i == 0 ? _first : 0;

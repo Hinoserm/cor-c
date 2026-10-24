@@ -49,8 +49,19 @@ Shared by every heap:
   the mark needs for a pointer into any heap;
 - the lock the collector's phases take.
 
-A chunk names its heap in its record. The record's word at +7W is unused
-today: +6W holds the live blocks, and +8W is the first block.
+A chunk names its heap in its header (`HeapChunks.HeapOf`, the word at
++14W; the header grew to sixteen words so the first block stays
+eight-aligned). A block freed or swept goes to its own chunk's heap's bins
+and lists, whichever heap the code doing it works for (`Gc.Link`,
+`ListPage`, `RetirePage`, `SweepNext`), so a free from another module's
+thread can never put one heap's memory in another's bins.
+
+A heap's record is one page of the operating system's: its bump chunk,
+pool and figures, then its class pages' list heads, then its bins. The
+allocator works for one heap at a time under the heap lock (`Gc._h`), set
+from the locking thread's heap as the lock is taken (`GcLock.Enter`). A
+program that makes no heap has heap 0 alone, and a free pays one compare
+for the rest (`_heapCount`).
 
 ### The current heap
 
@@ -60,8 +71,16 @@ inlined fast path is unchanged: it reads the cache it always read, and
 which heap that cache belongs to is decided where the cache pointer is set.
 
 - `Runtime.EnterHeap(heap)` makes `heap` current and returns the heap that
-  was. `Runtime.LeaveHeap(previous)` makes `previous` current again. Each
-  swaps two words: the current-heap word and the class-cache pointer.
+  was. `Runtime.LeaveHeap(previous)` makes `previous` current again. The
+  same heap again costs a compare. The current heap is the thread block's
+  word `Tls.Heap` (0 for heap 0).
+- **Switching, as built (stage 3, first form):** a switch takes the heap
+  lock and gives the thread's allocation buffer and class pages back to the
+  heap they came from, as a thread that leaves does
+  (`GcThreads.Deregister`); its next allocation refills from the new heap
+  by the slow path. Parking a cache per heap instead, so that a gate that
+  allocates pays no refill, is the next step once the kernel measures the
+  gates.
 - The kernel calls them at a module's gates, around its trap entries (its
   `ModuleGates` registry), its registered kernel-to-module interfaces, and
   the nt/gui dispatchers. A thread a module lends runs in that module's
@@ -101,13 +120,21 @@ sweep one heap alone when only that heap is short.
 ## The API
 
 ```
-nint Gc.KernelHeap                         // heap 0: today's heap
-nint Gc.NewHeap()                          // 0 when there is no memory; its first chunk is mapped lazily
-void Gc.ReleaseHeap(nint heap)             // after CountHeld/Revoke; gives everything back
-void Gc.HeapFigures(nint heap, out long live, out long held, out long free, out long chunks)
-nint Runtime.EnterHeap(nint heap)          // returns the previous heap
-void Runtime.LeaveHeap(nint previous)
+long Gc.KernelHeap                         // heap 0: today's heap
+long Gc.NewHeap()                          // 0 when there is no memory; its first chunk is mapped lazily
+bool Gc.ReleaseHeap(long heap)             // false while a thread is in it; see below
+void Gc.HeapFigures(long heap, out long live, out long held, out long free, out long chunks)
+long Runtime.EnterHeap(long heap)          // returns the previous heap
+void Runtime.LeaveHeap(long previous)
 ```
+
+`Gc.ReleaseHeap` collects, then gives back every chunk and page of the
+heap with nothing live in it. What still holds something live -- an object
+of the module's that the kernel still refers to -- becomes heap 0's, so
+nothing in use is ever unmapped. It answers false, and does nothing, while
+a thread's `Tls.Heap` still names the heap: a kernel whose thread block is
+a processor's must see that no thread it has switched out is still in it.
+`live` in `HeapFigures` is what the last sweep found live.
 
 Module load: `NewHeap`, kept in the module's record. Gates:
 `EnterHeap`/`LeaveHeap`. Unload: `CountHeld`/`Revoke` as today, then
@@ -115,7 +142,10 @@ Module load: `NewHeap`, kept in the module's record. Gates:
 
 ## The stages
 
-Each stage is landed and tested before the next begins.
+Stages 1 to 3 landed together, one batch tested once (tests 2408 and
+2409, with and without `Corsac.GC.HeapCheck`): the record, many heaps, and
+switching in its first form (above). Open: a class cache parked per heap,
+then stage 4; stage 5 is the kernel's.
 
 1. **The heap record.** The heap's own state moves out of statics into a
    record; the program's or kernel's heap is instance 0. One heap

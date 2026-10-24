@@ -1,0 +1,79 @@
+// test: a second heap made, filled, figured and released, what of it is still used kept
+// expect-exit: 0
+// expect-output:
+// made True
+// first heap again True
+// the second holds True
+// kept by the first True
+// the rest dropped True
+// released True
+// survivor 4000 item 3999
+// first heap holds True
+// collections ran True
+//
+// ONE COLLECTOR, A HEAP PER KERNEL MODULE (docs/HEAPS.md). A heap is made
+// (Gc.NewHeap) and this thread allocates in it (Runtime.EnterHeap) lists
+// of strings, of which one is kept by an object of the first heap's and
+// the rest dropped; back in the first heap, the second's figures say what
+// it holds after a collection: the kept list, and not the others. Then the
+// heap is released: what is dead in it goes back to the operating system,
+// and the list still referred to becomes the first heap's, read whole
+// afterwards.
+
+using System.Collections.Generic;
+
+static class Program
+{
+    static void Say(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? " True" : " False");
+        Sys.PrintLine();
+    }
+
+    sealed class Holder
+    {
+        public List<string>? Kept;
+    }
+
+    /// Sixteen lists of strings made in the second heap, the eighth kept by
+    /// the first heap's holder and the rest dropped as they are made.
+    static void FillSecond(Holder holder, long second)
+    {
+        long first = Runtime.EnterHeap(second);
+        for (int l = 0; l < 16; l++)
+        {
+            var list = new List<string>();
+            for (int i = 0; i < 4000; i++) list.Add("item " + i);
+            if (l == 7) holder.Kept = list;
+        }
+        Say("first heap again", Runtime.EnterHeap(first) == second);
+    }
+
+    static int Main()
+    {
+        var holder = new Holder();
+        long second = Gc.NewHeap();
+        Say("made", second != 0 && second != Gc.KernelHeap);
+
+        FillSecond(holder, second);
+        Gc.Collect();
+        Gc.HeapFigures(second, out long live, out long held, out long free, out long chunks);
+        Say("the second holds", held >= live && chunks > 0);
+        Say("kept by the first", live > 4000 * 32);
+        Say("the rest dropped", live < 1048576);
+
+        Say("released", Gc.ReleaseHeap(second));
+        var kept = holder.Kept!;
+        Sys.Print("survivor ");
+        Sys.PrintInt(kept.Count);
+        Sys.Print(" ");
+        Sys.Print(kept[3999]);
+        Sys.PrintLine();
+
+        Gc.HeapFigures(Gc.KernelHeap, out live, out held, out free, out chunks);
+        Say("first heap holds", held > 0 && chunks > 0);
+        Say("collections ran", Gc.Collections >= 3);
+        return 0;
+    }
+}
