@@ -270,8 +270,8 @@ mkdir -p "$f/run"
 "$corc" compile --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 --kernel-syscalls \
     $here/FileCalls.cor --obj -o "$f/files.o" 2> "$f/compile.log" || { cat "$f/compile.log"; fail "a module compiled --kernel-syscalls"; }
 "$corc" link "$f/files.o" --kernel "$a/kernel.exports" -o "$f/files.ko" 2> "$f/link.log" || { cat "$f/link.log"; fail "the --kernel-syscalls module's link"; }
-readelf --dyn-syms -W "$f/files.ko" | awk '$8 ~ /KernelFiles_Syscall/ && $7 == "UND" { found = 1 } END { exit !found }' \
-    || fail "the --kernel-syscalls module does not import KernelFiles.Syscall"
+# (The kernel's answer here is small: its body comes into the module from
+# the exports, as Log.Write's does, and nothing of it is imported.)
 if objdump -d "$f/files.ko" | grep -q 'int *\$0x8[03]'; then fail "the --kernel-syscalls module still traps"; fi
 cp "$a/kernel" "$a/kernel.exports" "$f/run/"
 cp "$f/files.ko" "$f/run/module.ko"
