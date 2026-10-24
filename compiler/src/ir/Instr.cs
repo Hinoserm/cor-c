@@ -18,10 +18,11 @@ public sealed class Instr : OperandList
     private byte _flags;
     private byte _size;
     private VReg? _dest;
-    // A call's callee (a string) or a branch's targets (a Block[], exactly as
-    // many as there are; TargetList): no instruction has both, and one word
-    // holds either -- 8 bytes of each of the million and a half instructions
-    // the class library's unit holds through its late passes.
+    // A call's callee (a string) or a branch's targets -- one Block, the
+    // usual jump's, or a Block[] of two or more (TargetList): no instruction
+    // has both, and one word holds either. 8 bytes of each of the million and
+    // a half instructions the class library's unit holds through its late
+    // passes, and a jump's lone target is no array of its own (32 bytes).
     private object? _link;
     // Field and Family, as one pair shared by every instruction that names
     // them (FieldNames): the same few thousand pairs over and over.
@@ -90,21 +91,27 @@ public sealed class Instr : OperandList
         get => _link as string;
         init
         {
-            if (_link is Block[] && value is not null) throw new InvalidOperationException("an instruction with targets given a callee");
+            if (_link is Block or Block[] && value is not null) throw new InvalidOperationException("an instruction with targets given a callee");
             _link = value;
         }
     }
 
-    /// <summary>The targets themselves (TargetList's), null for none.</summary>
-    internal Block[]? TargetBlocks
+    /// <summary>How many targets (TargetList's).</summary>
+    internal int TargetCount => _link is Block ? 1 : _link is Block[] all ? all.Length : 0;
+
+    /// <summary>Target `index`; the caller has checked it is one.</summary>
+    internal Block TargetAt(int index) => _link is Block one ? one : ((Block[])_link!)[index];
+
+    /// <summary>The targets made these, kept as they are: none, one, or an array nobody else holds.</summary>
+    internal void SetTargets(Block[]? all)
     {
-        get => _link as Block[];
-        set
-        {
-            if (_link is string && value is not null) throw new InvalidOperationException("a call given targets");
-            if (value is not null || _link is Block[]) _link = value;
-        }
+        if (_link is string && all is { Length: > 0 }) throw new InvalidOperationException("a call given targets");
+        if (_link is string) return;
+        _link = all is null || all.Length == 0 ? null : all.Length == 1 ? all[0] : all;
     }
+
+    /// <summary>The targets as an array of their own (a copy).</summary>
+    internal Block[] TargetsCopy() => _link is Block one ? new[] { one } : _link is Block[] all ? (Block[])all.Clone() : Array.Empty<Block>();
 
     /// <summary>
     /// CallIndirect of a virtual method: the descriptor of the type that
@@ -207,13 +214,13 @@ public sealed class Instr : OperandList
     /// InitialTargets = new[] { to } }`. The array is kept, not copied, so
     /// it must be one nobody else holds.
     /// </summary>
-    public Block[] InitialTargets { init => TargetBlocks = value.Length == 0 ? null : value; }
+    public Block[] InitialTargets { init => SetTargets(value); }
 
     /// <summary>Points target `index` somewhere else (Targets is a view, and a view's indexer cannot be written through).</summary>
     public void SetTarget(int index, Block to)
     {
-        if ((uint)index >= (uint)(TargetBlocks?.Length ?? 0)) throw new ArgumentOutOfRangeException(nameof(index));
-        TargetBlocks![index] = to;
+        if ((uint)index >= (uint)TargetCount) throw new ArgumentOutOfRangeException(nameof(index));
+        if (_link is Block) _link = to; else ((Block[])_link!)[index] = to;
     }
 
     /// <summary>Switch: where an out-of-range index goes.</summary>

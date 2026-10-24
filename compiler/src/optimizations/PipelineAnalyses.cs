@@ -95,13 +95,13 @@ internal static class PipelineAnalyses
                 Instr i = instrs[k];
                 h = h * 31 + i.Serial;
                 if (i.Dest is { } d) h = h * 31 + d.Id;
-                if (i.TargetBlocks is { } targets)
+                if (i.TargetCount is int targetCount and > 0)
                 {
                     // A terminator's targets and a LabelAddr's are the graph's.
                     bool edges = k == count - 1 && i.IsTerminator || i.Op == Opcode.LabelAddr;
-                    for (int t = 0; t < targets.Length; t++)
+                    for (int t = 0; t < targetCount; t++)
                     {
-                        int target = targets[t].Serial;
+                        int target = i.TargetAt(t).Serial;
                         h = h * 31 + target;
                         if (edges) g = g * 37 + target;
                     }

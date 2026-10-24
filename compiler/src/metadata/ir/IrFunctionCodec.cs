@@ -87,7 +87,7 @@ public static class IrFunctionCodec
     private const int InstructionBytes = 128, OperandBytes = 32, ExtraBytes = 48;
 
     // Past the two an instruction holds itself, its operands are an array
-    // exactly their number (OperandList); its targets are one (Instr.TargetBlocks).
+    // exactly their number (OperandList); its targets one Block or an array of them (Instr.SetTargets).
     private static long OperandArrayBytes(int count) => count > 2 ? 24 + 8L * (count - 2) : 0;
     private static long TargetArrayBytes(int count) => count > 0 ? 24 + 8L * count : 0;
 
@@ -382,7 +382,7 @@ public static class IrFunctionCodec
                         budget.Charge(1, checked((int)TargetArrayBytes(targets)), "block references");
                         IrBlock[] to = new IrBlock[targets];
                         for (int target = 0; target < targets; target++) to[target] = At(blocks, reader.ReadInt32());
-                        instruction.TargetBlocks = to;
+                        instruction.SetTargets(to);
                     }
                     int otherwise = reader.ReadInt32();
                     if (otherwise < -1) throw new InvalidDataException("Invalid IR default target");
