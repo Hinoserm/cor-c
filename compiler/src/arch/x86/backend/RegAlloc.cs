@@ -201,17 +201,6 @@ internal sealed class Allocator
         a.ComputeLiveness();
         a.Scan();
         a.HeldBeforeSpill();
-        // SPLIT AT THE LOOPS THE SCAN SPILLED INTO, then allocate again: the
-        // trial above is only how the split is chosen.
-        if (a.SplitAcrossLoops())
-        {
-            a = new(m);
-            a.CollectOccurrences();
-            a.ComputeLiveness();
-            a.Scan();
-            a.HeldBeforeSpill();
-        }
-        a.ShareSlots();
         a.Rewrite();
         // What the kept tables point at goes with the function.
         Array.Clear(a._remat, 0, a._n);
@@ -784,12 +773,6 @@ internal sealed class Allocator
             _active.RemoveRange(kept, _active.Count - kept);
 
             int reg = FreeRegister(cur);
-            if (reg < 0 && !cur.Short && _m.LoopCopies.ContainsKey(cur.VReg))
-            {
-                // A loop's copy takes a register to spare or none (SplitAcrossLoops).
-                Spill(cur.VReg, cur.Start / 4);
-                continue;
-            }
             if (reg < 0)
             {
                 reg = MakeRoom(cur);
@@ -1013,8 +996,7 @@ internal sealed class Allocator
                 if (a.Reg != r || !Overlaps(a, cur)) continue;
                 group.Add(a);
                 if (a.Short && a.Served is null) { unservedShort = true; break; }
-                // A loop's copy is the first given up (SplitAcrossLoops).
-                int use = a.Short ? NextServed(a, at) : _m.LoopCopies.ContainsKey(a.VReg) ? int.MaxValue - 1 : NextUse(a.VReg, at);
+                int use = a.Short ? NextServed(a, at) : NextUse(a.VReg, at);
                 if (use < next) next = use;
             }
             if (group.Count == 0 || unservedShort)
@@ -1499,170 +1481,6 @@ internal sealed class Allocator
     }
 
     /// <summary>
-    /// A VALUE SPILLED BEFORE A LOOP, READ FROM THE FRAME ROUND IT: an
-    /// interval is one register or none, so a value the scan gave up before
-    /// a loop -- a pointer, a count, a flag the loop only reads -- was
-    /// reloaded at every read in it, lap after lap. Split at the loop: a
-    /// fresh register for the loop, copied from the value once in the
-    /// loop's own preheader, and every read in the loop renamed to it. The
-    /// copy is the scan's last claim on a register (LoopCopy): it takes only
-    /// one free where it starts, evicts nothing, and is the first given up
-    /// -- so it holds a register the loop has to spare and costs nothing
-    /// hotter. Spilled, it reads the value's own slot, which every write of
-    /// the value keeps current, and the copy into it is dropped (ShareSlots).
-    ///
-    /// Only a value the loop never writes (one it writes is carried round
-    /// the back edge), read from the frame at least twice in the loop, and
-    /// each in the innermost such loop; not a loop entered other than
-    /// through its head, nor one headed by the entry block, nor in a
-    /// function that catches -- a landing pad is entered from anywhere in
-    /// its try, with no register but the frame's.
-    /// </summary>
-    private bool SplitAcrossLoops()
-    {
-        int nb = _blockCount;
-        for (int b = 0; b < nb; b++) if (_m.Blocks[b].Source?.IsLandingPad == true) return false;
-
-        // Back edges: an edge to a block still on the depth-first walk from the entry.
-        byte[] state = new byte[nb];
-        int[] stack = new int[nb], next = new int[nb];
-        List<(int Tail, int Head)> backs = new();
-        int top = 0;
-        stack[top++] = 0; state[0] = 1; next[0] = _succStart[0];
-        while (top > 0)
-        {
-            int b = stack[top - 1];
-            if (next[b] < _succStart[b + 1])
-            {
-                int t = _succAll[next[b]++];
-                if (state[t] == 1) backs.Add((b, t));
-                else if (state[t] == 0) { state[t] = 1; next[t] = _succStart[t]; stack[top++] = t; }
-            }
-            else { state[b] = 2; top--; }
-        }
-        if (backs.Count == 0) return false;
-
-        // Each head's loop: the blocks that reach a back edge's tail without
-        // passing the head, every back edge to the head together.
-        Dictionary<int, bool[]> loops = new();
-        foreach ((int tail, int head) in backs)
-        {
-            if (!loops.TryGetValue(head, out bool[]? body)) { body = new bool[nb]; body[head] = true; loops[head] = body; }
-            Stack<int> work = new();
-            if (!body[tail]) { body[tail] = true; work.Push(tail); }
-            while (work.Count > 0)
-            {
-                int b = work.Pop();
-                for (int e = _predStart[b]; e < _predStart[b + 1]; e++)
-                    if (state[_predAll[e]] != 0 && !body[_predAll[e]]) { body[_predAll[e]] = true; work.Push(_predAll[e]); }
-            }
-        }
-        List<(int Head, bool[] Body, int Size)> usable = new();
-        foreach ((int head, bool[] body) in loops)
-        {
-            if (head == 0) continue;
-            bool single = true;
-            int size = 0;
-            for (int b = 0; b < nb && single; b++)
-            {
-                if (!body[b]) continue;
-                size++;
-                if (b == head) continue;
-                for (int e = _predStart[b]; e < _predStart[b + 1]; e++)
-                    if (state[_predAll[e]] != 0 && !body[_predAll[e]]) { single = false; break; }
-            }
-            if (single) usable.Add((head, body, size));
-        }
-        if (usable.Count == 0) return false;
-        usable.Sort((x, y) => x.Size.CompareTo(y.Size));
-
-        // Each spilled value's innermost loop it is read from the frame in twice and never written in.
-        Dictionary<int, List<int>> chosen = new();
-        for (int v = 8; v < _n; v++)
-        {
-            int from = _spilledFrom[v];
-            if (from == int.MaxValue || _remat[v] is not null) continue;
-            int occStart = _occFirst[v], occEnd = _occFirst[v + 1];
-            for (int k = 0; k < usable.Count; k++)
-            {
-                bool[] body = usable[k].Body;
-                int memory = 0;
-                bool written = false;
-                for (int occ = occStart; occ < occEnd && !written; occ++)
-                {
-                    Occurrence o = _occAll[occ];
-                    if (!body[_blockOfInstr[o.Instr]]) continue;
-                    if ((o.Role & Role.Def) != 0) { written = true; break; }
-                    bool held = _noReload.Contains((v, o.Instr)) || o.Instr < from && _keepBefore.Contains(v);
-                    if (_folded.Contains((o.Instr, o.Operand)) || !held) memory++;
-                }
-                if (written || memory < 2) continue;
-                if (!chosen.TryGetValue(usable[k].Head, out List<int>? list)) chosen[usable[k].Head] = list = new();
-                list.Add(v);
-                break;
-            }
-        }
-        if (chosen.Count == 0) return false;
-
-        // The splits, by block, not number: a preheader each moves the rest.
-        List<(MBlock Head, MBlock[] Body, List<int> Values)> splits = new();
-        foreach ((int head, List<int> values) in chosen)
-        {
-            bool[] body = loops[head];
-            splits.Add((_m.Blocks[head], Enumerable.Range(0, nb).Where(b => body[b]).Select(b => _m.Blocks[b]).ToArray(), values));
-        }
-        foreach ((MBlock head, MBlock[] bodyBlocks, List<int> values) in splits)
-        {
-            HashSet<MBlock> body = new(bodyBlocks, ReferenceEqualityComparer.Instance);
-            Dictionary<int, int> renamed = new();
-            MBlock pre = new(head.Name + "$pre");
-            int line = head.Instrs.Count > 0 ? head.Instrs[0].Line : 0;
-            foreach (int v in values)
-            {
-                int fresh = _m.NewReg().Id;
-                renamed[v] = fresh;
-                if (_m.ByteRegs.Contains(v)) _m.ByteRegs.Add(fresh);
-                if (_m.WideHalves.Contains(v)) _m.WideHalves.Add(fresh);
-                MInstr copy = new(MOp.Mov, MReg.Of(fresh), MReg.Of(v)) { Line = line };
-                pre.Instrs.Add(copy);
-                _m.LoopCopies[fresh] = (v, copy);
-            }
-            // Every way in from outside goes through the preheader; it falls
-            // into the head, so a loop block that fell into the head jumps to it.
-            int at = _m.Blocks.IndexOf(head);
-            MBlock? before = at > 0 ? _m.Blocks[at - 1] : null;
-            if (before is not null && body.Contains(before) && !before.EndsUnconditionally)
-                before.Instrs.Add(new MInstr(MOp.Jmp, new MLabel(head)) { Line = line });
-            foreach (MBlock b in _m.Blocks)
-            {
-                if (body.Contains(b)) continue;
-                foreach (MInstr i in b.Instrs)
-                {
-                    if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel { Target: var t } && ReferenceEquals(t, head))
-                        i.Operands[0] = new MLabel(pre);
-                    if (i.Table is { } table)
-                        for (int k = 0; k < table.Count; k++) if (ReferenceEquals(table[k], head)) table[k] = pre;
-                }
-            }
-            _m.Blocks.Insert(at, pre);
-            // The loop reads its own register.
-            foreach (MBlock b in bodyBlocks)
-                foreach (MInstr i in b.Instrs)
-                    for (int k = 0; k < i.Operands.Count; k++)
-                    {
-                        if (i.Operands[k] is MReg r && renamed.TryGetValue(r.Id, out int to)) i.Operands[k] = MReg.Of(to);
-                        else if (i.Operands[k] is MMem mem && (mem.Base is { } mb && renamed.ContainsKey(mb.Id) || mem.Index is { } mi && renamed.ContainsKey(mi.Id)))
-                            i.Operands[k] = new MMem(mem.Base is { } b2 && renamed.TryGetValue(b2.Id, out int nb2) ? MReg.Of(nb2) : mem.Base, mem.Disp)
-                            {
-                                Index = mem.Index is { } i2 && renamed.TryGetValue(i2.Id, out int ni2) ? MReg.Of(ni2) : mem.Index,
-                                Scale = mem.Scale, Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, IsSpill = mem.IsSpill,
-                            };
-                    }
-        }
-        return true;
-    }
-
-    /// <summary>
     /// WHERE THE REGISTER STILL HOLDS IT, NO RELOAD. A register spilled from
     /// a point whose value flows back to code before it -- a loop's counter
     /// given up late in the body -- keeps the register it had over every
@@ -1782,34 +1600,6 @@ internal sealed class Allocator
         }
         return inReg;
     }
-
-    /// <summary>
-    /// A LOOP'S SPILLED COPY READS THE VALUE'S OWN SLOT: the value is never
-    /// written in the loop and every write of a spilled value stores, so its
-    /// slot holds what the copy would -- unless some other register was
-    /// given the same four bytes while the copy lives. Then the copy into
-    /// the loop's slot is no work at all (Rewrite drops it).
-    /// </summary>
-    private void ShareSlots()
-    {
-        _sharedCopies.Clear();
-        foreach ((int copy, (int of, MInstr move)) in _m.LoopCopies)
-        {
-            if (copy >= _n || _spilledFrom[copy] == int.MaxValue || _remat[copy] is not null || _remat[of] is not null) continue;
-            int at = _lin.IndexOf(move);
-            if (at < 0 || _spilledFrom[copy] > at || _spilledFrom[of] > at || _slot[of] == 0) continue;
-            int slot = _slot[of];
-            bool clash = false;
-            for (int w = 8; w < _n && !clash; w++)
-                if (w != of && w != copy && _slot[w] == slot && _end[w] >= _start[copy] && _start[w] <= _end[copy]) clash = true;
-            if (clash) continue;
-            _slot[copy] = slot;
-            _sharedCopies.Add(move);
-        }
-    }
-
-    /// <summary>The preheader copies whose loop reads the value's own slot: nothing to do (ShareSlots).</summary>
-    private readonly HashSet<MInstr> _sharedCopies = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// A spill slot for a register: one whose previous owner's interval
@@ -1997,12 +1787,6 @@ internal sealed class Allocator
             {
                 _rwRoles[r.Id] = _rwRoles.GetValueOrDefault(r.Id) | role;
             }
-        }
-
-        // A loop's copy that reads the value's own slot: nothing to copy (ShareSlots).
-        if (_sharedCopies.Contains(i))
-        {
-            return;
         }
 
         // The defining move of a spilled constant is dropped: see Spill.
