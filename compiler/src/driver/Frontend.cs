@@ -14,6 +14,16 @@ namespace Corsac;
 public static class Frontend
 {
     /// <summary>
+    /// THE RULE ALONE, closed over what it reads: made inline, the lambda
+    /// shared this method's closure, which holds the parsed unit, and the
+    /// index the driver keeps for the whole compile kept every syntax tree
+    /// and symbol of it alive through the late passes and code generation --
+    /// 200 MB of the class library's unit compiled against an index.
+    /// </summary>
+    private static Func<string, bool> LibrarySideOf(bool every, HashSet<string> fromLibrary)
+        => path => every || fromLibrary.Contains(Path.GetFullPath(path));
+
+    /// <summary>
     /// Parses and binds a set of sources against the prelude, with the
     /// generic-method discovery rounds the binder needs. Returns null after
     /// printing diagnostics on failure.
@@ -192,7 +202,7 @@ public static class Frontend
         if (declarations is not null)
         {
             bool every = library && paths.All(path => fromLibrary.Contains(Path.GetFullPath(path)));
-            declarations.LibrarySide = path => every || fromLibrary.Contains(Path.GetFullPath(path));
+            declarations.LibrarySide = LibrarySideOf(every, fromLibrary);
         }
         declarations?.AddHeaders(unit);
         // WHAT THE INDEX BROUGHT IS LIBRARY CODE BY ITS FILE, as what was

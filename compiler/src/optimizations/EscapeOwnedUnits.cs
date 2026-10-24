@@ -629,8 +629,12 @@ public sealed partial class Escape
             return record;
         }
 
-        Dictionary<Function, Dictionary<VReg, Instr>> defsOf = new();
-        Dictionary<VReg, Instr> Defs(Function f) => defsOf.TryGetValue(f, out var d) ? d : defsOf[f] = SingleDefs(f);
+        // WHAT IS WORKED OUT PER FUNCTION, kept for the last few functions asked
+        // about (RecentByFunction): each stage below goes function by function,
+        // and kept for every one, the liveness alone of the class library's
+        // 21,000 functions took its unit's compile past the heap's limit.
+        RecentByFunction<Dictionary<VReg, Instr>> defsOf = new();
+        Dictionary<VReg, Instr> Defs(Function f) => defsOf.Get(f, SingleDefs);
         Dictionary<Function, RegisterWrites> writesOf = new();
         // A COLLECTION'S OWN FREES OF THE STORAGE IT REPLACES (EscapeSelfFrees),
         // as OwnedFields finds them; the link learns which fields are freed so.
@@ -641,8 +645,8 @@ public sealed partial class Escape
             if (!ReferenceEquals(found, SelfFrees.None)) selfOf[f] = found;
         }
         SelfFrees SelfOf(Function f) => selfOf.GetValueOrDefault(f) ?? SelfFrees.None;
-        Dictionary<Function, HashSet<VReg>> writtenOf = new();
-        HashSet<VReg> WrittenIn(Function f) => writtenOf.TryGetValue(f, out HashSet<VReg>? known) ? known : writtenOf[f] = Written(f);
+        RecentByFunction<HashSet<VReg>> writtenOf = new();
+        HashSet<VReg> WrittenIn(Function f) => writtenOf.Get(f, Written);
 
         // A call's result made for its caller: an allocation, a fresh function
         // of this unit, or -- if the link finds it fresh -- another unit's.
@@ -753,10 +757,11 @@ public sealed partial class Escape
             if (callers is not null && callers.Count <= OwnedFieldHints.Limit) hints.FreshFirst[callee] = callers;
 
         // Where a value comes from, through copies and joins (OwnedFields' Sources).
-        Dictionary<(Function, VReg), List<Source>?> sourcesOf = new();
+        RecentByFunction<Dictionary<VReg, List<Source>?>> sourcesOf = new();
         List<Source>? Sources(Function f, VReg r)
         {
-            if (sourcesOf.TryGetValue((f, r), out List<Source>? known)) return known;
+            Dictionary<VReg, List<Source>?> sourcesIn = sourcesOf.Get(f, static _ => new());
+            if (sourcesIn.TryGetValue(r, out List<Source>? known)) return known;
             List<Source> found = new();
             HashSet<VReg> seen = new();
             Stack<VReg> work = new();
@@ -799,15 +804,15 @@ public sealed partial class Escape
                 }
             }
             if (work.Count > 0) found.Add(new Source(SourceKind.Unknown, 0, null));
-            return sourcesOf[(f, r)] = found;
+            return sourcesIn[r] = found;
         }
 
-        Dictionary<Function, FirstStores> firstOf = new();
-        FirstStores FirstOf(Function f) => firstOf.TryGetValue(f, out FirstStores? known) ? known : firstOf[f] = new FirstStores(f, Defs(f), _promotedMade, _promotedZeroing);
-        Dictionary<Function, Liveness> livenessOf = new();
-        Liveness LivenessOf(Function f) => livenessOf.TryGetValue(f, out Liveness? l) ? l : livenessOf[f] = new Liveness(f);
-        Dictionary<Function, HashSet<VReg>> padsOf = new();
-        HashSet<VReg> PadsOf(Function f) => padsOf.TryGetValue(f, out HashSet<VReg>? p) ? p : padsOf[f] = PadLive(LivenessOf(f));
+        RecentByFunction<FirstStores> firstOf = new();
+        FirstStores FirstOf(Function f) => firstOf.Get(f, g => new FirstStores(g, Defs(g), _promotedMade, _promotedZeroing));
+        RecentByFunction<Liveness> livenessOf = new();
+        Liveness LivenessOf(Function f) => livenessOf.Get(f, static g => new Liveness(g));
+        RecentByFunction<HashSet<VReg>> padsOf = new();
+        HashSet<VReg> PadsOf(Function f) => padsOf.Get(f, g => PadLive(LivenessOf(g)));
 
         // SINKS: each direct call's arguments, handed over or not.
         HashSet<(string, int)> kept = new();
