@@ -141,6 +141,9 @@ public sealed class Pipeline
         // twice over in every lap of every lexer loop.
         // An inlined callee's null check that its first field read makes
         // again (NullCheckFold), before the loads are compared.
+        // A free of a null, a region left that was never entered, on the way
+        // out a fast path takes (DeadFrees), before the loads it read go.
+        p.Passes.Add(new DeadFrees());
         p.Passes.Add(new NullCheckFold());
         p.Passes.Add(new LoadReuse());
         p.Passes.Add(new DeadCodeElimination());

@@ -216,6 +216,24 @@ public sealed class Instr : OperandList
     /// </summary>
     public Block[] InitialTargets { init => SetTargets(value); }
 
+    /// <summary>
+    /// The same instruction again, for another block: every field the
+    /// inliner's copy carries, the same operands and registers, the same
+    /// targets. Not SSA, so a register defined in both copies is fine.
+    /// </summary>
+    public Instr Clone()
+    {
+        Instr made = new()
+        {
+            Op = Op, Dest = Dest, Size = Size, Signed = Signed, Offset = Offset, Callee = Callee,
+            DispatchType = DispatchType, Field = Field, Number = Number, Family = Family,
+            RegionSite = RegionSite, Line = Line, Default = Default,
+        };
+        foreach (Operand o in Operands) made.Operands.Add(o);
+        made.SetTargets(TargetsCopy());
+        return made;
+    }
+
     /// <summary>Points target `index` somewhere else (Targets is a view, and a view's indexer cannot be written through).</summary>
     public void SetTarget(int index, Block to)
     {
