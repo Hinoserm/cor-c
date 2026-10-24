@@ -25,6 +25,8 @@ public static class ObjectLinkCommand
         // throws. Flat and physically placed images are so by their nature;
         // an executable linked against no shared library is so when asked.
         bool closed = false;
+        // A ring-1 module whose text the binder relocates (Linker.LinkModule): no GOT, direct calls into the kernel.
+        bool relocatedText = false;
         string? map = null;
         bool shared = false;
         bool noUndefined = false;
@@ -105,6 +107,7 @@ public static class ObjectLinkCommand
             }
             else if (arg == "--flat") flat = true;
             else if (arg == "--closed") closed = true;
+            else if (arg == "--relocated-text") relocatedText = true;
             // A line at the end of each phase: its time and the memory it took (LinkTimings).
             else if (arg == "--timings") LinkTimings.Enabled = true;
             else if (arg == "--map" && i + 1 < args.Length) map = args[++i];
@@ -264,7 +267,7 @@ public static class ObjectLinkCommand
         }
         else if (kernel is not null)
         {
-            image = Linker.LinkModule(inputs, output, kernel, sharedLibraries.Distinct(StringComparer.Ordinal).ToList());
+            image = Linker.LinkModule(inputs, output, kernel, sharedLibraries.Distinct(StringComparer.Ordinal).ToList(), relocatedText);
         }
         else if (shared || sharedLibraries.Count > 0)
         {

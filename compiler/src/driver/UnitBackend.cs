@@ -64,6 +64,10 @@ public sealed class UnitBackend : IUnitBackend
         bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
         // A kernel module's unit is part of a shared object, and is made again as one.
         bool positionIndependent = IrUnitCodec.ReadSettings(archive).Settings is { PositionIndependent: true };
+        // A kernel module's unit, by the kernel's stamp its compile put in it:
+        // position-independent, or not when its text is relocated at load
+        // (--relocated-text), and kept to what its compile defined either way.
+        bool moduleUnit = original.Sections.Any(section => section.Name == KernelExports.StampSection);
         // The late passes need the unit whole, so its decode is bounded by a
         // fixed limit, the same on every machine: sized by what the machine
         // has free (a quarter of what the process's 768 MB heap leaves), a
@@ -144,7 +148,7 @@ public sealed class UnitBackend : IUnitBackend
             // compile gave up because the kernel exports it (Module.Provided)
             // is still in the IR, taken before, and made again here it would
             // be a second copy of the kernel's, in the module.
-            else if (positionIndependent)
+            else if (positionIndependent || moduleUnit)
                 PruneAfterLate(module, archive, original.Symbols.Where(symbol => symbol.IsDefined)
                     .SelectMany(symbol => new[] { "F:" + symbol.Name, "D:" + symbol.Name }).ToHashSet(StringComparer.Ordinal));
             lateDone = Environment.TickCount64;

@@ -75,7 +75,8 @@ public static class Modules
             long tag = Word(bias + d), value = Word(bias + d + 4);
             if (tag == 6) symtab = value; else if (tag == 5) strtab = value; else if (tag == 17) rel = value; else if (tag == 18) relBytes = value;
             else if (tag == 23) jmprel = value; else if (tag == 2) jmprelBytes = value; else if (tag == 12) init = value;
-            else if (tag == 22) return Refuse("relocations in its text");
+            // DT_TEXTREL: a module linked --relocated-text. Its text is this
+            // loader's memory as the rest is, and is bound in the same pass.
             else if (tag == 1) return Refuse("needs another module");
         }
         if (!Bind(image, table, bias, symtab, strtab, rel, relBytes) || !Bind(image, table, bias, symtab, strtab, jmprel, jmprelBytes)) return false;
@@ -100,6 +101,8 @@ public static class Modules
             }
             if (kind == 8) Sys.PokeWord(where, (Word(where) + bias) & 0xFFFFFFFFL);
             else if (kind == 1) Sys.PokeWord(where, (Word(where) + symbol) & 0xFFFFFFFFL);
+            // A direct call of a module linked --relocated-text: S + A - P.
+            else if (kind == 2) Sys.PokeWord(where, (Word(where) + symbol - where) & 0xFFFFFFFFL);
             else if (kind == 6 || kind == 7) Sys.PokeWord(where, symbol);
             else return Refuse("relocation of kind " + kind);
         }

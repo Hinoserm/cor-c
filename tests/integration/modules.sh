@@ -126,6 +126,23 @@ printf '%s\n' 'kernel 0' 'registered sb16' 'modinfo name=sb16' 'modinfo ring=0' 
     'modinfo alias=isa:sb16@220,240,260,280' 'modinfo depends=mpu401' 'drivers 1' 'sb16 at 544, loaded 1 time' 'bind 1' \
     | cmp -s - "$work/run.out" || { cat "$work/run.out"; fail "the module ran other than it should"; }
 
+# RELOCATED TEXT (--relocated-text): the same module without position-
+# independent code -- no GOT register found by a call and a pop, the kernel's
+# functions called directly -- its text fixed by the binder (R_386_PC32 for
+# the calls), and running as the other does.
+mkdir -p "$work/relocated"
+"$corc" compile --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 \
+    $here/Sb16.cor --obj --relocated-text -o "$work/relocated/sb16.o" 2> "$work/relocated/compile.log" || { cat "$work/relocated/compile.log"; fail "relocated module object"; }
+"$corc" link "$work/relocated/sb16.o" --kernel "$a/kernel.exports" --relocated-text -o "$work/relocated/sb16.ko" 2> "$work/relocated/link.log" \
+    || { cat "$work/relocated/link.log"; fail "relocated module link"; }
+readelf -r "$work/relocated/sb16.ko" | grep -q R_386_PC32 || fail "the relocated module calls the kernel through no PC32 relocation"
+readelf -d "$work/relocated/sb16.ko" | grep -q TEXTREL || fail "the relocated module does not say it relocates its text"
+if objdump -d "$work/relocated/sb16.ko" | grep -A1 'pop *%ebx' | grep -q 'add *\$0x.*,%ebx'; then fail "the relocated module still finds a GOT"; fi
+cp "$work/relocated/sb16.ko" "$a/module.ko"
+(cd "$a" && ./kernel) > "$work/relocated/run.out" 2>&1 || { cat "$work/relocated/run.out"; fail "the kernel did not load the relocated module"; }
+cmp -s "$work/run.out" "$work/relocated/run.out" || { cat "$work/relocated/run.out"; fail "the relocated module ran other than the other"; }
+cp "$work/linked/sb16.ko" "$a/module.ko"
+
 # PRUNED WITH --keep: the kernel linked again keeping only what it and the
 # module reach -- the module's imports the roots beside the entry -- drops
 # what nobody calls, keeps every import, and loads and runs the module the

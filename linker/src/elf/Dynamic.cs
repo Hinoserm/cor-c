@@ -321,6 +321,13 @@ public static partial class Linker
 
         /// <summary>Set when a relocation lands in a section the loader will have to make writable.</summary>
         public bool TextRel { get; set; }
+        /// <summary>
+        /// A call to a name this image does not define goes straight to it, a
+        /// PC-relative word the loader fixes (R_386_PC32 in the text), not
+        /// through a PLT entry: a ring-1 module linked --relocated-text, whose
+        /// binder writes its text (Linker.LinkModule).
+        /// </summary>
+        public bool DirectCalls { get; set; }
 
         /// <summary>Every shared library on the command line, by path: the closure prebinding resolves against.</summary>
         public List<string> Libraries { get; } = new();
@@ -401,7 +408,11 @@ public static partial class Linker
                             break;
                         case RelocKind.Rel32:
                         case RelocKind.Plt32:
-                            if (d is null)
+                            if (d is null && dyn.DirectCalls)
+                            {
+                                NeedDynReloc(dyn, p, r, RelocKind.Rel32);
+                            }
+                            else if (d is null)
                             {
                                 NeedPlt(dyn, r.Symbol);
                             }
@@ -777,6 +788,13 @@ public static partial class Linker
                 if (d is not null)
                 {
                     value = (long)d.Value.Address + r.Addend - place;
+                    return true;
+                }
+                // A direct call the loader fixes: REL keeps the addend in the
+                // word, and the loader adds the symbol less the place.
+                if (dyn.DirectCalls)
+                {
+                    value = r.Addend;
                     return true;
                 }
                 value = (long)PltAddress(dyn, r.Symbol) + r.Addend - place;

@@ -1124,6 +1124,13 @@ public static class Driver
         module.ClosedImage = !args.Contains("--obj") && !library && kernel is null && sharedLibs.Count == 0 && !module.PreserveExports;
         module.NoCollector = args.Contains("--no-collector");
         bool moduleUnit = kernel is not null && args.Contains("--obj");
+        // A RING-1 MODULE WHOSE TEXT ITS BINDER RELOCATES (--relocated-text):
+        // no position-independent code -- no GOT register, no call/pop to find
+        // it, a static by its address and a call into the kernel a plain
+        // rel32 -- and the link leaves R_386_RELATIVE, R_386_32 and R_386_PC32
+        // in the text (Linker.LinkModule). 32-bit only.
+        bool relocatedText = kernel is not null && args.Contains("--relocated-text");
+        if (relocatedText && target == Target.X86_64) return Fail("--relocated-text is for a 32-bit module");
         // Whether the late passes may give objects to regions: not where there
         // is no operating system to keep an arena, nor under --no-regions; a
         // link making the unit again asks the same (IrUnitCodec.Settings.Regions).
@@ -1150,7 +1157,7 @@ public static class Driver
                 linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
                     !args.Contains("--no-stackmaps"),
                     new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
-                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit, Regions: regions, Polls: m.SafepointPolls));
+                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit && !relocatedText, Regions: regions, Polls: m.SafepointPolls));
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
                 // Nor under --no-regions: the link would place the unit's sites in regions all the same.
@@ -1281,7 +1288,7 @@ public static class Driver
             // link and cannot be serialized as relocatable object relocations.
             // A Windows image moves by its .reloc, not by position-independent
             // code, the runtime DLL and the images over it alike.
-            PositionIndependent = !windows && (shared || args.Contains("--pic") || (sharedLibs.Count > 0 && args.Contains("--obj"))),
+            PositionIndependent = !windows && !relocatedText && (shared || args.Contains("--pic") || (sharedLibs.Count > 0 && args.Contains("--obj"))),
             WindowsTls = windows,
             Workers = workers,
             EmitLinkSummary = !args.Contains("--no-lto") && !args.Contains("--no-opt"),
@@ -1298,7 +1305,9 @@ public static class Driver
             SafepointPolls = module.SafepointPolls && (!module.ClosedImage
                 || module.NeedsHeap && module.Functions.Any(f => f.Name == Corsac.Lang.Opt.BackEdgePolls.Poll)),
         };
-        foreach (string symbol in imported)
+        // Relocated text reaches the kernel's names where they are: the
+        // binder fixes each reference, so none goes through a GOT slot.
+        foreach (string symbol in relocatedText ? Enumerable.Empty<string>() : imported)
         {
             x86Backend.Imported.Add(symbol);
         }
@@ -1453,7 +1462,7 @@ public static class Driver
         }
         if (kernel is not null && !args.Contains("--obj"))
         {
-            byte[] ko = Linker.LinkModule(new[] { (name, obj) }, output, kernel, sharedLibs);
+            byte[] ko = Linker.LinkModule(new[] { (name, obj) }, output, kernel, sharedLibs, relocatedText);
             File.WriteAllBytes(output, ko);
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {ko.Length} bytes module of {kernel.Name}");
             return 0;

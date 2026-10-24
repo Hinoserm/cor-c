@@ -93,7 +93,16 @@ public static partial class Linker
     /// called <paramref name="fileName"/>, importing from the kernel and from
     /// <paramref name="dependencies"/> (other modules' files).
     /// </summary>
-    public static byte[] LinkModule(IEnumerable<(string Name, ObjectFile Object)> objects, string fileName, KernelExports kernel, IReadOnlyList<string>? dependencies = null)
+    /// <param name="relocatedText">
+    /// THE MODULE'S TEXT RELOCATED AT LOAD (--relocated-text), its units
+    /// compiled without position-independent code: a static by its absolute
+    /// address, a call into the kernel a plain rel32 the binder fixes
+    /// (R_386_PC32), no GOT register and no call/pop to find one -- what a
+    /// ring-1 module's binder, which writes the module's own pages, applies
+    /// (os/gui/guimodules.cor). Ring 0's loader does not yet.
+    /// </param>
+    public static byte[] LinkModule(IEnumerable<(string Name, ObjectFile Object)> objects, string fileName, KernelExports kernel, IReadOnlyList<string>? dependencies = null,
+        bool relocatedText = false)
     {
         List<(string Name, ObjectFile Object)> inputs = objects.ToList();
         AgreeWithKernel(inputs, kernel);
@@ -146,7 +155,7 @@ public static partial class Linker
         ObjectFile own = KernelExports.StampObject(kernel.Stamp, loaded: false);
         own.Sections.Add(ModuleInfo.Note(ModuleInfo.SectionName, entries));
 
-        Dyn dyn = new() { Shared = true, Soname = Path.GetFileName(fileName) };
+        Dyn dyn = new() { Shared = true, Soname = Path.GetFileName(fileName), DirectCalls = relocatedText };
         foreach (string dependency in needed) dyn.Needed.Add(SoName(dependency));
         inputs.Add(("the module's link", own));
 
@@ -154,9 +163,10 @@ public static partial class Linker
 
         // WHAT THE KERNEL'S BINDER WILL BE ASKED TO DO, checked now.
         List<string> errors = new();
-        if (dyn.TextRel) errors.Add("a module may not relocate its text, and this one would have to (DT_TEXTREL)");
+        if (dyn.TextRel && !relocatedText) errors.Add("a module may not relocate its text, and this one would have to (DT_TEXTREL); link it --relocated-text for a binder that does");
         foreach (DynReloc r in dyn.Relocations)
-            if (r.Kind is not (RelocKind.Relative or RelocKind.Abs32 or RelocKind.Abs64 or RelocKind.GlobData or RelocKind.JumpSlot))
+            if (r.Kind is not (RelocKind.Relative or RelocKind.Abs32 or RelocKind.Abs64 or RelocKind.GlobData or RelocKind.JumpSlot)
+                && !(relocatedText && r.Kind == RelocKind.Rel32))
                 errors.Add($"'{r.Symbol}' needs a {r.Kind} relocation, which the kernel's binder does not apply");
         foreach (DynSymbol s in dyn.Symbols)
         {

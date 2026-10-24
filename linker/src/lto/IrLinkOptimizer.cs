@@ -521,7 +521,9 @@ public static class IrLinkOptimizer
                         || !originalArchive.Entries.ContainsKey("F:" + symbol.Name) && !originalArchive.Entries.ContainsKey("D:" + symbol.Name);
                     string[] before = original.Symbols.Where(symbol => symbol.Global && symbol.IsDefined && Kept(symbol)).Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
                     string[] after = replacement.Symbols.Where(symbol => symbol.Global && symbol.IsDefined).Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
-                    if (!before.SequenceEqual(after)) throw new ElfFormatException("IR backend changed the unit's exported definitions");
+                    if (!before.SequenceEqual(after))
+                        throw new ElfFormatException("IR backend changed the unit's exported definitions: lost "
+                            + string.Join(", ", before.Except(after).Take(8)) + "; gained " + string.Join(", ", after.Except(before).Take(8)));
                     regenerated[k] = replacement;
                     reports[k] = "LTO IR: " + inputs[plan.Index].Name + ": imported " + imports.Length + " bodies, "
                         + imports.Sum(import => import.Body.Length) + " bytes; retained records=" + (plan.Retained?.Count.ToString() ?? "all")
