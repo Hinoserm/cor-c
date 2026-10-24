@@ -1555,7 +1555,8 @@ internal sealed class Allocator
     /// Whether every way into block `b` leaves the value in its register.
     private bool HeldOnEntry(int v, int b, int lo, int hi, int from, bool[] held)
     {
-        if (_predStart[b] == _predStart[b + 1] || _m.Blocks[b].Source?.IsLandingPad == true)
+        // The entry block is also entered from the caller, which no edge shows.
+        if (b == 0 || _predStart[b] == _predStart[b + 1] || _m.Blocks[b].Source?.IsLandingPad == true)
         {
             return false;
         }
