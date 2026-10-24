@@ -149,30 +149,41 @@ public static class ProjectCommand
             if (!node.Usings.SequenceEqual(project.Usings))
                 throw new InvalidDataException("Referenced projects with different global usings are not yet supported: " + node.Path);
         Parser.ProjectUsings = project.Usings;
-        if (!linkOnly || !File.Exists(index)) SourceIndexBuilder.Write(index, owners.Keys, project.AssemblyName, fileSymbols: symbols);
         string[] libraries = Driver.DefaultLibraries(target).ToArray();
         if (libraries.Length == 0) throw new InvalidDataException("The native runtime sources were not found");
+        // THE CLASS LIBRARY IN THE INDEX TOO, on the library's side, as an
+        // image build's index has it (corc index): its sources are units of
+        // their own below, each compiled against this, and the project's
+        // units read the library's declarations here rather than parsing its
+        // every file again (--ref).
+        foreach (string library in libraries) symbols.TryAdd(library, Driver.TargetSymbols(target).ToArray());
+        if (!linkOnly || !File.Exists(index))
+            SourceIndexBuilder.Write(index, owners.Keys.Concat(libraries), project.AssemblyName, fileSymbols: symbols, librarySource: Driver.IsLibrarySource);
         string toolchain = ProjectState.Digest(ToolIdentity(typeof(Driver).Assembly) + "\n" + ToolIdentity(typeof(ObjectLinkCommand).Assembly));
         string libraryState = ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity)));
-        using DeclarationCatalog catalog = new(index);
-        string interfaces = string.Join("\n", catalog.Interfaces(project.AssemblyName).OrderBy(pair => pair.Key.Name, StringComparer.Ordinal)
-            .ThenBy(pair => pair.Key.Arity).Select(pair => pair.Key.Name + ":" + pair.Key.Arity + ":" + pair.Value));
-        string settings = toolchain + "\n" + libraryState + "\n" + interfaces + "\n" + string.Join("\n", graph.Select(node => node.Evaluation))
-            + "\n" + string.Join("\n", cpuArguments) + (unusedReport is not null ? "\nunused-report" : "");
-        string runtime = Path.Combine(work, "runtime.o");
-        List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
-        runtimeArgs.AddRange(libraries);
-        runtimeArgs.AddRange(cpuArguments);
-        // The compiles only carry the notes: one value for all, so naming
-        // another report file recompiles nothing.
-        if (unusedReport is not null) { runtimeArgs.Add("--unused-report"); runtimeArgs.Add("-"); }
-        if (linkOnly && !runtimeOnly)
+        List<string> objects = new();
+        // THE CLASS LIBRARY A UNIT TO EACH SOURCE, as the image build compiles
+        // it: compiled whole, one unit of 21,000 functions, it held 450 MB
+        // live through its late passes -- past the compiler's heap limit in
+        // the process that had built the project's index -- where its
+        // largest file alone (Core.cor) holds about 110 MB. What one unit
+        // uses of another comes in at the link (IrLinkOptimizer), as for the
+        // project's own units. Current units are skipped by their receipts.
+        Dictionary<string, (List<string> Args, List<(string Source, string Object)> Units, bool Entry, bool Runtime)> groups = new(StringComparer.Ordinal);
         {
-            if (!File.Exists(runtime)) throw new InvalidDataException("--link-only: the runtime object was never compiled: " + runtime);
+            List<string> options = new() { "--nostdlib", "--obj", "--decl-index", index, "--assembly", project.AssemblyName };
+            options.AddRange(cpuArguments);
+            if (unusedReport is not null) { options.Add("--unused-report"); options.Add("-"); }
+            List<(string Source, string Object)> units = new();
+            foreach (string library in libraries.Select(Path.GetFullPath).Distinct(StringComparer.Ordinal))
+            {
+                string destination = Path.Combine(work, "rt-" + ProjectState.Digest(library)[..24] + ".o");
+                units.Add((library, destination));
+                objects.Add(destination);
+            }
+            groups["runtime\n" + string.Join("\n", options)] = (options, units, false, true);
         }
-        else if (!Compile(runtimeArgs, runtime, ProjectState.Digest(settings), index)) return 1;
-        List<string> objects = new() { runtime };
-        int changed = 0;
+        int changed = 0, runtimeChanged = 0;
 
         // THE SOURCES IN PARALLEL, through compile-project -- the unit
         // compiler the OS build uses: one process, a worker per unit, the
@@ -181,7 +192,6 @@ public static class ProjectCommand
         // this compiler) say its object is current. Units are handed over in
         // groups that share their options: a project's defines and warning
         // mode, and the entry unit, which names the program's Main.
-        Dictionary<string, (List<string> Args, List<(string Source, string Object)> Units, bool Entry)> groups = new(StringComparer.Ordinal);
         foreach (var owned in owners.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
             string source = owned.Key; EvaluatedProject owner = owned.Value;
@@ -199,11 +209,10 @@ public static class ProjectCommand
             if (!owner.WarningsAsErrors) options.Add("-Wno-error");
             foreach (string define in owner.Defines) { options.Add("--define"); options.Add(define); }
             foreach (string use in owner.Usings) { options.Add("--using"); options.Add(use); }
-            foreach (string library in libraries) { options.Add("--ref"); options.Add(library); }
             string key = (entry ? "entry\n" : "lib\n") + string.Join("\n", options);
             if (!groups.TryGetValue(key, out var group))
             {
-                group = (options, new List<(string, string)>(), entry);
+                group = (options, new List<(string, string)>(), entry, false);
                 groups[key] = group;
             }
             group.Units.Add((source, destination));
@@ -211,7 +220,7 @@ public static class ProjectCommand
         }
         foreach (var group in groups.Values)
         {
-            if (linkOnly)
+            if (linkOnly && !(runtimeOnly && group.Runtime))
             {
                 foreach ((string Source, string Object) unit in group.Units)
                     if (!File.Exists(unit.Object)) throw new InvalidDataException("--link-only: " + unit.Source + " was never compiled (" + unit.Object + ")");
@@ -232,7 +241,8 @@ public static class ProjectCommand
                 args.AddRange(group.Args);
                 if (ProjectCompile.Run(args.ToArray()) != 0) return 1;
             }
-            changed += group.Units.Count(unit => File.GetLastWriteTimeUtc(unit.Object) != before[unit.Object]);
+            int rebuilt = group.Units.Count(unit => File.GetLastWriteTimeUtc(unit.Object) != before[unit.Object]);
+            if (group.Runtime) runtimeChanged += rebuilt; else changed += rebuilt;
         }
         foreach (var source in generation)
             if (ProjectState.FileIdentity(source.Key) != source.Value) throw new InvalidDataException("Source changed during project compilation: " + source.Key);
@@ -254,7 +264,8 @@ public static class ProjectCommand
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
-        Console.Error.WriteLine("project: " + changed + "/" + owners.Count + " source units rebuilt; output " + output);
+        Console.Error.WriteLine("project: " + changed + "/" + owners.Count + " source units rebuilt, " + runtimeChanged + "/" + libraries.Length
+            + " class library units; output " + output);
         return 0;
     }
 
@@ -402,27 +413,4 @@ public static class ProjectCommand
         return ok;
     }
 
-    private static bool Current(string output, string signature, string index)
-        => ProjectState.Current(output + ".state", signature, output) && UnitDependencies.IsCurrent(output + ".deps", index);
-
-    private static bool Compile(List<string> arguments, string output, string signature, string index)
-    {
-        if (Current(output, signature, index)) { Console.Error.WriteLine("project: up-to-date " + output); return true; }
-        string temporary = output + "." + Guid.NewGuid().ToString("N");
-        arguments.Add("-o"); arguments.Add(temporary);
-        arguments.Add("--dependency-file"); arguments.Add(temporary + ".deps");
-        try
-        {
-            if (Driver.Run(arguments.ToArray()) != 0) return false;
-            File.Move(temporary, output, overwrite: true);
-            File.Move(temporary + ".deps", output + ".deps", overwrite: true);
-            ProjectState.Record(output + ".state", signature, output);
-            return true;
-        }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
-            if (File.Exists(temporary + ".deps")) File.Delete(temporary + ".deps");
-        }
-    }
 }
