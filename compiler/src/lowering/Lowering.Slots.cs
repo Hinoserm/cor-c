@@ -71,8 +71,14 @@ public sealed partial class Lowering
         if (_slotLabelsWaiting.Count == 0) return;
         HashSet<string> defined = new(_m.Functions.Select(f => f.Name), StringComparer.Ordinal);
         foreach (DataItem item in _m.Data)
-            item.Relocs.RemoveAll(r => r.Addend == 0 && _slotLabelsWaiting.TryGetValue(r.Symbol, out int slot)
-                && !_slotsCalled.Contains(slot) && !defined.Contains(r.Symbol));
+            item.Relocs.RemoveAll(r =>
+            {
+                if (r.Addend != 0 || !_slotLabelsWaiting.TryGetValue(r.Symbol, out int slot)
+                    || _slotsCalled.Contains(slot) || defined.Contains(r.Symbol)) return false;
+                // Said, so that a call through it is known to call nothing (Module.EmptiedSlots).
+                _m.EmptiedSlots.Add((item.Name, r.Offset));
+                return true;
+            });
     }
 
     /// <summary>

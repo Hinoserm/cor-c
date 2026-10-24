@@ -161,6 +161,14 @@ public sealed class Module
     public bool CallsCollector { get; set; }
 
     /// <summary>
+    /// The descriptor words lowering left empty in a closed world because no
+    /// code that runs reads their slot (Lowering.FillUnreachedSlots), as
+    /// (descriptor, offset): a call through one is never made, and calls
+    /// nothing (Escape's IndirectTargets).
+    /// </summary>
+    public HashSet<(string Item, int Offset)> EmptiedSlots { get; } = new();
+
+    /// <summary>
     /// The link's answer, for a unit of a closed image it regenerates: every
     /// type something thrown that was not just made can be an instance of,
     /// ancestors included -- a catch of any other type frees what it caught.

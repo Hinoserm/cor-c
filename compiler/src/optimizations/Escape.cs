@@ -4765,6 +4765,21 @@ continue;
             return bySlot[(declaring, slot)] = found.ToArray();
         }
 
+        // Whether every descriptor that answers `declaring` had the word for
+        // `slot` emptied by lowering -- and there is one.
+        bool EmptiedEverywhere(string declaring, long slot)
+        {
+            bool any = false;
+            foreach (DataItem d in descriptors)
+            {
+                if (declaring != "t_object" && !Corsac.Lang.Lto.VirtualTargets.Answers(Ancestors(d.Name), declaring)
+                    && !Corsac.Lang.Lto.VirtualTargets.MayAnswer(d.Name, declaring)) continue;
+                if (!bases.Any(b => m.EmptiedSlots.Contains((d.Name, (int)(b + slot))))) return false;
+                any = true;
+            }
+            return any;
+        }
+
         Dictionary<Instr, string[]> result = new(ReferenceEqualityComparer.Instance);
         Dictionary<string, bool> instantiated = new(StringComparer.Ordinal);
         foreach (Function f in m.Functions)
@@ -4808,6 +4823,18 @@ continue;
                         continue;
                     }
                     string[] targets = Slot(declaring, method.Offset);
+                    // A SLOT LOWERING EMPTIED IN EVERY TYPE THAT ANSWERS IT:
+                    // no code that runs reads it (Module.EmptiedSlots), so the
+                    // call is never made, and calls nothing. Counted unknown,
+                    // a never-run Runtime.FreeOwnedElements made every getter
+                    // that hands back a field it owns refuse that field --
+                    // and every exception thrown and caught kept its message.
+                    if (targets.Length == 0 && EmptiedEverywhere(declaring, method.Offset))
+                    {
+                        if (traced) Console.Error.WriteLine($"targets {f.Name}: {i} {declaring}+{method.Offset}: a slot lowering emptied");
+                        result[i] = Array.Empty<string>();
+                        continue;
+                    }
                     // A slot no descriptor fills is not a call this knows.
                     if (targets.Length == 0 || targets.Any(t => !byName.ContainsKey(t)))
                     {
