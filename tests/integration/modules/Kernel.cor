@@ -68,6 +68,14 @@ public static class Log
     }
 }
 
+// A SMALL FUNCTION A MODULE CALLS: its IR goes in the exports, and the
+// module's link puts its body where the module calls it -- no call into the
+// kernel for a getter (KernelExports.SmallBodies).
+public static class Tick
+{
+    public static int Twice(int value) => value * 2 + Log.Lines;
+}
+
 // NOTHING CALLS IT, neither the kernel nor the module: an open kernel keeps
 // it for modules nobody has built, and one linked with --keep, pruned to
 // what it and its build's modules reach, does not.

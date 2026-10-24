@@ -193,6 +193,9 @@ public static class ObjectLinkCommand
         // drain stopped making its messages.
         if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
         byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
+        // The kernel's small functions for its modules, read before this link's
+        // own optimiser takes the units' IR out (KernelExports.SmallBodies).
+        List<IrArchiveRecord>? smallBodies = exportsPath is not null && lto ? KernelExports.SmallBodies(inputs) : null;
         // A KERNEL WITH EXPORTS IS NOT CLOSED, whatever its address says:
         // what a module calls, subclasses or stores into is outside it, so
         // nothing the link proves about the whole program holds (closed
@@ -207,7 +210,7 @@ public static class ObjectLinkCommand
             // derives from (VirtualTargets.Made).
             madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && exportsPath is null && kernel is null,
             openTypes: exportsPath is not null || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
-            moduleOfKernel: kernel is not null);
+            moduleOfKernel: kernel is not null, kernelBodies: kernel?.Bodies);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
@@ -291,8 +294,10 @@ public static class ObjectLinkCommand
         if (exportsPath is not null)
         {
             List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
-            KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode);
-            Console.Error.WriteLine($"{exportsPath}: {globals.Count} kernel exports, build stamp {KernelExports.Text(stamp!)}");
+            byte[]? bodies = smallBodies is null ? null : KernelExports.BodiesNote(smallBodies, globals);
+            KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode, bodies);
+            Console.Error.WriteLine($"{exportsPath}: {globals.Count} kernel exports, build stamp {KernelExports.Text(stamp!)}"
+                + (bodies is null ? "" : ", small functions' IR " + (bodies.Length >> 10) + " KiB"));
         }
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)

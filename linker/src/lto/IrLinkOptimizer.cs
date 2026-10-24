@@ -23,7 +23,8 @@ public static class IrLinkOptimizer
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
         string? regionReport = null, bool madeOnly = false, bool openTypes = false, string? reachableFrom = null,
-        IEnumerable<string>? keep = null, bool moduleOfKernel = false, IReadOnlyList<HeapRecords?>? withoutCollector = null)
+        IEnumerable<string>? keep = null, bool moduleOfKernel = false, IReadOnlyList<HeapRecords?>? withoutCollector = null,
+        IrArchive? kernelBodies = null)
     {
         // THE SECOND MAKING OF A PROGRAM THAT NEEDS NO COLLECTOR (below,
         // HeapDecision): `withoutCollector` holds each input's records as
@@ -318,6 +319,21 @@ public static class IrLinkOptimizer
             // Not where stores go through the store-sequence stubs, which call the barriers whatever the program needs.
             && !owners.ContainsKey(RuntimeAbi.RefStore);
         List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<string>? Retained, HashSet<string>? Read)> plans = new();
+        // Where a call's body is: the unit of this link that defines it, or --
+        // a module's link -- the kernel's small functions in its exports
+        // (KernelExports.SmallBodies), for a call into the kernel no unit here
+        // answers.
+        bool Provider(string call, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IrArchive? provider, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IrArchiveEntry? body)
+        {
+            if (owners.TryGetValue(call, out ObjectFile? owner))
+            {
+                body = null;
+                return archives.TryGetValue(owner, out provider) && provider.Entries.TryGetValue("F:" + call, out body);
+            }
+            provider = kernelBodies;
+            body = null;
+            return provider is not null && provider.Entries.TryGetValue("F:" + call, out body);
+        }
         if (enabled)
             for (int index = 0; index < inputs.Count; index++)
             {
@@ -349,8 +365,7 @@ public static class IrLinkOptimizer
                 foreach (string call in archive.Entries.Values.Where(record => retained is null || retained.Contains(record.Key))
                     .SelectMany(record => record.Calls).Concat(helpers).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
                 {
-                    if (defined.Contains(call) || !owners.TryGetValue(call, out ObjectFile? owner) || !archives.TryGetValue(owner, out IrArchive? provider)
-                        || !provider.Entries.TryGetValue("F:" + call, out IrArchiveEntry? body) || !body.Importable
+                    if (defined.Contains(call) || !Provider(call, out IrArchive? provider, out IrArchiveEntry? body) || !body.Importable
                         || body.Instructions > 160) continue;
                     // NOTHING THAT ALLOCATES INTO A PROGRAM WITHOUT A COLLECTOR:
                     // what its own unit freed or kept in the frame, brought into
@@ -379,8 +394,7 @@ public static class IrLinkOptimizer
                 for (int at = 0; at < imports.Count; at++)
                     foreach (string call in imports[at].Body.Calls)
                     {
-                        if (taken.Contains(call) || defined.Contains(call) || !owners.TryGetValue(call, out ObjectFile? owner)
-                            || !archives.TryGetValue(owner, out IrArchive? provider) || !provider.Entries.TryGetValue("F:" + call, out IrArchiveEntry? body)
+                        if (taken.Contains(call) || defined.Contains(call) || !Provider(call, out IrArchive? provider, out IrArchiveEntry? body)
                             || !body.Importable || body.Instructions > ForwarderBody || body.Calls.Count > 0
                             || body.Length > importBytes - used || imports.Count >= BackendProtocol.MostImports - 2) continue;
                         if (noCollector && body.Calls.Any(callee => callee is RuntimeAbi.Alloc or RuntimeAbi.AllocLeaf or RuntimeAbi.AllocObject)) continue;

@@ -70,10 +70,63 @@ public sealed class KernelExports
     public bool LongMode { get; }
     /// <summary>Every name the kernel exports.</summary>
     public HashSet<string> Names { get; }
+    /// <summary>
+    /// The kernel's small functions' IR (SmallBodies), for a module's link to
+    /// bring into the module where it calls them; null where the exports have
+    /// none.
+    /// </summary>
+    public Lto.IrArchive? Bodies { get; }
 
-    private KernelExports(string path, string name, byte[] stamp, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names)
+    private KernelExports(string path, string name, byte[] stamp, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names, Lto.IrArchive? bodies)
     {
-        Path = path; Name = name; Stamp = stamp; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names;
+        Path = path; Name = name; Stamp = stamp; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names; Bodies = bodies;
+    }
+
+    // ---- the kernel's small functions -------------------------------------------
+    //
+    // A MODULE'S CALL INTO THE KERNEL IS AN INDIRECT CALL THROUGH ITS GOT, and
+    // its return, for what is a getter, one RDTSC (Cycles.Now) or a forwarder
+    // to an intrinsic: in win32k, on every call the GUI kernel answers, and
+    // under 86Box each return leaves the recompiler's chain of blocks. So the
+    // kernel's link writes the IR of its exported functions small enough to
+    // copy wherever they are called (SmallBody instructions), each only if
+    // everything it names is exported too -- a module's copy can name nothing
+    // else of the kernel's -- and a module's link imports them as it imports
+    // its own units' (IrLinkOptimizer). What the copies name becomes the
+    // module's imports, which the kernel's second link keeps.
+
+    /// <summary>The largest kernel function written for the modules: the link's tiny bodies.</summary>
+    public const int SmallBody = 24;
+
+    /// <summary>The importable small functions every unit of a kernel's link defines globally, with their bodies.</summary>
+    public static List<Lto.IrArchiveRecord> SmallBodies(IEnumerable<(string Name, ObjectFile Object)> inputs)
+    {
+        List<Lto.IrArchiveRecord> found = new();
+        HashSet<string> taken = new(StringComparer.Ordinal);
+        foreach ((string _, ObjectFile obj) in inputs)
+        {
+            Lto.IrArchive? archive = Lto.IrArchive.Read(obj);
+            if (archive is null) continue;
+            foreach (Symbol symbol in obj.Symbols)
+            {
+                if (!symbol.IsDefined || !symbol.Global || !symbol.IsFunction || !taken.Add(symbol.Name)) continue;
+                if (!archive.Entries.TryGetValue("F:" + symbol.Name, out Lto.IrArchiveEntry? entry) || !entry.Importable || entry.Instructions > SmallBody) continue;
+                found.Add(new Lto.IrArchiveRecord(entry.Key, true, entry.Instructions, entry.Calls, archive.ReadBody(entry.Key), entry.References, entry.DecodeBytes));
+            }
+        }
+        return found;
+    }
+
+    /// <summary>Those whose every name is among the kernel's final exports, as an archive's bytes; null for none.</summary>
+    public static byte[]? BodiesNote(List<Lto.IrArchiveRecord> bodies, IReadOnlyList<Export> globals)
+    {
+        HashSet<string> exported = new(globals.Select(g => g.Name), StringComparer.Ordinal);
+        List<Lto.IrArchiveRecord> kept = bodies.Where(r => exported.Contains(r.Key[2..])
+            && (r.References ?? r.Calls).All(name => exported.Contains(Lto.IrArchiveEntry.Named(name)))).ToList();
+        if (kept.Count == 0) return null;
+        ObjectFile holder = new();
+        Lto.IrArchive.Attach(holder, kept);
+        return holder.Sections[0].Bytes.ToArray();
     }
 
     /// <summary>One global of a linked image: what a .dynsym entry of it says.</summary>
@@ -101,8 +154,17 @@ public sealed class KernelExports
         byte[]? Copy(string name) => sections.Find(s => s.Name == name) is { } s ? bytes.AsSpan((int)s.Offset, (int)s.Size).ToArray() : null;
         HashSet<string> names = new(ElfReader.ExportsOf(bytes), StringComparer.Ordinal);
         string name = ElfReader.SoNameOf(bytes) ?? System.IO.Path.GetFileName(path);
+        Lto.IrArchive? bodies = null;
+        if (Copy(Lto.IrArchive.SectionName) is { } note)
+        {
+            ObjectFile holder = new() { NativeOmitted = true };
+            Section section = new(Lto.IrArchive.SectionName, SectionKind.Note);
+            section.Bytes.AddRange(note);
+            holder.Sections.Add(section);
+            bodies = Lto.IrArchive.Read(holder);
+        }
         return new KernelExports(path, name, Copy(StampSection)!, Copy(TargetContract.SectionName), Copy(X86CodeGenerationContract.SectionName),
-            bytes[4] == Elf.Class64, names);
+            bytes[4] == Elf.Class64, names, bodies);
     }
 
     /// <summary>The stamp in a linked image's .corsac.stamp, or null where it has none: a kernel's, a module's, or these exports'.</summary>
@@ -172,7 +234,7 @@ public sealed class KernelExports
     /// hash over them, a .dynamic naming the tables and the kernel
     /// (DT_SONAME), and the stamp and the contracts as notes.
     /// </summary>
-    public static void Write(string path, string kernelName, IReadOnlyList<Export> symbols, byte[] stamp, byte[]? abi, byte[]? cpu, bool wide)
+    public static void Write(string path, string kernelName, IReadOnlyList<Export> symbols, byte[] stamp, byte[]? abi, byte[]? cpu, bool wide, byte[]? bodies = null)
     {
         if (stamp.Length != StampBytes) throw new ArgumentException("a build stamp is " + StampBytes + " bytes");
         int header = wide ? Elf.Header64Size : Elf.HeaderSize;
@@ -213,6 +275,7 @@ public sealed class KernelExports
         List<(string Name, byte[] Bytes)> notes = new() { (StampSection, stamp) };
         if (abi is not null) notes.Add((TargetContract.SectionName, abi));
         if (cpu is not null) notes.Add((X86CodeGenerationContract.SectionName, cpu));
+        if (bodies is not null) notes.Add((Lto.IrArchive.SectionName, bodies));
         long[] noteAt = new long[notes.Count];
         long at = loadEnd;
         for (int i = 0; i < notes.Count; i++) { at = Align(at, 4); noteAt[i] = at; at += notes[i].Bytes.Length; }

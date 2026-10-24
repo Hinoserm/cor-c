@@ -20,7 +20,7 @@ public sealed class Sb16 : Driver
     {
         _base = port;
         Log.Write("sb16 at " + port + ", " + Sb16Module.Greeting);
-        return Sb16Module.Loads;
+        return Sb16Module.Loads + Tick.Twice(port) - Tick.Twice(port);
     }
 }
 

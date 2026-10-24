@@ -84,6 +84,12 @@ printf '%s\t%s\t%s\tentry\n' "$(realpath $here/Sb16.cor)" "$work/project/sb16.o"
 "$corc" link "$work/project/sb16.o" --kernel "$a/kernel.exports" -o "$work/project/sb16.ko" 2> "$work/project/link.log" \
     || { cat "$work/project/link.log"; fail "module units' link"; }
 
+# THE KERNEL'S SMALL FUNCTIONS COME INTO THE MODULE (KernelExports.SmallBodies):
+# Tick.Twice is copied where Sb16 calls it, no call through the GOT for it.
+grep -q "small functions' IR" "$a/link.log" || fail "the kernel's exports carry no small functions' IR"
+for ko in "$work/sb16.ko" "$work/linked/sb16.ko" "$work/project/sb16.ko"; do
+    if objdump -d "$ko" | grep -q 'Tick_Twice'; then fail "$ko calls the kernel's Tick.Twice instead of carrying it"; fi
+done
 for ko in "$work/sb16.ko" "$work/linked/sb16.ko" "$work/project/sb16.ko"; do
     readelf -h "$ko" | grep -q 'DYN (Shared object file)' || fail "$ko is not a shared object"
     readelf -d "$ko" > "$ko.dynamic"
