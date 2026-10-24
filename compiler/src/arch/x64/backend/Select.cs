@@ -1841,7 +1841,7 @@ internal sealed class Selector
         }
         Mov(Rax, number);
         // Linux's system call is the syscall instruction; any other gate --
-        // a kernel's own, CORSAC's ring 1 -- is a software interrupt taking
+        // a kernel's own, CORSAC's GUI module's -- is a software interrupt taking
         // the same registers.
         Emit(i.Offset == 0 ? new MInstr(MOp.Syscall) { IntArgs = args }
                            : new MInstr(MOp.SoftInt, Imm(i.Offset)) { IntArgs = args });

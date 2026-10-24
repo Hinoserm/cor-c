@@ -809,14 +809,13 @@ public sealed partial class Lowering
             }
             case "Syscall":
             case "GuiCall":
-            case "GuiService":
             {
                 List<Operand> args = new();
                 for (int i = 1; i < target.Params.Count; i++)
                 {
                     args.Add(R(ToWord(Arg(call, target, i))));
                 }
-                int vector = target.Name == "GuiCall" ? 0x81 : target.Name == "GuiService" ? 0x82 : Ring1Syscalls ? 0x83 : 0x80;
+                int vector = target.Name == "GuiCall" ? 0x81 : 0x80;
                 VReg r = _e.Syscall(R(ToWord(Arg(call, target, 0))), args, vector);
                 return Widen(r);
             }

@@ -836,12 +836,9 @@ public static class Prelude
             public static long Syscall(long number, long a, long b, long c) { return 0; }
             public static long Syscall(long number, long a, long b, long c, long d, long e, long f) { return 0; }
 
-            // The GUI kernel's two doors, the same convention as Syscall with
-            // another vector: GuiCall is a program's way into ring 1
-            // (`int 0x81`), GuiService is ring 1's way down to the kernel
-            // (`int 0x82`, which ring 3 may not use).
+            // The GUI module's door, the same convention as Syscall with
+            // another vector: a program's way into the GUI kernel (`int 0x81`).
             public static long GuiCall(long number, long a, long b, long c) { return 0; }
-            public static long GuiService(long number, long a, long b, long c) { return 0; }
             // A Windows system call (`int 0x2E`): EAX the call's number and EDX
             // the address of its arguments, as ntdll's stubs make it; the
             // answer is its NTSTATUS. For a CORSAC program attached to the NT

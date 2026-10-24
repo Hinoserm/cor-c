@@ -309,10 +309,10 @@ public sealed class CardMarks : IModulePass
 
         // 3. AN ERROR, where a barrier's diamond kept its window. Sequences
         //    are made only for an image whose threads are sent to the
-        //    collector's handshake at any instruction (--ring1-syscalls,
-        //    --store-sequences), and there a store left as a test, a barrier
-        //    call and a card can lose a reference to a concurrent mark: the
-        //    heap corrupted later, far from here. Every kernel, GUI and NT link
+        //    collector's handshake at any instruction (--store-sequences),
+        //    and there a store left as a test, a barrier call and a card can
+        //    lose a reference to a concurrent mark: the heap corrupted later,
+        //    far from here. Every kernel, GUI and NT link
         //    is clean of them, so one now stops the build where it is made.
         if (unfused > 0)
             throw new CompileError(f.SourceFile ?? f.Name, unfusedLine > 0 ? unfusedLine : f.Line, 0,

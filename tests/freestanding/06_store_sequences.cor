@@ -1,5 +1,5 @@
-// test: --ring1-syscalls makes a reference store one sequence no thread is stopped inside
-// flags: --ring1-syscalls
+// test: --store-sequences makes a reference store one sequence no thread is stopped inside
+// flags: --store-sequences
 // run: no
 // expect-asm-x86: Store: __corsac_refstore
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier

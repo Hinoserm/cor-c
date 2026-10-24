@@ -165,7 +165,7 @@ Everything runs natively on an x86-64 Linux host:
 `runtime/src/arch/x86/baremetal.cor`, the thread block is a word of `.bss`
 (or `gs:[0]` with `--tls-gs`, a kernel's per-processor block with its base
 in `IA32_GS_BASE`), and `--flat` writes a flat image. A system call through
-a gate other than Linux's (`--ring1-syscalls`, `int 0x83`) is `int N` with
+a gate other than Linux's (`Sys.GuiCall`, `int 0x81`) is `int N` with
 `syscall`'s registers.
 
 The machine intrinsics are the i386 backend's -- port I/O and its string

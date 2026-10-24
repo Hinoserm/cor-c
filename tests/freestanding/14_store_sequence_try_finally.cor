@@ -1,5 +1,5 @@
 // test: a store after a try/finally and an early static store is one sequence
-// flags: --ring1-syscalls
+// flags: --store-sequences
 // run: no
 // expect-asm-x86: Probe: __corsac_refstore
 // expect-no-asm-x86: Probe: __corsac_barrier __corsac_cardmark

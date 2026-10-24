@@ -591,10 +591,9 @@ public sealed class X86Backend : IBackend
         // runtime's barriers, when its units' stores are made through them:
         // the image's one copy, global, which its other units and its modules
         // call, laid out together between two symbols its kernel reads
-        // (CORSAC's ring-1 header). A thread of a ring-1 kernel is sent to its
-        // collector's handshake at whatever instruction a trap finds it on
-        // (Ring1Kernel.SendToAnswer), and ring 0 sends none whose EIP lies in
-        // here: between the Marking test and the store a thread so sent would
+        // (__corsac_store_sequences). A kernel's processor answers its
+        // collector's handshake at whatever instruction an interrupt finds it
+        // on, and the kernel answers none whose EIP lies in here: between the Marking test and the store a thread so sent would
         // answer the snapshot and then store over a reference nobody
         // reported, and between the store and the card leave the card unset
         // for a minor cycle. Each runs to its RET first.

@@ -323,9 +323,6 @@ public static class Driver
                                  at gs:[0], as on Linux, not in one global word.
                                  For a kernel with a block per processor; the
                                  program must load GS before managed code runs
-              --ring1-syscalls   with --freestanding: Sys.Syscall traps to 0x83, the
-                                 CORSAC ring-1 kernels' gate for Linux's file
-                                 calls, instead of 0x80
               --kernel-syscalls  with --freestanding or --kernel: Sys.Syscall is a
                                  call of the kernel's KernelFiles.Syscall(number,
                                  a..f), missing arguments 0 -- ring 0's Linux file
@@ -337,8 +334,7 @@ public static class Driver
                                  With --freestanding until the Windows platform
                                  layer is in; --base is 0x10000000 unless given
               --store-sequences  every reference store one sequence no thread is
-                                 stopped inside, as a kernel's images are built;
-                                 a ring-1 kernel's always are
+                                 stopped inside, as a kernel's images are built
               --base <addr>      load or link address, hexadecimal (0x10000)
               --load <addr>      where a loader puts the image, when that is
                                  not where it is linked to run: the ELF's
@@ -764,19 +760,14 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.Dll = dll;
         Corsac.Lang.Lower.Lowering.Freestanding = freestanding;
         Corsac.Lang.Lower.Lowering.TlsGs = freestanding && args.Contains("--tls-gs");
-        Corsac.Lang.Lower.Lowering.Ring1Syscalls = freestanding && args.Contains("--ring1-syscalls");
         // RING 0'S FILE CALLS, served by the kernel's own function
         // (Lowering.KernelSyscalls): the kernel and its modules.
         Corsac.Lang.Lower.Lowering.KernelSyscalls = (freestanding || Value(args, "--kernel") is not null) && args.Contains("--kernel-syscalls");
         if (args.Contains("--kernel-syscalls") && !Corsac.Lang.Lower.Lowering.KernelSyscalls)
             return Fail("--kernel-syscalls is for ring-0 code: a --freestanding kernel or a --kernel module");
-        if (Corsac.Lang.Lower.Lowering.KernelSyscalls && args.Contains("--ring1-syscalls"))
-            return Fail("--kernel-syscalls and --ring1-syscalls are two ways of making Sys.Syscall: one, not both");
         // ITS THREADS ARE STOPPED AT ANY INSTRUCTION: every reference store is
         // made one sequence no thread is stopped inside (Lowering.StoreSequences):
-        // a ring-1 kernel's, sent to its handshake from wherever a trap finds
-        // it (--ring1-syscalls), and ring 0's kernel and its modules, whose
-        // processors answer their collector from a Kick's interrupt -- the
+        // ring 0's kernel and its modules, whose processors answer their collector from a Kick's interrupt -- the
         // image build asks with --store-sequences. ANY COMPILE MAY ASK: the
         // core runtime has every routine the stubs call, and a program run on
         // Linux compiled so is the kernels' scheme tested across the whole
@@ -790,9 +781,9 @@ public static class Driver
         // a build that asked for them believed it had them.
         if (longMode && args.Contains("--store-sequences"))
             return Fail("--store-sequences is the 32-bit backend's: long mode has no store sequences");
-        Corsac.Lang.Lower.Lowering.StoreSequences = Corsac.Lang.Lower.Lowering.Ring1Syscalls || args.Contains("--store-sequences");
+        Corsac.Lang.Lower.Lowering.StoreSequences = args.Contains("--store-sequences");
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
-        Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && freestanding && !Corsac.Lang.Lower.Lowering.Ring1Syscalls;
+        Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && freestanding;
 
         // --asm-entry: an assembled object supplies `_start`, and this is the
         // name it calls once it has a stack and a cleared .bss.
@@ -1866,8 +1857,8 @@ public static class Driver
         }
         if (!freestanding)
         {
-            // Linux's numbers and structures, and its file calls, which the
-            // ring-1 kernels of CORSAC compile too (files.cor).
+            // Linux's numbers and structures, and its file calls, which
+            // CORSAC's kernel compiles too (files.cor, --kernel-syscalls).
             libs.Add(Path.Combine(root, "runtime", "src", "platforms", "linux", "abi.cor"));
             libs.Add(Path.Combine(root, "runtime", "src", "platforms", "linux", "files.cor"));
         }

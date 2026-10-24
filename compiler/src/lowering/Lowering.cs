@@ -63,13 +63,6 @@ public sealed partial class Lowering
     public static bool TlsGs { get; set; }
 
     /// <summary>
-    /// Sys.Syscall traps to 0x83 instead of 0x80: the program is one of
-    /// CORSAC's ring-1 kernels, whose Linux file calls go through a gate of
-    /// their own (--ring1-syscalls). The numbers and registers are Linux's.
-    /// </summary>
-    public static bool Ring1Syscalls { get; set; }
-
-    /// <summary>
     /// Sys.Syscall is a call of the kernel's own KernelFiles.Syscall(number,
     /// a, b, c, d, e, f), missing arguments 0, bound by name like any other
     /// kernel symbol (--kernel-syscalls): ring-0 code -- the kernel and its
@@ -81,9 +74,9 @@ public sealed partial class Lowering
     /// <summary>
     /// THE CARD MARK BEFORE A REFERENCE STORE AS WELL AS AFTER IT: the
     /// program's threads can be stopped by its collector at ANY instruction,
-    /// not only at a poll or a call. CORSAC's ring-1 kernels are: ring 0
-    /// sends a thread that owes their collector an answer to its handshake
-    /// from wherever the trap found it (Ring1Kernel.SendToAnswer). With the
+    /// not only at a poll or a call. CORSAC's kernel and its modules are: a
+    /// processor that owes the collector an answer answers from wherever a
+    /// Kick's interrupt found it. With the
     /// mark only after the store, a thread sent there between the two, its
     /// value already in the old object and in no register any more, left the
     /// card unset while a minor cycle took the cards, and the young object
@@ -93,8 +86,8 @@ public sealed partial class Lowering
     /// its handshake saved on its stack; taken after it, the old object holds
     /// it and its card was read. The mark after stays, for a cycle that takes
     /// the cards while the thread runs. Set wherever StoreSequences is:
-    /// --ring1-syscalls, or --store-sequences (ring 0's kernel and modules,
-    /// whose processors answer their collector from a Kick's interrupt).
+    /// --store-sequences (ring 0's kernel and modules, whose processors
+    /// answer their collector from a Kick's interrupt).
     ///
     /// NOW ONLY A FALLBACK. Such an image makes its stores as sequences
     /// (StoreSequences), inside which nothing stops a thread between the
@@ -106,10 +99,10 @@ public sealed partial class Lowering
 
     /// <summary>
     /// THE STORE SEQUENCES: every reference store of an i386 image whose
-    /// threads its collector stops at ANY instruction -- CORSAC's ring-1
-    /// kernels, whose ring 0 sends a thread to the collector's handshake from
-    /// wherever a trap finds it (Ring1Kernel.SendToAnswer) -- is made by one
-    /// of the image's stubs, which ring 0 sends no thread out of. Its Marking
+    /// threads its collector stops at ANY instruction -- CORSAC's kernel and
+    /// its modules, whose processors answer the collector's handshake from
+    /// wherever a Kick's interrupt finds them -- is made by one of the
+    /// image's stubs, which no thread is stopped inside. Its Marking
     /// test, its snapshot barrier, the store and its card mark are one
     /// sequence there: a thread stopped between the test and the store would
     /// answer the snapshot and then store over a reference nobody heard of,
@@ -118,14 +111,13 @@ public sealed partial class Lowering
     /// runtime helpers (RuntimeAbi.RefStore); the last pass makes each one
     /// its sequence (CardMarks.FuseStores); Interlocked's reference
     /// exchanges are sequences of their own from the start
-    /// (Sys.ExchangeReference). Set with --ring1-syscalls, or
-    /// --store-sequences.
+    /// (Sys.ExchangeReference). Set with --store-sequences.
     /// </summary>
     public static bool StoreSequences { get; set; }
 
     /// <summary>
     /// THE THREAD BLOCK IS A PROCESSOR'S, not a thread's: ring 0's kernel and
-    /// its modules (--store-sequences without --ring1-syscalls), where a
+    /// its modules (--freestanding with --store-sequences), where a
     /// process's kernel code that parks is resumed on whichever processor
     /// runs it next, with that processor's block. A read of the block before
     /// a call is not the block after it (Gvn).
@@ -1509,11 +1501,6 @@ public sealed partial class Lowering
         {
             Require(exit);
             e.Call(CallLabel(exit), IrType.Void, code);
-        }
-        else if (Ring1Syscalls)
-        {
-            // A ring-1 kernel's Linux calls go through its own gate.
-            e.Syscall(new ImmOperand(_t.ExitSyscall, IrTypes.Word), new[] { code }, 0x83);
         }
         else if (Freestanding)
         {

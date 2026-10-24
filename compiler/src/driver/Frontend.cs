@@ -977,7 +977,7 @@ public static class Frontend
     {
         // ANY SOURCE OF THE COMPILER'S LIBRARY ROOT IS THE CLASS LIBRARY'S, the
         // class library's and the runtime's alike, whichever of them this
-        // target's default set names: a ring-1 kernel compiles io.cor and
+        // target's default set names: CORSAC's kernel compiles io.cor and
         // Linux's files.cor as units of its own beside Core.cor and
         // baremetal.cor, and DateTime's two parts, and Os's, were taken for
         // two types each -- the part in the default set the library's, the

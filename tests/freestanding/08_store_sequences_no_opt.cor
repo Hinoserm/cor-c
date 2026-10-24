@@ -1,5 +1,5 @@
-// test: --no-opt makes a ring-1 image's reference stores sequences too
-// flags: --ring1-syscalls --no-opt
+// test: --no-opt makes a store-sequence image's reference stores sequences too
+// flags: --store-sequences --no-opt
 // run: no
 // expect-asm-x86: Store: __corsac_refstore
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier m_Runtime_CardMark m_Runtime_WriteBarrier
