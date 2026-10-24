@@ -244,6 +244,10 @@ public static class ProjectCompile
             one.Add("--dependency-file"); one.Add(unit.Receipt);
             one.Add("-o"); one.Add(unit.Object);
             long before = GC.GetTotalAllocatedBytes();
+            // A UNIT BEGUN IS SAID AT ONCE: only its end was, and a unit that
+            // never ended -- the compile caught in a loop -- looked like one
+            // still working, minutes on, with nothing to say which it was.
+            lock (gate) Console.Error.WriteLine("unit " + Path.GetFileName(unit.Source) + " begun");
             int code;
             try
             {

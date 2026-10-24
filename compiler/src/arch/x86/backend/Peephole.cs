@@ -396,26 +396,47 @@ internal static class Peephole
             edges[(from, to)] = new(state);
             return true;
         }
+        // ONE EDGE, SEVERAL WAYS ALONG IT in a walk of its block -- a jump to
+        // the block it then falls into, a table naming a target twice: what
+        // they carry is met, and the edge given that once. Each replacing
+        // the last, the edge took the two states in turn, every pass a
+        // change, and the walk never ended.
+        Dictionary<int, Dictionary<int, int>> along = new();
+        void Along(int to, Dictionary<int, int> state)
+        {
+            if (!along.TryGetValue(to, out Dictionary<int, int>? met)) { along[to] = new(state); return; }
+            foreach (int slot in met.Keys.ToList())
+            {
+                int both = state.TryGetValue(slot, out int regs) ? met[slot] & regs : 0;
+                if (both == 0) met.Remove(slot); else met[slot] = both;
+            }
+        }
         void Walk(int b, Dictionary<int, int> state, bool rewrite, ref bool changed)
         {
+            along.Clear();
             List<MInstr> instrs = m.Blocks[b].Instrs;
             for (int k = 0; k < instrs.Count; k++)
             {
                 MInstr i = instrs[k];
                 if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel { Target: var t } && index.TryGetValue(t, out int ti))
-                    changed |= Carry(b, ti, state);
+                    Along(ti, state);
                 else if (i.Op == MOp.JmpTable && i.Table is { } table)
-                    foreach (MBlock each in table) if (index.TryGetValue(each, out int ei)) changed |= Carry(b, ei, state);
+                    foreach (MBlock each in table) if (index.TryGetValue(each, out int ei)) Along(ei, state);
                 MInstr? now = StepHeld(i, state, rewrite);
                 if (!rewrite) continue;
                 if (now is null) { instrs.RemoveAt(k); k--; }
                 else instrs[k] = now;
             }
-            if (!m.Blocks[b].EndsUnconditionally && b + 1 < nb) changed |= Carry(b, b + 1, state);
+            if (!m.Blocks[b].EndsUnconditionally && b + 1 < nb) Along(b + 1, state);
+            foreach ((int to, Dictionary<int, int> met) in along) changed |= Carry(b, to, met);
         }
         bool again = true;
+        int passes = 0;
         while (again)
         {
+            // What each edge carries only shrinks, so this settles; a walk
+            // that has not is a fault, said with its function, not a spin.
+            if (++passes > 1000 + 16 * nb) throw new InvalidOperationException(m.Source.Name + ": forwarding spill loads did not settle");
             again = false;
             for (int b = 0; b < nb; b++)
                 if (Entry(b) is { } state) Walk(b, state, rewrite: false, ref again);
