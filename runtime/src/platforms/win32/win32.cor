@@ -59,7 +59,7 @@ static class Win32
     static extern nint GetModuleHandleW(nint name);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern nint CreateSemaphoreW(nint security, int initial, int maximum, nint name);
+    static extern nint CreateSemaphoreA(nint security, int initial, int maximum, nint name);
 
     [DllImport("kernel32"), SuppressGCTransition]
     static extern int ReleaseSemaphore(nint semaphore, int count, nint previous);
@@ -355,7 +355,7 @@ static class Win32
         if (table == 0) return false;
         for (int i = 0; i < ParkBuckets; i++)
         {
-            long semaphore = (long)(nuint)CreateSemaphoreW(0, 0, 0x7FFFFFFF, 0);
+            long semaphore = (long)(nuint)CreateSemaphoreA(0, 0, 0x7FFFFFFF, 0);
             if (semaphore == 0) return false;
             Sys.Poke(table + i * 4, semaphore);
         }
