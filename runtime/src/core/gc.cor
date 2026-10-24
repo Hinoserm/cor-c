@@ -1592,13 +1592,31 @@ static class Gc
         return at;
     }
 
-    /// The words of a frame a pooled bitmap names (a byte count, then the
-    /// bytes, bit b of byte k the word at frame - 4(8k + b + 1)), kept --
-    /// those at or above `from` only.
+    /// The words of a frame a pooled bitmap names, kept -- those at or above
+    /// `from` only. Dense (a byte count << 1, then the bytes, bit b of byte k
+    /// the word at frame - 4(8k + b + 1)) or sparse (a word count << 1 | 1,
+    /// then the first word and each next word's distance past it less one).
     static long KeepBitmap(long frame, long bitmap, long from, long copy, long at)
     {
         long p = 0;
-        long bytes = MapUleb(bitmap, out p);
+        long head = MapUleb(bitmap, out p);
+        long bytes = head >> 1;
+        if ((head & 1) != 0)
+        {
+            long word = -1;
+            long n = 0;
+            while (n < bytes)
+            {
+                word = word + MapUleb(p, out p) + 1;
+                long slot = frame - 4 * (word + 1);
+                if (slot >= from)
+                {
+                    at = KeepWord(Sys.Peek(slot), copy, at);
+                }
+                n = n + 1;
+            }
+            return at;
+        }
         long k = 0;
         while (k < bytes)
         {

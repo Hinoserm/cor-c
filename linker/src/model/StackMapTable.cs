@@ -40,7 +40,12 @@ namespace Corsac.Lang.Ir;
 ///       uleb  bitmap reference << 4 | live registers (bit 0 EBX, 1 ESI,
 ///             2 EDI) | 8 when the call has no map (its frame is read whole)
 ///     uleb  0, the end of the function's call sites
-///   the pool: per bitmap, uleb byte count, then the bytes
+///   the pool: per bitmap, uleb n << 1 | sparse, then for a dense one n
+///     bytes (bit b of byte k the word 8k + b), for a sparse one n ulebs:
+///     the first word, then each word's distance past the one before less
+///     one -- whichever is shorter. A large frame's live spill slots are a
+///     few words among hundreds: dense, the GUI module's pool was 590 KB of
+///     zero bytes, resident.
 ///
 ///   A BITMAP REFERENCE is odd for one held inline -- ref >> 1, bit b the word
 ///   at EBP - 4(b+1), at most sixteen words -- and even for a pooled one,
@@ -130,7 +135,7 @@ public static class StackMapTable
             if (Inline(words)) return;
             string key = string.Join(',', words);
             if (pooled.TryGetValue(key, out var seen)) pooled[key] = (seen.Uses + 1, seen.First, seen.Bytes);
-            else pooled.Add(key, (1, pooled.Count, Dense(words)));
+            else pooled.Add(key, (1, pooled.Count, Pooled(words)));
         }
         foreach (Function f in functions)
         {
@@ -142,7 +147,6 @@ public static class StackMapTable
         foreach (var entry in pooled.OrderByDescending(p => p.Value.Uses).ThenBy(p => p.Value.First))
         {
             placed.Add(entry.Key, pool.Count);
-            Uleb(pool, (ulong)entry.Value.Bytes.Length);
             pool.AddRange(entry.Value.Bytes);
         }
         ulong Reference(int[] words)
@@ -231,8 +235,19 @@ public static class StackMapTable
                     return words.ToArray();
                 }
                 int q = poolAt + (int)(reference >> 1);
-                int bytes = (int)ReadUleb(b, ref q);
-                for (int k = 0; k < bytes; k++)
+                ulong head = ReadUleb(b, ref q);
+                int n = (int)(head >> 1);
+                if ((head & 1) != 0)
+                {
+                    int word = -1;
+                    for (int k = 0; k < n; k++)
+                    {
+                        word += (int)ReadUleb(b, ref q) + 1;
+                        words.Add(word);
+                    }
+                    return words.ToArray();
+                }
+                for (int k = 0; k < n; k++)
                     for (int bit = 0; bit < 8; bit++)
                         if ((b[q + k] >> bit & 1) != 0) words.Add(k * 8 + bit);
                 return words.ToArray();
@@ -272,11 +287,23 @@ public static class StackMapTable
 
     private static bool Inline(int[] words) => words.Length == 0 || words[^1] < InlineWords;
 
-    private static byte[] Dense(int[] words)
+    /// <summary>A bitmap as the pool holds it: its head and its body, dense or sparse, whichever is shorter.</summary>
+    private static byte[] Pooled(int[] words)
     {
         byte[] bytes = new byte[words[^1] / 8 + 1];
         foreach (int w in words) bytes[w / 8] |= (byte)(1 << (w % 8));
-        return bytes;
+        ChunkedBytes dense = new();
+        Uleb(dense, (ulong)bytes.Length << 1);
+        dense.AddRange(bytes);
+        ChunkedBytes sparse = new();
+        Uleb(sparse, (ulong)words.Length << 1 | 1);
+        int previous = -1;
+        foreach (int w in words)
+        {
+            Uleb(sparse, (ulong)(w - previous - 1));
+            previous = w;
+        }
+        return sparse.Count < dense.Count ? sparse.ToArray() : dense.ToArray();
     }
 
     /// <summary>EBX, ESI and EDI (hardware numbers 3, 6 and 7) as bits 0, 1 and 2.</summary>
