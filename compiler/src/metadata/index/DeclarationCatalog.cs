@@ -33,9 +33,15 @@ public sealed class DeclarationCatalog : IDisposable
 
     /// <summary>
     /// The interface families of the KERNEL a module is compiled against:
-    /// those of the index under this one, when it was made on one, else of
-    /// this index -- a module compiled whole against the kernel's index
-    /// alone. What a module adds is the rest (Binder, the module's tier).
+    /// those of the index at the bottom of the chain this one was made on
+    /// (`index --on`), else of this index -- a module compiled whole against
+    /// the kernel's index alone. What the modules add is the rest, each
+    /// family with the level of the chain that first lists it (KernelFamilies.
+    /// Levels): a module made on another numbers the one under it first, as
+    /// that one numbered itself (Binder, the module's tier). Taken from the
+    /// index directly under, a module on the GUI module counted the GUI's
+    /// families as the kernel's, and every kernel class's virtuals moved up
+    /// by their thirty-nine slots in the NT module alone.
     /// </summary>
     public IReadOnlySet<(string Name, int Arity)> KernelInterfaces(string assembly)
     {
@@ -43,8 +49,13 @@ public sealed class DeclarationCatalog : IDisposable
         {
             if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
             if (kernelInterfaces is not null) return kernelInterfaces;
-            HashSet<(string Name, int Arity)> families = new();
-            foreach (var family in InterfaceFamilies.Read(index.Under ?? index, assembly)) families.Add(family.Key);
+            List<DeclarationIndex> chain = new();
+            for (DeclarationIndex? at = index; at is not null; at = at.Under) chain.Insert(0, at);
+            KernelFamilies families = new();
+            foreach (var family in InterfaceFamilies.Read(chain[0], assembly)) families.Add(family.Key);
+            for (int level = 1; level < chain.Count; level++)
+                foreach (var family in InterfaceFamilies.Read(chain[level], assembly))
+                    if (!families.Contains(family.Key)) families.Levels.TryAdd(family.Key, level);
             kernelInterfaces = families;
             return families;
         }
@@ -399,4 +410,15 @@ public sealed class DeclarationCatalog : IDisposable
             index.Dispose();
         }
     }
+}
+
+/// <summary>
+/// The kernel's interface families, and the module levels of the rest: the
+/// level of the `index --on` chain that first lists each (1 for the module
+/// right on the kernel), so that a module numbers the modules under it in
+/// their order, and its own above them.
+/// </summary>
+public sealed class KernelFamilies : HashSet<(string Name, int Arity)>
+{
+    public Dictionary<(string Name, int Arity), int> Levels { get; } = new();
 }

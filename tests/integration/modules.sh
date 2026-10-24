@@ -172,6 +172,15 @@ if "$corc" link $objects -o "$work/pruned/wrong" --keep "$work/keep" 2> "$work/p
 # through the module's index; the kernel loads it and calls through a
 # kernel interface into it, which the module's own interface, sorting
 # before, must not have moved.
+# Where a method is in an object's method table: the offset from the
+# table's symbol to the relocation that names the method, in .data.rel.ro.
+table_offset() {
+    local at
+    at=$(readelf -s -W "$1" | awk -v n="$2" '$8 == n && $7 != "UND" { print $2; exit }')
+    test -n "$at" || return 0
+    readelf -r -W "$1" | awk -v at="$at" -v m="$3" '/^Relocation section/ { s = ($0 ~ /\.rel\.data\.rel\.ro. /) }
+        s && $5 ~ m { print strtonum("0x" $1) - strtonum("0x" at); exit }'
+}
 m=$work/units
 mkdir -p "$m"
 mixer="$here/MixerAudio.cor $here/MixerDriver.cor $here/MixerEntry.cor"
@@ -252,6 +261,13 @@ for name in 't_Sound$002eChannel' 'm_Sound$Channels_Total_0' 's_Kernel$002eLog_L
 done
 if readelf -s -W "$ko" | awk '$8 == "t_Sound$002eChannel" && $7 != "UND" { found = 1 } END { exit !found }'; then fail "$ko defines the mixer's Channel"; fi
 readelf -s -W "$ko" | awk '$8 == "t_Chorus$002eVoice" && $7 != "UND" { found = 1 } END { exit !found }' || fail "$ko does not define its own Voice"
+# ITS SLOTS ARE THE KERNEL'S: the kernel's Driver.Bind and IDevice.Probe
+# sit in its Echo's method table where they sit in the mixer's Mixer.
+for method in Bind Probe; do
+    mixer_at=$(table_offset "$m/MixerDriver.o" 't_Sound$002eMixer' "^m_Sound.Mixer_${method}_")
+    echo_at=$(table_offset "$c/Chorus.o" 't_Chorus$002eEcho' "^m_Chorus.Echo_${method}_")
+    test -n "$mixer_at" && test "$mixer_at" = "$echo_at" || fail "$method is at ${echo_at:-nowhere} in a module on a module, at ${mixer_at:-nowhere} in the kernel's"
+done
 # Without the mixer's file its imports of the mixer are nobody's.
 if "$corc" link "$c/Chorus.o" --kernel "$a/kernel.exports" -o "$c/alone.ko" 2> "$c/alone.log"; then fail "a module on a module linked without it"; fi
 grep -q "neither kernel nor a module this one depends on exports it" "$c/alone.log" || { cat "$c/alone.log"; fail "the link without the mixer said otherwise"; }

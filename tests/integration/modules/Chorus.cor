@@ -18,6 +18,19 @@ public sealed class Voice
     public string Say() { return "chorus " + _channel.Describe(); }
 }
 
+// A KERNEL CLASS DERIVED AND A KERNEL INTERFACE IMPLEMENTED in a module on
+// a module: its Bind and Probe are where the kernel calls them, at the
+// slots the mixer's Mixer has them in. The mixer's own interface (IAudio)
+// is the mixer's, numbered as the mixer numbered it; counted among the
+// kernel's, it moved every slot of the kernel's classes up by its methods
+// in this module alone, and the kernel's calls into it jumped to nought.
+public sealed class Echo : Driver, IDevice
+{
+    public override string Name => "echo";
+    public override int Bind(int port) { return port + 1; }
+    public int Probe(int port) { return 1; }
+}
+
 static class ChorusModule
 {
     [ModuleInitializer]
@@ -26,5 +39,8 @@ static class ChorusModule
         Sound.Channel channel = new Sound.Channel("chorus", 3);
         Sound.Channels.All.Add(channel);
         Log.Write(new Voice(channel).Say() + " of " + Sound.Channels.Total());
+        Echo echo = new Echo();
+        Drivers.Register(echo);
+        Devices.Add(echo);
     }
 }

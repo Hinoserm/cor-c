@@ -3178,6 +3178,10 @@ public sealed partial class Binder
         bool IsLibraryFamily((string, int) family, bool declaredHere)
             => _libraryInterfaces is null ? true : _libraryInterfaces.Contains(family) && !declaredHere;
         bool IsModuleFamily((string, int) family) => _kernelInterfaces is not null && !_kernelInterfaces.Contains(family);
+        // The level of the chain of modules that declares a family (KernelFamilies);
+        // one no index lists is this compile's own, above them all.
+        int ModuleLevel((string, int) family)
+            => _kernelInterfaces is Metadata.KernelFamilies kernel && kernel.Levels.TryGetValue(family, out int level) ? level : int.MaxValue;
         if (_indexedInterfaces is not null)
             foreach (var family in _indexedInterfaces)
                 (IsLibraryFamily(family.Key, false) ? families : IsModuleFamily(family.Key) ? moduleTier : local)[family.Key] = family.Value;
@@ -3320,10 +3324,20 @@ public sealed partial class Binder
         // classes begin their virtuals, as the project's own interfaces sit
         // above the library's classes. Every unit of the module numbers the
         // same families here, the module's index listing them all.
+        // A MODULE MADE ON ANOTHER (`index --on`) numbers the one under it
+        // first, its families alone and in its order, as that module's own
+        // compile numbered them, and its own families after: an interface of
+        // the GUI module's is called through by the NT module at the slot
+        // the GUI module gave it.
         if (moduleTier.Count > 0)
         {
             _interfaceSlots = _projectClassSlots + ProjectClassReserve;
-            Number(moduleTier);
+            foreach (var level in moduleTier.GroupBy(f => ModuleLevel(f.Key)).OrderBy(g => g.Key))
+            {
+                SortedDictionary<(string, int), int> tier = new();
+                foreach (var family in level) tier[family.Key] = family.Value;
+                Number(tier);
+            }
             Assign(false);
         }
 
