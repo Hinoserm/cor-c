@@ -193,6 +193,7 @@ public sealed partial class Escape
                 told.UnionWith(after);
             }
 
+            OneReturn(f);
             foreach (Block b in f.Blocks)
             {
                 if (b.Terminator is not { Op: Opcode.Ret }) continue;
@@ -214,6 +215,37 @@ public sealed partial class Escape
             VariablesOwned++;
             liveness = null;
             defs = AnalysisCache.DefsOf(f, buildCfg: false);
+        }
+    }
+
+    /// <summary>
+    /// ONE WAY OUT FOR THE FREES AT A RETURN: a function with three returns or
+    /// more has them jump to one block that returns, its value carried in a
+    /// register, before a variable's frees are put at each. Every owned
+    /// variable's slot is freed at every return; at each of them, a
+    /// dispatcher of a hundred and thirty-seven returns and forty-five owned
+    /// variables was six thousand frees, 180 KB of the GUI module's code
+    /// apiece (EmfPlayer.Play and Run). Once, it is forty-five, and a return
+    /// is a jump longer.
+    /// </summary>
+    private static void OneReturn(Function f)
+    {
+        List<Block> returning = f.Blocks.Where(b => b.Terminator is { Op: Opcode.Ret }).ToList();
+        if (returning.Count < 3 || returning.Any(b => b.Terminator!.Operands.Count > 1)) return;
+        bool valued = returning[0].Terminator!.Operands.Count == 1;
+        if (returning.Any(b => (b.Terminator!.Operands.Count == 1) != valued)) return;
+        VReg? result = valued ? f.NewReg(f.Returns, "returned") : null;
+        Block exit = f.NewBlock("return");
+        int line = returning[^1].Terminator!.Line;
+        Instr ret = new() { Op = Opcode.Ret, Line = line };
+        if (result is not null) ret.Operands.Add(RegOperand.Of(result));
+        exit.Instrs.Add(ret);
+        foreach (Block b in returning)
+        {
+            Instr old = b.Instrs[^1];
+            b.Instrs.RemoveAt(b.Instrs.Count - 1);
+            if (result is not null) b.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = result, Operands = { old.Operands[0] }, Line = old.Line });
+            b.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { exit }, Line = old.Line });
         }
     }
 
