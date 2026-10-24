@@ -961,9 +961,14 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj") || runtimeDll;
         // Literals shared across the objects a link puts together, except in
         // position-independent code, where a global one is reached through the
-        // GOT (Lowering.SharedLiterals).
+        // GOT (Lowering.SharedLiterals). A KERNEL MODULE'S UNITS WITH TEXT ITS
+        // BINDER RELOCATES (--relocated-text) are not position-independent: a
+        // literal is reached by its address there, so every unit's copy of
+        // "System.String" -- a hundred and twenty-five in the NT module, a
+        // third of its read-only data duplicates -- is one at the link.
+        bool moduleUnitAbsolute = Value(args, "--kernel") is not null && args.Contains("--obj") && args.Contains("--relocated-text");
         Corsac.Lang.Lower.Lowering.SharedLiterals = (Corsac.Lang.Lower.Lowering.PartOfALibrary || library)
-            && !shared && !args.Contains("--pic") && !(sharedLibs.Count > 0 && args.Contains("--obj"));
+            && !shared && !args.Contains("--pic") && (!(sharedLibs.Count > 0 && args.Contains("--obj")) || moduleUnitAbsolute);
         // A unit linked with others keeps its interrupt facts for the link's
         // check of handlers across units (InterruptNotes).
         Binder.CollectInterruptFacts = args.Contains("--obj") || library;

@@ -227,6 +227,36 @@ cp "$ko" "$m/run/module.ko"
 printf '%s\n' 'kernel 0' 'registered mixer' 'modinfo name=mixer' 'modinfo ring=0' 'modinfo alias=pnp:MIX0001' 'drivers 1' \
     'probe 2' 'mixer at 544, master=7 wave=5' 'bind 12' \
     | cmp -s - "$m/run.out" || { cat "$m/run.out"; fail "the several-file module ran other than it should"; }
+# THE SAME UNITS, TEXT RELOCATED (--relocated-text), as the image builder
+# makes the GUI and NT modules: a literal is one object across the units
+# (Lowering.SharedLiterals) -- each unit's copy of a text was the module's
+# own until its link, a third of the NT module's read-only data -- and
+# exported by none (KernelExports.PerImage).
+rt=$m/relocated
+mkdir -p "$rt/run"
+sed "s|$m/|$rt/|g" "$m/units.tsv" > "$rt/units.tsv"
+"$corc" compile-project --units "$rt/units.tsv" --obj --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" \
+    --module-index "$m/module.idx" --assembly Kernel --ring 0 --relocated-text 2> "$rt/units.log" || { cat "$rt/units.log"; fail "the module's relocated units"; }
+objects=$(cut -f2 "$rt/units.tsv" | tr '\n' ' ')
+# shellcheck disable=SC2086
+"$corc" link $objects --kernel "$a/kernel.exports" --relocated-text -o "$rt/mixer.ko" 2> "$rt/link.log" || { cat "$rt/link.log"; fail "the module's relocated units' link"; }
+cp "$a/kernel" "$a/kernel.exports" "$rt/run/"
+cp "$rt/mixer.ko" "$rt/run/module.ko"
+(cd "$rt/run" && ./kernel) > "$rt/run.out" 2>&1 || { cat "$rt/run.out"; fail "the kernel did not load the relocated several-file module"; }
+cmp -s "$m/run.out" "$rt/run.out" || { cat "$rt/run.out"; fail "the relocated several-file module ran other than the other"; }
+# Every unit names its literals by their text: one definition each in the link.
+for unit in $objects; do readelf -s -W "$unit" | awk '$8 ~ /^str_/ && $7 != "UND" { print $8 }'; done | sort | uniq -d > "$rt/shared"
+test -s "$rt/shared" || fail "no literal is in two of the relocated units: nothing shows the sharing"
+readelf -s -W "$rt/mixer.ko" | awk '$8 ~ /^str_/ && $7 != "UND" { print $8 }' | sort | uniq -d > "$rt/twice"
+test ! -s "$rt/twice" || { head "$rt/twice"; fail "a literal is defined twice in the relocated module"; }
+if readelf --dyn-syms -W "$rt/mixer.ko" | awk '$8 ~ /^(str_|__corsac_unit|__corsac_frame|__corsac_stackmaps)/ { found = 1 } END { exit !found }'; then
+    fail "the relocated module exports what is its own"
+fi
+# Its relocations on pages of their own, which the binder can give back:
+# .rel.dyn starts a page, and .text starts the page after its end.
+readelf -S -W "$rt/mixer.ko" | sed 's/\[ */[/' | awk '$2 == ".rel.dyn" || $2 == ".text" { if (strtonum("0x" $4) % 4096 != 0) bad = 1; n++ } END { exit bad || n != 2 }' \
+    || fail "the relocated module's relocations do not have pages of their own"
+
 # A module may not declare a type of its kernel's: its index is refused.
 if "$corc" index --assembly Kernel --ring 0 --on "$a/kernel.idx" $here/KernelType.cor -o "$m/wrong.idx" 2> "$m/wrong-index.log"; then
     fail "a module's index declared a type of its kernel's"

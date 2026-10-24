@@ -250,6 +250,14 @@ public static partial class Linker
     private sealed class Dyn
     {
         public bool Shared { get; init; }
+        /// <summary>
+        /// THE RELOCATIONS ON PAGES OF THEIR OWN (a kernel module): .rel.dyn
+        /// starts a page and .text starts the page after its end, so that
+        /// the binder, done with them, gives those pages back -- read once,
+        /// at load, they were the largest part of a resident module after
+        /// its code (the GUI module's 0.9 MB, the NT module's 1.5 MB).
+        /// </summary>
+        public bool PageRelocations { get; init; }
         public string? Soname { get; init; }
 
         /// <summary>
@@ -342,6 +350,11 @@ public static partial class Linker
         public bool Imports(string name) => SymbolIndex.TryGetValue(name, out int i) && Symbols[i].Definition is null;
     }
 
+    /// <summary>A name an image defines for itself alone (ScanDynamic).</summary>
+    private static bool OwnAndUnbound(string name)
+        => name.StartsWith("str_", StringComparison.Ordinal) || name.StartsWith("__corsac_unit", StringComparison.Ordinal)
+        || name.StartsWith("__corsac_frame", StringComparison.Ordinal) || name.StartsWith("__corsac_stackmaps", StringComparison.Ordinal);
+
     /// <summary>A symbol in .dynsym: exported when it has a definition, imported when it does not.</summary>
     private sealed record DynSymbol(string Name, Definition? Definition)
     {
@@ -366,7 +379,14 @@ public static partial class Linker
         {
             foreach (string name in layout.GlobalOrder)
             {
-                if (layout.NotExported.Contains(name))
+                // NOR WHAT IS THIS IMAGE'S OWN AND NOTHING BINDS TO: a literal
+                // named by its text, coalesced across this link's units
+                // (Lowering.SharedLiterals), and the units' frame and
+                // stack-map tables. In a kernel module, resident for good,
+                // each was a name in .dynstr and an entry in .dynsym and
+                // .hash for nothing. (Its initialisers stay: DT_INIT names
+                // one.)
+                if (layout.NotExported.Contains(name) || OwnAndUnbound(name))
                 {
                     continue;
                 }
@@ -697,6 +717,11 @@ public static partial class Linker
             dyn.Interp.Content = System.Text.Encoding.ASCII.GetBytes(dyn.Interpreter + "\0");
             dyn.Interp.Size = (uint)dyn.Interp.Content.Length;
             layout.ReadOnly.Add(dyn.Interp);
+        }
+        if (dyn.PageRelocations)
+        {
+            dyn.RelDyn.Align = Math.Max(dyn.RelDyn.Align, 4096);
+            layout.Text.Align = Math.Max(layout.Text.Align, 4096);
         }
         layout.ReadOnly.Add(dyn.Hash);
         layout.ReadOnly.Add(dyn.DynSym);

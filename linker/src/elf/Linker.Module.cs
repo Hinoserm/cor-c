@@ -155,7 +155,7 @@ public static partial class Linker
         ObjectFile own = KernelExports.StampObject(kernel.Stamp, loaded: false);
         own.Sections.Add(ModuleInfo.Note(ModuleInfo.SectionName, entries));
 
-        Dyn dyn = new() { Shared = true, Soname = Path.GetFileName(fileName), DirectCalls = relocatedText };
+        Dyn dyn = new() { Shared = true, Soname = Path.GetFileName(fileName), DirectCalls = relocatedText, PageRelocations = true };
         foreach (string dependency in needed) dyn.Needed.Add(SoName(dependency));
         inputs.Add(("the module's link", own));
 
