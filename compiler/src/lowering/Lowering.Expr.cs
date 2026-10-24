@@ -1575,7 +1575,7 @@ public sealed partial class Lowering
             return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : CountOf(_e, obj);
         if (m.Name == "LongLength")
             return _e.Unary(Opcode.SExt32, R(_e.Unary(Opcode.ArrayLength, R(obj), IrType.I32)), IrType.I64);
-        VReg full = _e.Load(IrTypes.Word, obj, DescName * _t.WordSize);
+        VReg full = FullNameOf(_e, _e.Load(IrTypes.Word, obj, DescName * _t.WordSize));
         if (m.Name == "Namespace")
         {
             MethodSymbol? space = StringMethod(m, Prelude.TypeNamespaceMethod, 1, "a type's namespace");
@@ -5874,10 +5874,22 @@ public sealed partial class Lowering
     }
 
 
+    /// <summary>
+    /// A descriptor's name word spelt out (DescriptorName, String.TypeFullName):
+    /// the name itself where it has no short assembly in it, else the full
+    /// name, made once.
+    /// </summary>
+    private VReg FullNameOf(Builder e, VReg name)
+    {
+        if (!HasStringMethod(Prelude.TypeFullNameMethod)) return name;
+        MethodSymbol? spelt = StringMethod(new MethodDecl { Name = Prelude.TypeFullNameMethod, Line = 0, Col = 0 }, Prelude.TypeFullNameMethod, 1, "a type's full name");
+        return spelt is null ? name : e.Call(CallLabel(spelt), IrTypes.Word, R(name))!;
+    }
+
     /// <summary>A type's descriptor rendered as Type.ToString renders it (Prelude.TypeTextMethod).</summary>
     private VReg TypeText(Expr at, VReg type)
     {
-        VReg full = _e.Load(IrTypes.Word, type, DescName * _t.WordSize);
+        VReg full = FullNameOf(_e, _e.Load(IrTypes.Word, type, DescName * _t.WordSize));
         MethodSymbol? text = HasStringMethod(Prelude.TypeTextMethod)
             ? StringMethod(at, Prelude.TypeTextMethod, 1, "a type's text") : null;
         return text is null ? full : _e.Call(CallLabel(text), IrTypes.Word, R(full))!;

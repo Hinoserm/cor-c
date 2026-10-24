@@ -413,7 +413,7 @@ public sealed partial class Lowering
         // contents, as the object descriptor is).
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(name), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(DescriptorName(name)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
         // The display and the interface list a class descriptor has, at their
@@ -959,7 +959,9 @@ public sealed partial class Lowering
             }
             else
             {
-                e.Ret(RegOperand.Of(e.Address(InternString(name))));
+                // Its type as Type.ToString writes it, as ValueType.ToString
+                // answers in .NET: Pair`2[System.Int32,Mine], not its FullName.
+                e.Ret(RegOperand.Of(e.Address(InternString(TypeText(name)))));
             }
         }
         else
@@ -989,7 +991,16 @@ public sealed partial class Lowering
         f.Params.Add(self);
         Builder e = new(f, f.NewBlock("entry"));
         VReg desc = e.Binary(Opcode.Sub, e.Load(IrTypes.Word, self, 0), _t.DescriptorBytes);
-        e.Ret(RegOperand.Of(e.Load(IrTypes.Word, desc, DescName * _t.WordSize)));
+        VReg name = FullNameOf(e, e.Load(IrTypes.Word, desc, DescName * _t.WordSize));
+        // AS Type.ToString WRITES IT, which is what ValueType.ToString is in
+        // .NET: Pair`2[System.Int32,Mine], a generic's arguments without the
+        // assemblies its FullName qualifies them with (ObjectToStringStub).
+        if (HasStringMethod(Prelude.TypeTextMethod)
+            && StringMethod(new MethodDecl { Name = label, Line = 0, Col = 0 }, Prelude.TypeTextMethod, 1, "a value's text") is MethodSymbol text)
+        {
+            name = e.Call(CallLabel(text), IrTypes.Word, R(name))!;
+        }
+        e.Ret(RegOperand.Of(name));
         _m.Functions.Add(f);
         return label;
     }

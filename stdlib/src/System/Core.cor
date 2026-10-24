@@ -259,6 +259,57 @@ static class String {
         return dot < 0 ? null : bare.Substring(0, dot);
     }
 
+    // A DESCRIPTOR'S NAME SPELT OUT (Lowering.DescriptorName). The image keeps
+    // each generic argument's assembly short -- U+E000 for System.Private.
+    // CoreLib's, U+E001 NAME U+E002 for an assembly of the program's own --
+    // and the full name .NET gives is made the first time it is asked for and
+    // kept, one string a name, so that asking again is the same object. Most
+    // names have no argument and are their own full name.
+    public static string TypeFullName(string compact) {
+        if (Sys.StringFind(compact, 0, 0xE000, compact.Length) < 0 && Sys.StringFind(compact, 0, 0xE001, compact.Length) < 0) {
+            return compact;
+        }
+        lock (_fullNameLock) {
+            for (int i = 0; i < _fullNamesCount; i++) {
+                if (object.ReferenceEquals(_fullNamesFrom[i], compact)) { return _fullNamesTo[i]; }
+            }
+            string full = "";
+            int from = 0;
+            int at = 0;
+            while (at < compact.Length) {
+                char c = compact[at];
+                if (c == '') {
+                    full = full + compact.Substring(from, at - from) + ", System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e";
+                    from = at + 1;
+                } else if (c == '') {
+                    int end = Sys.StringFind(compact, at + 1, 0xE002, compact.Length - at - 1);
+                    if (end < 0) { break; }
+                    full = full + compact.Substring(from, at - from) + ", " + compact.Substring(at + 1, end - at - 1) + ", Version=0.0.0.0, Culture=neutral, PublicKeyToken=null";
+                    from = end + 1;
+                    at = end;
+                }
+                at++;
+            }
+            full = full + compact.Substring(from);
+            if (_fullNamesCount == _fullNamesFrom.Length) {
+                string[] fromMore = new string[_fullNamesCount * 2];
+                string[] toMore = new string[_fullNamesCount * 2];
+                for (int i = 0; i < _fullNamesCount; i++) { fromMore[i] = _fullNamesFrom[i]; toMore[i] = _fullNamesTo[i]; }
+                _fullNamesFrom = fromMore;
+                _fullNamesTo = toMore;
+            }
+            _fullNamesFrom[_fullNamesCount] = compact;
+            _fullNamesTo[_fullNamesCount] = full;
+            _fullNamesCount++;
+            return full;
+        }
+    }
+
+    static readonly object _fullNameLock = new object();
+    static string[] _fullNamesFrom = new string[16];
+    static string[] _fullNamesTo = new string[16];
+    static int _fullNamesCount;
+
     public static string TypeName(string full) {
         // A GENERIC TYPE'S ARGUMENTS ARE NOT ITS NAME: System.ValueTuple`2[[
         // System.Int32, ...]] is ValueTuple`2, as .NET's Type.Name, and an

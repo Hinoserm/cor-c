@@ -2184,6 +2184,26 @@ public sealed partial class Lowering
     /// <summary>The identity .NET's own types are qualified with.</summary>
     private const string CoreLibrary = "System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e";
 
+    /// <summary>
+    /// A DESCRIPTOR'S NAME AS THE IMAGE KEEPS IT: its full name with each
+    /// generic argument's assembly written short -- U+E000 for
+    /// `, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral,
+    /// PublicKeyToken=7cec85d7bea7798e`, and U+E001 NAME U+E002 for `, NAME,
+    /// Version=0.0.0.0, Culture=neutral, PublicKeyToken=null` -- spelt out
+    /// again as it is read (String.TypeFullName). Written in full, those
+    /// suffixes were half the NT module's text of names, half a megabyte
+    /// resident, for names a program seldom asks for.
+    /// </summary>
+    private static string DescriptorName(string full)
+    {
+        if (full.IndexOf(", Version=", StringComparison.Ordinal) < 0) return full;
+        string compact = full.Replace(", " + CoreLibrary, "\uE000", StringComparison.Ordinal);
+        return OwnAssembly.Replace(compact, m => "\uE001" + m.Groups[1].Value + "\uE002");
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex OwnAssembly =
+        new(@", ([^,\[\]]+), Version=0\.0\.0\.0, Culture=neutral, PublicKeyToken=null", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     /// <summary>A type as a generic argument names it: its full name and its assembly's.</summary>
     private string QualifiedName(Type t)
     {
@@ -2316,7 +2336,7 @@ public sealed partial class Lowering
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String"
             : elementType?.AsNonNullable().Symbol is TypeSymbol shaped && (shaped.Kind == TypeKind.Struct && IsTupleShape(shaped) || shaped.Decl is { Specialised: true })
-                ? DotNetTypeName(elementType.AsNonNullable()) + "[]"
+                ? DescriptorName(DotNetTypeName(elementType.AsNonNullable()) + "[]")
             : DotNetName(element) + "[]"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         // ITS ELEMENT'S DESCRIPTOR, for covariance at run time: whether a
@@ -2857,7 +2877,7 @@ public sealed partial class Lowering
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(DescriptorName(FullTypeName(t))), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         if (faceOf is not null) item.Relocs.Add(new DataReloc(DescElement * w, faceOf, 0));
         if (ShapeRecord(t, sym) is string record) item.Relocs.Add(new DataReloc(DescShape * w, record, 0));
@@ -3152,7 +3172,7 @@ public sealed partial class Lowering
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
             Exported = t.Decl?.LocalOnly != true, SharedCopies = shared?.ToArray() };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(FullTypeName(t)), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(DescriptorName(FullTypeName(t))), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
         // The reference map covers the whole instance, base fields included:
@@ -3345,7 +3365,7 @@ public sealed partial class Lowering
             f.Params.Add(self);
             Builder e = new(f, f.NewBlock("entry"));
             VReg vt = e.Load(IrTypes.Word, self, 0);
-            VReg nm = e.Load(IrTypes.Word, vt, -_t.DescriptorBytes + DescName * _t.WordSize);
+            VReg nm = FullNameOf(e, e.Load(IrTypes.Word, vt, -_t.DescriptorBytes + DescName * _t.WordSize));
             // AS Type.ToString WRITES IT, which is what object.ToString is in
             // .NET: List`1[System.Int32], a generic's arguments named without
             // the assemblies its FullName qualifies them with.

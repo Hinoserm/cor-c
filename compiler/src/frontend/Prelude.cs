@@ -419,6 +419,8 @@ public static class Prelude
     public const string TypeNamespaceMethod = "TypeNamespace";
     /// <summary>A type's full name as Type.ToString writes it: a generic's arguments without their assemblies.</summary>
     public const string TypeTextMethod = "TypeText";
+    /// <summary>String's method spelling out a descriptor's name, its generic arguments' assemblies written short in the image (Lowering.DescriptorName).</summary>
+    public const string TypeFullNameMethod = "TypeFullName";
 
     public const string Source = """
         static class Sys {

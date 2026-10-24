@@ -822,7 +822,7 @@ public sealed partial class Lowering
         WriteWord(block, DescPayload * w, header);
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString("System.SZGenericArrayEnumerator`1[" + DotNetTypeName(element) + "]"), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternString(DescriptorName("System.SZGenericArrayEnumerator`1[" + DotNetTypeName(element) + "]")), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         item.Relocs.Add(new DataReloc(DescElement * w, arrayDescriptor, 0));
         if (ReferenceMap("ArrayEnumerator_" + key, new List<(int, Type)> { (header, Type.ArrayOf(element)) }, size) is string map)
