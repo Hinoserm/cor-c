@@ -165,6 +165,12 @@ public sealed class RegionTypes
 
     /// <summary>For a report: the functions whose calls left every target are explained (Explained).</summary>
     public Func<int, bool>? Explain { get; init; }
+
+    /// <summary>A report's (+typesescape=TABLE): objects of this descriptor are followed, each node remembering where it first got one (WhyEscaped).</summary>
+    public string? Follow { get; init; }
+    private readonly Dictionary<(int Node, int O), (int From, string? Why)> _followFrom = new();
+    // What made each edge, where a report follows an object: the store or load it was.
+    private readonly Dictionary<(int From, int To), string> _edgeWhy = new();
     public List<string> Explained { get; } = new();
     /// <summary>Whether it gave up for its budget.</summary>
     public bool GaveUp;
@@ -256,7 +262,15 @@ public sealed class RegionTypes
 
     // A closed static's storage: one untyped object a symbol, in no function.
     private readonly Dictionary<int, int> _staticObjects = new();
-    private int Static(int index) => _staticObjects.TryGetValue(index, out int o) ? o : _staticObjects[index] = NewObject(null, 0);
+    private int Static(int index) => _staticObjects.TryGetValue(index, out int o) ? o : _staticObjects[index] = Labelled(NewObject(null, 0), "closed static " + (index < RegionConstants.ClosedNames.Count ? RegionConstants.ClosedNames[index] : index.ToString()));
+
+    // For a report (Follow): where an untyped object came from -- a function's frame slots, an allocation of no stamp, a static.
+    private readonly Dictionary<int, string> _origin = new();
+    private int Labelled(int o, string origin)
+    {
+        if (Follow is not null) _origin[o] = origin;
+        return o;
+    }
 
     /// <summary>The functions reachable code may run (RegionSolver.Reachable): null for every one. The rest are stated as nothing.</summary>
     public bool[]? Reached { get; init; }
@@ -293,12 +307,12 @@ public sealed class RegionTypes
     private int ArrayAt(string table, long at, int i, int site)
         => _arrays.TryGetValue((i, site), out int o) ? o : _arrays[(i, site)] = NewObject(table, at);
 
-    private int Untyped(int i) => _untyped[i] >= 0 ? _untyped[i] : _untyped[i] = NewObject(null, 0);
+    private int Untyped(int i) => _untyped[i] >= 0 ? _untyped[i] : _untyped[i] = Labelled(NewObject(null, 0), "the frame of " + _functions[_instF[i]].Name);
     // An allocation of no known stamp: of its instance's own, apart from its frame slots.
     private int UntypedMade(int i)
     {
         if (_untypedSites[i] >= 0) return _untypedSites[i];
-        int o = _untypedSites[i] = NewObject(null, 0);
+        int o = _untypedSites[i] = Labelled(NewObject(null, 0), "made untyped by " + _functions[_instF[i]].Name);
         _untypedMade.Add(o);
         return o;
     }
@@ -333,6 +347,7 @@ public sealed class RegionTypes
     {
         if (!(_pts[node] ??= new()).Add(value)) return;
         if (value == Top && Explain is not null) _topFrom.TryAdd(node, (_source, _sourceWhy));
+        else if (Follow is not null && ObjectOf(value) > 1 && Followed(ObjectOf(value))) _followFrom.TryAdd((node, ObjectOf(value)), (_source, _sourceWhy));
         if (++_steps > _budget) throw new OverBudget();
         if (Progress is not null && _steps % 50_000_000 == 0) ReportProgress();
         ValueSet delta = _delta[node] ??= new();
@@ -346,6 +361,7 @@ public sealed class RegionTypes
     private void Edge(int from, int to)
     {
         if (from == to) return;
+        if (Follow is not null && _sourceWhy is { } how) _edgeWhy.TryAdd((from, to), how);
         (UsesOf(from).Succ ??= new()).Add(to);
         if (_pts[from] is { } held) { int was = _source; _source = from; foreach (int v in held.ToArray()) Add(to, v); _source = was; }
     }
@@ -359,13 +375,25 @@ public sealed class RegionTypes
     private void Load(int to, int address, int offset)
     {
         (UsesOf(address).Loads ??= new()).Add((to, offset));
-        if (_pts[address] is { } held) { int was = _source; _source = address; foreach (int v in held.ToArray()) Loaded(to, v, offset); _source = was; }
+        if (_pts[address] is { } held)
+        {
+            int was = _source; string? why = _sourceWhy; _source = address;
+            if (Follow is not null) _sourceWhy = "loaded at " + offset + " through " + NodeName(address);
+            foreach (int v in held.ToArray()) Loaded(to, v, offset);
+            _source = was; _sourceWhy = why;
+        }
     }
 
     private void Store(int address, int value, int offset)
     {
         (UsesOf(address).Stores ??= new()).Add((value, offset));
-        if (_pts[address] is { } held) { int was = _source; _source = address; foreach (int v in held.ToArray()) Stored(v, value, offset); _source = was; }
+        if (_pts[address] is { } held)
+        {
+            int was = _source; string? why = _sourceWhy; _source = address;
+            if (Follow is not null) _sourceWhy = "stored at " + offset + " through " + NodeName(address);
+            foreach (int v in held.ToArray()) Stored(v, value, offset);
+            _source = was; _sourceWhy = why;
+        }
     }
 
     private void Loaded(int to, int value, int offset)
@@ -402,7 +430,8 @@ public sealed class RegionTypes
             if (node >= _instBase[i] && node < _instBase[i] + _functions[_instF[i]].Nodes)
                 return _functions[_instF[i]].Name + (_instCtx[i] is { } ctx ? " [" + ctx + "]" : "") + " node " + (node - _instBase[i]);
         _cellNames ??= _cells.ToDictionary(pair => pair.Value, pair => ((int)(pair.Key >> 32), (int)(uint)pair.Key));
-        if (_cellNames.TryGetValue(node, out var cell)) return (_objects[cell.O].Table ?? (cell.O == 0 ? "unknown" : "untyped")) + " cell " + cell.Offset;
+        if (_cellNames.TryGetValue(node, out var cell))
+            return (_objects[cell.O].Table ?? (cell.O == 0 ? "unknown" : "untyped" + (_origin.TryGetValue(cell.O, out string? origin) ? " (" + origin + ")" : ""))) + " cell " + cell.Offset;
         return node == _sink ? "where nobody follows" : "node " + node;
     }
 
@@ -447,12 +476,46 @@ public sealed class RegionTypes
                     for (int o = at; o != start && o >= 0; o = from[o]) chain.Add("held by " + (_objects[o].Table ?? "an untyped object"));
                     chain.Reverse();
                     chain.Add(why);
+                    // HOW IT CAME THERE (Follow): node by node, back to where it was made.
+                    if (at == start && Follow == table) chain.Add("in " + FollowedTo(node, start));
                     return table + ": " + string.Join(" <- ", chain);
                 }
             foreach (int p in _escaped)
                 if (!from.ContainsKey(p) && _cellsOf[p] is { } cells && cells.Any(cell => Holds(_pts[cell], at))) { from[p] = at; next.Enqueue(p); }
         }
         return table + ": no labelled cause";
+    }
+
+    // Whether an object is the one a report follows: by its descriptor, or by where an untyped one came from ("closed static s_X").
+    private bool Followed(int o) => _objects[o].Table == Follow || _objects[o].Table is null && _origin.TryGetValue(o, out string? origin) && origin == Follow;
+
+    /// <summary>For a report (+typespath=OBJECT|FUNCTION:NODE): how the followed object came to a function's node.</summary>
+    public string PathTo(string function, int local)
+    {
+        int f = -1;
+        for (int g = 0; g < _functions.Count; g++) if (_functions[g].Name.Contains(function, StringComparison.Ordinal)) { f = g; break; }
+        if (f < 0) return function + ": no such function";
+        int node = Node(f, local);
+        foreach (int value in _pts[node] ?? new ValueSet())
+            if (ObjectOf(value) > 1 && Followed(ObjectOf(value))) return Follow + " in " + FollowedTo(node, ObjectOf(value));
+        return Follow + ": not in " + NodeName(node);
+    }
+
+    // The way an object followed (Follow) came to a node, back to where it began.
+    private string FollowedTo(int node, int o)
+    {
+        List<string> chain = new() { NodeName(node) };
+        HashSet<int> seen = new() { node };
+        while (_followFrom.TryGetValue((node, o), out var came))
+        {
+            if (came.From < 0) { chain.Add(came.Why ?? "?"); break; }
+            if (!seen.Add(came.From)) { chain.Add("(a cycle)"); break; }
+            string? how = came.Why ?? _edgeWhy.GetValueOrDefault((came.From, node));
+            node = came.From;
+            chain.Add(NodeName(node) + (how is not null ? " [" + how + "]" : ""));
+            if (chain.Count > 80) { chain.Add("..."); break; }
+        }
+        return string.Join(" <- ", chain);
     }
 
     private void Escape(int value)
@@ -569,8 +632,19 @@ public sealed class RegionTypes
                 {
                     if (uses.Succ is { } succ) for (int s = 0; s < succ.Count; s++) Add(succ[s], v);
                     if (uses.Moved is { } moved) for (int s = 0; s < moved.Count; s++) Add(moved[s], Moved(v));
-                    if (uses.Loads is { } loads) for (int l = 0; l < loads.Count; l++) Loaded(loads[l].To, v, loads[l].Offset);
-                    if (uses.Stores is { } stores) for (int s = 0; s < stores.Count; s++) Stored(v, stores[s].Value, stores[s].Offset);
+                    if (uses.Loads is { } loads)
+                        for (int l = 0; l < loads.Count; l++)
+                        {
+                            if (Follow is not null) _sourceWhy = "loaded at " + loads[l].Offset + " through " + NodeName(n);
+                            Loaded(loads[l].To, v, loads[l].Offset);
+                        }
+                    if (uses.Stores is { } stores)
+                        for (int s = 0; s < stores.Count; s++)
+                        {
+                            if (Follow is not null) _sourceWhy = "stored at " + stores[s].Offset + " through " + NodeName(n);
+                            Stored(v, stores[s].Value, stores[s].Offset);
+                        }
+                    _sourceWhy = null;
                     if (uses.Receives is { } receives) for (int r = 0; r < receives.Count; r++) Received(receives[r], v);
                 }
                 if (n == _sink) Escape(v);
@@ -646,6 +720,7 @@ public sealed class RegionTypes
             {
                 case RegionConstraintKind.Site:
                     RegionSite site = c.B >= 0 && c.B < function.Sites.Length ? function.Sites[c.B] : default;
+                    _source = -1; _sourceWhy = function.Name + " makes it";
                     Add(a, (site.Table is { } table
                         ? table.StartsWith("q_array", StringComparison.Ordinal) ? ArrayAt(table, site.At, i, c.B) : TypedIn(table, site.At, i)
                         : site.Words == RegionWords.Leaf ? Untyped(i) : UntypedMade(i)) << 1);

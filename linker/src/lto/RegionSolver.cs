@@ -856,6 +856,8 @@ public static class RegionSolver
                 Budget = _report?.FirstOrDefault(w => w.StartsWith("+typesbudget=", StringComparison.Ordinal)) is { } budgetOf && long.TryParse(budgetOf[13..], out long millions) ? millions * 1_000_000 : -1,
                 Explain = _report?.FirstOrDefault(w => w.StartsWith("+typeswhy=", StringComparison.Ordinal)) is { } typesWhy
                     ? f => _functions[f].Name.Contains(typesWhy[10..], StringComparison.Ordinal) : null,
+                Follow = _report?.FirstOrDefault(w => w.StartsWith("+typesescape=", StringComparison.Ordinal)) is { } followOf ? followOf[13..]
+                    : _report?.FirstOrDefault(w => w.StartsWith("+typespath=", StringComparison.Ordinal)) is { } pathOf && pathOf.IndexOf('|') is int bar and > 11 ? pathOf[11..bar] : null,
             };
             bool pruned = types.Prune();
             foreach (string line in types.Explained) Log("receiver types why: " + line);
@@ -863,6 +865,10 @@ public static class RegionSolver
                 Log("receiver types unknown: " + types.WhyUnknown(unknownOf[14..colon], int.Parse(unknownOf[(colon + 1)..])));
             if (_report?.FirstOrDefault(w => w.StartsWith("+typesescape=", StringComparison.Ordinal)) is { } escapeOf)
                 Log("receiver types escape: " + types.WhyEscaped(escapeOf[13..]));
+            // +typespath=OBJECT|FUNCTION:NODE -- OBJECT a descriptor, or "closed static s_X" for a static's storage.
+            if (_report?.FirstOrDefault(w => w.StartsWith("+typespath=", StringComparison.Ordinal)) is { } pathAsk && pathAsk.IndexOf('|') is int pipe and > 11
+                && pathAsk.LastIndexOf(':') is int at && at > pipe && int.TryParse(pathAsk[(at + 1)..], out int pathNode))
+                Log("receiver types path: " + types.PathTo(pathAsk[(pipe + 1)..at], pathNode));
             Log(pruned
                 ? $"receiver types: {types.Objects} objects, {types.Instances} instances, {types.Steps} carried; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
                 : $"receiver types: gave up past its budget ({types.Steps} carried, {types.Instances} instances), every target kept, {_clock.ElapsedMilliseconds} ms");

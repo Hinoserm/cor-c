@@ -2820,7 +2820,17 @@ public sealed class RegionPointsTo : IModulePass
         // and every array it grew into to the unknown object (1290).
         || Array.IndexOf(TypeChecks, callee) >= 0
         || callee.StartsWith("m_Runtime_Card", StringComparison.Ordinal)
-        || callee.StartsWith("m_Runtime_WriteBarrier", StringComparison.Ordinal);
+        || callee.StartsWith("m_Runtime_WriteBarrier", StringComparison.Ordinal)
+        // NOR A TYPE'S INITIALISATION WORD (Runtime.Enter/Complete/
+        // FailTypeInitialization): handed a static's state word as a number,
+        // it writes the thread's block there and the word into the thread's
+        // block (Tls.TypeInitWait), and keeps no object. Followed, every
+        // static state word met the block's one cell, the collector's header
+        // writes took them from there into every object, and a LINQ walk's
+        // iterator into Console's (1211, with List<T> the non-generic IList).
+        || callee.StartsWith("m_Runtime_EnterTypeInitialization", StringComparison.Ordinal)
+        || callee.StartsWith("m_Runtime_CompleteTypeInitialization", StringComparison.Ordinal)
+        || callee.StartsWith("m_Runtime_FailTypeInitialization", StringComparison.Ordinal);
 
     // Every target the call can reach, in no object's context.
     private void Indirect(int copy, Instr i)

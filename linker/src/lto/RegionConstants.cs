@@ -29,6 +29,9 @@ namespace Corsac.Lang.Lto;
 /// </summary>
 internal static class RegionConstants
 {
+    /// <summary>For a report: each closed static's symbol, by its number (ClosedStatic).</summary>
+    public static readonly List<string> ClosedNames = new();
+
     /// <summary>
     /// Each function's Symbol constraints made Unknown where the symbol is
     /// not a constant; those left name constants (RegionFunction.ConstantsKnown).
@@ -37,6 +40,7 @@ internal static class RegionConstants
         List<(string Table, long At)>? dataObjects = null)
     {
         Classifier classes = new(all, unitObjects);
+        ClosedNames.Clear();
         int constants = 0;
         for (int u = 0; u < units.Count; u++)
             foreach (RegionFunction function in units[u].Functions)
@@ -171,6 +175,7 @@ internal static class RegionConstants
                     _ => -1,
                 };
                 _candidateStatics[name] = (_closed, laid);
+                ClosedNames.Add(name);
                 return _closed++;
             }
             if (meant.Length != 1) return -1;
@@ -178,6 +183,7 @@ internal static class RegionConstants
             if (_statics.TryGetValue(s, out int known)) return known;
             bool closed = s.Section is { } section && section.Kind is SectionKind.Data or SectionKind.Uninitialised
                 && s.Size > 0 && _units.Contains(_objectOf[s]) && !Within(s).Any();
+            if (closed) ClosedNames.Add(name);
             return _statics[s] = closed ? _closed++ : -1;
         }
 
