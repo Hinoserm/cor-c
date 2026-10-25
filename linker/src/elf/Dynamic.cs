@@ -422,6 +422,9 @@ public static partial class Linker
                         if (op != 0xFF || modrm >> 6 != 2 || (modrm & 7) == 4 || reg is not (2 or 4)) continue;
                         p.Bytes[r.Offset - 2] = 0x90;
                         p.Bytes[r.Offset - 1] = (byte)(reg == 2 ? 0xE8 : 0xE9);
+                        // The section's own list changes with the placed bytes:
+                        // a link consumes its inputs (HandOver), and an object
+                        // is never linked twice.
                         relocs[j] = new Relocation(r.Offset, r.Symbol, r.Addend - 4, RelocKind.Rel32);
                     }
                 }

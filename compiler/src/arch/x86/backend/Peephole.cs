@@ -82,9 +82,9 @@ internal static class Peephole
         static bool Ebp(MMem mem) => mem.Base is { IsPhys: true, Phys: Gpr.Ebp } && mem.Index is null && mem.Symbol is null && mem.Label is null;
         HashSet<int> mapped = new();
         foreach (Safepoint sp in m.Safepoints.Values) foreach (int at in sp.SlotOffsets) mapped.Add(at);
-        // What every instruction does to the frame: the parameter bytes
-        // written (eight from each write's start, whatever its width says --
-        // a packed store's is eight and its Width the default four), each
+        // What every instruction does to the frame: where each parameter
+        // write starts (taken as eight bytes, whatever its width says -- a
+        // packed store's is eight and its Width the default four), each
         // slot's whole writes and plain whole reads, and every other kind of
         // reach into the frame: an address taken, an index, another width,
         // an instruction this does not know.
@@ -105,7 +105,12 @@ internal static class Peephole
                     {
                         // A parameter's address taken, or reached by index: nothing moves.
                         if (i.Op == MOp.Lea || !Ebp(mem)) return;
-                        if (writes) for (int b = mem.Disp; b < mem.Disp + 8; b++) paramWritten.Add(b);
+                        // Roles name registers only, and call an fstp's or an
+                        // MMX store's memory operand a use: a float parameter's
+                        // home is its own argument slot, stored with fstp. So
+                        // a parameter is read only by the forms known to read
+                        // it, and anything else writes it.
+                        if (writes || !ReadsOnly(i, k)) paramWritten.Add(mem.Disp);
                         continue;
                     }
                     bool whole = i.Op != MOp.Lea && Ebp(mem) && i.Width == 4 && Understood(i)
@@ -126,6 +131,7 @@ internal static class Peephole
             }
             if (mapped.Contains(s.Disp) || slotWrites.GetValueOrDefault(s.Disp) != 1) continue;
             bool clear = true;
+            // A write of eight bytes starting from P-7 to P+3 reaches P's four.
             for (int b = p.Disp - 7; b < p.Disp + 4 && clear; b++) clear = !paramWritten.Contains(b);
             // Nothing else within reach of the slot's four bytes: no other
             // plain word overlapping it, and nothing reached any other way
@@ -1147,6 +1153,20 @@ internal static class Peephole
            || m.Base is null && m.Index is null && (m.Symbol is not null || m.Label is not null);
 
     /// <summary>Whether the operand roles fully describe what the instruction reads and writes.</summary>
+    /// <summary>
+    /// Whether operand k, a memory operand, is only read: a move's source, a
+    /// push, a comparison, an arithmetic source, an x87 load or operand, a
+    /// conversion's source. Anything not listed counts as a write.
+    /// </summary>
+    private static bool ReadsOnly(MInstr i, int k) => i.Op switch
+    {
+        MOp.Mov or MOp.Movsx or MOp.Movzx or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor
+            or MOp.Imul or MOp.Imul3 or MOp.Cmov or MOp.Cvttss2si or MOp.Cvttsd2si => k >= 1,
+        MOp.Cmp or MOp.Test or MOp.Push or MOp.Fld or MOp.Fild or MOp.Fadd or MOp.Fsub or MOp.Fmul or MOp.Fdiv
+            or MOp.Fldcw or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.CallInd or MOp.MmxLoad or MOp.MmxLoadD => true,
+        _ => false,
+    };
+
     private static bool Understood(MInstr i) => i.Op switch
     {
         // An unwind jump carries the exception in EAX by convention, unnamed.
