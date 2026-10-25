@@ -39,6 +39,16 @@ public static class InterruptNotes
     /// </summary>
     public static string Take(string kind, string what, string where) => kind + "|" + what + "|" + where;
 
+    /// <summary>
+    /// A SLOT'S FACT is named by this and the definition of the method that
+    /// declares the slot (Binder.SlotOf): a call through the slot -- virtual,
+    /// abstract, an interface's -- is a call to it, and it calls every method
+    /// a unit knows to fill it. Every unit's facts for one slot are joined at
+    /// the link. The wait check follows them (WaitsFromHandlers); the
+    /// allocation and spin-lock checks do not, as they never have.
+    /// </summary>
+    public const string Dispatch = "~";
+
     public static void Attach(ObjectFile obj, IReadOnlyList<Fact> facts) => Attach(obj, Encode(facts));
 
     /// <summary>
@@ -163,7 +173,9 @@ public static class InterruptNotes
             if (read is null) continue;
             foreach (Fact f in read)
             {
-                facts.TryAdd(f.Name, f);
+                // A slot filled in several units: every unit's fillers.
+                if (!facts.TryAdd(f.Name, f) && f.Name.StartsWith(Dispatch, StringComparison.Ordinal))
+                    facts[f.Name] = facts[f.Name] with { Calls = facts[f.Name].Calls.Union(f.Calls, StringComparer.Ordinal).ToArray() };
                 if (f.Handler) handlers.Add(f);
             }
         }
@@ -197,7 +209,7 @@ public static class InterruptNotes
             {
                 foreach (string call in f.Calls)
                 {
-                    if (!facts.TryGetValue(call, out Fact? callee)) continue;
+                    if (call.StartsWith(Dispatch, StringComparison.Ordinal) || !facts.TryGetValue(call, out Fact? callee)) continue;
                     (string What, Fact Where)? deeper = Reaches(callee, ref reached);
                     if (deeper.HasValue) { found = deeper; break; }
                 }
@@ -229,7 +241,7 @@ public static class InterruptNotes
             }
             foreach (string call in handler.Calls)
             {
-                if (!facts.TryGetValue(call, out Fact? callee)) continue;
+                if (call.StartsWith(Dispatch, StringComparison.Ordinal) || !facts.TryGetValue(call, out Fact? callee)) continue;
                 int low = int.MaxValue;
                 (string What, Fact Where)? found = Reaches(callee, ref low);
                 if (!found.HasValue) continue;
@@ -336,7 +348,7 @@ public static class InterruptNotes
             }
             foreach (string call in f.Calls)
             {
-                if (!facts.TryGetValue(call, out Fact? callee)) continue;
+                if (call.StartsWith(Dispatch, StringComparison.Ordinal) || !facts.TryGetValue(call, out Fact? callee)) continue;
                 if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
             }
         }
@@ -405,7 +417,7 @@ public static class InterruptNotes
             }
             foreach (string call in f.Calls)
             {
-                if (!facts.TryGetValue(call, out Fact? callee)) continue;
+                if (call.StartsWith(Dispatch, StringComparison.Ordinal) || !facts.TryGetValue(call, out Fact? callee)) continue;
                 if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
             }
         }

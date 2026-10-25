@@ -1,0 +1,55 @@
+// test: the wait check follows calls through an interface and a virtual method to every method that fills the slot
+// flags: --irq-waits Waits.Park --wait-free-roots Pass.Run
+// expect-compile-error: 'Pass.Run' may not wait (--wait-free-roots) and reaches 'Waits.Park', which waits, via Pass.Run -> IStore.Flush (any) -> Disc.Flush -> Volume.Write (any) -> FatVolume.Write -> Waits.Park
+// THROUGH A SLOT: a kernel's scheduler pass reached a disc wait by an
+// interface call (a registry's store flushed) and a virtual one (the
+// filesystem's write), and the check followed neither: it took only static
+// and non-virtual calls. A call through a slot now reaches every method the
+// program fills it with, joined across units at the link; here the
+// interface's Flush reaches Disc.Flush, and Volume.Write reaches the
+// override that parks. Volume's own Write, which does not, is reached too
+// and said nothing of.
+
+using System;
+
+static class Waits
+{
+    static int _parked;
+    public static void Park() { _parked++; }
+}
+
+interface IStore
+{
+    void Flush();
+}
+
+class Volume
+{
+    public virtual void Write(int block) { }
+}
+
+class FatVolume : Volume
+{
+    public override void Write(int block) { Waits.Park(); }
+}
+
+class Disc : IStore
+{
+    public Volume On = new FatVolume();
+    public void Flush() { On.Write(0); }
+}
+
+static class Pass
+{
+    public static IStore Store = new Disc();
+    public static void Run() { Store.Flush(); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Pass.Run();
+        return 0;
+    }
+}

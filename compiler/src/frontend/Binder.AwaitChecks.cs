@@ -1217,6 +1217,15 @@ public sealed partial class Binder
                     if (seen.Add(label)) calls.Add(label);
                 }
             }
+            // AND THE CALLS THROUGH A SLOT (virtual, abstract, interface): to
+            // the slot's fact, which names every method this unit knows to
+            // fill it (below); the link joins every unit's. Followed by the
+            // wait check only (InterruptNotes.Dispatch).
+            foreach (MethodSymbol callee in DispatchedCalls(d.Body!))
+            {
+                string slot = SlotOf(callee);
+                if (seen.Add(slot)) calls.Add(slot);
+            }
             // THE SPIN LOCKS IT TAKES ITSELF (InterruptNotes.SpinLocksFromHandlers):
             // a SpinLock reached from an interrupt handler is refused at the link.
             List<string> takes = new();
@@ -1230,7 +1239,86 @@ public sealed partial class Binder
             made.Add(new Corsac.Lang.Lto.InterruptNotes.Fact(NameOf(m), $"{m.Owner.Name}.{m.Name}",
                 IsInterruptHandler(m), allocates, calls.ToArray(), takes.ToArray()));
         }
+        // THE SLOTS' FACTS: each slot a method of this unit fills -- its own,
+        // when it has a body and is virtual; every one up its base chain it
+        // overrides (by name and parameter count); every interface method
+        // its type's interface map gives it -- names that method among the
+        // slot fact's calls.
+        Dictionary<string, (string Display, List<string> Fills)> slots = new(StringComparer.Ordinal);
+        void Fill(MethodSymbol slot, MethodSymbol by)
+        {
+            string key = SlotOf(slot);
+            if (!slots.TryGetValue(key, out var entry)) slots[key] = entry = ($"{slot.Owner.Name}.{slot.Name} (any)", new List<string>());
+            string name = NameOf(by);
+            if (!entry.Fills.Contains(name)) entry.Fills.Add(name);
+        }
+        HashSet<TypeSymbol> owners = new(ReferenceEqualityComparer.Instance);
+        foreach ((MethodSymbol m, MethodDecl _) in _boundBodies)
+        {
+            owners.Add(m.Owner);
+            if (m.Static || !(m.Virtual || m.Override || m.Owner.Kind == TypeKind.Interface)) continue;
+            Fill(m, m);
+            if (!m.Override) continue;
+            for (TypeSymbol? t = m.Owner.Base; t is not null; t = t.Base)
+                foreach (MethodSymbol b in t.Methods)
+                    if (!b.Static && (b.Virtual || b.Override || b.Abstract) && b.Name == m.Name && b.Params.Count == m.Params.Count) Fill(b, m);
+        }
+        foreach (TypeSymbol owner in owners)
+        {
+            if (owner.InterfaceImplementations.Count == 0) continue;
+            Dictionary<int, MethodSymbol> declared = new();
+            void Faces(TypeSymbol face)
+            {
+                foreach (MethodSymbol f in face.Methods) if (f.VtableSlot >= 0) declared.TryAdd(f.VtableSlot, f);
+                foreach (TypeSymbol inner in face.Interfaces) Faces(inner);
+            }
+            for (TypeSymbol? t = owner; t is not null; t = t.Base) foreach (TypeSymbol face in t.Interfaces) Faces(face);
+            foreach ((int at, MethodSymbol impl) in owner.InterfaceImplementations)
+                if (declared.TryGetValue(at, out MethodSymbol? face)) Fill(face, impl);
+        }
+        foreach ((string key, (string display, List<string> fills)) in slots)
+            made.Add(new Corsac.Lang.Lto.InterruptNotes.Fact(key, display, false, null, fills.ToArray(), Array.Empty<string>()));
         return made;
+    }
+
+    /// <summary>A slot's fact's name (InterruptNotes.Dispatch): the method that declares or overrides it, by its definition.</summary>
+    private static string SlotOf(MethodSymbol m) => Corsac.Lang.Lto.InterruptNotes.Dispatch + DefinitionName(m);
+
+    /// <summary>
+    /// The calls a body makes through a slot -- virtual, abstract or an
+    /// interface's, by call, indexer or property -- each as the method the
+    /// call names. A delegate's invocation is not one: what it runs is not
+    /// known by a name.
+    /// </summary>
+    private IEnumerable<MethodSymbol> DispatchedCalls(Node body)
+    {
+        static bool Dispatched(MethodSymbol m)
+            => !m.Static && (m.Virtual || m.Abstract || m.Override || m.Owner.Kind == TypeKind.Interface);
+        foreach (Node n in SafetyNodes(body))
+        {
+            if (n is CallExpr c)
+            {
+                if (_r.Calls.TryGetValue(c, out MethodSymbol? m) && !_r.Invocations.ContainsKey(c) && Dispatched(m)) yield return m;
+                continue;
+            }
+            if (n is IndexExpr ix)
+            {
+                if (_r.Indexers.TryGetValue(ix, out MethodSymbol? get) && Dispatched(get)) yield return get;
+                if (_r.IndexSetters.TryGetValue(ix, out MethodSymbol? set) && Dispatched(set)) yield return set;
+                continue;
+            }
+            if (n is not Expr e) continue;
+            if (_r.PropertySetters.TryGetValue(e, out MethodSymbol? setter) && Dispatched(setter)) yield return setter;
+            if (!_r.Resolved.TryGetValue(e, out Sym? sym)) continue;
+            MethodSymbol? accessor = sym switch
+            {
+                PropertyGetSym g => g.Getter,
+                CapturedPropertyGetSym g => g.Getter,
+                PropertySetSym ps => ps.Setter,
+                _ => null,
+            };
+            if (accessor is not null && Dispatched(accessor)) yield return accessor;
+        }
     }
 
     /// <summary>
