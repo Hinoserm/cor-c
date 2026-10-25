@@ -161,4 +161,9 @@ public enum MOp : byte
     CallKeepEax,
     /// <summary>CallKeepEax through a register, as CallKeepInd is CallKeep's.</summary>
     CallKeepEaxInd,
+    /// <summary>
+    /// Add or subtract one, every flag but CF set as ADD and SUB set them:
+    /// made only at the end, by Peephole.IncDec, where nothing reads CF.
+    /// </summary>
+    Inc, Dec,
 }

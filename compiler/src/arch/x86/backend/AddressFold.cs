@@ -15,7 +15,10 @@ namespace Corsac.Lang.X86;
 /// free: `mov r, [a+i*2+16]`. In a loop those two registers are what
 /// pushed the base and the bound out to the frame.
 ///
-/// Two steps, each within one block, on virtual registers only:
+/// The steps, each within one block, on virtual registers only. Three are
+/// described here; the code has more, each with its own comment: 0 (a copy
+/// used as a base), S (a symbol's address used as a base) and 4 (a load
+/// only compared, compared in memory).
 ///
 ///   1. `mov t, X ; add t, Y|imm` whose t is read nowhere but as the base
 ///      of memory operands after it in the block: each becomes
@@ -88,7 +91,7 @@ internal static class AddressFold
         }
         for (int b = 0; b < m.Blocks.Count; b++)
         {
-            if (FoldBlock(m.Blocks[b], occurrences, defs, writes, b, absolute, compareMemory))
+            if (FoldBlock(m.Blocks[b], occurrences, defs, writes, b, absolute, compareMemory, m.Frame))
             {
                 m.Blocks[b].Instrs.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
             }
@@ -220,7 +223,7 @@ internal static class AddressFold
         return counted + found.Count == occurrences[t.Id] ? found : null;
     }
 
-    private static bool FoldBlock(MBlock b, int[] occurrences, int[] defs, WriteSites writes, int block, bool absolute, bool compareMemory)
+    private static bool FoldBlock(MBlock b, int[] occurrences, int[] defs, WriteSites writes, int block, bool absolute, bool compareMemory, Frame frameOf)
     {
         List<MInstr> ins = b.Instrs;
         bool any = false;
@@ -240,7 +243,7 @@ internal static class AddressFold
                 MInstr load = ins[q];
                 if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
                     || load.Operands[0] is not MReg { IsPhys: false } t || defs[t.Id] != 1
-                    || load.Operands[1] is not MImm { Symbol: not null, Label: null } sym)
+                    || load.Operands[1] is not MImm { Symbol: not null, Label: null, Value: >= int.MinValue and <= int.MaxValue } sym)
                 {
                     continue;
                 }
@@ -341,6 +344,63 @@ internal static class AddressFold
             }
             occurrences[t.Id] += all.Count - 1;
             occurrences[u.Id] = 0;
+            ins[q] = Gone();
+            any = true;
+        }
+
+        // ---- F. base = a frame address ----
+        //
+        // `lea t, [ebp+d]` whose t is read nowhere but as the base of plain
+        // memory operands after it in this block: each becomes [ebp+d+disp]
+        // (with its index) -- a local's address taken only to be written
+        // through, `lea eax, [ebp-48h] ; mov dword [eax], 0`: 24,065 frame
+        // LEAs over a kernel, its modules and its userland, and an address
+        // generation interlock each on the 486 and the Pentium. FrameCompact
+        // places [ebp+d+disp] in the block it lies in, as it does any interior
+        // offset, and leaves a frame alone that it cannot place.
+        for (int q = 0; q < ins.Count; q++)
+        {
+            MInstr lea = ins[q];
+            if (lea.Op != MOp.Lea || lea.Operands.Count != 2 || lea.Operands[0] is not MReg { IsPhys: false } t || defs[t.Id] != 1
+                || lea.Operands[1] is not MMem { Base: { IsPhys: true, Phys: Gpr.Ebp } ebp, Index: null, Symbol: null, Label: null, IsSpill: false } frame)
+            {
+                continue;
+            }
+            List<(int J, int K)> uses = new();
+            bool ok = true;
+            for (int j = q + 1; j < ins.Count && ok; j++)
+            {
+                MInstr use = ins[j];
+                for (int k = 0; k < use.Operands.Count; k++)
+                {
+                    switch (use.Operands[k])
+                    {
+                        case MReg r when r.Id == t.Id:
+                        case MMem m1 when m1.Index?.Id == t.Id:
+                        // Only within the block the LEA names: FrameCompact moves
+                        // each operand by the block its displacement falls in,
+                        // and an element past the block's end, or an index the
+                        // displacement does not show, would be moved by another's.
+                        case MMem m2 when m2.Base?.Id == t.Id && (!Plain(m2) || m2.Index is not null || !FitsDisp(m2.Disp, frame.Disp)
+                            || !SameAllocation(frameOf, frame.Disp, frame.Disp + m2.Disp)):
+                            ok = false;
+                            break;
+                        case MMem mem when mem.Base?.Id == t.Id:
+                            uses.Add((j, k));
+                            break;
+                    }
+                }
+            }
+            if (!ok || uses.Count == 0 || uses.Count != occurrences[t.Id] - 1)
+            {
+                continue;
+            }
+            foreach ((int j, int k) in uses)
+            {
+                MMem mem = (MMem)ins[j].Operands[k];
+                ins[j].Operands[k] = new MMem(ebp, mem.Disp + frame.Disp) { Index = mem.Index, Scale = mem.Scale };
+            }
+            occurrences[t.Id] = 0;
             ins[q] = Gone();
             any = true;
         }
@@ -626,7 +686,7 @@ internal static class AddressFold
             for (int j = p + 1; j < q && quiet; j++)
             {
                 MInstr between = ins[j];
-                quiet = between.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
+                quiet = between.Op is MOp.Nop or MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
                         or MOp.Xor or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Cmp or MOp.Test or MOp.Setcc
                     && !between.Lock && !between.Operands.Any(o => o is MMem)
                     && (mem.Base is null || !Writes(between, mem.Base.Id))
@@ -673,7 +733,7 @@ internal static class AddressFold
             for (int j = p + 1; j < q && quiet; j++)
             {
                 MInstr between = ins[j];
-                quiet = between.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
+                quiet = between.Op is MOp.Nop or MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
                         or MOp.Xor or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Cmp or MOp.Test or MOp.Setcc
                     && !between.Lock && !between.Operands.Any(o => o is MMem)
                     && (mem.Base is null || !Writes(between, mem.Base.Id))
@@ -685,10 +745,64 @@ internal static class AddressFold
             ins[p] = Gone();
             any = true;
         }
+
+        // ---- 5. a call through a pointer loaded only to be called ----
+        //
+        // `mov t, [m] ; call t` whose t is read nowhere else: `call [m]` --
+        // a virtual or interface slot, a delegate's target, a GOT slot. The
+        // same clocks on a Pentium (CALL r/m, 2, unpaired either way) and the
+        // same vector decode on a K6 (AMD 21924's table, CALL mreg32 and
+        // mem32 alike), an instruction, two bytes and a register fewer:
+        // 189,429 of them over a kernel, its modules and its userland. Not a
+        // CallKeep's, whose register means more than the target.
+        for (int q = 1; q < ins.Count; q++)
+        {
+            MInstr call = ins[q];
+            if (call.Op != MOp.CallInd || call.Operands.Count != 1 || call.Operands[0] is not MReg { IsPhys: false } t
+                || defs[t.Id] != 1 || occurrences[t.Id] != 2)
+            {
+                continue;
+            }
+            int p = q - 1;
+            while (p >= 0 && !Touches(ins[p], t.Id)) p--;
+            if (p < 0) continue;
+            MInstr load = ins[p];
+            if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
+                || load.Operands[0] is not MReg l0 || l0.Id != t.Id || load.Operands[1] is not MMem mem)
+            {
+                continue;
+            }
+            bool quiet = true;
+            for (int j = p + 1; j < q && quiet; j++)
+            {
+                MInstr between = ins[j];
+                quiet = between.Op is MOp.Nop or MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
+                        or MOp.Xor or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Cmp or MOp.Test or MOp.Setcc
+                    && !between.Lock && !between.Operands.Any(o => o is MMem)
+                    && (mem.Base is null || !Writes(between, mem.Base.Id))
+                    && (mem.Index is null || !Writes(between, mem.Index.Id));
+            }
+            if (!quiet) continue;
+            call.Operands[0] = mem;
+            occurrences[t.Id] = 0;
+            ins[p] = Gone();
+            any = true;
+        }
         return any;
     }
 
     private static MInstr Gone() => new(MOp.Nop, new MImm(Removed));
+
+    /// <summary>Whether two frame displacements lie in one of the frame's allocations (FrameCompact's blocks).</summary>
+    private static bool SameAllocation(Frame frame, int a, int b)
+    {
+        foreach (var block in frame.Allocations)
+        {
+            int end = block.Offset + Math.Max(block.Bytes, 1);
+            if (a >= block.Offset && a < end) return b >= block.Offset && b < end;
+        }
+        return false;
+    }
 
     private static bool FitsDisp(int disp, long add) => disp + add is >= int.MinValue and <= int.MaxValue;
 

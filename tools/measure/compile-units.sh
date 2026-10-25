@@ -23,7 +23,7 @@ INDEX=$TREE/compiler/obj/cor-c/Release/net10.0/declarations.idx
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 # The options the project build passes a compiler unit (corsac.build's corc
 # project, Release, the 486 baseline), less the per-run ones given below.
-options=(--nostdlib --obj --assembly corc --cpu=486 --tune=486 --fpu=x87 --disable-mmx --disable-3dnow -Wno-error
+options=(--nostdlib --obj --assembly corc --cpu=486 --fpu=x87 --disable-mmx --disable-3dnow -Wno-error
   --define TRACE --define NET --define NETCOREAPP --define NET10_0 --define NET5_0_OR_GREATER --define NET6_0_OR_GREATER
   --define NET7_0_OR_GREATER --define NET8_0_OR_GREATER --define NET9_0_OR_GREATER --define NET10_0_OR_GREATER
   --using System --using System.Collections.Generic --using System.IO --using System.Linq --using System.Net.Http

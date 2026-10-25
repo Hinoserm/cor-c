@@ -1,0 +1,114 @@
+// test: multiplication, division and remainder by constants, signed and unsigned, against .NET's results
+// expect-exit: 0
+// expect-output:
+// mul 1190787532
+// sdiv 234002943
+// udiv 1447922640
+//
+// A product by a constant is shifts and LEAs where those are quicker than
+// IMUL for the processor --cpu names, and a quotient by any constant but a
+// power of two is a multiplication by its magic number: each result here
+// is checked against .NET's (wrapping products, quotients toward zero,
+// remainders with the dividend's sign), every constant written out so
+// that each reaches the selector as one, the dividends read from arrays
+// so that none is folded. The expected sums were worked out apart from the
+// compiler.
+
+using System;
+
+static class Program
+{
+    static int _h;
+    static void Mix(int v) { _h = _h * 31 + v; }
+
+    static readonly int[] Xs = { 0, 1, -1, 7, -7, 123456789, -123456789, 2147483647, -2147483648, 1000000, -999999, 65535, 46341 };
+    static readonly uint[] Us = { 0u, 1u, 7u, 123456789u, 2147483647u, 2147483648u, 4294967295u, 4294967294u, 1000000u, 3000000000u };
+
+    static int Main()
+    {
+        _h = 0;
+        foreach (int x in Xs)
+        {
+            Mix(x * 3);
+            Mix(x * 5);
+            Mix(x * 9);
+            Mix(x * 10);
+            Mix(x * 7);
+            Mix(x * 11);
+            Mix(x * 13);
+            Mix(x * 15);
+            Mix(x * 17);
+            Mix(x * 25);
+            Mix(x * 27);
+            Mix(x * 31);
+            Mix(x * 33);
+            Mix(x * 45);
+            Mix(x * 63);
+            Mix(x * 65);
+            Mix(x * 81);
+            Mix(x * 100);
+            Mix(x * 1000);
+            Mix(x * (-3));
+            Mix(x * (-10));
+            Mix(x * (-100));
+            Mix(x * 0);
+            Mix(x * 2);
+            Mix(x * 4);
+            Mix(x * 96);
+            Mix(x * 40);
+            Mix(x * 12);
+        }
+        Console.WriteLine("mul " + _h);
+        _h = 0;
+        foreach (int x in Xs)
+        {
+            Mix(x / 3); Mix(x % 3);
+            Mix(x / 5); Mix(x % 5);
+            Mix(x / 7); Mix(x % 7);
+            Mix(x / 9); Mix(x % 9);
+            Mix(x / 10); Mix(x % 10);
+            Mix(x / 11); Mix(x % 11);
+            Mix(x / 12); Mix(x % 12);
+            Mix(x / 13); Mix(x % 13);
+            Mix(x / 17); Mix(x % 17);
+            Mix(x / 25); Mix(x % 25);
+            Mix(x / 60); Mix(x % 60);
+            Mix(x / 100); Mix(x % 100);
+            Mix(x / 1000); Mix(x % 1000);
+            Mix(x / 641); Mix(x % 641);
+            Mix(x / 10000); Mix(x % 10000);
+            Mix(x / 2147483647); Mix(x % 2147483647);
+            Mix(x / (-3)); Mix(x % (-3));
+            Mix(x / (-7)); Mix(x % (-7));
+            Mix(x / (-10)); Mix(x % (-10));
+            Mix(x / (-100)); Mix(x % (-100));
+            Mix(x / (-1000)); Mix(x % (-1000));
+            Mix(x / (-2147483647)); Mix(x % (-2147483647));
+        }
+        Console.WriteLine("sdiv " + _h);
+        _h = 0;
+        foreach (uint x in Us)
+        {
+            Mix((int)(x / 3u)); Mix((int)(x % 3u));
+            Mix((int)(x / 5u)); Mix((int)(x % 5u));
+            Mix((int)(x / 7u)); Mix((int)(x % 7u));
+            Mix((int)(x / 9u)); Mix((int)(x % 9u));
+            Mix((int)(x / 10u)); Mix((int)(x % 10u));
+            Mix((int)(x / 11u)); Mix((int)(x % 11u));
+            Mix((int)(x / 12u)); Mix((int)(x % 12u));
+            Mix((int)(x / 13u)); Mix((int)(x % 13u));
+            Mix((int)(x / 25u)); Mix((int)(x % 25u));
+            Mix((int)(x / 60u)); Mix((int)(x % 60u));
+            Mix((int)(x / 100u)); Mix((int)(x % 100u));
+            Mix((int)(x / 1000u)); Mix((int)(x % 1000u));
+            Mix((int)(x / 641u)); Mix((int)(x % 641u));
+            Mix((int)(x / 10000u)); Mix((int)(x % 10000u));
+            Mix((int)(x / 2147483647u)); Mix((int)(x % 2147483647u));
+            Mix((int)(x / 2147483649u)); Mix((int)(x % 2147483649u));
+            Mix((int)(x / 4294967295u)); Mix((int)(x % 4294967295u));
+            Mix((int)(x / 3000000000u)); Mix((int)(x % 3000000000u));
+        }
+        Console.WriteLine("udiv " + _h);
+        return 0;
+    }
+}

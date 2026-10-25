@@ -73,6 +73,10 @@ public static class Driver
         // functions whose names contain NAME. Every child corc a command
         // starts is handed them again (ChildFlags). The diagnostic switches
         // are Switches'.
+        // --tune IS GONE: code is made for the processor --cpu names. Said,
+        // not skipped -- skipped, `--tune k6` made a source file of `k6`.
+        if (args.TakeWhile(a => a != "--").Any(a => a == "--tune" || a.StartsWith("--tune=", StringComparison.Ordinal)))
+            return Fail("--tune is gone: code is optimised for the processor --cpu names");
         List<string> taken;
         try { taken = Switches.Take(args); }
         // A RANGE OR A NULL REFUSED INSIDE THE COMPILER is a bug in it, not a

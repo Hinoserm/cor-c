@@ -16,6 +16,7 @@ internal static class Peephole
 {
     public static void Run(MFunction m)
     {
+        ParameterHomes(m);
         ForwardSpillLoadsAcrossBlocks(m);
         DeadSpillStores(m);
         SpillStoresDeadAcrossBlocks(m);
@@ -49,8 +50,190 @@ internal static class Peephole
             MergePops(block.Instrs);
             RedundantTests(block.Instrs);
             ZeroWithXor(block.Instrs);
+            SwapBack(block.Instrs);
+            BeforeTrap(block.Instrs);
+            ReadModifyWrite(block.Instrs, liveOut[b], Jumped);
+            ChooseForCpu(block.Instrs, liveOut[b], Usable(m), Jumped);
+            IncDec(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
         }
+        Unreachable(m);
+    }
+
+    // ---- a parameter spilled to its own slot ------------------------------------------
+
+    /// <summary>
+    /// `mov r, [ebp+P] ; mov [ebp-S], r` -- a parameter loaded and at once
+    /// spilled to a slot of its own -- where S is the allocator's spill slot,
+    /// the function never writes the parameter's word, takes no parameter's
+    /// address and never holds EBP as a value, writes S nowhere else, reaches
+    /// S and the eight bytes below it only as whole words (no address taken,
+    /// no index, no other width), and no safepoint names S: the spill is the
+    /// parameter's own slot, every read of S reads [ebp+P], and the store
+    /// goes (and the load too, if nothing else reads r). About 44,000 of
+    /// them over a kernel, its modules and its userland, each a store and a
+    /// slot. A slot a safepoint names holds a reference the collector must
+    /// find, and the maps name only the frame's own (negative) slots, so
+    /// those stay.
+    /// </summary>
+    private static void ParameterHomes(MFunction m)
+    {
+        if (m.Blocks.Count == 0) return;
+        static bool Ebp(MMem mem) => mem.Base is { IsPhys: true, Phys: Gpr.Ebp } && mem.Index is null && mem.Symbol is null && mem.Label is null;
+        HashSet<int> mapped = new();
+        foreach (Safepoint sp in m.Safepoints.Values) foreach (int at in sp.SlotOffsets) mapped.Add(at);
+        // What every instruction does to the frame: the parameter bytes
+        // written (eight from each write's start, whatever its width says --
+        // a packed store's is eight and its Width the default four), each
+        // slot's whole writes and plain whole reads, and every other kind of
+        // reach into the frame: an address taken, an index, another width,
+        // an instruction this does not know.
+        HashSet<int> paramWritten = new();
+        Dictionary<int, int> slotWrites = new();
+        HashSet<int> plain = new();     // displacements read or written plainly and whole
+        HashSet<int> other = new();     // displacements reached any other way
+        foreach (MBlock block in m.Blocks)
+            foreach (MInstr i in block.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    // EBP AS A VALUE -- copied, added to -- reaches the frame
+                    // by arithmetic no operand shows: nothing is moved then.
+                    if (i.Operands[k] is MReg { IsPhys: true, Phys: Gpr.Ebp }) return;
+                    if (i.Operands[k] is not MMem mem || mem.Base is not { IsPhys: true, Phys: Gpr.Ebp }) continue;
+                    bool writes = (Roles.Of(i.Op, k) & Roles.Role.Def) != 0 || !Understood(i);
+                    if (mem.Disp >= 8)
+                    {
+                        // A parameter's address taken, or reached by index: nothing moves.
+                        if (i.Op == MOp.Lea || !Ebp(mem)) return;
+                        if (writes) for (int b = mem.Disp; b < mem.Disp + 8; b++) paramWritten.Add(b);
+                        continue;
+                    }
+                    bool whole = i.Op != MOp.Lea && Ebp(mem) && i.Width == 4 && Understood(i)
+                        && (IsMov(i) || i.Op is MOp.Push or MOp.Cmp or MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Test);
+                    if (!whole) { other.Add(mem.Disp); continue; }
+                    plain.Add(mem.Disp);
+                    if (writes) slotWrites[mem.Disp] = slotWrites.GetValueOrDefault(mem.Disp) + 1;
+                }
+        List<MInstr> entry = m.Blocks[0].Instrs;
+        Dictionary<int, int> home = new();
+        for (int k = 1; k < entry.Count; k++)
+        {
+            MInstr store = entry[k], load = entry[k - 1];
+            if (!IsMov(load) || !IsMov(store) || load.Operands[0] is not MReg r || load.Operands[1] is not MMem p || !Ebp(p) || p.Disp < 8
+                || store.Operands[0] is not MMem { IsSpill: true } s || !Ebp(s) || s.Disp >= 0 || store.Operands[1] is not MReg r2 || r2.Id != r.Id)
+            {
+                continue;
+            }
+            if (mapped.Contains(s.Disp) || slotWrites.GetValueOrDefault(s.Disp) != 1) continue;
+            bool clear = true;
+            for (int b = p.Disp - 7; b < p.Disp + 4 && clear; b++) clear = !paramWritten.Contains(b);
+            // Nothing else within reach of the slot's four bytes: no other
+            // plain word overlapping it, and nothing reached any other way
+            // from eight below it (a quadword at S-4 covers it) to its end.
+            for (int b = s.Disp - 7; b < s.Disp + 4 && clear; b++) clear = !other.Contains(b);
+            for (int b = s.Disp - 3; b < s.Disp + 4 && clear; b++) clear = b == s.Disp || !plain.Contains(b);
+            if (!clear) continue;
+            home[s.Disp] = p.Disp;
+            entry.RemoveAt(k);
+            k--;
+        }
+        if (home.Count == 0) return;
+        foreach (MBlock block in m.Blocks)
+            foreach (MInstr i in block.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                    if (i.Operands[k] is MMem mem && Ebp(mem) && home.TryGetValue(mem.Disp, out int to))
+                        i.Operands[k] = new MMem(mem.Base, to);
+    }
+
+    // ---- what a trap makes dead ---------------------------------------------------------
+
+    /// <summary>
+    /// A block ending in INT3 (the selector's unreachable, after a call that
+    /// does not return -- a throw, an index out of range) runs nothing after
+    /// the call: an `add esp, n` cleaning up its arguments before the trap
+    /// is never reached, and a second INT3 neither. 26,312 such cleanups and
+    /// 78,093 doubled traps over a kernel, its modules and its userland. The
+    /// call's return address still lies in the function, on the trap.
+    /// </summary>
+    private static void BeforeTrap(List<MInstr> instrs)
+    {
+        int n = instrs.Count;
+        if (n < 2 || instrs[n - 1].Op != MOp.Int3 || instrs[n - 1].Operands.Count != 0) return;
+        int k = n - 2;
+        while (k >= 0 && (instrs[k].Op == MOp.Int3 && instrs[k].Operands.Count == 0
+            || instrs[k].Op == MOp.Add && instrs[k].Width == 4 && instrs[k].Operands.Count == 2
+               && instrs[k].Operands[0] is MReg { IsPhys: true, Phys: Gpr.Esp } && instrs[k].Operands[1] is MImm { IsPlain: true }))
+        {
+            instrs.RemoveAt(k);
+            k--;
+        }
+    }
+
+    // ---- a move straight back ---------------------------------------------------------
+
+    /// <summary>
+    /// `mov a, b ; mov b, a`: after the first the two hold one value, so the
+    /// second moves nothing -- 4,331 of them over a kernel, its modules and
+    /// its userland.
+    /// </summary>
+    private static void SwapBack(List<MInstr> instrs)
+    {
+        for (int k = instrs.Count - 1; k >= 1; k--)
+        {
+            MInstr second = instrs[k], first = instrs[k - 1];
+            if (IsMov(first) && IsMov(second) && first.Operands[0] is MReg a && first.Operands[1] is MReg b
+                && second.Operands[0] is MReg b2 && second.Operands[1] is MReg a2 && a.Id == a2.Id && b.Id == b2.Id)
+            {
+                instrs.RemoveAt(k);
+            }
+        }
+    }
+
+    // ---- blocks nothing reaches -----------------------------------------------------
+
+    /// <summary>
+    /// A block no jump, no fall-through, no jump table, no label taken and no
+    /// landing pad reaches is never run, and goes: the layout and the
+    /// peephole leave such ones behind -- a block of one `jmp X` laid out
+    /// straight after another `jmp X`, 23,081 of them over a kernel, its
+    /// modules and its userland. A landing pad is reached by the unwinder
+    /// and a block whose address is taken by whatever takes it, so both are
+    /// roots with the entry.
+    /// </summary>
+    private static void Unreachable(MFunction m)
+    {
+        int n = m.Blocks.Count;
+        if (n < 2) return;
+        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+        for (int b = 0; b < n; b++) index[m.Blocks[b]] = b;
+        bool[] reached = new bool[n];
+        Stack<int> work = new();
+        void Root(MBlock? block)
+        {
+            if (block is not null && index.TryGetValue(block, out int at) && !reached[at]) { reached[at] = true; work.Push(at); }
+        }
+        Root(m.Blocks[0]);
+        foreach (MBlock block in m.Blocks)
+        {
+            if (block.Source is { IsLandingPad: true }) Root(block);
+            foreach (MInstr i in block.Instrs)
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MImm { Label: { } taken }) Root(taken);
+                    else if (o is MMem { Label: { } table }) Root(table);
+                }
+        }
+        List<MBlock> next = new();
+        while (work.Count > 0)
+        {
+            m.SuccessorsInto(work.Pop(), next);
+            foreach (MBlock to in next) Root(to);
+        }
+        if (reached.All(x => x)) return;
+        List<MBlock> kept = new(n);
+        for (int b = 0; b < n; b++) if (reached[b]) kept.Add(m.Blocks[b]);
+        m.Blocks.Clear();
+        m.Blocks.AddRange(kept);
     }
 
     // ---- which physical registers leave each block alive --------------------------
@@ -1093,6 +1276,203 @@ internal static class Peephole
             {
                 instrs[k] = new MInstr(MOp.Xor, MReg.Of(r.Id), MReg.Of(r.Id));
             }
+        }
+    }
+
+    // ---- load, operate, store back: one read-modify-write ----------------------------
+
+    /// <summary>
+    /// `mov r, [m] ; op r, x ; mov [m], r` with r dead after the store, x a
+    /// register other than r or a constant, and m not addressed through r, is
+    /// `op [m], x`: the same memory, the same flags (add, sub, and, or and xor
+    /// set them from the result alike), one instruction and a register
+    /// freed. Three clocks on a 486 and a Pentium either way; on a K6 one long
+    /// decode (load, ALU, store) against three short ones (AMD 21924's
+    /// table: ADD mem, reg is long), about a clock and a half of decoding
+    /// either way. A local or a spilled count updated in a loop (`s += x`
+    /// with s in its slot) was the three.
+    /// </summary>
+    private static void ReadModifyWrite(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
+    {
+        const int Frame = (1 << (int)Gpr.Esp) | (1 << (int)Gpr.Ebp);
+        int dead = ~liveOut & 0xFF & ~Frame;
+        for (int k = instrs.Count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            dead &= ~jumped(i);
+            // dead says what holds after instruction k.
+            if (k >= 2 && IsMov(i) && i.Operands[0] is MMem m && i.Operands[1] is MReg { IsPhys: true } r
+                && r.Id < 8 && (dead & (1 << r.Id)) != 0 && m.Base?.Id != r.Id && m.Index?.Id != r.Id)
+            {
+                MInstr op = instrs[k - 1], load = instrs[k - 2];
+                if (op.Op is MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor && op.Width == 4 && !op.Lock
+                    && op.Operands.Count == 2 && op.Operands[0] is MReg o0 && o0.Id == r.Id
+                    && (op.Operands[1] is MReg x && x.Id != r.Id || op.Operands[1] is MImm { IsPlain: true })
+                    && IsMov(load) && load.Operands[0] is MReg l0 && l0.Id == r.Id
+                    && load.Operands[1] is MMem lm && SameMem(lm, m))
+                {
+                    MInstr rmw = new(op.Op, m, op.Operands[1]) { Width = 4, Line = op.Line };
+                    instrs.RemoveRange(k - 2, 3);
+                    instrs.Insert(k - 2, rmw);
+                    k -= 2;
+                    i = rmw;
+                }
+            }
+            if (!Understood(i))
+            {
+                dead = 0;
+                continue;
+            }
+            foreach ((MReg rr, bool isDef) in Regs(i)) if (isDef && rr.Id < 8) dead |= 1 << rr.Id;
+            foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
+            foreach ((MReg rr, bool isDef) in Regs(i)) if (!isDef && rr.Id < 8) dead &= ~(1 << rr.Id);
+            foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
+            dead &= ~Frame;
+        }
+    }
+
+    // ---- add or subtract one: inc, dec ------------------------------------------------
+
+    /// <summary>
+    /// `add x, 1` and `sub x, 1` (and by -1) are INC and DEC where nothing
+    /// after reads CF, which those leave alone: one byte for a register
+    /// against three, and the same clock on the 486,
+    /// the Pentium (in either pipe) and the K6 (Intel 242816, "Short
+    /// Opcodes"). A reader of CF is a jump, set or move on below, above or
+    /// their negations, or an ADC or SBB; anything else not known to leave
+    /// the flags alone keeps the add. Last of all: nothing after it here
+    /// reads the flags of an INC or DEC. A byte saved on memory (FF /0
+    /// against 83 /0 ib), two on a register.
+    /// </summary>
+    private static void IncDec(List<MInstr> instrs)
+    {
+        for (int k = 0; k < instrs.Count; k++)
+        {
+            MInstr i = instrs[k];
+            if (i.Op is not (MOp.Add or MOp.Sub) || i.Width != 4 || i.Lock || i.Operands.Count != 2
+                || i.Operands[1] is not MImm { IsPlain: true, Value: 1 or -1 } one
+                || i.Operands[0] is not (MReg or MMem))
+            {
+                continue;
+            }
+            bool safe = true;
+            for (int j = k + 1; j < instrs.Count; j++)
+            {
+                MInstr after = instrs[j];
+                if (after.Op is MOp.Jcc or MOp.Setcc or MOp.Cmov)
+                {
+                    if (after.Cond is Cond.B or Cond.Ae or Cond.Be or Cond.A) { safe = false; break; }
+                    continue;
+                }
+                if (after.Op is MOp.Adc or MOp.Sbb) { safe = false; break; }
+                if (after.Op is MOp.Call or MOp.CallInd or MOp.Ret or MOp.Epilogue) break;
+                if (WritesFlags(after)) break;
+                if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Push or MOp.Pop or MOp.Nop or MOp.Jmp) continue;
+                safe = false;
+                break;
+            }
+            if (!safe) continue;
+            bool up = (i.Op == MOp.Add) == (one.Value == 1);
+            instrs[k] = new MInstr(up ? MOp.Inc : MOp.Dec, i.Operands[0]) { Width = 4, Line = i.Line };
+        }
+    }
+
+    // ---- the instruction the selected processor runs best ---------------------------
+
+    /// <summary>
+    /// Each choice where the processors differ, made for the one --cpu names
+    /// (CpuModel), with the registers and flags known dead after each
+    /// instruction, as DeadDefs knows them:
+    /// - every processor: `shl r, 1` is `add r, r` -- the same flags but AF;
+    ///   the Pentium pairs an add in either pipe and a shift only in U, the
+    ///   K6 has two adders and one shifter (AMD 21924, "Use ADD reg, reg
+    ///   instead of SHL reg, 1"), the 486 adds in one clock and shifts in two.
+    /// - the 486 and the Pentium: a byte zero-extended is `xor r, r ; mov
+    ///   r8, src` (or `and r, 0FFh` from its own low byte) where the flags are
+    ///   dead -- MOVZX is three clocks there, unpaired, behind a 0Fh prefix
+    ///   the P54C decodes for a clock more (Intel 242816, "Zero-Extension of
+    ///   Short"). The K6 keeps MOVZX, which it decodes short and which makes no
+    ///   superset dependency (AMD 21924).
+    /// - the 486 and the Pentium: `push [m]` is `mov r, [m] ; push r` with a
+    ///   register dead there that the function may use (Usable) -- four
+    ///   clocks against two on the 486, two unpaired against two pairable on
+    ///   the Pentium (Intel 242816, "Push mem"). The K6 keeps PUSH [mem] (AMD
+    ///   21924), and so does the 386, where the pair is a clock slower.
+    /// - the Pentium and the K6: CDQ is `mov edx, eax ; sar edx, 31` where
+    ///   the flags are dead -- unpaired on the Pentium (Agner Fog, example
+    ///   4.12), vector decoded on the K6 (AMD 21924, "Balance the use of CWD,
+    ///   CBW, CDQ"); the 486 takes three clocks either way.
+    /// What an instruction becomes is walked in its place, last first, so the
+    /// registers a load put before it reads are live above it.
+    /// </summary>
+    private static void ChooseForCpu(List<MInstr> instrs, int liveOut, int usable, Func<MInstr, int> jumped)
+    {
+        bool p5 = CpuModel.P5, scalar = CpuModel.Scalar, k6 = CpuModel.K6, i486 = CpuModel.I486;
+        const int Frame = (1 << (int)Gpr.Esp) | (1 << (int)Gpr.Ebp);
+        int dead = ~liveOut & 0xFF & ~Frame;
+        bool flagsLive = false;
+        // What holds above instruction i, from what holds below it.
+        void Step(MInstr i)
+        {
+            if (!Understood(i))
+            {
+                dead = 0;
+                flagsLive = true;
+                return;
+            }
+            if (ReadsFlags(i)) flagsLive = true;
+            else if (WritesFlags(i) || i.Op is MOp.Call or MOp.CallInd) flagsLive = false;
+            foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.Id < 8) dead |= 1 << r.Id;
+            foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
+            foreach ((MReg r, bool isDef) in Regs(i)) if (!isDef && r.Id < 8) dead &= ~(1 << r.Id);
+            foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
+            dead &= ~Frame;
+        }
+        for (int k = instrs.Count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            dead &= ~jumped(i);
+            // dead and flagsLive say what holds AFTER instruction k.
+            MInstr[]? with = null;
+            if (i.Op == MOp.Shl && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg sr && i.Operands[1] is MImm { IsPlain: true, Value: 1 })
+            {
+                with = [new MInstr(MOp.Add, MReg.Of(sr.Id), MReg.Of(sr.Id)) { Line = i.Line }];
+            }
+            else if ((p5 || scalar) && !flagsLive && i.Op == MOp.Movzx && i.Width == 1 && i.Operands.Count == 2
+                && i.Operands[0] is MReg { IsPhys: true } zd && zd.Id < 4)
+            {
+                if (i.Operands[1] is MReg own && own.Id == zd.Id)
+                {
+                    with = [new MInstr(MOp.And, MReg.Of(zd.Id), new MImm(0xFF)) { Line = i.Line }];
+                }
+                else if (i.Operands[1] is MReg { IsPhys: true } from && from.Id < 4
+                    || i.Operands[1] is MMem zm && zm.Base?.Id != zd.Id && zm.Index?.Id != zd.Id)
+                {
+                    with = [new MInstr(MOp.Xor, MReg.Of(zd.Id), MReg.Of(zd.Id)) { Line = i.Line },
+                            new MInstr(MOp.Mov, MReg.Of(zd.Id), i.Operands[1]) { Width = 1, Line = i.Line }];
+                }
+            }
+            else if ((p5 || i486) && i.Op == MOp.Push && i.Width == 4 && i.Operands.Count == 1 && i.Operands[0] is MMem pm
+                && (dead & usable) != 0)
+            {
+                int free = dead & usable, scratch = 0;
+                while ((free & (1 << scratch)) == 0) scratch++;
+                with = [new MInstr(MOp.Mov, MReg.Of(scratch), pm) { Line = i.Line },
+                        new MInstr(MOp.Push, MReg.Of(scratch)) { Line = i.Line }];
+            }
+            else if ((k6 || p5) && !flagsLive && i.Op == MOp.Cdq)
+            {
+                with = [new MInstr(MOp.Mov, MReg.Of((int)Gpr.Edx), MReg.Of((int)Gpr.Eax)) { Line = i.Line },
+                        new MInstr(MOp.Sar, MReg.Of((int)Gpr.Edx), new MImm(31)) { Line = i.Line }];
+            }
+            if (with is null)
+            {
+                Step(i);
+                continue;
+            }
+            instrs.RemoveAt(k);
+            instrs.InsertRange(k, with);
+            for (int j = with.Length - 1; j >= 0; j--) Step(with[j]);
         }
     }
 

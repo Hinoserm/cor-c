@@ -53,6 +53,8 @@ public static class Roles
             case MOp.Imul:
             case MOp.Neg:
             case MOp.Not:
+            case MOp.Inc:
+            case MOp.Dec:
             case MOp.Bswap:
             case MOp.Shl:
             case MOp.Ror:

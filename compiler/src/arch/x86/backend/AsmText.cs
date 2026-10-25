@@ -98,6 +98,10 @@ internal static class AsmText
             case MOp.JmpInd:
                 yield return $"jmp {Op(i.Operands[0], 4, true)}";
                 yield break;
+            case MOp.Int3:
+                // A breakpoint's marker operand is the compiler's, not the instruction's.
+                yield return "int3";
+                yield break;
             case MOp.Call:
             case MOp.CallInd:
             case MOp.CallKeep:

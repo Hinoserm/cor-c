@@ -30,7 +30,6 @@ public static class Program
             Check(X86Cpu.Parse(["--cpu=k6"]).Mmx && !X86Cpu.Parse(["--cpu=k6"]).ThreeDNow, "K6 feature matrix");
             Check(X86Cpu.Parse(["--cpu=k6-3+"]).ThreeDNowExtended, "plus extensions missing");
             Check(!X86Cpu.Parse(["--cpu=k6-3+", "--disable-mmx"]).ThreeDNow, "dependent disable");
-            Check(!X86Cpu.Parse(["--cpu=486", "--tune=k6-3+"]).Mmx, "tuning enabled instructions");
             foreach (var (alias, model) in new[] { ("i386", "386"), ("i486", "486"), ("586", "pentium"), ("i586", "pentium"),
                 ("pentium_mmx", "pentium-mmx"), ("686", "686"), ("i686", "686"), ("pentium-pro", "686"), ("pentium2", "pentium2"),
                 ("pentium-ii", "pentium2"), ("pentium3", "pentium3"), ("pentium-iii", "pentium3"), ("pentium4", "pentium4"),
@@ -52,7 +51,6 @@ public static class Program
             Check(!X86Cpu.Parse(["--cpu=athlon", "--disable-cmov"]).Has(X86Feature.FloatCmov), "FCOMI outlived CMOV");
             Check(!X86Cpu.Parse(["--cpu=athlon64", "--disable-mmx"]).Has(X86Feature.MmxExtensions), "MMX extensions outlived MMX");
             Check(X86Cpu.Parse(["--cpu=pentium3", "--fpu=none"]).Features == (X86Feature.I486 | X86Feature.Pentium | X86Feature.Cmov), "no-FPU leaked x87 state");
-            Check(!X86Cpu.Parse(["--cpu=k6-2", "--tune=athlon64"]).Has(X86Feature.Cmov), "tuning enabled CMOV");
             Check(X86Cpu.Parse(["--cpu=486", "--enable-sse2"]).Has(X86Feature.Sse | X86Feature.Sse2), "SSE2 enabled without SSE");
             string[] mmx = "packsswb packssdw packuswb paddb paddw paddd paddsb paddsw paddusb paddusw pand pandn por pxor pcmpeqb pcmpeqw pcmpeqd pcmpgtb pcmpgtw pcmpgtd pmaddwd pmulhw pmullw psllw pslld psllq psraw psrad psrlw psrld psrlq psubb psubw psubd psubsb psubsw psubusb psubusw punpckhbw punpckhwd punpckhdq punpcklbw punpcklwd punpckldq".Split(' ');
             string[] now = "pi2fd pf2id pfacc pfadd pfsub pfsubr pfmul pfcmpeq pfcmpge pfcmpgt pfmax pfmin pfrcp pfrcpit1 pfrcpit2 pfrsqrt pfrsqit1 pmulhrw pavgusb pf2iw pi2fw pfnacc pfpnacc pswapd".Split(' ');

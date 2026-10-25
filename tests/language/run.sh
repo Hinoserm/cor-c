@@ -7,6 +7,7 @@
 #   tests/language/run.sh -v hello   also show the compiler's output
 #   tests/language/run.sh --target=x86-64   every test compiled for long mode
 #   tests/language/run.sh --opt-size  exercise size-oriented compilation
+#   tests/language/run.sh --cpu=pentium   every test compiled for that processor
 #   tests/language/run.sh --experimental-batch  exercise the staged optimizer group
 #   tests/language/run.sh --runtime-knob=Corsac.GC.VerifyFrees=1
 #                                every test built with that runtime setting
@@ -88,6 +89,14 @@ for arg in "$@"; do
             compiler_flags+=("--target" "${arg#--target=}")
             index_flags+=("--target" "${arg#--target=}")
             run_target="${arg#--target=}"
+            passthrough+=("$arg")
+            ;;
+        --cpu=*)
+            # Every test compiled for this processor (corc's --cpu), so the
+            # code chosen for its timing is exercised. The tests run on this
+            # machine, so name a processor whose instructions it has (k6,
+            # not k6-2: no 3DNow! here).
+            compiler_flags+=("--cpu" "${arg#--cpu=}")
             passthrough+=("$arg")
             ;;
         --runtime-knob=*)

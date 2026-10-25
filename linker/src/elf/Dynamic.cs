@@ -396,6 +396,37 @@ public static partial class Linker
             }
         }
 
+        // A CALL THROUGH THE GOT TO WHAT THIS LINK DEFINES IS A DIRECT CALL:
+        // a unit compiled on its own calls another unit's function through
+        // its GOT slot (`call [got + f@GOT]`, Pic), not knowing the two end
+        // in one image; here they do, and the six bytes are `nop ; call f`
+        // -- a direct call the K6 decodes short where the indirect one is
+        // vector decoded (AMD 21924), and no GOT slot. 94,547 of them over a
+        // kernel's userland libraries and programs. A jump through the slot
+        // (a tail call) likewise; a load of the slot (a function's address
+        // taken) is left as it is.
+        if (!dyn.LongMode)
+        {
+            foreach (Input input in inputs)
+                foreach (Placed p in input.Placed)
+                {
+                    var relocs = p.Section.Relocs;
+                    for (int j = 0; j < relocs.Count; j++)
+                    {
+                        Relocation r = relocs[j];
+                        if (r.Kind != RelocKind.Got32 || r.Offset < 2 || Lookup(input, layout, r.Symbol) is null) continue;
+                        // THE PLACED COPY, which the link relocates and writes:
+                        // the section's own bytes may be handed over already.
+                        byte op = p.Bytes[r.Offset - 2], modrm = p.Bytes[r.Offset - 1];
+                        int reg = (modrm >> 3) & 7;
+                        if (op != 0xFF || modrm >> 6 != 2 || (modrm & 7) == 4 || reg is not (2 or 4)) continue;
+                        p.Bytes[r.Offset - 2] = 0x90;
+                        p.Bytes[r.Offset - 1] = (byte)(reg == 2 ? 0xE8 : 0xE9);
+                        relocs[j] = new Relocation(r.Offset, r.Symbol, r.Addend - 4, RelocKind.Rel32);
+                    }
+                }
+        }
+
         foreach (Input input in inputs)
         {
             foreach (Placed p in input.Placed)

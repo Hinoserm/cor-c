@@ -717,7 +717,9 @@ internal sealed partial class Selector
                 SelectSyscall(i);
                 break;
             case Opcode.Trap:
-                Emit(MOp.Int3);
+                // A breakpoint the program may run on from: marked, so that
+                // nothing before it is taken for dead (Peephole.BeforeTrap).
+                Emit(MOp.Int3, new MImm(1));
                 break;
             case Opcode.Pause:
                 Emit(MOp.Pause);
@@ -980,6 +982,109 @@ internal sealed partial class Selector
         };
     }
 
+    /// <summary>
+    /// `dest = src * factor`, 32 bits wrapping, as the processor --cpu names
+    /// runs it best: IMUL, or shifts, LEAs, adds and subtracts where those
+    /// are quicker -- the same product modulo 2^32, and nothing reads the
+    /// flags of a multiplication selected here (a checked one is
+    /// CheckedArith's). IMUL r, r, imm is 10 and unpaired on a Pentium (and
+    /// AP-500 replaces one with six simple instructions); 2 or 3 on the K6,
+    /// whose manual keeps IMUL wherever the shifts and adds would take 3
+    /// clocks or more (AMD 21924, "Use integer multiply over shift-add
+    /// sequences"); 4 on a Pentium Pro; on a 486 about 10 plus the bits of
+    /// the constant, 13 to 42, where a shift is 2 clocks and a LEA with an
+    /// index 2 (AP-500), and each step waits on the last. So at most 5, 2, 3
+    /// or 5 instructions replace it -- on a 486, 7 to 9 clocks at worst.
+    /// The forms: n * 2^k, with n one of 1; 3, 5, 9 (one LEA); their
+    /// products two at a time (two); 1 + {2,4,8} * {3,5,9} (two: 7, 11, 13,
+    /// 19, 21, 25, 37, 41, 73); 2^j - 1 (a move, a shift and a subtract);
+    /// 2^j + 1 (a move, a shift and an add); the shift by k last, and a
+    /// negation for a negative factor. A source that is the destination is
+    /// copied first where the recipe reads it after writing the destination,
+    /// and the copy counts.
+    /// </summary>
+    private void MulByConstant(MReg dest, MReg src, int factor)
+    {
+        int limit = CpuModel.K6 ? 2 : CpuModel.P5 ? 5 : CpuModel.Scalar ? 5 : 3;
+        long c = Math.Abs((long)factor);
+        bool negate = factor < 0;
+        if (c == 0)
+        {
+            Mov(dest, Imm(0));
+            return;
+        }
+        int k = 0;
+        while ((c & 1) == 0) { c >>= 1; k++; }
+        static int Scale(long n) => n is 3 or 5 or 9 ? (int)n - 1 : 0;
+        // The odd part's recipe and its instructions.
+        int body; int kind = -1; long a = 0, b = 0; int j = 0;
+        if (c == 1) { body = 0; kind = 0; }
+        else if (Scale(c) != 0) { body = 1; kind = 1; a = c; }
+        else
+        {
+            body = int.MaxValue;
+            foreach (long x in new long[] { 3, 5, 9 })
+                foreach (long y in new long[] { 3, 5, 9 })
+                    if (x * y == c && body > 2) { body = 2; kind = 2; a = x; b = y; }
+            foreach (long x in new long[] { 3, 5, 9 })
+                foreach (long y in new long[] { 2, 4, 8 })
+                    if (1 + y * x == c && body > 2) { body = 2; kind = 3; a = x; b = y; }
+            for (int t = 2; t < 31 && body > 2; t++)
+            {
+                if (c == (1L << t) - 1) { body = 3; kind = 4; j = t; }
+                else if (c == (1L << t) + 1) { body = 3; kind = 5; j = t; }
+            }
+        }
+        // The recipes that read the source after writing the destination.
+        bool copies = dest.Id == src.Id && kind >= 3;
+        int cost = body == int.MaxValue ? int.MaxValue : body + (k > 0 ? 1 : 0) + (negate ? 1 : 0) + (copies ? 1 : 0);
+        if (cost > limit)
+        {
+            Emit(MOp.Imul3, dest, src, Imm(factor));
+            return;
+        }
+        MMem Scaled(MReg? baseReg, MReg index, long n) => new(baseReg, 0) { Index = index, Scale = (int)n };
+        // The source read after the destination is written (a subtract, an
+        // add, the second LEA's base): one register for both is copied first.
+        if (copies)
+        {
+            MReg copy = Temp();
+            Mov(copy, src);
+            src = copy;
+        }
+        switch (kind)
+        {
+            case 0:
+                Mov(dest, src);
+                break;
+            case 1:
+                Emit(MOp.Lea, dest, Scaled(src, src, Scale(a)));
+                break;
+            case 2:
+                Emit(MOp.Lea, dest, Scaled(src, src, Scale(a)));
+                Emit(MOp.Lea, dest, Scaled(dest, dest, Scale(b)));
+                break;
+            case 3:
+                // c = 1 + b * a: dest = a * src, then src + dest * b.
+                Emit(MOp.Lea, dest, Scaled(src, src, Scale(a)));
+                Emit(MOp.Lea, dest, Scaled(src, dest, b));
+                break;
+            case 4:
+                Mov(dest, src);
+                Emit(MOp.Shl, dest, Imm(j));
+                Emit(MOp.Sub, dest, src);
+                break;
+            case 5:
+                Mov(dest, src);
+                Emit(MOp.Shl, dest, Imm(j));
+                Emit(MOp.Add, dest, src);
+                break;
+        }
+        if (k == 1) Emit(MOp.Add, dest, dest);
+        else if (k > 1) Emit(MOp.Shl, dest, Imm(k));
+        if (negate) Emit(MOp.Neg, dest);
+    }
+
     private void SelectMul(Instr i)
     {
         var dest = DestPair(i);
@@ -987,7 +1092,7 @@ internal sealed partial class Selector
         {
             if (i.Operands[1] is ImmOperand imm)
             {
-                Emit(MOp.Imul3, dest.Lo, R(i.Operands[0]), Imm((int)imm.Value));
+                MulByConstant(dest.Lo, R(i.Operands[0]), (int)imm.Value);
             }
             else
             {
@@ -1068,51 +1173,155 @@ internal sealed partial class Selector
         Commit(i, dest);
     }
 
+    private static bool PowerOfTwo(ulong v) => v != 0 && (v & (v - 1)) == 0;
+
+    /// <summary>
+    /// The signed magic number and shift for `d` (not -1, 0, 1 or a power of
+    /// two in magnitude): Hacker's Delight figure 10-1. Checked against
+    /// truncating division for every divisor from -300 to 300 and the
+    /// extremes, with every dividend edge and hundreds of random ones.
+    /// </summary>
+    private static (int Magic, int Shift) MagicSigned(int d)
+    {
+        const uint two31 = 0x80000000;
+        uint ad = (uint)Math.Abs((long)d);
+        uint t = two31 + (unchecked((uint)d) >> 31);
+        uint anc = t - 1 - t % ad;
+        int p = 31;
+        uint q1 = two31 / anc, r1 = two31 - q1 * anc, q2 = two31 / ad, r2 = two31 - q2 * ad, delta;
+        do
+        {
+            p++;
+            q1 = 2 * q1; r1 = 2 * r1;
+            if (r1 >= anc) { q1++; r1 -= anc; }
+            q2 = 2 * q2; r2 = 2 * r2;
+            if (r2 >= ad) { q2++; r2 -= ad; }
+            delta = ad - r2;
+        } while (q1 < delta || (q1 == delta && r1 == 0));
+        int magic = unchecked((int)(q2 + 1));
+        return (d < 0 ? -magic : magic, p - 32);
+    }
+
+    /// <summary>
+    /// The unsigned magic number, shift and whether the add-and-halve form
+    /// is needed, for `d` at least 2 and not a power of two: Hacker's
+    /// Delight figure 10-2, checked as MagicSigned is.
+    /// </summary>
+    private static (uint Magic, int Shift, bool Add) MagicUnsigned(uint d)
+    {
+        int p = 31;
+        uint nc = uint.MaxValue - unchecked(0u - d) % d;
+        uint q1 = 0x80000000 / nc, r1 = 0x80000000 - q1 * nc, q2 = 0x7FFFFFFF / d, r2 = 0x7FFFFFFF - q2 * d, delta;
+        bool add = false;
+        do
+        {
+            p++;
+            if (r1 >= nc - r1) { q1 = unchecked(2 * q1 + 1); r1 = unchecked(2 * r1 - nc); }
+            else { q1 = unchecked(2 * q1); r1 = unchecked(2 * r1); }
+            if (r2 + 1 >= d - r2)
+            {
+                if (q2 >= 0x7FFFFFFF) add = true;
+                q2 = unchecked(2 * q2 + 1); r2 = unchecked(2 * r2 + 1 - d);
+            }
+            else
+            {
+                if (q2 >= 0x80000000) add = true;
+                q2 = unchecked(2 * q2); r2 = unchecked(2 * r2 + 1);
+            }
+            delta = d - 1 - r2;
+        } while (p < 64 && (q1 < delta || (q1 == delta && r1 == 0)));
+        return (unchecked(q2 + 1), p - 32, add);
+    }
+
+    /// <summary>A 32-bit quotient or remainder by a constant, by its magic number (MagicSigned, MagicUnsigned).</summary>
+    private void DivideByConstant(Instr i, bool signed, bool rem, long value)
+    {
+        // THE MAGIC NUMBER IN EAX, THE DIVIDEND THE MULTIPLIER: a 486 stops
+        // multiplying at the multiplier's highest bit (MUL and IMUL, 13 to
+        // 42 clocks), and a dividend is mostly small where a magic number has
+        // 32 bits -- 42 clocks of it and the division lost.
+        MReg numerator = Temp(), quotient = Temp();
+        Mov(numerator, RM(i.Operands[0]));
+        if (signed)
+        {
+            int d = unchecked((int)value);
+            (int magic, int shift) = MagicSigned(d);
+            Mov(Eax, Imm(magic));
+            Emit(MOp.ImulWide, numerator);
+            Mov(quotient, Edx);
+            if (d > 0 && magic < 0) Emit(MOp.Add, quotient, numerator);
+            if (d < 0 && magic > 0) Emit(MOp.Sub, quotient, numerator);
+            if (shift != 0) Emit(MOp.Sar, quotient, Imm(shift));
+            // Toward zero: one more for a negative quotient.
+            MReg sign = Temp();
+            Mov(sign, quotient); Emit(MOp.Shr, sign, Imm(31));
+            Emit(MOp.Add, quotient, sign);
+        }
+        else
+        {
+            (uint magic, int shift, bool add) = MagicUnsigned(unchecked((uint)value));
+            Mov(Eax, Imm(unchecked((int)magic)));
+            Emit(MOp.Mul, numerator);
+            Mov(quotient, Edx);
+            if (!add)
+            {
+                if (shift != 0) Emit(MOp.Shr, quotient, Imm(shift));
+            }
+            else
+            {
+                // ((n - t) >> 1) + t, then >> (shift - 1): the 33-bit magic.
+                MReg halved = Temp();
+                Mov(halved, numerator); Emit(MOp.Sub, halved, quotient);
+                Emit(MOp.Shr, halved, Imm(1)); Emit(MOp.Add, halved, quotient);
+                if (shift > 1) Emit(MOp.Shr, halved, Imm(shift - 1));
+                quotient = halved;
+            }
+        }
+        if (rem)
+        {
+            MReg product = Temp();
+            MulByConstant(product, quotient, unchecked((int)value));
+            Mov(Lo(i.Dest!), numerator); Emit(MOp.Sub, Lo(i.Dest!), product);
+        }
+        else Mov(Lo(i.Dest!), quotient);
+    }
+
     private void SelectDiv(Instr i)
     {
         bool signed = i.Op is Opcode.DivS or Opcode.RemS;
         bool rem = i.Op is Opcode.RemS or Opcode.RemU;
-        if (signed && i.Dest!.Type == IrType.I32 && i.Operands[1] is ImmOperand signedDivisor
-            && signedDivisor.Value is 3 or 5 or 10)
+        // ANY 32-BIT CONSTANT DIVISOR BUT A POWER OF TWO: a multiplication
+        // by its magic number and shifts (Granlund and Montgomery; Hacker's
+        // Delight, chapter 10). DIV is 41 clocks on a Pentium and IDIV 46,
+        // both unpaired; the K6 gives two bits of quotient a clock, some 18
+        // for 32 bits, against a two-clock multiply (AMD 21924, "Replace
+        // integer division by constants with multiplication by the
+        // reciprocal"); a 486 divides in 40 to 43. -1 never reaches here
+        // (Lowering.Divide), 0 is DivideByZeroCheck's.
+        if (i.Dest!.Type == IrType.I32 && i.Operands[1] is ImmOperand divisorImm
+            && (signed ? unchecked((int)divisorImm.Value) is not (-1 or 0 or 1) && !PowerOfTwo((ulong)Math.Abs((long)(int)divisorImm.Value))
+                       : unchecked((uint)divisorImm.Value) >= 2 && !PowerOfTwo(unchecked((uint)divisorImm.Value))))
         {
-            // Signed high product followed by a sign correction truncates
-            // toward zero, including int.MinValue, without abs overflow.
-            int shift = signedDivisor.Value == 3 ? 0 : signedDivisor.Value == 5 ? 1 : 2;
-            int magic = signedDivisor.Value == 3 ? 0x55555556 : 0x66666667;
-            MReg numerator = Temp(), multiplier = Temp(), quotient = Temp(), sign = Temp();
-            Mov(numerator, RM(i.Operands[0]));
-            Mov(sign, numerator); Emit(MOp.Sar, sign, Imm(31));
-            Mov(multiplier, Imm(magic)); Mov(Eax, numerator);
-            Emit(MOp.ImulWide, multiplier);
-            Mov(quotient, Edx);
-            if (shift != 0) Emit(MOp.Sar, quotient, Imm(shift));
-            Emit(MOp.Sub, quotient, sign);
-            if (rem)
-            {
-                MReg product = Temp();
-                Emit(MOp.Imul3, product, quotient, Imm((int)signedDivisor.Value));
-                Mov(Lo(i.Dest), numerator); Emit(MOp.Sub, Lo(i.Dest), product);
-            }
-            else Mov(Lo(i.Dest), quotient);
+            DivideByConstant(i, signed, rem, divisorImm.Value);
             return;
         }
         if (i.Operands[1] is ImmOperand constant && constant.Value is 3 or 5 or 10
-            && ((!signed && i.Dest!.Type == IrType.I32)
-                || (i.Dest!.Type == IrType.I64 && ZeroHigh(i.Operands[0]))))
+            && i.Dest!.Type == IrType.I64 && ZeroHigh(i.Operands[0]))
         {
             // Exact unsigned quotients over [0, 2^32-1]: high32(n*m) >> s.
             // ceil(2^33/3), ceil(2^34/5), ceil(2^35/10), respectively.
             int shift = constant.Value == 3 ? 1 : constant.Value == 5 ? 2 : 3;
             int magic = constant.Value == 3 ? unchecked((int)0xaaaaaaab) : unchecked((int)0xcccccccd);
-            MReg numerator = Temp(), multiplier = Temp(), quotient = Temp();
+            MReg numerator = Temp(), quotient = Temp();
             Mov(numerator, i.Dest.Type == IrType.I64 ? PairRM(i.Operands[0]).Lo : RM(i.Operands[0]));
-            Mov(multiplier, Imm(magic)); Mov(Eax, numerator);
-            Emit(MOp.Mul, multiplier);
+            // The dividend the multiplier, as DivideByConstant's.
+            Mov(Eax, Imm(magic));
+            Emit(MOp.Mul, numerator);
             Mov(quotient, Edx); Emit(MOp.Shr, quotient, Imm(shift));
             if (rem)
             {
                 MReg product = Temp();
-                Emit(MOp.Imul3, product, quotient, Imm((int)constant.Value));
+                MulByConstant(product, quotient, (int)constant.Value);
                 Mov(Lo(i.Dest), numerator); Emit(MOp.Sub, Lo(i.Dest), product);
             }
             else Mov(Lo(i.Dest), quotient);

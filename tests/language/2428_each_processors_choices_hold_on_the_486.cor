@@ -1,0 +1,66 @@
+// test: the code chosen for the 486 (the default) gives .NET's results: memory increments, constant products and quotients, byte reads, divisions, pushed arguments
+// expect-exit: 0
+// expect-output:
+// inc 300 300 300 700
+// edge -725252623
+// bytes 25284
+// div -493614463
+// args 91
+//
+// Each processor's own choices -- MOVZX made XOR and a byte move, PUSH of
+// memory made a load and a push, CDQ split, SHL by one an ADD, a load, an
+// operation and a store made one read-modify-write, an add of one an INC --
+// on code that reaches every one: a static, an array element and a field
+// counted past 255 in memory (INC of a dword, never of its low byte), the
+// edge constants of the product and quotient paths (int.MinValue, 1, an
+// unsigned power of two and 0xFFFFFFFF), bytes summed, signed quotients by
+// a variable, and arguments pushed from statics. The expected results were
+// worked out apart from the compiler.
+
+using System;
+
+sealed class Holder { public int F; }
+
+static class Program
+{
+    static int _s, _down = 1000;
+    static int _h;
+    static void Mix(int v) { _h = _h * 31 + v; }
+    static readonly int[] Xs = { 0, 1, -1, 7, -7, 2147483647, -2147483648, 123456789, -123456789 };
+    static readonly uint[] Us = { 0u, 1u, 7u, 2147483648u, 4294967295u, 123456789u };
+    static int A1 = 1, A2 = 2, A3 = 3, A4 = 4, A5 = 5, A6 = 6;
+
+    static int Squares(int a, int b, int c, int d, int e, int f) => a * a + b * b + c * c + d * d + e * e + f * f;
+
+    static int Main()
+    {
+        int[] a = new int[8];
+        Holder h = new Holder();
+        for (int i = 0; i < 300; i++) { _s++; a[3]++; h.F++; _down--; }
+        Console.WriteLine("inc " + _s + " " + a[3] + " " + h.F + " " + _down);
+
+        _h = 0;
+        foreach (int x in Xs)
+        {
+            Mix(x * -2147483648); Mix(x / -2147483648); Mix(x % -2147483648); Mix(x / 1); Mix(x % 1);
+        }
+        foreach (uint u in Us)
+        {
+            Mix((int)(u / 8u)); Mix((int)(u % 16u)); Mix((int)(u / 4294967295u));
+        }
+        Console.WriteLine("edge " + _h);
+
+        byte[] b = new byte[200];
+        for (int i = 0; i < b.Length; i++) b[i] = (byte)((i * 37 + 11) & 0xFF);
+        int sum = 0;
+        foreach (byte x in b) sum += x;
+        Console.WriteLine("bytes " + sum);
+
+        int q = 0;
+        for (int i = 1; i < 200; i++) q += (-100000 * i) / (i % 13 + 1) + (77777 * i) % (-(i % 7) - 1);
+        Console.WriteLine("div " + q);
+
+        Console.WriteLine("args " + Squares(A1, A2, A3, A4, A5, A6));
+        return 0;
+    }
+}

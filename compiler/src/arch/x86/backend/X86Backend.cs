@@ -24,10 +24,12 @@ public sealed class X86Backend : IBackend
     public Target Target => Target.X86;
 
     /// <summary>
-    /// Alignment of each function's first byte. Four by default: a 486
-    /// gains nothing measurable from more, and on a machine this size the
-    /// padding is bytes that could have been code. Raise it per build when
-    /// a hot function wants its entry on a fetch line.
+    /// The least alignment of each function's first byte: four by default,
+    /// which --cpu may raise (CpuModel.FunctionAlign: sixteen on the K6, as
+    /// AMD 21924 asks; Intel's 486 and Pentium manuals ask for none, and
+    /// padding there is bytes that could have been code). The text section
+    /// is aligned to what the loop heads in it need besides
+    /// (CpuModel.CodeAlign).
     /// </summary>
     public int FunctionAlign { get; set; } = 4;
 
@@ -151,7 +153,10 @@ public sealed class X86Backend : IBackend
         ObjectFile obj = new();
         (Target.X86Profile.Contract with { AutomaticPacked = AutomaticPacked }).Attach(obj);
         OptimizationSummary summary = new();
-        Section text = new(".text", SectionKind.Code) { Align = Math.Max(4, FunctionAlign) };
+        // THE SECTION AS ALIGNED AS ITS CODE ASKS (CpuModel.CodeAlign): a loop
+        // head padded to a section offset is at that address only so.
+        int functionAlign = CpuModel.FunctionAlign(FunctionAlign);
+        Section text = new(".text", SectionKind.Code) { Align = Math.Max(Math.Max(4, functionAlign), CpuModel.CodeAlign) };
         Section rodata = new(".rodata", SectionKind.ReadOnlyData);
         Section data = new(".data", SectionKind.Data);
         Section relocatedConstants = new(".data.rel.ro", SectionKind.Data);
@@ -354,7 +359,7 @@ public sealed class X86Backend : IBackend
             f = m.Source;
             // The gap before a function is never executed, but it is filled
             // with real no-ops rather than zeros so a disassembly reads cleanly.
-            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
             int start = text.Bytes.Count;
             int size;
@@ -537,7 +542,7 @@ public sealed class X86Backend : IBackend
             // THE CARD STUB (MachineIntrinsics.CardMark): the slot in EAX, every
             // register kept. No stack map and no frame entry: it calls nothing,
             // so no walk ever finds it on a stack.
-            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
             int at = text.Bytes.Count;
             text.Bytes.AddRange(new byte[] { 0x51, 0x8B, 0x0D });                  // push ecx; mov ecx, [Cards]
@@ -564,7 +569,7 @@ public sealed class X86Backend : IBackend
             // in EDX, every register kept; Runtime.WriteBarrier takes both as
             // machine words. A collection while it runs finds no map for the frames
             // above it and reads them whole, which is correct and conservative.
-            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
             int at = text.Bytes.Count;
             text.Bytes.AddRange(new byte[]
@@ -611,7 +616,7 @@ public sealed class X86Backend : IBackend
             && module.Functions.Any(f => f.Name == BarrierExchangeRoutine)
             && module.Functions.Any(f => f.Name == BarrierCompareExchangeRoutine))
         {
-            int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
+            int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
             int start = text.Bytes.Count;
             void Bytes(params byte[] bytes) => text.Bytes.AddRange(bytes);
