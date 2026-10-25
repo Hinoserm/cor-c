@@ -280,24 +280,29 @@ static class String {
     // same object. A name that is a string (the runtime's own descriptors,
     // Gc.RevokedVtable) is its own full name.
     //
-    // KEPT BY ITS ADDRESS, A NUMBER: a name is the image's and never moves.
-    // Kept as the object, every name read -- an object's ToString, its
-    // GetType().Name -- was a value loaded through the object stored into a
-    // static, and the lifetime rules gave up objects of every type whose
-    // name was asked: LINQ's iterators across units (1311) and an exception
-    // kept by a program that needs no collector (1513).
+    // KEPT BY WHAT IT SAYS, NOT WHERE IT IS: a hash of its bytes, and a hit
+    // checked against them (NameSpells). Kept as the object, every name read
+    // -- an object's ToString, its GetType().Name -- was a value loaded
+    // through the object stored into a static, and the lifetime rules gave
+    // up objects of every type whose name was asked (1311, 1513). Kept by
+    // its address, the address was that object to them still -- a word made
+    // of a reference is the reference -- and every object handed to this
+    // went to the collector: across units, every LINQ walk's iterator (1211
+    // with List<T> the non-generic IList). Nothing of a module's is kept, so
+    // a module gone leaves nothing to forget.
     public static string TypeFullName(object compact) {
         if (compact is string text) { return text; }
-        long at = Sys.Word(compact);
+        byte[] name = (byte[])compact;
+        long at = NameHash(name);
         long gate = EnterFullNames();
         try {
             int mask = TypeNameCache.At.Length - 1;
-            int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
+            int slot = NameSlot(at, mask);
             while (TypeNameCache.At[slot] != 0) {
-                if (TypeNameCache.At[slot] == at) { return TypeNameCache.To[slot]!; }
+                if (TypeNameCache.At[slot] == at && NameSpells(name, TypeNameCache.To[slot]!)) { return TypeNameCache.To[slot]!; }
                 slot = (slot + 1) & mask;
             }
-            string full = NameText$((byte[])compact);
+            string full = NameText$(name);
             TypeNameCache.At[slot] = at;
             TypeNameCache.To[slot] = full;
             TypeNameCache.Count++;
@@ -320,37 +325,52 @@ static class String {
         return gate;
     }
 
-    /// THE NAMES OF A MODULE GONE, FORGOTTEN: a full name kept for an
-    /// address in [low, high) -- a module's image, forced out or unloaded --
-    /// is dropped, so that another module loaded there is not answered with
-    /// the old one's names. Gc.Quarantine asks it; a kernel that unloads a
-    /// module any other way asks it too.
+    /// The names of a module gone: nothing to forget, as a name is kept by
+    /// its bytes, never by where they were (TypeFullName). The kernel's
+    /// module unload still asks.
     public static void ForgetTypeNames(long low, long high) {
-        long gate = EnterFullNames();
-        try {
-            long[] from = TypeNameCache.At;
-            string?[] to = TypeNameCache.To;
-            bool any = false;
-            for (int i = 0; i < from.Length; i++) {
-                if (from[i] >= low && from[i] < high) { any = true; break; }
+    }
+
+    // A name's bytes, hashed (FNV-1a, 64 bits); never 0, which marks a free slot.
+    static long NameHash(byte[] name) {
+        ulong h = 14695981039346656037;
+        for (int i = 0; i < name.Length; i++) { h = (h ^ name[i]) * 1099511628211; }
+        return h == 0 ? 1 : unchecked((long)h);
+    }
+
+    static int NameSlot(long hash, int mask) { return (int)(hash ^ (hash >> 29)) & mask; }
+
+    // Whether `full` is what `name` spells (NameText$), read without making it.
+    static bool NameSpells(byte[] name, string full) {
+        int put = 0;
+        int i = 0;
+        while (i < name.Length) {
+            int b = name[i];
+            if (b >= 1 && b <= 8) {
+                string token = NameToken(b);
+                if (put + token.Length > full.Length) { return false; }
+                for (int k = 0; k < token.Length; k++) { if (full[put++] != token[k]) { return false; } }
+                i++;
+                continue;
             }
-            if (!any) { return; }
-            TypeNameCache.At = new long[from.Length];
-            TypeNameCache.To = new string?[from.Length];
-            TypeNameCache.Count = 0;
-            int mask = TypeNameCache.At.Length - 1;
-            for (int i = 0; i < from.Length; i++) {
-                long at = from[i];
-                if (at == 0 || at >= low && at < high) { continue; }
-                int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
-                while (TypeNameCache.At[slot] != 0) { slot = (slot + 1) & mask; }
-                TypeNameCache.At[slot] = at;
-                TypeNameCache.To[slot] = to[i];
-                TypeNameCache.Count++;
+            if (b < 0x80) {
+                if (put >= full.Length || full[put++] != (char)b) { return false; }
+                i++;
+                continue;
             }
-        } finally {
-            Sys.AtomicSwap(gate, 0);
+            int more = (b & 0xE0) == 0xC0 ? 1 : (b & 0xF0) == 0xE0 ? 2 : 3;
+            int code = b & (more == 1 ? 0x1F : more == 2 ? 0x0F : 0x07);
+            for (int k = 1; k <= more; k++) { code = (code << 6) | (name[i + k] & 0x3F); }
+            i += more + 1;
+            if (code >= 0x10000) {
+                code -= 0x10000;
+                if (put + 2 > full.Length || full[put] != (char)(0xD800 + (code >> 10)) || full[put + 1] != (char)(0xDC00 + (code & 0x3FF))) { return false; }
+                put += 2;
+            } else if (put >= full.Length || full[put++] != (char)code) {
+                return false;
+            }
         }
+        return put == full.Length;
     }
 
     static void GrowFullNames() {
@@ -362,7 +382,7 @@ static class String {
         for (int i = 0; i < from.Length; i++) {
             long at = from[i];
             if (at == 0) { continue; }
-            int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
+            int slot = NameSlot(at, mask);
             while (TypeNameCache.At[slot] != 0) { slot = (slot + 1) & mask; }
             TypeNameCache.At[slot] = at;
             TypeNameCache.To[slot] = to[i];
