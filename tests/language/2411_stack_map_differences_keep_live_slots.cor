@@ -1,0 +1,153 @@
+// test: stack_map_differences_keep_live_slots
+// expect-exit: 0
+// expect-output:
+// 5500
+// ok
+//
+// A FRAME'S LIVE SPILL SLOTS, NAMED BY DIFFERENCES. Forty objects held in a
+// frame with more of them live than the machine has registers, each from
+// its making to a last read further on, so every call site keeps another
+// set of the frame's words: pooled bitmaps, most written as another site's
+// less the words it lacks and plus the words it adds (StackMapTable). Each
+// call collects with the heap churning: a slot the collector failed to read
+// would have its object freed and its memory given to the churn, and the
+// sum would come out wrong.
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Box { public long V; public Box(long v) { V = v; } }
+
+static class P
+{
+    static object[] _keep = new object[64];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Box Mk(long v) => new Box(v);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        for (int i = 0; i < 2000; i++) _keep[i & 63] = new Box(-1);
+        GC.Collect();
+        for (int i = 0; i < 2000; i++) _keep[i & 63] = new Box(-2);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Held()
+    {
+        long sum = 0;
+        Box b0 = Mk(1);
+        Churn();
+        Box b1 = Mk(8);
+        Churn();
+        Box b2 = Mk(15);
+        Churn();
+        Box b3 = Mk(22);
+        Churn();
+        Box b4 = Mk(29);
+        Churn();
+        Box b5 = Mk(36);
+        Churn();
+        Box b6 = Mk(43);
+        Churn();
+        Box b7 = Mk(50);
+        Churn();
+        Box b8 = Mk(57);
+        Churn();
+        Box b9 = Mk(64);
+        Churn();
+        Box b10 = Mk(71);
+        Churn();
+        Box b11 = Mk(78);
+        Churn();
+        Box b12 = Mk(85);
+        Churn();
+        Box b13 = Mk(92);
+        Churn();
+        Box b14 = Mk(99);
+        Churn();
+        Box b15 = Mk(106);
+        Churn();
+        sum += b5.V;
+        Box b16 = Mk(113);
+        Churn();
+        sum += b6.V;
+        Box b17 = Mk(120);
+        Churn();
+        sum += b7.V;
+        Box b18 = Mk(127);
+        Churn();
+        sum += b8.V;
+        Box b19 = Mk(134);
+        Churn();
+        sum += b9.V;
+        Box b20 = Mk(141);
+        Churn();
+        sum += b10.V;
+        Box b21 = Mk(148);
+        Churn();
+        sum += b11.V;
+        Box b22 = Mk(155);
+        Churn();
+        sum += b12.V;
+        Box b23 = Mk(162);
+        Churn();
+        sum += b13.V;
+        Box b24 = Mk(169);
+        Churn();
+        sum += b14.V;
+        Box b25 = Mk(176);
+        Churn();
+        sum += b15.V;
+        Box b26 = Mk(183);
+        Churn();
+        sum += b16.V;
+        Box b27 = Mk(190);
+        Churn();
+        sum += b17.V;
+        Box b28 = Mk(197);
+        Churn();
+        sum += b18.V;
+        Box b29 = Mk(204);
+        Churn();
+        sum += b19.V;
+        Box b30 = Mk(211);
+        Churn();
+        sum += b20.V;
+        Box b31 = Mk(218);
+        Churn();
+        sum += b21.V;
+        Box b32 = Mk(225);
+        Churn();
+        sum += b22.V;
+        Box b33 = Mk(232);
+        Churn();
+        sum += b23.V;
+        Box b34 = Mk(239);
+        Churn();
+        sum += b24.V;
+        Box b35 = Mk(246);
+        Churn();
+        sum += b25.V;
+        Box b36 = Mk(253);
+        Churn();
+        sum += b26.V;
+        Box b37 = Mk(260);
+        Churn();
+        sum += b27.V;
+        Box b38 = Mk(267);
+        Churn();
+        sum += b28.V;
+        Box b39 = Mk(274);
+        Churn();
+        sum += b29.V;
+        return sum + b0.V + b1.V + b2.V + b3.V + b4.V + b30.V + b31.V + b32.V + b33.V + b34.V + b35.V + b36.V + b37.V + b38.V + b39.V;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Held());
+        Console.WriteLine("ok");
+        return 0;
+    }
+}

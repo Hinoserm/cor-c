@@ -1340,8 +1340,8 @@ static class Gc
     // reference << 4 | live registers | 8 for a call with no map; a 0 ends
     // the function. Registers are bit 0 EBX, 1 ESI, 2 EDI. A bitmap
     // reference is odd for one inline (ref >> 1, bit b the word at
-    // EBP - 4(b+1)) and even for one in the pool (at ref >> 1: a byte count,
-    // then the bytes, bit b of byte k the word at EBP - 4(8k + b + 1)).
+    // EBP - 4(b+1)) and even for one in the pool (at ref >> 1: dense, sparse
+    // or a difference from another of the pool; KeepPooled).
     //
     // A lookup is a binary search of the checkpoints and then a read forward
     // of at most thirty-two sites: every site after a checkpoint lies above
@@ -1454,7 +1454,8 @@ static class Gc
     {
         if ((reference & 1) == 0)
         {
-            return KeepBitmap(frame, table + (Sys.PeekWord(table + 32) & 0xFFFFFFFF) + (reference >> 1), from, copy, at);
+            long pool = table + (Sys.PeekWord(table + 32) & 0xFFFFFFFF);
+            return KeepPooled(frame, pool, pool + (reference >> 1), from, copy, at);
         }
         long bits = reference >> 1;
         long b = 0;
@@ -1593,14 +1594,58 @@ static class Gc
     }
 
     /// The words of a frame a pooled bitmap names, kept -- those at or above
-    /// `from` only. Dense (a byte count << 1, then the bytes, bit b of byte k
-    /// the word at frame - 4(8k + b + 1)) or sparse (a word count << 1 | 1,
-    /// then the first word and each next word's distance past it less one).
-    static long KeepBitmap(long frame, long bitmap, long from, long copy, long at)
+    /// `from` only. A bitmap written whole (KeepBitmap), or a DIFFERENCE (a
+    /// zero head): its root's words but those it lacks, then those it adds.
+    /// The root is never a difference itself, and each word is read once.
+    static long KeepPooled(long frame, long pool, long bitmap, long from, long copy, long at)
+    {
+        long p = 0;
+        if (MapUleb(bitmap, out p) != 0)
+        {
+            return KeepBitmap(frame, bitmap, 0, 0, from, copy, at);
+        }
+        long root = MapUleb(p, out p);
+        long lacking = MapUleb(p, out p);
+        long list = p;
+        long n = 0;
+        while (n < lacking)
+        {
+            MapUleb(p, out p);
+            n = n + 1;
+        }
+        at = KeepBitmap(frame, pool + root, list, lacking, from, copy, at);
+        long adding = MapUleb(p, out p);
+        long word = -1;
+        n = 0;
+        while (n < adding)
+        {
+            word = word + MapUleb(p, out p) + 1;
+            long slot = frame - 4 * (word + 1);
+            if (slot >= from)
+            {
+                at = KeepWord(Sys.Peek(slot), copy, at);
+            }
+            n = n + 1;
+        }
+        return at;
+    }
+
+    /// The words of a frame a bitmap written whole names, kept -- those at
+    /// or above `from` only, and not the `skips` words listed at `skip` (a
+    /// sparse list, ascending, as a difference gives). Dense (a byte count
+    /// << 1, then the bytes, bit b of byte k the word at frame - 4(8k + b +
+    /// 1)) or sparse (a word count << 1 | 1, then the first word and each
+    /// next word's distance past it less one).
+    static long KeepBitmap(long frame, long bitmap, long skip, long skips, long from, long copy, long at)
     {
         long p = 0;
         long head = MapUleb(bitmap, out p);
         long bytes = head >> 1;
+        long gone = -1;
+        if (skips > 0)
+        {
+            gone = MapUleb(skip, out skip);
+        }
         if ((head & 1) != 0)
         {
             long word = -1;
@@ -1608,8 +1653,16 @@ static class Gc
             while (n < bytes)
             {
                 word = word + MapUleb(p, out p) + 1;
+                while (skips > 0 && gone < word)
+                {
+                    skips = skips - 1;
+                    if (skips > 0)
+                    {
+                        gone = gone + MapUleb(skip, out skip) + 1;
+                    }
+                }
                 long slot = frame - 4 * (word + 1);
-                if (slot >= from)
+                if (slot >= from && (skips == 0 || gone != word))
                 {
                     at = KeepWord(Sys.Peek(slot), copy, at);
                 }
@@ -1626,8 +1679,17 @@ static class Gc
             {
                 if ((bits & 1) != 0)
                 {
-                    long slot = frame - 4 * (k * 8 + b + 1);
-                    if (slot >= from)
+                    long word = k * 8 + b;
+                    while (skips > 0 && gone < word)
+                    {
+                        skips = skips - 1;
+                        if (skips > 0)
+                        {
+                            gone = gone + MapUleb(skip, out skip) + 1;
+                        }
+                    }
+                    long slot = frame - 4 * (word + 1);
+                    if (slot >= from && (skips == 0 || gone != word))
                     {
                         at = KeepWord(Sys.Peek(slot), copy, at);
                     }

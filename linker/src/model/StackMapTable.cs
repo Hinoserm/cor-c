@@ -46,6 +46,13 @@ namespace Corsac.Lang.Ir;
 ///     one -- whichever is shorter. A large frame's live spill slots are a
 ///     few words among hundreds: dense, the GUI module's pool was 590 KB of
 ///     zero bytes, resident.
+///     Or a DIFFERENCE, when shorter: uleb 0 (a dense bitmap of no bytes,
+///     never pooled), uleb the offset in the pool of a ROOT -- a bitmap of
+///     the same function written whole, never itself a difference; the
+///     varint may be padded with 0x80 bytes -- then the words the root has
+///     and this lacks and the words this adds, each a uleb count and a list
+///     as a sparse bitmap's. Sites of one frame keep most of the same
+///     slots: the GUI module's pool went from 486 KB to about 220.
 ///
 ///   A BITMAP REFERENCE is odd for one held inline -- ref >> 1, bit b the word
 ///   at EBP - 4(b+1), at most sixteen words -- and even for a pooled one,
@@ -129,25 +136,76 @@ public static class StackMapTable
     {
         // THE POOL, MOST USED FIRST: a reference is a varint of its offset, so
         // the bitmaps named most often are the ones placed where it is short.
-        Dictionary<string, (int Uses, int First, byte[] Bytes)> pooled = new(StringComparer.Ordinal);
-        void Count(int[] words)
-        {
-            if (Inline(words)) return;
-            string key = string.Join(',', words);
-            if (pooled.TryGetValue(key, out var seen)) pooled[key] = (seen.Uses + 1, seen.First, seen.Bytes);
-            else pooled.Add(key, (1, pooled.Count, Pooled(words)));
-        }
+        //
+        // A BITMAP AS ANOTHER'S DIFFERENCE. A large frame's call sites keep
+        // most of the same spill slots live, so a bitmap first named in a
+        // function is written as one of that function's whole bitmaps (a
+        // root) less the words it lacks and plus the words it adds, when
+        // that is shorter: two thirds of the GUI module's pool. A difference
+        // names only a root, so the collector's walk is the root's words,
+        // one compare each against the next lacking one, and then the
+        // added ones.
+        Dictionary<string, (int Uses, int First, int[] Words)> pooled = new(StringComparer.Ordinal);
+        Dictionary<string, int[]> rootOf = new(StringComparer.Ordinal);
         foreach (Function f in functions)
         {
+            List<int[]> roots = new();
+            void Count(int[] words)
+            {
+                if (Inline(words)) return;
+                string key = string.Join(',', words);
+                if (pooled.TryGetValue(key, out var seen))
+                {
+                    pooled[key] = (seen.Uses + 1, seen.First, seen.Words);
+                    return;
+                }
+                pooled.Add(key, (1, pooled.Count, words));
+                int best = Pooled(words).Length;
+                int[]? root = null;
+                for (int r = Math.Max(0, roots.Count - RootsAsked); r < roots.Count; r++)
+                {
+                    int cost = 1 + RootReferenceGuess + DifferenceBytes(roots[r], words);
+                    if (cost < best) (best, root) = (cost, roots[r]);
+                }
+                if (root is null) roots.Add(words);
+                else rootOf.Add(key, root);
+            }
             Count(f.Objects);
             foreach (Site s in f.Sites) Count(s.Slots);
         }
-        ChunkedBytes pool = new();
-        Dictionary<string, int> placed = new(StringComparer.Ordinal);
-        foreach (var entry in pooled.OrderByDescending(p => p.Value.Uses).ThenBy(p => p.Value.First))
+        List<string> order = pooled.OrderByDescending(p => p.Value.Uses).ThenBy(p => p.Value.First).Select(p => p.Key).ToList();
+        Dictionary<string, byte[]> bytes = new(StringComparer.Ordinal);
+        Dictionary<string, int> widths = new(StringComparer.Ordinal);
+        foreach (string key in order)
         {
-            placed.Add(entry.Key, pool.Count);
-            pool.AddRange(entry.Value.Bytes);
+            bytes[key] = rootOf.TryGetValue(key, out int[]? root) ? Difference(root, pooled[key].Words, 0, widths, key) : Pooled(pooled[key].Words);
+        }
+        // Each difference's root offset as the layout places it. A varint
+        // that would shrink keeps its width (padded), so no entry ever
+        // shortens and the offsets settle.
+        Dictionary<string, int> placed = new(StringComparer.Ordinal);
+        while (true)
+        {
+            int offset = 0;
+            foreach (string key in order)
+            {
+                placed[key] = offset;
+                offset += bytes[key].Length;
+            }
+            bool moved = false;
+            foreach (string key in order)
+            {
+                if (!rootOf.TryGetValue(key, out int[]? root)) continue;
+                byte[] again = Difference(root, pooled[key].Words, placed[string.Join(',', root)], widths, key);
+                if (again.Length != bytes[key].Length) moved = true;
+                bytes[key] = again;
+            }
+            if (!moved) break;
+        }
+        ChunkedBytes pool = new();
+        foreach (string key in order)
+        {
+            pool.AddRange(bytes[key]);
         }
         ulong Reference(int[] words)
         {
@@ -234,9 +292,21 @@ public static class StackMapTable
                         if ((bits & 1) != 0) words.Add(w);
                     return words.ToArray();
                 }
-                int q = poolAt + (int)(reference >> 1);
+                return Pooled(poolAt + (int)(reference >> 1));
+            }
+            int[] Pooled(int q)
+            {
+                List<int> words = new();
                 ulong head = ReadUleb(b, ref q);
                 int n = (int)(head >> 1);
+                if (head == 0)
+                {
+                    int[] root = Pooled(poolAt + (int)ReadUleb(b, ref q));
+                    SortedSet<int> those = new(root);
+                    foreach (int w in Listed(ref q)) those.Remove(w);
+                    foreach (int w in Listed(ref q)) those.Add(w);
+                    return those.ToArray();
+                }
                 if ((head & 1) != 0)
                 {
                     int word = -1;
@@ -251,6 +321,18 @@ public static class StackMapTable
                     for (int bit = 0; bit < 8; bit++)
                         if ((b[q + k] >> bit & 1) != 0) words.Add(k * 8 + bit);
                 return words.ToArray();
+            }
+            List<int> Listed(ref int q)
+            {
+                List<int> words = new();
+                int n = (int)ReadUleb(b, ref q);
+                int word = -1;
+                for (int k = 0; k < n; k++)
+                {
+                    word += (int)ReadUleb(b, ref q) + 1;
+                    words.Add(word);
+                }
+                return words;
             }
             while (p < poolAt)
             {
@@ -283,6 +365,82 @@ public static class StackMapTable
             return null;
         }
         return functions;
+    }
+
+    /// <summary>How many of a function's latest roots a new bitmap is measured against.</summary>
+    private const int RootsAsked = 256;
+    /// <summary>A root's offset as a difference names it, while the layout is not known.</summary>
+    private const int RootReferenceGuess = 3;
+
+    /// <summary>The bytes of the two lists that turn <paramref name="root"/> into <paramref name="words"/>.</summary>
+    private static int DifferenceBytes(int[] root, int[] words)
+    {
+        int lacking = 0, adding = 0, bytes = 0, lastLacking = -1, lastAdding = -1;
+        int i = 0, j = 0;
+        while (i < root.Length || j < words.Length)
+        {
+            if (j == words.Length || i < root.Length && root[i] < words[j])
+            {
+                bytes += UlebLength((ulong)(root[i] - lastLacking - 1));
+                lastLacking = root[i++];
+                lacking++;
+            }
+            else if (i == root.Length || words[j] < root[i])
+            {
+                bytes += UlebLength((ulong)(words[j] - lastAdding - 1));
+                lastAdding = words[j++];
+                adding++;
+            }
+            else
+            {
+                i++;
+                j++;
+            }
+        }
+        return bytes + UlebLength((ulong)lacking) + UlebLength((ulong)adding);
+    }
+
+    /// <summary>
+    /// A bitmap as a root's difference: a zero head (a dense bitmap of no
+    /// bytes, which is never pooled), the root's offset in the pool, then the
+    /// words the root has and this lacks and the words this adds, each a
+    /// count and the sparse list. The offset is written at least as wide as
+    /// it was before (<paramref name="widths"/>).
+    /// </summary>
+    private static byte[] Difference(int[] root, int[] words, int rootAt, Dictionary<string, int> widths, string key)
+    {
+        List<int> lacking = new(), adding = new();
+        int i = 0, j = 0;
+        while (i < root.Length || j < words.Length)
+        {
+            if (j == words.Length || i < root.Length && root[i] < words[j]) lacking.Add(root[i++]);
+            else if (i == root.Length || words[j] < root[i]) adding.Add(words[j++]);
+            else { i++; j++; }
+        }
+        int width = Math.Max(UlebLength((ulong)rootAt), widths.GetValueOrDefault(key));
+        widths[key] = width;
+        ChunkedBytes bytes = new();
+        bytes.Add(0);
+        for (int k = 0; k < width - 1; k++) bytes.Add((byte)(rootAt >> 7 * k & 0x7F | 0x80));
+        bytes.Add((byte)(rootAt >> 7 * (width - 1)));
+        foreach (List<int> list in new[] { lacking, adding })
+        {
+            Uleb(bytes, (ulong)list.Count);
+            int previous = -1;
+            foreach (int w in list)
+            {
+                Uleb(bytes, (ulong)(w - previous - 1));
+                previous = w;
+            }
+        }
+        return bytes.ToArray();
+    }
+
+    private static int UlebLength(ulong v)
+    {
+        int n = 1;
+        while (v >= 0x80) { v >>= 7; n++; }
+        return n;
     }
 
     private static bool Inline(int[] words) => words.Length == 0 || words[^1] < InlineWords;
