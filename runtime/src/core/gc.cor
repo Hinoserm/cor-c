@@ -3398,23 +3398,35 @@ static class Gc
     /// Gc.CountHeld and Gc.Revoke were for -- becomes the first heap's, so
     /// that nothing still in use is ever unmapped. Then its record. Answers
     /// false, and does nothing, while a thread is still in the heap, for
-    /// the first heap, and for one that is not a heap.
+    /// the first heap, for one that is not a heap, and when threads went on
+    /// handing the heap's pages back through eight collections (NoteUnowned):
+    /// the caller tries again later.
     public static bool ReleaseHeap(long heap)
     {
         if (heap == 0 || heap == _heap0 || !_ready)
         {
             return false;
         }
-        // WHAT IS GARBAGE NOW, FOUND: what the last sweeps found live is
-        // what stays.
-        Collect();
-        GcLock.Enter();
-        while (_collecting || _sweeping || Runtime.Marking != 0)
+        // WHAT IS GARBAGE NOW, FOUND, by a major collection whose counts are
+        // whole: none taken while a page or buffer of a module heap was
+        // handed back after its sweep began (NoteUnowned), whose counts that
+        // sweep never took. Collected again while one was; and while threads
+        // keep handing them back, not released at all rather than released
+        // by counts that may be stale.
+        for (long tries = 0; ; tries++)
         {
-            GcLock.Exit();
-            GcThreads.Park();
-            Sys.Pause();
+            Collect();
             GcLock.Enter();
+            while (_collecting || _sweeping || Runtime.Marking != 0)
+            {
+                GcLock.Exit();
+                GcThreads.Park();
+                Sys.Pause();
+                GcLock.Enter();
+            }
+            if (_unowned == _unownedAtMajorSweep) break;
+            GcLock.Exit();
+            if (tries >= 7) return false;
         }
         bool known = false;
         for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
@@ -5526,6 +5538,8 @@ static class Gc
             if (_stamping && !StampedAlready(tb)) StampPage(page);
             HeapChunks.SetOwner(page, Zero);
             Sys.Poke(slot, Zero);
+            // Handed back by its owner, with counts the sweep never took (NoteUnowned).
+            NoteUnownedPage(page);
         }
         page = Sys.Peek(_classPages + c * WordSize.Bytes);
         if (page != 0)
@@ -5600,6 +5614,7 @@ static class Gc
         {
             return;
         }
+        NoteUnowned(cache);
         for (long c = 0; c < Classes; c++)
         {
             long slot = cache + c * (2 * WordSize.Bytes);
@@ -5686,6 +5701,37 @@ static class Gc
 
     /// Threads' pages given back by ShedPages.
     public static long PagesShed;
+
+    // PAGES AND BUFFERS OF A HEAP NOT THE FIRST, HANDED BACK BY A THREAD
+    // (RetireCache, ClassRefill's page used up, Retire): a page a thread's
+    // cache owns, and a buffer it bumps in, is never swept while it does, so
+    // what the last sweep counted live there is from before -- nothing, for a
+    // page or a chunk taken fresh. Handed back after the last major sweep
+    // began, its counts are stale until a sweep counts them again, and
+    // ReleaseHeap must not judge the heap by them. Found by reading, after a
+    // kernel unloading its NT module unmapped a page of the NT heap holding a
+    // string the kernel still held: a thread handing back NT pages after
+    // ReleaseHeap's collection -- an NT thread ending, or one filling a page
+    // in an NT gate -- leaves exactly that. The first heap's are not
+    // counted: it is never released, and its threads hand pages back all the
+    // time. The heap lock is held at every count.
+    static long _unowned;
+    static long _unownedAtMajorSweep;
+
+    static void NoteUnownedPage(long page)
+    {
+        if (page != 0 && _heapCount > 1 && HeapOfChunk(page) != _heap0) _unowned = _unowned + 1;
+    }
+
+    static void NoteUnowned(long cache)
+    {
+        if (_heapCount <= 1) return;
+        for (long c = 0; c < Classes; c++)
+        {
+            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+            if (page != 0 && HeapOfChunk(page) != _heap0) { _unowned = _unowned + 1; return; }
+        }
+    }
 
     /// A thread that is going: its pages given up and its cache unmapped.
     public static void ForgetClasses(long tb)
@@ -7009,6 +7055,14 @@ static class Gc
         {
             Count(block, at - started);
             _since = _since + (at - started);
+        }
+
+        // A module heap's buffer handed back: its chunk's counts are stale
+        // until a sweep takes them (NoteUnowned).
+        if (started != 0 && _heapCount > 1)
+        {
+            long chunk = HeapChunks.Of(started);
+            if (chunk != 0 && HeapOfChunk(chunk) != _heap0) _unowned = _unowned + 1;
         }
 
         // A thread asked to answer a handshake had its limit taken away, so
@@ -14312,6 +14366,8 @@ static class Gc
             || HeapCeiling != 0 && HeapChunks.HeapBytes > HeapCeiling / 2
             || MemoryShort();
         _sweeping = true;
+        // What was handed back before this point the sweep counts (NoteUnowned).
+        if (!_minor) _unownedAtMajorSweep = _unowned;
         _sweepAt = HeapChunks.Newest();
         for (long h = _heap0; h != 0; h = Sys.Peek(h + HeapNextAt))
         {
