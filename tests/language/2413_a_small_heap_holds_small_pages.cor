@@ -1,0 +1,75 @@
+// test: a small heap holds small pages and no pool of a threshold's size
+// expect-exit: 0
+// expect-output:
+// kept intact True
+// live True
+// held small True
+// released True
+//
+// A KERNEL MODULE'S HEAP, SMALL (docs/HEAPS.md). A driver touches a dozen
+// size classes and keeps a few kilobytes: its heap held a 32 KB page of
+// every class, a chunk measured on the whole machine's heap for its first
+// object past a kilobyte, and every page it emptied, up to a whole
+// collection threshold of them. Now a heap still small takes pages of 4 KB,
+// grows by chunks measured on itself, and pools an eighth of what it holds:
+// thirteen classes and one larger array, kept, after their neighbours are
+// dropped and the shelf given back, hold under 160 KB where they held half
+// a megabyte.
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static void Say(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? " True" : " False");
+        Sys.PrintLine();
+    }
+
+    static readonly int[] Sizes = { 8, 16, 24, 40, 56, 88, 120, 184, 248, 376, 504, 760, 1000 };
+    static byte[][] _kept = new byte[Sizes.Length + 1][];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill(long heap)
+    {
+        long first = Runtime.EnterHeap(heap);
+        for (int k = 0; k < Sizes.Length; k++)
+        {
+            for (int n = 0; n < 40; n++)
+            {
+                byte[] b = new byte[Sizes[k]];
+                b[0] = (byte)(k + 1);
+                if (n == 17) _kept[k] = b;
+            }
+        }
+        byte[] big = new byte[3000];
+        big[2999] = 77;
+        _kept[Sizes.Length] = big;
+        Runtime.EnterHeap(first);
+    }
+
+    static int Main()
+    {
+        long heap = Gc.NewHeap();
+        Fill(heap);
+        Gc.DropShelves(Gc.KernelHeap);
+        Gc.Collect();
+        Gc.Collect();
+        bool intact = _kept[Sizes.Length][2999] == 77;
+        for (int k = 0; k < Sizes.Length; k++) intact &= _kept[k].Length == Sizes[k] && _kept[k][0] == k + 1;
+        Say("kept intact", intact);
+        Gc.HeapFigures(heap, out long live, out long held, out long free, out long chunks);
+        Say("live", live > 3000 && live < 65536);
+        if (held >= 163840)
+        {
+            Sys.Print("held ");
+            Sys.PrintInt((int)held);
+            Sys.Print(" in ");
+            Sys.PrintInt((int)chunks);
+            Sys.PrintLine();
+        }
+        Say("held small", held < 163840);
+        Say("released", Gc.ReleaseHeap(heap));
+        return 0;
+    }
+}

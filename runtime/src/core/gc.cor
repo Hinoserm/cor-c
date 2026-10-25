@@ -276,6 +276,9 @@ static class Gc
     /// The heap whose chunks are being taken: what HeapChunks writes in a
     /// new chunk's header. The heap lock is held.
     public static long WorkingHeap => _h;
+    /// What the working heap holds, or -1 when it is the first heap, which
+    /// is measured as the whole (HeapChunks.ChunkAsk).
+    public static long WorkingHeapBytes => _h == _heap0 || _h == 0 ? -1 : Sys.Peek(_h + HeapBytesAt);
 
     static long _current { get { return Sys.Peek(_h + HeapCurrentAt); } set { Sys.Poke(_h + HeapCurrentAt, value); } }
     static long _bump { get { return Sys.Peek(_h + HeapBumpAt); } set { Sys.Poke(_h + HeapBumpAt, value); } }
@@ -5159,6 +5162,17 @@ static class Gc
         return want > 8 * HeapChunks.PageBytes ? want : 8 * HeapChunks.PageBytes;
     }
 
+    /// THE POOL OF ONE HEAP. The first heap's is the collector's (PoolLimit):
+    /// what the next cycle will allocate. Another's -- a kernel module's -- is
+    /// an eighth of what it holds: a driver's heap with forty kilobytes live
+    /// kept a whole threshold of empty pages, nine hundred kilobytes, for an
+    /// allocation rate that never needed one.
+    static long PoolLimitOf(long h)
+    {
+        if (h == _heap0) return PoolLimit();
+        return Sys.Peek(h + HeapBytesAt) / 8;
+    }
+
     /// A page with nothing alive in it, off its list and pooled or given
     /// back. Nobody owns it. The heap lock is held.
     static void RetirePage(long page)
@@ -5172,7 +5186,7 @@ static class Gc
         // In its own heap's pool.
         long h = HeapOfChunk(page);
         long pooled = Sys.Peek(h + HeapPoolBytesAt);
-        if (pooled + HeapChunks.PageSize(page) <= PoolLimit() && !HeapChunks.OverCap() && !MemoryShort())
+        if (pooled + HeapChunks.PageSize(page) <= PoolLimitOf(h) && !HeapChunks.OverCap() && !MemoryShort())
         {
             HeapChunks.SetPooled(page, true);
             HeapChunks.SetPageNext(page, Sys.Peek(h + HeapPoolAt));
@@ -5229,6 +5243,20 @@ static class Gc
             Sys.Poke(h + HeapPoolBytesAt, Zero);
         }
         return drained;
+    }
+
+    /// A HEAP STILL SMALL TAKES SMALL PAGES. A thread holds a page of every
+    /// class it uses, and a page of the batch is 32 KB: a driver module's
+    /// heap that touched fifteen classes held half a megabyte for a few
+    /// kilobytes live. Until it holds SmallHeapBytes a heap other than the
+    /// first takes pages of SmallPageBytes, one mapping each; past that,
+    /// where its allocations are many, the batch's.
+    const long SmallPageBytes = 4096;
+    const long SmallHeapBytes = 262144;
+
+    static bool SmallPages()
+    {
+        return _h != _heap0 && Sys.Peek(_h + HeapBytesAt) < SmallHeapBytes;
     }
 
     /// Pages mapped a batch at a time: one answered, the rest pooled. A
@@ -5383,7 +5411,8 @@ static class Gc
             page = PopPool(c);
             if (page == 0)
             {
-                page = HeapChunks.TakeFresh();
+                page = SmallPages() ? HeapChunks.TakeOne(SmallPageBytes) : 0;
+                if (page == 0) page = HeapChunks.TakeFresh();
                 if (page != 0) PagesTaken = PagesTaken + 1;
                 else page = TakeBatch();
                 if (page == 0)
@@ -14353,6 +14382,8 @@ static class HeapChunks
     // kernel held its heap at three times what was live. A single
     // allocation larger gets a chunk of its own size.
     const long ChunkLeast = 65536, ChunkMost = 1048576;
+    /// The least a heap other than the first grows by (ChunkAsk).
+    const long ModuleChunkLeast = 16384;
 
     static long ChunkAsk()
     {
@@ -14365,8 +14396,13 @@ static class HeapChunks
         if (cap > 0) most = (cap / 8 + 4095) & -4096;
         if (most < ChunkLeast) most = ChunkLeast;
         if (most > ChunkMost) most = ChunkMost;
-        long ask = (_heapBytes / 16 + 4095) & -4096;
-        return ask < ChunkLeast ? ChunkLeast : ask > most ? most : ask;
+        // A KERNEL MODULE'S HEAP BY ITS OWN SIZE, not the machine's: a
+        // driver's first object past a kilobyte took a chunk measured on
+        // every heap together, a quarter of a megabyte for a ring buffer.
+        long own = Gc.WorkingHeapBytes;
+        long least = own >= 0 ? ModuleChunkLeast : ChunkLeast;
+        long ask = ((own >= 0 ? own : _heapBytes) / 16 + 4095) & -4096;
+        return ask < least ? least : ask > most ? most : ask;
     }
 
     static long _chunks;        // newest chunk first
@@ -15228,6 +15264,34 @@ static class HeapChunks
         _freshBytes = pageBytes;
         Sys.Poke(taken, 1);
         return top;
+    }
+
+    /// ONE SIZE-CLASS PAGE OF `bytes` IN A MAPPING OF ITS OWN, made -- its
+    /// header written, listed, indexed and counted -- or zero when the cap,
+    /// the ceiling or the operating system refuses it. What a heap still
+    /// small takes (Gc.SmallPages): not a page of the batch, whose size is
+    /// the first heap's. The heap lock is held.
+    public static long TakeOne(long bytes)
+    {
+        if (Gc.GrowthWaits(bytes))
+        {
+            return 0;
+        }
+        long cap = CapNow();
+        if (cap != 0 && _heapBytes + bytes > cap)
+        {
+            return 0;
+        }
+        long raw = Platform.Map(bytes);
+        if (raw == 0)
+        {
+            return 0;
+        }
+        Maps = Maps + 1;
+        Gc.CommitCards(raw, bytes);
+        CheckNew(raw, bytes);
+        MakePage(raw, bytes);
+        return raw;
     }
 
     // THE BATCH'S PAGES NOT YET MADE: [_freshLow, _freshNext), mapped and
