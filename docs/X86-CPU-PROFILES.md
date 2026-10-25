@@ -1,7 +1,8 @@
 # x86 CPU and FPU profiles
 
-The default is 486+x87. `--cpu` permits the selected processor's complete ISA;
-`--tune` selects cost preferences without adding instructions. Model names cover
+The default is 486+x87. `--cpu` permits the selected processor's complete ISA,
+and code is optimised for that processor; there is no separate tuning switch.
+Newer processors are served by run-time detection in the libraries. Model names cover
 386, 486, Pentium, Pentium MMX, Pentium Pro, Pentium II, Pentium III, Pentium 4,
 K6, K6-2, K6-III, K6-2+, K6-III+, Athlon, Athlon XP, Athlon 64 (32-bit code
 with an x87; `k8` is the long-mode target) and Cyrix's 6x86MX (CMOV without

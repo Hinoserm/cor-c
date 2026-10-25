@@ -69,8 +69,12 @@ public sealed class X86Cpu
         ("sse2", X86Feature.Sse2, X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2, X86Feature.Sse2),
     ];
 
+    /// <summary>
+    /// The processor code is made for, and optimised for: one name, no
+    /// separate tuning. A choice that depends on a processor's timing asks
+    /// this; newer processors are the runtime's to detect and patch for.
+    /// </summary>
     public string Name { get; }
-    public string Tune { get; }
     public string Fpu { get; }
     public X86Feature Features { get; }
     public bool Pentium => Has(X86Feature.Pentium);
@@ -79,11 +83,11 @@ public sealed class X86Cpu
     public bool ThreeDNowExtended => Has(X86Feature.ThreeDNowExtended);
     /// <summary>FCMOVcc and FCOMI/FUCOMI(P), where the profile has them (X86Feature.FloatCmov).</summary>
     public bool FloatCmov => Has(X86Feature.FloatCmov);
-    public global::Corsac.Lang.Ir.X86CodeGenerationContract Contract => new(Name, Tune, Fpu, Features);
+    public global::Corsac.Lang.Ir.X86CodeGenerationContract Contract => new(Name, Fpu, Features);
 
-    private X86Cpu(string name, string tune, string fpu, X86Feature features)
+    private X86Cpu(string name, string fpu, X86Feature features)
     {
-        Name = name; Tune = tune; Fpu = fpu; Features = features;
+        Name = name; Fpu = fpu; Features = features;
     }
 
     /// <summary>Whether every feature in <paramref name="feature"/> may be used.</summary>
@@ -181,24 +185,23 @@ public sealed class X86Cpu
     public static X86Cpu Parse(IEnumerable<string> arguments)
     {
         string[] args = arguments.ToArray();
-        string cpu = "486", tune = "", fpu = "";
+        string cpu = "486", fpu = "";
         // Each switch's last word: enabled, disabled, or not said.
         bool?[] said = new bool?[Switches.Length];
         for (int i = 0; i < args.Length; i++)
         {
             string option = args[i];
-            if (option.StartsWith("--cpu=") || option.StartsWith("--tune=") || option.StartsWith("--fpu="))
+            if (option.StartsWith("--cpu=") || option.StartsWith("--fpu="))
             {
                 int equals = option.IndexOf('=');
                 if (option[..equals] == "--cpu") cpu = Normalize(option[(equals + 1)..]);
-                else if (option[..equals] == "--tune") tune = Normalize(option[(equals + 1)..]);
                 else fpu = option[(equals + 1)..].ToLowerInvariant();
             }
-            else if (option is "--cpu" or "--tune" or "--fpu")
+            else if (option is "--cpu" or "--fpu")
             {
                 if (++i == args.Length) throw new ArgumentException(option + " requires a CPU name");
                 if (option == "--cpu") cpu = Normalize(args[i]);
-                else if (option == "--tune") tune = Normalize(args[i]); else fpu = args[i].ToLowerInvariant();
+                else fpu = args[i].ToLowerInvariant();
             }
             else
             {
@@ -225,6 +228,6 @@ public sealed class X86Cpu
             if (said[i] == true && (Switches[i].Enables & disabled) == 0) features |= Switches[i].Enables;
         for (int i = 0; i < Switches.Length; i++)
             if (said[i] == false) features &= ~Switches[i].Disables;
-        return new X86Cpu(cpu, tune.Length == 0 ? cpu : tune, fpu, Settled(features, fpu));
+        return new X86Cpu(cpu, fpu, Settled(features, fpu));
     }
 }

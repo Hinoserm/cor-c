@@ -354,7 +354,6 @@ public static class Driver
                                  pentium-pro, pentium2, pentium3, pentium4, k6,
                                  k6-2, k6-3, k6-2+, k6-3+, athlon, athlon-xp,
                                  athlon64, 6x86mx
-              --tune <name>      optimization preferences without enabling additional instructions
               --disable-mmx      exclude MMX and what needs it: 3DNow! and the
                                  MMX extensions
               --disable-3dnow    exclude 3DNow! while retaining MMX
@@ -475,7 +474,7 @@ public static class Driver
         {
             if (args[i].StartsWith('-'))
             {
-                if (args[i] is "-o" or "--target" or "--cpu" or "--tune" or "--fpu")
+                if (args[i] is "-o" or "--target" or "--cpu" or "--fpu")
                 {
                     i++;
                 }
@@ -695,7 +694,7 @@ public static class Driver
             if (args[i].StartsWith('-'))
             {
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map" or "--why" or "--debug-keep-object"
-                    or "--load" or "--paddr" or "--cpu" or "--tune" or "--fpu" or "--with" or "--asm-entry"
+                    or "--load" or "--paddr" or "--cpu" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type" or "--runtime-knob"
                     or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring" or "--module-index")

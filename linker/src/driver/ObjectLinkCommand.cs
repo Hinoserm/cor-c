@@ -89,12 +89,12 @@ public static class ObjectLinkCommand
                 unusedReport = args[i];
                 continue;
             }
-            if (arg is "--cpu" or "--tune" or "--fpu")
+            if (arg is "--cpu" or "--fpu")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
                 cpuArguments.Add(arg); cpuArguments.Add(args[i]); continue;
             }
-            if (arg.StartsWith("--cpu=") || arg.StartsWith("--tune=") || arg.StartsWith("--fpu=")
+            if (arg.StartsWith("--cpu=") || arg.StartsWith("--fpu=")
                 || Lang.X86.X86Cpu.IsSwitch(arg))
             { cpuArguments.Add(arg); continue; }
             if (arg is "-o" or "--entry" or "--base" or "--paddr" or "--lto-backend" or "--lto-import-bytes")

@@ -56,10 +56,10 @@ public static class ProjectCommand
                 case "--unused-report": unusedReport = Value(); break;
                 // The link's phases timed (corc link --timings).
                 case "--timings": timings = true; break;
-                case "--cpu": case "--tune": case "--fpu":
+                case "--cpu": case "--fpu":
                     profileArguments.Add(arguments[i]); profileArguments.Add(Value()); break;
                 default:
-                    if (arguments[i].StartsWith("--cpu=") || arguments[i].StartsWith("--tune=") || arguments[i].StartsWith("--fpu=")
+                    if (arguments[i].StartsWith("--cpu=") || arguments[i].StartsWith("--fpu=")
                         || global::Corsac.Lang.X86.X86Cpu.IsSwitch(arguments[i]))
                     { profileArguments.Add(arguments[i]); break; }
                     if (arguments[i].StartsWith('-') || path is not null) throw new ArgumentException("Unexpected project argument: " + arguments[i]);
@@ -73,7 +73,7 @@ public static class ProjectCommand
         // Ordinary MSBuild properties are ignored by .NET but select the native
         // target here. Command-line selections override project defaults.
         List<string> defaults = new();
-        foreach (var property in new[] { ("CorCCpu", "--cpu="), ("CorCTune", "--tune="), ("CorCFpu", "--fpu=") })
+        foreach (var property in new[] { ("CorCCpu", "--cpu="), ("CorCFpu", "--fpu=") })
             if (project.Properties.TryGetValue(property.Item1, out string? value) && value.Length != 0) defaults.Add(property.Item2 + value);
         defaults.AddRange(profileArguments);
         if (targetName is null && project.Properties.TryGetValue("CorCTarget", out string? projectTarget) && projectTarget.Length != 0)
@@ -84,7 +84,7 @@ public static class ProjectCommand
         // the K8 and the i386 profile options do not apply.
         string[] cpuArguments = target == Target.X86_64
             ? (profileArguments.Count == 0 ? new[] { "--target", "x86-64", "--cpu", "k8" }
-                : throw new ArgumentException("--cpu/--tune/--fpu and the --enable-/--disable- extension switches are for the i386 target"))
+                : throw new ArgumentException("--cpu/--fpu and the --enable-/--disable- extension switches are for the i386 target"))
             : global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
         // The link validates each object's CPU contract against the i386
         // profile; a long-mode object carries its own (k8/sse2).

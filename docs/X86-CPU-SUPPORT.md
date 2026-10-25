@@ -2,9 +2,10 @@
 
 ## Target selection
 
-The default remains `--cpu=486` with x87 floating point. `--cpu` selects allowed
-instructions; `--tune` selects a tuning model without granting new instructions.
-Tuning-specific cost models are not implemented yet.
+The default remains `--cpu=486` with x87 floating point. `--cpu` selects the
+allowed instructions and the processor the code is optimized for; there is no
+separate tuning switch. Newer processors are served by run-time detection and
+patching in the runtime and libraries.
 
 A profile is a set of instruction features (`X86Feature`), not a place on
 one line of generations: the K6-2 has 3DNow! and no CMOV, the Pentium Pro
@@ -153,13 +154,13 @@ not presented as real K6 performance.
 ## Projects and link-time optimization
 
 Native `corc project` accepts the CPU/FPU flags. SDK-style projects can set
-`CorCCpu`, `CorCTune`, and `CorCFpu` using ordinary MSBuild properties; command
+`CorCCpu` and `CorCFpu` using ordinary MSBuild properties; command
 line selections override them. The standard .NET toolchain ignores these
 native-only properties. Runtime/source units use the same selection, which
 also participates in incremental cache identities.
 
-`.corsac.cpu` records the `CCPU0` code-generation contract: the CPU, tuning and
-FPU names, the feature set as four hex digits, and whether automatic packed
+`.corsac.cpu` records the `CCPU1` code-generation contract: the CPU and FPU
+names, the feature set as four hex digits, and whether automatic packed
 operations are allowed by the execution environment. A contract is valid only
 when its features are what `--cpu`, `--fpu` and the switches give: the
 dependencies hold, and an extension no switch grants stays with its model.

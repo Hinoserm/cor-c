@@ -41,8 +41,9 @@ work belong in [TODO.md](TODO.md).
 - `--cpu` automatically permits the complete supported ISA of the selected
   processor. Support Pentium, Pentium MMX, K6, K6-2, K6-III and their requested
   plus models, including their specific MMX and 3DNow! capabilities.
-- `--tune` changes optimization preferences without expanding instruction
-  permission. Features supported by the selected CPU are enabled by default;
+- Code is optimized for the processor `--cpu` names; there is no separate
+  tuning switch, and newer processors are served by run-time detection and
+  patching in the runtime and libraries. Features supported by the selected CPU are enabled by default;
   explicit disable switches exclude them. Disabling MMX excludes dependent
   3DNow! register operations as well.
 - Compiler instruction selection, assembler validation, runtime dependencies
