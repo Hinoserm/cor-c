@@ -62,7 +62,16 @@ internal static class AddressFold
             => Block[v] >= 0 && (Block[v] == block ? At[v] < start : Dominates(Block[v], block));
     }
 
-    public static void Run(MFunction m)
+    /// <summary>
+    /// `absolute`: a symbol's address may be a 32-bit displacement (i386, not
+    /// position-independent code, which Pic has rewritten by now).
+    /// `compareMemory`: a load only compared may be compared in memory (step
+    /// 4). On the Pentium such a compare -- a displacement and an immediate
+    /// -- gives up the V pipe, at most a clock; the register it frees is a
+    /// spill's store and reload saved on a machine of six. One image runs on
+    /// the 486, the Pentium and the K6 alike (--cpu 486), so it is done for all.
+    /// </summary>
+    public static void Run(MFunction m, bool absolute = false, bool compareMemory = false)
     {
         int n = m.NextVReg;
         int[] occurrences = new int[n];
@@ -79,7 +88,7 @@ internal static class AddressFold
         }
         for (int b = 0; b < m.Blocks.Count; b++)
         {
-            if (FoldBlock(m.Blocks[b], occurrences, defs, writes, b))
+            if (FoldBlock(m.Blocks[b], occurrences, defs, writes, b, absolute, compareMemory))
             {
                 m.Blocks[b].Instrs.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
             }
@@ -211,10 +220,64 @@ internal static class AddressFold
         return counted + found.Count == occurrences[t.Id] ? found : null;
     }
 
-    private static bool FoldBlock(MBlock b, int[] occurrences, int[] defs, WriteSites writes, int block)
+    private static bool FoldBlock(MBlock b, int[] occurrences, int[] defs, WriteSites writes, int block, bool absolute, bool compareMemory)
     {
         List<MInstr> ins = b.Instrs;
         bool any = false;
+
+        // ---- S. base = a symbol's address ----
+        //
+        // `mov t, sym` whose t is read nowhere but as the base of plain memory
+        // operands after it in this block: each becomes [sym + disp], with its
+        // index if it has one -- i386 forms an absolute address for free. A
+        // static read through its address (Sys.Peek(Sys.AddressOf(ref s)),
+        // the allocator's class tables read as words at every inlined `new`)
+        // was `mov t, sym ; mov t, [t]`: 8,100 of them in a kernel.
+        if (absolute)
+        {
+            for (int q = 0; q < ins.Count; q++)
+            {
+                MInstr load = ins[q];
+                if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
+                    || load.Operands[0] is not MReg { IsPhys: false } t || defs[t.Id] != 1
+                    || load.Operands[1] is not MImm { Symbol: not null, Label: null } sym)
+                {
+                    continue;
+                }
+                List<(int J, int K)> uses = new();
+                bool ok = true;
+                for (int j = q + 1; j < ins.Count && ok; j++)
+                {
+                    MInstr use = ins[j];
+                    for (int k = 0; k < use.Operands.Count; k++)
+                    {
+                        switch (use.Operands[k])
+                        {
+                            case MReg r when r.Id == t.Id:
+                            case MMem m1 when m1.Index?.Id == t.Id:
+                            case MMem m2 when m2.Base?.Id == t.Id && (!Plain(m2) || !FitsDisp(m2.Disp, sym.Value)):
+                                ok = false;
+                                break;
+                            case MMem mem when mem.Base?.Id == t.Id:
+                                uses.Add((j, k));
+                                break;
+                        }
+                    }
+                }
+                if (!ok || uses.Count == 0 || uses.Count != occurrences[t.Id] - 1)
+                {
+                    continue;
+                }
+                foreach ((int j, int k) in uses)
+                {
+                    MMem mem = (MMem)ins[j].Operands[k];
+                    ins[j].Operands[k] = new MMem(null, checked(mem.Disp + (int)sym.Value)) { Index = mem.Index, Scale = mem.Scale, Symbol = sym.Symbol };
+                }
+                occurrences[t.Id] = 0;
+                ins[q] = Gone();
+                any = true;
+            }
+        }
 
         // ---- 0. base = X, a copy ----
         //
@@ -571,6 +634,53 @@ internal static class AddressFold
             }
             if (!quiet) continue;
             alu.Operands[1] = mem;
+            occurrences[t.Id] = 0;
+            ins[p] = Gone();
+            any = true;
+        }
+
+        // ---- 4. a load only compared, compared in memory ----
+        //
+        // `mov t, [m] ; cmp t, imm` and `mov t, [m] ; test t, t` whose t is
+        // read nowhere else: `cmp dword [m], imm` and `cmp dword [m], 0` --
+        // the same flags (a test and a compare with zero both clear CF and
+        // OF), a byte less, and no register. A type's initialiser test at
+        // every use (`cmp [flag], 1`), a field tested for null. The same
+        // clocks on a 486 and a K6; on a Pentium at most the V pipe, for a
+        // register (Run's compareMemory).
+        for (int q = 1; q < ins.Count && compareMemory; q++)
+        {
+            MInstr cmp = ins[q];
+            if (cmp.Width != 4 || cmp.Lock || cmp.Operands.Count != 2 || cmp.Operands[0] is not MReg { IsPhys: false } t
+                || defs[t.Id] != 1)
+            {
+                continue;
+            }
+            MImm against;
+            if (cmp.Op == MOp.Cmp && cmp.Operands[1] is MImm { IsPlain: true } imm && occurrences[t.Id] == 2) against = imm;
+            else if (cmp.Op == MOp.Test && cmp.Operands[1] is MReg same && same.Id == t.Id && occurrences[t.Id] == 3) against = new MImm(0);
+            else continue;
+            int p = q - 1;
+            while (p >= 0 && !Touches(ins[p], t.Id)) p--;
+            if (p < 0) continue;
+            MInstr load = ins[p];
+            if (load.Op != MOp.Mov || load.Width != 4 || load.Operands.Count != 2
+                || load.Operands[0] is not MReg l0 || l0.Id != t.Id || load.Operands[1] is not MMem mem)
+            {
+                continue;
+            }
+            bool quiet = true;
+            for (int j = p + 1; j < q && quiet; j++)
+            {
+                MInstr between = ins[j];
+                quiet = between.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
+                        or MOp.Xor or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Cmp or MOp.Test or MOp.Setcc
+                    && !between.Lock && !between.Operands.Any(o => o is MMem)
+                    && (mem.Base is null || !Writes(between, mem.Base.Id))
+                    && (mem.Index is null || !Writes(between, mem.Index.Id));
+            }
+            if (!quiet) continue;
+            ins[q] = new MInstr(MOp.Cmp, mem, against) { Width = 4, Line = cmp.Line };
             occurrences[t.Id] = 0;
             ins[p] = Gone();
             any = true;

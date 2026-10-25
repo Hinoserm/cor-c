@@ -851,7 +851,7 @@ public sealed class X86Backend : IBackend
         }
         try
         {
-            AddressFold.Run(m);
+            AddressFold.Run(m, absolute: true, compareMemory: true);
             if (Target.X86Profile.Has(X86Feature.Cmov)) IfConvert.Run(m);
             Allocator.Run(m);
             Layout.Run(m);
