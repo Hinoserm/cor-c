@@ -16332,8 +16332,12 @@ static class GcLock
         if (me == 0) me = 1;
 
         long spins = 0;
+        // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount), raised before
+        // the take and down again for each wait: a thread that wants it spins.
+        Runtime.PreemptOff();
         while (Sys.Cas(at, 0, me) != 0)
         {
+            Runtime.PreemptOn();
             // A thread spinning for this lock is a thread the collector is
             // waiting for; without this the two would wait for each other.
             if (IsCollecting())
@@ -16350,10 +16354,8 @@ static class GcLock
                 Platform.Yield();
             }
             Sys.Pause();
+            Runtime.PreemptOff();
         }
-        // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount): a thread that
-        // wants it spins.
-        Runtime.PreemptOff();
         // THE ALLOCATOR WORKS FOR THE HOLDER'S HEAP until it lets go.
         Gc.LockedFor(me);
     }

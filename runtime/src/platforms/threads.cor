@@ -476,6 +476,7 @@ partial class Thread
         if (!enter)
         {
             Sys.AtomicSwap(at, 0);
+            Runtime.PreemptOn();
             return;
         }
         // Paused, then the processor given up: no holder allocates under
@@ -483,11 +484,13 @@ partial class Thread
         // the collector (Atom.Turn): Finish takes it after EndThread, when
         // the thread is no longer the collector's to answer for.
         long turns = 0;
+        // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount); down again to wait.
+        Runtime.PreemptOff();
         while (Sys.Cas(at, 0, 1) != 0)
         {
             turns = turns + 1;
             if (turns < 64) Sys.Pause();
-            else Platform.Yield();
+            else { Runtime.PreemptOn(); Platform.Yield(); Runtime.PreemptOff(); }
         }
     }
 

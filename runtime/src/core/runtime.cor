@@ -2011,10 +2011,7 @@ static class Runtime
         }
         long need = (bytes + 2 * w + 15) & (0 - 16);
         long lockAt = _manualBins + ManualBinCount * w;
-        while (Sys.AtomicSwap(lockAt, 1) != 0)
-        {
-            Sys.Pause();
-        }
+        ManualLock(lockAt);
 
         long block = 0;
         long list = need <= ManualSmall ? _manualBins + (need >> 4) * w : _manualBins;
@@ -2055,7 +2052,7 @@ static class Runtime
         }
         Sys.Poke(block, need | flags);
         Sys.Poke(block + w, ManualMagic);
-        Sys.AtomicSwap(lockAt, 0);
+        ManualUnlock(lockAt);
         return block + 2 * w;
     }
 
@@ -2077,6 +2074,23 @@ static class Runtime
         return true;
     }
 
+    /// THE MANUAL HEAP'S LOCK, a spin: not preempted while it is held
+    /// (Tls.PreemptCount), as its waiters only pause.
+    static void ManualLock(long lockAt)
+    {
+        Runtime.PreemptOff();
+        while (Sys.AtomicSwap(lockAt, 1) != 0)
+        {
+            Sys.Pause();
+        }
+    }
+
+    static void ManualUnlock(long lockAt)
+    {
+        Sys.AtomicSwap(lockAt, 0);
+        Runtime.PreemptOn();
+    }
+
     /// The manual heap's exception out of memory, made as it begins.
     static OutOfMemoryException? _manualOutOfMemory;
 
@@ -2085,7 +2099,7 @@ static class Runtime
     /// holds it, let go first, and the trace taken with nothing made.
     static void ManualOutOfMemory(long lockAt)
     {
-        if (lockAt != 0) { Sys.AtomicSwap(lockAt, 0); }
+        if (lockAt != 0) { ManualUnlock(lockAt); }
         OutOfMemoryException? thrown = _manualOutOfMemory;
         if (thrown == null) { Exit(137); return; }
         thrown.Refill$(Sys.FramePointer());
@@ -2128,17 +2142,14 @@ static class Runtime
             return;
         }
         long lockAt = _manualBins + ManualBinCount * w;
-        while (Sys.AtomicSwap(lockAt, 1) != 0)
-        {
-            Sys.Pause();
-        }
+        ManualLock(lockAt);
         long block = ManualHeader(at);
         if (block != 0 && _manualVerify)
         {
             long word = Sys.Peek(block);
             if ((word & ManualChecked) != 0)
             {
-                Sys.AtomicSwap(lockAt, 0);
+                ManualUnlock(lockAt);
                 WriteLiteral(2, "runtime: checked free: freed twice\n");
                 Platform.Exit(97);
             }
@@ -2148,7 +2159,7 @@ static class Runtime
                 Sys.Poke(block, (word & (0 - 16)) | ManualFree | ManualChecked);
                 for (long p = block + 2 * w; p + 4 <= end; p = p + 4) Sys.PokeWord(p, ManualPoison);
             }
-            Sys.AtomicSwap(lockAt, 0);
+            ManualUnlock(lockAt);
             return;
         }
         if (block != 0 && (Sys.Peek(block) & ManualFree) == 0)
@@ -2159,7 +2170,7 @@ static class Runtime
             Sys.Poke(block + 2 * w, Sys.Peek(list));
             Sys.Poke(list, block);
         }
-        Sys.AtomicSwap(lockAt, 0);
+        ManualUnlock(lockAt);
     }
 
     /// Whether `at` is a live object of this heap, with a descriptor to read:

@@ -77,12 +77,19 @@ static class Atom
     }
 
     /// Takes the spin lock at `at` (0 free, 1 held), waiting a Turn at a
-    /// time while another thread holds it.
+    /// time while another thread holds it. NOT PREEMPTED WHILE IT IS HELD
+    /// (Tls.PreemptCount), raised before the take as Linux's spin_lock
+    /// raises it, and down again for each turn waited: a holder preempted on
+    /// one processor left its waiters spinning on a thread that could not run
+    /// (the scheduler's timer gate, Scheduler.DropCanceledTimers).
     public static void Enter(long at)
     {
         long turns = 0;
-        while (Sys.Cas(at, 0, 1) != 0)
+        while (true)
         {
+            Runtime.PreemptOff();
+            if (Sys.Cas(at, 0, 1) == 0) return;
+            Runtime.PreemptOn();
             Turn(ref turns);
         }
     }
@@ -113,6 +120,7 @@ static class Atom
     public static void Exit(long at)
     {
         Sys.AtomicSwap(at, 0);
+        Runtime.PreemptOn();
     }
 
     static bool _checked;

@@ -1047,11 +1047,14 @@ static class Platform
         long flags = Sys.ReadFlags();
         bool may = (Sys.ReadCodeSegment() & 3) <= ((flags >> 12) & 3);
         if (may) Sys.Cli();
+        // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount) where interrupts
+        // stay on; down again to give the time away.
+        Runtime.PreemptOff();
         int turns = 0;
         while (Sys.AtomicSwap(at, 1) != 0)
         {
             Sys.Pause();
-            if (!may && (++turns & 63) == 0) Yield();
+            if (!may && (++turns & 63) == 0) { Runtime.PreemptOn(); Yield(); Runtime.PreemptOff(); }
         }
         return may ? flags : 0;
     }
@@ -1059,6 +1062,7 @@ static class Platform
     public static void HandlerLockLeave(long at, long held)
     {
         Sys.AtomicSwap(at, 0);
+        Runtime.PreemptOn();
         if ((held & InterruptFlag) != 0) Sys.Sti();
     }
 
