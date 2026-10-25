@@ -1,0 +1,70 @@
+// test: trap_frees_shared_each_trap_keeps_its_line
+// expect-exit: 0
+// expect-output:
+// 0 IndexOutOfRangeException line A
+// 1 DivideByZeroException line B
+// 2 IndexOutOfRangeException line C
+// 3 OverflowException line D
+// 4 done 2000001102
+//
+// THE FREES BEFORE A TRAP, ONE COPY FOR ALL OF THEM (SharedTrapFrees). Work
+// owns three objects, and every check it makes -- an index, a division, an
+// overflow -- is a call that never returns, with each owned object freed
+// before it. The frees are written once and every trap jumps to them and
+// back to its own call, so a trap's line is still its own: each is named
+// below by the line its stack trace's first row gives, and each object is
+// still freed once, as a run that traps nowhere shows.
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Box { public long V; public Box(long v) { V = v; } }
+
+static class P
+{
+    static int Line(string trace)
+    {
+        int at = trace.IndexOf(":line ");
+        if (at < 0) return -1;
+        int end = at + 6;
+        while (end < trace.Length && trace[end] >= '0' && trace[end] <= '9') end++;
+        return int.Parse(trace.Substring(at + 6, end - at - 6));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Work(int which, int[] xs, int zero, int big)
+    {
+        Box a = new Box(xs.Length), b = new Box(which * 3), c = new Box(17);
+        long sum = a.V + b.V + c.V;
+        sum += xs[which == 0 ? 99 : 0];                         // A
+        sum += 1000 / (which == 1 ? zero : 1);                  // B
+        sum += xs[which == 2 ? -1 : 1];                         // C
+        sum += checked(big + (which == 3 ? big : 1));           // D
+        return sum + a.V * b.V + c.V;
+    }
+
+    static int Main()
+    {
+        string[] lines = System.IO.File.ReadAllLines("tests/language/2412_trap_frees_shared_each_trap_keeps_its_line.cor");
+        int[] marks = new int[4];
+        for (int n = 0; n < lines.Length; n++)
+            for (int k = 0; k < 4; k++)
+                if (lines[n].EndsWith("// " + (char)('A' + k))) marks[k] = n + 1;
+        int[] xs = new int[] { 1, 2, 3, 4 };
+        for (int which = 0; which < 5; which++)
+        {
+            try
+            {
+                long got = Work(which, xs, 0, 2000000000);
+                Console.WriteLine(which + " done " + got);
+            }
+            catch (Exception e)
+            {
+                int line = Line(e.StackTrace ?? "");
+                string named = "?";
+                for (int k = 0; k < 4; k++) if (marks[k] == line) named = ((char)('A' + k)).ToString();
+                Console.WriteLine(which + " " + e.GetType().Name + " line " + named);
+            }
+        }
+        return 0;
+    }
+}

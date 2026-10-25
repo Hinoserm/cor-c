@@ -957,6 +957,8 @@ public sealed class X86Backend : IBackend
     {
         int before = errors.Count;
         if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
+        // The frees before a trap, one copy for every trap that has them (SharedTrapFrees).
+        Corsac.Lang.Opt.SharedTrapFrees.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
         MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls);
