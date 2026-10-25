@@ -1,0 +1,56 @@
+// test: a method named in --irq-roots is held to what a handler is, and the spin-lock check follows a call through an interface
+// flags: --irq-roots Clock.Reschedule
+// expect-compile-error: 'Clock.Reschedule' is an interrupt handler and reaches SpinLock.Enter on 'Pipe._gate' at
+// A CLOCK TICK'S RESCHEDULE RUNS IN THE INTERRUPT, though nothing marks it
+// a handler, and it woke a waiter whose readiness took a pipe's SpinLock --
+// through an interface call, which the spin-lock check did not follow. A
+// processor with interrupts off spun on it for ever. Named with
+// --irq-roots, the reschedule is checked as a handler is, and the check
+// follows the call through the slot to the pipe's ReadReady.
+
+using System;
+
+sealed class SpinLock
+{
+    int _held;
+    public void Enter() { _held = 1; }
+    public void Exit() { _held = 0; }
+}
+
+interface IWaitable
+{
+    bool ReadReady();
+}
+
+sealed class Pipe : IWaitable
+{
+    readonly SpinLock _gate = new SpinLock();
+    int _bytes;
+
+    public bool ReadReady()
+    {
+        _gate.Enter();
+        bool ready = _bytes > 0;
+        _gate.Exit();
+        return ready;
+    }
+}
+
+static class Clock
+{
+    public static IWaitable Waiting = new Pipe();
+
+    public static void Reschedule()
+    {
+        if (Waiting.ReadReady()) Console.WriteLine("woken");
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Clock.Reschedule();
+        return 0;
+    }
+}

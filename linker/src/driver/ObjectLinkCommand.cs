@@ -72,11 +72,13 @@ public static class ObjectLinkCommand
             }
             // THE WAIT CHECK, as corc's own link takes it (InterruptNotes.WaitsFromHandlers):
             // a module's link checks the module's facts.
-            if (arg is "--irq-waits" or "--wait-free-roots" or "--wait-free-stop")
+            if (arg is "--irq-waits" or "--wait-free-roots" or "--wait-free-stop" or "--irq-roots" or "--irq-stop")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
                 if (arg == "--irq-waits") Switches.IrqWaits = args[i];
                 else if (arg == "--wait-free-roots") Switches.WaitFreeRoots = args[i];
+                else if (arg == "--irq-roots") Switches.IrqRoots = args[i];
+                else if (arg == "--irq-stop") Switches.IrqStop = args[i];
                 else Switches.WaitFreeStop = args[i];
                 continue;
             }

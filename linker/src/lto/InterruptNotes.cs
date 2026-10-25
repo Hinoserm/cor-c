@@ -44,8 +44,8 @@ public static class InterruptNotes
     /// declares the slot (Binder.SlotOf): a call through the slot -- virtual,
     /// abstract, an interface's -- is a call to it, and it calls every method
     /// a unit knows to fill it. Every unit's facts for one slot are joined at
-    /// the link. The wait check follows them (WaitsFromHandlers); the
-    /// allocation and spin-lock checks do not, as they never have.
+    /// the link. Every check follows them: a clock tick reached a socket's
+    /// SpinLock through one, and the spin-lock check never saw it.
     /// </summary>
     public const string Dispatch = "~";
 
@@ -138,8 +138,9 @@ public static class InterruptNotes
     /// units' facts -- a module's would be several times its own size -- so
     /// a module's link saw nothing past the edge, and every wait the kernel
     /// or the seat's module has was invisible from it. The image's link
-    /// writes them beside it (path + ".irq"), every unit's joined and none a
-    /// handler (an importer checks its own), and a link reading the image
+    /// writes them beside it (path + ".irq"), every unit's joined, its
+    /// handlers marked -- a kernel's handler reaches a module's code through
+    /// a slot, and the module's link is where that is seen -- and a link reading the image
     /// reads them too (ReadBeside). With no facts, one left from before is
     /// taken away.
     /// </summary>
@@ -160,13 +161,13 @@ public static class InterruptNotes
         return Decode(stream);
     }
 
-    /// <summary>Every object's facts, one each by name (a slot's fillers joined), none a handler.</summary>
+    /// <summary>Every object's facts, one each by name (a slot's fillers joined), its handlers still handlers.</summary>
     public static List<Fact> Gather(IEnumerable<ObjectFile> objects)
     {
         Dictionary<string, Fact> facts = new(StringComparer.Ordinal);
         foreach (ObjectFile obj in objects)
             if (Read(obj) is { } read)
-                foreach (Fact f in read) Add(facts, f with { Handler = false });
+                foreach (Fact f in read) Add(facts, f);
         return facts.Values.ToList();
     }
 
@@ -213,7 +214,8 @@ public static class InterruptNotes
         // reads no fact. Read whole, the compiler's own link parsed half a
         // gigabyte of facts it had no handler to ask about.
         List<ObjectFile> all = objects.ToList();
-        bool rooted = Corsac.Switches.IrqWaits is { Length: > 0 } && Corsac.Switches.WaitFreeRoots is { Length: > 0 };
+        bool rooted = Corsac.Switches.IrqWaits is { Length: > 0 } && Corsac.Switches.WaitFreeRoots is { Length: > 0 }
+            || Corsac.Switches.IrqRoots is { Length: > 0 };
         if (!rooted && all.All(obj => HandlerCount(obj) == 0)) return new List<string>();
         Dictionary<string, Fact> facts = new(StringComparer.Ordinal);
         List<Fact> handlers = new();
@@ -229,11 +231,42 @@ public static class InterruptNotes
             }
         }
 
+        // AND WHAT THE IMAGES THIS ONE LINKS AGAINST SAY (ReadBeside): the
+        // kernel's, a shared module's, after the link's own -- their
+        // handlers too, whose slots reach this link's code.
+        if (imported is not null)
+            foreach (Fact f in imported)
+            {
+                bool fresh = !facts.ContainsKey(f.Name);
+                Add(facts, f);
+                if (fresh && f.Handler) handlers.Add(f);
+            }
         // A STATIC THE LINK LAYS DOWN MADE (Preinit) is never made at run
         // time: its type's initialiser skips the step that would make it.
         if (neverRun is not null) foreach (string step in neverRun) facts.Remove(step);
         List<string> errors = new();
+        // AND WHATEVER ELSE RUNS IN AN INTERRUPT (--irq-roots): a clock
+        // tick's reschedule, an interrupt's dispatch, an IPI's work -- no
+        // handler by its attribute, held to all a handler is.
+        if (Corsac.Switches.IrqRoots is { Length: > 0 } irqRoots)
+        {
+            string[] named = Names(irqRoots);
+            HashSet<string> found = new(StringComparer.Ordinal);
+            foreach (Fact f in facts.Values.ToList())
+            {
+                if (f.Handler || !Matches(named, f.Display)) continue;
+                Fact root = f with { Handler = true };
+                facts[f.Name] = root;
+                handlers.Add(root);
+                foreach (string name in named) if (Matches(new[] { name }, f.Display)) found.Add(name);
+            }
+            foreach (string name in named)
+                if (!found.Contains(name)) errors.Add($"--irq-roots: no method '{name}' in the link");
+        }
         if (handlers.Count == 0 && !rooted) return errors;
+        // NOT FOLLOWED BY THE INTERRUPT CHECKS (--irq-stop): code that runs
+        // on another stack, or with interrupts as it says.
+        string[] irqStop = Corsac.Switches.IrqStop is { Length: > 0 } stops ? Names(stops) : Array.Empty<string>();
         // What each method reaches, once: the allocation and the method that
         // makes it, or null for nothing.
         // NOTHING FOUND PAST A METHOD STILL BEING WALKED IS NO ANSWER YET
@@ -259,7 +292,7 @@ public static class InterruptNotes
             {
                 foreach (string call in f.Calls)
                 {
-                    if (call.StartsWith(Dispatch, StringComparison.Ordinal) || !facts.TryGetValue(call, out Fact? callee)) continue;
+                    if (!facts.TryGetValue(call, out Fact? callee) || Matches(irqStop, callee.Display)) continue;
                     (string What, Fact Where)? deeper = Reaches(callee, ref reached);
                     if (deeper.HasValue) { found = deeper; break; }
                 }
@@ -291,7 +324,7 @@ public static class InterruptNotes
             }
             foreach (string call in handler.Calls)
             {
-                if (call.StartsWith(Dispatch, StringComparison.Ordinal) || !facts.TryGetValue(call, out Fact? callee)) continue;
+                if (!facts.TryGetValue(call, out Fact? callee) || Matches(irqStop, callee.Display)) continue;
                 int low = int.MaxValue;
                 (string What, Fact Where)? found = Reaches(callee, ref low);
                 if (!found.HasValue) continue;
@@ -300,18 +333,10 @@ public static class InterruptNotes
                 break;
             }
         }
-        if (errors.Count > 0) errors.AddRange(EveryAllocation(handlers, facts));
-        errors.AddRange(SpinLocksFromHandlers(handlers, facts, report: false));
+        if (errors.Count > 0) errors.AddRange(EveryAllocation(handlers, facts, irqStop));
+        errors.AddRange(SpinLocksFromHandlers(handlers, facts, report: false, irqStop));
         if (Corsac.Switches.IrqWaits is { Length: > 0 } waits)
         {
-            // AND WHAT THE IMAGES THIS ONE LINKS AGAINST SAY (ReadBeside): the
-            // kernel's, a shared module's, after the link's own -- for this
-            // walk alone, as the slots are.
-            if (imported is { Count: > 0 })
-            {
-                facts = new Dictionary<string, Fact>(facts, StringComparer.Ordinal);
-                foreach (Fact f in imported) Add(facts, f);
-            }
             // AND WHATEVER ELSE MAY NEVER WAIT (--wait-free-roots): a kernel's
             // scheduler pass, which runs on no thread of its own to park.
             List<Fact> roots = new(handlers);
@@ -390,8 +415,9 @@ public static class InterruptNotes
     /// `report`, instead, every IrqSpinLock taken anywhere and whether any
     /// handler reaches it (one that none does may keep interrupts on).
     /// </summary>
-    public static List<string> SpinLocksFromHandlers(List<Fact> handlers, Dictionary<string, Fact> facts, bool report)
+    public static List<string> SpinLocksFromHandlers(List<Fact> handlers, Dictionary<string, Fact> facts, bool report, string[]? stop = null)
     {
+        stop ??= Array.Empty<string>();
         List<string> lines = new();
         Dictionary<string, string?> cameFrom = new(StringComparer.Ordinal);
         Queue<Fact> work = new();
@@ -415,7 +441,7 @@ public static class InterruptNotes
             }
             foreach (string call in f.Calls)
             {
-                if (call.StartsWith(Dispatch, StringComparison.Ordinal) || !facts.TryGetValue(call, out Fact? callee)) continue;
+                if (!facts.TryGetValue(call, out Fact? callee) || Matches(stop, callee.Display)) continue;
                 if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
             }
         }
@@ -481,7 +507,7 @@ public static class InterruptNotes
             if (read is null) continue;
             foreach (Fact f in read)
             {
-                facts.TryAdd(f.Name, f);
+                Add(facts, f);
                 if (f.Handler) handlers.Add(f);
             }
         }
@@ -492,7 +518,7 @@ public static class InterruptNotes
     /// path from the first handler found to reach it: the errors above name
     /// only the first allocation on each handler's way, so fixing them one
     /// build at a time found the next one each time.
-    static List<string> EveryAllocation(List<Fact> handlers, Dictionary<string, Fact> facts)
+    static List<string> EveryAllocation(List<Fact> handlers, Dictionary<string, Fact> facts, string[] stop)
     {
         List<string> lines = new();
         Dictionary<string, string?> cameFrom = new(StringComparer.Ordinal);
@@ -514,7 +540,7 @@ public static class InterruptNotes
             }
             foreach (string call in f.Calls)
             {
-                if (call.StartsWith(Dispatch, StringComparison.Ordinal) || !facts.TryGetValue(call, out Fact? callee)) continue;
+                if (!facts.TryGetValue(call, out Fact? callee) || Matches(stop, callee.Display)) continue;
                 if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
             }
         }

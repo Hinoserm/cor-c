@@ -30,6 +30,10 @@ public static class Switches
     public static string? WaitFreeRoots;
     /// <summary>--wait-free-stop Type.Method,...: calls the wait check does not follow -- a continuation resumed on another stack.</summary>
     public static string? WaitFreeStop;
+    /// <summary>--irq-roots Type.Method,...: more code that runs in an interrupt, checked as handlers are (no allocation, no SpinLock, no --irq-waits).</summary>
+    public static string? IrqRoots;
+    /// <summary>--irq-stop Type.Method,...: calls the interrupt checks (allocation, SpinLock) do not follow.</summary>
+    public static string? IrqStop;
 
     /// <summary>--trace-fields NAME: the field escape analysis on fields whose names contain NAME.</summary>
     public static string? FieldTrace;
@@ -176,6 +180,8 @@ public static class Switches
         IrqWaits = Valued(taken, "--irq-waits") ?? IrqWaits;
         WaitFreeRoots = Valued(taken, "--wait-free-roots") ?? WaitFreeRoots;
         WaitFreeStop = Valued(taken, "--wait-free-stop") ?? WaitFreeStop;
+        IrqRoots = Valued(taken, "--irq-roots") ?? IrqRoots;
+        IrqStop = Valued(taken, "--irq-stop") ?? IrqStop;
         FieldTrace = Valued(taken, "--trace-fields") ?? FieldTrace;
         FieldTraceAll |= Switch(taken, "--trace-fields-all");
         TraceForward = Valued(taken, "--trace-forward") ?? TraceForward;
