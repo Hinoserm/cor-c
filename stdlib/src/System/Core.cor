@@ -276,7 +276,8 @@ static class String {
     public static string TypeFullName(object compact) {
         if (compact is string text) { return text; }
         long at = Sys.Word(compact);
-        lock (_fullNameLock) {
+        long gate = EnterFullNames();
+        try {
             int mask = _fullNamesAt.Length - 1;
             int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
             while (_fullNamesAt[slot] != 0) {
@@ -289,7 +290,22 @@ static class String {
             _fullNamesCount++;
             if (_fullNamesCount * 2 > _fullNamesAt.Length) { GrowFullNames(); }
             return full;
+        } finally {
+            Sys.AtomicSwap(gate, 0);
         }
+    }
+
+    // A SPIN GATE, NOT A MONITOR: nothing under it takes it again, and a
+    // `lock` here brought Monitor's depth table -- a Dictionary of its own --
+    // into every program that names a type, whose fields the lifetime rules
+    // then refused, and LINQ's iterators across units went to the collector
+    // (1311).
+    static long _fullNamesGate;
+
+    static long EnterFullNames() {
+        long gate = Sys.AddressOf(ref _fullNamesGate);
+        while (Sys.AtomicSwap(gate, 1) != 0) { Sys.Pause(); }
+        return gate;
     }
 
     /// THE NAMES OF A MODULE GONE, FORGOTTEN: a full name kept for an
@@ -298,7 +314,8 @@ static class String {
     /// the old one's names. Gc.Quarantine asks it; a kernel that unloads a
     /// module any other way asks it too.
     public static void ForgetTypeNames(long low, long high) {
-        lock (_fullNameLock) {
+        long gate = EnterFullNames();
+        try {
             long[] from = _fullNamesAt;
             string?[] to = _fullNamesTo;
             bool any = false;
@@ -319,6 +336,8 @@ static class String {
                 _fullNamesTo[slot] = to[i];
                 _fullNamesCount++;
             }
+        } finally {
+            Sys.AtomicSwap(gate, 0);
         }
     }
 
@@ -386,7 +405,6 @@ static class String {
         return new string(chars);
     }
 
-    static readonly object _fullNameLock = new object();
     static long[] _fullNamesAt = new long[64];
     static string?[] _fullNamesTo = new string?[64];
     static int _fullNamesCount;
