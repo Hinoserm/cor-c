@@ -129,7 +129,57 @@ public static class InterruptNotes
         Section? section = obj.Sections.FirstOrDefault(s => s.Name == SectionName);
         if (section is null) return null;
         using Stream stream = section.OpenRead();
-        using BinaryReader reader = new(stream, Encoding.UTF8);
+        return Decode(stream);
+    }
+
+    /// <summary>
+    /// FACTS BESIDE AN IMAGE OTHERS LINK AGAINST: a kernel's exports, a
+    /// module another module links with (--link-shared). Neither carries its
+    /// units' facts -- a module's would be several times its own size -- so
+    /// a module's link saw nothing past the edge, and every wait the kernel
+    /// or the seat's module has was invisible from it. The image's link
+    /// writes them beside it (path + ".irq"), every unit's joined and none a
+    /// handler (an importer checks its own), and a link reading the image
+    /// reads them too (ReadBeside). With no facts, one left from before is
+    /// taken away.
+    /// </summary>
+    public static void WriteBeside(string path, IEnumerable<ObjectFile> objects)
+    {
+        string beside = path + ".irq";
+        List<Fact> all = Gather(objects);
+        if (all.Count == 0) { if (File.Exists(beside)) File.Delete(beside); return; }
+        File.WriteAllBytes(beside, Encode(all));
+    }
+
+    /// <summary>The facts an image's link wrote beside it (WriteBeside), or none.</summary>
+    public static List<Fact> ReadBeside(string path)
+    {
+        string beside = path + ".irq";
+        if (!File.Exists(beside)) return new List<Fact>();
+        using FileStream stream = File.OpenRead(beside);
+        return Decode(stream);
+    }
+
+    /// <summary>Every object's facts, one each by name (a slot's fillers joined), none a handler.</summary>
+    public static List<Fact> Gather(IEnumerable<ObjectFile> objects)
+    {
+        Dictionary<string, Fact> facts = new(StringComparer.Ordinal);
+        foreach (ObjectFile obj in objects)
+            if (Read(obj) is { } read)
+                foreach (Fact f in read) Add(facts, f with { Handler = false });
+        return facts.Values.ToList();
+    }
+
+    // One fact by name; a slot's met again adds the fillers it names.
+    private static void Add(Dictionary<string, Fact> facts, Fact f)
+    {
+        if (!facts.TryAdd(f.Name, f) && f.Name.StartsWith(Dispatch, StringComparison.Ordinal))
+            facts[f.Name] = facts[f.Name] with { Calls = facts[f.Name].Calls.Union(f.Calls, StringComparer.Ordinal).ToArray() };
+    }
+
+    private static List<Fact> Decode(Stream stream)
+    {
+        using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: true);
         if (reader.ReadInt32() != Version) throw new ElfFormatException("Unknown " + SectionName + " version");
         reader.ReadInt32();
         int count = reader.ReadInt32();
@@ -156,7 +206,7 @@ public static class InterruptNotes
     /// describes -- assembled code, a unit compiled without facts -- are not
     /// followed.
     /// </summary>
-    public static List<string> Check(IEnumerable<ObjectFile> objects, IReadOnlySet<string>? neverRun = null)
+    public static List<string> Check(IEnumerable<ObjectFile> objects, IReadOnlySet<string>? neverRun = null, IReadOnlyList<Fact>? imported = null)
     {
         // NO HANDLER ANYWHERE, NOTHING TO WALK: each object's header says how
         // many it has, and a link of none -- every program but a kernel's --
@@ -174,11 +224,11 @@ public static class InterruptNotes
             foreach (Fact f in read)
             {
                 // A slot filled in several units: every unit's fillers.
-                if (!facts.TryAdd(f.Name, f) && f.Name.StartsWith(Dispatch, StringComparison.Ordinal))
-                    facts[f.Name] = facts[f.Name] with { Calls = facts[f.Name].Calls.Union(f.Calls, StringComparer.Ordinal).ToArray() };
+                Add(facts, f);
                 if (f.Handler) handlers.Add(f);
             }
         }
+
         // A STATIC THE LINK LAYS DOWN MADE (Preinit) is never made at run
         // time: its type's initialiser skips the step that would make it.
         if (neverRun is not null) foreach (string step in neverRun) facts.Remove(step);
@@ -254,6 +304,14 @@ public static class InterruptNotes
         errors.AddRange(SpinLocksFromHandlers(handlers, facts, report: false));
         if (Corsac.Switches.IrqWaits is { Length: > 0 } waits)
         {
+            // AND WHAT THE IMAGES THIS ONE LINKS AGAINST SAY (ReadBeside): the
+            // kernel's, a shared module's, after the link's own -- for this
+            // walk alone, as the slots are.
+            if (imported is { Count: > 0 })
+            {
+                facts = new Dictionary<string, Fact>(facts, StringComparer.Ordinal);
+                foreach (Fact f in imported) Add(facts, f);
+            }
             // AND WHATEVER ELSE MAY NEVER WAIT (--wait-free-roots): a kernel's
             // scheduler pass, which runs on no thread of its own to park.
             List<Fact> roots = new(handlers);
@@ -293,29 +351,22 @@ public static class InterruptNotes
         Queue<Fact> work = new();
         foreach (Fact handler in handlers)
             if (cameFrom.TryAdd(handler.Name, null)) work.Enqueue(handler);
+        // SAID WHERE A WAIT IS CALLED, once for each method that calls it,
+        // by the shortest way to that method: every place that waits, not
+        // one way to each wait. A wait with facts (the kernel's, beside its
+        // exports) and one without -- matched by the name its definition
+        // spells -- are said alike, and neither is walked into.
         while (work.Count > 0)
         {
             Fact f = work.Dequeue();
-            if (Matches(named, f.Display))
-            {
-                List<string> path = new();
-                for (string? at = f.Name; at is not null; at = cameFrom[at])
-                    path.Add(facts.TryGetValue(at, out Fact? step) ? step.Display : at);
-                path.Reverse();
-                string root = facts.TryGetValue(FirstName(f.Name, cameFrom), out Fact? first) && first.Handler
-                    ? "is an interrupt handler" : "may not wait (--wait-free-roots)";
-                lines.Add($"'{path[0]}' {root} and reaches '{f.Display}', which waits, via {string.Join(" -> ", path)}");
-                continue;
-            }
             foreach (string call in f.Calls)
             {
-                if (!facts.TryGetValue(call, out Fact? callee))
+                facts.TryGetValue(call, out Fact? callee);
+                string? shown = callee?.Display ?? (call.StartsWith(Dispatch, StringComparison.Ordinal) ? null : DisplayOf(call));
+                if (shown is null || Matches(stop, shown)) continue;
+                if (Matches(named, shown))
                 {
-                    // A METHOD WITH NO FACTS -- the kernel's, called from a
-                    // module, whose exports carry none -- is matched where it
-                    // is called, by the name its definition spells.
-                    if (call.StartsWith(Dispatch, StringComparison.Ordinal) || DisplayOf(call) is not { } shown
-                        || !Matches(named, shown) || Matches(stop, shown) || !said.Add(f.Name + "\n" + shown)) continue;
+                    if (!said.Add(f.Name + "\n" + shown)) continue;
                     List<string> way = new() { shown };
                     for (string? at = f.Name; at is not null; at = cameFrom[at])
                         way.Add(facts.TryGetValue(at, out Fact? step) ? step.Display : at);
@@ -325,8 +376,7 @@ public static class InterruptNotes
                     lines.Add($"'{way[0]}' {from} and reaches '{shown}', which waits, via {string.Join(" -> ", way)}");
                     continue;
                 }
-                if (Matches(stop, callee.Display)) continue;
-                if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
+                if (callee is not null && cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
             }
         }
         return lines;

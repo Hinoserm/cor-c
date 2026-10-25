@@ -200,13 +200,23 @@ public static class ObjectLinkCommand
         if (unusedReport is not null) UnusedReport.Write(inputs, entry, unusedReport);
         // EVERY INTERRUPT HANDLER, THROUGH EVERY UNIT: what no one unit's
         // compile could follow (InterruptNotes).
-        List<string> interruptErrors = InterruptNotes.Check(inputs.Select(input => input.Item2), Preinit.Peek(inputs.Select(input => input.Item2), longMode: false)?.FrozenSteps);
+        // The facts beside the kernel and the modules linked with
+        // (InterruptNotes.ReadBeside): the wait check walks into them.
+        List<InterruptNotes.Fact> imported = new();
+        if (kernelPath is not null) imported.AddRange(InterruptNotes.ReadBeside(kernelPath));
+        foreach (string library in sharedLibraries) imported.AddRange(InterruptNotes.ReadBeside(library));
+        List<string> interruptErrors = InterruptNotes.Check(inputs.Select(input => input.Item2), Preinit.Peek(inputs.Select(input => input.Item2), longMode: false)?.FrozenSteps, imported);
         // REFUSED, every path listed (InterruptNotes.EveryAllocation): the
         // kernel's handlers reach no allocation since the wake predicate
         // left WaitQueue.WakeAll (Sched.WakeQueuedIfOver) and the AIC's
         // drain stopped making its messages.
         if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
         if (Switches.IrqLocksReport) foreach (string line in InterruptNotes.IrqLocksReport(inputs.Select(input => input.Item2))) Console.Error.WriteLine(line);
+        // AN IMAGE OTHERS LINK AGAINST says what its units call and take
+        // beside it, for their links' checks: a kernel's beside its exports,
+        // a module's beside itself.
+        if (exportsPath is not null) InterruptNotes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
+        else if (kernel is not null) InterruptNotes.WriteBeside(destination, inputs.Select(input => input.Item2));
         byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
         // The kernel's small functions for its modules, read before this link's
         // own optimiser takes the units' IR out (KernelExports.SmallBodies).
