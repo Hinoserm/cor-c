@@ -3,17 +3,19 @@
 // expect-output:
 // 0 IndexOutOfRangeException line A
 // 1 DivideByZeroException line B
-// 2 IndexOutOfRangeException line C
+// 2 OverflowException line C
 // 3 OverflowException line D
-// 4 done 2000001273
+// 4 done 4000001057
 //
 // THE FREES BEFORE A TRAP, ONE COPY FOR ALL OF THEM (SharedTrapFrees). Work
-// owns three arrays, read by a call that keeps none, and every check it makes -- an index, a division, an
-// overflow -- is a call that never returns, with each owned object freed
-// before it. The frees are written once and every trap jumps to them and
-// back to its own call, so a trap's line is still its own: each is named
-// below by the line its stack trace's first row gives, and each object is
-// still freed once, as a run that traps nowhere shows.
+// owns three arrays, read by a call that keeps none, and every check it
+// makes -- an index, a division, an overflow -- is a call that never
+// returns, with each owned object freed before it. The frees are written
+// once and every trap jumps to them and back to its own call, so a trap's
+// line is still its own: each is named below by the line its row of the
+// stack trace gives, and each object is still freed once, as a run that
+// traps nowhere shows. (A function's index checks share one trap, the
+// first's: one index check here.)
 using System;
 using System.Runtime.CompilerServices;
 
@@ -40,11 +42,10 @@ static class P
     {
         // Of a size known only as it runs: in the heap, not the frame.
         long[] a = new long[xs.Length + which], b = new long[which + 1], c = new long[(big & 7) + 1];
-        a[0] = xs.Length; b[0] = which * 3; c[0] = 17;
         long sum = Read(a) + Read(b) + Read(c);
         sum += xs[which == 0 ? 99 : 0];                         // A
         sum += 1000 / (which == 1 ? zero : 1);                  // B
-        sum += xs[which == 2 ? -1 : 1];                         // C
+        sum += checked((int)(big * (which == 2 ? 2L : 1L)));    // C
         sum += checked(big + (which == 3 ? big : 1));           // D
         return sum + Read(a) * Read(b) + Read(c);
     }

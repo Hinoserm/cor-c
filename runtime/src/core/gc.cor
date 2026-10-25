@@ -266,6 +266,7 @@ static class Gc
     const long HeapNumberAt = 11 * WordSize.Bytes;      // 0 for the first heap, then in the order made
     const long HeapClassPagesAt = 16 * WordSize.Bytes;  // Classes words: pages with room, unowned
     const long HeapBinsAt = (16 + 40) * WordSize.Bytes; // Bins free-list heads, then the non-empty bitmap
+    const long HeapClassCountAt = HeapBinsAt + BinsBytes; // Classes words: its pages of each class (SmallPages)
     const long HeapRecordBytes = 4096;
 
     static long _heap0;         // the first heap's record: the program's, or the kernel's
@@ -5177,6 +5178,7 @@ static class Gc
     /// back. Nobody owns it. The heap lock is held.
     static void RetirePage(long page)
     {
+        CountClassPage(HeapOfChunk(page), HeapChunks.PageClass(page) - 1, -1);
         if (HeapChunks.IsListed(page)) UnlistPage(page);
         HeapChunks.SetLive(page, Zero, Zero);
         HeapChunks.SetYoung(page, false);
@@ -5245,18 +5247,31 @@ static class Gc
         return drained;
     }
 
-    /// A HEAP STILL SMALL TAKES SMALL PAGES. A thread holds a page of every
-    /// class it uses, and a page of the batch is 32 KB: a driver module's
-    /// heap that touched fifteen classes held half a megabyte for a few
-    /// kilobytes live. Until it holds SmallHeapBytes a heap other than the
-    /// first takes pages of SmallPageBytes, one mapping each; past that,
-    /// where its allocations are many, the batch's.
+    /// A HEAP STILL SMALL TAKES A SMALL FIRST PAGE OF A CLASS. A thread holds
+    /// a page of every class it uses, and a page of the batch is 32 KB: a
+    /// driver module's heap that touched fifteen classes held half a
+    /// megabyte for a few kilobytes live. Until it holds SmallHeapBytes, a
+    /// heap other than the first takes its first page of a class -- none of
+    /// the class held (HeapClassCountAt) -- of SmallPageBytes, one mapping;
+    /// a class it needs a second page of is one it allocates in steadily,
+    /// and takes the batch's, so that a refill comes as seldom as it did (a
+    /// gate's heap made a hundred thousand strings with eight times the
+    /// refills on small pages alone).
     const long SmallPageBytes = 4096;
     const long SmallHeapBytes = 262144;
 
-    static bool SmallPages()
+    static bool SmallPages(long c)
     {
-        return _h != _heap0 && Sys.Peek(_h + HeapBytesAt) < SmallHeapBytes;
+        return _h != _heap0 && Sys.Peek(_h + HeapBytesAt) < SmallHeapBytes
+            && Sys.Peek(_h + HeapClassCountAt + c * WordSize.Bytes) == 0;
+    }
+
+    /// A page of class `c` taken for heap `h` (1) or retired (-1).
+    static void CountClassPage(long h, long c, long by)
+    {
+        if (h == 0 || c < 0 || c >= Classes) return;
+        long at = h + HeapClassCountAt + c * WordSize.Bytes;
+        Sys.Poke(at, Sys.Peek(at) + by);
     }
 
     /// Pages mapped a batch at a time: one answered, the rest pooled. A
@@ -5411,7 +5426,7 @@ static class Gc
             page = PopPool(c);
             if (page == 0)
             {
-                page = SmallPages() ? HeapChunks.TakeOne(SmallPageBytes) : 0;
+                page = SmallPages(c) ? HeapChunks.TakeOne(SmallPageBytes) : 0;
                 if (page == 0) page = HeapChunks.TakeFresh();
                 if (page != 0) PagesTaken = PagesTaken + 1;
                 else page = TakeBatch();
@@ -5421,6 +5436,7 @@ static class Gc
                 }
                 FormatPage(page, c);
             }
+            CountClassPage(HeapOfChunk(page), c, 1);
         }
         long head = HeapChunks.PageFree(page);
         HeapChunks.SetPageFree(page, Zero);
