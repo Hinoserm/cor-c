@@ -1009,7 +1009,10 @@ public sealed partial class Lowering
             string site = "   at " + (_f.Display ?? _f.Name);
             string file = _f.SourceFile ?? at.File;
             if (!string.IsNullOrEmpty(file)) site += " in " + file + ":line " + at.Line;
-            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternString(site)));
+            // AS BYTES, as a descriptor's name is (InternNameBytes): spelt out
+            // only when the trace is read (Exception.Named). Every throw's
+            // line in UTF-16 was 220 KB of the GUI module.
+            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternNameBytes(site)));
         }
 
         // A throw that leaves catch bodies -- no handler opened inside them

@@ -11,10 +11,10 @@
 // every class, a chunk measured on the whole machine's heap for its first
 // object past a kilobyte, and every page it emptied, up to a whole
 // collection threshold of them. Now a heap still small takes pages of 4 KB,
-// grows by chunks measured on itself, and pools an eighth of what it holds:
-// thirteen classes and one larger array, kept, after their neighbours are
-// dropped and the shelf given back, hold under 160 KB where they held half
-// a megabyte.
+// doubling as it holds more of a class, grows by chunks measured on itself,
+// and pools an eighth of what it holds: thirteen classes and one larger
+// array, kept, after their neighbours are dropped and the shelf given back,
+// hold under 256 KB (192 KB) where they held 548 KB.
 using System.Runtime.CompilerServices;
 
 static class Program
@@ -60,7 +60,7 @@ static class Program
         Say("kept intact", intact);
         Gc.HeapFigures(heap, out long live, out long held, out long free, out long chunks);
         Say("live", live > 3000 && live < 65536);
-        if (held >= 163840)
+        if (held >= 262144)
         {
             Sys.Print("held ");
             Sys.PrintInt((int)held);
@@ -68,7 +68,7 @@ static class Program
             Sys.PrintInt((int)chunks);
             Sys.PrintLine();
         }
-        Say("held small", held < 163840);
+        Say("held small", held < 262144);
         Say("released", Gc.ReleaseHeap(heap));
         return 0;
     }

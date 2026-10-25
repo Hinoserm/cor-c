@@ -934,6 +934,71 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// A DESCRIPTOR'S NAME AS THE DATA HOLDS IT, and a throw's site: a byte
+    /// array, not a string, spelt out (String.NameText$) when it is asked
+    /// for -- a name the first time, and kept (String.TypeFullName).
+    /// UTF-16, every type's name was two bytes a letter, 400 KB of the GUI
+    /// module, most of it generic instantiations spelling
+    /// "System.Collections.Generic." over and over. Here a name is UTF-8 with
+    /// bytes no name holds standing for what names say most (NameTokens):
+    /// the core library's assembly (U+E000 in DescriptorName), an own
+    /// assembly's bracket (U+E001 NAME U+E002), the two namespaces, and a
+    /// trace row's three pieces.
+    /// One object a name across the objects of a module, as a literal is
+    /// (SharedLiterals).
+    /// </summary>
+    private string InternNameBytes(string compact)
+    {
+        byte[] text = NameBytes(compact);
+        string key = "n" + System.Convert.ToHexString(text);
+        if (_utf8Data.TryGetValue(key, out string? known)) return known;
+        int w = _t.WordSize;
+        int bytes = (_t.ArrayHeaderBytes + text.Length + w - 1) / w * w;
+        byte[] block = new byte[Math.Max(bytes, _t.ArrayHeaderBytes + w)];
+        WriteWord(block, _t.ArrayCountOffset, text.Length);
+        Array.Copy(text, 0, block, _t.ArrayHeaderBytes, text.Length);
+        string sym = SharedLiterals ? "tn_" + System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(text))[..32]
+            : "tn_" + _utf8Data.Count;
+        _utf8Data[key] = sym;
+        DataItem item = new(sym, block) { Align = _t.Align64, ReadOnly = true, NoReferences = true, Exported = SharedLiterals, Coalescible = SharedLiterals };
+        item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(Type.U8), 1, isString: false, elementType: Type.U8), _t.DescriptorBytes));
+        _m.Data.Add(item);
+        return sym;
+    }
+
+    /// <summary>The bytes a name's tokens are, in the order they are tried (String.NameText$ reads them back).</summary>
+    private static readonly (string Text, byte Token)[] NameTokens =
+    {
+        ("\uE000", 1), ("\uE001", 2), ("\uE002", 3), ("System.Collections.Generic.", 4), ("System.", 5),
+        // A throw's site (Lowering.EmitThrow, Exception.Named).
+        ("   at ", 6), (" in ", 7), (":line ", 8),
+    };
+
+    private static byte[] NameBytes(string compact)
+    {
+        List<byte> bytes = new(compact.Length);
+        for (int at = 0; at < compact.Length;)
+        {
+            bool token = false;
+            foreach ((string text, byte b) in NameTokens)
+            {
+                if (string.CompareOrdinal(compact, at, text, 0, text.Length) == 0)
+                {
+                    bytes.Add(b);
+                    at += text.Length;
+                    token = true;
+                    break;
+                }
+            }
+            if (token) continue;
+            int length = char.IsSurrogatePair(compact, at) ? 2 : 1;
+            bytes.AddRange(System.Text.Encoding.UTF8.GetBytes(compact.Substring(at, length)));
+            at += length;
+        }
+        return bytes.ToArray();
+    }
+
+    /// <summary>
     /// The largest power of two that divides <paramref name="size"/>, capped
     /// at <paramref name="max"/>. Section/symbol alignment must be a power of
     /// two (or one); <c>size</c> itself is not one for an aggregate whose
@@ -2336,7 +2401,7 @@ public sealed partial class Lowering
         // descriptor would be two types.
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(isString ? "System.String"
+        item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes(isString ? "System.String"
             : elementType?.AsNonNullable().Symbol is TypeSymbol shaped && (shaped.Kind == TypeKind.Struct && IsTupleShape(shaped) || shaped.Decl is { Specialised: true })
                 ? DescriptorName(DotNetTypeName(elementType.AsNonNullable()) + "[]")
             : DotNetName(element) + "[]"), 0));
@@ -2424,7 +2489,7 @@ public sealed partial class Lowering
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
 
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString("System." + named), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes("System." + named), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         return sym;
     }
@@ -2879,7 +2944,7 @@ public sealed partial class Lowering
 
         DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Decl?.Specialised == true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(DescriptorName(FullTypeName(t))), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes(DescriptorName(FullTypeName(t))), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
         if (faceOf is not null) item.Relocs.Add(new DataReloc(DescElement * w, faceOf, 0));
         if (ShapeRecord(t, sym) is string record) item.Relocs.Add(new DataReloc(DescShape * w, record, 0));
@@ -3174,7 +3239,7 @@ public sealed partial class Lowering
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
             Exported = t.Decl?.LocalOnly != true, SharedCopies = shared?.ToArray() };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(DescriptorName(FullTypeName(t))), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes(DescriptorName(FullTypeName(t))), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
         // The reference map covers the whole instance, base fields included:

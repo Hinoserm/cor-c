@@ -328,7 +328,7 @@ public sealed partial class Lowering
 
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString("System.Object"), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes("System.Object"), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
         DataItem display = new("td_System_Object", new byte[w]) { ReadOnly = true, Exported = false };
@@ -413,7 +413,7 @@ public sealed partial class Lowering
         // contents, as the object descriptor is).
         DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
         _m.Data.Add(item);
-        item.Relocs.Add(new DataReloc(DescName * w, InternString(DescriptorName(name)), 0));
+        item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes(DescriptorName(name)), 0));
         item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
 
         // The display and the interface list a class descriptor has, at their
