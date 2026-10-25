@@ -1,0 +1,41 @@
+// test: an interrupt handler that reaches a method named as a wait is refused, the way named
+// flags: --irq-waits Waits.Park
+// expect-compile-error: is an interrupt handler and reaches 'Waits.Park', which waits
+// NO HANDLER WAITS (--irq-waits): an interrupt handler runs on the block of
+// whatever it interrupted, and a wait there parks the processor or turns a
+// thread the collector counts as stopped into a running one. The handler
+// calls a helper that parks; the build is refused, naming the wait and the
+// way the handler reaches it. Its TryEnter-like neighbour, not named, is
+// not refused.
+
+using System;
+
+static class Waits
+{
+    static int _parked;
+    public static void Park() { _parked++; }
+    public static bool TryPark() { return _parked == 0; }
+}
+
+static class Device
+{
+    public static void Drain()
+    {
+        if (!Waits.TryPark()) Waits.Park();
+    }
+}
+
+static class Program
+{
+    [InterruptHandler]
+    static void Tick()
+    {
+        Device.Drain();
+    }
+
+    static int Main()
+    {
+        Tick();
+        return 0;
+    }
+}

@@ -239,7 +239,46 @@ public static class InterruptNotes
         }
         if (errors.Count > 0) errors.AddRange(EveryAllocation(handlers, facts));
         errors.AddRange(SpinLocksFromHandlers(handlers, facts, report: false));
+        if (Corsac.Switches.IrqWaits is { Length: > 0 } waits) errors.AddRange(WaitsFromHandlers(handlers, facts, waits));
         return errors;
+    }
+
+    /// <summary>
+    /// NO HANDLER WAITS (--irq-waits Type.Method,...): an interrupt handler
+    /// that parks or yields runs on the block of whatever it interrupted, and
+    /// a wait there turns a thread the collector counts as stopped into a
+    /// running one it waits for (GcThreads.EndBlocking) -- or simply parks the
+    /// processor with interrupts off. Each named method a handler reaches,
+    /// through any of the calls the facts follow, with the way there. A
+    /// TryEnter that does not wait is named by not being listed.
+    /// </summary>
+    public static List<string> WaitsFromHandlers(List<Fact> handlers, Dictionary<string, Fact> facts, string waits)
+    {
+        HashSet<string> named = new(waits.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.Ordinal);
+        List<string> lines = new();
+        Dictionary<string, string?> cameFrom = new(StringComparer.Ordinal);
+        Queue<Fact> work = new();
+        foreach (Fact handler in handlers)
+            if (cameFrom.TryAdd(handler.Name, null)) work.Enqueue(handler);
+        while (work.Count > 0)
+        {
+            Fact f = work.Dequeue();
+            if (named.Contains(f.Display))
+            {
+                List<string> path = new();
+                for (string? at = f.Name; at is not null; at = cameFrom[at])
+                    path.Add(facts.TryGetValue(at, out Fact? step) ? step.Display : at);
+                path.Reverse();
+                lines.Add($"'{path[0]}' is an interrupt handler and reaches '{f.Display}', which waits, via {string.Join(" -> ", path)}");
+                continue;
+            }
+            foreach (string call in f.Calls)
+            {
+                if (!facts.TryGetValue(call, out Fact? callee)) continue;
+                if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
+            }
+        }
+        return lines;
     }
 
     /// <summary>

@@ -24,6 +24,8 @@ public static class Switches
     public static bool HandedTrace;
     /// <summary>--irq-locks-report: every IrqSpinLock taken, and whether an interrupt handler reaches it (InterruptNotes).</summary>
     public static bool IrqLocksReport;
+    /// <summary>--irq-waits Type.Method,...: what waits, which no interrupt handler may reach (InterruptNotes.WaitsFromHandlers).</summary>
+    public static string? IrqWaits;
 
     /// <summary>--trace-fields NAME: the field escape analysis on fields whose names contain NAME.</summary>
     public static string? FieldTrace;
@@ -167,6 +169,7 @@ public static class Switches
         }
         HandedTrace |= Switch(taken, "--trace-handed");
         IrqLocksReport |= Switch(taken, "--irq-locks-report");
+        IrqWaits = Valued(taken, "--irq-waits") ?? IrqWaits;
         FieldTrace = Valued(taken, "--trace-fields") ?? FieldTrace;
         FieldTraceAll |= Switch(taken, "--trace-fields-all");
         TraceForward = Valued(taken, "--trace-forward") ?? TraceForward;
