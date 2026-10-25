@@ -865,6 +865,33 @@ internal sealed class Encoder
                 B(0x00, 0x00, 0x00, 0x00);
                 break;
             }
+            case MOp.GsLoadAt:
+            case MOp.GsStoreAt:
+            {
+                // 65 8B /r (load) or 65 89 /r (store), mod 00 and r/m 101: a
+                // disp32 with no base, taken in GS.
+                bool load = i.Op == MOp.GsLoadAt;
+                int r = ((MReg)i.Operands[load ? 0 : 1]).Id;
+                B(0x65, load ? (byte)0x8B : (byte)0x89);
+                _out.Add((byte)(0x05 | (r << 3)));
+                Imm32((MImm)i.Operands[load ? 1 : 0]);
+                break;
+            }
+            case MOp.GsLoadReg:
+            case MOp.GsStoreReg:
+            {
+                // The same through a register: mod 01, r/m 100 and a SIB of
+                // the register as base and no index, displacement 0, so that
+                // every register, ESP and EBP included, may be the offset.
+                bool load = i.Op == MOp.GsLoadReg;
+                int r = ((MReg)i.Operands[load ? 0 : 1]).Id;
+                int at = ((MReg)i.Operands[load ? 1 : 0]).Id;
+                B(0x65, load ? (byte)0x8B : (byte)0x89);
+                _out.Add((byte)(0x44 | (r << 3)));
+                _out.Add((byte)(0x20 | at));
+                _out.Add(0x00);
+                break;
+            }
             case MOp.FsLoad:
             {
                 // 64 8B /r with mod 01, r/m 100 and a SIB of the register as

@@ -214,6 +214,14 @@ internal static class AsmText
             case MOp.GsSelf:
                 yield return $"mov {Op(i.Operands[0], 4, false)}, gs:[0]";
                 yield break;
+            case MOp.GsLoadAt:
+            case MOp.GsLoadReg:
+                yield return $"mov {Op(i.Operands[0], 4, false)}, gs:[{Op(i.Operands[1], 4, false)}]";
+                yield break;
+            case MOp.GsStoreAt:
+            case MOp.GsStoreReg:
+                yield return $"mov gs:[{Op(i.Operands[0], 4, false)}], {Op(i.Operands[1], 4, false)}";
+                yield break;
             case MOp.FsLoad:
                 yield return $"mov {Op(i.Operands[0], 4, false)}, fs:[{Op(i.Operands[0], 4, false)}]";
                 yield break;

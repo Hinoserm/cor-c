@@ -2559,6 +2559,15 @@ internal sealed partial class Selector
             case MachineIntrinsics.SetGs:
                 Emit(MOp.SetGs, R(i.Operands[0]));
                 return;
+            case MachineIntrinsics.PerCpuRead:
+                if (i.Dest is null) return;
+                if (i.Operands[0] is ImmOperand { Value: var readAt }) Emit(MOp.GsLoadAt, Lo(i.Dest), new MImm(readAt));
+                else Emit(MOp.GsLoadReg, Lo(i.Dest), R(i.Operands[0]));
+                return;
+            case MachineIntrinsics.PerCpuWrite:
+                if (i.Operands[0] is ImmOperand { Value: var writeAt }) Emit(MOp.GsStoreAt, new MImm(writeAt), R(i.Operands[1]));
+                else Emit(MOp.GsStoreReg, R(i.Operands[0]), R(i.Operands[1]));
+                return;
             case MachineIntrinsics.SetTlsBlock:
                 // WINDOWS: the block into the runtime's TLS slot, found as
                 // ThreadBlock finds it (TlsBaseSymbol).

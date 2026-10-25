@@ -35,6 +35,8 @@ public static class Roles
             case MOp.MovFromCr:
             case MOp.GotPc:
             case MOp.GsSelf:
+            case MOp.GsLoadAt:
+            case MOp.GsLoadReg:
             case MOp.GetGs:
             case MOp.ReadCs:
             case MOp.ReadFlags:

@@ -103,6 +103,12 @@ public enum MOp : byte
     // answers a flat address every other instruction can use.
     /// <summary>mov r32, gs:[0] -- this thread's block, by the self pointer.</summary>
     GsSelf,
+    /// <summary>mov r32, gs:[disp32] / gs:[reg]: a word of this processor's own area (Sys.PerCpuRead).</summary>
+    GsLoadAt,
+    GsLoadReg,
+    /// <summary>mov gs:[disp32], r32 / gs:[reg], r32: the same, written (Sys.PerCpuWrite).</summary>
+    GsStoreAt,
+    GsStoreReg,
     /// <summary>
     /// mov r32, fs:[r32] -- on Windows, a word of the thread's own block, at
     /// the offset the register holds: the step that finds the TLS slots

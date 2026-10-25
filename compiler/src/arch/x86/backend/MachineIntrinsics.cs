@@ -65,6 +65,9 @@ internal static class MachineIntrinsics
     /// <summary>The same where the slot holds the expected one: slot, expected, value; answers what it held (Sys.CompareExchangeReference).</summary>
     public const string RefCompareExchange = Prefix + "refcas";
     public const string SetGs = Prefix + "setgs";
+    /// <summary>A word of this processor's own area, gs-relative: one instruction, never split by a preemption (Sys.PerCpuRead).</summary>
+    public const string PerCpuRead = Prefix + "percpuread";
+    public const string PerCpuWrite = Prefix + "percpuwrite";
     public const string GetGs = Prefix + "getgs";
     /// <summary>
     /// A use of its operand and nothing else: `test r, r`. What keeps an

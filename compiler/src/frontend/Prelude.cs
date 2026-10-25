@@ -896,6 +896,11 @@ public static class Prelude
             // reach the runtime's TLS slot (Selector.TlsBaseSymbol).
             public static void SetThreadBlockSlot(long block, long offset) { }
             public static void SetGs(long selector) { }
+            // A word of this processor's area at `offset` from where GS is
+            // based, read or written in one instruction (a kernel's per-CPU
+            // data: Linux's this_cpu_read and this_cpu_write).
+            public static long PerCpuRead(long offset) { return 0; }
+            public static void PerCpuWrite(long offset, long value) { }
             public static long GetGs() { return 0; }
             // The bounds of the program's static data, for a collector that
             // scans statics as roots: the linker defines the symbols.

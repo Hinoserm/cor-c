@@ -1,0 +1,55 @@
+// test: Sys.PerCpuRead and PerCpuWrite read and write a word where GS is based, at a constant offset or one in a register
+// expect-exit: 0
+// expect-output:
+// self True
+// constant True
+// register True
+// owner True
+//
+// A KERNEL'S PER-CPU DATA, Linux's this_cpu_read and this_cpu_write: one
+// gs-relative instruction, so no preemption falls between finding the
+// processor and reading its word. Here GS is based at the thread's block
+// (a hosted thread's), so the block's own words are what it reads: its
+// first word is its own address; a word written at a constant offset and
+// one at an offset only known at run time are read back through the block.
+// And the block's Owner word keeps an object (Runtime.SetThreadOwner).
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Thing { public int N = 7; }
+
+static class Program
+{
+    static void Say(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? " True" : " False");
+        Sys.PrintLine();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long At(long offset) { return Sys.PerCpuRead(offset); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Put(long offset, long value) { Sys.PerCpuWrite(offset, value); }
+
+    static int Main()
+    {
+        long block = Sys.ThreadBlock();
+        Say("self", Sys.PerCpuRead(0) == block);
+        Sys.PerCpuWrite(Tls.PreemptCount, 5);
+        bool constant = Sys.Peek(block + Tls.PreemptCount) == 5 && Sys.PerCpuRead(Tls.PreemptCount) == 5;
+        Sys.PerCpuWrite(Tls.PreemptCount, 0);
+        Say("constant", constant);
+        Put(Tls.PreemptCount, 9);
+        bool register = Sys.Peek(block + Tls.PreemptCount) == 9 && At(Tls.PreemptCount) == 9;
+        Put(Tls.PreemptCount, 0);
+        Say("register", register);
+        Thing thing = new Thing();
+        Runtime.SetThreadOwner(block, thing);
+        Gc.Collect();
+        Say("owner", Runtime.ThreadOwner(block) is Thing kept && kept.N == 7);
+        Runtime.SetThreadOwner(block, null);
+        return 0;
+    }
+}

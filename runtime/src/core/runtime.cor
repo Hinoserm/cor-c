@@ -1411,6 +1411,20 @@ static class Runtime
     // may not answer is inside the allocator or the barrier (Tls.InAlloc);
     // the hook is asked again a moment later.
 
+    /// The platform's word for what a thread is (Tls.Owner): `owner` kept in
+    /// `block`, before the thread first runs (the word has no barrier).
+    public static void SetThreadOwner(long block, object? owner)
+    {
+        Sys.Poke(block + Tls.Owner, owner == null ? 0 : Sys.Word(owner));
+    }
+
+    /// What SetThreadOwner kept in `block`, or null.
+    public static object? ThreadOwner(long block)
+    {
+        long word = block == 0 ? 0 : Sys.Peek(block + Tls.Owner);
+        return word == 0 ? null : Sys.FromWord(word);
+    }
+
     /// The running code may not be preempted until PreemptOn (Tls.PreemptCount).
     public static void PreemptOff()
     {

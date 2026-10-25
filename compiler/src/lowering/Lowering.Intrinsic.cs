@@ -407,6 +407,15 @@ public sealed partial class Lowering
                 // The selector GS holds now: on Linux, before the runtime
                 // takes it, the C library's thread pointer.
                 return Widen(_e.Call(MachineIntrinsics.GetGs, IrType.I32)!);
+            // A WORD OF THIS PROCESSOR'S OWN AREA, gs-relative, as Linux's
+            // this_cpu_read and this_cpu_write: one instruction, so no
+            // preemption falls between finding the processor and reading it.
+            // Only where GS is a processor's (a kernel's ring 0).
+            case "PerCpuRead":
+                return Widen(_e.Call(MachineIntrinsics.PerCpuRead, IrType.I32, R(ToI32(Arg(call, target, 0))))!);
+            case "PerCpuWrite":
+                _e.Call(MachineIntrinsics.PerCpuWrite, IrType.Void, R(ToI32(Arg(call, target, 0))), R(ToI32(Arg(call, target, 1))));
+                return Void();
             case "SetGs":
                 // The selector of the descriptor whose base is the block. Only
                 // an operating system that made that descriptor may say this.
