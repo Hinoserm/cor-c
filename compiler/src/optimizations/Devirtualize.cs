@@ -229,10 +229,17 @@ public sealed class Devirtualize : IModulePass
                     i.DispatchType = NoTarget;
                     continue;
                 }
-                // A method, or one of the routines an array answers its
-                // sequence interfaces with (Lowering.ArrayFaces).
+                // A method, one of the routines an array answers its
+                // sequence interfaces with (Lowering.ArrayFaces), or a box's
+                // stub for its struct's member (Lowering.BoxInterfaceStub).
+                // Left a call through its address, a stub was an address
+                // taken to the link's region solvers -- a root, whose result
+                // is every caller's -- and a boxed List<T>.Enumerator's
+                // Current gave every object any list held to the unknown
+                // (1211, with List<T> the non-generic IList).
                 if (Symbol(i.Operands[0]) is not { Offset: 0 } target
-                    || !(target.Name.StartsWith("m_", StringComparison.Ordinal) || target.Name.StartsWith("__array", StringComparison.Ordinal))) continue;
+                    || !(target.Name.StartsWith("m_", StringComparison.Ordinal) || target.Name.StartsWith("__array", StringComparison.Ordinal)
+                         || target.Name.StartsWith("__box_", StringComparison.Ordinal))) continue;
                 // A struct made for the call is made for it whoever answers
                 // it (FreshStruct); a delegate's Invoke is a slot's call no
                 // more, and a direct call needs no declaring type.
