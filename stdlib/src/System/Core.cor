@@ -310,6 +310,7 @@ static class String {
             return full;
         } finally {
             Sys.AtomicSwap(gate, 0);
+            Runtime.PreemptOn();
         }
     }
 
@@ -319,8 +320,10 @@ static class String {
     // then refused, and LINQ's iterators across units went to the collector
     // (1311).
 
+    // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount): a waiter spins.
     static long EnterFullNames() {
         long gate = Sys.AddressOf(ref TypeNameCache.Gate);
+        Runtime.PreemptOff();
         while (Sys.AtomicSwap(gate, 1) != 0) { Sys.Pause(); }
         return gate;
     }

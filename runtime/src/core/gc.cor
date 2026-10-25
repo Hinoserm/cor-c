@@ -16351,6 +16351,9 @@ static class GcLock
             }
             Sys.Pause();
         }
+        // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount): a thread that
+        // wants it spins.
+        Runtime.PreemptOff();
         // THE ALLOCATOR WORKS FOR THE HOLDER'S HEAP until it lets go.
         Gc.LockedFor(me);
     }
@@ -16358,6 +16361,7 @@ static class GcLock
     public static void Exit()
     {
         Sys.AtomicSwap(Words() + Held, 0);
+        Runtime.PreemptOn();
     }
 }
 
@@ -16862,6 +16866,11 @@ static class GcThreads
         else if (request == Scan)
         {
             Gc.ScanStack(block, from);
+            // THE BLOCK'S OWN REFERENCES, wherever the block is: a kernel's
+            // is not on the thread's stack, as a hosted thread's is.
+            Gc.ScanRoots(block + Tls.ThreadStatics, block + Tls.ThreadStatics + WordSize.Bytes);
+            Gc.ScanRoots(block + Tls.AsyncContext, block + Tls.AsyncContext + WordSize.Bytes);
+            Gc.ScanRoots(block + Tls.Owner, block + Tls.Owner + WordSize.Bytes);
         }
     }
 

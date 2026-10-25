@@ -302,7 +302,20 @@ static class Tls
     /// that heap on the new block (Runtime.EnterHeap), and copies nothing of
     /// the allocator's.
     public const long Shelf = 49 * WordSize.Bytes;
-    public const long Bytes = 50 * WordSize.Bytes;
+    /// HOW MANY REASONS THE RUNNING CODE MAY NOT BE PREEMPTED, as Linux's
+    /// preempt_count: the runtime raises it while it holds a spin lock of its
+    /// own (the heap lock, the type initialisers' graph, the type-name
+    /// gate), the kernel for its own spin locks and PreemptDisable. A kernel
+    /// preempts only where it is 0, Tls.InAlloc is 0 and the code is outside
+    /// __corsac_store_sequences: a spin lock's holder preempted on one
+    /// processor would leave its waiters spinning for ever.
+    public const long PreemptCount = 50 * WordSize.Bytes;
+    /// THE KERNEL'S OWN WORD: what the thread is to the platform that runs
+    /// it -- a kernel's thread object -- found in one load from the block,
+    /// as Linux's `current`. A reference: scanned with the block's other
+    /// references (GcThreads.Work). Written once, before the thread runs.
+    public const long Owner = 51 * WordSize.Bytes;
+    public const long Bytes = 52 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (Corsac.GC.AllocSample): every sixteenth
@@ -1092,13 +1105,18 @@ static class Runtime
             // nor walks, and only waits, as every waiter did before the word.
             long graph = Sys.AddressOf(ref _typeInitGraph);
             long held;
+            // NOT PREEMPTED WHILE THE GRAPH IS HELD (Tls.PreemptCount): its
+            // other waiters spin.
+            PreemptOff();
             while ((held = Sys.Cas(graph, 0, self)) != 0 && held != self) Sys.Pause();
             bool nested = held == self;
+            if (nested) PreemptOn();
             if (!nested)
             {
                 if (Sys.Peek(state) != owner)
                 {
                     Sys.AtomicSwap(graph, 0);
+                    PreemptOn();
                     continue;
                 }
                 Sys.AtomicSwap(self + Tls.TypeInitWait, state);
@@ -1113,6 +1131,7 @@ static class Runtime
                 }
                 if (cycle) Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
                 Sys.AtomicSwap(graph, 0);
+                PreemptOn();
                 if (cycle) return 0;
             }
             // A CALL THAT CAN PARK WAITS PARKED (Platform.TypeInitWaitHook):
@@ -1391,6 +1410,20 @@ static class Runtime
     // answers for it right there with AnswerAt and returns. The one place it
     // may not answer is inside the allocator or the barrier (Tls.InAlloc);
     // the hook is asked again a moment later.
+
+    /// The running code may not be preempted until PreemptOn (Tls.PreemptCount).
+    public static void PreemptOff()
+    {
+        long block = Sys.ThreadBlock();
+        if (block != 0) Sys.Poke(block + Tls.PreemptCount, Sys.Peek(block + Tls.PreemptCount) + 1);
+    }
+
+    /// One reason fewer not to preempt (PreemptOff).
+    public static void PreemptOn()
+    {
+        long block = Sys.ThreadBlock();
+        if (block != 0) Sys.Poke(block + Tls.PreemptCount, Sys.Peek(block + Tls.PreemptCount) - 1);
+    }
 
     /// Whether this thread holds the heap lock (see GcLock.HeldByMe).
     public static bool HoldsHeapLock()
