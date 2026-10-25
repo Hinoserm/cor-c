@@ -283,11 +283,12 @@ public static class InterruptNotes
     /// </summary>
     public static List<string> WaitsFromHandlers(List<Fact> handlers, Dictionary<string, Fact> facts, string waits, string? stops = null)
     {
-        HashSet<string> named = new(Names(waits), StringComparer.Ordinal);
+        string[] named = Names(waits);
         // NOT FOLLOWED (--wait-free-stop): a call that goes on on another
         // stack -- a parked continuation resumed -- is not the caller waiting.
-        HashSet<string> stop = new(stops is null ? Array.Empty<string>() : Names(stops), StringComparer.Ordinal);
+        string[] stop = stops is null ? Array.Empty<string>() : Names(stops);
         List<string> lines = new();
+        HashSet<string> said = new(StringComparer.Ordinal);
         Dictionary<string, string?> cameFrom = new(StringComparer.Ordinal);
         Queue<Fact> work = new();
         foreach (Fact handler in handlers)
@@ -295,7 +296,7 @@ public static class InterruptNotes
         while (work.Count > 0)
         {
             Fact f = work.Dequeue();
-            if (named.Contains(f.Display))
+            if (Matches(named, f.Display))
             {
                 List<string> path = new();
                 for (string? at = f.Name; at is not null; at = cameFrom[at])
@@ -308,7 +309,23 @@ public static class InterruptNotes
             }
             foreach (string call in f.Calls)
             {
-                if (!facts.TryGetValue(call, out Fact? callee) || stop.Contains(callee.Display)) continue;
+                if (!facts.TryGetValue(call, out Fact? callee))
+                {
+                    // A METHOD WITH NO FACTS -- the kernel's, called from a
+                    // module, whose exports carry none -- is matched where it
+                    // is called, by the name its definition spells.
+                    if (call.StartsWith(Dispatch, StringComparison.Ordinal) || DisplayOf(call) is not { } shown
+                        || !Matches(named, shown) || Matches(stop, shown) || !said.Add(f.Name + "\n" + shown)) continue;
+                    List<string> way = new() { shown };
+                    for (string? at = f.Name; at is not null; at = cameFrom[at])
+                        way.Add(facts.TryGetValue(at, out Fact? step) ? step.Display : at);
+                    way.Reverse();
+                    string from = facts.TryGetValue(FirstName(f.Name, cameFrom), out Fact? start) && start.Handler
+                        ? "is an interrupt handler" : "may not wait (--wait-free-roots)";
+                    lines.Add($"'{way[0]}' {from} and reaches '{shown}', which waits, via {string.Join(" -> ", way)}");
+                    continue;
+                }
+                if (Matches(stop, callee.Display)) continue;
                 if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
             }
         }
@@ -364,6 +381,36 @@ public static class InterruptNotes
     }
 
     private static string[] Names(string list) => list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    // A NAME ENDING IN '*' names every method it begins (FilesystemGuard.Enter*).
+    private static bool Matches(string[] names, string display)
+    {
+        foreach (string name in names)
+            if (name.EndsWith('*') ? display.StartsWith(name[..^1], StringComparison.Ordinal) : display == name) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// "Type.Method" from a definition's name (Binder.DefinitionName:
+    /// Owner`n.Method`n(parameters)), the owner's last part alone, as a
+    /// fact's Display is; null when it is not one.
+    /// </summary>
+    internal static string? DisplayOf(string definition)
+    {
+        int open = definition.IndexOf('(');
+        if (open < 0) return null;
+        string head = definition[..open];
+        int tick = head.LastIndexOf('`');
+        if (tick < 0) return null;
+        head = head[..tick];
+        int dot = head.LastIndexOf('.');
+        if (dot < 0) return null;
+        string owner = head[..dot], method = head[(dot + 1)..];
+        int ownerTick = owner.LastIndexOf('`');
+        if (ownerTick >= 0) owner = owner[..ownerTick];
+        int ownerDot = owner.LastIndexOf('.');
+        return (ownerDot >= 0 ? owner[(ownerDot + 1)..] : owner) + "." + method;
+    }
 
     // The root a walk came from (cameFrom's chain to its start).
     private static string FirstName(string name, Dictionary<string, string?> cameFrom)

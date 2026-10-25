@@ -1,0 +1,36 @@
+// test: a wait with no facts of its own (a module calling its kernel) is matched where it is called, and a name ending in '*' matches by prefix
+// flags: --irq-waits Os.sched_* --wait-free-roots Pass.Run
+// expect-compile-error: 'Pass.Run' may not wait (--wait-free-roots) and reaches 'Os.sched_yield', which waits, via Pass.Run -> Helper.Step -> Os.sched_yield
+// A MODULE'S LINK HAS NO FACTS FOR ITS KERNEL: the kernel's methods come
+// from its exports, and every wait the kernel has was invisible from the
+// module. A call to a method with no facts -- here one the program imports
+// and has no body of -- is matched against the waits where it is made, by
+// the name its definition spells. Named by its prefix (Os.sched_*), as the
+// kernel names a family of guards (FilesystemGuard.Enter*).
+
+using System;
+using System.Runtime.InteropServices;
+
+static class Os
+{
+    [DllImport("libc.so.6")] public static extern int sched_yield();
+}
+
+static class Helper
+{
+    public static void Step() { Os.sched_yield(); }
+}
+
+static class Pass
+{
+    public static void Run() { Helper.Step(); }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Pass.Run();
+        return 0;
+    }
+}
