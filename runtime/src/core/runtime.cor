@@ -4278,7 +4278,7 @@ static class Runtime
     /// frame pointer and source site, as bytes (Lowering.InternNameBytes).
     /// The frame chain begins with its callers; the explicit site preserves
     /// the leaf even when Capture is inlined.
-    public static void Capture(object thrown, long frame, object site) {
+    public static void Capture(object thrown, long frame, byte[] site) {
         // The iterator stop signal has no reader to show a trace to.
         if (thrown is IteratorStopSignal) { return; }
         // Tested and bound at once: a cast after the test was a failure path
@@ -4289,7 +4289,7 @@ static class Runtime
         // to take them with, and Frames would ask the heap that ran out.
         if (thrown is Exception e) {
             if (e.Keeps$()) { return; }
-            e.Thrown$(site, Frames(frame));
+            e.ThrownAt$(site, Frames(frame));
         }
     }
 

@@ -259,47 +259,81 @@ static class String {
         return dot < 0 ? null : bare.Substring(0, dot);
     }
 
-    // A DESCRIPTOR'S NAME SPELT OUT (Lowering.InternTypeName). The image keeps
-    // a name as bytes, UTF-8, with five bytes no name holds standing for what
-    // names say most: 1 System.Private.CoreLib's assembly after a generic
-    // argument, 2 and 3 round an assembly of the program's own, 4 and 5 the
-    // namespaces System.Collections.Generic. and System. -- a GUI module's
-    // names were 400 KB of UTF-16 -- and the full name .NET gives is made the
-    // first time it is asked for and kept, one string a name, so that asking
-    // again is the same object. A name that is a string (the runtime's own
-    // descriptors, Gc.RevokedVtable) is its own full name.
+    // A DESCRIPTOR'S NAME SPELT OUT (Lowering.InternNameBytes). The image keeps
+    // a name as bytes, UTF-8, with bytes no name holds standing for what
+    // names say most (NameToken) -- a GUI module's names were 400 KB of
+    // UTF-16 -- and the full name .NET gives is made the first time it is
+    // asked for and kept, one string a name, so that asking again is the
+    // same object. A name that is a string (the runtime's own descriptors,
+    // Gc.RevokedVtable) is its own full name.
+    //
+    // KEPT BY ITS ADDRESS, A NUMBER: a name is the image's and never moves.
+    // Kept as the object, every name read -- an object's ToString, its
+    // GetType().Name -- was a value loaded through the object stored into a
+    // static, and the lifetime rules gave up objects of every type whose
+    // name was asked: LINQ's iterators across units (1311) and an exception
+    // kept by a program that needs no collector (1513).
     public static string TypeFullName(object compact) {
         if (compact is string text) { return text; }
-        byte[] name = (byte[])compact;
+        long at = Sys.Word(compact);
         lock (_fullNameLock) {
-            long at = Sys.Word(name);
-            int mask = _fullNamesFrom.Length - 1;
+            int mask = _fullNamesAt.Length - 1;
             int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
-            while (_fullNamesFrom[slot] != null) {
-                if (object.ReferenceEquals(_fullNamesFrom[slot], name)) { return _fullNamesTo[slot]!; }
+            while (_fullNamesAt[slot] != 0) {
+                if (_fullNamesAt[slot] == at) { return _fullNamesTo[slot]!; }
                 slot = (slot + 1) & mask;
             }
-            string full = NameText$(name);
-            _fullNamesFrom[slot] = name;
+            string full = NameText$((byte[])compact);
+            _fullNamesAt[slot] = at;
             _fullNamesTo[slot] = full;
             _fullNamesCount++;
-            if (_fullNamesCount * 2 > _fullNamesFrom.Length) { GrowFullNames(); }
+            if (_fullNamesCount * 2 > _fullNamesAt.Length) { GrowFullNames(); }
             return full;
         }
     }
 
+    /// THE NAMES OF A MODULE GONE, FORGOTTEN: a full name kept for an
+    /// address in [low, high) -- a module's image, forced out or unloaded --
+    /// is dropped, so that another module loaded there is not answered with
+    /// the old one's names. Gc.Quarantine asks it; a kernel that unloads a
+    /// module any other way asks it too.
+    public static void ForgetTypeNames(long low, long high) {
+        lock (_fullNameLock) {
+            long[] from = _fullNamesAt;
+            string?[] to = _fullNamesTo;
+            bool any = false;
+            for (int i = 0; i < from.Length; i++) {
+                if (from[i] >= low && from[i] < high) { any = true; break; }
+            }
+            if (!any) { return; }
+            _fullNamesAt = new long[from.Length];
+            _fullNamesTo = new string?[from.Length];
+            _fullNamesCount = 0;
+            int mask = _fullNamesAt.Length - 1;
+            for (int i = 0; i < from.Length; i++) {
+                long at = from[i];
+                if (at == 0 || at >= low && at < high) { continue; }
+                int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
+                while (_fullNamesAt[slot] != 0) { slot = (slot + 1) & mask; }
+                _fullNamesAt[slot] = at;
+                _fullNamesTo[slot] = to[i];
+                _fullNamesCount++;
+            }
+        }
+    }
+
     static void GrowFullNames() {
-        object?[] from = _fullNamesFrom;
+        long[] from = _fullNamesAt;
         string?[] to = _fullNamesTo;
-        _fullNamesFrom = new object?[from.Length * 2];
+        _fullNamesAt = new long[from.Length * 2];
         _fullNamesTo = new string?[from.Length * 2];
-        int mask = _fullNamesFrom.Length - 1;
+        int mask = _fullNamesAt.Length - 1;
         for (int i = 0; i < from.Length; i++) {
-            if (from[i] == null) { continue; }
-            long at = Sys.Word(from[i]);
+            long at = from[i];
+            if (at == 0) { continue; }
             int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
-            while (_fullNamesFrom[slot] != null) { slot = (slot + 1) & mask; }
-            _fullNamesFrom[slot] = from[i];
+            while (_fullNamesAt[slot] != 0) { slot = (slot + 1) & mask; }
+            _fullNamesAt[slot] = at;
             _fullNamesTo[slot] = to[i];
         }
     }
@@ -353,7 +387,7 @@ static class String {
     }
 
     static readonly object _fullNameLock = new object();
-    static object?[] _fullNamesFrom = new object?[64];
+    static long[] _fullNamesAt = new long[64];
     static string?[] _fullNamesTo = new string?[64];
     static int _fullNamesCount;
 
@@ -21786,6 +21820,7 @@ class Exception
         {
             _trace = value;
             _site = null;
+            _siteBytes = null;
             _frames = null;
         }
     }
@@ -21794,7 +21829,13 @@ class Exception
     // compiler that throws and catches to back out of a guess never reads the
     // trace, and naming it at every throw was a search of the image's
     // function table for each of up to 32 frames.
-    object? _site;
+    string? _site;
+    // A throw's own site, as the image keeps it (Lowering.InternNameBytes):
+    // a field of its own, typed, as the site the runtime makes is a string
+    // (NullFault's) -- one field of both was an object's, which the
+    // lifetime rules could not say owns what it holds, and a program that
+    // throws needed a collector for it (1513).
+    byte[]? _siteBytes;
     long[]? _frames;
 
     bool _placed;
@@ -21809,7 +21850,7 @@ class Exception
     /// At the throw: the site's own line and the return addresses above it.
     /// Not when the trace was already placed (Placed$): the throw that
     /// follows is the runtime's, and the place is the program's.
-    public void Thrown$(object site, long[] frames)
+    public void Thrown$(string site, long[] frames)
     {
         if (_placed)
         {
@@ -21819,13 +21860,29 @@ class Exception
         if (_reserved) return;
         _trace = "";
         _site = site;
+        _siteBytes = null;
+        _frames = frames;
+    }
+
+    /// The same, the site as the image keeps it (Runtime.Capture).
+    public void ThrownAt$(byte[] site, long[] frames)
+    {
+        if (_placed)
+        {
+            _placed = false;
+            return;
+        }
+        if (_reserved) return;
+        _trace = "";
+        _site = null;
+        _siteBytes = site;
         _frames = frames;
     }
 
     /// A trace given before the throw, which the throw then keeps: a null
     /// dereference is thrown by the runtime (Runtime.NullFault) on behalf of
     /// the instruction that faulted, and the trace is that instruction's.
-    public void Placed$(object site, long[] frames)
+    public void Placed$(string site, long[] frames)
     {
         Thrown$(site, frames);
         _placed = true;
@@ -21903,11 +21960,11 @@ class Exception
     // and every exception thrown and caught was the collector's.
     string Named()
     {
-        if (_site != null && _frames != null)
+        if ((_site != null || _siteBytes != null) && _frames != null)
         {
             string callers = Runtime.TraceOf(_frames);
             // A throw's site is bytes, spelt out now (Lowering.InternNameBytes).
-            string site = _site as string ?? String.NameText$((byte[])_site);
+            string site = _siteBytes != null ? String.NameText$(_siteBytes) : _site ?? "";
             // No site line (Reserve$, a fault with no function to name): the callers alone.
             if (site.Length == 0) return callers;
             return callers.Length == 0 ? String.Concat(site, "") : String.Concat(site, String.Concat("\n", callers));

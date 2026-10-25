@@ -9503,6 +9503,8 @@ static class Gc
             Sys.Poke(at, low);
             Sys.Poke(at + WordSize.Bytes, high);
             Hull();
+            // Its types' names, kept by address, go with it (String.ForgetTypeNames).
+            String.ForgetTypeNames(low, high);
             return true;
         }
         return false;
