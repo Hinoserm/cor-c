@@ -1771,7 +1771,9 @@ public sealed partial class Lowering
     }
 
     /// <summary>The words of a class descriptor the type tests read (TypeTest), for the folding that reads them back (Devirtualize.FoldTypeTests).</summary>
-    internal const int DescriptorDepthWord = DescDepth, DescriptorDisplayWord = DescDisplay, DescriptorInterfacesWord = DescInterfaces, DescriptorSelfWord = DescSelf;
+    internal const int DescriptorDepthWord = DescDepth, DescriptorDisplayWord = DescDisplay, DescriptorInterfacesWord = DescInterfaces;
+    /// <summary>The link packs descriptors by their self word (Lto.DescriptorPacker): the two agree, or this does not compile.</summary>
+    private const int DescriptorPackerAgrees = 1 / (DescSelf == Corsac.Lang.Lto.DescriptorPacker.SelfWord ? 1 : 0);
 
     private const int DescName = 0, DescSize = 1, DescDepth = 2, DescDisplay = 3,
                       DescInterfaces = 4, DescSelf = 5, DescFlags = 6, DescPayload = 7,

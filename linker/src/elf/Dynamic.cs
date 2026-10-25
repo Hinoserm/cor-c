@@ -182,6 +182,8 @@ public static partial class Linker
         RefuseWindowsObjects(inputs.Select(input => (input.Name, input.Object)));
         ManagedLayoutContract.Validate(inputs.Select(input => (input.Name, input.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(input => (input.Name, input.Object)).ToArray());
+        // The copies chosen, each object's descriptors packed (DescriptorPacker).
+        Corsac.Lang.Lto.DescriptorPacker.Run(inputs.Select(input => input.Object));
         // THE STATICS THE LINK LAID DOWN MADE (Preinit): every candidate's
         // storage and flag, defined by no unit. After the units' copies are
         // coalesced, as a program's link does: laying them down renames a

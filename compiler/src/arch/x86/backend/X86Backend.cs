@@ -479,7 +479,6 @@ public sealed class X86Backend : IBackend
             frameSection.Relocs.Add(new Relocation(at + fixup, baseSymbol, 0, RelocKind.Abs32));
         }
 
-        Dictionary<Section, List<DataItem>> descriptors = new(ReferenceEqualityComparer.Instance);
         foreach (DataItem d in module.Data)
         {
             // READ-ONLY UNTIL SOMEBODY HAS TO WRITE IN IT. A data item
@@ -495,21 +494,6 @@ public sealed class X86Backend : IBackend
             // heap-root scanning. Keep them distinct from mutable statics.
             bool namesImport = loaderWrites && d.Relocs.Any(r => !moduleDefines.Contains(r.Symbol));
             Section s = d.Zero ? bss : d.ReadOnly ? (loaderWrites ? (namesImport && PositionIndependent ? ImportConstants() : relocatedConstants) : rodata) : d.NoReferences ? Numbers() : data;
-            // A TYPE'S DESCRIPTOR is laid with the others of its section once
-            // they are all known (PackDescriptors).
-            // NOT ONE THE LINK FINGERPRINTS (Lto.DefinitionFingerprint): a
-            // definition several units give (Coalescible) is proved the same
-            // by the bytes and the relocations under its name, and so is any
-            // local one such a definition names -- packed, those would be its
-            // neighbours' too, other in every unit. A global, unique
-            // descriptor is never fingerprinted: only its name is.
-            if (d.ReadOnly && !d.Zero && d.Exported && !d.Coalescible && SlotsEnd(d) > 0)
-            {
-                if (!descriptors.TryGetValue(s, out List<DataItem>? those)) descriptors.Add(s, those = new());
-                those.Add(d);
-                defined.Add(d.Name);
-                continue;
-            }
             int align = Math.Max(d.Align, 1);
             long offset;
             if (d.Zero)
@@ -546,11 +530,6 @@ public sealed class X86Backend : IBackend
                 d.Relocs.Clear();
                 d.Relocs.TrimExcess();
             }
-        }
-
-        foreach ((Section s, List<DataItem> those) in descriptors)
-        {
-            PackDescriptors(obj, s, those);
         }
 
         if (cardStub)
@@ -838,118 +817,6 @@ public sealed class X86Backend : IBackend
             sb.Append("; error: ").Append(e).Append('\n');
         }
         return sb.ToString();
-    }
-
-    // ---- the descriptors, packed ----------------------------------------------
-
-    /// <summary>
-    /// Where a type descriptor's vtable ends, in bytes from its start, or 0
-    /// for an item that is no descriptor: one whose self word (DescSelf) is a
-    /// relocation to itself. Its header is the target's DescriptorBytes and
-    /// its vtable the rest of it (Lowering, the descriptor's block); its
-    /// display is an item of its own.
-    /// </summary>
-    private int SlotsEnd(DataItem d)
-    {
-        const int w = 4;
-        int self = Corsac.Lang.Lower.Lowering.DescriptorSelfWord * w;
-        if (d.Bytes.Length % w != 0 || d.Bytes.Length <= Target.Current.DescriptorBytes) return 0;
-        bool named = false;
-        foreach (DataReloc r in d.Relocs)
-        {
-            if (r.Offset % w != 0) return 0;
-            if (r.Offset == self && r.Symbol == d.Name && r.Addend == 0) named = true;
-        }
-        return named ? d.Bytes.Length : 0;
-    }
-
-    /// <summary>
-    /// THE DESCRIPTORS OF ONE SECTION, PACKED: a vtable's words after its
-    /// header are mostly empty -- a class's own virtuals are
-    /// numbered above every interface's slot (Binder.AssignSlots), and the
-    /// interfaces it does not implement are holes -- and a hole is a slot no
-    /// call reaches: a virtual or an interface call reads a slot only through
-    /// a type that has it, a type test reads the display, and a string or an
-    /// array, which have no vtable, is told apart before any slot is asked
-    /// for (Lowering.AskSlot). So each descriptor is laid where its words
-    /// that are something -- its header and the slots that hold an address --
-    /// fall on words no other has taken, and
-    /// its holes over the others' words: the GUI module's descriptors were
-    /// two thirds holes. The first such place among the last few thousand
-    /// words, the densest descriptors first; the same input lays the same
-    /// bytes. A definition another object also gives is left where it lies
-    /// when it loses (Lto.DuplicateCutter cuts none with a name inside it).
-    /// </summary>
-    private void PackDescriptors(ObjectFile obj, Section s, List<DataItem> items)
-    {
-        const int w = 4, window = 4096;
-        List<(DataItem Item, int Index, int[] Dense, int Words, int Align)> laid = new();
-        for (int i = 0; i < items.Count; i++)
-        {
-            DataItem d = items[i];
-            int words = d.Bytes.Length / w, end = SlotsEnd(d) / w, header = Target.Current.DescriptorBytes / w;
-            HashSet<int> relocated = new();
-            foreach (DataReloc r in d.Relocs) relocated.Add(r.Offset / w);
-            List<int> dense = new();
-            for (int k = 0; k < words; k++)
-                if (k < header || k >= end || relocated.Contains(k) || BitConverter.ToUInt32(d.Bytes, k * w) != 0) dense.Add(k);
-            laid.Add((d, i, dense.ToArray(), words, Math.Max(1, Math.Max(d.Align, w) / w)));
-        }
-        laid.Sort((a, b) => a.Dense.Length != b.Dense.Length ? b.Dense.Length - a.Dense.Length : a.Index - b.Index);
-        int sectionAlign = laid.Max(x => x.Align) * w;
-        Pad(s, sectionAlign, 0);
-        int baseOffset = s.Bytes.Count;
-        List<bool> taken = new();
-        uint[] block = Array.Empty<uint>();
-        int top = 0;
-        (DataItem, int)[] placedAt = new (DataItem, int)[laid.Count];
-        int n = 0;
-        foreach (var (d, _, dense, words, align) in laid)
-        {
-            int from = Math.Max(0, top - window);
-            from -= from % align;
-            int at = from;
-            for (; at < top; at += align)
-            {
-                bool fits = true;
-                foreach (int k in dense)
-                    if (at + k < taken.Count && taken[at + k]) { fits = false; break; }
-                if (fits) break;
-            }
-            if (at > top) at = top + (align - top % align) % align;
-            while (taken.Count < at + words) taken.Add(false);
-            if (block.Length < at + words) Array.Resize(ref block, Math.Max(at + words, block.Length * 2));
-            foreach (int k in dense)
-            {
-                taken[at + k] = true;
-                block[at + k] = BitConverter.ToUInt32(d.Bytes, k * w);
-            }
-            top = Math.Max(top, at + words);
-            placedAt[n++] = (d, at);
-        }
-        for (int k = 0; k < top; k++)
-        {
-            uint v = block[k];
-            s.Bytes.Add((byte)v); s.Bytes.Add((byte)(v >> 8)); s.Bytes.Add((byte)(v >> 16)); s.Bytes.Add((byte)(v >> 24));
-        }
-        s.Align = Math.Max(s.Align, sectionAlign);
-        // In the module's order, as every other item is named.
-        Dictionary<DataItem, int> order = new(ReferenceEqualityComparer.Instance);
-        for (int i = 0; i < items.Count; i++) order[items[i]] = i;
-        Array.Sort(placedAt, (a, b) => order[a.Item1] - order[b.Item1]);
-        foreach ((DataItem d, int at) in placedAt)
-        {
-            long offset = baseOffset + (long)at * w;
-            foreach (DataReloc r in d.Relocs)
-                s.Relocs.Add(new Relocation((int)offset + r.Offset, r.Symbol, r.Addend, RelocKind.Abs32));
-            obj.Symbols.Add(new Symbol { Name = d.Name, Section = s, Offset = offset, Size = d.Bytes.Length, Global = d.Exported });
-            if (ReleaseBodies)
-            {
-                d.Bytes = Array.Empty<byte>();
-                d.Relocs.Clear();
-                d.Relocs.TrimExcess();
-            }
-        }
     }
 
     /// <summary>Select and allocate one function; null, with errors reported, if it cannot be compiled.</summary>

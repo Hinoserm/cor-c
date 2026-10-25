@@ -266,7 +266,7 @@ static class Gc
     const long HeapNumberAt = 11 * WordSize.Bytes;      // 0 for the first heap, then in the order made
     const long HeapClassPagesAt = 16 * WordSize.Bytes;  // Classes words: pages with room, unowned
     const long HeapBinsAt = (16 + 40) * WordSize.Bytes; // Bins free-list heads, then the non-empty bitmap
-    const long HeapClassCountAt = HeapBinsAt + BinsBytes; // Classes words: its pages of each class (SmallPages)
+    const long HeapClassCountAt = HeapBinsAt + BinsBytes; // Classes words: its pages of each class (SmallPageFor)
     const long HeapRecordBytes = 4096;
 
     static long _heap0;         // the first heap's record: the program's, or the kernel's
@@ -5247,23 +5247,27 @@ static class Gc
         return drained;
     }
 
-    /// A HEAP STILL SMALL TAKES A SMALL FIRST PAGE OF A CLASS. A thread holds
-    /// a page of every class it uses, and a page of the batch is 32 KB: a
-    /// driver module's heap that touched fifteen classes held half a
-    /// megabyte for a few kilobytes live. Until it holds SmallHeapBytes, a
-    /// heap other than the first takes its first page of a class -- none of
-    /// the class held (HeapClassCountAt) -- of SmallPageBytes, one mapping;
-    /// a class it needs a second page of is one it allocates in steadily,
-    /// and takes the batch's, so that a refill comes as seldom as it did (a
-    /// gate's heap made a hundred thousand strings with eight times the
-    /// refills on small pages alone).
+    /// A HEAP STILL SMALL TAKES SMALL PAGES, DOUBLING. A thread holds a page
+    /// of every class it uses, and a page of the batch is 32 KB: a driver
+    /// module's heap that touched fifteen classes held half a megabyte for a
+    /// few kilobytes live. Until it holds SmallHeapBytes, a heap other than
+    /// the first takes a page of a class it holds none of
+    /// (HeapClassCountAt) of SmallPageBytes, one mapping, and each page more
+    /// of it twice the last, to the batch's: a class it allocates in steadily
+    /// is on the batch's pages after three refills, so that a refill comes as
+    /// seldom as it did (a gate's heap made a hundred thousand strings with
+    /// eight times the refills on small pages alone), and as its pages are
+    /// retired its next ones are small again.
     const long SmallPageBytes = 4096;
     const long SmallHeapBytes = 262144;
 
-    static bool SmallPages(long c)
+    static long SmallPageFor(long c)
     {
-        return _h != _heap0 && Sys.Peek(_h + HeapBytesAt) < SmallHeapBytes
-            && Sys.Peek(_h + HeapClassCountAt + c * WordSize.Bytes) == 0;
+        if (_h == _heap0 || Sys.Peek(_h + HeapBytesAt) >= SmallHeapBytes) return 0;
+        long held = Sys.Peek(_h + HeapClassCountAt + c * WordSize.Bytes);
+        if (held < 0 || held >= 8) return 0;
+        long bytes = SmallPageBytes << (int)held;
+        return bytes < HeapChunks.BatchBytes() ? bytes : 0;
     }
 
     /// A page of class `c` taken for heap `h` (1) or retired (-1).
@@ -5426,7 +5430,8 @@ static class Gc
             page = PopPool(c);
             if (page == 0)
             {
-                page = SmallPages(c) ? HeapChunks.TakeOne(SmallPageBytes) : 0;
+                long small = SmallPageFor(c);
+                page = small != 0 ? HeapChunks.TakeOne(small) : 0;
                 if (page == 0) page = HeapChunks.TakeFresh();
                 if (page != 0) PagesTaken = PagesTaken + 1;
                 else page = TakeBatch();
@@ -14376,6 +14381,9 @@ static class HeapChunks
     /// classes: at 32 KiB a page, a 32 MB machine's kernel held ninety
     /// pages, 2.9 MB, for 0.7 MB of small objects. Each page says its own
     /// size (its limit), so pages of a size chosen before are as good.
+    /// The size of a page of the batch, for a heap choosing smaller ones (Gc.SmallPageFor).
+    public static long BatchBytes() => BatchPageBytes();
+
     static long BatchPageBytes()
     {
         long cap = Platform.GcThreshold();
@@ -15285,7 +15293,7 @@ static class HeapChunks
     /// ONE SIZE-CLASS PAGE OF `bytes` IN A MAPPING OF ITS OWN, made -- its
     /// header written, listed, indexed and counted -- or zero when the cap,
     /// the ceiling or the operating system refuses it. What a heap still
-    /// small takes (Gc.SmallPages): not a page of the batch, whose size is
+    /// small takes (Gc.SmallPageFor): not a page of the batch, whose size is
     /// the first heap's. The heap lock is held.
     public static long TakeOne(long bytes)
     {

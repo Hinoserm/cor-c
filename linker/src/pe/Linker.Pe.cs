@@ -123,6 +123,8 @@ public static partial class Linker
         }
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
+        // The copies chosen, each object's descriptors packed (DescriptorPacker).
+        Corsac.Lang.Lto.DescriptorPacker.Run(inputs.Select(i => i.Object));
         List<string> errors = new();
         if (ProgramInitializers(inputs, longMode: false) is ObjectFile programInit) inputs.Add(new Input("the program's initialisers", programInit));
         if (Corsac.Lang.Lto.Preinit.Lay(inputs.Select(i => i.Object), false) is ObjectFile preinitialised) inputs.Add(new Input("the statics laid down", preinitialised));

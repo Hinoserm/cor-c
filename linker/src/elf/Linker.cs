@@ -143,6 +143,8 @@ public static partial class Linker
         RefuseWindowsObjects(inputs.Select(i => (i.Name, i.Object)));
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
+        // The copies chosen, each object's descriptors packed (DescriptorPacker).
+        Corsac.Lang.Lto.DescriptorPacker.Run(inputs.Select(i => i.Object));
         List<string> errors = new();
         // LONG MODE, from what the objects say they are: an x86-64 image is
         // ELF64, loads at 0x400000 by default and relocates with the x86-64
@@ -242,6 +244,8 @@ public static partial class Linker
         RefuseWindowsObjects(inputs.Select(i => (i.Name, i.Object)));
         ManagedLayoutContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         Corsac.Lang.Lto.DefinitionCoalescer.Run(inputs.Select(i => (i.Name, i.Object)).ToArray());
+        // The copies chosen, each object's descriptors packed (DescriptorPacker).
+        Corsac.Lang.Lto.DescriptorPacker.Run(inputs.Select(i => i.Object));
         List<string> errors = new();
         // A long-mode image is flat the same way: its eight-byte addresses
         // relocate as R_X86_64_64 and its code RIP-relative, all within the
