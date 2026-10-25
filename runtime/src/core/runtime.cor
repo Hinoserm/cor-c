@@ -4414,6 +4414,9 @@ static class Runtime
         if (exception is Exception) { trace = ((Exception)exception).StackTrace; }
         if (trace.Length == 0) { trace = Trace(Sys.FramePointer()); }
         WriteText(StdErr, trace);
+        // Ended as a line, as .NET's report is (its trace has no newline of
+        // its own): a kernel's console glued what came next onto it.
+        if (trace.Length > 0 && trace[trace.Length - 1] != '\n') WriteText(StdErr, "\n");
         // At once: an unhandled exception ends the process whatever threads
         // it has, as .NET's does.
         Platform.Exit(134);
