@@ -16853,46 +16853,67 @@ static class GcThreads
     }
 
     /// The round, done for every thread that owes it and is blocked. The
-    /// heap lock is held for the walk of the table, which a thread starting
-    /// or ending may otherwise be changing.
+    /// heap lock is held for each thread's look and work -- the table a
+    /// thread starting or ending may be changing, and the pages a foreign
+    /// free writes while a stamp walks them -- and let go BETWEEN threads,
+    /// the platform asked there (YieldHook). Held for the whole walk, a
+    /// kernel with many threads parked in it stamped and copied every one in
+    /// one go: 44 ms of a K6-III's one processor, an audio mixer waiting it
+    /// out. Each look starts again from the first thread: a thread ending
+    /// meanwhile moves the last one into its place, and a walk that went on
+    /// from where it was could pass a thread that owes the round by. One
+    /// answered is passed by its epoch.
     static void AnswerForStopped(long epoch, long request)
     {
         long ctl = GcLock.Words();
         long self = Sys.ThreadBlock();
 
-        GcLock.Enter();
-        long i = 0;
-
-        while (i < _count)
+        while (true)
         {
-            long block = At(i);
-
-            if (block != self && Sys.Peek(block + Tls.Epoch) != epoch
-                && (Sys.Cas(block + Tls.State, Stopped, Busy) & WordSize.AddressMask) == Stopped)
+            GcLock.Enter();
+            long block = 0;
+            long i = 0;
+            while (i < _count)
             {
-                if (Sys.Peek(block + Tls.Epoch) != epoch)
+                long at = At(i);
+                if (at != self && Sys.Peek(at + Tls.Epoch) != epoch
+                    && (Sys.Cas(at + Tls.State, Stopped, Busy) & WordSize.AddressMask) == Stopped)
                 {
-                    // Blocked: its stack from where it stopped, and the
-                    // registers it stopped with (Tls.Spill).
-                    if (request == Scan)
+                    if (Sys.Peek(at + Tls.Epoch) != epoch)
                     {
-                        Gc.ScanRoots(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * WordSize.Bytes);
+                        block = at;
+                        break;
                     }
-                    Work(block, request, Sys.Peek(block + Tls.StackLimit));
-                    if (Claim(block, epoch))
-                    {
-                        Sys.AtomicAdd(ctl + GcLock.Pending, -1);
-                        AnsweredFor = AnsweredFor + 1;
-                    }
+                    // Answered between the two looks: given back as it was.
+                    Sys.AtomicSwap(at + Tls.State, Stopped);
+                    Platform.Wake(at + Tls.State, 1);
                 }
-
-                Sys.AtomicSwap(block + Tls.State, Stopped);
-                Platform.Wake(block + Tls.State, 1);
+                i = i + 1;
             }
-            i = i + 1;
-        }
+            if (block == 0)
+            {
+                GcLock.Exit();
+                return;
+            }
 
-        GcLock.Exit();
+            // Blocked: its stack from where it stopped, and the registers it
+            // stopped with (Tls.Spill).
+            if (request == Scan)
+            {
+                Gc.ScanRoots(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * WordSize.Bytes);
+            }
+            Work(block, request, Sys.Peek(block + Tls.StackLimit));
+            if (Claim(block, epoch))
+            {
+                Sys.AtomicAdd(ctl + GcLock.Pending, -1);
+                AnsweredFor = AnsweredFor + 1;
+            }
+
+            Sys.AtomicSwap(block + Tls.State, Stopped);
+            Platform.Wake(block + Tls.State, 1);
+            GcLock.Exit();
+            if (Gc.YieldHook != 0) Sys.Call(Gc.YieldHook, 0, 0, 0);
+        }
     }
 
     /// What a round asks, done on `block`'s behalf with its stack from `from`.
