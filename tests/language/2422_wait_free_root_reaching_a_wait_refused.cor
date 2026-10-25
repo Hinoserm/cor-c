@@ -1,0 +1,46 @@
+// test: a method named in --wait-free-roots that reaches a named wait is refused; --wait-free-stop is not followed
+// flags: --irq-waits Waits.Park --wait-free-roots Pass.Run --wait-free-stop Continuation.Resume
+// expect-compile-error: 'Pass.Run' may not wait (--wait-free-roots) and reaches 'Waits.Park', which waits, via Pass.Run -> Helper.Step -> Waits.Park
+// MORE THAN HANDLERS MAY NOT WAIT: a kernel's scheduler pass runs on no
+// thread of its own to park. Named with --wait-free-roots, it is checked
+// against --irq-waits as a handler is. It first resumes a continuation that
+// parks on its own stack (Continuation.Resume, named in --wait-free-stop, so
+// not followed -- else the way reported would go through it), then calls a
+// helper that parks on the pass's stack, which is refused. No interrupt
+// handler is in the program.
+
+using System;
+
+static class Waits
+{
+    static int _parked;
+    public static void Park() { _parked++; }
+}
+
+static class Continuation
+{
+    public static void Resume() { Waits.Park(); }
+}
+
+static class Helper
+{
+    public static void Step() { Waits.Park(); }
+}
+
+static class Pass
+{
+    public static void Run()
+    {
+        Continuation.Resume();
+        Helper.Step();
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Pass.Run();
+        return 0;
+    }
+}

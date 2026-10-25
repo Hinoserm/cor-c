@@ -976,8 +976,9 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.SharedLiterals = (Corsac.Lang.Lower.Lowering.PartOfALibrary || library)
             && !shared && !args.Contains("--pic") && (!(sharedLibs.Count > 0 && args.Contains("--obj")) || moduleUnitAbsolute);
         // A unit linked with others keeps its interrupt facts for the link's
-        // check of handlers across units (InterruptNotes).
-        Binder.CollectInterruptFacts = args.Contains("--obj") || library;
+        // check of handlers across units (InterruptNotes); so does any
+        // build naming code that may never wait, handler or none.
+        Binder.CollectInterruptFacts = args.Contains("--obj") || library || Corsac.Switches.WaitFreeRoots is { Length: > 0 };
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
         // A CLOSED WORLD: everything that can call through a vtable is in this
         // compile, so a slot's method is compiled only once something reads

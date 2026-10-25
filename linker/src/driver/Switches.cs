@@ -26,6 +26,10 @@ public static class Switches
     public static bool IrqLocksReport;
     /// <summary>--irq-waits Type.Method,...: what waits, which no interrupt handler may reach (InterruptNotes.WaitsFromHandlers).</summary>
     public static string? IrqWaits;
+    /// <summary>--wait-free-roots Type.Method,...: more code that may never wait, checked as interrupt handlers are against --irq-waits (a kernel's scheduler pass).</summary>
+    public static string? WaitFreeRoots;
+    /// <summary>--wait-free-stop Type.Method,...: calls the wait check does not follow -- a continuation resumed on another stack.</summary>
+    public static string? WaitFreeStop;
 
     /// <summary>--trace-fields NAME: the field escape analysis on fields whose names contain NAME.</summary>
     public static string? FieldTrace;
@@ -170,6 +174,8 @@ public static class Switches
         HandedTrace |= Switch(taken, "--trace-handed");
         IrqLocksReport |= Switch(taken, "--irq-locks-report");
         IrqWaits = Valued(taken, "--irq-waits") ?? IrqWaits;
+        WaitFreeRoots = Valued(taken, "--wait-free-roots") ?? WaitFreeRoots;
+        WaitFreeStop = Valued(taken, "--wait-free-stop") ?? WaitFreeStop;
         FieldTrace = Valued(taken, "--trace-fields") ?? FieldTrace;
         FieldTraceAll |= Switch(taken, "--trace-fields-all");
         TraceForward = Valued(taken, "--trace-forward") ?? TraceForward;

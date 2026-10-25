@@ -153,7 +153,8 @@ public static class InterruptNotes
         // reads no fact. Read whole, the compiler's own link parsed half a
         // gigabyte of facts it had no handler to ask about.
         List<ObjectFile> all = objects.ToList();
-        if (all.All(obj => HandlerCount(obj) == 0)) return new List<string>();
+        bool rooted = Corsac.Switches.IrqWaits is { Length: > 0 } && Corsac.Switches.WaitFreeRoots is { Length: > 0 };
+        if (!rooted && all.All(obj => HandlerCount(obj) == 0)) return new List<string>();
         Dictionary<string, Fact> facts = new(StringComparer.Ordinal);
         List<Fact> handlers = new();
         foreach (ObjectFile obj in all)
@@ -170,7 +171,7 @@ public static class InterruptNotes
         // time: its type's initialiser skips the step that would make it.
         if (neverRun is not null) foreach (string step in neverRun) facts.Remove(step);
         List<string> errors = new();
-        if (handlers.Count == 0) return errors;
+        if (handlers.Count == 0 && !rooted) return errors;
         // What each method reaches, once: the allocation and the method that
         // makes it, or null for nothing.
         // NOTHING FOUND PAST A METHOD STILL BEING WALKED IS NO ANSWER YET
@@ -239,7 +240,23 @@ public static class InterruptNotes
         }
         if (errors.Count > 0) errors.AddRange(EveryAllocation(handlers, facts));
         errors.AddRange(SpinLocksFromHandlers(handlers, facts, report: false));
-        if (Corsac.Switches.IrqWaits is { Length: > 0 } waits) errors.AddRange(WaitsFromHandlers(handlers, facts, waits));
+        if (Corsac.Switches.IrqWaits is { Length: > 0 } waits)
+        {
+            // AND WHATEVER ELSE MAY NEVER WAIT (--wait-free-roots): a kernel's
+            // scheduler pass, which runs on no thread of its own to park.
+            List<Fact> roots = new(handlers);
+            if (Corsac.Switches.WaitFreeRoots is { Length: > 0 } more)
+            {
+                HashSet<string> named = new(Names(more), StringComparer.Ordinal);
+                HashSet<string> found = new(StringComparer.Ordinal);
+                foreach (Fact f in facts.Values)
+                    if (named.Contains(f.Display)) { roots.Add(f); found.Add(f.Display); }
+                // A ROOT NAMED WRONG checks nothing, quietly: say so.
+                foreach (string name in named)
+                    if (!found.Contains(name)) errors.Add($"--wait-free-roots: no method '{name}' in the link");
+            }
+            errors.AddRange(WaitsFromHandlers(roots, facts, waits, Corsac.Switches.WaitFreeStop));
+        }
         return errors;
     }
 
@@ -252,9 +269,12 @@ public static class InterruptNotes
     /// through any of the calls the facts follow, with the way there. A
     /// TryEnter that does not wait is named by not being listed.
     /// </summary>
-    public static List<string> WaitsFromHandlers(List<Fact> handlers, Dictionary<string, Fact> facts, string waits)
+    public static List<string> WaitsFromHandlers(List<Fact> handlers, Dictionary<string, Fact> facts, string waits, string? stops = null)
     {
-        HashSet<string> named = new(waits.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.Ordinal);
+        HashSet<string> named = new(Names(waits), StringComparer.Ordinal);
+        // NOT FOLLOWED (--wait-free-stop): a call that goes on on another
+        // stack -- a parked continuation resumed -- is not the caller waiting.
+        HashSet<string> stop = new(stops is null ? Array.Empty<string>() : Names(stops), StringComparer.Ordinal);
         List<string> lines = new();
         Dictionary<string, string?> cameFrom = new(StringComparer.Ordinal);
         Queue<Fact> work = new();
@@ -269,12 +289,14 @@ public static class InterruptNotes
                 for (string? at = f.Name; at is not null; at = cameFrom[at])
                     path.Add(facts.TryGetValue(at, out Fact? step) ? step.Display : at);
                 path.Reverse();
-                lines.Add($"'{path[0]}' is an interrupt handler and reaches '{f.Display}', which waits, via {string.Join(" -> ", path)}");
+                string root = facts.TryGetValue(FirstName(f.Name, cameFrom), out Fact? first) && first.Handler
+                    ? "is an interrupt handler" : "may not wait (--wait-free-roots)";
+                lines.Add($"'{path[0]}' {root} and reaches '{f.Display}', which waits, via {string.Join(" -> ", path)}");
                 continue;
             }
             foreach (string call in f.Calls)
             {
-                if (!facts.TryGetValue(call, out Fact? callee)) continue;
+                if (!facts.TryGetValue(call, out Fact? callee) || stop.Contains(callee.Display)) continue;
                 if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
             }
         }
@@ -327,6 +349,16 @@ public static class InterruptNotes
                         lines.Add($"irq locks: IrqSpinLock '{parts[1]}' at {parts[2]}: no interrupt handler reaches it");
                 }
         return lines;
+    }
+
+    private static string[] Names(string list) => list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    // The root a walk came from (cameFrom's chain to its start).
+    private static string FirstName(string name, Dictionary<string, string?> cameFrom)
+    {
+        string at = name;
+        while (cameFrom.TryGetValue(at, out string? up) && up is not null) at = up;
+        return at;
     }
 
     /// <summary>--irq-locks-report: every IrqSpinLock taken, and whether an interrupt handler reaches it.</summary>
