@@ -98,6 +98,12 @@ public static class Driver
             Switches.HandOn("--dump-layout", taken[dumpAt + 1]);
             taken.RemoveRange(dumpAt, 2);
         }
+        int regallocAt = taken.IndexOf("--trace-regalloc");
+        if (regallocAt >= 0 && regallocAt + 1 < taken.Count)
+        {
+            Corsac.Lang.X86.Allocator.Trace = taken[regallocAt + 1];
+            taken.RemoveRange(regallocAt, 2);
+        }
         int lifetimesAt = taken.IndexOf("--trace-lifetimes");
         if (lifetimesAt >= 0 && lifetimesAt + 1 < taken.Count)
         {

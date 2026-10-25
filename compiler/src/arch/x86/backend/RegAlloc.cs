@@ -972,6 +972,10 @@ internal sealed class Allocator
     /// Returns the register the current interval gets, or -1 if it was
     /// the one spilled.
     /// </summary>
+    /// <summary>--trace-regalloc NAME: every choice of what gives up its register, in functions whose name holds NAME.</summary>
+    public static string? Trace;
+    private bool Tracing => Trace is { } t && _m.Source.Name.Contains(t, StringComparison.Ordinal);
+
     private int MakeRoom(Interval cur)
     {
         int at = cur.Start / 4;
@@ -1018,6 +1022,8 @@ internal sealed class Allocator
             }
             int cost = 0;
             if (loop >= 0) foreach (Interval a in group) cost += a.Short ? LapCostServed(a, at, loop) : LapCost(a.VReg, at, loop);
+            if (Tracing)
+                Console.Error.WriteLine($"regalloc {_m.Source.Name} at {at} loop {loop} for v{cur.VReg}{(cur.Short ? "s" : "")}: {(Gpr)r} holds {string.Join(",", group.Select(a => "v" + a.VReg + (a.Short ? "s" : "")))} cost {cost} next {next}");
             if (loop >= 0 ? cost < victimCost || cost == victimCost && next > victimNext : next > victimNext)
             {
                 victims = group;
@@ -1035,6 +1041,7 @@ internal sealed class Allocator
             int curCost = loop >= 0 ? (curSoon ? int.MaxValue : LapCost(cur.VReg, at, loop)) : 0;
             if (victims is null || (loop >= 0 ? curCost < victimCost || curCost == victimCost && curNext > victimNext : curNext > victimNext))
             {
+                if (Tracing) Console.Error.WriteLine($"regalloc {_m.Source.Name} at {at}: v{cur.VReg} itself given up (cost {curCost} next {curNext})");
                 int split = SplitPrefix(cur);
                 if (split >= 0)
                 {
@@ -1109,6 +1116,7 @@ internal sealed class Allocator
                 $"{_m.Source.Name}: no register for v{cur.VReg} at instruction {at}");
         }
 
+        if (Tracing) Console.Error.WriteLine($"regalloc {_m.Source.Name} at {at}: {string.Join(",", victims.Select(a => "v" + a.VReg + (a.Short ? "s" : "")))} give up {(Gpr)victims[0].Reg} to v{cur.VReg}");
         foreach (Interval victim in victims)
         {
             _active.Remove(victim);
