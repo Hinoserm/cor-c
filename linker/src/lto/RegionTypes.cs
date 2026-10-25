@@ -460,9 +460,20 @@ public sealed class RegionTypes
     /// <summary>For a report: why an object of a descriptor reaches the unknown, through what holds it.</summary>
     public string WhyEscaped(string table)
     {
-        int start = -1;
-        for (int o = 2; o < _objects.Count; o++) if (_objects[o].Table == table) { start = o; break; }
-        if (start < 0 || !_escaped.Contains(start)) return table + ": does not reach the unknown";
+        // EVERY OBJECT OF THE DESCRIPTOR, as each instance makes its own (TypedIn): the first that escapes for a labelled cause.
+        string? answer = null;
+        for (int o = 2; o < _objects.Count; o++)
+        {
+            if (_objects[o].Table != table || !_escaped.Contains(o)) continue;
+            string said = WhyEscaped(table, o);
+            if (!said.EndsWith(": no labelled cause", StringComparison.Ordinal)) return said;
+            answer ??= said;
+        }
+        return answer ?? table + ": does not reach the unknown";
+    }
+
+    private string WhyEscaped(string table, int start)
+    {
         bool Holds(ValueSet? held, int o) => held is not null && (held.Contains(o << 1) || held.Contains(o << 1 | 1));
         Dictionary<int, int> from = new() { [start] = -1 };
         Queue<int> next = new();

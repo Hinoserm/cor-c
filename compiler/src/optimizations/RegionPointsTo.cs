@@ -2831,13 +2831,20 @@ public sealed class RegionPointsTo : IModulePass
         || callee.StartsWith("m_Runtime_EnterTypeInitialization", StringComparison.Ordinal)
         || callee.StartsWith("m_Runtime_CompleteTypeInitialization", StringComparison.Ordinal)
         || callee.StartsWith("m_Runtime_FailTypeInitialization", StringComparison.Ordinal)
-        // NOR A BLOCK'S HEADER FLAG SET (Gc.SetFlag, SyncFooter): the header
-        // word read and written back with a flag, nothing kept. Followed, its
-        // block was every block anyone marked, and the word one block's
-        // header read went into every other one's (1211, with List<T> the
-        // non-generic IList).
-        || callee.StartsWith("m_Gc_SetFlag_", StringComparison.Ordinal)
-        || callee.StartsWith("m_Gc_SyncFooter_", StringComparison.Ordinal);
+        // NOR THE COLLECTOR (Gc, GcThreads, GcLock, GcRoots, HeapChunks):
+        // it reads objects and writes their headers, its marks and its own
+        // tables, hands no object back -- none of its methods answers one,
+        // and what it is handed as a string it only says -- and stores none
+        // where the program reads. Followed, its block arguments were every
+        // block anyone marked or flagged, and one header's word went into
+        // every other block: the thread's block among them, and with it
+        // every object stored in a Tls word into every iterator (1211, with
+        // List<T> the non-generic IList: Gc.SetFlag, then Gc.MarkWord).
+        || callee.StartsWith("m_Gc_", StringComparison.Ordinal)
+        || callee.StartsWith("m_GcThreads_", StringComparison.Ordinal)
+        || callee.StartsWith("m_GcLock_", StringComparison.Ordinal)
+        || callee.StartsWith("m_GcRoots_", StringComparison.Ordinal)
+        || callee.StartsWith("m_HeapChunks_", StringComparison.Ordinal);
 
     // Every target the call can reach, in no object's context.
     private void Indirect(int copy, Instr i)
