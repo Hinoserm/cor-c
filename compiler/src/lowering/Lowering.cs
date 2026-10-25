@@ -1771,7 +1771,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>The words of a class descriptor the type tests read (TypeTest), for the folding that reads them back (Devirtualize.FoldTypeTests).</summary>
-    internal const int DescriptorDepthWord = DescDepth, DescriptorDisplayWord = DescDisplay, DescriptorInterfacesWord = DescInterfaces;
+    internal const int DescriptorDepthWord = DescDepth, DescriptorDisplayWord = DescDisplay, DescriptorInterfacesWord = DescInterfaces, DescriptorSelfWord = DescSelf;
 
     private const int DescName = 0, DescSize = 1, DescDepth = 2, DescDisplay = 3,
                       DescInterfaces = 4, DescSelf = 5, DescFlags = 6, DescPayload = 7,
