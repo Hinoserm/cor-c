@@ -212,6 +212,19 @@ public static class Preinit
         _ => new Opaque(),
     };
 
+    /// <summary>
+    /// EVERY CANDIDATE'S STORAGE AND ITS VALUE, the notes left where they
+    /// are: the statics the link will define (Lay), for the region solvers
+    /// before it has (RegionConstants.ClosedStatic).
+    /// </summary>
+    public static Dictionary<string, Recipe> CandidateValues(IEnumerable<ObjectFile> objects)
+    {
+        Dictionary<string, Recipe> values = new(StringComparer.Ordinal);
+        foreach (Notes notes in Read(objects, take: false))
+            foreach (Candidate c in notes.Candidates) values.TryAdd(c.Storage, c.Value);
+        return values;
+    }
+
     /// <summary>Every input's notes, the sections taken out (the image carries none).</summary>
     public static List<Notes> Take(IEnumerable<ObjectFile> objects) => Read(objects, take: true);
 

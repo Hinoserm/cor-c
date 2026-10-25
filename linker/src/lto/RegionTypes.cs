@@ -653,7 +653,15 @@ public sealed class RegionTypes
                 case RegionConstraintKind.Slot: Add(a, Untyped(i) << 1); break;
                 // A closed static (RegionConstants.ClosedStatic, one past
                 // it in B): an object of its own, holding what is stored.
-                case RegionConstraintKind.Unknown when c.B > 0: Add(a, Static(c.B - 1) << 1); break;
+                // And what the link lays down in it, when it is a static
+                // the link lays down (RegionConstants.ClosedStatic): one past
+                // a data object in C, or the unknown object for -1.
+                case RegionConstraintKind.Unknown when c.B > 0:
+                    int held = Static((int)c.B - 1);
+                    Add(a, held << 1);
+                    if (c.C > 0 && DataObjects is { } seeded && c.C <= seeded.Count) Add(Cell(held, AnyOffset), DataObject((int)c.C - 1) << 1);
+                    else if (c.C != 0) { _source = -1; _sourceWhy = function.Name + " reads a static the link lays down"; Add(Cell(held, AnyOffset), Top); }
+                    break;
                 case RegionConstraintKind.Unknown when c.C > 0 && DataObjects is { } laid && c.C <= laid.Count: Add(a, DataObject((int)c.C - 1) << 1); break;
                 case RegionConstraintKind.Unknown: _source = -1; _sourceWhy = function.Name + " says unknown"; Add(a, Top); break;
                 // A symbol left after RegionConstants is a constant; one

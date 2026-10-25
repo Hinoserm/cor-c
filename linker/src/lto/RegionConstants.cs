@@ -61,7 +61,12 @@ internal static class RegionConstants
                         // nothing, made once -- keeps its descriptor, one past
                         // its place in dataObjects in C, for them too: a call
                         // on it runs what its type runs.
-                        else c = new RegionConstraint(RegionConstraintKind.Unknown, c.A, classes.ClosedStatic(unitObjects[u], function.Symbols[c.B]) + 1,
+                        // A STATIC THE LINK WILL LAY DOWN (Preinit) keeps, in C,
+                        // what it lays there: one past a data object, or -1
+                        // for the unknown object (ClosedStatic).
+                        else if (classes.ClosedStatic(unitObjects[u], function.Symbols[c.B], dataObjects, out long laid) is int closed and >= 0)
+                            c = new RegionConstraint(RegionConstraintKind.Unknown, c.A, closed + 1, laid);
+                        else c = new RegionConstraint(RegionConstraintKind.Unknown, c.A, 0,
                             dataObjects is null ? 0 : classes.DataObject(unitObjects[u], function.Symbols[c.B], dataObjects) + 1);
                     }
                     list[w++] = c;
@@ -89,10 +94,22 @@ internal static class RegionConstants
         private readonly HashSet<ObjectFile> _units = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<Symbol, int> _statics = new(ReferenceEqualityComparer.Instance);
         private int _closed;
+        // The statics the link will lay down, by storage, and each's value (Preinit).
+        private readonly Dictionary<string, Preinit.Recipe> _candidates;
+        private readonly Dictionary<string, (int Index, long Laid)> _candidateStatics = new(StringComparer.Ordinal);
+        private readonly Dictionary<(string, long), int> _laidObjects = new();
+
+        private int AddDataObject(List<(string Table, long At)> dataObjects, string table, long at)
+        {
+            if (_laidObjects.TryGetValue((table, at), out int known)) return known;
+            dataObjects.Add((table, at));
+            return _laidObjects[(table, at)] = dataObjects.Count - 1;
+        }
 
         public Classifier(IEnumerable<ObjectFile> all, IEnumerable<ObjectFile> units)
         {
             _units.UnionWith(units);
+            _candidates = Preinit.CandidateValues(all);
             foreach (ObjectFile obj in all)
             {
                 if (!_units.Contains(obj))
@@ -128,10 +145,35 @@ internal static class RegionConstants
         /// data outside the units -- numbered over the image; -1 for any
         /// other symbol.
         /// </summary>
-        public int ClosedStatic(ObjectFile obj, string name)
+        public int ClosedStatic(ObjectFile obj, string name, List<(string Table, long At)>? dataObjects, out long laid)
         {
+            laid = 0;
             Symbol[] meant = Meant(obj, name).ToArray();
-            if (meant.Length != 1 || _foreignNamed.Contains(name)) return -1;
+            if (_foreignNamed.Contains(name)) return -1;
+            // A PRELINK CANDIDATE'S STORAGE (Preinit.Candidate), defined by no
+            // object yet: the link defines it when it lays the statics down,
+            // after the solvers. Only the units' IR writes it -- its step, the
+            // initialiser the link may run instead, is IR too -- and what the
+            // link lays there is the value its recipe makes: an object of its
+            // descriptor, its words anything, as a laid-down object's are
+            // (RegionTypes.DataObject); nothing for a number or null; the
+            // unknown object for anything else. Taken for the unknown object,
+            // a List kept in a static and handed to a LINQ walk made every
+            // iterator's source unknown, and every walk's enumerator call
+            // every target (test 1311).
+            if (meant.Length == 0 && _candidates.TryGetValue(name, out Preinit.Recipe? value))
+            {
+                if (_candidateStatics.TryGetValue(name, out var seen)) { laid = seen.Laid; return seen.Index; }
+                laid = value switch
+                {
+                    Preinit.Null or Preinit.Bits or Preinit.Opaque => 0,
+                    Preinit.Make make when dataObjects is not null => AddDataObject(dataObjects, make.Vtable, make.VtableAddend) + 1,
+                    _ => -1,
+                };
+                _candidateStatics[name] = (_closed, laid);
+                return _closed++;
+            }
+            if (meant.Length != 1) return -1;
             Symbol s = meant[0];
             if (_statics.TryGetValue(s, out int known)) return known;
             bool closed = s.Section is { } section && section.Kind is SectionKind.Data or SectionKind.Uninitialised
