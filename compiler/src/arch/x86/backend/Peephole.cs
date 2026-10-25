@@ -105,8 +105,8 @@ internal static class Peephole
                     {
                         // A parameter's address taken, or reached by index: nothing moves.
                         if (i.Op == MOp.Lea || !Ebp(mem)) return;
-                        // Roles name registers only, and call an fstp's or an
-                        // MMX store's memory operand a use: a float parameter's
+                        // Roles name registers only, and an fstp's or an MMX
+                        // store's memory operand falls to their default, a use: a float parameter's
                         // home is its own argument slot, stored with fstp. So
                         // a parameter is read only by the forms known to read
                         // it, and anything else writes it.
@@ -1152,7 +1152,6 @@ internal static class Peephole
         => m.Base is { Id: (int)Gpr.Esp or (int)Gpr.Ebp }
            || m.Base is null && m.Index is null && (m.Symbol is not null || m.Label is not null);
 
-    /// <summary>Whether the operand roles fully describe what the instruction reads and writes.</summary>
     /// <summary>
     /// Whether operand k, a memory operand, is only read: a move's source, a
     /// push, a comparison, an arithmetic source, an x87 load or operand, a
@@ -1167,6 +1166,7 @@ internal static class Peephole
         _ => false,
     };
 
+    /// <summary>Whether the operand roles fully describe what the instruction reads and writes.</summary>
     private static bool Understood(MInstr i) => i.Op switch
     {
         // An unwind jump carries the exception in EAX by convention, unnamed.

@@ -420,11 +420,18 @@ public static partial class Linker
                         byte op = p.Bytes[r.Offset - 2], modrm = p.Bytes[r.Offset - 1];
                         int reg = (modrm >> 3) & 7;
                         if (op != 0xFF || modrm >> 6 != 2 || (modrm & 7) == 4 || reg is not (2 or 4)) continue;
+                        byte call = (byte)(reg == 2 ? 0xE8 : 0xE9);
                         p.Bytes[r.Offset - 2] = 0x90;
-                        p.Bytes[r.Offset - 1] = (byte)(reg == 2 ? 0xE8 : 0xE9);
-                        // The section's own list changes with the placed bytes:
-                        // a link consumes its inputs (HandOver), and an object
-                        // is never linked twice.
+                        p.Bytes[r.Offset - 1] = call;
+                        // The section's own list is what the link relocates
+                        // by, and it changes: the section's own bytes, when
+                        // the placed ones are a copy (no ReleaseSections),
+                        // change with it, so the object stays one whole.
+                        if (p.Section.HandedOver is null)
+                        {
+                            p.Section.Bytes[r.Offset - 2] = 0x90;
+                            p.Section.Bytes[r.Offset - 1] = call;
+                        }
                         relocs[j] = new Relocation(r.Offset, r.Symbol, r.Addend - 4, RelocKind.Rel32);
                     }
                 }

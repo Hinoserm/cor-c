@@ -1,35 +1,41 @@
-// test: a float or double parameter assigned in place, its old value read after, under register pressure, gives .NET's results
+// test: a float or double parameter assigned in place, its old bits read after, under register pressure, gives .NET's results
 // expect-exit: 0
 // expect-output:
-// d 7.5 15 -64 4
-// f 2.25 4.5 1 6
+// f 1074790400 4.5 1 6
+// d 4620130267728707584 15 -64 4
 // mix 1.5 6 21
 //
 // A float parameter's home is its own argument slot, written with fstp. A
-// spilled copy of a parameter must never be read from that slot once it has
-// been stored to, so each function keeps the old value live past the store
-// with enough other values that the copy is spilled.
+// copy of the parameter's bits taken at entry and spilled must never be
+// read back from that slot once it has been stored to: the copy is the
+// old value. Each function takes the bits first, assigns the parameter in
+// place, and keeps the bits live past it beside enough other values that
+// they are spilled. None is inlined, so each keeps its parameters.
 
 using System;
+using System.Runtime.CompilerServices;
 
 static class Program
 {
-    static void D(double x, int a, int b, int c)
-    {
-        double old = x;
-        int p = a * 3, q = b * 5, r = c * 7, s = a + b + c;
-        x = x * 2;
-        Console.WriteLine("d " + old + " " + x + " " + (p + q + r + s - 82) + " " + (s + a));
-    }
-
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static void F(float x, int a, int b)
     {
-        float old = x;
-        int p = a * 3, q = b * 5;
+        int bits = BitConverter.SingleToInt32Bits(x);
+        int p = a * 3, q = b * 5, r = a ^ b, s = a + b;
         x += x;
-        Console.WriteLine("f " + old + " " + x + " " + (p - q + 8) + " " + (a + b + 3));
+        Console.WriteLine("f " + bits + " " + x + " " + (p - q + 8 + r - r) + " " + (s + 3));
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void D(double x, int a, int b, int c)
+    {
+        long bits = BitConverter.DoubleToInt64Bits(x);
+        int p = a * 3, q = b * 5, r = c * 7, s = a + b + c;
+        x = x * 2;
+        Console.WriteLine("d " + bits + " " + x + " " + (p + q + r + s - 82) + " " + (s + a));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static void Mix(double x, double y, int n)
     {
         double keep = x;
@@ -39,8 +45,8 @@ static class Program
 
     static int Main()
     {
-        D(7.5, 1, 1, 1);
         F(2.25f, 1, 2);
+        D(7.5, 1, 1, 1);
         Mix(1.5, 0, 3);
         return 0;
     }
