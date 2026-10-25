@@ -1,0 +1,43 @@
+// test: --irq-stop takes a name beginning with '*' as a suffix, and '*.StaticInit$' lets the interrupt checks pass every type initialiser
+// flags: --irq-roots Clock.Tick --irq-stop *.StaticInit$
+// expect-exit: 0
+// expect-output:
+// 1
+//
+// A KERNEL THAT RUNS EVERY TYPE AN INTERRUPT TOUCHES AT BOOT, before its
+// handler is registered, has initialisers that never run in an interrupt:
+// it says so with --irq-stop '*.StaticInit$', and the checks pass every
+// type's initialiser and the steps it runs. Clock.Tick, held to a
+// handler's rules (--irq-roots), touches Buffers first, whose initialiser
+// makes an array the link cannot lay down made (1577); without the stop
+// the link refuses it.
+
+using System;
+
+static class Config
+{
+    public static int Size = 256;
+}
+
+static class Buffers
+{
+    public static readonly byte[] Ring = new byte[Config.Size];
+}
+
+static class Clock
+{
+    public static void Tick()
+    {
+        Buffers.Ring[0]++;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Clock.Tick();
+        Console.WriteLine(Buffers.Ring[0]);
+        return 0;
+    }
+}

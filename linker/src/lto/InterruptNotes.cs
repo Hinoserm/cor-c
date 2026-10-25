@@ -458,11 +458,20 @@ public static class InterruptNotes
 
     private static string[] Names(string list) => list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    // A NAME ENDING IN '*' names every method it begins (FilesystemGuard.Enter*).
+    // A NAME ENDING IN '*' names every method it begins (FilesystemGuard.Enter*),
+    // one beginning with it every method it ends (*.StaticInit$: every type's
+    // initialiser), one with both every method it holds.
     private static bool Matches(string[] names, string display)
     {
         foreach (string name in names)
-            if (name.EndsWith('*') ? display.StartsWith(name[..^1], StringComparison.Ordinal) : display == name) return true;
+        {
+            bool head = name.StartsWith('*'), tail = name.Length > 1 && name.EndsWith('*');
+            string core = name[(head ? 1 : 0)..(tail ? name.Length - 1 : name.Length)];
+            if (head && tail ? display.Contains(core, StringComparison.Ordinal)
+                : head ? display.EndsWith(core, StringComparison.Ordinal)
+                : tail ? display.StartsWith(core, StringComparison.Ordinal)
+                : display == name) return true;
+        }
         return false;
     }
 
