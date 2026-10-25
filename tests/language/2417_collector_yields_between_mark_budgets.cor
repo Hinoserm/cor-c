@@ -1,0 +1,54 @@
+// test: a long collection lets the processor go between budgets of marking
+// expect-exit: 0
+// expect-output:
+// yielded True
+// intact True
+// timed True
+//
+// A KERNEL WHOSE THREADS ARE NOT PREEMPTED waited a whole mark and sweep on
+// the thread that allocated: an audio mixer woken 120-195 ms late. The
+// collector now calls Gc.YieldHook between budgets of marked blocks and
+// swept chunks, where the platform may give the processor away. A hundred
+// thousand live nodes are marked a budget at a time, nothing is lost, and
+// the collection's length is kept (Gc.LastPauseMicros, LongestPauseMicros).
+using System;
+
+sealed class Node
+{
+    public Node? Next;
+    public int Value;
+}
+
+static class Program
+{
+    static long _yields;
+    static Node? _head;
+
+    static long Yield(long a, long b, long c)
+    {
+        _yields = _yields + 1;
+        return 0;
+    }
+
+    static void Say(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? " True" : " False");
+        Sys.PrintLine();
+    }
+
+    static int Main()
+    {
+        for (int i = 0; i < 100000; i++) _head = new Node { Next = _head, Value = i };
+        Gc.YieldHook = Sys.AddressOf(Program.Yield);
+        Gc.Collect();
+        Gc.YieldHook = 0;
+        Say("yielded", _yields > 0);
+        long sum = 0;
+        int count = 0;
+        for (Node? n = _head; n != null; n = n.Next) { sum += n.Value; count++; }
+        Say("intact", count == 100000 && sum == 4999950000L);
+        Say("timed", Gc.PauseClock == 0 || Gc.LastPauseMicros > 0 && Gc.LongestPauseMicros >= Gc.LastPauseMicros);
+        return 0;
+    }
+}

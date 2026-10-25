@@ -11480,8 +11480,31 @@ static class Gc
     /// Scans queued blocks until there are none ready.
     static void Drain()
     {
-        DrainSome(-1);
+        if (YieldHook == 0)
+        {
+            DrainSome(-1);
+            return;
+        }
+        // A BUDGET AT A TIME, the platform asked between (YieldHook): what
+        // is left over goes back on the queue (DrainSome), so nothing is
+        // lost, and marking is only later.
+        while (DrainSome(MarkBetweenYields) >= MarkBetweenYields)
+        {
+            Sys.Call(YieldHook, 0, 0, 0);
+        }
     }
+
+    /// LET THE PROCESSOR GO INSIDE A LONG COLLECTION: a platform whose
+    /// threads are not preempted -- a kernel on one processor -- had every
+    /// other thread wait for a whole mark and sweep on the thread that
+    /// allocated (an audio mixer woken 120-195 ms late, at 32 MB live on a
+    /// K6-III). Called between MarkBetweenYields blocks marked and between
+    /// SweepBetweenYields chunks swept, with the heap lock let go; it may
+    /// give the processor to a thread that is ready, and must not allocate.
+    /// 0: none.
+    public static long YieldHook;
+    const long MarkBetweenYields = 4096;
+    const long SweepBetweenYields = 16;
 
     /// Scans at most `budget` queued blocks -- all of them when it is
     /// negative -- and answers how many. Any thread may: the one that takes
@@ -12566,6 +12589,12 @@ static class Gc
     /// made (GC.GetTotalPauseDuration). The heap lock is held.
     public static long PauseMicros;
 
+    /// The last collection's length and the longest yet, in microseconds,
+    /// timed as PauseMicros is (PauseClock): what one collection keeps the
+    /// thread that made it, and on a platform whose threads are not
+    /// preempted, everyone else.
+    public static long LastPauseMicros, LongestPauseMicros;
+
     /// A monotonic clock in microseconds, from a platform that has one to
     /// read from any thread at any time (Linux's clock_gettime); 0 where
     /// there is none, and pauses go untimed.
@@ -12631,6 +12660,8 @@ static class Gc
             {
                 long took = (Sys.Call(clock, 0, 0, 0) - began) & 0xFFFFFFFF;
                 PauseMicros = PauseMicros + took;
+                LastPauseMicros = took;
+                if (took > LongestPauseMicros) LongestPauseMicros = took;
                 if (minor) _minorPauseMicros = _minorPauseMicros + took;
                 // A cycle that finished sets the pace of the next by what it
                 // cost; one given up leaves it as it was.
@@ -13397,12 +13428,15 @@ static class Gc
     /// With the world running and the heap lock NOT held between chunks.
     static void SweepWhileTheyRun()
     {
+        long swept = 0;
         while (true)
         {
             GcLock.Enter();
             bool more = SweepNext();
             GcLock.Exit();
             if (!more) return;
+            swept = swept + 1;
+            if (YieldHook != 0 && swept % SweepBetweenYields == 0) Sys.Call(YieldHook, 0, 0, 0);
         }
     }
 
