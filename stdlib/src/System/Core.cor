@@ -12120,12 +12120,8 @@ interface IEnumerable {
 }
 
 /// .NET's non-generic ICollection and IList (System.Collections): what an
-/// array is (Lowering.ArrayFaces), besides ArrayList and the rest of the
-/// non-generic collections (Collections.cor). NOT YET List<T>'s, as .NET's
-/// is: with those members in every List<T>, the link's escape graphs for a
-/// cycle of walks over lists grew fivefold and past their bound (test 1211),
-/// and the walks' lists were left to the collector -- why, in the solver,
-/// is still to be found.
+/// array is (Lowering.ArrayFaces) and List<T> too, besides ArrayList and
+/// the rest of the non-generic collections (Collections.cor).
 interface ICollection : IEnumerable {
     int Count { get; }
     bool IsSynchronized { get; }
@@ -12922,10 +12918,47 @@ static class OutgrownStorage {
     }
 }
 
-class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IOwnsElements {
+class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
+    // THE NON-GENERIC IList AND ICollection, as .NET's List<T> is them: an
+    // object in and out -- a null where T takes none is ArgumentNullException,
+    // another type's value ArgumentException, as .NET says them.
+    bool IList.IsFixedSize => false;
+    bool IList.IsReadOnly => false;
+    bool ICollection.IsSynchronized => false;
+    object ICollection.SyncRoot => this;
+    object? IList.this[int index] {
+        get { return this[index]; }
+        set { this[index] = Item(value); }
+    }
+    int IList.Add(object? value) { Add(Item(value)); return count - 1; }
+    bool IList.Contains(object? value) { return Compatible(value) && Contains((T)value!); }
+    int IList.IndexOf(object? value) { return Compatible(value) ? IndexOf((T)value!) : -1; }
+    void IList.Insert(int index, object? value) { Insert(index, Item(value)); }
+    void IList.Remove(object? value) { if (Compatible(value)) Remove((T)value!); }
+    void ICollection.CopyTo(Array array, int index) {
+        if (array == null) throw new ArgumentNullException("array");
+        if (array is T[] same) { CopyTo(same, index); return; }
+        if (index < 0) throw new ArgumentOutOfRangeException("index");
+        if (array.Length - index < count) throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
+        for (int i = 0; i < count; i++) array.SetValue(items[i], index + i);
+    }
+
+    // A value T can be, null included where T is a reference or a nullable.
+    private static bool Compatible(object? value) {
+        if (value is T) return true;
+        if (value != null) return false;
+        T none = default!;
+        return (object?)none == null;
+    }
+
+    private static T Item(object? value) {
+        if (Compatible(value)) return (T)value!;
+        if (value == null) throw new ArgumentNullException("value");
+        throw new ArgumentException("The value \"" + value.ToString() + "\" is not of type \"" + typeof(T).FullName + "\" and cannot be used in this generic collection.", "value");
+    }
 
 
     bool ICollection<T>.IsReadOnly => false;

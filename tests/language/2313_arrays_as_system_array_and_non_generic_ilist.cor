@@ -14,6 +14,7 @@
 // z a
 // x
 // 0,4,5
+// ArgumentException
 // NotSupportedException
 // InvalidCastException
 // 9;8;7;
@@ -23,8 +24,8 @@
 // implements, as .NET's (C# 10.2.8): GetValue and SetValue, Rank,
 // GetLength, CopyTo(Array, int) into an array of another element, `o is
 // Array`, `(int[])(Array)o`, an element boxed by its own type and unboxed
-// back. Array was a static class of helpers, so no value could be one.
-// (List<T> is not yet the non-generic IList: see ICollection in Core.cor.)
+// back. Array was a static class of helpers, so no value could be one;
+// List<T> is the non-generic IList and ICollection too.
 // Expected output from .NET 10.
 
 using System;
@@ -35,7 +36,7 @@ static class P
 {
     static void Main()
     {
-        ArrayList l = new() { 1, 2, 3 };
+        List<int> l = new() { 1, 2, 3 };
         IList il = l;
         il.Add(4);
         Console.WriteLine($"{il.Count} {il[0]} {il.Contains(2)} {il.IndexOf(3)} {il.Contains("2")} {il.IsFixedSize}");
@@ -71,8 +72,9 @@ static class P
         Console.WriteLine(copy[1]);
         Array target = new long[3];
         new List<long> { 4, 5 }.ForEach(_ => { });
-        ((ICollection)new ArrayList { 4L, 5L }).CopyTo(target, 1);
+        ((ICollection)new List<long> { 4, 5 }).CopyTo(target, 1);
         Console.WriteLine(string.Join(",", (long[])target));
+        try { il.Add("no"); } catch (ArgumentException e) { Console.WriteLine(e.GetType().Name); }
         try { ia.Add(1); } catch (NotSupportedException e) { Console.WriteLine(e.GetType().Name); }
         try { a.SetValue("x", 0); } catch (InvalidCastException e) { Console.WriteLine(e.GetType().Name); }
         foreach (object? each in a) Console.Write(each + ";");
