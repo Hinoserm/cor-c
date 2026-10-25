@@ -901,59 +901,69 @@ class Task
     /// resumes in (AsyncContext).
     public void AddContinuation(Action continuation)
     {
-        // Captured before the lock: capturing may allocate, and nothing is
-        // made under an Atom lock.
+        // Captured before the lock: capturing may allocate, and NOTHING IS
+        // MADE UNDER AN ATOM LOCK -- held, preemption is off (Tls.PreemptCount),
+        // and an allocation may collect and wait. A list with no room is
+        // grown outside it: the bigger ones made with the lock let go, and
+        // swapped in only if the lists are still the ones they were made for.
         AsyncContext? context = AsyncContext.Capture();
-        List<AsyncContext?>? contexts = null;
         long lockAt = Atom.At(this, Atom.SecondWord);
 
-        Atom.Enter(lockAt);
-
-        if (_state >= RanToCompletion)
+        while (true)
         {
-            Atom.Exit(lockAt);
-            Scheduler.Post(continuation, context);
-            return;
-        }
-
-        if (_first == null)
-        {
-            _first = continuation;
-            _firstContext = context;
-            Atom.Exit(lockAt);
-            return;
-        }
-
-        List<Action>? more = _more;
-
-        if (more == null || (context != null && _moreContexts == null))
-        {
-            // Made outside the lock and tried again: the lists are small and
-            // a second registration is rare.
-            Atom.Exit(lockAt);
-            List<Action> madeMore = more ?? new List<Action>();
-            if (context != null || _moreContexts != null) contexts = _moreContexts ?? new List<AsyncContext?>();
             Atom.Enter(lockAt);
+
             if (_state >= RanToCompletion)
             {
                 Atom.Exit(lockAt);
                 Scheduler.Post(continuation, context);
                 return;
             }
-            if (_more == null) _more = madeMore;
-            if (contexts != null && _moreContexts == null)
+
+            if (_first == null)
             {
-                // Contexts kept in step with the continuations already there.
-                for (int i = contexts.Count; i < _more.Count; i++) contexts.Add(null);
-                _moreContexts = contexts;
+                _first = continuation;
+                _firstContext = context;
+                Atom.Exit(lockAt);
+                return;
             }
-            more = _more;
+
+            List<Action>? more = _more;
+            List<AsyncContext?>? contexts = _moreContexts;
+            bool contextsWanted = context != null || contexts != null;
+            bool moreRoom = more != null && more.Count < more.Capacity;
+            bool contextsRoom = !contextsWanted || contexts != null && contexts.Count < contexts.Capacity;
+
+            if (moreRoom && contextsRoom)
+            {
+                more!.Add(continuation);
+                if (contexts != null) contexts.Add(context);
+                Atom.Exit(lockAt);
+                return;
+            }
+
+            int count = more == null ? 0 : more.Count;
+            Atom.Exit(lockAt);
+
+            int room = count * 2 + 4;
+            List<Action> biggerMore = new List<Action>(room);
+            List<AsyncContext?>? biggerContexts = contextsWanted ? new List<AsyncContext?>(room) : null;
+
+            Atom.Enter(lockAt);
+            if (_state < RanToCompletion && ReferenceEquals(_more, more) && ReferenceEquals(_moreContexts, contexts)
+                && (more == null ? 0 : more.Count) == count)
+            {
+                // Within the room just made: no Add here grows a list.
+                for (int i = 0; i < count; i++) biggerMore.Add(more![i]);
+                if (biggerContexts != null)
+                {
+                    for (int i = 0; i < count; i++) biggerContexts.Add(contexts != null && i < contexts.Count ? contexts[i] : null);
+                    _moreContexts = biggerContexts;
+                }
+                _more = biggerMore;
+            }
+            Atom.Exit(lockAt);
         }
-
-        more.Add(continuation);
-        if (_moreContexts != null) _moreContexts.Add(context);
-
-        Atom.Exit(lockAt);
     }
 
     // ---- the statics ----------------------------------------------------------
@@ -3582,17 +3592,33 @@ class CancellationTokenSource : IDisposable
             return new CancellationTokenRegistration(null, callback);
         }
 
-        List<Action>? callbacks = _callbacks;
-
-        if (callbacks == null)
+        // NOTHING MADE UNDER THE LOCK (Task.AddContinuation): a list with no
+        // room grown with it let go, and swapped in if it is still the one.
+        while (true)
         {
-            callbacks = new List<Action>();
-            _callbacks = callbacks;
+            List<Action>? callbacks = _callbacks;
+            if (callbacks != null && callbacks.Count < callbacks.Capacity)
+            {
+                callbacks.Add(callback);
+                Atom.Exit(lockAt);
+                return new CancellationTokenRegistration(this, callback);
+            }
+            int count = callbacks == null ? 0 : callbacks.Count;
+            Atom.Exit(lockAt);
+            List<Action> bigger = new List<Action>(count * 2 + 4);
+            Atom.Enter(lockAt);
+            if (_canceled != 0)
+            {
+                Atom.Exit(lockAt);
+                callback.Invoke();
+                return new CancellationTokenRegistration(null, callback);
+            }
+            if (ReferenceEquals(_callbacks, callbacks) && (callbacks == null ? 0 : callbacks.Count) == count)
+            {
+                for (int i = 0; i < count; i++) bigger.Add(callbacks![i]);
+                _callbacks = bigger;
+            }
         }
-        callbacks.Add(callback);
-
-        Atom.Exit(lockAt);
-        return new CancellationTokenRegistration(this, callback);
     }
 
     /// `callback` taken out: of those waiting for a cancellation, or of a
@@ -4008,7 +4034,7 @@ static partial class Scheduler
 
         while (_ring.Length < capacity)
         {
-            Grow();
+            Grow(gate);
         }
 
         gate.Exit();
@@ -4103,9 +4129,9 @@ static partial class Scheduler
 
         gate.Enter();
 
-        if (_count == _ring.Length)
+        while (_count == _ring.Length)
         {
-            Grow();
+            Grow(gate);
         }
 
         int at = _head + _count;
@@ -4160,13 +4186,20 @@ static partial class Scheduler
     }
 
     /// Doubles the ring, straightening it so the head is at zero. Called with
-    /// the gate held.
-    static void Grow()
+    /// the gate held, and returns with it held -- but NOTHING IS MADE UNDER
+    /// IT (Tls.PreemptCount is up while it is held): the bigger arrays are
+    /// made with it let go, and taken only if the ring is still the one they
+    /// were made for. A caller looks at what it needed again.
+    static void Grow(AtomicCell gate)
     {
+        Action?[] grown = _ring;
+        gate.Exit();
+        Action?[] bigger = new Action?[grown.Length * 2];
+        AsyncContext?[] biggerContexts = new AsyncContext?[grown.Length * 2];
+        gate.Enter();
+        if (!ReferenceEquals(_ring, grown)) return;
         Action?[] old = _ring;
         AsyncContext?[] oldContexts = _ringContexts;
-        Action?[] bigger = new Action?[old.Length * 2];
-        AsyncContext?[] biggerContexts = new AsyncContext?[old.Length * 2];
 
         for (int i = 0; i < _count; i++)
         {
@@ -4558,22 +4591,31 @@ static partial class Scheduler
         Gate();
         AtomicCell gate = Gate();
 
+        // NOTHING MADE UNDER THE GATE (Tls.PreemptCount is up while it is
+        // held): the entry made first, its number given under the gate, and
+        // a full heap grown with the gate let go, swapped in if it is still
+        // the one it was grown from.
+        TimerEntry entry = new TimerEntry(deadline, 0, callback);
+
         gate.Enter();
+        while (_timerCount == _timers.Length)
+        {
+            TimerEntry?[] full = _timers;
+            gate.Exit();
+            TimerEntry?[] bigger = new TimerEntry?[full.Length * 2];
+            gate.Enter();
+            if (ReferenceEquals(_timers, full) && _timerCount == full.Length)
+            {
+                for (int i = 0; i < _timerCount; i++)
+                {
+                    bigger[i] = _timers[i];
+                }
+                _timers = bigger;
+            }
+        }
 
         _timerSequence = _timerSequence + 1;
-
-        TimerEntry entry = new TimerEntry(deadline, _timerSequence, callback);
-
-        if (_timerCount == _timers.Length)
-        {
-            TimerEntry?[] bigger = new TimerEntry?[_timers.Length * 2];
-
-            for (int i = 0; i < _timerCount; i++)
-            {
-                bigger[i] = _timers[i];
-            }
-            _timers = bigger;
-        }
+        entry.Sequence = _timerSequence;
 
         int at = _timerCount;
 
@@ -4798,7 +4840,46 @@ static class Monitor
     const long Asleep = 1;          // bit 0: someone may be waiting on the word
 
     static nint _depthGate;
-    static Dictionary<long, int>? _depths;
+    // THE EXTRA DEPTHS, by lock word: open addressing over two arrays,
+    // grown with the gate let go -- NOTHING IS MADE UNDER IT, as preemption
+    // is off while it is held (Tls.PreemptCount). A word of 0 is a free slot.
+    static long[]? _depthWords;
+    static int[]? _depthCounts;
+    static int _depthUsed;
+
+    // The slot of `word`, or of the free one it would take.
+    static int DepthSlot(long[] words, long word)
+    {
+        int mask = words.Length - 1;
+        int slot = (int)((word >> 3) ^ (word >> 13)) & mask;
+        while (words[slot] != 0 && words[slot] != word) slot = (slot + 1) & mask;
+        return slot;
+    }
+
+    // `word`'s slot emptied, its run's later entries moved back over it
+    // (backward-shift deletion), so every lookup still finds its own.
+    static void DepthRemove(long[] words, int[] counts, int slot)
+    {
+        int mask = words.Length - 1;
+        int hole = slot;
+        int next = (hole + 1) & mask;
+        while (words[next] != 0)
+        {
+            int home = (int)((words[next] >> 3) ^ (words[next] >> 13)) & mask;
+            // Moved back only if its home is not between the hole and it, round the ring.
+            bool between = hole <= next ? home > hole && home <= next : home > hole || home <= next;
+            if (!between)
+            {
+                words[hole] = words[next];
+                counts[hole] = counts[next];
+                hole = next;
+            }
+            next = (next + 1) & mask;
+        }
+        words[hole] = 0;
+        counts[hole] = 0;
+        _depthUsed = _depthUsed - 1;
+    }
 
     // .NET'S LockContentionCount: each time taking a lock found it another
     // thread's and had to wait for it -- counted once a taking, however long
@@ -5069,29 +5150,70 @@ static class Monitor
     {
         long gate = Sys.AddressOf(ref _depthGate);
 
-        Atom.Enter(gate);
-        bool had = false;
-        try
+        while (true)
         {
-            Dictionary<long, int> depths = _depths ??= new Dictionary<long, int>();
-            depths.TryGetValue(word, out int depth);
-            if (by > 0)
+            Atom.Enter(gate);
+            long[]? words = _depthWords;
+            int[]? counts = _depthCounts;
+            if (by <= 0)
             {
-                depths[word] = depth + by;
-                had = true;
+                bool had = false;
+                if (words != null)
+                {
+                    int slot = DepthSlot(words, word);
+                    if (words[slot] == word && counts![slot] > 0)
+                    {
+                        if (counts[slot] == 1) DepthRemove(words, counts, slot);
+                        else counts[slot] = counts[slot] - 1;
+                        had = true;
+                    }
+                }
+                Atom.Exit(gate);
+                return had;
             }
-            else if (depth > 0)
+            if (words != null)
             {
-                if (depth == 1) depths.Remove(word);
-                else depths[word] = depth - 1;
-                had = true;
+                int slot = DepthSlot(words, word);
+                if (words[slot] == word)
+                {
+                    counts![slot] = counts[slot] + by;
+                    Atom.Exit(gate);
+                    return true;
+                }
+                // Kept at most half full, so a probe always ends.
+                if ((_depthUsed + 1) * 2 <= words.Length)
+                {
+                    words[slot] = word;
+                    counts![slot] = by;
+                    _depthUsed = _depthUsed + 1;
+                    Atom.Exit(gate);
+                    return true;
+                }
             }
+            // FULL, OR NONE YET: twice the room made with the gate let go,
+            // and taken only if the table is still the one it was made for.
+            int size = words == null ? 16 : words.Length * 2;
+            Atom.Exit(gate);
+            long[] biggerWords = new long[size];
+            int[] biggerCounts = new int[size];
+            Atom.Enter(gate);
+            if (ReferenceEquals(_depthWords, words))
+            {
+                if (words != null)
+                {
+                    for (int k = 0; k < words.Length; k++)
+                    {
+                        if (words[k] == 0) continue;
+                        int slot = DepthSlot(biggerWords, words[k]);
+                        biggerWords[slot] = words[k];
+                        biggerCounts[slot] = counts![k];
+                    }
+                }
+                _depthWords = biggerWords;
+                _depthCounts = biggerCounts;
+            }
+            Atom.Exit(gate);
         }
-        finally
-        {
-            Sys.AtomicSwap(gate, 0);
-        }
-        return had;
     }
 
     /// The extra depth, taken off the table whole (Monitor.Wait gives the
@@ -5102,14 +5224,17 @@ static class Monitor
 
         Atom.Enter(gate);
         int depth = 0;
-        try
+        long[]? words = _depthWords;
+        if (words != null)
         {
-            if (_depths != null && _depths.TryGetValue(word, out depth)) _depths.Remove(word);
+            int slot = DepthSlot(words, word);
+            if (words[slot] == word)
+            {
+                depth = _depthCounts![slot];
+                DepthRemove(words, _depthCounts, slot);
+            }
         }
-        finally
-        {
-            Sys.AtomicSwap(gate, 0);
-        }
+        Atom.Exit(gate);
         return depth;
     }
 
@@ -5160,17 +5285,30 @@ static class Monitor
             throw new SynchronizationLockException();
         }
 
+        // NOTHING MADE UNDER THE GATE (Tls.PreemptCount is up while it is
+        // held): the waiter made first, and a full list grown with the gate
+        // let go, taken only if it is still the one it was grown from.
         MonitorWaiter waiter = new MonitorWaiter(word);
         EnterGate();
-        try
+        while (true)
         {
-            List<MonitorWaiter> waiters = _waiters ??= new List<MonitorWaiter>();
-            waiters.Add(waiter);
-        }
-        finally
-        {
+            List<MonitorWaiter>? waiters = _waiters;
+            if (waiters != null && waiters.Count < waiters.Capacity)
+            {
+                waiters.Add(waiter);
+                break;
+            }
+            int count = waiters == null ? 0 : waiters.Count;
             ExitGate();
+            List<MonitorWaiter> bigger = new List<MonitorWaiter>(count * 2 + 4);
+            EnterGate();
+            if (ReferenceEquals(_waiters, waiters) && (waiters == null ? 0 : waiters.Count) == count)
+            {
+                for (int i = 0; i < count; i++) bigger.Add(waiters![i]);
+                _waiters = bigger;
+            }
         }
+        ExitGate();
 
         int depth = TakeDepth(word);
         Release(word);
@@ -5277,7 +5415,7 @@ static class Monitor
 
     static void ExitGate()
     {
-        Sys.AtomicSwap(Sys.AddressOf(ref _waitGate), 0);
+        Atom.Exit(Sys.AddressOf(ref _waitGate));
     }
 }
 
@@ -6808,7 +6946,7 @@ namespace System.Threading
         nint _lock;
 
         readonly int _max;
-        readonly List<SemaphoreWaiter> _waiters = new List<SemaphoreWaiter>();
+        List<SemaphoreWaiter> _waiters = new List<SemaphoreWaiter>();
         bool _disposed;
 
         public SemaphoreSlim(int initialCount) : this(initialCount, int.MaxValue)
@@ -6955,26 +7093,47 @@ namespace System.Threading
                 return canceled;
             }
 
-            SemaphoreWaiter waiter;
+            // NOTHING MADE UNDER THE LOCK (Tls.PreemptCount is up while it is
+            // held): a wait that must queue makes its waiter, and a full
+            // queue grows, with the lock let go, then looks again.
+            SemaphoreWaiter? waiter = null;
+            List<SemaphoreWaiter>? bigger = null;
             long gate = Atom.At(this, Atom.SecondWord);
-            Atom.Enter(gate);
-            if (_count > 0)
+            while (true)
             {
-                _count = _count - 1;
+                Atom.Enter(gate);
+                if (_count > 0)
+                {
+                    _count = _count - 1;
+                    Atom.Exit(gate);
+                    return Task.FromResult(true);
+                }
+                if (millisecondsTimeout == 0)
+                {
+                    Atom.Exit(gate);
+                    return Task.FromResult(false);
+                }
+                if (bigger != null && bigger.Capacity > _waiters.Count)
+                {
+                    for (int i = 0; i < _waiters.Count; i++) bigger.Add(_waiters[i]);
+                    _waiters = bigger;
+                }
+                bigger = null;
+                if (waiter != null && _waiters.Count < _waiters.Capacity)
+                {
+                    _waiters.Add(waiter);
+                    Atom.Exit(gate);
+                    break;
+                }
+                int count = _waiters.Count;
+                bool full = count >= _waiters.Capacity;
                 Atom.Exit(gate);
-                return Task.FromResult(true);
+                waiter ??= new SemaphoreWaiter(this);
+                if (full) bigger = new List<SemaphoreWaiter>(count * 2 + 4);
             }
-            if (millisecondsTimeout == 0)
-            {
-                Atom.Exit(gate);
-                return Task.FromResult(false);
-            }
-            waiter = new SemaphoreWaiter(this);
-            _waiters.Add(waiter);
-            Atom.Exit(gate);
 
-            waiter.Arm(millisecondsTimeout, cancellationToken);
-            return waiter.Task;
+            waiter!.Arm(millisecondsTimeout, cancellationToken);
+            return waiter!.Task;
         }
 
         public int Release()

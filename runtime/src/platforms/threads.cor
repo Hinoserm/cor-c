@@ -124,20 +124,30 @@ namespace Microsoft.Win32.SafeHandles
         {
             if (_handle == 0 && _target != null)
             {
+                // NOTHING MADE UNDER THE LOCK (Tls.PreemptCount is up while it
+                // is held): a full list grown with it let go.
                 _numbering.Enter();
-                try
+                while (_handle == 0)
                 {
-                    if (_handle == 0)
+                    List<SafeWaitHandle>? numbered = _numbered;
+                    if (numbered != null && numbered.Count < numbered.Capacity)
                     {
                         _next = _next + 4;
                         _handle = _next;
-                        (_numbered ??= new List<SafeWaitHandle>()).Add(this);
+                        numbered.Add(this);
+                        break;
+                    }
+                    int count = numbered == null ? 0 : numbered.Count;
+                    _numbering.Exit();
+                    List<SafeWaitHandle> bigger = new List<SafeWaitHandle>(count * 2 + 4);
+                    _numbering.Enter();
+                    if (ReferenceEquals(_numbered, numbered) && (numbered == null ? 0 : numbered.Count) == count)
+                    {
+                        for (int i = 0; i < count; i++) bigger.Add(numbered![i]);
+                        _numbered = bigger;
                     }
                 }
-                finally
-                {
-                    _numbering.Exit();
-                }
+                _numbering.Exit();
             }
             return _handle;
         }
@@ -562,15 +572,32 @@ partial class Thread
             return again;
         }
 
-        if (_slots == _all.Length)
+        // NOTHING MADE UNDER THE GATE (Tls.PreemptCount is up while it is
+        // held): a full table grown with it let go, and taken if it is still
+        // the one -- unless a slot was freed meanwhile.
+        while (_freedCount == 0 && _slots == _all.Length)
         {
-            Thread?[] bigger = new Thread?[_all.Length * 2];
-
-            for (int i = 0; i < _slots; i++)
+            Thread?[] full = _all;
+            gate.Exit();
+            Thread?[] bigger = new Thread?[full.Length * 2];
+            gate.Enter();
+            if (ReferenceEquals(_all, full) && _slots == full.Length)
             {
-                bigger[i] = _all[i];
+                for (int i = 0; i < _slots; i++)
+                {
+                    bigger[i] = _all[i];
+                }
+                _all = bigger;
             }
-            _all = bigger;
+        }
+
+        if (_freedCount > 0)
+        {
+            _freedCount = _freedCount - 1;
+            int reused = _freed[_freedCount];
+            _all[reused] = t;
+            gate.Exit();
+            return reused;
         }
 
         int slot = _slots;
@@ -589,11 +616,18 @@ partial class Thread
     {
         AtomicCell gate = Registry();
         gate.Enter();
-        if (_freedCount == _freed.Length)
+        // NOTHING MADE UNDER THE GATE: a full list grown with it let go.
+        while (_freedCount == _freed.Length)
         {
-            int[] bigger = new int[_freed.Length * 2];
-            for (int i = 0; i < _freedCount; i++) bigger[i] = _freed[i];
-            _freed = bigger;
+            int[] full = _freed;
+            gate.Exit();
+            int[] bigger = new int[full.Length * 2];
+            gate.Enter();
+            if (ReferenceEquals(_freed, full) && _freedCount == full.Length)
+            {
+                for (int i = 0; i < _freedCount; i++) bigger[i] = _freed[i];
+                _freed = bigger;
+            }
         }
         _all[slot] = null;
         _freed[_freedCount] = slot;
@@ -2252,7 +2286,10 @@ namespace System.Threading
     static class NamedMutexes
     {
         static List<Mutex>? _open;
-        static AtomicCell _lock = new AtomicCell();
+        // A SLEEPING LOCK, NOT A SPIN: under it a name's files are opened --
+        // system calls, allocations, waits -- which no spin lock may hold
+        // across (Tls.PreemptCount is up while one is held).
+        static readonly object _lock = new object();
 
         const string Incorrect = "The filename, directory name, or volume label syntax is incorrect.";
 
@@ -2297,9 +2334,7 @@ namespace System.Threading
                          + (global ? "global" : "s" + Os.SessionId());
             string key = scope + "/" + bare;
 
-            AtomicCell gate = _lock;
-            gate.Enter();
-            try
+            lock (_lock)
             {
                 List<Mutex> open = _open ??= new List<Mutex>();
                 for (int i = 0; i < open.Count; i++)
@@ -2320,24 +2355,14 @@ namespace System.Threading
                 open.Add(made);
                 return made;
             }
-            finally
-            {
-                gate.Exit();
-            }
         }
 
         /// One of this process's Mutexes of the name closed.
         public static void Closed(Mutex core)
         {
-            AtomicCell gate = _lock;
-            gate.Enter();
-            try
+            lock (_lock)
             {
                 if (core.LastClosed()) _open!.Remove(core);
-            }
-            finally
-            {
-                gate.Exit();
             }
         }
 
