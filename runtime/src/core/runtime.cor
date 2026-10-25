@@ -315,7 +315,12 @@ static class Tls
     /// as Linux's `current`. A reference: scanned with the block's other
     /// references (GcThreads.Work). Written once, before the thread runs.
     public const long Owner = 51 * WordSize.Bytes;
-    public const long Bytes = 52 * WordSize.Bytes;
+    /// TWO RAW WORDS OF THE KERNEL'S: never read, written or scanned by the
+    /// runtime. A processor's block keeps its number there, read
+    /// gs-relative (Sys.PerCpuRead) on every processor alike.
+    public const long Kernel0 = 52 * WordSize.Bytes;
+    public const long Kernel1 = 53 * WordSize.Bytes;
+    public const long Bytes = 54 * WordSize.Bytes;
 }
 
 /// WHERE THE ALLOCATIONS COME FROM (Corsac.GC.AllocSample): every sixteenth
