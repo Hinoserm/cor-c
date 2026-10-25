@@ -307,6 +307,17 @@ public sealed class RegionTypes
     private int ArrayAt(string table, long at, int i, int site)
         => _arrays.TryGetValue((i, site), out int o) ? o : _arrays[(i, site)] = NewObject(table, at);
 
+    // A FRAME SLOT AN OBJECT OF ITS OWN: a struct's field written through its
+    // slot's address and an offset lands at any offset of the object it is
+    // in (Into), and with every slot of a frame one object, what any slot
+    // held went into every other -- Main's caught exception handed every
+    // iterator its walks made to Runtime.Unhandled (1211, with List<T> the
+    // non-generic IList). Nothing reaches past its own slot.
+    private readonly Dictionary<(int Instance, int Slot), int> _slotObjects = new();
+    private int SlotObject(int i, int slot)
+        => _slotObjects.TryGetValue((i, slot), out int o) ? o
+            : _slotObjects[(i, slot)] = Labelled(NewObject(null, 0), "the frame of " + _functions[_instF[i]].Name + " slot " + slot);
+
     private int Untyped(int i) => _untyped[i] >= 0 ? _untyped[i] : _untyped[i] = Labelled(NewObject(null, 0), "the frame of " + _functions[_instF[i]].Name);
     // An allocation of no known stamp: of its instance's own, apart from its frame slots.
     private int UntypedMade(int i)
@@ -736,7 +747,7 @@ public sealed class RegionTypes
                         ? table.StartsWith("q_array", StringComparison.Ordinal) ? ArrayAt(table, site.At, i, c.B) : TypedIn(table, site.At, i)
                         : site.Words == RegionWords.Leaf ? Untyped(i) : UntypedMade(i)) << 1);
                     break;
-                case RegionConstraintKind.Slot: Add(a, Untyped(i) << 1); break;
+                case RegionConstraintKind.Slot: Add(a, SlotObject(i, c.B) << 1); break;
                 // A closed static (RegionConstants.ClosedStatic, one past
                 // it in B): an object of its own, holding what is stored.
                 // And what the link lays down in it, when it is a static
