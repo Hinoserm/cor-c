@@ -2295,10 +2295,23 @@ static class Gc
         long last = ((end - 1) & WordSize.AddressMask) >> Runtime.CardShift;
         long taken = 0;
         long words = 0;
+        // A BUDGET OF CARDS AT A TIME, the platform asked between (YieldHook)
+        // whenever the heap lock is not this thread's -- a concurrent minor
+        // cycle's cards, read while the program runs anyway: a chunk's cards
+        // read in one go held a K6-III's one processor tens of milliseconds
+        // (the root scan's reason, ScanRootsAttributed).
+        bool yields = YieldHook != 0 && !GcLock.HeldByMe();
+        long sinceYield = 0;
         while (card <= last)
         {
             if (Sys.PeekByte(_taken + card) != 0)
             {
+                if (yields && ++sinceYield > CardsBetweenYields)
+                {
+                    if (local != 0) DrainLocal(local);
+                    Sys.Call(YieldHook, 0, 0, 0);
+                    sinceYield = 1;
+                }
                 Sys.PokeByte(_taken + card, 0);
                 long from = card << Runtime.CardShift;
                 long to = from + (1 << Runtime.CardShift);
@@ -11528,6 +11541,7 @@ static class Gc
     public static long YieldHook;
     const long MarkBetweenYields = 4096;
     const long RootsBetweenYields = 4096;           // words of a root range
+    const long CardsBetweenYields = 64;             // taken cards of a chunk
     const long SweepBetweenYields = 16;
 
     /// Scans at most `budget` queued blocks -- all of them when it is
