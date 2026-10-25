@@ -1,0 +1,65 @@
+// test: the pool's pages are given back when the kernel asks
+// expect-exit: 0
+// expect-output:
+// pooled True
+// given True
+// none left True
+// makeup True
+// still allocates True
+//
+// A KERNEL SHORT OF MEMORY ASKS FOR THE POOL BACK (Gc.GiveBackPool). The
+// pages a collection empties are pooled for the next refill; DrainPool gave
+// them back but was the collector's own, called with the heap lock held.
+// Gc.GiveBackPool takes the lock, gives back every pooled page, and answers
+// how many went: a second ask finds none. Gc.HeapMakeup says where a
+// heap's bytes are: none left in its pool.
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static void Say(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? " True" : " False");
+        Sys.PrintLine();
+    }
+
+    static byte[][]? _held;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        _held = new byte[4000][];
+        for (int n = 0; n < _held.Length; n++)
+        {
+            _held[n] = new byte[200];
+            _held[n][0] = (byte)n;
+        }
+        _held = null;
+    }
+
+    static int Main()
+    {
+        Churn();
+        Gc.DropShelves(Gc.KernelHeap);
+        Gc.Collect();
+        Gc.Collect();
+        long pooledBefore = Gc.PagesPooled;
+        Say("pooled", pooledBefore > 0);
+        long given = Gc.GiveBackPool();
+        if (given <= 0)
+        {
+            Sys.Print("given ");
+            Sys.PrintInt((int)given);
+            Sys.PrintLine();
+        }
+        Say("given", given > 0);
+        Say("none left", Gc.GiveBackPool() == 0);
+        Gc.HeapMakeup(Gc.KernelHeap, out long pooled, out long pages, out long pagesLive, out long mixed, out long mixedLive);
+        Say("makeup", pooled == 0 && pages > 0 && pagesLive <= pages && mixedLive <= mixed);
+        byte[] after = new byte[200];
+        after[199] = 5;
+        Say("still allocates", after[199] == 5);
+        return 0;
+    }
+}

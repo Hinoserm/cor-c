@@ -3320,6 +3320,42 @@ static class Gc
         free = held - live;
     }
 
+    /// Where a heap's bytes are (HeapFigures, taken apart): its pool, empty
+    /// pages kept for the next refill; its size-class pages that are in use
+    /// and what their last sweeps found live in them; and its chunks of
+    /// mixed blocks and what is live in those. A module heap held at three
+    /// times what is live keeps the difference in one of the three.
+    public static void HeapMakeup(long heap, out long pooled, out long pages, out long pagesLive, out long mixed, out long mixedLive)
+    {
+        pooled = 0;
+        pages = 0;
+        pagesLive = 0;
+        mixed = 0;
+        mixedLive = 0;
+        if (heap == 0 || !_ready)
+        {
+            return;
+        }
+        GcLock.Enter();
+        for (long chunk = HeapChunks.Newest(); chunk != 0; chunk = HeapChunks.Next(chunk))
+        {
+            if (HeapOfChunk(chunk) != heap) continue;
+            long size = HeapChunks.PageSize(chunk);
+            if (HeapChunks.IsPooled(chunk)) pooled = pooled + size;
+            else if (HeapChunks.PageClass(chunk) != 0)
+            {
+                pages = pages + size;
+                pagesLive = pagesLive + HeapChunks.LiveBytes(chunk);
+            }
+            else
+            {
+                mixed = mixed + size;
+                mixedLive = mixedLive + HeapChunks.LiveBytes(chunk);
+            }
+        }
+        GcLock.Exit();
+    }
+
     /// A heap given back: every chunk and page of it that holds nothing live
     /// goes back to the operating system, and what still holds something --
     /// an object of the module's that the kernel still refers to, which
@@ -5238,6 +5274,23 @@ static class Gc
         if (_recycleNext == chunk) _recycleNext = HeapChunks.Next(chunk);
         if (_recycle == chunk) _recycle = Zero;
         HeapChunks.Release(chunk);
+    }
+
+    /// Every pooled page given back, for a caller outside the collector (the
+    /// kernel, when memory is short): DrainPool under the heap lock. Answers
+    /// how many pages went; none while a collection runs.
+    public static long GiveBackPool()
+    {
+        if (!_ready)
+        {
+            return 0;
+        }
+        GcLock.Enter();
+        long before = PagesReleased;
+        DrainPool();
+        long given = PagesReleased - before;
+        GcLock.Exit();
+        return given;
     }
 
     /// Every pooled page given back to the operating system: the room a cap
