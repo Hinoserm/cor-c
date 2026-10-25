@@ -1846,6 +1846,27 @@ static class Gc
     {
         if (!_census || _minor)
         {
+            // A RANGE OF ROOTS A BUDGET AT A TIME, the platform asked between
+            // (YieldHook) whenever the heap lock is not this thread's -- the
+            // concurrent cycle's root scan, whose program threads may run
+            // meanwhile anyway: a kernel's statics and its modules' data are
+            // megabytes, read in one go they were 40-60 ms the processor gave
+            // nobody (an audio mixer woken at once, run 50 ms later, on a
+            // K6-III). A word scanned is scanned once either way.
+            if (YieldHook != 0 && to - from > RootsBetweenYields * WordSize.Bytes && !GcLock.HeldByMe())
+            {
+                long at = (from + WordSize.Bytes - 1) & -WordSize.Bytes;
+                while (at < to)
+                {
+                    long end = at + RootsBetweenYields * WordSize.Bytes;
+                    if (end > to || end < at) end = to;
+                    if (stack) ScanRoots(at, end);
+                    else ScanRange(at, end);
+                    at = end;
+                    if (at < to) Sys.Call(YieldHook, 0, 0, 0);
+                }
+                return;
+            }
             if (stack) ScanRoots(from, to);
             else ScanRange(from, to);
             return;
@@ -11506,6 +11527,7 @@ static class Gc
     /// 0: none.
     public static long YieldHook;
     const long MarkBetweenYields = 4096;
+    const long RootsBetweenYields = 4096;           // words of a root range
     const long SweepBetweenYields = 16;
 
     /// Scans at most `budget` queued blocks -- all of them when it is
