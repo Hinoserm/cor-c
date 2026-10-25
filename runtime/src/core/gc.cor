@@ -2377,7 +2377,7 @@ static class Gc
         }
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
         YoungCardWords = YoungCardWords + (high - low) / w;
-        if (kind != KindObject || vt == 0 || (_quarantinedHigh != 0 && InQuarantine(vt)))
+        if (kind != KindObject || vt == 0 || (_anyQuarantined && InQuarantine(vt)))
         {
             ScanRangeW((nuint)low, (nuint)high, local);
             return;
@@ -2495,7 +2495,7 @@ static class Gc
         // A footer, where there is one, repeats the header: no reference.
         long end = block + size;
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
-        if (kind != KindObject || vt == 0 || (_quarantinedHigh != 0 && InQuarantine(vt)))
+        if (kind != KindObject || vt == 0 || (_anyQuarantined && InQuarantine(vt)))
         {
             ShadeRange(payload, end);
             return;
@@ -9474,8 +9474,15 @@ static class Gc
     // ---- quarantined ranges ------------------------------------------------------
 
     const long QuarantinedMax = 32;
-    static long _quarantined;           // QuarantinedMax pairs (low, high), of the platform's memory
-    static long _quarantinedLow, _quarantinedHigh;  // the hull of them all, 0 when there are none
+    // OF THE PLATFORM'S MEMORY, which no collection reads: the hull of them
+    // all, then QuarantinedMax pairs (low, high). Kept in statics, the hull's
+    // low bound was a word pointing into the range, counted by
+    // CountReferencesInto as a reference -- the runtime's own, and the count
+    // that lets a forced-out module's range go back never reached 0.
+    static long _quarantined;
+    static bool _anyQuarantined;        // whether the hull holds anything: the one load the hot paths pay
+
+    static long QuarantinedPair(long i) => _quarantined + (i + 1) * 2 * WordSize.Bytes;
 
     /// [low, high) is a module's, forced out: its descriptors are unmapped
     /// and an object whose vtable is there is read word by word. False when
@@ -9485,13 +9492,13 @@ static class Gc
         if (high <= low) return false;
         if (_quarantined == 0)
         {
-            _quarantined = Platform.Map(QuarantinedMax * 2 * WordSize.Bytes);
+            _quarantined = Platform.Map((QuarantinedMax + 1) * 2 * WordSize.Bytes);
             if (_quarantined == 0) return false;
-            Sys.MemorySet(_quarantined, 0, QuarantinedMax * 2 * WordSize.Bytes);
+            Sys.MemorySet(_quarantined, 0, (QuarantinedMax + 1) * 2 * WordSize.Bytes);
         }
         for (long i = 0; i < QuarantinedMax; i++)
         {
-            long at = _quarantined + i * 2 * WordSize.Bytes;
+            long at = QuarantinedPair(i);
             if (Sys.Peek(at + WordSize.Bytes) != 0) continue;
             Sys.Poke(at, low);
             Sys.Poke(at + WordSize.Bytes, high);
@@ -9507,7 +9514,7 @@ static class Gc
         if (_quarantined == 0) return;
         for (long i = 0; i < QuarantinedMax; i++)
         {
-            long at = _quarantined + i * 2 * WordSize.Bytes;
+            long at = QuarantinedPair(i);
             if (Sys.Peek(at) != low || Sys.Peek(at + WordSize.Bytes) != high) continue;
             Sys.Poke(at + WordSize.Bytes, 0);
             Sys.Poke(at, 0);
@@ -9520,7 +9527,7 @@ static class Gc
         long low = 0, high = 0;
         for (long i = 0; i < QuarantinedMax; i++)
         {
-            long at = _quarantined + i * 2 * WordSize.Bytes;
+            long at = QuarantinedPair(i);
             long h = Sys.Peek(at + WordSize.Bytes);
             if (h == 0) continue;
             long l = Sys.Peek(at);
@@ -9529,8 +9536,9 @@ static class Gc
         }
         // Low first: a reader that sees the new high with the old low asks
         // the table, which is right either way.
-        _quarantinedLow = low;
-        _quarantinedHigh = high;
+        Sys.Poke(_quarantined, low);
+        Sys.Poke(_quarantined + WordSize.Bytes, high);
+        _anyQuarantined = high != 0;
     }
 
     /// Whether `address` is in a quarantined range. One load and a branch
@@ -9538,10 +9546,10 @@ static class Gc
     /// a module out.
     public static bool InQuarantine(long address)
     {
-        if (_quarantinedHigh == 0 || address >= _quarantinedHigh || address < _quarantinedLow) return false;
+        if (!_anyQuarantined || address >= Sys.Peek(_quarantined + WordSize.Bytes) || address < Sys.Peek(_quarantined)) return false;
         for (long i = 0; i < QuarantinedMax; i++)
         {
-            long at = _quarantined + i * 2 * WordSize.Bytes;
+            long at = QuarantinedPair(i);
             if (address >= Sys.Peek(at) && address < Sys.Peek(at + WordSize.Bytes)) return true;
         }
         return false;
@@ -9735,7 +9743,8 @@ static class Gc
     /// thread's buffer stepped over, as the heap check steps over it -- and
     /// each word in the range is said, the first `max` of them, on standard
     /// error: "gc refs: static at X", "gc refs: root range word at X", or
-    /// "gc refs: block B (N bytes) of TYPE at +OFFSET". A stack or a register
+    /// "gc refs: block B (N bytes) of TYPE at +OFFSET" -- only the words the
+    /// marker reads as references (BlockReferencesInto). A stack or a register
     /// is no word read here: what the marking count finds that this does not
     /// is said as held by stacks or registers. Answers how many words were
     /// found. For finding what keeps a module; nothing calls it otherwise.
@@ -9781,25 +9790,7 @@ static class Gc
                 long word = Sys.Peek(block);
                 long size = word & SizeMask;
                 if (size < Smallest || block + size > end) break;
-                if ((word & FlagFree) == 0)
-                {
-                    long payload = block + HeaderBytes;
-                    long last = block + size - (paged ? 0 : FooterBytes);
-                    for (long q = payload; q + WordSize.Bytes <= last; q = q + WordSize.Bytes)
-                    {
-                        long w = Sys.Peek(q) & WordSize.AddressMask;
-                        if (w < low || w >= high) continue;
-                        if (found < max)
-                        {
-                            SayNumber("gc refs: block ", payload);
-                            SayNumber("gc refs:   bytes ", size);
-                            SayNumber("gc refs:   at offset ", q - payload);
-                            SayNumber("gc refs:   pointing at ", w);
-                            SayHolderType(payload);
-                        }
-                        found = found + 1;
-                    }
-                }
+                if ((word & FlagFree) == 0) found = BlockReferencesInto(block, size, paged, low, high, max, found);
                 block = block + size;
             }
         }
@@ -9807,6 +9798,65 @@ static class Gc
         SayNumber("gc refs: words found in statics, roots and the heap ", found);
         SayNumber("gc refs: references the marking counted ", marked);
         return found;
+    }
+
+    /// THE WORDS OF A BLOCK THE MARKER READS AS REFERENCES, those into
+    /// [low, high) said: none of a leaf's (a string, an array of numbers);
+    /// an object's fields its descriptor's map names, an array's elements
+    /// when they are references; every word of a block no descriptor
+    /// describes, and of an object whose vtable is quarantined -- a forced-out
+    /// module's own type, read word by word, as the marker reads it.
+    static long BlockReferencesInto(long block, long size, bool paged, long low, long high, long max, long found)
+    {
+        long w = WordSize.Bytes;
+        long payload = block + HeaderBytes;
+        long end = block + size - (paged ? 0 : FooterBytes);
+        long kind = Sys.Peek(block + KindAt);
+        if (kind == KindLeaf) return found;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        long desc = vt - DescWords * w;
+        bool described = kind == KindObject && vt != 0 && !InQuarantine(vt) && (Sys.Peek(desc + DescSelfWord * w) & WordSize.AddressMask) == desc;
+        if (!described)
+        {
+            for (long q = payload; q + w <= end; q = q + w) found = BlockWordInto(payload, size, q, low, high, max, found);
+            return found;
+        }
+        long flags = Sys.Peek(desc + DescFlagsWord * w);
+        if ((flags & SequenceFlag) != 0)
+        {
+            if ((flags & StringFlag) != 0 || (Sys.Peek(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0 || Sys.Peek(desc + DescSizeWord * w) != w) return found;
+            long count = Sys.Peek(payload + ArrayCountAt) & 0x7FFFFFFF;
+            long first = payload + Sys.Peek(desc + DescPayloadWord * w);
+            long last = first + count * w;
+            if (last > end || last < first) return found;
+            for (long q = first; q < last; q = q + w) found = BlockWordInto(payload, size, q, low, high, max, found);
+            return found;
+        }
+        long map = Sys.Peek(desc + DescRefMapWord * w) & WordSize.AddressMask;
+        if (map == 0) return found;
+        long words = Sys.Peek(map);
+        for (long index = 0; index < words; index++)
+        {
+            long bits = Sys.Peek(map + (1 + index / 32) * w) & 0xFFFFFFFF;
+            if (((bits >> (int)(index & 31)) & 1) != 0 && payload + (index + 1) * w <= end)
+                found = BlockWordInto(payload, size, payload + index * w, low, high, max, found);
+        }
+        return found;
+    }
+
+    static long BlockWordInto(long payload, long size, long q, long low, long high, long max, long found)
+    {
+        long word = Sys.Peek(q) & WordSize.AddressMask;
+        if (word < low || word >= high) return found;
+        if (found < max)
+        {
+            SayNumber("gc refs: block ", payload);
+            SayNumber("gc refs:   bytes ", size);
+            SayNumber("gc refs:   at offset ", q - payload);
+            SayNumber("gc refs:   pointing at ", word);
+            SayHolderType(payload);
+        }
+        return found + 1;
     }
 
     static long ReferencesInRange(long from, long to, long low, long high, long max, long found, string what)
@@ -11700,7 +11750,7 @@ static class Gc
     {
         long w = WordSize.Bytes;
         long vt = Sys.Peek(payload) & WordSize.AddressMask;
-        if (vt == 0 || (_quarantinedHigh != 0 && InQuarantine(vt)))
+        if (vt == 0 || (_anyQuarantined && InQuarantine(vt)))
         {
             return false;
         }
@@ -12152,7 +12202,7 @@ static class Gc
     {
         nuint w = (nuint)WordSize.Bytes;
         nuint vt = PeekW(payload);
-        if (vt == 0 || (_quarantinedHigh != 0 && InQuarantine((long)vt)))
+        if (vt == 0 || (_anyQuarantined && InQuarantine((long)vt)))
         {
             return false;
         }

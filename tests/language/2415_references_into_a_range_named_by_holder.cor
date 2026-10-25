@@ -3,14 +3,18 @@
 // expect-output:
 // found 2 True
 // counted True
+// quarantine adds none True
 //
 // WHO KEEPS A MODULE (Gc.ReferencesIntoReport). A forced-out module's range
 // stays while anything refers into it, and a count says only how many do.
 // Here a literal of the image is held by a static and by an object's field;
 // the report reads the statics and every block of the heap and says each
 // word that points into it, with what holds it (on standard error), and
-// answers how many it found: both. The marking counts those and whatever a
-// stack or a register still holds.
+// answers how many it found: both -- not the number an array of numbers
+// holds that happens to be the address, which the marker never reads as a
+// reference. The marking counts those and whatever a stack or a register
+// still holds; and quarantining the range adds nothing to the count, where
+// the runtime's own record of the range was a static pointing into it.
 using System.Runtime.CompilerServices;
 
 sealed class Holder { public object? Held; public long Tag = 7; }
@@ -19,6 +23,7 @@ static class Program
 {
     static object? _static;
     static Holder? _holder;
+    static long[]? _numbers;
 
     static void Say(string label, bool value)
     {
@@ -33,6 +38,7 @@ static class Program
         string target = "a literal of the image, held twice";
         _static = target;
         _holder = new Holder { Held = target };
+        _numbers = new long[] { Sys.Word(target), 0 };
         return Sys.Word(target);
     }
 
@@ -43,7 +49,12 @@ static class Program
         Sys.Print("found ");
         Sys.PrintInt((int)found);
         Say("", found == 2);
-        Say("counted", Gc.CountReferencesInto(at, at + 8) >= found);
+        long counted = Gc.CountReferencesInto(at, at + 8);
+        Say("counted", counted >= found);
+        Gc.Quarantine(at, at + 8);
+        long quarantined = Gc.CountReferencesInto(at, at + 8);
+        Gc.Unquarantine(at, at + 8);
+        Say("quarantine adds none", quarantined <= counted);
         return 0;
     }
 }
