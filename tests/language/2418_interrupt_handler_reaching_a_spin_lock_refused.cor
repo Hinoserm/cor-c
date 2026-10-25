@@ -1,0 +1,47 @@
+// test: an interrupt handler that reaches a SpinLock is refused, the lock and the way named
+// expect-compile-error: is an interrupt handler and reaches SpinLock.Enter on 'Counter._gate'
+// A SPIN LOCK THAT KEEPS INTERRUPTS ON IS NO HANDLER'S (Linux's spin_lock
+// against spin_lock_irqsave): an interrupt that lands on its holder and
+// takes it spins for ever on its own processor. The handler calls a helper
+// that takes Counter's SpinLock; the build is refused, naming the lock, the
+// line and the way the handler reaches it.
+
+using System;
+
+sealed class SpinLock
+{
+    int _held;
+    public void Enter() { _held = 1; }
+    public void Exit() { _held = 0; }
+}
+
+static class Counter
+{
+    static readonly SpinLock _gate = new SpinLock();
+    static int _count;
+
+    public static void Bump()
+    {
+        _gate.Enter();
+        _count++;
+        _gate.Exit();
+    }
+
+    public static int Count => _count;
+}
+
+static class Program
+{
+    [InterruptHandler]
+    static void Tick()
+    {
+        Counter.Bump();
+    }
+
+    static int Main()
+    {
+        Tick();
+        Console.WriteLine(Counter.Count);
+        return 0;
+    }
+}

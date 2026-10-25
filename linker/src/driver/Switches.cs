@@ -22,6 +22,8 @@ public static class Switches
 
     /// <summary>--trace-handed: the escape analysis says what it handed between frames.</summary>
     public static bool HandedTrace;
+    /// <summary>--irq-locks-report: every IrqSpinLock taken, and whether an interrupt handler reaches it (InterruptNotes).</summary>
+    public static bool IrqLocksReport;
 
     /// <summary>--trace-fields NAME: the field escape analysis on fields whose names contain NAME.</summary>
     public static string? FieldTrace;
@@ -164,6 +166,7 @@ public static class Switches
             AllocReportOnly = report == "all" ? null : report;
         }
         HandedTrace |= Switch(taken, "--trace-handed");
+        IrqLocksReport |= Switch(taken, "--irq-locks-report");
         FieldTrace = Valued(taken, "--trace-fields") ?? FieldTrace;
         FieldTraceAll |= Switch(taken, "--trace-fields-all");
         TraceForward = Valued(taken, "--trace-forward") ?? TraceForward;

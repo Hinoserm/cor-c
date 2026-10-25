@@ -30,7 +30,14 @@ public static class InterruptNotes
     /// compiler words it ("makes a new 'X' at file:line"), or null, and the
     /// symbols it calls directly.
     /// </summary>
-    public sealed record Fact(string Name, string Display, bool Handler, string? Allocates, string[] Calls);
+    public sealed record Fact(string Name, string Display, bool Handler, string? Allocates, string[] Calls, string[] Takes);
+
+    /// <summary>
+    /// A SPIN LOCK A METHOD TAKES ITSELF, as a Fact's Takes word it: the
+    /// lock's kind (SpinLock, or IrqSpinLock, which shuts interrupts off),
+    /// what it is ("Owner._gate"), and where.
+    /// </summary>
+    public static string Take(string kind, string what, string where) => kind + "|" + what + "|" + where;
 
     public static void Attach(ObjectFile obj, IReadOnlyList<Fact> facts) => Attach(obj, Encode(facts));
 
@@ -49,8 +56,9 @@ public static class InterruptNotes
         int handlers = 0;
         foreach (Fact f in facts)
         {
-            size += Written(f.Name) + Written(f.Display) + 1 + Written(f.Allocates ?? "") + 4;
+            size += Written(f.Name) + Written(f.Display) + 1 + Written(f.Allocates ?? "") + 4 + 4;
             foreach (string call in f.Calls) size += Written(call);
+            foreach (string take in f.Takes) size += Written(take);
             if (f.Handler) handlers++;
         }
         byte[] bytes = new byte[checked((int)size)];
@@ -68,6 +76,8 @@ public static class InterruptNotes
                 writer.Write(f.Allocates ?? "");
                 writer.Write(f.Calls.Length);
                 foreach (string call in f.Calls) writer.Write(call);
+                writer.Write(f.Takes.Length);
+                foreach (string take in f.Takes) writer.Write(take);
             }
         }
         if (stream.Position != bytes.Length) throw new InvalidOperationException("interrupt notes: counted " + bytes.Length + " bytes, wrote " + stream.Position);
@@ -122,7 +132,9 @@ public static class InterruptNotes
             string allocates = reader.ReadString();
             string[] calls = new string[reader.ReadInt32()];
             for (int k = 0; k < calls.Length; k++) calls[k] = reader.ReadString();
-            facts.Add(new Fact(name, display, handler, allocates.Length == 0 ? null : allocates, calls));
+            string[] takes = new string[reader.ReadInt32()];
+            for (int k = 0; k < takes.Length; k++) takes[k] = reader.ReadString();
+            facts.Add(new Fact(name, display, handler, allocates.Length == 0 ? null : allocates, calls, takes));
         }
         return facts;
     }
@@ -226,7 +238,74 @@ public static class InterruptNotes
             }
         }
         if (errors.Count > 0) errors.AddRange(EveryAllocation(handlers, facts));
+        errors.AddRange(SpinLocksFromHandlers(handlers, facts, report: false));
         return errors;
+    }
+
+    /// <summary>
+    /// A SPIN LOCK THAT KEEPS INTERRUPTS ON IS NO HANDLER'S (Linux's
+    /// spin_lock against spin_lock_irqsave): an interrupt that lands on its
+    /// holder and takes it spins for ever on its own processor. Each
+    /// SpinLock a handler reaches, with the way it gets there; with
+    /// `report`, instead, every IrqSpinLock taken anywhere and whether any
+    /// handler reaches it (one that none does may keep interrupts on).
+    /// </summary>
+    public static List<string> SpinLocksFromHandlers(List<Fact> handlers, Dictionary<string, Fact> facts, bool report)
+    {
+        List<string> lines = new();
+        Dictionary<string, string?> cameFrom = new(StringComparer.Ordinal);
+        Queue<Fact> work = new();
+        foreach (Fact handler in handlers)
+            if (cameFrom.TryAdd(handler.Name, null)) work.Enqueue(handler);
+        HashSet<string> said = new(StringComparer.Ordinal);
+        while (work.Count > 0)
+        {
+            Fact f = work.Dequeue();
+            foreach (string take in f.Takes)
+            {
+                string[] parts = take.Split('|');
+                if (parts.Length != 3 || parts[0] != (report ? "IrqSpinLock" : "SpinLock") || !said.Add(parts[1] + " " + parts[2])) continue;
+                List<string> path = new();
+                for (string? at = f.Name; at is not null; at = cameFrom[at])
+                    path.Add(facts.TryGetValue(at, out Fact? step) ? step.Display : at);
+                path.Reverse();
+                lines.Add(report
+                    ? $"irq locks: IrqSpinLock '{parts[1]}' at {parts[2]}: reached from an interrupt handler, via {string.Join(" -> ", path)}"
+                    : $"'{path[0]}' is an interrupt handler and reaches SpinLock.Enter on '{parts[1]}' at {parts[2]}, via {string.Join(" -> ", path)}; use an IrqSpinLock");
+            }
+            foreach (string call in f.Calls)
+            {
+                if (!facts.TryGetValue(call, out Fact? callee)) continue;
+                if (cameFrom.TryAdd(callee.Name, f.Name)) work.Enqueue(callee);
+            }
+        }
+        if (report)
+            foreach (Fact f in facts.Values)
+                foreach (string take in f.Takes)
+                {
+                    string[] parts = take.Split('|');
+                    if (parts.Length == 3 && parts[0] == "IrqSpinLock" && !cameFrom.ContainsKey(f.Name) && said.Add(parts[1] + " " + parts[2]))
+                        lines.Add($"irq locks: IrqSpinLock '{parts[1]}' at {parts[2]}: no interrupt handler reaches it");
+                }
+        return lines;
+    }
+
+    /// <summary>--irq-locks-report: every IrqSpinLock taken, and whether an interrupt handler reaches it.</summary>
+    public static List<string> IrqLocksReport(IEnumerable<ObjectFile> objects)
+    {
+        Dictionary<string, Fact> facts = new(StringComparer.Ordinal);
+        List<Fact> handlers = new();
+        foreach (ObjectFile obj in objects)
+        {
+            List<Fact>? read = Read(obj);
+            if (read is null) continue;
+            foreach (Fact f in read)
+            {
+                facts.TryAdd(f.Name, f);
+                if (f.Handler) handlers.Add(f);
+            }
+        }
+        return SpinLocksFromHandlers(handlers, facts, report: true);
     }
 
     /// EVERY METHOD THAT ALLOCATES AND A HANDLER REACHES, each once, with the

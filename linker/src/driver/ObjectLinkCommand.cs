@@ -195,6 +195,7 @@ public static class ObjectLinkCommand
         // left WaitQueue.WakeAll (Sched.WakeQueuedIfOver) and the AIC's
         // drain stopped making its messages.
         if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
+        if (Switches.IrqLocksReport) foreach (string line in InterruptNotes.IrqLocksReport(inputs.Select(input => input.Item2))) Console.Error.WriteLine(line);
         byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
         // The kernel's small functions for its modules, read before this link's
         // own optimiser takes the units' IR out (KernelExports.SmallBodies).

@@ -1,0 +1,65 @@
+// test: an interrupt handler may take an IrqSpinLock, and a SpinLock no handler reaches is allowed
+// expect-exit: 0
+// expect-output:
+// 2 1
+//
+// The other half of 2418: a lock a handler takes shuts interrupts off
+// (IrqSpinLock), and one taken only where no handler reaches keeps them on
+// (SpinLock). The build is accepted and both counts are kept.
+
+using System;
+
+sealed class SpinLock
+{
+    int _held;
+    public void Enter() { _held = 1; }
+    public void Exit() { _held = 0; }
+}
+
+sealed class IrqSpinLock
+{
+    int _held;
+    public void Enter() { _held = 1; }
+    public void Exit() { _held = 0; }
+}
+
+static class Counter
+{
+    static readonly IrqSpinLock _irqGate = new IrqSpinLock();
+    static readonly SpinLock _gate = new SpinLock();
+    static int _ticks, _calls;
+
+    public static void Tick()
+    {
+        _irqGate.Enter();
+        _ticks++;
+        _irqGate.Exit();
+    }
+
+    public static void Call()
+    {
+        _gate.Enter();
+        _calls++;
+        _gate.Exit();
+    }
+
+    public static string Said => _ticks + " " + _calls;
+}
+
+static class Program
+{
+    [InterruptHandler]
+    static void Tick()
+    {
+        Counter.Tick();
+    }
+
+    static int Main()
+    {
+        Tick();
+        Tick();
+        Counter.Call();
+        Console.WriteLine(Counter.Said);
+        return 0;
+    }
+}

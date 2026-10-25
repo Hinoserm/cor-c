@@ -1548,6 +1548,7 @@ public static class Driver
         // left WaitQueue.WakeAll (Sched.WakeQueuedIfOver) and the AIC's
         // drain stopped making its messages.
         if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
+        if (Switches.IrqLocksReport) foreach (string line in Corsac.Lang.Lto.InterruptNotes.IrqLocksReport(link.Select(input => input.Item2))) Console.Error.WriteLine(line);
 
         if (flat)
         {

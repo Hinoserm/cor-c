@@ -1217,8 +1217,18 @@ public sealed partial class Binder
                     if (seen.Add(label)) calls.Add(label);
                 }
             }
+            // THE SPIN LOCKS IT TAKES ITSELF (InterruptNotes.SpinLocksFromHandlers):
+            // a SpinLock reached from an interrupt handler is refused at the link.
+            List<string> takes = new();
+            foreach ((Node site, MethodSymbol callee) in DirectCalls(d.Body!, m.Owner))
+            {
+                if (callee.Name is not ("Enter" or "TryEnter") || callee.Owner.Name is not ("SpinLock" or "IrqSpinLock")
+                    || ReferenceEquals(callee.Owner, m.Owner)) continue;
+                string what = site is CallExpr { Target: MemberExpr { Target: { } receiver } } ? Spelt(receiver, m.Owner.Name) : m.Owner.Name;
+                takes.Add(Corsac.Lang.Lto.InterruptNotes.Take(callee.Owner.Name, what, $"{file}:{site.Line}"));
+            }
             made.Add(new Corsac.Lang.Lto.InterruptNotes.Fact(NameOf(m), $"{m.Owner.Name}.{m.Name}",
-                IsInterruptHandler(m), allocates, calls.ToArray()));
+                IsInterruptHandler(m), allocates, calls.ToArray(), takes.ToArray()));
         }
         return made;
     }
@@ -1378,6 +1388,18 @@ public sealed partial class Binder
     /// allocated with interrupts off and nothing said. Operators and
     /// conversions a type declared are calls already (their rewrites).
     /// </summary>
+    // A lock's receiver as written, a field of the method's own type named with it ("Owner._gate").
+    private static string Spelt(Expr e, string owner) => e switch
+    {
+        NameExpr n => owner + "." + n.Name,
+        ThisExpr => owner,
+        MemberExpr { Target: ThisExpr } m => owner + "." + m.Name,
+        // A type's static: Type._gate.
+        MemberExpr { Target: NameExpr { Name: var type } } m when type.Length > 0 && char.IsUpper(type[0]) => type + "." + m.Name,
+        MemberExpr m => Spelt(m.Target, owner) + "." + m.Name,
+        _ => owner + ".(an expression)",
+    };
+
     private IEnumerable<(Node Site, MethodSymbol Callee)> DirectCalls(Node body, TypeSymbol? within)
     {
         static bool Direct(MethodSymbol m)
