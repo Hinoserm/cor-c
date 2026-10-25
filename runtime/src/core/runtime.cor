@@ -4558,7 +4558,9 @@ static class Runtime
     static void ArrayCopyRefused(long value, long element)
     {
         object o = Sys.FromWord(value)!;
-        string named = Sys.FromWord(Sys.Peek(element) & WordSize.AddressMask) as string ?? "";
+        // The descriptor's name word, as the image keeps it (String.TypeFullName).
+        object? word = Sys.FromWord(Sys.Peek(element) & WordSize.AddressMask);
+        string named = word == null ? "" : String.TypeFullName(word);
         InvalidCastTo(o, String.TypeText(named));
     }
 
