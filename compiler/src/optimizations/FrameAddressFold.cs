@@ -75,7 +75,7 @@ public sealed class FrameAddressFold : IPass
             // (OwnedElements.Uses) -- the field region inference keeps it
             // apart by (Family), and whether it is a number (Number).
             Instr replacement = new() { Op = i.Op, Dest = i.Dest, Size = i.Size,
-                Signed = i.Signed, Offset = offset, Line = i.Line, Number = i.Number, Family = i.Family, Field = i.Field };
+                Signed = i.Signed, Offset = offset, Line = i.Line, Number = i.Number, Family = i.Family, Field = i.Field, Device = i.Device };
             replacement.Operands.Add(new SlotOperand(address.Slot));
             for (int k = 1; k < i.Operands.Count; k++) replacement.Operands.Add(i.Operands[k]);
             block.Instrs[index] = replacement;

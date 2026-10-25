@@ -31,7 +31,7 @@ public sealed class Instr : OperandList
     private int _offset;
     private int _line;
 
-    private const byte SignedFlag = 1, NumberFlag = 2, RegionSiteFlag = 4, BigOffsetFlag = 8, BigSizeFlag = 16;
+    private const byte SignedFlag = 1, NumberFlag = 2, RegionSiteFlag = 4, BigOffsetFlag = 8, BigSizeFlag = 16, DeviceFlag = 32;
 
     /// <summary>
     /// A number no other instruction or block of the process ever has: what
@@ -163,6 +163,15 @@ public sealed class Instr : OperandList
     public bool RegionSite { get => (_flags & RegionSiteFlag) != 0; set => SetFlag(RegionSiteFlag, value); }
 
     /// <summary>
+    /// Load: A READ OF A DEVICE'S MEMORY (Sys.PeekWord, PeekHalf, PeekByte),
+    /// made every time it is written: never answered by an earlier read of
+    /// the same address or a store to it (Gvn, LoadReuse). A card's status
+    /// read twice was read once, and a register that clears as it is read
+    /// was cleared once for two reads.
+    /// </summary>
+    public bool Device { get => (_flags & DeviceFlag) != 0; set => SetFlag(DeviceFlag, value); }
+
+    /// <summary>
     /// What a call's Field says when its result is a struct its callee made
     /// for it: a struct value is returned as a block nobody else holds (every
     /// `return` copies what it did not just make), whoever the callee is, so
@@ -227,7 +236,7 @@ public sealed class Instr : OperandList
         {
             Op = Op, Dest = Dest, Size = Size, Signed = Signed, Offset = Offset, Callee = Callee,
             DispatchType = DispatchType, Field = Field, Number = Number, Family = Family,
-            RegionSite = RegionSite, Line = Line, Default = Default,
+            RegionSite = RegionSite, Device = Device, Line = Line, Default = Default,
         };
         foreach (Operand o in Operands) made.Operands.Add(o);
         made.SetTargets(TargetsCopy());

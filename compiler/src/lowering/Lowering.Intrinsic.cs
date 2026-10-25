@@ -75,15 +75,19 @@ public sealed partial class Lowering
                 Rethrow(Arg(call, target, 0), call);
                 return Void();
             // ---- memory as words ------------------------------------------------
+            // THE NARROW READS ARE A DEVICE'S (Instr.Device): read every time
+            // they are written, never answered by an earlier read. Sys.Peek,
+            // the collector's word, stays an ordinary load.
             case "Peek":
-            case "PeekWord" when _t.WordSize == 4:
                 return Widen(_e.Load(word, Address(call, target, 0), 0));
+            case "PeekWord" when _t.WordSize == 4:
+                return Widen(_e.Load(word, Address(call, target, 0), 0, device: true));
             case "PeekByte":
-                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 1, signed: false));
+                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 1, signed: false, device: true));
             case "PeekHalf":
-                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 2, signed: false));
+                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 2, signed: false, device: true));
             case "PeekWord":
-                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 4, signed: false));
+                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 4, signed: false, device: true));
 
             case "Poke":
             case "PokeWord" when _t.WordSize == 4:

@@ -870,6 +870,7 @@ public sealed class Inline : IParallelModulePass
                     Number = i.Number,
                     Family = i.Family,
                     RegionSite = i.RegionSite,
+                    Device = i.Device,
                     Line = call.Line,
                     Default = i.Default is null ? null : blocks[i.Default],
                 };

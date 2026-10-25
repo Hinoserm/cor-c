@@ -175,6 +175,10 @@ public sealed class Gvn : IPass
 
             switch (i.Op)
             {
+                // A DEVICE'S READ is made every time (Instr.Device): nothing
+                // answers it, and it answers nothing after it.
+                case Opcode.Load when i.Device:
+                    continue;
                 case Opcode.Load:
                     {
                         string key = AddressKey(i.Operands[0], i.Offset);

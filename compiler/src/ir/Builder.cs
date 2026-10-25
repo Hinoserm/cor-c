@@ -113,19 +113,19 @@ public sealed class Builder
         _ => operand,
     };
 
-    public VReg Load(IrType type, Operand address, long offset = 0, int size = 0, bool signed = true)
+    public VReg Load(IrType type, Operand address, long offset = 0, int size = 0, bool signed = true, bool device = false)
     {
         VReg d = Function.NewReg(type);
         Append(new Instr
         {
             Op = Opcode.Load, Dest = d, Operands = { address },
-            Offset = offset, Size = size == 0 ? type.Bytes() : size, Signed = signed,
+            Offset = offset, Size = size == 0 ? type.Bytes() : size, Signed = signed, Device = device,
         });
         return d;
     }
 
-    public VReg Load(IrType type, VReg address, long offset = 0, int size = 0, bool signed = true)
-        => Load(type, R(address), offset, size, signed);
+    public VReg Load(IrType type, VReg address, long offset = 0, int size = 0, bool signed = true, bool device = false)
+        => Load(type, R(address), offset, size, signed, device);
 
     public void Store(Operand address, Operand value, long offset = 0, int size = 0)
         => Append(new Instr

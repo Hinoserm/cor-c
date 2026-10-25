@@ -141,7 +141,7 @@ public sealed class LoadReuse : IPass
                     foreach (Key gone in _all) { _undo.Add((gone, _memory[gone], true)); _memory.Remove(gone); }
                     _all.Clear();
                 }
-                if (i.Op == Opcode.Load && i.Dest is { } result && result.Type.IsInt()
+                if (i.Op == Opcode.Load && !i.Device && i.Dest is { } result && result.Type.IsInt()
                     && Address(i, out Key key))
                 {
                     if (_memory.TryGetValue(key, out Entry prior)
@@ -167,7 +167,7 @@ public sealed class LoadReuse : IPass
         foreach (Block block in function.Blocks)
         foreach (Instr i in block.Instrs)
         {
-            if (i.Op == Opcode.Load && i.Dest is { } result && result.Type.IsInt() && Address(i, out _)) return true;
+            if (i.Op == Opcode.Load && !i.Device && i.Dest is { } result && result.Type.IsInt() && Address(i, out _)) return true;
             if (i.Op == Opcode.ArrayLength) return true;
         }
         return false;

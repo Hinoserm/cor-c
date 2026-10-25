@@ -23,7 +23,7 @@ public static class IrFunctionCodec
     private const int Version = 0;
 
     // An instruction's marks (Instr): one byte.
-    private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4;
+    private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4, DeviceMark = 8;
 
     /// <summary>
     /// What Read charges for the function's record, `payloadBytes` long:
@@ -196,7 +196,8 @@ public static class IrFunctionCodec
                 writer.Write((int)instruction.Op); writer.Write(instruction.Dest?.Id ?? -1);
                 writer.Write(instruction.Size); writer.Write(instruction.Signed); writer.Write(instruction.Offset);
                 IrBinary.Text(writer, instruction.Callee); IrBinary.Text(writer, instruction.DispatchType); IrBinary.Text(writer, instruction.Field); writer.Write(instruction.Line);
-                writer.Write((byte)((instruction.Number ? NumberMark : 0) | (instruction.RegionSite ? RegionSiteMark : 0) | (instruction.Family is not null ? FamilyMark : 0)));
+                writer.Write((byte)((instruction.Number ? NumberMark : 0) | (instruction.RegionSite ? RegionSiteMark : 0) | (instruction.Family is not null ? FamilyMark : 0)
+                    | (instruction.Device ? DeviceMark : 0)));
                 if (instruction.Family is not null) IrBinary.Text(writer, instruction.Family);
                 writer.Write(instruction.Operands.Count);
                 foreach (Operand operand in instruction.Operands)
@@ -344,9 +345,10 @@ public static class IrFunctionCodec
                         Callee = callee, DispatchType = dispatchType, Field = field, Line = reader.ReadInt32(),
                     };
                     byte marks = reader.ReadByte();
-                    if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
+                    if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark | DeviceMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
                     instruction.Number = (marks & NumberMark) != 0;
                     instruction.RegionSite = (marks & RegionSiteMark) != 0;
+                    instruction.Device = (marks & DeviceMark) != 0;
                     if ((marks & FamilyMark) != 0)
                         instruction.Family = IrBinary.NameOrNull(reader, budget) ?? throw new InvalidDataException("Invalid IR instruction field");
                     // MADE AT ONCE, operands and targets: added one at a time,
