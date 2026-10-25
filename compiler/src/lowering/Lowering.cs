@@ -2514,6 +2514,7 @@ public sealed partial class Lowering
         Prim.Char => "Char",
         Prim.Void => "Void",
         Prim.Any => "Object",
+        Prim.Type => "Type",
         _ => "String",
     };
 

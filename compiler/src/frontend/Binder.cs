@@ -883,7 +883,10 @@ public sealed partial class Binder
         => prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64
                 or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
                 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64
-                or Prim.Char or Prim.String or Prim.Any or Prim.Void;
+                or Prim.Char or Prim.String or Prim.Any or Prim.Void
+                // AND Type ITSELF: `typeof(T)` in a List<Type>'s non-generic
+                // IList members (its "is not of type" message) is typeof(Type).
+                or Prim.Type;
 
     /// <summary>Whether the declaration being bound is somebody else's: an Elsewhere type's, or a member whose code another unit has.</summary>
     private bool BindingElsewhere => _thisType?.Decl?.Elsewhere == true || _member?.OwnedImplementation == false
