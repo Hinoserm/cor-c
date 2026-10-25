@@ -344,6 +344,9 @@ public sealed partial class Lowering
             case "Fence":
                 _e.Emit(Opcode.Fence, null);
                 return Void();
+            case "CompilerFence":
+                _e.Emit(Opcode.CompilerFence, null);
+                return Void();
             case "Pause":
                 _e.Emit(Opcode.Pause, null);
                 return Void();

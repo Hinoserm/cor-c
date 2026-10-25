@@ -315,6 +315,7 @@ public static class Prelude
     public const string TryVectorGather = "TryVectorGather";
     public const string TryVectorScatter = "TryVectorScatter";
     public const string Fence = "Fence";
+    public const string CompilerFence = "CompilerFence";
     public const string Drain = "Drain";
     public const string Breakpoint = "Breakpoint";
     public const string SingleStep = "SingleStep";
@@ -690,6 +691,11 @@ public static class Prelude
             // on a single card and the difference between working and working
             // most of the time on several.
             public static void Fence() { }
+            // Orders this processor's accesses as the optimiser sees them and
+            // no more: nothing moves or is merged across it, and on a machine
+            // whose loads and stores are already ordered (x86's) no
+            // instruction is made. A read's acquire, a write's release.
+            public static void CompilerFence() { }
             public static void Breakpoint(long detail) { }
 
             // Says this processor is spinning and getting nowhere, so the

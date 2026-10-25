@@ -398,26 +398,30 @@ public static class Interlocked
 }
 
 /// System.Threading.Volatile: a read no later read is moved before, a write no
-/// earlier write is moved after, as .NET has them. The fences around a plain
-/// read or write are stronger than asked, and keep the optimiser from reusing
-/// a read from the last time round a loop. A 64-bit value on i386 goes
-/// through Interlocked's lock, as .NET's is one read or one write there too.
+/// earlier write is moved after, as .NET has them. A READ is a plain read
+/// between two compiler fences (Sys.CompilerFence): x86 orders a load before
+/// every later access already, so the fences keep only the optimiser from
+/// moving it or reusing one from the last time round a loop. It was a locked
+/// compare-and-exchange, which wrote the line back and took it from every
+/// other processor for each read of a flag. A write keeps its full fence. A
+/// 64-bit value on i386 goes through Interlocked's lock, as .NET's is one
+/// read or one write there too.
 public static class Volatile
 {
-    public static bool Read(ref bool location) { Sys.Fence(); bool seen = location; Sys.Fence(); return seen; }
-    public static byte Read(ref byte location) { Sys.Fence(); byte seen = location; Sys.Fence(); return seen; }
-    public static sbyte Read(ref sbyte location) { Sys.Fence(); sbyte seen = location; Sys.Fence(); return seen; }
-    public static short Read(ref short location) { Sys.Fence(); short seen = location; Sys.Fence(); return seen; }
-    public static ushort Read(ref ushort location) { Sys.Fence(); ushort seen = location; Sys.Fence(); return seen; }
-    public static int Read(ref int location) { return Interlocked.CompareExchange(ref location, 0, 0); }
-    public static uint Read(ref uint location) { return Interlocked.CompareExchange(ref location, 0u, 0u); }
+    public static bool Read(ref bool location) { Sys.CompilerFence(); bool seen = location; Sys.CompilerFence(); return seen; }
+    public static byte Read(ref byte location) { Sys.CompilerFence(); byte seen = location; Sys.CompilerFence(); return seen; }
+    public static sbyte Read(ref sbyte location) { Sys.CompilerFence(); sbyte seen = location; Sys.CompilerFence(); return seen; }
+    public static short Read(ref short location) { Sys.CompilerFence(); short seen = location; Sys.CompilerFence(); return seen; }
+    public static ushort Read(ref ushort location) { Sys.CompilerFence(); ushort seen = location; Sys.CompilerFence(); return seen; }
+    public static int Read(ref int location) { Sys.CompilerFence(); int seen = location; Sys.CompilerFence(); return seen; }
+    public static uint Read(ref uint location) { Sys.CompilerFence(); uint seen = location; Sys.CompilerFence(); return seen; }
     public static long Read(ref long location) { return Interlocked.Read(ref location); }
     public static ulong Read(ref ulong location) { return Interlocked.Read(ref location); }
-    public static nint Read(ref nint location) { return Interlocked.CompareExchange(ref location, 0, 0); }
-    public static nuint Read(ref nuint location) { return Interlocked.CompareExchange(ref location, 0, 0); }
-    public static float Read(ref float location) { Sys.Fence(); float seen = location; Sys.Fence(); return seen; }
+    public static nint Read(ref nint location) { Sys.CompilerFence(); nint seen = location; Sys.CompilerFence(); return seen; }
+    public static nuint Read(ref nuint location) { Sys.CompilerFence(); nuint seen = location; Sys.CompilerFence(); return seen; }
+    public static float Read(ref float location) { Sys.CompilerFence(); float seen = location; Sys.CompilerFence(); return seen; }
     public static double Read(ref double location) { return Interlocked.CompareExchange(ref location, 0.0, 0.0); }
-    public static T Read<T>(ref T location) where T : class? { return Interlocked.CompareExchange<T>(ref location, null!, null!); }
+    public static T Read<T>(ref T location) where T : class? { Sys.CompilerFence(); T seen = location; Sys.CompilerFence(); return seen; }
 
     public static void Write(ref bool location, bool value) { Sys.Fence(); location = value; Sys.Fence(); }
     public static void Write(ref byte location, byte value) { Sys.Fence(); location = value; Sys.Fence(); }
