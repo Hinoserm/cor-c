@@ -2830,7 +2830,14 @@ public sealed class RegionPointsTo : IModulePass
         // iterator into Console's (1211, with List<T> the non-generic IList).
         || callee.StartsWith("m_Runtime_EnterTypeInitialization", StringComparison.Ordinal)
         || callee.StartsWith("m_Runtime_CompleteTypeInitialization", StringComparison.Ordinal)
-        || callee.StartsWith("m_Runtime_FailTypeInitialization", StringComparison.Ordinal);
+        || callee.StartsWith("m_Runtime_FailTypeInitialization", StringComparison.Ordinal)
+        // NOR A BLOCK'S HEADER FLAG SET (Gc.SetFlag, SyncFooter): the header
+        // word read and written back with a flag, nothing kept. Followed, its
+        // block was every block anyone marked, and the word one block's
+        // header read went into every other one's (1211, with List<T> the
+        // non-generic IList).
+        || callee.StartsWith("m_Gc_SetFlag_", StringComparison.Ordinal)
+        || callee.StartsWith("m_Gc_SyncFooter_", StringComparison.Ordinal);
 
     // Every target the call can reach, in no object's context.
     private void Indirect(int copy, Instr i)
