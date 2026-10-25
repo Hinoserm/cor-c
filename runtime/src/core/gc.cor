@@ -9728,6 +9728,138 @@ static class Gc
         return _references;
     }
 
+    /// WHO HOLDS WHAT POINTS INTO [low, high): a forced-out module's range
+    /// kept by references CountReferencesInto counts but cannot name. After
+    /// a collection, the statics and the ranges registered as roots are read
+    /// word by word, and every block still allocated in the heap -- a
+    /// thread's buffer stepped over, as the heap check steps over it -- and
+    /// each word in the range is said, the first `max` of them, on standard
+    /// error: "gc refs: static at X", "gc refs: root range word at X", or
+    /// "gc refs: block B (N bytes) of TYPE at +OFFSET". A stack or a register
+    /// is no word read here: what the marking count finds that this does not
+    /// is said as held by stacks or registers. Answers how many words were
+    /// found. For finding what keeps a module; nothing calls it otherwise.
+    public static long ReferencesIntoReport(long low, long high, long max)
+    {
+        if (high <= low || !_ready) return 0;
+        long marked = CountReferencesInto(low, high);
+        GcLock.Enter();
+        while (_collecting || _sweeping || Runtime.Marking != 0)
+        {
+            GcLock.Exit();
+            GcThreads.Park();
+            Sys.Pause();
+            GcLock.Enter();
+        }
+        long found = ReferencesInRange(Sys.DataStart(), Sys.DataEnd(), low, high, max, 0, "gc refs: static at ");
+        long i = 0;
+        while (GcRoots.ExtraTable() != 0 && i < GcRoots.ExtraCount())
+        {
+            long slot = GcRoots.ExtraTable() + i * (2 * WordSize.Bytes);
+            long start = Sys.Peek(slot);
+            if (start != 0 && start != GcRoots.ClaimMark()) found = ReferencesInRange(start, Sys.Peek(slot + WordSize.Bytes), low, high, max, found, "gc refs: root range word at ");
+            i = i + 1;
+        }
+        _heapCheckTable = GcThreads.Sized(_heapCheckTable, ref _heapCheckTableFor);
+        long buffers = _heapCheckTable != 0 ? GcThreads.CaptureBuffersInto(_heapCheckTable) : 0;
+        for (long chunk = HeapChunks.Newest(); chunk != 0; chunk = HeapChunks.Next(chunk))
+        {
+            long block = HeapChunks.First(chunk);
+            long end = chunk == _current ? _bump : HeapChunks.End(chunk);
+            if (end > HeapChunks.Limit(chunk) || end < block) continue;
+            long step = 0;
+            bool paged = HeapChunks.PageClass(chunk) != 0;
+            while (block < end)
+            {
+                while (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) < block) step = step + 1;
+                if (step < buffers && Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes)) == block)
+                {
+                    block = Sys.Peek(_heapCheckTable + step * (2 * WordSize.Bytes) + WordSize.Bytes);
+                    step = step + 1;
+                    continue;
+                }
+                long word = Sys.Peek(block);
+                long size = word & SizeMask;
+                if (size < Smallest || block + size > end) break;
+                if ((word & FlagFree) == 0)
+                {
+                    long payload = block + HeaderBytes;
+                    long last = block + size - (paged ? 0 : FooterBytes);
+                    for (long q = payload; q + WordSize.Bytes <= last; q = q + WordSize.Bytes)
+                    {
+                        long w = Sys.Peek(q) & WordSize.AddressMask;
+                        if (w < low || w >= high) continue;
+                        if (found < max)
+                        {
+                            SayNumber("gc refs: block ", payload);
+                            SayNumber("gc refs:   bytes ", size);
+                            SayNumber("gc refs:   at offset ", q - payload);
+                            SayNumber("gc refs:   pointing at ", w);
+                            SayHolderType(payload);
+                        }
+                        found = found + 1;
+                    }
+                }
+                block = block + size;
+            }
+        }
+        GcLock.Exit();
+        SayNumber("gc refs: words found in statics, roots and the heap ", found);
+        SayNumber("gc refs: references the marking counted ", marked);
+        return found;
+    }
+
+    static long ReferencesInRange(long from, long to, long low, long high, long max, long found, string what)
+    {
+        long p = (from + WordSize.Bytes - 1) & -WordSize.Bytes;
+        while (p < to)
+        {
+            long w = Sys.Peek(p) & WordSize.AddressMask;
+            if (w >= low && w < high)
+            {
+                if (found < max)
+                {
+                    SayNumber(what, p);
+                    SayNumber("gc refs:   pointing at ", w);
+                }
+                found = found + 1;
+            }
+            p = p + WordSize.Bytes;
+        }
+        return found;
+    }
+
+    /// The type of the object at `payload`, said, when its first word is a
+    /// vtable whose descriptor names itself: its name's bytes as they lie
+    /// (Lowering.InternNameBytes: UTF-8, its token bytes left as they are),
+    /// or a string's units' low bytes. Nothing is made.
+    static void SayHolderType(long payload)
+    {
+        long w = WordSize.Bytes;
+        long vt = Sys.Peek(payload) & WordSize.AddressMask;
+        long desc = vt - DescWords * w;
+        if (vt < 4096 || Sys.Peek(desc + DescSelfWord * w) != desc)
+        {
+            SayNumber("gc refs:   untyped, first word ", vt);
+            return;
+        }
+        long name = Sys.Peek(desc + DescNameWord * w) & WordSize.AddressMask;
+        Runtime.WriteLiteral(2, "gc refs:   of type ");
+        if (name != 0)
+        {
+            long nameVt = Sys.Peek(name) & WordSize.AddressMask;
+            long count = Sys.Peek(name + ArrayCountAt) & 0x7FFFFFFF;
+            long first = name + Sys.Peek(nameVt - DescWords * w + DescPayloadWord * w);
+            long stride = Sys.Peek(nameVt - DescWords * w + DescSizeWord * w);
+            for (long k = 0; k < count && k < 200; k++)
+            {
+                long b = stride == 2 ? Sys.PeekByte(first + 2 * k) : Sys.PeekByte(first + k);
+                Platform.WriteBytes(2, Sys.AddressOf(ref b), 1);
+            }
+        }
+        Runtime.WriteLiteral(2, "\n");
+    }
+
     static void NoteReference(nuint at)
     {
         if ((long)at > _referencesBelow && (long)at < _referencesEnd)

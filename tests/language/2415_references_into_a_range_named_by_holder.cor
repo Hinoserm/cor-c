@@ -1,0 +1,49 @@
+// test: references into a range, each named by what holds it
+// expect-exit: 0
+// expect-output:
+// found 2 True
+// counted True
+//
+// WHO KEEPS A MODULE (Gc.ReferencesIntoReport). A forced-out module's range
+// stays while anything refers into it, and a count says only how many do.
+// Here a literal of the image is held by a static and by an object's field;
+// the report reads the statics and every block of the heap and says each
+// word that points into it, with what holds it (on standard error), and
+// answers how many it found: both. The marking counts those and whatever a
+// stack or a register still holds.
+using System.Runtime.CompilerServices;
+
+sealed class Holder { public object? Held; public long Tag = 7; }
+
+static class Program
+{
+    static object? _static;
+    static Holder? _holder;
+
+    static void Say(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? " True" : " False");
+        Sys.PrintLine();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Make()
+    {
+        string target = "a literal of the image, held twice";
+        _static = target;
+        _holder = new Holder { Held = target };
+        return Sys.Word(target);
+    }
+
+    static int Main()
+    {
+        long at = Make();
+        long found = Gc.ReferencesIntoReport(at, at + 8, 10);
+        Sys.Print("found ");
+        Sys.PrintInt((int)found);
+        Say("", found == 2);
+        Say("counted", Gc.CountReferencesInto(at, at + 8) >= found);
+        return 0;
+    }
+}
