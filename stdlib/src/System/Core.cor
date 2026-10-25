@@ -289,7 +289,7 @@ static class String {
     // of a reference is the reference -- and every object handed to this
     // went to the collector: across units, every LINQ walk's iterator (1211
     // with List<T> the non-generic IList). Nothing of a module's is kept, so
-    // a module gone leaves nothing to forget.
+    // a module gone leaves nothing behind.
     public static string TypeFullName(object compact) {
         if (compact is string text) { return text; }
         byte[] name = (byte[])compact;
@@ -323,12 +323,6 @@ static class String {
         long gate = Sys.AddressOf(ref TypeNameCache.Gate);
         while (Sys.AtomicSwap(gate, 1) != 0) { Sys.Pause(); }
         return gate;
-    }
-
-    /// The names of a module gone: nothing to forget, as a name is kept by
-    /// its bytes, never by where they were (TypeFullName). The kernel's
-    /// module unload still asks.
-    public static void ForgetTypeNames(long low, long high) {
     }
 
     // A name's bytes, hashed (FNV-1a, 64 bits); never 0, which marks a free slot.
