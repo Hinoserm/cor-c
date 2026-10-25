@@ -5,7 +5,7 @@
 // d 4620130267728707584 15 -64 4
 // mix 1.5 6 21
 //
-// A float parameter's home is its own argument slot, written with fstp. A
+// A float parameter's home is its own argument slot, stored to in place. A
 // copy of the parameter's bits taken at entry and spilled must never be
 // read back from that slot once it has been stored to: the copy is the
 // old value. Each function takes the bits first, assigns the parameter in

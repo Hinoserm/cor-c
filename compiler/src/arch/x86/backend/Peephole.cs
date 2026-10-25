@@ -106,10 +106,10 @@ internal static class Peephole
                         // A parameter's address taken, or reached by index: nothing moves.
                         if (i.Op == MOp.Lea || !Ebp(mem)) return;
                         // Roles name registers only, and an fstp's or an MMX
-                        // store's memory operand falls to their default, a use: a float parameter's
-                        // home is its own argument slot, stored with fstp. So
-                        // a parameter is read only by the forms known to read
-                        // it, and anything else writes it.
+                        // store's memory operand takes their default, a use;
+                        // a float parameter's home is its own argument slot,
+                        // stored with fstp. So a parameter is read only by the
+                        // forms known to read it, and anything else writes it.
                         if (writes || !ReadsOnly(i, k)) paramWritten.Add(mem.Disp);
                         continue;
                     }
