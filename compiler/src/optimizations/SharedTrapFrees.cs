@@ -14,21 +14,41 @@ using Block = Corsac.Lang.Ir.Block;
 /// forty-five frees in each, 6,766 calls and 200 KB of the GUI module's
 /// code, twice over (Play is the same). The trap itself must stay where it
 /// is -- its return address is the line a stack trace shows -- so only what
-/// comes before it is shared: each such block sets its number and jumps to
-/// one copy of the frees, which goes back by a jump table to that block's own
-/// trap. A trap is the cold path; the cost there is a jump and a table read.
+/// comes before it is shared: each such trap's frees jump to one copy of
+/// them, its number set, and that copy goes back by a jump table to the
+/// trap's own call. A trap is the cold path; the cost there is a jump and a
+/// table read.
 ///
-/// What is shared is the longest run before the trap that reads nothing it
-/// did not compute itself, and blocks share it when their runs are the same
-/// instructions but for their own registers' names. Only a trap called with
-/// no arguments, so nothing is carried through the shared copy; not in a
-/// function with a landing pad, where a call's block says where its unwind
-/// lands; not where phis are still in place.
+/// WHAT COMES BEFORE A TRAP is a region: the trap's block and, going back,
+/// each block that leads nowhere else -- one whose only way on is into the
+/// region, or a free's diamond (a test of the slot, the call, the join) --
+/// up to a block reached from elsewhere, its head. Two traps' regions are
+/// one when they are the same instructions block for block, reading the
+/// same registers of the function: a register used nowhere but in one
+/// region is the region's own, and is matched by where it first appears.
+/// The trap's call is the trap's, not the region's: its arguments must not
+/// be written in the region. Not in a function with a landing pad, where a
+/// call's block says where its unwind lands, or where phis are still in
+/// place.
 /// </summary>
 public static class SharedTrapFrees
 {
-    /// <summary>The fewest instructions a run is shared for: about two frees.</summary>
-    private const int Fewest = 8;
+    /// <summary>
+    /// What sharing costs, in machine bytes as the x86 writes them: each trap
+    /// its number and a jump, and an entry of the table (SiteBytes); the
+    /// shared copy its switch (SwitchBytes). A region is weighed by its calls
+    /// -- a free is the call and its argument, about eight bytes, and its
+    /// test (BranchBytes) -- and four bytes for anything else.
+    /// </summary>
+    private const int SiteBytes = 14, SwitchBytes = 20, CallBytes = 8, BranchBytes = 6, OtherBytes = 4;
+
+    private sealed class Region
+    {
+        public readonly List<Block> Blocks = new();
+        public Block Head => Blocks[0];
+        public Block Trap => Blocks[^1];
+        public int Call;
+    }
 
     public static void Run(Function f)
     {
@@ -39,109 +59,275 @@ public static class SharedTrapFrees
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Phi) return;
         }
-        Dictionary<string, List<(Block Block, int Start)>> groups = new(StringComparer.Ordinal);
-        Dictionary<object, int> slots = new(ReferenceEqualityComparer.Instance);
+        Dictionary<Block, List<Block>> preds = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks) preds[b] = new();
+        foreach (Block b in f.Blocks)
+            foreach (Block s in Successors(b))
+                if (preds.TryGetValue(s, out var list) && !list.Contains(b)) list.Add(b);
+
+        HashSet<Block> taken = new(ReferenceEqualityComparer.Instance);
+        List<Region> regions = new();
         foreach (Block b in f.Blocks)
         {
-            int trap = b.Instrs.Count - 2;
-            if (trap < Fewest || b.Instrs[^1].Op != Opcode.Unreachable) continue;
-            Instr call = b.Instrs[trap];
-            if (call.Op != Opcode.Call || call.Dest is not null || call.Operands.Count != 0 || call.Callee is null) continue;
-            int start = Closed(b.Instrs, trap);
-            if (trap - start < Fewest) continue;
-            if (Key(b.Instrs, start, trap, slots) is not string key) continue;
+            int call = TrapCall(b);
+            if (call < 0 || taken.Contains(b)) continue;
+            Region r = Grow(f, b, preds, taken);
+            r.Call = call;
+            foreach (Block x in r.Blocks) taken.Add(x);
+            regions.Add(r);
+        }
+        if (regions.Count < 2) return;
+
+        // A register is a region's own when no instruction outside that
+        // region names it.
+        Dictionary<VReg, Region?> owner = new(ReferenceEqualityComparer.Instance);
+        Dictionary<Block, Region> regionOf = new(ReferenceEqualityComparer.Instance);
+        foreach (Region r in regions)
+            foreach (Block x in r.Blocks) regionOf[x] = r;
+        foreach (Block b in f.Blocks)
+        {
+            regionOf.TryGetValue(b, out Region? r);
+            foreach (Instr i in b.Instrs)
+            {
+                foreach (VReg v in Registers(i))
+                {
+                    if (!owner.TryGetValue(v, out Region? was)) owner[v] = r;
+                    else if (!ReferenceEquals(was, r)) owner[v] = null;
+                }
+            }
+        }
+
+        Dictionary<VReg, int> names = new(ReferenceEqualityComparer.Instance);
+        Dictionary<object, int> slots = new(ReferenceEqualityComparer.Instance);
+        Dictionary<string, List<Region>> groups = new(StringComparer.Ordinal);
+        foreach (Region r in regions)
+        {
+            if (Key(r, owner, names, slots) is not string key) continue;
             if (!groups.TryGetValue(key, out var group)) groups.Add(key, group = new());
-            group.Add((b, start));
+            group.Add(r);
         }
         foreach (var group in groups.Values)
         {
-            if (group.Count >= 2) Share(f, group);
-        }
-    }
-
-    /// <summary>
-    /// Where the longest run ending before `end` begins whose every register
-    /// read is written earlier in the run: nothing from before it lives on
-    /// into it. `end` when there is none.
-    /// </summary>
-    private static int Closed(List<Instr> instrs, int end)
-    {
-        HashSet<VReg> needed = new();
-        int best = end;
-        for (int k = end - 1; k >= 0; k--)
-        {
-            Instr i = instrs[k];
-            if (i.IsTerminator || i.Op is Opcode.Phi or Opcode.LabelAddr or Opcode.StackPointer or Opcode.FramePointer || i.Targets.Count != 0) break;
-            if (i.Dest is not null) needed.Remove(i.Dest);
-            foreach (Operand o in i.Operands)
-                if (o is RegOperand r) needed.Add(r.Reg);
-            if (needed.Count == 0) best = k;
-        }
-        return best;
-    }
-
-    /// <summary>
-    /// A run's instructions with its registers named by their first
-    /// appearance in it and its frame slots by which slot they are; null for
-    /// a run with an operand of any other kind, which is shared with none.
-    /// </summary>
-    private static string? Key(List<Instr> instrs, int start, int end, Dictionary<object, int> slots)
-    {
-        Dictionary<VReg, int> names = new();
-        StringBuilder sb = new();
-        string Name(VReg r)
-        {
-            if (!names.TryGetValue(r, out int n)) names.Add(r, n = names.Count);
-            return "r" + n + ":" + r.Type;
-        }
-        for (int k = start; k < end; k++)
-        {
-            Instr i = instrs[k];
-            sb.Append(i.Op).Append('|').Append(i.Size).Append('|').Append(i.Signed).Append('|').Append(i.Offset)
-              .Append('|').Append(i.Callee).Append('|').Append(i.Number).Append('|').Append(i.Family).Append('|').Append(i.Field)
-              .Append('|').Append(i.RegionSite).Append('|').Append(i.DispatchType).Append('|');
-            foreach (Operand o in i.Operands)
+            if (group.Count < 2) continue;
+            int bytes = 0;
+            Region first = group[0];
+            foreach (Block x in first.Blocks)
             {
-                switch (o)
-                {
-                    case RegOperand r: sb.Append(Name(r.Reg)); break;
-                    case ImmOperand m: sb.Append('i').Append(m.Value).Append(':').Append(m.Type); break;
-                    case SymOperand y: sb.Append('s').Append(y.Name).Append('+').Append(y.Offset).Append(':').Append(y.Type); break;
-                    case SlotOperand l:
-                        if (!slots.TryGetValue(l.Slot, out int n)) slots.Add(l.Slot, n = slots.Count);
-                        sb.Append('f').Append(n).Append(':').Append(l.Type);
-                        break;
-                    default: return null;
-                }
-                sb.Append(',');
+                int end = ReferenceEquals(x, first.Trap) ? first.Call : x.Instrs.Count;
+                for (int k = 0; k < end; k++)
+                    bytes += x.Instrs[k].Op switch
+                    {
+                        Opcode.Call or Opcode.CallIndirect => CallBytes,
+                        Opcode.Branch => BranchBytes,
+                        Opcode.Jump => 0,
+                        _ => OtherBytes,
+                    };
             }
-            sb.Append("->").Append(i.Dest is null ? "" : Name(i.Dest)).Append(';');
+            if ((group.Count - 1) * bytes > group.Count * SiteBytes + SwitchBytes) Share(f, group, preds);
+        }
+    }
+
+    private static IEnumerable<Block> Successors(Block b)
+    {
+        if (b.Instrs.Count == 0) yield break;
+        Instr end = b.Instrs[^1];
+        for (int k = 0; k < end.Targets.Count; k++) yield return end.Targets[k];
+        if (end.Default is Block d) yield return d;
+    }
+
+    private static IEnumerable<VReg> Registers(Instr i)
+    {
+        if (i.Dest is not null) yield return i.Dest;
+        foreach (Operand o in i.Operands)
+            if (o is RegOperand r) yield return r.Reg;
+    }
+
+    /// <summary>
+    /// The call a block ends in that never returns -- followed by nothing but
+    /// the machine's trap (Opcode.Trap) and Unreachable -- or -1.
+    /// </summary>
+    private static int TrapCall(Block b)
+    {
+        int k = b.Instrs.Count - 1;
+        if (k < 1 || b.Instrs[k].Op != Opcode.Unreachable) return -1;
+        k--;
+        if (b.Instrs[k].Op == Opcode.Trap) k--;
+        return k >= 0 && b.Instrs[k].Op == Opcode.Call && b.Instrs[k].Dest is null && b.Instrs[k].Callee is not null ? k : -1;
+    }
+
+    /// <summary>
+    /// A trap's region, its head first: back from the trap's block through
+    /// each block whose one way on is the head, and each free's diamond (a
+    /// test whose two ways are the head and a block that only goes there).
+    /// Never the entry, which nothing jumps to.
+    /// </summary>
+    private static Region Grow(Function f, Block trap, Dictionary<Block, List<Block>> preds, HashSet<Block> taken)
+    {
+        Region r = new();
+        r.Blocks.Add(trap);
+        Block head = trap;
+        while (true)
+        {
+            List<Block> into = preds[head];
+            if (into.Count == 1)
+            {
+                Block c = into[0];
+                if (Usable(f, c, taken, r) && Successors(c).All(s => ReferenceEquals(s, head)))
+                {
+                    r.Blocks.Insert(0, c);
+                    head = c;
+                    continue;
+                }
+                break;
+            }
+            if (into.Count == 2)
+            {
+                Block? test = null, free = null;
+                foreach (Block x in into)
+                {
+                    Block other = ReferenceEquals(x, into[0]) ? into[1] : into[0];
+                    if (preds[x].Count == 1 && ReferenceEquals(preds[x][0], other) && Successors(x).All(s => ReferenceEquals(s, head))
+                        && x.Instrs.Count > 0 && x.Instrs[^1].Op == Opcode.Jump)
+                    {
+                        free = x;
+                        test = other;
+                    }
+                }
+                if (test is not null && free is not null && Usable(f, test, taken, r) && Usable(f, free, taken, r)
+                    && test.Instrs.Count > 0 && test.Instrs[^1] is { Op: Opcode.Branch } branch && branch.Targets.Count == 2
+                    && (ReferenceEquals(branch.Targets[0], free) && ReferenceEquals(branch.Targets[1], head)
+                        || ReferenceEquals(branch.Targets[1], free) && ReferenceEquals(branch.Targets[0], head)))
+                {
+                    r.Blocks.Insert(0, free);
+                    r.Blocks.Insert(0, test);
+                    head = test;
+                    continue;
+                }
+            }
+            break;
+        }
+        return r;
+    }
+
+    private static bool Usable(Function f, Block b, HashSet<Block> taken, Region r) =>
+        !ReferenceEquals(b, f.Entry) && !taken.Contains(b) && !r.Blocks.Contains(b) && !b.IsLandingPad;
+
+    /// <summary>
+    /// A region as text, but its trap's call: each block's instructions, a
+    /// target by its place in the region, a register of the region's own by
+    /// where it first appears and any other by which it is, a frame slot by
+    /// which it is. Null for an operand of any other kind, or a trap whose
+    /// arguments the region writes; such a region is shared with none.
+    /// </summary>
+    private static string? Key(Region r, Dictionary<VReg, Region?> owner, Dictionary<VReg, int> names, Dictionary<object, int> slots)
+    {
+        Dictionary<VReg, int> own = new(ReferenceEqualityComparer.Instance);
+        HashSet<VReg> written = new(ReferenceEqualityComparer.Instance);
+        StringBuilder sb = new();
+        string Name(VReg v)
+        {
+            if (owner.TryGetValue(v, out Region? o) && ReferenceEquals(o, r))
+            {
+                if (!own.TryGetValue(v, out int n)) own.Add(v, n = own.Count);
+                return "o" + n + ":" + v.Type;
+            }
+            if (!names.TryGetValue(v, out int m)) names.Add(v, m = names.Count);
+            return "g" + m;
+        }
+        for (int b = 0; b < r.Blocks.Count; b++)
+        {
+            Block x = r.Blocks[b];
+            int end = b == r.Blocks.Count - 1 ? r.Call : x.Instrs.Count;
+            sb.Append('{');
+            for (int k = 0; k < end; k++)
+            {
+                Instr i = x.Instrs[k];
+                sb.Append(i.Op).Append('|').Append(i.Size).Append('|').Append(i.Signed).Append('|').Append(i.Offset)
+                  .Append('|').Append(i.Callee).Append('|').Append(i.Number).Append('|').Append(i.Family).Append('|').Append(i.Field)
+                  .Append('|').Append(i.RegionSite).Append('|').Append(i.DispatchType).Append('|');
+                foreach (Operand o in i.Operands)
+                {
+                    switch (o)
+                    {
+                        case RegOperand g: sb.Append(Name(g.Reg)); break;
+                        case ImmOperand m: sb.Append('i').Append(m.Value).Append(':').Append(m.Type); break;
+                        case SymOperand y: sb.Append('s').Append(y.Name).Append('+').Append(y.Offset).Append(':').Append(y.Type); break;
+                        case SlotOperand l:
+                            if (!slots.TryGetValue(l.Slot, out int n)) slots.Add(l.Slot, n = slots.Count);
+                            sb.Append('f').Append(n).Append(':').Append(l.Type);
+                            break;
+                        default: return null;
+                    }
+                    sb.Append(',');
+                }
+                for (int t = 0; t < i.Targets.Count; t++)
+                {
+                    int at = r.Blocks.IndexOf(i.Targets[t]);
+                    if (at < 0) return null;
+                    sb.Append("->").Append(at);
+                }
+                if (i.Default is not null) return null;
+                if (i.Dest is not null)
+                {
+                    written.Add(i.Dest);
+                    sb.Append("=>").Append(Name(i.Dest));
+                }
+                sb.Append(';');
+            }
+            sb.Append('}');
+        }
+        foreach (Operand o in r.Trap.Instrs[r.Call].Operands)
+        {
+            if (o is RegOperand g && written.Contains(g.Reg)) return null;
+            if (o is not (RegOperand or ImmOperand or SymOperand)) return null;
         }
         return sb.ToString();
     }
 
-    private static void Share(Function f, List<(Block Block, int Start)> group)
+    private static void Share(Function f, List<Region> group, Dictionary<Block, List<Block>> preds)
     {
-        Block shared = f.NewBlock("trapfrees");
+        Region kept = group[0];
         VReg site = f.NewReg(IrType.I32, "trapsite");
-        (Block first, int from) = group[0];
-        int line = first.Instrs[^2].Line;
-        shared.Instrs.AddRange(first.Instrs.GetRange(from, first.Instrs.Count - 2 - from));
+        int line = kept.Trap.Instrs[kept.Call].Line;
+
+        // Each trap's own call, in a block of its own.
         List<Block> traps = new();
-        for (int k = 0; k < group.Count; k++)
+        foreach (Region r in group)
         {
-            (Block b, int start) = group[k];
-            Block trap = f.NewBlock("trap");
-            trap.Instrs.Add(b.Instrs[^2]);
-            trap.Instrs.Add(b.Instrs[^1]);
-            traps.Add(trap);
-            int at = b.Instrs[^2].Line;
-            b.Instrs.RemoveRange(start, b.Instrs.Count - start);
-            b.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = site, Operands = { new ImmOperand(k, IrType.I32) }, Line = at });
-            b.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { shared }, Line = at });
+            Block t = f.NewBlock("trap");
+            t.Instrs.AddRange(r.Trap.Instrs.GetRange(r.Call, r.Trap.Instrs.Count - r.Call));
+            r.Trap.Instrs.RemoveRange(r.Call, r.Trap.Instrs.Count - r.Call);
+            traps.Add(t);
+        }
+
+        // The kept region entered with its number: what jumped to its head
+        // jumps to a block that sets it first.
+        Block head = kept.Head;
+        Block enter = f.NewBlock("trapsite");
+        enter.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = site, Operands = { new ImmOperand(0, IrType.I32) }, Line = line });
+        enter.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { head }, Line = line });
+        foreach (Block p in preds[head])
+        {
+            if (kept.Blocks.Contains(p)) continue;
+            Instr end = p.Instrs[^1];
+            for (int k = 0; k < end.Targets.Count; k++)
+                if (ReferenceEquals(end.Targets[k], head)) end.SetTarget(k, enter);
+            if (ReferenceEquals(end.Default, head)) end.Default = enter;
         }
         Instr choose = new() { Op = Opcode.Switch, Operands = { RegOperand.Of(site) }, Default = traps[0], Line = line };
         choose.WritableTargets.AddRange(traps);
-        shared.Instrs.Add(choose);
+        kept.Trap.Instrs.Add(choose);
+
+        // The others: their heads set their numbers and jump to it, and the
+        // rest of each goes.
+        for (int g = 1; g < group.Count; g++)
+        {
+            Region r = group[g];
+            int at = traps[g].Instrs[0].Line;
+            for (int k = 1; k < r.Blocks.Count; k++) f.Blocks.Remove(r.Blocks[k]);
+            r.Head.Instrs.Clear();
+            r.Head.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = site, Operands = { new ImmOperand(g, IrType.I32) }, Line = at });
+            r.Head.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { head }, Line = at });
+        }
     }
 }

@@ -5,10 +5,10 @@
 // 1 DivideByZeroException line B
 // 2 IndexOutOfRangeException line C
 // 3 OverflowException line D
-// 4 done 2000001102
+// 4 done 2000001273
 //
 // THE FREES BEFORE A TRAP, ONE COPY FOR ALL OF THEM (SharedTrapFrees). Work
-// owns three objects, and every check it makes -- an index, a division, an
+// owns three arrays, read by a call that keeps none, and every check it makes -- an index, a division, an
 // overflow -- is a call that never returns, with each owned object freed
 // before it. The frees are written once and every trap jumps to them and
 // back to its own call, so a trap's line is still its own: each is named
@@ -17,13 +17,15 @@
 using System;
 using System.Runtime.CompilerServices;
 
-sealed class Box { public long V; public Box(long v) { V = v; } }
-
 static class P
 {
+    // The line of the trace's row for Work: the first row is the runtime's
+    // own call that throws.
     static int Line(string trace)
     {
-        int at = trace.IndexOf(":line ");
+        int row = trace.IndexOf("at P.Work(");
+        if (row < 0) return -1;
+        int at = trace.IndexOf(":line ", row);
         if (at < 0) return -1;
         int end = at + 6;
         while (end < trace.Length && trace[end] >= '0' && trace[end] <= '9') end++;
@@ -31,15 +33,20 @@ static class P
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Read(long[] x) => x[0] + x.Length;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static long Work(int which, int[] xs, int zero, int big)
     {
-        Box a = new Box(xs.Length), b = new Box(which * 3), c = new Box(17);
-        long sum = a.V + b.V + c.V;
+        // Of a size known only as it runs: in the heap, not the frame.
+        long[] a = new long[xs.Length + which], b = new long[which + 1], c = new long[(big & 7) + 1];
+        a[0] = xs.Length; b[0] = which * 3; c[0] = 17;
+        long sum = Read(a) + Read(b) + Read(c);
         sum += xs[which == 0 ? 99 : 0];                         // A
         sum += 1000 / (which == 1 ? zero : 1);                  // B
         sum += xs[which == 2 ? -1 : 1];                         // C
         sum += checked(big + (which == 3 ? big : 1));           // D
-        return sum + a.V * b.V + c.V;
+        return sum + Read(a) * Read(b) + Read(c);
     }
 
     static int Main()
