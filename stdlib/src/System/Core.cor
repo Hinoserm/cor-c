@@ -50,6 +50,19 @@ enum StringSplitOptions {
     TrimEntries = 2,
 }
 
+// THE FULL NAMES ALREADY SPELT OUT (String.TypeFullName), by the address of
+// the name the image keeps. A class of its own, not String's statics: given
+// statics made at start, String had a type initializer, and every program
+// that touched a string paid its check -- and the lifetime rules, reaching
+// it, gave LINQ's iterators across units to the collector (1311). This
+// initializer runs when a name is first asked for.
+static class TypeNameCache {
+    internal static long[] At = new long[64];
+    internal static string?[] To = new string?[64];
+    internal static int Count;
+    internal static long Gate;
+}
+
 static class String {
     // String.ToString: the string itself, as .NET answers it, whether or not
     // a format provider is given -- a string is already its own text.
@@ -278,17 +291,17 @@ static class String {
         long at = Sys.Word(compact);
         long gate = EnterFullNames();
         try {
-            int mask = _fullNamesAt.Length - 1;
+            int mask = TypeNameCache.At.Length - 1;
             int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
-            while (_fullNamesAt[slot] != 0) {
-                if (_fullNamesAt[slot] == at) { return _fullNamesTo[slot]!; }
+            while (TypeNameCache.At[slot] != 0) {
+                if (TypeNameCache.At[slot] == at) { return TypeNameCache.To[slot]!; }
                 slot = (slot + 1) & mask;
             }
             string full = NameText$((byte[])compact);
-            _fullNamesAt[slot] = at;
-            _fullNamesTo[slot] = full;
-            _fullNamesCount++;
-            if (_fullNamesCount * 2 > _fullNamesAt.Length) { GrowFullNames(); }
+            TypeNameCache.At[slot] = at;
+            TypeNameCache.To[slot] = full;
+            TypeNameCache.Count++;
+            if (TypeNameCache.Count * 2 > TypeNameCache.At.Length) { GrowFullNames(); }
             return full;
         } finally {
             Sys.AtomicSwap(gate, 0);
@@ -300,10 +313,9 @@ static class String {
     // into every program that names a type, whose fields the lifetime rules
     // then refused, and LINQ's iterators across units went to the collector
     // (1311).
-    static long _fullNamesGate;
 
     static long EnterFullNames() {
-        long gate = Sys.AddressOf(ref _fullNamesGate);
+        long gate = Sys.AddressOf(ref TypeNameCache.Gate);
         while (Sys.AtomicSwap(gate, 1) != 0) { Sys.Pause(); }
         return gate;
     }
@@ -316,25 +328,25 @@ static class String {
     public static void ForgetTypeNames(long low, long high) {
         long gate = EnterFullNames();
         try {
-            long[] from = _fullNamesAt;
-            string?[] to = _fullNamesTo;
+            long[] from = TypeNameCache.At;
+            string?[] to = TypeNameCache.To;
             bool any = false;
             for (int i = 0; i < from.Length; i++) {
                 if (from[i] >= low && from[i] < high) { any = true; break; }
             }
             if (!any) { return; }
-            _fullNamesAt = new long[from.Length];
-            _fullNamesTo = new string?[from.Length];
-            _fullNamesCount = 0;
-            int mask = _fullNamesAt.Length - 1;
+            TypeNameCache.At = new long[from.Length];
+            TypeNameCache.To = new string?[from.Length];
+            TypeNameCache.Count = 0;
+            int mask = TypeNameCache.At.Length - 1;
             for (int i = 0; i < from.Length; i++) {
                 long at = from[i];
                 if (at == 0 || at >= low && at < high) { continue; }
                 int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
-                while (_fullNamesAt[slot] != 0) { slot = (slot + 1) & mask; }
-                _fullNamesAt[slot] = at;
-                _fullNamesTo[slot] = to[i];
-                _fullNamesCount++;
+                while (TypeNameCache.At[slot] != 0) { slot = (slot + 1) & mask; }
+                TypeNameCache.At[slot] = at;
+                TypeNameCache.To[slot] = to[i];
+                TypeNameCache.Count++;
             }
         } finally {
             Sys.AtomicSwap(gate, 0);
@@ -342,18 +354,18 @@ static class String {
     }
 
     static void GrowFullNames() {
-        long[] from = _fullNamesAt;
-        string?[] to = _fullNamesTo;
-        _fullNamesAt = new long[from.Length * 2];
-        _fullNamesTo = new string?[from.Length * 2];
-        int mask = _fullNamesAt.Length - 1;
+        long[] from = TypeNameCache.At;
+        string?[] to = TypeNameCache.To;
+        TypeNameCache.At = new long[from.Length * 2];
+        TypeNameCache.To = new string?[from.Length * 2];
+        int mask = TypeNameCache.At.Length - 1;
         for (int i = 0; i < from.Length; i++) {
             long at = from[i];
             if (at == 0) { continue; }
             int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
-            while (_fullNamesAt[slot] != 0) { slot = (slot + 1) & mask; }
-            _fullNamesAt[slot] = at;
-            _fullNamesTo[slot] = to[i];
+            while (TypeNameCache.At[slot] != 0) { slot = (slot + 1) & mask; }
+            TypeNameCache.At[slot] = at;
+            TypeNameCache.To[slot] = to[i];
         }
     }
 
@@ -405,9 +417,6 @@ static class String {
         return new string(chars);
     }
 
-    static long[] _fullNamesAt = new long[64];
-    static string?[] _fullNamesTo = new string?[64];
-    static int _fullNamesCount;
 
     public static string TypeName(string full) {
         // A GENERIC TYPE'S ARGUMENTS ARE NOT ITS NAME: System.ValueTuple`2[[
