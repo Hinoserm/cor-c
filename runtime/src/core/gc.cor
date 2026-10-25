@@ -3217,13 +3217,15 @@ static class Gc
         // shelf, or one a round has taken the cache from. The cache in use
         // is given back to its heap (its pages stamped first while this
         // thread owes the round STAMP) and shelved empty; the other heap's
-        // is put in.
-        GcLock.Enter();
+        // is put in. THE SHELF MADE FIRST, outside it: nothing is mapped under
+        // a spin lock, and a thread's shelf is its own (a round reads 0 or an
+        // empty page).
         if (shelf == 0)
         {
             shelf = Platform.Map(ShelfBytes);
             Sys.Poke(tb + Tls.Shelf, shelf);
         }
+        GcLock.Enter();
         if (_ready)
         {
             if (_stamping && !StampedAlready(tb)) StampPages(tb);
