@@ -3367,6 +3367,7 @@ static class Gc
                 long parked = shelf != 0 ? Sys.Peek(shelf + number * WordSize.Bytes) : 0;
                 if (parked == 0) continue;
                 Sys.Poke(shelf + number * WordSize.Bytes, Zero);
+                KeepCachedPages(parked);
                 RetireCache(tb, parked);
                 Platform.Unmap(parked, 4096);
             }
@@ -3449,6 +3450,24 @@ static class Gc
         Platform.Unmap(heap, HeapRecordBytes);
         GcLock.Exit();
         return true;
+    }
+
+    /// THE PAGES OF A CACHE TAKEN OFF A SHELF BY ReleaseHeap, KEPT: a page a
+    /// thread's cache owns is never swept, so what it says is live is from
+    /// before the thread took it -- nothing, for a page taken fresh -- and
+    /// the collection ReleaseHeap ran first stepped over it. Judged by that,
+    /// its objects went back with the heap while the kernel still held them:
+    /// a registry key made in NT's gate under a cache entry of the kernel's,
+    /// a lock's word array in the GUI's. Each is counted live, so that it
+    /// becomes the first heap's, whose next sweep counts it and gives it
+    /// back if nothing in it is.
+    static void KeepCachedPages(long cache)
+    {
+        for (long c = 0; c < Classes; c++)
+        {
+            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+            if (page != 0 && HeapChunks.LiveBlocks(page) == 0) HeapChunks.SetLive(page, 1, HeapChunks.LiveBytes(page));
+        }
     }
 
     /// Every free block of a chunk onto its heap's bins (not one freed in

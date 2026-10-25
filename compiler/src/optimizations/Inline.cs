@@ -108,6 +108,18 @@ public sealed class Inline : IParallelModulePass
     public int SingleCallerLimit { get; init; } = 60000;
 
     /// <summary>
+    /// A BODY WITH ONE CALLER STAYS WHERE IT IS, past this many instructions,
+    /// when the unit is a library's or a module's: nothing there is dropped
+    /// for want of a caller (RemoveDeadFunctions keeps every export), so the
+    /// body moved was a copy. The GUI module's record dispatcher, a hundred
+    /// kilobytes, was in its one caller, that caller in its own one, and
+    /// itself: three times. A call to a body this size costs nothing beside
+    /// it.
+    /// </summary>
+    public int KeptBodyCopyLimit { get; init; } = 300;
+
+
+    /// <summary>
     /// Bodies up to this many instructions are inlined however large the
     /// caller has grown: no bigger than the call they replace -- arguments
     /// pushed, the call, the frame, the result moved -- they cannot grow it.
@@ -143,6 +155,7 @@ public sealed class Inline : IParallelModulePass
 
     public void Run(Module m)
     {
+        bool keepsEverything = m.Entry is null;
         // A body's stores as of this run: a round that inlined into it since
         // may have given it one.
         lock (_storesField) _storesField.Clear();
@@ -245,7 +258,7 @@ public sealed class Inline : IParallelModulePass
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("inline-begin " + caller.Name + " instructions=" + Size(caller));
 #endif
-            InlineInto(caller, byName, pinned, addressTaken, callers, recursive);
+            InlineInto(caller, byName, pinned, addressTaken, callers, recursive, keepsEverything);
 #if COR_SELFHOST_BENCHMARK
             Corsac.Program.BenchmarkStage("inline-end " + caller.Name + " instructions=" + Size(caller));
 #endif
@@ -307,7 +320,7 @@ public sealed class Inline : IParallelModulePass
 
     private void InlineInto(Function caller, Dictionary<string, Function> byName,
                             HashSet<string> pinned, HashSet<string> addressTaken, Dictionary<string, int> callers,
-                            HashSet<Function> recursive)
+                            HashSet<Function> recursive, bool keepsEverything)
     {
         int size = Size(caller);
         bool changed = true;
@@ -380,7 +393,8 @@ public sealed class Inline : IParallelModulePass
                     // One caller makes a body free to move only if it then goes:
                     // one whose address is taken stays, and would be twice.
                     bool single = callers.GetValueOrDefault(callee.Name) == 1 && !addressTaken.Contains(callee.Name)
-                                  && size + calleeSize <= SingleCallerLimit;
+                                  && size + calleeSize <= SingleCallerLimit
+                                  && (!keepsEverything || !callee.Exported || calleeSize <= KeptBodyCopyLimit);
                     bool specializesBranch = calleeSize <= ConstantBranchBody
                         && ConstantControlsBranch(callee, call);
                     // The context walk builds definition/CFG information. Do

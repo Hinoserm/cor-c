@@ -1,0 +1,60 @@
+// test: a released heap keeps what a thread's parked cache made in it
+// expect-exit: 0
+// expect-output:
+// released True
+// kept key 17 True
+// kept array 1 True
+//
+// A HEAP RELEASED WITH ITS OBJECTS STILL HELD (docs/HEAPS.md, rule 4). What
+// the kernel makes inside a module's gate is the module heap's, and what it
+// keeps of that becomes the first heap's when the module goes. A string and
+// an array are made here in the second heap's pages -- of this thread's
+// class cache, parked on its shelf as it leaves -- and kept by a static of
+// the first heap's. A page a cache owns is never swept, so its count of
+// live blocks was from before the thread took it: nothing, and the release
+// gave it back with both inside (the NT and GUI modules' fault tests). Then
+// the heap churns and collects over what was given back, and both are read.
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static void Say(string label, bool value)
+    {
+        Sys.Print(label);
+        Sys.Print(value ? " True" : " False");
+        Sys.PrintLine();
+    }
+
+    static string? _key;
+    static long[]? _word;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Make(long heap)
+    {
+        long first = Runtime.EnterHeap(heap);
+        _key = "key " + 17;
+        _word = new long[1];
+        _word[0] = 1;
+        Runtime.EnterHeap(first);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        object[] ring = new object[256];
+        for (int i = 0; i < 200000; i++) ring[i & 255] = new long[(i & 7) + 1];
+    }
+
+    static int Main()
+    {
+        long heap = Gc.NewHeap();
+        Make(heap);
+        Say("released", Gc.ReleaseHeap(heap));
+        Churn();
+        Gc.Collect();
+        Churn();
+        Say("kept key 17", _key == "key 17");
+        Say("kept array 1", _word!.Length == 1 && _word[0] == 1);
+        return 0;
+    }
+}

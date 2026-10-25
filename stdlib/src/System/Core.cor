@@ -276,7 +276,7 @@ static class String {
             int mask = _fullNamesFrom.Length - 1;
             int slot = (int)((at >> 3) ^ (at >> 13)) & mask;
             while (_fullNamesFrom[slot] != null) {
-                if (object.ReferenceEquals(_fullNamesFrom[slot], name)) { return _fullNamesTo[slot]; }
+                if (object.ReferenceEquals(_fullNamesFrom[slot], name)) { return _fullNamesTo[slot]!; }
                 slot = (slot + 1) & mask;
             }
             string full = NameText$(name);
