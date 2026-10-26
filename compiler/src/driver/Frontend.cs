@@ -562,8 +562,9 @@ public static class Frontend
         Parser.ProjectRecords = records;
         (program, library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals, symbols);
         // Every file the library's: the program side's aliases (the index's,
-        // recorded by Driver.IsLibrarySource) are the library's too, the
-        // library's own winning a name both give.
+        // recorded by Driver.IsLibrarySource) are the library's too -- one
+        // only the program side gives applies to these files as well, and
+        // the library's own wins a name both give.
         if (every)
         {
             Dictionary<string, string> both = new(program, StringComparer.Ordinal);
