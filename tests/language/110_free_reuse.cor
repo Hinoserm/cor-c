@@ -40,8 +40,8 @@ static class Program
     {
         // Wake the heap up first, so that the address of the first block in
         // the loop is a bump-pointer address like all the others.
-        long warm = Runtime.Alloc(64);
-        Runtime.Free(warm);
+        nuint warm = Runtime.Alloc(64);
+        Runtime.Free((nint)warm);
 
         // Freeing what was never allocated must be safe and do nothing: the
         // compiler emits these calls from a proof, and a proof about a
@@ -49,14 +49,14 @@ static class Program
         Runtime.Free(0);
         Runtime.Free(4);
 
-        long first = 0;
+        nuint first = 0;
         long moved = 0;
-        long sum = 0;
+        nuint sum = 0;
         long startHeap = Gc.HeapBytes;
 
         for (int i = 0; i < 200000; i++)
         {
-            long at = Runtime.Alloc(64);
+            nuint at = Runtime.Alloc(64);
 
             if (first == 0)
             {
@@ -67,12 +67,12 @@ static class Program
                 moved = moved + 1;
             }
 
-            Sys.Poke(at, 64);
-            sum = sum + Sys.Peek(at);
-            Runtime.Free(at);
+            Sys.WriteNative(at, 64);
+            sum = sum + Sys.ReadNative(at);
+            Runtime.Free((nint)at);
         }
 
-        Say("checksum ", sum);
+        Say("checksum ", (long)sum);
         SayBool("reused ", moved == 0);
         Say("collections ", Gc.Collections);
         SayBool("heap steady ", Gc.HeapBytes == startHeap);

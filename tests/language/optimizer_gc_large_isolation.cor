@@ -10,21 +10,21 @@
 sealed class Roots
 {
     readonly object _block;
-    readonly long _at;
+    readonly nuint _at;
 
     public Roots(int count)
     {
-        Length = count;
-        _at = Runtime.Alloc(count * 8L);
-        _block = Sys.FromWord(_at);
+        Length = (nuint)count;
+        _at = Runtime.Alloc(count * 8);
+        _block = Sys.ObjectAt(_at);
     }
 
-    public int Length { get; }
+    public nuint Length { get; }
 
-    public long this[int i]
+    public nuint this[nuint i]
     {
-        get { return Sys.Peek(_at + i * 8L); }
-        set { Sys.Poke(_at + i * 8L, value); }
+        get { return Sys.ReadNative(_at + i * 8); }
+        set { Sys.WriteNative(_at + i * 8, value); }
     }
 }
 static class Program
@@ -34,34 +34,34 @@ static class Program
         Roots survivors = new Roots(128);
         Roots objects = new Roots(128);
         long before = HeapChunks.HeapBytes;
-        for (int i = 0; i < objects.Length; i++)
+        for (nuint i = 0; i < objects.Length; i++)
         {
-            long large = Runtime.Alloc(131072);
-            long small = Runtime.Alloc(64);
-            long largeChunk = HeapChunks.Of(large);
+            nuint large = Runtime.Alloc(131072);
+            nuint small = Runtime.Alloc(64);
+            nuint largeChunk = HeapChunks.Of(large);
             if (largeChunk == 0 || largeChunk == HeapChunks.Of(small)) return 1;
             if (HeapChunks.Limit(largeChunk) - largeChunk > 135168) return 2;
-            if (Sys.Peek(large) != 0 || Sys.Peek(large + 131068) != 0) return 3;
-            Sys.Poke(large, i + 1);
-            Sys.Poke(small, i + 10);
+            if (Sys.ReadNative(large) != 0 || Sys.ReadNative(large + 131068) != 0) return 3;
+            Sys.WriteNative(large, i + 1);
+            Sys.WriteNative(small, i + 10);
             objects[i] = large;
             survivors[i] = small;
         }
         long peak = HeapChunks.HeapBytes;
-        for (int i = 0; i < objects.Length; i++)
+        for (nuint i = 0; i < objects.Length; i++)
         {
-            long large = objects[i];
-            if (Sys.Peek(large) != i + 1) return 4;
+            nuint large = objects[i];
+            if (Sys.ReadNative(large) != i + 1) return 4;
             objects[i] = 0;
-            Runtime.Free(large);
+            Runtime.Free((nint)large);
             if (HeapChunks.Of(large) != 0) return 5;
         }
         if (peak - HeapChunks.HeapBytes < 128 * 131072) return 6;
         Gc.Collect();
-        for (int i = 0; i < survivors.Length; i++)
+        for (nuint i = 0; i < survivors.Length; i++)
         {
-            if (Sys.Peek(survivors[i]) != i + 10) return 7;
-            Runtime.Free(survivors[i]);
+            if (Sys.ReadNative(survivors[i]) != i + 10) return 7;
+            Runtime.Free((nint)survivors[i]);
             survivors[i] = 0;
         }
         if (!Gc.CheckFreeIndex()) return 8;

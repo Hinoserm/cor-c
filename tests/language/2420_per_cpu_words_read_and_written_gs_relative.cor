@@ -28,21 +28,21 @@ static class Program
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static long At(long offset) { return Sys.PerCpuRead(offset); }
+    static nuint At(int offset) { return Sys.PerCpuRead(offset); }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void Put(long offset, long value) { Sys.PerCpuWrite(offset, value); }
+    static void Put(int offset, nuint value) { Sys.PerCpuWrite(offset, value); }
 
     static int Main()
     {
-        long block = Sys.ThreadBlock();
+        nuint block = Sys.ThreadBlock();
         Say("self", Sys.PerCpuRead(0) == block);
         Sys.PerCpuWrite(Tls.PreemptCount, 5);
-        bool constant = Sys.Peek(block + Tls.PreemptCount) == 5 && Sys.PerCpuRead(Tls.PreemptCount) == 5;
+        bool constant = Sys.ReadNative(block + Tls.PreemptCount) == 5 && Sys.PerCpuRead(Tls.PreemptCount) == 5;
         Sys.PerCpuWrite(Tls.PreemptCount, 0);
         Say("constant", constant);
         Put(Tls.PreemptCount, 9);
-        bool register = Sys.Peek(block + Tls.PreemptCount) == 9 && At(Tls.PreemptCount) == 9;
+        bool register = Sys.ReadNative(block + Tls.PreemptCount) == 9 && At(Tls.PreemptCount) == 9;
         Put(Tls.PreemptCount, 0);
         Say("register", register);
         Thing thing = new Thing();

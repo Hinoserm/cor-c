@@ -13,10 +13,10 @@ using System;
 
 static class Program
 {
-    static long Sum(long at, int n)
+    static long Sum(nuint at, int n)
     {
         long s = 0;
-        for (int i = 0; i < n; i++) s += Sys.PeekByte(at + i);
+        for (int i = 0; i < n; i++) s += Sys.Read8(at + (nuint)i);
         return s;
     }
 

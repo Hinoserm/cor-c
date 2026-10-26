@@ -44,11 +44,11 @@ static class Program
     static void Privileged(int n)
     {
         byte[] table = new byte[16];
-        long at = Sys.ArrayData(table);
+        nuint at = Sys.ArrayData(table);
         Sys.Lgdt(at);
         Sys.Lidt(at);
         Sys.Invlpg(at);
-        long cr3 = Sys.ReadCr(3);
+        nuint cr3 = Sys.ReadCr(3);
         Sys.WriteCr(3, cr3);
         Sys.WriteCr(0, Sys.ReadCr(0) | 1);
         Sys.WriteMsr(0x10, Sys.ReadMsr(0x1B) + n);

@@ -37,11 +37,11 @@ class Bump : Action
 
     public void Invoke()
     {
-        long at = Atom.At(_counter, Atom.FirstWord);
+        nuint at = Atom.At(_counter, Atom.FirstWord);
 
         for (int i = 0; i < _times; i++)
         {
-            Sys.AtomicAdd(at, 1);
+            Sys.AtomicAdd(at, 1u);
         }
     }
 }

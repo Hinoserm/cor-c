@@ -8,9 +8,9 @@ using System;
 static class Program
 {
     static long[] _values = new long[] { -1, 65535, 65536, 1099511627776L };
-    static long _address;
+    static nuint _address;
     static void Target() { }
-    static long StoreAddress(long address) { _address = address; return address; }
+    static nuint StoreAddress(nuint address) { _address = address; return address; }
     static long Mixed(long input, bool large)
     {
         long value = input & 65535;
@@ -33,7 +33,7 @@ static class Program
         long running = 0;
         for (int i = 0; i < 20; i++) running = (running + 65536) * 3;
         if (running != 342764853657600L) return 5;
-        long address = StoreAddress(Sys.AddressOf(Target));
+        nuint address = StoreAddress(Sys.AddressOf(Target));
         if (address == 0 || address != _address || ((ulong)address >> 32) != 0) return 6;
         Console.WriteLine("optimizer ranges and ABI passed");
         return 0;

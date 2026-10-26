@@ -21,10 +21,10 @@ static class Program
 
     static int Main()
     {
-        long flags = Sys.ReadFlags();
+        nuint flags = Sys.ReadFlags();
         SayBool("reserved bit ", (flags & 2) != 0);
         SayBool("interrupts ", (flags & 0x200) != 0);
-        long again = Sys.ReadFlags();
+        nuint again = Sys.ReadFlags();
         SayBool("the same twice ", (flags & 0x200) == (again & 0x200) && (again & 2) != 0);
         return 0;
     }

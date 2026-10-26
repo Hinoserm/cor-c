@@ -1,6 +1,5 @@
 // test: a nuint address is one register on i386: a field read is one load, a compare is unsigned, a loop counts in words
-// flags-x86: --nuint-addresses --cpu=486
-// flags-x86-64: --nuint-addresses
+// flags-x86: --cpu=486
 // run: no
 // expect-asm-x86: Field: 0x14(%e
 // expect-no-asm-x86: Field: adc add
@@ -15,8 +14,7 @@
 // at all; Below's `p < 0xC0000000` compares once, unsigned -- the kernel's
 // half is above 0x80000000, where a signed compare is wrong; and Sum's
 // nuint counter and address stay one register each, compared unsigned.
-// Compiled and read, not run, and with --nuint-addresses, so the class
-// library's own uses of the address intrinsics compile that way too.
+// Compiled and read, not run.
 
 using System.Runtime.CompilerServices;
 

@@ -17,26 +17,26 @@ using System;
 sealed class Roots
 {
     readonly object _block;
-    readonly long _at;
+    readonly nuint _at;
 
     public Roots(int count)
     {
-        Length = count;
-        _at = Runtime.Alloc(count * 8L);
-        _block = Sys.FromWord(_at);
+        Length = (nuint)count;
+        _at = Runtime.Alloc(count * 8);
+        _block = Sys.ObjectAt(_at);
     }
 
-    public int Length { get; }
+    public nuint Length { get; }
 
-    public long this[int i]
+    public nuint this[nuint i]
     {
-        get { return Sys.Peek(_at + i * 8L); }
-        set { Sys.Poke(_at + i * 8L, value); }
+        get { return Sys.ReadNative(_at + i * 8); }
+        set { Sys.WriteNative(_at + i * 8, value); }
     }
 }
 static class Program
 {
-    static void Check(int stage)
+    static void Check(nuint stage)
     {
         if (Gc.CheckFreeIndex()) return;
         Sys.Print("free index failed stage=" + stage + " kind=" + Gc.FreeIndexErrorKind
@@ -49,22 +49,22 @@ static class Program
         Gc.SetLimit(134217728);
         Roots blocks = new Roots(count);
         Roots guards = new Roots(count);
-        long large = Runtime.Alloc(60000);
-        long largeGuard = Runtime.Alloc(64);
-        for (int i = 0; i < count; i++)
+        nuint large = Runtime.Alloc(60000);
+        nuint largeGuard = Runtime.Alloc(64);
+        for (nuint i = 0; i < count; i++)
         {
-            blocks[i] = Runtime.Alloc(40000 + (i % 7) * 8);
+            blocks[i] = Runtime.Alloc(40000 + (int)(i % 7) * 8);
             // Stay below the dedicated-mapping threshold so this exercises
             // the free bins rather than immediate whole-chunk unmapping.
             guards[i] = Runtime.Alloc(64);
-            Sys.Poke(guards[i], i + 1);
+            Sys.WriteNative(guards[i], i + 1);
         }
         Check(1);
-        Runtime.Free(large);
-        for (int i = 0; i < count; i++)
+        Runtime.Free((nint)large);
+        for (nuint i = 0; i < count; i++)
         {
-            int index = (i * 73) & (count - 1);
-            Runtime.Free(blocks[index]);
+            nuint index = (i * 73) & (count - 1);
+            Runtime.Free((nint)blocks[index]);
             blocks[index] = 0;
             if ((i & 31) == 31) Check(1000 + i);
         }
@@ -72,34 +72,34 @@ static class Program
         large = Runtime.Alloc(50000);
         if (Gc.ProbeSteps - probes > 8)
         { Sys.Print("excessive free-index probes: " + (Gc.ProbeSteps - probes) + "\n"); return 1; }
-        for (long i = 0; i + WordSize.Bytes <= 50000; i += WordSize.Bytes)
-            if (Sys.Peek(large + i) != 0) return 2;
+        for (nuint i = 0; i + WordSize.Bytes <= 50000; i += WordSize.Bytes)
+            if (Sys.ReadNative(large + i) != 0) return 2;
         Check(2);
-        for (int i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
             blocks[i] = Runtime.Alloc(40000);
-            if (Sys.Peek(blocks[i]) != 0 || Sys.Peek(blocks[i] + 40000 - WordSize.Bytes) != 0) return 3;
-            Sys.Poke(blocks[i], i + 1);
+            if (Sys.ReadNative(blocks[i]) != 0 || Sys.ReadNative(blocks[i] + 40000 - WordSize.Bytes) != 0) return 3;
+            Sys.WriteNative(blocks[i], i + 1);
             if ((i & 31) == 31) Check(2000 + i);
         }
         Gc.Collect();
         Check(3);
-        for (int i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
-            if (Sys.Peek(guards[i]) != i + 1 || Sys.Peek(blocks[i]) != i + 1) return 4;
-            Runtime.Free(guards[i]);
+            if (Sys.ReadNative(guards[i]) != i + 1 || Sys.ReadNative(blocks[i]) != i + 1) return 4;
+            Runtime.Free((nint)guards[i]);
             guards[i] = 0;
         }
         Check(4);
-        for (int i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
-            int index = (i * 173) & (count - 1);
-            Runtime.Free(blocks[index]);
+            nuint index = (i * 173) & (count - 1);
+            Runtime.Free((nint)blocks[index]);
             blocks[index] = 0;
             if ((i & 31) == 31) Check(3000 + i);
         }
-        Runtime.Free(large);
-        Runtime.Free(largeGuard);
+        Runtime.Free((nint)large);
+        Runtime.Free((nint)largeGuard);
         Gc.Collect();
         Check(5);
         Sys.Print("free tree passed\n");

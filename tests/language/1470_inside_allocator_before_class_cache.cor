@@ -82,36 +82,36 @@ enum Path : long
 
 static class Program
 {
-    const long WaitAll = 0x40000000;   // __WALL
-    const long Size = 40;
+    const int WaitAll = 0x40000000;   // __WALL
+    const int Size = 40;
     const long StepLimit = 2000000;
 
     // The child's mailbox, at the same address in both: [0] the path to
     // allocate through, [1] what the allocation returned.
-    static long[] _mailbox = new long[2];
-    static long[] _word = new long[1];
+    static nuint[] _mailbox = new nuint[2];
+    static nuint[] _word = new nuint[1];
     static long[] _status = new long[1];
-    static long[] _heads = new long[Gc.Classes];
-    static long _child;
-    static long _block;
-    static long _lock;
+    static nuint[] _heads = new nuint[Gc.Classes];
+    static nint _child;
+    static nuint _block;
+    static nuint _lock;
     static string _broken = "";
 
-    static long Sys4(SystemCall call, long a, long b, long c, long d)
+    static nint Sys4(SystemCall call, nint a, nint b, nint c, nint d)
     {
-        return Sys.Syscall((long)call, a, b, c, d, 0, 0);
+        return Sys.Syscall((nint)call, a, b, c, d, 0, 0);
     }
 
-    static long Peek(long at)
+    static nuint Peek(nuint at)
     {
         _word[0] = 0;
-        Sys4(SystemCall.Ptrace, (long)Trace.PeekData, _child, at, Sys.ArrayData(_word));
-        return _word[0] & WordSize.AddressMask;
+        Sys4(SystemCall.Ptrace, (nint)Trace.PeekData, _child, (nint)at, (nint)Sys.ArrayData(_word));
+        return _word[0];
     }
 
-    static void Poke(long at, long value)
+    static void Poke(nuint at, nuint value)
     {
-        Sys4(SystemCall.Ptrace, (long)Trace.PokeData, _child, at, value);
+        Sys4(SystemCall.Ptrace, (nint)Trace.PokeData, _child, (nint)at, (nint)value);
     }
 
     /// The child's next stop: the signal it stopped with, or -1 when it did
@@ -119,25 +119,25 @@ static class Program
     static long Stopped()
     {
         _status[0] = 0;
-        Sys4(SystemCall.Wait4, _child, Sys.ArrayData(_status), WaitAll, 0);
+        Sys4(SystemCall.Wait4, _child, (nint)Sys.ArrayData(_status), WaitAll, 0);
         long status = _status[0] & 0xFFFF;
         if ((status & 0xFF) != 0x7F) return -1;
         return (status >> 8) & 0xFF;
     }
 
     /// Every list head of the cache at `cache`.
-    static void ReadHeads(long cache)
+    static void ReadHeads(nuint cache)
     {
-        for (long c = 0; c < Gc.Classes; c++)
+        for (int c = 0; c < Gc.Classes; c++)
         {
-            _heads[c] = Peek(cache + c * (2 * WordSize.Bytes) + WordSize.Bytes);
+            _heads[c] = Peek(cache + (nuint)c * (2 * WordSize.Bytes) + WordSize.Bytes);
         }
     }
 
-    static bool AHead(long result)
+    static bool AHead(nuint result)
     {
-        long block = (result - Gc.BlockHeaderBytes) & WordSize.AddressMask;
-        for (long c = 0; c < Gc.Classes; c++)
+        nuint block = result - Gc.BlockHeaderBytes;
+        for (int c = 0; c < Gc.Classes; c++)
         {
             if (_heads[c] != 0 && _heads[c] == block) return true;
         }
@@ -146,12 +146,12 @@ static class Program
 
     static void Child()
     {
-        Sys4(SystemCall.Ptrace, (long)Trace.Me, 0, 0, 0);
-        long me = Sys4(SystemCall.GetPid, 0, 0, 0, 0);
+        Sys4(SystemCall.Ptrace, (nint)Trace.Me, 0, 0, 0);
+        nint me = Sys4(SystemCall.GetPid, 0, 0, 0, 0);
         while (true)
         {
-            Sys4(SystemCall.Kill, me, (long)Signal.Stop, 0, 0);
-            long at = (Path)_mailbox[0] == Path.Word ? (long)Gc.AllocWord((nint)Size, 0) : Gc.Alloc(Size);
+            Sys4(SystemCall.Kill, me, (nint)Signal.Stop, 0, 0);
+            nuint at = (Path)_mailbox[0] == Path.Word ? Gc.AllocWord(Size, 0) : Gc.Alloc(Size);
             _mailbox[1] = at;
         }
     }
@@ -161,20 +161,20 @@ static class Program
     static bool Untouched(Path path)
     {
         Warm(path);
-        Poke(Sys.ArrayData(_mailbox), (long)path);
-        long cache = Peek(_block + Tls.Classes);
+        Poke(Sys.ArrayData(_mailbox), (nuint)path);
+        nuint cache = Peek(_block + Tls.Classes);
         if (cache == 0) return false;
         ReadHeads(cache);
-        Sys4(SystemCall.Ptrace, (long)Trace.Continue, _child, 0, 0);
+        Sys4(SystemCall.Ptrace, (nint)Trace.Continue, _child, 0, 0);
         if (Stopped() != (long)Signal.Stop) return false;
-        return AHead(Peek(Sys.ArrayData(_mailbox) + 8));
+        return AHead(Peek(Sys.ArrayData(_mailbox) + WordSize.Bytes));
     }
 
     /// One allocation at full speed, nothing looked at.
     static void Warm(Path path)
     {
-        Poke(Sys.ArrayData(_mailbox), (long)path);
-        Sys4(SystemCall.Ptrace, (long)Trace.Continue, _child, 0, 0);
+        Poke(Sys.ArrayData(_mailbox), (nuint)path);
+        Sys4(SystemCall.Ptrace, (nint)Trace.Continue, _child, 0, 0);
         Stopped();
     }
 
@@ -187,19 +187,19 @@ static class Program
     static long Stepped(Path path, long at, out bool early)
     {
         early = false;
-        Poke(Sys.ArrayData(_mailbox), (long)path);
+        Poke(Sys.ArrayData(_mailbox), (nuint)path);
         bool taken = false;
         bool inside = false;
         for (long step = 0; step < StepLimit; step++)
         {
-            long inAlloc = Peek(_block + Tls.InAlloc);
+            nuint inAlloc = Peek(_block + Tls.InAlloc);
             if (inAlloc != 0) inside = true;
             // ShedPages passes over a thread inside the allocator, and runs
             // under the heap lock, so never while the child holds it.
-            bool locked = Peek(_lock + GcLock.Held) == (_block & WordSize.AddressMask);
+            bool locked = Peek(_lock + GcLock.Held) == _block;
             if (!taken && step >= at && inAlloc == 0 && !locked)
             {
-                long cache = Peek(_block + Tls.Classes);
+                nuint cache = Peek(_block + Tls.Classes);
                 if (cache != 0)
                 {
                     ReadHeads(cache);
@@ -210,12 +210,12 @@ static class Program
             }
             // Once the cache is taken, the rest of the allocation runs at
             // full speed to the child's next stop.
-            Sys4(SystemCall.Ptrace, (long)(taken ? Trace.Continue : Trace.SingleStep), _child, 0, 0);
+            Sys4(SystemCall.Ptrace, (nint)(taken ? Trace.Continue : Trace.SingleStep), _child, 0, 0);
             long signal = Stopped();
             if (signal == (long)Signal.Stop)
             {
                 if (!taken) return 0;
-                return AHead(Peek(Sys.ArrayData(_mailbox) + 8)) ? -1 : 1;
+                return AHead(Peek(Sys.ArrayData(_mailbox) + WordSize.Bytes)) ? -1 : 1;
             }
             if (signal != (long)Signal.Trap)
             {
@@ -255,7 +255,7 @@ static class Program
     static int Main()
     {
         // A cache with a list for the size, on each path, before the fork.
-        Gc.AllocWord((nint)Size, 0);
+        Gc.AllocWord(Size, 0);
         Gc.Alloc(Size);
         _block = Sys.ThreadBlock();
         _lock = GcLock.Words();
@@ -275,7 +275,7 @@ static class Program
         Check("word", Path.Word);
         Check("long", Path.Long);
 
-        Sys4(SystemCall.Kill, _child, (long)Signal.Kill, 0, 0);
+        Sys4(SystemCall.Kill, _child, (nint)Signal.Kill, 0, 0);
         Stopped();
         return 0;
     }

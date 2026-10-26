@@ -29,12 +29,12 @@ using LoopUnits;
 
 public static class Program
 {
-    static long _most;
+    static nuint _most;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void Note()
     {
-        long words = Gc.RegionWords(Sys.ThreadBlock());
+        nuint words = Gc.RegionWords(Sys.ThreadBlock());
         if (words > _most) _most = words;
     }
 

@@ -25,18 +25,18 @@ using System;
 static class Program
 {
 #if TARGET_64BIT
-    const long Write = 1;
-    const long Mmap = 9;
+    const nint Write = 1;
+    const nint Mmap = 9;
 #else
-    const long Write = 4;
-    const long Mmap = 192;
+    const nint Write = 4;
+    const nint Mmap = 192;
 #endif
 
     static long _given;
     static long _givenBytes;
 
     /// Platform.UnmapHook: the kernel's, which takes its frames back.
-    static long Unmapped(long at, long bytes, long unused)
+    static nint Unmapped(nint at, nint bytes, nint unused)
     {
         _given = _given + 1;
         _givenBytes = bytes;
@@ -46,9 +46,9 @@ static class Program
     static int Main()
     {
         string text = "before the heap\n";
-        long units = Sys.StringData(text);
+        nuint units = Sys.StringData(text);
         long wrote = 0;
-        for (int i = 0; i < text.Length; i++) wrote = wrote + Platform.Blocking(Write, 1, units + i * 2, 1);
+        for (int i = 0; i < text.Length; i++) wrote = wrote + Platform.Blocking(Write, 1, (nint)(units + (nuint)(i * 2)), 1);
 
         Host.Start(8 * 1024 * 1024);
         Host.Line("wrote " + wrote);
@@ -67,12 +67,12 @@ static class Program
 
         // A page of the region's, handed out by the bump before the hook,
         // given back: the region's again (Platform.Release), never the hook's.
-        long made = Platform.Map(4096);
+        nuint made = Platform.Map(4096);
         Platform.UnmapHook = Sys.AddressOf(Program.Unmapped);
         Platform.Unmap(made, 4096);
         Host.Line("given back " + _given);
 
-        long page = Sys.Syscall(Mmap, 0, 4096, 3, 0x22, -1, 0);
+        nuint page = (nuint)Sys.Syscall(Mmap, 0, 4096, 3, 0x22, -1, 0);
         Platform.Unmap(page, 4096);
         Host.Line("given back " + _given + " " + _givenBytes);
         Platform.UnmapHook = 0;

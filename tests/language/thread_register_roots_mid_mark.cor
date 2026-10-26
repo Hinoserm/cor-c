@@ -83,15 +83,15 @@ class Churn : Action
 /// a scan to find, stale or live.
 class Parker : Action
 {
-    public long Slot;
+    public nuint Slot;
     public long Round;
 
     public void Invoke()
     {
         long[] held = Program.Build(Round);
         if (Program.WaitForRoots(Gc.Collections)) Program._windows = Program._windows + 1;
-        Sys.Poke(Slot, Sys.Word(held));
-        Runtime.RegisterRoots(Slot, Slot + 4);
+        Sys.WriteNative(Slot, Sys.ObjectAddress(held));
+        Runtime.RegisterRoots(Slot, Slot + WordSize.Bytes);
     }
 }
 
@@ -111,10 +111,10 @@ static class Program
         return held;
     }
 
-    static bool Whole(long at, long round)
+    static bool Whole(nuint at, long round)
     {
         if (at == 0 || HeapChunks.Of(at) == 0) return false;
-        long[] held = (long[])Sys.FromWord(at);
+        long[] held = (long[])Sys.ObjectAt(at);
         if (held.Length != Length) return false;
         for (int i = 0; i < Length; i++)
         {
@@ -148,8 +148,8 @@ static class Program
         // between here and the registration allocates. A spin would not
         // do: a thread that reaches no safepoint for long is answered for
         // where it stands, with the megabyte still in this frame.
-        long request = GcLock.Words() + GcLock.Request;
-        while (Runtime.Marking != 2 || Sys.Peek(request) != GcThreads.Scan)
+        nuint request = GcLock.Words() + GcLock.Request;
+        while (Runtime.Marking != 2 || Sys.ReadNative(request) != GcThreads.Scan)
         {
             _junk = new byte[64];
             tries = tries + 1;
@@ -163,7 +163,7 @@ static class Program
     static int Main()
     {
         Gc.SetLimit(33554432);
-        long slot = Platform.Map(4096);
+        nuint slot = Platform.Map(4096);
         if (slot == 0) return 3;
 
         Churn[] bodies = new Churn[3];
@@ -191,9 +191,9 @@ static class Program
                 _junk = new byte[256];
             }
 
-            if (!Whole(Sys.Peek(slot), round)) held = false;
+            if (!Whole(Sys.ReadNative(slot), round)) held = false;
             Runtime.UnregisterRoots(slot, slot + 4);
-            Sys.Poke(slot, 0);
+            Sys.WriteNative(slot, 0);
         }
 
         for (int i = 0; i < 3; i++) bodies[i].Stop = true;

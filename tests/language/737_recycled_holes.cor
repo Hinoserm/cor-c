@@ -43,7 +43,7 @@ static class Program
             keep[i] = b;
         }
 
-        long[] dropped = new long[255];
+        nuint[] dropped = new nuint[255];
         int holes = 0;
 
         for (int i = 1; i < 510; i = i + 2)
@@ -64,12 +64,12 @@ static class Program
             again[i] = b;
             // In a dropped array's place: at its start, or where the free
             // tail of a thread's buffer before it merged into its hole.
-            long at = Sys.ArrayData(b);
+            nuint at = Sys.ArrayData(b);
             bool reused = false;
             for (int h = 0; h < holes; h++)
             {
-                long gap = ~dropped[h] - at;
-                if (gap >= 0 && gap < 4200) reused = true;
+                nuint start = ~dropped[h];
+                if (at >= start && at - start < 4200) reused = true;
             }
             if (reused) fromHoles = fromHoles + 1;
         }

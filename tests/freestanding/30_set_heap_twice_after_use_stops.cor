@@ -18,14 +18,14 @@ static class Program
 {
     static int Main()
     {
-        long bytes = 1024 * 1024;
+        nuint bytes = 1024 * 1024;
 #if TARGET_64BIT
-        const long Mmap = 9;
+        const nint Mmap = 9;
 #else
-        const long Mmap = 192;
+        const nint Mmap = 192;
 #endif
-        long a = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);
-        long b = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);
+        nuint a = (nuint)Sys.Syscall(Mmap, 0, (nint)bytes, 3, 0x22, -1, 0);
+        nuint b = (nuint)Sys.Syscall(Mmap, 0, (nint)bytes, 3, 0x22, -1, 0);
         Platform.SetHeap(a, a + bytes);
         Platform.SetHeap(b, b + bytes);
         int[] first = new int[8];

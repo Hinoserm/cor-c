@@ -31,22 +31,22 @@ sealed class Box
 static class Program
 {
 #if TARGET_64BIT
-    const long Mmap = 9;
-    const long Munmap = 11;
+    const nint Mmap = 9;
+    const nint Munmap = 11;
 #else
-    const long Mmap = 192;
-    const long Munmap = 91;
+    const nint Mmap = 192;
+    const nint Munmap = 91;
 #endif
 
     /// Platform.MapHook: anonymous pages, committed by the kernel as they
     /// are touched.
-    static long Map(long bytes, long b, long c)
+    static nint Map(nint bytes, nint b, nint c)
     {
-        long at = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);
+        nint at = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);
         return at < 0 && at > -4096 ? 0 : at;
     }
 
-    static long Unmap(long at, long bytes, long c)
+    static nint Unmap(nint at, nint bytes, nint c)
     {
         return Sys.Syscall(Munmap, at, bytes, 0, 0, 0, 0);
     }

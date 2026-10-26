@@ -16,7 +16,7 @@
 // 64-bit word is a ulong whole on i386 too. ReadNative and WriteNative carry
 // a pointer-sized value with its top bit set (0x80001234 and more) through
 // memory unchanged. Low32 is the named narrowing of a nuint and of a ulong.
-// Peek, Poke and the atomics take a nuint address beside the long one, and
+// The atomics take a nuint address, and
 // a word-sized field holding an address is compared and swapped as a nuint.
 //
 // And a constant into a struct's operator: `p + 4096` reaches operator
@@ -41,7 +41,7 @@ static class Program
     static int Main()
     {
         byte[] buffer = new byte[64];
-        nuint at = (nuint)Sys.ArrayData(buffer);
+        nuint at = Sys.ArrayData(buffer);
 
         Sys.Write8(at, 0x81);
         Sys.Write16(at + 2, 0xFF01);
@@ -61,18 +61,18 @@ static class Program
 
         Console.WriteLine("low32 " + Sys.Low32(at - at + 0xF0000001) + " " + Sys.Low32(0x123456787765E721UL));
 
-        Sys.Poke(at + 24, 0xF0000001);
-        Console.WriteLine("peek " + (Sys.Peek(at + 24) & 0xFFFFFFFF));
+        Sys.Write64(at + 24, 0xF0000001);
+        Console.WriteLine("peek " + (Sys.Read64(at + 24) & 0xFFFFFFFF));
 
-        Sys.Poke(at + 32, 5);
-        long was = Sys.Cas(at + 32, 5, 7);
-        long now = Sys.Peek(at + 32);
+        Sys.WriteNative(at + 32, 5);
+        nuint was = Sys.Cas(at + 32, 5, 7);
+        nuint now = Sys.ReadNative(at + 32);
         Sys.WriteNative(at + 40, high);
         nuint seen = Sys.Cas(at + 40, high, at);
         bool swapped = Sys.AtomicSwap(at + 40, high) == at;
-        Sys.Poke(at + 48, 10);
+        Sys.WriteNative(at + 48, 10);
         nint before = Sys.AtomicAdd(at + 48, (nint)2);
-        Console.WriteLine("cas " + was + " " + now + " nuint " + (seen == high) + " swap " + swapped + " add " + before + " " + Sys.Peek(at + 48));
+        Console.WriteLine("cas " + was + " " + now + " nuint " + (seen == high) + " swap " + swapped + " add " + before + " " + Sys.ReadNative(at + 48));
 
         Sys.Write32(at + 56, 3);
         int old32 = Sys.Cas32(at + 56, 3, 4);

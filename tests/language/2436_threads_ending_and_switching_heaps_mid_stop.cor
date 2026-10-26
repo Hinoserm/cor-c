@@ -22,11 +22,11 @@ using System;
 
 static class Program
 {
-    static long[] _heaps = new long[2];
+    static nuint[] _heaps = new nuint[2];
     static long _bad;
     static long _spin;
 
-    static long Linger(long a, long b, long c)
+    static nint Linger(nint a, nint b, nint c)
     {
         if (a != 0) return 0;
         for (int i = 0; i < 20000; i++) _spin = _spin + i;
@@ -43,7 +43,7 @@ static class Program
 
     static void Work(int which, int round)
     {
-        long previous = Runtime.EnterHeap(_heaps[which]);
+        nuint previous = Runtime.EnterHeap(_heaps[which]);
         var kept = new string[300][];
         for (int i = 0; i < kept.Length; i++)
         {
@@ -51,7 +51,7 @@ static class Program
             if (i % 100 == 50)
             {
                 // Out to the first heap and back, as through a gate.
-                long mine = Runtime.EnterHeap(previous);
+                nuint mine = Runtime.EnterHeap(previous);
                 string between = "between " + i;
                 Runtime.EnterHeap(mine);
                 if (between.Length < 9) Interlocked.Increment(ref _bad);

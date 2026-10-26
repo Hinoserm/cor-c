@@ -10,42 +10,43 @@ static class Program
         // no block chain. Only their first page is touched; large virtual size
         // exercises index growth without requiring a gigabyte of resident RAM.
         const int count = 1030;
-        long table = Platform.Map(count * WordSize.Bytes);
+        nuint table = Platform.Map(count * WordSize.Bytes);
         if (table == 0) return 1;
         long before = HeapChunks.HeapBytes;
         // A chunk's first block follows its record, however long that is.
-        for (int i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
-            long chunk = HeapChunks.Take(64);
+            nuint chunk = HeapChunks.Take(64);
             if (chunk == 0) return 2;
-            Sys.Poke(table + i * WordSize.Bytes, chunk);
+            Sys.WriteNative(table + i * WordSize.Bytes, chunk);
             HeapChunks.SetEnd(chunk, chunk + 80);
         }
-        long first = HeapChunks.First(Sys.Peek(table)) - Sys.Peek(table);
+        nuint first = HeapChunks.First(Sys.ReadNative(table)) - Sys.ReadNative(table);
         // Walk in reverse and nonadjacent order to defeat the one-entry memo.
-        for (int i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
-            long chunk = Sys.Peek(table + ((i * 37) % count) * WordSize.Bytes);
+            nuint chunk = Sys.ReadNative(table + ((i * 37) % count) * WordSize.Bytes);
             if (HeapChunks.Of(HeapChunks.First(chunk)) != chunk) return 3;
             if (HeapChunks.Of(chunk + 79) != chunk) return 4;
             if (HeapChunks.Of(chunk + first - 1) != 0) return 5;
             if (HeapChunks.Of(chunk + 80) != 0) return 6;
             if (HeapChunks.Of(HeapChunks.Limit(chunk) - 1) != 0) return 7;
         }
-        for (int i = count - 1; i >= 0; i -= 2)
+        for (nuint n = count; n > 0; n -= 2)
         {
-            long chunk = Sys.Peek(table + i * WordSize.Bytes);
+            nuint i = n - 1;
+            nuint chunk = Sys.ReadNative(table + i * WordSize.Bytes);
             if (HeapChunks.Of(chunk + first) != chunk) return 8;
             HeapChunks.Release(chunk);
             if (HeapChunks.Of(chunk + first) != 0) return 9;
         }
-        for (int i = 0; i < count; i += 2)
+        for (nuint i = 0; i < count; i += 2)
         {
-            long chunk = Sys.Peek(table + i * WordSize.Bytes);
+            nuint chunk = Sys.ReadNative(table + i * WordSize.Bytes);
             if (HeapChunks.Of(chunk + first) != chunk) return 10;
             HeapChunks.Release(chunk);
         }
-        long replacement = HeapChunks.Take(64);
+        nuint replacement = HeapChunks.Take(64);
         if (replacement == 0) return 11;
         HeapChunks.SetEnd(replacement, replacement + 80);
         if (HeapChunks.Of(replacement + first + 8) != replacement) return 12;

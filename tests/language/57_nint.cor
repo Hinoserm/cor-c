@@ -12,7 +12,7 @@
 // i386, 64 in long mode, so the edges are checked against nint.MinValue and
 // nuint.MaxValue), the implicit conversions in from int and uint and out to
 // long and ulong, the explicit ones back, promotion with long and uint, and
-// holding an address that Sys.PeekWord reads through.
+// holding an address that Sys.Read32 reads through.
 
 using System;
 
@@ -76,10 +76,10 @@ static class Program
         int[] values = new int[4];
         values[3] = 12345;
         values[0] = 7;
-        nint start = (nint)Sys.Word(values);
+        nint start = (nint)Sys.ObjectAddress(values);
         nint at = start + ArrayHeader + 3 * 4;
-        long first = Sys.PeekWord(start + ArrayHeader);
-        Line("addr " + (at - start - ArrayHeader) + " " + Sys.PeekWord(at) + " " + first);
+        uint first = Sys.Read32((nuint)(start + ArrayHeader));
+        Line("addr " + (at - start - ArrayHeader) + " " + Sys.Read32((nuint)at) + " " + first);
         return 0;
     }
 }

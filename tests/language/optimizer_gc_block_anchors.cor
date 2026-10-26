@@ -10,21 +10,21 @@
 sealed class Roots
 {
     readonly object _block;
-    readonly long _at;
+    readonly nuint _at;
 
     public Roots(int count)
     {
         Length = count;
-        _at = Runtime.Alloc(count * 8L);
-        _block = Sys.FromWord(_at);
+        _at = Runtime.Alloc(count * 8);
+        _block = Sys.ObjectAt(_at);
     }
 
     public int Length { get; }
 
-    public long this[int i]
+    public nuint this[nuint i]
     {
-        get { return Sys.Peek(_at + i * 8L); }
-        set { Sys.Poke(_at + i * 8L, value); }
+        get { return Sys.ReadNative(_at + i * 8); }
+        set { Sys.WriteNative(_at + i * 8, value); }
     }
 }
 static class Program
@@ -33,12 +33,13 @@ static class Program
     // two-word header, rounded to eight bytes -- and a one-word footer
     // besides, outside a size-class page (a block past the largest class,
     // 1024 bytes, is in the mixed heap and keeps one).
-    static long OnePast(long request)
+    static nuint OnePast(nuint request)
     {
-        long header = 2 * WordSize.Bytes;
-        if (((request + header + 7) & -8L) <= 1024) return ((request + header + 7) & -8L) - header;
-        long overhead = header + WordSize.Bytes;
-        return ((request + overhead + 7) & -8L) - overhead;
+        nuint round = 7;
+        nuint header = 2 * WordSize.Bytes;
+        if (((request + header + 7) & ~round) <= 1024) return ((request + header + 7) & ~round) - header;
+        nuint overhead = header + WordSize.Bytes;
+        return ((request + overhead + 7) & ~round) - overhead;
     }
 
     static int Main()
@@ -46,18 +47,18 @@ static class Program
         const int count = 8192;
         Gc.SetLimit(16777216);
         Roots roots = new Roots(count + 2);
-        for (int i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
-            long memory = Runtime.Alloc(64);
-            Sys.Poke(memory + 16, i + 1);
+            nuint memory = Runtime.Alloc(64);
+            Sys.WriteNative(memory + 16, i + 1);
             // A 64-byte request's actual payload ends at OnePast(64) (+64 in
             // a 72-byte class block on i386), which is also a valid conservative root.
             roots[i] = memory + (i % 7 == 0 ? OnePast(64) : 16);
         }
-        for (int i = 0; i < 2; i++)
+        for (nuint i = 0; i < 2; i++)
         {
-            long memory = Runtime.Alloc(20000);
-            Sys.Poke(memory + 15000, 9000 + i);
+            nuint memory = Runtime.Alloc(20000);
+            Sys.WriteNative(memory + 15000, 9000 + i);
             roots[count + i] = memory + (i == 0 ? 15000 : OnePast(20000));
         }
         long before = Gc.WalkSteps;
@@ -65,27 +66,27 @@ static class Program
         long steps = Gc.WalkSteps - before;
         if (steps > (count + 64) * 260)
         { Sys.Print("interior scan steps=" + steps + "\n"); return 1; }
-        for (int i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
-            long memory = roots[i] - (i % 7 == 0 ? OnePast(64) : 16);
-            if (Sys.Peek(memory + 16) != i + 1) return 2;
+            nuint memory = roots[i] - (i % 7 == 0 ? OnePast(64) : 16);
+            if (Sys.ReadNative(memory + 16) != i + 1) return 2;
         }
-        if (Sys.Peek(roots[count]) != 9000 || Sys.Peek(roots[count + 1] - OnePast(20000) + 15000) != 9001) return 3;
-        long chunk = HeapChunks.Of(roots[count / 2]);
+        if (Sys.ReadNative(roots[count]) != 9000 || Sys.ReadNative(roots[count + 1] - OnePast(20000) + 15000) != 9001) return 3;
+        nuint chunk = HeapChunks.Of(roots[count / 2]);
         // Sweep invalidates boundaries. Outside marking the helper must not
         // consult the previous collection's now-stale page entries.
         if (HeapChunks.MarkStart(chunk, roots[count / 2]) != HeapChunks.First(chunk)) return 4;
         GcLock.Enter();
-        long saved = Sys.Peek(chunk + 3 * WordSize.Bytes);
-        Sys.Poke(chunk + 3 * WordSize.Bytes, 0);
+        nuint saved = Sys.ReadNative(chunk + 3 * WordSize.Bytes);
+        Sys.WriteNative(chunk + 3 * WordSize.Bytes, 0);
         HeapChunks.SetBlockAnchorsActive(true);
         bool fallback = HeapChunks.MarkStart(chunk, roots[count / 2]) == HeapChunks.First(chunk);
         HeapChunks.SetBlockAnchorsActive(false);
-        Sys.Poke(chunk + 3 * WordSize.Bytes, saved);
+        Sys.WriteNative(chunk + 3 * WordSize.Bytes, saved);
         GcLock.Exit();
         if (!fallback) return 5;
         long metadata = HeapChunks.BlockAnchorBytes;
-        long temporary = HeapChunks.Take(4096);
+        nuint temporary = HeapChunks.Take(4096);
         if (temporary == 0 || HeapChunks.PrepareBlockAnchors(temporary) == 0) return 6;
         if (HeapChunks.BlockAnchorBytes <= metadata) return 7;
         HeapChunks.Release(temporary);

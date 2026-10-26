@@ -51,7 +51,7 @@ static class Program
 {
     static bool _pulseFromClock;
     static long _clockReads;
-    static long _owner;
+    static nuint _owner;
     static long[]? _callA, _callB;
 
     /// Platform.NanosHook: CLOCK_MONOTONIC. Asked once to, it first pulses
@@ -69,10 +69,10 @@ static class Program
         }
         long[] ts = new long[2];
 #if TARGET_64BIT
-        Sys.Syscall(228, 1, Sys.ArrayData(ts), 0);
+        Sys.Syscall(228, 1, (nint)Sys.ArrayData(ts), 0);
         return ts[0] * 1000000000 + ts[1];
 #else
-        Sys.Syscall(265, 1, Sys.ArrayData(ts), 0);
+        Sys.Syscall(265, 1, (nint)Sys.ArrayData(ts), 0);
         long w = ts[0];
         return (w & 0xFFFFFFFF) * 1000000000 + (w >> 32);
 #endif
@@ -80,9 +80,9 @@ static class Program
 
     /// Platform.TypeInitOwnerHook: the parked call running now, or 0 for
     /// the thread block.
-    static long Owner(long a, long b, long c)
+    static nint Owner(nint a, nint b, nint c)
     {
-        return _owner;
+        return (nint)_owner;
     }
 
     static void Inner()

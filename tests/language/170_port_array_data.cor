@@ -21,11 +21,11 @@ using System;
 class Program
 {
 #if TARGET_64BIT
-    const long ArrayHeader = 24;
-    const long ObjectHeader = 16;
+    const nuint ArrayHeader = 24;
+    const nuint ObjectHeader = 16;
 #else
-    const long ArrayHeader = 16;
-    const long ObjectHeader = 8;
+    const nuint ArrayHeader = 16;
+    const nuint ObjectHeader = 8;
 #endif
 
     static int Main()
@@ -33,7 +33,7 @@ class Program
         byte[] b = new byte[8];
 
         Console.Write("header ");
-        long header = Sys.ArrayData(b) - Sys.Word(b);
+        nuint header = Sys.ArrayData(b) - Sys.ObjectAddress(b);
         Console.WriteLine(header == ArrayHeader ? "is the target's" : "is " + header);
 
         for (int i = 0; i < b.Length; i++)
@@ -43,12 +43,12 @@ class Program
 
         // Read the same bytes twice: once as an array and once through the
         // address, which is what a system call is handed.
-        long at = Sys.ArrayData(b);
+        nuint at = Sys.ArrayData(b);
         bool same = true;
 
         for (int i = 0; i < b.Length; i++)
         {
-            if (Sys.PeekByte(at + i) != b[i])
+            if (Sys.Read8(at + (nuint)i) != b[i])
             {
                 same = false;
             }
@@ -58,11 +58,11 @@ class Program
         // A string is UTF-16 code units, as C#'s is, and its payload is found
         // the same way, by Sys.StringData: two bytes a unit, little end first.
         string s = "ab\u00E9";
-        long sat = Sys.StringData(s);
+        nuint sat = Sys.StringData(s);
 
-        Console.WriteLine(Sys.PeekByte(sat) == 97 && Sys.PeekByte(sat + 1) == 0
-                       && Sys.PeekByte(sat + 2) == 98 && Sys.PeekByte(sat + 4) == 0xE9
-                       && sat - Sys.Word(s) == Sys.ArrayData(b) - Sys.Word(b)
+        Console.WriteLine(Sys.Read8(sat) == 97 && Sys.Read8(sat + 1) == 0
+                       && Sys.Read8(sat + 2) == 98 && Sys.Read8(sat + 4) == 0xE9
+                       && sat - Sys.ObjectAddress(s) == Sys.ArrayData(b) - Sys.ObjectAddress(b)
                         ? "string payload matches" : "string payload DIFFERS");
 
         // And an object's header is two words: the other half of the same
@@ -71,7 +71,7 @@ class Program
 
         c.Value = 0x11223344;
         Console.Write("object header ");
-        Console.WriteLine(Sys.PeekWord(Sys.Word(c) + ObjectHeader) == 0x11223344 ? "is the target's" : "is not two words");
+        Console.WriteLine(Sys.ReadNative(Sys.ObjectAddress(c) + ObjectHeader) == 0x11223344 ? "is the target's" : "is not two words");
         return 0;
     }
 }

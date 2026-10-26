@@ -12,47 +12,47 @@ static class Program
 {
     static int Main()
     {
-        long left = Runtime.Alloc(32);
-        long reusable = Runtime.Alloc(32);
-        long right = Runtime.Alloc(32);
-        Sys.Poke(left, 111);
-        Sys.Poke(right, 222);
-        Sys.Poke(reusable, 333);
-        long leftPage = HeapChunks.Of(left);
+        nuint left = Runtime.Alloc(32);
+        nuint reusable = Runtime.Alloc(32);
+        nuint right = Runtime.Alloc(32);
+        Sys.WriteNative(left, 111);
+        Sys.WriteNative(right, 222);
+        Sys.WriteNative(reusable, 333);
+        nuint leftPage = HeapChunks.Of(left);
         if (leftPage == 0 || HeapChunks.PageClass(leftPage) == 0) return 1;
-        Runtime.Free(reusable);
-        long again = Runtime.Alloc(32);
+        Runtime.Free((nint)reusable);
+        nuint again = Runtime.Alloc(32);
         if (again != reusable) return 2;
-        for (long i = 0; i < 32; i += WordSize.Bytes)
-            if (Sys.Peek(again + i) != 0) return 3;
-        if (Sys.Peek(left) != 111 || Sys.Peek(right) != 222) return 4;
+        for (nuint i = 0; i < 32; i += WordSize.Bytes)
+            if (Sys.ReadNative(again + i) != 0) return 3;
+        if (Sys.ReadNative(left) != 111 || Sys.ReadNative(right) != 222) return 4;
 
-        long other = Runtime.Alloc(280);
+        nuint other = Runtime.Alloc(280);
         if (HeapChunks.Of(other) == leftPage || HeapChunks.PageClass(HeapChunks.Of(other)) == 0) return 5;
 
-        long thread = Sys.ThreadBlock();
-        long large = Runtime.Alloc(4096);
+        nuint thread = Sys.ThreadBlock();
+        nuint large = Runtime.Alloc(4096);
         if (HeapChunks.PageClass(HeapChunks.Of(large)) != 0) return 6;
-        if (large < Sys.Peek(thread + Tls.AllocBase) || large >= Sys.Peek(thread + Tls.AllocPtr)) return 7;
-        for (long i = 0; i < 4096; i += WordSize.Bytes)
-            if (Sys.Peek(large + i) != 0) return 8;
+        if (large < Sys.ReadNative(thread + Tls.AllocBase) || large >= Sys.ReadNative(thread + Tls.AllocPtr)) return 7;
+        for (nuint i = 0; i < 4096; i += WordSize.Bytes)
+            if (Sys.ReadNative(large + i) != 0) return 8;
 
         GcLock.Enter();
         Gc.RetireClasses(thread);
         Gc.Retire(thread);
         GcLock.Exit();
         if (!Gc.CheckFreeIndex()) return 9;
-        long after = Runtime.Alloc(32);
+        nuint after = Runtime.Alloc(32);
         if (after == left || after == right || after == again) return 10;
-        for (long i = 0; i < 32; i += WordSize.Bytes)
-            if (Sys.Peek(after + i) != 0) return 11;
+        for (nuint i = 0; i < 32; i += WordSize.Bytes)
+            if (Sys.ReadNative(after + i) != 0) return 11;
 
-        Runtime.Free(after);
-        Runtime.Free(large);
-        Runtime.Free(other);
-        Runtime.Free(again);
-        Runtime.Free(right);
-        Runtime.Free(left);
+        Runtime.Free((nint)after);
+        Runtime.Free((nint)large);
+        Runtime.Free((nint)other);
+        Runtime.Free((nint)again);
+        Runtime.Free((nint)right);
+        Runtime.Free((nint)left);
         Gc.Collect();
         if (!Gc.CheckFreeIndex()) return 12;
         Sys.Print("size-class buffer passed\n");
