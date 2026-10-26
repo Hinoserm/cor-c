@@ -549,10 +549,9 @@ public static class Frontend
         if (indexedRecords is not null) records.UnionWith(indexedRecords);
         Parser.ProjectRecords = records;
         (Dictionary<string, string> program, Dictionary<string, string> library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals, symbols);
-        // What a declaration header read from the index (another thread, no side) falls back on.
-        Dictionary<string, string> everywhere = new(library, StringComparer.Ordinal);
-        foreach ((string alias, string aimed) in program) everywhere[alias] = aimed;
-        Parser.IndexedGlobalTypeAliases = everywhere;
+        // Each side's, for the declaration headers read from the index later (Parser.EnterSide).
+        Parser.ProgramGlobalTypeAliases = program;
+        Parser.LibraryGlobalTypeAliases = library;
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
@@ -583,16 +582,6 @@ public static class Frontend
     }
 
     /// <summary>
-    /// One source, parsed. A source compiled ELSEWHERE -- a --ref library,
-    /// the whole runtime and class library to every unit of a project -- is
-    /// read as the declaration index reads its slices: every declaration, its
-    /// constants and initialisers, and the bodies of templates, which copies
-    /// are made from here; not the bodies of its ordinary methods, which this
-    /// compilation never checks or emits. Kept, they were most of a unit's
-    /// syntax tree, held for the whole compilation and copied whole by every
-    /// round of generic expansion.
-    /// </summary>
-    /// <summary>
     /// The names of the record classes the program's files declare, from
     /// their tokens (`record [class] Name`), for a record whose base is one
     /// declared in another file (Parser.ProjectRecords). The library's are
@@ -622,6 +611,16 @@ public static class Frontend
         return names;
     }
 
+    /// <summary>
+    /// One source, parsed. A source compiled ELSEWHERE -- a --ref library,
+    /// the whole runtime and class library to every unit of a project -- is
+    /// read as the declaration index reads its slices: every declaration, its
+    /// constants and initialisers, and the bodies of templates, which copies
+    /// are made from here; not the bodies of its ordinary methods, which this
+    /// compilation never checks or emits. Kept, they were most of a unit's
+    /// syntax tree, held for the whole compilation and copied whole by every
+    /// round of generic expansion.
+    /// </summary>
     private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols,
         SyntaxTokenCache? tokens = null, bool elsewhere = false, IReadOnlyDictionary<string, string>? globalAliases = null)
     {

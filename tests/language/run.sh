@@ -28,7 +28,6 @@
 #   CORC     command that runs the compiler (default: the Release build of
 #            compiler/corc.csproj, built here if it is missing)
 #   CORC_LIBS  space-separated library sources compiled before each test
-
 #            (default: the runtime and standard-library sources in this repository)
 #   TIMEOUT  seconds a compiled test may run (default: 10)
 #   KEEP     set to 1 to keep the build directory (and the copy of the
@@ -108,7 +107,7 @@ for arg in "$@"; do
             passthrough+=("$arg")
             ;;
         -h|--help)
-            sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -291,8 +290,9 @@ for f in "$here"/*.cor; do
 done
 
 # A NAME THAT MATCHES NOTHING is said, not dropped: among several, a typo
-# would otherwise leave the run looking complete.
-[ -n "${CORC_TEST_ONE:-}" ] || for one in "${filters[@]+"${filters[@]}"}"; do
+# would otherwise leave the run looking complete. (When nothing matches at
+# all, the one message below says so.)
+[ -n "${CORC_TEST_ONE:-}" ] || [ "${#tests[@]}" -eq 0 ] || for one in "${filters[@]+"${filters[@]}"}"; do
     hit=0
     for f in "${tests[@]+"${tests[@]}"}"; do [[ "$(basename "$f" .cor)" == *"$one"* ]] && hit=1 && break; done
     [ "$hit" = 1 ] || echo "no test matches '$one'" >&2

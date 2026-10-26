@@ -896,16 +896,37 @@ public sealed class Parser
     /// <summary>
     /// The `global using` aliases of a type that the side of the file being
     /// parsed has, by name (Frontend.GlobalTypeAliases): per thread, as
-    /// files of both sides are parsed at once.
+    /// files of both sides are parsed at once. Set for the one parse and
+    /// cleared after it -- a source's by Frontend.ParseSource, an index
+    /// header's by EnterSide/LeaveSide -- and null otherwise: a parse that
+    /// is no file's sees no global alias.
     /// </summary>
     [ThreadStatic]
     public static IReadOnlyDictionary<string, string>? GlobalTypeAliases;
 
     /// <summary>
-    /// Both sides' aliases together, for a parse that is on no side: a declaration header read
-    /// from the index, on whatever thread asks for it.
+    /// Each side's aliases for this compile (Frontend.ParseSources), for a
+    /// declaration header read later from the index: the program's, and the
+    /// library's -- another assembly, whose aliases are its own.
     /// </summary>
-    public static IReadOnlyDictionary<string, string>? IndexedGlobalTypeAliases { get; set; }
+    public static IReadOnlyDictionary<string, string>? ProgramGlobalTypeAliases { get; set; }
+    public static IReadOnlyDictionary<string, string>? LibraryGlobalTypeAliases { get; set; }
+
+    /// <summary>
+    /// The aliases of the side the file at `path` is on (Binder.LibrarySource),
+    /// for a parse of part of it: what LeaveSide puts back.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string>? EnterSide(string path)
+    {
+        IReadOnlyDictionary<string, string>? was = GlobalTypeAliases;
+        GlobalTypeAliases = Binder.LibrarySource?.Invoke(path) == true ? LibraryGlobalTypeAliases : ProgramGlobalTypeAliases;
+        return was;
+    }
+
+    public static void LeaveSide(IReadOnlyDictionary<string, string>? was)
+    {
+        GlobalTypeAliases = was;
+    }
 
     /// <summary>
     /// The record classes the program declares, in any of its files, by name
@@ -934,7 +955,7 @@ public sealed class Parser
         // SyscallWord, in every file of every side: the type of a system
         // call's register, which --syscall-abi decides (the target's own
         // where it is not given).
-        if ((GlobalTypeAliases ?? IndexedGlobalTypeAliases) is { } globalAliases)
+        if (GlobalTypeAliases is { } globalAliases)
             foreach ((string alias, string aimed) in globalAliases) _typeAliases[alias] = aimed;
         _typeAliases["SyscallWord"] = SyscallWordType ?? (Target.Current.WordSize == 8 ? "ulong" : "uint");
         ParseUsings(unit);
