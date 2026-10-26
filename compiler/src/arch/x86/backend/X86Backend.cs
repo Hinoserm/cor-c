@@ -27,9 +27,12 @@ public sealed class X86Backend : IBackend
     /// The least alignment of each function's first byte: four by default,
     /// which --cpu may raise (CpuModel.FunctionAlign: sixteen on the K6, as
     /// AMD 21924 asks; Intel's 486 and Pentium manuals ask for none, and
-    /// padding there is bytes that could have been code). The text section
-    /// is aligned to what the loop heads in it need besides
-    /// (CpuModel.CodeAlign).
+    /// padding there is bytes that could have been code). Loop heads are not
+    /// aligned: padded to their section offsets, they needed the section
+    /// aligned beyond its functions, and a copy of a generic body the link
+    /// takes out (DuplicateCutter) must leave the section's alignment -- with
+    /// the section at 16 and functions at 4, it nearly never could, and the
+    /// kernel kept 16,800 copies, a fifth more code.
     /// </summary>
     public int FunctionAlign { get; set; } = 4;
 
@@ -153,10 +156,10 @@ public sealed class X86Backend : IBackend
         ObjectFile obj = new();
         (Target.X86Profile.Contract with { AutomaticPacked = AutomaticPacked }).Attach(obj);
         OptimizationSummary summary = new();
-        // THE SECTION AS ALIGNED AS ITS CODE ASKS (CpuModel.CodeAlign): a loop
-        // head padded to a section offset is at that address only so.
+        // THE SECTION AS ALIGNED AS ITS FUNCTIONS: a duplicate the link cuts
+        // out of it must be a whole number of the section's alignment.
         int functionAlign = CpuModel.FunctionAlign(FunctionAlign);
-        Section text = new(".text", SectionKind.Code) { Align = Math.Max(Math.Max(4, functionAlign), CpuModel.CodeAlign) };
+        Section text = new(".text", SectionKind.Code) { Align = Math.Max(4, functionAlign) };
         Section rodata = new(".rodata", SectionKind.ReadOnlyData);
         Section data = new(".data", SectionKind.Data);
         Section relocatedConstants = new(".data.rel.ro", SectionKind.Data);

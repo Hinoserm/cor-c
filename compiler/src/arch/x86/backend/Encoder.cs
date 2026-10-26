@@ -23,36 +23,6 @@ internal sealed class Encoder
     private int _funcStart;
     private readonly HashSet<MInstr> _long = new();
     private bool _widen;
-    private bool _padsSettled;
-    private bool _anyAligned;
-
-    /// <summary>
-    /// The loops' heads LoopPad pads: a block some block at or after it
-    /// jumps back to, laid out after one that does not fall into it -- so the
-    /// padding is never run.
-    /// </summary>
-    private static bool AlignLoops(MFunction m)
-    {
-        Dictionary<MBlock, int> at = new(ReferenceEqualityComparer.Instance);
-        for (int b = 0; b < m.Blocks.Count; b++) { at[m.Blocks[b]] = b; m.Blocks[b].AlignHere = false; m.Blocks[b].Pad = 0; }
-        if (CpuModel.LoopPad(1) == 0 && CpuModel.LoopPad(31) == 0) return false;
-        for (int b = 0; b < m.Blocks.Count; b++)
-            foreach (MInstr i in m.Blocks[b].Instrs)
-                if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel { Target: var to } && at.TryGetValue(to, out int head)
-                    && head <= b && head > 0 && Behind(m.Blocks[head - 1], to))
-                    to.AlignHere = true;
-        return m.Blocks.Any(x => x.AlignHere);
-    }
-
-    // Nothing runs into `head` from the block laid out before it: that
-    // block ends unconditionally, and not with a jump to `head`, which the
-    // encoder leaves out (a jump to the next block) and so falls into it.
-    private static bool Behind(MBlock before, MBlock head)
-    {
-        if (!before.EndsUnconditionally) return false;
-        MInstr last = before.Instrs[^1];
-        return !(last.Op == MOp.Jmp && last.Operands[0] is MLabel { Target: var to } && ReferenceEquals(to, head));
-    }
 
     /// <summary>Jump tables this function needs in .rodata: the symbol to place them at, and their entries.</summary>
     public List<(string Symbol, List<MBlock> Targets)> Tables { get; } = new();
@@ -109,25 +79,14 @@ internal sealed class Encoder
         // against a stale offset would leave a five-byte jump where two
         // bytes would do.
         _widen = false;
-        _padsSettled = false;
-        _anyAligned = AlignLoops(m);
         Pass();
         _widen = true;
         bool grew;
-        int passes = 0;
         do
         {
             _pending.Clear();
             _out.Truncate(_funcStart);
             grew = Pass();
-            // THE PADDING SETTLES AFTER THE FIRST WIDENING PASS: a jump
-            // widened later moves what follows and a loop may lose its
-            // alignment, but every pass after this one lays out the same
-            // padding, so the offsets a forward jump read are the bytes.
-            // And one pass more after it, whatever widened: this pass's
-            // forward jumps read the offsets of a pass whose padding may
-            // differ.
-            if (++passes == 1) { _padsSettled = true; grew |= _anyAligned; }
         }
         while (grew);
         _text.Relocs.AddRange(_pending);
@@ -177,11 +136,6 @@ internal sealed class Encoder
         for (int b = 0; b < _m.Blocks.Count; b++)
         {
             MBlock block = _m.Blocks[b];
-            if (block.AlignHere)
-            {
-                if (!_padsSettled) block.Pad = CpuModel.LoopPad(_out.Count);
-                Nops(_out, block.Pad);
-            }
             block.Offset = _out.Count - _funcStart;
             MBlock? next = b + 1 < _m.Blocks.Count ? _m.Blocks[b + 1] : null;
             foreach (MInstr i in block.Instrs)

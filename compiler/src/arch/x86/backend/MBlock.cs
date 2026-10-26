@@ -20,14 +20,6 @@ public sealed class MBlock
     /// <summary>Byte offset from the function start, once encoded.</summary>
     public int Offset { get; set; }
 
-    /// <summary>
-    /// A loop's head that nothing falls into (Encoder.AlignLoops): aligned as
-    /// the processor's manual asks, with padding nothing runs; Pad is the
-    /// padding the encoder settled on.
-    /// </summary>
-    public bool AlignHere { get; set; }
-    public int Pad { get; set; }
-
     public MBlock(string name) => Name = name;
 
     public override string ToString() => Name;

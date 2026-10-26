@@ -28,33 +28,6 @@ internal static class CpuModel
     public static bool K6 => Name is "k6" or "k6-2" or "k6-3" or "k6-2+" or "k6-3+";
 
     /// <summary>
-    /// The padding before a loop's head at section offset `at`, where
-    /// nothing runs it: on the 486 and the Pentium a label to the next 16
-    /// when it is under 8 bytes away (AP-500 5.4.1; Intel 242816 3.4.1, the
-    /// 486's two 16-byte prefetch buffers, the Pentium's fetch on 16-byte
-    /// boundaries); on the K6 out of the last 8 bytes of a 32-byte line, so
-    /// that the loop starts at least two instructions before its end (AMD
-    /// 21924, "Code Alignment"). None for anything else.
-    /// </summary>
-    public static int LoopPad(int at)
-    {
-        if (Scalar || P5)
-        {
-            int need = (16 - at % 16) % 16;
-            return need < 8 ? need : 0;
-        }
-        if (K6)
-        {
-            int into = at % 32;
-            return into > 24 ? 32 - into : 0;
-        }
-        return 0;
-    }
-
-    /// <summary>Whether LoopPad ever pads: the section must then be 16 or 32 aligned for an offset in it to mean an address.</summary>
-    public static int CodeAlign => K6 ? 32 : Scalar || P5 ? 16 : 4;
-
-    /// <summary>
     /// A function's alignment: 16 on the K6 (AMD 21924, "Aligning
     /// subroutines at 0-mod-16 ... optimizes instruction cache-fill
     /// efficiency"); Intel's 486 and Pentium rules ask for none beyond the
