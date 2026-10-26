@@ -144,9 +144,9 @@ public static class Interlocked
     /// shares those four is left as it was. Answers what they held, zero
     /// extended. A comparison that fails still ends in a locked instruction,
     /// rewriting the word as it was: every form is a full barrier, as .NET's.
-    static int Narrow(long at, int width, int value, int comparand, bool compare)
+    static int Narrow(nuint at, int width, int value, int comparand, bool compare)
     {
-        nuint word = at & -4L;
+        nuint word = at & ~(nuint)3;
         int shift = (int)(at & 3) * 8;
         int ones = width == 1 ? 0xFF : 0xFFFF;
         int mask = ones << shift;
@@ -212,10 +212,10 @@ public static class Interlocked
 #if TARGET_64BIT
     // A machine word: the processor's own atomics, as for an int.
 
-    static long Add64(long at, long value) { return Sys.AtomicAdd(at, value); }
-    static long Swap64(long at, long value) { return Sys.AtomicSwap(at, value); }
-    static long Cas64(nuint at, long expect, long value) { return Sys.Cas(at, expect, value); }
-    static long Combine64(nuint at, long value, bool or) { return or ? Sys.AtomicOr(at, value) : Sys.AtomicAnd(at, value); }
+    static long Add64(nuint at, long value) { return Sys.AtomicAdd(at, (nint)value); }
+    static long Swap64(nuint at, long value) { return Sys.AtomicSwap(at, (nint)value); }
+    static long Cas64(nuint at, long expect, long value) { return Sys.Cas(at, (nint)expect, (nint)value); }
+    static long Combine64(nuint at, long value, bool or) { return or ? Sys.AtomicOr(at, (nint)value) : Sys.AtomicAnd(at, (nint)value); }
 
     /// A compare-exchange of 0 with 0, which leaves whatever is there as it
     /// was, as .NET has it.
@@ -229,53 +229,53 @@ public static class Interlocked
 
     static nint _wide;
 
-    static long Held(nuint at) { return (Sys.Read32(at) & 0xFFFFFFFF) | (Sys.Read32(at + 4) << 32); }
+    static long Held(nuint at) { return (long)Sys.Read32(at) | ((long)Sys.Read32(at + 4) << 32); }
 
     static void Put(nuint at, long value)
     {
-        Sys.Write32(at, (int)value);
-        Sys.Write32(at + 4, (int)(value >> 32));
+        Sys.Write32(at, (uint)value);
+        Sys.Write32(at + 4, (uint)(value >> 32));
     }
 
-    static long Add64(long at, long value)
+    static long Add64(nuint at, long value)
     {
-        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, was + value);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
         return was;
     }
 
-    static long Swap64(long at, long value)
+    static long Swap64(nuint at, long value)
     {
-        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, value);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
         return was;
     }
 
-    static long Cas64(long at, long expect, long value)
+    static long Cas64(nuint at, long expect, long value)
     {
-        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         if (was == expect) Put(at, value);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
         return was;
     }
 
-    static long Combine64(long at, long value, bool or)
+    static long Combine64(nuint at, long value, bool or)
     {
-        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, or ? was | value : was & value);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
         return was;
     }
 
-    static long Read64(long at)
+    static long Read64(nuint at)
     {
-        long held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
         return was;
@@ -367,18 +367,18 @@ public static class Interlocked
         {
             long given = Wide(value);
             long was = compare ? Cas64(at, Wide(comparand), given) : Swap64(at, given);
-            Sys.Write32(into, (int)was);
-            Sys.Write32(into + 4, (int)(was >> 32));
+            Sys.Write32(into, (uint)was);
+            Sys.Write32(into + 4, (uint)(was >> 32));
             return;
         }
         if (width == 4)
         {
             int given = (int)Sys.Read32(value);
-            Sys.Write32(into, compare ? Sys.Cas32(at, (int)Sys.Read32(comparand), given) : Sys.AtomicSwap32(at, given));
+            Sys.Write32(into, (uint)(compare ? Sys.Cas32(at, (int)Sys.Read32(comparand), given) : Sys.AtomicSwap32(at, given)));
             return;
         }
         int was8 = Narrow(at, width, Part(value, width), compare ? Part(comparand, width) : 0, compare);
-        if (width == 1) Sys.Write8(into, was8); else Sys.Write16(into, was8);
+        if (width == 1) Sys.Write8(into, (byte)was8); else Sys.Write16(into, (ushort)was8);
     }
 
     static long Wide(nuint at) { return (Sys.Read32(at) & 0xFFFFFFFF) | (Sys.Read32(at + 4) << 32); }

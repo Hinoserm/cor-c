@@ -68,12 +68,12 @@ using System.Threading.Tasks;
 /// instruction.
 static class Atom
 {
-    public const long FirstWord = 2 * WordSize.Bytes;
-    public const long SecondWord = 3 * WordSize.Bytes;
+    public const int FirstWord = 2 * WordSize.Bytes;
+    public const int SecondWord = 3 * WordSize.Bytes;
 
-    public static long At(object o, long offset)
+    public static nuint At(object o, int offset)
     {
-        return Sys.ObjectAddress(o) + offset;
+        return Sys.ObjectAddress(o) + (nuint)offset;
     }
 
     /// Takes the spin lock at `at` (0 free, 1 held), waiting a Turn at a
@@ -82,7 +82,7 @@ static class Atom
     /// raises it, and down again for each turn waited: a holder preempted on
     /// one processor left its waiters spinning on a thread that could not run
     /// (the scheduler's timer gate, Scheduler.DropCanceledTimers).
-    public static void Enter(long at)
+    public static void Enter(nuint at)
     {
         long turns = 0;
         while (true)
@@ -117,7 +117,7 @@ static class Atom
 
     const long SpinTurns = 64;
 
-    public static void Exit(long at)
+    public static void Exit(nuint at)
     {
         Sys.AtomicSwap(at, 0);
         Runtime.PreemptOn();
@@ -828,7 +828,7 @@ class Task
     /// Step two, for the caller that claimed: the outcome is already stored.
     void Finish(int finalState)
     {
-        long lockAt = Atom.At(this, Atom.SecondWord);
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
 
         Atom.Enter(lockAt);
 
@@ -864,7 +864,7 @@ class Task
     /// for (WaitAny), which a loop of short waits piled up on every one.
     internal void RemoveContinuation(Action continuation)
     {
-        long lockAt = Atom.At(this, Atom.SecondWord);
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
         Atom.Enter(lockAt);
         if (_state < RanToCompletion)
         {
@@ -907,7 +907,7 @@ class Task
         // grown outside it: the bigger ones made with the lock let go, and
         // swapped in only if the lists are still the ones they were made for.
         AsyncContext? context = AsyncContext.Capture();
-        long lockAt = Atom.At(this, Atom.SecondWord);
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
 
         while (true)
         {
@@ -3434,7 +3434,7 @@ class CancellationTokenSource : IDisposable
             timer.Cancel();
         }
 
-        long lockAt = Atom.At(this, Atom.SecondWord);
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
 
         Atom.Enter(lockAt);
 
@@ -3456,7 +3456,7 @@ class CancellationTokenSource : IDisposable
     /// "dispose the registration, then free what the callback uses" is safe.
     void RunCallbacks(List<Action> callbacks, bool throwOnFirstException)
     {
-        long lockAt = Atom.At(this, Atom.SecondWord);
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
         List<Exception>? thrown = null;
         Atom.Enter(lockAt);
         _running = callbacks;
@@ -3504,7 +3504,7 @@ class CancellationTokenSource : IDisposable
     // thread running them (RunCallbacks).
     List<Action>? _running;
     int _runningAt = -1;
-    long _runningOn;
+    nuint _runningOn;
 
     /// What a callback taken out of a run in progress is: nothing.
     sealed class Skipped : Action
@@ -3517,7 +3517,7 @@ class CancellationTokenSource : IDisposable
     /// registration waits out (CancellationTokenRegistration.Dispose).
     internal bool RunningElsewhere(Action callback)
     {
-        long lockAt = Atom.At(this, Atom.SecondWord);
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
         Atom.Enter(lockAt);
         List<Action>? run = _running;
         bool there = run != null && _runningAt >= 0 && _runningAt < run.Count
@@ -3581,7 +3581,7 @@ class CancellationTokenSource : IDisposable
     /// canceled, which is .NET's rule.
     public CancellationTokenRegistration Register(Action callback)
     {
-        long lockAt = Atom.At(this, Atom.SecondWord);
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
 
         Atom.Enter(lockAt);
 
@@ -3626,7 +3626,7 @@ class CancellationTokenSource : IDisposable
     /// not run, as .NET's Unregister answers.
     public bool Unregister(Action callback)
     {
-        long lockAt = Atom.At(this, Atom.SecondWord);
+        nuint lockAt = Atom.At(this, Atom.SecondWord);
 
         Atom.Enter(lockAt);
 
@@ -4043,7 +4043,7 @@ static partial class Scheduler
     static void WakeOneWorker()
     {
         AtomicCell signal = SignalCell();
-        long at = Atom.At(signal, Atom.FirstWord);
+        nuint at = Atom.At(signal, Atom.FirstWord);
 
         Sys.AtomicAdd(at, 1);
         Native.Wake(at, 1);
@@ -4121,7 +4121,7 @@ static partial class Scheduler
 
         if (Platform.PostHook != 0)
         {
-            Sys.Call(Platform.PostHook, Sys.ObjectAddress(work), Sys.ObjectAddress(context), 0);
+            Sys.Call(Platform.PostHook, (nint)Sys.ObjectAddress(work), (nint)Sys.ObjectAddress(context), 0);
             return;
         }
 
@@ -4225,7 +4225,7 @@ static partial class Scheduler
         // RunPosted answers what escaped, so nothing leaves between the two.
         nuint block = Sys.ThreadBlock();
         nuint outer = Sys.ReadNative(block + Tls.MonitorRun);
-        Sys.WriteNative(block + Tls.MonitorRun, Sys.FramePointer() & ~3L);
+        Sys.WriteNative(block + Tls.MonitorRun, Sys.FramePointer() & ~(nuint)3);
         Exception? failed = RunPosted(work, context);
         Sys.WriteNative(block + Tls.MonitorRun, outer);
         if (failed != null)
@@ -4836,19 +4836,19 @@ static partial class Scheduler
 // thread.
 static class Monitor
 {
-    const long Held = 2;            // the owner written when there is no identity
-    const long Asleep = 1;          // bit 0: someone may be waiting on the word
+    const nuint Held = 2;           // the owner written when there is no identity
+    const nuint Asleep = 1;         // bit 0: someone may be waiting on the word
 
     static nint _depthGate;
     // THE EXTRA DEPTHS, by lock word: open addressing over two arrays,
     // grown with the gate let go -- NOTHING IS MADE UNDER IT, as preemption
     // is off while it is held (Tls.PreemptCount). A word of 0 is a free slot.
-    static long[]? _depthWords;
+    static nuint[]? _depthWords;
     static int[]? _depthCounts;
     static int _depthUsed;
 
     // The slot of `word`, or of the free one it would take.
-    static int DepthSlot(long[] words, long word)
+    static int DepthSlot(nuint[] words, nuint word)
     {
         int mask = words.Length - 1;
         int slot = (int)((word >> 3) ^ (word >> 13)) & mask;
@@ -4858,7 +4858,7 @@ static class Monitor
 
     // `word`'s slot emptied, its run's later entries moved back over it
     // (backward-shift deletion), so every lookup still finds its own.
-    static void DepthRemove(long[] words, int[] counts, int slot)
+    static void DepthRemove(nuint[] words, int[] counts, int slot)
     {
         int mask = words.Length - 1;
         int hole = slot;
@@ -4893,7 +4893,7 @@ static class Monitor
     // as that thread, and a lock the waiter held was the run's to enter
     // again -- `lock (gate) { Task.Delay(1).Wait(); }` let a queued `lock
     // (gate) { ... }` in, and the waiter's update was lost.
-    static long Owner()
+    static nuint Owner()
     {
         nuint me = Platform.MonitorOwner();
         if (me == 0) return 0;
@@ -4904,9 +4904,9 @@ static class Monitor
     /// Whether the lock's owner is this thread's own, lower on its stack --
     /// the thread outside any run, or a run that is waiting for this one --
     /// which can never let go while this run waits: a deadlock, said as one.
-    static void RefuseHeldBelow(long seen)
+    static void RefuseHeldBelow(nuint seen)
     {
-        long owner = seen & ~Asleep;
+        nuint owner = seen & ~Asleep;
         nuint block = Sys.ThreadBlock();
         if (owner == 0 || Sys.ReadNative(block + Tls.MonitorRun) == 0) return;
         nuint top = Sys.ReadNative(block + Tls.StackBase);
@@ -4924,7 +4924,7 @@ static class Monitor
             throw new ArgumentNullException();
         }
         nuint word = Sys.SyncWord(obj);
-        long me = Owner();
+        nuint me = Owner();
 
         if (me == 0)
         {
@@ -4934,7 +4934,7 @@ static class Monitor
             return;
         }
 
-        long seen = Sys.Cas(word, 0, me);
+        nuint seen = Sys.Cas(word, 0, me);
 
         if (seen == 0)
         {
@@ -5011,8 +5011,8 @@ static class Monitor
             return true;
         }
         nuint word = Sys.SyncWord(obj);
-        long me = Owner();
-        long mark = me == 0 ? Held : me;
+        nuint me = Owner();
+        nuint mark = me == 0 ? Held : me;
         // THE CLOCK ONLY ONCE THERE IS SOMETHING TO TIME: a lock that is free,
         // or already this thread's, is taken without asking the time -- on
         // bare metal three port reads of the 8254, or a kernel's NanosHook --
@@ -5025,7 +5025,7 @@ static class Monitor
         long turns = 0;
         while (true)
         {
-            long seen = Sys.Cas(word, 0, mark);
+            nuint seen = Sys.Cas(word, 0, mark);
 
             if (seen == 0)
             {
@@ -5066,7 +5066,7 @@ static class Monitor
             throw new ArgumentNullException();
         }
         nuint word = Sys.SyncWord(obj);
-        long me = Owner();
+        nuint me = Owner();
 
         if (me == 0)
         {
@@ -5095,15 +5095,15 @@ static class Monitor
         {
             throw new ArgumentNullException("obj");
         }
-        long me = Owner();
+        nuint me = Owner();
         nuint seen = Sys.ReadNative(Sys.SyncWord(obj));
         return me == 0 ? seen != 0 : (seen & ~Asleep) == me;
     }
 
     /// Lets the word go, waking one sleeper if the word said there might be one.
-    static void Release(long word)
+    static void Release(nuint word)
     {
-        if ((Sys.AtomicSwap(word, 0) & Asleep) != 0)
+        if ((Sys.AtomicSwap(word, 0u) & Asleep) != 0)
         {
             Platform.MonitorWake(word);
         }
@@ -5111,7 +5111,7 @@ static class Monitor
 
     /// Waits for the word to come free and takes it, marked as possibly
     /// waited on: the sleeper that took it cannot know it was the last.
-    static void Contend(nuint word, long me)
+    static void Contend(nuint word, nuint me)
     {
         Interlocked.Increment(ref _contentions);
         int spins = 0;
@@ -5139,21 +5139,21 @@ static class Monitor
             {
                 continue;
             }
-            Platform.MonitorBlock(word, seen | Asleep);
+            Platform.MonitorBlock(word, (nint)(seen | Asleep));
         }
     }
 
     /// Changes the extra depth a held word is counted at by `by`, saying,
     /// for a decrease, whether there was depth to take (the lock is then
     /// still held).
-    static bool Deepen(long word, int by)
+    static bool Deepen(nuint word, int by)
     {
         nuint gate = Sys.AddressOf(ref _depthGate);
 
         while (true)
         {
             Atom.Enter(gate);
-            long[]? words = _depthWords;
+            nuint[]? words = _depthWords;
             int[]? counts = _depthCounts;
             if (by <= 0)
             {
@@ -5194,7 +5194,7 @@ static class Monitor
             // and taken only if the table is still the one it was made for.
             int size = words == null ? 16 : words.Length * 2;
             Atom.Exit(gate);
-            long[] biggerWords = new long[size];
+            nuint[] biggerWords = new nuint[size];
             int[] biggerCounts = new int[size];
             Atom.Enter(gate);
             if (ReferenceEquals(_depthWords, words))
@@ -5218,13 +5218,13 @@ static class Monitor
 
     /// The extra depth, taken off the table whole (Monitor.Wait gives the
     /// lock up entirely and must restore every level when it takes it back).
-    static int TakeDepth(long word)
+    static int TakeDepth(nuint word)
     {
         nuint gate = Sys.AddressOf(ref _depthGate);
 
         Atom.Enter(gate);
         int depth = 0;
-        long[]? words = _depthWords;
+        nuint[]? words = _depthWords;
         if (words != null)
         {
             int slot = DepthSlot(words, word);
@@ -5238,7 +5238,7 @@ static class Monitor
         return depth;
     }
 
-    static void RestoreDepth(long word, int depth)
+    static void RestoreDepth(nuint word, int depth)
     {
         if (depth > 0)
         {
@@ -5278,7 +5278,7 @@ static class Monitor
         }
         ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
         nuint word = Sys.SyncWord(obj);
-        long me = Owner();
+        nuint me = Owner();
 
         if (me == 0 || (Sys.ReadNative(word) & ~Asleep) != me)
         {
@@ -5371,7 +5371,7 @@ static class Monitor
             throw new ArgumentNullException("obj");
         }
         nuint word = Sys.SyncWord(obj);
-        long me = Owner();
+        nuint me = Owner();
 
         if (me == 0 || (Sys.ReadNative(word) & ~Asleep) != me)
         {
@@ -5428,9 +5428,9 @@ class MonitorWaiter
     nint _signalled;
     int _pad;
 
-    public long Word;
+    public nuint Word;
 
-    public MonitorWaiter(long word)
+    public MonitorWaiter(nuint word)
     {
         _signalled = 0;
         _pad = 0;
@@ -5588,12 +5588,12 @@ struct AsyncContextSaved
 {
     public CultureInfo? Culture;
     public CultureInfo? UICulture;
-    public long Running;
-    public long OwnerWord;
-    public long Statics;
+    public nuint Running;
+    public nuint OwnerWord;
+    public nuint Statics;
     public bool HeldStatics;
     public bool Arena;
-    public long RegionBase, RegionAt, RegionEnd, RegionOpen;
+    public nuint RegionBase, RegionAt, RegionEnd, RegionOpen;
 }
 
 sealed class AsyncContext
@@ -5611,7 +5611,7 @@ sealed class AsyncContext
 
     // Platform.ContextHook's operations: the word now; a run entered with a
     // word, answering what the leave is to find; the run left with that.
-    public const long CaptureOp = 0, EnterOp = 1, LeaveOp = 2;
+    public const int CaptureOp = 0, EnterOp = 1, LeaveOp = 2;
 
     /// The context now, for a continuation being registered or posted: the
     /// running one as it is -- its owner is the flow's, named where the flow
@@ -5713,7 +5713,7 @@ sealed class AsyncContext
         }
         if (Platform.ContextHook != 0)
         {
-            saved.OwnerWord = Sys.Call(Platform.ContextHook, EnterOp, Sys.ObjectAddress(context.Owner), 0);
+            saved.OwnerWord = (nuint)Sys.Call(Platform.ContextHook, EnterOp, (nint)Sys.ObjectAddress(context.Owner), 0);
         }
         if (block == 0)
         {
@@ -5793,7 +5793,7 @@ sealed class AsyncContext
         }
         if (Platform.ContextHook != 0)
         {
-            Sys.Call(Platform.ContextHook, LeaveOp, saved.OwnerWord, 0);
+            Sys.Call(Platform.ContextHook, LeaveOp, (nint)saved.OwnerWord, 0);
         }
     }
 }
@@ -5951,7 +5951,7 @@ static class InterruptCompletions
         {
             nuint head = Sys.ReadNative(at);
             _links[slot] = (int)head;
-            if (Sys.Cas(at, head, slot + 1) == head)
+            if (Sys.Cas(at, head, (nuint)(slot + 1)) == head)
             {
                 break;
             }
@@ -7098,7 +7098,7 @@ namespace System.Threading
             // queue grows, with the lock let go, then looks again.
             SemaphoreWaiter? waiter = null;
             List<SemaphoreWaiter>? bigger = null;
-            long gate = Atom.At(this, Atom.SecondWord);
+            nuint gate = Atom.At(this, Atom.SecondWord);
             while (true)
             {
                 Atom.Enter(gate);
@@ -7151,7 +7151,7 @@ namespace System.Threading
                 throw new ArgumentOutOfRangeException("releaseCount", releaseCount, "The releaseCount argument must be greater than zero.");
             }
 
-            long gate = Atom.At(this, Atom.SecondWord);
+            nuint gate = Atom.At(this, Atom.SecondWord);
             Atom.Enter(gate);
             int previous = (int)_count;
             if (_max - previous < releaseCount)
@@ -7179,7 +7179,7 @@ namespace System.Threading
         public bool TryTakeNow()
         {
             CheckDisposed();
-            long gate = Atom.At(this, Atom.SecondWord);
+            nuint gate = Atom.At(this, Atom.SecondWord);
             Atom.Enter(gate);
             bool took = _count > 0;
             if (took)
@@ -7194,7 +7194,7 @@ namespace System.Threading
         /// still there (and so had not been granted a permit).
         public bool Withdraw(SemaphoreWaiter waiter)
         {
-            long gate = Atom.At(this, Atom.SecondWord);
+            nuint gate = Atom.At(this, Atom.SecondWord);
             Atom.Enter(gate);
             bool had = _waiters.Remove(waiter);
             Atom.Exit(gate);
@@ -7397,13 +7397,15 @@ static class ThreadStatics
     static nint _lock;
 
     /// The cell of the field whose number is at `indexAt`, on this thread.
-    public static nuint Cell(nuint indexAt, long bytes)
+    public static nuint Cell(nuint indexAt, nint bytes)
     {
-        nuint index = Sys.ReadNative(indexAt);
+        // The field's number, made the first time any thread asks: one of a
+        // few thousand at most, an int.
+        int index = (int)Sys.ReadNative(indexAt);
         if (index == 0)
         {
             Sys.Cas(indexAt, 0, (int)Sys.AtomicAdd(Sys.AddressOf(ref _fields), 1) + 1);
-            index = Sys.ReadNative(indexAt);
+            index = (int)Sys.ReadNative(indexAt);
         }
         nuint home = Home();
         object?[]? cells = Sys.ObjectAt(Sys.ReadNative(home)) as object?[];
@@ -7428,7 +7430,7 @@ static class ThreadStatics
     {
         if (Platform.ThreadStaticsHook != 0)
         {
-            long word = Sys.Call(Platform.ThreadStaticsHook, 0, 0, 0);
+            nuint word = (nuint)Sys.Call(Platform.ThreadStaticsHook, 0, 0, 0);
             if (word != 0) return word;
         }
         return Sys.ThreadBlock() + Tls.ThreadStatics;
@@ -7436,9 +7438,9 @@ static class ThreadStatics
 
     /// This thread's table, long enough for `index`: its first, put on the
     /// list, or a longer copy of the one it has, named in the word at `home`.
-    static object?[] Grow(nuint home, object?[]? old, long index)
+    static object?[] Grow(nuint home, object?[]? old, int index)
     {
-        long size = old is null ? 8 : old.Length * 2;
+        int size = old is null ? 8 : old.Length * 2;
         while (size <= index)
         {
             size = size * 2;
@@ -7500,7 +7502,7 @@ static class ThreadStatics
     /// would keep it for ever once the flow ended, and handed to the context
     /// that carries the flow -- which is all that keeps it from then on. The
     /// block's word is the caller's to put back. Null for no table.
-    public static object?[]? Flowing(long word)
+    public static object?[]? Flowing(nuint word)
     {
         object?[]? cells = Sys.ObjectAt(word) as object?[];
         if (cells is null)

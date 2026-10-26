@@ -122,7 +122,7 @@ static class Utf8Transcoder
     /// how many bytes. Allocates nothing: what a kernel writes a message with
     /// before it has a heap, and how a string is copied out to a user's
     /// buffer. The memory must have ByteCount's worth of room.
-    public static int EncodeTo(string s, int at, int count, long address)
+    public static int EncodeTo(string s, int at, int count, nuint address)
     {
         int end = at + count;
         nuint o = address;
@@ -134,15 +134,15 @@ static class Utf8Transcoder
 
             if (c < 0x80)
             {
-                Sys.Write8(o, c);
+                Sys.Write8(o, (byte)(c));
                 o = o + 1;
                 i = i + 1;
                 continue;
             }
             if (c < 0x800)
             {
-                Sys.Write8(o, 0xC0 | (c >> 6));
-                Sys.Write8(o + 1, 0x80 | (c & 0x3F));
+                Sys.Write8(o, (byte)(0xC0 | (c >> 6)));
+                Sys.Write8(o + 1, (byte)(0x80 | (c & 0x3F)));
                 o = o + 2;
                 i = i + 1;
                 continue;
@@ -152,10 +152,10 @@ static class Utf8Transcoder
 
             if (point >= 0x10000)
             {
-                Sys.Write8(o, 0xF0 | (point >> 18));
-                Sys.Write8(o + 1, 0x80 | ((point >> 12) & 0x3F));
-                Sys.Write8(o + 2, 0x80 | ((point >> 6) & 0x3F));
-                Sys.Write8(o + 3, 0x80 | (point & 0x3F));
+                Sys.Write8(o, (byte)(0xF0 | (point >> 18)));
+                Sys.Write8(o + 1, (byte)(0x80 | ((point >> 12) & 0x3F)));
+                Sys.Write8(o + 2, (byte)(0x80 | ((point >> 6) & 0x3F)));
+                Sys.Write8(o + 3, (byte)(0x80 | (point & 0x3F)));
                 o = o + 4;
                 i = i + 2;
                 continue;
@@ -164,9 +164,9 @@ static class Utf8Transcoder
             {
                 point = 0xFFFD;
             }
-            Sys.Write8(o, 0xE0 | (point >> 12));
-            Sys.Write8(o + 1, 0x80 | ((point >> 6) & 0x3F));
-            Sys.Write8(o + 2, 0x80 | (point & 0x3F));
+            Sys.Write8(o, (byte)(0xE0 | (point >> 12)));
+            Sys.Write8(o + 1, (byte)(0x80 | ((point >> 6) & 0x3F)));
+            Sys.Write8(o + 2, (byte)(0x80 | (point & 0x3F)));
             o = o + 3;
             i = i + 1;
         }
@@ -217,12 +217,12 @@ static class Utf8Transcoder
     private static int ByteAt(byte[]? bytes, nuint address, int i, int end)
     {
         if (i >= end) return -1;
-        return bytes != null ? bytes[i] : (int)Sys.Read8(address + i);
+        return bytes != null ? bytes[i] : Sys.Read8(address + (nuint)i);
     }
 
     /// The UTF-16 length and, when `into` is given, the text of the UTF-8 in
     /// bytes[at, at + count) -- or, with no array, at the address.
-    private static int Transcode(byte[]? bytes, long address, int at, int count, string? into)
+    private static int Transcode(byte[]? bytes, nuint address, int at, int count, string? into)
     {
         int end = at + count;
         int i = at;
@@ -299,7 +299,7 @@ static class Utf8Transcoder
     /// The UTF-8 in `count` bytes of memory at `address` as a string: what
     /// the kernel hands a program (its arguments, its environment, a
     /// directory entry's name).
-    public static string Decode(long address, int count)
+    public static string Decode(nuint address, int count)
     {
         return DecodeOnce(null, address, 0, count);
     }
@@ -312,7 +312,7 @@ static class Utf8Transcoder
     /// be writing is read exactly once, so nothing it changes can make the
     /// text disagree with its length, and nothing is copied or counted first.
     /// ASCII, most of what is decoded, fills it exactly.
-    private static string DecodeOnce(byte[]? bytes, long address, int at, int count)
+    private static string DecodeOnce(byte[]? bytes, nuint address, int at, int count)
     {
         if (count <= 0) return "";
         string made = Sys.NewChars(count);
@@ -360,7 +360,7 @@ static class Utf8Transcoder
             i = i + length;
         }
         // The length written, in the count word after the descriptor.
-        if (o < count) Sys.Write32(Sys.ObjectAddress(made) + 2 * WordSize.Bytes, o);
+        if (o < count) Sys.Write32(Sys.ObjectAddress(made) + 2 * WordSize.Bytes, (uint)o);
         return made;
     }
 
@@ -368,7 +368,7 @@ static class Utf8Transcoder
     public static string DecodeTerminated(nuint address)
     {
         int length = 0;
-        while (Sys.Read8(address + length) != 0) { length = length + 1; }
+        while (Sys.Read8(address + (nuint)length) != 0) { length = length + 1; }
         return Decode(address, length);
     }
 

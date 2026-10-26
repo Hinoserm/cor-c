@@ -8704,7 +8704,7 @@ static class Gc
     /// its free shape. The heap lock is held.
     static void SayHeld()
     {
-        if (_failedNeed < 0 || _failedNeed > MaxRequest) SayNumber("out of memory: a request larger than any object may be ", _failedNeed);
+        if (_failedNeed > MaxRequest) SayNumber("out of memory: a request larger than any object may be ", _failedNeed);
         else SayNumber("out of memory: request ", _failedNeed);
         SayNumber("out of memory: heap ", HeapChunks.HeapBytes);
         SayNumber("out of memory: since last collection ", _since);
@@ -8959,7 +8959,7 @@ static class Gc
             // a hint -- shared by every thread, read and written without a
             // lock -- since the page's own range decides.
             nuint first = _lastFreeClass;
-            if (first < 0 || first >= Classes) first = 0;
+            if (first >= Classes) first = 0;
             long tried = 0;
             c = first;
             while (cache != 0 && tried < Classes)
@@ -12329,18 +12329,14 @@ static class Gc
 
     // ---- marking in words ----------------------------------------------------
     //
-    // THE MARKER'S INNER LOOP IN THE MACHINE'S WORD. From a word read out of
-    // a live object to its block, the block's flag, the grey queue and back,
-    // everything ran in long: on i386 an add and an adc for every address
-    // sum, a cmp and an sbb for every compare, and the high halves kept in
-    // the frame, for every word of every live object. These are the same
-    // steps in nuint. Addresses compare unsigned, which is what AddressMask
-    // made the long forms do; a long routine reached from here is handed the
-    // word zero-extended, as Sys.Peek gives it.
+    // THE MARKER'S INNER LOOP: from a word read out of a live object to its
+    // block, the block's flag, the grey queue and back, for every word of
+    // every live object -- kept to the machine's word, one register an
+    // address on i386 as in long mode.
 
     static nuint PeekW(nuint at)
     {
-        return (nuint)Sys.ReadNative(at);
+        return Sys.ReadNative(at);
     }
 
     /// `local`: the draining thread's own stack (ClaimLocal), where what it

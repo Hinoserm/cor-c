@@ -1108,7 +1108,7 @@ static partial class Os
     public static int Write(int fd, string s)
     {
         byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
-        Platform.WriteBytes(fd, Sys.ArrayData(bytes), bytes.Length);
+        Platform.WriteBytes(fd, Sys.ArrayData(bytes), (nuint)bytes.Length);
         return bytes.Length;
     }
 
@@ -1359,7 +1359,7 @@ static class Clock
         {
             hz = 19;
         }
-        long flags = Enter();
+        nint flags = Enter();
         long before = _interrupts ? _tickedTicks + (_reload - Count()) : _elapsedTicks;
         _reload = Hz / hz;
         Sys.PortOut8(Control, 0x34);    // channel 0, lo/hi, mode 2, binary
@@ -1377,7 +1377,7 @@ static class Clock
     /// Now(), which holds the lock only with interrupts off.
     public static void OnTick()
     {
-        long flags = Enter();
+        nint flags = Enter();
         _tickedTicks = _tickedTicks + _reload;
         Leave(flags);
     }
@@ -1473,12 +1473,12 @@ static class Native
     // A KERNEL'S SLEEPERS ARE WOKEN BY ITS HOOK (Platform.WakeHook), as the
     // collector's are: a Monitor's Pulse on one processor otherwise reached a
     // waiter halted on another only at its next tick.
-    public static void Wake(long at, long count)
+    public static void Wake(nuint at, nint count)
     {
         Platform.Wake(at, count);
     }
 
-    public static void WakeAll(long at)
+    public static void WakeAll(nuint at)
     {
         Platform.Wake(at, int.MaxValue);
     }

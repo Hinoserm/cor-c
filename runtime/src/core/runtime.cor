@@ -2230,7 +2230,7 @@ static class Runtime
     /// field's number and the bytes its cell needs.
     public static nint ThreadStaticCell(nint indexAt, nint bytes)
     {
-        return (nint)ThreadStatics.Cell((nuint)indexAt, (long)bytes);
+        return (nint)ThreadStatics.Cell((nuint)indexAt, bytes);
     }
 
     public static void Free(nuint at)
@@ -3371,7 +3371,7 @@ static class Runtime
     public static void Print(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length == 0) return;
-        WriteBytes(StdOut, Sys.ArrayData(bytes.Items) + bytes.Start, bytes.Length);
+        WriteBytes(StdOut, Sys.ArrayData(bytes.Items) + (nuint)bytes.Start, bytes.Length);
     }
 
     public static void PrintLine()
@@ -3412,7 +3412,7 @@ static class Runtime
         // The digits' bytes are written as they were made: no string between.
         byte[] scratch = new byte[DigitsBytes];
         int begin = Digits(scratch, v);
-        WriteBytes(StdOut, Sys.ArrayData(scratch) + begin, DigitsBytes - begin);
+        WriteBytes(StdOut, Sys.ArrayData(scratch) + (nuint)begin, DigitsBytes - begin);
     }
 
     /// Sixteen hex digits, zero padded, no prefix -- the shape a debugger
@@ -3668,7 +3668,7 @@ static class Runtime
     }
 
     /// The same, throwing what .NET throws when the text names nothing.
-    public static nuint EnumParse(string[] names, long[] values, string text, bool ignoreCase)
+    public static long EnumParse(string[] names, long[] values, string text, bool ignoreCase)
     {
         long value = 0;
 
@@ -4591,9 +4591,9 @@ static class Runtime
     /// made without a collector included, which kept the collector's
     /// reporting routines, where nothing could ever turn the journal on.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void ArrayStoreRefused(nuint array, long value)
+    static void ArrayStoreRefused(nuint array, nuint value)
     {
-        if (ArrayStoreReport != 0) Sys.Call(ArrayStoreReport, value, array, 0);
+        if (ArrayStoreReport != 0) Sys.Call(ArrayStoreReport, (nint)value, (nint)array, 0);
         throw new ArrayTypeMismatchException();
     }
 
@@ -4628,7 +4628,7 @@ static class Runtime
     /// The refusal, out of line as ArrayStoreRefused is: the element's type
     /// named by its descriptor.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void ArrayCopyRefused(long value, nuint element)
+    static void ArrayCopyRefused(nuint value, nuint element)
     {
         object o = Sys.ObjectAt(value)!;
         // The descriptor's name word, as the image keeps it (String.TypeFullName).
@@ -4639,7 +4639,7 @@ static class Runtime
 
     /// Whether an object is an array whose elements are of `element` or
     /// derive from it: `animals is Animal[]` for a Dog[] (ArrayTest).
-    public static bool ArrayOf(nuint array, long element)
+    public static bool ArrayOf(nuint array, nuint element)
     {
         if (array == 0)
         {
@@ -4668,16 +4668,17 @@ static class Runtime
         const int w = WordSize.Bytes;
         // A class's depth is its place in its chain; an interface's and an
         // array's is -1.
-        long wantDepth = (long)(int)Sys.ReadNative(want + DescDepthWord * w);
+        // A class's depth in its chain; an interface's is negative.
+        int wantDepth = (int)Sys.ReadNative(want + DescDepthWord * w);
         if (wantDepth >= 0)
         {
-            long depth = (long)(int)Sys.ReadNative(desc + DescDepthWord * w);
+            int depth = (int)Sys.ReadNative(desc + DescDepthWord * w);
             if (depth < wantDepth)
             {
                 return false;
             }
             nuint display = Sys.ReadNative(desc + DescDisplayWord * w);
-            return display != 0 && (Sys.ReadNative(display + wantDepth * w)) == want;
+            return display != 0 && (Sys.ReadNative(display + (nuint)wantDepth * w)) == want;
         }
         nuint faces = Sys.ReadNative(desc + DescInterfacesWord * w);
         if (faces != 0)
@@ -4752,7 +4753,7 @@ static class Runtime
     /// IFormattable a number or an enum, not a bool (the box the
     /// interface's word 10 names); IComparable<X> and IEquatable<X> only X's
     /// own, the descriptor its word 10 names.
-    static bool BoxedFace(nuint desc, nuint want, long wantFlags)
+    static bool BoxedFace(nuint desc, nuint want, nuint wantFlags)
     {
         const int w = WordSize.Bytes;
         nuint flags = Sys.ReadNative(desc + DescFlagsWordHere * w);
@@ -4805,22 +4806,21 @@ static class Runtime
     /// variance converts to the one of its family over these arguments'
     /// descriptors, as VariantFits says of two named ones: each argument the
     /// same, or a reference type converting the way the template declares.
-    static bool ShapeVariantFits(nuint record, nuint variance, long count, long shape, long a0, long a1, long a2, long a3)
+    static bool ShapeVariantFits(nuint record, nuint variance, nuint count, nuint shape, nuint a0, nuint a1, nuint a2, nuint a3)
     {
         const int w = WordSize.Bytes;
-        long mask = WordSize.AddressMask;
-        for (long i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
-            nuint theirs = (i == 0 ? a0 : i == 1 ? a1 : i == 2 ? a2 : a3) & mask;
-            long mine = Sys.ReadNative(record + (2 + i) * w) & mask;
+            nuint theirs = i == 0 ? a0 : i == 1 ? a1 : i == 2 ? a2 : a3;
+            nuint mine = Sys.ReadNative(record + (2 + i) * w);
             if (mine == theirs) continue;
             nuint kind = Sys.ReadNative(variance + (2 + 2 * i) * w);
             if ((kind & 4) == 0 || mine == 0 || theirs == 0) return false;
             if ((Sys.ReadNative(theirs + DescFlagsWordHere * w) & (TypeValueFlag | TypePrimitiveFlag | TypeEnumFlag)) != 0) return false;
             // Object, either side: the caller says of its arguments (ShapeObjectShift),
             // the variance record of the interface's (1).
-            bool theirsObject = ((shape >> (ShapeObjectShift + i)) & 1) != 0;
-            bool mineObject = (Sys.ReadNative(variance + (3 + 2 * i) * w) & mask) == 1;
+            bool theirsObject = ((shape >> (ShapeObjectShift + (int)i)) & 1) != 0;
+            bool mineObject = (Sys.ReadNative(variance + (3 + 2 * i) * w)) == 1;
             nuint how = kind & 3;
             if (how == 1)
             {
@@ -4840,16 +4840,15 @@ static class Runtime
 
     /// Whether an identity record (Lowering.ShapeRecord) is the type of
     /// `family` over these `count` arguments' descriptors.
-    static bool ShapeRecordIs(nuint record, long family, long count, long a0, long a1, long a2, long a3)
+    static bool ShapeRecordIs(nuint record, nuint family, nuint count, nuint a0, nuint a1, nuint a2, nuint a3)
     {
         const int w = WordSize.Bytes;
-        long mask = WordSize.AddressMask;
-        return (Sys.ReadNative(record) & mask) == (family & mask)
-            && (Sys.ReadNative(record + w) & mask) == count
-            && (Sys.ReadNative(record + 2 * w) & mask) == (a0 & mask)
-            && (count < 2 || (Sys.ReadNative(record + 3 * w) & mask) == (a1 & mask))
-            && (count < 3 || (Sys.ReadNative(record + 4 * w) & mask) == (a2 & mask))
-            && (count < 4 || (Sys.ReadNative(record + 5 * w) & mask) == (a3 & mask));
+        return (Sys.ReadNative(record)) == (family)
+            && (Sys.ReadNative(record + w)) == count
+            && (Sys.ReadNative(record + 2 * w)) == (a0)
+            && (count < 2 || (Sys.ReadNative(record + 3 * w)) == (a1))
+            && (count < 3 || (Sys.ReadNative(record + 4 * w)) == (a2))
+            && (count < 4 || (Sys.ReadNative(record + 5 * w)) == (a3));
     }
 
     /// Whether an object implements the generic interface of `family`
@@ -4861,35 +4860,35 @@ static class Runtime
     /// without their tables naming them (BoxedFace).
     /// False when any argument is 0, which no caller could say: the copy's
     /// own test answers then.
-    public static bool ShapedAs(nuint obj, long family, long shape, long a0, long a1, long a2, long a3)
+    public static bool ShapedAs(nuint obj, nuint family, nuint shape, nuint a0, nuint a1, nuint a2, nuint a3)
     {
         if (obj == 0)
         {
             return false;
         }
-        long count = shape & ShapeCountMask;
+        nuint count = shape & ShapeCountMask;
         if (count < 1 || count > 4 || a0 == 0 || count > 1 && a1 == 0 || count > 2 && a2 == 0 || count > 3 && a3 == 0)
         {
             return false;
         }
         const int w = WordSize.Bytes;
-        long mask = WordSize.AddressMask;
-        nuint desc = (Sys.ReadNative(obj) & mask) - DescWordsHere * w;
+        nuint desc = (Sys.ReadNative(obj)) - DescWordsHere * w;
         // A GENERIC CLASS (ShapeClass), at its depth in every chain it is in
         // (shape's high bits): the ancestor at that depth is the class of that
         // family over these arguments, by the identity record its type
         // context holds there (Lowering.TypeContext). Classes vary in nothing.
         if ((shape & ShapeClass) != 0)
         {
-            long depth = shape >> ShapeDepthShift;
+            nuint depth = shape >> ShapeDepthShift;
             if ((Sys.ReadNative(desc + DescFlagsWordHere * w) & (1 | TypeStringFlag | TypeValueFlag | InterfaceFlag)) != 0) return false;
-            if ((long)(int)Sys.ReadNative(desc + DescDepthWord * w) < depth) return false;
-            nuint context = Sys.ReadNative(desc + DescElementWord * w) & mask;
+            int had = (int)Sys.ReadNative(desc + DescDepthWord * w);
+            if (had < 0 || (nuint)had < depth) return false;
+            nuint context = Sys.ReadNative(desc + DescElementWord * w);
             if (context == 0) return false;
-            nuint table = Sys.ReadNative(context + depth * w) & mask;
+            nuint table = Sys.ReadNative(context + depth * w);
             if (table == 0) return false;
-            long entries = Sys.ReadNative(table) & mask;
-            long identity = Sys.ReadNative(table + (1 + entries) * w) & mask;
+            nuint entries = Sys.ReadNative(table);
+            nuint identity = Sys.ReadNative(table + (1 + entries) * w);
             return identity != 0 && ShapeRecordIs(identity, family, count, a0, a1, a2, a3);
         }
         // AN ARRAY, OR ITS WALKER, ASKED ONE OF ITS INTERFACES (ShapeArrayFace,
@@ -4897,24 +4896,24 @@ static class Runtime
         // derive from it, or U is object and they are references.
         nuint descFlags = Sys.ReadNative(desc + DescFlagsWordHere * w);
         nuint arrayAsked = (shape & ShapeArrayFace) != 0 && (descFlags & 3) == 1 ? desc
-            : (shape & ShapeWalkerFace) != 0 && (descFlags & ArrayWalkerFlag) != 0 ? Sys.ReadNative(desc + DescElementWord * w) & mask : 0;
+            : (shape & ShapeWalkerFace) != 0 && (descFlags & ArrayWalkerFlag) != 0 ? Sys.ReadNative(desc + DescElementWord * w) : 0;
         if (arrayAsked != 0)
         {
             if (((shape >> ShapeObjectShift) & 1) != 0)
             {
                 return (Sys.ReadNative(arrayAsked + DescFlagsWordHere * w) & ReferenceElementsFlag) != 0;
             }
-            long had = Sys.ReadNative(arrayAsked + DescElementWord * w) & mask;
-            return had != 0 && DescribedAs(had, a0);
+            nuint element = Sys.ReadNative(arrayAsked + DescElementWord * w);
+            return element != 0 && DescribedAs(element, a0);
         }
-        long faces = Sys.ReadNative(desc + DescInterfacesWord * w) & mask;
+        nuint faces = Sys.ReadNative(desc + DescInterfacesWord * w);
         if (faces != 0)
         {
             for (nuint at = faces; ; at = at + w)
             {
-                nuint face = Sys.ReadNative(at) & mask;
+                nuint face = Sys.ReadNative(at);
                 if (face == 0) break;
-                nuint record = Sys.ReadNative(face + DescShapeWord * w) & mask;
+                nuint record = Sys.ReadNative(face + DescShapeWord * w);
                 if (record != 0 && ShapeRecordIs(record, family, count, a0, a1, a2, a3))
                 {
                     return true;
@@ -4922,7 +4921,7 @@ static class Runtime
                 // AND BY VARIANCE, as DescribedAs answers a named interface
                 // (VariantFits): a List<string> is an IEnumerable<object>
                 // where the copy's U is object.
-                if (record != 0 && (Sys.ReadNative(record) & mask) == (family & mask) && (Sys.ReadNative(record + w) & mask) == count)
+                if (record != 0 && (Sys.ReadNative(record)) == (family) && (Sys.ReadNative(record + w)) == count)
                 {
                     nuint variance = VarianceOf(face);
                     if (variance != 0 && ShapeVariantFits(record, variance, count, shape, a0, a1, a2, a3)) return true;
@@ -4934,7 +4933,7 @@ static class Runtime
         // (BoxedFaces): X's descriptor is the object's own, as an interface's
         // word 10 names it for DescribedAs. Only the string answered here,
         // and a box asked of its own number from a shared copy said no.
-        if ((shape & ShapeFaceOf) != 0 && count == 1 && (a0 & mask) == desc && FaceOverItself(desc))
+        if ((shape & ShapeFaceOf) != 0 && count == 1 && (a0) == desc && FaceOverItself(desc))
         {
             return true;
         }
@@ -4965,7 +4964,7 @@ static class Runtime
     /// IEnumerable<string> is an IEnumerable<object>, a Func<string> a
     /// Func<object>, an Action<object> an Action<string>; a Func<int> is no
     /// Func<object>, a value type being no reference.
-    static bool VariantFits(long face, long want)
+    static bool VariantFits(nuint face, nuint want)
     {
         nuint had = VarianceOf(face);
         nuint wanted = VarianceOf(want);
@@ -4974,7 +4973,7 @@ static class Runtime
         if ((Sys.ReadNative(had)) != (Sys.ReadNative(wanted))) return false;
         nuint count = Sys.ReadNative(had + w);
         if (count != Sys.ReadNative(wanted + w)) return false;
-        for (long i = 0; i < count; i++)
+        for (nuint i = 0; i < count; i++)
         {
             nuint at = (2 + 2 * i) * w;
             nuint kind = Sys.ReadNative(wanted + at);
@@ -5037,7 +5036,7 @@ static class Runtime
         nuint map = Sys.ReadNative(desc + Gc.DescRefMapWord * w);
         nuint list = map + (1 + (Sys.ReadNative(map) + 31) / 32) * w;
         nuint count = Sys.ReadNative(list);
-        for (long k = 0; k < count; k++)
+        for (nuint k = 0; k < count; k++)
         {
             nuint entry = list + (1 + 3 * k) * w;
             nuint field = at + Sys.ReadNative(entry);
@@ -5047,7 +5046,7 @@ static class Runtime
             nuint own;
             if (copier != 0)
             {
-                own = Sys.Call(copier, shared, 0, 0);
+                own = (nuint)Sys.Call(copier, (nint)shared, 0, 0);
             }
             else
             {
@@ -5127,7 +5126,7 @@ static class Runtime
     /// (Platform.Fault) makes the faulting thread call this as if from the
     /// instruction that read or wrote the null page, with the frame it was in
     /// and that instruction, so the trace begins where the program was.
-    public static void NullFault(nuint frame, long pc)
+    public static void NullFault(nuint frame, nuint pc)
     {
         NullReferenceException e = new NullReferenceException();
         string? site = Frame(pc);
@@ -5143,7 +5142,7 @@ static class Runtime
     /// the collector, is no program's to catch and stays fatal.
     public static bool NullFaultCatchable(nuint address)
     {
-        if (address < 0 || address >= 65536) return false;
+        if (address >= 65536) return false;
         nuint me = Sys.ThreadBlock();
         if (me == 0) return false;
         return !GcLock.HeldByMe() && !GcLock.IsCollector(me);
@@ -5886,9 +5885,9 @@ static class Runtime
     /// as UNSIGNED, or zero when all `count` bytes agree: Sys.CompareBytes.
     /// Strings have their own (StringEqual, StringCompare), which walk code
     /// units in pairs.
-    public static int CompareBytes(nuint a, nuint b, long count)
+    public static int CompareBytes(nuint a, nuint b, nuint count)
     {
-        long i = 0;
+        nuint i = 0;
 
         // Aligned equal words can be skipped on every target. A differing
         // word still goes through the unsigned-byte comparison below, so the
@@ -5899,8 +5898,8 @@ static class Runtime
             // before both addresses become safe for aligned word loads.
             while (i < count && ((a + i) & 3) != 0)
             {
-                long x = Sys.Read8(a + i);
-                long y = Sys.Read8(b + i);
+                byte x = Sys.Read8(a + i);
+                byte y = Sys.Read8(b + i);
                 if (x != y)
                 {
                     return x < y ? -1 : 1;
@@ -5919,8 +5918,8 @@ static class Runtime
 
         while (i < count)
         {
-            long x = Sys.Read8(a + i);
-            long y = Sys.Read8(b + i);
+            byte x = Sys.Read8(a + i);
+            byte y = Sys.Read8(b + i);
 
             if (x != y)
             {
@@ -5932,13 +5931,13 @@ static class Runtime
     }
 
     /// Exchanges `count` bytes between two addresses. Memory.Swap.
-    public static void SwapBytes(nuint first, nuint second, long count)
+    public static void SwapBytes(nuint first, nuint second, nuint count)
     {
-        long i = 0;
+        nuint i = 0;
 
         while (i < count)
         {
-            long x = Sys.Read8(first + i);
+            byte x = Sys.Read8(first + i);
             Sys.Write8(first + i, Sys.Read8(second + i));
             Sys.Write8(second + i, x);
             i = i + 1;
@@ -5949,13 +5948,13 @@ static class Runtime
     /// each of `pairs` steps swaps the two. Memory.Reverse passes the first
     /// and last byte and count / 2 pairs, so the middle byte of an odd block
     /// is left where it is, which is where it belongs.
-    public static void ReverseBytes(nuint low, nuint high, long pairs)
+    public static void ReverseBytes(nuint low, nuint high, nuint pairs)
     {
-        long i = 0;
+        nuint i = 0;
 
         while (i < pairs)
         {
-            long x = Sys.Read8(low);
+            byte x = Sys.Read8(low);
             Sys.Write8(low, Sys.Read8(high));
             Sys.Write8(high, x);
             low = low + 1;
@@ -5968,13 +5967,13 @@ static class Runtime
     /// bit 0 being the low bit of the first byte, or -1 when none is set.
     /// Whole zero bytes are skipped a byte at a time; a word at a time is the
     /// obvious next step if a caller ever shows up with megabytes of them.
-    public static long FirstSet(nuint bitmap, long bits)
+    public static nint FirstSet(nuint bitmap, nuint bits)
     {
-        long bit = 0;
+        nuint bit = 0;
 
         while (bit < bits)
         {
-            long b = Sys.Read8(bitmap + (bit >> 3));
+            byte b = Sys.Read8(bitmap + (bit >> 3));
 
             if (b == 0)
             {
@@ -5982,7 +5981,7 @@ static class Runtime
                 continue;
             }
 
-            long within = bit & 7;
+            nuint within = bit & 7;
 
             while (within < 8)
             {
@@ -5992,7 +5991,7 @@ static class Runtime
                 }
                 if (((b >> (int)within) & 1) != 0)
                 {
-                    return bit;
+                    return (nint)bit;
                 }
                 within = within + 1;
                 bit = bit + 1;
@@ -6002,23 +6001,23 @@ static class Runtime
     }
 
     /// How many of the first `bits` bits at `bitmap` are set.
-    public static long PopCountBlock(nuint bitmap, long bits)
+    public static nuint PopCountBlock(nuint bitmap, nuint bits)
     {
-        long count = 0;
-        long bit = 0;
+        nuint count = 0;
+        nuint bit = 0;
 
         while (bit + 8 <= bits)
         {
-            count = count + PopulationCount(Sys.Read8(bitmap + (bit >> 3)));
+            count = count + (nuint)PopulationCount(Sys.Read8(bitmap + (bit >> 3)));
             bit = bit + 8;
         }
 
         // A last partial byte: only the bits below `bits` count.
         if (bit < bits)
         {
-            long b = Sys.Read8(bitmap + (bit >> 3));
-            long keep = bits - bit;
-            count = count + PopulationCount(b & ((1 << (int)keep) - 1));
+            int b = Sys.Read8(bitmap + (bit >> 3));
+            int keep = (int)(bits - bit);
+            count = count + (nuint)PopulationCount(b & ((1 << keep) - 1));
         }
         return count;
     }
@@ -6141,7 +6140,7 @@ static class Runtime
         return (long)result;
     }
 
-    public static long CarrylessMultiply(long left, long right, out nuint high)
+    public static long CarrylessMultiply(long left, long right, out long high)
     {
         ulong a = (ulong)left, b = (ulong)right, aHigh = 0, low = 0, upper = 0;
         for (int bit = 0; bit < 64; bit++)
@@ -6169,7 +6168,7 @@ static class Runtime
         return result;
     }
 
-    public static long MultiplyAccumulate(long left, long right, long carry, out nuint high)
+    public static long MultiplyAccumulate(long left, long right, long carry, out long high)
     {
         ulong product = (ulong)left * (ulong)right;
         ulong sum = product + (ulong)carry;
@@ -6206,9 +6205,9 @@ static class Runtime
     /// The signed version is the unsigned one corrected for each negative
     /// operand: interpreting a negative a as unsigned added 2^64 to it, which
     /// contributed b * 2^64 to the product, i.e. b to the high word.
-    public static nuint MultiplyHigh(long a, long b)
+    public static long MultiplyHigh(long a, long b)
     {
-        nuint high = MultiplyHighUnsigned(a, b);
+        long high = MultiplyHighUnsigned(a, b);
 
         if (a < 0)
         {
@@ -6240,10 +6239,8 @@ static class Runtime
     // it. The CRC tables are built on first use rather than at start-up.
 
     // The most bytes Adler-32 can take between reductions with 32-bit sums;
-    // see the selector-3 branch. A const long so the assignment is typed
-    // long: assigning an int literal to a long local inside a nested block
-    // is mis-typed by the lowering as of this writing (I32 into I64).
-    const long AdlerBlock = 5552;
+    // see the selector-3 branch.
+    const int AdlerBlock = 5552;
 
     // The two reflected polynomials are written as LITERALS where they are
     // used, deliberately: a `const long` initialised from a literal above
@@ -6296,7 +6293,7 @@ static class Runtime
     }
 
 
-    public static nuint Checksum(nuint at, nuint bytes, int kind, long seed)
+    public static long Checksum(nuint at, nuint bytes, int kind, long seed)
     {
         int selector = kind & 255;
         long mask32 = 0xFFFFFFFF;
@@ -6311,7 +6308,7 @@ static class Runtime
         if (selector == 0)
         {
             long sum = seed;
-            long i = 0;
+            nuint i = 0;
 
             while (i < bytes)
             {
@@ -6326,11 +6323,11 @@ static class Runtime
             // Big-endian 16-bit words, end-around carry after each, an odd
             // trailing byte padded with zero, and the complement at the end.
             long sum = seed;
-            long i = 0;
+            nuint i = 0;
 
             while (i < bytes)
             {
-                nuint word = Sys.Read8(at + i) << 8;
+                uint word = (uint)Sys.Read8(at + i) << 8;
 
                 if (i + 1 < bytes)
                 {
@@ -6348,7 +6345,7 @@ static class Runtime
         {
             uint[] table = CrcTable(selector == 2 ? 0x82F63B78 : 0xEDB88320);
             long crc = begun ? (seed & mask32) : ((~seed) & mask32);
-            long i = 0;
+            nuint i = 0;
 
             while (i < bytes)
             {
@@ -6361,10 +6358,10 @@ static class Runtime
 
         if (selector == 3)
         {
-            nuint start = begun ? seed : (seed == 0 ? 1 : seed);
-            nuint a = start & 0xFFFF;
-            nuint b = (start >> 16) & 0xFFFF;
-            long i = 0;
+            long start = begun ? seed : (seed == 0 ? 1 : seed);
+            long a = start & 0xFFFF;
+            long b = (start >> 16) & 0xFFFF;
+            nuint i = 0;
 
             // 65521 is the largest prime below 2^16. The reduction is done
             // every 5552 bytes rather than every byte -- the most that fits
@@ -6399,11 +6396,11 @@ static class Runtime
             // is run on whole files rarely enough that a table is not worth
             // its 1 KB.
             long crc = begun ? (seed & mask32) : ((~seed) & mask32);
-            long i = 0;
+            nuint i = 0;
 
             while (i < bytes)
             {
-                crc = crc ^ (Sys.Read8(at + i) << 24);
+                crc = crc ^ ((long)Sys.Read8(at + i) << 24);
 
                 for (int bit = 0; bit < 8; bit++)
                 {

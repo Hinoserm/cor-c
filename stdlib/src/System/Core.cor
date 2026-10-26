@@ -294,7 +294,7 @@ static class String {
         if (compact is string text) { return text; }
         byte[] name = (byte[])compact;
         long at = NameHash(name);
-        long gate = EnterFullNames();
+        nuint gate = EnterFullNames();
         try {
             int mask = TypeNameCache.At.Length - 1;
             int slot = NameSlot(at, mask);
@@ -321,7 +321,7 @@ static class String {
     // (1311).
 
     // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount): a waiter spins.
-    static long EnterFullNames() {
+    static nuint EnterFullNames() {
         nuint gate = Sys.AddressOf(ref TypeNameCache.Gate);
         Runtime.PreemptOff();
         while (Sys.AtomicSwap(gate, 1) != 0) { Sys.Pause(); }
@@ -11055,10 +11055,10 @@ public static class MemoryExtensions {
         return value.Length <= span.Length && Same(Data(span), Data(value), value.Length);
     }
     public static bool EndsWith(this ReadOnlySpan<byte> span, ReadOnlySpan<byte> value) {
-        return value.Length <= span.Length && Same(Data(span) + span.Length - value.Length, Data(value), value.Length);
+        return value.Length <= span.Length && Same(Data(span) + (nuint)(span.Length - value.Length), Data(value), value.Length);
     }
     public static bool EndsWith(this Span<byte> span, ReadOnlySpan<byte> value) {
-        return value.Length <= span.Length && Same(Data(span) + span.Length - value.Length, Data(value), value.Length);
+        return value.Length <= span.Length && Same(Data(span) + (nuint)(span.Length - value.Length), Data(value), value.Length);
     }
 
     public static int IndexOf(this ReadOnlySpan<byte> span, byte value) { return Find(Data(span), span.Length, value); }
@@ -12049,52 +12049,52 @@ static class BinaryPrimitives {
 // manufacture one or risk running past the array it belongs to.
 
 static class Memory {
-    private static long At(byte[] bytes, int start, int count) {
+    private static nuint At(byte[] bytes, int start, int count) {
         if (start < 0 || count < 0 || start > bytes.Length - count) {
             throw new IndexOutOfRangeException("byte block is outside its array");
         }
-        return Sys.ArrayData(bytes) + start;
+        return Sys.ArrayData(bytes) + (nuint)start;
     }
 
     public static void Swap(byte[] first, int firstAt, byte[] second, int secondAt, int count) {
-        long a = At(first, firstAt, count);
-        long b = At(second, secondAt, count);
-        if (count > 0) { Sys.SwapBytes(a, b, count); }
+        nuint a = At(first, firstAt, count);
+        nuint b = At(second, secondAt, count);
+        if (count > 0) { Sys.SwapBytes(a, b, (nuint)count); }
     }
 
     public static void Reverse(byte[] bytes, int start, int count) {
-        long low = At(bytes, start, count);
-        if (count > 1) { Sys.ReverseBytes(low, low + count - 1, count / 2); }
+        nuint low = At(bytes, start, count);
+        if (count > 1) { Sys.ReverseBytes(low, low + (nuint)count - 1, (nuint)(count / 2)); }
     }
 
     public static long FirstSet(byte[] bytes, int start, int count) {
-        long at = At(bytes, start, count);
-        return count == 0 ? -1 : Sys.FirstSet(at, count * 8);
+        nuint at = At(bytes, start, count);
+        return count == 0 ? -1 : Sys.FirstSet(at, (nuint)count * 8);
     }
 
     public static long PopCount(byte[] bytes, int start, int count) {
-        long at = At(bytes, start, count);
-        return count == 0 ? 0 : Sys.PopCountBlock(at, count * 8);
+        nuint at = At(bytes, start, count);
+        return count == 0 ? 0 : (long)Sys.PopCountBlock(at, (nuint)count * 8);
     }
 
     public static long Sum(byte[] bytes, int start, int count) {
-        return Sys.Checksum(At(bytes, start, count), count, 0, 0);
+        return Sys.Checksum(At(bytes, start, count), (nuint)count, 0, 0);
     }
 
     public static long InternetChecksum(byte[] bytes, int start, int count) {
-        return Sys.Checksum(At(bytes, start, count), count, 1, 0);
+        return Sys.Checksum(At(bytes, start, count), (nuint)count, 1, 0);
     }
 
     public static long Crc32C(byte[] bytes, int start, int count) {
-        return Sys.Checksum(At(bytes, start, count), count, 2, 0);
+        return Sys.Checksum(At(bytes, start, count), (nuint)count, 2, 0);
     }
 
     public static long Adler32(byte[] bytes, int start, int count) {
-        return Sys.Checksum(At(bytes, start, count), count, 3, 0);
+        return Sys.Checksum(At(bytes, start, count), (nuint)count, 3, 0);
     }
 
     public static long Crc32(byte[] bytes, int start, int count) {
-        return Sys.Checksum(At(bytes, start, count), count, 4, 0);
+        return Sys.Checksum(At(bytes, start, count), (nuint)count, 4, 0);
     }
 }
 
@@ -35722,10 +35722,10 @@ namespace System.Runtime.CompilerServices
         public static void WriteUnaligned<T>(ref byte destination, T value) { *(T*)Sys.AddressOf(ref destination) = value; }
         public static void Copy<T>(void* destination, ref T source) { *(T*)destination = source; }
         public static void Copy<T>(ref T destination, void* source) { destination = *(T*)source; }
-        public static void CopyBlock(void* destination, void* source, uint byteCount) { Sys.MemoryCopy((long)destination, (long)source, byteCount); }
-        public static void CopyBlockUnaligned(void* destination, void* source, uint byteCount) { Sys.MemoryCopy((long)destination, (long)source, byteCount); }
-        public static void InitBlock(void* startAddress, byte value, uint byteCount) { Sys.MemorySet((long)startAddress, value, byteCount); }
-        public static void InitBlockUnaligned(void* startAddress, byte value, uint byteCount) { Sys.MemorySet((long)startAddress, value, byteCount); }
+        public static void CopyBlock(void* destination, void* source, uint byteCount) { Sys.MemoryCopy((nuint)destination, (nuint)source, byteCount); }
+        public static void CopyBlockUnaligned(void* destination, void* source, uint byteCount) { Sys.MemoryCopy((nuint)destination, (nuint)source, byteCount); }
+        public static void InitBlock(void* startAddress, byte value, uint byteCount) { Sys.MemorySet((nuint)startAddress, value, byteCount); }
+        public static void InitBlockUnaligned(void* startAddress, byte value, uint byteCount) { Sys.MemorySet((nuint)startAddress, value, byteCount); }
         public static void SkipInit<T>(out T value) { value = default!; }
     }
 
