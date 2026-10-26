@@ -1298,7 +1298,7 @@ public sealed partial class Lowering
     }
 
     private bool MakesStoreSequences
-        => StoreSequences && _t.Name == "x86" && _b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
+        => StoreSequences && _t.Name is "x86" or "x86-64" && _b.Types.TryGetValue(RuntimeType, out TypeSymbol? rt)
             && rt.Fields.Any(f => f.Static && f.Name == "Marking") && rt.Fields.Any(f => f.Static && f.Name == "Cards")
             && RuntimeMethod("WriteBarrier", 2) is not null;
 

@@ -1888,6 +1888,32 @@ internal sealed class Selector
             case Corsac.Lang.X86.MachineIntrinsics.DoublePrecision:
                 // SSE2's doubles round once already.
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.RefStore:
+            case Corsac.Lang.X86.MachineIntrinsics.CardStore:
+                // A REFERENCE STORED IN ONE SEQUENCE (CardMarks.FuseStores):
+                // the slot in RAX, the value in RDX, every register kept, by
+                // the image's stub (X64Backend.RefStoreStub).
+                Mov(Rax, R(i.Operands[0]));
+                Mov(Rdx, R(i.Operands[1]));
+                Emit(MOp.CallKeep, MImm.Sym(name == Corsac.Lang.X86.MachineIntrinsics.RefStore ? X64Backend.RefStoreStub : X64Backend.CardStoreStub, 0));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.RefExchange:
+                // The exchange's stub: slot RAX, value RDX; the old reference
+                // in RAX, every other register kept.
+                Mov(Rax, R(i.Operands[0]));
+                Mov(Rdx, R(i.Operands[1]));
+                Emit(MOp.CallKeepRax, MImm.Sym(X64Backend.RefExchangeStub, 0));
+                if (i.Dest is not null) Mov(V(i.Dest), Rax);
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.RefCompareExchange:
+                // The compare-exchange's: slot RCX, value RDX, expected RAX
+                // (CMPXCHG's own); what the slot held in RAX.
+                Mov(Rcx, R(i.Operands[0]));
+                Mov(Rdx, R(i.Operands[2]));
+                Mov(Rax, R(i.Operands[1]));
+                Emit(MOp.CallKeepCas, MImm.Sym(X64Backend.RefCompareExchangeStub, 0));
+                if (i.Dest is not null) Mov(V(i.Dest), Rax);
+                return;
             case Corsac.Lang.X86.MachineIntrinsics.PerCpuRead:
                 // A word of this processor's own area, gs-relative: one
                 // instruction, so no preemption falls between finding the

@@ -454,6 +454,19 @@ internal sealed class Encoder
                 Op(4, 2, i.Operands[0], 0, 0xFF);
                 CallSites.Add((i, _b.Count));
                 break;
+            case MOp.CallKeep:
+            case MOp.CallKeepRax:
+            case MOp.CallKeepCas:
+            {
+                // Not a call site: the stub is never a safepoint (nothing in
+                // it waits or collects), as i386's.
+                MImm stub = (MImm)i.Operands[0];
+                Byte(0xE8);
+                int at = _b.Count;
+                Imm32(0);
+                _relocs.Add((at, stub.Symbol!, stub.Value - 4, RelocKind.Plt32));
+                break;
+            }
             case MOp.Ret:
                 Byte(0xC3);
                 break;

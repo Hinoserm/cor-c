@@ -469,7 +469,7 @@ internal sealed class AddressFold
                 // A call leaves the flags as its callee did, and a jump or a
                 // return takes nothing of them across: flags never flow
                 // from one block to the next here.
-                case MOp.Call or MOp.CallInd or MOp.Jmp or MOp.Ret or MOp.Epilogue:
+                case MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas or MOp.Jmp or MOp.Ret or MOp.Epilogue:
                     return true;
                 default:
                     return false;

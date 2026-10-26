@@ -40,7 +40,7 @@ public sealed class CardMarks : IModulePass
     {
         // THE STORE SEQUENCES, where the module's stores are made so
         // (Lowering.StoreSequences, which says it in the runtime helpers).
-        bool sequences = Target.Current.Name == "x86" && m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore);
+        bool sequences = Target.Current.Name is "x86" or "x86-64" && m.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore);
         foreach (Function f in m.Functions)
         {
             DropFrameNotes(f);

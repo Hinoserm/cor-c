@@ -5,6 +5,9 @@
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier
 // expect-asm-x86: Swap: __corsac_refxchg
 // expect-no-asm-x86: Swap: [s_Runtime_Marking] __corsac_cardmark __corsac_barrier
+// expect-asm-x86-64: Store: __corsac_refstore
+// expect-no-asm-x86-64: Store: cmp
+// expect-asm-x86-64: Swap: __corsac_refxchg
 //
 // THE WINDOW, CLOSED. A ring-1 kernel's thread can be sent to its
 // collector's handshake at any instruction (Ring1Kernel.SendToAnswer). Made

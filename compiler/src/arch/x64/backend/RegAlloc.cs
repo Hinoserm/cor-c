@@ -137,6 +137,16 @@ internal static class Roles
                 yield return (int)Gpr.Rax;
                 yield return (int)Gpr.Rcx;
                 break;
+            case MOp.CallKeep:
+            case MOp.CallKeepRax:
+                yield return (int)Gpr.Rax;
+                yield return (int)Gpr.Rdx;
+                break;
+            case MOp.CallKeepCas:
+                yield return (int)Gpr.Rax;
+                yield return (int)Gpr.Rcx;
+                yield return (int)Gpr.Rdx;
+                break;
             case MOp.Call:
             case MOp.CallInd:
                 if (i.NativeAl)
@@ -228,6 +238,12 @@ internal static class Roles
             case MOp.RepStosq:
                 yield return (int)Gpr.Rdi;
                 yield return (int)Gpr.Rcx;
+                break;
+            case MOp.CallKeepRax:
+            case MOp.CallKeepCas:
+                // A store sequence's stub keeps every register but the one it
+                // answers in (X64Backend.RefStoreStub).
+                yield return (int)Gpr.Rax;
                 break;
             case MOp.Call:
             case MOp.CallInd:

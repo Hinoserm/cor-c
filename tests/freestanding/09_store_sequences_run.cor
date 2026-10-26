@@ -1,7 +1,8 @@
 // test: reference stores made as sequences (--store-sequences) store, report and keep every register
-// flags-x86: --store-sequences
+// flags: --store-sequences
 // apart: yes
 // expect-asm-x86: Store: __corsac_refstore
+// expect-asm-x86-64: Store: __corsac_refstore
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier
 // expect-exit: 0
 // expect-output:
@@ -14,16 +15,19 @@
 // compare l m n
 // marking o p q
 // scalar s
+// floats 375
 // live 1234567
 // alive 2000
 //
 // The stubs of 06_store_sequences, run: a field, a static, an array element,
 // a struct with references, an object's own fields as it is made,
-// Interlocked's exchange and compare-exchange -- each through its sequence
-// on i386 (and as before on x86-64, where no image stops its threads
-// anywhere) -- with values held in registers across them, which the stubs
-// must keep. Then with Runtime.Marking set, so that each stub takes its
-// report too, and a collection with the stored references the only way to
+// Interlocked's exchange and compare-exchange -- each through its sequence,
+// on i386 and in long mode alike (X64Backend.EmitStoreSequences) -- with
+// values held in registers across them, which the stubs must keep. Then
+// with Runtime.Marking set, so that each stub takes its report too -- in long
+// mode a System V call inside the stub, which may destroy any XMM register:
+// two doubles held in registers across a store and an exchange (Floats) come
+// out whole -- and a collection with the stored references the only way to
 // what survives it. And an object kept in registers, its field overwritten
 // with Marking set (the WriteBarrierValues path, which needs no sequence).
 
@@ -51,6 +55,17 @@ class Holder
 static class Program
 {
     static object? _static;
+
+    // Two doubles live across a store's stub and an exchange's: kept in XMM
+    // registers by the allocator, which a stub's call keeps (MOp.CallKeep).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static double Floats(Cell c, double a, double b)
+    {
+        double x = a * 1.5, y = b + 0.25;
+        c.Value = "f1";
+        Interlocked.Exchange(ref c.Value, "f2");
+        return x + y;
+    }
 
     static int Main()
     {
@@ -96,9 +111,11 @@ static class Program
         object? before = Interlocked.Exchange(ref marked.Value, "p");
         Interlocked.CompareExchange(ref marked.Value, "q", "p");
         string scalar = Scalar("r", "s");
+        double floats = Floats(new Cell("e"), 1.0, 2.0);
         Runtime.Marking = 0;
         Host.Line("marking " + before + " " + (before == (object)"o" ? "p" : "wrong") + " " + marked.Value);
         Host.Line("scalar " + scalar);
+        Host.Line("floats " + (long)(floats * 100));
 
         Host.Line("live " + Live(1000000, 234567));
 

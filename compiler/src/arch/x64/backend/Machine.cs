@@ -234,6 +234,11 @@ public enum MOp : byte
 
     // ---- control ----------------------------------------------------------------
     Jmp, Jcc, JmpTable, JmpInd, Call, CallInd, Ret,
+    // A call of a store sequence's stub (X64Backend.RefStoreStub), which keeps
+    // every register but RAX where it answers in it: CallKeep reads RAX and
+    // RDX, CallKeepRax the same and answers in RAX, CallKeepCas reads RCX,
+    // RDX and RAX and answers in RAX. The flags it leaves as it likes.
+    CallKeep, CallKeepRax, CallKeepCas,
 
     // ---- atomics and strings -----------------------------------------------------
     Xchg, Xadd, Cmpxchg, Mfence,

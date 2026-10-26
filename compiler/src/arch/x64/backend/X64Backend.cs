@@ -252,6 +252,8 @@ public sealed class X64Backend : IBackend
             encoder.ReleaseFunction();
         }
 
+        EmitStoreSequences(module, text, obj, defined);
+
         // The frame table: the x86 format, whose one address is 32 bits. In
         // long mode it is the distance from the word to the first function
         // (PC32), which a shared object loaded anywhere can hold without the
@@ -364,7 +366,7 @@ public sealed class X64Backend : IBackend
             MOp.Cmovcc => "cmov" + i.Cond.Mnemonic(),
             _ => i.Op.ToString().ToLowerInvariant(),
         };
-        string width = i.Op is MOp.Jcc or MOp.Jmp or MOp.Call ? "" : $".{i.Width}";
+        string width = i.Op is MOp.Jcc or MOp.Jmp or MOp.Call or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas ? "" : $".{i.Width}";
         return $"{(i.Lock ? "lock " : "")}{name}{width} {string.Join(", ", i.Operands)}";
     }
 
@@ -408,6 +410,148 @@ public sealed class X64Backend : IBackend
             return null;
         }
         return m;
+    }
+
+    /// <summary>The store sequences' stubs, named as i386's (RuntimeAbi; CardMarks.FuseStores).</summary>
+    public const string RefStoreStub = Corsac.Lang.Lto.RuntimeAbi.RefStore, CardStoreStub = Corsac.Lang.Lto.RuntimeAbi.CardStore;
+    public const string RefExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefExchange, RefCompareExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefCompareExchange;
+    private const string MarkingFlag = "s_Runtime_Marking", CardTable = "s_Runtime_Cards";
+
+    /// <summary>
+    /// THE STORE SEQUENCES IN LONG MODE (MOp.CallKeep; i386's in
+    /// X86Backend), in the object that defines the runtime's barrier
+    /// routines, when its units' stores are made through them: the image's
+    /// one copy, laid out between __corsac_store_sequences and its end, a
+    /// range its kernel answers no handshake inside. Between the Marking
+    /// test and the store a thread so stopped would answer the snapshot and
+    /// then store over a reference nobody reported; between the store and
+    /// the card, leave the card unset for a minor cycle. Each runs to its RET.
+    ///
+    /// While a mark is under way the store is the runtime's
+    /// (Runtime.WriteBarrierStore and its exchanges), called by the System V
+    /// convention: every register the convention lets a callee destroy --
+    /// nine general ones and all sixteen XMM -- saved round it, since the
+    /// stub keeps every register but the one it answers in, and RSP 16-aligned
+    /// at the call. K8 instructions only: CMPXCHG, XCHG, MOVDQU.
+    /// </summary>
+    private void EmitStoreSequences(Module module, Section text, ObjectFile obj, HashSet<string> defined)
+    {
+        if (PositionIndependent || !module.RuntimeHelpers.Contains(RefStoreStub)
+            || !module.Functions.Any(f => f.Name == Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore)
+            || !module.Functions.Any(f => f.Name == Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange)
+            || !module.Functions.Any(f => f.Name == Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange))
+        {
+            return;
+        }
+        Corsac.Lang.Ir.ChunkedBytes b = text.Bytes;
+        int gap = (FunctionAlign - b.Count % FunctionAlign) % FunctionAlign;
+        Encoder.Nops(b, gap);
+        int start = b.Count;
+        void Bytes(params byte[] bytes) => b.AddRange(bytes);
+        // A RIP-relative disp32 to `symbol`, with `after` more bytes of the
+        // instruction past it (an immediate).
+        void Rip(string symbol, int after)
+        {
+            text.Relocs.Add(new Relocation(b.Count, symbol, -4 - after, RelocKind.Rel32));
+            b.AddRange(new byte[4]);
+        }
+        void Call(string routine)
+        {
+            Bytes(0xE8);
+            text.Relocs.Add(new Relocation(b.Count, routine, -4, RelocKind.Plt32));
+            b.AddRange(new byte[4]);
+        }
+        // movdqu [rsp+16k], xmmK (store) or movdqu xmmK, [rsp+16k] (load).
+        void Xmms(bool store)
+        {
+            for (int k = 0; k < 16; k++)
+            {
+                Bytes(0xF3);
+                if (k >= 8) Bytes(0x44);
+                Bytes(0x0F, store ? (byte)0x7F : (byte)0x6F, (byte)(0x84 | ((k & 7) << 3)), 0x24);
+                b.AddRange(BitConverter.GetBytes(16 * k));
+            }
+        }
+        // While Marking: `routine` does the whole operation. `saves` the
+        // registers pushed (RAX among them where the stub answers nothing),
+        // `args` the moves into RDI, RSI, RDX; RET with the routine's answer
+        // in RAX. Else on past it.
+        void Marked(byte[] saves, byte[] args, string routine, byte[] restores)
+        {
+            Bytes(0x83, 0x3D); Rip(MarkingFlag, 1); Bytes(0x00);       // cmp dword [rip+Marking], 0
+            Bytes(0x0F, 0x84); int skip = b.Count; Bytes(0, 0, 0, 0);    // je past
+            Bytes(saves);
+            // RSP is 8 past a 16 at entry; the saves and the XMM area keep
+            // it 16 at the call (`pad` where the saves are an odd count).
+            int pushes = 0;
+            for (int k = 0; k < saves.Length; k++) if (saves[k] != 0x41) pushes++;
+            int frame = 256 + ((8 + 8 * pushes) % 16 == 0 ? 0 : 8);
+            Bytes(0x48, 0x81, 0xEC); b.AddRange(BitConverter.GetBytes(frame));   // sub rsp, frame
+            Xmms(true);
+            Bytes(args);
+            Call(routine);
+            Xmms(false);
+            Bytes(0x48, 0x81, 0xC4); b.AddRange(BitConverter.GetBytes(frame));   // add rsp, frame
+            Bytes(restores);
+            Bytes(0xC3);                                                          // ret
+            int past = b.Count - (skip + 4);
+            byte[] rel = BitConverter.GetBytes(past);
+            for (int k = 0; k < 4; k++) b[skip + k] = rel[k];
+        }
+        byte[] saveAll = { 0x50, 0x51, 0x52, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53 };     // rax rcx rdx rsi rdi r8-r11
+        byte[] restoreAll = { 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5A, 0x59, 0x58 };
+        byte[] saveButRax = { 0x51, 0x52, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53 };
+        byte[] restoreButRax = { 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5A, 0x59 };
+
+        // __corsac_refstore: slot RAX, value RDX; every register kept.
+        Marked(saveAll, new byte[] { 0x48, 0x89, 0xC7, 0x48, 0x89, 0xD6 }, Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore, restoreAll); // mov rdi, rax; mov rsi, rdx
+        Bytes(0x48, 0x89, 0x10);                                                  // mov [rax], rdx
+        CardOfRax();
+        // __corsac_cardstore: the same from the store on, for a new block's.
+        int cardStore = b.Count;
+        Bytes(0x48, 0x89, 0x10);                                                  // mov [rax], rdx
+        CardOfRax();
+        // __corsac_refxchg: slot RAX, value RDX; the old reference in RAX.
+        int exchange = b.Count;
+        Marked(saveButRax, new byte[] { 0x48, 0x89, 0xC7, 0x48, 0x89, 0xD6 }, Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange, restoreButRax);
+        Bytes(0x51, 0x48, 0x89, 0xC1, 0x48, 0x89, 0xD0, 0x48, 0x87, 0x01);      // push rcx; mov rcx, rax; mov rax, rdx; xchg [rcx], rax
+        CardOfRcx(popRcx: true);
+        // __corsac_refcas: slot RCX, value RDX, expected RAX; what the slot held in RAX.
+        int compareExchange = b.Count;
+        Marked(saveButRax, new byte[] { 0x48, 0x89, 0xCF, 0x48, 0x89, 0xD6, 0x48, 0x89, 0xC2 },   // mov rdi, rcx; mov rsi, rdx; mov rdx, rax
+            Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange, restoreButRax);
+        Bytes(0xF0, 0x48, 0x0F, 0xB1, 0x11);                                      // lock cmpxchg [rcx], rdx
+        CardOfRcx(popRcx: false);
+        int end = b.Count;
+
+        // The card of the slot in RAX, every register kept, and RET.
+        void CardOfRax()
+        {
+            Bytes(0x51, 0x48, 0x8B, 0x0D); Rip(CardTable, 0);                     // push rcx; mov rcx, [rip+Cards]
+            Bytes(0x48, 0x85, 0xC9, 0x74, 0x0A,                                   // test rcx, rcx; jz done
+                  0x50, 0x48, 0xC1, 0xE8, 0x0A, 0xC6, 0x04, 0x01, 0x01, 0x58,     // push rax; shr rax, 10; mov byte [rcx+rax], 1; pop rax
+                  0x59, 0xC3);                                                    // done: pop rcx; ret
+        }
+        // The card of the slot in RCX, RDX kept round it; RCX popped after
+        // where the stub pushed it first; RET.
+        void CardOfRcx(bool popRcx)
+        {
+            Bytes(0x52, 0x48, 0x8B, 0x15); Rip(CardTable, 0);                     // push rdx; mov rdx, [rip+Cards]
+            Bytes(0x48, 0x85, 0xD2, 0x74, 0x0A,                                   // test rdx, rdx; jz done
+                  0x51, 0x48, 0xC1, 0xE9, 0x0A, 0xC6, 0x04, 0x0A, 0x01, 0x59,     // push rcx; shr rcx, 10; mov byte [rdx+rcx], 1; pop rcx
+                  0x5A);                                                          // done: pop rdx
+            if (popRcx) Bytes(0x59);                                              // pop rcx
+            Bytes(0xC3);
+        }
+
+        obj.Symbols.Add(new Symbol { Name = Corsac.Lang.Lto.RuntimeAbi.SequencesStart, Section = text, Offset = start, Size = end - start, Global = true });
+        obj.Symbols.Add(new Symbol { Name = RefStoreStub, Section = text, Offset = start, Size = cardStore - start, IsFunction = true, Global = true });
+        obj.Symbols.Add(new Symbol { Name = CardStoreStub, Section = text, Offset = cardStore, Size = exchange - cardStore, IsFunction = true, Global = true });
+        obj.Symbols.Add(new Symbol { Name = RefExchangeStub, Section = text, Offset = exchange, Size = compareExchange - exchange, IsFunction = true, Global = true });
+        obj.Symbols.Add(new Symbol { Name = RefCompareExchangeStub, Section = text, Offset = compareExchange, Size = end - compareExchange, IsFunction = true, Global = true });
+        obj.Symbols.Add(new Symbol { Name = Corsac.Lang.Lto.RuntimeAbi.SequencesEnd, Section = text, Offset = end, Size = 0, Global = true });
+        foreach (string stub in new[] { Corsac.Lang.Lto.RuntimeAbi.SequencesStart, RefStoreStub, CardStoreStub, RefExchangeStub, RefCompareExchangeStub, Corsac.Lang.Lto.RuntimeAbi.SequencesEnd })
+            defined.Add(stub);
     }
 
     private static void Pad(Section s, int align, byte fill)

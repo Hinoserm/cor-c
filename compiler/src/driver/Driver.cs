@@ -785,11 +785,13 @@ public static class Driver
         // stays only for a store that cannot be made one
         // (Lowering.CardMarkBefore), in the same images: one scheme an image.
         // A thread block is a processor's in a ring-0 image only.
-        // NOT ASKED OF LONG MODE, where the backend has no store sequences and
-        // no __corsac_store_sequences range: the flag did nothing there, and
-        // a build that asked for them believed it had them.
-        if (longMode && args.Contains("--store-sequences"))
-            return Fail("--store-sequences is the 32-bit backend's: long mode has no store sequences");
+        // LONG MODE HAS THEM TOO (X64Backend.EmitStoreSequences), in the
+        // image that defines the runtime -- not in a position-independent
+        // one, whose stubs would be another image's and are not made: there
+        // the flag would do nothing, and a build that asked for them would
+        // believe it had them.
+        if (longMode && args.Contains("--store-sequences") && (args.Contains("--pic") || args.Contains("--shared")))
+            return Fail("--store-sequences in long mode is for an image that is not position-independent: the kernel and its modules");
         Corsac.Lang.Lower.Lowering.StoreSequences = args.Contains("--store-sequences");
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
         Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && freestanding;

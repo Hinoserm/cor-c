@@ -187,7 +187,7 @@ internal static class Peephole
     {
         ulong read = after;
         // A call takes every register it clobbers whole.
-        if (i.Op is MOp.Call or MOp.CallInd)
+        if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeepRax or MOp.CallKeepCas)
         {
             foreach (int clobbered in Roles.ImplicitDefs(i))
                 if (clobbered < MReg.XmmBase) read &= ~(1UL << clobbered);
