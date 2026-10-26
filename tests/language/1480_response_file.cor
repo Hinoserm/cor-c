@@ -1,4 +1,5 @@
 // test: a response file names sources and flags
+// only-target: x86
 // flags: @tests/language/support/1480_response_file.list
 // expect-exit: 42
 // expect-output:
