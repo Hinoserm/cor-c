@@ -3601,6 +3601,15 @@ partial static class File
 
 partial static class Directory
 {
+    /// Where a symbolic link to a directory points (.NET 6's
+    /// Directory.ResolveLinkTarget): File.ResolveLinkTarget's walk, the
+    /// answer a DirectoryInfo. Null when `path` is no link.
+    public static FileSystemInfo? ResolveLinkTarget(string linkPath, bool returnFinalTarget)
+    {
+        FileSystemInfo? target = File.ResolveLinkTarget(linkPath, returnFinalTarget);
+        return target == null ? null : new DirectoryInfo(target.FullName);
+    }
+
     public static string[] GetDirectories(string path)
     {
         DirectoryInfo[] dirs = new DirectoryInfo(path).GetDirectories();
