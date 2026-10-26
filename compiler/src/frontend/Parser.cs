@@ -896,9 +896,10 @@ public sealed class Parser
     /// <summary>
     /// The `global using` aliases of a type that the side of the file being
     /// parsed has, by name (Frontend.GlobalTypeAliases): per thread, as
-    /// files of both sides are parsed at once. Set for the one parse and
-    /// put back after it -- a source's by Frontend.ParseSource, an index
-    /// header's by IndexedDeclarations.EnterSide -- and null otherwise: text
+    /// files of both sides are parsed at once. Set for the one parse -- a
+    /// source's by Frontend.ParseSource, which clears it after, an index
+    /// header's by IndexedDeclarations.EnterSide, which puts back what was
+    /// there -- and null otherwise: text
     /// the compiler makes itself (ComDeclarations, DynamicDeclarations)
     /// names types already resolved, and sees no global alias.
     /// </summary>

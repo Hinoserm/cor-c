@@ -127,10 +127,14 @@ public static class Frontend
 #endif
         List<string> programGlobals = new(), libraryGlobals = new();
         Dictionary<string, string> programAliases, libraryAliases;
+        // A LIBRARY'S COMPILE THAT MADE EVERY FILE IT WAS GIVEN THE LIBRARY'S
+        // (--lib, whose driver names them all so): one side, which its own
+        // files and the headers the index gives it (below) parse alike.
+        bool every = library && paths.All(path => fromLibrary.Contains(Path.GetFullPath(path)));
         try
         {
             Meter parsing = Meter.Start();
-            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, out programAliases, out libraryAliases,
+            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, every, out programAliases, out libraryAliases,
                 declarations?.Tokens, declarations?.RecordNames(),
                 declarations?.GlobalUsings(library: false), declarations?.GlobalUsings(library: true));
             parsing.Stop("front:parse");
@@ -204,19 +208,12 @@ public static class Frontend
         // whose driver names them all so); the program's otherwise.
         if (declarations is not null)
         {
-            bool every = library && paths.All(path => fromLibrary.Contains(Path.GetFullPath(path)));
             declarations.LibrarySide = LibrarySideOf(every, fromLibrary);
             // AND THE GLOBAL ALIASES ITS HEADERS PARSE WITH, by the same rule
             // (IndexedDeclarations.EnterSide): this compile's, so units compiled
-            // at once in one process each keep their own. A library's compile
-            // whose files are all the library's has both sides' as its own.
-            Dictionary<string, string> libraryHas = libraryAliases;
-            if (every)
-            {
-                libraryHas = new Dictionary<string, string>(programAliases, StringComparer.Ordinal);
-                foreach ((string alias, string aimed) in libraryAliases) libraryHas[alias] = aimed;
-            }
-            declarations.SetGlobalAliases(programAliases, libraryHas);
+            // at once in one process each keep their own -- the same two its
+            // own files were parsed with (ParseSources).
+            declarations.SetGlobalAliases(programAliases, libraryAliases);
         }
         declarations?.AddHeaders(unit);
         // WHAT THE INDEX BROUGHT IS LIBRARY CODE BY ITS FILE, as what was
@@ -555,7 +552,7 @@ public static class Frontend
 
     private static CompilationUnit[] ParseSources(
         List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
-        IReadOnlyCollection<string>? symbols, int workers,
+        IReadOnlyCollection<string>? symbols, int workers, bool every,
         out Dictionary<string, string> program, out Dictionary<string, string> library,
         SyntaxTokenCache? tokens = null, List<string>? indexedRecords = null,
         List<string>? indexedProgramGlobals = null, List<string>? indexedLibraryGlobals = null)
@@ -564,6 +561,15 @@ public static class Frontend
         if (indexedRecords is not null) records.UnionWith(indexedRecords);
         Parser.ProjectRecords = records;
         (program, library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals, symbols);
+        // Every file the library's: the program side's aliases (the index's,
+        // recorded by Driver.IsLibrarySource) are the library's too, the
+        // library's own winning a name both give.
+        if (every)
+        {
+            Dictionary<string, string> both = new(program, StringComparer.Ordinal);
+            foreach ((string alias, string aimed) in library) both[alias] = aimed;
+            library = both;
+        }
         // Copies the parse lanes below may capture (an out parameter cannot be).
         Dictionary<string, string> programSide = program, librarySide = library;
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
