@@ -2623,8 +2623,15 @@ static class Gc
     /// -- an interrupt's allocation popped the link in hand -- ends the walk
     /// of it at the page's bounds or its count, and the figure is short by
     /// what that interrupt did, for this one read. Between two steps the
-    /// platform is asked (YieldHook), as between a collection's budgets. On
-    /// top of the allocator itself, nothing is read.
+    /// platform is asked (YieldHook), as between a collection's budgets,
+    /// unless the thread may not be preempted (Tls.PreemptCount). A class
+    /// whose lists were handed back meanwhile (ShedPages, which uncharges
+    /// them) adds nothing: its links are counted aside and added only when
+    /// its walk ends with the cache and its page still the ones it began
+    /// with. That check sees the page, not the list: the same page handed
+    /// back and refilled between two steps reads as unchanged, and the
+    /// figure is off by what was on it, for this one read. On top of the
+    /// allocator itself, nothing is read.
     public static long OwnListBytes()
     {
         long tb = Sys.ThreadBlock();
@@ -2653,9 +2660,11 @@ static class Gc
             // Bounded by the page: a link outside it ends the walk.
             long left = (end - first) / size + 1;
             long step = 0;
+            long counted = 0;
+            bool gone = false;
             while (block != 0 && block >= first && block < end && left > 0)
             {
-                bytes = bytes + size;
+                counted = counted + size;
                 block = Sys.Peek(block + KindAt);
                 left = left - 1;
                 step = step + 1;
@@ -2680,9 +2689,14 @@ static class Gc
                     // this class's page are still the ones it began with.
                     long now = Sys.Peek(tb + Tls.Classes);
                     if (now == 0) now = Sys.Peek(tb + Tls.ClassesSaved);
-                    if (now != cache || Sys.Peek(cache + c * (2 * WordSize.Bytes)) != page) break;
+                    if (now != cache || Sys.Peek(cache + c * (2 * WordSize.Bytes)) != page)
+                    {
+                        gone = true;
+                        break;
+                    }
                 }
             }
+            if (!gone) bytes = bytes + counted;
             Sys.Poke(tb + Tls.InAlloc, 0);
         }
         return bytes;
@@ -11723,9 +11737,10 @@ static class Gc
     /// blocks marked and between SweepBetweenYields chunks swept; it may
     /// give the processor to a thread that is ready, and must not allocate.
     /// The heap lock is let go there, but for a collection made alone
-    /// (CollectAlone), whose
-    /// marking holds it throughout: there the platform must not give the
-    /// processor away (it can tell, Runtime.HoldsHeapLock). Called with 1
+    /// (CollectAlone), whose marking holds it throughout: there the platform
+    /// must not give the processor away (it can tell, Runtime.HoldsHeapLock),
+    /// nor where the thread's preempt count is raised (Tls.PreemptCount),
+    /// which only OwnListBytes checks before asking. Called with 1
     /// by a thread about to wait for another's collection to end, with the
     /// heap lock not held -- blocked (WaitForCollector), or still counted
     /// running and answering rounds as it waits (WaitOutAnyCycle, for
