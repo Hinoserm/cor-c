@@ -1933,7 +1933,8 @@ static class Gc
         }
     }
 
-    /// ScanRange for a stack or a thread's saved registers (MarkRoot).
+    /// Every aligned word of a stack or a thread's saved registers, each
+    /// marked as a root (MarkRoot), not scanned as a block's fields.
     public static void ScanRoots(nuint from, nuint to)
     {
         nuint p = (from + WordSize.Bytes - 1) & ~(nuint)(WordSize.Bytes - 1);
@@ -12614,9 +12615,10 @@ static class Gc
         return true;
     }
 
-    /// The block of `at` as SnapshotBlock finds it, the chunk's start bits read once, in the
-    /// snapshot's chunk of `at` (HeapChunks.OfSnapshot), which the caller
-    /// has found: it says too whether the block has a footer.
+    /// The block of `at` as SnapshotBlock finds it, in the snapshot's chunk
+    /// of `at` (HeapChunks.OfSnapshot) that the caller has found, the
+    /// chunk's start bits read once: it says too whether the block has a
+    /// footer.
     static nuint SnapshotBlockIn(nuint chunk, nuint at)
     {
         nuint starts = HeapChunks.Starts(chunk);
@@ -15605,9 +15607,7 @@ static class HeapChunks
 
     public static nuint BlockAnchorCount(nuint chunk)
     {
-        // A shift, not a divide: the marker asks this (Starts) for every word
-        // it resolves in a mixed chunk.
-        return (Limit(chunk) - chunk + 4095) >> 12;
+        return (Limit(chunk) - chunk + 4095) / 4096;
     }
 
     // After the anchors, in the same mapping: the cycle the start bits are
