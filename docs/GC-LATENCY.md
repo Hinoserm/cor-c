@@ -63,9 +63,9 @@ on a K6-III.
   The times are kept only where the platform sets `Gc.PauseClock`.
   `LongestStopStep` covers the steps only, not the work before the first
   step. A walk on demand is timed on its own (`LongestWalkOnDemand`).
-- `HeapChunks.MixedChunkMost` (branch gc-chunk) is a platform setting that
-  bounds how large a mixed chunk is made, and with it the longest walk on
-  demand.
+- `HeapChunks.MixedChunkMost` is a platform setting that bounds how large a
+  mixed chunk is made, and with it the longest walk on demand (a kernel on
+  a K6-III sets a quarter of a megabyte). Test 2437.
 - Still to do:
   - The work the stop still does whole under the lock: StartStackCopies,
     RetireClasses, CaptureBuffers, MarkWalks, TakeStaticCards, PeekCards
