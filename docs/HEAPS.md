@@ -141,7 +141,7 @@ sweep one heap alone when only that heap is short.
 ```
 long Gc.KernelHeap                         // heap 0: today's heap
 long Gc.NewHeap()                          // 0 when there is no memory; its first chunk is mapped lazily
-bool Gc.ReleaseHeap(long heap)             // false while a thread is in it; see below
+bool Gc.ReleaseHeap(long heap)             // false while a thread is in it, or no collection could be made; see below
 void Gc.HeapFigures(long heap, out long live, out long held, out long free, out long chunks)
 long Runtime.EnterHeap(long heap)          // returns the previous heap
 void Runtime.LeaveHeap(long previous)
@@ -153,6 +153,9 @@ of the module's that the kernel still refers to -- becomes heap 0's, so
 nothing in use is ever unmapped. It answers false, and does nothing, while
 a thread's `Tls.Heap` still names the heap: a kernel whose thread block is
 a processor's must see that no thread it has switched out is still in it.
+It answers false too when the platform says the calling thread may not
+wait for another thread's collection (`Gc.YieldHook` answering 1): its
+counts would be that cycle's, and the wait for it may never end.
 `live` in `HeapFigures` is what the last sweep found live.
 
 Module load: `NewHeap`, kept in the module's record. Gates:

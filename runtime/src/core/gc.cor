@@ -7632,6 +7632,11 @@ static class Gc
                 long waited = _cycle;
                 if (!WaitOutCycle())
                 {
+                    // The pool is not given back first, as the last try's
+                    // way otherwise is (attempt 2, below): a cycle is under
+                    // way, whose snapshot names its pages (DrainPool). A
+                    // class's refill takes a pooled page before a mapping
+                    // all the same (ClassRefill).
                     RefusedAllocations = RefusedAllocations + 1;
                     cannotWait = true;
                     attempt = 2;
@@ -9460,6 +9465,9 @@ static class Gc
 
     /// The same, with a Revoked table of at least `slots` vtable slots: the
     /// longest vtable of a type in [low, high).
+    /// The range is set before the collection is asked for: one another
+    /// thread has under way may see it part way, and tombstone what it
+    /// finds then; refused (-1), what it did is not counted.
     public static long Revoke(long low, long high, long slots)
     {
         if (high <= low) return 0;
@@ -11672,14 +11680,17 @@ static class Gc
     /// go there, but for a collection made alone (CollectAlone), whose
     /// marking holds it throughout: there the platform must not give the
     /// processor away (it can tell, Runtime.HoldsHeapLock). Called with 1
-    /// by a thread about to wait for another's collection to end
-    /// (WaitForCollector), blocked and with the heap lock not held: it
-    /// should give the processor to a thread that is ready whether or not
-    /// one is due, since the collector may be one of them -- and answer
-    /// nonzero when this thread may not give it away and may wait for ever
-    /// (a kernel's thread with its preemption count raised, or interrupts
-    /// off), which then does without that cycle's end: an allocation takes
-    /// its last try at once, and a collection asked for is not made. 0
+    /// by a thread about to wait for another's collection to end, with the
+    /// heap lock not held -- blocked (WaitForCollector), or still counted
+    /// running and answering rounds as it waits (WaitOutAnyCycle, for
+    /// ReleaseHeap and ReferencesIntoReport): it should give the processor
+    /// to a thread that is ready whether or not one is due, since the
+    /// collector may be one of them -- and answer nonzero when this thread
+    /// may not give it away and may wait for ever (a kernel's thread with
+    /// its preemption count raised, or interrupts off), which then does
+    /// without that cycle's end: an allocation takes its last try at once,
+    /// with the cap lifted for it (HeapChunks.PastCap); a collection asked
+    /// for is not made, and what needed one says so (CollectMade). 0
     /// answers otherwise. 0: none.
     public static long YieldHook;
     const long MarkBetweenYields = 4096;
@@ -15575,11 +15586,11 @@ static class HeapChunks
     }
 
     /// The cap for the request being answered now: the whole of it while the
-    /// reserve is open, else the soft cap. 0 for none -- and none for a
-    /// request the cap is lifted for (PastCap).
+    /// reserve is open, else the soft cap; an eighth more for a request the
+    /// cap is lifted for (PastCap). 0 for none.
     static long CapNow()
     {
-        if (PastCap) return 0;
+        if (PastCap && _cap != 0) return _cap + (_cap >> 3);
         return ReserveOpen ? _cap : SoftCap;
     }
 
@@ -15588,8 +15599,10 @@ static class HeapChunks
     /// kernel's, its preemption count raised), and cleared before the lock
     /// goes: such a request can neither wait for the cycle that would free
     /// its room nor fail where it stands, and takes it from the system
-    /// instead, as an allocation that may not sleep does in a kernel. The
-    /// cap paces the heap; the next cycle brings it back under.
+    /// instead, as an allocation that may not sleep does in a kernel -- up to
+    /// an eighth past the cap (CapNow), so that a thread allocating in a
+    /// loop while a cycle stands still cannot take the machine's memory.
+    /// The next cycle brings the heap back under.
     public static bool PastCap;
 
     /// The bytes held back below the cap, for the out-of-memory report.
