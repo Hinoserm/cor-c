@@ -14,6 +14,13 @@
 // a module's thread does at a gate, while the main thread churns in the
 // first heap and collects. Every string kept is read back whole, the free
 // index of every heap is checked, and the two heaps are released.
+//
+// THE RING KEPT IN A STATIC (_keep): a ring that never leaves Work, with its
+// strings, was the compiler's to place in a region of the call's own, off
+// the collected heap -- and the module heap then held only Work's few
+// temporaries, past the 16 KB asked for or not as the collections fell: in
+// 11 runs of 30 it was not. Kept where the program reads it, it and its
+// strings are the heap's to hold.
 
 using System.Threading;
 
@@ -22,11 +29,13 @@ static class Program
     static long[] _heaps = new long[2];
     static long[] _sums = new long[2];
     static bool[] _theirs = new bool[2];
+    static string[]?[] _keep = new string[]?[2];
 
     static void Work(int which)
     {
         long previous = Runtime.EnterHeap(_heaps[which]);
         var ring = new string[1000];
+        _keep[which] = ring;
         for (int round = 0; round < 40; round++)
         {
             for (int i = 0; i < 1000; i++) ring[i] = "w" + which + " " + (round * 1000 + i);
