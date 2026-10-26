@@ -4,6 +4,7 @@
 #
 #   tests/language/run.sh            run every tests/language/*.cor
 #   tests/language/run.sh strings    run the one whose file is *strings*.cor
+#   tests/language/run.sh 110_ 2442_ strings   every test matching any of them, in parallel
 #   tests/language/run.sh -v hello   also show the compiler's output
 #   tests/language/run.sh --target=x86-64   every test compiled for long mode
 #   tests/language/run.sh --opt-size  exercise size-oriented compilation
@@ -41,6 +42,7 @@ root="$(cd "$here/../.." && pwd)"
 timeout_s="${TIMEOUT:-10}"
 verbose=0
 filter=""
+filters=()
 compiler_flags=()
 # What an index is made for: the target the compiles against it are for.
 index_flags=()
@@ -112,6 +114,7 @@ for arg in "$@"; do
             ;;
         *)
             filter="$arg"
+            filters+=("$arg")
             ;;
     esac
 done
@@ -281,14 +284,16 @@ for f in "$here"/*.cor; do
     # this script; otherwise every test whose name contains the filter.
     if [ -n "${CORC_TEST_ONE:-}" ]; then
         [ "$name" = "$CORC_TEST_ONE" ] || continue
-    elif [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
-        continue
+    elif [ "${#filters[@]}" -gt 0 ]; then
+        wanted=0
+        for one in "${filters[@]}"; do [[ "$name" == *"$one"* ]] && wanted=1 && break; done
+        [ "$wanted" = 1 ] || continue
     fi
     tests+=("$f")
 done
 
 if [ "${#tests[@]}" -eq 0 ]; then
-    echo "no tests match '$filter'" >&2
+    echo "no tests match '${filters[*]}'" >&2
     exit 2
 fi
 
