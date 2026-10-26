@@ -1995,10 +1995,10 @@ public static class Gir
 
                 case E.Sequence:
                 {
-                    byte kind = U8();
+                    byte flags = U8();
                     Stmt effect = NeedStmt();
 
-                    return new SequenceExpr { Effect = effect, Value = Need(), Assignment = (kind & 1) != 0, ReadBackPure = (kind & 2) != 0 };
+                    return new SequenceExpr { Effect = effect, Value = Need(), Assignment = (flags & 1) != 0, ReadBackPure = (flags & 2) != 0 };
                 }
 
                 default:
