@@ -26,7 +26,7 @@
 // the next minor cycle, which the stop's taking of the cards had cleared
 // while the block was young (ScanStopBlocks sets it again). Without that,
 // VerifyStopBlock reported in 8 runs of 8, each at its cap of 20 reports;
-// with it, 0 in 8.
+// with it, 0 in 8 (measured with Gc.VerifyMarks, which runs it as well).
 
 using System.Runtime.CompilerServices;
 using System.Threading;

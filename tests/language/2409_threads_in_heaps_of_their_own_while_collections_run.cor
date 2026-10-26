@@ -15,12 +15,12 @@
 // first heap and collects. Every string kept is read back whole, the free
 // index of every heap is checked, and the two heaps are released.
 //
-// THE RING KEPT IN A STATIC (_keep): a ring that never leaves Work, with its
-// strings, was the compiler's to place in a region of the call's own, off
-// the collected heap -- and the module heap then held only Work's few
-// temporaries, past the 16 KB asked for or not as the collections fell: in
-// 11 runs of 30 it was not. Kept where the program reads it, it and its
-// strings are the heap's to hold.
+// THE RING KEPT IN A STATIC (_keep) while the heap's figures are taken: a
+// ring that never left Work was the compiler's to place wherever its
+// lifetime allowed, and the module heap's figures then fell short of the
+// 16 KB asked for in 11 runs of 30 (0 of 30 kept in a static). Kept where
+// the program reads it, it and its strings are the heap's to hold; let go
+// again before the heaps are released, so that no static points into one.
 
 using System.Threading;
 
@@ -57,6 +57,7 @@ static class Program
         _sums[which] += sum;
         Gc.HeapFigures(_heaps[which], out long live, out long held, out long free, out long chunks);
         _theirs[which] = held > 1000 * 16 && chunks > 0;
+        _keep[which] = null;
         Runtime.LeaveHeap(previous);
     }
 
