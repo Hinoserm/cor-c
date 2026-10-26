@@ -257,6 +257,14 @@ internal static class Elf
                 return 9;
             case RelocKind.GotPc:
                 return 10;
+            // R_386_GOT32X on an instruction with no base register: the
+            // absolute address of the symbol's GOT slot (i386 psABI, the
+            // GOT32X note), which is what GotAddr is -- a non-position-
+            // independent executable's object reaching a library's names.
+            // This toolchain writes it only so; the PIC slot offset from a
+            // base register is Got32.
+            case RelocKind.GotAddr:
+                return 43;
             default:
                 throw new ArgumentOutOfRangeException(nameof(kind), kind, null);
         }
@@ -284,6 +292,8 @@ internal static class Elf
                 return RelocKind.GotOff;
             case 10:
                 return RelocKind.GotPc;
+            case 43:
+                return RelocKind.GotAddr;
             default:
                 return null;
         }

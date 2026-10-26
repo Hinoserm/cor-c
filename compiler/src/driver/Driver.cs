@@ -1302,12 +1302,17 @@ public static class Driver
         X86Backend x86Backend = new()
         {
             AutomaticPacked = !freestanding,
-            // A relocatable dynamic unit must use standard ELF GOT relocations.
-            // Absolute GOT-slot addresses exist only inside a final executable
-            // link and cannot be serialized as relocatable object relocations.
+            // AN EXECUTABLE'S OBJECT IS NOT POSITION-INDEPENDENT, made apart
+            // (--obj) or not: it is linked at an address of its own, so its
+            // names are absolute and a library's are reached through its GOT
+            // slots at their absolute addresses (Imports; R_386_GOT32X with no
+            // base register in the object). PIC there paid a GOT pointer --
+            // a thunk and a register -- in every function that named anything:
+            // 35,618 thunks over a kernel's 113 programs. A shared object's
+            // object is (--shared, or --pic for one linked into one later).
             // A Windows image moves by its .reloc, not by position-independent
             // code, the runtime DLL and the images over it alike.
-            PositionIndependent = !windows && !relocatedText && (shared || args.Contains("--pic") || (sharedLibs.Count > 0 && args.Contains("--obj"))),
+            PositionIndependent = !windows && !relocatedText && (shared || args.Contains("--pic")),
             WindowsTls = windows,
             Workers = workers,
             EmitLinkSummary = !args.Contains("--no-lto") && !args.Contains("--no-opt"),

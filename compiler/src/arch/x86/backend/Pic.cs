@@ -247,9 +247,11 @@ internal static class Pic
 /// an ordinary R_386_GLOB_DAT. One extra load at the reference, no copy, no
 /// text relocation, and the address is the library's own.
 ///
-/// FUNCTIONS ARE NOT REWRITTEN: a call to an imported function already goes
-/// through this executable's PLT, whose entries are absolute jumps through
-/// the same GOT.
+/// A CALL TO AN IMPORTED FUNCTION goes through its slot too, `call
+/// [0x804a020]`, rather than through a PLT entry: one branch where the PLT
+/// made two (a call to the entry, its jump through the same slot), and a
+/// slot filled by the same R_386_GLOB_DAT. The other calls -- the ones that
+/// keep registers, a jump -- are left to the PLT.
 /// </summary>
 internal static class Imports
 {
@@ -274,7 +276,13 @@ internal static class Imports
 
     private static void Rewrite(MFunction m, MInstr i, Func<string, bool> isImported, List<MInstr> outList, List<string> errors)
     {
-        // A call is the PLT's business and a jump table is this object's own.
+        if (i.Op == MOp.Call && i.Operands.Count == 1 && i.Operands[0] is MImm { Symbol: { } callee, Label: null, Value: 0 } && isImported(callee))
+        {
+            outList.Add(new MInstr(MOp.CallInd, new MMem(null, 0) { Symbol = callee, Reloc = RelocKind.GotAddr })
+                { Width = i.Width, Native = i.Native, Line = i.Line });
+            return;
+        }
+        // Any other call is the PLT's business and a jump table is this object's own.
         if (i.Op is MOp.Call or MOp.Jmp or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd)
         {
             outList.Add(i);
