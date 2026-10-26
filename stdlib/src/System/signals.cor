@@ -132,5 +132,5 @@ class PosixSignalRegistration : IDisposable
 
     /// The handler at a signal, 0 its default action and 1 ignored: the
     /// platform's to install (Os.InstallSignal).
-    static void Install(int signal, long handler) => Os.InstallSignal(signal, handler);
+    static void Install(int signal, nuint handler) => Os.InstallSignal(signal, handler);
 }

@@ -94,7 +94,7 @@ static partial class Marshal
             return null;
         }
         int length = 0;
-        while (Sys.Read8(ptr + length) != 0)
+        while (Sys.Read8((nuint)(ptr + length)) != 0)
         {
             length++;
         }
@@ -112,7 +112,7 @@ static partial class Marshal
         {
             throw new ArgumentOutOfRangeException("byteLen");
         }
-        return Utf8Transcoder.Decode((long)ptr, byteLen);
+        return Utf8Transcoder.Decode((nuint)ptr, byteLen);
     }
 
     /// On Unix .NET reads an "ANSI" string as UTF-8, and so does this.
@@ -139,9 +139,9 @@ static partial class Marshal
         nint at = AllocHGlobal(bytes.Length + 1);
         for (int i = 0; i < bytes.Length; i++)
         {
-            Sys.Write8(at + i, bytes[i]);
+            Sys.Write8((nuint)(at + i), bytes[i]);
         }
-        Sys.Write8(at + bytes.Length, 0);
+        Sys.Write8((nuint)(at + bytes.Length), 0);
         return at;
     }
 
@@ -168,9 +168,9 @@ static partial class Marshal
         int kind = MarshalHeap.heapKind;
         if (kind == 0)
         {
-            long malloc = Runtime.NativeSymbol("malloc");
-            long free = Runtime.NativeSymbol("free");
-            long realloc = Runtime.NativeSymbol("realloc");
+            nuint malloc = Runtime.NativeSymbol("malloc");
+            nuint free = Runtime.NativeSymbol("free");
+            nuint realloc = Runtime.NativeSymbol("realloc");
             MarshalHeap.malloc = malloc;
             MarshalHeap.free = free;
             MarshalHeap.realloc = realloc;
@@ -188,21 +188,21 @@ static partial class Marshal
         {
             throw new ArgumentOutOfRangeException("cb");
         }
-        long at;
+        nuint at;
         if (CLibrary())
         {
-            at = Runtime.CallC(MarshalHeap.malloc, cb == 0 ? 1 : cb, 0, 0, 0);
+            at = (nuint)Runtime.CallC(MarshalHeap.malloc, cb == 0 ? 1 : cb, 0, 0, 0);
         }
         else
         {
             // No C library to ask: pages, with the size kept in front so
             // FreeHGlobal can give them back.
-            long bytes = (cb + 2 * WordSize.Bytes + 4095) & ~4095L;
-            long pages = Platform.Map(bytes);
+            nuint bytes = ((nuint)cb + (nuint)(2 * WordSize.Bytes) + 4095) & ~(nuint)4095;
+            nuint pages = Platform.Map(bytes);
             if (pages != 0)
             {
                 Sys.WriteNative(pages, bytes);
-                at = pages + 2 * WordSize.Bytes;
+                at = pages + (nuint)(2 * WordSize.Bytes);
             }
             else
             {
@@ -237,7 +237,7 @@ static partial class Marshal
             Runtime.CallC(MarshalHeap.free, hglobal, 0, 0, 0);
             return;
         }
-        long pages = hglobal - 2 * WordSize.Bytes;
+        nuint pages = (nuint)hglobal - (nuint)(2 * WordSize.Bytes);
         Platform.Unmap(pages, Sys.ReadNative(pages));
     }
 
@@ -254,46 +254,46 @@ static partial class Marshal
         }
         if (CLibrary())
         {
-            long at = Runtime.CallC(MarshalHeap.realloc, pv, cb == 0 ? 1 : cb, 0, 0);
+            nint at = Runtime.CallC(MarshalHeap.realloc, pv, cb == 0 ? 1 : cb, 0, 0);
             if (at == 0)
             {
                 throw new OutOfMemoryException();
             }
             return (nint)at;
         }
-        long pages = pv - 2 * WordSize.Bytes;
-        long had = Sys.ReadNative(pages) - 2 * WordSize.Bytes;
+        nuint pages = (nuint)pv - (nuint)(2 * WordSize.Bytes);
+        nuint had = Sys.ReadNative(pages) - (nuint)(2 * WordSize.Bytes);
         nint made = AllocHGlobal(cb);
-        long keep = had < cb ? had : cb;
-        for (long i = 0; i < keep; i++)
+        nuint keep = had < (nuint)cb ? had : (nuint)cb;
+        for (nuint i = 0; i < keep; i++)
         {
-            Sys.Write8(made + i, Sys.Read8(pv + i));
+            Sys.Write8((nuint)made + i, Sys.Read8((nuint)pv + i));
         }
         FreeHGlobal(pv);
         return made;
     }
 
-    public static byte ReadByte(nint ptr) { return (byte)Sys.Read8(ptr); }
-    public static byte ReadByte(nint ptr, int ofs) { return (byte)Sys.Read8(ptr + ofs); }
-    public static short ReadInt16(nint ptr) { return (short)Sys.Read16(ptr); }
-    public static short ReadInt16(nint ptr, int ofs) { return (short)Sys.Read16(ptr + ofs); }
-    public static int ReadInt32(nint ptr) { return (int)Sys.Read32(ptr); }
-    public static int ReadInt32(nint ptr, int ofs) { return (int)Sys.Read32(ptr + ofs); }
-    public static long ReadInt64(nint ptr) { return Sys.Read32(ptr) | (Sys.Read32(ptr + 4) << 32); }
+    public static byte ReadByte(nint ptr) { return (byte)Sys.Read8((nuint)ptr); }
+    public static byte ReadByte(nint ptr, int ofs) { return (byte)Sys.Read8((nuint)(ptr + ofs)); }
+    public static short ReadInt16(nint ptr) { return (short)Sys.Read16((nuint)ptr); }
+    public static short ReadInt16(nint ptr, int ofs) { return (short)Sys.Read16((nuint)(ptr + ofs)); }
+    public static int ReadInt32(nint ptr) { return (int)Sys.Read32((nuint)ptr); }
+    public static int ReadInt32(nint ptr, int ofs) { return (int)Sys.Read32((nuint)(ptr + ofs)); }
+    public static long ReadInt64(nint ptr) { return (long)Sys.Read64((nuint)ptr); }
     public static long ReadInt64(nint ptr, int ofs) { return ReadInt64(ptr + ofs); }
-    public static nint ReadIntPtr(nint ptr) { return (nint)Sys.ReadNative(ptr); }
-    public static nint ReadIntPtr(nint ptr, int ofs) { return (nint)Sys.ReadNative(ptr + ofs); }
+    public static nint ReadIntPtr(nint ptr) { return (nint)Sys.ReadNative((nuint)ptr); }
+    public static nint ReadIntPtr(nint ptr, int ofs) { return (nint)Sys.ReadNative((nuint)(ptr + ofs)); }
 
-    public static void WriteByte(nint ptr, byte val) { Sys.Write8(ptr, val); }
-    public static void WriteByte(nint ptr, int ofs, byte val) { Sys.Write8(ptr + ofs, val); }
-    public static void WriteInt16(nint ptr, short val) { Sys.Write16(ptr, val); }
-    public static void WriteInt16(nint ptr, int ofs, short val) { Sys.Write16(ptr + ofs, val); }
-    public static void WriteInt32(nint ptr, int val) { Sys.Write32(ptr, val); }
-    public static void WriteInt32(nint ptr, int ofs, int val) { Sys.Write32(ptr + ofs, val); }
-    public static void WriteInt64(nint ptr, long val) { Sys.Write32(ptr, val); Sys.Write32(ptr + 4, val >> 32); }
+    public static void WriteByte(nint ptr, byte val) { Sys.Write8((nuint)ptr, val); }
+    public static void WriteByte(nint ptr, int ofs, byte val) { Sys.Write8((nuint)(ptr + ofs), val); }
+    public static void WriteInt16(nint ptr, short val) { Sys.Write16((nuint)ptr, (ushort)val); }
+    public static void WriteInt16(nint ptr, int ofs, short val) { Sys.Write16((nuint)(ptr + ofs), (ushort)val); }
+    public static void WriteInt32(nint ptr, int val) { Sys.Write32((nuint)ptr, (uint)val); }
+    public static void WriteInt32(nint ptr, int ofs, int val) { Sys.Write32((nuint)(ptr + ofs), (uint)val); }
+    public static void WriteInt64(nint ptr, long val) { Sys.Write64((nuint)ptr, (ulong)val); }
     public static void WriteInt64(nint ptr, int ofs, long val) { WriteInt64(ptr + ofs, val); }
-    public static void WriteIntPtr(nint ptr, nint val) { Sys.WriteNative(ptr, val); }
-    public static void WriteIntPtr(nint ptr, int ofs, nint val) { Sys.WriteNative(ptr + ofs, val); }
+    public static void WriteIntPtr(nint ptr, nint val) { Sys.WriteNative((nuint)ptr, (nuint)val); }
+    public static void WriteIntPtr(nint ptr, int ofs, nint val) { Sys.WriteNative((nuint)(ptr + ofs), (nuint)val); }
 
     /// Bytes between an array and memory C owns, both ways.
     public static void Copy(byte[] source, int startIndex, nint destination, int length)
@@ -301,7 +301,7 @@ static partial class Marshal
         CheckRange(source.Length, startIndex, length);
         for (int i = 0; i < length; i++)
         {
-            Sys.Write8(destination + i, source[startIndex + i]);
+            Sys.Write8((nuint)(destination + i), source[startIndex + i]);
         }
     }
 
@@ -310,7 +310,7 @@ static partial class Marshal
         CheckRange(destination.Length, startIndex, length);
         for (int i = 0; i < length; i++)
         {
-            destination[startIndex + i] = (byte)Sys.Read8(source + i);
+            destination[startIndex + i] = (byte)Sys.Read8((nuint)(source + i));
         }
     }
 
@@ -319,7 +319,7 @@ static partial class Marshal
         CheckRange(source.Length, startIndex, length);
         for (int i = 0; i < length; i++)
         {
-            Sys.Write32(destination + 4 * i, source[startIndex + i]);
+            Sys.Write32((nuint)(destination + 4 * i), (uint)source[startIndex + i]);
         }
     }
 
@@ -328,7 +328,7 @@ static partial class Marshal
         CheckRange(destination.Length, startIndex, length);
         for (int i = 0; i < length; i++)
         {
-            destination[startIndex + i] = (int)Sys.Read32(source + 4 * i);
+            destination[startIndex + i] = (int)Sys.Read32((nuint)(source + 4 * i));
         }
     }
 
@@ -741,7 +741,7 @@ namespace System.Runtime.InteropServices
         static string Uname(int field)
         {
             byte[] names = new byte[65 * 6];
-            if (Err.Result(Sys.Syscall(LinuxCall.Uname, Sys.ArrayData(names), 0, 0)) < 0) return "";
+            if (Err.Result(Sys.Syscall(LinuxCall.Uname, (nint)Sys.ArrayData(names), 0, 0)) < 0) return "";
             int start = field * 65;
             int end = start;
             while (end < start + 65 && names[end] != 0) end++;
@@ -755,9 +755,9 @@ namespace System.Runtime.InteropServices
 /// a static of a split class lost its storage in one library's link.
 static class MarshalHeap
 {
-    public static long malloc;
-    public static long free;
-    public static long realloc;
+    public static nuint malloc;
+    public static nuint free;
+    public static nuint realloc;
     // 0 not yet asked, 1 the C library's, 2 our own pages.
     public static int heapKind;
 }

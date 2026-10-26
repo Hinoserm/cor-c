@@ -640,9 +640,8 @@ static partial class Os
     public static int Shutdown(int fd, int how) => (int)-Err.BadF;
 
     /// ioctl(2): Windows has none of Linux's.
-    public static long Ioctl(int fd, long request, long argument) => -25;
+    public static nint Ioctl(int fd, uint request, nuint argument) => -25;
 
-    public static long Ioctl(long fd, long request, long argument) => -25;
 
     // ---- signals ----------------------------------------------------------
 

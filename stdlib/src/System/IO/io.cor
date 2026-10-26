@@ -4183,7 +4183,7 @@ static class TempNames
 
     public static void Fill(byte[] into)
     {
-        long got = Sys.Syscall(LinuxCall.GetRandom, Sys.ArrayData(into), into.Length, 0);
+        long got = Sys.Syscall(LinuxCall.GetRandom, (nint)Sys.ArrayData(into), into.Length, 0);
         if (got == into.Length)
         {
             return;

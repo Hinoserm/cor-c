@@ -545,10 +545,10 @@ public static class Prelude
             public static long MultiplyAccumulate(long left, long right, long carry, out long high) { high = 0; return 0; }
             public static bool TryDesEncrypt(long block, int keyRegisterBase, out long result) { result = 0; return false; }
             public static bool TryDesDecrypt(long block, int keyRegisterBase, out long result) { result = 0; return false; }
-            public static bool TryAesEncryptBlock(long state, long roundKeys, int rounds) { return false; }
-            public static bool TryAesDecryptBlock(long state, long roundKeys, int rounds) { return false; }
-            public static bool TryAesKey128Next(long output, long previous, int roundConstant) { return false; }
-            public static bool TryAesKey256Next(long output, long earlier, long recent, int control) { return false; }
+            public static bool TryAesEncryptBlock(nuint state, nuint roundKeys, int rounds) { return false; }
+            public static bool TryAesDecryptBlock(nuint state, nuint roundKeys, int rounds) { return false; }
+            public static bool TryAesKey128Next(nuint output, nuint previous, int roundConstant) { return false; }
+            public static bool TryAesKey256Next(nuint output, nuint earlier, nuint recent, int control) { return false; }
             public static bool TryHashFinish(ref long outputCursor, long partialAddress, long partialBytes, long totalBytes) { return false; }
             public static bool TryRandom(out long value) { value = 0; return false; }
             public static bool TryModReduce(long high, long low, int hashRegister, out long result) { result = 0; return false; }

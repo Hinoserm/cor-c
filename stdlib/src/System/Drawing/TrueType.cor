@@ -80,17 +80,17 @@ internal class TrueTypeOutline
 sealed class FontBytes
 {
     readonly byte[]? _array;
-    readonly long _at;
+    readonly nuint _at;
     public readonly int Length;
 
     public FontBytes(byte[] array) { _array = array; Length = array.Length; }
 
-    public FontBytes(long at, int length) { _at = at; Length = length; }
+    public FontBytes(nuint at, int length) { _at = at; Length = length; }
 
     public int At(int i)
     {
         if (i < 0 || i >= Length) return 0;
-        return _array != null ? _array[i] & 255 : (int)(Sys.Read8(_at + i) & 255);
+        return _array != null ? _array[i] & 255 : (int)(Sys.Read8(_at + (nuint)i) & 255);
     }
 
     /// `count` bytes from `from` into `into` at `at`; past the end, zeros.
@@ -184,7 +184,7 @@ internal class TrueTypeFace : FontFace
     /// A face over a font file mapped read-only (Platform.MapReadOnly): its
     /// pages are the page cache's, shared by every program that has it, and
     /// none of them is copied into the program's own memory.
-    public static TrueTypeFace? FromMapped(long at, int length)
+    public static TrueTypeFace? FromMapped(nuint at, int length)
     {
         TrueTypeFace face = new TrueTypeFace(new FontBytes(at, length));
         return face.Open() ? face : null;

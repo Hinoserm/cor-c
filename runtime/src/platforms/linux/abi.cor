@@ -19,126 +19,126 @@
 /// ftruncate's length, set_thread_area) are shaped at their call sites.
 static class LinuxCall
 {
-    public const long Exit = 60;        // (status)
-    public const long Read = 0;         // (fd, address, count) -> read, or -errno
-    public const long Pread64 = 17;     // (fd, address, count, offset) -> read, or -errno
-    public const long Write = 1;        // (fd, address, count) -> written, or -errno
-    public const long Open = 2;         // (path, flags, mode) -> fd, or -errno
-    public const long Close = 3;        // (fd) -> 0, or -errno
-    public const long Getpid = 39;
-    public const long Uname = 63;       // (utsname)
-    public const long Sysinfo = 99;     // (struct sysinfo)
-    public const long Brk = 12;
+    public const int Exit = 60;        // (status)
+    public const int Read = 0;         // (fd, address, count) -> read, or -errno
+    public const int Pread64 = 17;     // (fd, address, count, offset) -> read, or -errno
+    public const int Write = 1;        // (fd, address, count) -> written, or -errno
+    public const int Open = 2;         // (path, flags, mode) -> fd, or -errno
+    public const int Close = 3;        // (fd) -> 0, or -errno
+    public const int Getpid = 39;
+    public const int Uname = 63;       // (utsname)
+    public const int Sysinfo = 99;     // (struct sysinfo)
+    public const int Brk = 12;
     /// mmap(2): the offset is in BYTES here, where i386's mmap2 takes pages.
-    public const long Mmap = 9;         // (addr, len, prot, flags, fd, offset) -> address
+    public const int Mmap = 9;         // (addr, len, prot, flags, fd, offset) -> address
     public const int MmapOffsetShift = 12;
-    public const long ExitGroup = 231;  // (status): every thread, not just this one
+    public const int ExitGroup = 231;  // (status): every thread, not just this one
     /// arch_prctl(2): where this thread's FS base, and so its block, is.
-    public const long ArchPrctl = 158;  // (code, address)
-    public const long ArchSetFs = 0x1002;
-    public const long ArchSetGs = 0x1001;
-    public const long Futex = 202;      // (uaddr, op, val, timeout, uaddr2, val3)
+    public const int ArchPrctl = 158;  // (code, address)
+    public const int ArchSetFs = 0x1002;
+    public const int ArchSetGs = 0x1001;
+    public const int Futex = 202;      // (uaddr, op, val, timeout, uaddr2, val3)
 
     // ---- processes -------------------------------------------------------
-    public const long Fork = 57;
+    public const int Fork = 57;
     /// wait4(2): waitpid's arguments and a fourth, the rusage, which is 0.
-    public const long Wait4 = 61;       // (pid, status, options, rusage)
-    public const long Execve = 59;
-    public const long Kill = 62;
-    public const long Getppid = 110;
-    public const long Getuid = 102;
-    public const long Geteuid = 107;
-    public const long Getgid = 104;
-    public const long Setpgid = 109;
-    public const long Getpgid = 121;
-    public const long Getsid = 124;     // (pid) -> its session's id
-    public const long Setsid = 112;
-    public const long Setuid = 105;
-    public const long Setgid = 106;
-    public const long Setgroups = 116;
-    public const long Umask = 95;
-    public const long Chown = 92;
-    public const long Lchown = 94;
-    public const long Gettid = 186;
-    public const long Tgkill = 234;
-    public const long Clone = 56;       // (flags, stack, ptid, ctid, tls): x86-64's order
-    public const long SetTidAddress = 218;
+    public const int Wait4 = 61;       // (pid, status, options, rusage)
+    public const int Execve = 59;
+    public const int Kill = 62;
+    public const int Getppid = 110;
+    public const int Getuid = 102;
+    public const int Geteuid = 107;
+    public const int Getgid = 104;
+    public const int Setpgid = 109;
+    public const int Getpgid = 121;
+    public const int Getsid = 124;     // (pid) -> its session's id
+    public const int Setsid = 112;
+    public const int Setuid = 105;
+    public const int Setgid = 106;
+    public const int Setgroups = 116;
+    public const int Umask = 95;
+    public const int Chown = 92;
+    public const int Lchown = 94;
+    public const int Gettid = 186;
+    public const int Tgkill = 234;
+    public const int Clone = 56;       // (flags, stack, ptid, ctid, tls): x86-64's order
+    public const int SetTidAddress = 218;
 
     // ---- files and directories -------------------------------------------
-    public const long Unlink = 87;
-    public const long Link = 86;
-    public const long Chdir = 80;
-    public const long Lseek = 8;        // (fd, offset, whence) -> the offset: 64 bits already
-    public const long Rename = 82;
-    public const long Mkdir = 83;
-    public const long Rmdir = 84;
-    public const long Dup = 32;
-    public const long Pipe = 22;
-    public const long Ioctl = 16;
-    public const long Dup2 = 33;
-    public const long Ftruncate = 77;   // (fd, length): the length is 64 bits already
-    public const long Getcwd = 79;
-    public const long Stat64 = 4;       // stat: already the 64-bit structure (StatBuf)
-    public const long Lstat64 = 6;
-    public const long Fstat64 = 5;
-    public const long Getdents64 = 217;
-    public const long Access = 21;
-    public const long Chmod = 90;
-    public const long Symlink = 88;
-    public const long Readlink = 89;
-    public const long Poll = 7;
-    public const long Fcntl = 72;
-    public const long RtSigaction = 13;
-    public const long RtSigprocmask = 14;
-    public const long RtSigreturn = 15;
-    public const long GetRandom = 318;
-    public const long SchedGetaffinity = 204;
-    public const long Utimensat = 280;
-    public const long Sync = 162;
-    public const long InitModule = 175;     // (image, length, params)
-    public const long DeleteModule = 176;   // (name, flags): O_TRUNC forces
-    public const long FinitModule = 313;    // (fd, params, flags)
-    public const long Fsync = 74;
-    public const long Flock = 73;
-    public const long Fdatasync = 75;
-    public const long Mount = 165;
-    public const long Umount2 = 166;
+    public const int Unlink = 87;
+    public const int Link = 86;
+    public const int Chdir = 80;
+    public const int Lseek = 8;        // (fd, offset, whence) -> the offset: 64 bits already
+    public const int Rename = 82;
+    public const int Mkdir = 83;
+    public const int Rmdir = 84;
+    public const int Dup = 32;
+    public const int Pipe = 22;
+    public const int Ioctl = 16;
+    public const int Dup2 = 33;
+    public const int Ftruncate = 77;   // (fd, length): the length is 64 bits already
+    public const int Getcwd = 79;
+    public const int Stat64 = 4;       // stat: already the 64-bit structure (StatBuf)
+    public const int Lstat64 = 6;
+    public const int Fstat64 = 5;
+    public const int Getdents64 = 217;
+    public const int Access = 21;
+    public const int Chmod = 90;
+    public const int Symlink = 88;
+    public const int Readlink = 89;
+    public const int Poll = 7;
+    public const int Fcntl = 72;
+    public const int RtSigaction = 13;
+    public const int RtSigprocmask = 14;
+    public const int RtSigreturn = 15;
+    public const int GetRandom = 318;
+    public const int SchedGetaffinity = 204;
+    public const int Utimensat = 280;
+    public const int Sync = 162;
+    public const int InitModule = 175;     // (image, length, params)
+    public const int DeleteModule = 176;   // (name, flags): O_TRUNC forces
+    public const int FinitModule = 313;    // (fd, params, flags)
+    public const int Fsync = 74;
+    public const int Flock = 73;
+    public const int Fdatasync = 75;
+    public const int Mount = 165;
+    public const int Umount2 = 166;
     /// statfs/fstatfs: (path or fd, buffer) -- no size argument on x86-64.
-    public const long Statfs64 = 137;
-    public const long Fstatfs64 = 138;
-    public const long Reboot = 169;
-    public const long Munmap = 11;
-    public const long Mprotect = 10;    // (address, length, protection)
-    public const long Membarrier = 324; // (cmd, flags, cpu)
+    public const int Statfs64 = 137;
+    public const int Fstatfs64 = 138;
+    public const int Reboot = 169;
+    public const int Munmap = 11;
+    public const int Mprotect = 10;    // (address, length, protection)
+    public const int Membarrier = 324; // (cmd, flags, cpu)
 
     // ---- time ------------------------------------------------------------
-    public const long Time = 201;
-    public const long GetTimeOfDay = 96;
-    public const long NanoSleep = 35;
-    public const long ClockGetTime = 228;
-    public const long ClockGetRes = 229;
-    public const long ClockNanosleep = 230;
-    public const long Sched_Yield = 24;
+    public const int Time = 201;
+    public const int GetTimeOfDay = 96;
+    public const int NanoSleep = 35;
+    public const int ClockGetTime = 228;
+    public const int ClockGetRes = 229;
+    public const int ClockNanosleep = 230;
+    public const int Sched_Yield = 24;
 
     // ---- sockets: one call each, and no socketcall(2) at all -------------
-    public const long Socket = 41;
-    public const long SocketPair = 53;
-    public const long Bind = 49;
-    public const long Connect = 42;
-    public const long Listen = 50;
-    public const long Accept4 = 288;
-    public const long GetSockOpt = 55;
-    public const long SetSockOpt = 54;
-    public const long GetSockName = 51;
-    public const long GetPeerName = 52;
-    public const long SendTo = 44;
-    public const long SendMsg = 46;
-    public const long RecvFrom = 45;
-    public const long RecvMsg = 47;
-    public const long Shutdown = 48;
-    public const long InotifyAddWatch = 254;    // (fd, path, mask) -> wd
-    public const long InotifyRmWatch = 255;     // (fd, wd)
-    public const long InotifyInit1 = 294;       // (flags: IN_NONBLOCK 0x800, IN_CLOEXEC 0x80000) -> fd
+    public const int Socket = 41;
+    public const int SocketPair = 53;
+    public const int Bind = 49;
+    public const int Connect = 42;
+    public const int Listen = 50;
+    public const int Accept4 = 288;
+    public const int GetSockOpt = 55;
+    public const int SetSockOpt = 54;
+    public const int GetSockName = 51;
+    public const int GetPeerName = 52;
+    public const int SendTo = 44;
+    public const int SendMsg = 46;
+    public const int RecvFrom = 45;
+    public const int RecvMsg = 47;
+    public const int Shutdown = 48;
+    public const int InotifyAddWatch = 254;    // (fd, path, mask) -> wd
+    public const int InotifyRmWatch = 255;     // (fd, wd)
+    public const int InotifyInit1 = 294;       // (flags: IN_NONBLOCK 0x800, IN_CLOEXEC 0x80000) -> fd
 }
 #else
 /// The i386 system-call numbers this library uses, from asm/unistd_32.h:
@@ -146,104 +146,104 @@ static class LinuxCall
 /// kernel compiled with this library keeps `Call` for its own.
 static class LinuxCall
 {
-    public const long Exit = 1;         // (status)
-    public const long Read = 3;         // (fd, address, count) -> read, or -errno
-    public const long Pread64 = 180;    // (fd, address, count, offset low, offset high) -> read, or -errno
-    public const long Write = 4;        // (fd, address, count) -> written, or -errno
-    public const long Open = 5;         // (path, flags, mode) -> fd, or -errno
-    public const long Close = 6;        // (fd) -> 0, or -errno
-    public const long Getpid = 20;      // () -> pid; the cheapest call there is
-    public const long Uname = 122;      // (utsname)
-    public const long Sysinfo = 116;    // (struct sysinfo)
-    public const long Brk = 45;         // (address) -> the break now; unused
-    public const long Mmap2 = 192;      // (addr, len, prot, flags, fd, pgoff) -> address
+    public const int Exit = 1;         // (status)
+    public const int Read = 3;         // (fd, address, count) -> read, or -errno
+    public const int Pread64 = 180;    // (fd, address, count, offset low, offset high) -> read, or -errno
+    public const int Write = 4;        // (fd, address, count) -> written, or -errno
+    public const int Open = 5;         // (path, flags, mode) -> fd, or -errno
+    public const int Close = 6;        // (fd) -> 0, or -errno
+    public const int Getpid = 20;      // () -> pid; the cheapest call there is
+    public const int Uname = 122;      // (utsname)
+    public const int Sysinfo = 116;    // (struct sysinfo)
+    public const int Brk = 45;         // (address) -> the break now; unused
+    public const int Mmap2 = 192;      // (addr, len, prot, flags, fd, pgoff) -> address
     /// The one this library calls: mmap2, whose offset is in pages.
-    public const long Mmap = 192;
+    public const int Mmap = 192;
     public const int MmapOffsetShift = 0;
-    public const long ExitGroup = 252;  // (status): every thread, not just this one
-    public const long SetThreadArea = 243;  // (user_desc): a GDT entry of this thread's own
-    public const long Futex = 240;      // (uaddr, op, val, timeout, uaddr2, val3)
-    public const long Gettid = 224;
-    public const long Clone = 120;      // (flags, stack, ptid, tls, ctid)
-    public const long ClockNanosleep = 267;
+    public const int ExitGroup = 252;  // (status): every thread, not just this one
+    public const int SetThreadArea = 243;  // (user_desc): a GDT entry of this thread's own
+    public const int Futex = 240;      // (uaddr, op, val, timeout, uaddr2, val3)
+    public const int Gettid = 224;
+    public const int Clone = 120;      // (flags, stack, ptid, tls, ctid)
+    public const int ClockNanosleep = 267;
 
     // ---- processes -------------------------------------------------------
-    public const long Fork = 2;         // () -> child pid in the parent, 0 in the child
-    public const long Waitpid = 7;      // (pid, status, options) -> pid, or -errno
-    public const long Execve = 11;      // (path, argv, envp): does not return on success
-    public const long Kill = 37;        // (pid, signal)
-    public const long Getppid = 64;
-    public const long Getuid = 199;     // getuid32; the 16-bit getuid (24) truncates
-    public const long Geteuid = 201;    // geteuid32
-    public const long Getgid = 200;     // getgid32
-    public const long Setpgid = 57;     // (pid, pgid)
-    public const long Getpgid = 132;    // (pid) -> the group it is in
-    public const long Getsid = 147;     // (pid) -> its session's id
-    public const long Setsid = 66;      // () -> the new session id
-    public const long Setuid = 213;     // setuid32; the 16-bit one (23) truncates
-    public const long Setgid = 214;     // setgid32
-    public const long Setgroups = 206;  // setgroups32 (count, list)
-    public const long Umask = 60;       // (mask) -> the mask it replaced
-    public const long Chown = 212;      // chown32 (path, uid, gid)
-    public const long Lchown = 198;     // lchown32 (path, uid, gid): the link itself
+    public const int Fork = 2;         // () -> child pid in the parent, 0 in the child
+    public const int Waitpid = 7;      // (pid, status, options) -> pid, or -errno
+    public const int Execve = 11;      // (path, argv, envp): does not return on success
+    public const int Kill = 37;        // (pid, signal)
+    public const int Getppid = 64;
+    public const int Getuid = 199;     // getuid32; the 16-bit getuid (24) truncates
+    public const int Geteuid = 201;    // geteuid32
+    public const int Getgid = 200;     // getgid32
+    public const int Setpgid = 57;     // (pid, pgid)
+    public const int Getpgid = 132;    // (pid) -> the group it is in
+    public const int Getsid = 147;     // (pid) -> its session's id
+    public const int Setsid = 66;      // () -> the new session id
+    public const int Setuid = 213;     // setuid32; the 16-bit one (23) truncates
+    public const int Setgid = 214;     // setgid32
+    public const int Setgroups = 206;  // setgroups32 (count, list)
+    public const int Umask = 60;       // (mask) -> the mask it replaced
+    public const int Chown = 212;      // chown32 (path, uid, gid)
+    public const int Lchown = 198;     // lchown32 (path, uid, gid): the link itself
 
     // ---- files and directories -------------------------------------------
-    public const long Unlink = 10;
-    public const long Link = 9;         // (existing, new): a second name for one inode
-    public const long Chdir = 12;
-    public const long Lseek = 19;       // 32-bit offsets only; LlSeek is the one to use
-    public const long Rename = 38;
-    public const long Mkdir = 39;       // (path, mode)
-    public const long Rmdir = 40;
-    public const long Dup = 41;
-    public const long Pipe = 42;        // (int[2]) -> 0; the two descriptors go in the array
-    public const long Ioctl = 54;
-    public const long Dup2 = 63;        // (from, to)
-    public const long Ftruncate = 93;
-    public const long Ftruncate64 = 194; // (fd, low, high): 64-bit length
-    public const long LlSeek = 140;     // (fd, high, low, result, whence): 64-bit lseek
-    public const long Getcwd = 183;     // (buffer, size) -> length INCLUDING the NUL
-    public const long Stat64 = 195;     // (path, buffer)
-    public const long Lstat64 = 196;    // (path, buffer): the link itself, not its target
-    public const long Fstat64 = 197;    // (fd, buffer)
-    public const long Getdents64 = 220; // (fd, buffer, count) -> bytes of records
-    public const long Access = 33;      // (path, mode)
-    public const long Chmod = 15;
-    public const long Symlink = 83;
-    public const long Readlink = 85;
-    public const long Poll = 168;       // (fds, nfds, timeout_ms)
-    public const long InotifyAddWatch = 292;    // (fd, path, mask) -> wd
-    public const long InotifyRmWatch = 293;     // (fd, wd)
-    public const long InotifyInit1 = 332;       // (flags: IN_NONBLOCK 0x800, IN_CLOEXEC 0x80000) -> fd
-    public const long Fcntl = 55;       // (fd, cmd, arg)
-    public const long RtSigaction = 174;
-    public const long RtSigprocmask = 175;
-    public const long GetRandom = 355;
-    public const long SchedGetaffinity = 242;   // (pid, bytes, mask)
-    public const long Utimensat = 320;
-    public const long Sync = 36;
-    public const long InitModule = 128;     // (image, length, params)
-    public const long DeleteModule = 129;   // (name, flags): O_TRUNC forces
-    public const long FinitModule = 350;    // (fd, params, flags)
-    public const long Fsync = 118;
-    public const long Flock = 143;     // (fd, operation): LOCK_SH 1, LOCK_EX 2, LOCK_NB 4
-    public const long Fdatasync = 148;
-    public const long Mount = 21;       // (source, target, type, flags, data)
-    public const long Umount2 = 52;     // (target, flags)
-    public const long Statfs64 = 268;   // (path, size, buffer)
-    public const long Fstatfs64 = 269;  // (fd, size, buffer)
-    public const long Reboot = 88;      // (magic1, magic2, cmd, arg)  // (dirfd, path, times[2], flags)  // (buffer, count, flags)
-    public const long Munmap = 91;
-    public const long Mprotect = 125;   // (address, length, protection)
-    public const long Membarrier = 375; // (cmd, flags, cpu)
+    public const int Unlink = 10;
+    public const int Link = 9;         // (existing, new): a second name for one inode
+    public const int Chdir = 12;
+    public const int Lseek = 19;       // 32-bit offsets only; LlSeek is the one to use
+    public const int Rename = 38;
+    public const int Mkdir = 39;       // (path, mode)
+    public const int Rmdir = 40;
+    public const int Dup = 41;
+    public const int Pipe = 42;        // (int[2]) -> 0; the two descriptors go in the array
+    public const int Ioctl = 54;
+    public const int Dup2 = 63;        // (from, to)
+    public const int Ftruncate = 93;
+    public const int Ftruncate64 = 194; // (fd, low, high): 64-bit length
+    public const int LlSeek = 140;     // (fd, high, low, result, whence): 64-bit lseek
+    public const int Getcwd = 183;     // (buffer, size) -> length INCLUDING the NUL
+    public const int Stat64 = 195;     // (path, buffer)
+    public const int Lstat64 = 196;    // (path, buffer): the link itself, not its target
+    public const int Fstat64 = 197;    // (fd, buffer)
+    public const int Getdents64 = 220; // (fd, buffer, count) -> bytes of records
+    public const int Access = 33;      // (path, mode)
+    public const int Chmod = 15;
+    public const int Symlink = 83;
+    public const int Readlink = 85;
+    public const int Poll = 168;       // (fds, nfds, timeout_ms)
+    public const int InotifyAddWatch = 292;    // (fd, path, mask) -> wd
+    public const int InotifyRmWatch = 293;     // (fd, wd)
+    public const int InotifyInit1 = 332;       // (flags: IN_NONBLOCK 0x800, IN_CLOEXEC 0x80000) -> fd
+    public const int Fcntl = 55;       // (fd, cmd, arg)
+    public const int RtSigaction = 174;
+    public const int RtSigprocmask = 175;
+    public const int GetRandom = 355;
+    public const int SchedGetaffinity = 242;   // (pid, bytes, mask)
+    public const int Utimensat = 320;
+    public const int Sync = 36;
+    public const int InitModule = 128;     // (image, length, params)
+    public const int DeleteModule = 129;   // (name, flags): O_TRUNC forces
+    public const int FinitModule = 350;    // (fd, params, flags)
+    public const int Fsync = 118;
+    public const int Flock = 143;     // (fd, operation): LOCK_SH 1, LOCK_EX 2, LOCK_NB 4
+    public const int Fdatasync = 148;
+    public const int Mount = 21;       // (source, target, type, flags, data)
+    public const int Umount2 = 52;     // (target, flags)
+    public const int Statfs64 = 268;   // (path, size, buffer)
+    public const int Fstatfs64 = 269;  // (fd, size, buffer)
+    public const int Reboot = 88;      // (magic1, magic2, cmd, arg)  // (dirfd, path, times[2], flags)  // (buffer, count, flags)
+    public const int Munmap = 91;
+    public const int Mprotect = 125;   // (address, length, protection)
+    public const int Membarrier = 375; // (cmd, flags, cpu)
 
     // ---- time ------------------------------------------------------------
-    public const long Time = 13;        // (address or 0) -> seconds since the epoch
-    public const long GetTimeOfDay = 78;
-    public const long NanoSleep = 162;  // (request, remainder)
-    public const long ClockGetTime = 265;
-    public const long ClockGetRes = 266;
-    public const long Sched_Yield = 158;
+    public const int Time = 13;        // (address or 0) -> seconds since the epoch
+    public const int GetTimeOfDay = 78;
+    public const int NanoSleep = 162;  // (request, remainder)
+    public const int ClockGetTime = 265;
+    public const int ClockGetRes = 266;
+    public const int Sched_Yield = 158;
 
     // ---- sockets ---------------------------------------------------------
     //
@@ -252,22 +252,22 @@ static class LinuxCall
     // through socketcall(2) with its arguments in a block of words. Os.Sock
     // below tries the direct call and falls back on -ENOSYS, so this library
     // runs on either without being told which it is on.
-    public const long SocketCall = 102; // (which, args): the old, universal door
-    public const long Socket = 359;
-    public const long SocketPair = 360;
-    public const long Bind = 361;
-    public const long Connect = 362;
-    public const long Listen = 363;
-    public const long Accept4 = 364;
-    public const long GetSockOpt = 365;
-    public const long SetSockOpt = 366;
-    public const long GetSockName = 367;
-    public const long GetPeerName = 368;
-    public const long SendTo = 369;
-    public const long SendMsg = 370;
-    public const long RecvFrom = 371;
-    public const long RecvMsg = 372;
-    public const long Shutdown = 373;
+    public const int SocketCall = 102; // (which, args): the old, universal door
+    public const int Socket = 359;
+    public const int SocketPair = 360;
+    public const int Bind = 361;
+    public const int Connect = 362;
+    public const int Listen = 363;
+    public const int Accept4 = 364;
+    public const int GetSockOpt = 365;
+    public const int SetSockOpt = 366;
+    public const int GetSockName = 367;
+    public const int GetPeerName = 368;
+    public const int SendTo = 369;
+    public const int SendMsg = 370;
+    public const int RecvFrom = 371;
+    public const int RecvMsg = 372;
+    public const int Shutdown = 373;
 }
 #endif
 
@@ -309,70 +309,71 @@ static class O
 /// there is no errno variable because there is no libc.
 static class Err
 {
-    public const long Perm = 1;         // EPERM
-    public const long NoEnt = 2;        // ENOENT
-    public const long Intr = 4;         // EINTR
-    public const long Io = 5;           // EIO
-    public const long BadF = 9;         // EBADF
-    public const long Again = 11;       // EAGAIN
-    public const long NoMem = 12;       // ENOMEM
-    public const long Access = 13;      // EACCES
-    public const long NoDev = 19;
-    public const long NetDown = 100;
-    public const long ConnReset = 104;
-    public const long NoBufs = 105;
-    public const long Fault = 14;
+    public const int Perm = 1;         // EPERM
+    public const int NoEnt = 2;        // ENOENT
+    public const int Intr = 4;         // EINTR
+    public const int Io = 5;           // EIO
+    public const int BadF = 9;         // EBADF
+    public const int Again = 11;       // EAGAIN
+    public const int NoMem = 12;       // ENOMEM
+    public const int Access = 13;      // EACCES
+    public const int NoDev = 19;
+    public const int NetDown = 100;
+    public const int ConnReset = 104;
+    public const int NoBufs = 105;
+    public const int Fault = 14;
 
-    public const long MFile = 24;
-    public const long MsgSize = 90;
-    public const long ProtoNoSupport = 93;      // EPROTONOSUPPORT
-    public const long NotSup = 95;
-    public const long AFNoSupport = 97;
-    public const long AddrInUse = 98;
-    public const long NetUnreach = 101;
-    public const long ConnAborted = 103;
-    public const long IsConn = 106;
-    public const long TimedOut = 110;
-    public const long ConnRefused = 111;
-    public const long HostUnreach = 113;
-    public const long Already = 114;
-    public const long InProgress = 115;
-    public const long NotConn = 107;
-    public const long Exist = 17;       // EEXIST
-    public const long NotDir = 20;      // ENOTDIR
-    public const long IsDir = 21;       // EISDIR
-    public const long Inval = 22;       // EINVAL
-    public const long FBig = 27;        // EFBIG: longer than the file system allows
-    public const long NoSpc = 28;       // ENOSPC
-    public const long Pipe = 32;        // EPIPE
-    public const long Range = 34;       // ERANGE
-    public const long NameTooLong = 36; // ENAMETOOLONG
-    public const long NotEmpty = 39;    // ENOTEMPTY
-    public const long NoSys = 38;       // ENOSYS: the kernel has no such call
-    public const long NotSock = 88;     // ENOTSOCK
-    public const long NoTty = 25;       // ENOTTY: not a terminal
-    public const long Spipe = 29;       // ESPIPE: a pipe cannot seek
-    public const long RoFs = 30;        // EROFS: a file system mounted read-only
-    public const long Canceled = 125;   // ECANCELED
+    public const int MFile = 24;
+    public const int MsgSize = 90;
+    public const int ProtoNoSupport = 93;      // EPROTONOSUPPORT
+    public const int NotSup = 95;
+    public const int AFNoSupport = 97;
+    public const int AddrInUse = 98;
+    public const int NetUnreach = 101;
+    public const int ConnAborted = 103;
+    public const int IsConn = 106;
+    public const int TimedOut = 110;
+    public const int ConnRefused = 111;
+    public const int HostUnreach = 113;
+    public const int Already = 114;
+    public const int InProgress = 115;
+    public const int NotConn = 107;
+    public const int Exist = 17;       // EEXIST
+    public const int NotDir = 20;      // ENOTDIR
+    public const int IsDir = 21;       // EISDIR
+    public const int Inval = 22;       // EINVAL
+    public const int FBig = 27;        // EFBIG: longer than the file system allows
+    public const int NoSpc = 28;       // ENOSPC
+    public const int Pipe = 32;        // EPIPE
+    public const int Range = 34;       // ERANGE
+    public const int NameTooLong = 36; // ENAMETOOLONG
+    public const int NotEmpty = 39;    // ENOTEMPTY
+    public const int NoSys = 38;       // ENOSYS: the kernel has no such call
+    public const int NotSock = 88;     // ENOTSOCK
+    public const int NoTty = 25;       // ENOTTY: not a terminal
+    public const int Spipe = 29;       // ESPIPE: a pipe cannot seek
+    public const int RoFs = 30;        // EROFS: a file system mounted read-only
+    public const int Canceled = 125;   // ECANCELED
 
-    /// A call's answer as the number it is. The register is 32 bits: an
-    /// address in the top half of the space arrives with its sign extended,
-    /// and is not an error. Only the last 4095 values are (asm/errno:
-    /// -MAX_ERRNO), and they come back negative.
-    public static long Result(long raw)
+    /// A call's answer as the number it is: a count or a descriptor, or
+    /// -errno. Only the last 4095 values of the word are errors (asm/errno:
+    /// -MAX_ERRNO); an address in the top half of the space reads negative
+    /// as a number, and is read as an address (Address).
+    public static nint Result(nint raw)
     {
-#if TARGET_AMD64
-        // RAX is the whole answer: -4095..-1 is -errno, as the kernel
-        // wrote it, and an address or a count is itself.
         return raw;
-#else
-        long word = raw & 0xFFFFFFFF;
-        if (word >= 0xFFFFF001)
-        {
-            return word - 0x100000000;
-        }
-        return word;
-#endif
+    }
+
+    /// Whether a call's answer is -errno.
+    public static bool Failed(nint raw)
+    {
+        return (nuint)raw >= unchecked((nuint)(-4095));
+    }
+
+    /// A call's answer that is an address (mmap, brk), or 0 for an error.
+    public static nuint Address(nint raw)
+    {
+        return Failed(raw) ? 0 : (nuint)raw;
     }
 }
 
@@ -426,21 +427,21 @@ static class Raw
     }
 
     /// A machine word: a pointer or a size_t in a structure the kernel reads.
-    public static long Word(byte[] b, int at)
+    public static nuint Word(byte[] b, int at)
     {
 #if TARGET_64BIT
-        return I64(b, at);
+        return (nuint)I64(b, at);
 #else
-        return U32(b, at);
+        return (nuint)U32(b, at);
 #endif
     }
 
-    public static void SetWord(byte[] b, int at, long value)
+    public static void SetWord(byte[] b, int at, nuint value)
     {
 #if TARGET_64BIT
-        SetI64(b, at, value);
+        SetI64(b, at, (long)value);
 #else
-        SetU32(b, at, value);
+        SetU32(b, at, (long)value);
 #endif
     }
 
@@ -537,16 +538,16 @@ static class StatBuf
     public const int TimeBytes = 4;
 #endif
 
-    public const long TypeMask = 0xF000;
-    public const long Fifo = 0x1000;
-    public const long Char = 0x2000;
-    public const long Dir = 0x4000;
-    public const long Block = 0x6000;
-    public const long File = 0x8000;
-    public const long Link = 0xA000;
-    public const long Socket = 0xC000;
+    public const int TypeMask = 0xF000;
+    public const int Fifo = 0x1000;
+    public const int Char = 0x2000;
+    public const int Dir = 0x4000;
+    public const int Block = 0x6000;
+    public const int File = 0x8000;
+    public const int Link = 0xA000;
+    public const int Socket = 0xC000;
 
-    public const long PermissionMask = 0xFFF;
+    public const int PermissionMask = 0xFFF;
 
     /// Somewhere to put one.
     public static byte[] Room()
@@ -607,14 +608,14 @@ static class Stat
 {
     public const int Bytes = StatBuf.Bytes;
 
-    public const long TypeMask = StatBuf.TypeMask;
-    public const long Fifo = StatBuf.Fifo;
-    public const long Char = StatBuf.Char;
-    public const long Dir = StatBuf.Dir;
-    public const long Block = StatBuf.Block;
-    public const long File = StatBuf.File;
-    public const long Link = StatBuf.Link;
-    public const long Socket = StatBuf.Socket;
+    public const int TypeMask = StatBuf.TypeMask;
+    public const int Fifo = StatBuf.Fifo;
+    public const int Char = StatBuf.Char;
+    public const int Dir = StatBuf.Dir;
+    public const int Block = StatBuf.Block;
+    public const int File = StatBuf.File;
+    public const int Link = StatBuf.Link;
+    public const int Socket = StatBuf.Socket;
 
     public static byte[] Room()            { return StatBuf.Room(); }
     public static void Check(byte[] b)     { StatBuf.Check(b); }
@@ -747,14 +748,14 @@ static class Dirent
     public const int TypeAt = 18;
     public const int NameAt = 19;
 
-    public const long Unknown = 0;
-    public const long Fifo = 1;
-    public const long Char = 2;
-    public const long DirKind = 4;
-    public const long Block = 6;
-    public const long FileKind = 8;
-    public const long LinkKind = 10;
-    public const long SocketKind = 12;
+    public const int Unknown = 0;
+    public const int Fifo = 1;
+    public const int Char = 2;
+    public const int DirKind = 4;
+    public const int Block = 6;
+    public const int FileKind = 8;
+    public const int LinkKind = 10;
+    public const int SocketKind = 12;
 
     /// How far to the next record. Zero would be a loop, so it is refused.
     public static int Length(byte[] b, int at)
@@ -895,24 +896,24 @@ static class Termios
     public const int CharsAt = 17;
 
     // c_lflag, the bits a program actually changes.
-    public const long Signals = 0x1;        // ISIG
-    public const long Canonical = 0x2;      // ICANON: input arrives a LINE at a time
-    public const long Echo = 0x8;           // ECHO
-    public const long EchoErase = 0x10;     // ECHOE
+    public const int Signals = 0x1;        // ISIG
+    public const int Canonical = 0x2;      // ICANON: input arrives a LINE at a time
+    public const int Echo = 0x8;           // ECHO
+    public const int EchoErase = 0x10;     // ECHOE
 
     // c_iflag
-    public const long CrToNl = 0x100;       // ICRNL
-    public const long IgnoreCr = 0x80;      // IGNCR
-    public const long FlowControl = 0x400;  // IXON
+    public const int CrToNl = 0x100;       // ICRNL
+    public const int IgnoreCr = 0x80;      // IGNCR
+    public const int FlowControl = 0x400;  // IXON
 
     // c_cflag
-    public const long HangUpOnClose = 0x400; // HUPCL: the last close drops DTR
-    public const long LocalLine = 0x800;    // CLOCAL: the line's carrier means nothing
-    public const long HardwareFlow = 0x80000000; // CRTSCTS: RTS/CTS flow control
+    public const int HangUpOnClose = 0x400; // HUPCL: the last close drops DTR
+    public const int LocalLine = 0x800;    // CLOCAL: the line's carrier means nothing
+    public const uint HardwareFlow = 0x80000000; // CRTSCTS: RTS/CTS flow control
 
     // c_oflag
-    public const long PostProcess = 0x1;    // OPOST
-    public const long NlToCrNl = 0x4;       // ONLCR
+    public const int PostProcess = 0x1;    // OPOST
+    public const int NlToCrNl = 0x4;       // ONLCR
 
     // indices into c_cc
     public const int Intr = 0;
@@ -960,18 +961,18 @@ static class Termios
 /// The terminal ioctls, by their traditional numbers.
 static class Tio
 {
-    public const long GetAttributes = 0x5401;       // TCGETS
-    public const long SetAttributes = 0x5402;       // TCSETS, at once
-    public const long SetAttributesDrain = 0x5403;  // TCSETSW, after the output goes out
-    public const long SetAttributesFlush = 0x5404;  // TCSETSF, and throw the input away
-    public const long WindowSize = 0x5413;          // TIOCGWINSZ
-    public const long SetWindowSize = 0x5414;
-    public const long Foreground = 0x540F;          // TIOCGPGRP
-    public const long SetForeground = 0x5410;
-    public const long Exclusive = 0x540C;
-    public const long SetControlling = 0x540E;      // TIOCSCTTY
-    public const long GiveUpControlling = 0x5422;   // TIOCNOTTY
-    public const long GetModemLines = 0x5415;       // TIOCMGET
-    public const long SetModemLines = 0x5418;       // TIOCMSET
-    public const long FlushInput = 0x540B;          // TCFLSH
+    public const int GetAttributes = 0x5401;       // TCGETS
+    public const int SetAttributes = 0x5402;       // TCSETS, at once
+    public const int SetAttributesDrain = 0x5403;  // TCSETSW, after the output goes out
+    public const int SetAttributesFlush = 0x5404;  // TCSETSF, and throw the input away
+    public const int WindowSize = 0x5413;          // TIOCGWINSZ
+    public const int SetWindowSize = 0x5414;
+    public const int Foreground = 0x540F;          // TIOCGPGRP
+    public const int SetForeground = 0x5410;
+    public const int Exclusive = 0x540C;
+    public const int SetControlling = 0x540E;      // TIOCSCTTY
+    public const int GiveUpControlling = 0x5422;   // TIOCNOTTY
+    public const int GetModemLines = 0x5415;       // TIOCMGET
+    public const int SetModemLines = 0x5418;       // TIOCMSET
+    public const int FlushInput = 0x540B;          // TCFLSH
 }

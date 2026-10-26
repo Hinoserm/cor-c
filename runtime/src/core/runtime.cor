@@ -6117,10 +6117,10 @@ static class Runtime
 
     // Legacy x86 has no AES instruction assistance. Returning false must not
     // modify any caller storage: the crypto library then uses its software path.
-    public static bool TryAesEncryptBlock(long state, long roundKeys, int rounds) { return false; }
-    public static bool TryAesDecryptBlock(long state, long roundKeys, int rounds) { return false; }
-    public static bool TryAesKey128Next(long output, long previous, int roundConstant) { return false; }
-    public static bool TryAesKey256Next(long output, long earlier, long recent, int control) { return false; }
+    public static bool TryAesEncryptBlock(nuint state, nuint roundKeys, int rounds) { return false; }
+    public static bool TryAesDecryptBlock(nuint state, nuint roundKeys, int rounds) { return false; }
+    public static bool TryAesKey128Next(nuint output, nuint previous, int roundConstant) { return false; }
+    public static bool TryAesKey256Next(nuint output, nuint earlier, nuint recent, int control) { return false; }
 
     public static long ReverseBits(long value)
     {

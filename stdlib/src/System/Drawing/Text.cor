@@ -226,7 +226,7 @@ static class Installed
     /// Mapped once a file, for the program's life.
     internal static TrueTypeFace? Read(string path)
     {
-        long at, length;
+        nuint at, length;
         lock (_mapped)
         {
             if (!_mapped.TryGetValue(path, out at))
@@ -241,8 +241,8 @@ static class Installed
         catch (IOException) { return null; }
     }
 
-    static readonly Dictionary<string, long> _mapped = new Dictionary<string, long>();
-    static readonly Dictionary<string, long> _mappedLength = new Dictionary<string, long>();
+    static readonly Dictionary<string, nuint> _mapped = new Dictionary<string, nuint>();
+    static readonly Dictionary<string, nuint> _mappedLength = new Dictionary<string, nuint>();
 
     /// The store's scalable face for a request, or null -- with no GUI
     /// kernel to ask, too.

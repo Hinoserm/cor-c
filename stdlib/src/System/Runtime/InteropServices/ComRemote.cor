@@ -761,11 +761,11 @@ namespace System.Runtime.InteropServices
         {
             switch (kind)
             {
-                case "I1": case "U1": case "Bool1": Sys.Write8(at, kind == "Bool1" ? (ComMarshal.Bool(v) ? 1 : 0) : ComMarshal.Long(v)); return;
-                case "I2": case "U2": Sys.Write16(at, ComMarshal.Long(v)); return;
-                case "Char": Sys.Write16(at, v is char c ? c : ComMarshal.Long(v)); return;
+                case "I1": case "U1": case "Bool1": Sys.Write8((nuint)at, (byte)(kind == "Bool1" ? (ComMarshal.Bool(v) ? 1 : 0) : ComMarshal.Long(v))); return;
+                case "I2": case "U2": Sys.Write16((nuint)at, (ushort)(ComMarshal.Long(v))); return;
+                case "Char": Sys.Write16((nuint)at, (ushort)(v is char c ? c : ComMarshal.Long(v))); return;
                 case "VBool": ComMarshal.WriteVBool(at, ComMarshal.Bool(v)); return;
-                case "I4": case "U4": Sys.Write32(at, ComMarshal.Long(v)); return;
+                case "I4": case "U4": Sys.Write32((nuint)at, (uint)(ComMarshal.Long(v))); return;
                 case "Bool": ComMarshal.WriteBool(at, ComMarshal.Bool(v)); return;
                 case "R4": ComMarshal.WriteR4(at, (float)ComMarshal.Double(v)); return;
                 case "I8": case "U8": ComMarshal.WriteI8(at, ComMarshal.Long(v)); return;
@@ -840,7 +840,7 @@ namespace System.Runtime.InteropServices
             System.__ComObject? c = v as System.__ComObject;
             RemoteObject? remote = c != null ? c._remote as RemoteObject : null;
             if (remote == null) { ComMarshal.WriteInterface(at, v, iid); return; }
-            Sys.WriteNative(at, ComCallable.For(new RemoteStandIn(remote, c)).Query(ComMarshal.IidIUnknown));
+            Sys.WriteNative((nuint)at, (nuint)(ComCallable.For(new RemoteStandIn(remote, c)).Query(ComMarshal.IidIUnknown)));
         }
 
         public static object? Take(string kind, nint at)
@@ -1780,10 +1780,10 @@ namespace System.Runtime.InteropServices
             {
                 Type? had;
                 if (_byClsid.TryGetValue(key, out had) && had != null) return had;
-                long original = Sys.Word(typeof(System.__ComObject));
+                nuint original = (nuint)Sys.Word(typeof(System.__ComObject));
                 int bytes = 12 * (int)WordSize.Bytes;
                 nint copy = Marshal.AllocHGlobal(bytes);
-                for (int i = 0; i < bytes; i++) Sys.Write8(copy + i, Sys.Read8(original + i));
+                for (int i = 0; i < bytes; i++) Sys.Write8((nuint)(copy + i), Sys.Read8(original + (nuint)i));
                 Type made = Sys.As<Type>(copy);
                 // KEYED BY THE WORD ClsidOf READS, Sys.Word's: the address
                 // as an nint widens with its sign, and a 32-bit process's

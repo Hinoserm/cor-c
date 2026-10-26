@@ -574,8 +574,8 @@ public sealed class RegistryKey : IDisposable
 /// by path, in a scope.
 static class RegistryStore
 {
-    const long Get_ = 0x52454701, Set_ = 0x52454702, Delete_ = 0x52454703, Enumerate_ = 0x52454704, Flush_ = 0x52454705;
-    const long BinaryType = 4;
+    const uint Get_ = 0x52454701, Set_ = 0x52454702, Delete_ = 0x52454703, Enumerate_ = 0x52454704, Flush_ = 0x52454705;
+    const uint BinaryType = 4;
     static int _fd = -2;
 
     static int Fd()
@@ -588,18 +588,18 @@ static class RegistryStore
     /// The request block /dev/registry takes, laid out in one array: the
     /// scope, the key's address and length, the type, the flags, the number,
     /// and the value's address and length.
-    static byte[] Request(string path, long scope, byte[] key, long valueAt, long valueBytes, long type)
+    static byte[] Request(string path, long scope, byte[] key, nuint valueAt, nuint valueBytes, uint type)
     {
         byte[] request = new byte[64];
-        long at = Sys.ArrayData(request);
-        Sys.WriteNative(at, scope);
+        nuint at = Sys.ArrayData(request);
+        Sys.WriteNative(at, (nuint)scope);
         Sys.WriteNative(at + 8, Sys.ArrayData(key));
-        Sys.Write32(at + 16, key.Length);
+        Sys.Write32(at + 16, (uint)key.Length);
         Sys.Write32(at + 20, type);
         Sys.Write32(at + 24, 0);
         Sys.WriteNative(at + 32, 0);
         Sys.WriteNative(at + 40, valueAt);
-        Sys.Write32(at + 48, valueBytes);
+        Sys.Write32(at + 48, (uint)valueBytes);
         return request;
     }
 
@@ -607,11 +607,11 @@ static class RegistryStore
     {
         byte[] key = Encoding.UTF8.GetBytes(path);
         byte[] room = new byte[65536];
-        byte[] request = Request(path, scope, key, Sys.ArrayData(room), room.Length, 0);
+        byte[] request = Request(path, scope, key, Sys.ArrayData(room), (nuint)room.Length, 0);
         if (Os.Ioctl(Fd(), Get_, Sys.ArrayData(request)) < 0) return null;
-        long type = Sys.Read32(Sys.ArrayData(request) + 20) & 0xFFFFFFFF;
+        uint type = Sys.Read32(Sys.ArrayData(request) + 20);
         if (type != BinaryType) return null;
-        long bytes = Sys.Read32(Sys.ArrayData(request) + 48) & 0xFFFFFFFF;
+        long bytes = Sys.Read32(Sys.ArrayData(request) + 48);
         byte[] got = new byte[(int)bytes];
         Array.Copy(room, got, (int)bytes);
         return got;
@@ -620,7 +620,7 @@ static class RegistryStore
     public static long Set(string path, long scope, byte[] record)
     {
         byte[] key = Encoding.UTF8.GetBytes(path);
-        byte[] request = Request(path, scope, key, Sys.ArrayData(record), record.Length, BinaryType);
+        byte[] request = Request(path, scope, key, Sys.ArrayData(record), (nuint)record.Length, BinaryType);
         return Os.Ioctl(Fd(), Set_, Sys.ArrayData(request));
     }
 
@@ -637,9 +637,9 @@ static class RegistryStore
     {
         byte[] key = Encoding.UTF8.GetBytes(prefix);
         byte[] room = new byte[262144];
-        byte[] request = Request(prefix, scope, key, Sys.ArrayData(room), room.Length, 0);
+        byte[] request = Request(prefix, scope, key, Sys.ArrayData(room), (nuint)room.Length, 0);
         if (Os.Ioctl(Fd(), Enumerate_, Sys.ArrayData(request)) < 0) return new string[0];
-        long bytes = Sys.Read32(Sys.ArrayData(request) + 48) & 0xFFFFFFFF;
+        long bytes = Sys.Read32(Sys.ArrayData(request) + 48);
         List<string> found = new List<string>();
         int start = 0;
         for (int i = 0; i < bytes; i++)

@@ -354,7 +354,7 @@ public class CorsacSecureCrypto_Field25519
         // exceed the instruction range and keeps full scalar Canonicalize.
         CarryRound(ref h0, ref h1, ref h2, ref h3, ref h4);
         Store(output, h0, h1, h2, h3, h4);
-        long address = Sys.ArrayData(output._limbs);
+        nuint address = Sys.ArrayData(output._limbs);
         // (no hardware assist on this machine: the software path follows)
         // Per-call discovery permits older/absent units or migration. The
         // scratch belongs to the result, never to a distinct read-only input.

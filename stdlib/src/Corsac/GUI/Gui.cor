@@ -280,9 +280,9 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
 
     /// CORSAC's own call (os/kernel/syscall-table.conf): the GUI module
     /// loaded if it is not -- the seat up.
-    const long GuiUp = 0x40000019;
-    const long CallRead = 16, CallWrite = 17, CallIoctl = 18;
-    const long NoSys = 38, Io = 5;
+    const int GuiUp = 0x40000019;
+    const int CallRead = 16, CallWrite = 17, CallIoctl = 18;
+    const int NoSys = 38, Io = 5;
 
     long _start;                    // the GUI kernel's start number this program last saw
     long _defined;                  // the start its shared definitions were last made in
@@ -300,7 +300,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     /// up -- waiting for it -- and the call is made again, after the windows
     /// have been put back if this is a new start. An EIO that was the seat's
     /// own answer, on a start that has not changed, is handed back as it is.
-    long Call(long call, long a, long b, long c)
+    long Call(nint call, nint a, nint b, nint c)
     {
 #if TARGET_WINDOWS
         // ON WINDOWS THE SEAT IS IN THIS PROCESS (WinSeat.cor): the same
@@ -309,7 +309,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
 #else
         while (true)
         {
-            long answer = Platform.Result(Sys.GuiCall(call, a, b, c));
+            long answer = Sys.GuiCall(call, a, b, c);
             if (answer != -NoSys && answer != -Io) return answer;
             long was;
             lock (_keep) { was = _start; }
@@ -339,9 +339,9 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         // start that a restore finds overtaken by another.
         for (int tries = 0; tries < 300; tries++)
         {
-            long up = Platform.Result(Sys.Syscall(GuiUp, 0, 0, 0));
+            long up = Sys.Syscall(GuiUp, 0, 0, 0);
             if (up != 0) { Thread.Sleep(100); continue; }
-            long start = Platform.Result(Sys.GuiCall(CallIoctl, SeatIoctl.Start, 0, 0));
+            long start = Sys.GuiCall(CallIoctl, (nint)SeatIoctl.Start, 0, 0);
             if (start <= 0) return true;
             bool first;
             lock (_keep)
@@ -351,28 +351,35 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
                 else _start = start;
             }
             if (first) return true;
-            long me = Platform.Result(Sys.GuiCall(CallIoctl, SeatIoctl.Whoami, 0, 0));
+            long me = Sys.GuiCall(CallIoctl, (nint)SeatIoctl.Whoami, 0, 0);
             Restore(start, me);
-            long after = Platform.Result(Sys.GuiCall(CallIoctl, SeatIoctl.Start, 0, 0));
+            long after = Sys.GuiCall(CallIoctl, (nint)SeatIoctl.Start, 0, 0);
             if (after == start || after <= 0) return true;
         }
         return false;
 #endif
     }
 
+    // An ioctl's argument is 64 bits, its low and high halves a word each.
     long Ioctl(SeatIoctl request, long argument)
     {
-        return Call(CallIoctl, (long)request, argument & 0xFFFFFFFF, (argument >> 32) & 0xFFFFFFFF);
+        return Call(CallIoctl, (nint)request, (nint)(argument & 0xFFFFFFFF), (nint)((argument >> 32) & 0xFFFFFFFF));
+    }
+
+    // The same for an address, zero-extended.
+    long Ioctl(SeatIoctl request, nuint address)
+    {
+        return Ioctl(request, (long)(ulong)address);
     }
 
     int Write(byte[] data, int at, int count)
     {
-        return (int)Call(CallWrite, Sys.ArrayData(data) + at, count, 0);
+        return (int)Call(CallWrite, (nint)(Sys.ArrayData(data) + (nuint)at), count, 0);
     }
 
     int Read(byte[] data, int at, int count)
     {
-        return (int)Call(CallRead, Sys.ArrayData(data) + at, count, 0);
+        return (int)Call(CallRead, (nint)(Sys.ArrayData(data) + (nuint)at), count, 0);
     }
 
     // ---- what is kept to be made again after a crash --------------------------
@@ -663,12 +670,12 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         // packed above bit 31 -- the rate and the depth -- simply never
         // arrived, so a change of depth alone "succeeded" by doing nothing.
         byte[] request = new byte[16];
-        long at = Sys.ArrayData(request);
+        nuint at = Sys.ArrayData(request);
 
-        Sys.Write32(at, width);
-        Sys.Write32(at + 4, height);
-        Sys.Write32(at + 8, refresh);
-        Sys.Write32(at + 12, bits);
+        Sys.Write32(at, (uint)width);
+        Sys.Write32(at + 4, (uint)height);
+        Sys.Write32(at + 8, (uint)refresh);
+        Sys.Write32(at + 12, (uint)bits);
         return Ioctl(SeatIoctl.SetModeExact, at) == 0;
     }
 
@@ -681,9 +688,9 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     {
         Flush();
         byte[] request = new byte[20];
-        long at = Sys.ArrayData(request);
-        Sys.Write32(at, width); Sys.Write32(at + 4, height); Sys.Write32(at + 8, refresh);
-        Sys.Write32(at + 12, bits); Sys.Write32(at + 16, seconds);
+        nuint at = Sys.ArrayData(request);
+        Sys.Write32(at, (uint)width); Sys.Write32(at + 4, (uint)height); Sys.Write32(at + 8, (uint)refresh);
+        Sys.Write32(at + 12, (uint)bits); Sys.Write32(at + 16, (uint)seconds);
         return Ioctl(SeatIoctl.ModeTry, at) == 0;
     }
 
@@ -711,8 +718,8 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     {
         monitor = new SeatMonitor();
         byte[] info = new byte[48];
-        long at = Sys.ArrayData(info);
-        Sys.Write32(at, index);
+        nuint at = Sys.ArrayData(info);
+        Sys.Write32(at, (uint)index);
         if (Ioctl(SeatIoctl.MonitorInfo, at) <= 0) return false;
         monitor.X = (int)Sys.Read32(at + 4); monitor.Y = (int)Sys.Read32(at + 8);
         monitor.Width = (int)Sys.Read32(at + 12); monitor.Height = (int)Sys.Read32(at + 16);
@@ -769,9 +776,9 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         mode = new SeatMode();
 
         byte[] request = new byte[20];
-        long at = Sys.ArrayData(request);
+        nuint at = Sys.ArrayData(request);
 
-        Sys.Write32(at, index);
+        Sys.Write32(at, (uint)index);
         if (Ioctl(SeatIoctl.ModeAt, at) != 0) { return false; }
 
         mode.Width = (int)Sys.Read32(at + 4);
@@ -1625,6 +1632,10 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     }
 
     static void PutWord(byte[] b, int at, long v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+
+    // AN ADDRESS IN A RECORD'S 32-BIT FIELD: the GUI kernel's records are
+    // laid out for i386; long mode will need them widened.
+    static void PutWord(byte[] b, int at, nuint address) { PutWord(b, at, (long)(ulong)address); }
 
     // ---- keyboard layouts -----------------------------------------------------
     //

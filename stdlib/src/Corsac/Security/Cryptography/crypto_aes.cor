@@ -167,7 +167,7 @@ public class CorsacSecureCrypto_Aes
         // by the portable loop below.
         while (keyBytes != Key192Bytes && generated < expandedBytes)
         {
-            long output = Sys.ArrayData(_roundKeys) + generated;
+            nuint output = Sys.ArrayData(_roundKeys) + (nuint)generated;
             bool rotated = (generated % keyBytes) == 0;
             bool assisted;
             if (keyBytes == Key128Bytes)

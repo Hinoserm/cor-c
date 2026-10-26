@@ -47,12 +47,12 @@ static partial class Environment
         {
             return have;
         }
-        long sp = Os.MainEntryStack();
+        nuint sp = Os.MainEntryStack();
         int argc = (int)Sys.ReadNative(sp);
         string[] args = new string[argc];
         for (int i = 0; i < argc; i++)
         {
-            args[i] = Os.StringAt(Sys.ReadNative(sp + WordSize.Bytes + WordSize.Bytes * i));
+            args[i] = Os.StringAt(Sys.ReadNative(sp + (nuint)(WordSize.Bytes + WordSize.Bytes * i)));
         }
         _args = args;
         return args;
@@ -65,25 +65,25 @@ static partial class Environment
         {
             return have;
         }
-        long sp = Os.MainEntryStack();
-        long argc = Sys.ReadNative(sp);
-        long at = sp + WordSize.Bytes + WordSize.Bytes * argc + WordSize.Bytes;
+        nuint sp = Os.MainEntryStack();
+        nuint argc = Sys.ReadNative(sp);
+        nuint at = sp + (nuint)WordSize.Bytes + (nuint)WordSize.Bytes * argc + (nuint)WordSize.Bytes;
         int n = 0;
-        while (Sys.ReadNative(at + WordSize.Bytes * n) != 0)
+        while (Sys.ReadNative(at + (nuint)(WordSize.Bytes * n)) != 0)
         {
             n = n + 1;
         }
         string[] all = new string[n];
         for (int i = 0; i < n; i++)
         {
-            all[i] = Os.StringAt(Sys.ReadNative(at + WordSize.Bytes * i));
+            all[i] = Os.StringAt(Sys.ReadNative(at + (nuint)(WordSize.Bytes * i)));
         }
         _env = all;
         return all;
     }
 
     /// The address of envp, for execve.
-    public static long EnvironAddress()
+    public static nuint EnvironAddress()
     {
         return Os.EnvironAddress();
     }
@@ -596,12 +596,12 @@ static class AppContext
     /// the image was built without it.
     static string? Knob(string name)
     {
-        long at = Runtime.KnobValue(name);
+        nuint at = Runtime.KnobValue(name);
         if (at == 0) return null;
         int length = 0;
-        while (Sys.Read16(at + length * 2) != 0) length = length + 1;
+        while (Sys.Read16(at + (nuint)(length * 2)) != 0) length = length + 1;
         char[] units = new char[length];
-        for (int i = 0; i < length; i++) units[i] = (char)Sys.Read16(at + i * 2);
+        for (int i = 0; i < length; i++) units[i] = (char)Sys.Read16(at + (nuint)(i * 2));
         return new string(units);
     }
 

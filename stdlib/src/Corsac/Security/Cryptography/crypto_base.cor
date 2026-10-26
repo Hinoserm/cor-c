@@ -68,7 +68,7 @@ public static class CorsacSecureCrypto_Bytes
         // object address.  It is therefore both faster for large keys and an
         // explicit observable erase which the compiler cannot discard.
         if (count != 0)
-            Sys.MemorySet(Sys.ArrayData(buffer) + offset, 0, count);
+            Sys.MemorySet(Sys.ArrayData(buffer) + (nuint)offset, 0, (nuint)count);
         return true;
     }
 }

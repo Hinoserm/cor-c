@@ -33,24 +33,24 @@
 /// with the system-call numbers (Call, abi.cor).
 static class SockCall
 {
-    public const long Socket = 1;
-    public const long Bind = 2;
-    public const long Connect = 3;
-    public const long Listen = 4;
-    public const long Accept = 5;
-    public const long GetSockName = 6;
-    public const long GetPeerName = 7;
-    public const long SocketPair = 8;
-    public const long Send = 9;
-    public const long Recv = 10;
-    public const long SendTo = 11;
-    public const long RecvFrom = 12;
-    public const long Shutdown = 13;
-    public const long SetSockOpt = 14;
-    public const long GetSockOpt = 15;
-    public const long SendMsg = 16;
-    public const long RecvMsg = 17;
-    public const long Accept4 = 18;
+    public const int Socket = 1;
+    public const int Bind = 2;
+    public const int Connect = 3;
+    public const int Listen = 4;
+    public const int Accept = 5;
+    public const int GetSockName = 6;
+    public const int GetPeerName = 7;
+    public const int SocketPair = 8;
+    public const int Send = 9;
+    public const int Recv = 10;
+    public const int SendTo = 11;
+    public const int RecvFrom = 12;
+    public const int Shutdown = 13;
+    public const int SetSockOpt = 14;
+    public const int GetSockOpt = 15;
+    public const int SendMsg = 16;
+    public const int RecvMsg = 17;
+    public const int Accept4 = 18;
 }
 
 /// The control messages recvmsg(2) answers with: a list of headers, each
@@ -88,7 +88,7 @@ static class Cmsg
     /// Where the header after the one at `at` is, or -1.
     public static int Next(byte[] control, int controlBytes, int at)
     {
-        long length = Length(control, at);
+        nuint length = Length(control, at);
 
         if (length < HeaderBytes)
         {
@@ -99,7 +99,7 @@ static class Cmsg
         return next + HeaderBytes <= controlBytes ? next : -1;
     }
 
-    public static long Length(byte[] control, int at)
+    public static nuint Length(byte[] control, int at)
     {
         return Raw.Word(control, at);
     }
@@ -129,7 +129,7 @@ static class Platform
 {
     // Sys.Syscall answers the 32-bit EAX zero-extended. -errno lives in
     // the top 4095 values of the unsigned range; nothing else does.
-    public static long Result(long raw)
+    public static nint Result(nint raw)
     {
         return Err.Result(raw);
     }
@@ -143,7 +143,7 @@ static class Platform
     /// this way. The stack is read where it stands meanwhile; the words the
     /// call was handed are on it, and they keep what they point into.
     /// Answers the kernel's raw number, as Sys.Syscall does.
-    public static long Blocking(long n, long a, long b, long c, long d = 0, long e = 0, long f = 0)
+    public static nint Blocking(nint n, nint a, nint b, nint c, nint d = 0, nint e = 0, nint f = 0)
     {
         // A KERNEL'S OWN CALL (--kernel-syscalls) IS NOT BRACKETED: its
         // thread block is a processor's, the kernel decides when the call
@@ -151,7 +151,7 @@ static class Platform
         // stopped is one it refuses to park.
         if (Sys.KernelSyscalls()) return Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.BeginBlocking();
-        long raw = Sys.Syscall(n, a, b, c, d, e, f);
+        nint raw = Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.EndBlocking();
         return raw;
     }
@@ -312,43 +312,42 @@ static class Platform
     /// mmap takes its arguments in a structure.
     /// A label and a number on standard error, allocating nothing: for the
     /// allocator's own paths, where a `new` would recurse.
-    static long _traceDigits;
+    static nuint _traceDigits;
 
     public static void Trace(string label, long value)
     {
         if (_traceDigits == 0)
         {
-            long got = Sys.Syscall(LinuxCall.Mmap, 0, 4096, 3, 0x22, 0 - 1, 0);
-            _traceDigits = Result(got) > 0 ? Result(got) : 0 - 1;
+            _traceDigits = Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, 4096, 3, 0x22, 0 - 1, 0));
         }
 
         Runtime.WriteLiteral(2, label);
 
-        if (_traceDigits > 0)
+        if (_traceDigits != 0)
         {
-            long n = value < 0 ? 0 - value : value;
-            long at = 24;
+            ulong n = value < 0 ? 0 - (ulong)value : (ulong)value;
+            int at = 24;
 
             if (n == 0)
             {
                 at = at - 1;
-                Sys.Write8(_traceDigits + at, 48);
+                Sys.Write8(_traceDigits + (nuint)at, 48);
             }
 
             while (n > 0 && at > 1)
             {
                 at = at - 1;
-                Sys.Write8(_traceDigits + at, 48 + n % 10);
+                Sys.Write8(_traceDigits + (nuint)at, (byte)(48 + n % 10));
                 n = n / 10;
             }
 
             if (value < 0)
             {
                 at = at - 1;
-                Sys.Write8(_traceDigits + at, 45);
+                Sys.Write8(_traceDigits + (nuint)at, 45);
             }
 
-            WriteBytes(2, _traceDigits + at, 24 - at);
+            WriteBytes(2, _traceDigits + (nuint)at, (nuint)(24 - at));
         }
 
         Runtime.WriteLiteral(2, "\n");
@@ -356,22 +355,22 @@ static class Platform
 
     /// Memory given back to the kernel: munmap(2). What the collector does
     /// with a chunk it has emptied.
-    public static void Unmap(long at, long bytes)
+    public static void Unmap(nuint at, nuint bytes)
     {
-        Sys.Syscall(LinuxCall.Munmap, at, bytes, 0);
+        Sys.Syscall(LinuxCall.Munmap, (nint)at, (nint)bytes, 0);
     }
 
     /// Memory made unreadable and unwritable and its address kept: a fresh
     /// PROT_NONE mapping over it. What a released chunk becomes under Corsac.GC.GuardReleases,
     /// so that its address is never handed out again and the first use of it
     /// faults where it happens.
-    public static void Guard(long at, long bytes)
+    public static void Guard(nuint at, nuint bytes)
     {
         // Mapped over, not protected: MAP_FIXED | MAP_NORESERVE with
         // PROT_NONE keeps the addresses reserved and gives the pages back.
         // Protected, every guarded chunk stayed resident, and a build ran
         // the machine out of memory.
-        Sys.Syscall(LinuxCall.Mmap, at, bytes, 0, 0x22 | 0x10 | 0x4000, 0 - 1, 0);
+        Sys.Syscall(LinuxCall.Mmap, (nint)at, (nint)bytes, 0, 0x22 | 0x10 | 0x4000, 0 - 1, 0);
     }
 
     /// The processor given up to whatever else is ready (sched_yield): a
@@ -385,36 +384,36 @@ static class Platform
     /// cache's, shared by every process that maps it and given back under
     /// pressure like any cached page. The address, and its length in
     /// `length`; 0 when it cannot be mapped (the caller reads it instead).
-    public static long MapReadOnly(string path, out long length)
+    public static nuint MapReadOnly(string path, out nuint length)
     {
         length = 0;
         int fd = Os.Open(path, 0);                          // O_RDONLY
         if (fd < 0) return 0;
         long size = Os.SizeOf(fd);
-        long at = 0;
+        nuint at = 0;
         if (size > 0 && size < 0x10000000)
         {
             // PROT_READ = 1, MAP_PRIVATE = 2.
-            long got = Sys.Syscall(LinuxCall.Mmap, 0, size, 1, 2, fd, 0);
-            if (Result(got) > 0) { at = Result(got); length = size; }
+            at = Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, (nint)size, 1, 2, fd, 0));
+            if (at != 0) length = (nuint)size;
         }
         Os.Close(fd);
         return at;
     }
 
-    public static long Map(long bytes)
+    public static nuint Map(nuint bytes)
     {
         // PROT_READ | PROT_WRITE = 3; MAP_PRIVATE | MAP_ANONYMOUS = 0x22;
         // no file (-1), offset 0.
-        long got = Sys.Syscall(LinuxCall.Mmap, 0, bytes, 3, 0x22, 0 - 1, 0);
-        long answer = Result(got);
+        nint got = Sys.Syscall(LinuxCall.Mmap, 0, (nint)bytes, 3, 0x22, 0 - 1, 0);
 
         // REFUSED, said by whoever asked: the heap's out of memory is
         // reported only if nothing catches it (Gc.ThrowOutOfMemory).
-        if (answer < 0)
+        if (Err.Failed(got))
         {
             return 0;
         }
+        nuint answer = (nuint)got;
         if (answer == 0)
         {
             string zero = "mmap answered address 0\n";
@@ -444,7 +443,7 @@ static class Platform
     /// what runs before a thread's block is its own (RuntimeAbi.SetThreadBlock),
     /// where no region may be opened.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static void SetThreadBlock(long block)
+    public static void SetThreadBlock(nuint block)
     {
         // ONLY FOR A COLLECTOR, which alone reads these: in a program without
         // one the stores fold away, and with them the routines they named --
@@ -473,20 +472,20 @@ static class Platform
         // code finds errno, its allocator's caches and its stack canary
         // through FS. No descriptor, no selector: the block's own first word
         // is still its address, so gs:[0] answers it.
-        if (Result(Sys.Syscall(LinuxCall.ArchPrctl, LinuxCall.ArchSetGs, block, 0)) < 0)
+        if (Sys.Syscall(LinuxCall.ArchPrctl, LinuxCall.ArchSetGs, (nint)block, 0) < 0)
         {
             Runtime.WriteLiteral(2, "arch_prctl(ARCH_SET_GS) failed: this kernel cannot give a thread its own block\n");
             Exit(134);
         }
 #else
 
-        long desc = block + Tls.Scratch;
+        nuint desc = block + Tls.Scratch;
 
         // THE C LIBRARY'S SELECTOR, taken before this replaces it: under
         // ld-linux, GS already names glibc's thread pointer, and a call into
         // C puts it back for the length of the call (Runtime.EnterNative).
         // Only the first time -- a later thread starts with the runtime's.
-        long entry = 0 - 1;                     // entry_number: any free one
+        int entry = 0 - 1;                      // entry_number: any free one
         if (Runtime.ManagedGs == 0)
         {
             Runtime.NativeGs = Sys.GetGs();
@@ -497,16 +496,16 @@ static class Platform
             // thread's own block: a thread made by pthread_create inherits
             // the slot as its creator left it, and asking for "any" would
             // give it another.
-            entry = Runtime.ManagedGs >> 3;
+            entry = (int)(Runtime.ManagedGs >> 3);
         }
-        Sys.Write32(desc, entry);
-        Sys.Write32(desc + 4, block);          // base_addr
+        Sys.Write32(desc, (uint)entry);
+        Sys.Write32(desc + 4, (uint)block);    // base_addr
         Sys.Write32(desc + 8, 0xFFFFF);        // limit: the whole space, in pages
         // seg_32bit | limit_in_pages | useable; a writable data segment that
         // is present, which is the rest of the bits being zero.
         Sys.Write32(desc + 12, 0x51);
 
-        if (Result(Sys.Syscall(LinuxCall.SetThreadArea, desc, 0, 0)) < 0)
+        if (Sys.Syscall(LinuxCall.SetThreadArea, (nint)desc, 0, 0) < 0)
         {
             string text = "set_thread_area failed: this kernel cannot give a thread its own block\n";
 
@@ -573,9 +572,9 @@ static class Platform
             long wanted = Runtime.KnobNumber("Corsac.GC.Workers");
             return (int)(wanted > 15 ? 15 : wanted);
         }
-        long page = Map(4096);
+        nuint page = Map(4096);
         if (page == 0) return 0;
-        long got = Platform.Result(Sys.Syscall(LinuxCall.SchedGetaffinity, 0, 128, page));
+        long got = Platform.Result(Sys.Syscall(LinuxCall.SchedGetaffinity, 0, 128, (nint)page));
         int count = 0;
         for (long i = 0; i < got && i < 128; i++)
         {
@@ -587,13 +586,13 @@ static class Platform
         return count < 0 ? 0 : count > 7 ? 7 : count;
     }
 
-    const long WorkerStackBytes = 256 * 1024;
+    const int WorkerStackBytes = 256 * 1024;
 
     /// Starts one of them: `entry` on a stack of its own, with no Thread,
     /// no thread block and no signals. False when there is no room for it.
     public static long StartCollectorWorker(long entry)
     {
-        long stack = Native.MapStack(WorkerStackBytes);
+        nuint stack = Native.MapStack(WorkerStackBytes);
         if (stack == 0) return 0;
         return Native.SpawnBare(entry, 0, stack, WorkerStackBytes) > 0 ? 1 : 0;
     }
@@ -605,17 +604,17 @@ static class Platform
         // A mask in the worker's own frame: its thread block would be the
         // parent's, whose GS it inherited. Eight bytes of ones, every signal.
         long mask = 0 - 1;
-        Sys.Syscall(LinuxCall.RtSigprocmask, 0, Sys.AddressOf(ref mask), 0, 8, 0, 0);     // SIG_BLOCK
+        Sys.Syscall(LinuxCall.RtSigprocmask, 0, (nint)Sys.AddressOf(ref mask), 0, 8, 0, 0);     // SIG_BLOCK
     }
 
-    public static void Wait(long at, long value)
+    public static void Wait(nuint at, nint value)
     {
-        Sys.Syscall(LinuxCall.Futex, at, 128, value, 0, 0, 0);
+        Sys.Syscall(LinuxCall.Futex, (nint)at, 128, value, 0, 0, 0);
     }
 
-    public static void Wake(long at, long count)
+    public static void Wake(nuint at, nint count)
     {
-        Sys.Syscall(LinuxCall.Futex, at, 129, count, 0, 0, 0);
+        Sys.Syscall(LinuxCall.Futex, (nint)at, 129, count, 0, 0, 0);
     }
 
     // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
@@ -662,24 +661,24 @@ static class Platform
     /// The scheduler's continuations are its own here: no kernel's run queue
     /// to post them to (Scheduler.Post), and no context to flow with them
     /// (AsyncContext) -- a Linux thread is the context.
-    public const long PostHook = 0;
-    public const long ContextHook = 0;
-    public const long CompletedHook = 0;
+    public const int PostHook = 0;
+    public const int ContextHook = 0;
+    public const int CompletedHook = 0;
 
     /// Memory committed as it is first touched: what every anonymous mapping
     /// here is already (MapsCommitLazily).
-    public static long MapLazy(long bytes) => Map(bytes);
+    public static nuint MapLazy(nuint bytes) => Map(bytes);
 
     /// Nothing to commit ahead: the kernel commits on touch, and never fails
     /// to (Gc.CommitCards).
-    public static void Commit(long at, long bytes) { }
-    public const long TaskArenaBytes = 0;
+    public static void Commit(nuint at, nuint bytes) { }
+    public const int TaskArenaBytes = 0;
 
     /// A thread here is a thread: its block is its own, and what it runs
     /// keeps its words there (the bare-metal platform's hooks of these names).
-    public const long ThreadStaticsHook = 0;
-    public const long TypeInitOwnerHook = 0;
-    public const long TypeInitWaitHook = 0;
+    public const int ThreadStaticsHook = 0;
+    public const int TypeInitOwnerHook = 0;
+    public const int TypeInitWaitHook = 0;
 
     /// Free memory as the collector may ask it: with the heap held, so without
     /// allocating (SysinfoBytes answers into a page of the system's own).
@@ -696,21 +695,19 @@ static class Platform
     /// load near 100% (GC.GetGCMemoryInfo) and the collector paced as if
     /// there were no room. Read with the heap held, into a page of the
     /// system's own; a caller that finds another reading answers the last.
-    static long _meminfoPage;
+    static nuint _meminfoPage;
     static long _lastAvailable;
     const int MeminfoPath = 8;
     const int MeminfoText = 64;
 
     static long MemAvailableBytes()
     {
-        long page = _meminfoPage;
+        nuint page = _meminfoPage;
         if (page == 0)
         {
-            long made = Map(4096);
+            nuint made = Map(4096);
             if (made == 0) return 0;
-            string path = "/proc/meminfo";
-            for (int i = 0; i < path.Length; i++) Sys.Write8(made + MeminfoPath + i, path[i]);
-            Sys.Write8(made + MeminfoPath + path.Length, 0);
+            WriteText(made + MeminfoPath, "/proc/meminfo");
             if (Sys.Cas(Sys.AddressOf(ref _meminfoPage), 0, made) != 0) Unmap(made, 4096);
             page = _meminfoPage;
         }
@@ -718,14 +715,15 @@ static class Platform
         {
             return _lastAvailable;
         }
-        long text = page + MeminfoText;
-        long got = ReadPath(page + MeminfoPath, text, 1024);
-        long at = got > 0 ? LineAfter(text, got, "MemAvailable:") : -1;
+        nuint text = page + MeminfoText;
+        nint got = ReadPath(page + MeminfoPath, text, 1024);
+        nuint at = got > 0 ? LineAfter(text, (nuint)got, "MemAvailable:") : 0;
         long value = 0;
-        if (at >= 0)
+        if (at != 0)
         {
-            while (at < text + got && Sys.Read8(at) == 32) at = at + 1;
-            while (at < text + got && Sys.Read8(at) >= 48 && Sys.Read8(at) <= 57)
+            nuint end = text + (nuint)got;
+            while (at < end && Sys.Read8(at) == 32) at = at + 1;
+            while (at < end && Sys.Read8(at) >= 48 && Sys.Read8(at) <= 57)
             {
                 value = value * 10 + (Sys.Read8(at) - 48);
                 at = at + 1;
@@ -743,16 +741,16 @@ static class Platform
     /// nothing here allocates. Zero when uname says nothing.
     public static long AddressSpace()
     {
-        long page = Map(4096);
+        nuint page = Map(4096);
         if (page == 0)
         {
             return 0;
         }
         long space = 0;
-        if (Result(Sys.Syscall(LinuxCall.Uname, page, 0, 0)) == 0)
+        if (Result(Sys.Syscall(LinuxCall.Uname, (nint)page, 0, 0)) == 0)
         {
             // struct utsname: six fields of 65 bytes; the machine is the fifth.
-            long machine = page + 4 * 65;
+            nuint machine = page + 4 * 65;
             bool wide = Sys.Read8(machine) == 120 && Sys.Read8(machine + 1) == 56 && Sys.Read8(machine + 2) == 54
                      && Sys.Read8(machine + 3) == 95 && Sys.Read8(machine + 4) == 54 && Sys.Read8(machine + 5) == 52
                      && Sys.Read8(machine + 6) == 0;
@@ -792,7 +790,7 @@ static class Platform
         {
             return;
         }
-        long page = Map(4096);
+        nuint page = Map(4096);
         if (page == 0)
         {
             return;
@@ -801,7 +799,7 @@ static class Platform
         // THE WAY BACK from a fault that becomes a NullReferenceException:
         // rt_sigreturn, seven bytes on a page of their own that may run, as
         // PosixSignalRegistration's restorer is.
-        long back = Platform.Result(Sys.Syscall(LinuxCall.Mmap, 0, 4096, 7, 0x22, 0 - 1, 0));
+        nuint back = Platform.Result(Sys.Syscall(LinuxCall.Mmap, 0, 4096, 7, 0x22, 0 - 1, 0));
         if (back > 0)
         {
 #if TARGET_64BIT
@@ -824,20 +822,20 @@ static class Platform
         // in the program after a NullReferenceException is caught again.
         // A second fault inside the report finds _faulting set and ends the
         // process.
-        long handler = Sys.AddressOf(Platform.Fault);
+        nuint handler = Sys.AddressOf(Platform.Fault);
         Sys.WriteNative(page, handler);
         Sys.WriteNative(page + WordSize.Bytes, 0x00000004 | 0x04000000 | 0x40000000);
         Sys.WriteNative(page + 2 * WordSize.Bytes, _faultReturn != 0 ? _faultReturn : handler);
-        Sys.Syscall(LinuxCall.RtSigaction, SignalSegv, page, 0, 8, 0, 0);
-        Sys.Syscall(LinuxCall.RtSigaction, SignalBus, page, 0, 8, 0, 0);
+        Sys.Syscall(LinuxCall.RtSigaction, SignalSegv, (nint)page, 0, 8, 0, 0);
+        Sys.Syscall(LinuxCall.RtSigaction, SignalBus, (nint)page, 0, 8, 0, 0);
     }
 
     /// The kernel's call on a fault: the signal, its siginfo and the
     /// interrupted context. Reports once, then dies of the signal.
     public static void Fault(int signal, nint info, nint context)
     {
-        long si = (long)info;
-        long uc = (long)context;
+        nuint si = (long)info;
+        nuint uc = (long)context;
         // A NULL DEREFERENCE IS AN EXCEPTION, as it is in .NET: the thread is
         // sent on, when the handler returns, into Runtime.NullFault as if the
         // faulting instruction had called it -- its return address that
@@ -848,17 +846,17 @@ static class Platform
 #if TARGET_64BIT
             long nullAt = Sys.ReadNative(si + 16);
 #else
-            long nullAt = Sys.ReadNative(si + 12);
+            nuint nullAt = Sys.ReadNative(si + 12);
 #endif
             if (Runtime.NullFaultCatchable(nullAt))
             {
-                long entry = Sys.AddressOf(Runtime.NullFault);
+                nuint entry = Sys.AddressOf(Runtime.NullFault);
 #if TARGET_64BIT
                 // gregs from 40: RDI 8th, RSI 9th, RBP 10th, RSP 15th, RIP 16th.
                 // Past the red zone, aligned as a call leaves it.
                 long faultPc = Sys.ReadNative(uc + 168);
                 long faultFrame = Sys.ReadNative(uc + 120);
-                long sp = ((Sys.ReadNative(uc + 160) - 128) & ~15L) - 8;
+                nuint sp = ((Sys.ReadNative(uc + 160) - 128) & ~15L) - 8;
                 Sys.WriteNative(sp, faultPc);
                 Sys.WriteNative(uc + 104, faultFrame);
                 Sys.WriteNative(uc + 112, faultPc);
@@ -869,9 +867,9 @@ static class Platform
                 // on the stack above the return address, each a long and so
                 // two words, the low one first. Aligned as a call leaves it:
                 // the return address at 12 past a multiple of 16.
-                long faultPc = Sys.ReadNative(uc + 76);
-                long faultFrame = Sys.ReadNative(uc + 44);
-                long sp = ((Sys.ReadNative(uc + 48)) - 64 & ~15L) - 20;
+                nuint faultPc = Sys.ReadNative(uc + 76);
+                nuint faultFrame = Sys.ReadNative(uc + 44);
+                nuint sp = ((Sys.ReadNative(uc + 48)) - 64 & ~15L) - 20;
                 Sys.WriteNative(sp, faultPc);
                 Sys.WriteNative(sp + 4, faultFrame);
                 Sys.WriteNative(sp + 8, 0);
@@ -897,24 +895,24 @@ static class Platform
 #else
             // siginfo's si_addr at 12; mcontext's gregs from 20, EBP the
             // seventh and EIP the fifteenth.
-            long address = Sys.ReadNative(si + 12);
-            long pc = Sys.ReadNative(uc + 76);
-            long frame = Sys.ReadNative(uc + 44);
+            nuint address = Sys.ReadNative(si + 12);
+            nuint pc = Sys.ReadNative(uc + 76);
+            nuint frame = Sys.ReadNative(uc + 44);
             // EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX.
-            long registers = uc + 36;
+            nuint registers = uc + 36;
             int count = 8;
 #endif
             Runtime.ReportFault(address, pc, frame, _faultPage + 256, registers, count);
         }
         // SIG_DFL, the signal unblocked (SIG_UNBLOCK, a set of one), and sent.
-        long page = _faultPage;
+        nuint page = _faultPage;
         Sys.WriteNative(page, 0);
         Sys.WriteNative(page + WordSize.Bytes, 0);
-        Sys.Syscall(LinuxCall.RtSigaction, signal, page, 0, 8, 0, 0);
+        Sys.Syscall(LinuxCall.RtSigaction, signal, (nint)page, 0, 8, 0, 0);
         Sys.WriteNative(page + 128, 0);
         Sys.WriteNative(page + 128 + WordSize.Bytes, 0);
         Sys.Write8(page + 128 + (signal - 1) / 8, 1 << ((signal - 1) % 8));
-        Sys.Syscall(LinuxCall.RtSigprocmask, 1, page + 128, 0, 8, 0, 0);
+        Sys.Syscall(LinuxCall.RtSigprocmask, 1, (nint)(page + 128), 0, 8, 0, 0);
         Sys.Syscall(LinuxCall.Kill, Sys.Syscall(LinuxCall.Getpid, 0, 0, 0, 0, 0, 0), signal, 0, 0, 0, 0);
         Sys.Syscall(LinuxCall.ExitGroup, 128 + signal, 0, 0, 0, 0, 0);
     }
@@ -952,7 +950,7 @@ static class Platform
     /// The page CgroupUsage reads through: a lock word at 0, the number read
     /// at UsageDigits, the usage file's NUL-terminated path at UsagePath. 0
     /// when no group limits the process.
-    static long _usagePage;
+    static nuint _usagePage;
     const int UsageDigits = 64;
     const int UsagePath = 128;
 
@@ -963,7 +961,7 @@ static class Platform
     /// at the same time.
     static long CgroupUsage()
     {
-        long page = _usagePage;
+        nuint page = _usagePage;
         if (page == 0)
         {
             return -1;
@@ -972,20 +970,34 @@ static class Platform
         {
             return _lastUsage - 1;
         }
-        long got = ReadPath(page + UsagePath, page + UsageDigits, 32);
-        long value = 0;
-        long digits = 0;
-        for (long p = page + UsageDigits; p < page + UsageDigits + got; p++)
-        {
-            long c = Sys.Read8(p);
-            if (c < 48 || c > 57) break;
-            value = value * 10 + (c - 48);
-            digits = digits + 1;
-        }
-        long answer = digits > 0 ? value : -1;
+        nint got = ReadPath(page + UsagePath, page + UsageDigits, 32);
+        long answer = got > 0 ? Digits(page + UsageDigits, (nuint)got) : -1;
         _lastUsage = answer + 1;
         Sys.WriteNative(page, 0);
         return answer;
+    }
+
+    /// The decimal number at `at`, or -1 for none.
+    static long Digits(nuint at, nuint count)
+    {
+        long value = 0;
+        bool any = false;
+        for (nuint p = at; p < at + count; p++)
+        {
+            byte c = Sys.Read8(p);
+            if (c < 48 || c > 57) break;
+            value = value * 10 + (c - 48);
+            any = true;
+        }
+        return any ? value : -1;
+    }
+
+    /// `text` and its NUL at `at`.
+    static nuint WriteText(nuint at, string text)
+    {
+        for (int i = 0; i < text.Length; i++) { Sys.Write8(at, (byte)text[i]); at = at + 1; }
+        Sys.Write8(at, 0);
+        return at;
     }
 
     // What the last read said, plus one: a static here starts as zero, read
@@ -994,26 +1006,30 @@ static class Platform
 
     static long ReadMemoryLimit()
     {
-        long page = Map(8192);
+        nuint page = Map(8192);
         if (page == 0)
         {
             return 0;
         }
-        long text = page;           // /proc/self/cgroup
-        long path = page + 4096;    // the file asked for, NUL-terminated
+        nuint text = page;           // /proc/self/cgroup
+        nuint path = page + 4096;    // the file asked for, NUL-terminated
         long limit = 0;
-        long got = ReadInto(text, 4095, "/proc/self/cgroup", path);
-        long v2 = got > 0 ? LineAfter(text, got, "0::") : -1;
-        if (v2 >= 0)
+        WriteText(path, "/proc/self/cgroup");
+        nint got = ReadPath(path, text, 4095);
+        nuint end0 = got > 0 ? text + (nuint)got : text;
+        nuint spare = end0 + 1;
+        nuint room = page + 4096 - spare;
+        nuint v2 = got > 0 ? LineAfter(text, (nuint)got, "0::") : 0;
+        if (v2 != 0)
         {
-            long end = v2;
-            while (end < text + got && Sys.Read8(end) != 10) end = end + 1;
+            nuint end = v2;
+            while (end < end0 && Sys.Read8(end) != 10) end = end + 1;
             // The group, then each parent up to the root, whose own file
             // does not exist (except as a namespace's root, which is "/").
-            long binding = 0;
+            nuint binding = 0;
             while (end > v2)
             {
-                long bytes = CgroupFile(path, v2, end, "/sys/fs/cgroup", "/memory.max", text + got + 1, page + 4096 - (text + got + 1));
+                long bytes = CgroupFile(path, v2, end, "/sys/fs/cgroup", "/memory.max", spare, room);
                 if (bytes > 0 && (limit == 0 || bytes < limit)) { limit = bytes; binding = end; }
                 end = end - 1;
                 while (end > v2 && Sys.Read8(end) != 47) end = end - 1;
@@ -1022,12 +1038,12 @@ static class Platform
         }
         if (limit == 0 && got > 0)
         {
-            long v1 = LineAfter(text, got, ":memory:");
-            if (v1 >= 0)
+            nuint v1 = LineAfter(text, (nuint)got, ":memory:");
+            if (v1 != 0)
             {
-                long end = v1;
-                while (end < text + got && Sys.Read8(end) != 10) end = end + 1;
-                limit = CgroupFile(path, v1, end, "/sys/fs/cgroup/memory", "/memory.limit_in_bytes", text + got + 1, page + 4096 - (text + got + 1));
+                nuint end = v1;
+                while (end < end0 && Sys.Read8(end) != 10) end = end + 1;
+                limit = CgroupFile(path, v1, end, "/sys/fs/cgroup/memory", "/memory.limit_in_bytes", spare, room);
                 // v1 says "no limit" as a number near 2^63.
                 if (limit >= 0x7FFFFFFFFFFFF000 / 2) limit = 0;
                 if (limit != 0) KeepUsagePath(v1, end, "/sys/fs/cgroup/memory", "/memory.usage_in_bytes");
@@ -1039,94 +1055,83 @@ static class Platform
 
     /// The binding group's usage file, `root` + [from, to) + `leaf`, written
     /// into a page kept for CgroupUsage; nothing kept when no page is had.
-    static void KeepUsagePath(long from, long to, string root, string leaf)
+    static void KeepUsagePath(nuint from, nuint to, string root, string leaf)
     {
-        long page = Map(4096);
+        nuint page = Map(4096);
         if (page == 0)
         {
             return;
         }
-        long at = page + UsagePath;
-        for (int i = 0; i < root.Length; i++) { Sys.Write8(at, root[i]); at = at + 1; }
-        for (long p = from; p < to && at < page + 3900; p++) { Sys.Write8(at, Sys.Read8(p)); at = at + 1; }
-        for (int i = 0; i < leaf.Length; i++) { Sys.Write8(at, leaf[i]); at = at + 1; }
-        Sys.Write8(at, 0);
+        WritePath(page + UsagePath, from, to, root, leaf);
         _usagePage = page;
+    }
+
+    /// root, the bytes [from, to), leaf and a NUL at `at`, at most 3000.
+    static void WritePath(nuint at, nuint from, nuint to, string root, string leaf)
+    {
+        nuint start = at;
+        for (int i = 0; i < root.Length; i++) { Sys.Write8(at, (byte)root[i]); at = at + 1; }
+        for (nuint p = from; p < to && at < start + 3000; p++) { Sys.Write8(at, Sys.Read8(p)); at = at + 1; }
+        WriteText(at, leaf);
     }
 
     /// Reads the file named by `name` (built into `scratch`) into [into,
     /// into + most); answers the bytes read, or -1.
-    static long ReadInto(long into, long most, string name, long scratch)
+    static nint ReadPath(nuint path, nuint into, nuint most)
     {
-        for (int i = 0; i < name.Length; i++) Sys.Write8(scratch + i, name[i]);
-        Sys.Write8(scratch + name.Length, 0);
-        return ReadPath(scratch, into, most);
-    }
-
-    static long ReadPath(long path, long into, long most)
-    {
-        long fd = Result(Sys.Syscall(LinuxCall.Open, path, 0, 0));
+        nint fd = Sys.Syscall(LinuxCall.Open, (nint)path, 0, 0);
         if (fd < 0)
         {
             return -1;
         }
-        long got = 0;
+        nuint got = 0;
         while (got < most)
         {
-            long n = Result(Sys.Syscall(LinuxCall.Read, fd, into + got, most - got));
+            nint n = Sys.Syscall(LinuxCall.Read, fd, (nint)(into + got), (nint)(most - got));
             if (n <= 0) break;
-            got = got + n;
+            got = got + (nuint)n;
         }
         Sys.Syscall(LinuxCall.Close, fd, 0, 0);
-        return got;
+        return (nint)got;
     }
 
     /// Where the text after `key` begins, when a line of [text, text + count)
     /// starts with it (or, for a key starting with ':', contains it after the
     /// line's hierarchy number); -1 when none does.
-    static long LineAfter(long text, long count, string key)
+    /// Just past `key` at a line's start -- or, for a key starting ':',
+    /// after the line's first field -- or 0.
+    static nuint LineAfter(nuint text, nuint count, string key)
     {
-        long line = text;
-        while (line < text + count)
+        nuint end = text + count;
+        nuint line = text;
+        while (line < end)
         {
-            long at = line;
+            nuint at = line;
             if (key[0] == ':')
             {
-                while (at < text + count && Sys.Read8(at) != 58 && Sys.Read8(at) != 10) at = at + 1;
+                while (at < end && Sys.Read8(at) != 58 && Sys.Read8(at) != 10) at = at + 1;
             }
             int i = 0;
-            while (i < key.Length && at + i < text + count && Sys.Read8(at + i) == key[i]) i = i + 1;
+            while (i < key.Length && at + (nuint)i < end && Sys.Read8(at + (nuint)i) == key[i]) i = i + 1;
             if (i == key.Length)
             {
-                return at + i;
+                return at + (nuint)i;
             }
-            while (line < text + count && Sys.Read8(line) != 10) line = line + 1;
+            while (line < end && Sys.Read8(line) != 10) line = line + 1;
             line = line + 1;
         }
-        return -1;
+        return 0;
     }
 
     /// The number in `root` + [from, to) + `leaf`, or 0 for "max", for a
     /// file that is not there, or for one that says nothing a number.
-    static long CgroupFile(long path, long from, long to, string root, string leaf, long buffer, long most)
+    static long CgroupFile(nuint path, nuint from, nuint to, string root, string leaf, nuint buffer, nuint most)
     {
-        long at = path;
-        for (int i = 0; i < root.Length; i++) { Sys.Write8(at, root[i]); at = at + 1; }
-        for (long p = from; p < to && at < path + 3000; p++) { Sys.Write8(at, Sys.Read8(p)); at = at + 1; }
-        for (int i = 0; i < leaf.Length; i++) { Sys.Write8(at, leaf[i]); at = at + 1; }
-        Sys.Write8(at, 0);
-        if (most < 32) most = 0;
-        long got = most > 0 ? ReadPath(path, buffer, most > 64 ? 64 : most) : -1;
-        long value = 0;
-        long digits = 0;
-        for (long p = buffer; p < buffer + got; p++)
-        {
-            long c = Sys.Read8(p);
-            if (c < 48 || c > 57) break;
-            value = value * 10 + (c - 48);
-            digits = digits + 1;
-        }
-        return digits > 0 ? value : 0;
+        WritePath(path, from, to, root, leaf);
+        if (most < 32) return 0;
+        nint got = ReadPath(path, buffer, most > 64 ? 64 : most);
+        long value = got > 0 ? Digits(buffer, (nuint)got) : -1;
+        return value > 0 ? value : 0;
     }
 
     // struct sysinfo: the unsigned longs are words, so the offsets are the
@@ -1166,19 +1171,19 @@ static class Platform
 
     /// Who holds a lock: this thread, by its thread block (word-aligned, so
     /// bit 0 is free for Monitor's "somebody is asleep" mark).
-    public static long MonitorOwner()
+    public static nuint MonitorOwner()
     {
         return Sys.ThreadBlock();
     }
 
     /// Sleeps while the lock word still reads `value`, as a blocking region:
     /// the collector does not wait for a thread asleep on a lock.
-    public static void MonitorBlock(long at, long value)
+    public static void MonitorBlock(nuint at, nint value)
     {
         Native.Wait(at, value);
     }
 
-    public static void MonitorWake(long at)
+    public static void MonitorWake(nuint at)
     {
         Native.Wake(at, 1);
     }
@@ -1234,7 +1239,7 @@ static class Platform
         // And C's, when a C library is loaded: exit(3) flushes what printf
         // buffered and runs its atexit handlers and its libraries'
         // finalisers, then ends the process itself.
-        long cExit = Runtime.NativeSymbol("exit");
+        nuint cExit = Runtime.NativeSymbol("exit");
         if (cExit != 0)
         {
             Runtime.CallC(cExit, code, 0, 0, 0);
@@ -1251,11 +1256,11 @@ static class Platform
     /// One write(2): how many bytes the kernel took, or -errno. The runtime
     /// loops on short writes and EINTR; this does not, so a caller that
     /// wants the raw answer can have it.
-    public static long WriteBytes(int fd, long address, long count)
+    public static nint WriteBytes(int fd, nuint address, nuint count)
     {
         // Raw: this is also how the runtime says it cannot start, before
         // the thread has the block a blocking call is recorded in.
-        return Result(Sys.Syscall(LinuxCall.Write, fd, address, count));
+        return Sys.Syscall(LinuxCall.Write, fd, (nint)address, (nint)count);
     }
 
     /// THE 386'S ATOMICS ARE DONE UNDER ONE LOCK (Runtime.AtomicAdd386 and
@@ -1265,7 +1270,7 @@ static class Platform
     /// thread finding it held yields to its holder, which on the 386's one
     /// processor can run only once this thread stops (Runtime.Atomics386).
     /// What Leave is handed.
-    public static long AtomicsEnter()
+    public static nint AtomicsEnter()
     {
         while (Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 1) != 0)
         {
@@ -1274,7 +1279,7 @@ static class Platform
         return 0;
     }
 
-    public static void AtomicsLeave(long held)
+    public static void AtomicsLeave(nint held)
     {
         Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 0);
     }
@@ -1284,9 +1289,9 @@ static class Platform
     /// exchange, a pause a turn, and the processor given up past a few --
     /// its holder, a few loads and stores from letting go, may have been
     /// put off it. Answers what Leave is handed.
-    public static long HandlerLockEnter(long at)
+    public static nint HandlerLockEnter(nuint at)
     {
-        long turns = 0;
+        int turns = 0;
         while (Sys.AtomicSwap(at, 1) != 0)
         {
             turns = turns + 1;
@@ -1296,7 +1301,7 @@ static class Platform
         return 0;
     }
 
-    public static void HandlerLockLeave(long at, long held)
+    public static void HandlerLockLeave(nuint at, nint held)
     {
         Sys.AtomicSwap(at, 0);
     }
@@ -1323,7 +1328,7 @@ static class Platform
 ///     kernel; Linux left argc and argv on the stack at entry.
 static partial class Os
 {
-    static long _signalRestorer;
+    static nuint _signalRestorer;
 
     /// The kernel's sigaction: handler, flags, restorer, mask (64 bits) --
     /// four words on x86-64, where the first three are eight bytes each.
@@ -1352,11 +1357,11 @@ static partial class Os
     /// marked global is private to.
     public static long SessionId() => Platform.Result(Sys.Syscall(LinuxCall.Getsid, 0, 0, 0));
 
-    public static void InstallSignal(int signal, long handler)
+    public static void InstallSignal(int signal, nuint handler)
     {
         if (_signalRestorer == 0)
         {
-            long page = Os.MapExecutable(4096);
+            nuint page = Os.MapExecutable(4096);
             if (page == 0)
             {
                 return;
@@ -1386,10 +1391,10 @@ static partial class Os
         // x86-64's kernel sigaction: handler, flags, restorer and mask, a
         // word each.
         byte[] act = new byte[32];
-        Raw.SetI64(act, 0, handler);
+        Raw.SetWord(act, 0, handler);
 #else
         byte[] act = new byte[20];
-        Raw.SetU32(act, 0, handler);
+        Raw.SetWord(act, 0, handler);
 #endif
         long flags = 0x04000000;                                      // SA_RESTORER
         if (handler > 1)
@@ -1404,10 +1409,10 @@ static partial class Os
         }
 #if TARGET_64BIT
         Raw.SetI64(act, 8, flags);
-        Raw.SetI64(act, 16, _signalRestorer);
+        Raw.SetWord(act, 16, _signalRestorer);
 #else
         Raw.SetU32(act, 4, flags);
-        Raw.SetU32(act, 8, _signalRestorer);
+        Raw.SetWord(act, 8, _signalRestorer);
 #endif
         Os.SigAction(signal, act);
     }
@@ -1426,7 +1431,7 @@ static partial class Os
     public static int Write(int fd, string s)
     {
         byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
-        long at = Sys.ArrayData(bytes);
+        nuint at = Sys.ArrayData(bytes);
         long done = 0;
         long length = bytes.Length;
 
@@ -1470,11 +1475,11 @@ static partial class Os
     /// collector's exit report after running out of memory on one -- or the
     /// environment first walked its own stack as envp: it faulted, or found
     /// nothing and kept that for every thread.
-    public static long MainEntryStack() => Sys.ReadNative(Sys.MainThreadBlock() + Tls.StackBase);
+    public static nuint MainEntryStack() => Sys.ReadNative(Sys.MainThreadBlock() + Tls.StackBase);
 
-    public static long EnvironAddress()
+    public static nuint EnvironAddress()
     {
-        long sp = MainEntryStack();
+        nuint sp = MainEntryStack();
         return sp + WordSize.Bytes + WordSize.Bytes * Sys.ReadNative(sp) + WordSize.Bytes;
     }
 
@@ -1485,8 +1490,8 @@ static partial class Os
     /// SetEnvironmentVariable changes.
     public static string? StartingVariable(string name)
     {
-        long at = EnvironAddress();
-        for (long entry = Sys.ReadNative(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadNative(at))
+        nuint at = EnvironAddress();
+        for (nuint entry = Sys.ReadNative(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadNative(at))
         {
             int i = 0;
             while (i < name.Length && Sys.Read8(entry + i) == name[i]) i = i + 1;
@@ -1502,7 +1507,7 @@ static partial class Os
     public static string? NodeName()
     {
         byte[] names = new byte[65 * 6];                      // struct utsname: six fields of 65
-        if (Platform.Result(Sys.Syscall(LinuxCall.Uname, Sys.ArrayData(names), 0, 0)) < 0) return null;
+        if (Platform.Result(Sys.Syscall(LinuxCall.Uname, (nint)Sys.ArrayData(names), 0, 0)) < 0) return null;
         int end = 65;
         while (end < 130 && names[end] != 0) end++;
         return Utf8Transcoder.Decode(names, 65, end - 65);
@@ -1515,7 +1520,7 @@ static partial class Os
         servicePack = "";
         int[] made = new int[] { 4, 0, 0, 0, 0 };
         byte[] names = new byte[65 * 6];
-        if (Platform.Result(Sys.Syscall(LinuxCall.Uname, Sys.ArrayData(names), 0, 0)) < 0) return made;
+        if (Platform.Result(Sys.Syscall(LinuxCall.Uname, (nint)Sys.ArrayData(names), 0, 0)) < 0) return made;
         int at = 130, field = 1;
         while (at < 195 && field < 5 && names[at] >= '0' && names[at] <= '9')
         {
@@ -1530,7 +1535,7 @@ static partial class Os
     public static int Chdir(string path)
     {
         byte[] c = CString(path);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Chdir, Sys.ArrayData(c), 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Chdir, (nint)Sys.ArrayData(c), 0, 0));
     }
 
     // ---- descriptors ------------------------------------------------------
@@ -1553,7 +1558,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("a pipe needs two descriptors");
         }
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Pipe, Sys.ArrayData(pair), 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Pipe, (nint)Sys.ArrayData(pair), 0, 0));
     }
 
     /// sync(2): every dirty block to the disc.
@@ -1591,7 +1596,7 @@ static partial class Os
         pfd[5] = (byte)(events >> 8);
         while (true)
         {
-            long r = Platform.Result(Platform.Blocking(LinuxCall.Poll, Sys.ArrayData(pfd), 1, timeoutMs));
+            long r = Platform.Result(Platform.Blocking(LinuxCall.Poll, (nint)Sys.ArrayData(pfd), 1, timeoutMs));
             if (r == -Err.Intr || PosixSignalRegistration.Pending)
             {
                 // A signal arrived while waiting -- or just before, with
@@ -1633,7 +1638,7 @@ static partial class Os
             ready[i] = false;
         }
 
-        long r = Platform.Result(Platform.Blocking(LinuxCall.Poll, Sys.ArrayData(pfd), count, timeoutMs));
+        long r = Platform.Result(Platform.Blocking(LinuxCall.Poll, (nint)Sys.ArrayData(pfd), count, timeoutMs));
 
         if (r == -Err.Intr || PosixSignalRegistration.Pending)
         {
@@ -1653,7 +1658,7 @@ static partial class Os
     public static int ProcessorCount()
     {
         byte[] mask = new byte[128];
-        long got = Platform.Result(Sys.Syscall(LinuxCall.SchedGetaffinity, 0, mask.Length, Sys.ArrayData(mask)));
+        long got = Platform.Result(Sys.Syscall(LinuxCall.SchedGetaffinity, 0, mask.Length, (nint)Sys.ArrayData(mask)));
         int count = 0;
         for (int i = 0; i < got && i < mask.Length; i++)
         {
@@ -1676,14 +1681,14 @@ static partial class Os
     /// restorer, 64-bit mask) and no request for the old one.
     public static long SigAction(int signal, byte[] action)
     {
-        return Platform.Result(Sys.Syscall(LinuxCall.RtSigaction, signal, Sys.ArrayData(action), 0, 8, 0, 0));
+        return Platform.Result(Sys.Syscall(LinuxCall.RtSigaction, signal, (nint)Sys.ArrayData(action), 0, 8, 0, 0));
     }
 
     /// Bytes waiting to be read on `fd` (FIONREAD), or -errno.
     public static long Available(int fd)
     {
         byte[] n = new byte[4];
-        long r = Ioctl(fd, 0x541B, Sys.ArrayData(n));
+        long r = Ioctl(fd, 0x541B, (nuint)((nint)Sys.ArrayData(n)));
         return r < 0 ? r : Raw.U32(n, 0);
     }
 
@@ -1776,7 +1781,7 @@ static partial class Os
     /// setgroups(2): the supplementary groups, as a block of 32-bit ids.
     public static int Setgroups(int[] groups, int count)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setgroups, count, Sys.ArrayData(groups), 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setgroups, count, (nint)Sys.ArrayData(groups), 0));
     }
 
     /// umask(2): the bits taken OUT of every mode this process creates with.
@@ -1798,8 +1803,8 @@ static partial class Os
         // Taken here, in the block the call is in: an address taken inside
         // the if would keep its array only to the if's end.
         byte[]? extra = data == null ? null : CString(data);
-        long options = extra == null ? 0 : Sys.ArrayData(extra);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Mount, Sys.ArrayData(from), Sys.ArrayData(onto),
+        nuint options = extra == null ? 0 : Sys.ArrayData(extra);
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Mount, (nint)Sys.ArrayData(from), (nint)Sys.ArrayData(onto),
                                                 Sys.ArrayData(kind), flags, options, 0));
     }
 
@@ -1807,7 +1812,7 @@ static partial class Os
     public static int Umount(string target, int flags)
     {
         byte[] c = CString(target);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Umount2, Sys.ArrayData(c), flags, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Umount2, (nint)Sys.ArrayData(c), flags, 0));
     }
 
     /// An array of C strings, then a null, as execve(2) wants it: the strings
@@ -1843,7 +1848,7 @@ static partial class Os
         byte[][] keep = new byte[room][];
 
         byte[] args = Vector(argv, keep, 0);
-        long env;
+        nuint env;
 
         if (envp == null)
         {
@@ -1854,7 +1859,7 @@ static partial class Os
             byte[] block = Vector(envp, keep, argv.Length);
             env = Sys.ArrayData(block);
         }
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, Sys.ArrayData(c), Sys.ArrayData(args), env));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, (nint)Sys.ArrayData(c), (nint)Sys.ArrayData(args), (nint)env));
     }
 
     /// The common shape: the program's own path as argv[0], the caller's
@@ -1895,13 +1900,13 @@ static partial class Os
     public static int ChdirPlanned(ExecPlan plan)
     {
         if (plan.Directory == null) return 0;
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Chdir, Sys.ArrayData(plan.Directory), 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Chdir, (nint)Sys.ArrayData(plan.Directory), 0, 0));
     }
 
     /// execve(2) on the plan; nothing allocated. Returns only on failure.
     public static int ExecPlanned(ExecPlan plan)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, Sys.ArrayData(plan.Path),
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, (nint)Sys.ArrayData(plan.Path),
             Sys.ArrayData(plan.Args), plan.EnvAddress));
     }
 
@@ -1922,9 +1927,9 @@ static partial class Os
         }
 #if TARGET_AMD64
         // wait4(2), the only form long mode has: no resource usage wanted.
-        return (int)Platform.Result(Platform.Blocking(LinuxCall.Wait4, pid, Sys.ArrayData(status), options, 0, 0, 0));
+        return (int)Platform.Result(Platform.Blocking(LinuxCall.Wait4, pid, (nint)Sys.ArrayData(status), options, 0, 0, 0));
 #else
-        return (int)Platform.Result(Platform.Blocking(LinuxCall.Waitpid, pid, Sys.ArrayData(status), options));
+        return (int)Platform.Result(Platform.Blocking(LinuxCall.Waitpid, pid, (nint)Sys.ArrayData(status), options));
 #endif
     }
 
@@ -1954,13 +1959,13 @@ static partial class Os
     public static int ClockGetTime(int clock, byte[] into)
     {
         TimeSpec.Check(into);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.ClockGetTime, clock, Sys.ArrayData(into), 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.ClockGetTime, clock, (nint)Sys.ArrayData(into), 0));
     }
 
     public static int ClockGetRes(int clock, byte[] into)
     {
         TimeSpec.Check(into);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.ClockGetRes, clock, Sys.ArrayData(into), 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.ClockGetRes, clock, (nint)Sys.ArrayData(into), 0));
     }
 
     /// A clock as ONE number of nanoseconds, which is what code that measures
@@ -1988,7 +1993,7 @@ static partial class Os
 
         while (true)
         {
-            long r = Platform.Result(Platform.Blocking(LinuxCall.NanoSleep, Sys.ArrayData(want), Sys.ArrayData(left), 0));
+            long r = Platform.Result(Platform.Blocking(LinuxCall.NanoSleep, (nint)Sys.ArrayData(want), (nint)Sys.ArrayData(left), 0));
 
             if (r != 0 - Err.Intr)
             {
@@ -2025,13 +2030,13 @@ static partial class Os
     public static bool IsTty(int fd)
     {
         byte[] t = Termios.Room();
-        return Ioctl(fd, Tio.GetAttributes, Sys.ArrayData(t)) >= 0;
+        return Ioctl(fd, Tio.GetAttributes, (nuint)((nint)Sys.ArrayData(t))) >= 0;
     }
 
     public static long GetAttributes(int fd, byte[] into)
     {
         Termios.Check(into);
-        return Ioctl(fd, Tio.GetAttributes, Sys.ArrayData(into));
+        return Ioctl(fd, Tio.GetAttributes, (nuint)((nint)Sys.ArrayData(into)));
     }
 
     /// The change takes effect at once. Tio.SetAttributesDrain is the form
@@ -2040,7 +2045,7 @@ static partial class Os
     public static long SetAttributes(int fd, byte[] from)
     {
         Termios.Check(from);
-        return Ioctl(fd, Tio.SetAttributes, Sys.ArrayData(from));
+        return Ioctl(fd, Tio.SetAttributes, (nuint)((nint)Sys.ArrayData(from)));
     }
 
     /// Characters as they are typed, no echo: what a full-screen program does
@@ -2078,7 +2083,7 @@ static partial class Os
     {
         byte[] w = new byte[8];
 
-        if (Ioctl(fd, Tio.WindowSize, Sys.ArrayData(w)) < 0)
+        if (Ioctl(fd, Tio.WindowSize, (nuint)((nint)Sys.ArrayData(w))) < 0)
         {
             return 0;
         }
@@ -2106,9 +2111,9 @@ static partial class Os
     // the same binary has to run on both -- so every call below tries the
     // direct number first and falls back when the kernel says -ENOSYS.
 
-    private static long Sock(long direct, long which, long a, long b, long c, long d, long e, long f)
+    private static nint Sock(nint direct, nint which, nint a, nint b, nint c, nint d, nint e, nint f)
     {
-        long got = Platform.Result(Platform.Blocking(direct, a, b, c, d, e, f));
+        nint got = Platform.Blocking(direct, a, b, c, d, e, f);
 
 #if TARGET_AMD64
         // Long mode has always had a call per operation, and no socketcall.
@@ -2129,7 +2134,7 @@ static partial class Os
         Raw.SetU32(block, 12, d);
         Raw.SetU32(block, 16, e);
         Raw.SetU32(block, 20, f);
-        return Platform.Result(Platform.Blocking(LinuxCall.SocketCall, which, Sys.ArrayData(block), 0));
+        return Platform.Blocking(LinuxCall.SocketCall, which, (nint)Sys.ArrayData(block), 0);
 #endif
     }
 
@@ -2140,7 +2145,7 @@ static partial class Os
 
     public static int Bind(int fd, byte[] address)
     {
-        return (int)Sock(LinuxCall.Bind, SockCall.Bind, fd, Sys.ArrayData(address), address.Length, 0, 0, 0);
+        return (int)Sock(LinuxCall.Bind, SockCall.Bind, fd, (nint)Sys.ArrayData(address), address.Length, 0, 0, 0);
     }
 
     public static int Listen(int fd, int backlog)
@@ -2161,12 +2166,12 @@ static partial class Os
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(LinuxCall.Accept4, SockCall.Accept, fd, Sys.ArrayData(address), Sys.ArrayData(length), 0, 0, 0);
+        return (int)Sock(LinuxCall.Accept4, SockCall.Accept, fd, (nint)Sys.ArrayData(address), (nint)Sys.ArrayData(length), 0, 0, 0);
     }
 
     public static int Connect(int fd, byte[] address)
     {
-        return (int)Sock(LinuxCall.Connect, SockCall.Connect, fd, Sys.ArrayData(address), address.Length, 0, 0, 0);
+        return (int)Sock(LinuxCall.Connect, SockCall.Connect, fd, (nint)Sys.ArrayData(address), address.Length, 0, 0, 0);
     }
 
     public static int GetSockName(int fd, byte[] address)
@@ -2174,7 +2179,7 @@ static partial class Os
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(LinuxCall.GetSockName, SockCall.GetSockName, fd, Sys.ArrayData(address), Sys.ArrayData(length), 0, 0, 0);
+        return (int)Sock(LinuxCall.GetSockName, SockCall.GetSockName, fd, (nint)Sys.ArrayData(address), (nint)Sys.ArrayData(length), 0, 0, 0);
     }
 
     public static int GetPeerName(int fd, byte[] address)
@@ -2182,7 +2187,7 @@ static partial class Os
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(LinuxCall.GetPeerName, SockCall.GetPeerName, fd, Sys.ArrayData(address), Sys.ArrayData(length), 0, 0, 0);
+        return (int)Sock(LinuxCall.GetPeerName, SockCall.GetPeerName, fd, (nint)Sys.ArrayData(address), (nint)Sys.ArrayData(length), 0, 0, 0);
     }
 
     /// send(2) is sendto(2) with no address, which is what the kernel makes of
@@ -2271,7 +2276,7 @@ static partial class Os
         Raw.SetI64(message, 40, control == null ? 0 : control.Length);
         Raw.SetU32(message, 48, 0);
 
-        int got = (int)Sock(LinuxCall.RecvMsg, SockCall.RecvMsg, fd, Sys.ArrayData(message), flags, 0, 0, 0);
+        int got = (int)Sock(LinuxCall.RecvMsg, SockCall.RecvMsg, fd, (nint)Sys.ArrayData(message), flags, 0, 0, 0);
 
         if (got >= 0)
         {
@@ -2294,7 +2299,7 @@ static partial class Os
         Raw.SetU32(message, 20, control == null ? 0 : control.Length);
         Raw.SetU32(message, 24, 0);
 
-        int got = (int)Sock(LinuxCall.RecvMsg, SockCall.RecvMsg, fd, Sys.ArrayData(message), flags, 0, 0, 0);
+        int got = (int)Sock(LinuxCall.RecvMsg, SockCall.RecvMsg, fd, (nint)Sys.ArrayData(message), flags, 0, 0, 0);
 
         if (got >= 0)
         {
@@ -2307,7 +2312,7 @@ static partial class Os
 
     public static int SetSockOpt(int fd, int level, int option, byte[] value)
     {
-        return (int)Sock(LinuxCall.SetSockOpt, SockCall.SetSockOpt, fd, level, option, Sys.ArrayData(value), value.Length, 0);
+        return (int)Sock(LinuxCall.SetSockOpt, SockCall.SetSockOpt, fd, level, option, (nint)Sys.ArrayData(value), value.Length, 0);
     }
 
     /// The one every server needs: SO_REUSEADDR, so a restart does not have to
@@ -2326,17 +2331,6 @@ static partial class Os
     }
 
     // ---- the shapes os/lib/user.cor had ------------------------------------
-    //
-    // That library counted descriptors and byte counts in `long`, because its
-    // machine's word was 64 bits. This one counts them in `int`, which is what
-    // a 32-bit word and an int-indexed array make them. These overloads take
-    // the old shapes so a ported utility's `long fd` still compiles; they do
-    // nothing but narrow and call the real one.
-
-    public static long Ioctl(long fd, long request, long argument)
-    {
-        return Ioctl((int)fd, request, argument);
-    }
 
     /// The old library's exit took the enum; a utility says
     /// Os.Exit(ExitCode.NoInput) and means 66.
@@ -2356,7 +2350,7 @@ static partial class Os
     static string[] _args;
 
     /// The length of a C string at `at`.
-    private static int CLength(long at)
+    private static int CLength(nuint at)
     {
         int n = 0;
 
@@ -2376,7 +2370,7 @@ static partial class Os
     /// A COR-C# string from a NUL-terminated C string at an address. Public
     /// because Env reads the kernel's environment block, which is C strings
     /// and nothing else.
-    public static string StringAt(long at)
+    public static string StringAt(nuint at)
     {
         return FromC(at);
     }
@@ -2395,7 +2389,7 @@ static partial class Os
 
         // The main thread's entry stack is ESP exactly as the kernel handed
         // it over, before _start's own prologue: argc at [sp], then argv.
-        long sp = MainEntryStack();
+        nuint sp = MainEntryStack();
         int argc = (int)Sys.ReadNative(sp);
 
         if (argc < 0)

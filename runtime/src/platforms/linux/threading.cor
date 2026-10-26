@@ -9,13 +9,13 @@
 /// facts in this file -- and move there when a second target needs its own.)
 static class Clock
 {
-    const long ClockGettime = LinuxCall.ClockGetTime;      // (clockid, struct timespec *)
-    const long ClockNanosleep = LinuxCall.ClockNanosleep;  // (clockid, flags, request, remain)
-    const long Nanosleep = LinuxCall.NanoSleep;            // (request, remain)
-    const long Monotonic = 1;           // CLOCK_MONOTONIC
-    const long AbsoluteTime = 1;        // TIMER_ABSTIME
-    const long NoSys = -38;             // -ENOSYS
-    const long NanosPerSecond = 1000000000;
+    const int ClockGettime = LinuxCall.ClockGetTime;      // (clockid, struct timespec *)
+    const int ClockNanosleep = LinuxCall.ClockNanosleep;  // (clockid, flags, request, remain)
+    const int Nanosleep = LinuxCall.NanoSleep;            // (request, remain)
+    const int Monotonic = 1;           // CLOCK_MONOTONIC
+    const int AbsoluteTime = 1;        // TIMER_ABSTIME
+    const int NoSys = -38;             // -ENOSYS
+    const int NanosPerSecond = 1000000000;
 
     /// Nanoseconds on CLOCK_MONOTONIC. The timespec is two words, seconds
     /// then nanoseconds -- 32 bits each on i386, 64 in long mode; neither
@@ -24,14 +24,15 @@ static class Clock
     {
         // Thread-local syscall storage is available before any allocation.
         // Clock reads do not retain it or dispatch managed signal handlers.
-        long at = Sys.ThreadBlock() + Tls.Scratch;
+        nuint at = Sys.ThreadBlock() + Tls.Scratch;
         Sys.WriteNative(at, 0);
         Sys.WriteNative(at + WordSize.Bytes, 0);
 
-        Sys.Syscall(ClockGettime, Monotonic, at, 0);
+        Sys.Syscall(ClockGettime, Monotonic, (nint)at, 0);
 
-        long seconds = Sys.ReadNative(at);
-        long nanos = Sys.ReadNative(at + WordSize.Bytes);
+        // struct timespec: tv_sec and tv_nsec, a C long each -- a word.
+        long seconds = (nint)Sys.ReadNative(at);
+        long nanos = (nint)Sys.ReadNative(at + WordSize.Bytes);
 
         return seconds * NanosPerSecond + nanos;
     }
@@ -55,16 +56,16 @@ static class Clock
     {
         // The kernel consumes this timespec during the syscall. Signal
         // callbacks run only afterwards; the fallback rewrites it after Now.
-        long at = Sys.ThreadBlock() + Tls.Scratch;
+        nuint at = Sys.ThreadBlock() + Tls.Scratch;
 
-        Sys.WriteNative(at, deadline / NanosPerSecond);
-        Sys.WriteNative(at + WordSize.Bytes, deadline % NanosPerSecond);
+        Sys.WriteNative(at, (nuint)(deadline / NanosPerSecond));
+        Sys.WriteNative(at + WordSize.Bytes, (nuint)(deadline % NanosPerSecond));
 
         // Asleep is stopped, as far as a collection is concerned: see the note
         // on Native.Wait.
         if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
 
-        long result = Platform.Result(Sys.Syscall(ClockNanosleep, Monotonic, AbsoluteTime, at, 0, 0, 0));
+        nint result = Sys.Syscall(ClockNanosleep, Monotonic, AbsoluteTime, (nint)at, 0, 0, 0);
 
         if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
 
@@ -88,10 +89,10 @@ static class Clock
             return;
         }
 
-        Sys.WriteNative(at, left / NanosPerSecond);
-        Sys.WriteNative(at + WordSize.Bytes, left % NanosPerSecond);
+        Sys.WriteNative(at, (nuint)(left / NanosPerSecond));
+        Sys.WriteNative(at + WordSize.Bytes, (nuint)(left % NanosPerSecond));
         if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
-        Sys.Syscall(Nanosleep, at, 0, 0);
+        Sys.Syscall(Nanosleep, (nint)at, 0, 0);
         if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
     }
 }
@@ -111,69 +112,54 @@ static class Clock
 /// own stack with a zero frame pointer and jumps to a real function.
 static class Native
 {
-    const long Mmap = LinuxCall.Mmap;        // (addr, len, prot, flags, fd, offset)
-    const long Clone = LinuxCall.Clone;
-    const long Futex = LinuxCall.Futex;      // (uaddr, op, val, timeout, uaddr2, val3)
-    const long GetTid = LinuxCall.Gettid;    // () -> the caller's thread id
-    const long Exit = LinuxCall.Exit;        // (status): THIS thread only
-    const long Munmap = LinuxCall.Munmap;    // (addr, len)
+    const int Mmap = LinuxCall.Mmap;        // (addr, len, prot, flags, fd, offset)
+    const int Clone = LinuxCall.Clone;
+    const int Futex = LinuxCall.Futex;      // (uaddr, op, val, timeout, uaddr2, val3)
+    const int GetTid = LinuxCall.Gettid;    // () -> the caller's thread id
+    const int Exit = LinuxCall.Exit;        // (status): THIS thread only
+    const int Munmap = LinuxCall.Munmap;    // (addr, len)
 
     /// WHERE A THREAD'S MAPPING SAYS HOW LONG IT IS, for the trampoline to give
     /// it back as the thread ends: the last word of the block's page, which
     /// the block (Tls.Bytes) never reaches and the guard page follows.
-    public const long UnmapLengthAt = 4096 - 8;
+    public const int UnmapLengthAt = 4096 - 8;
 
-    const long ProtReadWrite = 3;
-    const long ProtReadWriteExec = 7;
-    const long MapPrivateAnonymous = 0x22;
+    const int ProtReadWrite = 3;
+    const int ProtReadWriteExec = 7;
+    const int MapPrivateAnonymous = 0x22;
 
-    const long FutexWait = 128;         // FUTEX_WAIT | FUTEX_PRIVATE_FLAG
-    const long FutexWake = 129;         // FUTEX_WAKE | FUTEX_PRIVATE_FLAG
+    const int FutexWait = 128;         // FUTEX_WAIT | FUTEX_PRIVATE_FLAG
+    const int FutexWake = 129;         // FUTEX_WAKE | FUTEX_PRIVATE_FLAG
 
     /// CLONE_VM | FS | FILES | SIGHAND | THREAD | SYSVSEM: one address space,
     /// one file table, one signal disposition, one thread group -- a thread in
     /// the sense every other language means.
-    public const long ThreadFlags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
+    public const int ThreadFlags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
 
     /// Pages that can be read, written and executed, or 0.
-    static long MapExecutable(long bytes)
+    static nuint MapExecutable(nuint bytes)
     {
-        long got = Sys.Syscall(Mmap, 0, bytes, ProtReadWriteExec, MapPrivateAnonymous, 0 - 1, 0);
-
-        if (Platform.Result(got) < 0)
-        {
-            return 0;
-        }
-        return got;
+        return Err.Address(Sys.Syscall(Mmap, 0, (nint)bytes, ProtReadWriteExec, MapPrivateAnonymous, 0 - 1, 0));
     }
 
     /// Pages for a thread stack, or 0. A fixed size, not MAP_GROWSDOWN: the
     /// guard page a growing stack needs is the unmapped page below this one.
-    public static long MapStack(long bytes)
+    public static nuint MapStack(nuint bytes)
     {
-        long got = Sys.Syscall(Mmap, 0, bytes, ProtReadWrite, MapPrivateAnonymous, 0 - 1, 0);
-
-        if (Platform.Result(got) < 0)
-        {
-            return 0;
-        }
-        return got;
+        return Err.Address(Sys.Syscall(Mmap, 0, (nint)bytes, ProtReadWrite, MapPrivateAnonymous, 0 - 1, 0));
     }
 
-    static long _trampoline;
+    static nuint _trampoline;
 
-    static long Byte(long at, long value)
+    static nuint Byte(nuint at, int value)
     {
-        Sys.Write8(at, value);
+        Sys.Write8(at, (byte)value);
         return at + 1;
     }
 
-    static long Immediate(long at, long value)
+    static nuint Immediate(nuint at, int value)
     {
-        Sys.Write8(at, value & 0xFF);
-        Sys.Write8(at + 1, (value >> 8) & 0xFF);
-        Sys.Write8(at + 2, (value >> 16) & 0xFF);
-        Sys.Write8(at + 3, (value >> 24) & 0xFF);
+        Sys.Write32(at, (uint)value);
         return at + 4;
     }
 
@@ -188,9 +174,9 @@ static class Native
     /// The parent answers the new thread id (or -errno); the child ends up on
     /// the new stack with a zero frame pointer, calls entry(argument), and ends
     /// itself with exit(2) when that returns.
-    static long Trampoline()
+    static nuint Trampoline()
     {
-        long code = TryTrampoline();
+        nuint code = TryTrampoline();
 
         if (code == 0)
         {
@@ -201,9 +187,9 @@ static class Native
 
     /// The same, or 0 when there is no page for it: what the collector asks,
     /// which may neither throw nor allocate.
-    public static long TryTrampoline()
+    public static nuint TryTrampoline()
     {
-        long code = _trampoline;
+        nuint code = _trampoline;
 
         if (code != 0)
         {
@@ -217,7 +203,7 @@ static class Native
             return 0;
         }
 
-        long at = code;
+        nuint at = code;
 
 #if TARGET_AMD64
         // Long mode: called with flags in RDI, the child's stack top in RSI
@@ -311,7 +297,7 @@ static class Native
     /// only the parent reads them, and only before the clone, so a lock around
     /// a launch is all they need.
     // Past the code, which is some eighty bytes.
-    const long ParameterOffset = 128;
+    const int ParameterOffset = 128;
 
     static AtomicCell? _launching;
 
@@ -330,19 +316,19 @@ static class Native
 
     /// Starts a thread that runs `entry(argument)` on a stack of its own.
     /// Answers the new thread id, or a negative errno.
-    public static long Spawn(long entry, long argument, long stackTop)
+    public static nint Spawn(nuint entry, nuint argument, nuint stackTop)
     {
-        long code = Trampoline();
+        nuint code = Trampoline();
         AtomicCell gate = LaunchLock();
 
         gate.Enter();
 
-        long parameters = code + ParameterOffset;
+        nuint parameters = code + ParameterOffset;
 
         Sys.WriteNative(parameters, entry);
         Sys.WriteNative(parameters + WordSize.Bytes, argument);
 
-        long id = Platform.Result(Sys.CallNative(code, ThreadFlags, stackTop, parameters));
+        nint id = Sys.CallNative(code, ThreadFlags, (nint)stackTop, (nint)parameters);
 
         gate.Exit();
         return id;
@@ -352,9 +338,9 @@ static class Native
     /// runs on the pages [stack, stack + bytes), whose lowest two words carry
     /// its entry and argument to the trampoline, so no lock and no shared
     /// page are needed and nothing is allocated. The thread id, or -errno.
-    public static long SpawnBare(long entry, long argument, long stack, long bytes)
+    public static nint SpawnBare(nuint entry, nuint argument, nuint stack, nuint bytes)
     {
-        long code = TryTrampoline();
+        nuint code = TryTrampoline();
 
         if (code == 0)
         {
@@ -362,7 +348,7 @@ static class Native
         }
         Sys.WriteNative(stack, entry);
         Sys.WriteNative(stack + WordSize.Bytes, argument);
-        return Platform.Result(Sys.CallNative(code, ThreadFlags, stack + bytes, stack));
+        return Sys.CallNative(code, ThreadFlags, (nint)(stack + bytes), (nint)stack);
     }
 
     public static long CurrentThreadId()
@@ -378,35 +364,35 @@ static class Native
     /// thread to say it has stopped: without the pair around the call, a
     /// collection while any worker was idle would wait for that worker and the
     /// worker would wait for the work that the collection is in the way of.
-    public static void Wait(long at, long expect)
+    public static void Wait(nuint at, nint expect)
     {
         if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
-        Sys.Syscall(Futex, at, FutexWait, expect, 0, 0, 0);
+        Sys.Syscall(Futex, (nint)at, FutexWait, expect, 0, 0, 0);
         if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
     }
 
     /// As Wait, giving up after `nanoseconds` -- FUTEX_WAIT's timeout, which
     /// is relative. A return by timeout, wake or signal looks the same; every
     /// caller re-reads its word and its clock.
-    public static void WaitFor(long at, long expect, long nanoseconds)
+    public static void WaitFor(nuint at, nint expect, long nanoseconds)
     {
-        long timeout = Sys.ThreadBlock() + Tls.Scratch;
+        nuint timeout = Sys.ThreadBlock() + Tls.Scratch;
         // A timespec is two words, whatever the word is: 32-bit halves at 0
         // and 4 were a garbage timeout on every timed wait in long mode.
-        Sys.WriteNative(timeout, nanoseconds / 1000000000);
-        Sys.WriteNative(timeout + WordSize.Bytes, nanoseconds % 1000000000);
+        Sys.WriteNative(timeout, (nuint)(nanoseconds / 1000000000));
+        Sys.WriteNative(timeout + WordSize.Bytes, (nuint)(nanoseconds % 1000000000));
         if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
-        Sys.Syscall(Futex, at, FutexWait, expect, timeout, 0, 0);
+        Sys.Syscall(Futex, (nint)at, FutexWait, expect, (nint)timeout, 0, 0);
         if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
     }
 
     /// Wakes up to `count` waiters on the word at `at`.
-    public static void Wake(long at, long count)
+    public static void Wake(nuint at, nint count)
     {
-        Sys.Syscall(Futex, at, FutexWake, count, 0, 0, 0);
+        Sys.Syscall(Futex, (nint)at, FutexWake, count, 0, 0, 0);
     }
 
-    public const long WakeAll = 0x7FFFFFFF;
+    public const int WakeAll = 0x7FFFFFFF;
 }
 
 namespace System.Threading
@@ -421,31 +407,33 @@ partial class Thread
     // thread's, which C would then share between two threads at once. The
     // runtime's block is its own page; the stack is the C library's.
 
-    static long _nativeCreate;          // pthread_create, -1 when there is none
-    static long _nativeDetach;
+    static nuint _nativeCreate;         // pthread_create, or 0 when there is none
+    static nuint _nativeDetach;
+    static bool _nativeLooked;
 
-    static long NativeCreate()
+    static nuint NativeCreate()
     {
-        if (_nativeCreate == 0)
+        if (!_nativeLooked)
         {
-            long create = Runtime.NativeSymbol("pthread_create");
+            nuint create = Runtime.NativeSymbol("pthread_create");
             _nativeDetach = Runtime.NativeSymbol("pthread_detach");
-            _nativeCreate = create == 0 || _nativeDetach == 0 ? -1 : create;
+            _nativeCreate = _nativeDetach == 0 ? 0 : create;
+            _nativeLooked = true;
         }
-        return _nativeCreate < 0 ? 0 : _nativeCreate;
+        return _nativeCreate;
     }
 
     void Launch()
     {
-        long create = NativeCreate();
+        nuint create = NativeCreate();
         if (create != 0)
         {
             LaunchNative(create);
             return;
         }
 
-        long stackBytes = StackSize();
-        long stack = Native.MapStack(stackBytes);
+        nuint stackBytes = StackSize();
+        nuint stack = Native.MapStack(stackBytes);
 
         if (stack == 0)
         {
@@ -463,7 +451,7 @@ partial class Thread
 
         // The top, sixteen-byte aligned, because the first thing the child does
         // is push and call.
-        long top = (stack + stackBytes) & (0 - 16);
+        nuint top = (stack + stackBytes) & ~(nuint)15;
 
         // THE BLOCK GOES AT THE BOTTOM OF THE SAME MAPPING. The child needs it
         // before it may allocate, so it cannot be allocated by the child; it is
@@ -478,7 +466,7 @@ partial class Thread
         // says it is running once its block is its own (see Begin).
         Runtime.RegisterThread(_block, top);
 
-        long id = Native.Spawn(Sys.AddressOf(Thread.ChildEntry), _slot, top);
+        nint id = Native.Spawn(Sys.AddressOf(Thread.ChildEntry), (nuint)_slot, top);
 
         if (id < 0)
         {
@@ -488,9 +476,9 @@ partial class Thread
         _id = id;
     }
 
-    void LaunchNative(long create)
+    void LaunchNative(nuint create)
     {
-        long block = Platform.Map(4096);
+        nuint block = Platform.Map(4096);
 
         if (block == 0)
         {
@@ -505,7 +493,7 @@ partial class Thread
         Runtime.RegisterThread(_block, 0);
 
         byte[] handle = new byte[8];
-        long failed = Runtime.CallC(create, Sys.ArrayData(handle), 0, Sys.AddressOf(Thread.NativeEntry), _slot);
+        nint failed = Runtime.CallC(create, (nint)Sys.ArrayData(handle), 0, (nint)Sys.AddressOf(Thread.NativeEntry), _slot);
 
         if (failed != 0)
         {
@@ -514,13 +502,13 @@ partial class Thread
         }
         // Nobody joins it through the C library: Join waits on the thread's
         // own word, so its C side is released when it returns.
-        Runtime.CallC(_nativeDetach, Sys.ReadNative(Sys.ArrayData(handle)), 0, 0, 0);
+        Runtime.CallC(_nativeDetach, (nint)Sys.ReadNative(Sys.ArrayData(handle)), 0, 0, 0);
         _id = 1;
     }
 
     /// Where a thread pthread_create made begins: a C start routine, which
     /// this compiler's convention already is.
-    static long NativeEntry(long slot)
+    static nint NativeEntry(nint slot)
     {
         Thread? t = _all[(int)slot];
 
@@ -549,7 +537,7 @@ partial class Thread
     /// collector's -- the thread is none of the collector's by now, and the
     /// Thread may already be gone with it. Every signal is blocked first, so
     /// no handler runs on a stack about to go.
-    static long ChildEntry(long slot)
+    static nuint ChildEntry(nint slot)
     {
         Thread? t = _all[(int)slot];
 
@@ -558,7 +546,7 @@ partial class Thread
             return 0;
         }
         t.Begin();
-        long block = Sys.ThreadBlock();
+        nuint block = Sys.ThreadBlock();
         if (Sys.ReadNative(block + Native.UnmapLengthAt) == 0)
         {
             return 0;

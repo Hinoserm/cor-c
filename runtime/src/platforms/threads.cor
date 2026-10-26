@@ -234,9 +234,9 @@ partial class Thread
     ParameterizedThreadStart? _withArgument;
     object? _argument;
     long _id;
-    long _stack;
-    long _stackBytes;
-    long _block;
+    nuint _stack;
+    nuint _stackBytes;
+    nuint _block;
     int _slot;
     string? _name;
     bool _background;
@@ -273,9 +273,9 @@ partial class Thread
     /// a compiler's recursive rewrite that fit a megabyte on i386 ran off the
     /// end of one in long mode, through the thread block below it.
 #if TARGET_64BIT
-    const long StackBytes = 8388608;
+    const int StackBytes = 8388608;
 #else
-    const long StackBytes = 1048576;
+    const int StackBytes = 1048576;
 #endif
 
     /// The runtime's own threads -- Task workers, the pool -- are background
@@ -402,13 +402,13 @@ partial class Thread
     // The stack a thread asked for (0: StackBytes), and the least one runs
     // on: the thread block's page, the guard page, and room above them.
     long _requestedStack;
-    const long MinimumStack = 65536;
+    const int MinimumStack = 65536;
 
-    long StackSize()
+    nuint StackSize()
     {
         if (_requestedStack <= 0) return StackBytes;
         long bytes = _requestedStack < MinimumStack ? MinimumStack : _requestedStack;
-        return (bytes + 4095) & (0 - 4096);
+        return (nuint)((bytes + 4095) & (0 - 4096));
     }
 
     /// Starts a thread made with a ParameterizedThreadStart, handing it
@@ -482,7 +482,7 @@ partial class Thread
 
     static void Counting(bool enter)
     {
-        long at = Sys.ArrayData(_foreground) + WordSize.Bytes;
+        nuint at = Sys.ArrayData(_foreground) + WordSize.Bytes;
         if (!enter)
         {
             Sys.AtomicSwap(at, 0);
@@ -507,7 +507,7 @@ partial class Thread
     /// With the counting lock held: one foreground thread more or fewer.
     void Count(int by)
     {
-        long at = Sys.ArrayData(_foreground);
+        nuint at = Sys.ArrayData(_foreground);
         _counted = by > 0;
         if (Sys.AtomicAdd(at, by) + by == 0) Native.Wake(at, Native.WakeAll);
     }
@@ -515,12 +515,12 @@ partial class Thread
     /// The end of Main waits here for the foreground threads (Runtime.Exit).
     static void WaitForForeground()
     {
-        long at = Sys.ArrayData(_foreground);
+        nuint at = Sys.ArrayData(_foreground);
         while (true)
         {
-            long now = Sys.ReadNative(at);
+            nuint now = Sys.ReadNative(at);
             if (now == 0) return;
-            Native.Wait(at, now);
+            Native.Wait(at, (nint)now);
         }
     }
 
@@ -688,11 +688,11 @@ partial class Thread
 
     /// Begin, for a thread on the C library's stack: nothing above `frame`
     /// is the runtime's, so the stack the collector reads starts there.
-    void BeginNative(long frame)
+    void BeginNative(nuint frame)
     {
         Platform.SetThreadBlock(_block);
         Sys.WriteNative(_block + Tls.ThreadId, Native.CurrentThreadId());
-        long top = frame + 2 * WordSize.Bytes;
+        nuint top = frame + 2 * WordSize.Bytes;
         Runtime.MoveStack(top, top);
         Runtime.EndBlocking();
         Body();
@@ -762,7 +762,7 @@ partial class Thread
     /// just before its exit(2) (ChildEntry).
     void Finish()
     {
-        long at = Atom.At(this, Atom.FirstWord);
+        nuint at = Atom.At(this, Atom.FirstWord);
 
         Counting(true);
         Sys.AtomicSwap(at, 1);
@@ -775,7 +775,7 @@ partial class Thread
     public void Join()
     {
         if (_id == 0) throw new ThreadStateException("Thread has not been started.");
-        long at = Atom.At(this, Atom.FirstWord);
+        nuint at = Atom.At(this, Atom.FirstWord);
 
         while (Sys.Read32(at) == 0)
         {
@@ -790,7 +790,7 @@ partial class Thread
         if (millisecondsTimeout == -1) { Join(); return true; }
         if (millisecondsTimeout < -1) throw new ArgumentOutOfRangeException("millisecondsTimeout", "Number must be either non-negative and less than or equal to Int32.MaxValue or -1.");
         if (_id == 0) throw new ThreadStateException("Thread has not been started.");
-        long at = Atom.At(this, Atom.FirstWord);
+        nuint at = Atom.At(this, Atom.FirstWord);
         long until = Clock.Now() + (long)millisecondsTimeout * 1000000;
         while (Sys.Read32(at) == 0)
         {
@@ -1297,7 +1297,7 @@ namespace System.Threading
             wait.Queue();
             ExitGate();
 
-            long done = Atom.At(wait, Atom.FirstWord);
+            nuint done = Atom.At(wait, Atom.FirstWord);
             long deadline = milliseconds < 0 ? -1 : Clock.Now() + (long)milliseconds * 1000000;
             // A MUTEX OF A NAME ANOTHER PROCESS MAY HOLD gives no signal here
             // when that process lets it go: the wait looks again now and then,
@@ -1359,8 +1359,8 @@ namespace System.Threading
 
         // How long a wait on a named mutex sleeps before it first looks again,
         // and the most it sleeps between looks, in nanoseconds.
-        const long PollFirst = 1000000;
-        const long PollMost = 32000000;
+        const int PollFirst = 1000000;
+        const int PollMost = 32000000;
 
         static bool Polled(WaitHandle? one, WaitHandle[]? many, int count)
         {
@@ -1546,8 +1546,8 @@ namespace System.Threading
 
         internal static void EnterGate()
         {
-            long at = Sys.AddressOf(ref _gate);
-            long seen = Sys.Cas(at, 0, 1);
+            nuint at = Sys.AddressOf(ref _gate);
+            nint seen = Sys.Cas(at, 0, 1);
 
             if (seen == 0)
             {
@@ -1571,7 +1571,7 @@ namespace System.Threading
 
         internal static void ExitGate()
         {
-            long at = Sys.AddressOf(ref _gate);
+            nuint at = Sys.AddressOf(ref _gate);
 
             if (Sys.AtomicSwap(at, 0) == 2)
             {
@@ -1674,7 +1674,7 @@ namespace System.Threading
         {
             Unqueue();
             Result = result;
-            long done = Atom.At(this, Atom.FirstWord);
+            nuint done = Atom.At(this, Atom.FirstWord);
             Sys.AtomicSwap(done, 1);
             Native.Wake(done, 1);
         }
@@ -2635,7 +2635,7 @@ public class ManualResetEventSlim : IDisposable
 
     public void Set()
     {
-        long at = Atom.At(this, Atom.FirstWord);
+        nuint at = Atom.At(this, Atom.FirstWord);
         Sys.AtomicSwap(at, 1);
         Native.Wake(at, Native.WakeAll);
     }
@@ -2647,7 +2647,7 @@ public class ManualResetEventSlim : IDisposable
 
     public void Wait()
     {
-        long at = Atom.At(this, Atom.FirstWord);
+        nuint at = Atom.At(this, Atom.FirstWord);
         while (Sys.Read32(at) == 0) Native.Wait(at, 0);
     }
 
@@ -2658,7 +2658,7 @@ public class ManualResetEventSlim : IDisposable
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1, "millisecondsTimeout");
         if (millisecondsTimeout == -1) { Wait(); return true; }
-        long at = Atom.At(this, Atom.FirstWord);
+        nuint at = Atom.At(this, Atom.FirstWord);
         // Timed by the runtime's own clock, as Thread.Join's: Stopwatch is a
         // library above this one.
         long until = Clock.Now() + (long)millisecondsTimeout * 1000000;
