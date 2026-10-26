@@ -173,7 +173,7 @@ internal static class Pic
                     // GOT pointer supplies the base.
                     i.Operands[k] = new MMem(got(), mem.Disp)
                     {
-                        Index = mem.Index, Scale = mem.Scale, Symbol = mem.Symbol, Reloc = RelocKind.GotOff,
+                        Index = mem.Index, Scale = mem.Scale, Symbol = mem.Symbol, Reloc = RelocKind.GotOff, Device = mem.Device,
                     };
                     break;
                 }
@@ -183,7 +183,7 @@ internal static class Pic
                     // only a slot in it, so the address is loaded first.
                     MReg r = m.NewReg();
                     Address(outList, got, r, mem.Symbol, 0, isPrivate);
-                    i.Operands[k] = new MMem(r, mem.Disp) { Index = mem.Index, Scale = mem.Scale };
+                    i.Operands[k] = new MMem(r, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
                     break;
                 }
                 case MMem { Symbol: not null, Base: not null } mem:
@@ -200,7 +200,7 @@ internal static class Pic
                     MReg r = m.NewReg();
                     Address(outList, got, r, mem.Symbol, 0, isPrivate);
                     outList.Add(new MInstr(MOp.Lea, r, new MMem(r, 0) { Index = mem.Base, Scale = 1 }));
-                    i.Operands[k] = new MMem(r, mem.Disp) { Index = mem.Index, Scale = mem.Scale };
+                    i.Operands[k] = new MMem(r, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
                     break;
                 }
             }
@@ -309,7 +309,7 @@ internal static class Imports
                 {
                     MReg r = m.NewReg();
                     Slot(outList, r, mem.Symbol!, 0);
-                    i.Operands[k] = new MMem(r, mem.Disp) { Index = mem.Index, Scale = mem.Scale };
+                    i.Operands[k] = new MMem(r, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
                     break;
                 }
                 case MMem { Symbol: not null, Base: not null } mem when isImported(mem.Symbol!):
@@ -320,7 +320,7 @@ internal static class Imports
                     MReg r = m.NewReg();
                     Slot(outList, r, mem.Symbol!, 0);
                     outList.Add(new MInstr(MOp.Lea, r, new MMem(r, 0) { Index = mem.Base, Scale = 1 }));
-                    i.Operands[k] = new MMem(r, mem.Disp) { Index = mem.Index, Scale = mem.Scale };
+                    i.Operands[k] = new MMem(r, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
                     break;
                 }
             }

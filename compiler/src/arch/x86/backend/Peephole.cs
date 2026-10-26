@@ -257,7 +257,7 @@ internal static class Peephole
             foreach (MInstr i in block.Instrs)
                 for (int k = 0; k < i.Operands.Count; k++)
                     if (i.Operands[k] is MMem mem && Ebp(mem) && home.TryGetValue(mem.Disp, out int to))
-                        i.Operands[k] = new MMem(mem.Base, to);
+                        i.Operands[k] = new MMem(mem.Base, to) { Device = mem.Device };
     }
 
     // ---- what a trap makes dead ---------------------------------------------------------
@@ -1259,10 +1259,12 @@ internal static class Peephole
     /// NullReferenceException a call on null must raise, and a receiver the
     /// optimiser had proved null was a load of address 0 with no base that
     /// went as dead: `((Thing)null).ToString()` answered "" (test 1284).
+    /// A device's register is never taken for one: read, it may clear, so
+    /// a read nobody uses still happens (MMem.Device).
     /// </summary>
     private static bool CannotFault(MMem m)
-        => m.Base is { Id: (int)Gpr.Esp or (int)Gpr.Ebp }
-           || m.Base is null && m.Index is null && (m.Symbol is not null || m.Label is not null);
+        => !m.Device && (m.Base is { Id: (int)Gpr.Esp or (int)Gpr.Ebp }
+           || m.Base is null && m.Index is null && (m.Symbol is not null || m.Label is not null));
 
     /// <summary>
     /// Whether operand k, a memory operand, is only read: a move's source, a
