@@ -8,7 +8,7 @@ static class Program
     {
         long before = HeapChunks.HeapBytes;
         HeapChunks.SetLimit(before + 524288);
-        long chunk = HeapChunks.Take(262144);
+        nuint chunk = HeapChunks.Take(262144);
         if (chunk == 0) return 1;
         if (HeapChunks.Limit(chunk) - HeapChunks.First(chunk) < 262144) return 2;
         if (HeapChunks.HeapBytes > before + 524288) return 3;
