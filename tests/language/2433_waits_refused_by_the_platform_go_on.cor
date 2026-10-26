@@ -1,0 +1,135 @@
+// test: a thread the platform says may not wait for another's collection goes on without it, and loses nothing
+// expect-exit: 0
+// expect-output:
+// count 348174
+// bad 0
+// refused True
+//
+// On one processor a kernel's thread with its preemption count raised can
+// never wait for another thread's collection: that cycle's collector may be
+// a thread that yielded between budgets, and nothing runs it again while
+// the waiter spins. Such a wait asks the platform first (Gc.YieldHook with
+// 1), which answers nonzero for a thread that may not give the processor
+// away. Then an allocation takes its last try at once -- the reserve under
+// the cap, growth past the ceiling -- and a collection asked for is not
+// made. Here the hook refuses every such wait, six threads allocate under a
+// cap that keeps cycles running beside them, and the main thread asks for
+// collections throughout: every allocation is answered, every name read
+// back is its own, and waits were refused.
+
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System;
+
+class Holder
+{
+    public string? S;
+    public Holder? Next;
+}
+
+class Node
+{
+    public string[]? Names;
+    public int Value;
+    public Node? Next;
+}
+
+class Worker : Action
+{
+    public static Node?[] Sink = new Node?[1024];
+    public int Seed;
+    public long Bad;
+    public long Count;
+
+    public Worker(int seed) { Seed = seed; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Holder? Chain(int v, int len)
+    {
+        Holder? head = null;
+        for (int k = 0; k < len; k++)
+        {
+            Holder h = new Holder();
+            h.S = "n" + v;
+            h.Next = head;
+            head = h;
+        }
+        return head;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node Make(int v)
+    {
+        Holder? c = Chain(v, 8);
+        for (int k = 0; k < 4; k++)
+        {
+            Sink[(v * 4 + k) & 1023] = new Node();
+        }
+        Node n = new Node();
+        n.Value = v;
+        Holder p = c!;
+        while (p.Next != null) p = p.Next;
+        n.Names = new string[] { p.S!, p.S! };
+        return n;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Invoke()
+    {
+        Node? head = null;
+        int live = 0;
+        for (int i = 0; i < Program.Steps; i++)
+        {
+            Node n = Make(Seed * 1000000 + i);
+            n.Next = head;
+            head = n;
+            live++;
+            if (live > 2000)
+            {
+                Node? p = head;
+                while (p != null)
+                {
+                    if (p.Names![1] != "n" + p.Value) Bad++;
+                    Count++;
+                    p = p.Next;
+                }
+                head = null;
+                live = 0;
+            }
+        }
+    }
+}
+
+static class Program
+{
+    public static int Steps = 60000;
+    static long _refused;
+
+    static long Refuse(long a, long b, long c)
+    {
+        if (a != 1) return 0;
+        Interlocked.Increment(ref _refused);
+        return 1;
+    }
+
+    static int Main()
+    {
+        int workers = 6;
+        Gc.SetLimit(25165824);
+        Gc.YieldHook = Sys.AddressOf(Program.Refuse);
+        Worker[] w = new Worker[workers];
+        Thread[] t = new Thread[workers];
+        for (int i = 0; i < workers; i++) { w[i] = new Worker(i); t[i] = Thread.Start(w[i]); }
+        // Collections asked for while the workers' cycles run.
+        for (int k = 0; k < 200; k++) Gc.Collect();
+        for (int i = 0; i < workers; i++) t[i].Join();
+        Gc.YieldHook = 0;
+        long bad = 0;
+        long count = 0;
+        for (int i = 0; i < workers; i++) { bad += w[i].Bad; count += w[i].Count; }
+        Console.WriteLine("count " + count);
+        Console.WriteLine("bad " + bad);
+        Console.WriteLine("refused " + (Interlocked.Read(ref _refused) > 0));
+        return 0;
+    }
+}

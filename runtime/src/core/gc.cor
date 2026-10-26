@@ -7455,11 +7455,15 @@ static class Gc
             // begun later is numbered past failedAt -- so the loop ends.
             if (failedAt < 0) failedAt = _cycle;
             bool early = false;
+            // MAY NOT WAIT (WaitOutCycle false): the last try at once, then
+            // out of memory -- as an allocation that may not sleep is in a
+            // kernel, never a wait the waiter itself keeps from ending.
+            bool cannotWait = false;
             if (_collecting)
             {
                 long waited = _cycle;
-                WaitOutCycle();
-                early = waited <= failedAt;
+                cannotWait = !WaitOutCycle();
+                early = !cannotWait && waited <= failedAt;
             }
             else early = CollectedNothing(ref givenUp);
 
@@ -7477,8 +7481,8 @@ static class Gc
             // which may have been minor and left dead arrays mapped -- and to
             // any request on the last try, which would otherwise be out of
             // memory.
-            _growPast = attempt == 2;
-            HeapChunks.ReserveOpen = dedicated && !early || attempt == 2;
+            _growPast = attempt == 2 || cannotWait;
+            HeapChunks.ReserveOpen = dedicated && !early || attempt == 2 || cannotWait;
             block = dedicated ? TakeDedicated(need) : Take(need);
 
             if (block == 0 && !dedicated && Grow(need))
@@ -7489,6 +7493,7 @@ static class Gc
             if (block == 0 && dedicated) block = Take(need);
             _growPast = false;
             HeapChunks.ReserveOpen = false;
+            if (block == 0 && cannotWait) break;
             if (block == 0 && early)
             {
                 attempt = attempt - 1;
@@ -7528,11 +7533,14 @@ static class Gc
         long failedAt = -1;
         long lapped = 0;
         long givenUp = 0;
+        // MAY NOT WAIT for a cycle under way (WaitOutCycle false): the last
+        // try at once, then out of memory, as in AllocSlow.
+        bool cannotWait = false;
         for (long attempt = 0; attempt < 4; attempt++)
         {
             // After a whole cycle has failed it: room asked for, the lock
             // let go meanwhile (WaitForRoom).
-            if (attempt >= 2) WaitForRoom(tb, ClassSize(c));
+            if (attempt >= 2 && !cannotWait) WaitForRoom(tb, ClassSize(c));
             // THE LAST TRY, after three cycles: not held at the ceiling
             // (GrowthWaits), and the reserve under the cap open to it
             // (HeapChunks.Reserve) -- set here, after the lock was last let
@@ -7598,6 +7606,7 @@ static class Gc
                 return block + HeaderBytes;
             }
             ShutLastTry();
+            if (cannotWait) break;
             if (attempt == 3)
             {
                 if (!MostlyGarbage(lapped)) break;
@@ -7616,7 +7625,12 @@ static class Gc
             if (_collecting)
             {
                 long waited = _cycle;
-                WaitOutCycle();
+                if (!WaitOutCycle())
+                {
+                    cannotWait = true;
+                    attempt = 2;
+                    continue;
+                }
                 if (waited <= failedAt)
                 {
                     attempt = attempt - 1;
@@ -9514,9 +9528,12 @@ static class Gc
             }
             for (long i = 0; i < _visitCount; i++)
             {
-                if (Sys.Peek(_visitPairs + i * 2 * WordSize.Bytes) != vt) continue;
+                // A pair with a 0 word is passed by: a vtable of 0 matches
+                // an object half made, a visitor of 0 is no call.
+                long by = Sys.Peek(_visitPairs + (i * 2 + 1) * WordSize.Bytes);
+                if (vt == 0 || by == 0 || Sys.Peek(_visitPairs + i * 2 * WordSize.Bytes) != vt) continue;
                 _visited = _visited + 1;
-                Sys.Call(Sys.Peek(_visitPairs + (i * 2 + 1) * WordSize.Bytes), block + HeaderBytes, 0, 0);
+                Sys.Call(by, block + HeaderBytes, 0, 0);
             }
             return;
         }
@@ -9554,8 +9571,11 @@ static class Gc
             // it now: stepped through by size to its limit.
             if (HeapChunks.PageClass(chunk) != 0)
             {
+                // To the end of what is laid out (FormatPage lays a page out
+                // as it goes), not its limit: past that nothing is a block,
+                // and reading there maps a page for nothing.
                 long size = ClassSize(HeapChunks.PageClass(chunk) - 1);
-                long limit = HeapChunks.Limit(chunk);
+                long limit = HeapChunks.End(chunk);
                 for (long at = HeapChunks.First(chunk); at + size <= limit; at = at + size)
                 {
                     if ((Sys.Peek(at) & SizeMask) != size) break;
@@ -9613,8 +9633,11 @@ static class Gc
     // collection, it waited out a cycle another thread was making, and on
     // one processor a caller that may not be preempted -- the kernel letting
     // go of a killed thread's locks, its count raised -- spun for ever while
-    // that cycle's collector, yielded between budgets, never ran again. An
-    // object no longer reachable and not yet swept is visited too.
+    // that cycle's collector, yielded between budgets, never ran again. The
+    // heap lock is still taken, and a collection made alone holds it to its
+    // end: one that may not give the processor away there (YieldHook) holds
+    // it for no longer than its work. An object no longer reachable and not
+    // yet swept is visited too.
 
     static bool _visiting;
     static long _visitOne, _visitOneBy;     // one type: its vtable and visitor
@@ -9622,7 +9645,10 @@ static class Gc
     static long _visited;
 
     /// `visitor(payload)` called for every object whose vtable is `vtable`;
-    /// how many there were.
+    /// how many there were, or -1 when no walk could be made: the heap lock
+    /// is this thread's already (an interrupt on top of the allocator), or
+    /// there was no room for the table of buffers. The heap lock is held
+    /// during the walk, and a visitor must not fault: it would be left held.
     public static long VisitInstances(long vtable, long visitor)
     {
         if (vtable == 0 || visitor == 0) return 0;
@@ -9640,8 +9666,9 @@ static class Gc
 
     static long Visit(long one, long oneBy, long pairs, long count)
     {
+        if (!HeapChunks.Any()) return 0;
         // The heap lock this thread holds already would be taken again.
-        if (!HeapChunks.Any() || GcLock.HeldByMe()) return 0;
+        if (GcLock.HeldByMe()) return -1;
         GcLock.Enter();
         _visitOne = one;
         _visitOneBy = oneBy;
@@ -9652,7 +9679,8 @@ static class Gc
         WalkAtStart();
         _visiting = false;
         _visitOne = _visitOneBy = _visitPairs = _visitCount = 0;
-        long visited = _visited;
+        // No table of buffers, no walk (WalkAtStart): said, not counted 0.
+        long visited = _heapCheckTable != 0 ? _visited : -1;
         GcLock.Exit();
         return visited;
     }
@@ -11632,13 +11660,20 @@ static class Gc
     /// other thread wait for a whole mark and sweep on the thread that
     /// allocated (an audio mixer woken 120-195 ms late, at 32 MB live on a
     /// K6-III). Called with 0 between MarkBetweenYields blocks marked and
-    /// between SweepBetweenYields chunks swept, with the heap lock let go; it
-    /// may give the processor to a thread that is ready, and must not
-    /// allocate. Called with 1 by a thread about to wait for another's
-    /// collection to end (WaitForCollector), blocked and with the heap lock
-    /// not held: it should give the processor to a thread that is ready
-    /// whether or not one is due, since the collector may be one of them.
-    /// 0: none.
+    /// between SweepBetweenYields chunks swept; it may give the processor to
+    /// a thread that is ready, and must not allocate. The heap lock is let
+    /// go there, but for a collection made alone (CollectAlone), whose
+    /// marking holds it throughout: there the platform must not give the
+    /// processor away (it can tell, Runtime.HoldsHeapLock). Called with 1
+    /// by a thread about to wait for another's collection to end
+    /// (WaitForCollector), blocked and with the heap lock not held: it
+    /// should give the processor to a thread that is ready whether or not
+    /// one is due, since the collector may be one of them -- and answer
+    /// nonzero when this thread may not give it away and may wait for ever
+    /// (a kernel's thread with its preemption count raised, or interrupts
+    /// off), which then does without that cycle's end: an allocation takes
+    /// its last try at once, and a collection asked for is not made. 0
+    /// answers otherwise. 0: none.
     public static long YieldHook;
     const long MarkBetweenYields = 4096;
     const long RootsBetweenYields = 4096;           // words of a root range
@@ -12635,16 +12670,20 @@ static class Gc
             // Somebody else's collection is between its two stops. Asking
             // for one means wanting one that STARTED after the call: wait
             // that one out, as a thread that is blocked and readable.
+            // A THREAD THAT MAY NOT GIVE THE PROCESSOR AWAY (WaitForCollector
+            // false) cannot wait that cycle out: none is made for it.
             GcLock.Exit();
             GcThreads.BeginBlocking();
             long cycling = GcLock.Words() + GcLock.Cycling;
+            bool waited = true;
 
-            while (Sys.Peek(cycling) != 0)
+            while (waited && Sys.Peek(cycling) != 0)
             {
-                WaitForCollector(cycling);
+                waited = WaitForCollector(cycling);
             }
 
             GcThreads.EndBlocking();
+            if (!waited) return;
         }
     }
 
@@ -12652,11 +12691,15 @@ static class Gc
     /// first to give the processor away (YieldHook with 1). Its collector
     /// may be a thread that yielded between budgets; on one processor, a
     /// platform whose wait only spins and that never preempts a thread
-    /// blocked here had it never run again.
-    static void WaitForCollector(long cycling)
+    /// blocked here had it never run again. False, and no wait, when the
+    /// platform answers that this thread may not give the processor away
+    /// and so may wait for ever (a kernel's thread with its preemption
+    /// count raised): the caller does without the cycle's end.
+    static bool WaitForCollector(long cycling)
     {
-        if (YieldHook != 0) Sys.Call(YieldHook, 1, 0, 0);
+        if (YieldHook != 0 && Sys.Call(YieldHook, 1, 0, 0) != 0) return false;
         if (Sys.Peek(cycling) != 0) Platform.Wait(cycling, 1);
+        return true;
     }
 
     /// A collection for a request that came up short, with the heap lock
@@ -12679,21 +12722,25 @@ static class Gc
     /// needs it for its second stop -- as a thread that is blocked, readable
     /// and counted as stopped. The next one may have begun by the time the
     /// lock is had again: its STAMP is answered before the allocator that
-    /// waited takes anything (AnswerBeforeTaking).
-    static void WaitOutCycle()
+    /// waited takes anything (AnswerBeforeTaking). False when the platform
+    /// said this thread may not wait (WaitForCollector): the cycle may
+    /// still be under way, and the request goes without it.
+    static bool WaitOutCycle()
     {
         long cycling = GcLock.Words() + GcLock.Cycling;
         GcLock.Exit();
         GcThreads.BeginBlocking();
+        bool waited = true;
 
-        while (Sys.Peek(cycling) != 0)
+        while (waited && Sys.Peek(cycling) != 0)
         {
-            WaitForCollector(cycling);
+            waited = WaitForCollector(cycling);
         }
 
         GcThreads.EndBlocking();
         GcLock.Enter();
         AnswerBeforeTaking(Sys.ThreadBlock());
+        return waited;
     }
 
     // ---- a collection ---------------------------------------------------------
@@ -13118,10 +13165,13 @@ static class Gc
 
         _concurrent = true;
         ConcurrentCycles = ConcurrentCycles + 1;
-        GcLock.Exit();
 
-        // 2. Every thread's own buffer.
-        GcThreads.Round(GcThreads.Stamp);
+        // 2. Every thread's own buffer. THE ROUND IS ASKED WITHOUT THE LOCK
+        //    LET GO since stamping opened: an allocator waits for it there
+        //    (AnswerBeforeTaking), and on a kernel one that may not give the
+        //    processor away spun for ever behind a collector preempted in
+        //    between. Asked, the round is one it answers itself.
+        GcThreads.Round(GcThreads.Stamp, true);
 
         if (Sys.Peek(ctl + GcLock.BarrierLost) != 0)
         {
@@ -16830,12 +16880,16 @@ static class GcThreads
     /// answered. Called by the collector, without the heap lock. While it
     /// waits it answers for the blocked, marks what is queued, prompts the
     /// ones that have not answered, and waits a turn.
-    public static void Round(long request)
+    public static void Round(long request) => Round(request, false);
+
+    /// The same with the heap lock already held (`held`), let go once the
+    /// round is asked.
+    public static void Round(long request, bool held)
     {
         long ctl = GcLock.Words();
         long self = Sys.ThreadBlock();
 
-        GcLock.Enter();
+        if (!held) GcLock.Enter();
         long epoch = (Sys.Peek(ctl + GcLock.Epoch) + 1) & 0x7FFFFFFF;
         long owed = 0;
         long i = 0;

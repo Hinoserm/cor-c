@@ -58,10 +58,13 @@ static class Program
         long both = Gc.VisitInstancesOf(Sys.AddressOf(ref pairs[0]), 2);
         Console.WriteLine("several " + both + " " + _a + " " + _b);
 
+        // At least 300 walks, and on until the other thread has made ten
+        // collections since they began: the walks land inside its cycles.
         Thread t = new Thread(Churn);
         t.Start();
         bool exact = true;
-        for (int round = 0; round < 300; round++)
+        long from = Gc.Collections;
+        for (int round = 0; round < 300 || Gc.Collections - from < 10; round++)
         {
             _a = _b = 0;
             long seen = Gc.VisitInstancesOf(Sys.AddressOf(ref pairs[0]), 2);
