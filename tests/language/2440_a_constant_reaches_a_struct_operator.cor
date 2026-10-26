@@ -1,0 +1,44 @@
+// test: an int constant reaches a struct's operator through C#'s implicit constant conversion
+// expect-exit: 0
+// expect-output:
+// next 8192 frame 2 below True
+// pages 8
+// less 4095 shifted 4194304
+//
+// `p + 4096` with only an operator +(Physical, uint) declared: the int
+// constant 4096 converts to the uint operand (C# 10.2.11), as it would to a
+// uint parameter, and so does `4097` into operator -(Physical, ushort) and
+// `2` into one taking a byte. The binder looked for operators through
+// standard and user-defined conversions only, and refused the sum as "'Physical'
+// and 'int' are not both numbers". A negative constant converts to none of
+// them, and a long constant to no uint, which is C#'s rule too.
+using System;
+
+struct Physical
+{
+    readonly uint _value;
+    public Physical(uint value) { _value = value; }
+    public static Physical operator +(Physical a, uint offset) => new Physical(a._value + offset);
+    public static uint operator -(Physical a, ushort less) => a._value - less;
+    public static uint operator <<(Physical a, int shift) => a._value << shift;
+    public static uint operator *(Physical a, byte times) => a._value * times;
+    public static bool operator <(Physical a, Physical b) => a._value < b._value;
+    public static bool operator >(Physical a, Physical b) => a._value > b._value;
+    public static uint operator >>(Physical a, int shift) => a._value >> shift;
+    public static explicit operator uint(Physical a) => a._value;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Physical p = new Physical(4096);
+        Physical next = p + 4096;
+        Console.WriteLine("next " + (uint)next + " frame " + (next >> 12) + " below " + (p < next));
+        int pages = 0;
+        for (Physical at = new Physical(0); at < new Physical(32768); at = at + 4096) pages++;
+        Console.WriteLine("pages " + pages);
+        Console.WriteLine("less " + (next - 4097) + " shifted " + ((p * 2) << 9));
+        return 0;
+    }
+}

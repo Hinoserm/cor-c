@@ -25944,8 +25944,12 @@ public sealed partial class Binder
             return null;
         }
 
+        // A CONSTANT REACHES AN OPERAND by C#'s implicit constant conversion
+        // (10.2.11) as an argument does: `p + 4096` is a PhysicalAddress's
+        // operator +(PhysicalAddress, uint), the int constant a uint.
         bool Takes(Type given, long? constant, Type want)
-            => Convertible(given, want) || constant is not null && UserConversion(given, want, false, constant) is not null;
+            => Convertible(given, want) || constant is long value
+                && (ConstantConverts(given, value, want) || UserConversion(given, want, false, constant) is not null);
 
         foreach (MethodSymbol m in holder.FindMethods(name))
         {
