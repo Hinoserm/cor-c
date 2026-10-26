@@ -266,6 +266,67 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// THE ONE BLOCK A CONDITIONAL OR SWITCH EXPRESSION OF A STRUCT TYPE
+    /// MAKES ITS VALUE IN, made before the arms, or null where the type is no
+    /// plain struct (one with a struct held by pointer is copied by its type's
+    /// copier, arm by arm). Each arm's value was a block of its own -- a copy,
+    /// for an arm that was a static or an array's element -- and the register
+    /// they merged in held one of two allocations, which escape analysis did
+    /// not put in the frame (a register written by several blocks'
+    /// allocations has no one `new` to promote): every `c ? a : b` of structs
+    /// made a heap block, and in a kernel before it has a heap that is a hang. With one block,
+    /// each arm copies its bytes in (SetArmResult), and it is a `new` like any
+    /// other, which a frame can hold.
+    /// </summary>
+    private VReg? StructResultBlock(Node at, Type resultType)
+        => IsStructValue(resultType) && !resultType.IsNullableValue && !HasStructFields(StructOf(resultType))
+            ? NewStruct(at, StructOf(resultType)) : null;
+
+    /// <summary>
+    /// An arm's value as the expression's: its bytes copied into
+    /// <paramref name="block"/> (StructResultBlock), with the barriers and cards
+    /// a stored reference has; or, where there is no block, the register
+    /// <paramref name="result"/> given what EvalAs answers. A throw and
+    /// `default` copy nothing, and a conditional arm of the same type writes
+    /// its own arms into the block.
+    /// </summary>
+    private void SetArmResult(VReg result, VReg? block, Expr value, Type resultType)
+    {
+        if (block is null)
+        {
+            _e.CopyTo(result, R(EvalAs(value, resultType)));
+            return;
+        }
+        // A throw is evaluated for what it does, and no value is written.
+        if (value is ThrowExpr)
+        {
+            EvalAs(value, resultType);
+            return;
+        }
+        // `default` is the zero the block is already.
+        if (value is DefaultExpr) return;
+        // A conditional of the same type as an arm writes its arms into the
+        // same block: `a ? x : b ? y : z` is one block, not one for each `?:`.
+        if (value is ConditionalExpr nested && !_b.Rewrites.ContainsKey(nested) && _b.TypeOf(nested).Equals(resultType))
+        {
+            Block innerThen = _f.NewBlock("qthen");
+            Block innerElse = _f.NewBlock("qelse");
+            Block innerEnd = _f.NewBlock("qend");
+            BranchOn(nested.Cond, innerThen, innerElse);
+            _e.SetBlock(innerThen);
+            SetArmResult(result, block, nested.Then, resultType);
+            _e.Jump(innerEnd);
+            _e.SetBlock(innerElse);
+            SetArmResult(result, block, nested.Else, resultType);
+            _e.Jump(innerEnd);
+            _e.SetBlock(innerEnd);
+            return;
+        }
+        MemPlace into = new(R(block), 0, resultType, Inline: true);
+        StorePlace(into, InlineValue(into, value, resultType));
+    }
+
+    /// <summary>
     /// Whether an expression's struct result is a block nobody else can
     /// reach, so copying it again would only cost. A constructor, a call
     /// (its return already copied), a default, a `with`, a tuple.
@@ -962,15 +1023,21 @@ public sealed partial class Lowering
             {
                 Type result = _b.TypeOf(c);
                 VReg dest = _f.NewReg(IrTypes.Of(result), "cond");
+                VReg? made = StructResultBlock(c, result);
+                if (made is not null)
+                {
+                    _e.CopyTo(dest, R(made));
+                    _heapStructs.Add(dest);
+                }
                 Block then = _f.NewBlock("qthen");
                 Block els = _f.NewBlock("qelse");
                 Block end = _f.NewBlock("qend");
                 BranchOn(c.Cond, then, els);
                 _e.SetBlock(then);
-                _e.CopyTo(dest, R(EvalAs(c.Then, result)));
+                SetArmResult(dest, made, c.Then, result);
                 _e.Jump(end);
                 _e.SetBlock(els);
-                _e.CopyTo(dest, R(EvalAs(c.Else, result)));
+                SetArmResult(dest, made, c.Else, result);
                 _e.Jump(end);
                 _e.SetBlock(end);
                 return dest;
@@ -3678,6 +3745,12 @@ public sealed partial class Lowering
         Type resultType = _b.TypeOf(sx);
         Type of = _b.TypeOf(sx.Subject);
         VReg result = _f.NewReg(IrTypes.Of(resultType), "swx");
+        VReg? made = StructResultBlock(sx, resultType);
+        if (made is not null)
+        {
+            _e.CopyTo(result, R(made));
+            _heapStructs.Add(result);
+        }
         Block end = _f.NewBlock("swxend");
 
         VReg subject = Eval(sx.Subject);
@@ -3686,7 +3759,7 @@ public sealed partial class Lowering
             _e.CopyTo(SlotReg(held, IrTypes.Of(of)), R(subject));
         }
 
-        int first = ConstantArms(sx, of, subject, resultType, result, end);
+        int first = ConstantArms(sx, of, subject, resultType, result, made, end);
         for (int armAt = first; armAt < sx.Arms.Count; armAt++)
         {
             SwitchArm arm = sx.Arms[armAt];
@@ -3868,18 +3941,22 @@ public sealed partial class Lowering
                 _e.SetBlock(guarded);
             }
 
-            _e.CopyTo(result, R(EvalAs(arm.Result, resultType)));
+            SetArmResult(result, made, arm.Result, resultType);
             _e.Jump(end);
             _e.SetBlock(next);
         }
 
         // Nothing matched: the binder refused this unless there is a `_`, so
         // this path is unreachable, but the register needs a definition.
-        _e.CopyTo(result, Imm(0, result.Type.IsFloat() ? IrType.I32 : result.Type));
-        if (result.Type.IsFloat())
+        // The block of a struct result defines the register already.
+        if (made is null)
         {
-            VReg z = _e.Const(0, result.Type == IrType.F32 ? IrType.I32 : IrType.I64);
-            _e.CopyTo(result, R(_e.Unary(Opcode.Bits, R(z), result.Type)));
+            _e.CopyTo(result, Imm(0, result.Type.IsFloat() ? IrType.I32 : result.Type));
+            if (result.Type.IsFloat())
+            {
+                VReg z = _e.Const(0, result.Type == IrType.F32 ? IrType.I32 : IrType.I64);
+                _e.CopyTo(result, R(_e.Unary(Opcode.Bits, R(z), result.Type)));
+            }
         }
         _e.Jump(end);
         _e.SetBlock(end);
@@ -3896,7 +3973,7 @@ public sealed partial class Lowering
     /// takes goes on to the arms after them, tested in order as before.
     /// Answers how many arms it took (0: none, the arms are tested in order).
     /// </summary>
-    private int ConstantArms(SwitchExpr sx, Type of, VReg subject, Type resultType, VReg result, Block end)
+    private int ConstantArms(SwitchExpr sx, Type of, VReg subject, Type resultType, VReg result, VReg? made, Block end)
     {
         if (!(of.IsInteger || of.IsEnumValue) || of.IsNullableValue || of.IsPointer || of.IsArray || of.IsFloat) return 0;
         int k = 0;
@@ -3925,7 +4002,7 @@ public sealed partial class Lowering
         foreach ((SwitchArm arm, Block body) in bodies)
         {
             _e.SetBlock(body);
-            _e.CopyTo(result, R(EvalAs(arm.Result, resultType)));
+            SetArmResult(result, made, arm.Result, resultType);
             _e.Jump(end);
         }
         _e.SetBlock(rest);

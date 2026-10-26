@@ -1,0 +1,56 @@
+// test: a conditional expression of structs makes its value in the frame: nothing is allocated before the image has a heap
+// expect-exit: 0
+// expect-output:
+// root 4096
+// zero 0
+// first 11
+// expect-no-asm-x86: Root: AllocMissed AllocFast m_Runtime_Alloc cmpxchg
+// expect-no-asm-x86-64: Root: AllocMissed AllocFast m_Runtime_Alloc cmpxchg
+//
+// `roots != null ? roots[i] : i == 0 ? _boot : Phys.Zero` -- a kernel's
+// lookup of a processor's root, made before it has read its memory map --
+// was a heap block for each arm that was a static or an element: each a
+// copy of its own, the two merged in one register, which a frame does not
+// hold. A struct-valued conditional (and a switch expression) makes ONE
+// block before its arms and each arm copies its bytes in
+// (Lowering.StructResultBlock), a `new` like any other, which escape
+// analysis keeps in the frame. Main calls it before Host.Start: with no heap
+// there is nothing to allocate in.
+
+using System.Runtime.CompilerServices;
+
+readonly struct Phys
+{
+    readonly uint _bits;
+    public Phys(uint bits) { _bits = bits; }
+    public uint Bits { get { return _bits; } }
+    public static readonly Phys Zero = new Phys(0);
+}
+
+static class Program
+{
+    static Phys _boot;
+    static Phys[]? _roots;
+
+    // Its own body, which the disassembly is read for.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Phys Root(int index)
+    {
+        Phys[]? roots = _roots;
+        return roots != null ? roots[index] : index == 0 ? _boot : Phys.Zero;
+    }
+
+    static int Main()
+    {
+        _boot = new Phys(4096);
+        uint a = Root(0).Bits;
+        uint b = Root(1).Bits;
+        Host.Start(1024 * 1024);
+        _roots = new Phys[2] { new Phys(11), new Phys(22) };
+        Host.Line("root " + (int)a);
+        Host.Line("zero " + (int)b);
+        Host.Line("first " + (int)Root(0).Bits);
+        Host.Done(0);
+        return 0;
+    }
+}

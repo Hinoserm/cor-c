@@ -1,0 +1,120 @@
+// test: struct_conditional_one_block
+// expect-exit: 0
+// expect-output:
+// 4 9 0
+// 1 2 9
+// a 7 b 8
+// 3 5 14
+// two 20 nine 99
+// independent 4 100
+// 1 4 2 6
+// True 4 False
+// 12
+// 4 threw 2 3
+//
+// A conditional or switch expression of a struct type makes one block for its
+// value and each arm copies its bytes in (StructResultBlock): from a static,
+// an array's element, a local, a call, `default`, a nested conditional, a
+// struct that holds a reference (its barrier and card as any stored
+// reference's) and a struct holding a struct and a string. The result is a copy: changing it changes nothing it was taken
+// from. A `throw` arm is no value.
+
+using System;
+
+struct P { public int X; public int Y; }
+struct Named { public string Name; public int N; }
+struct Holder { public P In; public int Z; }
+struct Boxed { public Named Item; public P Where; }
+struct Wrap
+{
+    public P Inner;
+    public int Tag;
+    public static implicit operator Wrap(P p) { Wrap w; w.Inner = p; w.Tag = 1; return w; }
+}
+
+static class Program
+{
+    static P _s = new P { X = 4, Y = 5 };
+    static P[] _arr = new P[] { new P { X = 1, Y = 2 }, new P { X = 3, Y = 4 } };
+
+    static P Make(int x) { P p; p.X = x; p.Y = x + 1; return p; }
+
+    static P Pick(int mode, P local)
+    {
+        return mode == 0 ? _s
+             : mode == 1 ? _arr[1]
+             : mode == 2 ? local
+             : mode == 3 ? Make(9)
+             : default;
+    }
+
+    static string Words(int n)
+    {
+        Named r = n switch
+        {
+            0 => new Named { Name = "a", N = 7 },
+            1 => new Named { Name = "b", N = 8 },
+            2 => new Named { Name = "c", N = 9 },
+            3 => new Named { Name = "d", N = 10 },
+            4 => new Named { Name = "e", N = 11 },
+            _ => throw new ArgumentException("n"),
+        };
+        return r.Name + " " + r.N;
+    }
+
+    static string Mid(int n)
+    {
+        try
+        {
+            P r = n switch { 0 => _s, 1 => throw new ArgumentException("one"), 2 => Make(2), _ => _arr[1] };
+            return r.X.ToString();
+        }
+        catch (ArgumentException) { return "threw"; }
+    }
+
+    static P Pair(int n) => n switch { 0 => _s, 1 => _arr[0], 2 => Make(5), _ => new P { X = 99, Y = 100 } };
+
+    static int Main()
+    {
+        P local = new P { X = 7, Y = 8 };
+        P a = Pick(0, local), b = Pick(3, local), c = Pick(4, local);
+        Console.WriteLine(a.X + " " + b.X + " " + c.X);
+
+        Console.WriteLine(_arr[0].X + " " + _arr[0].Y + " " + Pick(9, local).Y.ToString().Replace("0", "9"));
+
+        Console.WriteLine(Words(0) + " " + Words(1));
+
+        Console.WriteLine(Pair(1).Y + 1 + " " + Pair(2).X + " " + (Pair(0).X + Pair(0).Y * 2));
+
+        Holder h = new Holder { In = new P { X = 20, Y = 21 }, Z = 2 };
+        Boxed bx = new Boxed { Item = new Named { Name = "nine", N = 9 }, Where = new P { X = 20, Y = 1 } };
+        Boxed again = h.Z == 2 ? bx : default;
+        Console.WriteLine((h.Z == 2 ? "two" : "x") + " " + (h.Z == 2 ? h.In : default).X + " " + again.Item.Name + " " + Pair(3).X);
+
+        P r = _s.X == 4 ? _s : Make(0);
+        r.X = 100;
+        Console.WriteLine("independent " + _s.X + " " + r.X);
+
+        // A user conversion on an arm; a nullable result (the old way); a
+        // conditional in a loop kept in a list; a throw among the arms.
+        bool flag = _s.X == 4;
+        Wrap src = new Wrap { Inner = new P { X = 6, Y = 0 }, Tag = 2 };
+        Wrap w1 = flag ? _s : src;
+        Wrap w2 = !flag ? _s : src;
+        Console.WriteLine(w1.Tag + " " + w1.Inner.X + " " + w2.Tag + " " + w2.Inner.X);
+
+        P? n1 = flag ? _s : (P?)null;
+        P? n2 = !flag ? _s : (P?)null;
+        Console.WriteLine(n1.HasValue + " " + n1.Value.X + " " + n2.HasValue);
+
+        var list = new System.Collections.Generic.List<P>();
+        for (int i = 0; i < 4; i++) list.Add(i % 2 == 0 ? _s : Make(i));
+        int total = 0;
+        foreach (P q in list) total += q.X;
+        Console.WriteLine(total);
+
+        Console.WriteLine(Mid(0) + " " + Mid(1) + " " + Mid(2) + " " + Mid(7));
+
+        return 0;
+    }
+}
