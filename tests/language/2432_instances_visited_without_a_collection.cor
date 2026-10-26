@@ -1,0 +1,78 @@
+// test: every object of one type or several is visited by a walk of the heap, also while another thread collects
+// expect-exit: 0
+// expect-output:
+// one 50
+// several 80 50 30
+// beside a collector True
+// after 50 30
+//
+// Gc.VisitInstances hands a visitor every object of a type -- a kernel finds
+// the locks a killed thread left held so -- and VisitInstancesOf several
+// types in one walk. Neither runs a collection or waits for one: run as a
+// collection, it waited out a cycle another thread was making, and on one
+// processor a caller that may not be preempted spun for ever while that
+// cycle's collector, yielded between budgets, never ran again. The walk is
+// made here over and over while another thread allocates garbage of a
+// third type and collects, so it lands in every part of that thread's
+// cycles, and finds exactly the live objects every time.
+using System;
+using System.Threading;
+
+sealed class Apple { public int Value; }
+sealed class Berry { public int Value; }
+sealed class Chaff { public int Value; }
+
+static class Program
+{
+    static Apple[] _apples = new Apple[50];
+    static Berry[] _berries = new Berry[30];
+    static long _a, _b;
+    static volatile bool _stop;
+
+    static long SeeApple(long payload, long b, long c) { _a = _a + 1; return 0; }
+    static long SeeBerry(long payload, long b, long c) { _b = _b + 1; return 0; }
+
+    static long VtableOf(object o) => Sys.Peek(Sys.Word(o)) & WordSize.AddressMask;
+
+    static void Churn()
+    {
+        long n = 0;
+        while (!_stop)
+        {
+            for (int i = 0; i < 2000; i++) { Chaff c = new Chaff { Value = i }; n += c.Value; }
+            Gc.Collect();
+        }
+    }
+
+    static int Main()
+    {
+        for (int i = 0; i < 50; i++) _apples[i] = new Apple { Value = i };
+        for (int i = 0; i < 30; i++) _berries[i] = new Berry { Value = i };
+        long apple = VtableOf(_apples[0]), berry = VtableOf(_berries[0]);
+
+        _a = 0;
+        Console.WriteLine("one " + Gc.VisitInstances(apple, Sys.AddressOf(Program.SeeApple)));
+
+        nint[] pairs = new nint[] { (nint)apple, (nint)Sys.AddressOf(Program.SeeApple), (nint)berry, (nint)Sys.AddressOf(Program.SeeBerry) };
+        _a = _b = 0;
+        long both = Gc.VisitInstancesOf(Sys.AddressOf(ref pairs[0]), 2);
+        Console.WriteLine("several " + both + " " + _a + " " + _b);
+
+        Thread t = new Thread(Churn);
+        t.Start();
+        bool exact = true;
+        for (int round = 0; round < 300; round++)
+        {
+            _a = _b = 0;
+            long seen = Gc.VisitInstancesOf(Sys.AddressOf(ref pairs[0]), 2);
+            if (seen != 80 || _a != 50 || _b != 30) exact = false;
+        }
+        _stop = true;
+        t.Join();
+        Console.WriteLine("beside a collector " + exact);
+
+        GC.KeepAlive(pairs);
+        Console.WriteLine("after " + _apples.Length + " " + _berries.Length);
+        return 0;
+    }
+}

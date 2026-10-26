@@ -9505,10 +9505,19 @@ static class Gc
     {
         if ((Sys.Peek(block) & FlagFree) != 0 || Sys.Peek(block + KindAt) != KindObject) return;
         long vt = Sys.Peek(block + HeaderBytes) & WordSize.AddressMask;
-        if (_visitVtable != 0 && vt == _visitVtable)
+        if (_visiting)
         {
-            _visited = _visited + 1;
-            Sys.Call(_visitor, block + HeaderBytes, 0, 0);
+            if (_visitOne != 0 && vt == _visitOne)
+            {
+                _visited = _visited + 1;
+                Sys.Call(_visitOneBy, block + HeaderBytes, 0, 0);
+            }
+            for (long i = 0; i < _visitCount; i++)
+            {
+                if (Sys.Peek(_visitPairs + i * 2 * WordSize.Bytes) != vt) continue;
+                _visited = _visited + 1;
+                Sys.Call(Sys.Peek(_visitPairs + (i * 2 + 1) * WordSize.Bytes), block + HeaderBytes, 0, 0);
+            }
             return;
         }
         if (_revokeHigh == 0) return;
@@ -9523,13 +9532,13 @@ static class Gc
     }
 
     /// The walk CheckHeap makes -- every chunk's chain, every thread's
-    /// buffer up to its pointer -- at the start of a collection, with the
-    /// heap lock held and no cycle under way: tombstoning (Revoke), counting
-    /// (CountIn) and visiting (VisitInstances) as it goes.
+    /// buffer up to its pointer -- with the heap lock held: at the start of
+    /// a collection, tombstoning (Revoke) and counting (CountIn) as it
+    /// goes; or visiting alone (VisitInstances, _visiting), at any time.
     static void WalkAtStart()
     {
         long vtable = 0;
-        if (_revokeHigh != 0 && !_revokeCountOnly)
+        if (!_visiting && _revokeHigh != 0 && !_revokeCountOnly)
         {
             vtable = RevokedVtable(_revokeSlots);
             if (vtable == 0) return;
@@ -9589,29 +9598,63 @@ static class Gc
         }
     }
 
-    // ---- every object of one type, visited ---------------------------------------
+    // ---- every object of some types, visited ------------------------------------
     //
     // A kernel that killed a thread finds the locks it left held this way
     // (every IrqSpinLock and KernelGate on the heap, os/kernel/arch/x86/
-    // modules.cor): a walk of the heap at the start of a collection, the
-    // heap lock held, every object whose vtable is the one asked for handed
-    // to the visitor. The visitor must not allocate, take the heap lock or
-    // wait.
+    // modules.cor): a walk of the heap with the heap lock held, every object
+    // whose vtable is one asked for handed to that one's visitor. The
+    // visitor must not allocate, take the heap lock or wait.
+    //
+    // NO COLLECTION, AND NO WAIT FOR ONE. The walk is CheckHeap's, sound at
+    // any point of another thread's cycle: the sweep takes the lock chunk by
+    // chunk (SweepWhileTheyRun), so each chunk is walked whole, swept or not,
+    // and the mark changes a header's flags, never its size. Run as a full
+    // collection, it waited out a cycle another thread was making, and on
+    // one processor a caller that may not be preempted -- the kernel letting
+    // go of a killed thread's locks, its count raised -- spun for ever while
+    // that cycle's collector, yielded between budgets, never ran again. An
+    // object no longer reachable and not yet swept is visited too.
 
-    static long _visitVtable, _visitor, _visited;
+    static bool _visiting;
+    static long _visitOne, _visitOneBy;     // one type: its vtable and visitor
+    static long _visitPairs, _visitCount;   // several: pairs of words, how many
+    static long _visited;
 
     /// `visitor(payload)` called for every object whose vtable is `vtable`;
-    /// how many there were. Runs a full collection to do it.
+    /// how many there were.
     public static long VisitInstances(long vtable, long visitor)
     {
         if (vtable == 0 || visitor == 0) return 0;
+        return Visit(vtable, visitor, 0, 0);
+    }
+
+    /// The same for several types in one walk: `count` pairs of words at
+    /// `pairs`, a vtable and its visitor each, read during the walk. How
+    /// many objects were visited.
+    public static long VisitInstancesOf(long pairs, long count)
+    {
+        if (pairs == 0 || count <= 0) return 0;
+        return Visit(0, 0, pairs, count);
+    }
+
+    static long Visit(long one, long oneBy, long pairs, long count)
+    {
+        // The heap lock this thread holds already would be taken again.
+        if (!HeapChunks.Any() || GcLock.HeldByMe()) return 0;
+        GcLock.Enter();
+        _visitOne = one;
+        _visitOneBy = oneBy;
+        _visitPairs = pairs;
+        _visitCount = count;
         _visited = 0;
-        _visitor = visitor;
-        _visitVtable = vtable;
-        Collect();
-        _visitVtable = 0;
-        _visitor = 0;
-        return _visited;
+        _visiting = true;
+        WalkAtStart();
+        _visiting = false;
+        _visitOne = _visitOneBy = _visitPairs = _visitCount = 0;
+        long visited = _visited;
+        GcLock.Exit();
+        return visited;
     }
 
     // ---- quarantined ranges ------------------------------------------------------
@@ -11588,9 +11631,13 @@ static class Gc
     /// threads are not preempted -- a kernel on one processor -- had every
     /// other thread wait for a whole mark and sweep on the thread that
     /// allocated (an audio mixer woken 120-195 ms late, at 32 MB live on a
-    /// K6-III). Called between MarkBetweenYields blocks marked and between
-    /// SweepBetweenYields chunks swept, with the heap lock let go; it may
-    /// give the processor to a thread that is ready, and must not allocate.
+    /// K6-III). Called with 0 between MarkBetweenYields blocks marked and
+    /// between SweepBetweenYields chunks swept, with the heap lock let go; it
+    /// may give the processor to a thread that is ready, and must not
+    /// allocate. Called with 1 by a thread about to wait for another's
+    /// collection to end (WaitForCollector), blocked and with the heap lock
+    /// not held: it should give the processor to a thread that is ready
+    /// whether or not one is due, since the collector may be one of them.
     /// 0: none.
     public static long YieldHook;
     const long MarkBetweenYields = 4096;
@@ -12594,11 +12641,22 @@ static class Gc
 
             while (Sys.Peek(cycling) != 0)
             {
-                Platform.Wait(cycling, 1);
+                WaitForCollector(cycling);
             }
 
             GcThreads.EndBlocking();
         }
+    }
+
+    /// One wait for another thread's collection to end: the platform asked
+    /// first to give the processor away (YieldHook with 1). Its collector
+    /// may be a thread that yielded between budgets; on one processor, a
+    /// platform whose wait only spins and that never preempts a thread
+    /// blocked here had it never run again.
+    static void WaitForCollector(long cycling)
+    {
+        if (YieldHook != 0) Sys.Call(YieldHook, 1, 0, 0);
+        if (Sys.Peek(cycling) != 0) Platform.Wait(cycling, 1);
     }
 
     /// A collection for a request that came up short, with the heap lock
@@ -12630,7 +12688,7 @@ static class Gc
 
         while (Sys.Peek(cycling) != 0)
         {
-            Platform.Wait(cycling, 1);
+            WaitForCollector(cycling);
         }
 
         GcThreads.EndBlocking();
@@ -12702,7 +12760,7 @@ static class Gc
         {
             CheckHeap(0);
         }
-        if (_revokeHigh != 0 || _visitVtable != 0)
+        if (_revokeHigh != 0)
         {
             WalkAtStart();
         }
