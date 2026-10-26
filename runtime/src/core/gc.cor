@@ -15343,6 +15343,16 @@ static class HeapChunks
     /// The least a heap other than the first grows by (ChunkAsk).
     const long ModuleChunkLeast = 16384;
 
+    /// THE MOST A MIXED CHUNK MAY BE, as a platform sets it (0: ChunkMost,
+    /// a megabyte). A chunk's blocks are found by their chain from its first,
+    /// so its size is what one walk of it costs -- the stop's walk in steps
+    /// passes chunk by chunk, but a thread that needs a chunk's snapshot
+    /// mid-stop walks the whole of it (Gc.EnsureWalked), and every thread
+    /// waiting for the heap lock waits as long. A kernel on a K6-III asks a
+    /// quarter of a megabyte. Never below ChunkLeast; a request larger than
+    /// a mixed chunk takes one of its own, as ever.
+    public static long MixedChunkMost;
+
     static long ChunkAsk()
     {
         // NOT PAST AN EIGHTH OF A COLLECTION'S ALLOWANCE where the platform
@@ -15352,8 +15362,10 @@ static class HeapChunks
         long most = ChunkMost;
         long cap = Platform.GcThreshold();
         if (cap > 0) most = (cap / 8 + 4095) & -4096;
+        long ceiling = MixedChunkMost > 0 && MixedChunkMost < ChunkMost ? MixedChunkMost : ChunkMost;
+        if (ceiling < ChunkLeast) ceiling = ChunkLeast;
         if (most < ChunkLeast) most = ChunkLeast;
-        if (most > ChunkMost) most = ChunkMost;
+        if (most > ceiling) most = ceiling;
         // A KERNEL MODULE'S HEAP BY ITS OWN SIZE, not the machine's: a
         // driver's first object past a kilobyte took a chunk measured on
         // every heap together, a quarter of a megabyte for a ring buffer.
