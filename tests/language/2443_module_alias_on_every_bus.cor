@@ -1,0 +1,35 @@
+// test: module_alias_on_every_bus
+// expect-exit: 0
+// expect-output:
+// aliases taken
+//
+// Every bus an alias may name is taken (ModuleDeclarations.Buses), USB's
+// three forms among them: a device by vendor and product, an interface by
+// class, subclass and protocol, and a device by its class (09, a hub).
+// The refusal of a bare name is 1267's.
+
+using System;
+
+[ModuleAlias("pnp:CTL0031")]
+[ModuleAlias("pci:v10ECd8139")]
+[ModuleAlias("pci:c010180")]
+[ModuleAlias("eisa:ADP7771")]
+[ModuleAlias("isa:sb16@220,240,260,280")]
+[ModuleAlias("i8042:aux")]
+[ModuleAlias("platform:fdc")]
+[ModuleAlias("virtio:d00000001")]
+[ModuleAlias("usb:v046DpC52B")]
+[ModuleAlias("usb:ic03isc01ip02")]
+[ModuleAlias("usb:dc09")]
+class Device
+{
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("aliases taken");
+        return 0;
+    }
+}

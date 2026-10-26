@@ -14,6 +14,10 @@ namespace Corsac.Lang;
 ///   i8042:aux                  a child of the 8042
 ///   platform:fdc               a fixed device of the board
 ///   virtio:d00000001           a virtio device, by its type
+///   usb:v046DpC52B, usb:ic03isc01ip02, usb:dc09
+///                              a USB device by vendor and product, an
+///                              interface by class, subclass and protocol,
+///                              or a device by its class (09 a hub)
 ///
 /// -- and a bus that finds a device looks its alias up. The attribute is on
 /// the class because the class is the driver: the module holding it is what
@@ -26,7 +30,7 @@ namespace Corsac.Lang;
 public static class ModuleDeclarations
 {
     /// <summary>The buses an alias may name, each the prefix before its colon.</summary>
-    static readonly HashSet<string> Buses = new(StringComparer.Ordinal) { "pnp", "pci", "eisa", "isa", "i8042", "virtio", "platform" };
+    static readonly HashSet<string> Buses = new(StringComparer.Ordinal) { "pnp", "pci", "eisa", "isa", "i8042", "virtio", "platform", "usb" };
 
     public static List<string> Collect(CompilationUnit unit, List<CompileError> errors)
     {
