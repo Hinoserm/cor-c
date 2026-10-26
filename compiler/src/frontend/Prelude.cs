@@ -780,19 +780,20 @@ public static class Prelude
             // device.
             //
             // A port number is an int because the space is 16 bits wide and
-            // every port constant anyone writes is small; the value of an 8-
-            // or 16-bit port is likewise an int, zero-extended on the way in
-            // and truncated by the instruction on the way out.
+            // every port constant anyone writes is small; the value of a port
+            // is the width of the instruction -- a byte, a ushort, a uint --
+            // zero-extended on the way in, as the register is, and written
+            // whole on the way out.
             //
             // A target that has no I/O space refuses these at selection rather
             // than pretending: a driver is not portable and should not compile
             // as though it were.
-            public static int PortIn8(int port) { return 0; }
-            public static int PortIn16(int port) { return 0; }
-            public static int PortIn32(int port) { return 0; }
-            public static void PortOut8(int port, int value) { }
-            public static void PortOut16(int port, int value) { }
-            public static void PortOut32(int port, int value) { }
+            public static byte PortIn8(int port) { return 0; }
+            public static ushort PortIn16(int port) { return 0; }
+            public static uint PortIn32(int port) { return 0; }
+            public static void PortOut8(int port, byte value) { }
+            public static void PortOut16(int port, ushort value) { }
+            public static void PortOut32(int port, uint value) { }
 
             // The block forms: `count` 16-bit words between the port and
             // memory at `address`, which is what an ATA sector transfer is and

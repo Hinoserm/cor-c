@@ -993,7 +993,7 @@ static class Platform
             Leave(code);
         }
 
-        Sys.PortOut8(Port.DebugExit, code & 0xFF);
+        Sys.PortOut8(Port.DebugExit, (byte)(code & 0xFF));
         Sys.Cli();
 
         while (true)
@@ -1166,7 +1166,7 @@ static partial class Os
             // Bit 0 of that port is a system reset. It is masked off here
             // because writing it back as read is fine and writing it set is
             // a reboot.
-            Sys.PortOut8(Port.SystemControlA, (now | 2) & 0xFE);
+            Sys.PortOut8(Port.SystemControlA, (byte)((now | 2) & 0xFE));
         }
     }
 
@@ -1386,8 +1386,8 @@ static class Clock
         long before = _interrupts ? _tickedTicks + (_reload - Count()) : _elapsedTicks;
         _reload = Hz / hz;
         Sys.PortOut8(Control, 0x34);    // channel 0, lo/hi, mode 2, binary
-        Sys.PortOut8(Channel0, (int)(_reload & 0xFF));
-        Sys.PortOut8(Channel0, (int)((_reload >> 8) & 0xFF));
+        Sys.PortOut8(Channel0, (byte)(_reload & 0xFF));
+        Sys.PortOut8(Channel0, (byte)((_reload >> 8) & 0xFF));
         // On from the time already counted, so that Now() goes on rising.
         _tickedTicks = before;
         _interrupts = true;

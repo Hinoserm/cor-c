@@ -4,8 +4,8 @@
 // vendor known True
 // tsc advances True
 // max leaf positive True
-// expect-asm-x86-64: Privileged: lgdt lidt invlpg %cr3 %cr0 wrmsr rdmsr swapgs ltr insw outsw lretq %ds hlt cli sti
-// expect-asm-x86: Privileged: lgdt lidt invlpg %cr3 %cr0 wrmsr rdmsr ltr insw outsw lret %ds hlt cli sti
+// expect-asm-x86-64: Privileged: lgdt lidt invlpg %cr3 %cr0 wrmsr rdmsr swapgs ltr insw outsw lretq %ds hlt cli sti (%dx),%al (%dx),%ax (%dx),%eax %al,(%dx) %ax,(%dx) %eax,(%dx)
+// expect-asm-x86: Privileged: lgdt lidt invlpg %cr3 %cr0 wrmsr rdmsr ltr insw outsw lret %ds hlt cli sti (%dx),%al (%dx),%ax (%dx),%eax %al,(%dx) %ax,(%dx) %eax,(%dx)
 //
 // CPUID, RDTSC and PAUSE are allowed in ring 3, so they are run and their
 // answers checked. The rest -- descriptor tables, control registers, MSRs,
@@ -58,6 +58,13 @@ static class Program
         Sys.LoadTaskRegister(0x28);
         Sys.PortInString16(0x1F0, at, 8);
         Sys.PortOutString16(0x1F0, at, 8);
+        // Single ports at their widths: a byte, a ushort, a uint.
+        byte b8 = Sys.PortIn8(0x80);
+        ushort b16 = Sys.PortIn16(0x1F0);
+        uint b32 = Sys.PortIn32(0xCFC);
+        Sys.PortOut8(0x80, b8);
+        Sys.PortOut16(0x1F0, b16);
+        Sys.PortOut32(0xCF8, b32 + 1);
         Sys.LoadCodeSegment(0x08);
         Sys.LoadSegments(0x10);
         Sys.Cli();
