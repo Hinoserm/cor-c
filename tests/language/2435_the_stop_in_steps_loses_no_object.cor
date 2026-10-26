@@ -18,9 +18,9 @@
 // cap that keeps cycles coming, with a budget of 32 blocks and a platform
 // that lingers between steps (YieldHook), so the threads run out of their
 // buffers inside stops: tens of thousands of blocks answered one by one a
-// run, and every name read back is its own. The checks of marking run at
-// every cycle (Gc.VerifyMarks), and the stop's own finds nothing
-// (Gc.StopBlockReports): a block answered mid-stop
+// run, and every name read back is its own. The stop's own check runs at
+// every cycle (Gc.VerifyStopBlocks) and finds nothing (Gc.StopBlockReports):
+// a block answered mid-stop
 // is black, old once the cycle ends, and a newcomer it holds -- a name made
 // in a page the stop's walk passed by -- is reached through its card at
 // the next minor cycle, which the stop's taking of the cards had cleared
@@ -136,7 +136,7 @@ static class Program
         // A stop of a few blocks a step: hundreds of steps a cycle, and the
         // threads' slow paths answered block by block in between.
         Gc.StopBudget = 32;
-        Gc.VerifyMarks = true;
+        Gc.VerifyStopBlocks = true;
         Gc.YieldHook = Sys.AddressOf(Program.Linger);
         Worker[] w = new Worker[workers];
         Thread[] t = new Thread[workers];

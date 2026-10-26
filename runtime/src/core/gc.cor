@@ -13386,10 +13386,11 @@ static class Gc
     /// Every block handed out mid-stop (NoteStopBlock) marked, and what it
     /// holds read as roots, once every thread has answered STAMP and the
     /// barrier marks what any store writes (Marking 2): allocated black.
-    /// Without the heap lock: nothing writes the list after the stop, and no
-    /// block of the heap is freed while marking. A budget at a time, the
-    /// platform asked between (ScanRootsAttributed): a dedicated array may
-    /// be megabytes.
+    /// Entered without the heap lock: nothing writes the list after the
+    /// stop, and no block of the heap is freed while marking. The checks
+    /// (VerifyStopBlock) take it for each block they read. A budget at a
+    /// time, the platform asked between (ScanRootsAttributed): a dedicated
+    /// array may be megabytes.
     static void ScanStopBlocks()
     {
         long segment = _stopList;
@@ -13403,7 +13404,7 @@ static class Gc
                 // was a mark's budget many times over: the platform is asked
                 // between, as the mark does (MarkBetweenYields).
                 since = since + 1;
-                if (since >= MarkBetweenYields && YieldHook != 0 && !GcLock.HeldByMe())
+                if (since >= MarkBetweenYields && YieldHook != 0)
                 {
                     Sys.Call(YieldHook, 0, 0, 0);
                     since = 0;
@@ -13425,9 +13426,9 @@ static class Gc
                 // the block was still young and its kilobyte not read; set
                 // now, after the stop has taken its cards, it is the next
                 // cycle's to take.
-                CardMarkObject(block + HeaderBytes);
+                CardsOver(block + HeaderBytes, block + size - tail);
                 // Under the lock: the chunk index is nobody's to read without it.
-                if (_verifyGenerations || VerifyMarks || VerifyHeap)
+                if (_verifyGenerations || VerifyMarks || VerifyHeap || VerifyStopBlocks)
                 {
                     GcLock.Enter();
                     VerifyStopBlock(block, size, tail);
@@ -13445,20 +13446,42 @@ static class Gc
     /// newcomer, which the marker cannot mark -- with the card over it clear
     /// is reported. The block is old once the cycle ends, the newcomer
     /// young, and without that card the next minor cycle frees what it
-    /// holds. Run after ScanStopBlocks sets the block's cards again, it
-    /// finds nothing unless that is lost: then it reports in every run of
-    /// 2435 (8 of 8, each at the cap of 20). The next minor cycle's own
-    /// check (VerifyMinor) sees the same loss from the other side. Its
-    /// reports are counted on their own too (StopBlockReports), for a test
-    /// to read apart from the rest.
+    /// holds. Run just after ScanStopBlocks sets the block's cards again, it
+    /// guards that step: it finds nothing unless the step is lost or sets
+    /// too few cards, and then it reports at once (measured on 2435 with
+    /// the step taken out: 8 runs of 8 reported). That the card lives on to
+    /// the next cycle's TakeCards it does not see; the next minor cycle's
+    /// check (VerifyMinor) does. Counted on its own (StopBlockReports), to a
+    /// cap of its own, for a test to read apart from the other checks.
     public static long StopBlockReports;
+
+    /// VerifyStopBlock alone, without the rest of the checks of marking: what
+    /// a test asks for that must finish inside its time (2435), where every
+    /// cycle's whole-heap checks (VerifyMarks) do not.
+    public static bool VerifyStopBlocks;
+
+    /// The cards over [from, to) set: a block's own extent, read off its
+    /// size, never its footer -- which another marker may not have written
+    /// yet when it took the block first.
+    static void CardsOver(long from, long to)
+    {
+        long cards = Runtime.Cards;
+        if (cards == 0 || to <= from) return;
+        long card = (from & WordSize.AddressMask) >> Runtime.CardShift;
+        long last = ((to - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+        while (card <= last)
+        {
+            Sys.PokeByte(cards + card, 1);
+            card = card + 1;
+        }
+    }
 
     static void VerifyStopBlock(long block, long size, long tail)
     {
         long cards = Runtime.Cards;
         if (cards == 0) return;
         long p = block + HeaderBytes;
-        while (p < block + size - tail && _verifyReports < 20)
+        while (p < block + size - tail && StopBlockReports < 20)
         {
             long w = Sys.Peek(p);
             long chunk = MarkerReads(block, size, p, tail) && (w & 7) == 0 ? HeapChunks.Of(w) : 0;
@@ -13633,7 +13656,10 @@ static class Gc
         TakeBarrier(false);
         // The stacks as they were at STAMP (GcThreads.CopyStack).
         GcThreads.ScanStackCopies();
-        // And the blocks handed out mid-stop from chunks the snapshot has not.
+        // And every block handed out mid-stop, black (ScanStopBlocks).
+        // The checks' count from here: the stop blocks' own (VerifyStopBlock)
+        // made while they are read are this cycle's as much as the mark's.
+        long verifiedBefore = _verifyReports;
         ScanStopBlocks();
         _rootsOnly = true;
         GcRoots.Enter();
@@ -13678,7 +13704,6 @@ static class Gc
         Runtime.Marking = 0;
         GcThreads.Round(GcThreads.Ack);
         MarkToEmpty();
-        long verifiedBefore = _verifyReports;
         if (_minor && (_verifyGenerations || VerifyMarks || VerifyHeap)) VerifyMinor();
         bool majorChecked = !_minor && MajorChecked();
         if (!_minor && (_verifyGenerations || VerifyMarks || VerifyHeap || majorChecked)) VerifyMajor();
