@@ -184,9 +184,9 @@ static partial class Os
         return (int)Read(fd, Sys.ArrayData(buf) + (nuint)at, (nuint)count);
     }
 
-    /// A read at an offset that moves no file position, as pread(2): the
-    /// overlapped form's offset, which a handle opened for ordinary reads
-    /// takes on NT.
+    /// A read at an offset, pread(2)'s: the overlapped form's offset, which
+    /// a handle opened for ordinary reads takes on NT. Unlike pread, a
+    /// synchronous handle's file pointer is left after the read.
     public static long Pread(int fd, nuint into, nuint count, long offset)
     {
         nuint handle = HandleOf(fd);
@@ -210,8 +210,10 @@ static partial class Os
         return Pread(fd, Sys.ArrayData(buf) + (nuint)at, (nuint)count, offset);
     }
 
-    /// A write at an offset that moves no file position, as pwrite(2): the
-    /// overlapped form's offset, as Pread's.
+    /// A write at an offset, pwrite(2)'s: the overlapped form's offset, as
+    /// Pread's. Unlike pwrite, a handle opened for synchronous I/O has its
+    /// file pointer left after the write; RandomAccess, which uses only
+    /// offsets, never looks at it.
     public static long Pwrite(int fd, nuint from, nuint count, long offset)
     {
         nuint handle = HandleOf(fd);
