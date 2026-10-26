@@ -24226,9 +24226,18 @@ public sealed partial class Binder
                     // A BASE TYPE'S METHOD IS NO CANDIDATE beside a derived
                     // type's that applies too (BetterMember's rule).
                     if (best is not null && Hides(best, candidate)) continue;
+                    // THE BETTER FUNCTION MEMBER FIRST (C# 12.6.4.3), each
+                    // argument's conversion to the two inferred parameter
+                    // types: `ElementAtOrDefault(source, index.Value)` with an
+                    // int is the (IEnumerable<T>, int) overload, not the
+                    // (IEnumerable<T>, Index) one declared before it -- that
+                    // was the Index overload calling itself for ever. Only
+                    // where the conversions tie do the shapes decide.
+                    int conversions = best is null || openNow != openBest ? 0 : ConversionsBetter(candidate, got, best, bound ?? new());
                     if (best is null || Hides(candidate, best) || openNow < openBest
-                        || (openNow == openBest && Specificity(candidate) > Specificity(best))
-                        || (openNow == openBest && Specificity(candidate) == Specificity(best)
+                        || (openNow == openBest && conversions > 0)
+                        || (openNow == openBest && conversions == 0 && Specificity(candidate) > Specificity(best))
+                        || (openNow == openBest && conversions == 0 && Specificity(candidate) == Specificity(best)
                             && BetterLambdas(candidate, got, best, bound ?? new(), c.Args)))
                     {
                         best = candidate;
@@ -24242,6 +24251,26 @@ public sealed partial class Binder
         {
             best = firstWritten;
             bound = firstTold;
+        }
+
+        // Which of two generic candidates, each at the type arguments inferred
+        // for it, takes the arguments better (C# 12.6.4.3): 1 the first, -1
+        // the second, 0 neither -- some each way is neither. A lambda or a
+        // method group is judged by BetterLambdas; a parameter left unmade
+        // says nothing.
+        int ConversionsBetter(MethodSymbol one, Dictionary<string, Type> oneBound, MethodSymbol other, Dictionary<string, Type> otherBound)
+        {
+            bool oneBetter = false, otherBetter = false;
+            for (int i = 0; i < args.Count && i < one.Params.Count && i < other.Params.Count; i++)
+            {
+                if (i < c.Args.Count && (IsFunctionSource(c.Args[i]) || c.Args[i] is LambdaExpr)) continue;
+                Type a = Close(Wants(one, i), oneBound), b = Close(Wants(other, i), otherBound);
+                if (Unmade(a) || Unmade(b)) continue;
+                int said = BetterConversion(args[i], a, b);
+                if (said > 0) oneBetter = true;
+                if (said < 0) otherBetter = true;
+            }
+            return oneBetter == otherBetter ? 0 : oneBetter ? 1 : -1;
         }
 
         // Each lambda argument converts to the delegate the candidate takes,

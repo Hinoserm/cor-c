@@ -1,0 +1,34 @@
+// test: generic_overload_by_conversion
+// expect-exit: 0
+// expect-output:
+// int int int index
+// b b
+// a
+//
+// Between two generic overloads that both apply, the better function member
+// is the one each argument converts to better (C# 12.6.4.3), before any
+// tie-break on shape: an int is the (IEnumerable<T>, int) overload, not the
+// (IEnumerable<T>, Index) one declared first. The Index overload calling
+// the int one with index.Value used to call itself until the stack ran out.
+
+using System;
+using System.Linq;
+using System.Collections.Generic;
+
+static class Program
+{
+    static string G<T>(IEnumerable<T> a, Index i) => "index";
+    static string G<T>(IEnumerable<T> a, int i) => "int";
+    static string H<T>(this IEnumerable<T> a, Index i) { if (!i.IsFromEnd) return H(a, i.Value); return "index"; }
+    static string H<T>(this IEnumerable<T> a, int i) => "int";
+
+    static int Main()
+    {
+        List<string> l = new() { "a", "b" };
+        IEnumerable<string> e = l;
+        Console.WriteLine($"{G(l, 1)} {G(e, 1)} {e.H(new Index(1))} {e.H(^1)}");
+        Console.WriteLine($"{e.ElementAtOrDefault(1)} {e.ElementAtOrDefault(^1)}");
+        Console.WriteLine(e.ElementAt(new Index(0)));
+        return 0;
+    }
+}
