@@ -6204,13 +6204,15 @@ static class Gc
         }
     }
 
-    // THE COLLECTOR'S OWN PAGES IN STEPS (CollectConcurrently's stop): its
-    // own cache, then its shelf's, a page at a time, from where the last
-    // step left. Nothing of the program runs on the collector meanwhile, so
-    // its caches stand still.
+    // A THREAD'S PAGES IN STEPS: its own cache, then its shelf's, a page at
+    // a time, from where the last step left -- the collector's own in its
+    // stop (nothing of the program runs on it meanwhile), and a blocked
+    // thread's that the collector answers STAMP for (GcThreads.
+    // AnswerForStopped, the thread held Busy). Either way the caches stand
+    // still between steps.
     static long _selfShelf, _selfClass;
 
-    static void BeginSelfStamp()
+    public static void BeginSelfStamp()
     {
         _selfShelf = -1;
         _selfClass = 0;
@@ -6218,7 +6220,7 @@ static class Gc
 
     /// StampPages(tb), on from where it was, until `budget` pages are done
     /// (-1: all): true when all are.
-    static bool StampPagesSome(long tb, long budget)
+    public static bool StampPagesSome(long tb, long budget)
     {
         long work = 0;
         long shelf = Sys.Peek(tb + Tls.Shelf);
@@ -14015,7 +14017,7 @@ static class Gc
 
     /// The objects in a thread's buffer written into the snapshot: StampBuffer
     /// without the pages.
-    static void StampOwnBuffer(long block)
+    public static void StampOwnBuffer(long block)
     {
         long at = Sys.Peek(block + Tls.AllocBase);
         long upto = Sys.Peek(block + Tls.AllocPtr);
@@ -17458,7 +17460,7 @@ static class GcThreads
             {
                 Gc.ScanRoots(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * WordSize.Bytes);
             }
-            Work(block, request, Sys.Peek(block + Tls.StackLimit));
+            Work(block, request, Sys.Peek(block + Tls.StackLimit), true);
             if (Claim(block, epoch))
             {
                 Sys.AtomicAdd(ctl + GcLock.Pending, -1);
@@ -17473,11 +17475,33 @@ static class GcThreads
     }
 
     /// What a round asks, done on `block`'s behalf with its stack from `from`.
-    static void Work(long block, long request, long from)
+    static void Work(long block, long request, long from, bool locked)
     {
-        if (request == Stamp)
+        if (request == Stamp && !locked)
         {
+            // A thread answering for itself holds no lock: it may be
+            // preempted anywhere in this, as anywhere else.
             Gc.StampBuffer(block);
+            CopyStack(block, from);
+        }
+        else if (request == Stamp)
+        {
+            // FOR A BLOCKED THREAD, UNDER THE HEAP LOCK: the pages in steps,
+            // the lock let go and the platform asked between two. A thread
+            // with a shelf of module heaps holds hundreds of pages, and
+            // stamped whole under the lock they kept a one-processor kernel's
+            // mixer from running. The thread is held Busy throughout, so it
+            // cannot leave its blocking and its pages stand still; a free
+            // into one is dropped while marking.
+            Gc.BeginSelfStamp();
+            long pages = Gc.StopBudget / 2048 > 0 ? Gc.StopBudget / 2048 : 1;
+            while (!Gc.StampPagesSome(block, pages))
+            {
+                GcLock.Exit();
+                if (Gc.YieldHook != 0) Sys.Call(Gc.YieldHook, 0, 0, 0);
+                GcLock.Enter();
+            }
+            Gc.StampOwnBuffer(block);
             CopyStack(block, from);
         }
         else if (request == Scan)
@@ -17740,7 +17764,7 @@ static class GcThreads
         long epoch = Sys.Peek(ctl + GcLock.Epoch);
         long request = Sys.Peek(ctl + GcLock.Request);
 
-        Work(block, request, stack);
+        Work(block, request, stack, false);
         Settle(block);
         Answered = Answered + 1;
         Sys.Poke(block + Tls.HandshakeArmed, 0);
