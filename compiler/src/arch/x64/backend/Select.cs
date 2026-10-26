@@ -1863,6 +1863,16 @@ internal sealed class Selector
         return n;
     }
 
+    /// <summary>The per-processor word at `offset` from GS's base: gs:[disp32], or gs:[reg].</summary>
+    private MMem PerCpuWord(Operand offset)
+    {
+        if (offset is ImmOperand { Value: var at } && at >= int.MinValue && at <= int.MaxValue)
+        {
+            return new MMem(null, (int)at) { Segment = 0x65 };
+        }
+        return new MMem(R(offset), 0) { Segment = 0x65 };
+    }
+
     private void SelectMachineIntrinsic(string name, Instr i)
     {
         switch (name)
@@ -1878,6 +1888,20 @@ internal sealed class Selector
             case Corsac.Lang.X86.MachineIntrinsics.DoublePrecision:
                 // SSE2's doubles round once already.
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.PerCpuRead:
+                // A word of this processor's own area, gs-relative: one
+                // instruction, so no preemption falls between finding the
+                // processor and reading its word (Linux's this_cpu_read). The
+                // offset a constant where it fits a displacement, else in a
+                // register.
+                if (i.Dest is not null) Mov(V(i.Dest), PerCpuWord(i.Operands[0]));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.PerCpuWrite:
+            {
+                MReg value = R(i.Operands[1]);
+                Mov(PerCpuWord(i.Operands[0]), value);
+                return;
+            }
             case Corsac.Lang.X86.MachineIntrinsics.LoaderFini:
                 // Unused when no C library is started: nothing to read.
                 if (i.Dest is not null)

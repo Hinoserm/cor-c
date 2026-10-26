@@ -6,6 +6,8 @@
 #   tests/freestanding/run.sh 02         the ones whose name matches
 #   tests/freestanding/run.sh --work=DIR 02
 #                                        the images and logs made in DIR
+#   tests/freestanding/run.sh --corc=PATH --targets=x86-64 02
+#                                        that compiler, those targets
 #
 # Each test is compiled --freestanding: the runtime is baremetal.cor, the
 # entry stub is the one a kernel gets, and nothing of the Linux platform
@@ -62,9 +64,14 @@ corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
 targets="${TARGETS:-x86 x86-64}"
 work=""
 made=""
-case "${1:-}" in
-    --work=*) work="${1#--work=}"; shift; mkdir -p "$work" || exit 2 ;;
-esac
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --work=*) work="${1#--work=}"; shift; mkdir -p "$work" || exit 2 ;;
+        --corc=*) corc="${1#--corc=}"; shift ;;
+        --targets=*) targets="${1#--targets=}"; shift ;;
+        *) break ;;
+    esac
+done
 filter="${1:-}"
 [ -n "$work" ] || { work="$(mktemp -d "${TMPDIR:-/tmp}/corc-freestanding.XXXXXX")"; made=1; }
 passed=0
