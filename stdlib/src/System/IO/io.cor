@@ -331,6 +331,17 @@ abstract class Stream : IDisposable, IAsyncDisposable
 
 /// A stream over a descriptor: a file opened by path, or a handle the
 /// program already holds (standard input, a pipe end).
+/// .NET 6's FileStreamOptions, and .NET 7's UnixCreateMode.
+sealed class FileStreamOptions
+{
+    public FileMode Mode { get; set; } = FileMode.Open;
+    public FileAccess Access { get; set; } = FileAccess.Read;
+    public FileShare Share { get; set; } = FileShare.Read;
+    public FileOptions Options { get; set; } = FileOptions.None;
+    public int BufferSize { get; set; } = 4096;
+    public UnixFileMode? UnixCreateMode { get; set; }
+}
+
 class FileStream : Stream
 {
     int _fd;
@@ -366,7 +377,32 @@ class FileStream : Stream
     {
     }
 
-    public FileStream(string path, FileMode mode, FileAccess access)
+    public FileStream(string path, FileMode mode, FileAccess access) : this(path, mode, access, 420)
+    {
+    }
+
+    /// .NET 6's options form: mode, access, sharing, buffer size, and (.NET
+    /// 7) UnixCreateMode, the permissions a file this open creates is given
+    /// -- through the umask, as open(2)'s mode is -- instead of 0666 & ~umask.
+    public FileStream(string path, FileStreamOptions options)
+        : this(path, options.Mode, options.Access, options.UnixCreateMode.HasValue ? (int)options.UnixCreateMode.Value & 4095 : 420)
+    {
+        bool exclusive = options.Share == FileShare.None;
+        if (exclusive || options.Access == FileAccess.Read)
+        {
+            int result = Os.Flock(_fd, (exclusive ? 2 : 1) | 4);
+            if (result == -(int)Err.Again)
+            {
+                Os.Close(_fd);
+                _fd = -1;
+                throw IoErrno.For((int)Err.Again, FileSystem.Full(path));
+            }
+        }
+        int bufferSize = options.BufferSize == -1 ? DefaultBufferSize : options.BufferSize;
+        _bufferSize = bufferSize > 1 ? bufferSize : 0;
+    }
+
+    FileStream(string path, FileMode mode, FileAccess access, int createMode)
     {
         // No name at all is the caller's mistake, refused before any open
         // as .NET refuses it -- not a file the system could not find.
@@ -393,7 +429,7 @@ class FileStream : Stream
         {
             flags = flags | O.Create | O.Append;
         }
-        _fd = OpenFile(path, flags);
+        _fd = OpenFile(path, flags, createMode);
         _canRead = access != FileAccess.Write;
         _canWrite = access != FileAccess.Read;
         _owns = true;
@@ -413,7 +449,12 @@ class FileStream : Stream
     /// open it, which only an fstat finds out.
     internal static int OpenFile(string path, int flags)
     {
-        int fd = Os.Open(path, flags | O.LargeFile, 420);
+        return OpenFile(path, flags, 420);
+    }
+
+    internal static int OpenFile(string path, int flags, int createMode)
+    {
+        int fd = Os.Open(path, flags | O.LargeFile, createMode);
         if (fd < 0)
         {
             if (fd == -Err.IsDir) fd = -(int)Err.Access;
