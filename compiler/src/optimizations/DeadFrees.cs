@@ -106,7 +106,17 @@ public sealed class DeadFrees : IPass
                 Block on = f.NewBlock(b.Label + "$freed");
                 on.Instrs.AddRange(b.Instrs.GetRange(k + 1, b.Instrs.Count - k - 1));
                 b.Instrs.RemoveRange(k, b.Instrs.Count - k);
-                b.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { freed }, InitialTargets = new[] { freeing, on }, Line = call.Line });
+                // A BRANCH TESTS 32 BITS: in long mode a word is eight bytes, and
+                // the test is `freed != 0` -- branched on the word itself, the
+                // IR was wrong there (Verifier: a branch's operand is I32).
+                Operand test = freed;
+                if (freed.Type != IrType.I32)
+                {
+                    VReg nonNull = f.NewReg(IrType.I32, "nonnull");
+                    b.Instrs.Add(new Instr { Op = Opcode.Ne, Dest = nonNull, Operands = { freed, new ImmOperand(0, freed.Type) }, Line = call.Line });
+                    test = nonNull;
+                }
+                b.Instrs.Add(new Instr { Op = Opcode.Branch, Operands = { test }, InitialTargets = new[] { freeing, on }, Line = call.Line });
                 freeing.Instrs.Add(call);
                 freeing.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { on }, Line = call.Line });
                 // The rest of the block, any free after this one with it, is `on` now.
@@ -122,8 +132,17 @@ public sealed class DeadFrees : IPass
         Block[] preds = cfg.Preds(b).ToArray();
         if (preds.Length != 1 || preds[0].Instrs.Count == 0) return false;
         Instr last = preds[0].Instrs[^1];
-        return last.Op == Opcode.Branch && last.Operands.Count == 1 && last.Operands[0] is RegOperand tested
-            && tested.Reg == value.Reg && last.Targets.Count == 2 && last.Targets[0] == b && last.Targets[1] != b;
+        if (last.Op != Opcode.Branch || last.Operands.Count != 1 || last.Operands[0] is not RegOperand tested
+            || last.Targets.Count != 2 || last.Targets[0] != b || last.Targets[1] == b) return false;
+        if (tested.Reg == value.Reg) return true;
+        // Or on `value != 0`, a word wider than a branch tests (GuardFrees).
+        foreach (Instr i in preds[0].Instrs)
+        {
+            if (i.Dest == tested.Reg && i.Op == Opcode.Ne && i.Operands.Count == 2
+                && i.Operands[0] is RegOperand compared && compared.Reg == value.Reg && i.Operands[1] is ImmOperand { Value: 0 })
+                return true;
+        }
+        return false;
     }
 
     /// How large a shared way out is copied for a path: frees, a region's

@@ -1,6 +1,6 @@
 // test: Platform.Blocking makes its call as a blocking one to the collector, on bare metal as on Linux
 // expect-asm-x86: Main: BeginBlocking EndBlocking
-// expect-asm-x86-64: Main: Platform_SafePoint EndBlocking
+// expect-asm-x86-64: Main: BeginBlocking EndBlocking
 // expect-exit: 0
 // expect-output:
 // through Platform.Blocking
