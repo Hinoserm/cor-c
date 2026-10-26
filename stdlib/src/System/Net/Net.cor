@@ -2318,6 +2318,10 @@ class TcpListener
         }
     }
 
+    /// The listening socket itself (.NET's TcpListener.Server), for a
+    /// caller that waits on it with Poll or sets its options.
+    public Socket Server { get { return _socket; } }
+
     public bool Pending()
     {
         return _socket.Poll(0, SelectMode.SelectRead);
