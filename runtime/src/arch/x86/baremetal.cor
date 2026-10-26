@@ -224,6 +224,11 @@ static class Platform
         // passed its limit, and the room counted from them wrapped to all
         // there is (Map). The start rounded up only where that cannot wrap.
         nuint first = start > PageMask ? 0 : (start + RegionPage - 1) & PageMask;
+        // ADDRESS 0 IS NONE: Map answers 0 for "no memory", and a block there
+        // would be a null reference. A region that begins at 0 -- a kernel's
+        // low memory -- keeps the rest of itself, from its second page; only
+        // a start that cannot be rounded (first still 0 below) is refused.
+        if (start == 0) first = RegionPage;
         nuint limit = end & PageMask;
         if (first == 0 || limit <= first)
         {

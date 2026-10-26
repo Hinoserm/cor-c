@@ -232,7 +232,6 @@ static class Gc
     const int Bins = ExactBins + (LargeTop - 8) * LargeSteps;
     const int BinsBytes = (Bins + (Bins + 8 * WordSize.Bytes - 1) / (8 * WordSize.Bytes)) * WordSize.Bytes; // heads, then the non-empty bitmap
 
-
     // ---- heaps (docs/HEAPS.md) ---------------------------------------------
     //
     // ONE COLLECTOR, ANY NUMBER OF HEAPS: a kernel gives each of its modules
@@ -343,7 +342,6 @@ static class Gc
     public static long ConcurrentCycles;
     public static long BarrierTaken;
     public static long BarrierOverflows;
-
 
     // Work counters, for finding out where a collection's time goes.
     public static long MarkCalls;
@@ -2324,7 +2322,7 @@ static class Gc
             if (entry == 0) return;
             nuint block = Untag(entry);
             nuint tail = TailOfEntry(entry);
-            if (ClaimScanW(block, tail)) ScanBlockW(block, PeekW(block) & SizeMask, local, tail);
+            if (ClaimScan(block, tail)) ScanBlock(block, Sys.ReadAddress(block) & SizeMask, tail, local);
         }
     }
 
@@ -2370,7 +2368,7 @@ static class Gc
                 else
                 {
                     words = words + (to - from) / WordSize.Bytes;
-                    ScanRangeW(from, to, local);
+                    ScanRange(from, to, local);
                 }
             }
             card = card + 1;
@@ -2458,13 +2456,13 @@ static class Gc
         YoungCardWords = YoungCardWords + (long)((high - low) / w);
         if (kind != KindObject || vt == 0 || (_anyQuarantined && InQuarantine(vt)))
         {
-            ScanRangeW(low, high, local);
+            ScanRange(low, high, local);
             return;
         }
         nuint desc = vt - DescWords * w;
         if (Sys.ReadAddress(desc + DescSelfWord * w) != desc)
         {
-            ScanRangeW(low, high, local);
+            ScanRange(low, high, local);
             return;
         }
         nuint flags = Sys.ReadAddress(desc + DescFlagsWord * w);
@@ -2476,7 +2474,7 @@ static class Gc
             }
             if (Sys.ReadAddress(desc + DescSizeWord * w) != w)
             {
-                ScanRangeW(low, high, local);
+                ScanRange(low, high, local);
                 return;
             }
             nuint count = Sys.ReadAddress(payload + ArrayCountAt) & 0x7FFFFFFF;
@@ -2484,10 +2482,10 @@ static class Gc
             nuint last = first + count * w;
             if (last > end || last < first)
             {
-                ScanRangeW(low, high, local);
+                ScanRange(low, high, local);
                 return;
             }
-            ScanRangeW(low > first ? low : first, high < last ? high : last, local);
+            ScanRange(low > first ? low : first, high < last ? high : last, local);
             return;
         }
         nuint map = Sys.ReadAddress(desc + DescRefMapWord * w);
@@ -2504,7 +2502,7 @@ static class Gc
             nuint bits = Sys.ReadAddress(map + (1 + index / 32) * w) & 0xFFFFFFFF;
             if (((bits >> (int)(index & 31)) & 1) != 0)
             {
-                MarkRefW(Sys.ReadAddress(payload + index * w), local);
+                MarkRef(Sys.ReadAddress(payload + index * w), local);
             }
             index = index + 1;
         }
@@ -3099,7 +3097,6 @@ static class Gc
             && !Beyond(node, size, HeapChunks.End(chunk)) && (header & FlagFree) != 0
             && Sys.ReadAddress(node + size - FooterBytes) == header && BinOf(size) == bin;
     }
-
 
     public static bool CheckFreeIndex()
     {
@@ -5091,12 +5088,18 @@ static class Gc
         return block + HeaderBytes;
     }
 
-    /// WHETHER A BUFFER AT `block` HOLDS `need` MORE BYTES, the room counted
-    /// and never the end summed, and a limit below the pointer no room (the
-    /// bump above says why): what is left past the request must be nothing,
-    /// or a free block at least (Retire stamps it so). An exact fit refused sent the request to the slow path, which retired
-    /// the buffer and its last hole's worth with it -- a recycled hole that
-    /// held two requests answered one, its other half passed over until the
+    /// WHETHER THE BUFFER FROM `block` TO `limit` HOLDS `need` BYTES.
+    ///
+    /// The room is counted (limit - block) and the end never summed: in 32
+    /// bits block + need can wrap below the limit and pass. A limit below
+    /// the pointer is no room at all -- a round takes the limit away (the
+    /// bump above says why).
+    ///
+    /// What is left past the request must be nothing, or at least a free
+    /// block (Smallest), which Retire stamps there. AN EXACT FIT IS A FIT:
+    /// refused, it sent the request to the slow path, which retired the
+    /// buffer and its last hole's worth with it -- a recycled hole that held
+    /// two requests answered one, its other half was passed over until the
     /// next collection, and the heap grew for the request instead (737).
     static bool BufferFits(nuint block, nuint need, nuint limit)
     {
@@ -6730,7 +6733,7 @@ static class Gc
         OldCardsOfPage(page, 0);
         while (block + size <= end)
         {
-            nuint word = PeekW(block);
+            nuint word = Sys.ReadAddress(block);
             if ((word & ~(nuint)7) != size)
             {
                 break;
@@ -6836,7 +6839,7 @@ static class Gc
     /// together. One clear for the run, then a header and a link a block.
     /// Clearing the headers with the payloads is safe for the reason the
     /// sweep is: nobody reads a page's dead blocks while it is swept.
-    /// Words, not longs, as the marker's loops are (ScanRangeW).
+    /// Words, not longs, as the marker's loops are (ScanRange).
     static void ClearDeadRun(nuint run, nuint stop, nuint size)
     {
         if (_journalAddr != 0) for (nuint b = run; b < stop; b = b + size) NoteFreed(b, 1);
@@ -9215,7 +9218,7 @@ static class Gc
     /// freeing thread owns, put on that thread's own list for its class,
     /// with no lock. The same as the free below of a block of the thread's
     /// own page (and its checks), found the way the marker finds a page's
-    /// block (PageBlockW): the page by the 4 KB table, the class by the page,
+    /// block (PageBlock): the page by the 4 KB table, the class by the page,
     /// the grid by the class's reciprocal. Where it went through a region
     /// test, the allocator and lock tests, a dozen flags in longs, and then
     /// looked for the page among every class the thread holds -- each a
@@ -9261,9 +9264,9 @@ static class Gc
             Sys.WriteAddress(tb + Tls.InAlloc, 0);
             return false;
         }
-        nuint page = PeekW(slots + (at >> 12) * WordSize.Bytes);
-        nuint cls = page == 0 ? 0 : PeekW(page + (nuint)HeapChunks.ClassAt);
-        if (cls == 0 || PeekW(page + (nuint)HeapChunks.OwnerAt) != tb)
+        nuint page = Sys.ReadAddress(slots + (at >> 12) * WordSize.Bytes);
+        nuint cls = page == 0 ? 0 : Sys.ReadAddress(page + (nuint)HeapChunks.ClassAt);
+        if (cls == 0 || Sys.ReadAddress(page + (nuint)HeapChunks.OwnerAt) != tb)
         {
             Sys.WriteAddress(tb + Tls.InAlloc, 0);
             return false;
@@ -9271,13 +9274,13 @@ static class Gc
         nuint cache = Sys.ReadAddress(tb + Tls.Classes);
         nuint c = cls - 1;
         nuint slot = cache + c * (nuint)(2 * WordSize.Bytes);
-        nuint block = PageBlockW(page, at, cls);
-        nuint size = block == 0 ? 0 : PeekW(block) & ~(nuint)7;
+        nuint block = PageBlock(page, at, cls);
+        nuint size = block == 0 ? 0 : Sys.ReadAddress(block) & ~(nuint)7;
         // ITS OWN PAGE IN ITS OWN CACHE, the block whole -- live, the class's
-        // size, on the grid (PageBlockW), and the payload's start: a pointer
+        // size, on the grid (PageBlock), and the payload's start: a pointer
         // into the middle of one is no object handed to a free.
-        if (cache == 0 || PeekW(slot) != page || block == 0 || block + HeaderBytes != at
-            || (PeekW(block) & FlagFree) != 0)
+        if (cache == 0 || Sys.ReadAddress(slot) != page || block == 0 || block + HeaderBytes != at
+            || (Sys.ReadAddress(block) & FlagFree) != 0)
         {
             Sys.WriteAddress(tb + Tls.InAlloc, 0);
             return false;
@@ -11460,14 +11463,14 @@ static class Gc
 #endif
         if (slots != 0)
         {
-            nuint page = PeekW(slots + ((nuint)block >> 12) * WordSize.Bytes);
+            nuint page = Sys.ReadAddress(slots + ((nuint)block >> 12) * WordSize.Bytes);
             if (page == 0) return 0;
-            nuint cls = PeekW(page + (nuint)HeapChunks.ClassAt);
-            if (cls == 0 || PeekW(page + (nuint)HeapChunks.OwnerAt) != tb) return 0;
-            if (PeekW((nuint)cache + (cls - 1) * (nuint)(2 * WordSize.Bytes)) != page) return 0;
-            nuint found = PageBlockW(page, (nuint)block + HeaderBytes, cls);
-            if (found != (nuint)block || (PeekW(found) & FlagFree) != 0) return 0;
-            return (PeekW(found) & ~(nuint)7);
+            nuint cls = Sys.ReadAddress(page + (nuint)HeapChunks.ClassAt);
+            if (cls == 0 || Sys.ReadAddress(page + (nuint)HeapChunks.OwnerAt) != tb) return 0;
+            if (Sys.ReadAddress((nuint)cache + (cls - 1) * (nuint)(2 * WordSize.Bytes)) != page) return 0;
+            nuint found = PageBlock(page, (nuint)block + HeaderBytes, cls);
+            if (found != (nuint)block || (Sys.ReadAddress(found) & FlagFree) != 0) return 0;
+            return (Sys.ReadAddress(found) & ~(nuint)7);
         }
         for (nuint c = 0; c < Classes; c = c + 1)
         {
@@ -11707,7 +11710,7 @@ static class Gc
         // not walked for their start bits (_pagesUnwalked).
         if (chunk != 0 && _pagesUnwalked && HeapChunks.PageClass(chunk) != 0)
         {
-            return PageBlockW((nuint)chunk, (nuint)at, (nuint)HeapChunks.PageClass(chunk));
+            return PageBlock((nuint)chunk, (nuint)at, (nuint)HeapChunks.PageClass(chunk));
         }
 
         if (chunk == 0 || HeapChunks.StartsCycle(chunk) != _cycle)
@@ -11771,80 +11774,6 @@ static class Gc
     static nuint GreySignature(nuint place)
     {
         return (place & 0x7FFFFFFF) | 0x80000000;
-    }
-
-    /// Queues a block this thread has just marked.
-    static void PushGrey(nuint block)
-    {
-        nuint ctl = GcLock.Words();
-
-        while (true)
-        {
-            nuint tail = Sys.ReadAddress(ctl + GcLock.GreyTail);
-            nuint head = Sys.ReadAddress(ctl + GcLock.GreyHead);
-
-            if (_markAt == 0 || ((tail - head)) >= _markCount)
-            {
-                // Marked and not queued: counted here, as the queue's tail
-                // counts every block that was (Marked).
-                Sys.AtomicAdd(ctl + GcLock.Pushes, 1);
-                Sys.AtomicSwap32(ctl + GcLock.Overflow, 1);
-                return;
-            }
-
-            // Claimed with a compare-and-swap and not an add, so that a place
-            // is only ever claimed when it is free: an add past a full ring
-            // would leave a claim nobody fills, and every taker would stop at
-            // it for good.
-            if ((Sys.Cas(ctl + GcLock.GreyTail, tail, (tail + 1))) != tail)
-            {
-                continue;
-            }
-
-            nuint at = _markAt + (tail & (_markCount - 1)) * GreyEntry;
-            Sys.WriteAddress(at + WordSize.Bytes, block);
-            Sys.AtomicSwap(at, GreySignature(tail));
-
-            nuint depth = (tail + 1 - head);
-            if (depth > _markPeak) _markPeak = depth;
-            if (Workers != 0) WakeWorkers(depth);
-            return;
-        }
-    }
-
-    /// The next queued block, or 0 when there is none ready to take -- the
-    /// queue is empty, or the next place is claimed and not yet written,
-    /// which its pusher is a few instructions from doing.
-    static nuint PopGrey()
-    {
-        nuint ctl = GcLock.Words();
-
-        while (true)
-        {
-            nuint head = Sys.ReadAddress(ctl + GcLock.GreyHead);
-            nuint tail = Sys.ReadAddress(ctl + GcLock.GreyTail);
-
-            if (head == tail || _markAt == 0)
-            {
-                return 0;
-            }
-
-            nuint at = _markAt + (head & (_markCount - 1)) * GreyEntry;
-
-            if ((Sys.ReadAddress(at)) != GreySignature(head))
-            {
-                return 0;
-            }
-
-            // Read before the take: once the head has moved past this place a
-            // pusher may claim it again and write over the block.
-            nuint block = Sys.ReadAddress(at + WordSize.Bytes);
-
-            if ((Sys.Cas(ctl + GcLock.GreyHead, head, (head + 1))) == head)
-            {
-                return block;
-            }
-        }
     }
 
     /// Whether marking has nothing left in hand: the queue is empty and no
@@ -11999,7 +11928,7 @@ static class Gc
             }
 
             nuint entry = local != 0 ? PopLocal(local) : 0;
-            if (entry == 0) entry = PopGreyW();
+            if (entry == 0) entry = PopGrey();
 
             if (entry == 0)
             {
@@ -12008,9 +11937,9 @@ static class Gc
 
             nuint block = Untag(entry);
             nuint tail = TailOfEntry(entry);
-            if (ClaimScanW(block, tail))
+            if (ClaimScan(block, tail))
             {
-                ScanBlockW(block, PeekW(block) & ~(nuint)7, local, tail);
+                ScanBlock(block, Sys.ReadAddress(block) & ~(nuint)7, tail, local);
             }
 
             scanned = scanned + 1;
@@ -12086,7 +12015,7 @@ static class Gc
     static void ReleaseLocal(nuint stack)
     {
         nuint ctl = GcLock.Words();
-        nuint marked = PeekW(stack + WordSize.Bytes);
+        nuint marked = Sys.ReadAddress(stack + WordSize.Bytes);
         if (marked != 0) Sys.AtomicAdd(ctl + GcLock.Pushes, marked);
         nuint pool = _localPool;
         nuint k = (stack - (nuint)pool - (nuint)(LocalStacks * WordSize.Bytes)) / LocalStackBytes();
@@ -12099,16 +12028,16 @@ static class Gc
     static void PushLocal(nuint stack, nuint block)
     {
         const int w = WordSize.Bytes;
-        nuint depth = PeekW(stack);
+        nuint depth = Sys.ReadAddress(stack);
         if (depth >= (nuint)LocalEntries)
         {
             ShareLocal(stack, LocalEntries / 2);
-            depth = PeekW(stack);
+            depth = Sys.ReadAddress(stack);
         }
         Sys.WriteAddress((stack + ((nuint)LocalHead + depth) * w), block);
         Sys.WriteAddress(stack, (depth + 1));
-        Sys.WriteAddress((stack + w), (PeekW(stack + w) + 1));
-        nuint since = PeekW(stack + 2 * w) + 1;
+        Sys.WriteAddress((stack + w), (Sys.ReadAddress(stack + w) + 1));
+        nuint since = Sys.ReadAddress(stack + 2 * w) + 1;
         if (since < 64)
         {
             Sys.WriteAddress((stack + 2 * w), since);
@@ -12119,19 +12048,19 @@ static class Gc
         // below the depth that wakes them (WorkerWakeDepth) find nothing.
         if (Workers == 0 || depth + 1 < 2 * (nuint)WorkerWakeDepth) return;
         nuint ctl = GcLock.Words();
-        nuint head = PeekW((nuint)ctl + (nuint)GcLock.GreyHead);
-        nuint queued = PeekW((nuint)ctl + (nuint)GcLock.GreyTail) - head;
+        nuint head = Sys.ReadAddress((nuint)ctl + (nuint)GcLock.GreyHead);
+        nuint queued = Sys.ReadAddress((nuint)ctl + (nuint)GcLock.GreyTail) - head;
         if (queued < (nuint)WorkerWakeDepth) ShareLocal(stack, ((depth + 1) / 2));
     }
 
     /// The top block of this drain's own stack, or 0 when it is empty.
     static nuint PopLocal(nuint stack)
     {
-        nuint depth = PeekW(stack);
+        nuint depth = Sys.ReadAddress(stack);
         if (depth == 0) return 0;
         depth = depth - 1;
         Sys.WriteAddress(stack, depth);
-        return PeekW(stack + ((nuint)LocalHead + depth) * WordSize.Bytes);
+        return Sys.ReadAddress(stack + ((nuint)LocalHead + depth) * WordSize.Bytes);
     }
 
     /// Moves blocks from the top of this drain's stack to the shared queue
@@ -12139,10 +12068,10 @@ static class Gc
     /// wake parked workers as any push does.
     static void ShareLocal(nuint stack, nuint keep)
     {
-        while (PeekW(stack) > keep)
+        while (Sys.ReadAddress(stack) > keep)
         {
             nuint block = PopLocal(stack);
-            PushGreyW(block);
+            PushGrey(block);
         }
     }
 
@@ -12265,106 +12194,12 @@ static class Gc
     /// Root ranges marked from as they were registered, a mark under way.
     public static long RegisteredMidMark;
 
-    /// Marks everything reachable from a range of memory, a word at a time.
-    /// Public because GcRoots feeds the roots through it.
-    /// A marked block's references marked in turn: none for a leaf, the
-    /// ones its descriptor names for an object, every word for the rest.
-    static void ScanBlock(nuint block, nuint size, nuint tail)
-    {
-        ScanBlockW((nuint)block, (nuint)size, 0, (nuint)tail);
-    }
-
-    /// AN OBJECT BY ITS DESCRIPTOR: the words its reference map names, or,
-    /// for an array of references, its elements. False when the object
-    /// cannot be read that way -- no vtable yet (made, not yet described:
-    /// nothing is in it), a first word that is not a descriptor's vtable, an
-    /// array of anything but references, a count past the block -- and the
-    /// caller scans every word instead, which is never wrong.
-    static bool ScanObject(nuint payload, nuint end)
-    {
-        const int w = WordSize.Bytes;
-        nuint vt = Sys.ReadAddress(payload);
-        if (vt == 0 || (_anyQuarantined && InQuarantine(vt)))
-        {
-            return false;
-        }
-        nuint desc = vt - DescWords * w;
-        if ((Sys.ReadAddress(desc + DescSelfWord * w)) != desc)
-        {
-            return false;
-        }
-        nuint flags = Sys.ReadAddress(desc + DescFlagsWord * w);
-        if ((flags & SequenceFlag) != 0)
-        {
-            if ((flags & StringFlag) != 0)
-            {
-                return true;
-            }
-            // AN ARRAY OF NUMBERS HOLDS NO REFERENCE, as in .NET: read word by
-            // word, every hash code and offset that looked like an address
-            // was looked up -- a large part of marking a compiler's heap --
-            // and kept whatever it happened to land on. (The one table that
-            // kept addresses as numbers, the scheduler's run queue, is a
-            // block of its own now, read word by word as such blocks are.)
-            if ((Sys.ReadAddress(desc + DescGcFlagsWord * w) & ElementsAreReferences) == 0)
-            {
-                return true;
-            }
-            if (Sys.ReadAddress(desc + DescSizeWord * w) != w)
-            {
-                return false;
-            }
-            nuint count = Sys.ReadAddress(payload + ArrayCountAt) & 0x7FFFFFFF;
-            nuint first = payload + Sys.ReadAddress(desc + DescPayloadWord * w);
-            nuint last = first + count * w;
-            if (last > end || last < first)
-            {
-                return false;
-            }
-            ScanRange(first, last);
-            return true;
-        }
-        nuint map = Sys.ReadAddress(desc + DescRefMapWord * w);
-        if (map == 0)
-        {
-            return true;
-        }
-        // The map: how many words it covers, then 32 bits to a word.
-        nuint words = Sys.ReadAddress(map);
-        nuint k = 0;
-        while (k * 32 < words)
-        {
-            nuint bits = Sys.ReadAddress(map + (1 + k) * w) & 0xFFFFFFFF;
-            nuint bit = 0;
-            while (bits != 0)
-            {
-                if ((bits & 1) != 0)
-                {
-                    nuint at = payload + (k * 32 + bit) * w;
-                    if (at + w <= end)
-                    {
-                        MarkAt(Sys.ReadAddress(at));
-                    }
-                }
-                bits = bits >> 1;
-                bit = bit + 1;
-            }
-            k = k + 1;
-        }
-        return true;
-    }
-
     // ---- marking in words ----------------------------------------------------
     //
     // THE MARKER'S INNER LOOP: from a word read out of a live object to its
     // block, the block's flag, the grey queue and back, for every word of
     // every live object -- kept to the machine's word, one register an
     // address on i386 as in long mode.
-
-    static nuint PeekW(nuint at)
-    {
-        return Sys.ReadAddress(at);
-    }
 
     /// `local`: the draining thread's own stack (ClaimLocal), where what it
     /// marks goes with no atomic operation, or 0 for the shared queue.
@@ -12376,7 +12211,7 @@ static class Gc
     /// aligned, the low bits are free -- and whoever pops it reads the bit
     /// back (Untag) rather than look the chunk up again for every block.
     // A CALL OF ITS OWN, so that what calls it stays small enough to be put
-    // in place in the scan loops (MarkRefW): put into MarkRefW itself, it
+    // in place in the scan loops (MarkRef): put into MarkRef itself, it
     // made that a call, and every null word a scan met paid for one.
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void MarkWord(nuint at, nuint local)
@@ -12390,36 +12225,36 @@ static class Gc
             // ONE LOAD FOR THE CHUNK, by the word's 4 KB (HeapChunks.Of's
             // table): 0 for a null, a number, a code or static address --
             // most of the words a scan meets -- and for a chunk not mapped.
-            // Where OfSnapshotW searched the snapshot's chunks from a word per
+            // Where OfSnapshot searched the snapshot's chunks from a word per
             // 64 KB and read each one's limit. No chunk is given back while a
             // mark runs (Free and the pool's drain refuse then, and the sweep
             // comes after), and one made since holds only newcomers: a page's
             // are refused by their headers or marked and kept, a mixed
             // chunk's by its start table, which is not this cycle's.
-            nuint chunk = InWindow(at) ? PeekW(slots + (at >> 12) * WordSize.Bytes) : 0;
+            nuint chunk = InWindow(at) ? Sys.ReadAddress(slots + (at >> 12) * WordSize.Bytes) : 0;
             block = 0;
             tail = 0;
             if (chunk != 0)
             {
-                nuint cls = PeekW(chunk + (nuint)HeapChunks.ClassAt);
+                nuint cls = Sys.ReadAddress(chunk + (nuint)HeapChunks.ClassAt);
                 if (cls != 0 && !_concurrent)
                 {
-                    block = PageBlockW(chunk, at, cls);
+                    block = PageBlock(chunk, at, cls);
                 }
-                else if (at < PeekW(chunk + (nuint)HeapChunks.LimitAt))
+                else if (at < Sys.ReadAddress(chunk + (nuint)HeapChunks.LimitAt))
                 {
                     // A mixed chunk's block by its start bits; and a page's
                     // too in a cycle beside running threads, whose newcomers
-                    // only the start bits tell (PageBlockW).
-                    block = SnapshotBlockInW(chunk, at);
+                    // only the start bits tell (PageBlock).
+                    block = SnapshotBlockIn(chunk, at);
                     tail = cls != 0 ? (nuint)0 : FooterBytes;
                 }
             }
         }
         else if (_snapshots)
         {
-            nuint chunk = HeapChunks.OfSnapshotW(at);
-            block = chunk == 0 ? 0 : SnapshotBlockInW(chunk, at);
+            nuint chunk = HeapChunks.OfSnapshot(at);
+            block = chunk == 0 ? 0 : SnapshotBlockIn(chunk, at);
             tail = block == 0 ? 0 : (nuint)TailIn(chunk);
         }
         else
@@ -12443,8 +12278,8 @@ static class Gc
         // word there is a link, a multiple of eight that KindLeaf is not --
         // and the swap refuses a free block anyway. A word pointing at a free
         // block is a number that happens to look like a pointer.
-        bool leaf = PeekW(block + KindAt) == KindLeaf;
-        if (!MarkFlagsW(block, leaf ? (nuint)(FlagMark | FlagScan) : FlagMark, tail))
+        bool leaf = Sys.ReadAddress(block + KindAt) == KindLeaf;
+        if (!MarkFlags(block, leaf ? (nuint)(FlagMark | FlagScan) : FlagMark, tail))
         {
             return;
         }
@@ -12460,17 +12295,17 @@ static class Gc
 
         if (tail == 0) block = block | (nuint)PagedBit;
         if (local != 0) PushLocal(local, block);
-        else PushGreyW(block);
+        else PushGrey(block);
     }
 
     /// THE BLOCK OF A SIZE-CLASS PAGE A WORD POINTS INTO, by its class: the
     /// offset times the class's reciprocal (OnGrid's), with no start bits
     /// read and no division. The candidate is the block holding the word a
     /// header below `at` -- a payload pointer is one past its header, and
-    /// one past a payload's end is still its block, as SnapshotBlockInW has
+    /// one past a payload's end is still its block, as SnapshotBlockIn has
     /// it -- and it is one only if its header says the class's size: the
     /// page's tail not yet laid out, its header, its start table, are not.
-    /// Free blocks pass here and are refused by the mark (MarkFlagsW).
+    /// Free blocks pass here and are refused by the mark (MarkFlags).
     ///
     /// NO START BITS: ONLY WITH THE WORLD STOPPED (MarkWord asks it only when
     /// the cycle is not concurrent), when every block a page holds was there
@@ -12479,22 +12314,22 @@ static class Gc
     /// running threads a page's newcomers are told by their missing start
     /// bits, which this cannot see. In a minor cycle a page not walked holds
     /// old blocks only, marked already, and free ones: the mark refuses both.
-    static nuint PageBlockW(nuint page, nuint at, nuint cls)
+    static nuint PageBlock(nuint page, nuint at, nuint cls)
     {
         nuint first = page + (nuint)HeapChunks.FirstAt;
         nuint highest = (at - HeaderBytes) & ~(nuint)7;
-        if (at < first + HeaderBytes || highest >= PeekW(page + (nuint)HeapChunks.EndAt))
+        if (at < first + HeaderBytes || highest >= Sys.ReadAddress(page + (nuint)HeapChunks.EndAt))
         {
             return 0;
         }
         nuint c = cls - 1;
-        nuint size = PeekW((nuint)_classSize + c * WordSize.Bytes);
+        nuint size = Sys.ReadAddress((nuint)_classSize + c * WordSize.Bytes);
         nuint offset = highest - first;
         // Under 2^16 in a page, as OnGrid requires for the floor to be exact.
         if (offset >= 0x10000) return 0;
         ulong quotient = ((ulong)offset * Sys.ReadAddress(_classStep + c * WordSize.Bytes)) >> 32;
         nuint block = first + (nuint)quotient * size;
-        if ((PeekW(block) & ~(nuint)7) != size || at > block + size)
+        if ((Sys.ReadAddress(block) & ~(nuint)7) != size || at > block + size)
         {
             return 0;
         }
@@ -12502,15 +12337,15 @@ static class Gc
     }
 
     /// The marker's 4 KB table (HeapChunks.SlotTable) while the snapshot is
-    /// whole (BuildBlockAnchors), else 0: MarkWord's way in, and MarkRefW's.
+    /// whole (BuildBlockAnchors), else 0: MarkWord's way in, and MarkRef's.
     static nuint _markSlots;
 
     /// A word of a block being scanned, marked from: those that lie in no
     /// chunk -- null above all -- turned away by one load before the call.
-    static void MarkRefW(nuint at, nuint local)
+    static void MarkRef(nuint at, nuint local)
     {
         nuint slots = _markSlots;
-        if (slots != 0 && (!InWindow(at) || PeekW(slots + (at >> 12) * WordSize.Bytes) == 0))
+        if (slots != 0 && (!InWindow(at) || Sys.ReadAddress(slots + (at >> 12) * WordSize.Bytes) == 0))
         {
             return;
         }
@@ -12546,36 +12381,15 @@ static class Gc
         return (entry & (nuint)PagedBit) != 0 ? (nuint)0 : FooterBytes;
     }
 
-    /// `tail`: what follows its payload (TailIn) -- the footer to bring up
-    /// to the header, or nothing in a page, which has none.
-    static bool SetFlagW(nuint block, nuint flag, nuint tail)
-    {
-        while (true)
-        {
-            nuint word = PeekW(block);
-
-            if ((word & FlagFree) != 0 || (word & flag) != 0)
-            {
-                return false;
-            }
-
-            if ((nuint)Sys.Cas(block, word, (word | flag)) == word)
-            {
-                if (tail != 0) SyncFooterW(block);
-                return true;
-            }
-        }
-    }
-
     /// The mark: `flags` added to the header (and footer) of a block not yet
-    /// marked, against every other marker -- SetFlagW, but refusing only a
+    /// marked, against every other marker -- SetFlag, but refusing only a
     /// free block or a marked one, so that a leaf's mark can carry its scan
     /// flag with it (MarkWord). True only for the thread that marked it.
-    static bool MarkFlagsW(nuint block, nuint flags, nuint tail)
+    static bool MarkFlags(nuint block, nuint flags, nuint tail)
     {
         while (true)
         {
-            nuint word = PeekW(block);
+            nuint word = Sys.ReadAddress(block);
 
             if ((word & (nuint)(FlagFree | FlagMark)) != 0)
             {
@@ -12584,13 +12398,13 @@ static class Gc
 
             if ((nuint)Sys.Cas(block, word, (word | flags)) == word)
             {
-                if (tail != 0) SyncFooterW(block);
+                if (tail != 0) SyncFooter(block);
                 return true;
             }
         }
     }
 
-    /// A QUEUED BLOCK'S SCAN CLAIMED WITH A PLAIN STORE, where SetFlagW takes
+    /// A QUEUED BLOCK'S SCAN CLAIMED WITH A PLAIN STORE, where SetFlag takes
     /// a locked compare-and-swap: one locked instruction a marked object, the
     /// second of two, and a locked instruction is a full fence on top of its
     /// own twenty-odd cycles. The swap is not needed here. A block is queued
@@ -12602,33 +12416,20 @@ static class Gc
     /// marks nothing twice (MarkWord refuses a marked block). Nothing frees,
     /// merges or splits a block while a mark runs (Free refuses then).
     /// `tail`: what follows its payload (TailIn).
-    static bool ClaimScanW(nuint block, nuint tail)
+    static bool ClaimScan(nuint block, nuint tail)
     {
-        nuint word = PeekW(block);
+        nuint word = Sys.ReadAddress(block);
         if ((word & (nuint)(FlagFree | FlagScan)) != 0)
         {
             return false;
         }
         Sys.WriteAddress(block, (word | FlagScan));
-        if (tail != 0) SyncFooterW(block);
+        if (tail != 0) SyncFooter(block);
         return true;
     }
 
-    static void SyncFooterW(nuint block)
-    {
-        while (true)
-        {
-            nuint word = PeekW(block);
-            Sys.WriteAddress((block + (word & ~(nuint)7) - FooterBytes), word);
-
-            if (PeekW(block) == word)
-            {
-                return;
-            }
-        }
-    }
-
-    static void PushGreyW(nuint block)
+    /// Queues a block this thread has just marked.
+    static void PushGrey(nuint block)
     {
         nuint ctl = (nuint)GcLock.Words();
         nuint ring = (nuint)_markAt;
@@ -12638,8 +12439,8 @@ static class Gc
         {
             // The head first: it only follows the tail, so a tail read after
             // it is never behind it, and their difference never wraps.
-            nuint head = PeekW(ctl + (nuint)GcLock.GreyHead);
-            nuint tail = PeekW(ctl + (nuint)GcLock.GreyTail);
+            nuint head = Sys.ReadAddress(ctl + (nuint)GcLock.GreyHead);
+            nuint tail = Sys.ReadAddress(ctl + (nuint)GcLock.GreyTail);
 
             if (ring == 0 || tail - head >= count)
             {
@@ -12650,7 +12451,10 @@ static class Gc
                 return;
             }
 
-            // Claimed with a compare-and-swap and not an add: see PushGrey.
+            // Claimed with a compare-and-swap and not an add, so that a place
+            // is only ever claimed when it is free: an add past a full ring
+            // would leave a claim nobody fills, and every taker would stop at
+            // it for good.
             if ((nuint)Sys.Cas((ctl + (nuint)GcLock.GreyTail), tail, (tail + 1)) != tail)
             {
                 continue;
@@ -12667,14 +12471,14 @@ static class Gc
         }
     }
 
-    static nuint PopGreyW()
+    static nuint PopGrey()
     {
         nuint ctl = (nuint)GcLock.Words();
 
         while (true)
         {
-            nuint head = PeekW(ctl + (nuint)GcLock.GreyHead);
-            nuint tail = PeekW(ctl + (nuint)GcLock.GreyTail);
+            nuint head = Sys.ReadAddress(ctl + (nuint)GcLock.GreyHead);
+            nuint tail = Sys.ReadAddress(ctl + (nuint)GcLock.GreyTail);
 
             if (head == tail || _markAt == 0)
             {
@@ -12683,14 +12487,14 @@ static class Gc
 
             nuint at = (nuint)_markAt + (head & ((nuint)_markCount - 1)) * (nuint)GreyEntry;
 
-            if (PeekW(at) != (nuint)GreySignature(head))
+            if (Sys.ReadAddress(at) != (nuint)GreySignature(head))
             {
                 return 0;
             }
 
             // Read before the take: once the head has moved past this place a
             // pusher may claim it again and write over the block.
-            nuint block = PeekW(at + WordSize.Bytes);
+            nuint block = Sys.ReadAddress(at + WordSize.Bytes);
 
             if ((nuint)Sys.Cas((ctl + (nuint)GcLock.GreyHead), head, (head + 1)) == head)
             {
@@ -12700,29 +12504,29 @@ static class Gc
     }
 
     /// `tail`: what follows its payload (TailIn).
-    static void ScanBlockW(nuint block, nuint size, nuint local, nuint tail)
+    static void ScanBlock(nuint block, nuint size, nuint tail, nuint local = 0)
     {
-        nuint kind = PeekW(block + KindAt);
+        nuint kind = Sys.ReadAddress(block + KindAt);
         if (kind == KindLeaf)
         {
             return;
         }
         nuint payload = block + HeaderBytes;
         nuint end = block + size - tail;
-        if (kind != KindObject || !ScanObjectW(payload, end, local))
+        if (kind != KindObject || !ScanObject(payload, end, local))
         {
-            ScanRangeW(payload, end, local);
+            ScanRange(payload, end, local);
         }
     }
 
-    static void ScanRangeW(nuint from, nuint to, nuint local)
+    public static void ScanRange(nuint from, nuint to, nuint local = 0)
     {
         const int w = WordSize.Bytes;
         nuint p = (from + w - 1) & ~(nuint)(w - 1);
 
         while (p < to)
         {
-            MarkRefW(PeekW(p), local);
+            MarkRef(Sys.ReadAddress(p), local);
             p = p + w;
         }
     }
@@ -12730,20 +12534,20 @@ static class Gc
     /// ScanObject in words. The array's count is checked against the room
     /// before it is multiplied: in 32 bits count * w can wrap, which in 64
     /// it could not, and `last > end` alone would then pass.
-    static bool ScanObjectW(nuint payload, nuint end, nuint local)
+    static bool ScanObject(nuint payload, nuint end, nuint local)
     {
         const int w = WordSize.Bytes;
-        nuint vt = PeekW(payload);
+        nuint vt = Sys.ReadAddress(payload);
         if (vt == 0 || (_anyQuarantined && InQuarantine(vt)))
         {
             return false;
         }
         nuint desc = vt - (nuint)DescWords * w;
-        if (PeekW(desc + (nuint)DescSelfWord * w) != desc)
+        if (Sys.ReadAddress(desc + (nuint)DescSelfWord * w) != desc)
         {
             return false;
         }
-        nuint flags = PeekW(desc + (nuint)DescFlagsWord * w);
+        nuint flags = Sys.ReadAddress(desc + (nuint)DescFlagsWord * w);
         if ((flags & (nuint)SequenceFlag) != 0)
         {
             if ((flags & (nuint)StringFlag) != 0)
@@ -12751,40 +12555,40 @@ static class Gc
                 return true;
             }
             // An array of numbers holds no reference: see ScanObject.
-            if ((PeekW(desc + (nuint)DescGcFlagsWord * w) & (nuint)ElementsAreReferences) == 0)
+            if ((Sys.ReadAddress(desc + (nuint)DescGcFlagsWord * w) & (nuint)ElementsAreReferences) == 0)
             {
                 return true;
             }
-            if (PeekW(desc + (nuint)DescSizeWord * w) != w)
+            if (Sys.ReadAddress(desc + (nuint)DescSizeWord * w) != w)
             {
                 return false;
             }
-            nuint count = PeekW(payload + (nuint)ArrayCountAt) & 0x7FFFFFFF;
-            nuint first = payload + PeekW(desc + (nuint)DescPayloadWord * w);
+            nuint count = Sys.ReadAddress(payload + (nuint)ArrayCountAt) & 0x7FFFFFFF;
+            nuint first = payload + Sys.ReadAddress(desc + (nuint)DescPayloadWord * w);
             if (first > end || count > (end - first) >> WordSize.Shift)
             {
                 return false;
             }
-            ScanRangeW(first, first + count * w, local);
+            ScanRange(first, first + count * w, local);
             return true;
         }
-        nuint map = PeekW(desc + (nuint)DescRefMapWord * w);
+        nuint map = Sys.ReadAddress(desc + (nuint)DescRefMapWord * w);
         if (map == 0)
         {
             return true;
         }
         // The map: how many words it covers, then 32 bits to a word.
-        nuint words = PeekW(map);
+        nuint words = Sys.ReadAddress(map);
         nuint k = 0;
         while (k * 32 < words)
         {
-            uint bits = (uint)PeekW(map + (1 + k) * w);
+            uint bits = (uint)Sys.ReadAddress(map + (1 + k) * w);
             nuint at = payload + k * 32 * w;
             while (bits != 0)
             {
                 if ((bits & 1) != 0 && at + w <= end)
                 {
-                    MarkRefW(PeekW(at), local);
+                    MarkRef(Sys.ReadAddress(at), local);
                 }
                 bits = bits >> 1;
                 at = at + w;
@@ -12795,11 +12599,11 @@ static class Gc
     }
 
     /// SnapshotBlock in words, the chunk's start bits read once, in the
-    /// snapshot's chunk of `at` (HeapChunks.OfSnapshotW), which the caller
+    /// snapshot's chunk of `at` (HeapChunks.OfSnapshot), which the caller
     /// has found: it says too whether the block has a footer.
-    static nuint SnapshotBlockInW(nuint chunk, nuint at)
+    static nuint SnapshotBlockIn(nuint chunk, nuint at)
     {
-        nuint starts = HeapChunks.StartsW(chunk);
+        nuint starts = HeapChunks.Starts(chunk);
         if (starts == 0 || Sys.ReadAddress(starts) != _cycle)
         {
             return 0;
@@ -12809,11 +12613,11 @@ static class Gc
         // or below `at - HeaderBytes`; the nearest start at or below that
         // is the only candidate, and its size says whether it reaches.
         nuint highest = (at - HeaderBytes) & ~(nuint)7;
-        if (highest < HeapChunks.FirstW(chunk))
+        if (highest < HeapChunks.First(chunk))
         {
             return 0;
         }
-        nuint block = HeapChunks.StartAtOrBelowW(chunk, starts, highest, (at & 7) == 0);
+        nuint block = HeapChunks.StartAtOrBelow(chunk, starts, highest, (at & 7) == 0);
         if (block == 0)
         {
             return 0;
@@ -12822,7 +12626,7 @@ static class Gc
         {
             return block;
         }
-        nuint size = PeekW(block) & ~(nuint)7;
+        nuint size = Sys.ReadAddress(block) & ~(nuint)7;
         if (size < Smallest || at > block + size - (nuint)TailIn(chunk))
         {
             return 0;
@@ -12908,11 +12712,6 @@ static class Gc
             return false;
         }
         return ((Sys.ReadAddress(map + (1 + index / 32) * w) >> (int)(index & 31)) & 1) != 0;
-    }
-
-    public static void ScanRange(nuint from, nuint to)
-    {
-        ScanRangeW((nuint)from, (nuint)to, 0);
     }
 
     /// Runs a collection. Everything reachable from the stack, the registers
@@ -13569,7 +13368,7 @@ static class Gc
                 nuint tail = (entry & 1) != 0 ? 0 : (nuint)FooterBytes;
                 nuint size = Sys.ReadAddress(block) & SizeMask;
                 if (size < Smallest) continue;
-                MarkFlagsW((nuint)block, (nuint)(FlagMark | FlagScan), (nuint)tail);
+                MarkFlags((nuint)block, (nuint)(FlagMark | FlagScan), (nuint)tail);
                 if (Sys.ReadAddress(block + KindAt) == KindLeaf) continue;
                 ScanRootsAttributed(block + HeaderBytes, block + size - tail, 3, false);
                 // ITS CARDS SET AGAIN. Black, it is old once the cycle ends,
@@ -14756,7 +14555,7 @@ static class Gc
         // A MINOR CYCLE WITH THE WORLD STOPPED WALKS NO PAGE. A page's walk
         // wrote each block's start bit, flagged the cards its old blocks lie
         // in (OldCards), and -- in a major cycle -- took their marks off. The
-        // marker finds a page's blocks by its class now (PageBlockW), with
+        // marker finds a page's blocks by its class now (PageBlock), with
         // nothing made since the snapshot to tell apart; the old blocks'
         // cards are kept as each page is swept (_oldCards); and a minor
         // cycle takes no marks off. So only a major cycle, one beside
@@ -15088,7 +14887,7 @@ static class Gc
             nuint block = at <= first ? first : first + (at - first) / size * size;
             Sys.WriteAddress(anchors + p * WordSize.Bytes, block < end ? block : 0);
         }
-        // IN WORDS, as the marker's loops are (ScanRangeW): this runs for
+        // IN WORDS, as the marker's loops are (ScanRange): this runs for
         // every block of every young page at every cycle, and in longs on a
         // 32-bit processor each sum was an add and an adc, each compare two,
         // and the start bit a 64-bit shift.
@@ -15099,7 +14898,7 @@ static class Gc
         nuint block2 = first;
         while (block2 < end)
         {
-            nuint header = PeekW(block2);
+            nuint header = Sys.ReadAddress(block2);
             if ((header & ~(nuint)7) != size)
             {
                 return false;
@@ -15112,7 +14911,7 @@ static class Gc
                 {
                     if (wordAt >= 0) Sys.WriteAddress((starts + (nuint)wordAt * w), bits);
                     wordAt = word;
-                    bits = PeekW(starts + (nuint)word * w);
+                    bits = Sys.ReadAddress(starts + (nuint)word * w);
                 }
                 bits = bits | ((nuint)1 << (int)(bit & (8 * WordSize.Bytes - 1)));
                 nuint marks = header & (nuint)(FlagMark | FlagScan);
@@ -15815,7 +15614,8 @@ static class HeapChunks
         return (BlockAnchorCount(chunk) * WordSize.Bytes + WordSize.Bytes + StartWords(chunk) * WordSize.Bytes + 4095) & ~(nuint)4095;
     }
 
-    static nuint Starts(nuint chunk)
+    /// Where a chunk's start bits are (after its anchors), or 0 for a chunk without them.
+    public static nuint Starts(nuint chunk)
     {
         nuint anchors = Sys.ReadAddress(chunk + ChunkAnchors);
         return anchors == 0 ? 0 : anchors + BlockAnchorCount(chunk) * WordSize.Bytes;
@@ -15879,25 +15679,7 @@ static class HeapChunks
     public static nuint StartAtOrBelow(nuint chunk, nuint address)
     {
         nuint starts = Starts(chunk);
-        if (starts == 0) return 0;
-        nuint bit = (address - chunk) >> 3;
-        nuint word = bit >> StartShift;
-        nuint bits = Sys.ReadAddress(starts + WordSize.Bytes + word * WordSize.Bytes);
-        nuint keep = bit & StartBitMask;
-        if (keep != StartBitMask) bits = bits & (((nuint)1 << (int)(keep + 1)) - 1);
-
-        while (bits == 0)
-        {
-            if (word == 0) return 0;
-            word = word - 1;
-            bits = Sys.ReadAddress(starts + WordSize.Bytes + word * WordSize.Bytes);
-        }
-
-        // The highest set bit by counting, not by stepping down a 64-bit
-        // word a bit at a time: this answers every card an old block lies
-        // in, and every pointer the marker resolves.
-        nuint top = (nuint)(StartBitMask - Runtime.LeadingZeroCount(bits));
-        return chunk + (word * StartBits + top) * 8;
+        return starts == 0 ? 0 : StartAtOrBelow(chunk, starts, address, false);
     }
 
     /// The lowest start at or above `address`, or 0.
@@ -16962,32 +16744,15 @@ static class HeapChunks
     }
     // ---- the snapshot's lookups, in words (Gc.MarkWord) -----------------------
 
-    public static nuint FirstW(nuint chunk)
-    {
-        return chunk + (nuint)ChunkBytes;
-    }
-
-    /// Starts(chunk) in words.
-    public static nuint StartsW(nuint chunk)
-    {
-        nuint anchors = (nuint)Sys.ReadAddress((chunk + (nuint)ChunkAnchors));
-        if (anchors == 0)
-        {
-            return 0;
-        }
-        nuint limit = (nuint)Sys.ReadAddress((chunk + (nuint)ChunkLimit));
-        return anchors + ((limit - chunk + 4095) >> 12) * WordSize.Bytes;
-    }
-
     /// The highest start at or below `address` -- `address` itself when its
     /// bit is set, which `exact` asks for first -- or 0. IsStart and
     /// StartAtOrBelow in one, on start bits already found.
-    public static nuint StartAtOrBelowW(nuint chunk, nuint starts, nuint address, bool exact)
+    public static nuint StartAtOrBelow(nuint chunk, nuint starts, nuint address, bool exact)
     {
         const int w = WordSize.Bytes;
         nuint bit = (address - chunk) >> 3;
         nuint word = bit >> StartShift;
-        nuint bits = (nuint)Sys.ReadAddress((starts + w + word * w));
+        nuint bits = Sys.ReadAddress((starts + w + word * w));
         nuint keep = bit & (nuint)StartBitMask;
         if (exact && (bits & ((nuint)1 << (int)keep)) != 0)
         {
@@ -16999,38 +16764,13 @@ static class HeapChunks
         {
             if (word == 0) return 0;
             word = word - 1;
-            bits = (nuint)Sys.ReadAddress((starts + w + word * w));
+            bits = Sys.ReadAddress((starts + w + word * w));
         }
 
         nuint top = (nuint)(StartBitMask - Runtime.LeadingZeroCount(bits));
         return chunk + (word * (nuint)StartBits + top) * 8;
     }
 
-    /// OfSnapshot in words.
-    public static nuint OfSnapshotW(nuint at)
-    {
-#if TARGET_64BIT
-        return OfSnapshot(at);
-#else
-        const int w = WordSize.Bytes;
-        if (_snapMegabytes != 0)
-        {
-            int i = (int)Sys.ReadAddress(((nuint)_snapMegabytes + (at >> MegabyteShift) * w)) - 1;
-            if (i < 0) return 0;
-            // The chunks from there on, in address order, while one could hold it.
-            int count = (int)_snapCount;
-            while (i < count)
-            {
-                nuint chunk = (nuint)Sys.ReadAddress(((nuint)_snap + (nuint)i * w));
-                if (chunk > at) return 0;
-                if (at < (nuint)Sys.ReadAddress((chunk + (nuint)ChunkLimit))) return chunk;
-                i = i + 1;
-            }
-            return 0;
-        }
-        return OfSnapshot(at);
-#endif
-    }
 }
 
 // ---- roots: where the live pointers begin ----------------------------------------
