@@ -13265,8 +13265,15 @@ static class Gc
     // count raised allocates as any other.
 
     /// Blocks a step of the stop does before the lock is let go: about a
-    /// millisecond of the walk on a K6-III.
-    public static long StopBudget = 8192;
+    /// millisecond of the walk on a K6-III. Set by a platform or a test; a
+    /// field with no initialiser, so that the collector has no static
+    /// initialiser of its own to run.
+    public static long StopBudget
+    {
+        get { return _stopBudget != 0 ? _stopBudget : 8192; }
+        set { _stopBudget = value; }
+    }
+    static long _stopBudget;
 
     static bool _stopOpen;
     // What was handed out or retired while it was: pairs of words, a block
