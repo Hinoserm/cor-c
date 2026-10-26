@@ -481,7 +481,17 @@ public static partial class Linker
                             }
                             break;
                         case RelocKind.Got32:
+                            NeedGot(dyn, r.Symbol, d);
+                            break;
                         case RelocKind.GotAddr:
+                            // A SLOT'S ABSOLUTE ADDRESS is an executable's: a
+                            // shared object moves, and the word in its text
+                            // would be wrong anywhere but at 0.
+                            if (dyn.Shared)
+                            {
+                                errors.Add($"'{r.Symbol}' is reached from {where} by its GOT slot's absolute address, as an executable's object is: compile it --pic to link it into a shared object");
+                                break;
+                            }
                             NeedGot(dyn, r.Symbol, d);
                             break;
                         case RelocKind.GotOff:

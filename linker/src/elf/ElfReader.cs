@@ -652,6 +652,15 @@ public static class ElfReader
                 // left in its file too, which then comes into memory.
                 target.Load();
                 int addend = target.Bytes.ReadInt32((int)offset);
+                // R_386_GOT32X IS GotAddr ONLY WITH NO BASE REGISTER: a ModRM
+                // of mod 00, rm 101 before the word (an absolute disp32).
+                // With a base -- `call *foo@GOT(%ebx)`, what an assembler
+                // writes for PIC -- it is the slot's offset from the GOT, as
+                // R_386_GOT32 is. This toolchain writes GOT32X only without.
+                if (kind == RelocKind.GotAddr && (offset == 0 || (target.Bytes[(int)offset - 1] & 0xC7) != 0x05))
+                {
+                    kind = RelocKind.Got32;
+                }
                 target.Relocs.Add(new Relocation((int)offset, symbol, addend, kind.Value));
             }
         }

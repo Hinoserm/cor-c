@@ -329,7 +329,14 @@ the one place this differs from a C toolchain. The executable is not
 position-independent, but it knows where its own `.got` is, so the
 reference becomes one load from an absolute address -- `mov eax,
 [0x804a7f8]` -- and the slot is an ordinary `R_386_GLOB_DAT`. One extra
-load at the reference, and the address is the library's own.
+load at the reference, and the address is the library's own. A call to
+an imported function goes through the same slot, `call [0x804a7fc]`.
+This holds for an executable's objects made apart (`--dynamic --obj`)
+too: such an object is not position-independent, and the slot's absolute
+address is written in it as `R_386_GOT32X` on an instruction with no base
+register (the psABI's reading of GOT32X without a base). The linker reads
+a GOT32X with a base register -- an assembler's PIC -- as `R_386_GOT32`,
+and refuses the absolute form in a shared object.
 
 **Binding is eager, and a library's own definitions win.** `DT_BIND_NOW`
 and `DF_BIND_NOW` are set: the loader must fill every `.got` slot,
@@ -343,9 +350,10 @@ its own definition when it was linked, so nothing can interpose on a
 COR-C# library's internals.
 
 A PLT entry is eight bytes: `jmp *disp32` through its `.got` slot, then
-two `nop`s. Only an executable has a PLT; a position-independent object
-reaches an imported function by loading the slot and calling through the
-register, so a library's `.plt` is empty and its `.rel.plt` absent.
+two `nop`s. Only an executable has a PLT, and only for the calls that keep
+registers (CallKeep); a position-independent object reaches an imported
+function by loading the slot and calling through the register, so a
+library's `.plt` is empty and its `.rel.plt` absent.
 
 **Symbols.** `.dynsym` holds what the image exports and what it imports,
 all `STB_GLOBAL`, typed `STT_FUNC` or `STT_OBJECT` where the definition

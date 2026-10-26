@@ -30,7 +30,9 @@ if corlink "$work/caller.o" --shared --no-undefined -o "$work/missing.so" > "$wo
     echo 'FAIL unresolved shared-library dependency accepted' >&2
     exit 1
 fi
-grep -q 'unresolved shared-library imports' "$work/missing.log"
+# Refused either way: an executable's object is not position-independent
+# (its GOT slots' absolute addresses), and its import is unresolved.
+grep -q 'unresolved shared-library imports\|compile it --pic' "$work/missing.log"
 test ! -e "$work/missing.so"
 for mode in lto native; do
     if [ "$mode" = native ]; then set -- --no-lto; else set --; fi
