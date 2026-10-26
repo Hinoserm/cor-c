@@ -43,30 +43,25 @@ public sealed class DominatingBranch : IPass
                 branches[c] = n;
                 repeated |= n > 1;
             }
-        Cfg? cfg = null;
-        Defs? defs = null;
-        // The compares branched on, by their operands: one pair may decide another.
-        Dictionary<string, int>? compared = null;
-        if (!repeated)
-        {
-            cfg = PipelineAnalyses.CfgOf(function);
-            if (cfg.Roots.Count != 1) return;
-            defs = PipelineAnalyses.DefsOf(function);
-            compared = new();
-            foreach (Block b in function.Blocks)
-                if (b.Terminator is { Op: Opcode.Branch, Operands: [RegOperand { Reg: var c }] } && EqualityOf(defs, c) is { } key)
-                    compared[key.Key] = compared.GetValueOrDefault(key.Key) + 1;
-            if (!compared.Values.Any(n => n > 1)) return;
-        }
-        cfg ??= PipelineAnalyses.CfgOf(function);
+        // The equality compares branched on, by their operands: two of one
+        // pair may decide each other. Two branches at least; none is looked
+        // for in a function with fewer.
+        if (!repeated && branches.Count < 2) return;
+        Dictionary<EqKey, int> compared = new();
+        foreach (Block b in function.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op is Opcode.Eq or Opcode.Ne && i.Dest is { } dest && branches.ContainsKey(dest) && KeyOf(i) is { } key)
+                    compared[key] = compared.GetValueOrDefault(key) + 1;
+        if (!repeated && !compared.Values.Any(n => n > 1)) return;
+        Cfg cfg = PipelineAnalyses.CfgOf(function);
         if (cfg.Roots.Count != 1) return;
-        defs ??= PipelineAnalyses.DefsOf(function);
+        Defs defs = PipelineAnalyses.DefsOf(function);
         foreach (Block block in function.Blocks)
         {
             if (block.Terminator is not { Op: Opcode.Branch, Operands: [RegOperand { Reg: var condition }] } branch
                 || branch.Targets.Count != 2 || !defs.IsSingle(condition)) continue;
-            (string Key, bool Equal)? mine = EqualityOf(defs, condition);
-            if (branches.GetValueOrDefault(condition) < 2 && mine is null) continue;
+            (EqKey Key, bool Equal)? mine = EqualityOf(defs, condition);
+            if (branches.GetValueOrDefault(condition) < 2 && (mine is not { } own || compared.GetValueOrDefault(own.Key) < 2)) continue;
             Block child = block;
             for (int depth = 0; depth < 32; depth++)
             {
@@ -88,7 +83,8 @@ public sealed class DominatingBranch : IPass
                 if (mine is { } asked && preds.Count == 1 && ReferenceEquals(preds[0], parent) && !ReferenceEquals(parent, block)
                     && parent.Terminator is { Op: Opcode.Branch, Operands: [RegOperand { Reg: var before }] } known
                     && known.Targets.Count == 2 && known.Targets[0] != known.Targets[1] && defs.IsSingle(before)
-                    && EqualityOf(defs, before) is { } was && was.Key == asked.Key)
+                    && EqualityOf(defs, before) is { } was && was.Key == asked.Key
+                    && Unchanged(defs, condition, parent, block))
                 {
                     bool equalHere = known.Targets[0] == child ? was.Equal : !was.Equal;
                     bool taken = asked.Equal ? equalHere : !equalHere;
@@ -101,23 +97,51 @@ public sealed class DominatingBranch : IPass
         }
     }
 
+    /// <summary>One side of an equality compare: a register's number, or a constant's value and type; kind -1 for anything else.</summary>
+    private readonly record struct EqKey(long A, long B, int KindA, int KindB);
+
+    private static (int Kind, long Value) Part(Operand o) => o switch
+    {
+        RegOperand { Reg: var r } => (0, r.Id),
+        ImmOperand imm => (1 + (int)imm.Type, imm.Value),
+        _ => (-1, 0),
+    };
+
+    /// <summary>The operands of an `eq` or `ne`, as a key that does not depend on their order; null for anything else.</summary>
+    private static EqKey? KeyOf(Instr? def)
+    {
+        if (def is not { Op: Opcode.Eq or Opcode.Ne, Operands: [var left, var right] }) return null;
+        (int ka, long a) = Part(left);
+        (int kb, long b) = Part(right);
+        if (ka < 0 || kb < 0) return null;
+        return (ka, a).CompareTo((kb, b)) <= 0 ? new EqKey(a, b, ka, kb) : new EqKey(b, a, kb, ka);
+    }
+
     /// <summary>
     /// What an equality compare is of, or null: `eq`/`ne` of two operands, each
     /// a constant or a register written once (so the same pair compared
-    /// anywhere is the same question), as a key that does not depend on their
-    /// order, and whether it asks for equal.
+    /// anywhere is the same question), and whether it asks for equal.
     /// </summary>
-    private static (string Key, bool Equal)? EqualityOf(Defs defs, VReg condition)
+    private static (EqKey Key, bool Equal)? EqualityOf(Defs defs, VReg condition)
     {
-        if (!defs.IsSingle(condition) || defs.Definition(condition) is not { Op: Opcode.Eq or Opcode.Ne, Operands: [var left, var right] } compare) return null;
-        string Name(Operand o) => o switch
-        {
-            ImmOperand imm => "i" + imm.Value,
-            RegOperand { Reg: var r } when defs.IsSingle(r) => "r" + r.Id,
-            _ => "",
-        };
-        string a = Name(left), b = Name(right);
-        if (a.Length == 0 || b.Length == 0) return null;
-        return (string.CompareOrdinal(a, b) <= 0 ? a + "|" + b : b + "|" + a, compare.Op == Opcode.Eq);
+        if (!defs.IsSingle(condition) || defs.Definition(condition) is not { } compare || KeyOf(compare) is not { } key) return null;
+        foreach (Operand o in compare.Operands)
+            if (o is RegOperand { Reg: var r } && !defs.IsSingle(r)) return null;
+        return (key, compare.Op == Opcode.Eq);
+    }
+
+    /// <summary>
+    /// Whether the operands of the compare <paramref name="condition"/> is the
+    /// result of read the same at the end of <paramref name="parent"/> as at
+    /// the end of <paramref name="block"/> (Defs.CanForward): written once
+    /// does not say it is not written again between, were a register read
+    /// before its definition in a lap of a loop.
+    /// </summary>
+    private static bool Unchanged(Defs defs, VReg condition, Block parent, Block block)
+    {
+        if (defs.Definition(condition) is not { } compare) return false;
+        foreach (Operand o in compare.Operands)
+            if (o is RegOperand { Reg: var r } && !defs.CanForward(r, parent, parent.Instrs.Count - 1, block, block.Instrs.Count - 1)) return false;
+        return true;
     }
 }
