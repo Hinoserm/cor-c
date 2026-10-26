@@ -1,0 +1,47 @@
+// test: a nuint address is one register on i386: a field read is one load, a compare is unsigned, a loop counts in words
+// flags-x86: --nuint-addresses --cpu=486
+// flags-x86-64: --nuint-addresses
+// run: no
+// expect-asm-x86: Field: 0x14(%e
+// expect-no-asm-x86: Field: adc add
+// expect-asm-x86: Below: 0xc0000000
+// expect-no-asm-x86: Below: setl setg jl jg adc
+// expect-no-asm-x86: Sum: adc setl setg jl jg
+//
+// WHAT A KERNEL'S ADDRESSES COST ON A 386 OR 486 (LONG-MODE.md 7.1): held
+// as a long, every address was two of the i386's seven registers, every add
+// an ADD/ADC pair and every compare two. As a nuint it is the word: Field's
+// Sys.Read32(p + 20) is one load with the 20 in its displacement and no add
+// at all; Below's `p < 0xC0000000` compares once, unsigned -- the kernel's
+// half is above 0x80000000, where a signed compare is wrong; and Sum's
+// nuint counter and address stay one register each, compared unsigned.
+// Compiled and read, not run, and with --nuint-addresses, so the class
+// library's own uses of the address intrinsics compile that way too.
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static uint[] _words = new uint[16];
+
+    static int Main()
+    {
+        nuint at = Sys.ArrayData(_words);
+        return (int)(Field(at) + Sum(at, 16)) + (Below(at) ? 0 : 1);
+    }
+
+    // Its own body, which the disassembly is read for.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static uint Field(nuint p) => Sys.Read32(p + 20);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static bool Below(nuint p) => p < 0xC0000000;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static uint Sum(nuint p, nuint count)
+    {
+        uint sum = 0;
+        for (nuint i = 0; i < count; i++) sum += Sys.Read32(p + i * 4);
+        return sum;
+    }
+}

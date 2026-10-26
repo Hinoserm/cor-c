@@ -629,10 +629,8 @@ public sealed partial class Lowering
                     TouchType(named.Owner);
                 }
                 Require(named);
-                // Sys.AddressOf is a language long, even when a machine
-                // address is only 32 bits. Call/store ABI widths follow the
-                // declared result type, not the symbol operand's word size.
-                return Widen(_e.Address(CallLabel(named)));
+                // An address, the nuint Sys.AddressOf answers: the word.
+                return _e.Address(CallLabel(named));
             }
             return Fail(call, "this call did not resolve to a method");
         }

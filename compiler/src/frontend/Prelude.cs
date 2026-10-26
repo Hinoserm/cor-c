@@ -65,8 +65,6 @@ public static class Prelude
     // number. There is no way to write one without these and no way to write one
     // safely with them, which is why they are here rather than in a library:
     // somebody reading Sys can see the entire list of things that can go wrong.
-    public const string Peek = "Peek";
-    public const string Poke = "Poke";
     public const string MemoryCopy = "MemoryCopy";
     public const string MemoryCopyNoCache = "MemoryCopyNoCache";
     public const string CacheFlush = "CacheFlush";
@@ -102,12 +100,6 @@ public static class Prelude
     public const string ContextSave = "ContextSave";
     public const string ContextLoad = "ContextLoad";
     public const string MemorySet = "MemorySet";
-    public const string PeekByte = "PeekByte";
-    public const string PeekHalf = "PeekHalf";
-    public const string PeekWord = "PeekWord";
-    public const string PokeByte = "PokeByte";
-    public const string PokeHalf = "PokeHalf";
-    public const string PokeWord = "PokeWord";
     public const string Stack = "Stack";
     public const string Spill = "Spill";
     public const string Cas = "Cas";
@@ -436,6 +428,12 @@ public static class Prelude
             public static void PrintLine() { }
             public static void Exit(int code) { }
             public static long Word(object x) { return 0; }
+            // WHERE A REFERENCE POINTS: an object's address, a nuint as every
+            // address is. Word is its bits as a long, which for a double held
+            // as a value is 64 of them -- more than a 32-bit nuint holds.
+            public static nuint ObjectAddress(object o) { return 0; }
+            // And back: the reference an address holds, as FromWord is Word's.
+            public static object? ObjectAt(nuint address) { return null; }
             // The other way: a word read out of memory, taken as the reference
             // it holds. What an atomic swap of a reference field hands back.
             public static object? FromWord(long word) { return null; }
@@ -504,23 +502,24 @@ public static class Prelude
             public static long StringNumber(string s, int at, int count) { return 0; }
             public static int StringFormat(string dst, int at, long value, int capacity) { return 0; }
 
-            // Raw memory, for the one program that has to manage it. Peek and
-            // Poke are exactly as unsafe as they look; Ref turns an address into
-            // a reference, which is how an allocator hands back what it found.
-            public static long Peek(long at) { return 0; }
-            public static void Poke(long at, long value) { }
-            public static void MemoryCopy(long dst, long src, long count) { }
-            public static long Allocate(long byteCount) { return 0; }
-            public static long ProbeRange(long address, long byteCount, long permissions, out long status) { status = 0; return 0; }
-            public static long PageProbe(long address, out long status) { status = 0; return 0; }
-            public static long PageWalk(long address, out long status) { status = 0; return 0; }
+            // Raw memory, for the one program that has to manage it. AN
+            // ADDRESS IS A nuint, here and everywhere in Sys: the target's
+            // word, unsigned -- one register on i386, where a long is two, and
+            // never negative, so a kernel's half above 0x80000000 compares as
+            // it is. A length in memory is one too.
+            public static void MemoryCopy(nuint dst, nuint src, nuint count) { }
+            public static nuint Allocate(nuint byteCount) { return 0; }
+            public static long ProbeRange(nuint address, nuint byteCount, long permissions, out long status) { status = 0; return 0; }
+            public static long PageProbe(nuint address, out long status) { status = 0; return 0; }
+            public static long PageWalk(nuint address, out long status) { status = 0; return 0; }
             public static long PageNext(long cursor, out long leafStatus) { leafStatus = 0; return 0; }
-            public static long PageMap(long address, long pte, long options, out long status) { status = 0; return 0; }
-            public static long PageUnmap(long address, out long status) { status = 0; return 0; }
-            public static void PageCopy(ref long destination, ref long source, ref long pages, ref long status) { }
-            public static void CrossAddressCopy(ref long primary, ref long secondary, ref long bytes, ref long status) { }
-            public static void TraceRead(out long source, out long destination, out long kind, out long valid) { source = 0; destination = 0; kind = 0; valid = 0; }
-            public static void MemorySet(long dst, long value, long count) { }
+            public static long PageMap(nuint address, long pte, long options, out long status) { status = 0; return 0; }
+            public static long PageUnmap(nuint address, out long status) { status = 0; return 0; }
+            public static void PageCopy(ref nuint destination, ref nuint source, ref long pages, ref long status) { }
+            public static void CrossAddressCopy(ref nuint primary, ref nuint secondary, ref nuint bytes, ref long status) { }
+            public static void TraceRead(out nuint source, out nuint destination, out long kind, out long valid) { source = 0; destination = 0; kind = 0; valid = 0; }
+            // `value` is the byte every one of `count` is set to.
+            public static void MemorySet(nuint dst, int value, nuint count) { }
 
             // Mandatory core arithmetic and bit operations. MultiplyHigh is
             // the upper half of the full 128-bit product; BitFieldInsert keeps
@@ -606,29 +605,41 @@ public static class Prelude
             public static bool TryUnwind(ref long cursor, long exceptionObject, long targetDescriptor, ref long state) { return false; }
             public static bool TryVectorReduce(int source, long mask, long reduction, int vectorBits, int elementBits, out long value) { value = 0; return false; }
 
-            // A byte, a half word and a word, because that is what a structure
-            // written down by somebody else is made of. Reading them out of a
-            // word load with shifts and masks works and turns every field into
-            // arithmetic that can be wrong without saying so.
-            //
-            // These do NOT sign-extend. Everything they are for -- a mode, a
-            // link count, a block number, a length -- counts upwards from zero,
-            // and a field that came back negative because its top bit was set
-            // would be a bug a long way from here.
-            public static long PeekByte(long at) { return 0; }
-            public static long PeekHalf(long at) { return 0; }
-            public static long PeekWord(long at) { return 0; }
-            public static void PokeByte(long at, long value) { }
+            // MEMORY BY WIDTH: a byte, a half word, a word and two, because
+            // that is what a structure written down by somebody else is made
+            // of. Reading them out of a word load with shifts and masks works
+            // and turns every field into arithmetic that can be wrong without
+            // saying so. Each answers exactly the width it reads, unsigned --
+            // a mode, a link count, a block number, a length counts up from
+            // zero, and a field whose top bit is set is not negative -- and is
+            // a device's read or write: never answered by an earlier one.
+            // Read64 and Write64 are two words on i386.
+            public static byte Read8(nuint at) { return 0; }
+            public static ushort Read16(nuint at) { return 0; }
+            public static uint Read32(nuint at) { return 0; }
+            public static ulong Read64(nuint at) { return 0; }
+            public static void Write8(nuint at, byte value) { }
+            public static void Write16(nuint at, ushort value) { }
+            public static void Write32(nuint at, uint value) { }
+            public static void Write64(nuint at, ulong value) { }
+            // A WORD: a pointer-sized field -- an address kept in memory, a
+            // length, a header -- as an ordinary load and store, which the
+            // optimiser may answer from an earlier one, as the collector's
+            // words are read.
+            public static nuint ReadNative(nuint at) { return 0; }
+            public static void WriteNative(nuint at, nuint value) { }
+            // The low 32 bits, said: the one narrowing of an address or a
+            // physical address to a uint.
+            public static uint Low32(nuint value) { return 0; }
+            public static uint Low32(ulong value) { return 0; }
             // A USE OF A REFERENCE, and nothing else: the collector counts the
             // object reachable up to here. What GC.KeepAlive is, for an object
             // whose address was handed somewhere the collector does not look
             // -- a request block, a system call -- and whose last use in the
             // code is therefore before the callee is done with it.
             public static void KeepAlive(object? value) { }
-            public static void PokeHalf(long at, long value) { }
-            public static void PokeWord(long at, long value) { }
 
-            public static long Stack() { return 0; }
+            public static nuint Stack() { return 0; }
 
             // The whole of what makes anything written in this language safe
             // for more than one processor. Without these a read, a change and a
@@ -637,55 +648,88 @@ public static class Prelude
             //
             // Cas answers with what was THERE, whether or not it matched, so a
             // caller learns why it failed rather than only that it did.
-            public static long Cas(long at, long expect, long value) { return 0; }
-            public static long CasRelaxed(long at, long expect, long value) { return 0; }
-            public static long CasAcquire(long at, long expect, long value) { return 0; }
-            public static long CasRelease(long at, long expect, long value) { return 0; }
-            public static long CasSequential(long at, long expect, long value) { return 0; }
-            public static bool CasPair(long at, long expectedLow, long expectedHigh, long desiredLow, long desiredHigh, out long observedLow) { observedLow = 0; return false; }
-            public static long AtomicAdd(long at, long value) { return 0; }
-            public static long AtomicAddRelaxed(long at, long value) { return 0; }
-            public static long AtomicAddAcquire(long at, long value) { return 0; }
-            public static long AtomicAddRelease(long at, long value) { return 0; }
-            public static long AtomicAddSequential(long at, long value) { return 0; }
-            public static long AtomicAnd(long at, long value) { return 0; }
-            public static long AtomicAndRelaxed(long at, long value) { return 0; }
-            public static long AtomicAndAcquire(long at, long value) { return 0; }
-            public static long AtomicAndRelease(long at, long value) { return 0; }
-            public static long AtomicAndSequential(long at, long value) { return 0; }
-            public static long AtomicOr(long at, long value) { return 0; }
-            public static long AtomicOrRelaxed(long at, long value) { return 0; }
-            public static long AtomicOrAcquire(long at, long value) { return 0; }
-            public static long AtomicOrRelease(long at, long value) { return 0; }
-            public static long AtomicOrSequential(long at, long value) { return 0; }
-            public static long AtomicXor(long at, long value) { return 0; }
-            public static long AtomicXorRelaxed(long at, long value) { return 0; }
-            public static long AtomicXorAcquire(long at, long value) { return 0; }
-            public static long AtomicXorRelease(long at, long value) { return 0; }
-            public static long AtomicXorSequential(long at, long value) { return 0; }
-            public static long AtomicSwap(long at, long value) { return 0; }
-            // THE 32-BIT FORMS, for an int: Cas, AtomicAdd and AtomicSwap
-            // work on a machine word, which in long mode is the int and the
-            // four bytes after it -- a neighbouring field changed, and a
-            // compare that fails on what the neighbour holds. These touch
-            // four bytes on either target (on i386 they are the word forms).
-            public static int Cas32(long at, int expect, int value) { return 0; }
-            public static int AtomicAdd32(long at, int value) { return 0; }
-            public static int AtomicSwap32(long at, int value) { return 0; }
+            // A WORD AT A TIME, its value a nuint where it is an address or a
+            // mask and an nint where it is a count: the same instruction
+            // either way, and a number written as it is (`Cas(p, 0, 1)`) the
+            // nint form's, a signed type being the better fit for it.
+            public static nuint Cas(nuint at, nuint expect, nuint value) { return 0; }
+            public static nint Cas(nuint at, nint expect, nint value) { return 0; }
+            public static nuint CasRelaxed(nuint at, nuint expect, nuint value) { return 0; }
+            public static nint CasRelaxed(nuint at, nint expect, nint value) { return 0; }
+            public static nuint CasAcquire(nuint at, nuint expect, nuint value) { return 0; }
+            public static nint CasAcquire(nuint at, nint expect, nint value) { return 0; }
+            public static nuint CasRelease(nuint at, nuint expect, nuint value) { return 0; }
+            public static nint CasRelease(nuint at, nint expect, nint value) { return 0; }
+            public static nuint CasSequential(nuint at, nuint expect, nuint value) { return 0; }
+            public static nint CasSequential(nuint at, nint expect, nint value) { return 0; }
+            public static bool CasPair(nuint at, nuint expectedLow, nuint expectedHigh, nuint desiredLow, nuint desiredHigh, out nuint observedLow) { observedLow = 0; return false; }
+            public static nuint AtomicAdd(nuint at, nuint value) { return 0; }
+            public static nint AtomicAdd(nuint at, nint value) { return 0; }
+            public static nuint AtomicAddRelaxed(nuint at, nuint value) { return 0; }
+            public static nint AtomicAddRelaxed(nuint at, nint value) { return 0; }
+            public static nuint AtomicAddAcquire(nuint at, nuint value) { return 0; }
+            public static nint AtomicAddAcquire(nuint at, nint value) { return 0; }
+            public static nuint AtomicAddRelease(nuint at, nuint value) { return 0; }
+            public static nint AtomicAddRelease(nuint at, nint value) { return 0; }
+            public static nuint AtomicAddSequential(nuint at, nuint value) { return 0; }
+            public static nint AtomicAddSequential(nuint at, nint value) { return 0; }
+            public static nuint AtomicAnd(nuint at, nuint value) { return 0; }
+            public static nint AtomicAnd(nuint at, nint value) { return 0; }
+            public static nuint AtomicAndRelaxed(nuint at, nuint value) { return 0; }
+            public static nint AtomicAndRelaxed(nuint at, nint value) { return 0; }
+            public static nuint AtomicAndAcquire(nuint at, nuint value) { return 0; }
+            public static nint AtomicAndAcquire(nuint at, nint value) { return 0; }
+            public static nuint AtomicAndRelease(nuint at, nuint value) { return 0; }
+            public static nint AtomicAndRelease(nuint at, nint value) { return 0; }
+            public static nuint AtomicAndSequential(nuint at, nuint value) { return 0; }
+            public static nint AtomicAndSequential(nuint at, nint value) { return 0; }
+            public static nuint AtomicOr(nuint at, nuint value) { return 0; }
+            public static nint AtomicOr(nuint at, nint value) { return 0; }
+            public static nuint AtomicOrRelaxed(nuint at, nuint value) { return 0; }
+            public static nint AtomicOrRelaxed(nuint at, nint value) { return 0; }
+            public static nuint AtomicOrAcquire(nuint at, nuint value) { return 0; }
+            public static nint AtomicOrAcquire(nuint at, nint value) { return 0; }
+            public static nuint AtomicOrRelease(nuint at, nuint value) { return 0; }
+            public static nint AtomicOrRelease(nuint at, nint value) { return 0; }
+            public static nuint AtomicOrSequential(nuint at, nuint value) { return 0; }
+            public static nint AtomicOrSequential(nuint at, nint value) { return 0; }
+            public static nuint AtomicXor(nuint at, nuint value) { return 0; }
+            public static nint AtomicXor(nuint at, nint value) { return 0; }
+            public static nuint AtomicXorRelaxed(nuint at, nuint value) { return 0; }
+            public static nint AtomicXorRelaxed(nuint at, nint value) { return 0; }
+            public static nuint AtomicXorAcquire(nuint at, nuint value) { return 0; }
+            public static nint AtomicXorAcquire(nuint at, nint value) { return 0; }
+            public static nuint AtomicXorRelease(nuint at, nuint value) { return 0; }
+            public static nint AtomicXorRelease(nuint at, nint value) { return 0; }
+            public static nuint AtomicXorSequential(nuint at, nuint value) { return 0; }
+            public static nint AtomicXorSequential(nuint at, nint value) { return 0; }
+            public static nuint AtomicSwap(nuint at, nuint value) { return 0; }
+            public static nint AtomicSwap(nuint at, nint value) { return 0; }
+            // THE 32-BIT FORMS, for an int: the word forms work on a machine
+            // word, which in long mode is the int and the four bytes after it
+            // -- a neighbouring field changed, and a compare that fails on
+            // what the neighbour holds. These touch four bytes on either
+            // target (on i386 they are the word forms). Named, not overloads
+            // by the value's type: an overload would make `Cas(p, 0, 1)` a
+            // 32-bit compare of a word field in long mode.
+            public static int Cas32(nuint at, int expect, int value) { return 0; }
+            public static int AtomicAdd32(nuint at, int value) { return 0; }
+            public static int AtomicSwap32(nuint at, int value) { return 0; }
             // A reference exchanged at `at` with the write barrier and the card
             // mark every reference store takes (Interlocked's reference
             // exchanges): what was there; and the same only where it holds
             // `expected`, answering what it held.
-            public static long ExchangeReference(long at, long value) { return 0; }
-            public static long CompareExchangeReference(long at, long expected, long value) { return 0; }
+            public static nuint ExchangeReference(nuint at, nuint value) { return 0; }
+            public static nuint CompareExchangeReference(nuint at, nuint expected, nuint value) { return 0; }
 
             // Golden unit-0x01 bulk-memory surface. These work on raw memory;
             // safe array and string operations remain in their libraries.
-            public static long FirstSet(long bitmap, long bits) { return 0; }
-            public static long PopCountBlock(long bitmap, long bits) { return 0; }
-            public static long Checksum(long at, long bytes, int kind, long seed) { return 0; }
-            public static void SwapBytes(long first, long second, long count) { }
-            public static void ReverseBytes(long low, long high, long pairs) { }
+            // FirstSet answers the bit's index, or -1 where none is set.
+            public static nint FirstSet(nuint bitmap, nuint bits) { return 0; }
+            public static nuint PopCountBlock(nuint bitmap, nuint bits) { return 0; }
+            public static long Checksum(nuint at, nuint bytes, int kind, long seed) { return 0; }
+            public static void SwapBytes(nuint first, nuint second, nuint count) { }
+            public static void ReverseBytes(nuint low, nuint high, nuint pairs) { }
 
             // Orders this processor's accesses against every other one's. Free
             // on a single card and the difference between working and working
@@ -709,13 +753,13 @@ public static class Prelude
             // it to anything.
             //
             // The argument is a static method named and not called.
-            public static long AddressOf(long method) { return 0; }
-            public static long AddressOf(ref int value) { return 0; }
+            public static nuint AddressOf(long method) { return 0; }
+            public static nuint AddressOf(ref int value) { return 0; }
             // And of any variable passed by reference: what System.Threading.
             // Interlocked is built on, since a `ref` parameter is already the
             // address of the caller's variable and an atomic needs exactly that.
-            public static long AddressOf(ref long value) { return 0; }
-            public static long AddressOf<T>(ref T value) { return 0; }
+            public static nuint AddressOf(ref long value) { return 0; }
+            public static nuint AddressOf<T>(ref T value) { return 0; }
 
             // A reference taken as T with no test: .NET's Unsafe.As, for code
             // that has proved what the object is where a cast's test could not
@@ -729,20 +773,22 @@ public static class Prelude
             // pushes them. Code that takes the machine's own words -- an
             // assembly routine, a card's driver ROM, the C library -- is
             // reached by CallNative instead.
-            public static long Call(long fn, long a, long b, long c) { return 0; }
             // A C function by its address, with C's rules for the call -- a
             // word an argument, the stack sixteen-aligned on i386, the vector
             // count in AL on x86-64. What the runtime uses for what it finds
             // in the C library at run time -- pthread_create, exit -- and
             // what a kernel uses for its own assembly routines.
-            public static long CallNative(long fn) { return 0; }
-            public static long CallNative(long fn, long a) { return 0; }
-            public static long CallNative(long fn, long a, long b) { return 0; }
-            public static long CallNative(long fn, long a, long b, long c) { return 0; }
-            public static long CallNative(long fn, long a, long b, long c, long d) { return 0; }
-            public static long CallNative(long fn, long a, long b, long c, long d, long e) { return 0; }
-            public static long CallNative(long fn, long a, long b, long c, long d, long e, long f) { return 0; }
-            public static long CallNative(long fn, long a, long b, long c, long d, long e, long f, long g) { return 0; }
+            // The function's address a nuint, as every address is; a C
+            // function's arguments and answer are words, an nint each.
+            public static long Call(nuint fn, long a, long b, long c) { return 0; }
+            public static nint CallNative(nuint fn) { return 0; }
+            public static nint CallNative(nuint fn, nint a) { return 0; }
+            public static nint CallNative(nuint fn, nint a, nint b) { return 0; }
+            public static nint CallNative(nuint fn, nint a, nint b, nint c) { return 0; }
+            public static nint CallNative(nuint fn, nint a, nint b, nint c, nint d) { return 0; }
+            public static nint CallNative(nuint fn, nint a, nint b, nint c, nint d, nint e) { return 0; }
+            public static nint CallNative(nuint fn, nint a, nint b, nint c, nint d, nint e, nint f) { return 0; }
+            public static nint CallNative(nuint fn, nint a, nint b, nint c, nint d, nint e, nint f, nint g) { return 0; }
 
             // ---- the x86 I/O space and the privileged instructions ---------
             //
@@ -773,8 +819,8 @@ public static class Prelude
             // the reason the instructions exist. One instruction moves the
             // whole sector; a loop around PortIn16 would be sixteen times the
             // code and several times the time.
-            public static void PortInString16(int port, long address, int count) { }
-            public static void PortOutString16(int port, long address, int count) { }
+            public static void PortInString16(int port, nuint address, int count) { }
+            public static void PortOutString16(int port, nuint address, int count) { }
 
             // The interrupt flag and the halt. Cli/Sti bracket a critical
             // section a device interrupt must not enter; Hlt stops the
@@ -799,17 +845,17 @@ public static class Prelude
             // The descriptor tables. Each takes the address of a six-byte
             // pseudo-descriptor -- a 16-bit limit then a 32-bit base -- that
             // the caller has already built in memory.
-            public static void Lidt(long address) { }
-            public static void Lgdt(long address) { }
+            public static void Lidt(nuint address) { }
+            public static void Lgdt(nuint address) { }
 
             // The control registers, by number: CR0 holds protected mode and
             // paging, CR2 the faulting address, CR3 the page directory. The
             // number has to be a constant, because the instruction encodes it.
-            public static long ReadCr(int n) { return 0; }
-            public static void WriteCr(int n, long value) { }
+            public static nuint ReadCr(int n) { return 0; }
+            public static void WriteCr(int n, nuint value) { }
 
             // Drop one page's cached translation, after changing its entry.
-            public static void Invlpg(long address) { }
+            public static void Invlpg(nuint address) { }
 
             // The one data selector into DS, ES, FS, GS and SS: what a
             // protected-mode entry does immediately after the far jump that
@@ -825,13 +871,13 @@ public static class Prelude
             public static long ReadMsr(int msr) { return 0; }
             public static void WriteMsr(int msr, long value) { }
             // cpuid: EAX, EBX, ECX and EDX of the leaf, as four ints at `into`.
-            public static void Cpuid(int leaf, int subleaf, long into) { }
+            public static void Cpuid(int leaf, int subleaf, nuint into) { }
             // rdtsc: the time-stamp counter.
             public static long ReadTsc() { return 0; }
             // pushfd; pop (pushfq on x86-64): the flags register, which a
             // kernel asks for the interrupt flag (bit 9) before it turns
             // interrupts off and on again.
-            public static long ReadFlags() { return 0; }
+            public static nuint ReadFlags() { return 0; }
             // The code selector: its low two bits are the privilege level
             // the code runs at, which with EFLAGS.IOPL says whether it may
             // turn interrupts off (Platform.AtomicsEnter).
@@ -846,30 +892,30 @@ public static class Prelude
             // A program in user mode can do nothing else that matters -- it
             // cannot touch a device, arm a clock, or reach the trap table -- so
             // everything it CAN do arrives through here.
-            public static long Syscall(long number, long a, long b, long c) { return 0; }
-            public static long Syscall(long number, long a, long b, long c, long d, long e, long f) { return 0; }
+            public static nint Syscall(nint number, nint a, nint b, nint c) { return 0; }
+            public static nint Syscall(nint number, nint a, nint b, nint c, nint d, nint e, nint f) { return 0; }
 
             // The GUI module's door, the same convention as Syscall with
             // another vector: a program's way into the GUI kernel (`int 0x81`).
-            public static long GuiCall(long number, long a, long b, long c) { return 0; }
+            public static nint GuiCall(nint number, nint a, nint b, nint c) { return 0; }
             // A Windows system call (`int 0x2E`): EAX the call's number and EDX
             // the address of its arguments, as ntdll's stubs make it; the
             // answer is its NTSTATUS. For a CORSAC program attached to the NT
             // kernel -- csrss -- which serves Windows programs from outside them.
-            public static long NtCall(long number, long arguments) { return 0; }
+            public static nint NtCall(nint number, nuint arguments) { return 0; }
             // The stack pointer as the program was entered, for a runtime that
             // needs to find what the loader left there: argc and argv.
-            public static long EntryStack() { return 0; }
+            public static nuint EntryStack() { return 0; }
 
             // WHERE THE FRAME TABLE IS, and where this frame is, which is all
             // the runtime needs to turn a fault into the list of calls that
             // led to it. The table the code generator writes is described in
             // Lang/X86/FrameTable.cs; FramePointer is this function's own ebp,
             // and the chain of saved ones behind it is the stack of callers.
-            public static long FrameTable() { return 0; }
-            public static long FrameDirectory() { return 0; }
+            public static nuint FrameTable() { return 0; }
+            public static nuint FrameDirectory() { return 0; }
             public static void Rethrow(object exception) { }
-            public static long FramePointer() { return 0; }
+            public static nuint FramePointer() { return 0; }
 
             // ---- the thread block ----------------------------------------
             //
@@ -883,14 +929,14 @@ public static class Prelude
             // and GS names it, so this is one load. With no operating system
             // there is one thread and one block, in .bss, and no GS is set up
             // at all.
-            public static long ThreadBlock() { return 0; }
+            public static nuint ThreadBlock() { return 0; }
             // The block the program's first thread uses: static memory, so it
             // is there before anything that could allocate one.
-            public static long MainThreadBlock() { return 0; }
+            public static nuint MainThreadBlock() { return 0; }
             // Where ThreadBlock reads the block from when there is no segment
             // register to keep it in. A system library that has GS uses SetGs
             // instead, after making the descriptor.
-            public static void SetThreadBlock(long block) { }
+            public static void SetThreadBlock(nuint block) { }
             // Windows: where ThreadBlock and SetThreadBlock find this thread's
             // block -- the word of FS to start from, and what to add to it to
             // reach the runtime's TLS slot (Selector.TlsBaseSymbol).
@@ -899,8 +945,8 @@ public static class Prelude
             // A word of this processor's area at `offset` from where GS is
             // based, read or written in one instruction (a kernel's per-CPU
             // data: Linux's this_cpu_read and this_cpu_write).
-            public static long PerCpuRead(long offset) { return 0; }
-            public static void PerCpuWrite(long offset, long value) { }
+            public static nuint PerCpuRead(int offset) { return 0; }
+            public static void PerCpuWrite(int offset, nuint value) { }
             public static long GetGs() { return 0; }
             // The bounds of the program's static data, for a collector that
             // scans statics as roots: the linker defines the symbols.
@@ -911,16 +957,16 @@ public static class Prelude
             // of it is the target's business; code that needs the raw bytes asks
             // here instead of adding a number. NOT OF A STRING: its elements are
             // UTF-16 code units, and code that meant its bytes means an encoding.
-            public static long ArrayData(object array) { return 0; }
+            public static nuint ArrayData(object array) { return 0; }
             // The address of a string's first UTF-16 code unit, for code that
             // wants exactly those -- a Win32 W function's LPCWSTR.
-            public static long StringData(string s) { return 0; }
+            public static nuint StringData(string s) { return 0; }
             // The address of an array's first element, the array kept alive
             // until the function returns: what `T* p = stackalloc T[n]` is,
             // whose memory C# keeps for the whole call, not only p's block.
-            public static long FrameData(object array) { return 0; }
+            public static nuint FrameData(object array) { return 0; }
             // The address of an object's synchronisation word, for a monitor.
-            public static long SyncWord(object o) { return 0; }
+            public static nuint SyncWord(object o) { return 0; }
             public static bool IsString(object x) { return false; }
             // Whether the value is an object that can be ASKED whether it is
             // equal to another: not null, and not a number. KeyEquals and
@@ -945,14 +991,14 @@ public static class Prelude
             // The same reference as a string, once IsString has said it is one.
             // A reinterpretation, not a conversion: no bytes move.
             public static string AsString(object x) { return ""; }
-            public static long DataStart() { return 0; }
-            public static long DataEnd() { return 0; }
+            public static nuint DataStart() { return 0; }
+            public static nuint DataEnd() { return 0; }
             // THE KERNEL'S BUILD STAMP: the address of the thirty-two bytes
             // `corc link --exports` writes into a kernel, the hash of the
             // declarations it was compiled against. A module's .corsac.stamp
             // must be the same bytes to be loaded. Only in an image linked so,
             // and in a module, where the name is the kernel's.
-            public static long BuildStamp() { return 0; }
+            public static nuint BuildStamp() { return 0; }
 
         }
 

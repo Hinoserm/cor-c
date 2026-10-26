@@ -74,37 +74,48 @@ public sealed partial class Lowering
             case "Rethrow":
                 Rethrow(Arg(call, target, 0), call);
                 return Void();
-            // ---- memory as words ------------------------------------------------
-            // THE NARROW READS ARE A DEVICE'S (Instr.Device): read every time
-            // they are written, never answered by an earlier read. Sys.Peek,
-            // the collector's word, stays an ordinary load.
-            case "Peek":
-                return Widen(_e.Load(word, Address(call, target, 0), 0));
-            case "PeekWord" when _t.WordSize == 4:
-                return Widen(_e.Load(word, Address(call, target, 0), 0, device: true));
-            case "PeekByte":
-                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 1, signed: false, device: true));
-            case "PeekHalf":
-                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 2, signed: false, device: true));
-            case "PeekWord":
-                return Widen(_e.Load(IrType.I32, Address(call, target, 0), 0, 4, signed: false, device: true));
-
-            case "Poke":
-            case "PokeWord" when _t.WordSize == 4:
-                _e.Store(R(Address(call, target, 0)), R(ToWord(Arg(call, target, 1))), 0, _t.WordSize);
-                return Void();
-            case "PokeByte":
+            // ---- memory: an address is a nuint, the target's word -----------------
+            // BY WIDTH (LONG-MODE.md 7.2), answering exactly the width read. THE
+            // WIDTH-NAMED READS ARE A DEVICE'S (Instr.Device): read every time
+            // they are written, never answered by an earlier read. Read64 and
+            // Write64 are two words on i386.
+            case "Read8":
+                return _e.Load(IrType.I32, Address(call, target, 0), 0, 1, signed: false, device: true);
+            case "Read16":
+                return _e.Load(IrType.I32, Address(call, target, 0), 0, 2, signed: false, device: true);
+            case "Read32":
+                return _e.Load(IrType.I32, Address(call, target, 0), 0, 4, signed: false, device: true);
+            case "Read64":
+                return _e.Load(IrType.I64, Address(call, target, 0), 0, 8, device: true);
+            case "Write8":
                 _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 1);
                 return Void();
+            case "Write16":
+                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 2);
+                return Void();
+            case "Write32":
+                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 4);
+                return Void();
+            case "Write64":
+                _e.Store(R(Address(call, target, 0)), R(ToI64(Arg(call, target, 1))), 0, 8);
+                return Void();
+            // A WORD, the collector's: an ordinary load and store.
+            case "ReadNative":
+                return _e.Load(word, Address(call, target, 0), 0);
+            case "WriteNative":
+                _e.Store(R(Address(call, target, 0)), R(ToWord(Arg(call, target, 1))), 0, _t.WordSize);
+                return Void();
+            case "Low32":
+                return ToI32(Arg(call, target, 0));
             case "KeepAlive":
                 _e.Call(MachineIntrinsics.KeepAlive, IrType.Void, RegOperand.Of(Arg(call, target, 0)));
                 return Void();
-            case "PokeHalf":
-                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 2);
-                return Void();
-            case "PokeWord":
-                _e.Store(R(Address(call, target, 0)), R(ToI32(Arg(call, target, 1))), 0, 4);
-                return Void();
+
+            // WHERE A REFERENCE POINTS, and the reference at an address: its
+            // word, unconverted (Word is the bits of any value as a long).
+            case "ObjectAddress":
+            case "ObjectAt":
+                return ToWord(Arg(call, target, 0));
 
             case "Word":
             {
@@ -115,8 +126,8 @@ public sealed partial class Lowering
                 // of them with an integer instruction.
                 VReg held = Arg(call, target, 0);
                 if (held.Type == IrType.F64) return _e.Unary(Opcode.Bits, R(held), IrType.I64);
-                if (held.Type == IrType.F32) return Widen(_e.Unary(Opcode.Bits, R(held), IrType.I32));
-                return Widen(held);
+                if (held.Type == IrType.F32) return Fit(_e.Unary(Opcode.Bits, R(held), IrType.I32), returns);
+                return Fit(held, returns);
             }
             case "FromWord":
                 return ToWord(Arg(call, target, 0));
@@ -151,7 +162,7 @@ public sealed partial class Lowering
             }
 
             case "Allocate":
-                return Widen(AllocateDynamic(call, ToWord(Arg(call, target, 0))));
+                return Fit(AllocateDynamic(call, ToWord(Arg(call, target, 0))), returns);
 
             // ---- strings: a count, then that many UTF-16 code units -------------
             case "NewChars":
@@ -275,7 +286,7 @@ public sealed partial class Lowering
                 VReg value = ToWord(Arg(call, target, 2));
                 VReg old = _e.Reg(word);
                 EmitAtomic(Opcode.AtomicCas, old, R(at), R(expect), R(value));
-                return Widen(old);
+                return Fit(old, returns);
             }
             case "AtomicAdd" or "AtomicAddRelaxed" or "AtomicAddAcquire" or "AtomicAddRelease" or "AtomicAddSequential":
                 return Atomic(call, target, Opcode.AtomicAdd);
@@ -327,7 +338,7 @@ public sealed partial class Lowering
                     VReg seen = swap
                         ? _e.Call(MachineIntrinsicRefExchange, IrTypes.Word, R(at), R(value))!
                         : _e.Call(MachineIntrinsicRefCompareExchange, IrTypes.Word, R(at), R(expect), R(value))!;
-                    return Widen(seen);
+                    return Fit(seen, returns);
                 }
                 MemPlace place = new(R(at), 0, Type.String);
                 ReferenceBarrier(place, value);
@@ -338,7 +349,7 @@ public sealed partial class Lowering
                 if (swap) EmitAtomic(Opcode.AtomicSwap, old, R(at), R(value));
                 else EmitAtomic(Opcode.AtomicCas, old, R(at), R(expect), R(value));
                 CardMark(place, value);
-                return Widen(old);
+                return Fit(old, returns);
             }
 
             case "Fence":
@@ -358,28 +369,28 @@ public sealed partial class Lowering
             {
                 VReg sp = _e.Reg(word, "sp");
                 _e.Emit(Opcode.StackPointer, sp);
-                return Widen(sp);
+                return Fit(sp, returns);
             }
             case "EntryStack":
                 // The top of THIS thread's stack: the stack pointer the loader
                 // left on the main thread, and where the child began on any
                 // other. It is what a stack scan ends at, and on the main
                 // thread also where argc and argv are.
-                return Widen(_e.Load(word, ThreadBlockNow(), TlsStackBase / 4 * _t.WordSize));
+                return Fit(_e.Load(word, ThreadBlockNow(), TlsStackBase / 4 * _t.WordSize), returns);
             case "FrameTable":
-                return Widen(_e.Address(Corsac.Lang.X86.FrameTable.Symbol));
+                return Fit(_e.Address(Corsac.Lang.X86.FrameTable.Symbol), returns);
             case "FrameDirectory":
-                return Widen(_e.Address(ManagedDirectory.Symbol));
+                return Fit(_e.Address(ManagedDirectory.Symbol), returns);
             case "FramePointer":
             {
                 VReg fp = _e.Reg(word, "fp");
                 _e.Emit(Opcode.FramePointer, fp);
-                return Widen(fp);
+                return Fit(fp, returns);
             }
             case "ThreadBlock":
-                return Widen(ThreadBlockNow());
+                return Fit(ThreadBlockNow(), returns);
             case "MainThreadBlock":
-                return Widen(_e.Address(ThreadBlock0));
+                return Fit(_e.Address(ThreadBlock0), returns);
             case "SetThreadBlock":
                 // WINDOWS: into the runtime's TLS slot of the TEB.
                 if (Windows)
@@ -406,7 +417,7 @@ public sealed partial class Lowering
             case "GetGs":
                 // The selector GS holds now: on Linux, before the runtime
                 // takes it, the C library's thread pointer.
-                return Widen(_e.Call(MachineIntrinsics.GetGs, IrType.I32)!);
+                return Fit(_e.Call(MachineIntrinsics.GetGs, IrType.I32)!, returns);
             // A WORD OF THIS PROCESSOR'S OWN AREA, gs-relative, as Linux's
             // this_cpu_read and this_cpu_write: one instruction, so no
             // preemption falls between finding the processor and reading it.
@@ -415,7 +426,7 @@ public sealed partial class Lowering
             // higher half among them; typed as 32 bits, its high half was
             // cut on the way in and on the way out.
             case "PerCpuRead":
-                return Widen(_e.Call(MachineIntrinsics.PerCpuRead, IrTypes.Word, R(ToWord(Arg(call, target, 0))))!);
+                return Fit(_e.Call(MachineIntrinsics.PerCpuRead, IrTypes.Word, R(ToWord(Arg(call, target, 0))))!, returns);
             case "PerCpuWrite":
                 _e.Call(MachineIntrinsics.PerCpuWrite, IrType.Void, R(ToWord(Arg(call, target, 0))), R(ToWord(Arg(call, target, 1))));
                 return Void();
@@ -578,7 +589,7 @@ public sealed partial class Lowering
                                              R(_e.Binary(Opcode.FNe, R(y), R(y), IrType.I32)), IrType.I32);
                     return _e.Binary(Opcode.Or, R(same), R(bothNaN), IrType.I32);
                 }
-                VReg wx = Widen(x), wy = Widen(y);
+                VReg wx = Fit(x, returns), wy = Fit(y, returns);
                 return _e.Binary(Opcode.Eq, R(wx), R(wy), IrType.I32);
             }
             case "HashValue":
@@ -588,7 +599,7 @@ public sealed partial class Lowering
                 {
                     // Every zero hashes as 0 and every NaN alike, as they are equal.
                     bool wide = held.Type == IrType.F64;
-                    VReg bits = wide ? _e.Unary(Opcode.Bits, R(held), IrType.I64) : Widen(_e.Unary(Opcode.Bits, R(held), IrType.I32));
+                    VReg bits = wide ? _e.Unary(Opcode.Bits, R(held), IrType.I64) : Fit(_e.Unary(Opcode.Bits, R(held), IrType.I32), returns);
                     VReg zero = _e.Unary(Opcode.IToF, R(_e.Const(0, IrType.I32)), held.Type);
                     VReg isZero = _e.Binary(Opcode.FEq, R(held), R(zero), IrType.I32);
                     VReg isNaN = _e.Binary(Opcode.FNe, R(held), R(held), IrType.I32);
@@ -605,9 +616,9 @@ public sealed partial class Lowering
                     _e.CopyTo(result, Imm(0, IrType.I64));
                     _e.Jump(end);
                     _e.SetBlock(end);
-                    return Widen(result);
+                    return Fit(result, returns);
                 }
-                return Widen(held);
+                return Fit(held, returns);
             }
             case "CompareValues":
             {
@@ -690,27 +701,27 @@ public sealed partial class Lowering
                 }
                 VReg arr = ToWord(Arg(call, target, 0));
                 Addressed(arr);
-                return Widen(_e.Binary(Opcode.Add, arr, _t.ArrayHeaderBytes));
+                return Fit(_e.Binary(Opcode.Add, arr, _t.ArrayHeaderBytes), returns);
             }
             case "FrameData":
             {
                 VReg arr = ToWord(Arg(call, target, 0));
                 Addressed(arr, toReturn: true);
-                return Widen(_e.Binary(Opcode.Add, arr, _t.ArrayHeaderBytes));
+                return Fit(_e.Binary(Opcode.Add, arr, _t.ArrayHeaderBytes), returns);
             }
             case "SyncWord":
             {
                 VReg obj = ToWord(Arg(call, target, 0));
-                return Widen(_e.Binary(Opcode.Add, obj, _t.WordSize));
+                return Fit(_e.Binary(Opcode.Add, obj, _t.WordSize), returns);
             }
             case "AsString":
                 return ToWord(Arg(call, target, 0));
             case "DataStart":
-                return Widen(_e.Address("__data_start"));
+                return Fit(_e.Address("__data_start"), returns);
             case "DataEnd":
-                return Widen(_e.Address("_end"));
+                return Fit(_e.Address("_end"), returns);
             case "BuildStamp":
-                return Widen(_e.Address(Corsac.Lang.Elf.KernelExports.StampSymbol));
+                return Fit(_e.Address(Corsac.Lang.Elf.KernelExports.StampSymbol), returns);
             case "KernelSyscalls":
                 // Whether this compile's Sys.Syscall is the kernel's own
                 // function (--kernel-syscalls): a constant, its tests folded.
@@ -781,7 +792,7 @@ public sealed partial class Lowering
                 // long mode, where CR3 holds a physical address above 4 GiB --
                 // and none of them is a signed quantity, so the long the
                 // language sees is the zero-extension.
-                return Widen(_e.Call(MachineIntrinsics.ReadCr, IrTypes.Word, R(ToI32(Arg(call, target, 0))))!);
+                return Fit(_e.Call(MachineIntrinsics.ReadCr, IrTypes.Word, R(ToI32(Arg(call, target, 0))))!, returns);
             case "WriteCr":
                 _e.Call(MachineIntrinsics.WriteCr, IrType.Void,
                         R(ToI32(Arg(call, target, 0))), R(ToWord(Arg(call, target, 1))));
@@ -807,9 +818,9 @@ public sealed partial class Lowering
             case "ReadTsc":
                 return _e.Call(MachineIntrinsics.ReadTsc, IrType.I64)!;
             case "ReadFlags":
-                return Widen(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!);
+                return Fit(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!, returns);
             case "ReadCodeSegment":
-                return Widen(_e.Call(MachineIntrinsics.ReadCodeSegment, IrType.I32)!);
+                return Fit(_e.Call(MachineIntrinsics.ReadCodeSegment, IrType.I32)!, returns);
             case "SwapGs":
                 _e.Call(MachineIntrinsics.SwapGs, IrType.Void);
                 return Void();
@@ -820,15 +831,15 @@ public sealed partial class Lowering
                 // RING 0: the kernel's own function, not a trap (KernelSyscalls).
                 if (KernelSyscallMethod() is not MethodSymbol served)
                 {
-                    Error(call, "--kernel-syscalls: Sys.Syscall is a call of KernelFiles.Syscall(long number, long a, long b, long c, long d, long e, long f), "
+                    Error(call, "--kernel-syscalls: Sys.Syscall is a call of KernelFiles.Syscall(nint number, nint a, nint b, nint c, nint d, nint e, nint f), "
                               + (KernelSyscallCandidates() == 0 ? "and no such static method is declared" : "and more than one type KernelFiles declares one"));
-                    return _e.Const(0, IrType.I64);
+                    return _e.Const(0, IrTypes.Word);
                 }
                 Require(served);
                 List<Operand> passed = new();
                 for (int i = 0; i < 7; i++)
-                    passed.Add(i < target.Params.Count ? R(Arg(call, target, i)) : Imm(0, IrType.I64));
-                return _e.Call(CallLabel(served), IrType.I64, passed.ToArray())!;
+                    passed.Add(i < target.Params.Count ? R(Arg(call, target, i)) : Imm(0, IrTypes.Word));
+                return _e.Call(CallLabel(served), IrTypes.Word, passed.ToArray())!;
             }
             case "Syscall":
             case "GuiCall":
@@ -840,7 +851,7 @@ public sealed partial class Lowering
                 }
                 int vector = target.Name == "GuiCall" ? 0x81 : 0x80;
                 VReg r = _e.Syscall(R(ToWord(Arg(call, target, 0))), args, vector);
-                return Widen(r);
+                return Fit(r, returns);
             }
             case "NtCall":
             {
@@ -849,7 +860,7 @@ public sealed partial class Lowering
                 VReg number = ToWord(Arg(call, target, 0));
                 List<Operand> args = new() { Imm(0, number.Type), Imm(0, number.Type), R(ToWord(Arg(call, target, 1))) };
                 VReg r = _e.Syscall(R(number), args, 0x2E);
-                return Widen(r);
+                return Fit(r, returns);
             }
             case "Call":
             {
@@ -878,10 +889,10 @@ public sealed partial class Lowering
                 {
                     args.Add(R(ToWord(Arg(call, target, i))));
                 }
-                return Widen(_e.CallIndirect(R(fn), word, args, NativeCall.Indirect)!);
+                return Fit(_e.CallIndirect(R(fn), word, args, NativeCall.Indirect)!, returns);
             }
             case "AddressOf":
-                return Widen(Arg(call, target, 0));
+                return Fit(Arg(call, target, 0), returns);
 
             // ---- small arithmetic the old machine had instructions for --------------
             case "Max":
@@ -987,7 +998,7 @@ public sealed partial class Lowering
         VReg value = ToWord(Arg(call, target, 1));
         VReg old = _e.Reg(IrTypes.Word);
         EmitAtomic(op, old, R(at), R(value));
-        return Widen(old);
+        return Fit(old, IrTypes.Of(target.Returns));
     }
 
     /// <summary>An atomic on an int: four bytes at `at`, answering the int that was there.</summary>
@@ -1236,10 +1247,23 @@ public sealed partial class Lowering
         return wanted is IrType.F32 or IrType.F64 ? _e.Unary(Opcode.Bits, R(bits), wanted) : bits;
     }
 
-    private VReg Widen(VReg v) => v.Type == IrType.I32 ? _e.Unary(Opcode.ZExt32, v) : v;
+    /// <summary>
+    /// A machine word as the type the intrinsic answers: a long zero-extended
+    /// from it (Widen), a nuint or nint the word itself (--nuint-addresses,
+    /// Prelude.AddressIntrinsics), a 32-bit type its low half.
+    /// </summary>
+    private VReg Fit(VReg v, IrType to)
+    {
+        if (v.Type == to) return v;
+        if (v.Type == IrType.I32 && to == IrType.I64) return _e.Unary(Opcode.ZExt32, v);
+        if (v.Type == IrType.I64 && to == IrType.I32) return _e.Unary(Opcode.Trunc64, v);
+        return v;
+    }
+
+    private VReg ToI64(VReg v) => v.Type == IrType.I32 ? _e.Unary(Opcode.ZExt32, v) : v;
 
     /// <summary>
-    /// The kernel's KernelFiles.Syscall(long number, long a .. f), whatever
+    /// The kernel's KernelFiles.Syscall(nint number, nint a .. f), whatever
     /// its namespace, for --kernel-syscalls; null when no type KernelFiles
     /// declares exactly one, or more than one does.
     /// </summary>
@@ -1255,6 +1279,6 @@ public sealed partial class Lowering
         => _b.Types.Values.Where(t => t.Name == "KernelFiles")
             .SelectMany(t => { t.EnsureMembers(); return t.Methods; })
             .Where(m => m.Static && m.Name == "Syscall" && m.Params.Count == 7
-                && m.Params.All(p => p.Type.Prim == Prim.I64) && m.Returns.Prim == Prim.I64)
+                && m.Params.All(p => p.Type.Prim == Prim.NInt) && m.Returns.Prim == Prim.NInt)
             .Distinct().ToList();
 }

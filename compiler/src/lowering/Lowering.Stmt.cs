@@ -1012,7 +1012,7 @@ public sealed partial class Lowering
             // AS BYTES, as a descriptor's name is (InternNameBytes): spelt out
             // only when the trace is read (Exception.Named). Every throw's
             // line in UTF-16 was 220 KB of the GUI module.
-            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(Widen(frame)), new SymOperand(InternNameBytes(site)));
+            _e.Call(CallLabel(capture), IrType.Void, R(obj), R(AsParam(frame, capture.Params[1].Type)), new SymOperand(InternNameBytes(site)));
         }
 
         // A throw that leaves catch bodies -- no handler opened inside them

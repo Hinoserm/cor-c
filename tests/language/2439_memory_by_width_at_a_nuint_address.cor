@@ -1,0 +1,90 @@
+// test: memory by width at a nuint address, the atomics there, and a struct's operator taking a constant
+// expect-exit: 0
+// expect-output:
+// read8 129 read16 65281 read32 4026531841 read64 18364758544493064720
+// bytes 129 1 255 240
+// native True
+// low32 4026531841 2003167009
+// peek 4026531841
+// cas 5 7 nuint True swap True add 10 12
+// cas32 3 4 add32 6 swap32 9 10
+// physical 8192 2 True
+//
+// THE WIDTH-NAMED INTRINSICS (LONG-MODE.md 7.2): Read8..Read64 and
+// Write8..Write64 at a nuint address answer exactly the width they read --
+// 0xF0000001 is the uint 4026531841, never a negative number, and the
+// 64-bit word is a ulong whole on i386 too. ReadNative and WriteNative carry
+// a pointer-sized value with its top bit set (0x80001234 and more) through
+// memory unchanged. Low32 is the named narrowing of a nuint and of a ulong.
+// Peek, Poke and the atomics take a nuint address beside the long one, and
+// a word-sized field holding an address is compared and swapped as a nuint.
+//
+// And a constant into a struct's operator: `p + 4096` reaches operator
+// +(Physical, uint), the int constant a uint by C#'s implicit constant
+// conversion, as an argument's would be. It was refused as "not both
+// numbers".
+using System;
+
+struct Physical
+{
+    readonly uint _value;
+    public Physical(uint value) { _value = value; }
+    public static Physical operator +(Physical a, uint offset) => new Physical(a._value + offset);
+    public static bool operator <(Physical a, Physical b) => a._value < b._value;
+    public static bool operator >(Physical a, Physical b) => a._value > b._value;
+    public static uint operator >>(Physical a, int shift) => a._value >> shift;
+    public static explicit operator uint(Physical a) => a._value;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        byte[] buffer = new byte[64];
+        nuint at = (nuint)Sys.ArrayData(buffer);
+
+        Sys.Write8(at, 0x81);
+        Sys.Write16(at + 2, 0xFF01);
+        Sys.Write32(at + 4, 0xF0000001);
+        Sys.Write64(at + 8, 0xFEDCBA9876543210);
+        byte b = Sys.Read8(at);
+        ushort h = Sys.Read16(at + 2);
+        uint w = Sys.Read32(at + 4);
+        ulong q = Sys.Read64(at + 8);
+        Console.WriteLine("read8 " + b + " read16 " + h + " read32 " + w + " read64 " + q);
+        Console.WriteLine("bytes " + buffer[0] + " " + buffer[2] + " " + buffer[3] + " " + buffer[7]);
+
+        // An address with its top bit set: a kernel's, on either machine.
+        nuint high = IntPtr.Size == 8 ? unchecked((nuint)0xFFFF888000001234UL) : (nuint)0x80001234u;
+        Sys.WriteNative(at + 16, high);
+        Console.WriteLine("native " + (Sys.ReadNative(at + 16) == high));
+
+        Console.WriteLine("low32 " + Sys.Low32(at - at + 0xF0000001) + " " + Sys.Low32(0x123456787765E721UL));
+
+        Sys.Poke(at + 24, 0xF0000001);
+        Console.WriteLine("peek " + (Sys.Peek(at + 24) & 0xFFFFFFFF));
+
+        Sys.Poke(at + 32, 5);
+        long was = Sys.Cas(at + 32, 5, 7);
+        long now = Sys.Peek(at + 32);
+        Sys.WriteNative(at + 40, high);
+        nuint seen = Sys.Cas(at + 40, high, at);
+        bool swapped = Sys.AtomicSwap(at + 40, high) == at;
+        Sys.Poke(at + 48, 10);
+        nint before = Sys.AtomicAdd(at + 48, (nint)2);
+        Console.WriteLine("cas " + was + " " + now + " nuint " + (seen == high) + " swap " + swapped + " add " + before + " " + Sys.Peek(at + 48));
+
+        Sys.Write32(at + 56, 3);
+        int old32 = Sys.Cas32(at + 56, 3, 4);
+        int now32 = (int)Sys.Read32(at + 56);
+        int added = Sys.AtomicAdd32(at + 56, 2);
+        int swap32 = Sys.AtomicSwap32(at + 56, 10);
+        Console.WriteLine("cas32 " + old32 + " " + now32 + " add32 " + (added + 2) + " swap32 " + (swap32 + 3) + " " + Sys.Read32(at + 56));
+
+        Physical p = new Physical(4096);
+        Physical next = p + 4096;
+        Console.WriteLine("physical " + (uint)next + " " + (next >> 12) + " " + (p < next));
+        GC.KeepAlive(buffer);
+        return 0;
+    }
+}

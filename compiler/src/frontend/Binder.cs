@@ -22771,7 +22771,8 @@ public sealed partial class Binder
                     && found is MethodGroupSym mg && mg.Methods.Count == 1 && mg.Methods[0].Static)
                 {
                     _r.AddressOf[c] = mg.Methods[0];
-                    return Type.I64;
+                    // An address, a nuint as every one Sys answers.
+                    return Type.NUInt;
                 }
             }
 
