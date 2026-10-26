@@ -783,7 +783,7 @@ namespace System.Runtime.InteropServices
         public static ushort ReadU2(nint at) { return (ushort)Sys.Read16((nuint)at); }
         public static int ReadI4(nint at) { return (int)Sys.Read32((nuint)at); }
         public static uint ReadU4(nint at) { return (uint)Sys.Read32((nuint)at); }
-        public static long ReadI8(nint at) { return (Sys.Read32((nuint)at) & 0xFFFFFFFFL) | (Sys.Read32((nuint)(at + 4)) << 32); }
+        public static long ReadI8(nint at) { return (long)Sys.Read64((nuint)at); }
         public static ulong ReadU8(nint at) { return (ulong)ReadI8(at); }
         public static float ReadR4(nint at) { return BitConverter.Int32BitsToSingle(ReadI4(at)); }
         public static double ReadR8(nint at) { return BitConverter.Int64BitsToDouble(ReadI8(at)); }
