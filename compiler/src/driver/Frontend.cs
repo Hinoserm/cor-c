@@ -129,7 +129,8 @@ public static class Frontend
         try
         {
             Meter parsing = Meter.Start();
-            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, declarations?.Tokens, declarations?.RecordNames());
+            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, declarations?.Tokens, declarations?.RecordNames(),
+                declarations?.GlobalUsings(library: false), declarations?.GlobalUsings(library: true));
             parsing.Stop("front:parse");
             int sourceIndex = 0;
             foreach ((string file, string? path, bool isLibrary, bool isElsewhere) in sources)
@@ -486,18 +487,72 @@ public static class Frontend
         }
     }
 
+    /// <summary>
+    /// THE `global using` ALIASES OF A BUILT-IN OR NAMED TYPE, one side's --
+    /// `global using Word = uint;` -- from the tokens of every file of the
+    /// side, read before any is parsed (Parser.GlobalTypeAliases): an alias
+    /// of a type is its type, put where a file names it as one at parse
+    /// time, so a file parsed before the one that declares it did not see
+    /// it. A unit compiled apart has the rest from the index. The target is
+    /// kept as text, a dotted name only as a name in System, the rule a
+    /// file's own alias has (Parser.ParseUsings).
+    /// </summary>
+    private static (Dictionary<string, string> Program, Dictionary<string, string> Library) GlobalTypeAliases(
+        List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
+        List<string>? indexedProgram, List<string>? indexedLibrary)
+    {
+        Dictionary<string, string> program = new(StringComparer.Ordinal), library = new(StringComparer.Ordinal);
+        foreach ((string name, string? path, bool fromLibrary, bool _) in sources)
+        {
+            if (path is null) continue;
+            string text = SourceText(path);
+            if (!text.Contains("global", StringComparison.Ordinal)) continue;
+            List<Token> read;
+            try { read = Lexer.Tokenize(text, name); }
+            catch (CompileError) { continue; }
+            for (int i = 0; i + 3 < read.Count; i++)
+            {
+                if (read[i] is not { Kind: Tok.Ident, Text: "global" } || read[i + 1].Kind != Tok.KwUsing
+                    || read[i + 2].Kind != Tok.Ident || read[i + 3].Kind != Tok.Assign) continue;
+                List<string> words = new();
+                for (int j = i + 4; j < read.Count && read[j].Kind is not (Tok.Semi or Tok.End); j++) words.Add(read[j].Text);
+                if (GlobalAliasTarget(string.Join(" ", words)) is string target) (fromLibrary ? library : program)[read[i + 2].Text] = target;
+            }
+        }
+        foreach ((List<string>? given, Dictionary<string, string> side) in new[] { (indexedProgram, program), (indexedLibrary, library) })
+        {
+            foreach (string use in given ?? new List<string>())
+            {
+                int equals = use.IndexOf('=');
+                if (equals > 0 && GlobalAliasTarget(use[(equals + 1)..]) is string target) side.TryAdd(use[..equals], target);
+            }
+        }
+        return (program, library);
+    }
+
+    /// <summary>The text of an alias's target where it is a type read at the use (no dotted name but one of System's), else null.</summary>
+    private static string? GlobalAliasTarget(string text)
+    {
+        string joined = text.Replace(" ", "");
+        int dot = joined.IndexOf('.');
+        if (dot >= 0 && !(joined.StartsWith("System.", StringComparison.Ordinal) && joined.IndexOf('.', 7) < 0)) return null;
+        return text;
+    }
+
     private static CompilationUnit[] ParseSources(
         List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
-        IReadOnlyCollection<string>? symbols, int workers, SyntaxTokenCache? tokens = null, List<string>? indexedRecords = null)
+        IReadOnlyCollection<string>? symbols, int workers, SyntaxTokenCache? tokens = null, List<string>? indexedRecords = null,
+        List<string>? indexedProgramGlobals = null, List<string>? indexedLibraryGlobals = null)
     {
         HashSet<string> records = RecordNames(sources);
         if (indexedRecords is not null) records.UnionWith(indexedRecords);
         Parser.ProjectRecords = records;
+        (Dictionary<string, string> program, Dictionary<string, string> library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals);
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
             for (int i = 0; i < sources.Count; i++)
-                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere);
+                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere, sources[i].FromLibrary ? library : program);
             return parsed;
         }
         CompileError?[] failures = new CompileError?[sources.Count];
@@ -510,7 +565,7 @@ public static class Frontend
             {
                 for (int i = lane; i < sources.Count; i += active)
                 {
-                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere); }
+                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere, sources[i].FromLibrary ? library : program); }
                     catch (CompileError error) { failures[i] = error; }
                 }
             });
@@ -563,8 +618,9 @@ public static class Frontend
     }
 
     private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols,
-        SyntaxTokenCache? tokens = null, bool elsewhere = false)
+        SyntaxTokenCache? tokens = null, bool elsewhere = false, IReadOnlyDictionary<string, string>? globalAliases = null)
     {
+        Parser.GlobalTypeAliases = globalAliases;
         // Source text belongs to the active parser, not the project. Retain
         // paths in the queue so completed files release their text before the
         // next file is read. At most one source buffer per worker is live.

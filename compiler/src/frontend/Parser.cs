@@ -894,6 +894,14 @@ public sealed class Parser
     public static string? SyscallWordType { get; set; }
 
     /// <summary>
+    /// The `global using` aliases of a type that the side of the file being
+    /// parsed has, by name (Frontend.GlobalTypeAliases): per thread, as
+    /// files of both sides are parsed at once.
+    /// </summary>
+    [ThreadStatic]
+    public static IReadOnlyDictionary<string, string>? GlobalTypeAliases;
+
+    /// <summary>
     /// The record classes the program declares, in any of its files, by name
     /// (Frontend.RecordNames, read before any is parsed): a record deriving
     /// from one declared in another file, or later in its own, chains its
@@ -920,6 +928,8 @@ public sealed class Parser
         // SyscallWord, in every file of every side: the type of a system
         // call's register, which --syscall-abi decides (the target's own
         // where it is not given).
+        if (GlobalTypeAliases is not null)
+            foreach ((string alias, string aimed) in GlobalTypeAliases) _typeAliases[alias] = aimed;
         _typeAliases["SyscallWord"] = SyscallWordType ?? (Target.Current.WordSize == 8 ? "ulong" : "uint");
         ParseUsings(unit);
 
@@ -1188,6 +1198,7 @@ public sealed class Parser
                     List<string> words = new();
                     while (!At(Tok.Semi) && !At(Tok.End)) words.Add(_t[_i++].Text);
                     _typeAliases[name] = string.Join(" ", words);
+                    if (global) unit.GlobalUsings.Add(name + "=" + string.Join(" ", words));
                     Expect(Tok.Semi, "';' after using");
                     continue;
                 }

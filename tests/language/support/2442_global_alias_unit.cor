@@ -1,0 +1,10 @@
+// A unit of 2442_global_using_alias_of_a_keyword_type_in_every_file: the
+// project's global alias of a keyword type, and a helper that uses it.
+
+global using Word = uint;
+
+static class Helper
+{
+    public static int Size() { return sizeof(Word); }
+    public static Word Seven() { return 7; }
+}

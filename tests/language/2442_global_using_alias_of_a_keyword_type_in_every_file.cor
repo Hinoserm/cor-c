@@ -1,0 +1,31 @@
+// test: global_using_alias_of_a_keyword_type_in_every_file
+// apart: tests/language/support/2442_global_alias_unit.cor
+// expect-exit: 0
+// expect-output:
+// 4
+// 300000000
+// 7
+//
+// A global using that names a built-in type by its keyword -- `global using
+// Word = uint;` -- is that type in every file of the project, the one
+// that declares it and one parsed before it or compiled by itself. Here
+// the alias is written in the other unit only: the entry unit names Word
+// as a field, a local and a parameter, and the value wraps at 32 bits
+// as a uint does.
+
+static class Program
+{
+    static Word total;
+
+    static Word Add(Word a, Word b) { return a + b; }
+
+    static int Main()
+    {
+        Word w = 4000000000;
+        total = Add(w, 594967296);
+        Console.WriteLine(Helper.Size());
+        Console.WriteLine(total);
+        Console.WriteLine(Helper.Seven());
+        return 0;
+    }
+}
