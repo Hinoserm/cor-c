@@ -539,10 +539,6 @@ static class Platform
 
     // ---- the collector's workers ----------------------------------------
 
-    /// How many threads may mark and sweep beside the collecting one: the
-    /// processors this process may run on less one, at most seven, or the
-    /// image's Corsac.GC.Workers, at most fifteen. Read without the heap: the
-    /// collector asks this holding its lock.
     // THE COLLECTOR'S HOOKS, as Sys.Call makes them: three words in, a word out.
     // The clock's microseconds are answered as their low word (the collector
     // takes differences of those as 32-bit numbers).
@@ -551,6 +547,10 @@ static class Platform
     static nuint WorkerStartHook(nuint entry, nuint b, nuint c) { return (nuint)StartCollectorWorker(entry); }
     static nuint WorkerQuietHook(nuint a, nuint b, nuint c) { QuietWorker(); return 0; }
 
+    /// How many threads may mark and sweep beside the collecting one: the
+    /// processors this process may run on less one, at most seven, or the
+    /// image's Corsac.GC.Workers, at most fifteen. Read without the heap: the
+    /// collector asks this holding its lock.
     public static long CollectorWorkers()
     {
         if (Runtime.KnobValue("Corsac.GC.Workers") != 0)

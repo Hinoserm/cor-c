@@ -41,7 +41,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 timeout_s="${TIMEOUT:-10}"
 verbose=0
-filter=""
 filters=()
 compiler_flags=()
 # What an index is made for: the target the compiles against it are for.
@@ -109,11 +108,10 @@ for arg in "$@"; do
             passthrough+=("$arg")
             ;;
         -h|--help)
-            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
-            filter="$arg"
             filters+=("$arg")
             ;;
     esac
@@ -281,7 +279,7 @@ for f in "$here"/*.cor; do
     [ -e "$f" ] || continue
     name="$(basename "$f" .cor)"
     # One test exactly, when the parallel run below hands it to a copy of
-    # this script; otherwise every test whose name contains the filter.
+    # this script; otherwise every test whose name contains one of the filters.
     if [ -n "${CORC_TEST_ONE:-}" ]; then
         [ "$name" = "$CORC_TEST_ONE" ] || continue
     elif [ "${#filters[@]}" -gt 0 ]; then
@@ -292,8 +290,16 @@ for f in "$here"/*.cor; do
     tests+=("$f")
 done
 
+# A NAME THAT MATCHES NOTHING is said, not dropped: among several, a typo
+# would otherwise leave the run looking complete.
+[ -n "${CORC_TEST_ONE:-}" ] || for one in "${filters[@]+"${filters[@]}"}"; do
+    hit=0
+    for f in "${tests[@]+"${tests[@]}"}"; do [[ "$(basename "$f" .cor)" == *"$one"* ]] && hit=1 && break; done
+    [ "$hit" = 1 ] || echo "no test matches '$one'" >&2
+done
+
 if [ "${#tests[@]}" -eq 0 ]; then
-    echo "no tests match '${filters[*]}'" >&2
+    echo "no tests match '${filters[*]+"${filters[*]}"}'" >&2
     exit 2
 fi
 

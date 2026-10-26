@@ -506,7 +506,7 @@ public static class Frontend
         {
             if (path is null) continue;
             string text = SourceText(path);
-            if (!text.Contains("global using", StringComparison.Ordinal)) continue;
+            if (!text.Contains("global", StringComparison.Ordinal) || !text.Contains("using", StringComparison.Ordinal)) continue;
             List<Token> read;
             // With the compile's own symbols: a `#if` around an alias reads as it will be parsed.
             try { read = Lexer.Tokenize(text, name, 1, 1, symbols); }
@@ -625,13 +625,23 @@ public static class Frontend
     private static CompilationUnit ParseSource(string name, string? path, IReadOnlyCollection<string>? symbols,
         SyntaxTokenCache? tokens = null, bool elsewhere = false, IReadOnlyDictionary<string, string>? globalAliases = null)
     {
+        // THIS FILE'S SIDE'S ALIASES, for this parse only: left set, a later
+        // parse on the same thread -- an index header's, which is on no side,
+        // or the next compile's -- would read them instead of its own.
         Parser.GlobalTypeAliases = globalAliases;
-        // Source text belongs to the active parser, not the project. Retain
-        // paths in the queue so completed files release their text before the
-        // next file is read. At most one source buffer per worker is live.
-        string text = path is null ? Prelude.Source : SourceText(path);
-        return tokens is null ? Parser.ParseText(text, name, symbols, elsewhere, elsewhere)
-            : tokens.Parse(text, name, symbols, elsewhere, elsewhere);
+        try
+        {
+            // Source text belongs to the active parser, not the project. Retain
+            // paths in the queue so completed files release their text before the
+            // next file is read. At most one source buffer per worker is live.
+            string text = path is null ? Prelude.Source : SourceText(path);
+            return tokens is null ? Parser.ParseText(text, name, symbols, elsewhere, elsewhere)
+                : tokens.Parse(text, name, symbols, elsewhere, elsewhere);
+        }
+        finally
+        {
+            Parser.GlobalTypeAliases = null;
+        }
     }
 
     /// <summary>

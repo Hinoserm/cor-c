@@ -66,11 +66,12 @@ static class Clock
 
         if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
 
-        // THE TIME64 CALLS ARE LINUX 5.1's: older, a sleep would return at once and
+        // THE TIME64 CALLS ARE LINUX 5.1's: refused -- an older kernel, or a
+        // filter that does not know them -- a sleep would return at once and
         // its caller spin on the clock, which this one also cannot read.
         if (result == 0 - Err.NoSys)
         {
-            Runtime.WriteLiteral(2, "clock_nanosleep_time64 is missing: this kernel is older than Linux 5.1\n");
+            Runtime.WriteLiteral(2, "clock_nanosleep_time64 was refused (ENOSYS): a kernel older than Linux 5.1, or a filter that does not allow it\n");
             Platform.Exit(134);
         }
 

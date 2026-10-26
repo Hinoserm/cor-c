@@ -4,6 +4,10 @@
 // expect-no-symbol: m_Platform_StartCollectorWorker
 // expect-no-symbol: m_Platform_QuietWorker
 // expect-no-symbol: m_Clock_NowMicroseconds
+// expect-no-symbol: m_Platform_MicrosecondsHook
+// expect-no-symbol: m_Platform_WorkerCountHook
+// expect-no-symbol: m_Platform_WorkerStartHook
+// expect-no-symbol: m_Platform_WorkerQuietHook
 // expect-no-symbol: s_Gc_ArenaUsedPeak
 // expect-no-symbol: s_AllocSamples_
 // expect-output:

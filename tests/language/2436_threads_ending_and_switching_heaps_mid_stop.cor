@@ -26,7 +26,7 @@ static class Program
     static long _bad;
     static long _spin;
 
-    static nint Linger(nint a, nint b, nint c)
+    static nuint Linger(nuint a, nuint b, nuint c)
     {
         if (a != 0) return 0;
         for (int i = 0; i < 20000; i++) _spin = _spin + i;
