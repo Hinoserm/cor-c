@@ -2601,6 +2601,9 @@ static class Gc
         }
     }
 
+    /// Links of a list OwnListBytes reads between two lets-go of the flag.
+    const long OwnListStep = 32;
+
     /// THE BYTES ON THIS THREAD'S OWN CLASS LISTS, charged as each list was
     /// handed over (Charge) and not yet taken: what the counters a program
     /// reads (Since, Allocated, AllocatedByThread) take off, so that they say
@@ -2622,8 +2625,6 @@ static class Gc
     /// what that interrupt did, for this one read. Between two steps the
     /// platform is asked (YieldHook), as between a collection's budgets. On
     /// top of the allocator itself, nothing is read.
-    const long OwnListStep = 32;
-
     public static long OwnListBytes()
     {
         long tb = Sys.ThreadBlock();
@@ -2658,15 +2659,28 @@ static class Gc
                 block = Sys.Peek(block + KindAt);
                 left = left - 1;
                 step = step + 1;
-                if (step == OwnListStep)
+                if (step == OwnListStep && block != 0)
                 {
                     // Let go, and the platform asked (YieldHook): a preemption
                     // refused meanwhile is taken here, not at a next interrupt
-                    // that would land in the walk again.
+                    // that would land in the walk again. Not asked with the
+                    // heap lock held, or where the thread may not be
+                    // preempted (Tls.PreemptCount): only let go.
                     Sys.Poke(tb + Tls.InAlloc, 0);
-                    if (YieldHook != 0 && !GcLock.HeldByMe()) Sys.Call(YieldHook, 0, 0, 0);
+                    if (YieldHook != 0 && !GcLock.HeldByMe() && Sys.Peek(tb + Tls.PreemptCount) == 0)
+                    {
+                        Sys.Call(YieldHook, 0, 0, 0);
+                    }
                     step = 0;
                     Sys.Poke(tb + Tls.InAlloc, 1);
+                    // THE LISTS MAY HAVE GONE MEANWHILE: a round took the
+                    // cache (Classes into ClassesSaved) and ShedPages handed
+                    // the lists back to their pages, which a sweep may then
+                    // release. The walk goes on only while the cache and
+                    // this class's page are still the ones it began with.
+                    long now = Sys.Peek(tb + Tls.Classes);
+                    if (now == 0) now = Sys.Peek(tb + Tls.ClassesSaved);
+                    if (now != cache || Sys.Peek(cache + c * (2 * WordSize.Bytes)) != page) break;
                 }
             }
             Sys.Poke(tb + Tls.InAlloc, 0);
@@ -11706,9 +11720,10 @@ static class Gc
     /// allocated (an audio mixer woken 120-195 ms late, at 32 MB live on a
     /// K6-III). Called with 0 between OwnListStep links of a counter's read
     /// of the thread's own lists (OwnListBytes), between MarkBetweenYields
-    /// blocks marked and between SweepBetweenYields chunks swept; it may give
-    /// the processor to a thread that is ready, and must not allocate. The heap lock is let
-    /// go there, but for a collection made alone (CollectAlone), whose
+    /// blocks marked and between SweepBetweenYields chunks swept; it may
+    /// give the processor to a thread that is ready, and must not allocate.
+    /// The heap lock is let go there, but for a collection made alone
+    /// (CollectAlone), whose
     /// marking holds it throughout: there the platform must not give the
     /// processor away (it can tell, Runtime.HoldsHeapLock). Called with 1
     /// by a thread about to wait for another's collection to end, with the
