@@ -5,6 +5,7 @@
 // bad 0
 // stepped True
 // answered block by block True
+// stop block reports 0
 //
 // THE STOP IN STEPS (Gc.StopBudget): the snapshot's walk of the heap, the
 // cards and the collector's own pages, a few blocks at a time with the heap
@@ -17,7 +18,15 @@
 // cap that keeps cycles coming, with a budget of 32 blocks and a platform
 // that lingers between steps (YieldHook), so the threads run out of their
 // buffers inside stops: tens of thousands of blocks answered one by one a
-// run, and every name read back is its own.
+// run, and every name read back is its own. The checks of marking run at
+// every cycle (Gc.VerifyMarks), and the stop's own finds nothing
+// (Gc.StopBlockReports): a block answered mid-stop
+// is black, old once the cycle ends, and a newcomer it holds -- a name made
+// in a page the stop's walk passed by -- is reached through its card at
+// the next minor cycle, which the stop's taking of the cards had cleared
+// while the block was young (ScanStopBlocks sets it again). Without that,
+// VerifyStopBlock reported in 8 runs of 8, each at its cap of 20 reports;
+// with it, 0 in 8.
 
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -127,6 +136,7 @@ static class Program
         // A stop of a few blocks a step: hundreds of steps a cycle, and the
         // threads' slow paths answered block by block in between.
         Gc.StopBudget = 32;
+        Gc.VerifyMarks = true;
         Gc.YieldHook = Sys.AddressOf(Program.Linger);
         Worker[] w = new Worker[workers];
         Thread[] t = new Thread[workers];
@@ -142,6 +152,7 @@ static class Program
         Gc.YieldHook = 0;
         System.Console.WriteLine("stepped " + (Gc.StopSteps > 0));
         System.Console.WriteLine("answered block by block " + (Gc.StopBlocks > 0));
+        System.Console.WriteLine("stop block reports " + Gc.StopBlockReports);
         return 0;
     }
 }
