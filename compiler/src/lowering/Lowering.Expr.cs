@@ -4786,6 +4786,9 @@ public sealed partial class Lowering
     {
         if (place is MemPlace { Inline: true } && IsStructValue(storedAs))
         {
+            // `default` WANTED AS A TUPLE: EvalAs makes the tuple of it (the
+            // checker typed it as the null literal), a static's or a field's.
+            if (value is DefaultExpr && TupleShapeOf(storedAs) is not null) return EvalAs(value, storedAs);
             // Already made what it is stored as -- a number the checker marked
             // to go into a Nullable -- it is not converted a second time.
             VReg made = Eval(value);
@@ -4897,7 +4900,15 @@ public sealed partial class Lowering
         }
         if (m.Inline)
         {
-            return Fail(at, "a struct field held in line in its object (FieldSymbol.Inline) has no pointer to it to pass by reference");
+            // A STATIC'S OWN BYTES (StaticHeldInline) are where the symbol is,
+            // never moved and nothing to pin: `&_s` is that address. One held
+            // in line in an object moves with it, and has no pointer to pass.
+            if (m.Address is not SymOperand)
+            {
+                return Fail(at, "a struct field held in line in its object (FieldSymbol.Inline) has no pointer to it to pass by reference");
+            }
+            VReg statics = RegOf(m.Address);
+            return m.Offset == 0 ? statics : _e.Binary(Opcode.Add, statics, m.Offset);
         }
         VReg basis = RegOf(m.Address);
         if (m.Offset == 0) return basis;

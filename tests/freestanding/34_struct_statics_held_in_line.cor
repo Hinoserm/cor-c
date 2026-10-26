@@ -1,0 +1,67 @@
+// test: a struct of numbers held by a static is the static's own bytes: written before the image has a heap, with no block, null test or compare-and-swap
+// expect-exit: 0
+// expect-output:
+// bitmap 7
+// floor 4096
+// counter 1 2
+// kept 7
+// expect-no-asm-x86: Touch: cmpxchg AllocMissed AllocFast m_Runtime_Alloc
+// expect-no-asm-x86-64: Touch: cmpxchg AllocMissed AllocFast m_Runtime_Alloc
+//
+// A STATIC OF A STRUCT TYPE was a word pointing at a block made the first
+// time anything touched it -- a null test, an allocation and a compare-and-
+// swap on every first access, and an allocation a kernel's first writes to
+// its statics (a bitmap's address, before it has read its memory map) have
+// no heap to make: the image stopped with "no heap". A struct of numbers is
+// held in line wherever it is a field (FieldSymbol.Inline); a static holds it
+// the same way (Lowering.StaticHeldInline), its bytes the static's own,
+// zero until written -- and one whose declaration gives it a value is set by
+// the type's initialiser as a plain store, which also runs before the heap.
+// Touch is read for what it contains; Main writes the statics first and only
+// then gives the runtime its heap.
+
+using System.Runtime.CompilerServices;
+
+readonly struct Phys
+{
+    readonly uint _bits;
+    public Phys(uint bits) { _bits = bits; }
+    public static Phys Of(uint bits) { return new Phys(bits); }
+    public uint Bits { get { return _bits; } }
+}
+
+struct Counter
+{
+    public int A;
+    public int B;
+    public void Bump() { A = A + 1; B = B + 2; }
+}
+
+static class Program
+{
+    static Phys _bitmap;
+    static Phys _floor = Phys.Of(4096);
+    static Counter _counter;
+    static Phys _kept;
+
+    // Its own body, which the disassembly is read for.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Touch()
+    {
+        _bitmap = Phys.Of(7);
+        _counter.Bump();
+        _kept = _bitmap;
+    }
+
+    static int Main()
+    {
+        Touch();
+        Host.Start(1024 * 1024);
+        Host.Line("bitmap " + (int)_bitmap.Bits);
+        Host.Line("floor " + (int)_floor.Bits);
+        Host.Line("counter " + _counter.A + " " + _counter.B);
+        Host.Line("kept " + (int)_kept.Bits);
+        Host.Done(0);
+        return 0;
+    }
+}

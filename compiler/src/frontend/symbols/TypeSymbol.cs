@@ -70,7 +70,8 @@ public sealed class TypeSymbol
 
     /// <summary>
     /// A struct's: whether it is held in line wherever it is held -- a field
-    /// (FieldSymbol.Inline) and an array's element alike -- its fields all
+    /// (FieldSymbol.Inline), an array's element and, where it holds no
+    /// reference, a static (Lowering.StaticHeldInline) alike -- its fields all
     /// numbers, references, or structs held in line themselves.
     /// </summary>
     public bool HeldInline

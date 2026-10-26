@@ -1,0 +1,113 @@
+// test: struct_statics_held_in_line
+// expect-exit: 0
+// expect-output:
+// True 4096 True
+// 16 99
+// 12 4 6
+// 1 2 3 5 100 1
+// 77
+// 1 2 3 12
+// 42 7 True
+// 7 0 0
+//
+// A static of a struct of numbers is its own bytes in the static's storage,
+// not a word pointing at a block made at the first touch (StaticHeldInline):
+// still a value -- a copy is a copy, a method called on it changes the
+// static itself, a nested struct is part of it -- and still reached by
+// reference and by `out`. Initialised statics, a readonly one among them,
+// are set by the type's initialiser.
+
+using System;
+using System.Runtime.CompilerServices;
+
+readonly struct Phys
+{
+    readonly uint _bits;
+    public Phys(uint bits) { _bits = bits; }
+    public static Phys Of(uint bits) { return new Phys(bits); }
+    public uint Bits { get { return _bits; } }
+    public bool IsZero { get { return _bits == 0; } }
+    public static Phys operator +(Phys a, uint n) { return new Phys(a._bits + n); }
+    public static readonly Phys Zero = new Phys(0);
+}
+
+struct Counter
+{
+    public int A;
+    public int B;
+    public long C;
+    public void Bump() { A++; B += 2; C += 3; }
+}
+
+struct Outer
+{
+    public Counter In;
+    public int Z;
+}
+
+static class Mem
+{
+    static Phys _bitmap;
+    public static Phys Floor = Phys.Of(4096);
+    static Counter _c;
+    static Outer _o;
+    static Phys _lastBad;
+    static Counter _p;
+    static (int, int) _t = default;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Fill(out Phys p) { p = new Phys(77); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Grow(ref Counter c) { c.A += 10; }
+
+    // The address of a static's bytes (`&_p`) is where they are; a tuple
+    // static given `default` is the zero tuple.
+    public static unsafe void Pointers()
+    {
+        Counter* q = &_p;
+        q->A = 41;
+        q->A++;
+        q->B = 7;
+        Console.WriteLine(_p.A + " " + _p.B + " " + (q == &_p));
+        _t = (3, 4);
+        int sum = _t.Item1 + _t.Item2;
+        _t = default;
+        Console.WriteLine(sum + " " + _t.Item1 + " " + _t.Item2);
+    }
+
+    public static void Run()
+    {
+        Console.WriteLine(_bitmap.IsZero + " " + Floor.Bits + " " + Phys.Zero.IsZero);
+
+        _bitmap = new Phys(12);
+        _bitmap = _bitmap + 4;
+        Phys copy = _bitmap;
+        _bitmap = Phys.Of(99);
+        Console.WriteLine(copy.Bits + " " + _bitmap.Bits);
+
+        _c.Bump();
+        _c.Bump();
+        Grow(ref _c);
+        Console.WriteLine(_c.A + " " + _c.B + " " + _c.C);
+
+        _o.In.Bump();
+        _o.Z = 5;
+        Counter taken = _o.In;
+        taken.A = 100;
+        Console.WriteLine(_o.In.A + " " + _o.In.B + " " + _o.In.C + " " + _o.Z + " " + taken.A + " " + _o.In.A);
+
+        Fill(out _lastBad);
+        Console.WriteLine(_lastBad.Bits);
+
+        _bitmap = Phys.Of(1);
+        _lastBad = Phys.Of(2);
+        Floor = Phys.Of(3);
+        Console.WriteLine(_bitmap.Bits + " " + _lastBad.Bits + " " + Floor.Bits + " " + _c.A);
+    }
+}
+
+static class Program
+{
+    static void Main() { Mem.Run(); Mem.Pointers(); }
+}

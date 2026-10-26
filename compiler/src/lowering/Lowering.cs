@@ -749,7 +749,9 @@ public sealed partial class Lowering
             {
                 continue;
             }
-            int size = Math.Max(1, f.Type.Size);
+            // A struct of numbers is the bytes of its own, held in line (StaticHeldInline).
+            bool heldInline = StaticHeldInline(f);
+            int size = heldInline ? Math.Max(1, StructOf(f.Type).InstanceSize) : Math.Max(1, f.Type.Size);
             // A [ThreadStatic]'s storage is each thread's cell; the image keeps
             // its number among the program's thread statics, 0 until its first
             // touch gives it one.
@@ -789,7 +791,7 @@ public sealed partial class Lowering
             NoteStatic(StaticSymbol(f), f, ReadOnlyStatic(f));
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
-                Zero = true, Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
+                Zero = true, Align = heldInline ? Math.Max(1, StructOf(f.Type).InlineAlign) : AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
                 Coalescible = f.Owner.Decl?.Specialised == true,
                 SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
             });

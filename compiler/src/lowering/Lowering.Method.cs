@@ -1775,9 +1775,15 @@ public sealed partial class Lowering
             // time this thread touches it. No field tag: the cell is no static's
             // storage, and nothing shares it with another thread.
             VReg? cell = store.ThreadStatic ? ThreadStaticCell(store, at) : null;
+            // A STRUCT OF NUMBERS IS ITS STATIC'S OWN BYTES (StaticHeldInline):
+            // no block made the first time anything touches it, no test of
+            // the word for null, no compare-and-swap -- and nothing the heap
+            // must be there for, which a kernel's first writes to its statics
+            // are not.
+            bool inLine = cell is null && StaticHeldInline(store);
             MemPlace place = cell is not null
                 ? new MemPlace(RegOperand.Of(cell), 0, f.Type, f.Volatile)
-                : new MemPlace(new SymOperand(StaticSymbol(store)), 0, f.Type, f.Volatile, Field: store);
+                : new MemPlace(new SymOperand(StaticSymbol(store)), 0, f.Type, f.Volatile, Inline: inLine, Field: store);
 
             // A STATIC STRUCT FIELD IS A VALUE TOO, zero until written; static
             // storage starts as zero bytes, which for a struct held by pointer
@@ -1788,7 +1794,7 @@ public sealed partial class Lowering
             // when its object is made (InitStructFields). Put there with a
             // compare-and-swap, so that two processors touching it first agree
             // on one block and a field written into the loser's is not lost.
-            if (!f.Boxed && !f.Initialised && IsStructValue(f.Type))
+            if (!inLine && !f.Boxed && !f.Initialised && IsStructValue(f.Type))
             {
                 VReg at2 = cell ?? _e.Address(StaticSymbol(store));
                 VReg held = _e.Load(IrTypes.Word, at2, 0);
@@ -1816,6 +1822,24 @@ public sealed partial class Lowering
 
         return new MemPlace(RegOperand.Of(obj), f.Offset, f.Type, f.Volatile, f.Inline, Field: f);
     }
+
+    /// <summary>
+    /// Whether a static field of a struct type is held in line: the struct's
+    /// bytes are the static's storage, as an instance field of it is the
+    /// object's (FieldSymbol.Inline), where the struct is held in line
+    /// everywhere (TypeSymbol.HeldInline) and has no reference in it: a
+    /// reference written into the static's bytes would need the barrier and
+    /// the card every stored reference has, which the static's word pointing
+    /// at a block already gets. Decided from the types alone, so the unit
+    /// that declares the static and every unit that touches it agree on its
+    /// size. Not a [ThreadStatic], whose cell is a word. The static's data is
+    /// zero (bss), so it is scanned with the other statics as roots, as every
+    /// number static is: a number that looks like an address retains at most
+    /// what it looks like.
+    /// </summary>
+    private bool StaticHeldInline(FieldSymbol f)
+        => f.Static && !f.ThreadStatic && !f.Boxed && !f.Type.IsNullableValue && !f.Type.IsPointer && !f.Type.IsArray
+        && IsStructValue(f.Type) && StructOf(f.Type) is { HeldInline: true } held && !InlineHasReferences(held);
 
     /// <summary>
     /// A [ThreadStatic] field's cell on this thread: Runtime.ThreadStaticCell,
