@@ -6274,9 +6274,10 @@ static class Gc
     // A THREAD'S PAGES IN STEPS: its own cache, then its shelf's, a page at
     // a time, from where the last step left -- the collector's own in its
     // stop (nothing of the program runs on it meanwhile), and a blocked
-    // thread's that the collector answers STAMP for (GcThreads.
-    // AnswerForStopped, the thread held Busy). Either way the caches stand
-    // still between steps.
+    // thread's that the collector answers STAMP for (GcThreads.Work). That
+    // thread is given back between steps and claimed again; it can leave
+    // its blocking meanwhile only by answering, which ends the steps, so
+    // when they go on its caches have stood still.
     static long _selfShelf, _selfClass;
 
     public static void BeginSelfStamp()
@@ -17801,8 +17802,8 @@ static class GcThreads
             // thread still claimed, a one-processor kernel preempted the
             // collector there, and the thread, leaving its blocking, spun on
             // Busy for ever (EndBlocking). Given back between steps instead:
-            // a thread that leaves meanwhile answers for itself, and then
-            // nothing is left to do here.
+            // a thread that leaves meanwhile answers for itself, and one
+            // moved to another stack is begun again on the next look.
             if (!Work(block, request, Sys.Peek(block + Tls.StackLimit), true, epoch))
             {
                 GcLock.Exit();
@@ -17823,9 +17824,10 @@ static class GcThreads
     }
 
     /// What a round asks, done on `block`'s behalf with its stack from `from`.
-    /// False when a blocked thread (`locked`, held Busy) left its blocking
-    /// while its pages were stamped in steps: it has answered for itself,
-    /// and is not held Busy any longer.
+    /// False when a blocked thread (`locked`, held Busy) could not be held
+    /// through its page steps: not claimed again, answered, or moved to
+    /// another stack meanwhile. It is not held Busy then, and whatever is
+    /// left is for its own answer or the next look (AnswerForStopped).
     static bool Work(long block, long request, long from, bool locked, long epoch)
     {
         if (request == Stamp && !locked)
@@ -17849,11 +17851,19 @@ static class GcThreads
             // wait for it gives the processor to nobody. Held across the
             // lock let go, the collector was preempted holding it, and the
             // thread -- a one-processor kernel's audio mixer -- spun on it
-            // for ever. Claimed again and still owing the round, the thread
-            // has not run in between: leaving its blocking it answers at
-            // once (EndBlocking), so its pages and its stack are as they
-            // were, and the steps go on. Gone, or answered, it did that
-            // itself, and nothing is left to do.
+            // for ever. Claimed again, still owing the round, and on the
+            // stack it was on, the thread has not run in between: leaving
+            // its blocking it answers at once (EndBlocking), so its pages
+            // and its stack are as they were, and the steps go on. Not
+            // claimed again (Busy in a MoveStack, Running in its answer,
+            // Gone), or answered, it is left to itself. Moved to another
+            // stack meanwhile (MoveStack: a trap from a program, the thread
+            // still counted stopped), `from` is the old stack's: given back,
+            // and the next look (AnswerForStopped) begins it again from the
+            // new one -- or CopyStack read from one stack to the other's
+            // top, across whatever lies between.
+            long limitAt = Sys.Peek(block + Tls.StackLimit);
+            long baseAt = Sys.Peek(block + Tls.StackBase);
             Gc.BeginSelfStamp();
             long pages = Gc.StopBudget / 2048 > 0 ? Gc.StopBudget / 2048 : 1;
             while (!Gc.StampPagesSome(block, pages))
@@ -17867,7 +17877,8 @@ static class GcThreads
                 {
                     return false;
                 }
-                if (Sys.Peek(block + Tls.Epoch) == epoch)
+                if (Sys.Peek(block + Tls.Epoch) == epoch
+                    || Sys.Peek(block + Tls.StackLimit) != limitAt || Sys.Peek(block + Tls.StackBase) != baseAt)
                 {
                     Sys.AtomicSwap(block + Tls.State, Stopped);
                     Platform.Wake(block + Tls.State, 1);
