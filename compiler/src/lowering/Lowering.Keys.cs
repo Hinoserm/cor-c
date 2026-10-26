@@ -1048,7 +1048,7 @@ public sealed partial class Lowering
         VReg self = f.NewReg(IrTypes.Word, "this");
         f.Params.Add(self);
         Builder e = new(f, f.NewBlock("entry"));
-        Operand which = identity is null ? (Operand)new ImmOperand(0, IrType.I64) : R(WordAddress(e, identity));
+        Operand which = identity is null ? (Operand)new ImmOperand(0, IrTypes.Word) : R(WordAddress(e, identity));
         e.Ret(RegOperand.Of(e.Call(CallLabel(hash), IrType.I32, R(self), which)!));
         _m.Functions.Add(f);
         return label;

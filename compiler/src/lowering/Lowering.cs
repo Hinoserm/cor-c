@@ -1447,15 +1447,14 @@ public sealed partial class Lowering
             _m.Functions.Add(cMain);
 
             Require(startC);
-            // AS THE LONGS StartC TAKES, as every hook of this stub is handed
-            // its words (WordAddress): three 32-bit words pushed for three
-            // 64-bit parameters, StartC read the C main's address as its
-            // stack and stale stack as the main. Inlined into _start in a
-            // whole program, the widths never met a calling convention; a
-            // unit linked with the runtime's object called it, and every
-            // [DllImport] program jumped to nothing (700-703 as separate units).
+            // AS THE WORDS StartC TAKES, as every hook of this stub is handed
+            // its words (WordAddress): a width this stub and the runtime
+            // disagree on is a calling convention broken -- three 32-bit
+            // words pushed once for three 64-bit parameters, StartC read the
+            // C main's address as its stack, and every [DllImport] program
+            // linked as separate units jumped to nothing (700-703).
             e.Call(CallLabel(startC), IrType.Void,
-                RegOperand.Of(AsLong(e, loaderFini)), RegOperand.Of(AsLong(e, entrySp)), RegOperand.Of(WordAddress(e, CMainName)));
+                RegOperand.Of(loaderFini), RegOperand.Of(entrySp), RegOperand.Of(WordAddress(e, CMainName)));
         }
 
         EmitRunMain(entry, f, e);
@@ -1709,15 +1708,8 @@ public sealed partial class Lowering
             RegOperand.Of(WordAddress(e, ManagedDirectory.Symbol)));
     }
 
-    /// <summary>
-    /// A symbol's address as the `long` the runtime's hooks take: widened
-    /// from i386's 32-bit word, and already that in long mode, where
-    /// widening would cut it to its low half.
-    /// </summary>
-    private static VReg WordAddress(Builder e, string symbol) => AsLong(e, e.Address(symbol));
-
-    /// <summary>A machine word as a long: widened from i386's 32 bits, already that in long mode.</summary>
-    private static VReg AsLong(Builder e, VReg word) => word.Type == IrType.I32 ? e.Unary(Opcode.ZExt32, word) : word;
+    /// <summary>A symbol's address as the `nuint` the runtime's hooks take: the machine word.</summary>
+    private static VReg WordAddress(Builder e, string symbol) => e.Address(symbol);
 
     /// <summary>
     /// A hook the runtime library provides: by name and arity where that is

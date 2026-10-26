@@ -1012,11 +1012,9 @@ public sealed partial class Lowering
                 _e.CopyTo(delegateDesc, R(_e.Binary(Opcode.Sub, _e.Load(IrTypes.Word, first, 0), _t.DescriptorBytes)));
                 _e.Jump(described);
                 _e.SetBlock(described);
-                // By the descriptor alone, a number: the object is handed to nothing.
-                // The descriptor's address, a long the runtime answers in: a word here.
-                VReg descriptorWord = IrTypes.Word == IrType.I64 ? delegateDesc : _e.Unary(Opcode.ZExt32, R(delegateDesc), IrType.I64);
-                VReg answered = _e.Call(CallLabel(delegateType), IrTypes.Of(delegateType.Returns), R(descriptorWord))!;
-                _e.CopyTo(typeOf, R(answered.Type == IrTypes.Word ? answered : _e.Unary(Opcode.Trunc64, answered)));
+                // By the descriptor alone, a word: the object is handed to nothing.
+                VReg answered = _e.Call(CallLabel(delegateType), IrTypes.Word, R(delegateDesc))!;
+                _e.CopyTo(typeOf, R(answered));
                 _e.Jump(typed);
                 _e.SetBlock(typed);
                 return typeOf;

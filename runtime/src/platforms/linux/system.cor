@@ -1189,7 +1189,7 @@ static class Platform
     /// invisible to a collector that reads memory unless a prologue pushed it,
     /// and the stack pointer written down inside GcThreads.SafePoint is below
     /// these pushes. See GcRoots in runtime/src/core/gc.cor.
-    public static void SafePoint(long mode)
+    public static void SafePoint(int mode)
     {
         Sys.Syscall(LinuxCall.Getpid, 0, 0, 0, 0, 0, 0);
         GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());

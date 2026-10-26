@@ -7468,7 +7468,7 @@ static class ThreadStatics
 
     /// A thread's table off the list as the thread ends: its cells are the
     /// collector's once nothing else holds what is in them.
-    public static void Release(long block)
+    public static void Release(nuint block)
     {
         ReleaseAt(block + Tls.ThreadStatics);
     }

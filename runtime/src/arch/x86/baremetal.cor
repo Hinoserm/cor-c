@@ -994,18 +994,18 @@ static class Platform
     /// The heap's own reports come here -- out of memory among them -- so a
     /// console driver's Write may not allocate either.
     // WriteHook(fd, address, count)
-    public static nuint WriteBytes(int fd, nuint address, nuint count)
+    public static nint WriteBytes(int fd, nuint address, nuint count)
     {
         if (WriteHook != 0)
         {
             Sys.Call(WriteHook, fd, (nint)address, (nint)count);
-            return count;
+            return (nint)count;
         }
         if (Console != null)
         {
             Console.Write(address, count);
         }
-        return count;
+        return (nint)count;
     }
 
     /// THE 386'S ATOMICS WITH INTERRUPTS OFF (Runtime.AtomicAdd386 and its

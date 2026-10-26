@@ -168,7 +168,7 @@ public sealed partial class Lowering
         {
             Require(take);
             var run = f.NewBlock("run");
-            VReg ok = e.Call(CallLabel(take), IrType.I32, RegOperand.Of(e.Unary(Opcode.ZExt32, instance)))!;
+            VReg ok = e.Call(CallLabel(take), IrType.I32, RegOperand.Of(instance))!;
             e.Branch(ok, run, no);
             e.SetBlock(run);
             if (RuntimeKnobs.Count > 0 && RuntimeMethod("UseKnobs", 1) is MethodSymbol knobs)
@@ -244,7 +244,7 @@ public sealed partial class Lowering
             Error(new Block(), "an image over the runtime DLL needs Win32.FillImports and Win32.PinImage (runtime/src/platforms/win32/win32.cor)");
             return;
         }
-        VReg image = e.Unary(Opcode.ZExt32, instance);
+        VReg image = instance;
         Require(fill);
         e.Call(CallLabel(fill), IrType.Void, RegOperand.Of(image),
             RegOperand.Of(WordAddress(e, Corsac.Lang.Elf.Linker.DataImportsStart)), RegOperand.Of(WordAddress(e, Corsac.Lang.Elf.Linker.DataImportsEnd)));
