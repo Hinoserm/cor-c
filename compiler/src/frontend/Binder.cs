@@ -24233,7 +24233,7 @@ public sealed partial class Binder
                     // (IEnumerable<T>, Index) one declared before it -- that
                     // was the Index overload calling itself for ever. Only
                     // where the conversions tie do the shapes decide.
-                    int conversions = best is null || openNow != openBest ? 0 : ConversionsBetter(candidate, got, best, bound ?? new());
+                    int conversions = best is null || openNow != openBest || Hides(candidate, best) ? 0 : ConversionsBetter(candidate, got, best, bound ?? new());
                     if (best is null || Hides(candidate, best) || openNow < openBest
                         || (openNow == openBest && conversions > 0)
                         || (openNow == openBest && conversions == 0 && Specificity(candidate) > Specificity(best))
@@ -24255,17 +24255,20 @@ public sealed partial class Binder
 
         // Which of two generic candidates, each at the type arguments inferred
         // for it, takes the arguments better (C# 12.6.4.3): 1 the first, -1
-        // the second, 0 neither -- some each way is neither. A lambda or a
-        // method group is judged by BetterLambdas; a parameter left unmade
-        // says nothing.
+        // the second, 0 neither -- some each way is neither. Says nothing of
+        // an argument that has no type of its own yet (a lambda, a method
+        // group, `null`, `default`, `new()`, a conditional waiting for its
+        // target: those are left to the shape tie-breaks and BetterLambdas),
+        // nor of a parameter left unmade or still open: two methods' T are
+        // not one type because they share a name.
         int ConversionsBetter(MethodSymbol one, Dictionary<string, Type> oneBound, MethodSymbol other, Dictionary<string, Type> otherBound)
         {
             bool oneBetter = false, otherBetter = false;
             for (int i = 0; i < args.Count && i < one.Params.Count && i < other.Params.Count; i++)
             {
-                if (i < c.Args.Count && (IsFunctionSource(c.Args[i]) || c.Args[i] is LambdaExpr)) continue;
+                if (args[i].IsError || i < c.Args.Count && (IsFunctionSource(c.Args[i]) || Typeless(c.Args[i]) || Deferred(c.Args[i]))) continue;
                 Type a = Close(Wants(one, i), oneBound), b = Close(Wants(other, i), otherBound);
-                if (Unmade(a) || Unmade(b)) continue;
+                if (Unmade(a) || Unmade(b) || Open(a) || Open(b)) continue;
                 int said = BetterConversion(args[i], a, b);
                 if (said > 0) oneBetter = true;
                 if (said < 0) otherBetter = true;
