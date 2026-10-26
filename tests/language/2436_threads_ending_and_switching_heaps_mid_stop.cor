@@ -34,7 +34,7 @@ static class Program
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static string[] Names(int seed, int n)
+    static string[] Names(int seed)
     {
         string first = "n" + seed;
         string[] names = new string[] { first, first };
@@ -47,7 +47,7 @@ static class Program
         var kept = new string[300][];
         for (int i = 0; i < kept.Length; i++)
         {
-            kept[i] = Names(round * 1000 + i, 2);
+            kept[i] = Names(round * 1000 + i);
             if (i % 100 == 50)
             {
                 // Out to the first heap and back, as through a gate.

@@ -6287,18 +6287,21 @@ static class Gc
         if (chunk == 0) chunk = HeapChunks.OfSnapshot(block);
         // One of a snapshot chunk the stop's walk has not reached: the chunk
         // walked first (EnsureWalked).
-        if (chunk != 0) EnsureWalked(chunk);
-        // MID-STOP, A BLOCK NO START TABLE OF THIS CYCLE HOLDS -- a chunk
-        // mapped since the snapshot, an old chunk a minor cycle does not
-        // walk -- would be a newcomer its thread made before answering,
-        // which is what AnswerBeforeTaking keeps out, and it does not wait
-        // mid-stop: listed, and scanned as a root once every thread has
-        // answered (ScanStopBlocks).
-        if (chunk == 0 || HeapChunks.StartsCycle(chunk) != _cycle)
-        {
-            if (_stopOpen) NoteStopBlock(block);
-            return;
-        }
+        if (chunk != 0) EnsureWalked(chunk, block);
+        // EVERY BLOCK HANDED OUT MID-STOP IS LISTED, and at step 3 marked and
+        // read as roots (ScanStopBlocks): made while the collection runs, it
+        // is live for it -- allocated black. Given only its start bit, as a
+        // block made before its thread answers is after the stop, it was a
+        // snapshot object traced only through what reached it, and the
+        // verifier (Corsac.GC.Verify) found reachable young objects left
+        // unmarked whenever stops ran long with blocks handed out singly:
+        // about twenty a run of 2435, none with the blocks listed. A block
+        // no start table of this cycle holds -- a chunk mapped since the
+        // snapshot, an old chunk a minor cycle does not walk -- is listed
+        // the same way, and AnswerBeforeTaking, which keeps such space out
+        // before an answer, does not wait mid-stop.
+        if (_stopOpen) NoteStopBlock(block, chunk != 0 && HeapChunks.PageClass(chunk) != 0);
+        if (chunk == 0 || HeapChunks.StartsCycle(chunk) != _cycle) return;
         HeapChunks.SetStartShared(chunk, block);
     }
 
@@ -7303,8 +7306,9 @@ static class Gc
     static void AnswerBeforeTaking(long tb)
     {
         // NOT WHILE A STOP IS OPEN: nothing taken then but single blocks,
-        // written down and marked at its end (_stopOpen), and the round this
-        // waits for is not asked until the stop is done.
+        // each written into the snapshot as it is handed out, or listed and
+        // scanned as a root after the round (StampHandedOut), and the round
+        // this waits for is not asked until the stop is done.
         while (tb != 0 && Sys.Peek(tb + Tls.InAlloc) == 0 && _stamping && !_stopOpen && !StampedAlready(tb))
         {
             GcLock.Exit();
@@ -13296,9 +13300,13 @@ static class Gc
     static long _stopBudget;
 
     static bool _stopOpen;
-    // The blocks handed out mid-stop from chunks mapped since the snapshot:
-    // words, mapped, never the heap's.
-    static long _stopList, _stopCount, _stopCap;
+    // The blocks handed out mid-stop, a page's with its low bit set (it has
+    // no footer): segments of StopSegmentWords words, mapped and never the
+    // heap's, linked by their first word and never copied, so the lock is
+    // held for no copy of the list as it grows. _stopList is the first,
+    // _stopLast the one filled now, _stopCount the words used in it.
+    const long StopSegmentWords = 4096;
+    static long _stopList, _stopLast, _stopCount;
     static bool _stopListLost;
 
     /// Blocks answered one by one in a stop's steps; the stop's steps; the
@@ -13306,29 +13314,38 @@ static class Gc
     public static long StopBlocks, StopSteps, LongestStopStep;
     static long _stepFrom;
 
-    static void NoteStopBlock(long block)
+    static void NoteStopBlock(long block, bool page)
     {
-        if (_stopCount == _stopCap)
+        if (_stopLast == 0 || _stopCount == StopSegmentWords)
         {
-            long cap = _stopCap == 0 ? 256 : _stopCap * 2;
-            long list = Platform.Map(cap * WordSize.Bytes);
-            if (list == 0)
+            long segment = _stopLast != 0 ? Sys.Peek(_stopLast) : 0;
+            if (segment == 0 && _stopList != 0 && _stopLast == 0) segment = _stopList;
+            if (segment == 0)
             {
-                // No room to write it down: the snapshot is not whole, and
-                // the cycle is given up at the stop's end.
-                _stopListLost = true;
-                return;
+                segment = Platform.Map(StopSegmentWords * WordSize.Bytes);
+                if (segment == 0)
+                {
+                    // No room to write it down: the cycle is given up at the
+                    // stop's end, a block not listed being one no root leads to.
+                    _stopListLost = true;
+                    return;
+                }
+                Sys.Poke(segment, 0);
+                if (_stopList == 0) _stopList = segment;
+                else Sys.Poke(_stopLast, segment);
             }
-            if (_stopList != 0)
-            {
-                Sys.MemoryCopy(list, _stopList, _stopCount * WordSize.Bytes);
-                Platform.Unmap(_stopList, _stopCap * WordSize.Bytes);
-            }
-            _stopList = list;
-            _stopCap = cap;
+            _stopLast = segment;
+            _stopCount = 1;
         }
-        Sys.Poke(_stopList + _stopCount * WordSize.Bytes, block);
+        Sys.Poke(_stopLast + _stopCount * WordSize.Bytes, page ? block | 1 : block);
         _stopCount = _stopCount + 1;
+    }
+
+    /// The list emptied for a stop: its segments kept, mapped, for the next.
+    static void ResetStopBlocks()
+    {
+        _stopLast = 0;
+        _stopCount = 0;
     }
 
     /// The heap lock let go between two of the stop's steps, the platform
@@ -13352,21 +13369,34 @@ static class Gc
         if (took > LongestStopStep) LongestStopStep = took;
     }
 
-    /// The blocks handed out mid-stop from chunks mapped since the snapshot
-    /// (NoteStopBlock), each read as roots once every thread has answered
-    /// STAMP: kept as newcomers are, and what they held before their thread
-    /// answered marked. Without the heap lock: nothing writes the list after
-    /// the stop, and no block of the heap is freed while marking.
+    /// Every block handed out mid-stop (NoteStopBlock) marked, and what it
+    /// holds read as roots, once every thread has answered STAMP and the
+    /// barrier marks what any store writes (Marking 2): allocated black.
+    /// Without the heap lock: nothing writes the list after the stop, and no
+    /// block of the heap is freed while marking. A budget at a time, the
+    /// platform asked between (ScanRootsAttributed): a dedicated array may
+    /// be megabytes.
     static void ScanStopBlocks()
     {
-        for (long i = 0; i < _stopCount; i++)
+        long segment = _stopList;
+        while (segment != 0 && _stopLast != 0)
         {
-            long block = Sys.Peek(_stopList + i * WordSize.Bytes);
-            long size = Sys.Peek(block) & SizeMask;
-            if (size < Smallest || Sys.Peek(block + KindAt) == KindLeaf) continue;
-            ScanRoots(block + HeaderBytes, block + size - TailOf(block));
+            long used = segment == _stopLast ? _stopCount : StopSegmentWords;
+            for (long i = 1; i < used; i++)
+            {
+                long entry = Sys.Peek(segment + i * WordSize.Bytes);
+                long block = entry & ~1;
+                long tail = (entry & 1) != 0 ? 0 : FooterBytes;
+                long size = Sys.Peek(block) & SizeMask;
+                if (size < Smallest) continue;
+                MarkFlagsW((nuint)block, (nuint)(FlagMark | FlagScan), (nuint)tail);
+                if (Sys.Peek(block + KindAt) == KindLeaf) continue;
+                ScanRootsAttributed(block + HeaderBytes, block + size - tail, 3, false);
+            }
+            if (segment == _stopLast) break;
+            segment = Sys.Peek(segment);
         }
-        _stopCount = 0;
+        ResetStopBlocks();
     }
 
     /// Several threads: the collection runs beside them. Entered and left
@@ -13425,7 +13455,7 @@ static class Gc
         // between, and nothing but single blocks handed out meanwhile.
         _stopOpen = true;
         _stopListLost = false;
-        _stopCount = 0;
+        ResetStopBlocks();
         long stepClock = PauseClock;
         _stepFrom = stepClock != 0 ? Sys.Call(stepClock, 0, 0, 0) : 0;
         BeginAnchors(true);
@@ -13441,7 +13471,7 @@ static class Gc
         if (!_snapshots)
         {
             _stopOpen = false;
-            _stopCount = 0;
+            ResetStopBlocks();
             StopStepTimed();
             GcLock.Exit();
             GiveUp(false);
@@ -13460,10 +13490,14 @@ static class Gc
         _stopOpen = false;
         StopStepTimed();
         // A block of a new chunk not written down -- no room for the list --
-        // is a newcomer no root leads to: no sound cycle, then.
-        if (_stopListLost)
+        // is a newcomer no root leads to; and a chunk walked on demand after
+        // the walk's end (an old chunk a minor cycle made young since) whose
+        // chain broke has half a start table: no sound cycle, either way.
+        if (_stopListLost || !_walkEvery)
         {
-            _stopCount = 0;
+            _snapshots = false;
+            _markSlots = 0;
+            ResetStopBlocks();
             GcLock.Exit();
             GiveUp(false);
             return;
@@ -14467,6 +14501,7 @@ static class Gc
                       && HeapChunks.Whole;
         _snapCount = 0;
         _walkStepping = stepping;
+        if (stepping) HeapChunks.MarkWalks();
         _walkChunk = HeapChunks.Newest();
         _walkBlock = 0;
     }
@@ -14507,8 +14542,9 @@ static class Gc
         // A MINOR CYCLE LOOKS ONLY AT YOUNG CHUNKS: an old chunk keeps
         // the start table of its last cycle, which SnapshotBlock does not
         // trust for this one, so a pointer into it is not followed -- its
-        // blocks are all old, and old is kept.
-        if (_minor && !HeapChunks.IsYoung(chunk)) return false;
+        // blocks are all old, and old is kept. Young as the stop began, in
+        // steps (MarkWalks): one made young since is not walked.
+        if (_minor && !(stepping ? HeapChunks.Walks(chunk) : HeapChunks.IsYoung(chunk))) return false;
         if (_pagesUnwalked && HeapChunks.PageClass(chunk) != 0)
         {
             PagesUnwalked = PagesUnwalked + 1;
@@ -14562,15 +14598,21 @@ static class Gc
     /// finished. Only this one chunk: a page is 32 KB, a mixed chunk a
     /// megabyte at most. Under the heap lock, so no two walk one chunk. Not
     /// a chunk the snapshot does not hold (mapped since), nor an old one in
-    /// a minor cycle -- neither is walked at all.
-    static void EnsureWalked(long chunk)
+    /// a minor cycle (old as the stop began, HeapChunks.Walks, whatever it
+    /// has become since) -- neither is walked at all.
+    static void EnsureWalked(long chunk) => EnsureWalked(chunk, 0);
+
+    /// The same for `block` of it: a block in the part of the chunk in hand
+    /// the walk has been through needs no more of it.
+    static void EnsureWalked(long chunk, long block)
     {
         if (!_stopOpen || chunk == 0) return;
         bool inHand = chunk == _walkChunk && _walkBlock != 0;
+        if (inHand && block != 0 && block < _walkBlock) return;
         if (!inHand)
         {
             if (HeapChunks.StartsCycle(chunk) == _cycle) return;
-            if (_minor && !HeapChunks.IsYoung(chunk)) return;
+            if (_minor && !HeapChunks.Walks(chunk)) return;
             if (HeapChunks.OfSnapshot(HeapChunks.First(chunk)) != chunk) return;
         }
         long clock = PauseClock;
@@ -15301,6 +15343,7 @@ static class HeapChunks
     const long ChunkListed = 2;     // a page on its class's list
     const long ChunkPooled = 4;     // an empty page kept for any class
     const long ChunkSwept = 8;      // a page the workers swept, for the collector to list (Gc.SweepPage)
+    const long ChunkWalks = 16;     // young when the stop began: the cycle's walk is through it (MarkWalks)
 
     /// A size-class page at its largest: small enough that a thread owning
     /// one of every class holds little, large enough that the start table
@@ -16325,6 +16368,30 @@ static class HeapChunks
     {
         long flags = Sys.Peek(chunk + ChunkFlags);
         Sys.Poke(chunk + ChunkFlags, young ? flags | ChunkYoung : flags & ~ChunkYoung);
+    }
+
+    /// WHAT A MINOR CYCLE'S WALK IS THROUGH, fixed as its stop begins: every
+    /// chunk young then (ChunkWalks), and no other. Taken whole under the
+    /// heap lock, the walk saw young as it was at its start; in steps, a
+    /// hole handed out of an old chunk between two makes the chunk young
+    /// (YoungAt), and walked then -- by the stop's walk, or on demand -- the
+    /// chunk had a start table of the cycle its old blocks were never meant
+    /// to be judged by. A pass over the chunk list, not the heap. The heap
+    /// lock is held.
+    public static void MarkWalks()
+    {
+        for (long chunk = _chunks; chunk != 0; chunk = Sys.Peek(chunk + ChunkNext))
+        {
+            long flags = Sys.Peek(chunk + ChunkFlags);
+            Sys.Poke(chunk + ChunkFlags, (flags & ChunkYoung) != 0 ? flags | ChunkWalks : flags & ~ChunkWalks);
+        }
+    }
+
+    /// Whether the cycle's walk is through the chunk (MarkWalks): young when
+    /// the stop began.
+    public static bool Walks(long chunk)
+    {
+        return (Sys.Peek(chunk + ChunkFlags) & ChunkWalks) != 0;
     }
 
     /// The chunk a block handed out lies in, made young. Heap lock held.

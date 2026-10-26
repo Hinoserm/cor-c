@@ -9,10 +9,11 @@
 // THE STOP IN STEPS (Gc.StopBudget): the snapshot's walk of the heap, the
 // cards and the collector's own pages, a few blocks at a time with the heap
 // lock let go between. While it is open a slow path refills no buffer and
-// no page: each request is one block, written down and, at the stop's end,
-// given its start bit and marked, so that what a thread made before it
-// answered STAMP -- an array of names filled with no barrier, the string
-// only the array holds -- is traced. 1011's workload, six threads under a
+// no page: each request is one block, written into the snapshot as it is
+// handed out (its chunk walked first if the stop's walk has not been
+// there), so that what a thread made before it answered STAMP -- an array
+// of names filled with no barrier, the string only the array holds -- is
+// traced. 1011's workload, six threads under a
 // cap that keeps cycles coming, with a budget of 32 blocks and a platform
 // that lingers between steps (YieldHook), so the threads run out of their
 // buffers inside stops: tens of thousands of blocks answered one by one a
