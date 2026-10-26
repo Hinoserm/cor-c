@@ -210,6 +210,26 @@ static partial class Os
         return Pread(fd, Sys.ArrayData(buf) + (nuint)at, (nuint)count, offset);
     }
 
+    /// A write at an offset that moves no file position, as pwrite(2): the
+    /// overlapped form's offset, as Pread's.
+    public static long Pwrite(int fd, nuint from, nuint count, long offset)
+    {
+        nuint handle = HandleOf(fd);
+        if (handle == 0) return -Err.BadF;
+        byte[] overlapped = new byte[20];
+        Raw.SetU32(overlapped, 8, offset & 0xFFFFFFFF);
+        Raw.SetU32(overlapped, 12, (offset >> 32) & 0xFFFFFFFF);
+        int wrote = 0;
+        if (WriteFile(handle, from, (int)count, Sys.AddressOf(ref wrote), At(overlapped)) == 0) return Failed();
+        return wrote;
+    }
+
+    public static long Pwrite(int fd, byte[] buf, int at, int count, long offset)
+    {
+        if (at < 0 || count < 0 || at > buf.Length - count) throw new IndexOutOfRangeException("write range is outside its buffer");
+        return Pwrite(fd, Sys.ArrayData(buf) + (nuint)at, (nuint)count, offset);
+    }
+
     /// write(2); a descriptor opened to append writes at the end each time.
     public static long Write(int fd, nuint at, nuint count)
     {

@@ -4485,6 +4485,23 @@ public static class RandomAccess
         return (int)got;
     }
 
+    /// All of buffer at fileOffset, as .NET's: a short write is carried on
+    /// until everything is written or the system refuses.
+    public static void Write(Microsoft.Win32.SafeHandles.SafeFileHandle handle, ReadOnlySpan<byte> buffer, long fileOffset)
+    {
+        if (handle == null) throw new ArgumentNullException("handle");
+        if (handle.IsClosed) throw new ObjectDisposedException("handle");
+        if (fileOffset < 0) throw new ArgumentOutOfRangeException("fileOffset");
+        int done = 0;
+        while (done < buffer.Length)
+        {
+            long put = Os.Pwrite(handle.Fd, buffer.Items, buffer.Start + done, buffer.Length - done, fileOffset + done);
+            if (put < 0) throw Interop.GetExceptionForIoErrnoOnHandle((int)put, null);
+            if (put == 0) throw new IOException("the write made no progress");
+            done += (int)put;
+        }
+    }
+
     public static long GetLength(Microsoft.Win32.SafeHandles.SafeFileHandle handle)
     {
         if (handle == null) throw new ArgumentNullException("handle");

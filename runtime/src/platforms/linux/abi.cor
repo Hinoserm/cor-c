@@ -22,6 +22,7 @@ static class LinuxCall
     public const int Exit = 60;        // (status)
     public const int Read = 0;         // (fd, address, count) -> read, or -errno
     public const int Pread64 = 17;     // (fd, address, count, offset) -> read, or -errno
+    public const int Pwrite64 = 18;    // (fd, address, count, offset) -> written, or -errno
     public const int Write = 1;        // (fd, address, count) -> written, or -errno
     public const int Open = 2;         // (path, flags, mode) -> fd, or -errno
     public const int Close = 3;        // (fd) -> 0, or -errno
@@ -146,6 +147,7 @@ static class LinuxCall
     public const int Exit = 1;         // (status)
     public const int Read = 3;         // (fd, address, count) -> read, or -errno
     public const int Pread64 = 180;    // (fd, address, count, offset low, offset high) -> read, or -errno
+    public const int Pwrite64 = 181;   // (fd, address, count, offset low, offset high) -> written, or -errno
     public const int Write = 4;        // (fd, address, count) -> written, or -errno
     public const int Open = 5;         // (path, flags, mode) -> fd, or -errno
     public const int Close = 6;        // (fd) -> 0, or -errno
