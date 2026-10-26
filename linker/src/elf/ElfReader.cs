@@ -656,7 +656,11 @@ public static class ElfReader
                 // of mod 00, rm 101 before the word (an absolute disp32).
                 // With a base -- `call *foo@GOT(%ebx)`, what an assembler
                 // writes for PIC -- it is the slot's offset from the GOT, as
-                // R_386_GOT32 is. This toolchain writes GOT32X only without.
+                // R_386_GOT32 is. This toolchain writes GOT32X only without
+                // (Imports: a slot load or call, no index). The one byte read
+                // is taken for a ModRM; a SIB with no base and scale 1 passes
+                // too and is base-less as well, but one scaled is read as a
+                // base: no assembler writes GOT32X so.
                 if (kind == RelocKind.GotAddr && (offset == 0 || (target.Bytes[(int)offset - 1] & 0xC7) != 0x05))
                 {
                     kind = RelocKind.Got32;

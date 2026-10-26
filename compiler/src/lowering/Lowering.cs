@@ -169,7 +169,10 @@ public sealed partial class Lowering
     /// (InternString): in a compile to an object a link puts together with
     /// others, not position-independent. C# interns a literal process-wide:
     /// `""` made by the library and `""` written in a program are one object,
-    /// and per object they were two (725).
+    /// and per object they were two (725). Shared across the objects of one
+    /// link: a shared library exports none of its literals (OwnAndUnbound),
+    /// so a program's literal and a library's of the same text are still
+    /// two objects.
     /// </summary>
     public static bool SharedLiterals { get; set; }
 
