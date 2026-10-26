@@ -4022,7 +4022,7 @@ static class Gc
     // has no memory to give.
     static bool Room(nuint tb, nuint need)
     {
-        if (Sys.ReadNative(tb + Tls.RegionAt) + need <= Sys.ReadNative(tb + Tls.RegionEnd))
+        if (need <= Sys.ReadNative(tb + Tls.RegionEnd) - Sys.ReadNative(tb + Tls.RegionAt))
         {
             SizedRoomHere = SizedRoomHere + 1;
             return true;
@@ -4078,7 +4078,7 @@ static class Gc
     static nuint OpenRecord(nuint tb, nuint frame)
     {
         nuint record = Sys.ReadNative(tb + Tls.RegionAt);
-        if (record + RecordBytes > Sys.ReadNative(tb + Tls.RegionEnd))
+        if (RecordBytes > Sys.ReadNative(tb + Tls.RegionEnd) - record)
         {
             if (!NextChunk(tb, RecordBytes, false)) return NoRecord;
             record = Sys.ReadNative(tb + Tls.RegionAt);
@@ -4484,7 +4484,7 @@ static class Gc
         nuint at = Sys.ReadNative(tb + Tls.RegionAt);
         nuint need = ((nuint)bytes + Overhead + 7) & SizeMask;
         if (need < Smallest) need = Smallest;
-        if (at + need > Sys.ReadNative(tb + Tls.RegionEnd))
+        if (need > Sys.ReadNative(tb + Tls.RegionEnd) - at)
         {
             // NO MORE THAN A SIXTEENTH OF THE MACHINE IN REGIONS. A region
             // holds everything made in it until it ends, and one around a
@@ -4575,8 +4575,9 @@ static class Gc
             // The block below, by its footer: on down while it is one given back.
             nuint below = Sys.ReadNative(block - FooterBytes);
             nuint under = below & SizeMask;
+            if (under < Smallest || under > block - floor) break;
             nuint prev = block - under;
-            if (under < Smallest || prev < floor || Sys.ReadNative(prev) != below || Sys.ReadNative(prev + KindAt) != KindFreed) break;
+            if (Sys.ReadNative(prev) != below || Sys.ReadNative(prev + KindAt) != KindFreed) break;
             block = prev;
             size = under;
         }
@@ -4634,9 +4635,12 @@ static class Gc
         nuint count = Sys.ReadNative(at + ArrayCountAt) & 0x7FFFFFFF;
         // In range, checked above: a count, as a word.
         nuint elements = (nuint)length;
-        if (stride == 0 || elements <= count) return false;
+        // The product bounded before it is made: in 32 bits a count near
+        // 2^30 of words wrapped it small, and the region grew by a few bytes
+        // under a count of a billion.
+        if (stride == 0 || elements <= count || payload > MaxRequest || elements > (MaxRequest - payload) / stride) return false;
         nuint need = (payload + elements * stride + Overhead + 7) & SizeMask;
-        if (need <= size || block + need > last) return false;
+        if (need <= size || need > last - block) return false;
         // The pointer first, then the footer past the old end, the old footer
         // cleared, the header, and the count last.
         Sys.WriteNative(tb + Tls.RegionAt, block + need);
@@ -5077,8 +5081,7 @@ static class Gc
         // counted from it wrapped to all there is: the thread bumped on past
         // its buffer over whatever lay beyond (739). AN EXACT FIT IS ROOM
         // (BufferFits).
-        nuint limit = Sys.ReadNative(tb + Tls.AllocLimit);
-        if (limit < block || need != limit - block && need + Smallest > limit - block)
+        if (!BufferFits(block, need, Sys.ReadNative(tb + Tls.AllocLimit)))
         {
             Sys.WriteNative(tb + Tls.InAlloc, 0);
             return AllocSlow(request, what);
@@ -5092,15 +5095,18 @@ static class Gc
         return block + HeaderBytes;
     }
 
-    /// WHETHER A BUFFER BUMPED TO `next` STILL HOLDS: what is left past it
-    /// must be nothing, or a free block at least (Retire stamps it so). An
-    /// exact fit refused sent the request to the slow path, which retired
+    /// WHETHER A BUFFER AT `block` HOLDS `need` MORE BYTES, the room counted
+    /// and never the end summed, and a limit below the pointer no room (the
+    /// bump above says why): what is left past the request must be nothing,
+    /// or a free block at least (Retire stamps it so). An exact fit refused sent the request to the slow path, which retired
     /// the buffer and its last hole's worth with it -- a recycled hole that
     /// held two requests answered one, its other half passed over until the
     /// next collection, and the heap grew for the request instead (737).
-    static bool BufferFits(nuint next, nuint limit)
+    static bool BufferFits(nuint block, nuint need, nuint limit)
     {
-        return next == limit || next + Smallest <= limit;
+        if (limit < block) return false;
+        nuint room = limit - block;
+        return need == room || need <= room && room - need >= Smallest;
     }
 
     static nuint AllocKindUnguarded(nuint bytes, nuint kind)
@@ -5145,7 +5151,6 @@ static class Gc
         // retire it before the pointer has moved past the object.
         Sys.WriteNative(tb + Tls.InAlloc, 1);
         nuint block = Sys.ReadNative(tb + Tls.AllocPtr);
-        nuint next = block + need;
 
         // A BUFFER WITH ROOM ANSWERS, whatever the free index holds. Asking
         // it first sent every allocation whose size had a hole anywhere to
@@ -5153,12 +5158,13 @@ static class Gc
         // every thread queued behind whichever was collecting -- and put the
         // object in that hole's chunk, young for the next minor cycle to
         // walk. Holes are reused as buffers are refilled (AllocSlow).
-        if (bytes > MaxRequest || !BufferFits(next, Sys.ReadNative(tb + Tls.AllocLimit)))
+        if (bytes > MaxRequest || !BufferFits(block, need, Sys.ReadNative(tb + Tls.AllocLimit)))
         {
             Sys.WriteNative(tb + Tls.InAlloc, 0);
             return AllocSlow(bytes, kind);
         }
 
+        nuint next = block + need;
         Sys.WriteNative(tb + Tls.AllocPtr, next);
         Sys.WriteNative(block, need);
         Sys.WriteNative(block + KindAt, kind);
@@ -7207,7 +7213,7 @@ static class Gc
                     && !IsInPlace(at))
                 {
                     Unlink(at);
-                    if (size - BufferBytes >= Smallest)
+                    if (size >= BufferBytes + Smallest)
                     {
                         Stamp(at + BufferBytes, size - BufferBytes, FlagFree);
                         Link(at + BufferBytes);
@@ -7589,7 +7595,7 @@ static class Gc
         // request at a time, which is what it has left. The small holes stay
         // for the requests too large for a buffer, and for the sweep to join.
         bool room = Sys.ReadNative(tb + Tls.AllocPtr) != 0
-            && BufferFits(Sys.ReadNative(tb + Tls.AllocPtr) + need, Sys.ReadNative(tb + Tls.AllocLimit));
+            && BufferFits(Sys.ReadNative(tb + Tls.AllocPtr), need, Sys.ReadNative(tb + Tls.AllocLimit));
         bool tight = HeapChunks.SoftCap != 0 && HeapChunks.HeapBytes + BufferBytes > HeapChunks.SoftCap
             || HeapCeiling != 0 && HeapChunks.HeapBytes + BufferBytes > HeapCeiling;
         if (need + Smallest <= BufferBytes
@@ -7945,8 +7951,9 @@ static class Gc
                 if (next != 0) HeapChunks.SetLargestHole(page, HeapChunks.LargestHole(page) + (HeapChunks.End(page) - next));
             }
             HeapChunks.SetPageFree(page, next);
-            nuint hole = HeapChunks.LargestHole(page) - size;
-            HeapChunks.SetLargestHole(page, hole > 0 ? hole : 0);
+            // A hint, which may be below the size taken: none left then.
+            nuint hole = HeapChunks.LargestHole(page);
+            HeapChunks.SetLargestHole(page, hole > size ? hole - size : 0);
             if (next == 0) UnlistPage(page);
             Sys.WriteNative(block, size);
             Sys.WriteNative(block + KindAt, 0);
@@ -8301,7 +8308,7 @@ static class Gc
 
     static nuint TakeBump(nuint need)
     {
-        if (_current == 0 || _bump + need > _limit)
+        if (_current == 0 || need > _limit - _bump)
         {
             return 0;
         }
@@ -8433,7 +8440,8 @@ static class Gc
             if (c > 1)
             {
                 size = ClassSize(c - 1);
-                block = first + ((at - first) / size) * size;
+                // In the page's header, before its first block: none.
+                block = at < first ? 0 : first + ((at - first) / size) * size;
             }
             else if (c == 0)
             {
@@ -12098,7 +12106,8 @@ static class Gc
         // below the depth that wakes them (WorkerWakeDepth) find nothing.
         if (Workers == 0 || depth + 1 < 2 * (nuint)WorkerWakeDepth) return;
         nuint ctl = GcLock.Words();
-        nuint queued = PeekW((nuint)ctl + (nuint)GcLock.GreyTail) - PeekW((nuint)ctl + (nuint)GcLock.GreyHead);
+        nuint head = PeekW((nuint)ctl + (nuint)GcLock.GreyHead);
+        nuint queued = PeekW((nuint)ctl + (nuint)GcLock.GreyTail) - head;
         if (queued < (nuint)WorkerWakeDepth) ShareLocal(stack, ((depth + 1) / 2));
     }
 
@@ -12614,8 +12623,10 @@ static class Gc
 
         while (true)
         {
-            nuint tail = PeekW(ctl + (nuint)GcLock.GreyTail);
+            // The head first: it only follows the tail, so a tail read after
+            // it is never behind it, and their difference never wraps.
             nuint head = PeekW(ctl + (nuint)GcLock.GreyHead);
+            nuint tail = PeekW(ctl + (nuint)GcLock.GreyTail);
 
             if (ring == 0 || tail - head >= count)
             {
@@ -16841,7 +16852,7 @@ static class HeapChunks
     {
         for (nuint chunk = _chunks; chunk != 0; chunk = Sys.ReadNative(chunk + ChunkNext))
         {
-            if (chunk < at + bytes && Sys.ReadNative(chunk + ChunkLimit) > at) return chunk;
+            if (chunk - at < bytes || chunk < at && Sys.ReadNative(chunk + ChunkLimit) > at) return chunk;
         }
         return 0;
     }

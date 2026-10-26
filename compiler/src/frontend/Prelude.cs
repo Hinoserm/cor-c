@@ -943,14 +943,14 @@ public static class Prelude
             // Windows: where ThreadBlock and SetThreadBlock find this thread's
             // block -- the word of FS to start from, and what to add to it to
             // reach the runtime's TLS slot (Selector.TlsBaseSymbol).
-            public static void SetThreadBlockSlot(long block, long offset) { }
-            public static void SetGs(long selector) { }
+            public static void SetThreadBlockSlot(int block, int offset) { }
+            public static void SetGs(int selector) { }
             // A word of this processor's area at `offset` from where GS is
             // based, read or written in one instruction (a kernel's per-CPU
             // data: Linux's this_cpu_read and this_cpu_write).
             public static nuint PerCpuRead(int offset) { return 0; }
             public static void PerCpuWrite(int offset, nuint value) { }
-            public static long GetGs() { return 0; }
+            public static int GetGs() { return 0; }
             // The bounds of the program's static data, for a collector that
             // scans statics as roots: the linker defines the symbols.
             // Whether a reference is a string, read from its descriptor: what

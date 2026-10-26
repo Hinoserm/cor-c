@@ -496,7 +496,7 @@ static class Platform
             // thread's own block: a thread made by pthread_create inherits
             // the slot as its creator left it, and asking for "any" would
             // give it another.
-            entry = (int)(Runtime.ManagedGs >> 3);
+            entry = Runtime.ManagedGs >> 3;
         }
         Sys.Write32(desc, (uint)entry);
         Sys.Write32(desc + 4, (uint)block);    // base_addr
@@ -513,7 +513,7 @@ static class Platform
             Exit(134);
         }
 
-        long selector = (Sys.Read32(desc) << 3) | 3;
+        int selector = (int)(Sys.Read32(desc) << 3) | 3;
         Runtime.ManagedGs = selector;
         Sys.SetGs(selector);
 #endif

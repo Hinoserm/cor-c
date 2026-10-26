@@ -2798,10 +2798,10 @@ static class Runtime
 
     /// i386: the selector GS held when the process began -- the C library's
     /// thread pointer under ld-linux, zero in a program nobody else set up.
-    public static long NativeGs;
+    public static int NativeGs;
 
     /// i386: the selector of the runtime's own thread blocks.
-    public static long ManagedGs;
+    public static int ManagedGs;
 
     public static void EnterNative()
     {

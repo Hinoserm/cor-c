@@ -220,9 +220,22 @@ static class Platform
             for (int i = 0; i < text.Length; i++) WriteBytes(2, units + (nuint)i * 2, 1);
             Exit(137);
         }
-        _at = (start + RegionPage - 1) & PageMask;
-        _start = _at;
-        _limit = end & PageMask;
+        // A region with no whole page in it is none: rounded, its start
+        // passed its limit, and the room counted from them wrapped to all
+        // there is (Map). The start rounded up only where that cannot wrap.
+        nuint first = start > PageMask ? 0 : (start + RegionPage - 1) & PageMask;
+        nuint limit = end & PageMask;
+        if (first == 0 || limit <= first)
+        {
+            UnlockRegion(held);
+            string text = "heap: Platform.SetHeap was given no whole page\n";
+            nuint units = Sys.StringData(text);
+            for (int i = 0; i < text.Length; i++) WriteBytes(2, units + (nuint)i * 2, 1);
+            Exit(137);
+        }
+        _at = first;
+        _start = first;
+        _limit = limit;
         UnlockRegion(held);
     }
 
@@ -1435,9 +1448,11 @@ static class Clock
 /// until the kernel provides one.
 static class Native
 {
-    public static void Wait(nuint at, long expect)
+    public static void Wait(nuint at, nint expect)
     {
-        for (int i = 0; i < 1000000 && Sys.Read32(at) == expect; i++)
+        // The word is 32 bits; the expected value its low half, whatever
+        // sign the caller's word gave it.
+        for (int i = 0; i < 1000000 && Sys.Read32(at) == (uint)expect; i++)
         {
             Idle();
         }
@@ -1446,11 +1461,11 @@ static class Native
     /// As Wait, giving up once `nanoseconds` have passed by Clock (a
     /// timed Monitor.Wait's). A return by timeout or by the word changing
     /// looks the same; every caller re-reads its word and its clock.
-    public static void WaitFor(nuint at, long expect, long nanoseconds)
+    public static void WaitFor(nuint at, nint expect, long nanoseconds)
     {
         long deadline = Clock.Now() + nanoseconds;
 
-        while (Sys.Read32(at) == expect && Clock.Now() < deadline)
+        while (Sys.Read32(at) == (uint)expect && Clock.Now() < deadline)
         {
             Idle();
         }
