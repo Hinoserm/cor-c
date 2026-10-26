@@ -12,24 +12,26 @@ class AllocationWorker : Action
     public bool Valid;
     public void Invoke()
     {
-        long left = Runtime.Alloc(32);
-        long hole = Runtime.Alloc(32);
-        long right = Runtime.Alloc(32);
-        Sys.Poke(left, 111);
-        Sys.Poke(right, 222);
+        // The payload's first and last four bytes: 32-bit fields, whatever the word.
+        nuint left = Runtime.Alloc(32);
+        nuint hole = Runtime.Alloc(32);
+        nuint right = Runtime.Alloc(32);
+        Sys.Write32(left, 111);
+        Sys.Write32(right, 222);
         Runtime.Free(hole);
         bool okay = true;
         for (int i = 0; i < Count; i++)
         {
             int bytes = 1024 + (i & 7) * 8;
-            long memory = Runtime.Alloc(bytes);
-            if (Sys.Peek(memory) != 0 || Sys.Peek(memory + bytes - 4) != 0) okay = false;
-            Sys.Poke(memory, i + 1);
-            Sys.Poke(memory + bytes - 4, i + 2);
-            if (Sys.Peek(memory) != i + 1 || Sys.Peek(memory + bytes - 4) != i + 2) okay = false;
+            nuint memory = Runtime.Alloc((nuint)bytes);
+            nuint last = memory + (nuint)bytes - 4;
+            if (Sys.Read32(memory) != 0 || Sys.Read32(last) != 0) okay = false;
+            Sys.Write32(memory, (uint)(i + 1));
+            Sys.Write32(last, (uint)(i + 2));
+            if (Sys.Read32(memory) != (uint)(i + 1) || Sys.Read32(last) != (uint)(i + 2)) okay = false;
             Runtime.Free(memory);
         }
-        if (Sys.Peek(left) != 111 || Sys.Peek(right) != 222) okay = false;
+        if (Sys.Read32(left) != 111 || Sys.Read32(right) != 222) okay = false;
         Runtime.Free(right);
         Runtime.Free(left);
         Valid = okay;
