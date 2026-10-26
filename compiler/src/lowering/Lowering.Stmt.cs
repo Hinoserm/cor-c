@@ -299,7 +299,10 @@ public sealed partial class Lowering
                 _e.SetBlock(step);
                 foreach (Expr e2 in f.Step)
                 {
-                    Eval(e2);
+                    // A step is a statement: `(i, j) = (i + 1, j - 1)` is
+                    // its assignment, not its places read back.
+                    if (e2 is SequenceExpr { Assignment: true } deconstructing) EmitStmt(deconstructing.Effect);
+                    else Eval(e2);
                 }
                 _e.Jump(top);
                 _e.SetBlock(end);
