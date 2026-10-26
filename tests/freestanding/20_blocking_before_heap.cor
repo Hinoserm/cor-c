@@ -48,7 +48,7 @@ static class Program
         string text = "before the heap\n";
         nuint units = Sys.StringData(text);
         long wrote = 0;
-        for (int i = 0; i < text.Length; i++) wrote = wrote + Err.Result(Platform.Blocking(Write, 1, (SyscallWord)(units + (nuint)(i * 2)), 1));
+        for (int i = 0; i < text.Length; i++) wrote = wrote + (long)Platform.Blocking(Write, 1, (SyscallWord)(units + (nuint)(i * 2)), 1);
 
         Host.Start(8 * 1024 * 1024);
         Host.Line("wrote " + wrote);

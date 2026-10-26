@@ -120,7 +120,7 @@ static class Program
 
     // Between two of the stop's steps: a while spent, as a platform that
     // gives the processor to others does.
-    static long Linger(long a, long b, long c)
+    static nuint Linger(nuint a, nuint b, nuint c)
     {
         if (a != 0) return 0;
         for (int i = 0; i < 20000; i++) _spin = _spin + i;

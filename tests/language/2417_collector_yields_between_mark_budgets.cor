@@ -24,7 +24,7 @@ static class Program
     static long _yields;
     static Node? _head;
 
-    static long Yield(long a, long b, long c)
+    static nuint Yield(nuint a, nuint b, nuint c)
     {
         _yields = _yields + 1;
         return 0;

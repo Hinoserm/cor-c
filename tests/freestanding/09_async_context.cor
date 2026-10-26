@@ -38,16 +38,16 @@ static class Program
     static int _seenA, _seenB;
 
     /// Platform.ContextHook: the "process" is _current.
-    static long Context(long op, long word, long unused)
+    static nuint Context(nuint op, nuint word, nuint unused)
     {
-        if (op == AsyncContext.CaptureOp) return Sys.Word(_current);
+        if (op == AsyncContext.CaptureOp) return Sys.ObjectAddress(_current);
         if (op == AsyncContext.EnterOp)
         {
-            long was = Sys.Word(_current);
-            _current = Sys.FromWord(word);
+            nuint was = Sys.ObjectAddress(_current);
+            _current = Sys.ObjectAt(word);
             return was;
         }
-        _current = Sys.FromWord(word);
+        _current = Sys.ObjectAt(word);
         return 0;
     }
 

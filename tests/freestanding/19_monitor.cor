@@ -56,7 +56,7 @@ static class Program
 
     /// Platform.NanosHook: CLOCK_MONOTONIC. Asked once to, it first pulses
     /// the gate, as another processor would while a Wait sleeps.
-    static long Nanos(long a, long b, long c)
+    static long Nanos(nuint a, nuint b, nuint c)
     {
         _clockReads++;
         if (_pulseFromClock)

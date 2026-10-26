@@ -120,7 +120,7 @@ static class Program
     static long _refused;
     [ThreadStatic] public static bool Refusing;
 
-    static long Refuse(long a, long b, long c)
+    static nuint Refuse(nuint a, nuint b, nuint c)
     {
         if (a != 1 || !Refusing) return 0;
         Interlocked.Increment(ref _refused);

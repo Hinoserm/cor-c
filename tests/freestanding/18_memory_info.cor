@@ -24,9 +24,9 @@ static class Program
     static long _processors;
 
     /// Platform.ProcessorCountHook: the kernel's count.
-    static long Processors(long a, long b, long c)
+    static nuint Processors(nuint a, nuint b, nuint c)
     {
-        return _processors;
+        return (nuint)_processors;
     }
 
     static int Main()

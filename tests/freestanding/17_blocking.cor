@@ -37,7 +37,7 @@ static class Program
         string text = "through Platform.Blocking\n";
         byte[] bytes = new byte[text.Length];
         for (int i = 0; i < text.Length; i++) bytes[i] = (byte)text[i];
-        long wrote = Err.Result(Platform.Blocking(Write, 1, (SyscallWord)Sys.ArrayData(bytes), (SyscallWord)bytes.Length));
+        long wrote = (long)Platform.Blocking(Write, 1, (SyscallWord)Sys.ArrayData(bytes), (SyscallWord)bytes.Length);
         Host.Line("wrote " + wrote);
 
         object[] keep = new object[100];
