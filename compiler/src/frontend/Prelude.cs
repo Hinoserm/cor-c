@@ -622,10 +622,15 @@ public static class Prelude
             public static void Write16(nuint at, ushort value) { }
             public static void Write32(nuint at, uint value) { }
             public static void Write64(nuint at, ulong value) { }
-            // A WORD: a pointer-sized field -- an address kept in memory, a
-            // length, a header -- as an ordinary load and store, which the
-            // optimiser may answer from an earlier one, as the collector's
-            // words are read.
+            // A POINTER-SIZED FIELD: an address kept in memory, or a length,
+            // size or header the layout makes as wide as an address -- 4
+            // bytes on i386, 8 in long mode, as an ordinary load and store,
+            // which the optimiser may answer from an earlier one. NEVER the
+            // default for a number: a field whose width is its own (a long, an
+            // int, a DWORD, a 64-bit offset) is read at that width, by
+            // Read8/16/32/64, whatever the machine.
+            public static nuint ReadAddress(nuint at) { return 0; }
+            public static void WriteAddress(nuint at, nuint value) { }
             public static nuint ReadNative(nuint at) { return 0; }
             public static void WriteNative(nuint at, nuint value) { }
             // The low 32 bits, said: the one narrowing of an address or a
@@ -895,17 +900,21 @@ public static class Prelude
             // A program in user mode can do nothing else that matters -- it
             // cannot touch a device, arm a clock, or reach the trap table -- so
             // everything it CAN do arrives through here.
-            public static nint Syscall(nint number, nint a, nint b, nint c) { return 0; }
-            public static nint Syscall(nint number, nint a, nint b, nint c, nint d, nint e, nint f) { return 0; }
+            //
+            // As Linux's: the registers are SyscallWord wide (--syscall-abi),
+            // 32 bits for the i386 interface and 64 for x86-64's, and what
+            // comes back is the raw register (Err says how to read it).
+            public static SyscallWord Syscall(int number, SyscallWord a, SyscallWord b, SyscallWord c) { return 0; }
+            public static SyscallWord Syscall(int number, SyscallWord a, SyscallWord b, SyscallWord c, SyscallWord d, SyscallWord e, SyscallWord f) { return 0; }
 
             // The GUI module's door, the same convention as Syscall with
             // another vector: a program's way into the GUI kernel (`int 0x81`).
-            public static nint GuiCall(nint number, nint a, nint b, nint c) { return 0; }
+            public static SyscallWord GuiCall(int number, SyscallWord a, SyscallWord b, SyscallWord c) { return 0; }
             // A Windows system call (`int 0x2E`): EAX the call's number and EDX
             // the address of its arguments, as ntdll's stubs make it; the
             // answer is its NTSTATUS. For a CORSAC program attached to the NT
             // kernel -- csrss -- which serves Windows programs from outside them.
-            public static nint NtCall(nint number, nuint arguments) { return 0; }
+            public static SyscallWord NtCall(int number, SyscallWord arguments) { return 0; }
             // The stack pointer as the program was entered, for a runtime that
             // needs to find what the loader left there: argc and argv.
             public static nuint EntryStack() { return 0; }

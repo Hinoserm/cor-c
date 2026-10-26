@@ -100,8 +100,10 @@ public sealed partial class Lowering
                 _e.Store(R(Address(call, target, 0)), R(ToI64(Arg(call, target, 1))), 0, 8);
                 return Void();
             // A WORD, the collector's: an ordinary load and store.
+            case "ReadAddress":
             case "ReadNative":
                 return _e.Load(word, Address(call, target, 0), 0);
+            case "WriteAddress":
             case "WriteNative":
                 _e.Store(R(Address(call, target, 0)), R(ToWord(Arg(call, target, 1))), 0, _t.WordSize);
                 return Void();
@@ -831,7 +833,7 @@ public sealed partial class Lowering
                 // RING 0: the kernel's own function, not a trap (KernelSyscalls).
                 if (KernelSyscallMethod() is not MethodSymbol served)
                 {
-                    Error(call, "--kernel-syscalls: Sys.Syscall is a call of KernelFiles.Syscall(nint number, nint a, nint b, nint c, nint d, nint e, nint f), "
+                    Error(call, "--kernel-syscalls: Sys.Syscall is a call of KernelFiles.Syscall(int number, SyscallWord a, ..., SyscallWord f), "
                               + (KernelSyscallCandidates() == 0 ? "and no such static method is declared" : "and more than one type KernelFiles declares one"));
                     return _e.Const(0, IrTypes.Word);
                 }
@@ -844,10 +846,13 @@ public sealed partial class Lowering
             case "Syscall":
             case "GuiCall":
             {
+                // The registers are SyscallWord wide, which is the machine's
+                // word where --syscall-abi is the target's own (the driver
+                // refuses the others): each argument is already that wide.
                 List<Operand> args = new();
                 for (int i = 1; i < target.Params.Count; i++)
                 {
-                    args.Add(R(ToWord(Arg(call, target, i))));
+                    args.Add(R(Arg(call, target, i)));
                 }
                 int vector = target.Name == "GuiCall" ? 0x81 : 0x80;
                 VReg r = _e.Syscall(R(ToWord(Arg(call, target, 0))), args, vector);
@@ -858,7 +863,7 @@ public sealed partial class Lowering
                 // NT's convention: the arguments' address in EDX, which is the
                 // third of Syscall's registers (EBX, ECX, EDX).
                 VReg number = ToWord(Arg(call, target, 0));
-                List<Operand> args = new() { Imm(0, number.Type), Imm(0, number.Type), R(ToWord(Arg(call, target, 1))) };
+                List<Operand> args = new() { Imm(0, number.Type), Imm(0, number.Type), R(Arg(call, target, 1)) };
                 VReg r = _e.Syscall(R(number), args, 0x2E);
                 return Fit(r, returns);
             }

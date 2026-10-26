@@ -888,6 +888,12 @@ public sealed class Parser
     public static IReadOnlyList<string> ProjectUsings { get; set; } = Array.Empty<string>();
 
     /// <summary>
+    /// What SyscallWord is, "uint" or "ulong" (--syscall-abi, Driver); null
+    /// for the target's own word.
+    /// </summary>
+    public static string? SyscallWordType { get; set; }
+
+    /// <summary>
     /// The record classes the program declares, in any of its files, by name
     /// (Frontend.RecordNames, read before any is parsed): a record deriving
     /// from one declared in another file, or later in its own, chains its
@@ -911,6 +917,10 @@ public sealed class Parser
             unit.Usings.Add(equals > 0 ? project[..equals] : project);
         }
 
+        // SyscallWord, in every file of every side: the type of a system
+        // call's register, which --syscall-abi decides (the target's own
+        // where it is not given).
+        _typeAliases["SyscallWord"] = SyscallWordType ?? (Target.Current.WordSize == 8 ? "ulong" : "uint");
         ParseUsings(unit);
 
         // A NAMESPACE IS A PATH ON THE TYPES INSIDE IT. `Corsac.Lang.Expr` and

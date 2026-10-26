@@ -701,7 +701,7 @@ public static class Driver
                     or "--load" or "--paddr" or "--cpu" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type" or "--runtime-knob"
-                    or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring" or "--module-index")
+                    or "--syscall-abi" or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring" or "--module-index")
                 {
                     i++;
                 }
@@ -747,6 +747,21 @@ public static class Driver
         // Bare metal: no operating system under the program, and therefore a
         // different platform library, no thread scheduler, and an entry stub
         // that touches nothing the loader did not give it.
+        // THE SYSTEM CALL INTERFACE this program is made for: 32 is Linux's i386
+        // (int 0x80, six 32-bit registers), 64 its x86-64 (the syscall
+        // instruction, six 64-bit registers). Left out, the target's own.
+        int syscallAbi = longMode ? 64 : 32;
+        if (Value(args, "--syscall-abi") is string abiText)
+        {
+            if (abiText != "32" && abiText != "64") return Fail("--syscall-abi is 32 or 64");
+            syscallAbi = int.Parse(abiText);
+            // The one the target has. A 32-bit interface from long mode (int
+            // 0x80 with the i386 registers, for a compat process) is not
+            // lowered yet; nothing runs one.
+            if (syscallAbi != (longMode ? 64 : 32))
+                return Fail("--syscall-abi=" + abiText + " is not made for --target " + targetName + " (its own is " + (longMode ? 64 : 32) + ")");
+        }
+        Corsac.Lang.Lower.Lowering.SyscallAbi = syscallAbi;
         bool freestanding = args.Contains("--freestanding");
         bool flat = args.Contains("--flat");
         // WINDOWS (docs/WIN32-TARGET.md): a PE32 image whose calls into C go
@@ -957,6 +972,9 @@ public static class Driver
 
         // THE PROJECT'S USINGS, in every file (Parser.ProjectUsings).
         Parser.ProjectUsings = Values(args, "--using").ToList();
+        // SyscallWord, the width of a system call's registers (--syscall-abi).
+        Parser.SyscallWordType = syscallAbi == 64 ? "ulong" : "uint";
+        if (syscallAbi == 64) symbols.Add("SYSCALL64");
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");
         // --check: the source read and bound, its errors and warnings

@@ -72,6 +72,13 @@ public sealed partial class Lowering
     public static bool KernelSyscalls { get; set; }
 
     /// <summary>
+    /// The width, 32 or 64, of a system call's registers (--syscall-abi):
+    /// SyscallWord is a uint or a ulong by it, and Sys.Syscall is Linux's
+    /// i386 interface or its x86-64 one.
+    /// </summary>
+    public static int SyscallAbi { get; set; } = 32;
+
+    /// <summary>
     /// THE CARD MARK BEFORE A REFERENCE STORE AS WELL AS AFTER IT: the
     /// program's threads can be stopped by its collector at ANY instruction,
     /// not only at a poll or a call. CORSAC's kernel and its modules are: a
