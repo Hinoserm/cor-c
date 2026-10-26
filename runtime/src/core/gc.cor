@@ -2606,41 +2606,71 @@ static class Gc
     /// reads (Since, Allocated, AllocatedByThread) take off, so that they say
     /// what was handed out -- a string made and freed in a loop goes back on
     /// its list, and costs nothing, as it did when each block was counted as
-    /// it was taken. Read inside the allocator (Tls.InAlloc), as the lists
-    /// are popped: an interrupt that allocates or frees between two links is
-    /// refused meanwhile; on top of the allocator itself, nothing is read.
-    /// Another thread's lists are not this one's to walk; theirs stay as
-    /// charged until they are handed back (RetireClasses), as their counts
-    /// not yet folded in were never counted before.
+    /// it was taken. Another thread's lists are not this one's to walk;
+    /// theirs stay as charged until they are handed back (RetireClasses), as
+    /// their counts not yet folded in were never counted before.
+    ///
+    /// READ A FEW LINKS AT A TIME. Inside the allocator (Tls.InAlloc) an
+    /// interrupt that allocates or frees between two links is refused, and
+    /// so is a kernel's preemption: held across whole lists, a program that
+    /// read the counter at every call (the NT layer's per-call accounting)
+    /// kept a K6-III's one processor inside the walk, and the shell never
+    /// ran again. So the flag is held for OwnListStep links and let go
+    /// between, where the thread may be preempted. A list changed meanwhile
+    /// -- an interrupt's allocation popped the link in hand -- ends the walk
+    /// of it at the page's bounds or its count, and the figure is short by
+    /// what that interrupt did, for this one read. Between two steps the
+    /// platform is asked (YieldHook), as between a collection's budgets. On
+    /// top of the allocator itself, nothing is read.
+    const long OwnListStep = 32;
+
     public static long OwnListBytes()
     {
         long tb = Sys.ThreadBlock();
         if (tb == 0 || _classSize == 0 || Sys.Peek(tb + Tls.InAlloc) != 0) return 0;
-        Sys.Poke(tb + Tls.InAlloc, 1);
-        long cache = Sys.Peek(tb + Tls.Classes);
-        if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
         long bytes = 0;
-        if (cache != 0)
+        for (long c = 0; c < Classes; c++)
         {
-            for (long c = 0; c < Classes; c++)
+            Sys.Poke(tb + Tls.InAlloc, 1);
+            long cache = Sys.Peek(tb + Tls.Classes);
+            if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+            if (cache == 0)
             {
-                long size = ClassSize(c);
-                long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
-                long block = Sys.Peek(cache + c * (2 * WordSize.Bytes) + WordSize.Bytes);
-                if (page == 0) continue;
-                long first = HeapChunks.First(page);
-                long end = HeapChunks.End(page);
-                // Bounded by the page: a link outside it ends the walk.
-                long left = (end - first) / size + 1;
-                while (block != 0 && block >= first && block < end && left > 0)
+                Sys.Poke(tb + Tls.InAlloc, 0);
+                break;
+            }
+            long size = ClassSize(c);
+            long page = Sys.Peek(cache + c * (2 * WordSize.Bytes));
+            long block = Sys.Peek(cache + c * (2 * WordSize.Bytes) + WordSize.Bytes);
+            if (page == 0)
+            {
+                Sys.Poke(tb + Tls.InAlloc, 0);
+                continue;
+            }
+            long first = HeapChunks.First(page);
+            long end = HeapChunks.End(page);
+            // Bounded by the page: a link outside it ends the walk.
+            long left = (end - first) / size + 1;
+            long step = 0;
+            while (block != 0 && block >= first && block < end && left > 0)
+            {
+                bytes = bytes + size;
+                block = Sys.Peek(block + KindAt);
+                left = left - 1;
+                step = step + 1;
+                if (step == OwnListStep)
                 {
-                    bytes = bytes + size;
-                    block = Sys.Peek(block + KindAt);
-                    left = left - 1;
+                    // Let go, and the platform asked (YieldHook): a preemption
+                    // refused meanwhile is taken here, not at a next interrupt
+                    // that would land in the walk again.
+                    Sys.Poke(tb + Tls.InAlloc, 0);
+                    if (YieldHook != 0 && !GcLock.HeldByMe()) Sys.Call(YieldHook, 0, 0, 0);
+                    step = 0;
+                    Sys.Poke(tb + Tls.InAlloc, 1);
                 }
             }
+            Sys.Poke(tb + Tls.InAlloc, 0);
         }
-        Sys.Poke(tb + Tls.InAlloc, 0);
         return bytes;
     }
 
@@ -11674,9 +11704,10 @@ static class Gc
     /// threads are not preempted -- a kernel on one processor -- had every
     /// other thread wait for a whole mark and sweep on the thread that
     /// allocated (an audio mixer woken 120-195 ms late, at 32 MB live on a
-    /// K6-III). Called with 0 between MarkBetweenYields blocks marked and
-    /// between SweepBetweenYields chunks swept; it may give the processor to
-    /// a thread that is ready, and must not allocate. The heap lock is let
+    /// K6-III). Called with 0 between OwnListStep links of a counter's read
+    /// of the thread's own lists (OwnListBytes), between MarkBetweenYields
+    /// blocks marked and between SweepBetweenYields chunks swept; it may give
+    /// the processor to a thread that is ready, and must not allocate. The heap lock is let
     /// go there, but for a collection made alone (CollectAlone), whose
     /// marking holds it throughout: there the platform must not give the
     /// processor away (it can tell, Runtime.HoldsHeapLock). Called with 1
