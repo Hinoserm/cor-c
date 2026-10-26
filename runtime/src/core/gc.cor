@@ -2625,10 +2625,13 @@ static class Gc
     /// what that interrupt did, for this one read. Between two steps the
     /// platform is asked (YieldHook), as between a collection's budgets,
     /// unless the thread may not be preempted (Tls.PreemptCount). A class
-    /// whose lists were handed back meanwhile (ShedPages, which uncharges
-    /// them) adds nothing: its links are counted aside and added only when
-    /// its walk ends with the cache and its page still the ones it began
-    /// with. That check sees the page, not the list: the same page handed
+    /// whose page changed meanwhile adds nothing for this read -- its lists
+    /// handed back (ShedPages, which uncharges them), or an interrupt's
+    /// allocation that emptied the list and refilled the class: its links
+    /// are counted aside and added only when its walk ends with the cache
+    /// and its page still the ones it began with, and the figure is short
+    /// by the whole list the other way. That check sees the page, not the
+    /// list: the same page handed
     /// back and refilled between two steps reads as unchanged, and the
     /// figure is off by what was on it, for this one read. On top of the
     /// allocator itself, nothing is read.
@@ -11739,8 +11742,9 @@ static class Gc
     /// The heap lock is let go there, but for a collection made alone
     /// (CollectAlone), whose marking holds it throughout: there the platform
     /// must not give the processor away (it can tell, Runtime.HoldsHeapLock),
-    /// nor where the thread's preempt count is raised (Tls.PreemptCount),
-    /// which only OwnListBytes checks before asking. Called with 1
+    /// nor where the thread's preempt count is raised (Tls.PreemptCount):
+    /// the platform must refuse there itself, as every caller but
+    /// OwnListBytes, which leaves the call out, asks regardless. Called with 1
     /// by a thread about to wait for another's collection to end, with the
     /// heap lock not held -- blocked (WaitForCollector), or still counted
     /// running and answering rounds as it waits (WaitOutAnyCycle, for
