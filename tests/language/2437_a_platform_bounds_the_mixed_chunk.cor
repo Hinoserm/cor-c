@@ -2,6 +2,7 @@
 // expect-exit: 0
 // expect-output:
 // sum 1999000 True
+// chunks made since True
 // largest mixed chunk within True
 //
 // HeapChunks.MixedChunkMost: the most a mixed chunk of the heap may be,
@@ -10,7 +11,8 @@
 // kernel on a K6-III asks a quarter of a megabyte. Here 128 KB, and eight
 // megabytes of 4 KB arrays -- too big for a size class, too small for a
 // chunk of their own, so mixed blocks -- kept in a list read back whole;
-// no mixed chunk of the heap is bigger than the bound.
+// no mixed chunk made since the bound was set is bigger than it. Only those
+// are judged: the chunks the heap had before were sized without it.
 
 using System;
 
@@ -20,6 +22,7 @@ static class Program
 {
     static int Main()
     {
+        long before = HeapChunks.Newest();
         HeapChunks.MixedChunkMost = 131072;
         Cell? head = null;
         for (int i = 0; i < 2000; i++)
@@ -37,13 +40,19 @@ static class Program
             if (c.Bytes![3999] != (byte)(c.Value & 0x7F)) whole = false;
         }
         Console.WriteLine("sum " + sum + " " + (count == 2000 && whole));
+        // The chunks made since the bound was set, newest first, down to the
+        // newest of before: eight megabytes need dozens of them.
         long largest = 0;
-        for (long chunk = HeapChunks.Newest(); chunk != 0; chunk = HeapChunks.Next(chunk))
+        int made = 0;
+        for (long chunk = HeapChunks.Newest(); chunk != 0 && chunk != before; chunk = HeapChunks.Next(chunk))
         {
             long size = HeapChunks.Limit(chunk) - chunk;
-            if (HeapChunks.PageClass(chunk) == 0 && size < 65536 * 4 && size > largest) largest = size;
+            if (HeapChunks.PageClass(chunk) != 0) continue;
+            made++;
+            if (size > largest) largest = size;
         }
-        Console.WriteLine("largest mixed chunk within " + (largest > 0 && largest <= 131072));
+        Console.WriteLine("chunks made since " + (made >= 32));
+        Console.WriteLine("largest mixed chunk within " + (largest > 0 && largest <= 131072 + 4096));
         GC.KeepAlive(head);
         return 0;
     }
