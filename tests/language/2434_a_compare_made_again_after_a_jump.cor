@@ -1,0 +1,79 @@
+// test: a compare made again where a jump fell through is dropped only while its flags still stand
+// expect-exit: 0
+// expect-output:
+// at 7 -1 99
+// changed 7 5
+// field 3 0
+// moved 2 1
+//
+// `cmp i, [a+8] ; jge out ; cmp i, [a+8] ; jae throw` -- a test followed by
+// an index's bounds check -- reads the same flags twice: the second compare
+// goes, and the bounds check's jump reads the first's. Here the check still
+// throws for a negative index (the unsigned jump on the signed test's
+// flags), and a compare stays wherever what it reads may have changed
+// between: an array's element written, a field stored to, a register
+// moved.
+
+using System;
+using System.Runtime.CompilerServices;
+
+sealed class Walk { public int[] A = new int[8]; public int I; public int Limit; }
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int At(Walk w)
+    {
+        if (w.I < w.A.Length) return w.A[w.I];
+        return -1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Changed(int[] a, int i)
+    {
+        if (a[0] < 6) { a[0] = 9; if (a[0] < 6) return 1; return a[i]; }
+        return a[0];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Field(Walk w, int x)
+    {
+        int n = 0;
+        if (w.Limit > x) { n++; w.Limit = 0; if (w.Limit > x) n += 10; n += 2; }
+        return n;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Moved(int x, int y)
+    {
+        int n = 0;
+        if (x < y) { n++; x = y + 1; if (x < y) n += 10; n++; }
+        if (x > y) n = n / 2 + 1;
+        return n;
+    }
+
+    static int Main()
+    {
+        Walk w = new Walk();
+        w.A[3] = 7;
+        w.I = 3;
+        Walk past = new Walk();
+        past.I = 8;
+        Walk below = new Walk();
+        below.I = -1;
+        int thrown = -2;
+        try { thrown = At(below); } catch (IndexOutOfRangeException) { thrown = 99; }
+        Console.WriteLine("at " + At(w) + " " + At(past) + " " + thrown);
+
+        int[] a = new int[] { 5, 0, 0, 7 };
+        int[] b = new int[] { 7, 0, 0, 0 };
+        Console.WriteLine("changed " + Changed(a, 3) + " " + Changed(new int[] { 5 }, 0) / 9 * 5);
+
+        Walk f = new Walk();
+        f.Limit = 4;
+        Console.WriteLine("field " + Field(f, 1) + " " + Field(f, 1));
+        Console.WriteLine("moved " + Moved(1, 2) + " " + Moved(3, 2));
+        GC.KeepAlive(b);
+        return 0;
+    }
+}
