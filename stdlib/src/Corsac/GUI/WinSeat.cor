@@ -736,7 +736,7 @@ static class WinSeat
 
     /// Whether a length the batch names (a word of it, a signed number here)
     /// lies within what remains of the batch, and that length as a size.
-    static bool Fits(long length, nuint room) { return length >= 0 && (nuint)length <= room; }
+    static bool Fits(long length, nuint room) { return length >= 0 && length <= (long)room; }
 
     static nuint Span(long length) { return (nuint)length; }
 
@@ -2079,7 +2079,7 @@ static class WinSeat
 
     /// A signed word of memory: the seat's records and pixels hold their
     /// numbers as 32-bit words, which are signed here.
-    static int LoadInt(nuint at) { return LoadInt(at); }
+    static int LoadInt(nuint at) { return (int)Sys.Read32(at); }
     static void StoreInt(nuint at, int v) { Sys.Write32(at, (uint)v); }
 
     /// How far into an array of `size`-byte elements element `index` is.

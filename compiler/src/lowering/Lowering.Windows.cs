@@ -278,7 +278,7 @@ public sealed partial class Lowering
             return;
         }
         Require(image);
-        VReg instance = e.Call(CallLabel(image), IrType.I64)!;
+        VReg instance = e.Call(CallLabel(image), IrTypes.Word)!;
         Require(take);
         VReg ok = e.Call(CallLabel(take), IrType.I32, RegOperand.Of(instance))!;
         var run = f.NewBlock("run");

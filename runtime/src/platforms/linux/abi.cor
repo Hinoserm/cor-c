@@ -386,9 +386,10 @@ static class Raw
         return b[at];
     }
 
+    /// An unsigned 16-bit field at byte offset `at`, as U32 reads one.
     public static long U16(byte[] b, int at)
     {
-        return b[at * 2 + 0] | (b[at * 2 + 1] << 8);
+        return b[at] | (b[at + 1] << 8);
     }
 
     /// An unsigned 32-bit field, widened into a long so that 0x80000000 is

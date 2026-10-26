@@ -1247,8 +1247,8 @@ public sealed partial class Lowering
 
     /// <summary>
     /// A machine word as the type the intrinsic answers: a long zero-extended
-    /// from it (Widen), a nuint or nint the word itself (--nuint-addresses,
-    /// Prelude.AddressIntrinsics), a 32-bit type its low half.
+    /// from it (Widen), a nuint or nint the word itself, a 32-bit type its
+    /// low half.
     /// </summary>
     private VReg Fit(VReg v, IrType to)
     {
