@@ -329,8 +329,6 @@ abstract class Stream : IDisposable, IAsyncDisposable
     }
 }
 
-/// A stream over a descriptor: a file opened by path, or a handle the
-/// program already holds (standard input, a pipe end).
 /// .NET 6's FileStreamOptions, and .NET 7's UnixCreateMode.
 sealed class FileStreamOptions
 {
@@ -342,6 +340,8 @@ sealed class FileStreamOptions
     public UnixFileMode? UnixCreateMode { get; set; }
 }
 
+/// A stream over a descriptor: a file opened by path, or a handle the
+/// program already holds (standard input, a pipe end).
 class FileStream : Stream
 {
     int _fd;
@@ -385,7 +385,7 @@ class FileStream : Stream
     /// 7) UnixCreateMode, the permissions a file this open creates is given
     /// -- through the umask, as open(2)'s mode is -- instead of 0666 & ~umask.
     public FileStream(string path, FileStreamOptions options)
-        : this(path, options.Mode, options.Access, options.UnixCreateMode.HasValue ? (int)options.UnixCreateMode.Value & 4095 : 420)
+        : this(path, Checked(options).Mode, options.Access, options.UnixCreateMode.HasValue ? (int)options.UnixCreateMode.Value : 420)
     {
         bool exclusive = options.Share == FileShare.None;
         if (exclusive || options.Access == FileAccess.Read)
@@ -400,6 +400,21 @@ class FileStream : Stream
         }
         int bufferSize = options.BufferSize == -1 ? DefaultBufferSize : options.BufferSize;
         _bufferSize = bufferSize > 1 ? bufferSize : 0;
+    }
+
+    /// .NET's checks of the options: none missing, and a create mode only
+    /// with a mode that can create, holding permission bits only.
+    static FileStreamOptions Checked(FileStreamOptions options)
+    {
+        if (options == null) throw new ArgumentNullException(nameof(options));
+        if (options.UnixCreateMode.HasValue)
+        {
+            if (options.Mode == FileMode.Open || options.Mode == FileMode.Truncate)
+                throw new ArgumentException("UnixCreateMode can only be used with file modes that can create a new file.", nameof(options));
+            if (((int)options.UnixCreateMode.Value & ~4095) != 0)
+                throw new ArgumentException("Value is invalid for UnixCreateMode.", nameof(options));
+        }
+        return options;
     }
 
     FileStream(string path, FileMode mode, FileAccess access, int createMode)
