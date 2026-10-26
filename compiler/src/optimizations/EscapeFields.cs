@@ -74,9 +74,9 @@ public sealed partial class Escape
     [ThreadStatic] private static HashSet<Instr>? _inserted;
 
     internal static bool IsCollectorNote(string? callee) =>
-        callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64"
-            or Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or "m_Gc_Barrier_2_V$I64_V$I64"
-            or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues or "m_Gc_BarrierValues_2_V$I64_V$I64"
+        callee is "m_Gc_MarkAt_1_V$NUInt" or "m_Gc_Report_1_V$NUInt"
+            or Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or "m_Gc_Barrier_2_V$NUInt_V$NUInt"
+            or Corsac.Lang.Lto.RuntimeAbi.WriteBarrierValues or "m_Gc_BarrierValues_2_V$NUInt_V$NUInt"
             or CardMarks.CardMark
             // The same notes as CardMarks writes them out, last of the late
             // passes: the link runs its lifetime pass after them (RunAtLink),
@@ -98,7 +98,7 @@ public sealed partial class Escape
     /// Gc.Report fit the inliner's budget used to depend on the word size.
     /// </summary>
     internal static bool IsCollectorLeaf(string? callee) =>
-        callee is "m_Gc_MarkAt_1_V$I64" or "m_Gc_Report_1_V$I64" or CardMarks.CardMark;
+        callee is "m_Gc_MarkAt_1_V$NUInt" or "m_Gc_Report_1_V$NUInt" or CardMarks.CardMark;
 
     /// <summary>How many fields this pass arranged to free with their owner.</summary>
     public int FieldsOwned { get; private set; }

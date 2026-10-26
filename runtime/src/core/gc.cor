@@ -114,7 +114,7 @@ static class Gc
     const int FlagScan = 4;
     const int FlagMask = 7;
     // The header word less its flags: the block's size.
-    const nuint SizeMask = ~FlagMask;
+    const nuint SizeMask = ~(nuint)FlagMask;
 
     // THE HEADER'S SECOND WORD SAYS WHAT A LIVE BLOCK HOLDS. Free, it is the
     // free list's link -- a block's address, a multiple of eight, or 0 --
@@ -2954,7 +2954,7 @@ static class Gc
         // 264..287 is bin 31, 288..319 bin 32 and so on: the bit length
         // picks the power of two, the three bits under the top one pick the
         // eighth of it. Anything past 2^31 shares the top bin.
-        int length = 64 - (int)Runtime.LeadingZeroCount((long)size);
+        int length = 8 * WordSize.Bytes - Runtime.LeadingZeroCount(size);
         if (length > LargeTop)
         {
             return Bins - 1;
@@ -3032,7 +3032,7 @@ static class Gc
             if (word >= MapWords) return -1;
             bits = Sys.ReadNative(MapWord(word * BitsPerWord));
         }
-        int bin = word * BitsPerWord + (int)Runtime.TrailingZeroCount((long)bits);
+        int bin = word * BitsPerWord + Runtime.TrailingZeroCount(bits);
         return bin < Bins ? bin : -1;
     }
 
@@ -3051,7 +3051,7 @@ static class Gc
             word = word - 1;
             bits = Sys.ReadNative(MapWord(word * BitsPerWord));
         }
-        return word * BitsPerWord + 63 - (int)Runtime.LeadingZeroCount((long)bits);
+        return word * BitsPerWord + BitsPerWord - 1 - Runtime.LeadingZeroCount(bits);
     }
 
     /// The first of the few blocks from `node` on at least `need` bytes, or 0.
@@ -8692,7 +8692,7 @@ static class Gc
     /// The heap's report for an out-of-memory exception nobody caught
     /// (Runtime.OutOfMemoryReport, a hook's three words): what it held, under
     /// its lock, with nothing made.
-    public static long SayOutOfMemory(long a, long b, nuint c)
+    public static nint SayOutOfMemory(nint a, nint b, nint c)
     {
         GcLock.Enter();
         SayHeld();
@@ -10804,7 +10804,7 @@ static class Gc
             if (child == 0 || HeapChunks.Of(child) == 0) continue;
             nuint childBlock = child - HeaderBytes;
             nuint childSize = Sys.ReadNative(childBlock) & SizeMask;
-            if (childSize <= 0) continue;
+            if (childSize == 0) continue;
             ParentAdd(CensusKey(childBlock, childSize), vt, childSize);
         }
     }
@@ -11475,11 +11475,7 @@ static class Gc
 
     static nuint ValidAllocated(nuint at)
     {
-        // UNSIGNED: a heap in the top half of the address space -- a
-        // higher-half kernel's -- has addresses that are negative longs,
-        // and refused here, every locked-path free and owner check refused
-        // them all.
-        if ((at & 7) != 0 || (ulong)at < (ulong)HeaderBytes)
+        if ((at & 7) != 0 || at < HeaderBytes)
         {
             return 0;
         }
@@ -11962,7 +11958,7 @@ static class Gc
 
         // THE COUNT IN WORDS: compared a 64-bit long a block, it was an add
         // and an adc, a compare and an sbb, held in the frame.
-        nint left = budget < 0 ? (nint)0x7FFFFFFF : (nint)budget;
+        nint left = budget < 0 || budget > 0x7FFFFFFF ? (nint)0x7FFFFFFF : (nint)budget;
         nint scanned = 0;
         while (scanned < left)
         {
@@ -15922,12 +15918,12 @@ static class HeapChunks
     const int RegionTopShift = 32;
     const int RegionMapBytes = 8192;           // 2^32 >> 16 bits, per 4 GiB
     static nuint _snapRegionUsed;                // top slots holding a bitmap, one word each
-    static long _snapRegionUsedCount;
+    static nuint _snapRegionUsedCount;
     static bool _snapFilterOff;
 
     static nuint RegionBitmap(nuint top)
     {
-        long bitmap = Sys.ReadNative(_snapRegions + top * WordSize.Bytes);
+        nuint bitmap = Sys.ReadNative(_snapRegions + top * WordSize.Bytes);
         if (bitmap != 0) return bitmap;
         bitmap = Platform.Map(RegionMapBytes);
         if (bitmap == 0) return 0;
@@ -15989,7 +15985,7 @@ static class HeapChunks
                     if (bitmap == 0) { _snapFilterOff = true; break; }
                     nuint within = r & (((nuint)1 << (RegionTopShift - RegionShift)) - 1);
                     nuint at = bitmap + (within >> 3);
-                    Sys.Write8(at, Sys.Read8(at) | (1 << (int)(within & 7)));
+                    Sys.Write8(at, (byte)(Sys.Read8(at) | (1 << (int)(within & 7))));
                 }
             }
         }
@@ -18268,7 +18264,7 @@ static class GcThreads
                 return false;
             }
 
-            if ((Sys.Cas(block + Tls.Epoch, old, epoch) & 0xFFFFFFFF) == old)
+            if (Sys.Cas(block + Tls.Epoch, old, epoch) == old)
             {
                 return true;
             }

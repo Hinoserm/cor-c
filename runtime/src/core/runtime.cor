@@ -142,7 +142,7 @@ static class WordSize
 static class Tls
 {
     // Every field is a word slot, numbered as lowering numbers them (its Tls*
-    // constants are these slots times four, scaled by the word): 50 slots.
+    // constants are these slots times four, scaled by the word): 54 slots.
     /// The block's own address. First, because gs:[0] is how it is found.
     public const int Self = 0 * WordSize.Bytes;
 
@@ -878,7 +878,7 @@ static class Runtime
             nuint element = Sys.ReadNative(cell);
             if (element == 0) continue;
             Sys.WriteNative(cell, 0);
-            Free(element);
+            Free((nint)element);
         }
     }
 
@@ -1933,19 +1933,6 @@ static class Runtime
         return at;
     }
 
-    /// THE SAME TAKING LONGS, for a program that holds sizes and addresses in
-    /// them (the collector's tests). Compiled code calls the nint forms: one
-    /// word a parameter, one push on i386 where a long was two.
-    public static nuint Alloc(nuint bytes)
-    {
-        return Alloc((nint)bytes);
-    }
-
-    public static nuint AllocObject(nuint bytes)
-    {
-        return AllocObject((nint)bytes);
-    }
-
     // ---- the heap of a program that needs no collector -----------------------
     //
     // WHAT MALLOC AND FREE ARE. When escape analysis proves that nothing
@@ -2231,11 +2218,6 @@ static class Runtime
     public static nint ThreadStaticCell(nint indexAt, nint bytes)
     {
         return (nint)ThreadStatics.Cell((nuint)indexAt, bytes);
-    }
-
-    public static void Free(nuint at)
-    {
-        Free(unchecked((nint)at));
     }
 
     public static void Free(nint word)
@@ -3297,7 +3279,7 @@ static class Runtime
 
     /// ASCII text to a descriptor WITHOUT ALLOCATING, for the paths that
     /// report the allocator's own failure and the collector's own reports,
-    /// made with its lock held: eight characters at a time through a local
+    /// made with its lock held: a word of characters at a time through a local
     /// whose address is taken, so it lives in the frame and nothing is ever
     /// allocated -- a block `new`ed for it was allocated, and the collector's
     /// census, said with the heap lock held, waited on that lock for good. A
@@ -6049,10 +6031,16 @@ static class Runtime
         return Clz64((ulong)value);
     }
 
-    /// The same over a word: 8 * WordSize.Bytes for zero.
+    /// The same over a word, 8 * WordSize.Bytes for zero: on i386 by the
+    /// 32-bit steps, half the 64-bit ones' work, for the marker resolves a
+    /// pointer by one of each (HeapChunks.StartAtOrBelow, NextStart).
     public static int LeadingZeroCount(nuint value)
     {
-        return (int)Clz64((ulong)value) - (64 - 8 * WordSize.Bytes);
+#if TARGET_64BIT
+        return Clz64(value);
+#else
+        return Clz32((uint)value);
+#endif
     }
 
     public static int TrailingZeroCount(nuint value)
@@ -6061,7 +6049,12 @@ static class Runtime
         {
             return 8 * WordSize.Bytes;
         }
-        return (int)TrailingZeroCount((long)(ulong)value);
+        nuint lowest = value & (0 - value);
+#if TARGET_64BIT
+        return 63 - Clz64(lowest);
+#else
+        return 31 - Clz32((uint)lowest);
+#endif
     }
 
     /// Trailing zeros; 64 for zero. The lowest set bit is isolated with

@@ -426,13 +426,13 @@ public sealed partial class Escape : IModulePass
     public const string ManualLive = Corsac.Lang.Lto.RuntimeAbi.ManualObject;
 
     /// <summary>The collector's own free and liveness test, which the runtime's frees call.</summary>
-    public const string CollectorFreer = "m_Gc_Free_1_V$I64";
-    public const string CollectorLive = "m_Gc_LiveObject_1_V$I64";
+    public const string CollectorFreer = "m_Gc_Free_1_V$NUInt";
+    public const string CollectorLive = "m_Gc_LiveObject_1_V$NUInt";
 
     /// <summary>A thread telling the collector it blocks, is back, or is at a safepoint.</summary>
     public const string ThreadBlocking = "m_GcThreads_BeginBlocking_0";
     public const string ThreadUnblocking = "m_GcThreads_EndBlocking_0";
-    public const string ThreadSafePoint = "m_GcThreads_SafePoint_1_V$I64";
+    public const string ThreadSafePoint = "m_GcThreads_SafePoint_1_V$I32";
     /// <summary>The runtime asking whether the program has a collector (answered here, per program).</summary>
     public const string CollectorQuery = "m_Runtime_CollectorLinked_0";
 
@@ -441,10 +441,10 @@ public sealed partial class Escape : IModulePass
     /// NullReferenceException: named by the handler's address, run only by a
     /// program that has already faulted.
     /// </summary>
-    public const string NullFault = "m_Runtime_NullFault_2_V$I64_V$I64";
+    public const string NullFault = "m_Runtime_NullFault_2_V$NUInt_V$NUInt";
 
     /// <summary>A thread made known to the collector as it starts.</summary>
-    public const string ThreadRegister = "m_GcThreads_Register_1_V$I64";
+    public const string ThreadRegister = "m_GcThreads_Register_1_V$NUInt";
 
     /// <summary>
     /// Giving a block back by hand. The compiler calls this only for an
@@ -2161,7 +2161,7 @@ continue;
     /// </summary>
     private static readonly (string Name, int Params)[] KeepsNothing =
     {
-        ("m_Runtime_ArrayStoreCheck_2_V$I64_V$I64", 2),
+        ("m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt", 2),
         // Its refusal, out of line: says what the free journal knows and throws.
         (ArrayStoreRefused, 2),
         // CopyTo's check of an array's element, and its refusal (Lowering.ArrayFaces).
@@ -2841,17 +2841,17 @@ continue;
     // and its store of the bigger one, the List's own free of the old array
     // was no self-replacing free (EscapeSelfFrees), and the field was refused.
     internal static bool NeverWritesFields(string callee) =>
-        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64" || callee == ArrayStoreRefused || callee == DescribedAs
+        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt" || callee == ArrayStoreRefused || callee == DescribedAs
         || callee == ArrayCopyCheck || callee == ArrayCopyRefused;
 
     /// <summary>Runtime.ArrayStoreRefused(array, value): an array store check's refusal, kept out of line.</summary>
-    internal const string ArrayStoreRefused = "m_Runtime_ArrayStoreRefused_2_V$I64_V$I64";
+    internal const string ArrayStoreRefused = "m_Runtime_ArrayStoreRefused_2_V$NUInt_V$NUInt";
 
     /// <summary>Runtime.ArrayCopyCheck(array, value) and its refusal: CopyTo's check of an element copied into an array (Lowering.ArrayFaces).</summary>
-    internal const string ArrayCopyCheck = "m_Runtime_ArrayCopyCheck_2_V$I64_V$I64", ArrayCopyRefused = "m_Runtime_ArrayCopyRefused_2_V$I64_V$I64";
+    internal const string ArrayCopyCheck = "m_Runtime_ArrayCopyCheck_2_V$NUInt_V$NUInt", ArrayCopyRefused = "m_Runtime_ArrayCopyRefused_2_V$NUInt_V$NUInt";
 
     /// <summary>Runtime.DescribedAs(desc, want): whether a type is another or derives from it, read from their descriptors.</summary>
-    internal const string DescribedAs = "m_Runtime_DescribedAs_2_V$I64_V$I64";
+    internal const string DescribedAs = "m_Runtime_DescribedAs_2_V$NUInt_V$NUInt";
 
     private enum SourceKind { Null, Static, Parameter, Fresh, Unknown }
     private readonly record struct Source(SourceKind Kind, int Index, Instr? Made);

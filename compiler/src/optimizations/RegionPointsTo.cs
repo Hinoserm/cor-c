@@ -2786,13 +2786,13 @@ public sealed class RegionPointsTo : IModulePass
     /// </summary>
     private static readonly string[] TypeChecks =
     {
-        "m_Runtime_ArrayStoreCheck_2_V$I64_V$I64",
+        "m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt",
         Opt.Escape.ArrayStoreRefused,
         Opt.Escape.ArrayCopyCheck,
         Opt.Escape.ArrayCopyRefused,
-        "m_Runtime_ArrayOf_2_V$I64_V$I64",
-        "m_Runtime_DescribedAs_2_V$I64_V$I64",
-        "m_Runtime_ShapedAs_7_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64_V$I64",
+        "m_Runtime_ArrayOf_2_V$NUInt_V$NUInt",
+        "m_Runtime_DescribedAs_2_V$NUInt_V$NUInt",
+        "m_Runtime_ShapedAs_7_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt",
     };
 
     // The collector's notes and the runtime's frees keep no pointer.

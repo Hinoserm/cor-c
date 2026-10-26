@@ -277,7 +277,8 @@ static class Platform
 
     static void Release(nuint at, nuint size)
     {
-        if (size < RangeLeast || at + size > _at) return;
+        // Past the bump, by a difference: at + size can wrap on i386.
+        if (size < RangeLeast || at >= _at || size > _at - at) return;
         // The top of what was handed out: the bump's again, with the free
         // range it then ends at.
         if (at + size == _at)
@@ -378,8 +379,11 @@ static class Platform
     /// piece of the region whole pages (RegionPage).
     public static nuint Map(nuint bytes)
     {
+        // NO SIZE PAST THE LAST PAGE: rounded up, it would wrap to nothing
+        // on i386, and the free ranges hand out their first for nothing.
+        if (bytes == 0 || bytes > PageMask) return 0;
         // The region's own given back first (Unmap), whoever maps the rest.
-        if (_freeRanges != 0 && bytes > 0)
+        if (_freeRanges != 0)
         {
             nuint want = (bytes + RegionPage - 1) & PageMask;
             nint reusing = LockRegion();
@@ -411,7 +415,7 @@ static class Platform
             Exit(137);
         }
 
-        if (bytes == 0 || bytes > _limit - _start) return 0;
+        if (bytes > _limit - _start) return 0;
         nuint need = (bytes + RegionPage - 1) & PageMask;
 
         nint held = LockRegion();

@@ -1734,10 +1734,9 @@ public sealed partial class Lowering
             found = found.Where(m => m.Params.Select(p => p.Type).SequenceEqual(like.Select(p => p.Type))).ToList();
         }
         // THE HOT HELPERS are bound by their full signature, every parameter
-        // one machine word, overloaded or not: Runtime.Free(nint) beside
-        // Runtime.Free(long), which is kept for programs that hold addresses
-        // in longs. Their labels (Lto.RuntimeAbi) and every pass calling them
-        // pass words, so a declaration taking anything else is not theirs.
+        // one machine word, overloaded or not. Their labels (Lto.RuntimeAbi)
+        // and every pass calling them pass words, so a declaration taking
+        // anything else is not theirs.
         if (like is null && WordHelpers.Contains(name))
         {
             found = found.Where(m => m.Params.All(p => p.Type.Equals(Type.NInt))).ToList();

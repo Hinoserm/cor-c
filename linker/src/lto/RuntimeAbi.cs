@@ -13,6 +13,9 @@ public static class RuntimeAbi
     /// <summary>How a parameter of type nint is mangled.</summary>
     public const string Word = "V$NInt";
 
+    /// <summary>How a parameter of type nuint, an address, is mangled.</summary>
+    public const string Address = "V$NUInt";
+
     /// <summary>
     /// The calls that end the program, never coming back by return or by
     /// unwind: Runtime.Exit and Unhandled, the platform's and the system's
@@ -41,8 +44,8 @@ public static class RuntimeAbi
     public const string AllocManual = "m_Runtime_AllocManual_1_" + Word;
     public const string AllocManualObject = "m_Runtime_AllocManualObject_1_" + Word;
     /// <summary>The manual heap's free and its liveness test (Escape's ManualFreer, ManualLive).</summary>
-    public const string FreeManual = "m_Runtime_FreeManual_1_V$I64";
-    public const string ManualObject = "m_Runtime_ManualObject_1_V$I64";
+    public const string FreeManual = "m_Runtime_FreeManual_1_" + Address;
+    public const string ManualObject = "m_Runtime_ManualObject_1_" + Address;
     public const string Free = "m_Runtime_Free_1_" + Word;
     public const string FreeReplaced = "m_Runtime_FreeReplaced_2_" + Word + "_" + Word;
     public const string FreeOwnedReplaced = "m_Runtime_FreeOwnedReplaced_2_" + Word + "_" + Word;
@@ -101,14 +104,14 @@ public static class RuntimeAbi
     /// region is opened in the block, so nothing that runs before this does
     /// -- it, and every function that calls it -- may open one.
     /// </summary>
-    public const string SetThreadBlock = "m_Platform_SetThreadBlock_1_V$I64";
+    public const string SetThreadBlock = "m_Platform_SetThreadBlock_1_" + Address;
 
     /// <summary>
     /// What hands a thread's arena back as the thread ends (Gc.ReleaseRegion):
     /// nothing that calls it is a boundary, its region's leave coming after
     /// the arena it was opened in is gone (RegionSolver.BeforeThreadBlock).
     /// </summary>
-    public const string ReleaseRegion = "m_Gc_ReleaseRegion_1_V$I64";
+    public const string ReleaseRegion = "m_Gc_ReleaseRegion_1_" + Address;
     /// <summary>Made in the region of another object, or on the heap beside one there is none of (RegionPointsTo.Near).</summary>
     public const string AllocNear = "m_Runtime_AllocNear_4_" + Word + "_" + Word + "_" + Word + "_" + Word;
 }
