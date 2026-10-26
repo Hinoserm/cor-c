@@ -171,7 +171,7 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // every array a stack outgrew stayed until a collection.
     private void Grow() {
         int size = items.Length * 2;
-        if (Runtime.GrowInPlace((nint)Sys.Word(items), size)) { return; }
+        if (Runtime.GrowInPlace((nint)Sys.ObjectAddress(items), size)) { return; }
         T[] bigger = new T[size];
         for (int i = 0; i < count; i++) { bigger[i] = items[i]; }
         T[] outgrown = items;

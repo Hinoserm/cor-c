@@ -100,9 +100,9 @@ public static class Interlocked
     // AND AND OR OF FOUR BYTES, as a compare-exchange until nothing changed
     // them in between: the word forms (Sys.AtomicAnd) are eight bytes in long
     // mode, and would change the four after.
-    static int Combine32(long at, int value, bool or)
+    static int Combine32(nuint at, int value, bool or)
     {
-        int seen = (int)Sys.PeekWord(at);
+        int seen = (int)Sys.Read32(at);
         while (true)
         {
             int was = Sys.Cas32(at, seen, or ? seen | value : seen & value);
@@ -146,11 +146,11 @@ public static class Interlocked
     /// rewriting the word as it was: every form is a full barrier, as .NET's.
     static int Narrow(long at, int width, int value, int comparand, bool compare)
     {
-        long word = at & -4L;
+        nuint word = at & -4L;
         int shift = (int)(at & 3) * 8;
         int ones = width == 1 ? 0xFF : 0xFFFF;
         int mask = ones << shift;
-        int seen = (int)Sys.PeekWord(word);
+        int seen = (int)Sys.Read32(word);
         while (true)
         {
             int held = (int)((uint)seen >> shift) & ones;
@@ -214,12 +214,12 @@ public static class Interlocked
 
     static long Add64(long at, long value) { return Sys.AtomicAdd(at, value); }
     static long Swap64(long at, long value) { return Sys.AtomicSwap(at, value); }
-    static long Cas64(long at, long expect, long value) { return Sys.Cas(at, expect, value); }
-    static long Combine64(long at, long value, bool or) { return or ? Sys.AtomicOr(at, value) : Sys.AtomicAnd(at, value); }
+    static long Cas64(nuint at, long expect, long value) { return Sys.Cas(at, expect, value); }
+    static long Combine64(nuint at, long value, bool or) { return or ? Sys.AtomicOr(at, value) : Sys.AtomicAnd(at, value); }
 
     /// A compare-exchange of 0 with 0, which leaves whatever is there as it
     /// was, as .NET has it.
-    static long Read64(long at) { return Sys.Cas(at, 0, 0); }
+    static long Read64(nuint at) { return Sys.Cas(at, 0, 0); }
 #else
     // TWO WORDS, UNDER THE ONE LOCK, read and written a word at a time. Each
     // answers what was there before. A LOCK A HANDLER TAKES TOO (Platform.
@@ -229,12 +229,12 @@ public static class Interlocked
 
     static nint _wide;
 
-    static long Held(long at) { return (Sys.PeekWord(at) & 0xFFFFFFFF) | (Sys.PeekWord(at + 4) << 32); }
+    static long Held(nuint at) { return (Sys.Read32(at) & 0xFFFFFFFF) | (Sys.Read32(at + 4) << 32); }
 
-    static void Put(long at, long value)
+    static void Put(nuint at, long value)
     {
-        Sys.PokeWord(at, (int)value);
-        Sys.PokeWord(at + 4, (int)(value >> 32));
+        Sys.Write32(at, (int)value);
+        Sys.Write32(at + 4, (int)(value >> 32));
     }
 
     static long Add64(long at, long value)
@@ -328,7 +328,7 @@ public static class Interlocked
     {
         if (!typeof(T).IsValueType)
         {
-            return Sys.As<T>(Sys.FromWord(Sys.ExchangeReference(Sys.AddressOf(ref location), Sys.Word(value))));
+            return Sys.As<T>(Sys.ObjectAt(Sys.ExchangeReference(Sys.AddressOf(ref location), Sys.ObjectAddress(value))));
         }
         T was = default!;
         Exchanged(Sys.AddressOf(ref location), Sys.AddressOf(ref value), 0, Sys.AddressOf(ref was), Width<T>(), false);
@@ -339,7 +339,7 @@ public static class Interlocked
     {
         if (!typeof(T).IsValueType)
         {
-            return Sys.As<T>(Sys.FromWord(Sys.CompareExchangeReference(Sys.AddressOf(ref location), Sys.Word(comparand), Sys.Word(value))));
+            return Sys.As<T>(Sys.ObjectAt(Sys.CompareExchangeReference(Sys.AddressOf(ref location), Sys.ObjectAddress(comparand), Sys.ObjectAddress(value))));
         }
         T was = default!;
         Exchanged(Sys.AddressOf(ref location), Sys.AddressOf(ref value), Sys.AddressOf(ref comparand), Sys.AddressOf(ref was), Width<T>(), true);
@@ -361,29 +361,29 @@ public static class Interlocked
     // The value at `value` stored at `at` -- where the one at `comparand` is
     // there, when `compare` -- and what was there written to `into`, all
     // `width` bytes wide.
-    static void Exchanged(long at, long value, long comparand, long into, int width, bool compare)
+    static void Exchanged(nuint at, nuint value, nuint comparand, nuint into, int width, bool compare)
     {
         if (width == 8)
         {
             long given = Wide(value);
             long was = compare ? Cas64(at, Wide(comparand), given) : Swap64(at, given);
-            Sys.PokeWord(into, (int)was);
-            Sys.PokeWord(into + 4, (int)(was >> 32));
+            Sys.Write32(into, (int)was);
+            Sys.Write32(into + 4, (int)(was >> 32));
             return;
         }
         if (width == 4)
         {
-            int given = (int)Sys.PeekWord(value);
-            Sys.PokeWord(into, compare ? Sys.Cas32(at, (int)Sys.PeekWord(comparand), given) : Sys.AtomicSwap32(at, given));
+            int given = (int)Sys.Read32(value);
+            Sys.Write32(into, compare ? Sys.Cas32(at, (int)Sys.Read32(comparand), given) : Sys.AtomicSwap32(at, given));
             return;
         }
         int was8 = Narrow(at, width, Part(value, width), compare ? Part(comparand, width) : 0, compare);
-        if (width == 1) Sys.PokeByte(into, was8); else Sys.PokeHalf(into, was8);
+        if (width == 1) Sys.Write8(into, was8); else Sys.Write16(into, was8);
     }
 
-    static long Wide(long at) { return (Sys.PeekWord(at) & 0xFFFFFFFF) | (Sys.PeekWord(at + 4) << 32); }
+    static long Wide(nuint at) { return (Sys.Read32(at) & 0xFFFFFFFF) | (Sys.Read32(at + 4) << 32); }
 
-    static int Part(long at, int width) { return width == 1 ? (int)Sys.PeekByte(at) : (int)Sys.PeekHalf(at); }
+    static int Part(nuint at, int width) { return width == 1 ? (int)Sys.Read8(at) : (int)Sys.Read16(at); }
 
     // ---- ordering ----------------------------------------------------------------------
 

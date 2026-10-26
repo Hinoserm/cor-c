@@ -125,7 +125,7 @@ static class Utf8Transcoder
     public static int EncodeTo(string s, int at, int count, long address)
     {
         int end = at + count;
-        long o = address;
+        nuint o = address;
         int i = at;
 
         while (i < end)
@@ -134,15 +134,15 @@ static class Utf8Transcoder
 
             if (c < 0x80)
             {
-                Sys.PokeByte(o, c);
+                Sys.Write8(o, c);
                 o = o + 1;
                 i = i + 1;
                 continue;
             }
             if (c < 0x800)
             {
-                Sys.PokeByte(o, 0xC0 | (c >> 6));
-                Sys.PokeByte(o + 1, 0x80 | (c & 0x3F));
+                Sys.Write8(o, 0xC0 | (c >> 6));
+                Sys.Write8(o + 1, 0x80 | (c & 0x3F));
                 o = o + 2;
                 i = i + 1;
                 continue;
@@ -152,10 +152,10 @@ static class Utf8Transcoder
 
             if (point >= 0x10000)
             {
-                Sys.PokeByte(o, 0xF0 | (point >> 18));
-                Sys.PokeByte(o + 1, 0x80 | ((point >> 12) & 0x3F));
-                Sys.PokeByte(o + 2, 0x80 | ((point >> 6) & 0x3F));
-                Sys.PokeByte(o + 3, 0x80 | (point & 0x3F));
+                Sys.Write8(o, 0xF0 | (point >> 18));
+                Sys.Write8(o + 1, 0x80 | ((point >> 12) & 0x3F));
+                Sys.Write8(o + 2, 0x80 | ((point >> 6) & 0x3F));
+                Sys.Write8(o + 3, 0x80 | (point & 0x3F));
                 o = o + 4;
                 i = i + 2;
                 continue;
@@ -164,9 +164,9 @@ static class Utf8Transcoder
             {
                 point = 0xFFFD;
             }
-            Sys.PokeByte(o, 0xE0 | (point >> 12));
-            Sys.PokeByte(o + 1, 0x80 | ((point >> 6) & 0x3F));
-            Sys.PokeByte(o + 2, 0x80 | (point & 0x3F));
+            Sys.Write8(o, 0xE0 | (point >> 12));
+            Sys.Write8(o + 1, 0x80 | ((point >> 6) & 0x3F));
+            Sys.Write8(o + 2, 0x80 | (point & 0x3F));
             o = o + 3;
             i = i + 1;
         }
@@ -214,10 +214,10 @@ static class Utf8Transcoder
         return 4;
     }
 
-    private static int ByteAt(byte[]? bytes, long address, int i, int end)
+    private static int ByteAt(byte[]? bytes, nuint address, int i, int end)
     {
         if (i >= end) return -1;
-        return bytes != null ? bytes[i] : (int)Sys.PeekByte(address + i);
+        return bytes != null ? bytes[i] : (int)Sys.Read8(address + i);
     }
 
     /// The UTF-16 length and, when `into` is given, the text of the UTF-8 in
@@ -360,15 +360,15 @@ static class Utf8Transcoder
             i = i + length;
         }
         // The length written, in the count word after the descriptor.
-        if (o < count) Sys.PokeWord(Sys.Word(made) + 2 * WordSize.Bytes, o);
+        if (o < count) Sys.Write32(Sys.ObjectAddress(made) + 2 * WordSize.Bytes, o);
         return made;
     }
 
     /// The zero-terminated UTF-8 at `address` as a string.
-    public static string DecodeTerminated(long address)
+    public static string DecodeTerminated(nuint address)
     {
         int length = 0;
-        while (Sys.PeekByte(address + length) != 0) { length = length + 1; }
+        while (Sys.Read8(address + length) != 0) { length = length + 1; }
         return Decode(address, length);
     }
 

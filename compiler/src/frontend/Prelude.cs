@@ -768,19 +768,22 @@ public static class Prelude
             public static T As<T>(object? value) { return default!; }
 
             // Calls one: a method of this program's, by its address (a hook,
-            // a chore, a callback), with this language's convention -- each
-            // argument a long, two words on i386, as the kernel's entry code
-            // pushes them. Code that takes the machine's own words -- an
-            // assembly routine, a card's driver ROM, the C library -- is
-            // reached by CallNative instead.
+            // a chore, a callback), with this language's convention. Its
+            // arguments are words, an nint each -- one register or one push on
+            // i386, where a long was two -- and so are the arguments of every
+            // method it reaches, which declares (nint, nint, nint) and answers
+            // an nint; the call is indirect, and nothing checks the callee.
+            // CallLong reaches one that answers a long, a figure no word holds
+            // on i386 (a clock's nanoseconds).
+            public static nint Call(nuint fn, nint a, nint b, nint c) { return 0; }
+            public static long CallLong(nuint fn, nint a, nint b, nint c) { return 0; }
             // A C function by its address, with C's rules for the call -- a
             // word an argument, the stack sixteen-aligned on i386, the vector
             // count in AL on x86-64. What the runtime uses for what it finds
             // in the C library at run time -- pthread_create, exit -- and
-            // what a kernel uses for its own assembly routines.
-            // The function's address a nuint, as every address is; a C
-            // function's arguments and answer are words, an nint each.
-            public static long Call(nuint fn, long a, long b, long c) { return 0; }
+            // what a kernel uses for its own assembly routines. Its arguments
+            // and its answer are words, an nint each. Code with this
+            // language's convention is reached by Call instead.
             public static nint CallNative(nuint fn) { return 0; }
             public static nint CallNative(nuint fn, nint a) { return 0; }
             public static nint CallNative(nuint fn, nint a, nint b) { return 0; }
@@ -881,7 +884,7 @@ public static class Prelude
             // The code selector: its low two bits are the privilege level
             // the code runs at, which with EFLAGS.IOPL says whether it may
             // turn interrupts off (Platform.AtomicsEnter).
-            public static long ReadCodeSegment() { return 0; }
+            public static int ReadCodeSegment() { return 0; }
             // swapgs: the kernel's GS base for the user's, on x86-64.
             public static void SwapGs() { }
 

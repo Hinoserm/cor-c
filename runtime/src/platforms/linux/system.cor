@@ -332,20 +332,20 @@ static class Platform
             if (n == 0)
             {
                 at = at - 1;
-                Sys.PokeByte(_traceDigits + at, 48);
+                Sys.Write8(_traceDigits + at, 48);
             }
 
             while (n > 0 && at > 1)
             {
                 at = at - 1;
-                Sys.PokeByte(_traceDigits + at, 48 + n % 10);
+                Sys.Write8(_traceDigits + at, 48 + n % 10);
                 n = n / 10;
             }
 
             if (value < 0)
             {
                 at = at - 1;
-                Sys.PokeByte(_traceDigits + at, 45);
+                Sys.Write8(_traceDigits + at, 45);
             }
 
             WriteBytes(2, _traceDigits + at, 24 - at);
@@ -463,7 +463,7 @@ static class Platform
             // compiler marks (Gc.ScanStatics).
             Gc.StaticsByCards = true;
         }
-        Sys.Poke(block + Tls.Self, block);
+        Sys.WriteNative(block + Tls.Self, block);
 
 #if TARGET_AMD64
         // LONG MODE KEEPS A BASE REGISTER PER THREAD FOR THIS: GS, set with
@@ -499,12 +499,12 @@ static class Platform
             // give it another.
             entry = Runtime.ManagedGs >> 3;
         }
-        Sys.PokeWord(desc, entry);
-        Sys.PokeWord(desc + 4, block);          // base_addr
-        Sys.PokeWord(desc + 8, 0xFFFFF);        // limit: the whole space, in pages
+        Sys.Write32(desc, entry);
+        Sys.Write32(desc + 4, block);          // base_addr
+        Sys.Write32(desc + 8, 0xFFFFF);        // limit: the whole space, in pages
         // seg_32bit | limit_in_pages | useable; a writable data segment that
         // is present, which is the rest of the bits being zero.
-        Sys.PokeWord(desc + 12, 0x51);
+        Sys.Write32(desc + 12, 0x51);
 
         if (Result(Sys.Syscall(LinuxCall.SetThreadArea, desc, 0, 0)) < 0)
         {
@@ -514,7 +514,7 @@ static class Platform
             Exit(134);
         }
 
-        long selector = (Sys.PeekWord(desc) << 3) | 3;
+        long selector = (Sys.Read32(desc) << 3) | 3;
         Runtime.ManagedGs = selector;
         Sys.SetGs(selector);
 #endif
@@ -579,7 +579,7 @@ static class Platform
         int count = 0;
         for (long i = 0; i < got && i < 128; i++)
         {
-            long bits = Sys.PeekByte(page + i);
+            long bits = Sys.Read8(page + i);
             while (bits != 0) { count = count + (int)(bits & 1); bits = bits >> 1; }
         }
         Unmap(page, 4096);
@@ -709,8 +709,8 @@ static class Platform
             long made = Map(4096);
             if (made == 0) return 0;
             string path = "/proc/meminfo";
-            for (int i = 0; i < path.Length; i++) Sys.PokeByte(made + MeminfoPath + i, path[i]);
-            Sys.PokeByte(made + MeminfoPath + path.Length, 0);
+            for (int i = 0; i < path.Length; i++) Sys.Write8(made + MeminfoPath + i, path[i]);
+            Sys.Write8(made + MeminfoPath + path.Length, 0);
             if (Sys.Cas(Sys.AddressOf(ref _meminfoPage), 0, made) != 0) Unmap(made, 4096);
             page = _meminfoPage;
         }
@@ -724,16 +724,16 @@ static class Platform
         long value = 0;
         if (at >= 0)
         {
-            while (at < text + got && Sys.PeekByte(at) == 32) at = at + 1;
-            while (at < text + got && Sys.PeekByte(at) >= 48 && Sys.PeekByte(at) <= 57)
+            while (at < text + got && Sys.Read8(at) == 32) at = at + 1;
+            while (at < text + got && Sys.Read8(at) >= 48 && Sys.Read8(at) <= 57)
             {
-                value = value * 10 + (Sys.PeekByte(at) - 48);
+                value = value * 10 + (Sys.Read8(at) - 48);
                 at = at + 1;
             }
             value = value * 1024;
         }
         _lastAvailable = value;
-        Sys.Poke(page, 0);
+        Sys.WriteNative(page, 0);
         return value;
     }
 
@@ -753,9 +753,9 @@ static class Platform
         {
             // struct utsname: six fields of 65 bytes; the machine is the fifth.
             long machine = page + 4 * 65;
-            bool wide = Sys.PeekByte(machine) == 120 && Sys.PeekByte(machine + 1) == 56 && Sys.PeekByte(machine + 2) == 54
-                     && Sys.PeekByte(machine + 3) == 95 && Sys.PeekByte(machine + 4) == 54 && Sys.PeekByte(machine + 5) == 52
-                     && Sys.PeekByte(machine + 6) == 0;
+            bool wide = Sys.Read8(machine) == 120 && Sys.Read8(machine + 1) == 56 && Sys.Read8(machine + 2) == 54
+                     && Sys.Read8(machine + 3) == 95 && Sys.Read8(machine + 4) == 54 && Sys.Read8(machine + 5) == 52
+                     && Sys.Read8(machine + 6) == 0;
             space = wide ? 4294967296 : 3221225472;
         }
         Unmap(page, 4096);
@@ -805,15 +805,15 @@ static class Platform
         if (back > 0)
         {
 #if TARGET_64BIT
-            Sys.PokeByte(back, 0xB8);                                 // mov eax,
-            Sys.PokeByte(back + 1, 15);                               //   15 (rt_sigreturn)
-            Sys.PokeByte(back + 5, 0x0F);                             // syscall
-            Sys.PokeByte(back + 6, 0x05);
+            Sys.Write8(back, 0xB8);                                 // mov eax,
+            Sys.Write8(back + 1, 15);                               //   15 (rt_sigreturn)
+            Sys.Write8(back + 5, 0x0F);                             // syscall
+            Sys.Write8(back + 6, 0x05);
 #else
-            Sys.PokeByte(back, 0xB8);                                 // mov eax,
-            Sys.PokeByte(back + 1, 173);                              //   173 (rt_sigreturn)
-            Sys.PokeByte(back + 5, 0xCD);                             // int 0x80
-            Sys.PokeByte(back + 6, 0x80);
+            Sys.Write8(back, 0xB8);                                 // mov eax,
+            Sys.Write8(back + 1, 173);                              //   173 (rt_sigreturn)
+            Sys.Write8(back + 5, 0xCD);                             // int 0x80
+            Sys.Write8(back + 6, 0x80);
 #endif
             _faultReturn = back;
         }
@@ -825,9 +825,9 @@ static class Platform
         // A second fault inside the report finds _faulting set and ends the
         // process.
         long handler = Sys.AddressOf(Platform.Fault);
-        Sys.Poke(page, handler);
-        Sys.Poke(page + WordSize.Bytes, 0x00000004 | 0x04000000 | 0x40000000);
-        Sys.Poke(page + 2 * WordSize.Bytes, _faultReturn != 0 ? _faultReturn : handler);
+        Sys.WriteNative(page, handler);
+        Sys.WriteNative(page + WordSize.Bytes, 0x00000004 | 0x04000000 | 0x40000000);
+        Sys.WriteNative(page + 2 * WordSize.Bytes, _faultReturn != 0 ? _faultReturn : handler);
         Sys.Syscall(LinuxCall.RtSigaction, SignalSegv, page, 0, 8, 0, 0);
         Sys.Syscall(LinuxCall.RtSigaction, SignalBus, page, 0, 8, 0, 0);
     }
@@ -836,8 +836,8 @@ static class Platform
     /// interrupted context. Reports once, then dies of the signal.
     public static void Fault(int signal, nint info, nint context)
     {
-        long si = (long)info & WordSize.AddressMask;
-        long uc = (long)context & WordSize.AddressMask;
+        long si = (long)info;
+        long uc = (long)context;
         // A NULL DEREFERENCE IS AN EXCEPTION, as it is in .NET: the thread is
         // sent on, when the handler returns, into Runtime.NullFault as if the
         // faulting instruction had called it -- its return address that
@@ -846,9 +846,9 @@ static class Platform
         if (_faulting == 0 && signal == SignalSegv && si != 0 && uc != 0 && _faultReturn != 0)
         {
 #if TARGET_64BIT
-            long nullAt = Sys.Peek(si + 16);
+            long nullAt = Sys.ReadNative(si + 16);
 #else
-            long nullAt = Sys.Peek(si + 12) & WordSize.AddressMask;
+            long nullAt = Sys.ReadNative(si + 12);
 #endif
             if (Runtime.NullFaultCatchable(nullAt))
             {
@@ -856,29 +856,29 @@ static class Platform
 #if TARGET_64BIT
                 // gregs from 40: RDI 8th, RSI 9th, RBP 10th, RSP 15th, RIP 16th.
                 // Past the red zone, aligned as a call leaves it.
-                long faultPc = Sys.Peek(uc + 168);
-                long faultFrame = Sys.Peek(uc + 120);
-                long sp = ((Sys.Peek(uc + 160) - 128) & ~15L) - 8;
-                Sys.Poke(sp, faultPc);
-                Sys.Poke(uc + 104, faultFrame);
-                Sys.Poke(uc + 112, faultPc);
-                Sys.Poke(uc + 160, sp);
-                Sys.Poke(uc + 168, entry);
+                long faultPc = Sys.ReadNative(uc + 168);
+                long faultFrame = Sys.ReadNative(uc + 120);
+                long sp = ((Sys.ReadNative(uc + 160) - 128) & ~15L) - 8;
+                Sys.WriteNative(sp, faultPc);
+                Sys.WriteNative(uc + 104, faultFrame);
+                Sys.WriteNative(uc + 112, faultPc);
+                Sys.WriteNative(uc + 160, sp);
+                Sys.WriteNative(uc + 168, entry);
 #else
                 // gregs from 20: EBP 7th, ESP 8th, EIP 15th; the arguments
                 // on the stack above the return address, each a long and so
                 // two words, the low one first. Aligned as a call leaves it:
                 // the return address at 12 past a multiple of 16.
-                long faultPc = Sys.Peek(uc + 76) & WordSize.AddressMask;
-                long faultFrame = Sys.Peek(uc + 44) & WordSize.AddressMask;
-                long sp = ((Sys.Peek(uc + 48) & WordSize.AddressMask) - 64 & ~15L) - 20;
-                Sys.Poke(sp, faultPc);
-                Sys.Poke(sp + 4, faultFrame);
-                Sys.Poke(sp + 8, 0);
-                Sys.Poke(sp + 12, faultPc);
-                Sys.Poke(sp + 16, 0);
-                Sys.Poke(uc + 48, sp);
-                Sys.Poke(uc + 76, entry);
+                long faultPc = Sys.ReadNative(uc + 76);
+                long faultFrame = Sys.ReadNative(uc + 44);
+                long sp = ((Sys.ReadNative(uc + 48)) - 64 & ~15L) - 20;
+                Sys.WriteNative(sp, faultPc);
+                Sys.WriteNative(sp + 4, faultFrame);
+                Sys.WriteNative(sp + 8, 0);
+                Sys.WriteNative(sp + 12, faultPc);
+                Sys.WriteNative(sp + 16, 0);
+                Sys.WriteNative(uc + 48, sp);
+                Sys.WriteNative(uc + 76, entry);
 #endif
                 return;
             }
@@ -889,17 +889,17 @@ static class Platform
 #if TARGET_64BIT
             // siginfo's si_addr at 16; mcontext's gregs from 40, RBP the
             // eleventh and RIP the seventeenth.
-            long address = Sys.Peek(si + 16);
-            long pc = Sys.Peek(uc + 168);
-            long frame = Sys.Peek(uc + 120);
+            long address = Sys.ReadNative(si + 16);
+            long pc = Sys.ReadNative(uc + 168);
+            long frame = Sys.ReadNative(uc + 120);
             long registers = uc + 40;
             int count = 16;
 #else
             // siginfo's si_addr at 12; mcontext's gregs from 20, EBP the
             // seventh and EIP the fifteenth.
-            long address = Sys.Peek(si + 12) & WordSize.AddressMask;
-            long pc = Sys.Peek(uc + 76) & WordSize.AddressMask;
-            long frame = Sys.Peek(uc + 44) & WordSize.AddressMask;
+            long address = Sys.ReadNative(si + 12);
+            long pc = Sys.ReadNative(uc + 76);
+            long frame = Sys.ReadNative(uc + 44);
             // EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX.
             long registers = uc + 36;
             int count = 8;
@@ -908,12 +908,12 @@ static class Platform
         }
         // SIG_DFL, the signal unblocked (SIG_UNBLOCK, a set of one), and sent.
         long page = _faultPage;
-        Sys.Poke(page, 0);
-        Sys.Poke(page + WordSize.Bytes, 0);
+        Sys.WriteNative(page, 0);
+        Sys.WriteNative(page + WordSize.Bytes, 0);
         Sys.Syscall(LinuxCall.RtSigaction, signal, page, 0, 8, 0, 0);
-        Sys.Poke(page + 128, 0);
-        Sys.Poke(page + 128 + WordSize.Bytes, 0);
-        Sys.PokeByte(page + 128 + (signal - 1) / 8, 1 << ((signal - 1) % 8));
+        Sys.WriteNative(page + 128, 0);
+        Sys.WriteNative(page + 128 + WordSize.Bytes, 0);
+        Sys.Write8(page + 128 + (signal - 1) / 8, 1 << ((signal - 1) % 8));
         Sys.Syscall(LinuxCall.RtSigprocmask, 1, page + 128, 0, 8, 0, 0);
         Sys.Syscall(LinuxCall.Kill, Sys.Syscall(LinuxCall.Getpid, 0, 0, 0, 0, 0, 0), signal, 0, 0, 0, 0);
         Sys.Syscall(LinuxCall.ExitGroup, 128 + signal, 0, 0, 0, 0, 0);
@@ -977,14 +977,14 @@ static class Platform
         long digits = 0;
         for (long p = page + UsageDigits; p < page + UsageDigits + got; p++)
         {
-            long c = Sys.PeekByte(p);
+            long c = Sys.Read8(p);
             if (c < 48 || c > 57) break;
             value = value * 10 + (c - 48);
             digits = digits + 1;
         }
         long answer = digits > 0 ? value : -1;
         _lastUsage = answer + 1;
-        Sys.Poke(page, 0);
+        Sys.WriteNative(page, 0);
         return answer;
     }
 
@@ -1007,7 +1007,7 @@ static class Platform
         if (v2 >= 0)
         {
             long end = v2;
-            while (end < text + got && Sys.PeekByte(end) != 10) end = end + 1;
+            while (end < text + got && Sys.Read8(end) != 10) end = end + 1;
             // The group, then each parent up to the root, whose own file
             // does not exist (except as a namespace's root, which is "/").
             long binding = 0;
@@ -1016,7 +1016,7 @@ static class Platform
                 long bytes = CgroupFile(path, v2, end, "/sys/fs/cgroup", "/memory.max", text + got + 1, page + 4096 - (text + got + 1));
                 if (bytes > 0 && (limit == 0 || bytes < limit)) { limit = bytes; binding = end; }
                 end = end - 1;
-                while (end > v2 && Sys.PeekByte(end) != 47) end = end - 1;
+                while (end > v2 && Sys.Read8(end) != 47) end = end - 1;
             }
             if (limit != 0) KeepUsagePath(v2, binding, "/sys/fs/cgroup", "/memory.current");
         }
@@ -1026,7 +1026,7 @@ static class Platform
             if (v1 >= 0)
             {
                 long end = v1;
-                while (end < text + got && Sys.PeekByte(end) != 10) end = end + 1;
+                while (end < text + got && Sys.Read8(end) != 10) end = end + 1;
                 limit = CgroupFile(path, v1, end, "/sys/fs/cgroup/memory", "/memory.limit_in_bytes", text + got + 1, page + 4096 - (text + got + 1));
                 // v1 says "no limit" as a number near 2^63.
                 if (limit >= 0x7FFFFFFFFFFFF000 / 2) limit = 0;
@@ -1047,10 +1047,10 @@ static class Platform
             return;
         }
         long at = page + UsagePath;
-        for (int i = 0; i < root.Length; i++) { Sys.PokeByte(at, root[i]); at = at + 1; }
-        for (long p = from; p < to && at < page + 3900; p++) { Sys.PokeByte(at, Sys.PeekByte(p)); at = at + 1; }
-        for (int i = 0; i < leaf.Length; i++) { Sys.PokeByte(at, leaf[i]); at = at + 1; }
-        Sys.PokeByte(at, 0);
+        for (int i = 0; i < root.Length; i++) { Sys.Write8(at, root[i]); at = at + 1; }
+        for (long p = from; p < to && at < page + 3900; p++) { Sys.Write8(at, Sys.Read8(p)); at = at + 1; }
+        for (int i = 0; i < leaf.Length; i++) { Sys.Write8(at, leaf[i]); at = at + 1; }
+        Sys.Write8(at, 0);
         _usagePage = page;
     }
 
@@ -1058,8 +1058,8 @@ static class Platform
     /// into + most); answers the bytes read, or -1.
     static long ReadInto(long into, long most, string name, long scratch)
     {
-        for (int i = 0; i < name.Length; i++) Sys.PokeByte(scratch + i, name[i]);
-        Sys.PokeByte(scratch + name.Length, 0);
+        for (int i = 0; i < name.Length; i++) Sys.Write8(scratch + i, name[i]);
+        Sys.Write8(scratch + name.Length, 0);
         return ReadPath(scratch, into, most);
     }
 
@@ -1092,15 +1092,15 @@ static class Platform
             long at = line;
             if (key[0] == ':')
             {
-                while (at < text + count && Sys.PeekByte(at) != 58 && Sys.PeekByte(at) != 10) at = at + 1;
+                while (at < text + count && Sys.Read8(at) != 58 && Sys.Read8(at) != 10) at = at + 1;
             }
             int i = 0;
-            while (i < key.Length && at + i < text + count && Sys.PeekByte(at + i) == key[i]) i = i + 1;
+            while (i < key.Length && at + i < text + count && Sys.Read8(at + i) == key[i]) i = i + 1;
             if (i == key.Length)
             {
                 return at + i;
             }
-            while (line < text + count && Sys.PeekByte(line) != 10) line = line + 1;
+            while (line < text + count && Sys.Read8(line) != 10) line = line + 1;
             line = line + 1;
         }
         return -1;
@@ -1111,17 +1111,17 @@ static class Platform
     static long CgroupFile(long path, long from, long to, string root, string leaf, long buffer, long most)
     {
         long at = path;
-        for (int i = 0; i < root.Length; i++) { Sys.PokeByte(at, root[i]); at = at + 1; }
-        for (long p = from; p < to && at < path + 3000; p++) { Sys.PokeByte(at, Sys.PeekByte(p)); at = at + 1; }
-        for (int i = 0; i < leaf.Length; i++) { Sys.PokeByte(at, leaf[i]); at = at + 1; }
-        Sys.PokeByte(at, 0);
+        for (int i = 0; i < root.Length; i++) { Sys.Write8(at, root[i]); at = at + 1; }
+        for (long p = from; p < to && at < path + 3000; p++) { Sys.Write8(at, Sys.Read8(p)); at = at + 1; }
+        for (int i = 0; i < leaf.Length; i++) { Sys.Write8(at, leaf[i]); at = at + 1; }
+        Sys.Write8(at, 0);
         if (most < 32) most = 0;
         long got = most > 0 ? ReadPath(path, buffer, most > 64 ? 64 : most) : -1;
         long value = 0;
         long digits = 0;
         for (long p = buffer; p < buffer + got; p++)
         {
-            long c = Sys.PeekByte(p);
+            long c = Sys.Read8(p);
             if (c < 48 || c > 57) break;
             value = value * 10 + (c - 48);
             digits = digits + 1;
@@ -1157,8 +1157,8 @@ static class Platform
         {
             return 0;
         }
-        long unit = Sys.Peek(_sysinfo + SysinfoUnit) & 0xFFFFFFFF;
-        long count = Sys.Peek(_sysinfo + field) & WordSize.AddressMask;
+        long unit = Sys.ReadNative(_sysinfo + SysinfoUnit) & 0xFFFFFFFF;
+        long count = Sys.ReadNative(_sysinfo + field);
         return count * (unit == 0 ? 1 : unit);
     }
 
@@ -1364,21 +1364,21 @@ static partial class Os
 #if TARGET_AMD64
             // Long mode's: rt_sigreturn is 15 and is made with `syscall`. The
             // kernel refuses a handler without a restorer on this ABI.
-            Sys.PokeByte(page, 0xB8);                                 // mov eax,
-            Sys.PokeByte(page + 1, 15);                               //   15 (rt_sigreturn)
-            Sys.PokeByte(page + 2, 0);
-            Sys.PokeByte(page + 3, 0);
-            Sys.PokeByte(page + 4, 0);
-            Sys.PokeByte(page + 5, 0x0F);                             // syscall
-            Sys.PokeByte(page + 6, 0x05);
+            Sys.Write8(page, 0xB8);                                 // mov eax,
+            Sys.Write8(page + 1, 15);                               //   15 (rt_sigreturn)
+            Sys.Write8(page + 2, 0);
+            Sys.Write8(page + 3, 0);
+            Sys.Write8(page + 4, 0);
+            Sys.Write8(page + 5, 0x0F);                             // syscall
+            Sys.Write8(page + 6, 0x05);
 #else
-            Sys.PokeByte(page, 0xB8);                                 // mov eax,
-            Sys.PokeByte(page + 1, 173);                              //   173 (rt_sigreturn)
-            Sys.PokeByte(page + 2, 0);
-            Sys.PokeByte(page + 3, 0);
-            Sys.PokeByte(page + 4, 0);
-            Sys.PokeByte(page + 5, 0xCD);                             // int
-            Sys.PokeByte(page + 6, 0x80);                             //   0x80
+            Sys.Write8(page, 0xB8);                                 // mov eax,
+            Sys.Write8(page + 1, 173);                              //   173 (rt_sigreturn)
+            Sys.Write8(page + 2, 0);
+            Sys.Write8(page + 3, 0);
+            Sys.Write8(page + 4, 0);
+            Sys.Write8(page + 5, 0xCD);                             // int
+            Sys.Write8(page + 6, 0x80);                             //   0x80
 #endif
             _signalRestorer = page;
         }
@@ -1470,12 +1470,12 @@ static partial class Os
     /// collector's exit report after running out of memory on one -- or the
     /// environment first walked its own stack as envp: it faulted, or found
     /// nothing and kept that for every thread.
-    public static long MainEntryStack() => Sys.Peek(Sys.MainThreadBlock() + Tls.StackBase);
+    public static long MainEntryStack() => Sys.ReadNative(Sys.MainThreadBlock() + Tls.StackBase);
 
     public static long EnvironAddress()
     {
         long sp = MainEntryStack();
-        return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
+        return sp + WordSize.Bytes + WordSize.Bytes * Sys.ReadNative(sp) + WordSize.Bytes;
     }
 
     /// A VARIABLE OF THE ENVIRONMENT THE PROCESS STARTED WITH, as getenv(3)
@@ -1486,11 +1486,11 @@ static partial class Os
     public static string? StartingVariable(string name)
     {
         long at = EnvironAddress();
-        for (long entry = Sys.Peek(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.Peek(at))
+        for (long entry = Sys.ReadNative(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadNative(at))
         {
             int i = 0;
-            while (i < name.Length && Sys.PeekByte(entry + i) == name[i]) i = i + 1;
-            if (i == name.Length && Sys.PeekByte(entry + i) == '=') return FromC(entry + i + 1);
+            while (i < name.Length && Sys.Read8(entry + i) == name[i]) i = i + 1;
+            if (i == name.Length && Sys.Read8(entry + i) == '=') return FromC(entry + i + 1);
         }
         return null;
     }
@@ -2360,7 +2360,7 @@ static partial class Os
     {
         int n = 0;
 
-        while (Sys.PeekByte(at + n) != 0)
+        while (Sys.Read8(at + n) != 0)
         {
             n = n + 1;
         }
@@ -2396,7 +2396,7 @@ static partial class Os
         // The main thread's entry stack is ESP exactly as the kernel handed
         // it over, before _start's own prologue: argc at [sp], then argv.
         long sp = MainEntryStack();
-        int argc = (int)Sys.Peek(sp);
+        int argc = (int)Sys.ReadNative(sp);
 
         if (argc < 0)
         {
@@ -2407,7 +2407,7 @@ static partial class Os
 
         for (int i = 0; i < argc; i++)
         {
-            args[i] = FromC(Sys.Peek(sp + WordSize.Bytes + WordSize.Bytes * i));
+            args[i] = FromC(Sys.ReadNative(sp + WordSize.Bytes + WordSize.Bytes * i));
         }
         _args = args;
         return args;

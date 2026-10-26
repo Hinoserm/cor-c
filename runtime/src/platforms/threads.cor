@@ -338,7 +338,7 @@ partial class Thread
     CultureInfo BeforeStart(CultureInfo value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        if (Sys.PeekWord(Atom.At(this, Atom.SecondWord)) != 0) throw new InvalidOperationException(NotCurrent);
+        if (Sys.Read32(Atom.At(this, Atom.SecondWord)) != 0) throw new InvalidOperationException(NotCurrent);
         return value;
     }
 
@@ -472,7 +472,7 @@ partial class Thread
             try
             {
                 _background = value;
-                bool running = !_adopted && _id != 0 && Sys.PeekWord(Atom.At(this, Atom.FirstWord)) == 0;
+                bool running = !_adopted && _id != 0 && Sys.Read32(Atom.At(this, Atom.FirstWord)) == 0;
                 if (running && !value && !_counted) Count(1);
                 if (running && value && _counted) Count(-1);
             }
@@ -518,7 +518,7 @@ partial class Thread
         long at = Sys.ArrayData(_foreground);
         while (true)
         {
-            long now = Sys.Peek(at) & WordSize.AddressMask;
+            long now = Sys.ReadNative(at);
             if (now == 0) return;
             Native.Wait(at, now);
         }
@@ -691,7 +691,7 @@ partial class Thread
     void BeginNative(long frame)
     {
         Platform.SetThreadBlock(_block);
-        Sys.Poke(_block + Tls.ThreadId, Native.CurrentThreadId());
+        Sys.WriteNative(_block + Tls.ThreadId, Native.CurrentThreadId());
         long top = frame + 2 * WordSize.Bytes;
         Runtime.MoveStack(top, top);
         Runtime.EndBlocking();
@@ -706,7 +706,7 @@ partial class Thread
     void Begin()
     {
         Platform.SetThreadBlock(_block);
-        Sys.Poke(_block + Tls.ThreadId, Native.CurrentThreadId());
+        Sys.WriteNative(_block + Tls.ThreadId, Native.CurrentThreadId());
 
         // Running, from here on: until this the collector was told this thread
         // was stopped with nothing on its stack, which it was.
@@ -748,7 +748,7 @@ partial class Thread
         Unregister(_slot);
         if (_stack != 0)
         {
-            Sys.Poke(_block + Native.UnmapLengthAt, _stackBytes);
+            Sys.WriteNative(_block + Native.UnmapLengthAt, _stackBytes);
         }
 
         // The stack under this thread stops being a stack the collector may
@@ -777,7 +777,7 @@ partial class Thread
         if (_id == 0) throw new ThreadStateException("Thread has not been started.");
         long at = Atom.At(this, Atom.FirstWord);
 
-        while (Sys.PeekWord(at) == 0)
+        while (Sys.Read32(at) == 0)
         {
             Native.Wait(at, 0);
         }
@@ -792,7 +792,7 @@ partial class Thread
         if (_id == 0) throw new ThreadStateException("Thread has not been started.");
         long at = Atom.At(this, Atom.FirstWord);
         long until = Clock.Now() + (long)millisecondsTimeout * 1000000;
-        while (Sys.PeekWord(at) == 0)
+        while (Sys.Read32(at) == 0)
         {
             long left = until - Clock.Now();
             if (left <= 0) return false;
@@ -1303,7 +1303,7 @@ namespace System.Threading
             // when that process lets it go: the wait looks again now and then,
             // a little less often each time, and takes what it can.
             long poll = Polled(one, many, count) ? PollFirst : 0;
-            while (Sys.PeekWord(done) == 0)
+            while (Sys.Read32(done) == 0)
             {
                 long left = deadline < 0 ? long.MaxValue : deadline - Clock.Now();
                 if (left <= 0)
@@ -1314,9 +1314,9 @@ namespace System.Threading
                 {
                     Native.WaitFor(done, 0, left < poll ? left : poll);
                     if (poll < PollMost) poll = poll * 2;
-                    if (Sys.PeekWord(done) != 0) break;
+                    if (Sys.Read32(done) != 0) break;
                     EnterGate();
-                    if (Sys.PeekWord(done) == 0)
+                    if (Sys.Read32(done) == 0)
                     {
                         result = TakeNow(one, many, count, all, me);
                         if (result != WaitTimeout)
@@ -1339,12 +1339,12 @@ namespace System.Threading
 
             // Finished by a signal: what it ended with was written before the
             // word that says so.
-            if (Sys.PeekWord(done) != 0)
+            if (Sys.Read32(done) != 0)
             {
                 return wait.Result;
             }
             EnterGate();
-            if (Sys.PeekWord(done) != 0)
+            if (Sys.Read32(done) != 0)
             {
                 result = wait.Result;
             }
@@ -2631,7 +2631,7 @@ public class ManualResetEventSlim : IDisposable
         Atom.CheckLayout();
     }
 
-    public bool IsSet => Sys.PeekWord(Atom.At(this, Atom.FirstWord)) != 0;
+    public bool IsSet => Sys.Read32(Atom.At(this, Atom.FirstWord)) != 0;
 
     public void Set()
     {
@@ -2648,7 +2648,7 @@ public class ManualResetEventSlim : IDisposable
     public void Wait()
     {
         long at = Atom.At(this, Atom.FirstWord);
-        while (Sys.PeekWord(at) == 0) Native.Wait(at, 0);
+        while (Sys.Read32(at) == 0) Native.Wait(at, 0);
     }
 
     public bool Wait(TimeSpan timeout) => Wait(Timeouts.Guarded(timeout));
@@ -2662,7 +2662,7 @@ public class ManualResetEventSlim : IDisposable
         // Timed by the runtime's own clock, as Thread.Join's: Stopwatch is a
         // library above this one.
         long until = Clock.Now() + (long)millisecondsTimeout * 1000000;
-        while (Sys.PeekWord(at) == 0)
+        while (Sys.Read32(at) == 0)
         {
             long left = until - Clock.Now();
             if (left <= 0) return false;

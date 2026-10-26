@@ -322,7 +322,7 @@ static class String {
 
     // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount): a waiter spins.
     static long EnterFullNames() {
-        long gate = Sys.AddressOf(ref TypeNameCache.Gate);
+        nuint gate = Sys.AddressOf(ref TypeNameCache.Gate);
         Runtime.PreemptOff();
         while (Sys.AtomicSwap(gate, 1) != 0) { Sys.Pause(); }
         return gate;
@@ -10929,80 +10929,80 @@ public static class MemoryExtensions {
     static long Data(Span<byte> s) { return s.Length == 0 ? 0 : Sys.ArrayData(s.Array) + s.Start; }
 
     /// Whether `n` bytes at `a` and `b` are the same: a machine word at a time.
-    static bool Same(long a, long b, int n) {
+    static bool Same(nuint a, nuint b, int n) {
         int i = 0;
         for (; i + WordSize.Bytes <= n; i += (int)WordSize.Bytes) {
-            if (Sys.Peek(a + i) != Sys.Peek(b + i)) { return false; }
+            if (Sys.ReadNative(a + i) != Sys.ReadNative(b + i)) { return false; }
         }
         for (; i < n; i++) {
-            if (Sys.PeekByte(a + i) != Sys.PeekByte(b + i)) { return false; }
+            if (Sys.Read8(a + i) != Sys.Read8(b + i)) { return false; }
         }
         return true;
     }
 
     /// Where byte `b` first is in `n` bytes at `p`, or -1.
-    static int Find(long p, int n, int b) {
+    static int Find(nuint p, int n, int b) {
         long pattern = (b & 0xFF) * Ones;
         int i = 0;
         for (; i + 4 <= n; i += 4) {
-            long v = (Sys.PeekWord(p + i) & 0xFFFFFFFF) ^ pattern;
+            long v = (Sys.Read32(p + i) & 0xFFFFFFFF) ^ pattern;
             if ((((v - Ones) & ~v) & Highs) != 0) { break; }
         }
         for (; i < n; i++) {
-            if ((Sys.PeekByte(p + i) & 0xFF) == (b & 0xFF)) { return i; }
+            if ((Sys.Read8(p + i) & 0xFF) == (b & 0xFF)) { return i; }
         }
         return -1;
     }
 
     /// Where byte `b` last is in `n` bytes at `p`, or -1.
-    static int FindLast(long p, int n, int b) {
+    static int FindLast(nuint p, int n, int b) {
         long pattern = (b & 0xFF) * Ones;
         int i = n;
         for (; i >= 4; i -= 4) {
-            long v = (Sys.PeekWord(p + i - 4) & 0xFFFFFFFF) ^ pattern;
+            long v = (Sys.Read32(p + i - 4) & 0xFFFFFFFF) ^ pattern;
             if ((((v - Ones) & ~v) & Highs) != 0) { break; }
         }
         for (i = i - 1; i >= 0; i--) {
-            if ((Sys.PeekByte(p + i) & 0xFF) == (b & 0xFF)) { return i; }
+            if ((Sys.Read8(p + i) & 0xFF) == (b & 0xFF)) { return i; }
         }
         return -1;
     }
 
     /// Where either byte first is, or -1.
-    static int FindAny(long p, int n, int b0, int b1) {
+    static int FindAny(nuint p, int n, int b0, int b1) {
         long p0 = (b0 & 0xFF) * Ones, p1 = (b1 & 0xFF) * Ones;
         int i = 0;
         for (; i + 4 <= n; i += 4) {
-            long w = Sys.PeekWord(p + i) & 0xFFFFFFFF;
+            long w = Sys.Read32(p + i) & 0xFFFFFFFF;
             long v0 = w ^ p0, v1 = w ^ p1;
             if (((((v0 - Ones) & ~v0) | ((v1 - Ones) & ~v1)) & Highs) != 0) { break; }
         }
         for (; i < n; i++) {
-            int c = (int)Sys.PeekByte(p + i) & 0xFF;
+            int c = (int)Sys.Read8(p + i) & 0xFF;
             if (c == (b0 & 0xFF) || c == (b1 & 0xFF)) { return i; }
         }
         return -1;
     }
 
-    static int FindAny(long p, int n, int b0, int b1, int b2) {
+    static int FindAny(nuint p, int n, int b0, int b1, int b2) {
         long p0 = (b0 & 0xFF) * Ones, p1 = (b1 & 0xFF) * Ones, p2 = (b2 & 0xFF) * Ones;
         int i = 0;
         for (; i + 4 <= n; i += 4) {
-            long w = Sys.PeekWord(p + i) & 0xFFFFFFFF;
+            long w = Sys.Read32(p + i) & 0xFFFFFFFF;
             long v0 = w ^ p0, v1 = w ^ p1, v2 = w ^ p2;
             if (((((v0 - Ones) & ~v0) | ((v1 - Ones) & ~v1) | ((v2 - Ones) & ~v2)) & Highs) != 0) { break; }
         }
         for (; i < n; i++) {
-            int c = (int)Sys.PeekByte(p + i) & 0xFF;
+            int c = (int)Sys.Read8(p + i) & 0xFF;
             if (c == (b0 & 0xFF) || c == (b1 & 0xFF) || c == (b2 & 0xFF)) { return i; }
         }
         return -1;
     }
 
     /// Where `m` bytes at `q` first appear in `n` bytes at `p`, or -1.
-    static int FindRun(long p, int n, long q, int m) {
+    static int FindRun(long p, int n, nuint q, int m) {
         if (m == 0) { return 0; }
-        int first = (int)Sys.PeekByte(q) & 0xFF;
+        int first = (int)Sys.Read8(q) & 0xFF;
         int at = 0;
         while (at <= n - m) {
             int k = Find(p + at, n - m - at + 1, first);
@@ -11016,14 +11016,14 @@ public static class MemoryExtensions {
 
     /// `n` bytes from `from` to `to`, overlapping or not (memmove): forward
     /// unless the destination starts inside the source.
-    static void Move(long to, long from, int n) {
+    static void Move(nuint to, nuint from, int n) {
         if (n <= 0 || to == from) { return; }
         if (to < from || to >= from + n) { Sys.MemoryCopy(to, from, n); return; }
         int i = n;
         for (; i >= WordSize.Bytes; i -= (int)WordSize.Bytes) {
-            Sys.Poke(to + i - WordSize.Bytes, Sys.Peek(from + i - WordSize.Bytes));
+            Sys.WriteNative(to + i - WordSize.Bytes, Sys.ReadNative(from + i - WordSize.Bytes));
         }
-        for (i = i - 1; i >= 0; i--) { Sys.PokeByte(to + i, Sys.PeekByte(from + i)); }
+        for (i = i - 1; i >= 0; i--) { Sys.Write8(to + i, Sys.Read8(from + i)); }
     }
 
     // ---- bytes -----------------------------------------------------------
@@ -12865,7 +12865,7 @@ static class CollectionExpressionBuilder {
 static class OwnedElements {
     internal static void Release<E>(E element) {
         // A collection given back takes its storage with it (Runtime.Free).
-        if (Sys.IsObject(element) && Sys.Word(element) != 0) { Runtime.Free((nint)Sys.Word(element)); }
+        if (Sys.IsObject(element) && Sys.ObjectAddress(element) != 0) { Runtime.Free((nint)Sys.ObjectAddress(element)); }
     }
 
     // EACH ELEMENT GIVEN BACK ONCE, however often the list holds it: an
@@ -12914,7 +12914,7 @@ static class OutgrownStorage {
         // once where it is the top (Gc.RegionFree).
         // A DIAGNOSTIC (Gc.IgnoredFrees 'o'): a collection's outgrown
         // storage left to the collector, apart from the compiler's frees.
-        if (old != null && Gc.IgnoredFrees != 'o') { Runtime.FreeOwnedReplaced((nint)Sys.Word(old), 0); }
+        if (old != null && Gc.IgnoredFrees != 'o') { Runtime.FreeOwnedReplaced((nint)Sys.ObjectAddress(old), 0); }
     }
 }
 
@@ -13331,7 +13331,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
             if (value == Capacity) { return; }
             T[] old = items;
             if (value == 0) { items = null!; Outgrown(old); return; }
-            if (old != null && value > old.Length && !lent && Runtime.GrowInPlace((nint)Sys.Word(old), value)) { return; }
+            if (old != null && value > old.Length && !lent && Runtime.GrowInPlace((nint)Sys.ObjectAddress(old), value)) { return; }
 
             T[] bigger = new T[value];
             for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
@@ -13573,7 +13573,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
         int size = items == null || items.Length == 0 ? 4 : items.Length * 2;
         // GROWN WHERE IT IS, at its region's top: nothing copied, nothing left
         // behind (Runtime.GrowInPlace). Only an array never lent out.
-        if (items != null && !lent && Runtime.GrowInPlace((nint)Sys.Word(items), size)) { return; }
+        if (items != null && !lent && Runtime.GrowInPlace((nint)Sys.ObjectAddress(items), size)) { return; }
         T[] bigger = new T[size];
         T[] old = items;
         for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
@@ -20754,7 +20754,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             // is (Runtime.GrowInPlace).
             int[]? was = vacant;
             int[] into;
-            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.Word(was), was.Length * 2)) {
+            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.ObjectAddress(was), was.Length * 2)) {
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
@@ -22000,13 +22000,13 @@ class Exception
     {
         _placed = true;
         if (_frames == null) return;
-        long frame = from;
+        nuint frame = from;
         int i = 0;
         while (i < _frames.Length)
         {
             long next = Runtime.StepFrame(frame);
             if (next == -1) break;
-            long back = Sys.Peek(frame + WordSize.Bytes);
+            long back = Sys.ReadNative(frame + WordSize.Bytes);
             frame = next;
             if (i == 0 && Runtime.InRuntime(back)) continue;
             _frames[i] = back;
@@ -22815,7 +22815,7 @@ class Random {
         Different = Different + 1;
 
         ulong stream = Mix((ulong)Clock.Now())
-                     ^ Mix((ulong)Sys.Word(new object()) + Golden)
+                     ^ Mix((ulong)Sys.ObjectAddress(new object()) + Golden)
                      ^ (Different * Golden);
 
         // FOUR STEPS OF ONE STREAM, never one word mixed into the next: Mix is
@@ -23182,7 +23182,7 @@ class StringBuilder : IOwnsStorage {
     // THE BUFFER GIVEN BACK with a builder proved dead (Runtime.Free): it is
     // never handed out -- ToString copies out of it.
     public void FreeStorage() {
-        if (buffer != null) { Runtime.FreeOwnedReplaced((nint)Sys.Word(buffer), 0); }
+        if (buffer != null) { Runtime.FreeOwnedReplaced((nint)Sys.ObjectAddress(buffer), 0); }
         buffer = null!;
         used = 0;
     }
@@ -24352,12 +24352,12 @@ class StringBuilder : IOwnsStorage {
         // given back from the top. Left to the collector, every buffer a
         // builder outgrew stayed until a collection, and a builder's growth
         // was never made in its region. One made smaller is always new.
-        if (size > buffer.Length && Runtime.GrowInPlace((nint)Sys.Word(buffer), size)) { return; }
+        if (size > buffer.Length && Runtime.GrowInPlace((nint)Sys.ObjectAddress(buffer), size)) { return; }
         string bigger = Sys.NewChars(size);
         Sys.CopyNoOverlap(bigger, 0, buffer, 0, used);
         string outgrown = buffer;
         buffer = bigger;
-        Runtime.FreeOwnedReplaced((nint)Sys.Word(outgrown), 0);
+        Runtime.FreeOwnedReplaced((nint)Sys.ObjectAddress(outgrown), 0);
     }
 }
 
@@ -24467,7 +24467,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
             // is (Runtime.GrowInPlace).
             int[]? was = vacant;
             int[] into;
-            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.Word(was), was.Length * 2)) {
+            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.ObjectAddress(was), was.Length * 2)) {
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;

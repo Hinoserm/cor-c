@@ -85,7 +85,7 @@ static class Port
 /// then output is dropped, which is what a machine with no console does.
 interface IConsole
 {
-    void Write(long address, long count);
+    void Write(nuint address, nuint count);
 }
 
 /// What runtime/src/core/runtime.cor and runtime/src/core/gc.cor ask of the system.
@@ -109,7 +109,7 @@ static class Platform
     /// running thread's after all (GcThreads.BeginBlocking declines there);
     /// with one thread there is nobody to wait for it, and the bracket is a
     /// safepoint. Answers the kernel's raw number, as Sys.Syscall does.
-    public static long Blocking(long n, long a, long b, long c, long d = 0, long e = 0, long f = 0)
+    public static nint Blocking(nint n, nint a, nint b, nint c, nint d = 0, nint e = 0, nint f = 0)
     {
         // A KERNEL'S OWN CALL (--kernel-syscalls) IS NOT BRACKETED: its
         // thread block is a processor's, the kernel decides when the call
@@ -117,7 +117,7 @@ static class Platform
         // stopped is one it refuses to park.
         if (Sys.KernelSyscalls()) return Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.BeginBlocking();
-        long raw = Sys.Syscall(n, a, b, c, d, e, f);
+        nint raw = Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.EndBlocking();
         return raw;
     }
@@ -150,14 +150,14 @@ static class Platform
     /// reference reads what was there instead of faulting.
     public static bool GuardReleases() => Runtime.KnobFlag("Corsac.GC.GuardReleases");
 
-    public static void Guard(long at, long bytes)
+    public static void Guard(nuint at, nuint bytes)
     {
     }
 
     /// Where the bump region begins and ends. A limit of zero means nobody
     /// has said (SetHeap), and Map stops the image rather than guess.
-    private static long _at;
-    private static long _limit;
+    private static nuint _at;
+    private static nuint _limit;
 
     /// THE REGION IS HANDED OUT IN PAGES, aligned and whole, as the contract
     /// every platform keeps says (runtime.cor, "Platform.Map"): the
@@ -165,7 +165,8 @@ static class Platform
     /// holds one chunk a page, and two chunks sharing a page -- the bump's
     /// 8-byte steps after an odd-sized table -- left the one that lost the
     /// entry unfound there, its live objects no heap's to the marker.
-    const long RegionPage = 4096;
+    const int RegionPage = 4096;
+    const nuint PageMask = ~(nuint)(RegionPage - 1);
 
     /// The region's bookkeeping -- the bump, the free ranges -- taken round
     /// every change. Map and Unmap are called with the heap's lock held and
@@ -177,19 +178,19 @@ static class Platform
     /// landing while thread code held it spun for ever with them off.
     private static nint _regionLock;
 
-    static long LockRegion()
+    static nint LockRegion()
     {
         return HandlerLockEnter(Sys.AddressOf(ref _regionLock));
     }
 
-    static void UnlockRegion(long held)
+    static void UnlockRegion(nint held)
     {
         HandlerLockLeave(Sys.AddressOf(ref _regionLock), held);
     }
 
     /// Where the region began, which _at has moved on from: with _limit, the
     /// whole of the memory an image alone on the machine has (TotalMemory).
-    private static long _start;
+    private static nuint _start;
 
     /// The loader's word on where memory is.
     ///
@@ -198,15 +199,15 @@ static class Platform
     /// really there and really free. Whoever loaded the image is the only
     /// thing that knows: the firmware's memory map is gone by the time this
     /// code runs.
-    public static void SetHeap(long start, long end)
+    public static void SetHeap(nuint start, nuint end)
     {
 #if !TARGET_64BIT
         // NOT TO THE TOP OF 32 BITS: a chunk ending at 4 GiB has a limit word
         // of 0, and the collector's table, its sweep and its release then
-        // saw no chunk there, or a negative size.
-        if (end > 0x100000000 - RegionPage) end = 0x100000000 - RegionPage;
+        // saw no chunk there, or a negative size. The last page is left out.
+        if (end > PageMask) end = PageMask;
 #endif
-        long held = LockRegion();
+        nint held = LockRegion();
         // ONCE, OR AGAIN ONLY BEFORE ANYTHING WAS HANDED OUT: the chunks the
         // first region gave are the collector's, and a second region over
         // or beside them would hand the same memory out twice, or send the
@@ -215,13 +216,13 @@ static class Platform
         {
             UnlockRegion(held);
             string text = "heap: Platform.SetHeap was called again after the heap was used\n";
-            long units = Sys.StringData(text);
-            for (int i = 0; i < text.Length; i++) WriteBytes(2, units + i * 2, 1);
+            nuint units = Sys.StringData(text);
+            for (int i = 0; i < text.Length; i++) WriteBytes(2, units + (nuint)i * 2, 1);
             Exit(137);
         }
-        _at = (start + RegionPage - 1) & -RegionPage;
+        _at = (start + RegionPage - 1) & PageMask;
         _start = _at;
-        _limit = end & -RegionPage;
+        _limit = end & PageMask;
         UnlockRegion(held);
     }
 
@@ -229,8 +230,11 @@ static class Platform
     /// image: the kernel installs the two routines (by Sys.AddressOf) that
     /// map and unmap kernel memory page by page, and from then on the bump
     /// region below is only what was handed out before they existed.
-    public static long MapHook;
-    public static long UnmapHook;
+    // HOOKS: a method's address (Sys.AddressOf) called by Sys.Call, so each
+    // declares (nint, nint, nint) and answers an nint -- a word an argument.
+    // MapHook(bytes, 0, 0) -> address; UnmapHook(at, bytes, 0).
+    public static nuint MapHook;
+    public static nuint UnmapHook;
 
     /// MEMORY GIVEN BACK. What the region handed out (SetHeap) is the
     /// region's again, hooks or none -- a kernel's UnmapHook is for what its
@@ -242,36 +246,36 @@ static class Platform
     /// collector gave back -- a dead large array's, a page with nothing live
     /// -- was gone for good, and a heap that had run out once could never
     /// answer again. Anything else goes to the hook, which returns its frames.
-    public static void Unmap(long at, long bytes)
+    public static void Unmap(nuint at, nuint bytes)
     {
         if (_limit != 0 && at >= _start && at < _limit)
         {
-            long held = LockRegion();
-            Release(at, (bytes + RegionPage - 1) & -RegionPage);
+            nint held = LockRegion();
+            Release(at, (bytes + RegionPage - 1) & PageMask);
             UnlockRegion(held);
             return;
         }
         if (UnmapHook != 0)
         {
-            Sys.Call(UnmapHook, at, bytes, 0);
+            Sys.Call(UnmapHook, (nint)at, (nint)bytes, 0);
         }
     }
 
     /// The region's free ranges (Unmap), the lowest first, and their bytes.
-    private static long _freeRanges;
-    private static long _freeBytes;
-    private const long RangeLeast = 2 * WordSize.Bytes;
+    private static nuint _freeRanges;
+    private static nuint _freeBytes;
+    private const int RangeLeast = 2 * WordSize.Bytes;
 
-    static long RangeNext(long range) => Sys.Peek(range);
-    static long RangeSize(long range) => Sys.Peek(range + WordSize.Bytes);
+    static nuint RangeNext(nuint range) => Sys.ReadNative(range);
+    static nuint RangeSize(nuint range) => Sys.ReadNative(range + WordSize.Bytes);
 
-    static void SetRange(long range, long next, long size)
+    static void SetRange(nuint range, nuint next, nuint size)
     {
-        Sys.Poke(range, next);
-        Sys.Poke(range + WordSize.Bytes, size);
+        Sys.WriteNative(range, next);
+        Sys.WriteNative(range + WordSize.Bytes, size);
     }
 
-    static void Release(long at, long size)
+    static void Release(nuint at, nuint size)
     {
         if (size < RangeLeast || at + size > _at) return;
         // The top of what was handed out: the bump's again, with the free
@@ -279,19 +283,19 @@ static class Platform
         if (at + size == _at)
         {
             _at = at;
-            long before = 0;
-            long range = _freeRanges;
+            nuint before = 0;
+            nuint range = _freeRanges;
             while (range != 0 && RangeNext(range) != 0) { before = range; range = RangeNext(range); }
             if (range != 0 && range + RangeSize(range) == _at)
             {
                 _at = range;
                 _freeBytes = _freeBytes - RangeSize(range);
-                if (before == 0) _freeRanges = 0; else Sys.Poke(before, 0);
+                if (before == 0) _freeRanges = 0; else Sys.WriteNative(before, 0);
             }
             return;
         }
-        long previous = 0;
-        long next = _freeRanges;
+        nuint previous = 0;
+        nuint next = _freeRanges;
         while (next != 0 && next < at) { previous = next; next = RangeNext(next); }
         _freeBytes = _freeBytes + size;
         // Joined with what follows it, and with what comes before.
@@ -306,30 +310,30 @@ static class Platform
             return;
         }
         SetRange(at, next, size);
-        if (previous == 0) _freeRanges = at; else Sys.Poke(previous, at);
+        if (previous == 0) _freeRanges = at; else Sys.WriteNative(previous, at);
     }
 
     /// `need` bytes of the free ranges, the first that holds them, from its
     /// end; 0 when none does.
-    static long TakeRange(long need)
+    static nuint TakeRange(nuint need)
     {
-        long previous = 0;
-        long range = _freeRanges;
+        nuint previous = 0;
+        nuint range = _freeRanges;
         while (range != 0)
         {
-            long size = RangeSize(range);
+            nuint size = RangeSize(range);
             if (size >= need)
             {
                 _freeBytes = _freeBytes - need;
                 if (size - need >= RangeLeast)
                 {
-                    Sys.Poke(range + WordSize.Bytes, size - need);
+                    Sys.WriteNative(range + WordSize.Bytes, size - need);
                     return range + size - need;
                 }
                 // The whole of it: what is over is too little to list, and
                 // goes with it.
                 _freeBytes = _freeBytes - (size - need);
-                if (previous == 0) _freeRanges = RangeNext(range); else Sys.Poke(previous, RangeNext(range));
+                if (previous == 0) _freeRanges = RangeNext(range); else Sys.WriteNative(previous, RangeNext(range));
                 return range;
             }
             previous = range;
@@ -341,7 +345,7 @@ static class Platform
     /// The processor given up to whatever else is ready, by the hook -- a
     /// ring-1 kernel's, which asks the kernel -- or, with none (the kernel
     /// itself, which has no one to ask), nothing.
-    public static long YieldHook;
+    public static nuint YieldHook;           // YieldHook(0, 0, 0)
 
     public static void Yield()
     {
@@ -354,15 +358,16 @@ static class Platform
     /// the length. No hook: 0, and the caller reads the file instead. The
     /// one member here that allocates (the path's bytes): System.IO's, never
     /// the heap's, so the heap never comes back into it.
-    public static long MapFileHook;
+    // MapFileHook(path's bytes, their count, where to write the length: a nuint) -> address
+    public static nuint MapFileHook;
 
-    public static long MapReadOnly(string path, out long length)
+    public static nuint MapReadOnly(string path, out nuint length)
     {
         length = 0;
         if (MapFileHook == 0 || path.Length == 0) return 0;
         byte[] name = Utf8Transcoder.Encode(path, 0, path.Length);
-        long bytes = 0;
-        long at = Sys.Call(MapFileHook, Sys.ArrayData(name), name.Length, Sys.AddressOf(ref bytes));
+        nuint bytes = 0;
+        nuint at = (nuint)Sys.Call(MapFileHook, (nint)Sys.ArrayData(name), name.Length, (nint)Sys.AddressOf(ref bytes));
         if (at != 0) length = bytes;
         return at;
     }
@@ -371,14 +376,14 @@ static class Platform
     /// none: the region's given back (Unmap) first, then the kernel's once
     /// it has installed MapHook, and the bump region's until then -- every
     /// piece of the region whole pages (RegionPage).
-    public static long Map(long bytes)
+    public static nuint Map(nuint bytes)
     {
         // The region's own given back first (Unmap), whoever maps the rest.
         if (_freeRanges != 0 && bytes > 0)
         {
-            long want = (bytes + RegionPage - 1) & -RegionPage;
-            long reusing = LockRegion();
-            long reused = TakeRange(want);
+            nuint want = (bytes + RegionPage - 1) & PageMask;
+            nint reusing = LockRegion();
+            nuint reused = TakeRange(want);
             UnlockRegion(reusing);
             if (reused != 0)
             {
@@ -388,7 +393,7 @@ static class Platform
         }
         if (MapHook != 0)
         {
-            return Sys.Call(MapHook, bytes, 0, 0);
+            return (nuint)Sys.Call(MapHook, (nint)bytes, 0, 0);
         }
 
         if (_limit == 0)
@@ -401,21 +406,21 @@ static class Platform
             // UTF-16 units are written a byte each, the low byte first on
             // x86, which for this ASCII text is the whole character.
             string text = "no heap: Platform.SetHeap was not called\n";
-            long units = Sys.StringData(text);
-            for (int i = 0; i < text.Length; i++) WriteBytes(2, units + i * 2, 1);
+            nuint units = Sys.StringData(text);
+            for (int i = 0; i < text.Length; i++) WriteBytes(2, units + (nuint)i * 2, 1);
             Exit(137);
         }
 
-        if (bytes <= 0 || bytes > _limit - _start) return 0;
-        long need = (bytes + RegionPage - 1) & -RegionPage;
+        if (bytes == 0 || bytes > _limit - _start) return 0;
+        nuint need = (bytes + RegionPage - 1) & PageMask;
 
-        long held = LockRegion();
+        nint held = LockRegion();
         if (need > _limit - _at)
         {
             UnlockRegion(held);
             return 0;
         }
-        long got = _at;
+        nuint got = _at;
         _at = _at + need;
         UnlockRegion(held);
         Zero(got, need);
@@ -426,7 +431,7 @@ static class Platform
     ///
     /// Memory left by a bootloader is not, and a heap that inherited it would
     /// hand an object a vtable pointer made of stale bytes.
-    private static void Zero(long at, long count)
+    private static void Zero(nuint at, nuint count)
     {
         Sys.MemorySet(at, 0, count);
     }
@@ -443,9 +448,9 @@ static class Platform
     // needs neither GS nor a call here to throw or to allocate. These exist
     // so that the runtime above is written once.
 
-    public static void SetThreadBlock(long block)
+    public static void SetThreadBlock(nuint block)
     {
-        Sys.Poke(block + Tls.Self, block);
+        Sys.WriteNative(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
     }
 
@@ -455,25 +460,27 @@ static class Platform
     /// of a stopped thread's wait and is where that processor answers what
     /// it must answer with interrupts off (a TLB flush another processor
     /// is waiting on).
-    public static long WaitHook;
+    // WaitHook(at, value, 0)
+    public static nuint WaitHook;
 
-    public static void Wait(long at, long value)
+    public static void Wait(nuint at, nint value)
     {
         if (WaitHook != 0)
         {
-            Sys.Call(WaitHook, at, value, 0);
+            Sys.Call(WaitHook, (nint)at, value, 0);
         }
     }
 
     /// The other half, for the same kernel: a word a Wait may be sleeping
     /// for has changed, and the sleeper is to be woken (WakeHook).
-    public static long WakeHook;
+    // WakeHook(at, count, 0)
+    public static nuint WakeHook;
 
-    public static void Wake(long at, long count)
+    public static void Wake(nuint at, nint count)
     {
         if (WakeHook != 0)
         {
-            Sys.Call(WakeHook, at, count, 0);
+            Sys.Call(WakeHook, (nint)at, count, 0);
         }
     }
 
@@ -483,12 +490,13 @@ static class Platform
     /// the cell its kernel writes -- so one that has a clock installs this,
     /// and Clock.Now, which the scheduler's timers read too, asks the PIT
     /// only where nobody did.
-    public static long NanosHook;
+    // NanosHook(0, 0, 0) -> long, called by Sys.CallLong: no word holds it on i386.
+    public static nuint NanosHook;
 
     /// WHO ENDS A CALLER OF A REVOKED OBJECT (Gc.Revoke): the kernel installs
     /// it -- a program is crashed, a kernel thread killed -- and it does not
     /// return. With none installed the processor stops.
-    public static long RevokedHook;
+    public static nuint RevokedHook;         // RevokedHook(0, 0, 0)
 
     public static void Revoked()
     {
@@ -506,9 +514,9 @@ static class Platform
     // EXIT_GROUP, the whole program's end in Linux's numbers, which a ring-1
     // gate takes too: exit (1, 60) ends the calling thread alone.
 #if TARGET_64BIT
-    const long ExitCall = 231;
+    const int ExitCall = 231;
 #else
-    const long ExitCall = 252;
+    const int ExitCall = 252;
 #endif
 
     /// The end above ring 0: the system's exit, and should it come back --
@@ -534,7 +542,7 @@ static class Platform
     /// is what Environment.ProcessorCount asks). A ring-1 kernel installs it
     /// as it starts, as it does its other hooks, with its kernel's answer
     /// (Service.ProcessorCount); with none the image counts one.
-    public static long ProcessorCountHook;
+    public static nuint ProcessorCountHook;  // ProcessorCountHook(0, 0, 0) -> count
 
     // ---- WHAT AN IMAGE ON TOP OF A KERNEL SAYS OF ITS MEMORY -------------------
     //
@@ -557,9 +565,10 @@ static class Platform
     public static long TotalMemoryBytes;
 
     /// Who says what is free, a kernel's routine (by Sys.AddressOf) called
-    /// with no arguments and answering bytes; 0 for nobody. Called by the
-    /// collector with its heap held, so it allocates nothing.
-    public static long FreeMemoryHook;
+    /// with no arguments and answering 4 KiB FRAMES, which a word holds past
+    /// 4 GB of memory on i386 too; 0 for nobody. Called by the collector
+    /// with its heap held, so it allocates nothing. FreeMemoryHook(0, 0, 0).
+    public static nuint FreeMemoryHook;
 
     /// THE MEMORY THE COLLECTOR MAY USE, which GC.GetGCMemoryInfo reports as
     /// its total: what the kernel below says the machine has, when one said
@@ -572,7 +581,7 @@ static class Platform
     public static long TotalMemory()
     {
         if (TotalMemoryBytes != 0) return TotalMemoryBytes;
-        if (MapHook == 0) return _limit - _start;
+        if (MapHook == 0) return (long)(_limit - _start);
         return 0;
     }
 
@@ -588,7 +597,7 @@ static class Platform
     /// region used up is (GC.GetGCMemoryInfo's load is then all of it).
     public static long AvailableMemory()
     {
-        if (TotalMemoryBytes == 0 && MapHook == 0) return _limit - _at + _freeBytes;
+        if (TotalMemoryBytes == 0 && MapHook == 0) return (long)(_limit - _at + _freeBytes);
         return FreeMemoryHook == 0 ? -1 : FreeMemoryQuietly();
     }
 
@@ -598,11 +607,11 @@ static class Platform
     /// makes each page when it is first touched (ring 0's KernelMapLazy), or,
     /// with none, an ordinary Map -- a ring-1 kernel's, which its kernel
     /// commits on touch already.
-    public static long MapLazyHook;
+    public static nuint MapLazyHook;         // MapLazyHook(bytes, 0, 0) -> address
 
-    public static long MapLazy(long bytes)
+    public static nuint MapLazy(nuint bytes)
     {
-        if (MapLazyHook != 0) return Sys.Call(MapLazyHook, bytes, 0, 0);
+        if (MapLazyHook != 0) return (nuint)Sys.Call(MapLazyHook, (nint)bytes, 0, 0);
         return Map(bytes);
     }
 
@@ -610,11 +619,11 @@ static class Platform
     /// thread context, by the kernel's routine (CommitHook) -- so nothing
     /// the collector knows will be touched waits on a fault (Gc.CommitCards).
     /// No hook: nothing to do.
-    public static long CommitHook;
+    public static nuint CommitHook;          // CommitHook(at, bytes, 0)
 
-    public static void Commit(long at, long bytes)
+    public static void Commit(nuint at, nuint bytes)
     {
-        if (CommitHook != 0) Sys.Call(CommitHook, at, bytes, 0);
+        if (CommitHook != 0) Sys.Call(CommitHook, (nint)at, (nint)bytes, 0);
     }
 
     /// Whether a mapping costs only the pages that are touched: false alone
@@ -629,7 +638,7 @@ static class Platform
     /// Nonzero: every thread has a region arena, mapped chunk by chunk as
     /// its regions need (Regions); 0 for none. Set before any thread opens
     /// a region.
-    public static long RegionArenaBytes;
+    public static nuint RegionArenaBytes;
 
     // ---- THE ASYNC SCHEDULER'S CONTRACT, for a kernel that runs it --------------
     //
@@ -644,7 +653,7 @@ static class Platform
     /// scheduler loop to run through Scheduler.RunPosted. 0: this
     /// scheduler's own ring. Called in thread context only -- an interrupt
     /// handler completes through InterruptCompletions, never here.
-    public static long PostHook;
+    public static nuint PostHook;
 
     /// What is current, as a kernel keeps it (AsyncContext): called with
     /// AsyncContext.CaptureOp (answers a word for what is current now: an
@@ -652,19 +661,19 @@ static class Platform
     /// a flow begins), EnterOp and the Owner's word as a continuation starts
     /// (the platform may make it current or only note it; it answers a word)
     /// and LeaveOp and that answer as it ends. 0: no context flows.
-    public static long ContextHook;
+    public static nuint ContextHook;
 
     /// Called with no arguments by InterruptCompletions.Complete -- from an
     /// interrupt handler, so it may not allocate or wait -- once a task is
     /// queued for finishing: a kernel wakes an idle processor to run its
     /// loop. 0: nobody to tell.
-    public static long CompletedHook;
+    public static nuint CompletedHook;
 
     /// Nonzero: each continuation's run on a thread block has a region
     /// arena of its own (AsyncContext; Tls.TaskArena), mapped chunk by chunk
     /// as its regions need and given back as the run ends. 0: continuations
     /// run with the block's own arena words, whatever they are.
-    public static long TaskArenaBytes;
+    public static nuint TaskArenaBytes;
 
     /// WHERE THE RUNNING CODE'S OWN WORDS ARE, when that is not the thread
     /// block. A kernel's thread block is a processor's, and a system call
@@ -675,19 +684,19 @@ static class Platform
     /// ThreadStaticsHook, called with nothing: the address of the word that
     /// holds the running code's [ThreadStatic] table (ThreadStatics), or 0
     /// for the thread block's own (Tls.ThreadStatics).
-    public static long ThreadStaticsHook;
+    public static nuint ThreadStaticsHook;
 
     /// TypeInitOwnerHook, called with nothing: the block that names the
     /// running code as a type initializer's owner -- a word at
     /// Tls.TypeInitWait says what it waits for -- or 0 for the thread block.
     /// The same block names it as a Monitor's owner (MonitorOwner).
-    public static long TypeInitOwnerHook;
+    public static nuint TypeInitOwnerHook;
 
     /// TypeInitWaitHook, called with the type's state word and the owner it
     /// holds: 1 when the wait was made (a parked call that slept a moment,
     /// which the caller follows by looking again), 0 to wait here as any
     /// thread does (Runtime.EnterTypeInitialization).
-    public static long TypeInitWaitHook;
+    public static nuint TypeInitWaitHook;
 
     /// Corsac.GC.Verify: no old object pointing at a young one the minor
     /// cycle is about to sweep, checked after each one's mark.
@@ -795,7 +804,7 @@ static class Platform
     public static long FreeMemoryQuietly()
     {
         if (FreeMemoryHook == 0) return 0;
-        return Sys.Call(FreeMemoryHook, 0, 0, 0);
+        return (long)Sys.Call(FreeMemoryHook, 0, 0, 0) * 4096;
     }
 
     // ---- what Monitor asks (core threading.cor) ----------------------------
@@ -818,11 +827,11 @@ static class Platform
     /// may hold: it runs as that code, on its stack and its block, so it
     /// would be taken for the owner and walk into the middle of the lock.
     /// What an interrupt shares is guarded by the kernels' IrqSpinLock.
-    public static long MonitorOwner()
+    public static nuint MonitorOwner()
     {
         if (TypeInitOwnerHook != 0)
         {
-            long owner = Sys.Call(TypeInitOwnerHook, 0, 0, 0);
+            nuint owner = (nuint)Sys.Call(TypeInitOwnerHook, 0, 0, 0);
             if (owner != 0) return owner;
         }
         return Sys.ThreadBlock();
@@ -832,21 +841,21 @@ static class Platform
     /// yielding between looks (YieldHook) and then pausing. Ring 1 may not
     /// HLT, and its yield lets another thread run -- the holder among them;
     /// ring 0's answers the TLB shootdown a holder may be waiting on.
-    public static void MonitorBlock(long at, long value)
+    public static void MonitorBlock(nuint at, nint value)
     {
         Yield();
         Sys.Pause();
     }
 
     /// Nobody asleep to wake: the waiter looks again (MonitorBlock).
-    public static void MonitorWake(long at)
+    public static void MonitorWake(nuint at)
     {
     }
 
     /// Asks every thread still running to stop for a collection: nothing
     /// on one thread, and on a kernel an interrupt to every other processor
     /// that is running managed code (StopHook, installed by the kernel).
-    public static long StopHook;
+    public static nuint StopHook;
 
     public static void PromptStop()
     {
@@ -859,7 +868,7 @@ static class Platform
     /// Every processor serialised (Interlocked.MemoryBarrierProcessWide): on
     /// one processor a fence, and on a kernel's several whatever it installs
     /// here to interrupt the others and fence each (BarrierHook).
-    public static long BarrierHook;
+    public static nuint BarrierHook;
 
     public static void ProcessWideBarrier()
     {
@@ -873,7 +882,7 @@ static class Platform
     /// The one thread never has to stop for another, but the shape is the
     /// runtime's and not the machine's. The register pressure is the same
     /// trick EnterCollection uses below, for the same reason.
-    public static void SafePoint(long mode)
+    public static void SafePoint(int mode)
     {
         long a = _spill + 1;
         long b = _spill + 2;
@@ -932,7 +941,7 @@ static class Platform
     /// becomes a call to it, which does not return. CORSAC's kernel installs
     /// one too, for an unwind that a module forced out began; for anything
     /// else it returns, and the machine stops below as it always has.
-    public static long ExitHook;
+    public static nuint ExitHook;
 
     /// Ends the program. There is nothing to return to, so this stops.
     ///
@@ -978,17 +987,18 @@ static class Platform
     /// WHERE THE BYTES GO WITHOUT AN OBJECT: a host's routine, called with
     /// the descriptor, the address and the count -- a Windows image's
     /// standard error (Win32.Write) -- so that writing needs nothing made.
-    public static long WriteHook;
+    public static nuint WriteHook;
 
     /// Returns the count, always: a console that is not there swallows bytes
     /// rather than failing, and there is nowhere to report a failure to.
     /// The heap's own reports come here -- out of memory among them -- so a
     /// console driver's Write may not allocate either.
-    public static long WriteBytes(int fd, long address, long count)
+    // WriteHook(fd, address, count)
+    public static nuint WriteBytes(int fd, nuint address, nuint count)
     {
         if (WriteHook != 0)
         {
-            Sys.Call(WriteHook, fd, address, count);
+            Sys.Call(WriteHook, fd, (nint)address, (nint)count);
             return count;
         }
         if (Console != null)
@@ -1011,13 +1021,13 @@ static class Platform
     /// bare-metal runtime run as a process, as its tests run it -- under one
     /// lock taken by XCHG. Answers the flags, for Leave to turn interrupts
     /// back on only where they were, or LockHeld.
-    public static long AtomicsEnter()
+    public static nint AtomicsEnter()
     {
-        long flags = Sys.ReadFlags();
-        if ((Sys.ReadCodeSegment() & 3) <= ((flags >> 12) & 3))
+        nuint flags = Sys.ReadFlags();
+        if ((Sys.ReadCodeSegment() & 3) <= (int)((flags >> 12) & 3))
         {
             Sys.Cli();
-            return flags;
+            return (nint)flags;
         }
         while (Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 1) != 0)
         {
@@ -1026,7 +1036,7 @@ static class Platform
         return LockHeld;
     }
 
-    public static void AtomicsLeave(long held)
+    public static void AtomicsLeave(nint held)
     {
         if (held == LockHeld) Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 0);
         else if ((held & InterruptFlag) != 0) Sys.Sti();
@@ -1042,34 +1052,34 @@ static class Platform
     /// the time is offered to it (Yield) every so many turns, where the
     /// spin burnt whole time slices while it waited to run. Answers what
     /// Leave is handed.
-    public static long HandlerLockEnter(long at)
+    public static nint HandlerLockEnter(nuint at)
     {
-        long flags = Sys.ReadFlags();
-        bool may = (Sys.ReadCodeSegment() & 3) <= ((flags >> 12) & 3);
+        nuint flags = Sys.ReadFlags();
+        bool may = (Sys.ReadCodeSegment() & 3) <= (int)((flags >> 12) & 3);
         if (may) Sys.Cli();
         // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount) where interrupts
         // stay on; down again to give the time away.
         Runtime.PreemptOff();
         int turns = 0;
-        while (Sys.AtomicSwap(at, 1) != 0)
+        while (Sys.AtomicSwap(at, 1u) != 0)
         {
             Sys.Pause();
             if (!may && (++turns & 63) == 0) { Runtime.PreemptOn(); Yield(); Runtime.PreemptOff(); }
         }
-        return may ? flags : 0;
+        return may ? (nint)flags : 0;
     }
 
-    public static void HandlerLockLeave(long at, long held)
+    public static void HandlerLockLeave(nuint at, nint held)
     {
-        Sys.AtomicSwap(at, 0);
+        Sys.AtomicSwap(at, 0u);
         Runtime.PreemptOn();
         if ((held & InterruptFlag) != 0) Sys.Sti();
     }
 
     /// EFLAGS.IF.
-    const long InterruptFlag = 0x200;
+    const int InterruptFlag = 0x200;
     /// What AtomicsEnter answers for the lock: no flags word is negative.
-    const long LockHeld = -1;
+    const int LockHeld = -1;
 }
 
 /// The parts of system.cor's `Os` that mean anything with no kernel.
@@ -1089,7 +1099,7 @@ static partial class Os
     public static int ProcessorCount()
     {
         if (Platform.ProcessorCountHook == 0) return 1;
-        long count = Sys.Call(Platform.ProcessorCountHook, 0, 0, 0);
+        nint count = Sys.Call(Platform.ProcessorCountHook, 0, 0, 0);
         return count > 0 ? (int)count : 1;
     }
 
@@ -1168,18 +1178,18 @@ static partial class Os
     /// Where argc, argv and envp would be: the empty block. (Windows makes
     /// a real one: runtime/src/platforms/win32/files.cor.)
 #if !TARGET_WINDOWS
-    public static long MainEntryStack() { return Sys.ArrayData(NoEntryBlock); }
+    public static nuint MainEntryStack() { return Sys.ArrayData(NoEntryBlock); }
 #endif
 
     /// envp, as on Linux: past argc, argv's entries and argv's null.
-    public static long EnvironAddress()
+    public static nuint EnvironAddress()
     {
-        long sp = MainEntryStack();
-        return sp + WordSize.Bytes + WordSize.Bytes * Sys.Peek(sp) + WordSize.Bytes;
+        nuint sp = MainEntryStack();
+        return sp + WordSize.Bytes + WordSize.Bytes * Sys.ReadNative(sp) + WordSize.Bytes;
     }
 
     /// A NUL-terminated UTF-8 string at an address.
-    public static string StringAt(long at) { return Utf8Transcoder.DecodeTerminated(at); }
+    public static string StringAt(nuint at) { return Utf8Transcoder.DecodeTerminated(at); }
 
     /// No working directory to change: ENOSYS, which Environment reports as
     /// the IOException .NET gives for a directory that cannot be entered.
@@ -1256,9 +1266,9 @@ static class Clock
     /// a kernel with a clock of its own (NanosHook) never comes here.
     static nint _pitLock;
 
-    static long Enter() { return Platform.HandlerLockEnter(Sys.AddressOf(ref _pitLock)); }
+    static nint Enter() { return Platform.HandlerLockEnter(Sys.AddressOf(ref _pitLock)); }
 
-    static void Leave(long flags) { Platform.HandlerLockLeave(Sys.AddressOf(ref _pitLock), flags); }
+    static void Leave(nint flags) { Platform.HandlerLockLeave(Sys.AddressOf(ref _pitLock), flags); }
 
     /// The count now, latched so both bytes belong to one instant.
     static long Count()
@@ -1289,8 +1299,8 @@ static class Clock
 
     public static long Now()
     {
-        if (Platform.NanosHook != 0) return Sys.Call(Platform.NanosHook, 0, 0, 0);
-        long flags = Enter();
+        if (Platform.NanosHook != 0) return Sys.CallLong(Platform.NanosHook, 0, 0, 0);
+        nint flags = Enter();
         long ticks;
         if (_interrupts)
         {
@@ -1421,9 +1431,9 @@ static class Clock
 /// until the kernel provides one.
 static class Native
 {
-    public static void Wait(long at, long expect)
+    public static void Wait(nuint at, long expect)
     {
-        for (int i = 0; i < 1000000 && Sys.PeekWord(at) == expect; i++)
+        for (int i = 0; i < 1000000 && Sys.Read32(at) == expect; i++)
         {
             Idle();
         }
@@ -1432,11 +1442,11 @@ static class Native
     /// As Wait, giving up once `nanoseconds` have passed by Clock (a
     /// timed Monitor.Wait's). A return by timeout or by the word changing
     /// looks the same; every caller re-reads its word and its clock.
-    public static void WaitFor(long at, long expect, long nanoseconds)
+    public static void WaitFor(nuint at, long expect, long nanoseconds)
     {
         long deadline = Clock.Now() + nanoseconds;
 
-        while (Sys.PeekWord(at) == expect && Clock.Now() < deadline)
+        while (Sys.Read32(at) == expect && Clock.Now() < deadline)
         {
             Idle();
         }

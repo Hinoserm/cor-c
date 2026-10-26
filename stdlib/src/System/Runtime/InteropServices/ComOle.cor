@@ -177,13 +177,13 @@ namespace System.Runtime.InteropServices
         public static nint Alloc(byte[] bytes)
         {
             nint block = Marshal.AllocHGlobal(Head + Math.Max(bytes.Length, 1));
-            Sys.PokeWord(block, bytes.Length);
+            Sys.Write32(block, bytes.Length);
             nint h = block + Head;
             if (bytes.Length > 0) Marshal.Copy(bytes, 0, h, bytes.Length);
             return h;
         }
 
-        public static int Size(nint h) { return h == 0 ? 0 : (int)Sys.PeekWord(h - Head); }
+        public static int Size(nint h) { return h == 0 ? 0 : (int)Sys.Read32(h - Head); }
 
         public static byte[] Bytes(nint h)
         {
@@ -212,7 +212,7 @@ namespace System.Runtime.InteropServices
         static nint Zeroed(int bytes)
         {
             nint at = Marshal.AllocHGlobal(bytes);
-            for (int i = 0; i < bytes; i++) Sys.PokeByte(at + i, 0);
+            for (int i = 0; i < bytes; i++) Sys.Write8(at + i, 0);
             return at;
         }
 
@@ -229,7 +229,7 @@ namespace System.Runtime.InteropServices
 
         public static void WriteFormatEtc(nint at, FORMATETC f)
         {
-            for (int i = 0; i < FormatEtcBytes; i++) Sys.PokeByte(at + i, 0);
+            for (int i = 0; i < FormatEtcBytes; i++) Sys.Write8(at + i, 0);
             ComMarshal.WriteU2(at, (ushort)f.cfFormat);
             ComMarshal.WritePtr(at + W, f.ptd);
             ComMarshal.WriteI4(at + 2 * W, (int)f.dwAspect);
@@ -268,7 +268,7 @@ namespace System.Runtime.InteropServices
 
         public static void WriteStgMedium(nint at, int tymed, nint handle, nint unkForRelease)
         {
-            for (int i = 0; i < StgMediumBytes; i++) Sys.PokeByte(at + i, 0);
+            for (int i = 0; i < StgMediumBytes; i++) Sys.Write8(at + i, 0);
             ComMarshal.WriteI4(at, tymed);
             ComMarshal.WritePtr(at + W, handle);
             ComMarshal.WritePtr(at + 2 * W, unkForRelease);
@@ -297,7 +297,7 @@ namespace System.Runtime.InteropServices
         public static nint InterfaceData(byte[] objref)
         {
             nint at = Marshal.AllocHGlobal(4 + Math.Max(objref.Length, 1));
-            Sys.PokeWord(at, objref.Length);
+            Sys.Write32(at, objref.Length);
             if (objref.Length > 0) Marshal.Copy(objref, 0, at + 4, objref.Length);
             return at;
         }
@@ -836,7 +836,7 @@ namespace System.Runtime.InteropServices
                 int celt = Math.Max(0, Math.Min(r.Int(), MostAtOnce));
                 nint rgelt = OleMemory.NewFormatEtcs(celt);
                 nint fetched = Marshal.AllocHGlobal(4);
-                Sys.PokeWord(fetched, 0);
+                Sys.Write32(fetched, 0);
                 try
                 {
                     int hr = e.Next(celt, rgelt, fetched);

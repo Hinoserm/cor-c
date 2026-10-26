@@ -94,7 +94,7 @@ static partial class Marshal
             return null;
         }
         int length = 0;
-        while (Sys.PeekByte(ptr + length) != 0)
+        while (Sys.Read8(ptr + length) != 0)
         {
             length++;
         }
@@ -139,9 +139,9 @@ static partial class Marshal
         nint at = AllocHGlobal(bytes.Length + 1);
         for (int i = 0; i < bytes.Length; i++)
         {
-            Sys.PokeByte(at + i, bytes[i]);
+            Sys.Write8(at + i, bytes[i]);
         }
-        Sys.PokeByte(at + bytes.Length, 0);
+        Sys.Write8(at + bytes.Length, 0);
         return at;
     }
 
@@ -201,7 +201,7 @@ static partial class Marshal
             long pages = Platform.Map(bytes);
             if (pages != 0)
             {
-                Sys.Poke(pages, bytes);
+                Sys.WriteNative(pages, bytes);
                 at = pages + 2 * WordSize.Bytes;
             }
             else
@@ -238,7 +238,7 @@ static partial class Marshal
             return;
         }
         long pages = hglobal - 2 * WordSize.Bytes;
-        Platform.Unmap(pages, Sys.Peek(pages));
+        Platform.Unmap(pages, Sys.ReadNative(pages));
     }
 
     public static void FreeCoTaskMem(nint ptr)
@@ -262,38 +262,38 @@ static partial class Marshal
             return (nint)at;
         }
         long pages = pv - 2 * WordSize.Bytes;
-        long had = Sys.Peek(pages) - 2 * WordSize.Bytes;
+        long had = Sys.ReadNative(pages) - 2 * WordSize.Bytes;
         nint made = AllocHGlobal(cb);
         long keep = had < cb ? had : cb;
         for (long i = 0; i < keep; i++)
         {
-            Sys.PokeByte(made + i, Sys.PeekByte(pv + i));
+            Sys.Write8(made + i, Sys.Read8(pv + i));
         }
         FreeHGlobal(pv);
         return made;
     }
 
-    public static byte ReadByte(nint ptr) { return (byte)Sys.PeekByte(ptr); }
-    public static byte ReadByte(nint ptr, int ofs) { return (byte)Sys.PeekByte(ptr + ofs); }
-    public static short ReadInt16(nint ptr) { return (short)Sys.PeekHalf(ptr); }
-    public static short ReadInt16(nint ptr, int ofs) { return (short)Sys.PeekHalf(ptr + ofs); }
-    public static int ReadInt32(nint ptr) { return (int)Sys.PeekWord(ptr); }
-    public static int ReadInt32(nint ptr, int ofs) { return (int)Sys.PeekWord(ptr + ofs); }
-    public static long ReadInt64(nint ptr) { return Sys.PeekWord(ptr) | (Sys.PeekWord(ptr + 4) << 32); }
+    public static byte ReadByte(nint ptr) { return (byte)Sys.Read8(ptr); }
+    public static byte ReadByte(nint ptr, int ofs) { return (byte)Sys.Read8(ptr + ofs); }
+    public static short ReadInt16(nint ptr) { return (short)Sys.Read16(ptr); }
+    public static short ReadInt16(nint ptr, int ofs) { return (short)Sys.Read16(ptr + ofs); }
+    public static int ReadInt32(nint ptr) { return (int)Sys.Read32(ptr); }
+    public static int ReadInt32(nint ptr, int ofs) { return (int)Sys.Read32(ptr + ofs); }
+    public static long ReadInt64(nint ptr) { return Sys.Read32(ptr) | (Sys.Read32(ptr + 4) << 32); }
     public static long ReadInt64(nint ptr, int ofs) { return ReadInt64(ptr + ofs); }
-    public static nint ReadIntPtr(nint ptr) { return (nint)Sys.Peek(ptr); }
-    public static nint ReadIntPtr(nint ptr, int ofs) { return (nint)Sys.Peek(ptr + ofs); }
+    public static nint ReadIntPtr(nint ptr) { return (nint)Sys.ReadNative(ptr); }
+    public static nint ReadIntPtr(nint ptr, int ofs) { return (nint)Sys.ReadNative(ptr + ofs); }
 
-    public static void WriteByte(nint ptr, byte val) { Sys.PokeByte(ptr, val); }
-    public static void WriteByte(nint ptr, int ofs, byte val) { Sys.PokeByte(ptr + ofs, val); }
-    public static void WriteInt16(nint ptr, short val) { Sys.PokeHalf(ptr, val); }
-    public static void WriteInt16(nint ptr, int ofs, short val) { Sys.PokeHalf(ptr + ofs, val); }
-    public static void WriteInt32(nint ptr, int val) { Sys.PokeWord(ptr, val); }
-    public static void WriteInt32(nint ptr, int ofs, int val) { Sys.PokeWord(ptr + ofs, val); }
-    public static void WriteInt64(nint ptr, long val) { Sys.PokeWord(ptr, val); Sys.PokeWord(ptr + 4, val >> 32); }
+    public static void WriteByte(nint ptr, byte val) { Sys.Write8(ptr, val); }
+    public static void WriteByte(nint ptr, int ofs, byte val) { Sys.Write8(ptr + ofs, val); }
+    public static void WriteInt16(nint ptr, short val) { Sys.Write16(ptr, val); }
+    public static void WriteInt16(nint ptr, int ofs, short val) { Sys.Write16(ptr + ofs, val); }
+    public static void WriteInt32(nint ptr, int val) { Sys.Write32(ptr, val); }
+    public static void WriteInt32(nint ptr, int ofs, int val) { Sys.Write32(ptr + ofs, val); }
+    public static void WriteInt64(nint ptr, long val) { Sys.Write32(ptr, val); Sys.Write32(ptr + 4, val >> 32); }
     public static void WriteInt64(nint ptr, int ofs, long val) { WriteInt64(ptr + ofs, val); }
-    public static void WriteIntPtr(nint ptr, nint val) { Sys.Poke(ptr, val); }
-    public static void WriteIntPtr(nint ptr, int ofs, nint val) { Sys.Poke(ptr + ofs, val); }
+    public static void WriteIntPtr(nint ptr, nint val) { Sys.WriteNative(ptr, val); }
+    public static void WriteIntPtr(nint ptr, int ofs, nint val) { Sys.WriteNative(ptr + ofs, val); }
 
     /// Bytes between an array and memory C owns, both ways.
     public static void Copy(byte[] source, int startIndex, nint destination, int length)
@@ -301,7 +301,7 @@ static partial class Marshal
         CheckRange(source.Length, startIndex, length);
         for (int i = 0; i < length; i++)
         {
-            Sys.PokeByte(destination + i, source[startIndex + i]);
+            Sys.Write8(destination + i, source[startIndex + i]);
         }
     }
 
@@ -310,7 +310,7 @@ static partial class Marshal
         CheckRange(destination.Length, startIndex, length);
         for (int i = 0; i < length; i++)
         {
-            destination[startIndex + i] = (byte)Sys.PeekByte(source + i);
+            destination[startIndex + i] = (byte)Sys.Read8(source + i);
         }
     }
 
@@ -319,7 +319,7 @@ static partial class Marshal
         CheckRange(source.Length, startIndex, length);
         for (int i = 0; i < length; i++)
         {
-            Sys.PokeWord(destination + 4 * i, source[startIndex + i]);
+            Sys.Write32(destination + 4 * i, source[startIndex + i]);
         }
     }
 
@@ -328,7 +328,7 @@ static partial class Marshal
         CheckRange(destination.Length, startIndex, length);
         for (int i = 0; i < length; i++)
         {
-            destination[startIndex + i] = (int)Sys.PeekWord(source + 4 * i);
+            destination[startIndex + i] = (int)Sys.Read32(source + 4 * i);
         }
     }
 

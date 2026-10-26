@@ -81,10 +81,10 @@ public class CorsacSecureCrypto_Poly1305
         _s4 = _r4 * 5;
 
         long assistKey = Sys.ArrayData(_block) + 72;
-        Sys.Poke(assistKey, _r0 | ((_r1 & 0x3ffff) << 26));
-        Sys.Poke(assistKey + 8, (_r1 >> 18) | (_r2 << 8)
+        Sys.WriteNative(assistKey, _r0 | ((_r1 & 0x3ffff) << 26));
+        Sys.WriteNative(assistKey + 8, (_r1 >> 18) | (_r2 << 8)
                                 | ((_r3 & 0x3ff) << 34));
-        Sys.Poke(assistKey + 16, (_r3 >> 10) | (_r4 << 16));
+        Sys.WriteNative(assistKey + 16, (_r3 >> 10) | (_r4 << 16));
 
         _pad0 = Load32(key, keyOffset + 16);
         _pad1 = Load32(key, keyOffset + 20);
@@ -317,16 +317,16 @@ public class CorsacSecureCrypto_Poly1305
         // relocation. Rounding up after the pending message needs at most
         // 31 padding bytes: the accumulator ends before fixed key offset 72.
         long scratch = (Sys.ArrayData(_block) + 16 + 31) & -32L;
-        Sys.Poke(scratch, h0);
-        Sys.Poke(scratch + 8, h1);
-        Sys.Poke(scratch + 16, h2);
+        Sys.WriteNative(scratch, h0);
+        Sys.WriteNative(scratch + 8, h1);
+        Sys.WriteNative(scratch + 16, h2);
         return false;
 
         // Keep the original five-limb scalar state authoritative after EVERY
         // block, so a following call can freely take the portable path.
-        h0 = Sys.Peek(scratch);
-        h1 = Sys.Peek(scratch + 8);
-        h2 = Sys.Peek(scratch + 16);
+        h0 = Sys.ReadNative(scratch);
+        h1 = Sys.ReadNative(scratch + 8);
+        h2 = Sys.ReadNative(scratch + 16);
         _h0 = h0 & LimbMask;
         _h1 = ((h0 >> 26) | (h1 << 18)) & LimbMask;
         _h2 = (h1 >> 8) & LimbMask;

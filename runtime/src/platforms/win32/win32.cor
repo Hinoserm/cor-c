@@ -151,15 +151,15 @@ static class Win32
         // The image's own extent, which a fault must be in to be ours:
         // SizeOfImage from the PE header e_lfanew names.
         _imageStart = instance;
-        _imageEnd = instance + (Sys.PeekWord(instance + Sys.PeekWord(instance + 0x3C) + 0x50) & 0xFFFFFFFF);
+        _imageEnd = instance + (Sys.Read32(instance + Sys.Read32(instance + 0x3C) + 0x50) & 0xFFFFFFFF);
         _nullStub = NullStub();
 
         long block = Sys.MainThreadBlock();
-        Sys.Poke(block + Tls.Self, block);
+        Sys.WriteNative(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
         long scratch = (long)(nuint)VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
         if (scratch == 0) return false;
-        Sys.Poke(block + Tls.StackBase, StackTop(scratch));
+        Sys.WriteNative(block + Tls.StackBase, StackTop(scratch));
         VirtualFree((nint)scratch, 0, MemRelease);
         return true;
     }
@@ -180,7 +180,7 @@ static class Win32
         long block = (long)(nuint)VirtualAlloc(0, (nint)(Tls.Bytes + InfoBytes), MemCommit | MemReserve, PageReadWrite);
         if (block == 0) ExitProcess(137);
         long top = StackTop(block + Tls.Bytes);
-        Sys.Poke(block + Tls.Self, block);
+        Sys.WriteNative(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
         Runtime.RegisterThread(block, top);
     }
@@ -210,15 +210,15 @@ static class Win32
         if (stub == 0) return 0;
         long entry = Sys.AddressOf(Runtime.NullFault);
         int at = 0;
-        Sys.PokeByte(stub + at++, 0x83); Sys.PokeByte(stub + at++, 0xE4); Sys.PokeByte(stub + at++, 0xF0); // and esp, -16
-        Sys.PokeByte(stub + at++, 0x6A); Sys.PokeByte(stub + at++, 0x00);                                 // push 0     pc, high
-        Sys.PokeByte(stub + at++, 0x50);                                                                  // push eax   pc
-        Sys.PokeByte(stub + at++, 0x6A); Sys.PokeByte(stub + at++, 0x00);                                 // push 0     frame, high
-        Sys.PokeByte(stub + at++, 0x52);                                                                  // push edx   frame
-        Sys.PokeByte(stub + at++, 0x50);                                                                  // push eax   the return address
-        Sys.PokeByte(stub + at++, 0xB9);                                                                  // mov ecx, NullFault
-        for (int i = 0; i < 4; i++) Sys.PokeByte(stub + at++, (int)(entry >> (8 * i)) & 0xFF);
-        Sys.PokeByte(stub + at++, 0xFF); Sys.PokeByte(stub + at++, 0xE1);                                 // jmp ecx
+        Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xE4); Sys.Write8(stub + at++, 0xF0); // and esp, -16
+        Sys.Write8(stub + at++, 0x6A); Sys.Write8(stub + at++, 0x00);                                 // push 0     pc, high
+        Sys.Write8(stub + at++, 0x50);                                                                  // push eax   pc
+        Sys.Write8(stub + at++, 0x6A); Sys.Write8(stub + at++, 0x00);                                 // push 0     frame, high
+        Sys.Write8(stub + at++, 0x52);                                                                  // push edx   frame
+        Sys.Write8(stub + at++, 0x50);                                                                  // push eax   the return address
+        Sys.Write8(stub + at++, 0xB9);                                                                  // mov ecx, NullFault
+        for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (int)(entry >> (8 * i)) & 0xFF);
+        Sys.Write8(stub + at++, 0xFF); Sys.Write8(stub + at++, 0xE1);                                 // jmp ecx
         return stub;
     }
 
@@ -236,21 +236,21 @@ static class Win32
     {
         long rec = (long)(nuint)record;
         long ctx = (long)(nuint)context;
-        if ((Sys.PeekWord(rec + 4) & Unwinding) != 0) return ContinueSearch;
-        if ((int)Sys.PeekWord(rec) != AccessViolation || _nullStub == 0 || Sys.PeekWord(rec + 16) < 2) return ContinueSearch;
-        long pc = Sys.PeekWord(ctx + 0xB8) & 0xFFFFFFFF;
+        if ((Sys.Read32(rec + 4) & Unwinding) != 0) return ContinueSearch;
+        if ((int)Sys.Read32(rec) != AccessViolation || _nullStub == 0 || Sys.Read32(rec + 16) < 2) return ContinueSearch;
+        long pc = Sys.Read32(ctx + 0xB8) & 0xFFFFFFFF;
         // Ours: this image's code, or code of an image over it that the
         // runtime knows by its frames (Runtime.KnowsCode).
         if ((pc < _imageStart || pc >= _imageEnd) && !Runtime.KnowsCode(pc)) return ContinueSearch;
         // The address read or written. Windows 9x gives -1 there, and the
         // faulting instruction says it instead (FaultAddress).
-        long address = Sys.PeekWord(rec + 24) & 0xFFFFFFFF;
+        long address = Sys.Read32(rec + 24) & 0xFFFFFFFF;
         if (address == 0xFFFFFFFF) address = FaultAddress(ctx, pc);
         if (address < 0 || !Runtime.NullFaultCatchable(address)) return ContinueSearch;
 
-        Sys.Poke(ctx + 0xB0, pc);
-        Sys.Poke(ctx + 0xA8, Sys.PeekWord(ctx + 0xB4));
-        Sys.Poke(ctx + 0xB8, _nullStub);
+        Sys.WriteNative(ctx + 0xB0, pc);
+        Sys.WriteNative(ctx + 0xA8, Sys.Read32(ctx + 0xB4));
+        Sys.WriteNative(ctx + 0xB8, _nullStub);
         return ContinueExecution;
     }
 
@@ -264,20 +264,20 @@ static class Win32
     static long FaultAddress(long ctx, long pc)
     {
         long at = pc;
-        int b = (int)Sys.PeekByte(at);
+        int b = (int)Sys.Read8(at);
         // Prefixes: operand size, repeats, lock, the segments but FS and GS.
         while (b is 0x66 or 0x67 or 0xF0 or 0xF2 or 0xF3 or 0x26 or 0x2E or 0x36 or 0x3E)
         {
             at++;
-            b = (int)Sys.PeekByte(at);
+            b = (int)Sys.Read8(at);
         }
         if (b is 0x64 or 0x65) return -1;
-        if (b is >= 0xA0 and <= 0xA3) return Sys.PeekWord(at + 1) & 0xFFFFFFFF;
+        if (b is >= 0xA0 and <= 0xA3) return Sys.Read32(at + 1) & 0xFFFFFFFF;
         bool modrm;
         if (b == 0x0F)
         {
             at++;
-            int c = (int)Sys.PeekByte(at);
+            int c = (int)Sys.Read8(at);
             modrm = c is (>= 0x10 and <= 0x17) or (>= 0x28 and <= 0x2F) or (>= 0x40 and <= 0x4F) or (>= 0x90 and <= 0x9F)
                 or 0xA3 or 0xA4 or 0xA5 or 0xAB or 0xAC or 0xAD or 0xAF or (>= 0xB0 and <= 0xB7) or (>= 0xBA and <= 0xBF)
                 or 0xC0 or 0xC1 or 0xC7;
@@ -289,32 +289,32 @@ static class Win32
         }
         if (!modrm) return -1;
         at++;
-        int m = (int)Sys.PeekByte(at);
+        int m = (int)Sys.Read8(at);
         int mod = m >> 6, rm = m & 7;
         if (mod == 3) return -1;
         at++;
         long address = 0;
         if (rm == 4)
         {
-            int sib = (int)Sys.PeekByte(at);
+            int sib = (int)Sys.Read8(at);
             at++;
             int scale = sib >> 6, index = (sib >> 3) & 7, bas = sib & 7;
             if (index != 4) address = Register(ctx, index) << scale;
             if (bas == 5 && mod == 0)
             {
-                address = address + (Sys.PeekWord(at) & 0xFFFFFFFF);
+                address = address + (Sys.Read32(at) & 0xFFFFFFFF);
                 at = at + 4;
             }
             else address = address + Register(ctx, bas);
         }
         else if (rm == 5 && mod == 0)
         {
-            address = Sys.PeekWord(at) & 0xFFFFFFFF;
+            address = Sys.Read32(at) & 0xFFFFFFFF;
             at = at + 4;
         }
         else address = Register(ctx, rm);
-        if (mod == 1) address = address + (long)(sbyte)Sys.PeekByte(at);
-        else if (mod == 2) address = address + (long)(int)Sys.PeekWord(at);
+        if (mod == 1) address = address + (long)(sbyte)Sys.Read8(at);
+        else if (mod == 2) address = address + (long)(int)Sys.Read32(at);
         return address & 0xFFFFFFFF;
     }
 
@@ -322,7 +322,7 @@ static class Win32
     static long Register(long ctx, int number)
     {
         long offset = number switch { 0 => 0xB0, 1 => 0xAC, 2 => 0xA8, 3 => 0xA4, 4 => 0xC4, 5 => 0xB4, 6 => 0xA0, _ => 0x9C };
-        return Sys.PeekWord(ctx + offset) & 0xFFFFFFFF;
+        return Sys.Read32(ctx + offset) & 0xFFFFFFFF;
     }
 
     /// A PROGRAM'S IMAGE: the module the process was started from (its handle is its base).
@@ -357,7 +357,7 @@ static class Win32
         {
             long semaphore = (long)(nuint)CreateSemaphoreA(0, 0, 0x7FFFFFFF, 0);
             if (semaphore == 0) return false;
-            Sys.Poke(table + i * 4, semaphore);
+            Sys.WriteNative(table + i * 4, semaphore);
         }
         _parkWaiters = table + ParkBuckets * 4;
         _parkSemaphores = table;
@@ -373,8 +373,8 @@ static class Win32
         int b = Bucket(at);
         long waiters = _parkWaiters + b * 4;
         Sys.AtomicAdd(waiters, 1);
-        if (Sys.PeekWord(at) == expect)
-            WaitForSingleObject((nint)Sys.PeekWord(_parkSemaphores + b * 4), milliseconds < 0 || milliseconds > 1000 ? 1000 : milliseconds);
+        if (Sys.Read32(at) == expect)
+            WaitForSingleObject((nint)Sys.Read32(_parkSemaphores + b * 4), milliseconds < 0 || milliseconds > 1000 ? 1000 : milliseconds);
         Sys.AtomicAdd(waiters, -1);
     }
 
@@ -382,9 +382,9 @@ static class Win32
     public static void Unpark(long at, long count)
     {
         int b = Bucket(at);
-        long waiting = Sys.PeekWord(_parkWaiters + b * 4);
+        long waiting = Sys.Read32(_parkWaiters + b * 4);
         if (waiting <= 0) return;
-        ReleaseSemaphore((nint)Sys.PeekWord(_parkSemaphores + b * 4), (int)(count < waiting ? count : waiting), 0);
+        ReleaseSemaphore((nint)Sys.Read32(_parkSemaphores + b * 4), (int)(count < waiting ? count : waiting), 0);
     }
 
     /// The runtime is running: what wants it.
@@ -426,27 +426,27 @@ static class Win32
     public static void FillImports(long instance, long table, long end)
     {
         if (table == end) return;
-        long pe = instance + (Sys.PeekWord(instance + 0x3C) & 0xFFFFFFFF);
-        long sections = Sys.PeekWord(pe + 6) & 0xFFFF;
-        long headers = pe + 24 + (Sys.PeekWord(pe + 20) & 0xFFFF);
+        long pe = instance + (Sys.Read32(instance + 0x3C) & 0xFFFFFFFF);
+        long sections = Sys.Read32(pe + 6) & 0xFFFF;
+        long headers = pe + 24 + (Sys.Read32(pe + 20) & 0xFFFF);
         // A word of protection kept for each section, in a page of its own.
         long kept = (long)(nuint)VirtualAlloc(0, (nint)(sections * 4 + 4), MemCommit | MemReserve, PageReadWrite);
         if (kept == 0) ExitProcess(137);
         for (long i = 0; i < sections; i++)
         {
             long header = headers + i * 40;
-            VirtualProtect((nint)(instance + (Sys.PeekWord(header + 12) & 0xFFFFFFFF)), (nint)(Sys.PeekWord(header + 8) & 0xFFFFFFFF), PageExecuteReadWrite, (nint)(kept + i * 4));
+            VirtualProtect((nint)(instance + (Sys.Read32(header + 12) & 0xFFFFFFFF)), (nint)(Sys.Read32(header + 8) & 0xFFFFFFFF), PageExecuteReadWrite, (nint)(kept + i * 4));
         }
         for (long at = table; at < end; at = at + 8)
         {
-            long word = instance + (Sys.PeekWord(at) & 0xFFFFFFFF);
-            long slot = instance + (Sys.PeekWord(at + 4) & 0xFFFFFFFF);
-            Sys.Poke(word, (Sys.PeekWord(word) + Sys.PeekWord(slot)) & 0xFFFFFFFF);
+            long word = instance + (Sys.Read32(at) & 0xFFFFFFFF);
+            long slot = instance + (Sys.Read32(at + 4) & 0xFFFFFFFF);
+            Sys.WriteNative(word, (Sys.Read32(word) + Sys.Read32(slot)) & 0xFFFFFFFF);
         }
         for (long i = 0; i < sections; i++)
         {
             long header = headers + i * 40;
-            VirtualProtect((nint)(instance + (Sys.PeekWord(header + 12) & 0xFFFFFFFF)), (nint)(Sys.PeekWord(header + 8) & 0xFFFFFFFF), (int)Sys.PeekWord(kept + i * 4), (nint)(kept + sections * 4));
+            VirtualProtect((nint)(instance + (Sys.Read32(header + 12) & 0xFFFFFFFF)), (nint)(Sys.Read32(header + 8) & 0xFFFFFFFF), (int)Sys.Read32(kept + i * 4), (nint)(kept + sections * 4));
         }
         VirtualFree((nint)kept, 0, MemRelease);
     }
@@ -460,7 +460,7 @@ static class Win32
     static long StackTop(long scratch)
     {
         VirtualQuery((nint)Sys.FramePointer(), (nint)scratch, InfoBytes);
-        return (Sys.Peek(scratch) & 0xFFFFFFFF) + (Sys.Peek(scratch + 12) & 0xFFFFFFFF);
+        return (Sys.ReadNative(scratch) & 0xFFFFFFFF) + (Sys.ReadNative(scratch + 12) & 0xFFFFFFFF);
     }
 
     /// Zeroed pages, or 0: VirtualAlloc's are zeroed.

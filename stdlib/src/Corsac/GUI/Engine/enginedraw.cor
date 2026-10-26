@@ -186,7 +186,7 @@ static class DrawEngine
             int run = -1;
             for (int column = 0; column <= width; column++)
             {
-                bool on = column < width && ((Sys.PeekByte(line + (column >> 3)) & (0x80 >> (column & 7))) != 0) == set;
+                bool on = column < width && ((Sys.Read8(line + (column >> 3)) & (0x80 >> (column & 7))) != 0) == set;
                 if (on && run < 0) run = column;
                 else if (!on && run >= 0) { rects.Add(x + run); rects.Add(y + row); rects.Add(x + column); rects.Add(y + row + 1); run = -1; }
             }
@@ -589,9 +589,9 @@ static class DrawEngine
         int[] types = new int[count];
         for (int i = 0; i < count; i++)
         {
-            xs[i] = Signed(Sys.PeekWord(source + i * 12));
-            ys[i] = Signed(Sys.PeekWord(source + i * 12 + 4));
-            types[i] = (int)(Sys.PeekWord(source + i * 12 + 8) & 0xFF);
+            xs[i] = Signed(Sys.Read32(source + i * 12));
+            ys[i] = Signed(Sys.Read32(source + i * 12 + 4));
+            types[i] = (int)(Sys.Read32(source + i * 12 + 8) & 0xFF);
         }
         if (world != null) world.Apply(xs, ys, count);
         DevicePath path = new DevicePath();

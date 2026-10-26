@@ -665,10 +665,10 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         byte[] request = new byte[16];
         long at = Sys.ArrayData(request);
 
-        Sys.PokeWord(at, width);
-        Sys.PokeWord(at + 4, height);
-        Sys.PokeWord(at + 8, refresh);
-        Sys.PokeWord(at + 12, bits);
+        Sys.Write32(at, width);
+        Sys.Write32(at + 4, height);
+        Sys.Write32(at + 8, refresh);
+        Sys.Write32(at + 12, bits);
         return Ioctl(SeatIoctl.SetModeExact, at) == 0;
     }
 
@@ -682,8 +682,8 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         Flush();
         byte[] request = new byte[20];
         long at = Sys.ArrayData(request);
-        Sys.PokeWord(at, width); Sys.PokeWord(at + 4, height); Sys.PokeWord(at + 8, refresh);
-        Sys.PokeWord(at + 12, bits); Sys.PokeWord(at + 16, seconds);
+        Sys.Write32(at, width); Sys.Write32(at + 4, height); Sys.Write32(at + 8, refresh);
+        Sys.Write32(at + 12, bits); Sys.Write32(at + 16, seconds);
         return Ioctl(SeatIoctl.ModeTry, at) == 0;
     }
 
@@ -712,14 +712,14 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         monitor = new SeatMonitor();
         byte[] info = new byte[48];
         long at = Sys.ArrayData(info);
-        Sys.PokeWord(at, index);
+        Sys.Write32(at, index);
         if (Ioctl(SeatIoctl.MonitorInfo, at) <= 0) return false;
-        monitor.X = (int)Sys.PeekWord(at + 4); monitor.Y = (int)Sys.PeekWord(at + 8);
-        monitor.Width = (int)Sys.PeekWord(at + 12); monitor.Height = (int)Sys.PeekWord(at + 16);
-        monitor.WorkX = (int)Sys.PeekWord(at + 20); monitor.WorkY = (int)Sys.PeekWord(at + 24);
-        monitor.WorkWidth = (int)Sys.PeekWord(at + 28); monitor.WorkHeight = (int)Sys.PeekWord(at + 32);
-        monitor.Bits = (int)Sys.PeekWord(at + 36); monitor.Refresh = (int)Sys.PeekWord(at + 40);
-        monitor.Primary = (Sys.PeekWord(at + 44) & 1) != 0;
+        monitor.X = (int)Sys.Read32(at + 4); monitor.Y = (int)Sys.Read32(at + 8);
+        monitor.Width = (int)Sys.Read32(at + 12); monitor.Height = (int)Sys.Read32(at + 16);
+        monitor.WorkX = (int)Sys.Read32(at + 20); monitor.WorkY = (int)Sys.Read32(at + 24);
+        monitor.WorkWidth = (int)Sys.Read32(at + 28); monitor.WorkHeight = (int)Sys.Read32(at + 32);
+        monitor.Bits = (int)Sys.Read32(at + 36); monitor.Refresh = (int)Sys.Read32(at + 40);
+        monitor.Primary = (Sys.Read32(at + 44) & 1) != 0;
         return true;
     }
 
@@ -771,13 +771,13 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         byte[] request = new byte[20];
         long at = Sys.ArrayData(request);
 
-        Sys.PokeWord(at, index);
+        Sys.Write32(at, index);
         if (Ioctl(SeatIoctl.ModeAt, at) != 0) { return false; }
 
-        mode.Width = (int)Sys.PeekWord(at + 4);
-        mode.Height = (int)Sys.PeekWord(at + 8);
-        mode.Format = (int)Sys.PeekWord(at + 12);
-        mode.Refresh = (int)Sys.PeekWord(at + 16);
+        mode.Width = (int)Sys.Read32(at + 4);
+        mode.Height = (int)Sys.Read32(at + 8);
+        mode.Format = (int)Sys.Read32(at + 12);
+        mode.Refresh = (int)Sys.Read32(at + 16);
         return true;
     }
 

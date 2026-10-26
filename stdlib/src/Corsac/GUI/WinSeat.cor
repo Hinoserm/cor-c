@@ -269,7 +269,7 @@ static class WinSeat
         while (_count > 0 && given + 16 <= room)
         {
             int at = (_head * 4) % _events.Length;
-            for (int i = 0; i < 4; i++) Sys.PokeWord(into + given + i * 4, _events[at + i]);
+            for (int i = 0; i < 4; i++) Sys.Write32(into + given + i * 4, _events[at + i]);
             _head = (_head + 1) % (_events.Length / 4);
             _count--;
             given += 16;
@@ -403,8 +403,8 @@ static class WinSeat
             case WmGetMinMaxInfo:
                 if (w.MinW > 0 || w.MinH > 0)
                 {
-                    if (w.MinW > 0) Sys.PokeWord((long)lParam + 24, w.MinW);
-                    if (w.MinH > 0) Sys.PokeWord((long)lParam + 28, w.MinH);
+                    if (w.MinW > 0) Sys.Write32((long)lParam + 24, w.MinW);
+                    if (w.MinH > 0) Sys.Write32((long)lParam + 28, w.MinH);
                 }
                 return 0;
             case WmSetCursor:
@@ -725,7 +725,7 @@ static class WinSeat
         return count;
     }
 
-    static long Peek(long at) { return Sys.PeekWord(at) & 0xFFFFFFFF; }
+    static long Peek(long at) { return Sys.Read32(at) & 0xFFFFFFFF; }
 
     static int Signed16(long v) { int n = (int)(v & 0xFFFF); return n >= 0x8000 ? n - 0x10000 : n; }
 
@@ -776,7 +776,7 @@ static class WinSeat
         for (int row = 0; row < height; row++)
         {
             long at = w.Bits + ((long)(y + row) * w.W + x) * 4;
-            for (int k = 0; k < width; k++) Sys.PokeWord(at + k * 4, pixel);
+            for (int k = 0; k < width; k++) Sys.Write32(at + k * 4, pixel);
         }
         Dirty(w, x, y, width, height);
     }
@@ -828,7 +828,7 @@ static class WinSeat
         Glyph g = new Glyph();
         g.W = width; g.H = height; g.Stride = (width + 7) / 8;
         g.Bits = new byte[bytes];
-        for (int i = 0; i < bytes; i++) g.Bits[i] = (byte)Sys.PeekByte(at + i);
+        for (int i = 0; i < bytes; i++) g.Bits[i] = (byte)Sys.Read8(at + i);
         _glyphs[id] = g;
     }
 
@@ -920,9 +920,9 @@ static class WinSeat
                 int c = argb[py * p.W + px];
                 int a = (c >> 24) & 0xFF;
                 if (a == 0) continue;
-                if (a == 255) { Sys.PokeWord(at, c & 0xFFFFFF); continue; }
-                int under = (int)Sys.PeekWord(at);
-                Sys.PokeWord(at, Blend(c, under, a));
+                if (a == 255) { Sys.Write32(at, c & 0xFFFFFF); continue; }
+                int under = (int)Sys.Read32(at);
+                Sys.Write32(at, Blend(c, under, a));
             }
         }
         Dirty(w, cx, cy, cw, ch);
@@ -960,10 +960,10 @@ static class WinSeat
             long at = payload;
             if (dashes > 0)
             {
-                long offset = Sys.PeekWord(at) & 0xFFFFFFFF;
+                long offset = Sys.Read32(at) & 0xFFFFFFFF;
                 if (offset >= 0x80000000) offset -= 0x100000000;
                 long[] pattern = new long[dashes];
-                for (int i = 0; i < dashes; i++) pattern[i] = Sys.PeekWord(at + 4 + i * 4) & 0xFFFFFFFF;
+                for (int i = 0; i < dashes; i++) pattern[i] = Sys.Read32(at + 4 + i * 4) & 0xFFFFFFFF;
                 if (_transform != null)
                 {
                     offset = _transform.Width(offset);
@@ -1080,8 +1080,8 @@ static class WinSeat
                 int a = coverage == null ? 255 : coverage[from + (cx - x) + k];
                 if (_alpha < 255) a = (a * _alpha + 127) / 255;
                 if (a == 0) continue;
-                if (a >= 255) { Sys.PokeWord(at, _pixel); continue; }
-                Sys.PokeWord(at, Blend(_pixel, (int)Sys.PeekWord(at), a));
+                if (a >= 255) { Sys.Write32(at, _pixel); continue; }
+                Sys.Write32(at, Blend(_pixel, (int)Sys.Read32(at), a));
             }
             Dirty(_w, cx, cy, cw, 1);
         }
@@ -1106,9 +1106,9 @@ static class WinSeat
         for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++)
             {
-                int c = (int)Sys.PeekWord(argb + ((long)y * width + x) * 4);
+                int c = (int)Sys.Read32(argb + ((long)y * width + x) * 4);
                 bool clear = ((c >> 24) & 0xFF) < 128;
-                Sys.PokeWord((bits & 0xFFFFFFFF) + ((long)y * width + x) * 4, clear ? 0 : c);
+                Sys.Write32((bits & 0xFFFFFFFF) + ((long)y * width + x) * 4, clear ? 0 : c);
                 if (clear) mask[y * stride + x / 8] |= (byte)(0x80 >> (x % 8));
             }
         nint maskBitmap = CreateBitmap(width, height, 1, 1, At(mask));
@@ -1231,7 +1231,7 @@ static class WinSeat
                     int px = x + col, py = y + row;
                     if (px < clipX || py < clipY || px >= clipX + clipWidth || py >= clipY + clipHeight) continue;
                     if (px < 0 || py < 0 || px >= W.W || py >= W.H) continue;
-                    Sys.PokeWord(W.Bits + ((long)py * W.W + px) * 4, pixel);
+                    Sys.Write32(W.Bits + ((long)py * W.W + px) * 4, pixel);
                 }
             Dirty(W, x, y, width, height);
         }
@@ -1318,11 +1318,11 @@ static class WinSeat
     static long ScrollRequest(long request, long arg)
     {
         Window? w;
-        if (!_windows.TryGetValue((int)Sys.PeekWord(arg), out w)) return -2;
-        int id = (int)Sys.PeekWord(arg + 4);
+        if (!_windows.TryGetValue((int)Sys.Read32(arg), out w)) return -2;
+        int id = (int)Sys.Read32(arg + 4);
         if (id < 0) return -Inval;
-        long a2 = Sys.PeekWord(arg + 8), a3 = Sys.PeekWord(arg + 12), a4 = Sys.PeekWord(arg + 16), a5 = Sys.PeekWord(arg + 20);
-        long a6 = Sys.PeekWord(arg + 24), a7 = Sys.PeekWord(arg + 28);
+        long a2 = Sys.Read32(arg + 8), a3 = Sys.Read32(arg + 12), a4 = Sys.Read32(arg + 16), a5 = Sys.Read32(arg + 20);
+        long a6 = Sys.Read32(arg + 24), a7 = Sys.Read32(arg + 28);
         if (id <= 1) return FrameScroll(w, id, request, arg, a2, a3, a4, a5, a6, a7);
         if (request == (long)SeatIoctl.ScrollBarPlace)
         {
@@ -1343,10 +1343,10 @@ static class WinSeat
         }
         if (request == (long)SeatIoctl.ScrollBarGet)
         {
-            Sys.PokeWord(arg + 8, b.State.Min); Sys.PokeWord(arg + 12, b.State.Max);
-            Sys.PokeWord(arg + 16, b.State.Page); Sys.PokeWord(arg + 20, b.State.Pos);
-            Sys.PokeWord(arg + 24, b.State.Tracking ? b.State.TrackPos : b.State.Pos);
-            Sys.PokeWord(arg + 28, (int)b.Disabled);
+            Sys.Write32(arg + 8, b.State.Min); Sys.Write32(arg + 12, b.State.Max);
+            Sys.Write32(arg + 16, b.State.Page); Sys.Write32(arg + 20, b.State.Pos);
+            Sys.Write32(arg + 24, b.State.Tracking ? b.State.TrackPos : b.State.Pos);
+            Sys.Write32(arg + 28, (int)b.Disabled);
             return 0;
         }
         if (request == (long)SeatIoctl.ScrollBarEnable)
@@ -1384,9 +1384,9 @@ static class WinSeat
         {
             Put(info, 4, 0x17);
             if (GetScrollInfo(w.Hwnd, id, At(info)) == 0) return -Inval;
-            Sys.PokeWord(arg + 8, Word(info, 8)); Sys.PokeWord(arg + 12, Word(info, 12));
-            Sys.PokeWord(arg + 16, Word(info, 16)); Sys.PokeWord(arg + 20, Word(info, 20));
-            Sys.PokeWord(arg + 24, Word(info, 24)); Sys.PokeWord(arg + 28, 0);
+            Sys.Write32(arg + 8, Word(info, 8)); Sys.Write32(arg + 12, Word(info, 12));
+            Sys.Write32(arg + 16, Word(info, 16)); Sys.Write32(arg + 20, Word(info, 20));
+            Sys.Write32(arg + 24, Word(info, 24)); Sys.Write32(arg + 28, 0);
             return 0;
         }
         if (request == (long)SeatIoctl.ScrollBarEnable) return EnableScrollBar(w.Hwnd, id, (int)(a2 & 3)) != 0 ? 1 : 0;
@@ -1495,10 +1495,10 @@ static class WinSeat
             {
                 w = Selected();
                 if (w == null) return -BadF;
-                long at = Sys.PeekWord(arg) & 0xFFFFFFFF;
-                int n = (int)Sys.PeekWord(arg + 4);
+                long at = Sys.Read32(arg) & 0xFFFFFFFF;
+                int n = (int)Sys.Read32(arg + 4);
                 char[] text = new char[n + 1];
-                for (int i = 0; i < n; i++) text[i] = (char)Sys.PeekHalf(at + i * 2);
+                for (int i = 0; i < n; i++) text[i] = (char)Sys.Read16(at + i * 2);
                 SetWindowTextW(w.Hwnd, (nint)Sys.ArrayData(text));
                 return 0;
             }
@@ -1521,7 +1521,7 @@ static class WinSeat
                 return 0;
             case SeatIoctl.FrameInsets:
             {
-                int style = (int)Sys.PeekWord(arg), ex = (int)Sys.PeekWord(arg + 4), menu = (int)Sys.PeekByte(arg + 8);
+                int style = (int)Sys.Read32(arg), ex = (int)Sys.Read32(arg + 4), menu = (int)Sys.Read8(arg + 8);
                 byte[] r = new byte[16];
                 AdjustWindowRectEx(At(r), Windowed(style), menu, Windowed2(ex));
                 long l = -Word(r, 0), t = -Word(r, 4), rr = Word(r, 8), b = Word(r, 12);
@@ -1536,7 +1536,7 @@ static class WinSeat
                 int[] argb = new int[256];
                 for (int i = 0; i < 256; i++)
                 {
-                    int c = (int)Sys.PeekWord(arg + i * 4);
+                    int c = (int)Sys.Read32(arg + i * 4);
                     argb[i] = c == -1 ? 0 : unchecked((int)0xFF000000) | Swap(c);
                 }
                 SetIcon(w, MakeCursor(true, 16, 16, 0, 0, Sys.ArrayData(argb)));
@@ -1573,9 +1573,9 @@ static class WinSeat
             }
             case SeatIoctl.ImageCreate:
             {
-                int kind = (int)Sys.PeekWord(arg), width = (int)Sys.PeekWord(arg + 4), height = (int)Sys.PeekWord(arg + 8);
-                int hotX = (int)Sys.PeekWord(arg + 12), hotY = (int)Sys.PeekWord(arg + 16);
-                long pixels = Sys.PeekWord(arg + 20) & 0xFFFFFFFF;
+                int kind = (int)Sys.Read32(arg), width = (int)Sys.Read32(arg + 4), height = (int)Sys.Read32(arg + 8);
+                int hotX = (int)Sys.Read32(arg + 12), hotY = (int)Sys.Read32(arg + 16);
+                long pixels = Sys.Read32(arg + 20) & 0xFFFFFFFF;
                 if (width <= 0 || height <= 0) return -Inval;
                 nint h = MakeCursor(kind != 2, width, height, hotX, hotY, pixels);
                 return h == 0 ? -Inval : (long)h & 0xFFFFFFFF;
@@ -1592,17 +1592,17 @@ static class WinSeat
             case SeatIoctl.ModeCount: return 0;
             case SeatIoctl.MonitorInfo:
             {
-                int index = (int)Sys.PeekWord(arg);
+                int index = (int)Sys.Read32(arg);
                 if (index != 0) return 1;
                 byte[] r = new byte[16];
                 SystemParametersInfoW(0x30, 0, At(r), 0);
                 int[] words = { 0, 0, 0, GetSystemMetrics(0), GetSystemMetrics(1), Word(r, 0), Word(r, 4), Word(r, 8) - Word(r, 0), Word(r, 12) - Word(r, 4), 32, 0, 1 };
-                for (int i = 1; i < words.Length; i++) Sys.PokeWord(arg + i * 4, words[i]);
+                for (int i = 1; i < words.Length; i++) Sys.Write32(arg + i * 4, words[i]);
                 return 1;
             }
             case SeatIoctl.TimerSet:
             {
-                int window = (int)Sys.PeekWord(arg), id = (int)Sys.PeekWord(arg + 4), ms = (int)Sys.PeekWord(arg + 8);
+                int window = (int)Sys.Read32(arg), id = (int)Sys.Read32(arg + 4), ms = (int)Sys.Read32(arg + 8);
                 if (id == 0) { id = 1; while (_timerWindow.ContainsKey(id)) id++; }
                 _timerWindow[id] = window;
                 SetTimer(_helper, id, Math.Max(ms, 1), 0);
@@ -1610,16 +1610,16 @@ static class WinSeat
             }
             case SeatIoctl.TimerKill:
             {
-                int id = (int)Sys.PeekWord(arg + 4);
+                int id = (int)Sys.Read32(arg + 4);
                 _timerWindow.Remove(id);
                 return KillTimer(_helper, id) != 0 ? 0 : -Inval;
             }
             case SeatIoctl.CaretCreate:
             {
-                int window = (int)Sys.PeekWord(arg);
+                int window = (int)Sys.Read32(arg);
                 if (!_windows.TryGetValue(window, out w)) return -BadF;
                 _caretWindow = w;
-                return CreateCaret(w.Hwnd, 0, (int)Sys.PeekWord(arg + 4), (int)Sys.PeekWord(arg + 8)) != 0 ? 0 : -Inval;
+                return CreateCaret(w.Hwnd, 0, (int)Sys.Read32(arg + 4), (int)Sys.Read32(arg + 8)) != 0 ? 0 : -Inval;
             }
             case SeatIoctl.CaretShow:
                 if (_caretWindow == null) return -Inval;
@@ -1639,15 +1639,15 @@ static class WinSeat
                 return GetCaretBlinkTime();
             case SeatIoctl.HotKeyRegister:
             {
-                int window = (int)Sys.PeekWord(arg);
+                int window = (int)Sys.Read32(arg);
                 nint hwnd = _windows.TryGetValue(window, out w) ? w.Hwnd : _helper;
-                return RegisterHotKey(hwnd, (int)Sys.PeekWord(arg + 4), (int)Sys.PeekWord(arg + 8), (int)Sys.PeekWord(arg + 12)) != 0 ? 0 : -Inval;
+                return RegisterHotKey(hwnd, (int)Sys.Read32(arg + 4), (int)Sys.Read32(arg + 8), (int)Sys.Read32(arg + 12)) != 0 ? 0 : -Inval;
             }
             case SeatIoctl.HotKeyUnregister:
             {
-                int window = (int)Sys.PeekWord(arg);
+                int window = (int)Sys.Read32(arg);
                 nint hwnd = _windows.TryGetValue(window, out w) ? w.Hwnd : _helper;
-                return UnregisterHotKey(hwnd, (int)Sys.PeekWord(arg + 4)) != 0 ? 0 : -Inval;
+                return UnregisterHotKey(hwnd, (int)Sys.Read32(arg + 4)) != 0 ? 0 : -Inval;
             }
             case SeatIoctl.KeyState: return GetKeyState((int)arg) & 0xFFFF;
             case SeatIoctl.AsyncKeyState: return GetAsyncKeyState((int)arg) & 0xFFFF;
@@ -1662,22 +1662,22 @@ static class WinSeat
             }
             case SeatIoctl.GetCapture: return _captured;
             case SeatIoctl.DoubleClicks:
-                if (_windows.TryGetValue((int)Sys.PeekWord(arg), out w)) w.DoubleClicks = Sys.PeekWord(arg + 4) != 0;
+                if (_windows.TryGetValue((int)Sys.Read32(arg), out w)) w.DoubleClicks = Sys.Read32(arg + 4) != 0;
                 return 0;
             case SeatIoctl.ThemeColours: case SeatIoctl.ThemeMetrics:
             {
                 bool colours = request == (long)SeatIoctl.ThemeColours;
                 int count = colours ? 29 : 83;
-                long at = Sys.PeekWord(arg) & 0xFFFFFFFF;
-                long room = Sys.PeekWord(arg + 4);
+                long at = Sys.Read32(arg) & 0xFFFFFFFF;
+                long room = Sys.Read32(arg + 4);
                 int n = (int)Math.Min(room, (long)count);
-                if (at != 0) for (int i = 0; i < n; i++) Sys.PokeWord(at + i * 4, colours ? Swap(GetSysColor(i)) : GetSystemMetrics(i));
+                if (at != 0) for (int i = 0; i < n; i++) Sys.Write32(at + i * 4, colours ? Swap(GetSysColor(i)) : GetSystemMetrics(i));
                 return count;
             }
             case SeatIoctl.ThemeFont: return ThemeFont(arg);
             case SeatIoctl.ThemeSetting:
             {
-                int setting = (int)Sys.PeekWord(arg);
+                int setting = (int)Sys.Read32(arg);
                 int value = 0;
                 int action = setting == 4 ? 0x26 : setting == 6 ? 0x4A : setting == 7 ? 0x1008 : 0;   // drag full windows, font smoothing, gradient captions
                 if (action != 0) SystemParametersInfoW(action, 0, (nint)Sys.AddressOf(ref value), 0);
@@ -1690,13 +1690,13 @@ static class WinSeat
                 return ScrollRequest(request, arg);
             case SeatIoctl.WindowPixels:
             {
-                if (!_windows.TryGetValue((int)Sys.PeekWord(arg), out w)) return -BadF;
-                int x = (int)Sys.PeekWord(arg + 4), y = (int)Sys.PeekWord(arg + 8), width = (int)Sys.PeekWord(arg + 12), height = (int)Sys.PeekWord(arg + 16);
-                long into = Sys.PeekWord(arg + 20) & 0xFFFFFFFF;
+                if (!_windows.TryGetValue((int)Sys.Read32(arg), out w)) return -BadF;
+                int x = (int)Sys.Read32(arg + 4), y = (int)Sys.Read32(arg + 8), width = (int)Sys.Read32(arg + 12), height = (int)Sys.Read32(arg + 16);
+                long into = Sys.Read32(arg + 20) & 0xFFFFFFFF;
                 if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > w.W || y + height > w.H) return -Inval;
                 for (int row = 0; row < height; row++)
                     for (int k = 0; k < width; k++)
-                        Sys.PokeWord(into + ((long)row * width + k) * 4, unchecked((int)0xFF000000) | (int)Sys.PeekWord(w.Bits + ((long)(y + row) * w.W + x + k) * 4));
+                        Sys.Write32(into + ((long)row * width + k) * 4, unchecked((int)0xFF000000) | (int)Sys.Read32(w.Bits + ((long)(y + row) * w.W + x + k) * 4));
                 return (long)width * height;
             }
         }
@@ -1764,13 +1764,13 @@ static class WinSeat
     /// one: the ImageLoad ioctl.
     static long LoadImage(long arg)
     {
-        long bytes = Sys.PeekWord(arg) & 0xFFFFFFFF;
-        int length = (int)Sys.PeekWord(arg + 4);
+        long bytes = Sys.Read32(arg) & 0xFFFFFFFF;
+        int length = (int)Sys.Read32(arg + 4);
         if (length < 22) return -Inval;
-        int type = (int)Sys.PeekHalf(bytes + 2), count = (int)Sys.PeekHalf(bytes + 4);
+        int type = (int)Sys.Read16(bytes + 2), count = (int)Sys.Read16(bytes + 4);
         if ((type != 1 && type != 2) || count < 1) return -Inval;
         long entry = bytes + 6;
-        int size = (int)Sys.PeekWord(entry + 8), offset = (int)Sys.PeekWord(entry + 12);
+        int size = (int)Sys.Read32(entry + 8), offset = (int)Sys.Read32(entry + 12);
         if (offset < 0 || size <= 0 || offset + size > length) return -Inval;
         nint made;
         if (type == 1) made = CreateIconFromResourceEx((nint)(bytes + offset), size, 1, 0x30000, 0, 0, 0);
@@ -1778,9 +1778,9 @@ static class WinSeat
         {
             // A cursor's resource leads with its hot spot.
             byte[] res = new byte[size + 4];
-            res[0] = (byte)Sys.PeekByte(entry + 4); res[1] = (byte)Sys.PeekByte(entry + 5);
-            res[2] = (byte)Sys.PeekByte(entry + 6); res[3] = (byte)Sys.PeekByte(entry + 7);
-            for (int i = 0; i < size; i++) res[4 + i] = (byte)Sys.PeekByte(bytes + offset + i);
+            res[0] = (byte)Sys.Read8(entry + 4); res[1] = (byte)Sys.Read8(entry + 5);
+            res[2] = (byte)Sys.Read8(entry + 6); res[3] = (byte)Sys.Read8(entry + 7);
+            for (int i = 0; i < size; i++) res[4 + i] = (byte)Sys.Read8(bytes + offset + i);
             made = CreateIconFromResourceEx(At(res), res.Length, 0, 0x30000, 0, 0, 0);
         }
         return made == 0 ? -Inval : (long)made & 0xFFFFFFFF;
@@ -1792,9 +1792,9 @@ static class WinSeat
     /// message, 5 icon title) as the seat's record: NONCLIENTMETRICS' LOGFONTs.
     static long ThemeFont(long arg)
     {
-        int kind = (int)Sys.PeekWord(arg);
-        long at = Sys.PeekWord(arg + 4) & 0xFFFFFFFF;
-        long room = Sys.PeekWord(arg + 8);
+        int kind = (int)Sys.Read32(arg);
+        long at = Sys.Read32(arg + 4) & 0xFFFFFFFF;
+        long room = Sys.Read32(arg + 8);
         const int RecordBytes = 96;
         if (kind < 0 || kind > 5) return -Inval;
         if (at == 0 || room < RecordBytes) return RecordBytes;
@@ -1831,7 +1831,7 @@ static class WinSeat
         Put(record, 16, logfont[23]); Put(record, 20, logfont[26]); Put(record, 24, logfont[27]);
         Put(record, 28, n);
         for (int i = 0; i < n * 2; i++) record[32 + i] = logfont[28 + i];
-        for (int i = 0; i < RecordBytes; i++) Sys.PokeByte(at + i, record[i]);
+        for (int i = 0; i < RecordBytes; i++) Sys.Write8(at + i, record[i]);
         return RecordBytes;
     }
 
@@ -1930,8 +1930,8 @@ static class WinSeat
     /// The families, each once: as the seat lists them, texts one after another.
     static long FontFamilies(long arg)
     {
-        long at = Sys.PeekWord(arg) & 0xFFFFFFFF;
-        long room = Sys.PeekWord(arg + 4);
+        long at = Sys.Read32(arg) & 0xFFFFFFFF;
+        long room = Sys.Read32(arg + 4);
         List<string> names = new List<string>();
         foreach (Face f in Faces())
         {
@@ -1941,7 +1941,7 @@ static class WinSeat
         }
         List<byte> list = new List<byte>();
         foreach (string n in names) AddText(list, n);
-        if (at != 0 && room >= list.Count) for (int i = 0; i < list.Count; i++) Sys.PokeByte(at + i, list[i]);
+        if (at != 0 && room >= list.Count) for (int i = 0; i < list.Count; i++) Sys.Write8(at + i, list[i]);
         return list.Count;
     }
 
@@ -1950,14 +1950,14 @@ static class WinSeat
     /// -- and in it the nearest weight with the slant asked for.
     static long FontMatch(long arg)
     {
-        long text = Sys.PeekWord(arg) & 0xFFFFFFFF;
-        int length = (int)Sys.PeekWord(arg + 4);
-        int weight = (int)Sys.PeekWord(arg + 8);
-        bool italic = (Sys.PeekWord(arg + 12) & 1) != 0;
-        long at = Sys.PeekWord(arg + 24) & 0xFFFFFFFF;
-        long room = Sys.PeekWord(arg + 28);
+        long text = Sys.Read32(arg) & 0xFFFFFFFF;
+        int length = (int)Sys.Read32(arg + 4);
+        int weight = (int)Sys.Read32(arg + 8);
+        bool italic = (Sys.Read32(arg + 12) & 1) != 0;
+        long at = Sys.Read32(arg + 24) & 0xFFFFFFFF;
+        long room = Sys.Read32(arg + 28);
         char[] chars = new char[Math.Max(0, length)];
-        for (int i = 0; i < chars.Length; i++) chars[i] = (char)Sys.PeekHalf(text + i * 2);
+        for (int i = 0; i < chars.Length; i++) chars[i] = (char)Sys.Read16(text + i * 2);
         string family = new string(chars);
         Face? best = Nearest(family, weight, italic);
         // A name Windows stands for another (FontSubstitutes: MS Shell Dlg
@@ -1985,7 +1985,7 @@ static class WinSeat
         AddWord(r, 1);                                                          // generation
         AddWord(r, 0);                                                          // no bitmap sizes
         AddText(r, best.Family); AddText(r, best.Style); AddText(r, best.FullName); AddText(r, best.Path);
-        if (at != 0 && room >= r.Count) for (int i = 0; i < r.Count; i++) Sys.PokeByte(at + i, r[i]);
+        if (at != 0 && room >= r.Count) for (int i = 0; i < r.Count; i++) Sys.Write8(at + i, r[i]);
         return r.Count;
     }
 
@@ -2058,7 +2058,7 @@ static class WinSeat
     {
         byte[] bytes = new byte[room];
         int n = 0;
-        while (n < room && (bytes[n] = (byte)Sys.PeekByte(at + n)) != 0) n++;
+        while (n < room && (bytes[n] = (byte)Sys.Read8(at + n)) != 0) n++;
         return System.Text.Encoding.UTF8.GetString(bytes, 0, n);
     }
 }

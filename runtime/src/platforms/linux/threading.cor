@@ -25,13 +25,13 @@ static class Clock
         // Thread-local syscall storage is available before any allocation.
         // Clock reads do not retain it or dispatch managed signal handlers.
         long at = Sys.ThreadBlock() + Tls.Scratch;
-        Sys.Poke(at, 0);
-        Sys.Poke(at + WordSize.Bytes, 0);
+        Sys.WriteNative(at, 0);
+        Sys.WriteNative(at + WordSize.Bytes, 0);
 
         Sys.Syscall(ClockGettime, Monotonic, at, 0);
 
-        long seconds = Sys.Peek(at);
-        long nanos = Sys.Peek(at + WordSize.Bytes);
+        long seconds = Sys.ReadNative(at);
+        long nanos = Sys.ReadNative(at + WordSize.Bytes);
 
         return seconds * NanosPerSecond + nanos;
     }
@@ -57,8 +57,8 @@ static class Clock
         // callbacks run only afterwards; the fallback rewrites it after Now.
         long at = Sys.ThreadBlock() + Tls.Scratch;
 
-        Sys.Poke(at, deadline / NanosPerSecond);
-        Sys.Poke(at + WordSize.Bytes, deadline % NanosPerSecond);
+        Sys.WriteNative(at, deadline / NanosPerSecond);
+        Sys.WriteNative(at + WordSize.Bytes, deadline % NanosPerSecond);
 
         // Asleep is stopped, as far as a collection is concerned: see the note
         // on Native.Wait.
@@ -88,8 +88,8 @@ static class Clock
             return;
         }
 
-        Sys.Poke(at, left / NanosPerSecond);
-        Sys.Poke(at + WordSize.Bytes, left % NanosPerSecond);
+        Sys.WriteNative(at, left / NanosPerSecond);
+        Sys.WriteNative(at + WordSize.Bytes, left % NanosPerSecond);
         if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
         Sys.Syscall(Nanosleep, at, 0, 0);
         if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
@@ -164,16 +164,16 @@ static class Native
 
     static long Byte(long at, long value)
     {
-        Sys.PokeByte(at, value);
+        Sys.Write8(at, value);
         return at + 1;
     }
 
     static long Immediate(long at, long value)
     {
-        Sys.PokeByte(at, value & 0xFF);
-        Sys.PokeByte(at + 1, (value >> 8) & 0xFF);
-        Sys.PokeByte(at + 2, (value >> 16) & 0xFF);
-        Sys.PokeByte(at + 3, (value >> 24) & 0xFF);
+        Sys.Write8(at, value & 0xFF);
+        Sys.Write8(at + 1, (value >> 8) & 0xFF);
+        Sys.Write8(at + 2, (value >> 16) & 0xFF);
+        Sys.Write8(at + 3, (value >> 24) & 0xFF);
         return at + 4;
     }
 
@@ -339,8 +339,8 @@ static class Native
 
         long parameters = code + ParameterOffset;
 
-        Sys.Poke(parameters, entry);
-        Sys.Poke(parameters + WordSize.Bytes, argument);
+        Sys.WriteNative(parameters, entry);
+        Sys.WriteNative(parameters + WordSize.Bytes, argument);
 
         long id = Platform.Result(Sys.CallNative(code, ThreadFlags, stackTop, parameters));
 
@@ -360,8 +360,8 @@ static class Native
         {
             return 0 - 12;      // ENOMEM
         }
-        Sys.Poke(stack, entry);
-        Sys.Poke(stack + WordSize.Bytes, argument);
+        Sys.WriteNative(stack, entry);
+        Sys.WriteNative(stack + WordSize.Bytes, argument);
         return Platform.Result(Sys.CallNative(code, ThreadFlags, stack + bytes, stack));
     }
 
@@ -393,8 +393,8 @@ static class Native
         long timeout = Sys.ThreadBlock() + Tls.Scratch;
         // A timespec is two words, whatever the word is: 32-bit halves at 0
         // and 4 were a garbage timeout on every timed wait in long mode.
-        Sys.Poke(timeout, nanoseconds / 1000000000);
-        Sys.Poke(timeout + WordSize.Bytes, nanoseconds % 1000000000);
+        Sys.WriteNative(timeout, nanoseconds / 1000000000);
+        Sys.WriteNative(timeout + WordSize.Bytes, nanoseconds % 1000000000);
         if (!Sys.KernelSyscalls()) Runtime.BeginBlocking();
         Sys.Syscall(Futex, at, FutexWait, expect, timeout, 0, 0);
         if (!Sys.KernelSyscalls()) Runtime.EndBlocking();
@@ -514,7 +514,7 @@ partial class Thread
         }
         // Nobody joins it through the C library: Join waits on the thread's
         // own word, so its C side is released when it returns.
-        Runtime.CallC(_nativeDetach, Sys.Peek(Sys.ArrayData(handle)), 0, 0, 0);
+        Runtime.CallC(_nativeDetach, Sys.ReadNative(Sys.ArrayData(handle)), 0, 0, 0);
         _id = 1;
     }
 
@@ -559,7 +559,7 @@ partial class Thread
         }
         t.Begin();
         long block = Sys.ThreadBlock();
-        if (Sys.Peek(block + Native.UnmapLengthAt) == 0)
+        if (Sys.ReadNative(block + Native.UnmapLengthAt) == 0)
         {
             return 0;
         }

@@ -592,14 +592,14 @@ static class RegistryStore
     {
         byte[] request = new byte[64];
         long at = Sys.ArrayData(request);
-        Sys.Poke(at, scope);
-        Sys.Poke(at + 8, Sys.ArrayData(key));
-        Sys.PokeWord(at + 16, key.Length);
-        Sys.PokeWord(at + 20, type);
-        Sys.PokeWord(at + 24, 0);
-        Sys.Poke(at + 32, 0);
-        Sys.Poke(at + 40, valueAt);
-        Sys.PokeWord(at + 48, valueBytes);
+        Sys.WriteNative(at, scope);
+        Sys.WriteNative(at + 8, Sys.ArrayData(key));
+        Sys.Write32(at + 16, key.Length);
+        Sys.Write32(at + 20, type);
+        Sys.Write32(at + 24, 0);
+        Sys.WriteNative(at + 32, 0);
+        Sys.WriteNative(at + 40, valueAt);
+        Sys.Write32(at + 48, valueBytes);
         return request;
     }
 
@@ -609,9 +609,9 @@ static class RegistryStore
         byte[] room = new byte[65536];
         byte[] request = Request(path, scope, key, Sys.ArrayData(room), room.Length, 0);
         if (Os.Ioctl(Fd(), Get_, Sys.ArrayData(request)) < 0) return null;
-        long type = Sys.PeekWord(Sys.ArrayData(request) + 20) & 0xFFFFFFFF;
+        long type = Sys.Read32(Sys.ArrayData(request) + 20) & 0xFFFFFFFF;
         if (type != BinaryType) return null;
-        long bytes = Sys.PeekWord(Sys.ArrayData(request) + 48) & 0xFFFFFFFF;
+        long bytes = Sys.Read32(Sys.ArrayData(request) + 48) & 0xFFFFFFFF;
         byte[] got = new byte[(int)bytes];
         Array.Copy(room, got, (int)bytes);
         return got;
@@ -639,7 +639,7 @@ static class RegistryStore
         byte[] room = new byte[262144];
         byte[] request = Request(prefix, scope, key, Sys.ArrayData(room), room.Length, 0);
         if (Os.Ioctl(Fd(), Enumerate_, Sys.ArrayData(request)) < 0) return new string[0];
-        long bytes = Sys.PeekWord(Sys.ArrayData(request) + 48) & 0xFFFFFFFF;
+        long bytes = Sys.Read32(Sys.ArrayData(request) + 48) & 0xFFFFFFFF;
         List<string> found = new List<string>();
         int start = 0;
         for (int i = 0; i < bytes; i++)

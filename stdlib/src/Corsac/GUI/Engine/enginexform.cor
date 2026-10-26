@@ -367,10 +367,10 @@ class XformMatrix
     public void Store(long at, int bytes)
     {
         EFloat[] e = new EFloat[] { M11, M12, M21, M22, Dx, Dy };
-        for (int i = 0; i < 6; i++) { Sys.PokeWord(at + i * 8, e[i].Mant & 0xFFFFFFFFL); Sys.PokeWord(at + i * 8 + 4, e[i].Exp & 0xFFFFFFFFL); }
-        Sys.PokeWord(at + 0x30, FxDx & 0xFFFFFFFFL);
-        Sys.PokeWord(at + 0x34, FxDy & 0xFFFFFFFFL);
-        if (bytes >= 0x3C) Sys.PokeWord(at + 0x38, Accel);
+        for (int i = 0; i < 6; i++) { Sys.Write32(at + i * 8, e[i].Mant & 0xFFFFFFFFL); Sys.Write32(at + i * 8 + 4, e[i].Exp & 0xFFFFFFFFL); }
+        Sys.Write32(at + 0x30, FxDx & 0xFFFFFFFFL);
+        Sys.Write32(at + 0x34, FxDy & 0xFFFFFFFFL);
+        if (bytes >= 0x3C) Sys.Write32(at + 0x38, Accel);
     }
 
     public bool SameAs(XformMatrix o)

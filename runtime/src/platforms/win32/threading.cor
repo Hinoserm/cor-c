@@ -92,15 +92,15 @@ partial class Thread
         if (stub == 0) return 0;
         long entry = Sys.AddressOf(Thread.ThreadEntry);
         int at = 0;
-        Sys.PokeByte(stub + at++, 0x8B); Sys.PokeByte(stub + at++, 0x44); Sys.PokeByte(stub + at++, 0x24); Sys.PokeByte(stub + at++, 0x04); // mov eax, [esp+4]
-        Sys.PokeByte(stub + at++, 0x6A); Sys.PokeByte(stub + at++, 0x00);                                                              // push 0     slot, high
-        Sys.PokeByte(stub + at++, 0x50);                                                                                               // push eax   slot
-        Sys.PokeByte(stub + at++, 0xB9);                                                                                               // mov ecx, ThreadEntry
-        for (int i = 0; i < 4; i++) Sys.PokeByte(stub + at++, (int)(entry >> (8 * i)) & 0xFF);
-        Sys.PokeByte(stub + at++, 0xFF); Sys.PokeByte(stub + at++, 0xD1);                                                              // call ecx
-        Sys.PokeByte(stub + at++, 0x83); Sys.PokeByte(stub + at++, 0xC4); Sys.PokeByte(stub + at++, 0x08);                            // add esp, 8
-        Sys.PokeByte(stub + at++, 0x31); Sys.PokeByte(stub + at++, 0xC0);                                                              // xor eax, eax
-        Sys.PokeByte(stub + at++, 0xC2); Sys.PokeByte(stub + at++, 0x04); Sys.PokeByte(stub + at++, 0x00);                            // ret 4
+        Sys.Write8(stub + at++, 0x8B); Sys.Write8(stub + at++, 0x44); Sys.Write8(stub + at++, 0x24); Sys.Write8(stub + at++, 0x04); // mov eax, [esp+4]
+        Sys.Write8(stub + at++, 0x6A); Sys.Write8(stub + at++, 0x00);                                                              // push 0     slot, high
+        Sys.Write8(stub + at++, 0x50);                                                                                               // push eax   slot
+        Sys.Write8(stub + at++, 0xB9);                                                                                               // mov ecx, ThreadEntry
+        for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (int)(entry >> (8 * i)) & 0xFF);
+        Sys.Write8(stub + at++, 0xFF); Sys.Write8(stub + at++, 0xD1);                                                              // call ecx
+        Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xC4); Sys.Write8(stub + at++, 0x08);                            // add esp, 8
+        Sys.Write8(stub + at++, 0x31); Sys.Write8(stub + at++, 0xC0);                                                              // xor eax, eax
+        Sys.Write8(stub + at++, 0xC2); Sys.Write8(stub + at++, 0x04); Sys.Write8(stub + at++, 0x00);                            // ret 4
         _windowsEntry = stub;
         return stub;
     }

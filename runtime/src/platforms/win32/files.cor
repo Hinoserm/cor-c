@@ -703,7 +703,7 @@ static partial class Os
         if (block != 0)
         {
             long at = block;
-            while (Sys.PeekHalf(at) != 0)
+            while (Sys.Read16(at) != 0)
             {
                 string one = Wide((nint)at);
                 // "=C:=C:\..." is cmd's drive memory, not a variable.
@@ -720,14 +720,14 @@ static partial class Os
         foreach (byte[] t in texts) bytes = bytes + t.Length;
         long stack = (long)(nuint)VirtualAlloc(0, (nint)bytes, 0x3000, 0x04);
         if (stack == 0) return 0;
-        Sys.Poke(stack, args.Count);
+        Sys.WriteNative(stack, args.Count);
         long text = stack + words * 4;
         for (int i = 0; i < texts.Count; i++)
         {
             long slot = i < args.Count ? stack + 4 * (1 + i) : stack + 4 * (1 + args.Count + 1 + (i - args.Count));
-            Sys.Poke(slot, text);
+            Sys.WriteNative(slot, text);
             byte[] t = texts[i];
-            for (int k = 0; k < t.Length; k++) Sys.PokeByte(text + k, t[k]);
+            for (int k = 0; k < t.Length; k++) Sys.Write8(text + k, t[k]);
             text = text + t.Length;
         }
         _entryStack = stack;
@@ -739,9 +739,9 @@ static partial class Os
     {
         long p = (long)(nuint)at;
         int n = 0;
-        while (Sys.PeekHalf(p + 2 * n) != 0) n++;
+        while (Sys.Read16(p + 2 * n) != 0) n++;
         char[] chars = new char[n];
-        for (int i = 0; i < n; i++) chars[i] = (char)Sys.PeekHalf(p + 2 * i);
+        for (int i = 0; i < n; i++) chars[i] = (char)Sys.Read16(p + 2 * i);
         return new string(chars);
     }
 
@@ -798,11 +798,11 @@ static partial class Os
     public static string? StartingVariable(string name)
     {
         long at = EnvironAddress();
-        for (long entry = Sys.Peek(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.Peek(at))
+        for (long entry = Sys.ReadNative(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadNative(at))
         {
             int i = 0;
-            while (i < name.Length && Sys.PeekByte(entry + i) == name[i]) i = i + 1;
-            if (i == name.Length && Sys.PeekByte(entry + i) == '=') return StringAt(entry + i + 1);
+            while (i < name.Length && Sys.Read8(entry + i) == name[i]) i = i + 1;
+            if (i == name.Length && Sys.Read8(entry + i) == '=') return StringAt(entry + i + 1);
         }
         return null;
     }
