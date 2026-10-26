@@ -1966,7 +1966,23 @@ partial static class Directory
         {
             throw new ArgumentException("The path is empty.", nameof(path));
         }
-        Make(Path.GetFullPath(path));
+        Make(Path.GetFullPath(path), 511);
+        return new DirectoryInfo(path);
+    }
+
+    /// .NET 7's form: every directory it creates is given `unixCreateMode`
+    /// -- mkdir(2)'s own mode argument, so through the umask.
+    public static DirectoryInfo CreateDirectory(string path, UnixFileMode unixCreateMode)
+    {
+        if (path == null)
+        {
+            throw new ArgumentNullException(nameof(path));
+        }
+        if (path.Length == 0)
+        {
+            throw new ArgumentException("The path is empty.", nameof(path));
+        }
+        Make(Path.GetFullPath(path), (int)unixCreateMode & 4095);
         return new DirectoryInfo(path);
     }
 
@@ -1974,20 +1990,20 @@ partial static class Directory
     /// missing, as .NET's does. A FILE IN THE WAY is "already exists" when it
     /// has the name itself and a missing part of the path when it is above
     /// it (ENOTDIR); a directory another made meanwhile is no failure.
-    static void Make(string path)
+    static void Make(string path, int mode)
     {
         if (path.Length == 0 || Exists(path))
         {
             return;
         }
-        int r = Os.Mkdir(path, 511);
+        int r = Os.Mkdir(path, mode);
         if (r == -Err.NoEnt)
         {
             string? parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path));
             if (parent != null && parent.Length != 0 && parent != path)
             {
-                Make(parent);
-                r = Os.Mkdir(path, 511);
+                Make(parent, mode);
+                r = Os.Mkdir(path, mode);
             }
         }
         if (r == -Err.Exist && Exists(path))
