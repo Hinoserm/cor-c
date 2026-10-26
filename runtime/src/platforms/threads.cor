@@ -691,7 +691,7 @@ partial class Thread
     void BeginNative(nuint frame)
     {
         Platform.SetThreadBlock(_block);
-        Sys.WriteNative(_block + Tls.ThreadId, Native.CurrentThreadId());
+        Sys.WriteNative(_block + Tls.ThreadId, (nuint)Native.CurrentThreadId());
         nuint top = frame + 2 * WordSize.Bytes;
         Runtime.MoveStack(top, top);
         Runtime.EndBlocking();
@@ -706,7 +706,7 @@ partial class Thread
     void Begin()
     {
         Platform.SetThreadBlock(_block);
-        Sys.WriteNative(_block + Tls.ThreadId, Native.CurrentThreadId());
+        Sys.WriteNative(_block + Tls.ThreadId, (nuint)Native.CurrentThreadId());
 
         // Running, from here on: until this the collector was told this thread
         // was stopped with nothing on its stack, which it was.

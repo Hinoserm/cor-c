@@ -95,7 +95,7 @@ static class Cmsg
             return -1;
         }
 
-        int next = at + (int)((length + Align) & ~Align);
+        int next = at + (int)((length + (nuint)Align) & ~(nuint)Align);
         return next + HeaderBytes <= controlBytes ? next : -1;
     }
 
@@ -578,7 +578,7 @@ static class Platform
         int count = 0;
         for (long i = 0; i < got && i < 128; i++)
         {
-            long bits = Sys.Read8(page + i);
+            long bits = Sys.Read8(page + (nuint)i);
             while (bits != 0) { count = count + (int)(bits & 1); bits = bits >> 1; }
         }
         Unmap(page, 4096);
@@ -590,7 +590,7 @@ static class Platform
 
     /// Starts one of them: `entry` on a stack of its own, with no Thread,
     /// no thread block and no signals. False when there is no room for it.
-    public static long StartCollectorWorker(long entry)
+    public static long StartCollectorWorker(nuint entry)
     {
         nuint stack = Native.MapStack(WorkerStackBytes);
         if (stack == 0) return 0;
@@ -777,9 +777,9 @@ static class Platform
     // sigreturn trampoline; it puts the default action back itself rather
     // than trusting SA_RESETHAND to have, unblocks the signal and sends it
     // again, and ends the process outright if that did not.
-    static long _faultPage;
+    static nuint _faultPage;
     static long _faulting;
-    static long _faultReturn;
+    static nuint _faultReturn;
 
     const int SignalBus = 7;
     const int SignalSegv = 11;
@@ -799,8 +799,9 @@ static class Platform
         // THE WAY BACK from a fault that becomes a NullReferenceException:
         // rt_sigreturn, seven bytes on a page of their own that may run, as
         // PosixSignalRegistration's restorer is.
-        nuint back = Platform.Result(Sys.Syscall(LinuxCall.Mmap, 0, 4096, 7, 0x22, 0 - 1, 0));
-        if (back > 0)
+        nint mapped = Sys.Syscall(LinuxCall.Mmap, 0, 4096, 7, 0x22, 0 - 1, 0);
+        nuint back = Err.Failed(mapped) ? 0 : Err.Address(mapped);
+        if (back != 0)
         {
 #if TARGET_64BIT
             Sys.Write8(back, 0xB8);                                 // mov eax,
@@ -824,7 +825,7 @@ static class Platform
         // process.
         nuint handler = Sys.AddressOf(Platform.Fault);
         Sys.WriteNative(page, handler);
-        Sys.WriteNative(page + WordSize.Bytes, 0x00000004 | 0x04000000 | 0x40000000);
+        Sys.WriteNative(page + WordSize.Bytes, (nuint)(0x00000004 | 0x04000000 | 0x40000000));
         Sys.WriteNative(page + 2 * WordSize.Bytes, _faultReturn != 0 ? _faultReturn : handler);
         Sys.Syscall(LinuxCall.RtSigaction, SignalSegv, (nint)page, 0, 8, 0, 0);
         Sys.Syscall(LinuxCall.RtSigaction, SignalBus, (nint)page, 0, 8, 0, 0);
@@ -834,8 +835,8 @@ static class Platform
     /// interrupted context. Reports once, then dies of the signal.
     public static void Fault(int signal, nint info, nint context)
     {
-        nuint si = (long)info;
-        nuint uc = (long)context;
+        nuint si = (nuint)info;
+        nuint uc = (nuint)context;
         // A NULL DEREFERENCE IS AN EXCEPTION, as it is in .NET: the thread is
         // sent on, when the handler returns, into Runtime.NullFault as if the
         // faulting instruction had called it -- its return address that
@@ -844,7 +845,7 @@ static class Platform
         if (_faulting == 0 && signal == SignalSegv && si != 0 && uc != 0 && _faultReturn != 0)
         {
 #if TARGET_64BIT
-            long nullAt = Sys.ReadNative(si + 16);
+            nuint nullAt = Sys.ReadNative(si + 16);
 #else
             nuint nullAt = Sys.ReadNative(si + 12);
 #endif
@@ -854,9 +855,9 @@ static class Platform
 #if TARGET_64BIT
                 // gregs from 40: RDI 8th, RSI 9th, RBP 10th, RSP 15th, RIP 16th.
                 // Past the red zone, aligned as a call leaves it.
-                long faultPc = Sys.ReadNative(uc + 168);
-                long faultFrame = Sys.ReadNative(uc + 120);
-                nuint sp = ((Sys.ReadNative(uc + 160) - 128) & ~15L) - 8;
+                nuint faultPc = Sys.ReadNative(uc + 168);
+                nuint faultFrame = Sys.ReadNative(uc + 120);
+                nuint sp = ((Sys.ReadNative(uc + 160) - 128) & ~(nuint)15) - 8;
                 Sys.WriteNative(sp, faultPc);
                 Sys.WriteNative(uc + 104, faultFrame);
                 Sys.WriteNative(uc + 112, faultPc);
@@ -864,17 +865,15 @@ static class Platform
                 Sys.WriteNative(uc + 168, entry);
 #else
                 // gregs from 20: EBP 7th, ESP 8th, EIP 15th; the arguments
-                // on the stack above the return address, each a long and so
-                // two words, the low one first. Aligned as a call leaves it:
-                // the return address at 12 past a multiple of 16.
+                // on the stack above the return address, each a word. Aligned
+                // as a call leaves it: the return address at 12 past a
+                // multiple of 16.
                 nuint faultPc = Sys.ReadNative(uc + 76);
                 nuint faultFrame = Sys.ReadNative(uc + 44);
-                nuint sp = ((Sys.ReadNative(uc + 48)) - 64 & ~15L) - 20;
+                nuint sp = ((Sys.ReadNative(uc + 48) - 64) & ~(nuint)15) - 20;
                 Sys.WriteNative(sp, faultPc);
                 Sys.WriteNative(sp + 4, faultFrame);
-                Sys.WriteNative(sp + 8, 0);
-                Sys.WriteNative(sp + 12, faultPc);
-                Sys.WriteNative(sp + 16, 0);
+                Sys.WriteNative(sp + 8, faultPc);
                 Sys.WriteNative(uc + 48, sp);
                 Sys.WriteNative(uc + 76, entry);
 #endif
@@ -887,10 +886,10 @@ static class Platform
 #if TARGET_64BIT
             // siginfo's si_addr at 16; mcontext's gregs from 40, RBP the
             // eleventh and RIP the seventeenth.
-            long address = Sys.ReadNative(si + 16);
-            long pc = Sys.ReadNative(uc + 168);
-            long frame = Sys.ReadNative(uc + 120);
-            long registers = uc + 40;
+            nuint address = Sys.ReadNative(si + 16);
+            nuint pc = Sys.ReadNative(uc + 168);
+            nuint frame = Sys.ReadNative(uc + 120);
+            nuint registers = uc + 40;
             int count = 16;
 #else
             // siginfo's si_addr at 12; mcontext's gregs from 20, EBP the
@@ -911,7 +910,7 @@ static class Platform
         Sys.Syscall(LinuxCall.RtSigaction, signal, (nint)page, 0, 8, 0, 0);
         Sys.WriteNative(page + 128, 0);
         Sys.WriteNative(page + 128 + WordSize.Bytes, 0);
-        Sys.Write8(page + 128 + (signal - 1) / 8, 1 << ((signal - 1) % 8));
+        Sys.Write8(page + 128 + (nuint)((signal - 1) / 8), (byte)(1 << ((signal - 1) % 8)));
         Sys.Syscall(LinuxCall.RtSigprocmask, 1, (nint)(page + 128), 0, 8, 0, 0);
         Sys.Syscall(LinuxCall.Kill, Sys.Syscall(LinuxCall.Getpid, 0, 0, 0, 0, 0, 0), signal, 0, 0, 0, 0);
         Sys.Syscall(LinuxCall.ExitGroup, 128 + signal, 0, 0, 0, 0, 0);
@@ -1149,7 +1148,7 @@ static class Platform
     // machine's free memory as it sets the next collection's pace, holding
     // the heap, where a `new byte[]` would ask the heap for itself. Taken
     // once; two callers at once write the same figures into it.
-    static long _sysinfo;
+    static nuint _sysinfo;
 
     static long SysinfoBytes(int field)
     {
@@ -1158,12 +1157,12 @@ static class Platform
             _sysinfo = Map(4096);
             if (_sysinfo == 0) return 0;
         }
-        if (Result(Sys.Syscall(LinuxCall.Sysinfo, _sysinfo, 0, 0)) < 0)
+        if (Result(Sys.Syscall(LinuxCall.Sysinfo, (nint)_sysinfo, 0, 0)) < 0)
         {
             return 0;
         }
-        long unit = Sys.ReadNative(_sysinfo + SysinfoUnit) & 0xFFFFFFFF;
-        long count = Sys.ReadNative(_sysinfo + field);
+        long unit = Sys.Read32(_sysinfo + SysinfoUnit);
+        long count = (long)Sys.ReadNative(_sysinfo + (nuint)field);
         return count * (unit == 0 ? 1 : unit);
     }
 
@@ -1432,12 +1431,12 @@ static partial class Os
     {
         byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
         nuint at = Sys.ArrayData(bytes);
-        long done = 0;
-        long length = bytes.Length;
+        nuint done = 0;
+        nuint length = (nuint)bytes.Length;
 
         while (done < length)
         {
-            long n = Platform.WriteBytes(fd, at + done, length - done);
+            nint n = Platform.WriteBytes(fd, at + done, length - done);
 
             if (n == 0 - Err.Intr)
             {
@@ -1447,7 +1446,7 @@ static partial class Os
             {
                 return done > 0 ? (int)done : (int)n;
             }
-            done = done + n;
+            done = done + (nuint)n;
         }
         return (int)done;
     }
@@ -1494,8 +1493,8 @@ static partial class Os
         for (nuint entry = Sys.ReadNative(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadNative(at))
         {
             int i = 0;
-            while (i < name.Length && Sys.Read8(entry + i) == name[i]) i = i + 1;
-            if (i == name.Length && Sys.Read8(entry + i) == '=') return FromC(entry + i + 1);
+            while (i < name.Length && Sys.Read8(entry + (nuint)i) == name[i]) i = i + 1;
+            if (i == name.Length && Sys.Read8(entry + (nuint)i) == '=') return FromC(entry + (nuint)i + 1);
         }
         return null;
     }
@@ -1572,7 +1571,7 @@ static partial class Os
     /// Does not return when it works; -errno when it does not.
     public static long Reboot(long command)
     {
-        return Platform.Result(Sys.Syscall(LinuxCall.Reboot, 0xFEE1DEAD, 672274793, command, 0, 0, 0));
+        return Platform.Result(Sys.Syscall(LinuxCall.Reboot, (nint)0xFEE1DEAD, 672274793, (nint)command, 0, 0, 0));
     }
 
     // ---- waiting, randomness, signals ----------------------------------------
@@ -1674,7 +1673,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("getrandom range is outside its buffer");
         }
-        return Platform.Result(Sys.Syscall(LinuxCall.GetRandom, Sys.ArrayData(buffer) + at, count, 0));
+        return Platform.Result(Sys.Syscall(LinuxCall.GetRandom, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, 0));
     }
 
     /// rt_sigaction(2) with a 20-byte kernel sigaction (handler, flags,
@@ -1704,11 +1703,10 @@ static partial class Os
     /// does.
     ///
     /// The address, or 0.
-    public static long MapExecutable(long bytes)
+    public static nuint MapExecutable(nuint bytes)
     {
         // PROT_READ | PROT_WRITE | PROT_EXEC = 7; MAP_PRIVATE | MAP_ANONYMOUS.
-        long got = Platform.Result(Sys.Syscall(LinuxCall.Mmap, 0, bytes, 7, 0x22, 0 - 1, 0));
-        return got < 0 ? 0 : got;
+        return Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, (nint)bytes, 7, 0x22, 0 - 1, 0));
     }
 
     /// fork(2): the child's pid here, 0 over there, -errno on failure.
@@ -1805,7 +1803,7 @@ static partial class Os
         byte[]? extra = data == null ? null : CString(data);
         nuint options = extra == null ? 0 : Sys.ArrayData(extra);
         return (int)Platform.Result(Sys.Syscall(LinuxCall.Mount, (nint)Sys.ArrayData(from), (nint)Sys.ArrayData(onto),
-                                                Sys.ArrayData(kind), flags, options, 0));
+                                                (nint)Sys.ArrayData(kind), (nint)flags, (nint)options, 0));
     }
 
     /// umount2(2). The flags are MNT_FORCE, MNT_DETACH and the rest.
@@ -1907,7 +1905,7 @@ static partial class Os
     public static int ExecPlanned(ExecPlan plan)
     {
         return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, (nint)Sys.ArrayData(plan.Path),
-            Sys.ArrayData(plan.Args), plan.EnvAddress));
+            (nint)Sys.ArrayData(plan.Args), (nint)plan.EnvAddress));
     }
 
     /// exit_group(2) at once: no handler, no flush -- a forked child's buffers
@@ -2092,14 +2090,14 @@ static partial class Os
 
     // ---- memory -----------------------------------------------------------
 
-    public static long Mmap(long address, long length, long protection, long flags, long fd, long pages)
+    public static nint Mmap(nuint address, nuint length, nint protection, nint flags, nint fd, long pages)
     {
-        return Platform.Result(Sys.Syscall(LinuxCall.Mmap, address, length, protection, flags, fd, pages << LinuxCall.MmapOffsetShift));
+        return Platform.Result(Sys.Syscall(LinuxCall.Mmap, (nint)address, (nint)length, protection, flags, fd, (nint)(pages << LinuxCall.MmapOffsetShift)));
     }
 
-    public static int Munmap(long address, long length)
+    public static int Munmap(nuint address, nuint length)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Munmap, address, length, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Munmap, (nint)address, (nint)length, 0));
     }
 
     // ---- sockets ----------------------------------------------------------
@@ -2198,7 +2196,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("send range is outside its buffer");
         }
-        return (int)Sock(LinuxCall.SendTo, SockCall.Send, fd, Sys.ArrayData(buffer) + at, count, flags, 0, 0);
+        return (int)Sock(LinuxCall.SendTo, SockCall.Send, fd, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, flags, 0, 0);
     }
 
     public static int Recv(int fd, byte[] buffer, int at, int count, int flags)
@@ -2207,7 +2205,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("recv range is outside its buffer");
         }
-        return (int)Sock(LinuxCall.RecvFrom, SockCall.Recv, fd, Sys.ArrayData(buffer) + at, count, flags, 0, 0);
+        return (int)Sock(LinuxCall.RecvFrom, SockCall.Recv, fd, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, flags, 0, 0);
     }
 
     /// sendto(2) and recvfrom(2) with an address: a datagram's destination,
@@ -2219,8 +2217,8 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("sendto range is outside its buffer");
         }
-        return (int)Sock(LinuxCall.SendTo, SockCall.SendTo, fd, Sys.ArrayData(buffer) + at, count, flags,
-            Sys.ArrayData(address), address.Length);
+        return (int)Sock(LinuxCall.SendTo, SockCall.SendTo, fd, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, flags,
+            (nint)Sys.ArrayData(address), address.Length);
     }
 
     public static int RecvFrom(int fd, byte[] buffer, int at, int count, int flags, byte[] address)
@@ -2231,8 +2229,8 @@ static partial class Os
         }
         byte[] length = new byte[4];
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(LinuxCall.RecvFrom, SockCall.RecvFrom, fd, Sys.ArrayData(buffer) + at, count, flags,
-            Sys.ArrayData(address), Sys.ArrayData(length));
+        return (int)Sock(LinuxCall.RecvFrom, SockCall.RecvFrom, fd, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, flags,
+            (nint)Sys.ArrayData(address), (nint)Sys.ArrayData(length));
     }
 
     /// recvmsg(2): a datagram AND WHAT THE KERNEL KNOWS ABOUT IT.
@@ -2265,14 +2263,14 @@ static partial class Os
         byte[] iov = new byte[16];
         byte[] message = new byte[56];
 
-        Raw.SetI64(iov, 0, Sys.ArrayData(buffer) + at);
+        Raw.SetWord(iov, 0, Sys.ArrayData(buffer) + (nuint)at);
         Raw.SetI64(iov, 8, count);
 
-        Raw.SetI64(message, 0, address == null ? 0 : Sys.ArrayData(address));
+        Raw.SetWord(message, 0, address == null ? 0 : Sys.ArrayData(address));
         Raw.SetU32(message, 8, address == null ? 0 : address.Length);
-        Raw.SetI64(message, 16, Sys.ArrayData(iov));
+        Raw.SetWord(message, 16, Sys.ArrayData(iov));
         Raw.SetI64(message, 24, 1);
-        Raw.SetI64(message, 32, control == null ? 0 : Sys.ArrayData(control));
+        Raw.SetWord(message, 32, control == null ? 0 : Sys.ArrayData(control));
         Raw.SetI64(message, 40, control == null ? 0 : control.Length);
         Raw.SetU32(message, 48, 0);
 
@@ -2288,14 +2286,14 @@ static partial class Os
         byte[] iov = new byte[8];
         byte[] message = new byte[28];
 
-        Raw.SetU32(iov, 0, Sys.ArrayData(buffer) + at);
+        Raw.SetWord(iov, 0, Sys.ArrayData(buffer) + (nuint)at);
         Raw.SetU32(iov, 4, count);
 
-        Raw.SetU32(message, 0, address == null ? 0 : Sys.ArrayData(address));
+        Raw.SetWord(message, 0, address == null ? 0 : Sys.ArrayData(address));
         Raw.SetU32(message, 4, address == null ? 0 : address.Length);
-        Raw.SetU32(message, 8, Sys.ArrayData(iov));
+        Raw.SetWord(message, 8, Sys.ArrayData(iov));
         Raw.SetU32(message, 12, 1);
-        Raw.SetU32(message, 16, control == null ? 0 : Sys.ArrayData(control));
+        Raw.SetWord(message, 16, control == null ? 0 : Sys.ArrayData(control));
         Raw.SetU32(message, 20, control == null ? 0 : control.Length);
         Raw.SetU32(message, 24, 0);
 
@@ -2354,7 +2352,7 @@ static partial class Os
     {
         int n = 0;
 
-        while (Sys.Read8(at + n) != 0)
+        while (Sys.Read8(at + (nuint)n) != 0)
         {
             n = n + 1;
         }
@@ -2362,7 +2360,7 @@ static partial class Os
     }
 
     /// A COR-C# string from a C string: its bytes decoded as UTF-8.
-    private static string FromC(long at)
+    private static string FromC(nuint at)
     {
         return Utf8Transcoder.Decode(at, CLength(at));
     }
@@ -2401,7 +2399,7 @@ static partial class Os
 
         for (int i = 0; i < argc; i++)
         {
-            args[i] = FromC(Sys.ReadNative(sp + WordSize.Bytes + WordSize.Bytes * i));
+            args[i] = FromC(Sys.ReadNative(sp + WordSize.Bytes + (nuint)(WordSize.Bytes * i)));
         }
         _args = args;
         return args;
@@ -2588,6 +2586,6 @@ sealed class ExecPlan
     public byte[] Args = null!;
     public byte[][] Keep = null!;
     public byte[]? Env;
-    public long EnvAddress;
+    public nuint EnvAddress;
     public byte[]? Directory;
 }

@@ -4071,7 +4071,7 @@ static partial class Scheduler
                 continue;
             }
 
-            long seen = Sys.Read32(at);
+            nint seen = (nint)Sys.Read32(at);
 
             // Re-read the queue after reading the counter: a Post in between
             // bumps the counter, and then the futex wait returns at once.
