@@ -564,11 +564,13 @@ public static class Frontend
         if (indexedRecords is not null) records.UnionWith(indexedRecords);
         Parser.ProjectRecords = records;
         (program, library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals, symbols);
+        // Copies the parse lanes below may capture (an out parameter cannot be).
+        Dictionary<string, string> programSide = program, librarySide = library;
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
             for (int i = 0; i < sources.Count; i++)
-                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere, sources[i].FromLibrary ? library : program);
+                parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere, sources[i].FromLibrary ? librarySide : programSide);
             return parsed;
         }
         CompileError?[] failures = new CompileError?[sources.Count];
@@ -581,7 +583,7 @@ public static class Frontend
             {
                 for (int i = lane; i < sources.Count; i += active)
                 {
-                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere, sources[i].FromLibrary ? library : program); }
+                    try { parsed[i] = ParseSource(sources[i].Name, sources[i].Path, symbols, tokens, sources[i].Elsewhere, sources[i].FromLibrary ? librarySide : programSide); }
                     catch (CompileError error) { failures[i] = error; }
                 }
             });
