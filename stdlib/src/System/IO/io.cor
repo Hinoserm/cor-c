@@ -2133,7 +2133,7 @@ static partial class Path
             // clock and process id: a ring-1 kernel compiles System.IO over
             // its own small Environment, and has neither.
             long serial = Sys.AtomicAdd(Sys.AddressOf(ref _tempSerial), 1) + 1;
-            long pid = Sys.Syscall(LinuxCall.Getpid, 0, 0, 0);
+            long pid = Err.Result(Sys.Syscall(LinuxCall.Getpid, 0, 0, 0));
             long mix = (Os.Micros() * 31 + pid) * 1000003 + serial * 7919 + attempt;
             string name = "tmp" + ((mix & 0x7FFFFFFFFFFF) % 0xFFFFFF).ToString("X6") + ".tmp";
             string full = directory + name;
@@ -4183,12 +4183,12 @@ static class TempNames
 
     public static void Fill(byte[] into)
     {
-        long got = Sys.Syscall(LinuxCall.GetRandom, (nint)Sys.ArrayData(into), into.Length, 0);
+        long got = Err.Result(Sys.Syscall(LinuxCall.GetRandom, (SyscallWord)Sys.ArrayData(into), (SyscallWord)into.Length, 0));
         if (got == into.Length)
         {
             return;
         }
-        Random fallback = _fallback ??= new Random((int)(Os.Micros() ^ Sys.Syscall(LinuxCall.Getpid, 0, 0, 0)));
+        Random fallback = _fallback ??= new Random((int)(Os.Micros() ^ Err.Result(Sys.Syscall(LinuxCall.Getpid, 0, 0, 0))));
         fallback.NextBytes(into);
     }
 }

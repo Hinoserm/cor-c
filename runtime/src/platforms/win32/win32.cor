@@ -32,7 +32,6 @@ static class Win32
     const int StdErrorHandle = -12;
     const int TlsOutOfIndexes = -1;
     const nuint InvalidHandle = 0xFFFFFFFF;
-    const nint One = 1, MinusOne = -1;
 
     /// WHERE THE TLS SLOTS ARE. NT keeps 64 in the TEB, at 0xE10 of it, and
     /// a slot past them in an expansion array (Windows 2000 on) this does not
@@ -160,11 +159,11 @@ static class Win32
         _nullStub = NullStub();
 
         nuint block = Sys.MainThreadBlock();
-        Sys.WriteNative(block + Tls.Self, block);
+        Sys.WriteAddress(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
         nuint scratch = VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
         if (scratch == 0) return false;
-        Sys.WriteNative(block + Tls.StackBase, StackTop(scratch));
+        Sys.WriteAddress(block + Tls.StackBase, StackTop(scratch));
         VirtualFree(scratch, 0, MemRelease);
         return true;
     }
@@ -185,7 +184,7 @@ static class Win32
         nuint block = VirtualAlloc(0, Tls.Bytes + InfoBytes, MemCommit | MemReserve, PageReadWrite);
         if (block == 0) ExitProcess(137);
         nuint top = StackTop(block + Tls.Bytes);
-        Sys.WriteNative(block + Tls.Self, block);
+        Sys.WriteAddress(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
         Runtime.RegisterThread(block, top);
     }
@@ -250,9 +249,10 @@ static class Win32
         if (address == NoAddress) address = FaultAddress(ctx, pc);
         if (address == NoAddress || !Runtime.NullFaultCatchable(address)) return ContinueSearch;
 
-        Sys.WriteNative(ctx + 0xB0, pc);
-        Sys.WriteNative(ctx + 0xA8, Sys.Read32(ctx + 0xB4));
-        Sys.WriteNative(ctx + 0xB8, _nullStub);
+        // CONTEXT's registers are DWORDs: Eax, Edx (from Ebp), Eip.
+        Sys.Write32(ctx + 0xB0, Sys.Low32(pc));
+        Sys.Write32(ctx + 0xA8, Sys.Read32(ctx + 0xB4));
+        Sys.Write32(ctx + 0xB8, Sys.Low32(_nullStub));
         return ContinueExecution;
     }
 
@@ -359,7 +359,7 @@ static class Win32
         {
             nuint semaphore = CreateSemaphoreA(0, 0, 0x7FFFFFFF, 0);
             if (semaphore == 0) return false;
-            Sys.WriteNative(table + 4 * (nuint)i, semaphore);
+            Sys.Write32(table + 4 * (nuint)i, Sys.Low32(semaphore));      // a HANDLE is 32 bits here
         }
         _parkWaiters = table + 4 * ParkBuckets;
         _parkSemaphores = table;
@@ -374,10 +374,10 @@ static class Win32
     {
         nuint b = Bucket(at);
         nuint waiters = _parkWaiters + b * 4;
-        Sys.AtomicAdd(waiters, One);
+        Sys.AtomicAdd32(waiters, 1);
         if (Sys.Read32(at) == (uint)expect)
             WaitForSingleObject(Sys.Read32(_parkSemaphores + b * 4), milliseconds < 0 || milliseconds > 1000 ? 1000 : milliseconds);
-        Sys.AtomicAdd(waiters, MinusOne);
+        Sys.AtomicAdd32(waiters, -1);
     }
 
     /// Wakes up to `count` of what waits on the word at `at`.
@@ -444,7 +444,7 @@ static class Win32
         {
             nuint word = instance + Sys.Read32(at);
             nuint slot = instance + Sys.Read32(at + 4);
-            Sys.WriteNative(word, Sys.Read32(word) + Sys.Read32(slot));
+            Sys.Write32(word, Sys.Read32(word) + Sys.Read32(slot));
         }
         for (nuint i = 0; i < sections; i++)
         {
@@ -463,7 +463,8 @@ static class Win32
     static nuint StackTop(nuint scratch)
     {
         VirtualQuery(Sys.FramePointer(), scratch, InfoBytes);
-        return Sys.ReadNative(scratch) + Sys.ReadNative(scratch + 12);
+        // BaseAddress and RegionSize are a PVOID and a SIZE_T: 32 bits here.
+        return (nuint)Sys.Read32(scratch) + Sys.Read32(scratch + 12);
     }
 
     /// Zeroed pages, or 0: VirtualAlloc's are zeroed.

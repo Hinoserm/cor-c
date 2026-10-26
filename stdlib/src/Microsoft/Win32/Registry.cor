@@ -592,13 +592,16 @@ static class RegistryStore
     {
         byte[] request = new byte[64];
         nuint at = Sys.ArrayData(request);
-        Sys.WriteNative(at, (nuint)scope);
-        Sys.WriteNative(at + 8, Sys.ArrayData(key));
+        // The block's layout is the kernel's (RegistryRequest): 64-bit slots
+        // for the scope, the two addresses and the number, whatever the
+        // machine's word; an address is carried zero-extended.
+        Sys.Write64(at, (ulong)scope);
+        Sys.Write64(at + 8, Sys.ArrayData(key));
         Sys.Write32(at + 16, (uint)key.Length);
         Sys.Write32(at + 20, type);
         Sys.Write32(at + 24, 0);
-        Sys.WriteNative(at + 32, 0);
-        Sys.WriteNative(at + 40, valueAt);
+        Sys.Write64(at + 32, 0);
+        Sys.Write64(at + 40, valueAt);
         Sys.Write32(at + 48, (uint)valueBytes);
         return request;
     }

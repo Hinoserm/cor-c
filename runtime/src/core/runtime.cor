@@ -108,7 +108,7 @@ class MissingMethodException : MissingMemberException
 
 /// THE MACHINE WORD, for every layout the runtime keeps itself: a pointer, a
 /// length, a slot of the thread block, a word of the collector's headers.
-/// Sys.ReadNative and Sys.WriteNative move exactly one of these, a nuint;
+/// Sys.ReadAddress and Sys.WriteAddress move exactly one of these, a nuint;
 /// Sys.Read32 and Sys.Write32 move 32 bits whatever the machine, and are for
 /// data that is 32 bits by its own definition. Chosen by the target's
 /// conditional symbol, as .NET's CoreLib chooses its own pointer-sized
@@ -323,8 +323,20 @@ static class Tls
 /// process ends, for tools/sym to name. Nothing here allocates.
 static class AllocSamples
 {
-    const int Slots = 65536;           // entries of eight words: site, caller, bytes, count, freed, collected, and the two calls above the caller
-    const int Words = 8;
+    // An entry: four addresses -- the site, its caller, and the two calls
+    // above the caller -- then four 64-BIT TOTALS, which a word would cut
+    // at 4 GB on i386: bytes, count, freed and collected.
+    const int Slots = 65536;
+    const int W = WordSize.Bytes;
+    const int SiteAt = 0;
+    const int CallerAt = W;
+    const int AboveAt = 2 * W;
+    const int Above2At = 3 * W;
+    const int BytesAt = 4 * W;
+    const int CountAt = 4 * W + 8;
+    const int FreedAt = 4 * W + 16;
+    const int CollectedAt = 4 * W + 24;
+    const int EntryBytes = 4 * W + 32;
     static nuint _table;
     static long _lost;
 
@@ -354,7 +366,7 @@ static class AllocSamples
     public static void Begin()
     {
         if (_table != 0) return;
-        _table = Platform.Map(Slots * Words * WordSize.Bytes);
+        _table = Platform.Map((nuint)Slots * EntryBytes);
         if (_table == 0) return;
         // WHICH WERE FREED takes twelve megabytes more, past what a small
         // machine's kernel can spare: there the sites and their bytes only.
@@ -373,26 +385,27 @@ static class AllocSamples
     {
         nuint table = _table;
         if (table == 0) return;
-        const int w = WordSize.Bytes;
         // The last said, highest first; an entry's address breaks a tie
         // (0, below every entry, before the first).
-        nuint lastBytes = nuint.MaxValue, lastAt = 0;
+        ulong lastBytes = ulong.MaxValue;
+        nuint lastAt = 0;
         for (long said = 0; said < most; said++)
         {
-            nuint best = 0, bestBytes = 0;
+            nuint best = 0;
+            ulong bestBytes = 0;
             for (nuint i = 0; i < Slots; i++)
             {
-                nuint e = table + i * Words * w;
-                if (Sys.ReadNative(e) == 0) continue;
-                nuint bytes = Sys.ReadNative(e + 2 * w);
+                nuint e = table + i * EntryBytes;
+                if (Sys.ReadAddress(e + SiteAt) == 0) continue;
+                ulong bytes = Sys.Read64(e + BytesAt);
                 bool below = bytes < lastBytes || bytes == lastBytes && e > lastAt;
                 if (below && bytes > bestBytes) { bestBytes = bytes; best = e; }
             }
             if (best == 0) return;
-            Gc.SayNumber("alloc sample site ", Sys.ReadNative(best));
-            Gc.SayNumber("alloc sample caller ", Sys.ReadNative(best + w));
+            Gc.SayNumber("alloc sample site ", Sys.ReadAddress(best + SiteAt));
+            Gc.SayNumber("alloc sample caller ", Sys.ReadAddress(best + CallerAt));
             Gc.SayNumber("alloc sample bytes ", bestBytes);
-            Gc.SayNumber("alloc sample count ", Sys.ReadNative(best + 3 * w));
+            Gc.SayNumber("alloc sample count ", Sys.Read64(best + CountAt));
             lastBytes = bestBytes;
             lastAt = best;
         }
@@ -404,45 +417,45 @@ static class AllocSamples
     static long _leafBytes;
     static long _objectBytes;
 
-    static nint Record(nint frameKind, nint size, nint made)
+    static nuint Record(nuint frameKind, nuint size, nuint made)
     {
-        nuint fp = (nuint)frameKind & ~(nuint)3;
+        nuint fp = frameKind & ~(nuint)3;
         int kind = (int)(frameKind & 3);
-        long bytes = size;
-        nuint block = (nuint)made;
+        long bytes = (long)size;
+        nuint block = made;
         if (kind == 1) _blockBytes = _blockBytes + bytes;
         else if (kind == 2) _leafBytes = _leafBytes + bytes;
         else _objectBytes = _objectBytes + bytes;
         // The allocator in the site's top bits (code sits far below them):
         // 1 a struct's block or a cell, 2 a leaf, 3 an object.
-        nuint site = Sys.ReadNative(fp + WordSize.Bytes) | ((nuint)kind << 30);
-        nuint up = Sys.ReadNative(fp);
-        nuint caller = up != 0 ? Sys.ReadNative(up + WordSize.Bytes) : 0;
+        nuint site = Sys.ReadAddress(fp + WordSize.Bytes) | ((nuint)kind << 30);
+        nuint up = Sys.ReadAddress(fp);
+        nuint caller = up != 0 ? Sys.ReadAddress(up + WordSize.Bytes) : 0;
         // AND THE TWO CALLS ABOVE IT: a table's arrays are made by its Rehash
         // for whichever set_Item grew it, and only further up is the code
         // whose table it was.
-        nuint up2 = up != 0 ? Sys.ReadNative(up) : 0;
-        nuint above = up2 != 0 ? Sys.ReadNative(up2 + WordSize.Bytes) : 0;
-        nuint up3 = up2 != 0 ? Sys.ReadNative(up2) : 0;
-        nuint above2 = up3 != 0 ? Sys.ReadNative(up3 + WordSize.Bytes) : 0;
+        nuint up2 = up != 0 ? Sys.ReadAddress(up) : 0;
+        nuint above = up2 != 0 ? Sys.ReadAddress(up2 + WordSize.Bytes) : 0;
+        nuint up3 = up2 != 0 ? Sys.ReadAddress(up2) : 0;
+        nuint above2 = up3 != 0 ? Sys.ReadAddress(up3 + WordSize.Bytes) : 0;
         nuint h = ((site >> 2) ^ (caller << 3) ^ (above << 5) ^ (above2 << 7)) * 40503 & (Slots - 1);
         for (nuint probe = 0; probe < 64; probe++)
         {
-            nuint e = _table + ((h + probe) & (Slots - 1)) * Words * WordSize.Bytes;
-            nuint at = Sys.ReadNative(e);
+            nuint e = _table + ((h + probe) & (Slots - 1)) * EntryBytes;
+            nuint at = Sys.ReadAddress(e + SiteAt);
             if (at == 0)
             {
-                Sys.WriteNative(e, site);
-                Sys.WriteNative(e + WordSize.Bytes, caller);
-                Sys.WriteNative(e + 6 * WordSize.Bytes, above);
-                Sys.WriteNative(e + 7 * WordSize.Bytes, above2);
+                Sys.WriteAddress(e + SiteAt, site);
+                Sys.WriteAddress(e + CallerAt, caller);
+                Sys.WriteAddress(e + AboveAt, above);
+                Sys.WriteAddress(e + Above2At, above2);
                 at = site;
             }
-            if (at == site && Sys.ReadNative(e + WordSize.Bytes) == caller
-                && Sys.ReadNative(e + 6 * WordSize.Bytes) == above && Sys.ReadNative(e + 7 * WordSize.Bytes) == above2)
+            if (at == site && Sys.ReadAddress(e + CallerAt) == caller
+                && Sys.ReadAddress(e + AboveAt) == above && Sys.ReadAddress(e + Above2At) == above2)
             {
-                Sys.WriteNative(e + 2 * WordSize.Bytes, Sys.ReadNative(e + 2 * WordSize.Bytes) + (nuint)bytes);
-                Sys.WriteNative(e + 3 * WordSize.Bytes, Sys.ReadNative(e + 3 * WordSize.Bytes) + 1);
+                Sys.Write64(e + BytesAt, Sys.Read64(e + BytesAt) + (ulong)bytes);
+                Sys.Write64(e + CountAt, Sys.Read64(e + CountAt) + 1);
                 if (Tracking && block != 0) Place(block, e, (nuint)bytes);
                 return 0;
             }
@@ -462,12 +475,12 @@ static class AllocSamples
         for (nuint probe = 0; probe < 32; probe++)
         {
             nuint p = _places + ((h + probe) & (Places - 1)) * 3 * WordSize.Bytes;
-            nuint at = Sys.ReadNative(p);
+            nuint at = Sys.ReadAddress(p);
             if (at == 0 || at == block || at == Gone)
             {
-                Sys.WriteNative(p, block);
-                Sys.WriteNative(p + WordSize.Bytes, entry);
-                Sys.WriteNative(p + 2 * WordSize.Bytes, bytes);
+                Sys.WriteAddress(p, block);
+                Sys.WriteAddress(p + WordSize.Bytes, entry);
+                Sys.WriteAddress(p + 2 * WordSize.Bytes, bytes);
                 return;
             }
         }
@@ -476,9 +489,9 @@ static class AllocSamples
         // so a full table goes on counting what is freed now.
         _evict = (_evict + 1) & 31;
         nuint q = _places + ((h + _evict) & (Places - 1)) * 3 * WordSize.Bytes;
-        Sys.WriteNative(q, block);
-        Sys.WriteNative(q + WordSize.Bytes, entry);
-        Sys.WriteNative(q + 2 * WordSize.Bytes, bytes);
+        Sys.WriteAddress(q, block);
+        Sys.WriteAddress(q + WordSize.Bytes, entry);
+        Sys.WriteAddress(q + 2 * WordSize.Bytes, bytes);
     }
     static nuint _evict;
 
@@ -489,13 +502,13 @@ static class AllocSamples
         for (nuint probe = 0; probe < 32; probe++)
         {
             nuint p = _places + ((h + probe) & (Places - 1)) * 3 * WordSize.Bytes;
-            nuint at = Sys.ReadNative(p);
+            nuint at = Sys.ReadAddress(p);
             if (at == 0) return;
             if (at == block)
             {
-                nuint e = Sys.ReadNative(p + WordSize.Bytes);
-                Sys.WriteNative(e + 4 * WordSize.Bytes, Sys.ReadNative(e + 4 * WordSize.Bytes) + Sys.ReadNative(p + 2 * WordSize.Bytes));
-                Sys.WriteNative(p, Gone);
+                nuint e = Sys.ReadAddress(p + WordSize.Bytes);
+                Sys.Write64(e + FreedAt, Sys.Read64(e + FreedAt) + Sys.ReadAddress(p + 2 * WordSize.Bytes));
+                Sys.WriteAddress(p, Gone);
                 return;
             }
         }
@@ -509,13 +522,13 @@ static class AllocSamples
         for (nuint probe = 0; probe < 32; probe++)
         {
             nuint p = _places + ((h + probe) & (Places - 1)) * 3 * WordSize.Bytes;
-            nuint at = Sys.ReadNative(p);
+            nuint at = Sys.ReadAddress(p);
             if (at == 0) return;
             if (at == block)
             {
-                nuint e = Sys.ReadNative(p + WordSize.Bytes);
-                Sys.WriteNative(e + 5 * WordSize.Bytes, Sys.ReadNative(e + 5 * WordSize.Bytes) + Sys.ReadNative(p + 2 * WordSize.Bytes));
-                Sys.WriteNative(p, Gone);
+                nuint e = Sys.ReadAddress(p + WordSize.Bytes);
+                Sys.Write64(e + CollectedAt, Sys.Read64(e + CollectedAt) + Sys.ReadAddress(p + 2 * WordSize.Bytes));
+                Sys.WriteAddress(p, Gone);
                 return;
             }
         }
@@ -531,22 +544,22 @@ static class AllocSamples
         Gc.FastPathsChanged();
         for (nuint i = 0; i < Slots; i++)
         {
-            nuint e = table + i * Words * WordSize.Bytes;
-            if (Sys.ReadNative(e) == 0) continue;
-            Gc.SayNumber("alloc sample site ", Sys.ReadNative(e));
-            Gc.SayNumber("alloc sample caller ", Sys.ReadNative(e + WordSize.Bytes));
-            Gc.SayNumber("alloc sample above ", Sys.ReadNative(e + 6 * WordSize.Bytes));
-            Gc.SayNumber("alloc sample above2 ", Sys.ReadNative(e + 7 * WordSize.Bytes));
-            Gc.SayNumber("alloc sample bytes ", Sys.ReadNative(e + 2 * WordSize.Bytes));
+            nuint e = table + i * EntryBytes;
+            if (Sys.ReadAddress(e + SiteAt) == 0) continue;
+            Gc.SayNumber("alloc sample site ", Sys.ReadAddress(e + SiteAt));
+            Gc.SayNumber("alloc sample caller ", Sys.ReadAddress(e + CallerAt));
+            Gc.SayNumber("alloc sample above ", Sys.ReadAddress(e + AboveAt));
+            Gc.SayNumber("alloc sample above2 ", Sys.ReadAddress(e + Above2At));
+            Gc.SayNumber("alloc sample bytes ", Sys.Read64(e + BytesAt));
             // AND THE LINE THE CALL IS ON, for a tool to read without
             // decoding the image's line program itself -- written where the
             // names lie, as the fault report writes them: nothing here may
             // allocate, or every program would need a collector for the end
             // it reaches this way.
-            Runtime.SayWhere("alloc sample where ", (Sys.ReadNative(e) & (((nuint)1 << 30) - 1)) - 1);
-            Gc.SayNumber("alloc sample freed ", Sys.ReadNative(e + 4 * WordSize.Bytes));
-            Gc.SayNumber("alloc sample collected ", Sys.ReadNative(e + 5 * WordSize.Bytes));
-            Gc.SayNumber("alloc sample count ", Sys.ReadNative(e + 3 * WordSize.Bytes));
+            Runtime.SayWhere("alloc sample where ", (Sys.ReadAddress(e + SiteAt) & (((nuint)1 << 30) - 1)) - 1);
+            Gc.SayNumber("alloc sample freed ", Sys.Read64(e + FreedAt));
+            Gc.SayNumber("alloc sample collected ", Sys.Read64(e + CollectedAt));
+            Gc.SayNumber("alloc sample count ", Sys.Read64(e + CountAt));
         }
         Gc.SayNumber("alloc sample lost ", _lost);
         Gc.SayNumber("alloc sample block bytes ", _blockBytes);
@@ -787,10 +800,9 @@ static class Runtime
     public static int Atomics386;
 
     // A 386's words are 32 bits: each reads and writes exactly those.
-    public static int AtomicAdd386(nint at, int value)
+    public static int AtomicAdd386(nuint word, int value)
     {
-        nuint word = (nuint)at;
-        nint held = Platform.AtomicsEnter();
+        uint held = Platform.AtomicsEnter();
         int was = (int)Sys.Read32(word);
         Sys.Write32(word, (uint)(was + value));
         Platform.AtomicsLeave(held);
@@ -799,20 +811,18 @@ static class Runtime
 
     /// An exchange under the same lock, so that it never lands between a
     /// compare-exchange's read and its write (Lowering.EmitAtomic).
-    public static int AtomicSwap386(nint at, int value)
+    public static int AtomicSwap386(nuint word, int value)
     {
-        nuint word = (nuint)at;
-        nint held = Platform.AtomicsEnter();
+        uint held = Platform.AtomicsEnter();
         int was = (int)Sys.Read32(word);
         Sys.Write32(word, (uint)value);
         Platform.AtomicsLeave(held);
         return was;
     }
 
-    public static int AtomicCas386(nint at, int expect, int value)
+    public static int AtomicCas386(nuint word, int expect, int value)
     {
-        nuint word = (nuint)at;
-        nint held = Platform.AtomicsEnter();
+        uint held = Platform.AtomicsEnter();
         int was = (int)Sys.Read32(word);
         if (was == expect) Sys.Write32(word, (uint)value);
         Platform.AtomicsLeave(held);
@@ -820,10 +830,9 @@ static class Runtime
     }
 
     /// And (0), or (1) or exclusive or (2) of `value` into the word at `at`.
-    public static int AtomicBits386(nint at, int value, int op)
+    public static int AtomicBits386(nuint word, int value, int op)
     {
-        nuint word = (nuint)at;
-        nint held = Platform.AtomicsEnter();
+        uint held = Platform.AtomicsEnter();
         int was = (int)Sys.Read32(word);
         Sys.Write32(word, (uint)(op == 0 ? was & value : op == 1 ? was | value : was ^ value));
         Platform.AtomicsLeave(held);
@@ -835,7 +844,7 @@ static class Runtime
     /// such a collection is nothing to do.
     public static void FreeOwnedElements(object? collection)
     {
-        if (collection == null || (Sys.ReadNative(Sys.ObjectAddress(collection))) == 0) return;
+        if (collection == null || (Sys.ReadAddress(Sys.ObjectAddress(collection))) == 0) return;
         if (collection is IOwnsElements owner) owner.FreeOwnedElements();
     }
 
@@ -849,7 +858,7 @@ static class Runtime
     {
         if (array == null) return;
         nuint at = Sys.ObjectAddress(array);
-        if ((Sys.ReadNative(at)) == 0) return;
+        if ((Sys.ReadAddress(at)) == 0) return;
         FreeReferenceElements(at);
     }
 
@@ -862,23 +871,23 @@ static class Runtime
     public static void FreeReferenceElements(nuint payload)
     {
         const int w = WordSize.Bytes;
-        nuint vt = Sys.ReadNative(payload);
+        nuint vt = Sys.ReadAddress(payload);
         if (vt == 0 || CollectorLinked() && Gc.InQuarantine(vt)) return;
         nuint desc = vt - Gc.DescWords * w;
-        if ((Sys.ReadNative(desc + Gc.DescSelfWord * w)) != desc) return;
-        nuint flags = Sys.ReadNative(desc + Gc.DescFlagsWord * w);
+        if ((Sys.ReadAddress(desc + Gc.DescSelfWord * w)) != desc) return;
+        nuint flags = Sys.ReadAddress(desc + Gc.DescFlagsWord * w);
         if ((flags & Gc.SequenceFlag) == 0 || (flags & Gc.StringFlag) != 0) return;
-        if ((Sys.ReadNative(desc + Gc.DescGcFlagsWord * w) & Gc.ElementsAreReferences) == 0) return;
-        if (Sys.ReadNative(desc + Gc.DescSizeWord * w) != w) return;
-        nuint count = Sys.ReadNative(payload + Gc.ArrayCountAt) & 0x7FFFFFFF;
-        nuint first = payload + Sys.ReadNative(desc + Gc.DescPayloadWord * w);
+        if ((Sys.ReadAddress(desc + Gc.DescGcFlagsWord * w) & Gc.ElementsAreReferences) == 0) return;
+        if (Sys.ReadAddress(desc + Gc.DescSizeWord * w) != w) return;
+        nuint count = Sys.ReadAddress(payload + Gc.ArrayCountAt) & 0x7FFFFFFF;
+        nuint first = payload + Sys.ReadAddress(desc + Gc.DescPayloadWord * w);
         for (nuint i = 0; i < count; i++)
         {
             nuint cell = first + i * w;
-            nuint element = Sys.ReadNative(cell);
+            nuint element = Sys.ReadAddress(cell);
             if (element == 0) continue;
-            Sys.WriteNative(cell, 0);
-            Free((nint)element);
+            Sys.WriteAddress(cell, 0);
+            Free(element);
         }
     }
 
@@ -900,7 +909,7 @@ static class Runtime
     {
         long ignored = Gc.IgnoredFrees;
         if (ignored == 's' || ignored != 0 && ignored != 'p' && ignored != 'f' && ignored != 'r') return;
-        if (collection == null || (Sys.ReadNative(Sys.ObjectAddress(collection))) == 0) return;
+        if (collection == null || (Sys.ReadAddress(Sys.ObjectAddress(collection))) == 0) return;
         if (collection is IOwnsStorage owner) owner.FreeStorage();
     }
 
@@ -917,12 +926,12 @@ static class Runtime
         nuint pb = Sys.ObjectAddress(b);
         if (pa == pb) return true;
         if (pa == 0 || pb == 0) return false;
-        nuint vt = Sys.ReadNative(pa);
-        if (vt != Sys.ReadNative(pb)) return false;
-        nuint size = Sys.ReadNative(vt - 12 * WordSize.Bytes + WordSize.Bytes);
+        nuint vt = Sys.ReadAddress(pa);
+        if (vt != Sys.ReadAddress(pb)) return false;
+        nuint size = Sys.ReadAddress(vt - 12 * WordSize.Bytes + WordSize.Bytes);
         for (nuint at = 2 * WordSize.Bytes; at + WordSize.Bytes <= size; at += WordSize.Bytes)
         {
-            if (Sys.ReadNative(pa + at) != Sys.ReadNative(pb + at)) return false;
+            if (Sys.ReadAddress(pa + at) != Sys.ReadAddress(pb + at)) return false;
         }
         return true;
     }
@@ -941,7 +950,7 @@ static class Runtime
         IMulticastDelegate? many = a as IMulticastDelegate;
         IMulticastDelegate? others = b as IMulticastDelegate;
         if (many == null || others == null) return many == null && others == null && SameClosure(a, b);
-        if (Sys.ReadNative(Sys.ObjectAddress(a)) != Sys.ReadNative(Sys.ObjectAddress(b))) return false;
+        if (Sys.ReadAddress(Sys.ObjectAddress(a)) != Sys.ReadAddress(Sys.ObjectAddress(b))) return false;
         int count = many.InvocationCount();
         if (count != others.InvocationCount()) return false;
         // EACH TARGET ASKED ITS OWN QUESTION, through its Equals slot: a
@@ -1001,20 +1010,20 @@ static class Runtime
 
     static nuint DelegateTypeOf(nuint obj)
     {
-        return DelegateFace((Sys.ReadNative(obj)) - 12 * WordSize.Bytes);
+        return DelegateFace((Sys.ReadAddress(obj)) - 12 * WordSize.Bytes);
     }
 
     static nuint DelegateFace(nuint desc)
     {
         const int w = WordSize.Bytes;
-        nuint faces = Sys.ReadNative(desc + 4 * w);
+        nuint faces = Sys.ReadAddress(desc + 4 * w);
         if (faces != 0)
         {
             for (nuint at = faces; ; at = at + w)
             {
-                nuint face = Sys.ReadNative(at);
+                nuint face = Sys.ReadAddress(at);
                 if (face == 0) break;
-                if ((Sys.ReadNative(face + 6 * w) & DelegateFlag) != 0) return face;
+                if ((Sys.ReadAddress(face + 6 * w) & DelegateFlag) != 0) return face;
             }
         }
         return desc;
@@ -1037,18 +1046,18 @@ static class Runtime
     {
         if (DelegateEquals(a, b)) return true;
         if (a == null || b == null) return false;
-        nuint va = Sys.ReadNative(Sys.ObjectAddress(a));
-        nuint vb = Sys.ReadNative(Sys.ObjectAddress(b));
+        nuint va = Sys.ReadAddress(Sys.ObjectAddress(a));
+        nuint vb = Sys.ReadAddress(Sys.ObjectAddress(b));
         // A string or an array has no slots to read; its flags say so.
-        if ((Sys.ReadNative(vb - 12 * WordSize.Bytes + 6 * WordSize.Bytes) & 1) != 0) return false;
-        if (Sys.ReadNative(va + (nuint)slot) != Sys.ReadNative(vb + (nuint)slot)) return false;
-        nuint size = Sys.ReadNative(va - 12 * WordSize.Bytes + WordSize.Bytes);
-        if (size != Sys.ReadNative(vb - 12 * WordSize.Bytes + WordSize.Bytes)) return false;
+        if ((Sys.ReadAddress(vb - 12 * WordSize.Bytes + 6 * WordSize.Bytes) & 1) != 0) return false;
+        if (Sys.ReadAddress(va + (nuint)slot) != Sys.ReadAddress(vb + (nuint)slot)) return false;
+        nuint size = Sys.ReadAddress(va - 12 * WordSize.Bytes + WordSize.Bytes);
+        if (size != Sys.ReadAddress(vb - 12 * WordSize.Bytes + WordSize.Bytes)) return false;
         nuint pa = Sys.ObjectAddress(a);
         nuint pb = Sys.ObjectAddress(b);
         for (nuint at = 2 * WordSize.Bytes; at + WordSize.Bytes <= size; at += WordSize.Bytes)
         {
-            if (Sys.ReadNative(pa + at) != Sys.ReadNative(pb + at)) return false;
+            if (Sys.ReadAddress(pa + at) != Sys.ReadAddress(pb + at)) return false;
         }
         return true;
     }
@@ -1067,7 +1076,7 @@ static class Runtime
             for (int i = 0; i < count; i++) hash = unchecked(hash * 33 + many.InvocationAt(i).GetHashCode());
             return hash;
         }
-        nuint word = identity != 0 ? (nuint)identity : Sys.ReadNative(Sys.ObjectAddress(self));
+        nuint word = identity != 0 ? (nuint)identity : Sys.ReadAddress(Sys.ObjectAddress(self));
         return (int)(word >> 3);
     }
 
@@ -1098,7 +1107,7 @@ static class Runtime
         if (self == 0) self = Sys.MainThreadBlock();
         while (true)
         {
-            nuint owner = Sys.ReadNative(state);
+            nuint owner = Sys.ReadAddress(state);
             if (owner == 1 || owner == self) return 0;
             if (owner == 2) return 2;
             if (owner == 0)
@@ -1123,7 +1132,7 @@ static class Runtime
             if (nested) PreemptOn();
             if (!nested)
             {
-                if (Sys.ReadNative(state) != owner)
+                if (Sys.ReadAddress(state) != owner)
                 {
                     Sys.AtomicSwap(graph, 0);
                     PreemptOn();
@@ -1135,9 +1144,9 @@ static class Runtime
                 for (int steps = 0; peer > 2 && steps < 256; steps++)
                 {
                     if (peer == self) { cycle = true; break; }
-                    nuint waits = Sys.ReadNative(peer + Tls.TypeInitWait);
+                    nuint waits = Sys.ReadAddress(peer + Tls.TypeInitWait);
                     if (waits == 0) break;
-                    peer = Sys.ReadNative(waits);
+                    peer = Sys.ReadAddress(waits);
                 }
                 if (cycle) Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
                 Sys.AtomicSwap(graph, 0);
@@ -1149,11 +1158,11 @@ static class Runtime
             // would spin. Otherwise a waiter exposes its roots before
             // blocking: the owner may allocate and collect while executing
             // the initializer.
-            if (Platform.TypeInitWaitHook == 0 || Sys.ReadNative(state) != owner
-                || Sys.Call(Platform.TypeInitWaitHook, (nint)state, (nint)owner, 0) == 0)
+            if (Platform.TypeInitWaitHook == 0 || Sys.ReadAddress(state) != owner
+                || Sys.Call(Platform.TypeInitWaitHook, state, owner, 0) == 0)
             {
                 BeginBlocking();
-                if (Sys.ReadNative(state) == owner) Platform.Wait(state, (nint)owner);
+                if (Sys.ReadAddress(state) == owner) Platform.Wait(state, (int)Sys.Low32(owner));
                 EndBlocking();
             }
             if (!nested) Sys.AtomicSwap(self + Tls.TypeInitWait, 0);
@@ -1347,13 +1356,13 @@ static class Runtime
     /// says it is running, with EndBlocking, once its block is its own.
     public static void RegisterThread(nuint block, nuint stackTop)
     {
-        Sys.WriteNative(block + Tls.Self, block);
-        Sys.WriteNative(block + Tls.StackBase, stackTop);
-        Sys.WriteNative(block + Tls.StackLimit, stackTop);
-        Sys.WriteNative(block + Tls.SpillCount, 0);
-        Sys.WriteNative(block + Tls.Allocated, 0);
-        Sys.WriteNative(block + Tls.Allocated + WordSize.Bytes, 0);
-        Sys.WriteNative(block + Tls.State, 1);
+        Sys.WriteAddress(block + Tls.Self, block);
+        Sys.WriteAddress(block + Tls.StackBase, stackTop);
+        Sys.WriteAddress(block + Tls.StackLimit, stackTop);
+        Sys.WriteAddress(block + Tls.SpillCount, 0);
+        Sys.WriteAddress(block + Tls.Allocated, 0);
+        Sys.WriteAddress(block + Tls.Allocated + WordSize.Bytes, 0);
+        Sys.WriteAddress(block + Tls.State, 1);
         GcThreads.Register(block);
     }
 
@@ -1367,8 +1376,8 @@ static class Runtime
     {
         nuint block = Sys.ThreadBlock();
 
-        Sys.WriteNative(block + Tls.StackLimit, Sys.ReadNative(block + Tls.StackBase));
-        Sys.WriteNative(block + Tls.SpillCount, 0);
+        Sys.WriteAddress(block + Tls.StackLimit, Sys.ReadAddress(block + Tls.StackBase));
+        Sys.WriteAddress(block + Tls.SpillCount, 0);
         Sys.AtomicSwap(block + Tls.State, 1);
     }
 
@@ -1425,13 +1434,13 @@ static class Runtime
     /// `block`, before the thread first runs (the word has no barrier).
     public static void SetThreadOwner(nuint block, object? owner)
     {
-        Sys.WriteNative(block + Tls.Owner, owner == null ? 0 : Sys.ObjectAddress(owner));
+        Sys.WriteAddress(block + Tls.Owner, owner == null ? 0 : Sys.ObjectAddress(owner));
     }
 
     /// What SetThreadOwner kept in `block`, or null.
     public static object? ThreadOwner(nuint block)
     {
-        nuint word = block == 0 ? 0 : Sys.ReadNative(block + Tls.Owner);
+        nuint word = block == 0 ? 0 : Sys.ReadAddress(block + Tls.Owner);
         return word == 0 ? null : Sys.ObjectAt(word);
     }
 
@@ -1439,14 +1448,14 @@ static class Runtime
     public static void PreemptOff()
     {
         nuint block = Sys.ThreadBlock();
-        if (block != 0) Sys.WriteNative(block + Tls.PreemptCount, Sys.ReadNative(block + Tls.PreemptCount) + 1);
+        if (block != 0) Sys.WriteAddress(block + Tls.PreemptCount, Sys.ReadAddress(block + Tls.PreemptCount) + 1);
     }
 
     /// One reason fewer not to preempt (PreemptOff).
     public static void PreemptOn()
     {
         nuint block = Sys.ThreadBlock();
-        if (block != 0) Sys.WriteNative(block + Tls.PreemptCount, Sys.ReadNative(block + Tls.PreemptCount) - 1);
+        if (block != 0) Sys.WriteAddress(block + Tls.PreemptCount, Sys.ReadAddress(block + Tls.PreemptCount) - 1);
     }
 
     /// Whether this thread holds the heap lock (see GcLock.HeldByMe).
@@ -1467,7 +1476,7 @@ static class Runtime
     public static bool AnswerOwed()
     {
         nuint block = Sys.ThreadBlock();
-        return Sys.ReadNative(block + Tls.State) == 0 && Sys.ReadNative(block + Tls.InAlloc) == 0
+        return Sys.ReadAddress(block + Tls.State) == 0 && Sys.ReadAddress(block + Tls.InAlloc) == 0
             && !GcLock.HeldByMe() && GcThreads.Owes(block);
     }
 
@@ -1483,7 +1492,7 @@ static class Runtime
     /// stop hook has to interrupt.
     public static bool ThreadOwes(nuint block)
     {
-        return Sys.ReadNative(block + Tls.State) == 0 && GcThreads.Owes(block);
+        return Sys.ReadAddress(block + Tls.State) == 0 && GcThreads.Owes(block);
     }
 
     /// THE HEAP THIS THREAD ALLOCATES IN made `heap` (Gc.NewHeap's record,
@@ -1493,7 +1502,7 @@ static class Runtime
     public static nuint EnterHeap(nuint heap)
     {
         nuint tb = Sys.ThreadBlock();
-        nuint was = tb != 0 ? Sys.ReadNative(tb + Tls.Heap) : 0;
+        nuint was = tb != 0 ? Sys.ReadAddress(tb + Tls.Heap) : 0;
         nuint now = heap == Gc.KernelHeap ? 0 : heap;
         if (was != now)
         {
@@ -1534,7 +1543,7 @@ static class Runtime
     /// collector sees it: the ones a stop hook has to interrupt.
     public static bool ThreadRunning(nuint block)
     {
-        return Sys.ReadNative(block + Tls.State) == 0;
+        return Sys.ReadAddress(block + Tls.State) == 0;
     }
 
     /// The heap: the garbage-collected one in runtime/src/core/gc.cor. This is the
@@ -1553,12 +1562,12 @@ static class Runtime
     public static bool AllocHookEvery;
     static long _allocCount;
 
-    public static nuint Alloc(nint bytes)
+    public static nuint Alloc(nuint bytes)
     {
-        nuint at = (nuint)Gc.AllocWord(bytes, 0);
+        nuint at = Gc.AllocWord(bytes, 0);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, (nint)Sys.FramePointer() | 1, bytes, (nint)at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | 1, bytes, at);
         return at;
     }
 
@@ -1566,24 +1575,24 @@ static class Runtime
     /// array of bytes, characters or floating-point numbers: the collector
     /// marks it when it is reachable and never reads what is in it. The
     /// compiler calls this for those, and Alloc for everything else.
-    public static nuint AllocLeaf(nint bytes)
+    public static nuint AllocLeaf(nuint bytes)
     {
-        nuint at = (nuint)Gc.AllocWord(bytes, (nint)Gc.LeafKind);
+        nuint at = Gc.AllocWord(bytes, Gc.LeafKind);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, (nint)Sys.FramePointer() | 2, bytes, (nint)at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | 2, bytes, at);
         return at;
     }
 
     /// The same for an object whose vtable the compiler stores next -- a class
     /// instance, a box, a closure, an array: the collector reads its
     /// references from its descriptor instead of guessing them from every word.
-    public static nuint AllocObject(nint bytes)
+    public static nuint AllocObject(nuint bytes)
     {
-        nuint at = (nuint)Gc.AllocWord(bytes, (nint)Gc.ObjectKind);
+        nuint at = Gc.AllocWord(bytes, Gc.ObjectKind);
         // After the allocation, so the sampler knows the block (and whether
         // the program frees it or leaves it to the collector).
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, (nint)Sys.FramePointer() | 3, bytes, (nint)at);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | 3, bytes, at);
         return at;
     }
 
@@ -1623,17 +1632,17 @@ static class Runtime
     /// thread answer, then the list. Every way out but the pop goes to
     /// AllocMissed, the call the site was, which clears InAlloc first; the
     /// pop clears it itself. Each exactly once.
-    public static nuint AllocFastSized(nint bytes, nint kind, nint slot, nint size)
+    public static nuint AllocFastSized(nuint bytes, nuint kind, nuint slot, nuint size)
     {
         nuint tb = Sys.ThreadBlock() & Gc.FastClassMask;
         if (tb != 0)
         {
-            Sys.WriteNative(tb + Tls.InAlloc, 1);
-            nuint cache = Sys.ReadNative(tb + Tls.Classes);
+            Sys.WriteAddress(tb + Tls.InAlloc, 1);
+            nuint cache = Sys.ReadAddress(tb + Tls.Classes);
             if (cache != 0)
             {
-                nuint at = cache + (nuint)slot;
-                nuint free = Sys.ReadNative(at);
+                nuint at = cache + slot;
+                nuint free = Sys.ReadAddress(at);
                 if (free != 0)
                 {
                     // An interrupt between the next link's load and its store
@@ -1641,10 +1650,10 @@ static class Runtime
                     // pushes this list -- other threads' frees go to the
                     // page's own (Gc.ClassFree), and this thread's frees and
                     // handshake answers are refused while InAlloc is set.
-                    Sys.WriteNative(at, Sys.ReadNative(free + Gc.BlockKindAt));
-                    Sys.WriteNative(free, (nuint)size);
-                    Sys.WriteNative(free + Gc.BlockKindAt, (nuint)kind);
-                    Sys.WriteNative(tb + Tls.InAlloc, 0);
+                    Sys.WriteAddress(at, Sys.ReadAddress(free + Gc.BlockKindAt));
+                    Sys.WriteAddress(free, size);
+                    Sys.WriteAddress(free + Gc.BlockKindAt, kind);
+                    Sys.WriteAddress(tb + Tls.InAlloc, 0);
                     return free + Gc.BlockHeaderBytes;
                 }
             }
@@ -1662,12 +1671,12 @@ static class Runtime
     /// class's size by its index: two loads, no division. A call of its
     /// own, these were the compiler's most frequent allocations still made
     /// through a call and a frame.
-    public static nuint AllocFast(nint bytes, nint kind)
+    public static nuint AllocFast(nuint bytes, nuint kind)
     {
         // THE CLASS TEST ON THE REQUEST ITSELF, unsigned: the rounded size
         // is at most ClassMax exactly when this holds, and a negative request
         // -- which AllocWord refuses -- is a huge one here, and goes there.
-        nuint request = (nuint)bytes;
+        nuint request = bytes;
         if (request <= Gc.ClassMax + 7 - Gc.ClassBlockRounding)
         {
             const int w = WordSize.Bytes;
@@ -1675,22 +1684,22 @@ static class Runtime
             nuint tb = Sys.ThreadBlock() & Gc.FastClassMask;
             if (tb != 0)
             {
-                Sys.WriteNative(tb + Tls.InAlloc, 1);
-                nuint cache = Sys.ReadNative(tb + Tls.Classes);
+                Sys.WriteAddress(tb + Tls.InAlloc, 1);
+                nuint cache = Sys.ReadAddress(tb + Tls.Classes);
                 if (cache != 0)
                 {
                     nuint small = (request + Gc.ClassBlockRounding) & Gc.BlockSizeMask;
                     // The tables: a word each, an address.
-                    nuint c = Sys.ReadNative(Gc._classOf + (small >> 3) * w);
+                    nuint c = Sys.ReadAddress(Gc._classOf + (small >> 3) * w);
                     nuint slot = cache + c * (2 * w) + w;
-                    nuint free = Sys.ReadNative(slot);
+                    nuint free = Sys.ReadAddress(slot);
                     if (free != 0)
                     {
-                        nuint size = Sys.ReadNative(Gc._classSize + c * w);
-                        Sys.WriteNative(slot, Sys.ReadNative(free + Gc.BlockKindAt));
-                        Sys.WriteNative(free, size);
-                        Sys.WriteNative(free + Gc.BlockKindAt, (nuint)kind);
-                        Sys.WriteNative(tb + Tls.InAlloc, 0);
+                        nuint size = Sys.ReadAddress(Gc._classSize + c * w);
+                        Sys.WriteAddress(slot, Sys.ReadAddress(free + Gc.BlockKindAt));
+                        Sys.WriteAddress(free, size);
+                        Sys.WriteAddress(free + Gc.BlockKindAt, kind);
+                        Sys.WriteAddress(tb + Tls.InAlloc, 0);
                         return free + Gc.BlockHeaderBytes;
                     }
                 }
@@ -1703,7 +1712,7 @@ static class Runtime
     /// AllocFast's long way: the call the site was, by its kind. A call of
     /// its own, never put in place, so that each site carries one call.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static nuint AllocMissed(nint bytes, nint kind)
+    public static nuint AllocMissed(nuint bytes, nuint kind)
     {
         // OUT OF THE ALLOCATOR FIRST: AllocFastSized and AllocFast come here
         // with Tls.InAlloc still set when the cache or the list was empty,
@@ -1711,9 +1720,9 @@ static class Runtime
         // cache and the list were read, not changed -- and the few
         // instructions to here are as unanswerable as the pop.
         nuint tb = Sys.ThreadBlock();
-        if (tb != 0) Sys.WriteNative(tb + Tls.InAlloc, 0);
-        if (kind == (nint)Gc.ObjectKind) return AllocObject(bytes);
-        if (kind == (nint)Gc.LeafKind) return AllocLeaf(bytes);
+        if (tb != 0) Sys.WriteAddress(tb + Tls.InAlloc, 0);
+        if (kind == Gc.ObjectKind) return AllocObject(bytes);
+        if (kind == Gc.LeafKind) return AllocLeaf(bytes);
         return Alloc(bytes);
     }
 
@@ -1729,46 +1738,46 @@ static class Runtime
     /// and room for the record where the arena is -- the record laid down
     /// as Gc.OpenRecord lays it, then the pointer and the open region. Any
     /// other case is Gc.RegionEnter's.
-    public static nint RegionEnter(nint frame, nint bytes)
+    public static nuint RegionEnter(nuint frame, nuint bytes)
     {
         nuint tb = Sys.ThreadBlock();
-        if (bytes == 0 && tb != 0 && Sys.ReadNative(tb + Tls.RegionBase) != 0)
+        if (bytes == 0 && tb != 0 && Sys.ReadAddress(tb + Tls.RegionBase) != 0)
         {
-            nuint open = Sys.ReadNative(tb + Tls.RegionOpen);
-            nuint record = Sys.ReadNative(tb + Tls.RegionAt);
+            nuint open = Sys.ReadAddress(tb + Tls.RegionOpen);
+            nuint record = Sys.ReadAddress(tb + Tls.RegionAt);
             nuint end = record + Gc.RegionRecordBytes;
             // The open region's opener from the block (Tls.RegionFloor), not its record.
-            if ((open == 0 || Sys.ReadNative(tb + Tls.RegionFloor) > (nuint)frame)
-                && end <= Sys.ReadNative(tb + Tls.RegionEnd))
+            if ((open == 0 || Sys.ReadAddress(tb + Tls.RegionFloor) > frame)
+                && end <= Sys.ReadAddress(tb + Tls.RegionEnd))
             {
-                Sys.WriteNative(record, Gc.RegionRecordBytes);
-                Sys.WriteNative(end - Gc.BlockFooterBytes, Gc.RegionRecordBytes);
-                Sys.WriteNative(record + Gc.BlockKindAt, Gc.LeafKind);
-                Sys.WriteNative(record + Gc.BlockHeaderBytes, open);
-                Sys.WriteNative(record + Gc.RecordFrameAt, (nuint)frame);
-                Sys.WriteNative(tb + Tls.RegionAt, end);
-                Sys.WriteNative(tb + Tls.RegionFloor, (nuint)frame);
-                Sys.WriteNative(tb + Tls.RegionOpen, record);
-                return (nint)record;
+                Sys.WriteAddress(record, Gc.RegionRecordBytes);
+                Sys.WriteAddress(end - Gc.BlockFooterBytes, Gc.RegionRecordBytes);
+                Sys.WriteAddress(record + Gc.BlockKindAt, Gc.LeafKind);
+                Sys.WriteAddress(record + Gc.BlockHeaderBytes, open);
+                Sys.WriteAddress(record + Gc.RecordFrameAt, frame);
+                Sys.WriteAddress(tb + Tls.RegionAt, end);
+                Sys.WriteAddress(tb + Tls.RegionFloor, frame);
+                Sys.WriteAddress(tb + Tls.RegionOpen, record);
+                return record;
             }
         }
-        return (nint)Gc.RegionEnter((nuint)frame, (nuint)bytes);
+        return Gc.RegionEnter(frame, bytes);
     }
 
     /// A catch's own frame: every region opened by a frame below it -- a
     /// boundary the throw it caught came out of -- is closed (Gc.PopStale).
-    public static void RegionCatch(nint frame)
+    public static void RegionCatch(nuint frame)
     {
-        Gc.RegionCatch((nuint)frame);
+        Gc.RegionCatch(frame);
     }
 
     /// A loop's region at the top of a lap: opened on the first (`record`
     /// -1), what the last lap made in it given back on every other. What it
     /// answers is the next lap's `record`, and RegionLeave's on the way out.
     /// `bytes` is the most one lap makes in it, 0 when nobody proved it.
-    public static nint RegionLoop(nint record, nint frame, nint bytes)
+    public static nuint RegionLoop(nuint record, nuint frame, nuint bytes)
     {
-        return (nint)Gc.RegionLoop((nuint)record, (nuint)frame, (nuint)bytes);
+        return Gc.RegionLoop(record, frame, bytes);
     }
 
     /// THE FAST PATH, inlined at every leave as RegionEnter is: a region
@@ -1777,31 +1786,30 @@ static class Runtime
     /// long way measures the arena as it is cut). The thread's blocks
     /// counted, the pointer set back first, the bytes cleared, the record
     /// popped: what Gc.RegionLeave does there. Any other case is its.
-    public static void RegionLeave(nint outer)
+    public static void RegionLeave(nuint record)
     {
-        nuint record = (nuint)outer;
         nuint tb = Sys.ThreadBlock();
         if (record != Gc.NoRecord && tb != 0 && !Gc.StatsAsked && !Gc.CountingCollected)
         {
-            nuint last = Sys.ReadNative(tb + Tls.RegionEnd);
+            nuint last = Sys.ReadAddress(tb + Tls.RegionEnd);
             // The arena handed back already (Gc.ReleaseRegion): nothing left to give.
             if (last == 0) return;
-            nuint at = Sys.ReadNative(tb + Tls.RegionAt);
-            if (record >= Sys.ReadNative(last) && record < at)
+            nuint at = Sys.ReadAddress(tb + Tls.RegionAt);
+            if (record >= Sys.ReadAddress(last) && record < at)
             {
-                nuint counted = Sys.ReadNative(tb + Tls.RegionCount);
+                nuint counted = Sys.ReadAddress(tb + Tls.RegionCount);
                 if (counted != 0)
                 {
-                    Sys.WriteNative(tb + Tls.RegionCount, 0);
+                    Sys.WriteAddress(tb + Tls.RegionCount, 0);
                     Gc.RegionBlocks = Gc.RegionBlocks + (long)counted;
                 }
-                nuint parent = Sys.ReadNative(record + Gc.BlockHeaderBytes);
-                Sys.WriteNative(tb + Tls.RegionAt, record);
+                nuint parent = Sys.ReadAddress(record + Gc.BlockHeaderBytes);
+                Sys.WriteAddress(tb + Tls.RegionAt, record);
                 nuint freed = at - record;
                 Sys.MemorySet(record, 0, freed);
-                Sys.WriteNative(tb + Tls.RegionFloor, parent == 0 ? 0
-                    : Sys.ReadNative(parent + Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark);
-                Sys.WriteNative(tb + Tls.RegionOpen, parent);
+                Sys.WriteAddress(tb + Tls.RegionFloor, parent == 0 ? 0
+                    : Sys.ReadAddress(parent + Gc.RecordFrameAt) & ~(nuint)Gc.RecordLoopMark);
+                Sys.WriteAddress(tb + Tls.RegionOpen, parent);
                 Gc.RegionFreedBytes = Gc.RegionFreedBytes + (long)(freed - Gc.RegionRecordBytes);
                 Gc.FreedBytes = Gc.FreedBytes + (long)(freed - Gc.RegionRecordBytes);
                 return;
@@ -1828,35 +1836,35 @@ static class Runtime
     /// yet, no region, a stale one to close, a chunk to grow into, a sampled
     /// allocation -- the long way (AllocRegionSlow). A size the compiler
     /// knows is AllocRegionSized's, put in place.
-    public static nuint AllocRegion(nint bytes, nint kind, nint frame)
+    public static nuint AllocRegion(nuint bytes, nuint kind, nuint frame)
     {
         // The block ANDed with Gc.FastRegionMask (no block yet, a sampler, the
         // statistics), then the open region's opener from the block
         // (Tls.RegionFloor, 0 with none open): AllocRegionSized's tests.
         nuint tb = Sys.ThreadBlock() & Gc.FastRegionMask;
-        if (tb != 0 && Sys.ReadNative(tb + Tls.RegionFloor) >= (nuint)frame && (nuint)bytes <= Gc.MostRequest)
+        if (tb != 0 && Sys.ReadAddress(tb + Tls.RegionFloor) >= frame && bytes <= Gc.MostRequest)
         {
-            nuint at = Sys.ReadNative(tb + Tls.RegionAt);
-            nuint need = ((nuint)bytes + Gc.BlockRounding) & Gc.BlockSizeMask;
+            nuint at = Sys.ReadAddress(tb + Tls.RegionAt);
+            nuint need = (bytes + Gc.BlockRounding) & Gc.BlockSizeMask;
             if (need < Gc.SmallestBlock) need = Gc.SmallestBlock;
             // ROOM COUNTED, NOT AN END COMPARED: on i386 a request near
             // MostRequest added to an arena high in the address space
             // wraps, and a wrapped end below the chunk's passed the test
             // and the block's footer was written far below it. The pointer
             // is never past the end.
-            nuint end = Sys.ReadNative(tb + Tls.RegionEnd);
+            nuint end = Sys.ReadAddress(tb + Tls.RegionEnd);
             if (need <= end - at)
             {
                 nuint next = at + need;
-                Sys.WriteNative(at, need);
-                Sys.WriteNative(next - Gc.BlockFooterBytes, need);
-                Sys.WriteNative(at + Gc.BlockKindAt, (nuint)kind);
-                Sys.WriteNative(tb + Tls.RegionAt, next);
+                Sys.WriteAddress(at, need);
+                Sys.WriteAddress(next - Gc.BlockFooterBytes, need);
+                Sys.WriteAddress(at + Gc.BlockKindAt, kind);
+                Sys.WriteAddress(tb + Tls.RegionAt, next);
                 // Counted in the thread's block (Tls.RegionCount), added to
                 // Gc.RegionBlocks where a region ends: what says how much a
                 // program makes in its regions.
                 nuint counted = tb + Tls.RegionCount;
-                Sys.WriteNative(counted, Sys.ReadNative(counted) + 1);
+                Sys.WriteAddress(counted, Sys.ReadAddress(counted) + 1);
                 return at + Gc.BlockHeaderBytes;
             }
         }
@@ -1884,24 +1892,24 @@ static class Runtime
     /// block, and either is an arena as it is. The count is read only by
     /// this thread at a region's end (CountRegionBlocks) and as it ends
     /// (ReleaseRegion), never by a handshake.
-    public static nuint AllocRegionSized(nint bytes, nint kind, nint frame, nint need)
+    public static nuint AllocRegionSized(nuint bytes, nuint kind, nuint frame, nuint need)
     {
         nuint tb = Sys.ThreadBlock() & Gc.FastRegionMask;
-        if (tb != 0 && Sys.ReadNative(tb + Tls.RegionFloor) >= (nuint)frame)
+        if (tb != 0 && Sys.ReadAddress(tb + Tls.RegionFloor) >= frame)
         {
-            nuint at = Sys.ReadNative(tb + Tls.RegionAt);
-            if ((nuint)need <= Sys.ReadNative(tb + Tls.RegionEnd) - at)
+            nuint at = Sys.ReadAddress(tb + Tls.RegionAt);
+            if (need <= Sys.ReadAddress(tb + Tls.RegionEnd) - at)
             {
-                nuint next = at + (nuint)need;
-                Sys.WriteNative(at, (nuint)need);
-                Sys.WriteNative(next - Gc.BlockFooterBytes, (nuint)need);
-                Sys.WriteNative(at + Gc.BlockKindAt, (nuint)kind);
-                Sys.WriteNative(tb + Tls.RegionAt, next);
+                nuint next = at + need;
+                Sys.WriteAddress(at, need);
+                Sys.WriteAddress(next - Gc.BlockFooterBytes, need);
+                Sys.WriteAddress(at + Gc.BlockKindAt, kind);
+                Sys.WriteAddress(tb + Tls.RegionAt, next);
                 // Counted in the thread's block (Tls.RegionCount), added to
                 // Gc.RegionBlocks where a region ends: what says how much a
                 // program makes in its regions.
                 nuint counted = tb + Tls.RegionCount;
-                Sys.WriteNative(counted, Sys.ReadNative(counted) + 1);
+                Sys.WriteAddress(counted, Sys.ReadAddress(counted) + 1);
                 return at + Gc.BlockHeaderBytes;
             }
         }
@@ -1910,26 +1918,26 @@ static class Runtime
 
     /// The long way of AllocRegion: Gc.AllocRegion, and the sampler.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static nuint AllocRegionSlow(nint bytes, nint kind, nint frame)
+    static nuint AllocRegionSlow(nuint bytes, nuint kind, nuint frame)
     {
-        nuint at = Gc.AllocRegion(bytes, kind, 0, (nuint)frame);
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, (nint)Sys.FramePointer() | SampleKind(kind), bytes, (nint)at);
+        nuint at = Gc.AllocRegion(bytes, kind, 0, frame);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | SampleKind(kind), bytes, at);
         return at;
     }
 
     // The sampler's kind of a block: 1 scanned word by word, 2 a leaf, 3 an
     // object. The hook gets it in the low two bits of the allocator's frame
     // pointer, which is word-aligned: (frame | kind, bytes, block).
-    static nint SampleKind(nint kind) => kind == (nint)Gc.LeafKind ? 2 : kind == (nint)Gc.ObjectKind ? 3 : 1;
+    static nuint SampleKind(nuint kind) => kind == Gc.LeafKind ? 2 : kind == Gc.ObjectKind ? 3 : 1;
 
     /// Storage made for `owner` and dead when it is: in the innermost open
     /// region when owner is in it, or on this thread's stack in a frame that
     /// returns no later than that region ends (a collection the lifetime pass
     /// put in a boundary's frame; Gc.OnStackWithin); on the heap otherwise.
-    public static nuint AllocNear(nint bytes, nint kind, nint owner, nint frame)
+    public static nuint AllocNear(nuint bytes, nuint kind, nuint owner, nuint frame)
     {
-        nuint at = Gc.AllocRegion(bytes, kind, owner == 0 ? Gc.NoRecord : (nuint)owner, (nuint)frame);
-        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, (nint)Sys.FramePointer() | SampleKind(kind), bytes, (nint)at);
+        nuint at = Gc.AllocRegion(bytes, kind, owner == 0 ? Gc.NoRecord : owner, frame);
+        if (AllocHook != 0 && (((++_allocCount) & 15) == 0 || AllocHookEvery)) Sys.Call(AllocHook, Sys.FramePointer() | SampleKind(kind), bytes, at);
         return at;
     }
 
@@ -1974,17 +1982,17 @@ static class Runtime
     const int ManualBinCount = 65;        // 0 is the list of large blocks
     const int ManualSmall = 1024;
 
-    public static nuint AllocManual(nint bytes)
+    public static nuint AllocManual(nuint bytes)
     {
         return ManualTake(bytes, 0);
     }
 
-    public static nuint AllocManualObject(nint bytes)
+    public static nuint AllocManualObject(nuint bytes)
     {
         return ManualTake(bytes, ManualObjectFlag);
     }
 
-    static nuint ManualTake(nint bytes, nuint flags)
+    static nuint ManualTake(nuint bytes, nuint flags)
     {
         const int w = WordSize.Bytes;
         if (_manualBins == 0)
@@ -2003,27 +2011,27 @@ static class Runtime
         {
             ManualOutOfMemory(0);
         }
-        nuint need = ((nuint)bytes + 2 * w + 15) & ~(nuint)15;
+        nuint need = (bytes + 2 * w + 15) & ~(nuint)15;
         nuint lockAt = _manualBins + ManualBinCount * w;
         ManualLock(lockAt);
 
         nuint block = 0;
         nuint list = need <= ManualSmall ? _manualBins + (need >> 4) * w : _manualBins;
         nuint previous = 0;
-        nuint at = Sys.ReadNative(list);
+        nuint at = Sys.ReadAddress(list);
         while (at != 0)
         {
-            nuint size = Sys.ReadNative(at) & ~(nuint)15;
+            nuint size = Sys.ReadAddress(at) & ~(nuint)15;
             if (size == need || (need > ManualSmall && size >= need))
             {
-                nuint next = Sys.ReadNative(at + 2 * w);
-                if (previous == 0) Sys.WriteNative(list, next); else Sys.WriteNative(previous + 2 * w, next);
+                nuint next = Sys.ReadAddress(at + 2 * w);
+                if (previous == 0) Sys.WriteAddress(list, next); else Sys.WriteAddress(previous + 2 * w, next);
                 block = at;
                 need = size;
                 nuint word = at + 2 * w;
                 while (word < at + size)
                 {
-                    Sys.WriteNative(word, 0);
+                    Sys.WriteAddress(word, 0);
                     word = word + w;
                 }
                 break;
@@ -2033,7 +2041,7 @@ static class Runtime
                 break;
             }
             previous = at;
-            at = Sys.ReadNative(at + 2 * w);
+            at = Sys.ReadAddress(at + 2 * w);
         }
         if (block == 0)
         {
@@ -2044,8 +2052,8 @@ static class Runtime
             block = _manualAt;
             _manualAt = _manualAt + need;
         }
-        Sys.WriteNative(block, need | flags);
-        Sys.WriteNative(block + w, ManualMagic);
+        Sys.WriteAddress(block, need | flags);
+        Sys.WriteAddress(block + w, ManualMagic);
         ManualUnlock(lockAt);
         return block + 2 * w;
     }
@@ -2060,8 +2068,8 @@ static class Runtime
         {
             return false;
         }
-        Sys.WriteNative(chunk, _manualChunks);
-        Sys.WriteNative(chunk + WordSize.Bytes, chunk + ask);
+        Sys.WriteAddress(chunk, _manualChunks);
+        Sys.WriteAddress(chunk + WordSize.Bytes, chunk + ask);
         _manualChunks = chunk;
         _manualAt = (chunk + 2 * WordSize.Bytes + 15) & ~(nuint)15;
         _manualLimit = chunk + ask;
@@ -2104,7 +2112,7 @@ static class Runtime
     static nuint ManualBlock(nuint at)
     {
         nuint block = ManualHeader(at);
-        return block != 0 && (Sys.ReadNative(block) & ManualFree) == 0 ? block : 0;
+        return block != 0 && (Sys.ReadAddress(block) & ManualFree) == 0 ? block : 0;
     }
 
     /// The header of the block of this heap `at` is the payload of, freed or not, or 0.
@@ -2119,11 +2127,11 @@ static class Runtime
         nuint chunk = _manualChunks;
         while (chunk != 0)
         {
-            if (block >= chunk + 2 * w && block < Sys.ReadNative(chunk + w))
+            if (block >= chunk + 2 * w && block < Sys.ReadAddress(chunk + w))
             {
-                return Sys.ReadNative(block + w) == ManualMagic ? block : 0;
+                return Sys.ReadAddress(block + w) == ManualMagic ? block : 0;
             }
-            chunk = Sys.ReadNative(chunk);
+            chunk = Sys.ReadAddress(chunk);
         }
         return 0;
     }
@@ -2140,7 +2148,7 @@ static class Runtime
         nuint block = ManualHeader(at);
         if (block != 0 && _manualVerify)
         {
-            nuint word = Sys.ReadNative(block);
+            nuint word = Sys.ReadAddress(block);
             if ((word & ManualChecked) != 0)
             {
                 ManualUnlock(lockAt);
@@ -2150,19 +2158,19 @@ static class Runtime
             if ((word & ManualFree) == 0)
             {
                 nuint end = block + (word & ~(nuint)15);
-                Sys.WriteNative(block, (word & ~(nuint)15) | ManualFree | ManualChecked);
+                Sys.WriteAddress(block, (word & ~(nuint)15) | ManualFree | ManualChecked);
                 for (nuint p = block + 2 * w; p + 4 <= end; p = p + 4) Sys.Write32(p, ManualPoison);
             }
             ManualUnlock(lockAt);
             return;
         }
-        if (block != 0 && (Sys.ReadNative(block) & ManualFree) == 0)
+        if (block != 0 && (Sys.ReadAddress(block) & ManualFree) == 0)
         {
-            nuint size = Sys.ReadNative(block) & ~(nuint)15;
+            nuint size = Sys.ReadAddress(block) & ~(nuint)15;
             nuint list = size <= ManualSmall ? _manualBins + (size >> 4) * w : _manualBins;
-            Sys.WriteNative(block, size | ManualFree);
-            Sys.WriteNative(block + 2 * w, Sys.ReadNative(list));
-            Sys.WriteNative(list, block);
+            Sys.WriteAddress(block, size | ManualFree);
+            Sys.WriteAddress(block + 2 * w, Sys.ReadAddress(list));
+            Sys.WriteAddress(list, block);
         }
         ManualUnlock(lockAt);
     }
@@ -2172,7 +2180,7 @@ static class Runtime
     public static bool ManualObject(nuint at)
     {
         nuint block = ManualBlock(at);
-        return block != 0 && (Sys.ReadNative(block) & ManualObjectFlag) != 0;
+        return block != 0 && (Sys.ReadAddress(block) & ManualObjectFlag) != 0;
     }
 
     /// Gives a block obtained from Runtime.Alloc back to the heap NOW.
@@ -2215,14 +2223,13 @@ static class Runtime
     /// A [ThreadStatic] field's cell on this thread (ThreadStatics.Cell): what
     /// lowering calls for every touch of one, handed the word that holds the
     /// field's number and the bytes its cell needs.
-    public static nint ThreadStaticCell(nint indexAt, nint bytes)
+    public static nuint ThreadStaticCell(nuint indexAt, nuint bytes)
     {
-        return (nint)ThreadStatics.Cell((nuint)indexAt, bytes);
+        return ThreadStatics.Cell(indexAt, bytes);
     }
 
-    public static void Free(nint word)
+    public static void Free(nuint at)
     {
-        nuint at = (nuint)word;
         if (Gc.IgnoredFrees == 'p')
         {
             return;
@@ -2252,10 +2259,10 @@ static class Runtime
 
     static void FreeStorageOf(nuint at)
     {
-        nuint vtable = Sys.ReadNative(at);
+        nuint vtable = Sys.ReadAddress(at);
         if (vtable == 0) return;
         // The descriptor is twelve words before the vtable; its GC flags the tenth.
-        if ((Sys.ReadNative(vtable - 12 * WordSize.Bytes + 9 * WordSize.Bytes) & OwnsStorageFlag) == 0) return;
+        if ((Sys.ReadAddress(vtable - 12 * WordSize.Bytes + 9 * WordSize.Bytes) & OwnsStorageFlag) == 0) return;
         if (Sys.ObjectAt(at) is IOwnsStorage owner) owner.FreeStorage();
     }
 
@@ -2268,17 +2275,17 @@ static class Runtime
     /// the compiler proved dead come here, so the header is theirs to read.
     public static void FreeOwnedFields(nuint at)
     {
-        nuint vtable = Sys.ReadNative(at);
+        nuint vtable = Sys.ReadAddress(at);
         if (vtable == 0)
         {
             return;
         }
-        nuint map = Sys.ReadNative(vtable - WordSize.Bytes);
+        nuint map = Sys.ReadAddress(vtable - WordSize.Bytes);
         if (map == 0)
         {
             return;
         }
-        nuint head = Sys.ReadNative(map);
+        nuint head = Sys.ReadAddress(map);
         // The element bits follow the field bits when the count says so
         // (ElementMapFlag): a field whose array owns its collections.
         nuint words = head & (ElementMapFlag - 1);
@@ -2291,10 +2298,10 @@ static class Runtime
                 continue;
             }
             nuint field = at + word * WordSize.Bytes;
-            nuint held = Sys.ReadNative(field);
+            nuint held = Sys.ReadAddress(field);
             if (held != 0)
             {
-                Sys.WriteNative(field, 0);
+                Sys.WriteAddress(field, 0);
                 if (elementsAt != 0 && (Sys.Read32(elementsAt + (word / 32) * WordSize.Bytes) & (1u << (int)(word % 32))) != 0)
                     FreeReferenceElements(held);
                 FreeHeld(held);
@@ -2304,11 +2311,11 @@ static class Runtime
 
     /// What an owned field held before a store replaces it (Escape.OwnedFields):
     /// freed with what it owns, unless it is what is being stored again.
-    public static void FreeOwnedReplaced(nint old, nint current)
+    public static void FreeOwnedReplaced(nuint old, nuint current)
     {
         if (old != 0 && old != current && Gc.IgnoredFrees != 'r' && Gc.IgnoredFrees != 'w')
         {
-            FreeHeld((nuint)old);
+            FreeHeld(old);
         }
     }
 
@@ -2329,7 +2336,7 @@ static class Runtime
     /// AND WHAT A LAP MADE FOR THE VARIABLE AND DROPPED, where it dies
     /// (Escape.FreeDropped): `old` that object, `current` what the variable's
     /// shadow names -- nothing to do when the variable took it.
-    public static void FreeReplaced(nint old, nint current)
+    public static void FreeReplaced(nuint old, nuint current)
     {
         if (old != current && Gc.IgnoredFrees != 'r' && Gc.IgnoredFrees != 'v')
         {
@@ -2342,24 +2349,23 @@ static class Runtime
     /// optimiser has proved holds only objects made for it and reachable
     /// through it alone (Escape's owned fields) -- a List's array, freed with
     /// the List. Nothing for a null object or an empty field.
-    public static void FreeField(nint word, nint offset)
+    public static void FreeField(nuint at, nuint offset)
     {
-        nuint at = (nuint)word;
         if (at == 0 || Gc.IgnoredFrees == 'f')
         {
             return;
         }
-        if (CollectorLinked()) Gc.VerifyFieldOwner(at, (nuint)offset);
-        nuint held = Sys.ReadNative(at + (nuint)offset);
+        if (CollectorLinked()) Gc.VerifyFieldOwner(at, offset);
+        nuint held = Sys.ReadAddress(at + offset);
         if (held != 0)
         {
             if (FreeLogRing != 0)
             {
-                LogFree(held, at, (nuint)offset, Sys.ReadNative(Sys.FramePointer() + WordSize.Bytes));
+                LogFree(held, at, offset, Sys.ReadAddress(Sys.FramePointer() + WordSize.Bytes));
             }
             // Cleared first: the object's owned-field map (FreeOwnedFields)
             // may name the same field, and must find it empty.
-            Sys.WriteNative(at + (nuint)offset, 0);
+            Sys.WriteAddress(at + offset, 0);
             // The checked mode poisons and keeps a heap block: a region's
             // goes with its region, as FreeHeld sends it, and is no block of
             // the heap's to mark freed -- a cell of no type among them.
@@ -2396,20 +2402,20 @@ static class Runtime
     static bool Described(nuint at)
     {
         nuint tb = Sys.ThreadBlock();
-        if (tb != 0 && at > Sys.FramePointer() && at < Sys.ReadNative(tb + Tls.StackBase)) return true;
+        if (tb != 0 && at > Sys.FramePointer() && at < Sys.ReadAddress(tb + Tls.StackBase)) return true;
         return Gc.ObjectBlock(at);
     }
 
-    static bool OwnsArrayElements(nuint at, nint offset)
+    static bool OwnsArrayElements(nuint at, nuint offset)
     {
-        nuint vtable = Sys.ReadNative(at);
-        if (vtable == 0 || offset < 0 || offset % WordSize.Bytes != 0) return false;
-        nuint map = Sys.ReadNative(vtable - WordSize.Bytes);
+        nuint vtable = Sys.ReadAddress(at);
+        if (vtable == 0 || offset % WordSize.Bytes != 0) return false;
+        nuint map = Sys.ReadAddress(vtable - WordSize.Bytes);
         if (map == 0) return false;
-        nuint head = Sys.ReadNative(map);
+        nuint head = Sys.ReadAddress(map);
         if ((head & ElementMapFlag) == 0) return false;
         nuint words = head & (ElementMapFlag - 1);
-        nuint word = (nuint)offset / WordSize.Bytes;
+        nuint word = offset / WordSize.Bytes;
         if (word >= words) return false;
         nuint chunks = (words + 31) / 32;
         uint bits = Sys.Read32(map + (1 + chunks + word / 32) * WordSize.Bytes);
@@ -2441,16 +2447,15 @@ static class Runtime
             Gc.RegionFree(held);
             return;
         }
-        Free((nint)held);
+        Free(held);
     }
 
     /// An array its collection's own storage field alone holds, grown to
     /// `length` elements where it is when it is its region's top (Gc.RegionGrow):
     /// true when it was, and the collection keeps it; false, and it makes a
     /// new one as it always has. Keeps no pointer (EscapeFields.IsCollectorNote).
-    public static bool GrowInPlace(nint array, nint length)
+    public static bool GrowInPlace(nuint at, nuint length)
     {
-        nuint at = (nuint)array;
         if (at == 0 || !CollectorLinked() || !Gc.InOwnRegion(at)) return false;
         return Gc.RegionGrow(at, (long)length);
     }
@@ -2480,10 +2485,10 @@ static class Runtime
     {
         nuint n = (nuint)Sys.AtomicAdd(FreeLogRing, 1) % FreeLogEntries;
         nuint entry = FreeLogRing + (1 + n * 4) * WordSize.Bytes;
-        Sys.WriteNative(entry, held);
-        Sys.WriteNative(entry + WordSize.Bytes, owner);
-        Sys.WriteNative(entry + 2 * WordSize.Bytes, offset);
-        Sys.WriteNative(entry + 3 * WordSize.Bytes, site);
+        Sys.WriteAddress(entry, held);
+        Sys.WriteAddress(entry + WordSize.Bytes, owner);
+        Sys.WriteAddress(entry + 2 * WordSize.Bytes, offset);
+        Sys.WriteAddress(entry + 3 * WordSize.Bytes, site);
     }
 
     /// What a field free becomes when the link finds the field is not clean
@@ -2491,7 +2496,7 @@ static class Runtime
     /// field another unit fills holds only objects made for it; it calls a
     /// symbol of its own there, and the link makes that symbol FreeField or
     /// this (Escape's field sites, the link's lifetime hints).
-    public static void KeepField(nint at, nint offset)
+    public static void KeepField(nuint at, nuint offset)
     {
     }
 
@@ -2512,62 +2517,62 @@ static class Runtime
 
     /// Every card of the object a payload belongs to: what a coroutine's
     /// frame is saved into at a suspension, without a barrier (AsyncTransform).
-    public static void CardMarkObject(nint payload)
+    public static void CardMarkObject(nuint payload)
     {
-        Gc.CardMarkObject((nuint)payload);
+        Gc.CardMarkObject(payload);
     }
 
     /// What an object holds, reported as a barrier reports what a store
     /// overwrites, while a collection marks: a coroutine's machine, before
     /// its frame is saved over it at a suspension (AsyncTransform).
-    public static void ShadeObject(nint payload)
+    public static void ShadeObject(nuint payload)
     {
-        if (Marking != 0) Gc.ShadeObject((nuint)payload);
+        if (Marking != 0) Gc.ShadeObject(payload);
     }
 
-    public static void CardMark(nint slot)
+    public static void CardMark(nuint slot)
     {
         nuint cards = Cards;
         if (cards != 0)
         {
-            Sys.Write8(cards + (((nuint)slot) >> CardShift), 1);
+            Sys.Write8(cards + (slot >> CardShift), 1);
         }
     }
 
-    public static void WriteBarrier(nint slot, nint value)
+    public static void WriteBarrier(nuint slot, nuint value)
     {
-        Gc.Barrier((nuint)slot, (nuint)value);
+        Gc.Barrier(slot, value);
     }
 
     /// THE STORE SEQUENCES' BARRIERS (X86Backend and X64Backend:
     /// __corsac_refstore, __corsac_refxchg, __corsac_refcas), called while
     /// Marking is set: the report, the store and its card made together
     /// (Gc.BarrierStore).
-    public static void WriteBarrierStore(nint slot, nint value)
+    public static void WriteBarrierStore(nuint slot, nuint value)
     {
-        Gc.BarrierStore((nuint)slot, (nuint)value);
+        Gc.BarrierStore(slot, value);
     }
 
     /// The same for an exchange: what the slot held.
-    public static nint WriteBarrierExchange(nint slot, nint value)
+    public static nuint WriteBarrierExchange(nuint slot, nuint value)
     {
-        return (nint)Gc.BarrierExchange((nuint)slot, (nuint)value);
+        return Gc.BarrierExchange(slot, value);
     }
 
     /// The same for a compare-exchange: what the slot held, `value` stored
     /// only where that was `expected`.
-    public static nint WriteBarrierCompareExchange(nint slot, nint value, nint expected)
+    public static nuint WriteBarrierCompareExchange(nuint slot, nuint value, nuint expected)
     {
-        return (nint)Gc.BarrierCompareExchange((nuint)slot, (nuint)value, (nuint)expected);
+        return Gc.BarrierCompareExchange(slot, value, expected);
     }
 
     /// The same, told the reference being overwritten rather than where it
     /// is: what a barrier becomes when the object it guarded no longer lives
     /// in memory -- the optimiser kept its fields in registers
     /// (ScalarObjects), so the old reference is a register's value.
-    public static void WriteBarrierValues(nint old, nint value)
+    public static void WriteBarrierValues(nuint old, nuint value)
     {
-        Gc.BarrierValues((nuint)old, (nuint)value);
+        Gc.BarrierValues(old, value);
     }
 
     /// Tells the collector about a range of memory outside the heap that may
@@ -2671,14 +2676,14 @@ static class Runtime
 
         // struct r_debug { int r_version; struct link_map *r_map; ... }: the
         // map is the second word, the int padded to one where words are 8.
-        nuint image = Sys.ReadNative(debug + WordSize.Bytes);
+        nuint image = Sys.ReadAddress(debug + WordSize.Bytes);
 
         while (image != 0)
         {
             // struct link_map { ElfN_Addr l_addr; char *l_name;
             //                   ElfN_Dyn *l_ld; link_map *l_next, *l_prev; }
-            RunInitialiser(Sys.ReadNative(image + 2 * WordSize.Bytes), Sys.ReadNative(image));
-            image = Sys.ReadNative(image + 3 * WordSize.Bytes);
+            RunInitialiser(Sys.ReadAddress(image + 2 * WordSize.Bytes), Sys.ReadAddress(image));
+            image = Sys.ReadAddress(image + 3 * WordSize.Bytes);
         }
     }
 
@@ -2691,27 +2696,27 @@ static class Runtime
     /// time, with no arguments, clears its environment.
     static bool Interpreted()
     {
-        nuint stack = Sys.ReadNative(Sys.ThreadBlock() + Tls.StackBase);
+        nuint stack = Sys.ReadAddress(Sys.ThreadBlock() + Tls.StackBase);
         if (stack == 0)
         {
             return false;
         }
-        nuint at = stack + (Sys.ReadNative(stack) + 2) * WordSize.Bytes;     // past argc, argv and its NULL
-        while (Sys.ReadNative(at) != 0)
+        nuint at = stack + (Sys.ReadAddress(stack) + 2) * WordSize.Bytes;     // past argc, argv and its NULL
+        while (Sys.ReadAddress(at) != 0)
         {
             at = at + WordSize.Bytes;                                  // the environment
         }
         at = at + WordSize.Bytes;
         while (true)
         {
-            nuint type = Sys.ReadNative(at);
+            nuint type = Sys.ReadAddress(at);
             if (type == 0)
             {
                 return false;
             }
             if (type == 7)                                             // AT_BASE
             {
-                return Sys.ReadNative(at + WordSize.Bytes) != 0;
+                return Sys.ReadAddress(at + WordSize.Bytes) != 0;
             }
             at = at + 2 * WordSize.Bytes;
         }
@@ -2733,7 +2738,7 @@ static class Runtime
         while (true)
         {
             // ElfN_Dyn: a tag word and a value word.
-            nuint tag = Sys.ReadNative(at);
+            nuint tag = Sys.ReadAddress(at);
 
             if (tag == DtNull)
             {
@@ -2742,7 +2747,7 @@ static class Runtime
 
             if (tag == want)
             {
-                return Sys.ReadNative(at + WordSize.Bytes);
+                return Sys.ReadAddress(at + WordSize.Bytes);
             }
             at = at + 2 * WordSize.Bytes;
         }
@@ -2770,7 +2775,7 @@ static class Runtime
 
         for (nuint i = 0; i < bytes; i = i + WordSize.Bytes)
         {
-            nuint one = Sys.ReadNative(array + bias + i);
+            nuint one = Sys.ReadAddress(array + bias + i);
 
             if (one != 0)
             {
@@ -2839,7 +2844,7 @@ static class Runtime
             return;
         }
         EnterNative();
-        Sys.CallNative(start, (nint)main, (nint)Sys.ReadNative(stack), (nint)(stack + WordSize.Bytes), 0, 0, (nint)loaderFini, (nint)stack);
+        Sys.CallNative(start, main, Sys.ReadAddress(stack), stack + WordSize.Bytes, 0, 0, loaderFini, stack);
     }
 
     /// The first thing a function C calls does: GS back to the runtime's on
@@ -2857,10 +2862,10 @@ static class Runtime
 
     /// A C function the runtime found for itself (NativeSymbol), called with
     /// C's rules and the same handshake a [DllImport] makes.
-    public static nint CallC(nuint fn, nint a, nint b, nint c, nint d)
+    public static nuint CallC(nuint fn, nuint a, nuint b, nuint c, nuint d)
     {
         EnterNative();
-        nint r = Sys.CallNative(fn, a, b, c, d);
+        nuint r = Sys.CallNative(fn, a, b, c, d);
         LeaveNative();
         return r;
     }
@@ -2878,24 +2883,24 @@ static class Runtime
 
     /// The address of an array's first element, or zero for null: what C's
     /// pointer to it is.
-    public static nint NativeData(object? array)
+    public static nuint NativeData(object? array)
     {
         if (array == null)
         {
             return 0;
         }
-        return (nint)Sys.ArrayData(array);
+        return Sys.ArrayData(array);
     }
 
     /// errno, as a SetLastError import left it, for Marshal.GetLastPInvokeError.
     public static void SetNativeError(int error)
     {
-        Sys.WriteNative(Sys.ThreadBlock() + Tls.LastError, (nuint)error);
+        Sys.WriteAddress(Sys.ThreadBlock() + Tls.LastError, (nuint)error);
     }
 
     public static int NativeError()
     {
-        return (int)Sys.ReadNative(Sys.ThreadBlock() + Tls.LastError);
+        return (int)Sys.ReadAddress(Sys.ThreadBlock() + Tls.LastError);
     }
 
     // FINDING A C FUNCTION AT RUN TIME. The link map (StartImages) lists every
@@ -2925,15 +2930,15 @@ static class Runtime
             return 0;
         }
         byte[] bytes = Utf8Transcoder.Encode(name, 0, name.Length);
-        nuint image = Sys.ReadNative(debug + WordSize.Bytes);
+        nuint image = Sys.ReadAddress(debug + WordSize.Bytes);
         while (image != 0)
         {
-            nuint found = SymbolIn(Sys.ReadNative(image + 2 * WordSize.Bytes), Sys.ReadNative(image), bytes);
+            nuint found = SymbolIn(Sys.ReadAddress(image + 2 * WordSize.Bytes), Sys.ReadAddress(image), bytes);
             if (found != 0)
             {
                 return found;
             }
-            image = Sys.ReadNative(image + 3 * WordSize.Bytes);
+            image = Sys.ReadAddress(image + 3 * WordSize.Bytes);
         }
         return 0;
     }
@@ -3047,12 +3052,12 @@ static class Runtime
         nuint symbol = symbols + index * 24;
         byte info = Sys.Read8(symbol + 4);
         ushort section = Sys.Read16(symbol + 6);
-        nuint value = Sys.ReadNative(symbol + 8);
+        nuint value = Sys.ReadAddress(symbol + 8);
 #else
         nuint symbol = symbols + index * 16;
         byte info = Sys.Read8(symbol + 12);
         ushort section = Sys.Read16(symbol + 14);
-        nuint value = Sys.ReadNative(symbol + 4);
+        nuint value = Sys.ReadAddress(symbol + 4);
 #endif
         if (section == 0 || value == 0)
         {
@@ -3116,7 +3121,7 @@ static class Runtime
         {
             return Sys.FrameDirectory();
         }
-        return i - 1 < _tableCount ? Sys.ReadNative(_tables + (i - 1) * WordSize.Bytes) : 0;
+        return i - 1 < _tableCount ? Sys.ReadAddress(_tables + (i - 1) * WordSize.Bytes) : 0;
     }
 
     /// Registers an image directory or an explicitly supplied individual frame
@@ -3131,7 +3136,7 @@ static class Runtime
         if (Sys.Read32(table) != TableMagic && Sys.Read32(table) != PooledMagic && Sys.Read32(table) != DirectoryMagic) { return false; }
         for (nuint i = 0; i < _tableCount; i++)
         {
-            if (Sys.ReadNative(_tables + i * WordSize.Bytes) == table) { return true; }
+            if (Sys.ReadAddress(_tables + i * WordSize.Bytes) == table) { return true; }
         }
 
         if (_tables == 0)
@@ -3148,7 +3153,7 @@ static class Runtime
         {
             return false;
         }
-        Sys.WriteNative(_tables + _tableCount * WordSize.Bytes, table);
+        Sys.WriteAddress(_tables + _tableCount * WordSize.Bytes, table);
         _tableCount = _tableCount + 1;
         Gc.MapsChanged();
         return true;
@@ -3160,8 +3165,8 @@ static class Runtime
     {
         for (nuint i = 0; i < _tableCount; i++)
         {
-            if (Sys.ReadNative(_tables + i * WordSize.Bytes) != table) continue;
-            for (nuint j = i; j + 1 < _tableCount; j++) Sys.WriteNative(_tables + j * WordSize.Bytes, Sys.ReadNative(_tables + (j + 1) * WordSize.Bytes));
+            if (Sys.ReadAddress(_tables + i * WordSize.Bytes) != table) continue;
+            for (nuint j = i; j + 1 < _tableCount; j++) Sys.WriteAddress(_tables + j * WordSize.Bytes, Sys.ReadAddress(_tables + (j + 1) * WordSize.Bytes));
             _tableCount = _tableCount - 1;
             Gc.MapsChanged();
             return true;
@@ -3232,13 +3237,13 @@ static class Runtime
 
     /// Every byte the runtime prints goes through here, so the retry on a
     /// short or interrupted write is in one place.
-    public static void WriteBytes(int fd, nuint address, nint count)
+    public static void WriteBytes(int fd, nuint address, nuint count)
     {
-        nint done = 0;
+        nuint done = 0;
 
         while (done < count)
         {
-            nint n = Platform.WriteBytes(fd, address + (nuint)done, (nuint)(count - done));
+            long n = Platform.WriteBytes(fd, address + done, count - done);
 
             if (n < 0)
             {
@@ -3255,7 +3260,7 @@ static class Runtime
             {
                 return;
             }
-            done = done + n;
+            done = done + (nuint)n;
         }
     }
 
@@ -3710,16 +3715,16 @@ static class Runtime
     }
 
     /// The same, signed, for a line that moved backwards.
-    static nint Sleb(nuint at, out nuint next) {
-        nint value = 0;
+    static long Sleb(nuint at, out nuint next) {
+        long value = 0;
         int shift = 0;
         while (true) {
             byte b = Sys.Read8(at);
             at = at + 1;
-            value = value | ((nint)(b & 127) << shift);
+            value = value | ((long)(b & 127) << shift);
             shift = shift + 7;
             if ((b & 128) == 0) {
-                if (shift < 8 * WordSize.Bytes && (b & 64) != 0) { value = value | -((nint)1 << shift); }
+                if (shift < 64 && (b & 64) != 0) { value = value | -(1L << shift); }
                 next = at;
                 return value;
             }
@@ -3795,7 +3800,7 @@ static class Runtime
         if (LookupMetadata(Sys.FrameDirectory(), address, out name, out file, out pool, out line, out offset, lines)) { return true; }
 
         for (nuint i = 0; i < _tableCount; i++) {
-            if (LookupMetadata(Sys.ReadNative(_tables + i * WordSize.Bytes), address, out name, out file, out pool, out line, out offset, lines)) { return true; }
+            if (LookupMetadata(Sys.ReadAddress(_tables + i * WordSize.Bytes), address, out name, out file, out pool, out line, out offset, lines)) { return true; }
         }
         return false;
     }
@@ -3825,7 +3830,7 @@ static class Runtime
         uint held = Sys.Read32(at);
 #if TARGET_64BIT
         if (held == 0) { return 0; }
-        return at + (nuint)(nint)(int)held;
+        return at + (nuint)(long)(int)held;
 #else
         return held;
 #endif
@@ -3956,7 +3961,7 @@ static class Runtime
             int b = Sys.Read8(at);
             at = at + 1;
             nuint step;
-            nint moved;
+            long moved;
             if (b < 160) {
                 step = (nuint)((b >> 1) + 1);
                 moved = (b & 1) + 1;
@@ -4008,8 +4013,8 @@ static class Runtime
         nuint[] frames = new nuint[count];
         frame = from;
         for (int i = 0; i < count; i++) {
-            frames[i] = Sys.ReadNative(frame + WordSize.Bytes);
-            frame = Sys.ReadNative(frame);
+            frames[i] = Sys.ReadAddress(frame + WordSize.Bytes);
+            frame = Sys.ReadAddress(frame);
         }
         return frames;
     }
@@ -4025,8 +4030,8 @@ static class Runtime
     /// address: the chain every prologue here builds.
     public static nuint StepFrame(nuint frame) {
         if (frame == 0) { return NoFrame; }
-        nuint next = Sys.ReadNative(frame);
-        if (Sys.ReadNative(frame + WordSize.Bytes) == 0) { return NoFrame; }
+        nuint next = Sys.ReadAddress(frame);
+        if (Sys.ReadAddress(frame + WordSize.Bytes) == 0) { return NoFrame; }
         if (next != 0 && next <= frame) { return NoFrame; }
         // NOR PAST THE TOP OF THIS THREAD'S STACK: a frame in it whose link
         // leaves it is C's, built without a frame pointer, its EBP any value
@@ -4035,7 +4040,7 @@ static class Runtime
         // frame not in the stack the thread's block records -- an interrupt's
         // stack, say -- is followed as before.
         nuint block = Sys.ThreadBlock();
-        nuint top = block == 0 ? 0 : Sys.ReadNative(block + Tls.StackBase);
+        nuint top = block == 0 ? 0 : Sys.ReadAddress(block + Tls.StackBase);
         if (top != 0 && frame < top && next >= top) { return NoFrame; }
         return next;
     }
@@ -4077,8 +4082,8 @@ static class Runtime
         while (frame != 0 && taken < TraceDepth) {
             // [frame] is the caller's frame pointer, the word after it the
             // return address: the chain every prologue here builds.
-            nuint next = Sys.ReadNative(frame);
-            nuint ret = Sys.ReadNative(frame + WordSize.Bytes);
+            nuint next = Sys.ReadAddress(frame);
+            nuint ret = Sys.ReadAddress(frame + WordSize.Bytes);
             if (ret == 0) { break; }
             if (next != 0 && next <= frame) { break; }
 
@@ -4123,7 +4128,7 @@ static class Runtime
             SayLiteral(StdErr, "   registers");
             for (int i = 0; i < count; i++) {
                 SayLiteral(StdErr, " ");
-                SayHex(digits, Sys.ReadNative(registers + (nuint)i * WordSize.Bytes));
+                SayHex(digits, Sys.ReadAddress(registers + (nuint)i * WordSize.Bytes));
             }
             SayLiteral(StdErr, "\n");
         }
@@ -4150,7 +4155,7 @@ static class Runtime
             FreedNear(digits, address);
             if (registers != 0) {
                 for (int i = 0; i < count; i++) {
-                    FreedNear(digits, Sys.ReadNative(registers + (nuint)i * WordSize.Bytes));
+                    FreedNear(digits, Sys.ReadAddress(registers + (nuint)i * WordSize.Bytes));
                 }
             }
         }
@@ -4162,14 +4167,14 @@ static class Runtime
         if (value < 4096) {
             return;
         }
-        nuint total = Sys.ReadNative(FreeLogRing);
+        nuint total = Sys.ReadAddress(FreeLogRing);
         nuint have = total < FreeLogEntries ? total : FreeLogEntries;
         nuint found = 0;
         nuint back = 0;
         while (back < have && found < 4) {
             nuint n = (total - 1 - back) % FreeLogEntries;
             nuint entry = FreeLogRing + (1 + n * 4) * WordSize.Bytes;
-            nuint held = Sys.ReadNative(entry);
+            nuint held = Sys.ReadAddress(entry);
             if (held != 0 && value >= held - 16 && value < held + 1024) {
                 SayLiteral(StdErr, "   0x");
                 SayHex(digits, value);
@@ -4177,15 +4182,15 @@ static class Runtime
                 SayHex(digits, back);
                 SayLiteral(StdErr, " frees ago, at 0x");
                 SayHex(digits, held);
-                nuint owner = Sys.ReadNative(entry + WordSize.Bytes);
+                nuint owner = Sys.ReadAddress(entry + WordSize.Bytes);
                 if (owner != 0) {
                     SayLiteral(StdErr, ", a field of 0x");
                     SayHex(digits, owner);
                 }
                 SayLiteral(StdErr, "\n");
-                SayFrame(StdErr, Sys.ReadNative(entry + 3 * WordSize.Bytes));
+                SayFrame(StdErr, Sys.ReadAddress(entry + 3 * WordSize.Bytes));
                 if (owner == 0) {
-                    SayFrame(StdErr, Sys.ReadNative(entry + 2 * WordSize.Bytes));
+                    SayFrame(StdErr, Sys.ReadAddress(entry + 2 * WordSize.Bytes));
                 }
                 found = found + 1;
             }
@@ -4529,8 +4534,8 @@ static class Runtime
     public static int BoxKind(object value)
     {
         const int w = WordSize.Bytes;
-        nuint desc = (Sys.ReadNative(Sys.ObjectAddress(value))) - DescWordsHere * w;
-        return (int)((Sys.ReadNative(desc + DescFlagsWordHere * w) >> 12) & 0xFF);
+        nuint desc = (Sys.ReadAddress(Sys.ObjectAddress(value))) - DescWordsHere * w;
+        return (int)((Sys.ReadAddress(desc + DescFlagsWordHere * w) >> 12) & 0xFF);
     }
 
     /// The store of `value` into `array`: refused with ArrayTypeMismatchException
@@ -4542,8 +4547,8 @@ static class Runtime
             return;
         }
         const int w = WordSize.Bytes;
-        nuint desc = (Sys.ReadNative(array)) - DescWordsHere * w;
-        nuint element = Sys.ReadNative(desc + DescElementWord * w);
+        nuint desc = (Sys.ReadAddress(array)) - DescWordsHere * w;
+        nuint element = Sys.ReadAddress(desc + DescElementWord * w);
         if (element == 0)
         {
             return;
@@ -4552,7 +4557,7 @@ static class Runtime
         // live reference: said with what the collector's free journal knows
         // of it (gc.freejournal), and refused as a mismatch rather than read
         // through a description at address 0.
-        nuint vtable = Sys.ReadNative(value);
+        nuint vtable = Sys.ReadAddress(value);
         if (vtable == 0 || !DescribedAs(vtable - DescWordsHere * w, element))
         {
             ArrayStoreRefused(array, value);
@@ -4575,7 +4580,7 @@ static class Runtime
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void ArrayStoreRefused(nuint array, nuint value)
     {
-        if (ArrayStoreReport != 0) Sys.Call(ArrayStoreReport, (nint)value, (nint)array, 0);
+        if (ArrayStoreReport != 0) Sys.Call(ArrayStoreReport, value, array, 0);
         throw new ArrayTypeMismatchException();
     }
 
@@ -4594,13 +4599,13 @@ static class Runtime
             return;
         }
         const int w = WordSize.Bytes;
-        nuint desc = (Sys.ReadNative(array)) - DescWordsHere * w;
-        nuint element = Sys.ReadNative(desc + DescElementWord * w);
+        nuint desc = (Sys.ReadAddress(array)) - DescWordsHere * w;
+        nuint element = Sys.ReadAddress(desc + DescElementWord * w);
         if (element == 0)
         {
             return;
         }
-        nuint vtable = Sys.ReadNative(value);
+        nuint vtable = Sys.ReadAddress(value);
         if (vtable == 0 || !DescribedAs(vtable - DescWordsHere * w, element))
         {
             ArrayCopyRefused(value, element);
@@ -4614,7 +4619,7 @@ static class Runtime
     {
         object o = Sys.ObjectAt(value)!;
         // The descriptor's name word, as the image keeps it (String.TypeFullName).
-        object? word = Sys.ObjectAt(Sys.ReadNative(element));
+        object? word = Sys.ObjectAt(Sys.ReadAddress(element));
         string named = word == null ? "" : String.TypeFullName(word);
         InvalidCastTo(o, String.TypeText(named));
     }
@@ -4628,12 +4633,12 @@ static class Runtime
             return false;
         }
         const int w = WordSize.Bytes;
-        nuint desc = (Sys.ReadNative(array)) - DescWordsHere * w;
-        if ((Sys.ReadNative(desc + DescFlagsWordHere * w) & 3) != 1)
+        nuint desc = (Sys.ReadAddress(array)) - DescWordsHere * w;
+        if ((Sys.ReadAddress(desc + DescFlagsWordHere * w) & 3) != 1)
         {
             return false;
         }
-        nuint had = Sys.ReadNative(desc + DescElementWord * w);
+        nuint had = Sys.ReadAddress(desc + DescElementWord * w);
         return had != 0 && DescribedAs(had, element);
     }
 
@@ -4651,23 +4656,23 @@ static class Runtime
         // A class's depth is its place in its chain; an interface's and an
         // array's is -1.
         // A class's depth in its chain; an interface's is negative.
-        int wantDepth = (int)Sys.ReadNative(want + DescDepthWord * w);
+        int wantDepth = (int)Sys.ReadAddress(want + DescDepthWord * w);
         if (wantDepth >= 0)
         {
-            int depth = (int)Sys.ReadNative(desc + DescDepthWord * w);
+            int depth = (int)Sys.ReadAddress(desc + DescDepthWord * w);
             if (depth < wantDepth)
             {
                 return false;
             }
-            nuint display = Sys.ReadNative(desc + DescDisplayWord * w);
-            return display != 0 && (Sys.ReadNative(display + (nuint)wantDepth * w)) == want;
+            nuint display = Sys.ReadAddress(desc + DescDisplayWord * w);
+            return display != 0 && (Sys.ReadAddress(display + (nuint)wantDepth * w)) == want;
         }
-        nuint faces = Sys.ReadNative(desc + DescInterfacesWord * w);
+        nuint faces = Sys.ReadAddress(desc + DescInterfacesWord * w);
         if (faces != 0)
         {
             for (nuint at = faces; ; at = at + w)
             {
-                nuint face = Sys.ReadNative(at);
+                nuint face = Sys.ReadAddress(at);
                 if (face == 0) break;
                 if (face == want) return true;
             }
@@ -4675,22 +4680,22 @@ static class Runtime
         // A BOX OR A STRING IS ITS SYSTEM INTERFACES (BoxedFaces), which its
         // table names none of, so that every unit's copy of it is one table:
         // the interface's own descriptor says which face it is.
-        nuint wantFlags = Sys.ReadNative(want + DescFlagsWordHere * w);
+        nuint wantFlags = Sys.ReadAddress(want + DescFlagsWordHere * w);
         // AN ARRAY IS ITS SEQUENCE INTERFACES, AND ITS WALKER IEnumerator<T>
         // (Lowering.ArrayFaces), named in no table of theirs for the same
         // reason: an IList<U> -- its word 10 the descriptor of U[] -- of an
         // array that is a U[], covariance included; IEnumerable of any array.
         if ((wantFlags & (ArrayFaceFlag | WalkerFaceFlag)) != 0)
         {
-            nuint descFlags = Sys.ReadNative(desc + DescFlagsWordHere * w);
-            nuint elements = Sys.ReadNative(want + DescElementWord * w);
+            nuint descFlags = Sys.ReadAddress(desc + DescFlagsWordHere * w);
+            nuint elements = Sys.ReadAddress(want + DescElementWord * w);
             if ((wantFlags & ArrayFaceFlag) != 0 && (descFlags & 3) == 1)
             {
                 return elements == 0 || DescribedAs(desc, elements);
             }
             if ((wantFlags & WalkerFaceFlag) != 0 && (descFlags & ArrayWalkerFlag) != 0)
             {
-                nuint walked = Sys.ReadNative(desc + DescElementWord * w);
+                nuint walked = Sys.ReadAddress(desc + DescElementWord * w);
                 return elements == 0 || walked != 0 && DescribedAs(walked, elements);
             }
         }
@@ -4708,7 +4713,7 @@ static class Runtime
             {
                 for (nuint at = faces; ; at = at + w)
                 {
-                    nuint face = Sys.ReadNative(at);
+                    nuint face = Sys.ReadAddress(at);
                     if (face == 0) break;
                     if (VariantFits(face, want)) return true;
                 }
@@ -4716,13 +4721,13 @@ static class Runtime
         }
         // Two arrays of references: covariance, element by element. Every
         // array of references is an object[], whose element is named by none.
-        if ((Sys.ReadNative(desc + DescFlagsWordHere * w) & 3) == 1 && (wantFlags & 3) == 1)
+        if ((Sys.ReadAddress(desc + DescFlagsWordHere * w) & 3) == 1 && (wantFlags & 3) == 1)
         {
-            nuint had = Sys.ReadNative(desc + DescElementWord * w);
-            nuint wanted = Sys.ReadNative(want + DescElementWord * w);
+            nuint had = Sys.ReadAddress(desc + DescElementWord * w);
+            nuint wanted = Sys.ReadAddress(want + DescElementWord * w);
             if (wanted == 0)
             {
-                return (wantFlags & ReferenceElementsFlag) != 0 && (Sys.ReadNative(desc + DescFlagsWordHere * w) & ReferenceElementsFlag) != 0;
+                return (wantFlags & ReferenceElementsFlag) != 0 && (Sys.ReadAddress(desc + DescFlagsWordHere * w) & ReferenceElementsFlag) != 0;
             }
             return had != 0 && DescribedAs(had, wanted);
         }
@@ -4738,8 +4743,8 @@ static class Runtime
     static bool BoxedFace(nuint desc, nuint want, nuint wantFlags)
     {
         const int w = WordSize.Bytes;
-        nuint flags = Sys.ReadNative(desc + DescFlagsWordHere * w);
-        nuint named = Sys.ReadNative(want + DescElementWord * w);
+        nuint flags = Sys.ReadAddress(desc + DescFlagsWordHere * w);
+        nuint named = Sys.ReadAddress(want + DescElementWord * w);
         if ((wantFlags & FaceOfFlag) != 0)
         {
             return named != 0 && named == desc && FaceOverItself(desc);
@@ -4764,7 +4769,7 @@ static class Runtime
     /// (BoxedFaceTest).
     static bool FaceOverItself(nuint desc)
     {
-        nuint flags = Sys.ReadNative(desc + DescFlagsWordHere * WordSize.Bytes);
+        nuint flags = Sys.ReadAddress(desc + DescFlagsWordHere * WordSize.Bytes);
         return (flags & 3) == (1 | TypeStringFlag) || (flags & TypePrimitiveFlag) != 0;
     }
 
@@ -4794,15 +4799,15 @@ static class Runtime
         for (nuint i = 0; i < count; i++)
         {
             nuint theirs = i == 0 ? a0 : i == 1 ? a1 : i == 2 ? a2 : a3;
-            nuint mine = Sys.ReadNative(record + (2 + i) * w);
+            nuint mine = Sys.ReadAddress(record + (2 + i) * w);
             if (mine == theirs) continue;
-            nuint kind = Sys.ReadNative(variance + (2 + 2 * i) * w);
+            nuint kind = Sys.ReadAddress(variance + (2 + 2 * i) * w);
             if ((kind & 4) == 0 || mine == 0 || theirs == 0) return false;
-            if ((Sys.ReadNative(theirs + DescFlagsWordHere * w) & (TypeValueFlag | TypePrimitiveFlag | TypeEnumFlag)) != 0) return false;
+            if ((Sys.ReadAddress(theirs + DescFlagsWordHere * w) & (TypeValueFlag | TypePrimitiveFlag | TypeEnumFlag)) != 0) return false;
             // Object, either side: the caller says of its arguments (ShapeObjectShift),
             // the variance record of the interface's (1).
             bool theirsObject = ((shape >> (ShapeObjectShift + (int)i)) & 1) != 0;
-            bool mineObject = (Sys.ReadNative(variance + (3 + 2 * i) * w)) == 1;
+            bool mineObject = (Sys.ReadAddress(variance + (3 + 2 * i) * w)) == 1;
             nuint how = kind & 3;
             if (how == 1)
             {
@@ -4825,12 +4830,12 @@ static class Runtime
     static bool ShapeRecordIs(nuint record, nuint family, nuint count, nuint a0, nuint a1, nuint a2, nuint a3)
     {
         const int w = WordSize.Bytes;
-        return (Sys.ReadNative(record)) == (family)
-            && (Sys.ReadNative(record + w)) == count
-            && (Sys.ReadNative(record + 2 * w)) == (a0)
-            && (count < 2 || (Sys.ReadNative(record + 3 * w)) == (a1))
-            && (count < 3 || (Sys.ReadNative(record + 4 * w)) == (a2))
-            && (count < 4 || (Sys.ReadNative(record + 5 * w)) == (a3));
+        return (Sys.ReadAddress(record)) == (family)
+            && (Sys.ReadAddress(record + w)) == count
+            && (Sys.ReadAddress(record + 2 * w)) == (a0)
+            && (count < 2 || (Sys.ReadAddress(record + 3 * w)) == (a1))
+            && (count < 3 || (Sys.ReadAddress(record + 4 * w)) == (a2))
+            && (count < 4 || (Sys.ReadAddress(record + 5 * w)) == (a3));
     }
 
     /// Whether an object implements the generic interface of `family`
@@ -4854,7 +4859,7 @@ static class Runtime
             return false;
         }
         const int w = WordSize.Bytes;
-        nuint desc = (Sys.ReadNative(obj)) - DescWordsHere * w;
+        nuint desc = (Sys.ReadAddress(obj)) - DescWordsHere * w;
         // A GENERIC CLASS (ShapeClass), at its depth in every chain it is in
         // (shape's high bits): the ancestor at that depth is the class of that
         // family over these arguments, by the identity record its type
@@ -4862,40 +4867,40 @@ static class Runtime
         if ((shape & ShapeClass) != 0)
         {
             nuint depth = shape >> ShapeDepthShift;
-            if ((Sys.ReadNative(desc + DescFlagsWordHere * w) & (1 | TypeStringFlag | TypeValueFlag | InterfaceFlag)) != 0) return false;
-            int had = (int)Sys.ReadNative(desc + DescDepthWord * w);
+            if ((Sys.ReadAddress(desc + DescFlagsWordHere * w) & (1 | TypeStringFlag | TypeValueFlag | InterfaceFlag)) != 0) return false;
+            int had = (int)Sys.ReadAddress(desc + DescDepthWord * w);
             if (had < 0 || (nuint)had < depth) return false;
-            nuint context = Sys.ReadNative(desc + DescElementWord * w);
+            nuint context = Sys.ReadAddress(desc + DescElementWord * w);
             if (context == 0) return false;
-            nuint table = Sys.ReadNative(context + depth * w);
+            nuint table = Sys.ReadAddress(context + depth * w);
             if (table == 0) return false;
-            nuint entries = Sys.ReadNative(table);
-            nuint identity = Sys.ReadNative(table + (1 + entries) * w);
+            nuint entries = Sys.ReadAddress(table);
+            nuint identity = Sys.ReadAddress(table + (1 + entries) * w);
             return identity != 0 && ShapeRecordIs(identity, family, count, a0, a1, a2, a3);
         }
         // AN ARRAY, OR ITS WALKER, ASKED ONE OF ITS INTERFACES (ShapeArrayFace,
         // ShapeWalkerFace; Lowering.ArrayFaces): its elements are U's, or
         // derive from it, or U is object and they are references.
-        nuint descFlags = Sys.ReadNative(desc + DescFlagsWordHere * w);
+        nuint descFlags = Sys.ReadAddress(desc + DescFlagsWordHere * w);
         nuint arrayAsked = (shape & ShapeArrayFace) != 0 && (descFlags & 3) == 1 ? desc
-            : (shape & ShapeWalkerFace) != 0 && (descFlags & ArrayWalkerFlag) != 0 ? Sys.ReadNative(desc + DescElementWord * w) : 0;
+            : (shape & ShapeWalkerFace) != 0 && (descFlags & ArrayWalkerFlag) != 0 ? Sys.ReadAddress(desc + DescElementWord * w) : 0;
         if (arrayAsked != 0)
         {
             if (((shape >> ShapeObjectShift) & 1) != 0)
             {
-                return (Sys.ReadNative(arrayAsked + DescFlagsWordHere * w) & ReferenceElementsFlag) != 0;
+                return (Sys.ReadAddress(arrayAsked + DescFlagsWordHere * w) & ReferenceElementsFlag) != 0;
             }
-            nuint element = Sys.ReadNative(arrayAsked + DescElementWord * w);
+            nuint element = Sys.ReadAddress(arrayAsked + DescElementWord * w);
             return element != 0 && DescribedAs(element, a0);
         }
-        nuint faces = Sys.ReadNative(desc + DescInterfacesWord * w);
+        nuint faces = Sys.ReadAddress(desc + DescInterfacesWord * w);
         if (faces != 0)
         {
             for (nuint at = faces; ; at = at + w)
             {
-                nuint face = Sys.ReadNative(at);
+                nuint face = Sys.ReadAddress(at);
                 if (face == 0) break;
-                nuint record = Sys.ReadNative(face + DescShapeWord * w);
+                nuint record = Sys.ReadAddress(face + DescShapeWord * w);
                 if (record != 0 && ShapeRecordIs(record, family, count, a0, a1, a2, a3))
                 {
                     return true;
@@ -4903,7 +4908,7 @@ static class Runtime
                 // AND BY VARIANCE, as DescribedAs answers a named interface
                 // (VariantFits): a List<string> is an IEnumerable<object>
                 // where the copy's U is object.
-                if (record != 0 && (Sys.ReadNative(record)) == (family) && (Sys.ReadNative(record + w)) == count)
+                if (record != 0 && (Sys.ReadAddress(record)) == (family) && (Sys.ReadAddress(record + w)) == count)
                 {
                     nuint variance = VarianceOf(face);
                     if (variance != 0 && ShapeVariantFits(record, variance, count, shape, a0, a1, a2, a3)) return true;
@@ -4935,8 +4940,8 @@ static class Runtime
     static nuint VarianceOf(nuint desc)
     {
         const int w = WordSize.Bytes;
-        if ((Sys.ReadNative(desc + DescFlagsWordHere * w) & InterfaceFlag) == 0) return 0;
-        return Sys.ReadNative(desc + DescRecordWord * w);
+        if ((Sys.ReadAddress(desc + DescFlagsWordHere * w) & InterfaceFlag) == 0) return 0;
+        return Sys.ReadAddress(desc + DescRecordWord * w);
     }
 
     /// Whether the interface `face` converts to `want` by variance, as C#
@@ -4952,17 +4957,17 @@ static class Runtime
         nuint wanted = VarianceOf(want);
         if (had == 0 || wanted == 0) return false;
         const int w = WordSize.Bytes;
-        if ((Sys.ReadNative(had)) != (Sys.ReadNative(wanted))) return false;
-        nuint count = Sys.ReadNative(had + w);
-        if (count != Sys.ReadNative(wanted + w)) return false;
+        if ((Sys.ReadAddress(had)) != (Sys.ReadAddress(wanted))) return false;
+        nuint count = Sys.ReadAddress(had + w);
+        if (count != Sys.ReadAddress(wanted + w)) return false;
         for (nuint i = 0; i < count; i++)
         {
             nuint at = (2 + 2 * i) * w;
-            nuint kind = Sys.ReadNative(wanted + at);
-            nuint mine = Sys.ReadNative(had + at + w);
-            nuint theirs = Sys.ReadNative(wanted + at + w);
+            nuint kind = Sys.ReadAddress(wanted + at);
+            nuint mine = Sys.ReadAddress(had + at + w);
+            nuint theirs = Sys.ReadAddress(wanted + at + w);
             if (mine == theirs) continue;
-            if ((kind & 4) == 0 || (Sys.ReadNative(had + at) & 4) == 0) return false;
+            if ((kind & 4) == 0 || (Sys.ReadAddress(had + at) & 4) == 0) return false;
             nuint how = kind & 3;
             if (how == 1)
             {
@@ -5014,29 +5019,29 @@ static class Runtime
     {
         nuint at = Sys.ObjectAddress(made);
         const int w = WordSize.Bytes;
-        nuint desc = Sys.ReadNative(at) - Gc.DescWords * w;
-        nuint map = Sys.ReadNative(desc + Gc.DescRefMapWord * w);
-        nuint list = map + (1 + (Sys.ReadNative(map) + 31) / 32) * w;
-        nuint count = Sys.ReadNative(list);
+        nuint desc = Sys.ReadAddress(at) - Gc.DescWords * w;
+        nuint map = Sys.ReadAddress(desc + Gc.DescRefMapWord * w);
+        nuint list = map + (1 + (Sys.ReadAddress(map) + 31) / 32) * w;
+        nuint count = Sys.ReadAddress(list);
         for (nuint k = 0; k < count; k++)
         {
             nuint entry = list + (1 + 3 * k) * w;
-            nuint field = at + Sys.ReadNative(entry);
-            nuint shared = Sys.ReadNative(field);
+            nuint field = at + Sys.ReadAddress(entry);
+            nuint shared = Sys.ReadAddress(field);
             if (shared == 0) continue;
-            nuint copier = Sys.ReadNative(entry + 2 * w);
+            nuint copier = Sys.ReadAddress(entry + 2 * w);
             nuint own;
             if (copier != 0)
             {
-                own = (nuint)Sys.Call(copier, (nint)shared, 0, 0);
+                own = Sys.Call(copier, shared, 0, 0);
             }
             else
             {
-                nuint size = Sys.ReadNative(entry + w);
-                own = Alloc((nint)size);
+                nuint size = Sys.ReadAddress(entry + w);
+                own = Alloc(size);
                 Sys.MemoryCopy(own, shared, size);
             }
-            Sys.WriteNative(field, own);
+            Sys.WriteAddress(field, own);
         }
     }
 
@@ -5949,7 +5954,7 @@ static class Runtime
     /// bit 0 being the low bit of the first byte, or -1 when none is set.
     /// Whole zero bytes are skipped a byte at a time; a word at a time is the
     /// obvious next step if a caller ever shows up with megabytes of them.
-    public static nint FirstSet(nuint bitmap, nuint bits)
+    public static int FirstSet(nuint bitmap, nuint bits)
     {
         nuint bit = 0;
 
@@ -5973,7 +5978,7 @@ static class Runtime
                 }
                 if (((b >> (int)within) & 1) != 0)
                 {
-                    return (nint)bit;
+                    return (int)bit;
                 }
                 within = within + 1;
                 bit = bit + 1;

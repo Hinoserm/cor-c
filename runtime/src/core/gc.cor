@@ -6863,7 +6863,7 @@ static class Gc
     static nuint _pageCount;
     static nint _pageNext;
     static nuint _pagesDone;
-    static long _job;           // what the workers do while the word is odd: 0 mark, 1 sweep pages, 2 snapshot pages
+    static nint _job;           // what the workers do while the word is odd: 0 mark, 1 sweep pages, 2 snapshot pages (a word: the atomics on it are the machine's)
     const int PagesTogether = 512;
 
     static void SweepPagesTogether()
@@ -8000,6 +8000,12 @@ static class Gc
     /// An address or a length, said unsigned: a kernel's address in the top
     /// half of long mode is no negative number.
     internal static void SayNumber(string label, nuint value)
+    {
+        SayDigits(label, value, false);
+    }
+
+    /// A 64-bit total, said unsigned.
+    internal static void SayNumber(string label, ulong value)
     {
         SayDigits(label, value, false);
     }
@@ -14008,7 +14014,7 @@ static class Gc
     /// Looks at an empty queue before a worker parks.
     const int WorkerSpins = 256;
     /// Workers parked on the queue's tail.
-    static long _sleepers;
+    static nint _sleepers;      // a count, a word: the atomics on it are the machine's
     /// The depth at which a push wakes them: less is the pusher's own to scan.
     const int WorkerWakeDepth = 64;
 

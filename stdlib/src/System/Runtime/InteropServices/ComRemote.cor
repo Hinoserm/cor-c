@@ -840,7 +840,7 @@ namespace System.Runtime.InteropServices
             System.__ComObject? c = v as System.__ComObject;
             RemoteObject? remote = c != null ? c._remote as RemoteObject : null;
             if (remote == null) { ComMarshal.WriteInterface(at, v, iid); return; }
-            Sys.WriteNative((nuint)at, (nuint)(ComCallable.For(new RemoteStandIn(remote, c)).Query(ComMarshal.IidIUnknown)));
+            Sys.WriteAddress((nuint)at, (nuint)(ComCallable.For(new RemoteStandIn(remote, c)).Query(ComMarshal.IidIUnknown)));
         }
 
         public static object? Take(string kind, nint at)

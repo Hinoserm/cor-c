@@ -60,7 +60,7 @@ static class TypeNameCache {
     internal static long[] At = new long[64];
     internal static string?[] To = new string?[64];
     internal static int Count;
-    internal static long Gate;
+    internal static nint Gate;      // a word: the spin gate's atomics are the machine's
 }
 
 static class String {
@@ -10935,7 +10935,7 @@ public static class MemoryExtensions {
         nuint count = (nuint)n;
         nuint i = 0;
         for (; i + WordSize.Bytes <= count; i += WordSize.Bytes) {
-            if (Sys.ReadNative(a + i) != Sys.ReadNative(b + i)) { return false; }
+            if (Sys.ReadAddress(a + i) != Sys.ReadAddress(b + i)) { return false; }
         }
         for (; i < count; i++) {
             if (Sys.Read8(a + i) != Sys.Read8(b + i)) { return false; }
@@ -11029,7 +11029,7 @@ public static class MemoryExtensions {
         if (to < from || to >= from + count) { Sys.MemoryCopy(to, from, count); return; }
         nuint i = count;
         for (; i >= WordSize.Bytes; i -= WordSize.Bytes) {
-            Sys.WriteNative(to + i - WordSize.Bytes, Sys.ReadNative(from + i - WordSize.Bytes));
+            Sys.WriteAddress(to + i - WordSize.Bytes, Sys.ReadAddress(from + i - WordSize.Bytes));
         }
         while (i > 0) { i--; Sys.Write8(to + i, Sys.Read8(from + i)); }
     }
@@ -22014,7 +22014,7 @@ class Exception
         {
             nuint next = Runtime.StepFrame(frame);
             if (next == Runtime.NoFrame) break;
-            nuint back = Sys.ReadNative(frame + WordSize.Bytes);
+            nuint back = Sys.ReadAddress(frame + WordSize.Bytes);      // the return address a frame keeps above its saved frame pointer
             frame = next;
             if (i == 0 && Runtime.InRuntime(back)) continue;
             _frames[i] = back;

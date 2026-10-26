@@ -719,12 +719,13 @@ static partial class Os
         foreach (byte[] t in texts) bytes = bytes + (nuint)t.Length;
         nuint stack = VirtualAlloc(0, bytes, 0x3000, 0x04);
         if (stack == 0) return 0;
-        Sys.WriteNative(stack, (nuint)args.Count);
+        // The program's entry stack as a 32-bit process has it: words of 4 bytes.
+        Sys.Write32(stack, (uint)args.Count);
         nuint text = stack + words * 4;
         for (int i = 0; i < texts.Count; i++)
         {
             nuint slot = i < args.Count ? stack + 4 * (nuint)(1 + i) : stack + 4 * (nuint)(1 + args.Count + 1 + (i - args.Count));
-            Sys.WriteNative(slot, text);
+            Sys.Write32(slot, Sys.Low32(text));
             byte[] t = texts[i];
             for (int k = 0; k < t.Length; k++) Sys.Write8(text + (nuint)k, t[k]);
             text = text + (nuint)t.Length;
@@ -796,7 +797,7 @@ static partial class Os
     public static string? StartingVariable(string name)
     {
         nuint at = EnvironAddress();
-        for (nuint entry = Sys.ReadNative(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadNative(at))
+        for (nuint entry = Sys.Read32(at); entry != 0; at = at + 4, entry = Sys.Read32(at))
         {
             int i = 0;
             while (i < name.Length && Sys.Read8(entry + (nuint)i) == name[i]) i = i + 1;

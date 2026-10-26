@@ -201,7 +201,7 @@ static partial class Marshal
             nuint pages = Platform.Map(bytes);
             if (pages != 0)
             {
-                Sys.WriteNative(pages, bytes);
+                Sys.WriteAddress(pages, bytes);
                 at = pages + (nuint)(2 * WordSize.Bytes);
             }
             else
@@ -238,7 +238,7 @@ static partial class Marshal
             return;
         }
         nuint pages = (nuint)hglobal - (nuint)(2 * WordSize.Bytes);
-        Platform.Unmap(pages, Sys.ReadNative(pages));
+        Platform.Unmap(pages, Sys.ReadAddress(pages));
     }
 
     public static void FreeCoTaskMem(nint ptr)
@@ -262,7 +262,7 @@ static partial class Marshal
             return (nint)at;
         }
         nuint pages = (nuint)pv - (nuint)(2 * WordSize.Bytes);
-        nuint had = Sys.ReadNative(pages) - (nuint)(2 * WordSize.Bytes);
+        nuint had = Sys.ReadAddress(pages) - (nuint)(2 * WordSize.Bytes);
         nint made = AllocHGlobal(cb);
         nuint keep = had < (nuint)cb ? had : (nuint)cb;
         for (nuint i = 0; i < keep; i++)
@@ -281,8 +281,8 @@ static partial class Marshal
     public static int ReadInt32(nint ptr, int ofs) { return (int)Sys.Read32((nuint)(ptr + ofs)); }
     public static long ReadInt64(nint ptr) { return (long)Sys.Read64((nuint)ptr); }
     public static long ReadInt64(nint ptr, int ofs) { return ReadInt64(ptr + ofs); }
-    public static nint ReadIntPtr(nint ptr) { return (nint)Sys.ReadNative((nuint)ptr); }
-    public static nint ReadIntPtr(nint ptr, int ofs) { return (nint)Sys.ReadNative((nuint)(ptr + ofs)); }
+    public static nint ReadIntPtr(nint ptr) { return (nint)Sys.ReadAddress((nuint)ptr); }
+    public static nint ReadIntPtr(nint ptr, int ofs) { return (nint)Sys.ReadAddress((nuint)(ptr + ofs)); }
 
     public static void WriteByte(nint ptr, byte val) { Sys.Write8((nuint)ptr, val); }
     public static void WriteByte(nint ptr, int ofs, byte val) { Sys.Write8((nuint)(ptr + ofs), val); }
@@ -292,8 +292,8 @@ static partial class Marshal
     public static void WriteInt32(nint ptr, int ofs, int val) { Sys.Write32((nuint)(ptr + ofs), (uint)val); }
     public static void WriteInt64(nint ptr, long val) { Sys.Write64((nuint)ptr, (ulong)val); }
     public static void WriteInt64(nint ptr, int ofs, long val) { WriteInt64(ptr + ofs, val); }
-    public static void WriteIntPtr(nint ptr, nint val) { Sys.WriteNative((nuint)ptr, (nuint)val); }
-    public static void WriteIntPtr(nint ptr, int ofs, nint val) { Sys.WriteNative((nuint)(ptr + ofs), (nuint)val); }
+    public static void WriteIntPtr(nint ptr, nint val) { Sys.WriteAddress((nuint)ptr, (nuint)val); }
+    public static void WriteIntPtr(nint ptr, int ofs, nint val) { Sys.WriteAddress((nuint)(ptr + ofs), (nuint)val); }
 
     /// Bytes between an array and memory C owns, both ways.
     public static void Copy(byte[] source, int startIndex, nint destination, int length)
@@ -741,7 +741,7 @@ namespace System.Runtime.InteropServices
         static string Uname(int field)
         {
             byte[] names = new byte[65 * 6];
-            if (Err.Result(Sys.Syscall(LinuxCall.Uname, (nint)Sys.ArrayData(names), 0, 0)) < 0) return "";
+            if (Err.Result(Sys.Syscall(LinuxCall.Uname, (SyscallWord)Sys.ArrayData(names), 0, 0)) < 0) return "";
             int start = field * 65;
             int end = start;
             while (end < start + 65 && names[end] != 0) end++;

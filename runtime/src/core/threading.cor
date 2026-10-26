@@ -4224,10 +4224,10 @@ static partial class Scheduler
         // this frame, and the run it is inside named again as it ends.
         // RunPosted answers what escaped, so nothing leaves between the two.
         nuint block = Sys.ThreadBlock();
-        nuint outer = Sys.ReadNative(block + Tls.MonitorRun);
-        Sys.WriteNative(block + Tls.MonitorRun, Sys.FramePointer() & ~(nuint)3);
+        nuint outer = Sys.ReadAddress(block + Tls.MonitorRun);
+        Sys.WriteAddress(block + Tls.MonitorRun, Sys.FramePointer() & ~(nuint)3);
         Exception? failed = RunPosted(work, context);
-        Sys.WriteNative(block + Tls.MonitorRun, outer);
+        Sys.WriteAddress(block + Tls.MonitorRun, outer);
         if (failed != null)
         {
             AsyncRuntime.Unhandled(failed);
@@ -4897,7 +4897,7 @@ static class Monitor
     {
         nuint me = Platform.MonitorOwner();
         if (me == 0) return 0;
-        nuint run = Sys.ReadNative(Sys.ThreadBlock() + Tls.MonitorRun);
+        nuint run = Sys.ReadAddress(Sys.ThreadBlock() + Tls.MonitorRun);
         return (run != 0 ? run : me) & ~Asleep;
     }
 
@@ -4908,8 +4908,8 @@ static class Monitor
     {
         nuint owner = seen & ~Asleep;
         nuint block = Sys.ThreadBlock();
-        if (owner == 0 || Sys.ReadNative(block + Tls.MonitorRun) == 0) return;
-        nuint top = Sys.ReadNative(block + Tls.StackBase);
+        if (owner == 0 || Sys.ReadAddress(block + Tls.MonitorRun) == 0) return;
+        nuint top = Sys.ReadAddress(block + Tls.StackBase);
         if (owner == (Platform.MonitorOwner() & ~Asleep) || (owner > Sys.FramePointer() && owner < top))
             throw new InvalidOperationException("deadlock: the lock is held by the code waiting for this work to run");
     }
@@ -5076,7 +5076,7 @@ static class Monitor
         // THE WHOLE WORD: an owner is a thread block's address, above 4 GB in
         // long mode, and PeekWord reads 32 bits of it -- every lock taken on a
         // 64-bit thread was "not held" by it on the way out.
-        if ((Sys.ReadNative(word) & ~Asleep) != me)
+        if ((Sys.ReadAddress(word) & ~Asleep) != me)
         {
             throw new SynchronizationLockException();
         }
@@ -5096,7 +5096,7 @@ static class Monitor
             throw new ArgumentNullException("obj");
         }
         nuint me = Owner();
-        nuint seen = Sys.ReadNative(Sys.SyncWord(obj));
+        nuint seen = Sys.ReadAddress(Sys.SyncWord(obj));
         return me == 0 ? seen != 0 : (seen & ~Asleep) == me;
     }
 
@@ -5118,7 +5118,7 @@ static class Monitor
 
         while (true)
         {
-            nuint seen = Sys.ReadNative(word);
+            nuint seen = Sys.ReadAddress(word);
 
             if (seen == 0)
             {
@@ -5280,7 +5280,7 @@ static class Monitor
         nuint word = Sys.SyncWord(obj);
         nuint me = Owner();
 
-        if (me == 0 || (Sys.ReadNative(word) & ~Asleep) != me)
+        if (me == 0 || (Sys.ReadAddress(word) & ~Asleep) != me)
         {
             throw new SynchronizationLockException();
         }
@@ -5373,7 +5373,7 @@ static class Monitor
         nuint word = Sys.SyncWord(obj);
         nuint me = Owner();
 
-        if (me == 0 || (Sys.ReadNative(word) & ~Asleep) != me)
+        if (me == 0 || (Sys.ReadAddress(word) & ~Asleep) != me)
         {
             throw new SynchronizationLockException();
         }
@@ -5685,7 +5685,7 @@ sealed class AsyncContext
         get
         {
             nuint block = Sys.ThreadBlock();
-            return block == 0 ? null : Sys.ObjectAt(Sys.ReadNative(block + Tls.AsyncContext)) as AsyncContext;
+            return block == 0 ? null : Sys.ObjectAt(Sys.ReadAddress(block + Tls.AsyncContext)) as AsyncContext;
         }
     }
 
@@ -5706,8 +5706,8 @@ sealed class AsyncContext
             CultureInfo.GivenUICulture = context.UICulture;
             if (block != 0)
             {
-                saved.Running = Sys.ReadNative(block + Tls.AsyncContext);
-                Sys.WriteNative(block + Tls.AsyncContext, Sys.ObjectAddress(context));
+                saved.Running = Sys.ReadAddress(block + Tls.AsyncContext);
+                Sys.WriteAddress(block + Tls.AsyncContext, Sys.ObjectAddress(context));
             }
             return saved;
         }
@@ -5719,26 +5719,26 @@ sealed class AsyncContext
         {
             return saved;
         }
-        saved.Running = Sys.ReadNative(block + Tls.AsyncContext);
-        saved.Statics = Sys.ReadNative(block + Tls.ThreadStatics);
+        saved.Running = Sys.ReadAddress(block + Tls.AsyncContext);
+        saved.Statics = Sys.ReadAddress(block + Tls.ThreadStatics);
         saved.HeldStatics = Sys.Cas(Sys.AddressOf(ref context._staticsHeld), 0, 1) == 0;
-        Sys.WriteNative(block + Tls.ThreadStatics, saved.HeldStatics ? Sys.ObjectAddress(context.Statics) : 0);
+        Sys.WriteAddress(block + Tls.ThreadStatics, saved.HeldStatics ? Sys.ObjectAddress(context.Statics) : 0);
         if (saved.Running == 0 && Platform.TaskArenaBytes > 0)
         {
             // The block's region words put aside, and the run's arena begun
             // empty: its first region maps it, as big as the region needs.
             saved.Arena = true;
-            saved.RegionBase = Sys.ReadNative(block + Tls.RegionBase);
-            saved.RegionAt = Sys.ReadNative(block + Tls.RegionAt);
-            saved.RegionEnd = Sys.ReadNative(block + Tls.RegionEnd);
-            saved.RegionOpen = Sys.ReadNative(block + Tls.RegionOpen);
-            Sys.WriteNative(block + Tls.RegionBase, 0);
-            Sys.WriteNative(block + Tls.RegionAt, 0);
-            Sys.WriteNative(block + Tls.RegionEnd, 0);
+            saved.RegionBase = Sys.ReadAddress(block + Tls.RegionBase);
+            saved.RegionAt = Sys.ReadAddress(block + Tls.RegionAt);
+            saved.RegionEnd = Sys.ReadAddress(block + Tls.RegionEnd);
+            saved.RegionOpen = Sys.ReadAddress(block + Tls.RegionOpen);
+            Sys.WriteAddress(block + Tls.RegionBase, 0);
+            Sys.WriteAddress(block + Tls.RegionAt, 0);
+            Sys.WriteAddress(block + Tls.RegionEnd, 0);
             Gc.SetOpen(block, 0);
-            Sys.WriteNative(block + Tls.TaskArena, 1);
+            Sys.WriteAddress(block + Tls.TaskArena, 1);
         }
-        Sys.WriteNative(block + Tls.AsyncContext, Sys.ObjectAddress(context));
+        Sys.WriteAddress(block + Tls.AsyncContext, Sys.ObjectAddress(context));
         return saved;
     }
 
@@ -5753,12 +5753,12 @@ sealed class AsyncContext
             // What the run set is the run's: the thread's own back.
             CultureInfo.GivenCulture = saved.Culture;
             CultureInfo.GivenUICulture = saved.UICulture;
-            if (block != 0) Sys.WriteNative(block + Tls.AsyncContext, saved.Running);
+            if (block != 0) Sys.WriteAddress(block + Tls.AsyncContext, saved.Running);
             return;
         }
         if (block != 0)
         {
-            nuint statics = Sys.ReadNative(block + Tls.ThreadStatics);
+            nuint statics = Sys.ReadAddress(block + Tls.ThreadStatics);
             if (saved.HeldStatics)
             {
                 if (statics != Sys.ObjectAddress(context.Statics)) context.Statics = ThreadStatics.Flowing(statics);
@@ -5775,7 +5775,7 @@ sealed class AsyncContext
                 // The run's arena given back whole (every region it opened
                 // is closed or left behind by now), then the block's own.
                 Gc.ReleaseRegion(block);
-                Sys.WriteNative(block + Tls.TaskArena, 0);
+                Sys.WriteAddress(block + Tls.TaskArena, 0);
                 // THE FIRST CHUNK LAST: a scan that lands in the middle
                 // (ScanRegion, from a handshake) reads an arena only from
                 // its first chunk, and finds none until every word of it is
@@ -5783,13 +5783,13 @@ sealed class AsyncContext
                 // the chunk being filled still the run's -- zero -- and every
                 // chunk's fill taken from trailers that were stale for the
                 // one being filled.
-                Sys.WriteNative(block + Tls.RegionAt, saved.RegionAt);
-                Sys.WriteNative(block + Tls.RegionEnd, saved.RegionEnd);
+                Sys.WriteAddress(block + Tls.RegionAt, saved.RegionAt);
+                Sys.WriteAddress(block + Tls.RegionEnd, saved.RegionEnd);
                 Gc.SetOpen(block, saved.RegionOpen);
-                Sys.WriteNative(block + Tls.RegionBase, saved.RegionBase);
+                Sys.WriteAddress(block + Tls.RegionBase, saved.RegionBase);
             }
-            Sys.WriteNative(block + Tls.ThreadStatics, saved.Statics);
-            Sys.WriteNative(block + Tls.AsyncContext, saved.Running);
+            Sys.WriteAddress(block + Tls.ThreadStatics, saved.Statics);
+            Sys.WriteAddress(block + Tls.AsyncContext, saved.Running);
         }
         if (Platform.ContextHook != 0)
         {
@@ -5949,7 +5949,7 @@ static class InterruptCompletions
         nuint at = Sys.AddressOf(ref _ready);
         while (true)
         {
-            nuint head = Sys.ReadNative(at);
+            nuint head = Sys.ReadAddress(at);
             _links[slot] = (int)head;
             if (Sys.Cas(at, head, (nuint)(slot + 1)) == head)
             {
@@ -7401,14 +7401,15 @@ static class ThreadStatics
     {
         // The field's number, made the first time any thread asks: one of a
         // few thousand at most, an int.
-        int index = (int)Sys.ReadNative(indexAt);
+        // (A word: the compiler lays the number down as one, ts_<field>.)
+        int index = (int)Sys.ReadAddress(indexAt);
         if (index == 0)
         {
             Sys.Cas(indexAt, 0, (int)Sys.AtomicAdd(Sys.AddressOf(ref _fields), 1) + 1);
-            index = (int)Sys.ReadNative(indexAt);
+            index = (int)Sys.ReadAddress(indexAt);
         }
         nuint home = Home();
-        object?[]? cells = Sys.ObjectAt(Sys.ReadNative(home)) as object?[];
+        object?[]? cells = Sys.ObjectAt(Sys.ReadAddress(home)) as object?[];
         if (cells is null || index >= cells.Length)
         {
             cells = Grow(home, cells, index);
@@ -7464,7 +7465,7 @@ static class ThreadStatics
         cells[0] = node;
         // Kept by the list before the thread block names it.
         node.Cells = cells;
-        Sys.WriteNative(home, Sys.ObjectAddress(cells));
+        Sys.WriteAddress(home, Sys.ObjectAddress(cells));
         return cells;
     }
 
@@ -7480,12 +7481,12 @@ static class ThreadStatics
     /// there (Platform.ThreadStaticsHook), as it ends.
     public static void ReleaseAt(nuint home)
     {
-        object?[]? cells = Sys.ObjectAt(Sys.ReadNative(home)) as object?[];
+        object?[]? cells = Sys.ObjectAt(Sys.ReadAddress(home)) as object?[];
         if (cells is null)
         {
             return;
         }
-        Sys.WriteNative(home, 0);
+        Sys.WriteAddress(home, 0);
         ThreadStaticTable node = (ThreadStaticTable)cells[0]!;
         Enter();
         if (node.Previous is not null) node.Previous.Next = node.Next;

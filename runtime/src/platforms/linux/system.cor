@@ -3,11 +3,14 @@
 //
 // Everything here is a system call through Sys.Syscall, the one intrinsic the
 // compiler provides for reaching the kernel (docs/software/X86-BACKEND.md,
-// "Linux is a target, not a model"): `int 0x80` with the number in EAX and
+// "Linux is a target, not a model"), made exactly as Linux's interface for
+// the program's own mode makes it: `int 0x80` with the number in EAX and
 // the arguments in EBX, ECX, EDX, ESI, EDI, EBP on i386, `syscall` with them
 // in RAX and RDI, RSI, RDX, R10, R8, R9 in long mode. The backend does that;
-// this file only says which number and what to pass, and where the two ABIs
-// ask for different shapes it says so under TARGET_AMD64.
+// this file only says which number and what to pass, in registers as wide as
+// the interface's (SyscallWord), and where the two interfaces ask for
+// different shapes -- a 64-bit value in two registers, a structure laid out
+// otherwise -- it says so under SYSCALL64 (--syscall-abi).
 //
 //   corc compile program.cor -o program
 //
@@ -23,35 +26,10 @@
 //
 // THE ONE FACT ABOUT THE KERNEL'S ANSWERS. A Linux system call returns its
 // result in EAX, and an error is a SMALL NEGATIVE number: -errno, in
-// -4095..-1. Sys.Syscall hands the register back as an nint, unchanged. An
+// -4095..-1. Sys.Syscall hands the register back as a SyscallWord, unchanged. An
 // error is one of the top 4095 values of the unsigned range (Err.Failed);
 // an address is read with Err.Address, never by its sign, since one above
-// 2 GB (which brk and mmap can legitimately return) is negative as an nint.
-
-/// Which socket operation, when they go through socketcall(2). The numbers
-/// are the kernel's SYS_SOCKET family from linux/net.h and have nothing to do
-/// with the system-call numbers (Call, abi.cor).
-static class SockCall
-{
-    public const int Socket = 1;
-    public const int Bind = 2;
-    public const int Connect = 3;
-    public const int Listen = 4;
-    public const int Accept = 5;
-    public const int GetSockName = 6;
-    public const int GetPeerName = 7;
-    public const int SocketPair = 8;
-    public const int Send = 9;
-    public const int Recv = 10;
-    public const int SendTo = 11;
-    public const int RecvFrom = 12;
-    public const int Shutdown = 13;
-    public const int SetSockOpt = 14;
-    public const int GetSockOpt = 15;
-    public const int SendMsg = 16;
-    public const int RecvMsg = 17;
-    public const int Accept4 = 18;
-}
+// 2 GB (which brk and mmap can legitimately return) is negative as a signed number.
 
 /// The control messages recvmsg(2) answers with: a list of headers, each
 /// four words of its own length, a level and a type, then the data, and
@@ -64,7 +42,7 @@ static class SockCall
 static class Cmsg
 {
     // struct cmsghdr: a size_t length, then two ints, padded to a word.
-#if TARGET_64BIT
+#if SYSCALL64
     public const int HeaderBytes = 16;
     const int LevelAt = 8;
     const int Align = 7;
@@ -129,7 +107,7 @@ static class Platform
 {
     // The raw answer, as is: -errno for a call that answers a count or
     // zero. An address-returning call goes through Err.Failed/Err.Address.
-    public static nint Result(nint raw)
+    public static long Result(SyscallWord raw)
     {
         return Err.Result(raw);
     }
@@ -143,7 +121,7 @@ static class Platform
     /// this way. The stack is read where it stands meanwhile; the words the
     /// call was handed are on it, and they keep what they point into.
     /// Answers the kernel's raw number, as Sys.Syscall does.
-    public static nint Blocking(nint n, nint a, nint b, nint c, nint d = 0, nint e = 0, nint f = 0)
+    public static SyscallWord Blocking(int n, SyscallWord a, SyscallWord b, SyscallWord c, SyscallWord d = 0, SyscallWord e = 0, SyscallWord f = 0)
     {
         // A KERNEL'S OWN CALL (--kernel-syscalls) IS NOT BRACKETED: its
         // thread block is a processor's, the kernel decides when the call
@@ -151,7 +129,7 @@ static class Platform
         // stopped is one it refuses to park.
         if (Sys.KernelSyscalls()) return Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.BeginBlocking();
-        nint raw = Sys.Syscall(n, a, b, c, d, e, f);
+        SyscallWord raw = Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.EndBlocking();
         return raw;
     }
@@ -318,7 +296,7 @@ static class Platform
     {
         if (_traceDigits == 0)
         {
-            _traceDigits = Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, 4096, 3, 0x22, 0 - 1, 0));
+            _traceDigits = Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, 4096, 3, 0x22, SyscallRegister.MinusOne, 0));
         }
 
         Runtime.WriteLiteral(2, label);
@@ -357,7 +335,7 @@ static class Platform
     /// with a chunk it has emptied.
     public static void Unmap(nuint at, nuint bytes)
     {
-        Sys.Syscall(LinuxCall.Munmap, (nint)at, (nint)bytes, 0);
+        Sys.Syscall(LinuxCall.Munmap, (SyscallWord)at, (SyscallWord)bytes, 0);
     }
 
     /// Memory made unreadable and unwritable and its address kept: a fresh
@@ -370,7 +348,7 @@ static class Platform
         // PROT_NONE keeps the addresses reserved and gives the pages back.
         // Protected, every guarded chunk stayed resident, and a build ran
         // the machine out of memory.
-        Sys.Syscall(LinuxCall.Mmap, (nint)at, (nint)bytes, 0, 0x22 | 0x10 | 0x4000, 0 - 1, 0);
+        Sys.Syscall(LinuxCall.Mmap, (SyscallWord)at, (SyscallWord)bytes, 0, 0x22 | 0x10 | 0x4000, SyscallRegister.MinusOne, 0);
     }
 
     /// The processor given up to whatever else is ready (sched_yield): a
@@ -394,7 +372,7 @@ static class Platform
         if (size > 0 && size < 0x10000000)
         {
             // PROT_READ = 1, MAP_PRIVATE = 2.
-            at = Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, (nint)size, 1, 2, fd, 0));
+            at = Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, (SyscallWord)size, 1, 2, (SyscallWord)fd, 0));
             if (at != 0) length = (nuint)size;
         }
         Os.Close(fd);
@@ -405,7 +383,7 @@ static class Platform
     {
         // PROT_READ | PROT_WRITE = 3; MAP_PRIVATE | MAP_ANONYMOUS = 0x22;
         // no file (-1), offset 0.
-        nint got = Sys.Syscall(LinuxCall.Mmap, 0, (nint)bytes, 3, 0x22, 0 - 1, 0);
+        SyscallWord got = Sys.Syscall(LinuxCall.Mmap, 0, (SyscallWord)bytes, 3, 0x22, SyscallRegister.MinusOne, 0);
 
         // REFUSED, said by whoever asked: the heap's out of memory is
         // reported only if nothing catches it (Gc.ThrowOutOfMemory).
@@ -462,9 +440,9 @@ static class Platform
             // compiler marks (Gc.ScanStatics).
             Gc.StaticsByCards = true;
         }
-        Sys.WriteNative(block + Tls.Self, block);
+        Sys.WriteAddress(block + Tls.Self, block);
 
-#if TARGET_AMD64
+#if SYSCALL64
         // LONG MODE KEEPS A BASE REGISTER PER THREAD FOR THIS: GS, set with
         // arch_prctl(ARCH_SET_GS), saved and restored by the kernel on every
         // switch. Not FS, which is glibc's thread pointer: a program that
@@ -472,7 +450,7 @@ static class Platform
         // code finds errno, its allocator's caches and its stack canary
         // through FS. No descriptor, no selector: the block's own first word
         // is still its address, so gs:[0] answers it.
-        if (Sys.Syscall(LinuxCall.ArchPrctl, LinuxCall.ArchSetGs, (nint)block, 0) < 0)
+        if (Err.Failed(Sys.Syscall(LinuxCall.ArchPrctl, LinuxCall.ArchSetGs, (SyscallWord)block, 0)))
         {
             Runtime.WriteLiteral(2, "arch_prctl(ARCH_SET_GS) failed: this kernel cannot give a thread its own block\n");
             Exit(134);
@@ -505,7 +483,7 @@ static class Platform
         // is present, which is the rest of the bits being zero.
         Sys.Write32(desc + 12, 0x51);
 
-        if (Sys.Syscall(LinuxCall.SetThreadArea, (nint)desc, 0, 0) < 0)
+        if (Err.Failed(Sys.Syscall(LinuxCall.SetThreadArea, (SyscallWord)desc, 0, 0)))
         {
             string text = "set_thread_area failed: this kernel cannot give a thread its own block\n";
 
@@ -549,7 +527,7 @@ static class Platform
         if (how == 0)
         {
             // MEMBARRIER_CMD_QUERY (0): the commands this kernel has.
-            long has = Sys.Syscall(LinuxCall.Membarrier, 0, 0, 0);
+            long has = Err.Result(Sys.Syscall(LinuxCall.Membarrier, 0, 0, 0));
             if (has > 0 && (has & 8) != 0 && Sys.Syscall(LinuxCall.Membarrier, 16, 0, 0) == 0) how = 1;   // REGISTER_PRIVATE_EXPEDITED
             else if (has > 0 && (has & 1) != 0) how = 2;                                             // GLOBAL
             else how = -1;
@@ -574,7 +552,7 @@ static class Platform
         }
         nuint page = Map(4096);
         if (page == 0) return 0;
-        long got = Platform.Result(Sys.Syscall(LinuxCall.SchedGetaffinity, 0, 128, (nint)page));
+        long got = Platform.Result(Sys.Syscall(LinuxCall.SchedGetaffinity, 0, 128, (SyscallWord)page));
         int count = 0;
         for (long i = 0; i < got && i < 128; i++)
         {
@@ -604,17 +582,17 @@ static class Platform
         // A mask in the worker's own frame: its thread block would be the
         // parent's, whose GS it inherited. Eight bytes of ones, every signal.
         long mask = 0 - 1;
-        Sys.Syscall(LinuxCall.RtSigprocmask, 0, (nint)Sys.AddressOf(ref mask), 0, 8, 0, 0);     // SIG_BLOCK
+        Sys.Syscall(LinuxCall.RtSigprocmask, 0, (SyscallWord)Sys.AddressOf(ref mask), 0, 8, 0, 0);     // SIG_BLOCK
     }
 
-    public static void Wait(nuint at, nint value)
+    public static void Wait(nuint at, int value)
     {
-        Sys.Syscall(LinuxCall.Futex, (nint)at, 128, value, 0, 0, 0);
+        Sys.Syscall(LinuxCall.Futex, (SyscallWord)at, 128, (SyscallWord)value, 0, 0, 0);
     }
 
-    public static void Wake(nuint at, nint count)
+    public static void Wake(nuint at, int count)
     {
-        Sys.Syscall(LinuxCall.Futex, (nint)at, 129, count, 0, 0, 0);
+        Sys.Syscall(LinuxCall.Futex, (SyscallWord)at, 129, (SyscallWord)count, 0, 0, 0);
     }
 
     // ---- the machine's memory, for GC.GetGCMemoryInfo ------------------------
@@ -711,12 +689,12 @@ static class Platform
             if (Sys.Cas(Sys.AddressOf(ref _meminfoPage), 0, made) != 0) Unmap(made, 4096);
             page = _meminfoPage;
         }
-        if (Sys.Cas(page, 0, 1) != 0)
+        if (Sys.Cas32(page, 0, 1) != 0)
         {
             return _lastAvailable;
         }
         nuint text = page + MeminfoText;
-        nint got = ReadPath(page + MeminfoPath, text, 1024);
+        long got = ReadPath(page + MeminfoPath, text, 1024);
         nuint at = got > 0 ? LineAfter(text, (nuint)got, "MemAvailable:") : 0;
         long value = 0;
         if (at != 0)
@@ -731,7 +709,7 @@ static class Platform
             value = value * 1024;
         }
         _lastAvailable = value;
-        Sys.WriteNative(page, 0);
+        Sys.Write32(page, 0);
         return value;
     }
 
@@ -747,7 +725,7 @@ static class Platform
             return 0;
         }
         long space = 0;
-        if (Result(Sys.Syscall(LinuxCall.Uname, (nint)page, 0, 0)) == 0)
+        if (Result(Sys.Syscall(LinuxCall.Uname, (SyscallWord)page, 0, 0)) == 0)
         {
             // struct utsname: six fields of 65 bytes; the machine is the fifth.
             nuint machine = page + 4 * 65;
@@ -799,11 +777,11 @@ static class Platform
         // THE WAY BACK from a fault that becomes a NullReferenceException:
         // rt_sigreturn, seven bytes on a page of their own that may run, as
         // PosixSignalRegistration's restorer is.
-        nint mapped = Sys.Syscall(LinuxCall.Mmap, 0, 4096, 7, 0x22, 0 - 1, 0);
+        SyscallWord mapped = Sys.Syscall(LinuxCall.Mmap, 0, 4096, 7, 0x22, SyscallRegister.MinusOne, 0);
         nuint back = Err.Address(mapped);
         if (back != 0)
         {
-#if TARGET_64BIT
+#if SYSCALL64
             Sys.Write8(back, 0xB8);                                 // mov eax,
             Sys.Write8(back + 1, 15);                               //   15 (rt_sigreturn)
             Sys.Write8(back + 5, 0x0F);                             // syscall
@@ -824,19 +802,17 @@ static class Platform
         // A second fault inside the report finds _faulting set and ends the
         // process.
         nuint handler = Sys.AddressOf(Platform.Fault);
-        Sys.WriteNative(page, handler);
-        Sys.WriteNative(page + WordSize.Bytes, (nuint)(0x00000004 | 0x04000000 | 0x40000000));
-        Sys.WriteNative(page + 2 * WordSize.Bytes, _faultReturn != 0 ? _faultReturn : handler);
-        Sys.Syscall(LinuxCall.RtSigaction, SignalSegv, (nint)page, 0, 8, 0, 0);
-        Sys.Syscall(LinuxCall.RtSigaction, SignalBus, (nint)page, 0, 8, 0, 0);
+        Sys.WriteAddress(page, handler);
+        Sys.WriteAddress(page + WordSize.Bytes, (nuint)(0x00000004 | 0x04000000 | 0x40000000));
+        Sys.WriteAddress(page + 2 * WordSize.Bytes, _faultReturn != 0 ? _faultReturn : handler);
+        Sys.Syscall(LinuxCall.RtSigaction, SignalSegv, (SyscallWord)page, 0, 8, 0, 0);
+        Sys.Syscall(LinuxCall.RtSigaction, SignalBus, (SyscallWord)page, 0, 8, 0, 0);
     }
 
     /// The kernel's call on a fault: the signal, its siginfo and the
     /// interrupted context. Reports once, then dies of the signal.
-    public static void Fault(int signal, nint info, nint context)
+    public static void Fault(int signal, nuint si, nuint uc)
     {
-        nuint si = (nuint)info;
-        nuint uc = (nuint)context;
         // A NULL DEREFERENCE IS AN EXCEPTION, as it is in .NET: the thread is
         // sent on, when the handler returns, into Runtime.NullFault as if the
         // faulting instruction had called it -- its return address that
@@ -844,38 +820,40 @@ static class Platform
         // throws NullReferenceException from there to whatever catches it.
         if (_faulting == 0 && signal == SignalSegv && si != 0 && uc != 0 && _faultReturn != 0)
         {
-#if TARGET_64BIT
-            nuint nullAt = Sys.ReadNative(si + 16);
+#if SYSCALL64
+            nuint nullAt = Sys.ReadAddress(si + 16);
 #else
-            nuint nullAt = Sys.ReadNative(si + 12);
+            nuint nullAt = Sys.ReadAddress(si + 12);
 #endif
             if (Runtime.NullFaultCatchable(nullAt))
             {
                 nuint entry = Sys.AddressOf(Runtime.NullFault);
-#if TARGET_64BIT
+#if SYSCALL64
                 // gregs from 40: RDI 8th, RSI 9th, RBP 10th, RSP 15th, RIP 16th.
                 // Past the red zone, aligned as a call leaves it.
-                nuint faultPc = Sys.ReadNative(uc + 168);
-                nuint faultFrame = Sys.ReadNative(uc + 120);
-                nuint sp = ((Sys.ReadNative(uc + 160) - 128) & ~(nuint)15) - 8;
-                Sys.WriteNative(sp, faultPc);
-                Sys.WriteNative(uc + 104, faultFrame);
-                Sys.WriteNative(uc + 112, faultPc);
-                Sys.WriteNative(uc + 160, sp);
-                Sys.WriteNative(uc + 168, entry);
+                // Each greg_t is 8 bytes here.
+                nuint faultPc = Sys.ReadAddress(uc + 168);
+                nuint faultFrame = Sys.ReadAddress(uc + 120);
+                nuint sp = ((Sys.ReadAddress(uc + 160) - 128) & ~(nuint)15) - 8;
+                Sys.WriteAddress(sp, faultPc);
+                Sys.WriteAddress(uc + 104, faultFrame);
+                Sys.WriteAddress(uc + 112, faultPc);
+                Sys.WriteAddress(uc + 160, sp);
+                Sys.WriteAddress(uc + 168, entry);
 #else
                 // gregs from 20: EBP 7th, ESP 8th, EIP 15th; the arguments
                 // on the stack above the return address, each a word. Aligned
                 // as a call leaves it: the return address at 12 past a
                 // multiple of 16.
-                nuint faultPc = Sys.ReadNative(uc + 76);
-                nuint faultFrame = Sys.ReadNative(uc + 44);
-                nuint sp = ((Sys.ReadNative(uc + 48) - 64) & ~(nuint)15) - 20;
-                Sys.WriteNative(sp, faultPc);
-                Sys.WriteNative(sp + 4, faultFrame);
-                Sys.WriteNative(sp + 8, faultPc);
-                Sys.WriteNative(uc + 48, sp);
-                Sys.WriteNative(uc + 76, entry);
+                // Each greg_t is 4 bytes here.
+                nuint faultPc = Sys.ReadAddress(uc + 76);
+                nuint faultFrame = Sys.ReadAddress(uc + 44);
+                nuint sp = ((Sys.ReadAddress(uc + 48) - 64) & ~(nuint)15) - 20;
+                Sys.WriteAddress(sp, faultPc);
+                Sys.WriteAddress(sp + 4, faultFrame);
+                Sys.WriteAddress(sp + 8, faultPc);
+                Sys.WriteAddress(uc + 48, sp);
+                Sys.WriteAddress(uc + 76, entry);
 #endif
                 return;
             }
@@ -883,20 +861,20 @@ static class Platform
         if (_faulting == 0 && si != 0 && uc != 0)
         {
             _faulting = 1;
-#if TARGET_64BIT
+#if SYSCALL64
             // siginfo's si_addr at 16; mcontext's gregs from 40, RBP the
             // 10th and RIP the 16th.
-            nuint address = Sys.ReadNative(si + 16);
-            nuint pc = Sys.ReadNative(uc + 168);
-            nuint frame = Sys.ReadNative(uc + 120);
+            nuint address = Sys.ReadAddress(si + 16);
+            nuint pc = Sys.ReadAddress(uc + 168);
+            nuint frame = Sys.ReadAddress(uc + 120);
             nuint registers = uc + 40;
             int count = 16;
 #else
             // siginfo's si_addr at 12; mcontext's gregs from 20, EBP the
             // seventh and EIP the fifteenth.
-            nuint address = Sys.ReadNative(si + 12);
-            nuint pc = Sys.ReadNative(uc + 76);
-            nuint frame = Sys.ReadNative(uc + 44);
+            nuint address = Sys.ReadAddress(si + 12);
+            nuint pc = Sys.ReadAddress(uc + 76);
+            nuint frame = Sys.ReadAddress(uc + 44);
             // EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX.
             nuint registers = uc + 36;
             int count = 8;
@@ -905,15 +883,15 @@ static class Platform
         }
         // SIG_DFL, the signal unblocked (SIG_UNBLOCK, a set of one), and sent.
         nuint page = _faultPage;
-        Sys.WriteNative(page, 0);
-        Sys.WriteNative(page + WordSize.Bytes, 0);
-        Sys.Syscall(LinuxCall.RtSigaction, signal, (nint)page, 0, 8, 0, 0);
-        Sys.WriteNative(page + 128, 0);
-        Sys.WriteNative(page + 128 + WordSize.Bytes, 0);
+        Sys.WriteAddress(page, 0);
+        Sys.WriteAddress(page + WordSize.Bytes, 0);
+        Sys.Syscall(LinuxCall.RtSigaction, (SyscallWord)signal, (SyscallWord)page, 0, 8, 0, 0);
+        // The signal set is 64 bits, whatever the machine's word.
+        Sys.Write64(page + 128, 0);
         Sys.Write8(page + 128 + (nuint)((signal - 1) / 8), (byte)(1 << ((signal - 1) % 8)));
-        Sys.Syscall(LinuxCall.RtSigprocmask, 1, (nint)(page + 128), 0, 8, 0, 0);
-        Sys.Syscall(LinuxCall.Kill, Sys.Syscall(LinuxCall.Getpid, 0, 0, 0, 0, 0, 0), signal, 0, 0, 0, 0);
-        Sys.Syscall(LinuxCall.ExitGroup, 128 + signal, 0, 0, 0, 0, 0);
+        Sys.Syscall(LinuxCall.RtSigprocmask, 1, (SyscallWord)(page + 128), 0, 8, 0, 0);
+        Sys.Syscall(LinuxCall.Kill, Sys.Syscall(LinuxCall.Getpid, 0, 0, 0, 0, 0, 0), (SyscallWord)signal, 0, 0, 0, 0);
+        Sys.Syscall(LinuxCall.ExitGroup, (SyscallWord)(128 + signal), 0, 0, 0, 0, 0);
     }
 
     /// THE MEMORY THE PROCESS'S CONTROL GROUP MAY USE, or 0 when it has no
@@ -965,14 +943,14 @@ static class Platform
         {
             return -1;
         }
-        if (Sys.Cas(page, 0, 1) != 0)
+        if (Sys.Cas32(page, 0, 1) != 0)
         {
             return _lastUsage - 1;
         }
-        nint got = ReadPath(page + UsagePath, page + UsageDigits, 32);
+        long got = ReadPath(page + UsagePath, page + UsageDigits, 32);
         long answer = got > 0 ? Digits(page + UsageDigits, (nuint)got) : -1;
         _lastUsage = answer + 1;
-        Sys.WriteNative(page, 0);
+        Sys.Write32(page, 0);
         return answer;
     }
 
@@ -1014,7 +992,7 @@ static class Platform
         nuint path = page + 4096;    // the file asked for, NUL-terminated
         long limit = 0;
         WriteText(path, "/proc/self/cgroup");
-        nint got = ReadPath(path, text, 4095);
+        long got = ReadPath(path, text, 4095);
         nuint end0 = got > 0 ? text + (nuint)got : text;
         nuint spare = end0 + 1;
         nuint room = page + 4096 - spare;
@@ -1076,9 +1054,9 @@ static class Platform
 
     /// Reads the file named by `name` (built into `scratch`) into [into,
     /// into + most); answers the bytes read, or -1.
-    static nint ReadPath(nuint path, nuint into, nuint most)
+    static long ReadPath(nuint path, nuint into, nuint most)
     {
-        nint fd = Sys.Syscall(LinuxCall.Open, (nint)path, 0, 0);
+        int fd = (int)Err.Result(Sys.Syscall(LinuxCall.Open, (SyscallWord)path, 0, 0));
         if (fd < 0)
         {
             return -1;
@@ -1086,12 +1064,12 @@ static class Platform
         nuint got = 0;
         while (got < most)
         {
-            nint n = Sys.Syscall(LinuxCall.Read, fd, (nint)(into + got), (nint)(most - got));
+            long n = Err.Result(Sys.Syscall(LinuxCall.Read, (SyscallWord)fd, (SyscallWord)(into + got), (SyscallWord)(most - got)));
             if (n <= 0) break;
             got = got + (nuint)n;
         }
-        Sys.Syscall(LinuxCall.Close, fd, 0, 0);
-        return (nint)got;
+        Sys.Syscall(LinuxCall.Close, (SyscallWord)fd, 0, 0);
+        return (long)got;
     }
 
     /// Where the text after `key` begins, when a line of [text, text + count)
@@ -1128,7 +1106,7 @@ static class Platform
     {
         WritePath(path, from, to, root, leaf);
         if (most < 32) return 0;
-        nint got = ReadPath(path, buffer, most > 64 ? 64 : most);
+        long got = ReadPath(path, buffer, most > 64 ? 64 : most);
         long value = got > 0 ? Digits(buffer, (nuint)got) : -1;
         return value > 0 ? value : 0;
     }
@@ -1138,7 +1116,7 @@ static class Platform
     const int SysinfoTotal = 4 * WordSize.Bytes;
     const int SysinfoFree = 5 * WordSize.Bytes;
     const int SysinfoBuffers = 7 * WordSize.Bytes;
-#if TARGET_64BIT
+#if SYSCALL64
     const int SysinfoUnit = 104;
 #else
     const int SysinfoUnit = 52;
@@ -1157,12 +1135,13 @@ static class Platform
             _sysinfo = Map(4096);
             if (_sysinfo == 0) return 0;
         }
-        if (Result(Sys.Syscall(LinuxCall.Sysinfo, (nint)_sysinfo, 0, 0)) < 0)
+        if (Result(Sys.Syscall(LinuxCall.Sysinfo, (SyscallWord)_sysinfo, 0, 0)) < 0)
         {
             return 0;
         }
         long unit = Sys.Read32(_sysinfo + SysinfoUnit);
-        long count = (long)Sys.ReadNative(_sysinfo + (nuint)field);
+        // struct sysinfo's counts are `unsigned long`: a word, 4 bytes on i386.
+        long count = (long)Sys.ReadAddress(_sysinfo + (nuint)field);
         return count * (unit == 0 ? 1 : unit);
     }
 
@@ -1177,7 +1156,7 @@ static class Platform
 
     /// Sleeps while the lock word still reads `value`, as a blocking region:
     /// the collector does not wait for a thread asleep on a lock.
-    public static void MonitorBlock(nuint at, nint value)
+    public static void MonitorBlock(nuint at, int value)
     {
         Native.Wait(at, value);
     }
@@ -1243,23 +1222,23 @@ static class Platform
         {
             Runtime.CallC(cExit, code, 0, 0, 0);
         }
-        Sys.Syscall(LinuxCall.ExitGroup, code, 0, 0);
+        Sys.Syscall(LinuxCall.ExitGroup, (SyscallWord)code, 0, 0);
         // The kernel does not return from that; if it somehow did, the plain
         // exit is the next best thing, and after that there is nothing --
         // asked again for ever rather than returned from, so that this, and
         // Os.Exit and Environment.Exit over it, is proved never to return
         // and the code after a call to one is none (Binder.CallNeverReturns).
-        while (true) Sys.Syscall(LinuxCall.Exit, code, 0, 0);
+        while (true) Sys.Syscall(LinuxCall.Exit, (SyscallWord)code, 0, 0);
     }
 
     /// One write(2): how many bytes the kernel took, or -errno. The runtime
     /// loops on short writes and EINTR; this does not, so a caller that
     /// wants the raw answer can have it.
-    public static nint WriteBytes(int fd, nuint address, nuint count)
+    public static long WriteBytes(int fd, nuint address, nuint count)
     {
         // Raw: this is also how the runtime says it cannot start, before
         // the thread has the block a blocking call is recorded in.
-        return Sys.Syscall(LinuxCall.Write, fd, (nint)address, (nint)count);
+        return Err.Result(Sys.Syscall(LinuxCall.Write, (SyscallWord)fd, (SyscallWord)address, (SyscallWord)count));
     }
 
     /// THE 386'S ATOMICS ARE DONE UNDER ONE LOCK (Runtime.AtomicAdd386 and
@@ -1269,7 +1248,7 @@ static class Platform
     /// thread finding it held yields to its holder, which on the 386's one
     /// processor can run only once this thread stops (Runtime.Atomics386).
     /// What Leave is handed.
-    public static nint AtomicsEnter()
+    public static uint AtomicsEnter()
     {
         while (Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 1) != 0)
         {
@@ -1278,7 +1257,7 @@ static class Platform
         return 0;
     }
 
-    public static void AtomicsLeave(nint held)
+    public static void AtomicsLeave(uint held)
     {
         Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 0);
     }
@@ -1288,7 +1267,7 @@ static class Platform
     /// exchange, a pause a turn, and the processor given up past a few --
     /// its holder, a few loads and stores from letting go, may have been
     /// put off it. Answers what Leave is handed.
-    public static nint HandlerLockEnter(nuint at)
+    public static uint HandlerLockEnter(nuint at)
     {
         int turns = 0;
         while (Sys.AtomicSwap(at, 1) != 0)
@@ -1300,7 +1279,7 @@ static class Platform
         return 0;
     }
 
-    public static void HandlerLockLeave(nuint at, nint held)
+    public static void HandlerLockLeave(nuint at, uint held)
     {
         Sys.AtomicSwap(at, 0);
     }
@@ -1365,7 +1344,7 @@ static partial class Os
             {
                 return;
             }
-#if TARGET_AMD64
+#if SYSCALL64
             // Long mode's: rt_sigreturn is 15 and is made with `syscall`. The
             // kernel refuses a handler without a restorer on this ABI.
             Sys.Write8(page, 0xB8);                                 // mov eax,
@@ -1386,7 +1365,7 @@ static partial class Os
 #endif
             _signalRestorer = page;
         }
-#if TARGET_64BIT
+#if SYSCALL64
         // x86-64's kernel sigaction: handler, flags, restorer and mask, a
         // word each.
         byte[] act = new byte[32];
@@ -1406,7 +1385,7 @@ static partial class Os
             // restores a context of rubbish.
             flags = flags | 0x10000000 | 0x00000004;                  // SA_RESTART|SA_SIGINFO
         }
-#if TARGET_64BIT
+#if SYSCALL64
         Raw.SetI64(act, 8, flags);
         Raw.SetWord(act, 16, _signalRestorer);
 #else
@@ -1436,7 +1415,7 @@ static partial class Os
 
         while (done < length)
         {
-            nint n = Platform.WriteBytes(fd, at + done, length - done);
+            long n = Platform.WriteBytes(fd, at + done, length - done);
 
             if (n == 0 - Err.Intr)
             {
@@ -1474,12 +1453,13 @@ static partial class Os
     /// collector's exit report after running out of memory on one -- or the
     /// environment first walked its own stack as envp: it faulted, or found
     /// nothing and kept that for every thread.
-    public static nuint MainEntryStack() => Sys.ReadNative(Sys.MainThreadBlock() + Tls.StackBase);
+    public static nuint MainEntryStack() => Sys.ReadAddress(Sys.MainThreadBlock() + Tls.StackBase);
 
     public static nuint EnvironAddress()
     {
         nuint sp = MainEntryStack();
-        return sp + WordSize.Bytes + WordSize.Bytes * Sys.ReadNative(sp) + WordSize.Bytes;
+        // argc is a word at the stack pointer, then argc+1 argv words, then envp.
+        return sp + WordSize.Bytes + WordSize.Bytes * Sys.ReadAddress(sp) + WordSize.Bytes;
     }
 
     /// A VARIABLE OF THE ENVIRONMENT THE PROCESS STARTED WITH, as getenv(3)
@@ -1490,7 +1470,7 @@ static partial class Os
     public static string? StartingVariable(string name)
     {
         nuint at = EnvironAddress();
-        for (nuint entry = Sys.ReadNative(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadNative(at))
+        for (nuint entry = Sys.ReadAddress(at); entry != 0; at = at + WordSize.Bytes, entry = Sys.ReadAddress(at))
         {
             int i = 0;
             while (i < name.Length && Sys.Read8(entry + (nuint)i) == name[i]) i = i + 1;
@@ -1500,13 +1480,13 @@ static partial class Os
     }
 
     /// geteuid(2): who the process acts as, which Environment.UserName names.
-    public static long EffectiveUserId() { return Sys.Syscall(LinuxCall.Geteuid, 0, 0, 0); }
+    public static long EffectiveUserId() { return (uint)Sys.Syscall(LinuxCall.Geteuid, 0, 0, 0); }
 
     /// uname(2)'s nodename, or null when the call fails.
     public static string? NodeName()
     {
         byte[] names = new byte[65 * 6];                      // struct utsname: six fields of 65
-        if (Platform.Result(Sys.Syscall(LinuxCall.Uname, (nint)Sys.ArrayData(names), 0, 0)) < 0) return null;
+        if (Platform.Result(Sys.Syscall(LinuxCall.Uname, (SyscallWord)Sys.ArrayData(names), 0, 0)) < 0) return null;
         int end = 65;
         while (end < 130 && names[end] != 0) end++;
         return Utf8Transcoder.Decode(names, 65, end - 65);
@@ -1519,7 +1499,7 @@ static partial class Os
         servicePack = "";
         int[] made = new int[] { 4, 0, 0, 0, 0 };
         byte[] names = new byte[65 * 6];
-        if (Platform.Result(Sys.Syscall(LinuxCall.Uname, (nint)Sys.ArrayData(names), 0, 0)) < 0) return made;
+        if (Platform.Result(Sys.Syscall(LinuxCall.Uname, (SyscallWord)Sys.ArrayData(names), 0, 0)) < 0) return made;
         int at = 130, field = 1;
         while (at < 195 && field < 5 && names[at] >= '0' && names[at] <= '9')
         {
@@ -1534,20 +1514,20 @@ static partial class Os
     public static int Chdir(string path)
     {
         byte[] c = CString(path);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Chdir, (nint)Sys.ArrayData(c), 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Chdir, (SyscallWord)Sys.ArrayData(c), 0, 0));
     }
 
     // ---- descriptors ------------------------------------------------------
 
     public static int Dup(int fd)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Dup, fd, 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Dup, (SyscallWord)fd, 0, 0));
     }
 
     /// dup2(2): `to` becomes another name for `fd`, closing whatever it was.
     public static int Dup2(int fd, int to)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Dup2, fd, to, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Dup2, (SyscallWord)fd, (SyscallWord)to, 0));
     }
 
     /// pipe(2). `pair` gets the read end at 0 and the write end at 1.
@@ -1557,7 +1537,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("a pipe needs two descriptors");
         }
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Pipe, (nint)Sys.ArrayData(pair), 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Pipe, (SyscallWord)Sys.ArrayData(pair), 0, 0));
     }
 
     /// sync(2): every dirty block to the disc.
@@ -1569,9 +1549,9 @@ static partial class Os
     /// reboot(2) with Linux's two magic numbers and a command:
     /// 0x01234567 restart, 0x4321FEDC power off, 0xCDEF0123 halt.
     /// Does not return when it works; -errno when it does not.
-    public static long Reboot(long command)
+    public static long Reboot(uint command)
     {
-        return Platform.Result(Sys.Syscall(LinuxCall.Reboot, -18751827 /* 0xFEE1DEAD */, 672274793, (nint)command, 0, 0, 0));
+        return Platform.Result(Sys.Syscall(LinuxCall.Reboot, 0xFEE1DEAD, 672274793, command, 0, 0, 0));
     }
 
     // ---- waiting, randomness, signals ----------------------------------------
@@ -1581,7 +1561,7 @@ static partial class Os
     /// more than one ear sets, and is what .NET spells Socket.Blocking.
     public static int Fcntl(int fd, int command, int argument)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Fcntl, fd, command, argument));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Fcntl, (SyscallWord)fd, (SyscallWord)command, (SyscallWord)argument));
     }
 
     /// poll(2) on one descriptor: >0 when an event in `events` (1 read,
@@ -1595,7 +1575,7 @@ static partial class Os
         pfd[5] = (byte)(events >> 8);
         while (true)
         {
-            long r = Platform.Result(Platform.Blocking(LinuxCall.Poll, (nint)Sys.ArrayData(pfd), 1, timeoutMs));
+            long r = Platform.Result(Platform.Blocking(LinuxCall.Poll, (SyscallWord)Sys.ArrayData(pfd), 1, (SyscallWord)timeoutMs));
             if (r == -Err.Intr || PosixSignalRegistration.Pending)
             {
                 // A signal arrived while waiting -- or just before, with
@@ -1616,7 +1596,7 @@ static partial class Os
     {
         if (!PosixSignalRegistration.Pending)
         {
-            Platform.Result(Platform.Blocking(LinuxCall.Poll, 0, 0, -1));
+            Platform.Result(Platform.Blocking(LinuxCall.Poll, 0, 0, SyscallRegister.MinusOne));
         }
 
         PosixSignalRegistration.Deliver();
@@ -1637,7 +1617,7 @@ static partial class Os
             ready[i] = false;
         }
 
-        long r = Platform.Result(Platform.Blocking(LinuxCall.Poll, (nint)Sys.ArrayData(pfd), count, timeoutMs));
+        long r = Platform.Result(Platform.Blocking(LinuxCall.Poll, (SyscallWord)Sys.ArrayData(pfd), (SyscallWord)count, (SyscallWord)timeoutMs));
 
         if (r == -Err.Intr || PosixSignalRegistration.Pending)
         {
@@ -1657,7 +1637,7 @@ static partial class Os
     public static int ProcessorCount()
     {
         byte[] mask = new byte[128];
-        long got = Platform.Result(Sys.Syscall(LinuxCall.SchedGetaffinity, 0, mask.Length, (nint)Sys.ArrayData(mask)));
+        long got = Platform.Result(Sys.Syscall(LinuxCall.SchedGetaffinity, 0, (SyscallWord)mask.Length, (SyscallWord)Sys.ArrayData(mask)));
         int count = 0;
         for (int i = 0; i < got && i < mask.Length; i++)
         {
@@ -1673,14 +1653,14 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("getrandom range is outside its buffer");
         }
-        return Platform.Result(Sys.Syscall(LinuxCall.GetRandom, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, 0));
+        return Platform.Result(Sys.Syscall(LinuxCall.GetRandom, (SyscallWord)(Sys.ArrayData(buffer) + (nuint)at), (SyscallWord)count, 0));
     }
 
     /// rt_sigaction(2) with a 20-byte kernel sigaction (handler, flags,
     /// restorer, 64-bit mask) and no request for the old one.
     public static long SigAction(int signal, byte[] action)
     {
-        return Platform.Result(Sys.Syscall(LinuxCall.RtSigaction, signal, (nint)Sys.ArrayData(action), 0, 8, 0, 0));
+        return Platform.Result(Sys.Syscall(LinuxCall.RtSigaction, (SyscallWord)signal, (SyscallWord)Sys.ArrayData(action), 0, 8, 0, 0));
     }
 
     /// Bytes waiting to be read on `fd` (FIONREAD), or -errno.
@@ -1706,7 +1686,7 @@ static partial class Os
     public static nuint MapExecutable(nuint bytes)
     {
         // PROT_READ | PROT_WRITE | PROT_EXEC = 7; MAP_PRIVATE | MAP_ANONYMOUS.
-        return Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, (nint)bytes, 7, 0x22, 0 - 1, 0));
+        return Err.Address(Sys.Syscall(LinuxCall.Mmap, 0, (SyscallWord)bytes, 7, 0x22, SyscallRegister.MinusOne, 0));
     }
 
     /// fork(2): the child's pid here, 0 over there, -errno on failure.
@@ -1743,20 +1723,20 @@ static partial class Os
 
     public static int Kill(int pid, int signal)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Kill, pid, signal, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Kill, (SyscallWord)pid, (SyscallWord)signal, 0));
     }
 
     /// setpgid(2). A zero for either means "this process" and "its own pid",
     /// which is how a shell puts itself in a group of its own.
     public static int Setpgid(int pid, int group)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setpgid, pid, group, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setpgid, (SyscallWord)pid, (SyscallWord)group, 0));
     }
 
     /// getpgid(2); zero means this process.
     public static int Getpgid(int pid)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Getpgid, pid, 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Getpgid, (SyscallWord)pid, 0, 0));
     }
 
     /// setsid(2): a new session, with no controlling terminal, this process
@@ -1768,32 +1748,32 @@ static partial class Os
 
     public static int Setuid(int uid)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setuid, uid, 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setuid, (SyscallWord)uid, 0, 0));
     }
 
     public static int Setgid(int gid)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setgid, gid, 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setgid, (SyscallWord)gid, 0, 0));
     }
 
     /// setgroups(2): the supplementary groups, as a block of 32-bit ids.
     public static int Setgroups(int[] groups, int count)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setgroups, count, (nint)Sys.ArrayData(groups), 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Setgroups, (SyscallWord)count, (SyscallWord)Sys.ArrayData(groups), 0));
     }
 
     /// umask(2): the bits taken OUT of every mode this process creates with.
     /// Answers the mask it replaced, and cannot fail.
     public static int Umask(int mask)
     {
-        return (int)Sys.Syscall(LinuxCall.Umask, mask, 0, 0);
+        return (int)Sys.Syscall(LinuxCall.Umask, (SyscallWord)mask, 0, 0);
     }
 
     /// mount(2). `data` is the filing system's own options, the ones after
     /// -o that the kernel does not understand itself; null when there are
     /// none.
     public static int Mount(string source, string target, string type,
-                            long flags, string? data)
+                            ulong flags, string? data)
     {
         byte[] from = CString(source);
         byte[] onto = CString(target);
@@ -1802,15 +1782,15 @@ static partial class Os
         // the if would keep its array only to the if's end.
         byte[]? extra = data == null ? null : CString(data);
         nuint options = extra == null ? 0 : Sys.ArrayData(extra);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Mount, (nint)Sys.ArrayData(from), (nint)Sys.ArrayData(onto),
-                                                (nint)Sys.ArrayData(kind), (nint)flags, (nint)options, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Mount, (SyscallWord)Sys.ArrayData(from), (SyscallWord)Sys.ArrayData(onto),
+                                                (SyscallWord)Sys.ArrayData(kind), (SyscallWord)flags, (SyscallWord)options, 0));
     }
 
     /// umount2(2). The flags are MNT_FORCE, MNT_DETACH and the rest.
     public static int Umount(string target, int flags)
     {
         byte[] c = CString(target);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Umount2, (nint)Sys.ArrayData(c), flags, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Umount2, (SyscallWord)Sys.ArrayData(c), (SyscallWord)flags, 0));
     }
 
     /// An array of C strings, then a null, as execve(2) wants it: the strings
@@ -1857,7 +1837,7 @@ static partial class Os
             byte[] block = Vector(envp, keep, argv.Length);
             env = Sys.ArrayData(block);
         }
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, (nint)Sys.ArrayData(c), (nint)Sys.ArrayData(args), (nint)env));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, (SyscallWord)Sys.ArrayData(c), (SyscallWord)Sys.ArrayData(args), (SyscallWord)env));
     }
 
     /// The common shape: the program's own path as argv[0], the caller's
@@ -1898,21 +1878,21 @@ static partial class Os
     public static int ChdirPlanned(ExecPlan plan)
     {
         if (plan.Directory == null) return 0;
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Chdir, (nint)Sys.ArrayData(plan.Directory), 0, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Chdir, (SyscallWord)Sys.ArrayData(plan.Directory), 0, 0));
     }
 
     /// execve(2) on the plan; nothing allocated. Returns only on failure.
     public static int ExecPlanned(ExecPlan plan)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, (nint)Sys.ArrayData(plan.Path),
-            (nint)Sys.ArrayData(plan.Args), (nint)plan.EnvAddress));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Execve, (SyscallWord)Sys.ArrayData(plan.Path),
+            (SyscallWord)Sys.ArrayData(plan.Args), (SyscallWord)plan.EnvAddress));
     }
 
     /// exit_group(2) at once: no handler, no flush -- a forked child's buffers
     /// are its parent's too.
     public static void ExitNow(int code)
     {
-        Sys.Syscall(LinuxCall.ExitGroup, code, 0, 0);
+        Sys.Syscall(LinuxCall.ExitGroup, (SyscallWord)code, 0, 0);
     }
 
     /// waitpid(2). -1 for `pid` means any child. `status` gets the raw status
@@ -1923,11 +1903,11 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("waitpid needs somewhere for the status");
         }
-#if TARGET_AMD64
+#if SYSCALL64
         // wait4(2), the only form long mode has: no resource usage wanted.
-        return (int)Platform.Result(Platform.Blocking(LinuxCall.Wait4, pid, (nint)Sys.ArrayData(status), options, 0, 0, 0));
+        return (int)Platform.Result(Platform.Blocking(LinuxCall.Wait4, (SyscallWord)pid, (SyscallWord)Sys.ArrayData(status), (SyscallWord)options, 0, 0, 0));
 #else
-        return (int)Platform.Result(Platform.Blocking(LinuxCall.Waitpid, pid, (nint)Sys.ArrayData(status), options));
+        return (int)Platform.Result(Platform.Blocking(LinuxCall.Waitpid, (SyscallWord)pid, (SyscallWord)Sys.ArrayData(status), (SyscallWord)options));
 #endif
     }
 
@@ -1957,13 +1937,13 @@ static partial class Os
     public static int ClockGetTime(int clock, byte[] into)
     {
         TimeSpec.Check(into);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.ClockGetTime, clock, (nint)Sys.ArrayData(into), 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.ClockGetTime, (SyscallWord)clock, (SyscallWord)Sys.ArrayData(into), 0));
     }
 
     public static int ClockGetRes(int clock, byte[] into)
     {
         TimeSpec.Check(into);
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.ClockGetRes, clock, (nint)Sys.ArrayData(into), 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.ClockGetRes, (SyscallWord)clock, (SyscallWord)Sys.ArrayData(into), 0));
     }
 
     /// A clock as ONE number of nanoseconds, which is what code that measures
@@ -1991,7 +1971,7 @@ static partial class Os
 
         while (true)
         {
-            long r = Platform.Result(Platform.Blocking(LinuxCall.NanoSleep, (nint)Sys.ArrayData(want), (nint)Sys.ArrayData(left), 0));
+            long r = Platform.Result(Platform.Blocking(LinuxCall.NanoSleep, (SyscallWord)Sys.ArrayData(want), (SyscallWord)Sys.ArrayData(left), 0));
 
             if (r != 0 - Err.Intr)
             {
@@ -2092,65 +2072,41 @@ static partial class Os
 
     /// The raw answer: test it with Err.Failed and read the address with
     /// Err.Address, never by its sign (a mapping above 2 GB is negative).
-    public static nint Mmap(nuint address, nuint length, nint protection, nint flags, nint fd, long pages)
+    public static SyscallWord Mmap(nuint address, nuint length, int protection, int flags, int fd, long pages)
     {
-        return Sys.Syscall(LinuxCall.Mmap, (nint)address, (nint)length, protection, flags, fd, (nint)(pages << LinuxCall.MmapOffsetShift));
+        return Sys.Syscall(LinuxCall.Mmap, (SyscallWord)address, (SyscallWord)length, (SyscallWord)protection, (SyscallWord)flags, (SyscallWord)fd, (SyscallWord)(pages << LinuxCall.MmapOffsetShift));
     }
 
     public static int Munmap(nuint address, nuint length)
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Munmap, (nint)address, (nint)length, 0));
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Munmap, (SyscallWord)address, (SyscallWord)length, 0));
     }
 
     // ---- sockets ----------------------------------------------------------
     //
-    // Two doors, one question. i386 gained an ordinary system call per socket
-    // operation in Linux 4.3; before that the only way in was socketcall(2),
-    // which takes the operation number and a block of argument words. Which
-    // one a kernel has is not something a library can be told at build time --
-    // the same binary has to run on both -- so every call below tries the
-    // direct number first and falls back when the kernel says -ENOSYS.
+    // One system call per operation, as x86-64 has always had and i386 has
+    // since Linux 4.3: no socketcall(2), which packed the arguments into a
+    // block of words and is the multiplexer the kernel kept for its old
+    // callers.
 
-    private static nint Sock(nint direct, nint which, nint a, nint b, nint c, nint d, nint e, nint f)
+    private static long Sock(int call, SyscallWord a, SyscallWord b, SyscallWord c, SyscallWord d, SyscallWord e, SyscallWord f)
     {
-        nint got = Platform.Blocking(direct, a, b, c, d, e, f);
-
-#if TARGET_AMD64
-        // Long mode has always had a call per operation, and no socketcall.
-        return got;
-#else
-        if (got != 0 - Err.NoSys)
-        {
-            return got;
-        }
-
-        // socketcall copies as many words as the operation takes; the ones
-        // beyond that are never read, so one six-word block serves them all.
-        byte[] block = new byte[24];
-
-        Raw.SetU32(block, 0, a);
-        Raw.SetU32(block, 4, b);
-        Raw.SetU32(block, 8, c);
-        Raw.SetU32(block, 12, d);
-        Raw.SetU32(block, 16, e);
-        Raw.SetU32(block, 20, f);
-        return Platform.Blocking(LinuxCall.SocketCall, which, (nint)Sys.ArrayData(block), 0);
-#endif
+        return Err.Result(Platform.Blocking(call, a, b, c, d, e, f));
     }
 
     public static int Socket(int family, int kind, int protocol)
     {
-        return (int)Sock(LinuxCall.Socket, SockCall.Socket, family, kind, protocol, 0, 0, 0);
+        return (int)Sock(LinuxCall.Socket, (SyscallWord)family, (SyscallWord)kind, (SyscallWord)protocol, 0, 0, 0);
     }
 
     public static int Bind(int fd, byte[] address)
     {
-        return (int)Sock(LinuxCall.Bind, SockCall.Bind, fd, (nint)Sys.ArrayData(address), address.Length, 0, 0, 0);
+        return (int)Sock(LinuxCall.Bind, (SyscallWord)fd, (SyscallWord)Sys.ArrayData(address), (SyscallWord)address.Length, 0, 0, 0);
     }
 
     public static int Listen(int fd, int backlog)
     {
-        return (int)Sock(LinuxCall.Listen, SockCall.Listen, fd, backlog, 0, 0, 0, 0);
+        return (int)Sock(LinuxCall.Listen, (SyscallWord)fd, (SyscallWord)backlog, 0, 0, 0, 0);
     }
 
     /// accept(2), through accept4 with no flags where the direct calls exist:
@@ -2160,18 +2116,18 @@ static partial class Os
     {
         if (address == null)
         {
-            return (int)Sock(LinuxCall.Accept4, SockCall.Accept, fd, 0, 0, 0, 0, 0);
+            return (int)Sock(LinuxCall.Accept4, (SyscallWord)fd, 0, 0, 0, 0, 0);
         }
 
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(LinuxCall.Accept4, SockCall.Accept, fd, (nint)Sys.ArrayData(address), (nint)Sys.ArrayData(length), 0, 0, 0);
+        return (int)Sock(LinuxCall.Accept4, (SyscallWord)fd, (SyscallWord)Sys.ArrayData(address), (SyscallWord)Sys.ArrayData(length), 0, 0, 0);
     }
 
     public static int Connect(int fd, byte[] address)
     {
-        return (int)Sock(LinuxCall.Connect, SockCall.Connect, fd, (nint)Sys.ArrayData(address), address.Length, 0, 0, 0);
+        return (int)Sock(LinuxCall.Connect, (SyscallWord)fd, (SyscallWord)Sys.ArrayData(address), (SyscallWord)address.Length, 0, 0, 0);
     }
 
     public static int GetSockName(int fd, byte[] address)
@@ -2179,7 +2135,7 @@ static partial class Os
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(LinuxCall.GetSockName, SockCall.GetSockName, fd, (nint)Sys.ArrayData(address), (nint)Sys.ArrayData(length), 0, 0, 0);
+        return (int)Sock(LinuxCall.GetSockName, (SyscallWord)fd, (SyscallWord)Sys.ArrayData(address), (SyscallWord)Sys.ArrayData(length), 0, 0, 0);
     }
 
     public static int GetPeerName(int fd, byte[] address)
@@ -2187,7 +2143,7 @@ static partial class Os
         byte[] length = new byte[4];
 
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(LinuxCall.GetPeerName, SockCall.GetPeerName, fd, (nint)Sys.ArrayData(address), (nint)Sys.ArrayData(length), 0, 0, 0);
+        return (int)Sock(LinuxCall.GetPeerName, (SyscallWord)fd, (SyscallWord)Sys.ArrayData(address), (SyscallWord)Sys.ArrayData(length), 0, 0, 0);
     }
 
     /// send(2) is sendto(2) with no address, which is what the kernel makes of
@@ -2198,7 +2154,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("send range is outside its buffer");
         }
-        return (int)Sock(LinuxCall.SendTo, SockCall.Send, fd, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, flags, 0, 0);
+        return (int)Sock(LinuxCall.SendTo, (SyscallWord)fd, (SyscallWord)(Sys.ArrayData(buffer) + (nuint)at), (SyscallWord)count, (SyscallWord)flags, 0, 0);
     }
 
     public static int Recv(int fd, byte[] buffer, int at, int count, int flags)
@@ -2207,7 +2163,7 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("recv range is outside its buffer");
         }
-        return (int)Sock(LinuxCall.RecvFrom, SockCall.Recv, fd, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, flags, 0, 0);
+        return (int)Sock(LinuxCall.RecvFrom, (SyscallWord)fd, (SyscallWord)(Sys.ArrayData(buffer) + (nuint)at), (SyscallWord)count, (SyscallWord)flags, 0, 0);
     }
 
     /// sendto(2) and recvfrom(2) with an address: a datagram's destination,
@@ -2219,8 +2175,8 @@ static partial class Os
         {
             throw new IndexOutOfRangeException("sendto range is outside its buffer");
         }
-        return (int)Sock(LinuxCall.SendTo, SockCall.SendTo, fd, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, flags,
-            (nint)Sys.ArrayData(address), address.Length);
+        return (int)Sock(LinuxCall.SendTo, (SyscallWord)fd, (SyscallWord)(Sys.ArrayData(buffer) + (nuint)at), (SyscallWord)count, (SyscallWord)flags,
+            (SyscallWord)Sys.ArrayData(address), (SyscallWord)address.Length);
     }
 
     public static int RecvFrom(int fd, byte[] buffer, int at, int count, int flags, byte[] address)
@@ -2231,8 +2187,8 @@ static partial class Os
         }
         byte[] length = new byte[4];
         Raw.SetU32(length, 0, address.Length);
-        return (int)Sock(LinuxCall.RecvFrom, SockCall.RecvFrom, fd, (nint)(Sys.ArrayData(buffer) + (nuint)at), count, flags,
-            (nint)Sys.ArrayData(address), (nint)Sys.ArrayData(length));
+        return (int)Sock(LinuxCall.RecvFrom, (SyscallWord)fd, (SyscallWord)(Sys.ArrayData(buffer) + (nuint)at), (SyscallWord)count, (SyscallWord)flags,
+            (SyscallWord)Sys.ArrayData(address), (SyscallWord)Sys.ArrayData(length));
     }
 
     /// recvmsg(2): a datagram AND WHAT THE KERNEL KNOWS ABOUT IT.
@@ -2258,7 +2214,7 @@ static partial class Os
             throw new IndexOutOfRangeException("recvmsg range is outside its buffer");
         }
 
-#if TARGET_64BIT
+#if SYSCALL64
         // The structures are the kernel's, laid out as x86-64 lays them out:
         // an iovec of two words, and a msghdr whose name length is an int
         // padded to the pointer after it and whose counts are words.
@@ -2276,7 +2232,7 @@ static partial class Os
         Raw.SetI64(message, 40, control == null ? 0 : control.Length);
         Raw.SetU32(message, 48, 0);
 
-        int got = (int)Sock(LinuxCall.RecvMsg, SockCall.RecvMsg, fd, (nint)Sys.ArrayData(message), flags, 0, 0, 0);
+        int got = (int)Sock(LinuxCall.RecvMsg, (SyscallWord)fd, (SyscallWord)Sys.ArrayData(message), (SyscallWord)flags, 0, 0, 0);
 
         if (got >= 0)
         {
@@ -2299,7 +2255,7 @@ static partial class Os
         Raw.SetU32(message, 20, control == null ? 0 : control.Length);
         Raw.SetU32(message, 24, 0);
 
-        int got = (int)Sock(LinuxCall.RecvMsg, SockCall.RecvMsg, fd, (nint)Sys.ArrayData(message), flags, 0, 0, 0);
+        int got = (int)Sock(LinuxCall.RecvMsg, (SyscallWord)fd, (SyscallWord)Sys.ArrayData(message), (SyscallWord)flags, 0, 0, 0);
 
         if (got >= 0)
         {
@@ -2312,7 +2268,7 @@ static partial class Os
 
     public static int SetSockOpt(int fd, int level, int option, byte[] value)
     {
-        return (int)Sock(LinuxCall.SetSockOpt, SockCall.SetSockOpt, fd, level, option, (nint)Sys.ArrayData(value), value.Length, 0);
+        return (int)Sock(LinuxCall.SetSockOpt, (SyscallWord)fd, (SyscallWord)level, (SyscallWord)option, (SyscallWord)Sys.ArrayData(value), (SyscallWord)value.Length, 0);
     }
 
     /// The one every server needs: SO_REUSEADDR, so a restart does not have to
@@ -2327,7 +2283,7 @@ static partial class Os
 
     public static int Shutdown(int fd, int how)
     {
-        return (int)Sock(LinuxCall.Shutdown, SockCall.Shutdown, fd, how, 0, 0, 0, 0);
+        return (int)Sock(LinuxCall.Shutdown, (SyscallWord)fd, (SyscallWord)how, 0, 0, 0, 0);
     }
 
     // ---- the shapes os/lib/user.cor had ------------------------------------
@@ -2390,7 +2346,7 @@ static partial class Os
         // The main thread's entry stack is ESP exactly as the kernel handed
         // it over, before _start's own prologue: argc at [sp], then argv.
         nuint sp = MainEntryStack();
-        int argc = (int)Sys.ReadNative(sp);
+        int argc = (int)Sys.ReadAddress(sp);
 
         if (argc < 0)
         {
@@ -2401,7 +2357,7 @@ static partial class Os
 
         for (int i = 0; i < argc; i++)
         {
-            args[i] = FromC(Sys.ReadNative(sp + WordSize.Bytes + (nuint)(WordSize.Bytes * i)));
+            args[i] = FromC(Sys.ReadAddress(sp + WordSize.Bytes + (nuint)(WordSize.Bytes * i)));
         }
         _args = args;
         return args;

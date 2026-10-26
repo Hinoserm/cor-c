@@ -109,7 +109,7 @@ static class Platform
     /// running thread's after all (GcThreads.BeginBlocking declines there);
     /// with one thread there is nobody to wait for it, and the bracket is a
     /// safepoint. Answers the kernel's raw number, as Sys.Syscall does.
-    public static nint Blocking(nint n, nint a, nint b, nint c, nint d = 0, nint e = 0, nint f = 0)
+    public static SyscallWord Blocking(int n, SyscallWord a, SyscallWord b, SyscallWord c, SyscallWord d = 0, SyscallWord e = 0, SyscallWord f = 0)
     {
         // A KERNEL'S OWN CALL (--kernel-syscalls) IS NOT BRACKETED: its
         // thread block is a processor's, the kernel decides when the call
@@ -117,7 +117,7 @@ static class Platform
         // stopped is one it refuses to park.
         if (Sys.KernelSyscalls()) return Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.BeginBlocking();
-        nint raw = Sys.Syscall(n, a, b, c, d, e, f);
+        SyscallWord raw = Sys.Syscall(n, a, b, c, d, e, f);
         Runtime.EndBlocking();
         return raw;
     }
@@ -279,13 +279,14 @@ static class Platform
     private static nuint _freeBytes;
     private const int RangeLeast = 2 * WordSize.Bytes;
 
-    static nuint RangeNext(nuint range) => Sys.ReadNative(range);
-    static nuint RangeSize(nuint range) => Sys.ReadNative(range + WordSize.Bytes);
+    // A free range's two words: the next range's address and this one's size.
+    static nuint RangeNext(nuint range) => Sys.ReadAddress(range);
+    static nuint RangeSize(nuint range) => Sys.ReadAddress(range + WordSize.Bytes);
 
     static void SetRange(nuint range, nuint next, nuint size)
     {
-        Sys.WriteNative(range, next);
-        Sys.WriteNative(range + WordSize.Bytes, size);
+        Sys.WriteAddress(range, next);
+        Sys.WriteAddress(range + WordSize.Bytes, size);
     }
 
     static void Release(nuint at, nuint size)
@@ -304,7 +305,7 @@ static class Platform
             {
                 _at = range;
                 _freeBytes = _freeBytes - RangeSize(range);
-                if (before == 0) _freeRanges = 0; else Sys.WriteNative(before, 0);
+                if (before == 0) _freeRanges = 0; else Sys.WriteAddress(before, 0);
             }
             return;
         }
@@ -324,7 +325,7 @@ static class Platform
             return;
         }
         SetRange(at, next, size);
-        if (previous == 0) _freeRanges = at; else Sys.WriteNative(previous, at);
+        if (previous == 0) _freeRanges = at; else Sys.WriteAddress(previous, at);
     }
 
     /// `need` bytes of the free ranges, the first that holds them, from its
@@ -341,13 +342,13 @@ static class Platform
                 _freeBytes = _freeBytes - need;
                 if (size - need >= RangeLeast)
                 {
-                    Sys.WriteNative(range + WordSize.Bytes, size - need);
+                    Sys.WriteAddress(range + WordSize.Bytes, size - need);
                     return range + size - need;
                 }
                 // The whole of it: what is over is too little to list, and
                 // goes with it.
                 _freeBytes = _freeBytes - (size - need);
-                if (previous == 0) _freeRanges = RangeNext(range); else Sys.WriteNative(previous, RangeNext(range));
+                if (previous == 0) _freeRanges = RangeNext(range); else Sys.WriteAddress(previous, RangeNext(range));
                 return range;
             }
             previous = range;
@@ -467,7 +468,7 @@ static class Platform
 
     public static void SetThreadBlock(nuint block)
     {
-        Sys.WriteNative(block + Tls.Self, block);
+        Sys.WriteAddress(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
     }
 
@@ -530,7 +531,7 @@ static class Platform
 
     // EXIT_GROUP, the whole program's end in Linux's numbers, which a ring-1
     // gate takes too: exit (1, 60) ends the calling thread alone.
-#if TARGET_64BIT
+#if SYSCALL64
     const int ExitCall = 231;
 #else
     const int ExitCall = 252;
@@ -544,7 +545,7 @@ static class Platform
     [DoesNotReturn]
     private static void Leave(int code)
     {
-        Sys.Syscall(ExitCall, code, 0, 0);
+        Sys.Syscall(ExitCall, (SyscallWord)code, 0, 0);
         while (true)
         {
             Yield();
@@ -1038,13 +1039,13 @@ static class Platform
     /// bare-metal runtime run as a process, as its tests run it -- under one
     /// lock taken by XCHG. Answers the flags, for Leave to turn interrupts
     /// back on only where they were, or LockHeld.
-    public static nint AtomicsEnter()
+    public static uint AtomicsEnter()
     {
         nuint flags = Sys.ReadFlags();
         if ((Sys.ReadCodeSegment() & 3) <= (int)((flags >> 12) & 3))
         {
             Sys.Cli();
-            return (nint)flags;
+            return Sys.Low32(flags);
         }
         while (Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 1) != 0)
         {
@@ -1053,7 +1054,7 @@ static class Platform
         return LockHeld;
     }
 
-    public static void AtomicsLeave(nint held)
+    public static void AtomicsLeave(uint held)
     {
         if (held == LockHeld) Sys.AtomicSwap32(Sys.AddressOf(ref Runtime.Atomics386), 0);
         else if ((held & InterruptFlag) != 0) Sys.Sti();
@@ -1069,7 +1070,7 @@ static class Platform
     /// the time is offered to it (Yield) every so many turns, where the
     /// spin burnt whole time slices while it waited to run. Answers what
     /// Leave is handed.
-    public static nint HandlerLockEnter(nuint at)
+    public static uint HandlerLockEnter(nuint at)
     {
         nuint flags = Sys.ReadFlags();
         bool may = (Sys.ReadCodeSegment() & 3) <= (int)((flags >> 12) & 3);
@@ -1083,10 +1084,10 @@ static class Platform
             Sys.Pause();
             if (!may && (++turns & 63) == 0) { Runtime.PreemptOn(); Yield(); Runtime.PreemptOff(); }
         }
-        return may ? (nint)flags : 0;
+        return may ? Sys.Low32(flags) : 0;
     }
 
-    public static void HandlerLockLeave(nuint at, nint held)
+    public static void HandlerLockLeave(nuint at, uint held)
     {
         Sys.AtomicSwap(at, 0u);
         Runtime.PreemptOn();
@@ -1094,9 +1095,9 @@ static class Platform
     }
 
     /// EFLAGS.IF.
-    const int InterruptFlag = 0x200;
-    /// What AtomicsEnter answers for the lock: no flags word is negative.
-    const int LockHeld = -1;
+    const uint InterruptFlag = 0x200;
+    /// What AtomicsEnter answers for the lock: no flags word has all its bits set.
+    const uint LockHeld = 0xFFFFFFFF;
 }
 
 /// The parts of system.cor's `Os` that mean anything with no kernel.
@@ -1202,7 +1203,7 @@ static partial class Os
     public static nuint EnvironAddress()
     {
         nuint sp = MainEntryStack();
-        return sp + WordSize.Bytes + WordSize.Bytes * Sys.ReadNative(sp) + WordSize.Bytes;
+        return sp + WordSize.Bytes + WordSize.Bytes * Sys.ReadAddress(sp) + WordSize.Bytes;
     }
 
     /// A NUL-terminated UTF-8 string at an address.

@@ -2016,19 +2016,19 @@ class Socket : IDisposable
 
     /// How long a receive waits, in milliseconds, before it fails with a
     /// timeout (SocketError.TimedOut); zero or less waits for ever, as .NET's
-    /// does. SO_RCVTIMEO carries a struct timeval, whose layout is the
-    /// machine's (TimeVal).
+    /// does. SO_RCVTIMEO_NEW carries a struct timeval of two 64-bit
+    /// fields on every interface (TimeVal).
     public int ReceiveTimeout
     {
         get { return _receiveTimeout; }
-        set { SetTimeout(20, value); _receiveTimeout = value <= 0 ? 0 : value; }      // SO_RCVTIMEO
+        set { SetTimeout(66, value); _receiveTimeout = value <= 0 ? 0 : value; }      // SO_RCVTIMEO_NEW
     }
 
-    /// The same for a send (SO_SNDTIMEO).
+    /// The same for a send (SO_SNDTIMEO_NEW).
     public int SendTimeout
     {
         get { return _sendTimeout; }
-        set { SetTimeout(21, value); _sendTimeout = value <= 0 ? 0 : value; }         // SO_SNDTIMEO
+        set { SetTimeout(67, value); _sendTimeout = value <= 0 ? 0 : value; }         // SO_SNDTIMEO_NEW
     }
 
     void SetTimeout(int option, int milliseconds)

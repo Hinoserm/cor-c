@@ -518,7 +518,7 @@ partial class Thread
         nuint at = Sys.ArrayData(_foreground);
         while (true)
         {
-            nuint now = Sys.ReadNative(at);
+            nuint now = Sys.ReadAddress(at);
             if (now == 0) return;
             Native.Wait(at, (nint)now);
         }
@@ -691,7 +691,7 @@ partial class Thread
     void BeginNative(nuint frame)
     {
         Platform.SetThreadBlock(_block);
-        Sys.WriteNative(_block + Tls.ThreadId, (nuint)Native.CurrentThreadId());
+        Sys.WriteAddress(_block + Tls.ThreadId, (nuint)Native.CurrentThreadId());
         nuint top = frame + 2 * WordSize.Bytes;
         Runtime.MoveStack(top, top);
         Runtime.EndBlocking();
@@ -706,7 +706,7 @@ partial class Thread
     void Begin()
     {
         Platform.SetThreadBlock(_block);
-        Sys.WriteNative(_block + Tls.ThreadId, (nuint)Native.CurrentThreadId());
+        Sys.WriteAddress(_block + Tls.ThreadId, (nuint)Native.CurrentThreadId());
 
         // Running, from here on: until this the collector was told this thread
         // was stopped with nothing on its stack, which it was.
@@ -748,7 +748,7 @@ partial class Thread
         Unregister(_slot);
         if (_stack != 0)
         {
-            Sys.WriteNative(_block + Native.UnmapLengthAt, _stackBytes);
+            Sys.WriteAddress(_block + Native.UnmapLengthAt, _stackBytes);
         }
 
         // The stack under this thread stops being a stack the collector may

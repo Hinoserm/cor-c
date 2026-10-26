@@ -48,11 +48,11 @@ static partial class Environment
             return have;
         }
         nuint sp = Os.MainEntryStack();
-        int argc = (int)Sys.ReadNative(sp);
+        int argc = (int)Sys.ReadAddress(sp);
         string[] args = new string[argc];
         for (int i = 0; i < argc; i++)
         {
-            args[i] = Os.StringAt(Sys.ReadNative(sp + (nuint)(WordSize.Bytes + WordSize.Bytes * i)));
+            args[i] = Os.StringAt(Sys.ReadAddress(sp + (nuint)(WordSize.Bytes + WordSize.Bytes * i)));
         }
         _args = args;
         return args;
@@ -66,17 +66,17 @@ static partial class Environment
             return have;
         }
         nuint sp = Os.MainEntryStack();
-        nuint argc = Sys.ReadNative(sp);
+        nuint argc = Sys.ReadAddress(sp);
         nuint at = sp + (nuint)WordSize.Bytes + (nuint)WordSize.Bytes * argc + (nuint)WordSize.Bytes;
         int n = 0;
-        while (Sys.ReadNative(at + (nuint)(WordSize.Bytes * n)) != 0)
+        while (Sys.ReadAddress(at + (nuint)(WordSize.Bytes * n)) != 0)
         {
             n = n + 1;
         }
         string[] all = new string[n];
         for (int i = 0; i < n; i++)
         {
-            all[i] = Os.StringAt(Sys.ReadNative(at + (nuint)(WordSize.Bytes * i)));
+            all[i] = Os.StringAt(Sys.ReadAddress(at + (nuint)(WordSize.Bytes * i)));
         }
         _env = all;
         return all;
