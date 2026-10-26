@@ -25503,7 +25503,7 @@ public sealed partial class Binder
                 && op.Params.All(p => ValueOperand(p.Type)) && ValueOperand(op.Returns)
                 && (!relational || op.Returns.Prim == Prim.Bool))
             {
-                _r.Rewrites[b] = LiftedOperator(b, op, name, l.IsNullableValue, r.IsNullableValue, relational);
+                _r.Rewrites[b] = LiftedOperator(b, op, name, l.IsNullableValue, r.IsNullableValue, relational, lc, rc, l, r);
                 _liftedOperators[b] = op;
                 return CheckExpr(_r.Rewrites[b]);
             }
@@ -25756,20 +25756,34 @@ public sealed partial class Binder
     /// their values where every nullable side holds one, and otherwise empty
     /// -- or false for a relational operator answering bool.
     /// </summary>
-    private Expr LiftedOperator(BinaryExpr b, MethodSymbol op, string name, bool leftMay, bool rightMay, bool relational)
+    private Expr LiftedOperator(BinaryExpr b, MethodSymbol op, string name, bool leftMay, bool rightMay, bool relational,
+        long? leftConstant = null, long? rightConstant = null, Type? leftType = null, Type? rightType = null)
     {
         Expr Held(int outer) => new SubjectExpr { Outer = outer, Line = b.Line, Col = b.Col };
         Expr Has(int outer) => new MemberExpr { Target = Held(outer), Name = "HasValue", Line = b.Line, Col = b.Col };
-        Expr Value(int outer, bool may) => may ? new MemberExpr { Target = Held(outer), Name = "Value", Line = b.Line, Col = b.Col } : Held(outer);
+        // A CONSTANT ON THE SIDE THAT IS NO NULLABLE is the call's argument
+        // as itself, written again: held as a subject it is a value of its
+        // type and no longer a constant, and `q + 4096` with a Physical? q
+        // and an operator +(Physical, uint) lost the conversion that made
+        // the int a uint (Operator's Takes).
+        Expr Value(int outer, bool may, long? constant, Type? type)
+            => may ? new MemberExpr { Target = Held(outer), Name = "Value", Line = b.Line, Col = b.Col }
+             : constant is long value && type is not null
+                ? new LiteralExpr
+                {
+                    Kind = Lit.Int, IntValue = value, Line = b.Line, Col = b.Col,
+                    Text = value.ToString(System.Globalization.CultureInfo.InvariantCulture) + (type.Prim == Prim.I64 ? "L" : ""),
+                }
+                : Held(outer);
 
         CallExpr call = new()
         {
             Target = new MemberExpr { Target = Qualified(op.Owner, b), Name = name, Line = b.Line, Col = b.Col },
             Line = b.Line, Col = b.Col,
         };
-        call.Args.Add(Value(1, leftMay));
+        call.Args.Add(Value(1, leftMay, leftConstant, leftType));
         call.WritableArgNames.Add(null);
-        call.Args.Add(Value(0, rightMay));
+        call.Args.Add(Value(0, rightMay, rightConstant, rightType));
         call.WritableArgNames.Add(null);
 
         Expr has = leftMay && rightMay
@@ -25946,10 +25960,15 @@ public sealed partial class Binder
 
         // A CONSTANT REACHES AN OPERAND by C#'s implicit constant conversion
         // (10.2.11) as an argument does: `p + 4096` is a PhysicalAddress's
-        // operator +(PhysicalAddress, uint), the int constant a uint.
+        // operator +(PhysicalAddress, uint), the int constant a uint. Not an
+        // enum's member, which converts to no number implicitly.
+        // THE FIRST THAT APPLIES says only that one does: the call made of it
+        // is bound as any call is (UserOperator), over every overload, so a
+        // constant that fits an earlier op(S, byte) still reaches a later
+        // op(S, int) by identity, as C# chooses.
         bool Takes(Type given, long? constant, Type want)
             => Convertible(given, want) || constant is long value
-                && (ConstantConverts(given, value, want) || UserConversion(given, want, false, constant) is not null);
+                && (given.Symbol is null && ConstantConverts(given, value, want) || UserConversion(given, want, false, constant) is not null);
 
         foreach (MethodSymbol m in holder.FindMethods(name))
         {

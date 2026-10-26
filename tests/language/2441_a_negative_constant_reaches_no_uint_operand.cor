@@ -1,0 +1,22 @@
+// test: a negative constant reaches no uint operand of a struct's operator
+// expect-compile-error: 'Physical' and 'int' are not both numbers
+// C# converts an int constant to a uint operand only when the value fits
+// (10.2.11): `p + -1` has no operator +(Physical, uint) to call, and is
+// refused as the sum of a struct and an int (2440 has the constants that
+// do fit).
+struct Physical
+{
+    readonly uint _value;
+    public Physical(uint value) { _value = value; }
+    public static Physical operator +(Physical a, uint offset) => new Physical(a._value + offset);
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Physical p = new Physical(4096);
+        Physical q = p + -1;
+        return 0;
+    }
+}
