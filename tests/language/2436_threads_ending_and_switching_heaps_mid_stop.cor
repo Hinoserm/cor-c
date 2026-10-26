@@ -1,0 +1,93 @@
+// test: threads that end, and switch heaps as at a gate, while the collector's stop is open lose no object
+// expect-exit: 0
+// expect-output:
+// rounds 60 bad 0
+// walked on demand True
+//
+// A STOP IN STEPS (Gc.StopBudget) lets a thread give up its buffer and its
+// pages between two of them: as it ends, and as it leaves a heap of its own
+// for the first one and comes back (a module's thread at a gate). Given up
+// in a chunk the stop's walk has not reached, they were written into no
+// snapshot, the walk passed them after as captured, and an array of names
+// made before the thread answered STAMP -- its string held by the array
+// alone -- lost the string. The chunk is walked first now, by whoever gives
+// it up (EnsureWalked). Here short-lived threads in two heaps of their own
+// make names in arrays, step out to the first heap and back, check every
+// name, and end, over and over, while the main thread allocates and
+// collects with a 32-block budget and a platform that lingers between steps.
+
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System;
+
+static class Program
+{
+    static long[] _heaps = new long[2];
+    static long _bad;
+    static long _spin;
+
+    static long Linger(long a, long b, long c)
+    {
+        if (a != 0) return 0;
+        for (int i = 0; i < 20000; i++) _spin = _spin + i;
+        return 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string[] Names(int seed, int n)
+    {
+        string first = "n" + seed;
+        string[] names = new string[] { first, first };
+        return names;
+    }
+
+    static void Work(int which, int round)
+    {
+        long previous = Runtime.EnterHeap(_heaps[which]);
+        var kept = new string[300][];
+        for (int i = 0; i < kept.Length; i++)
+        {
+            kept[i] = Names(round * 1000 + i, 2);
+            if (i % 100 == 50)
+            {
+                // Out to the first heap and back, as through a gate.
+                long mine = Runtime.EnterHeap(previous);
+                string between = "between " + i;
+                Runtime.EnterHeap(mine);
+                if (between.Length < 9) Interlocked.Increment(ref _bad);
+            }
+        }
+        for (int i = 0; i < kept.Length; i++)
+        {
+            if (kept[i][1] != "n" + (round * 1000 + i)) Interlocked.Increment(ref _bad);
+        }
+        Runtime.LeaveHeap(previous);
+    }
+
+    static int Main()
+    {
+        _heaps[0] = Gc.NewHeap();
+        _heaps[1] = Gc.NewHeap();
+        Gc.StopBudget = 32;
+        Gc.YieldHook = Sys.AddressOf(Program.Linger);
+        var churn = new string[2000];
+        int rounds = 0;
+        for (int round = 0; round < 60; round++)
+        {
+            int r = round;
+            var a = new Thread(() => Work(0, r));
+            var b = new Thread(() => Work(1, r + 100));
+            a.Start();
+            b.Start();
+            for (int i = 0; i < churn.Length; i++) churn[i] = "m " + (round * 10000 + i);
+            if (round % 4 == 0) Gc.Collect();
+            a.Join();
+            b.Join();
+            rounds++;
+        }
+        Gc.YieldHook = 0;
+        Console.WriteLine("rounds " + rounds + " bad " + Interlocked.Read(ref _bad));
+        Console.WriteLine("walked on demand " + (Gc.StopWalksOnDemand > 0));
+        return 0;
+    }
+}
