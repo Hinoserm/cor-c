@@ -153,7 +153,13 @@ On main, that walks the thread's own class lists 32 links at a time
     block with its card clear. It can report only if setting the cards
     again in ScanStopBlocks is lost, and then it reports in every run.
   - Open, and older than the stepped stop: VerifyMinor reports an old array
-    pointing at an unmarked young string in 2-4 runs of 100 of 2435's
+    pointing at an unmarked young string in a few runs of 100 of 2435's
     workload, on main as well, with no name ever read back wrong. The
-    string is a newcomer in a chunk made young after the stop, held by an
-    array the cycle marked. Under investigation.
+    evidence so far says the arrays are garbage. Every array the
+    verifier reported was recorded, and every array the program still held
+    was checked against them as it was read back. In 192 runs, one run
+    reported (10 arrays) and none of the 10 was still held. A dead old
+    object may point anywhere, as VerifyMinor's own comment says, so the
+    reports read as that and not as a loss. Still open: one reporting run
+    is a small sample, and how a dead old array came to point at a string
+    that is young and unmarked is not yet explained.
