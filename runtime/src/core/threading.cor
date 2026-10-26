@@ -52,15 +52,16 @@ using System.Threading.Tasks;
 /// (vtable, sync word) followed by its fields in declaration order, each
 /// aligned to its size, base-class fields first (X86-BACKEND.md, "Object
 /// layout"; Binder.LayOut). So a class whose FIRST two declared instance
-/// fields are `nint` -- and whose base declares none -- has them at two and
-/// three words: +8 and +12 on i386, +16 and +24 in long mode. Task,
+/// fields are `int` -- and whose base declares none -- has them at two words
+/// and two words and four bytes: +8 and +12 on i386, +16 and +20 in long
+/// mode. Task,
 /// CancellationTokenSource, AtomicCell and WhenAllState are written that way,
 /// and CheckLayout below proves it on first use of the scheduler rather than
 /// trusting this comment.
 ///
-/// `nint`, a machine word, because Sys.Cas, Sys.AtomicSwap and Sys.AtomicAdd
-/// are word operations: on i386 that is 32 bits, as `int` was, and in long
-/// mode a CAS on a 32-bit field would take its neighbour with it.
+/// `int`, with the 32-bit atomics (Sys.Cas32, Sys.AtomicSwap32,
+/// Sys.AtomicAdd32): the word forms would take the neighbouring field with
+/// them in long mode.
 ///
 /// The address is taken afresh on every operation (Sys.ObjectAddress(o) + offset) and
 /// never stored, so a future moving collector that updates references keeps
@@ -69,7 +70,7 @@ using System.Threading.Tasks;
 static class Atom
 {
     public const int FirstWord = 2 * WordSize.Bytes;
-    public const int SecondWord = 3 * WordSize.Bytes;
+    public const int SecondWord = 2 * WordSize.Bytes + 4;
 
     public static nuint At(object o, int offset)
     {
@@ -88,7 +89,7 @@ static class Atom
         while (true)
         {
             Runtime.PreemptOff();
-            if (Sys.Cas(at, 0, 1) == 0) return;
+            if (Sys.Cas32(at, 0, 1) == 0) return;
             Runtime.PreemptOn();
             Turn(ref turns);
         }
@@ -119,7 +120,7 @@ static class Atom
 
     public static void Exit(nuint at)
     {
-        Sys.AtomicSwap(at, 0);
+        Sys.AtomicSwap32(at, 0);
         Runtime.PreemptOn();
     }
 
@@ -159,24 +160,24 @@ static class Atom
 class AtomicCell
 {
     // LAYOUT: Value at Atom.FirstWord, Lock at Atom.SecondWord. Keep first.
-    public nint Value;
-    public nint Lock;
+    public int Value;
+    public int Lock;
 
     public int Read()
     {
-        return (int)Value;
+        return Value;
     }
 
     /// Answers what was there; the swap happened when that equals `expect`.
     public int CompareExchange(int expect, int value)
     {
-        return (int)Sys.Cas(Atom.At(this, Atom.FirstWord), expect, value);
+        return Sys.Cas32(Atom.At(this, Atom.FirstWord), expect, value);
     }
 
     /// Adds and answers the NEW value (xadd hands back the old one).
     public int Add(int delta)
     {
-        return (int)Sys.AtomicAdd(Atom.At(this, Atom.FirstWord), delta) + delta;
+        return Sys.AtomicAdd32(Atom.At(this, Atom.FirstWord), delta) + delta;
     }
 
     public void Enter()
@@ -222,8 +223,8 @@ enum TaskStatus
 class Task
 {
     // LAYOUT: these two must stay the first instance fields (see Atom).
-    nint _state;
-    nint _lock;
+    int _state;
+    int _lock;
 
     // THE FIRST FAULT, or what canceled the task. A task faulted by one
     // exception -- nearly every faulted task -- keeps only this; one faulted
@@ -781,7 +782,7 @@ class Task
     /// Step one of completing: exactly one caller ever gets true.
     public bool TryClaim()
     {
-        return Sys.Cas(Atom.At(this, Atom.FirstWord), Incomplete, Claimed) == Incomplete;
+        return Sys.Cas32(Atom.At(this, Atom.FirstWord), Incomplete, Claimed) == Incomplete;
     }
 
     /// Step two for a caller that claimed and stored a result.
@@ -832,7 +833,7 @@ class Task
 
         Atom.Enter(lockAt);
 
-        Sys.AtomicSwap(Atom.At(this, Atom.FirstWord), finalState);
+        Sys.AtomicSwap32(Atom.At(this, Atom.FirstWord), finalState);
 
         Action? first = _first;
         List<Action>? more = _more;
@@ -2081,8 +2082,8 @@ class TaskStart
 {
     // LAYOUT: the claim must stay the first instance field (see Atom): 0
     // unclaimed, 1 the run's, 2 the cancellation's.
-    nint _claim;
-    nint _pad;
+    int _claim;
+    int _pad;
     Task _task;
     CancellationTokenRegistration _registration;
     CancellationToken _token;
@@ -2108,7 +2109,7 @@ class TaskStart
 
     void Canceled()
     {
-        if (Sys.Cas(Atom.At(this, Atom.FirstWord), 0, 2) == 0)
+        if (Sys.Cas32(Atom.At(this, Atom.FirstWord), 0, 2) == 0)
         {
             _task.TrySetCanceled(_token);
         }
@@ -2118,7 +2119,7 @@ class TaskStart
     /// not get there first. The registration is let go either way.
     public bool Begin()
     {
-        bool mine = Sys.Cas(Atom.At(this, Atom.FirstWord), 0, 1) == 0;
+        bool mine = Sys.Cas32(Atom.At(this, Atom.FirstWord), 0, 1) == 0;
         CancellationTokenRegistration registration = _registration;
         _registration = default(CancellationTokenRegistration);
         registration.Dispose();
@@ -2766,8 +2767,8 @@ class WhenAllState : Action
 {
     // LAYOUT: Remaining and Noted must stay the first two instance fields
     // (see Atom).
-    nint _remaining;
-    nint _noted;
+    int _remaining;
+    int _noted;
     Task[] _tasks;
     Task _all;
     // THE TASKS THAT FAULTED OR WERE CANCELED, in the order they completed,
@@ -2799,8 +2800,8 @@ class WhenAllState : Action
         if (unsuccessful != null && !one.IsCompletedSuccessfully)
         {
             // xadd answers the OLD count: this task's place.
-            long at = Sys.AtomicAdd(Atom.At(this, Atom.SecondWord), 1);
-            unsuccessful[(int)at] = one;
+            int at = Sys.AtomicAdd32(Atom.At(this, Atom.SecondWord), 1);
+            unsuccessful[at] = one;
         }
         CountDown();
     }
@@ -2808,7 +2809,7 @@ class WhenAllState : Action
     void CountDown()
     {
         // xadd answers the OLD count: the last task sees 1.
-        long before = Sys.AtomicAdd(Atom.At(this, Atom.FirstWord), -1);
+        int before = Sys.AtomicAdd32(Atom.At(this, Atom.FirstWord), -1);
 
         if (before != 1)
         {
@@ -2827,7 +2828,7 @@ class WhenAllState : Action
         // canceled task's cancellation is the one it carries.
         Task?[]? unsuccessful = _unsuccessful;
         Task[] tasks = _tasks;
-        int count = unsuccessful != null ? (int)_noted : tasks.Length;
+        int count = unsuccessful != null ? _noted : tasks.Length;
         Exception? canceled = null;
         bool anyCanceled = false;
         List<Exception>? faults = null;
@@ -3341,8 +3342,8 @@ static class Timeout
 class CancellationTokenSource : IDisposable
 {
     // LAYOUT: these two must stay the first instance fields (see Atom).
-    nint _canceled;
-    nint _lock;
+    int _canceled;
+    int _lock;
 
     List<Action>? _callbacks;
     TimerEntry? _timer;
@@ -3422,7 +3423,7 @@ class CancellationTokenSource : IDisposable
     bool Requested(out List<Action>? callbacks)
     {
         callbacks = null;
-        if (Sys.Cas(Atom.At(this, Atom.FirstWord), 0, 1) != 0)
+        if (Sys.Cas32(Atom.At(this, Atom.FirstWord), 0, 1) != 0)
         {
             return false;
         }
@@ -4045,7 +4046,7 @@ static partial class Scheduler
         AtomicCell signal = SignalCell();
         nuint at = Atom.At(signal, Atom.FirstWord);
 
-        Sys.AtomicAdd(at, 1);
+        Sys.AtomicAdd32(at, 1);
         Native.Wake(at, 1);
     }
 
@@ -4071,7 +4072,7 @@ static partial class Scheduler
                 continue;
             }
 
-            nint seen = (nint)Sys.Read32(at);
+            int seen = (int)Sys.Read32(at);
 
             // Re-read the queue after reading the counter: a Post in between
             // bumps the counter, and then the futex wait returns at once.
@@ -4121,7 +4122,7 @@ static partial class Scheduler
 
         if (Platform.PostHook != 0)
         {
-            Sys.Call(Platform.PostHook, (nint)Sys.ObjectAddress(work), (nint)Sys.ObjectAddress(context), 0);
+            Sys.Call(Platform.PostHook, Sys.ObjectAddress(work), Sys.ObjectAddress(context), 0);
             return;
         }
 
@@ -4839,7 +4840,7 @@ static class Monitor
     const nuint Held = 2;           // the owner written when there is no identity
     const nuint Asleep = 1;         // bit 0: someone may be waiting on the word
 
-    static nint _depthGate;
+    static int _depthGate;
     // THE EXTRA DEPTHS, by lock word: open addressing over two arrays,
     // grown with the gate let go -- NOTHING IS MADE UNDER IT, as preemption
     // is off while it is held (Tls.PreemptCount). A word of 0 is a free slot.
@@ -5139,7 +5140,7 @@ static class Monitor
             {
                 continue;
             }
-            Platform.MonitorBlock(word, (nint)(seen | Asleep));
+            Platform.MonitorBlock(word, (int)Sys.Low32(seen | Asleep));
         }
     }
 
@@ -5246,7 +5247,7 @@ static class Monitor
         }
     }
 
-    static nint _waitGate;
+    static int _waitGate;
     static List<MonitorWaiter>? _waiters;
 
     public static bool Wait(object obj)
@@ -5394,7 +5395,7 @@ static class Monitor
                 {
                     continue;
                 }
-                Sys.AtomicSwap(flag, 1);
+                Sys.AtomicSwap32(flag, 1);
                 Native.Wake(flag, 1);
                 if (!all)
                 {
@@ -5423,9 +5424,9 @@ static class Monitor
 /// sets -- the word it sleeps on (Native.Wait).
 class MonitorWaiter
 {
-    // LAYOUT: first instance field, at Atom.FirstWord (see Atom), and a
-    // WORD, as the other waiters' are.
-    nint _signalled;
+    // LAYOUT: first instance field, at Atom.FirstWord (see Atom), an int, as
+    // the other waiters' are.
+    int _signalled;
     int _pad;
 
     public nuint Word;
@@ -5607,7 +5608,7 @@ sealed class AsyncContext
     /// The flow's [ThreadStatic] cells (ThreadStatics), or null for none yet.
     public object?[]? Statics;
     // Whether a run has the statics table in (1) or not (0).
-    nint _staticsHeld;
+    int _staticsHeld;
 
     // Platform.ContextHook's operations: the word now; a run entered with a
     // word, answering what the leave is to find; the run left with that.
@@ -5713,7 +5714,7 @@ sealed class AsyncContext
         }
         if (Platform.ContextHook != 0)
         {
-            saved.OwnerWord = (nuint)Sys.Call(Platform.ContextHook, EnterOp, (nint)Sys.ObjectAddress(context.Owner), 0);
+            saved.OwnerWord = Sys.Call(Platform.ContextHook, EnterOp, Sys.ObjectAddress(context.Owner), 0);
         }
         if (block == 0)
         {
@@ -5721,7 +5722,7 @@ sealed class AsyncContext
         }
         saved.Running = Sys.ReadAddress(block + Tls.AsyncContext);
         saved.Statics = Sys.ReadAddress(block + Tls.ThreadStatics);
-        saved.HeldStatics = Sys.Cas(Sys.AddressOf(ref context._staticsHeld), 0, 1) == 0;
+        saved.HeldStatics = Sys.Cas32(Sys.AddressOf(ref context._staticsHeld), 0, 1) == 0;
         Sys.WriteAddress(block + Tls.ThreadStatics, saved.HeldStatics ? Sys.ObjectAddress(context.Statics) : 0);
         if (saved.Running == 0 && Platform.TaskArenaBytes > 0)
         {
@@ -5762,7 +5763,7 @@ sealed class AsyncContext
             if (saved.HeldStatics)
             {
                 if (statics != Sys.ObjectAddress(context.Statics)) context.Statics = ThreadStatics.Flowing(statics);
-                Sys.AtomicSwap(Sys.AddressOf(ref context._staticsHeld), 0);
+                Sys.AtomicSwap32(Sys.AddressOf(ref context._staticsHeld), 0);
             }
             else if (statics != 0)
             {
@@ -5793,7 +5794,7 @@ sealed class AsyncContext
         }
         if (Platform.ContextHook != 0)
         {
-            Sys.Call(Platform.ContextHook, LeaveOp, (nint)saved.OwnerWord, 0);
+            Sys.Call(Platform.ContextHook, LeaveOp, saved.OwnerWord, 0);
         }
     }
 }
@@ -5827,12 +5828,12 @@ static class InterruptCompletions
     static int[] _links = null!;
     static int[] _generations = null!;
     static bool[] _typed = null!;
-    static nint _free;          // first free slot + 1, under the gate
-    static nint _ready;         // first completed slot + 1, pushed by handlers
+    static int _free;           // first free slot + 1, under the gate
+    static int _ready;          // first completed slot + 1, pushed by handlers
     static AtomicCell? _gate;
     // Set once the table is made (Gate).
     static volatile int _gateReady;
-    static nint _armed;
+    static int _armed;
 
     /// Slots armed and not yet drained: a device may still complete them.
     public static long Armed => _armed;
@@ -5909,7 +5910,7 @@ static class InterruptCompletions
         _results[slot] = 0;
         _held[slot] = task;
         gate.Exit();
-        Sys.AtomicAdd(Sys.AddressOf(ref _armed), 1);
+        Sys.AtomicAdd32(Sys.AddressOf(ref _armed), 1);
         return ((long)generation << 16) | (long)(slot + 1);
     }
 
@@ -5949,9 +5950,9 @@ static class InterruptCompletions
         nuint at = Sys.AddressOf(ref _ready);
         while (true)
         {
-            nuint head = Sys.ReadAddress(at);
-            _links[slot] = (int)head;
-            if (Sys.Cas(at, head, (nuint)(slot + 1)) == head)
+            int head = (int)Sys.Read32(at);
+            _links[slot] = head;
+            if (Sys.Cas32(at, head, slot + 1) == head)
             {
                 break;
             }
@@ -5978,10 +5979,10 @@ static class InterruptCompletions
         // slot.
         if (_armed > 0 && (++_looks & 63) == 0) Reap();
         if (_ready == 0) return;
-        long taken = Sys.AtomicSwap(Sys.AddressOf(ref _ready), 0);
+        int taken = Sys.AtomicSwap32(Sys.AddressOf(ref _ready), 0);
         // Pushed newest first: turned round, so the first completed runs first.
         int reversed = 0;
-        int at = (int)taken;
+        int at = taken;
         while (at != 0)
         {
             int next = _links[at - 1];
@@ -6000,10 +6001,10 @@ static class InterruptCompletions
             bool typed = _typed[slot];
             gate.Enter();
             _held[slot] = null;
-            _links[slot] = (int)_free;
+            _links[slot] = _free;
             _free = slot + 1;
             gate.Exit();
-            Sys.AtomicAdd(Sys.AddressOf(ref _armed), -1);
+            Sys.AtomicAdd32(Sys.AddressOf(ref _armed), -1);
             if (task != null)
             {
                 if (typed && task is Task<long> number) number.FinishClaimed(result);
@@ -6037,10 +6038,10 @@ static class InterruptCompletions
             _generations[slot] = generation == 0 ? 1 : generation;
             Sys.Fence();
             _held[slot] = null;
-            _links[slot] = (int)_free;
+            _links[slot] = _free;
             _free = slot + 1;
             gate.Exit();
-            Sys.AtomicAdd(Sys.AddressOf(ref _armed), -1);
+            Sys.AtomicAdd32(Sys.AddressOf(ref _armed), -1);
         }
     }
 }
@@ -6940,10 +6941,9 @@ namespace System.Threading
     class SemaphoreSlim : IDisposable
     {
         // LAYOUT: these two must stay the first instance fields (see Atom),
-        // and WORDS: as ints, two of them shared the first word in long mode,
-        // Atom.SecondWord fell on _max, and the gate never read free.
-        nint _count;
-        nint _lock;
+        // and ints, with the 32-bit atomics.
+        int _count;
+        int _lock;
 
         readonly int _max;
         List<SemaphoreWaiter> _waiters = new List<SemaphoreWaiter>();
@@ -6969,7 +6969,7 @@ namespace System.Threading
             Atom.CheckLayout();
         }
 
-        public int CurrentCount => (int)_count;
+        public int CurrentCount => _count;
 
         public void Wait()
         {
@@ -7153,7 +7153,7 @@ namespace System.Threading
 
             nuint gate = Atom.At(this, Atom.SecondWord);
             Atom.Enter(gate);
-            int previous = (int)_count;
+            int previous = _count;
             if (_max - previous < releaseCount)
             {
                 Atom.Exit(gate);
@@ -7387,17 +7387,16 @@ namespace System.Threading
 static class ThreadStatics
 {
     /// The numbers given out so far. Every atomic here is the runtime's own
-    /// (Sys.AtomicAdd, Sys.Cas, Sys.AtomicSwap), never Interlocked: a
-    /// freestanding kernel is built without the class library. They work on
-    /// a word, so the fields are words.
-    static nint _fields;
+    /// (Sys.AtomicAdd32, Sys.Cas32, Sys.AtomicSwap32), never Interlocked: a
+    /// freestanding kernel is built without the class library.
+    static int _fields;
     /// Every thread's table, through its node.
     static ThreadStaticTable? _tables;
     /// Held while the list changes.
-    static nint _lock;
+    static int _lock;
 
     /// The cell of the field whose number is at `indexAt`, on this thread.
-    public static nuint Cell(nuint indexAt, nint bytes)
+    public static nuint Cell(nuint indexAt, nuint bytes)
     {
         // The field's number, made the first time any thread asks: one of a
         // few thousand at most, an int.
@@ -7405,7 +7404,7 @@ static class ThreadStatics
         int index = (int)Sys.ReadAddress(indexAt);
         if (index == 0)
         {
-            Sys.Cas(indexAt, 0, (int)Sys.AtomicAdd(Sys.AddressOf(ref _fields), 1) + 1);
+            Sys.Cas(indexAt, 0, (nuint)(Sys.AtomicAdd32(Sys.AddressOf(ref _fields), 1) + 1));
             index = (int)Sys.ReadAddress(indexAt);
         }
         nuint home = Home();
@@ -7528,7 +7527,7 @@ static class ThreadStatics
 
     static void Enter()
     {
-        while ((int)Sys.Cas(Sys.AddressOf(ref _lock), 0, 1) != 0)
+        while (Sys.Cas32(Sys.AddressOf(ref _lock), 0, 1) != 0)
         {
             Sys.Pause();
         }
@@ -7536,7 +7535,7 @@ static class ThreadStatics
 
     static void Leave()
     {
-        Sys.AtomicSwap(Sys.AddressOf(ref _lock), 0);
+        Sys.AtomicSwap32(Sys.AddressOf(ref _lock), 0);
     }
 }
 

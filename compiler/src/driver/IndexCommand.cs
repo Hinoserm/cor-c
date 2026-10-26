@@ -51,6 +51,7 @@ public static class IndexCommand
         global::Corsac.Lang.Target target = global::Corsac.Lang.Target.ByName(targetName)
             ?? throw new ArgumentException("unknown target '" + targetName + "'");
         symbols.AddRange(Driver.TargetSymbols(target));
+        global::Corsac.Lang.Parser.SyscallWordType = target.WordSize == 8 ? "ulong" : "uint";
         global::Corsac.Lang.Parser.ProjectUsings = usings;
         if (on is not null && !File.Exists(on)) throw new ArgumentException("--on names the index this one is made on, and " + on + " is not there");
         SourceIndexBuilder.Write(output, paths, assembly, symbols, librarySource: Driver.IsLibrarySource, on: on);

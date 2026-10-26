@@ -79,10 +79,10 @@ namespace Microsoft.Win32.SafeHandles
     public sealed class SafeWaitHandle : IDisposable
     {
         System.Threading.WaitHandle? _target;
-        nint _handle;
+        IntPtr _handle;          // a handle NUMBER, as .NET's IntPtr API names one
         bool _closed;
 
-        static nint _next = 0x1000;
+        static IntPtr _next = 0x1000;
         static List<SafeWaitHandle>? _numbered;
         static AtomicCell _numbering = new AtomicCell();
 
@@ -226,8 +226,8 @@ partial class Thread
     // LAYOUT: these two must stay the first instance fields (see Atom). _done
     // is what Join waits on, and it is a futex word, so it must have an
     // address -- hence a field of an object rather than a static.
-    nint _done;
-    nint _lock;
+    int _done;
+    int _lock;
 
     Action _body;
     ThreadStart? _start;
@@ -260,12 +260,12 @@ partial class Thread
     [ThreadStatic] static Thread? _current;
 
     /// How many Threads have been made, for ManagedThreadId.
-    static nint _made;
+    static int _made;
 
     /// How many foreground threads are running, as a futex word the end of
     /// Main waits on (WaitForForeground); and a spin lock over the counting.
-    // Two words a CAS and a futex work on: the count, and its lock.
-    static readonly nint[] _foreground = new nint[2];
+    // Two ints a CAS and a futex work on: the count, and its lock.
+    static readonly int[] _foreground = new int[2];
 
     /// Big enough for the deepest call a thread body here makes, and cheap:
     /// anonymous pages cost nothing until they are touched. EIGHT MEGABYTES
@@ -379,7 +379,7 @@ partial class Thread
     // from 2, and keeps its number for good.
     static int NextManagedId()
     {
-        return (int)Sys.AtomicAdd(Sys.AddressOf(ref _made), 1) + 2;
+        return Sys.AtomicAdd32(Sys.AddressOf(ref _made), 1) + 2;
     }
 
     /// A THREAD OF A STACK SIZE ITS OWN, as .NET's maxStackSize: 0 the
@@ -482,10 +482,10 @@ partial class Thread
 
     static void Counting(bool enter)
     {
-        nuint at = Sys.ArrayData(_foreground) + WordSize.Bytes;
+        nuint at = Sys.ArrayData(_foreground) + 4;
         if (!enter)
         {
-            Sys.AtomicSwap(at, 0);
+            Sys.AtomicSwap32(at, 0);
             Runtime.PreemptOn();
             return;
         }
@@ -496,7 +496,7 @@ partial class Thread
         long turns = 0;
         // NOT PREEMPTED WHILE IT IS HELD (Tls.PreemptCount); down again to wait.
         Runtime.PreemptOff();
-        while (Sys.Cas(at, 0, 1) != 0)
+        while (Sys.Cas32(at, 0, 1) != 0)
         {
             turns = turns + 1;
             if (turns < 64) Sys.Pause();
@@ -509,7 +509,7 @@ partial class Thread
     {
         nuint at = Sys.ArrayData(_foreground);
         _counted = by > 0;
-        if (Sys.AtomicAdd(at, by) + by == 0) Native.Wake(at, Native.WakeAll);
+        if (Sys.AtomicAdd32(at, by) + by == 0) Native.Wake(at, Native.WakeAll);
     }
 
     /// The end of Main waits here for the foreground threads (Runtime.Exit).
@@ -518,9 +518,9 @@ partial class Thread
         nuint at = Sys.ArrayData(_foreground);
         while (true)
         {
-            nuint now = Sys.ReadAddress(at);
+            int now = (int)Sys.Read32(at);
             if (now == 0) return;
-            Native.Wait(at, (nint)now);
+            Native.Wait(at, now);
         }
     }
 
@@ -658,7 +658,7 @@ partial class Thread
         Atom.CheckLayout();
         // The second layout word is the one-time start claim, not a held
         // mutex: even a completed thread cannot be started a second time.
-        if (Sys.Cas(Atom.At(this, Atom.SecondWord), 0, 1) != 0)
+        if (Sys.Cas32(Atom.At(this, Atom.SecondWord), 0, 1) != 0)
             throw new ThreadStateException("Thread is running or terminated; it cannot restart.");
         // WHAT THE STARTER WAS GIVEN GOES WITH IT, as .NET's execution
         // context carries the cultures into a thread it starts -- not into
@@ -765,7 +765,7 @@ partial class Thread
         nuint at = Atom.At(this, Atom.FirstWord);
 
         Counting(true);
-        Sys.AtomicSwap(at, 1);
+        Sys.AtomicSwap32(at, 1);
         if (_counted) Count(-1);
         Counting(false);
         Native.Wake(at, Native.WakeAll);
@@ -922,7 +922,7 @@ namespace System.Threading
         // Tricky", section 6): taking and giving it back uncontended is one
         // atomic instruction each, and only a sleeper makes the giving back
         // pay for a wake.
-        static nint _gate;
+        static int _gate;
 
         // The waits queued on this handle, oldest first.
         HandleWaitLink? _first;
@@ -1547,7 +1547,7 @@ namespace System.Threading
         internal static void EnterGate()
         {
             nuint at = Sys.AddressOf(ref _gate);
-            nint seen = Sys.Cas(at, 0, 1);
+            int seen = Sys.Cas32(at, 0, 1);
 
             if (seen == 0)
             {
@@ -1558,14 +1558,14 @@ namespace System.Threading
             // goes to 2 and stays there until a giving back finds it free.
             while (seen != 0)
             {
-                seen = Sys.AtomicSwap(at, 2);
+                seen = Sys.AtomicSwap32(at, 2);
 
                 if (seen == 0)
                 {
                     return;
                 }
                 Native.Wait(at, 2);
-                seen = Sys.Cas(at, 0, 2);
+                seen = Sys.Cas32(at, 0, 2);
             }
         }
 
@@ -1573,7 +1573,7 @@ namespace System.Threading
         {
             nuint at = Sys.AddressOf(ref _gate);
 
-            if (Sys.AtomicSwap(at, 0) == 2)
+            if (Sys.AtomicSwap32(at, 0) == 2)
             {
                 Native.Wake(at, 1);
             }
@@ -1584,10 +1584,10 @@ namespace System.Threading
     /// on, how, and for which thread a signal takes the handles.
     sealed class HandleWait
     {
-        // LAYOUT: first instance field, at Atom.FirstWord (see Atom), and a
-        // WORD, as the other waiters' are: what the waiting thread sleeps on,
-        // 1 once a signal has finished the wait.
-        nint _done;
+        // LAYOUT: first instance field, at Atom.FirstWord (see Atom), an int,
+        // as the other waiters' are: what the waiting thread sleeps on, 1
+        // once a signal has finished the wait.
+        int _done;
         int _pad;
 
         // The thread that waits, which a signal takes the handles for.
@@ -1675,7 +1675,7 @@ namespace System.Threading
             Unqueue();
             Result = result;
             nuint done = Atom.At(this, Atom.FirstWord);
-            Sys.AtomicSwap(done, 1);
+            Sys.AtomicSwap32(done, 1);
             Native.Wake(done, 1);
         }
     }
@@ -2619,7 +2619,7 @@ namespace System.Threading
 public class ManualResetEventSlim : IDisposable
 {
     // LAYOUT: first instance field, at Atom.FirstWord (see Atom).
-    nint _signalled;
+    int _signalled;
     int _pad;
 
     public ManualResetEventSlim() : this(false) { }
@@ -2636,13 +2636,13 @@ public class ManualResetEventSlim : IDisposable
     public void Set()
     {
         nuint at = Atom.At(this, Atom.FirstWord);
-        Sys.AtomicSwap(at, 1);
+        Sys.AtomicSwap32(at, 1);
         Native.Wake(at, Native.WakeAll);
     }
 
     public void Reset()
     {
-        Sys.AtomicSwap(Atom.At(this, Atom.FirstWord), 0);
+        Sys.AtomicSwap32(Atom.At(this, Atom.FirstWord), 0);
     }
 
     public void Wait()

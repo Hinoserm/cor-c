@@ -13,7 +13,7 @@
 // THE WIDTH-NAMED INTRINSICS (LONG-MODE.md 7.2): Read8..Read64 and
 // Write8..Write64 at a nuint address answer exactly the width they read --
 // 0xF0000001 is the uint 4026531841, never a negative number, and the
-// 64-bit word is a ulong whole on i386 too. ReadNative and WriteNative carry
+// 64-bit word is a ulong whole on i386 too. ReadAddress and WriteAddress carry
 // a pointer-sized value with its top bit set (0x80001234 and more) through
 // memory unchanged. Low32 is the named narrowing of a nuint and of a ulong.
 // The atomics take a nuint address, and
@@ -56,23 +56,23 @@ static class Program
 
         // An address with its top bit set: a kernel's, on either machine.
         nuint high = IntPtr.Size == 8 ? unchecked((nuint)0xFFFF888000001234UL) : (nuint)0x80001234u;
-        Sys.WriteNative(at + 16, high);
-        Console.WriteLine("native " + (Sys.ReadNative(at + 16) == high));
+        Sys.WriteAddress(at + 16, high);
+        Console.WriteLine("native " + (Sys.ReadAddress(at + 16) == high));
 
         Console.WriteLine("low32 " + Sys.Low32(at - at + 0xF0000001) + " " + Sys.Low32(0x123456787765E721UL));
 
         Sys.Write64(at + 24, 0xF0000001);
         Console.WriteLine("peek " + (Sys.Read64(at + 24) & 0xFFFFFFFF));
 
-        Sys.WriteNative(at + 32, 5);
+        Sys.WriteAddress(at + 32, 5);
         nuint was = Sys.Cas(at + 32, 5, 7);
-        nuint now = Sys.ReadNative(at + 32);
-        Sys.WriteNative(at + 40, high);
+        nuint now = Sys.ReadAddress(at + 32);
+        Sys.WriteAddress(at + 40, high);
         nuint seen = Sys.Cas(at + 40, high, at);
         bool swapped = Sys.AtomicSwap(at + 40, high) == at;
-        Sys.WriteNative(at + 48, 10);
-        nint before = Sys.AtomicAdd(at + 48, (nint)2);
-        Console.WriteLine("cas " + was + " " + now + " nuint " + (seen == high) + " swap " + swapped + " add " + before + " " + Sys.ReadNative(at + 48));
+        Sys.WriteAddress(at + 48, 10);
+        nuint before = Sys.AtomicAdd(at + 48, 2);
+        Console.WriteLine("cas " + was + " " + now + " nuint " + (seen == high) + " swap " + swapped + " add " + before + " " + Sys.ReadAddress(at + 48));
 
         Sys.Write32(at + 56, 3);
         int old32 = Sys.Cas32(at + 56, 3, 4);

@@ -315,8 +315,8 @@ static class Win32
             at = at + 4;
         }
         else address = Register(ctx, rm);
-        if (mod == 1) address = address + (nuint)(nint)(sbyte)Sys.Read8(at);
-        else if (mod == 2) address = address + (nuint)(nint)(int)Sys.Read32(at);
+        if (mod == 1) address = address + (nuint)(long)(sbyte)Sys.Read8(at);
+        else if (mod == 2) address = address + (nuint)(long)(int)Sys.Read32(at);
         return address;
     }
 
@@ -370,7 +370,7 @@ static class Win32
 
     /// Waits while the word at `at` is `expect`, for at most `milliseconds`
     /// (-1, none -- looked at again each second all the same).
-    public static void Park(nuint at, nint expect, int milliseconds)
+    public static void Park(nuint at, int expect, int milliseconds)
     {
         nuint b = Bucket(at);
         nuint waiters = _parkWaiters + b * 4;
@@ -381,7 +381,7 @@ static class Win32
     }
 
     /// Wakes up to `count` of what waits on the word at `at`.
-    public static void Unpark(nuint at, nint count)
+    public static void Unpark(nuint at, int count)
     {
         nuint b = Bucket(at);
         uint waiting = Sys.Read32(_parkWaiters + b * 4);
@@ -475,7 +475,7 @@ static class Win32
 
     /// Given back by DECOMMIT: the heap gives back pieces of what it was
     /// mapped, and only a whole reservation can be released.
-    static nint Unmap(nuint at, nuint bytes, nuint c)
+    static nuint Unmap(nuint at, nuint bytes, nuint c)
     {
         VirtualFree(at, bytes, MemDecommit);
         return 0;
@@ -483,7 +483,7 @@ static class Win32
 
     /// The performance counter as nanoseconds, or the tick count's
     /// milliseconds on a machine without one.
-    static long Nanos(nint a, nint b, nint c)
+    static long Nanos(nuint a, nuint b, nuint c)
     {
         if (_frequency == 0 && QueryPerformanceFrequency(Sys.AddressOf(ref _frequency)) == 0) _frequency = -1;
         if (_frequency < 0) { long ticks = GetTickCount(); return ticks * 1000000; }
@@ -497,7 +497,7 @@ static class Win32
     /// change, so this one gives up the rest of its time slice.
     /// Sleep(0), which every Windows has; nothing wakes a sleeper, which
     /// looks again on its next turn.
-    static nint Yield(nuint at, nint value, nint c)
+    static nuint Yield(nuint at, nuint value, nuint c)
     {
         Sleep(0);
         return 0;
@@ -506,16 +506,16 @@ static class Win32
     [DllImport("kernel32")] static extern void GetSystemInfo(nuint info);
 
     /// How many processors (Os.ProcessorCount): SYSTEM_INFO's count, at 20.
-    static nint Processors(nint a, nint b, nint c)
+    static nuint Processors(nuint a, nuint b, nuint c)
     {
         byte[] info = new byte[36];
         GetSystemInfo(Sys.ArrayData(info));
         return info[20] | (info[21] << 8) | (info[22] << 16) | (info[23] << 24);
     }
 
-    static nint Exit(int code, nint b, nint c)
+    static nuint Exit(nuint code, nuint b, nuint c)
     {
-        ExitProcess(code);
+        ExitProcess((int)code);
         return 0;
     }
 

@@ -24,11 +24,11 @@ using AstBlock = Corsac.Lang.Block;
 /// </summary>
 public sealed partial class Lowering
 {
-    // The runtime helpers' labels (RuntimeAbi) spell nint as Mangle does.
+    // The runtime helpers' labels (RuntimeAbi) spell nuint as Mangle does.
     static Lowering()
     {
-        if (Mangle(Type.NInt) != Corsac.Lang.Lto.RuntimeAbi.Word)
-            throw new InvalidOperationException($"RuntimeAbi.Word is {Corsac.Lang.Lto.RuntimeAbi.Word}, but nint mangles as {Mangle(Type.NInt)}");
+        if (Mangle(Type.NUInt) != Corsac.Lang.Lto.RuntimeAbi.Word)
+            throw new InvalidOperationException($"RuntimeAbi.Word is {Corsac.Lang.Lto.RuntimeAbi.Word}, but nuint mangles as {Mangle(Type.NUInt)}");
     }
 
     private readonly BindResult _b;
@@ -1746,7 +1746,7 @@ public sealed partial class Lowering
         // anything else is not theirs.
         if (like is null && WordHelpers.Contains(name))
         {
-            found = found.Where(m => m.Params.All(p => p.Type.Equals(Type.NInt))).ToList();
+            found = found.Where(m => m.Params.All(p => p.Type.Equals(Type.NUInt))).ToList();
         }
         if (found.Count > 1)
         {
@@ -1757,7 +1757,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// The runtime's hot helpers, bound as (nint, ...): one machine word a
+    /// The runtime's hot helpers, bound as (nuint, ...): one machine word a
     /// parameter, as their labels in Lto.RuntimeAbi spell them.
     /// </summary>
     private static readonly HashSet<string> WordHelpers = new(StringComparer.Ordinal)

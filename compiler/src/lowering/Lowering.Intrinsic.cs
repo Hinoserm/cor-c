@@ -101,10 +101,8 @@ public sealed partial class Lowering
                 return Void();
             // A WORD, the collector's: an ordinary load and store.
             case "ReadAddress":
-            case "ReadNative":
                 return _e.Load(word, Address(call, target, 0), 0);
             case "WriteAddress":
-            case "WriteNative":
                 _e.Store(R(Address(call, target, 0)), R(ToWord(Arg(call, target, 1))), 0, _t.WordSize);
                 return Void();
             case "Low32":
@@ -871,7 +869,7 @@ public sealed partial class Lowering
             case "CallLong":
             {
                 // AS ANY CALL OF THIS LANGUAGE'S, of a method declaring
-                // (nint, nint, nint): a word an argument, as Sys.Call declares
+                // (nuint, nuint, nuint): a word an argument, as Sys.Call declares
                 // them and as the kernel's entry code pushes them for
                 // Arch.TrapEntry, answering a word -- or a long (CallLong),
                 // two registers on i386. Code with the machine's own C
@@ -1266,7 +1264,7 @@ public sealed partial class Lowering
     private VReg ToI64(VReg v) => v.Type == IrType.I32 ? _e.Unary(Opcode.ZExt32, v) : v;
 
     /// <summary>
-    /// The kernel's KernelFiles.Syscall(nint number, nint a .. f), whatever
+    /// The kernel's KernelFiles.Syscall(int number, SyscallWord a .. f), whatever
     /// its namespace, for --kernel-syscalls; null when no type KernelFiles
     /// declares exactly one, or more than one does.
     /// </summary>
@@ -1282,6 +1280,8 @@ public sealed partial class Lowering
         => _b.Types.Values.Where(t => t.Name == "KernelFiles")
             .SelectMany(t => { t.EnsureMembers(); return t.Methods; })
             .Where(m => m.Static && m.Name == "Syscall" && m.Params.Count == 7
-                && m.Params.All(p => p.Type.Prim == Prim.NInt) && m.Returns.Prim == Prim.NInt)
+                && m.Params[0].Type.Prim == Prim.I32
+                && m.Params.Skip(1).All(p => p.Type.Prim == (SyscallAbi == 64 ? Prim.U64 : Prim.U32))
+                && m.Returns.Prim == (SyscallAbi == 64 ? Prim.U64 : Prim.U32))
             .Distinct().ToList();
 }

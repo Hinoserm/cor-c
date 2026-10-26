@@ -212,14 +212,14 @@ public static class Interlocked
 #if TARGET_64BIT
     // A machine word: the processor's own atomics, as for an int.
 
-    static long Add64(nuint at, long value) { return Sys.AtomicAdd(at, (nint)value); }
-    static long Swap64(nuint at, long value) { return Sys.AtomicSwap(at, (nint)value); }
-    static long Cas64(nuint at, long expect, long value) { return Sys.Cas(at, (nint)expect, (nint)value); }
-    static long Combine64(nuint at, long value, bool or) { return or ? Sys.AtomicOr(at, (nint)value) : Sys.AtomicAnd(at, (nint)value); }
+    static long Add64(nuint at, long value) { return (long)Sys.AtomicAdd(at, (nuint)value); }
+    static long Swap64(nuint at, long value) { return (long)Sys.AtomicSwap(at, (nuint)value); }
+    static long Cas64(nuint at, long expect, long value) { return (long)Sys.Cas(at, (nuint)expect, (nuint)value); }
+    static long Combine64(nuint at, long value, bool or) { return or ? (long)Sys.AtomicOr(at, (nuint)value) : (long)Sys.AtomicAnd(at, (nuint)value); }
 
     /// A compare-exchange of 0 with 0, which leaves whatever is there as it
     /// was, as .NET has it.
-    static long Read64(nuint at) { return Sys.Cas(at, 0, 0); }
+    static long Read64(nuint at) { return (long)Sys.Cas(at, 0, 0); }
 #else
     // TWO WORDS, UNDER THE ONE LOCK, read and written a word at a time. Each
     // answers what was there before. A LOCK A HANDLER TAKES TOO (Platform.
@@ -239,7 +239,7 @@ public static class Interlocked
 
     static long Add64(nuint at, long value)
     {
-        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, was + value);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
@@ -248,7 +248,7 @@ public static class Interlocked
 
     static long Swap64(nuint at, long value)
     {
-        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, value);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
@@ -257,7 +257,7 @@ public static class Interlocked
 
     static long Cas64(nuint at, long expect, long value)
     {
-        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         if (was == expect) Put(at, value);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
@@ -266,7 +266,7 @@ public static class Interlocked
 
     static long Combine64(nuint at, long value, bool or)
     {
-        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, or ? was | value : was & value);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
@@ -275,7 +275,7 @@ public static class Interlocked
 
     static long Read64(nuint at)
     {
-        nint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
+        uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);
         return was;
@@ -284,21 +284,21 @@ public static class Interlocked
 
     // ---- machine words ----------------------------------------------------------
 
-    public static nint Exchange(ref nint location, nint value) { return (nint)Sys.AtomicSwap(Sys.AddressOf(ref location), value); }
+    public static nint Exchange(ref nint location, nint value) { return (nint)Sys.AtomicSwap(Sys.AddressOf(ref location), (nuint)value); }
 
     public static nint CompareExchange(ref nint location, nint value, nint comparand)
     {
-        return (nint)Sys.Cas(Sys.AddressOf(ref location), comparand, value);
+        return (nint)Sys.Cas(Sys.AddressOf(ref location), (nuint)comparand, (nuint)value);
     }
 
     public static nuint Exchange(ref nuint location, nuint value)
     {
-        return unchecked((nuint)Sys.AtomicSwap(Sys.AddressOf(ref location), (nint)value));
+        return Sys.AtomicSwap(Sys.AddressOf(ref location), value);
     }
 
     public static nuint CompareExchange(ref nuint location, nuint value, nuint comparand)
     {
-        return unchecked((nuint)Sys.Cas(Sys.AddressOf(ref location), (nint)comparand, (nint)value));
+        return Sys.Cas(Sys.AddressOf(ref location), comparand, value);
     }
 
     // ---- references ------------------------------------------------------------------

@@ -49,7 +49,7 @@ static class Native
     /// Sleeps until the word at `at` stops being `expect`, or someone wakes it;
     /// a spurious return is normal, every caller reads its word again. Asleep
     /// is stopped, as far as a collection is concerned (Linux's note).
-    public static void Wait(nuint at, nint expect)
+    public static void Wait(nuint at, int expect)
     {
         Runtime.BeginBlocking();
         Win32.Park(at, expect, -1);
@@ -57,7 +57,7 @@ static class Native
     }
 
     /// As Wait, giving up after `nanoseconds`.
-    public static void WaitFor(nuint at, nint expect, long nanoseconds)
+    public static void WaitFor(nuint at, int expect, long nanoseconds)
     {
         long ms = (nanoseconds + 999999) / 1000000;
         Runtime.BeginBlocking();
@@ -66,7 +66,7 @@ static class Native
     }
 
     /// Wakes up to `count` waiters on the word at `at`.
-    public static void Wake(nuint at, nint count) => Win32.Unpark(at, count);
+    public static void Wake(nuint at, int count) => Win32.Unpark(at, count);
 }
 
 namespace System.Threading

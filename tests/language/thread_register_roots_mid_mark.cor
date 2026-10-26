@@ -90,7 +90,7 @@ class Parker : Action
     {
         long[] held = Program.Build(Round);
         if (Program.WaitForRoots(Gc.Collections)) Program._windows = Program._windows + 1;
-        Sys.WriteNative(Slot, Sys.ObjectAddress(held));
+        Sys.WriteAddress(Slot, Sys.ObjectAddress(held));
         Runtime.RegisterRoots(Slot, Slot + WordSize.Bytes);
     }
 }
@@ -149,7 +149,7 @@ static class Program
         // do: a thread that reaches no safepoint for long is answered for
         // where it stands, with the megabyte still in this frame.
         nuint request = GcLock.Words() + GcLock.Request;
-        while (Runtime.Marking != 2 || Sys.ReadNative(request) != GcThreads.Scan)
+        while (Runtime.Marking != 2 || Sys.ReadAddress(request) != GcThreads.Scan)
         {
             _junk = new byte[64];
             tries = tries + 1;
@@ -191,9 +191,9 @@ static class Program
                 _junk = new byte[256];
             }
 
-            if (!Whole(Sys.ReadNative(slot), round)) held = false;
+            if (!Whole(Sys.ReadAddress(slot), round)) held = false;
             Runtime.UnregisterRoots(slot, slot + 4);
-            Sys.WriteNative(slot, 0);
+            Sys.WriteAddress(slot, 0);
         }
 
         for (int i = 0; i < 3; i++) bodies[i].Stop = true;

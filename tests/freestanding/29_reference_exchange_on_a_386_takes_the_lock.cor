@@ -7,7 +7,7 @@
 // compared c then d
 // expect-asm-x86: SwapName: __corsac_refxchg
 // expect-asm-x86: CompareName: __corsac_refcas
-// expect-bytes-x86: __corsac_refxchg: 83 3d [s_Runtime_Marking] 00 74 0f 51 52 52 50 e8 (m_Runtime_WriteBarrierExchange_2_V$NInt_V$NInt) 83 c4 08 5a 59 c3 51 89 c1 89 d0 9c 53 31 db 66 8c cb 83 e3 03 51 8b 4c 24 08 c1 e9 0c 83 e1 03 39 cb 59 77 07 fa 87 01 5b 9d eb 1b bb 01 00 00 00 87 1d [s_Runtime_Atomics386] 85 db 75 f1 87 01 31 db 87 1d [s_Runtime_Atomics386] 5b 9d 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3
+// expect-bytes-x86: __corsac_refxchg: 83 3d [s_Runtime_Marking] 00 74 0f 51 52 52 50 e8 (m_Runtime_WriteBarrierExchange_2_V$NUInt_V$NUInt) 83 c4 08 5a 59 c3 51 89 c1 89 d0 9c 53 31 db 66 8c cb 83 e3 03 51 8b 4c 24 08 c1 e9 0c 83 e1 03 39 cb 59 77 07 fa 87 01 5b 9d eb 1b bb 01 00 00 00 87 1d [s_Runtime_Atomics386] 85 db 75 f1 87 01 31 db 87 1d [s_Runtime_Atomics386] 5b 9d 52 8b 15 [s_Runtime_Cards] 85 d2 74 09 51 c1 e9 0a c6 04 0a 01 59 5a 59 c3
 //
 // On a 386 a reference's compare-exchange (__corsac_refcas) reads and
 // writes the slot with interrupts off where its code may turn them off,

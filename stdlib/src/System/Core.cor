@@ -60,7 +60,7 @@ static class TypeNameCache {
     internal static long[] At = new long[64];
     internal static string?[] To = new string?[64];
     internal static int Count;
-    internal static nint Gate;      // a word: the spin gate's atomics are the machine's
+    internal static int Gate;       // the spin gate: 0 free, 1 held (the 32-bit atomics)
 }
 
 static class String {
@@ -309,7 +309,7 @@ static class String {
             if (TypeNameCache.Count * 2 > TypeNameCache.At.Length) { GrowFullNames(); }
             return full;
         } finally {
-            Sys.AtomicSwap(gate, 0);
+            Sys.AtomicSwap32(gate, 0);
             Runtime.PreemptOn();
         }
     }
@@ -324,7 +324,7 @@ static class String {
     static nuint EnterFullNames() {
         nuint gate = Sys.AddressOf(ref TypeNameCache.Gate);
         Runtime.PreemptOff();
-        while (Sys.AtomicSwap(gate, 1) != 0) { Sys.Pause(); }
+        while (Sys.AtomicSwap32(gate, 1) != 0) { Sys.Pause(); }
         return gate;
     }
 
@@ -12873,7 +12873,7 @@ static class CollectionExpressionBuilder {
 static class OwnedElements {
     internal static void Release<E>(E element) {
         // A collection given back takes its storage with it (Runtime.Free).
-        if (Sys.IsObject(element) && Sys.ObjectAddress(element) != 0) { Runtime.Free((nint)Sys.ObjectAddress(element)); }
+        if (Sys.IsObject(element) && Sys.ObjectAddress(element) != 0) { Runtime.Free(Sys.ObjectAddress(element)); }
     }
 
     // EACH ELEMENT GIVEN BACK ONCE, however often the list holds it: an
@@ -12922,7 +12922,7 @@ static class OutgrownStorage {
         // once where it is the top (Gc.RegionFree).
         // A DIAGNOSTIC (Gc.IgnoredFrees 'o'): a collection's outgrown
         // storage left to the collector, apart from the compiler's frees.
-        if (old != null && Gc.IgnoredFrees != 'o') { Runtime.FreeOwnedReplaced((nint)Sys.ObjectAddress(old), 0); }
+        if (old != null && Gc.IgnoredFrees != 'o') { Runtime.FreeOwnedReplaced(Sys.ObjectAddress(old), 0); }
     }
 }
 
@@ -13339,7 +13339,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
             if (value == Capacity) { return; }
             T[] old = items;
             if (value == 0) { items = null!; Outgrown(old); return; }
-            if (old != null && value > old.Length && !lent && Runtime.GrowInPlace((nint)Sys.ObjectAddress(old), value)) { return; }
+            if (old != null && value > old.Length && !lent && Runtime.GrowInPlace(Sys.ObjectAddress(old), value)) { return; }
 
             T[] bigger = new T[value];
             for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
@@ -13581,7 +13581,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
         int size = items == null || items.Length == 0 ? 4 : items.Length * 2;
         // GROWN WHERE IT IS, at its region's top: nothing copied, nothing left
         // behind (Runtime.GrowInPlace). Only an array never lent out.
-        if (items != null && !lent && Runtime.GrowInPlace((nint)Sys.ObjectAddress(items), size)) { return; }
+        if (items != null && !lent && Runtime.GrowInPlace(Sys.ObjectAddress(items), size)) { return; }
         T[] bigger = new T[size];
         T[] old = items;
         for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
@@ -20762,7 +20762,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             // is (Runtime.GrowInPlace).
             int[]? was = vacant;
             int[] into;
-            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.ObjectAddress(was), was.Length * 2)) {
+            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace(Sys.ObjectAddress(was), was.Length * 2)) {
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;
@@ -23190,7 +23190,7 @@ class StringBuilder : IOwnsStorage {
     // THE BUFFER GIVEN BACK with a builder proved dead (Runtime.Free): it is
     // never handed out -- ToString copies out of it.
     public void FreeStorage() {
-        if (buffer != null) { Runtime.FreeOwnedReplaced((nint)Sys.ObjectAddress(buffer), 0); }
+        if (buffer != null) { Runtime.FreeOwnedReplaced(Sys.ObjectAddress(buffer), 0); }
         buffer = null!;
         used = 0;
     }
@@ -24360,12 +24360,12 @@ class StringBuilder : IOwnsStorage {
         // given back from the top. Left to the collector, every buffer a
         // builder outgrew stayed until a collection, and a builder's growth
         // was never made in its region. One made smaller is always new.
-        if (size > buffer.Length && Runtime.GrowInPlace((nint)Sys.ObjectAddress(buffer), size)) { return; }
+        if (size > buffer.Length && Runtime.GrowInPlace(Sys.ObjectAddress(buffer), size)) { return; }
         string bigger = Sys.NewChars(size);
         Sys.CopyNoOverlap(bigger, 0, buffer, 0, used);
         string outgrown = buffer;
         buffer = bigger;
-        Runtime.FreeOwnedReplaced((nint)Sys.ObjectAddress(outgrown), 0);
+        Runtime.FreeOwnedReplaced(Sys.ObjectAddress(outgrown), 0);
     }
 }
 
@@ -24475,7 +24475,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
             // is (Runtime.GrowInPlace).
             int[]? was = vacant;
             int[] into;
-            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace((nint)Sys.ObjectAddress(was), was.Length * 2)) {
+            if (was == null || vacancies == was.Length && !Runtime.GrowInPlace(Sys.ObjectAddress(was), was.Length * 2)) {
                 int[] more = new int[was == null ? 8 : was.Length * 2];
                 for (int n = 0; n < vacancies; n++) { more[n] = was![n]; }
                 vacant = more;

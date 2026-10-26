@@ -176,14 +176,14 @@ static class Platform
     /// here (HeapChunks.Release). Taken with interrupts off where this code
     /// may turn them off (Platform.HandlerLockEnter), or a handler's free
     /// landing while thread code held it spun for ever with them off.
-    private static nint _regionLock;
+    private static nuint _regionLock;
 
-    static nint LockRegion()
+    static uint LockRegion()
     {
         return HandlerLockEnter(Sys.AddressOf(ref _regionLock));
     }
 
-    static void UnlockRegion(nint held)
+    static void UnlockRegion(uint held)
     {
         HandlerLockLeave(Sys.AddressOf(ref _regionLock), held);
     }
@@ -207,7 +207,7 @@ static class Platform
         // saw no chunk there, or a negative size. The last page is left out.
         if (end > PageMask) end = PageMask;
 #endif
-        nint held = LockRegion();
+        uint held = LockRegion();
         // ONCE, OR AGAIN ONLY BEFORE ANYTHING WAS HANDED OUT: the chunks the
         // first region gave are the collector's, and a second region over
         // or beside them would hand the same memory out twice, or send the
@@ -244,7 +244,7 @@ static class Platform
     /// map and unmap kernel memory page by page, and from then on the bump
     /// region below is only what was handed out before they existed.
     // HOOKS: a method's address (Sys.AddressOf) called by Sys.Call, so each
-    // declares (nint, nint, nint) and answers an nint -- a word an argument.
+    // declares (nuint, nuint, nuint) and answers a nuint -- a word an argument.
     // MapHook(bytes, 0, 0) -> address; UnmapHook(at, bytes, 0).
     public static nuint MapHook;
     public static nuint UnmapHook;
@@ -263,14 +263,14 @@ static class Platform
     {
         if (_limit != 0 && at >= _start && at < _limit)
         {
-            nint held = LockRegion();
+            uint held = LockRegion();
             Release(at, (bytes + RegionPage - 1) & PageMask);
             UnlockRegion(held);
             return;
         }
         if (UnmapHook != 0)
         {
-            Sys.Call(UnmapHook, (nint)at, (nint)bytes, 0);
+            Sys.Call(UnmapHook, at, bytes, 0);
         }
     }
 
@@ -382,7 +382,7 @@ static class Platform
         if (MapFileHook == 0 || path.Length == 0) return 0;
         byte[] name = Utf8Transcoder.Encode(path, 0, path.Length);
         nuint bytes = 0;
-        nuint at = (nuint)Sys.Call(MapFileHook, (nint)Sys.ArrayData(name), name.Length, (nint)Sys.AddressOf(ref bytes));
+        nuint at = Sys.Call(MapFileHook, Sys.ArrayData(name), (nuint)name.Length, Sys.AddressOf(ref bytes));
         if (at != 0) length = bytes;
         return at;
     }
@@ -400,7 +400,7 @@ static class Platform
         if (_freeRanges != 0)
         {
             nuint want = (bytes + RegionPage - 1) & PageMask;
-            nint reusing = LockRegion();
+            uint reusing = LockRegion();
             nuint reused = TakeRange(want);
             UnlockRegion(reusing);
             if (reused != 0)
@@ -411,7 +411,7 @@ static class Platform
         }
         if (MapHook != 0)
         {
-            return (nuint)Sys.Call(MapHook, (nint)bytes, 0, 0);
+            return Sys.Call(MapHook, bytes, 0, 0);
         }
 
         if (_limit == 0)
@@ -432,7 +432,7 @@ static class Platform
         if (bytes > _limit - _start) return 0;
         nuint need = (bytes + RegionPage - 1) & PageMask;
 
-        nint held = LockRegion();
+        uint held = LockRegion();
         if (need > _limit - _at)
         {
             UnlockRegion(held);
@@ -481,11 +481,11 @@ static class Platform
     // WaitHook(at, value, 0)
     public static nuint WaitHook;
 
-    public static void Wait(nuint at, nint value)
+    public static void Wait(nuint at, int value)
     {
         if (WaitHook != 0)
         {
-            Sys.Call(WaitHook, (nint)at, value, 0);
+            Sys.Call(WaitHook, at, (nuint)value, 0);
         }
     }
 
@@ -494,11 +494,11 @@ static class Platform
     // WakeHook(at, count, 0)
     public static nuint WakeHook;
 
-    public static void Wake(nuint at, nint count)
+    public static void Wake(nuint at, int count)
     {
         if (WakeHook != 0)
         {
-            Sys.Call(WakeHook, (nint)at, count, 0);
+            Sys.Call(WakeHook, at, (nuint)count, 0);
         }
     }
 
@@ -629,7 +629,7 @@ static class Platform
 
     public static nuint MapLazy(nuint bytes)
     {
-        if (MapLazyHook != 0) return (nuint)Sys.Call(MapLazyHook, (nint)bytes, 0, 0);
+        if (MapLazyHook != 0) return Sys.Call(MapLazyHook, bytes, 0, 0);
         return Map(bytes);
     }
 
@@ -641,7 +641,7 @@ static class Platform
 
     public static void Commit(nuint at, nuint bytes)
     {
-        if (CommitHook != 0) Sys.Call(CommitHook, (nint)at, (nint)bytes, 0);
+        if (CommitHook != 0) Sys.Call(CommitHook, at, bytes, 0);
     }
 
     /// Whether a mapping costs only the pages that are touched: false alone
@@ -859,7 +859,7 @@ static class Platform
     /// yielding between looks (YieldHook) and then pausing. Ring 1 may not
     /// HLT, and its yield lets another thread run -- the holder among them;
     /// ring 0's answers the TLB shootdown a holder may be waiting on.
-    public static void MonitorBlock(nuint at, nint value)
+    public static void MonitorBlock(nuint at, int value)
     {
         Yield();
         Sys.Pause();
@@ -1012,18 +1012,18 @@ static class Platform
     /// The heap's own reports come here -- out of memory among them -- so a
     /// console driver's Write may not allocate either.
     // WriteHook(fd, address, count)
-    public static nint WriteBytes(int fd, nuint address, nuint count)
+    public static long WriteBytes(int fd, nuint address, nuint count)
     {
         if (WriteHook != 0)
         {
-            Sys.Call(WriteHook, fd, (nint)address, (nint)count);
-            return (nint)count;
+            Sys.Call(WriteHook, (nuint)fd, address, count);
+            return (long)count;
         }
         if (Console != null)
         {
             Console.Write(address, count);
         }
-        return (nint)count;
+        return (long)count;
     }
 
     /// THE 386'S ATOMICS WITH INTERRUPTS OFF (Runtime.AtomicAdd386 and its
@@ -1117,8 +1117,8 @@ static partial class Os
     public static int ProcessorCount()
     {
         if (Platform.ProcessorCountHook == 0) return 1;
-        nint count = Sys.Call(Platform.ProcessorCountHook, 0, 0, 0);
-        return count > 0 ? (int)count : 1;
+        int count = (int)Sys.Call(Platform.ProcessorCountHook, 0, 0, 0);
+        return count > 0 ? count : 1;
     }
 
     /// Everything written goes to the console whatever the descriptor, as
@@ -1282,11 +1282,11 @@ static class Clock
     /// the other half of someone else's count. Taken by XCHG, with interrupts
     /// off where this code may turn them off (its ring at most EFLAGS.IOPL);
     /// a kernel with a clock of its own (NanosHook) never comes here.
-    static nint _pitLock;
+    static nuint _pitLock;
 
-    static nint Enter() { return Platform.HandlerLockEnter(Sys.AddressOf(ref _pitLock)); }
+    static uint Enter() { return Platform.HandlerLockEnter(Sys.AddressOf(ref _pitLock)); }
 
-    static void Leave(nint flags) { Platform.HandlerLockLeave(Sys.AddressOf(ref _pitLock), flags); }
+    static void Leave(uint flags) { Platform.HandlerLockLeave(Sys.AddressOf(ref _pitLock), flags); }
 
     /// The count now, latched so both bytes belong to one instant.
     static long Count()
@@ -1318,7 +1318,7 @@ static class Clock
     public static long Now()
     {
         if (Platform.NanosHook != 0) return Sys.CallLong(Platform.NanosHook, 0, 0, 0);
-        nint flags = Enter();
+        uint flags = Enter();
         long ticks;
         if (_interrupts)
         {
@@ -1377,7 +1377,7 @@ static class Clock
         {
             hz = 19;
         }
-        nint flags = Enter();
+        uint flags = Enter();
         long before = _interrupts ? _tickedTicks + (_reload - Count()) : _elapsedTicks;
         _reload = Hz / hz;
         Sys.PortOut8(Control, 0x34);    // channel 0, lo/hi, mode 2, binary
@@ -1395,7 +1395,7 @@ static class Clock
     /// Now(), which holds the lock only with interrupts off.
     public static void OnTick()
     {
-        nint flags = Enter();
+        uint flags = Enter();
         _tickedTicks = _tickedTicks + _reload;
         Leave(flags);
     }
@@ -1449,7 +1449,7 @@ static class Clock
 /// until the kernel provides one.
 static class Native
 {
-    public static void Wait(nuint at, nint expect)
+    public static void Wait(nuint at, int expect)
     {
         // The word is 32 bits; the expected value its low half, whatever
         // sign the caller's word gave it.
@@ -1462,7 +1462,7 @@ static class Native
     /// As Wait, giving up once `nanoseconds` have passed by Clock (a
     /// timed Monitor.Wait's). A return by timeout or by the word changing
     /// looks the same; every caller re-reads its word and its clock.
-    public static void WaitFor(nuint at, nint expect, long nanoseconds)
+    public static void WaitFor(nuint at, int expect, long nanoseconds)
     {
         long deadline = Clock.Now() + nanoseconds;
 
@@ -1493,7 +1493,7 @@ static class Native
     // A KERNEL'S SLEEPERS ARE WOKEN BY ITS HOOK (Platform.WakeHook), as the
     // collector's are: a Monitor's Pulse on one processor otherwise reached a
     // waiter halted on another only at its next tick.
-    public static void Wake(nuint at, nint count)
+    public static void Wake(nuint at, int count)
     {
         Platform.Wake(at, count);
     }

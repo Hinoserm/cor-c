@@ -18,14 +18,14 @@ static class Program
         {
             nuint chunk = HeapChunks.Take(64);
             if (chunk == 0) return 2;
-            Sys.WriteNative(table + i * WordSize.Bytes, chunk);
+            Sys.WriteAddress(table + i * WordSize.Bytes, chunk);
             HeapChunks.SetEnd(chunk, chunk + 80);
         }
-        nuint first = HeapChunks.First(Sys.ReadNative(table)) - Sys.ReadNative(table);
+        nuint first = HeapChunks.First(Sys.ReadAddress(table)) - Sys.ReadAddress(table);
         // Walk in reverse and nonadjacent order to defeat the one-entry memo.
         for (nuint i = 0; i < count; i++)
         {
-            nuint chunk = Sys.ReadNative(table + ((i * 37) % count) * WordSize.Bytes);
+            nuint chunk = Sys.ReadAddress(table + ((i * 37) % count) * WordSize.Bytes);
             if (HeapChunks.Of(HeapChunks.First(chunk)) != chunk) return 3;
             if (HeapChunks.Of(chunk + 79) != chunk) return 4;
             if (HeapChunks.Of(chunk + first - 1) != 0) return 5;
@@ -35,14 +35,14 @@ static class Program
         for (nuint n = count; n > 0; n -= 2)
         {
             nuint i = n - 1;
-            nuint chunk = Sys.ReadNative(table + i * WordSize.Bytes);
+            nuint chunk = Sys.ReadAddress(table + i * WordSize.Bytes);
             if (HeapChunks.Of(chunk + first) != chunk) return 8;
             HeapChunks.Release(chunk);
             if (HeapChunks.Of(chunk + first) != 0) return 9;
         }
         for (nuint i = 0; i < count; i += 2)
         {
-            nuint chunk = Sys.ReadNative(table + i * WordSize.Bytes);
+            nuint chunk = Sys.ReadAddress(table + i * WordSize.Bytes);
             if (HeapChunks.Of(chunk + first) != chunk) return 10;
             HeapChunks.Release(chunk);
         }

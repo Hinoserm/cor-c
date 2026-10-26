@@ -2,16 +2,16 @@ namespace Corsac.Lang.Lto;
 
 /// <summary>
 /// The labels of the runtime's hot helpers, as the compiler and the link name
-/// them. Their parameters are nint -- one machine word, one push on i386
-/// where a long was two -- so each label is built from the mangling of nint
-/// (Lowering.Mangle of Type.NInt, checked against this when lowering starts).
+/// them. Their parameters are nuint -- one machine word, one push on i386
+/// where a long was two -- so each label is built from the mangling of nuint
+/// (Lowering.Mangle of Type.NUInt, checked against this when lowering starts).
 /// Mangling names the type, not its width, so the one spelling is right for
 /// every target.
 /// </summary>
 public static class RuntimeAbi
 {
-    /// <summary>How a parameter of type nint is mangled.</summary>
-    public const string Word = "V$NInt";
+    /// <summary>How a parameter of type nuint is mangled: the machine word compiled code passes.</summary>
+    public const string Word = "V$NUInt";
 
     /// <summary>How a parameter of type nuint, an address, is mangled.</summary>
     public const string Address = "V$NUInt";

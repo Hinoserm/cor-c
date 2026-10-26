@@ -631,8 +631,6 @@ public static class Prelude
             // Read8/16/32/64, whatever the machine.
             public static nuint ReadAddress(nuint at) { return 0; }
             public static void WriteAddress(nuint at, nuint value) { }
-            public static nuint ReadNative(nuint at) { return 0; }
-            public static void WriteNative(nuint at, nuint value) { }
             // The low 32 bits, said: the one narrowing of an address or a
             // physical address to a uint.
             public static uint Low32(nuint value) { return 0; }
@@ -653,63 +651,37 @@ public static class Prelude
             //
             // Cas answers with what was THERE, whether or not it matched, so a
             // caller learns why it failed rather than only that it did.
-            // A WORD AT A TIME, its value a nuint where it is an address or a
-            // mask and an nint where it is a count: the same instruction
-            // either way, and a number written as it is (`Cas(p, 0, 1)`) the
-            // nint form's, a signed type being the better fit for it.
+            // A WORD AT A TIME, its value a nuint: for a field that is an address
+            // or a mask a pointer wide, and for nothing else. A field of its own
+            // width -- a count, a state, a lock word -- is an int and uses the
+            // 32-bit forms below; a 64-bit one has no atomic here.
             public static nuint Cas(nuint at, nuint expect, nuint value) { return 0; }
-            public static nint Cas(nuint at, nint expect, nint value) { return 0; }
             public static nuint CasRelaxed(nuint at, nuint expect, nuint value) { return 0; }
-            public static nint CasRelaxed(nuint at, nint expect, nint value) { return 0; }
             public static nuint CasAcquire(nuint at, nuint expect, nuint value) { return 0; }
-            public static nint CasAcquire(nuint at, nint expect, nint value) { return 0; }
             public static nuint CasRelease(nuint at, nuint expect, nuint value) { return 0; }
-            public static nint CasRelease(nuint at, nint expect, nint value) { return 0; }
             public static nuint CasSequential(nuint at, nuint expect, nuint value) { return 0; }
-            public static nint CasSequential(nuint at, nint expect, nint value) { return 0; }
             public static bool CasPair(nuint at, nuint expectedLow, nuint expectedHigh, nuint desiredLow, nuint desiredHigh, out nuint observedLow) { observedLow = 0; return false; }
             public static nuint AtomicAdd(nuint at, nuint value) { return 0; }
-            public static nint AtomicAdd(nuint at, nint value) { return 0; }
             public static nuint AtomicAddRelaxed(nuint at, nuint value) { return 0; }
-            public static nint AtomicAddRelaxed(nuint at, nint value) { return 0; }
             public static nuint AtomicAddAcquire(nuint at, nuint value) { return 0; }
-            public static nint AtomicAddAcquire(nuint at, nint value) { return 0; }
             public static nuint AtomicAddRelease(nuint at, nuint value) { return 0; }
-            public static nint AtomicAddRelease(nuint at, nint value) { return 0; }
             public static nuint AtomicAddSequential(nuint at, nuint value) { return 0; }
-            public static nint AtomicAddSequential(nuint at, nint value) { return 0; }
             public static nuint AtomicAnd(nuint at, nuint value) { return 0; }
-            public static nint AtomicAnd(nuint at, nint value) { return 0; }
             public static nuint AtomicAndRelaxed(nuint at, nuint value) { return 0; }
-            public static nint AtomicAndRelaxed(nuint at, nint value) { return 0; }
             public static nuint AtomicAndAcquire(nuint at, nuint value) { return 0; }
-            public static nint AtomicAndAcquire(nuint at, nint value) { return 0; }
             public static nuint AtomicAndRelease(nuint at, nuint value) { return 0; }
-            public static nint AtomicAndRelease(nuint at, nint value) { return 0; }
             public static nuint AtomicAndSequential(nuint at, nuint value) { return 0; }
-            public static nint AtomicAndSequential(nuint at, nint value) { return 0; }
             public static nuint AtomicOr(nuint at, nuint value) { return 0; }
-            public static nint AtomicOr(nuint at, nint value) { return 0; }
             public static nuint AtomicOrRelaxed(nuint at, nuint value) { return 0; }
-            public static nint AtomicOrRelaxed(nuint at, nint value) { return 0; }
             public static nuint AtomicOrAcquire(nuint at, nuint value) { return 0; }
-            public static nint AtomicOrAcquire(nuint at, nint value) { return 0; }
             public static nuint AtomicOrRelease(nuint at, nuint value) { return 0; }
-            public static nint AtomicOrRelease(nuint at, nint value) { return 0; }
             public static nuint AtomicOrSequential(nuint at, nuint value) { return 0; }
-            public static nint AtomicOrSequential(nuint at, nint value) { return 0; }
             public static nuint AtomicXor(nuint at, nuint value) { return 0; }
-            public static nint AtomicXor(nuint at, nint value) { return 0; }
             public static nuint AtomicXorRelaxed(nuint at, nuint value) { return 0; }
-            public static nint AtomicXorRelaxed(nuint at, nint value) { return 0; }
             public static nuint AtomicXorAcquire(nuint at, nuint value) { return 0; }
-            public static nint AtomicXorAcquire(nuint at, nint value) { return 0; }
             public static nuint AtomicXorRelease(nuint at, nuint value) { return 0; }
-            public static nint AtomicXorRelease(nuint at, nint value) { return 0; }
             public static nuint AtomicXorSequential(nuint at, nuint value) { return 0; }
-            public static nint AtomicXorSequential(nuint at, nint value) { return 0; }
             public static nuint AtomicSwap(nuint at, nuint value) { return 0; }
-            public static nint AtomicSwap(nuint at, nint value) { return 0; }
             // THE 32-BIT FORMS, for an int: the word forms work on a machine
             // word, which in long mode is the int and the four bytes after it
             // -- a neighbouring field changed, and a compare that fails on
@@ -730,7 +702,7 @@ public static class Prelude
             // Golden unit-0x01 bulk-memory surface. These work on raw memory;
             // safe array and string operations remain in their libraries.
             // FirstSet answers the bit's index, or -1 where none is set.
-            public static nint FirstSet(nuint bitmap, nuint bits) { return 0; }
+            public static int FirstSet(nuint bitmap, nuint bits) { return 0; }
             public static nuint PopCountBlock(nuint bitmap, nuint bits) { return 0; }
             public static long Checksum(nuint at, nuint bytes, int kind, long seed) { return 0; }
             public static void SwapBytes(nuint first, nuint second, nuint count) { }
@@ -774,29 +746,29 @@ public static class Prelude
 
             // Calls one: a method of this program's, by its address (a hook,
             // a chore, a callback), with this language's convention. Its
-            // arguments are words, an nint each -- one register or one push on
+            // arguments are words, a nuint each -- one register or one push on
             // i386, where a long was two -- and so are the arguments of every
-            // method it reaches, which declares (nint, nint, nint) and answers
-            // an nint; the call is indirect, and nothing checks the callee.
+            // method it reaches, which declares (nuint, nuint, nuint) and
+            // answers a nuint; the call is indirect, and nothing checks the callee.
             // CallLong reaches one that answers a long, a figure no word holds
             // on i386 (a clock's nanoseconds).
-            public static nint Call(nuint fn, nint a, nint b, nint c) { return 0; }
-            public static long CallLong(nuint fn, nint a, nint b, nint c) { return 0; }
+            public static nuint Call(nuint fn, nuint a, nuint b, nuint c) { return 0; }
+            public static long CallLong(nuint fn, nuint a, nuint b, nuint c) { return 0; }
             // A C function by its address, with C's rules for the call -- a
             // word an argument, the stack sixteen-aligned on i386, the vector
             // count in AL on x86-64. What the runtime uses for what it finds
             // in the C library at run time -- pthread_create, exit -- and
             // what a kernel uses for its own assembly routines. Its arguments
-            // and its answer are words, an nint each. Code with this
+            // and its answer are words, a nuint each. Code with this
             // language's convention is reached by Call instead.
-            public static nint CallNative(nuint fn) { return 0; }
-            public static nint CallNative(nuint fn, nint a) { return 0; }
-            public static nint CallNative(nuint fn, nint a, nint b) { return 0; }
-            public static nint CallNative(nuint fn, nint a, nint b, nint c) { return 0; }
-            public static nint CallNative(nuint fn, nint a, nint b, nint c, nint d) { return 0; }
-            public static nint CallNative(nuint fn, nint a, nint b, nint c, nint d, nint e) { return 0; }
-            public static nint CallNative(nuint fn, nint a, nint b, nint c, nint d, nint e, nint f) { return 0; }
-            public static nint CallNative(nuint fn, nint a, nint b, nint c, nint d, nint e, nint f, nint g) { return 0; }
+            public static nuint CallNative(nuint fn) { return 0; }
+            public static nuint CallNative(nuint fn, nuint a) { return 0; }
+            public static nuint CallNative(nuint fn, nuint a, nuint b) { return 0; }
+            public static nuint CallNative(nuint fn, nuint a, nuint b, nuint c) { return 0; }
+            public static nuint CallNative(nuint fn, nuint a, nuint b, nuint c, nuint d) { return 0; }
+            public static nuint CallNative(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e) { return 0; }
+            public static nuint CallNative(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e, nuint f) { return 0; }
+            public static nuint CallNative(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e, nuint f, nuint g) { return 0; }
 
             // ---- the x86 I/O space and the privileged instructions ---------
             //

@@ -191,7 +191,7 @@ static partial class Marshal
         nuint at;
         if (CLibrary())
         {
-            at = (nuint)Runtime.CallC(MarshalHeap.malloc, cb == 0 ? 1 : cb, 0, 0, 0);
+            at = Runtime.CallC(MarshalHeap.malloc, cb == 0 ? 1 : (nuint)cb, 0, 0, 0);
         }
         else
         {
@@ -234,7 +234,7 @@ static partial class Marshal
         }
         if (CLibrary())
         {
-            Runtime.CallC(MarshalHeap.free, hglobal, 0, 0, 0);
+            Runtime.CallC(MarshalHeap.free, (nuint)hglobal, 0, 0, 0);
             return;
         }
         nuint pages = (nuint)hglobal - (nuint)(2 * WordSize.Bytes);
@@ -254,7 +254,7 @@ static partial class Marshal
         }
         if (CLibrary())
         {
-            nint at = Runtime.CallC(MarshalHeap.realloc, pv, cb == 0 ? 1 : cb, 0, 0);
+            nuint at = Runtime.CallC(MarshalHeap.realloc, (nuint)pv, cb == 0 ? 1 : (nuint)cb, 0, 0);
             if (at == 0)
             {
                 throw new OutOfMemoryException();

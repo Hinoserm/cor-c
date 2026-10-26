@@ -15,17 +15,17 @@ static class Program
         nuint left = Runtime.Alloc(32);
         nuint reusable = Runtime.Alloc(32);
         nuint right = Runtime.Alloc(32);
-        Sys.WriteNative(left, 111);
-        Sys.WriteNative(right, 222);
-        Sys.WriteNative(reusable, 333);
+        Sys.WriteAddress(left, 111);
+        Sys.WriteAddress(right, 222);
+        Sys.WriteAddress(reusable, 333);
         nuint leftPage = HeapChunks.Of(left);
         if (leftPage == 0 || HeapChunks.PageClass(leftPage) == 0) return 1;
         Runtime.Free((nint)reusable);
         nuint again = Runtime.Alloc(32);
         if (again != reusable) return 2;
         for (nuint i = 0; i < 32; i += WordSize.Bytes)
-            if (Sys.ReadNative(again + i) != 0) return 3;
-        if (Sys.ReadNative(left) != 111 || Sys.ReadNative(right) != 222) return 4;
+            if (Sys.ReadAddress(again + i) != 0) return 3;
+        if (Sys.ReadAddress(left) != 111 || Sys.ReadAddress(right) != 222) return 4;
 
         nuint other = Runtime.Alloc(280);
         if (HeapChunks.Of(other) == leftPage || HeapChunks.PageClass(HeapChunks.Of(other)) == 0) return 5;
@@ -33,9 +33,9 @@ static class Program
         nuint thread = Sys.ThreadBlock();
         nuint large = Runtime.Alloc(4096);
         if (HeapChunks.PageClass(HeapChunks.Of(large)) != 0) return 6;
-        if (large < Sys.ReadNative(thread + Tls.AllocBase) || large >= Sys.ReadNative(thread + Tls.AllocPtr)) return 7;
+        if (large < Sys.ReadAddress(thread + Tls.AllocBase) || large >= Sys.ReadAddress(thread + Tls.AllocPtr)) return 7;
         for (nuint i = 0; i < 4096; i += WordSize.Bytes)
-            if (Sys.ReadNative(large + i) != 0) return 8;
+            if (Sys.ReadAddress(large + i) != 0) return 8;
 
         GcLock.Enter();
         Gc.RetireClasses(thread);
@@ -45,7 +45,7 @@ static class Program
         nuint after = Runtime.Alloc(32);
         if (after == left || after == right || after == again) return 10;
         for (nuint i = 0; i < 32; i += WordSize.Bytes)
-            if (Sys.ReadNative(after + i) != 0) return 11;
+            if (Sys.ReadAddress(after + i) != 0) return 11;
 
         Runtime.Free((nint)after);
         Runtime.Free((nint)large);

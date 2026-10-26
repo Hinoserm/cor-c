@@ -71,7 +71,7 @@ class Program
 
         c.Value = 0x11223344;
         Console.Write("object header ");
-        Console.WriteLine(Sys.ReadNative(Sys.ObjectAddress(c) + ObjectHeader) == 0x11223344 ? "is the target's" : "is not two words");
+        Console.WriteLine(Sys.ReadAddress(Sys.ObjectAddress(c) + ObjectHeader) == 0x11223344 ? "is the target's" : "is not two words");
         return 0;
     }
 }

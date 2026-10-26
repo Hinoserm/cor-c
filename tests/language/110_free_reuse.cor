@@ -67,8 +67,8 @@ static class Program
                 moved = moved + 1;
             }
 
-            Sys.WriteNative(at, 64);
-            sum = sum + Sys.ReadNative(at);
+            Sys.WriteAddress(at, 64);
+            sum = sum + Sys.ReadAddress(at);
             Runtime.Free((nint)at);
         }
 

@@ -974,7 +974,6 @@ public static class Driver
         Parser.ProjectUsings = Values(args, "--using").ToList();
         // SyscallWord, the width of a system call's registers (--syscall-abi).
         Parser.SyscallWordType = syscallAbi == 64 ? "ulong" : "uint";
-        if (syscallAbi == 64) symbols.Add("SYSCALL64");
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");
         // --check: the source read and bound, its errors and warnings
@@ -1698,6 +1697,9 @@ public static class Driver
         {
             yield return "TARGET_64BIT";
             yield return "TARGET_AMD64";
+            // The interface its system calls take (--syscall-abi), which is
+            // its own: the symbol the library's per-interface code asks.
+            yield return "SYSCALL64";
         }
         else if (target == Target.X86)
         {

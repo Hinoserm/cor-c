@@ -456,7 +456,7 @@ static partial class Os
         for (int i = 0; i < TimeSpec.Bytes; i++) times[i] = one[i];
         TimeSpec.Set(one, mtimeNanos < 0 ? 0 : mtimeSeconds, mtimeNanos < 0 ? 1073741822 : mtimeNanos);
         for (int i = 0; i < TimeSpec.Bytes; i++) times[TimeSpec.Bytes + i] = one[i];
-        return (int)Err.Result(Sys.Syscall(LinuxCall.Utimensat, SyscallRegister.AtFdCwd, (SyscallWord)Sys.ArrayData(CString(path)), (SyscallWord)Sys.ArrayData(times), follow ? 0 : 0x100, 0, 0));
+        return (int)Err.Result(Sys.Syscall(LinuxCall.Utimensat, SyscallRegister.AtFdCwd, (SyscallWord)Sys.ArrayData(CString(path)), (SyscallWord)Sys.ArrayData(times), follow ? 0u : 0x100u, 0, 0));
     }
 
     /// chown(2), by name, following symbolic links.

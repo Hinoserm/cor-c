@@ -23,8 +23,8 @@ sealed class Roots
 
     public nuint this[nuint i]
     {
-        get { return Sys.ReadNative(_at + i * 8); }
-        set { Sys.WriteNative(_at + i * 8, value); }
+        get { return Sys.ReadAddress(_at + i * 8); }
+        set { Sys.WriteAddress(_at + i * 8, value); }
     }
 }
 static class Program
@@ -41,9 +41,9 @@ static class Program
             nuint largeChunk = HeapChunks.Of(large);
             if (largeChunk == 0 || largeChunk == HeapChunks.Of(small)) return 1;
             if (HeapChunks.Limit(largeChunk) - largeChunk > 135168) return 2;
-            if (Sys.ReadNative(large) != 0 || Sys.ReadNative(large + 131068) != 0) return 3;
-            Sys.WriteNative(large, i + 1);
-            Sys.WriteNative(small, i + 10);
+            if (Sys.ReadAddress(large) != 0 || Sys.ReadAddress(large + 131068) != 0) return 3;
+            Sys.WriteAddress(large, i + 1);
+            Sys.WriteAddress(small, i + 10);
             objects[i] = large;
             survivors[i] = small;
         }
@@ -51,7 +51,7 @@ static class Program
         for (nuint i = 0; i < objects.Length; i++)
         {
             nuint large = objects[i];
-            if (Sys.ReadNative(large) != i + 1) return 4;
+            if (Sys.ReadAddress(large) != i + 1) return 4;
             objects[i] = 0;
             Runtime.Free((nint)large);
             if (HeapChunks.Of(large) != 0) return 5;
@@ -60,7 +60,7 @@ static class Program
         Gc.Collect();
         for (nuint i = 0; i < survivors.Length; i++)
         {
-            if (Sys.ReadNative(survivors[i]) != i + 10) return 7;
+            if (Sys.ReadAddress(survivors[i]) != i + 10) return 7;
             Runtime.Free((nint)survivors[i]);
             survivors[i] = 0;
         }

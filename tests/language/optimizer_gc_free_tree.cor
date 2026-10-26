@@ -30,8 +30,8 @@ sealed class Roots
 
     public nuint this[nuint i]
     {
-        get { return Sys.ReadNative(_at + i * 8); }
-        set { Sys.WriteNative(_at + i * 8, value); }
+        get { return Sys.ReadAddress(_at + i * 8); }
+        set { Sys.WriteAddress(_at + i * 8, value); }
     }
 }
 static class Program
@@ -57,7 +57,7 @@ static class Program
             // Stay below the dedicated-mapping threshold so this exercises
             // the free bins rather than immediate whole-chunk unmapping.
             guards[i] = Runtime.Alloc(64);
-            Sys.WriteNative(guards[i], i + 1);
+            Sys.WriteAddress(guards[i], i + 1);
         }
         Check(1);
         Runtime.Free((nint)large);
@@ -73,20 +73,20 @@ static class Program
         if (Gc.ProbeSteps - probes > 8)
         { Sys.Print("excessive free-index probes: " + (Gc.ProbeSteps - probes) + "\n"); return 1; }
         for (nuint i = 0; i + WordSize.Bytes <= 50000; i += WordSize.Bytes)
-            if (Sys.ReadNative(large + i) != 0) return 2;
+            if (Sys.ReadAddress(large + i) != 0) return 2;
         Check(2);
         for (nuint i = 0; i < count; i++)
         {
             blocks[i] = Runtime.Alloc(40000);
-            if (Sys.ReadNative(blocks[i]) != 0 || Sys.ReadNative(blocks[i] + 40000 - WordSize.Bytes) != 0) return 3;
-            Sys.WriteNative(blocks[i], i + 1);
+            if (Sys.ReadAddress(blocks[i]) != 0 || Sys.ReadAddress(blocks[i] + 40000 - WordSize.Bytes) != 0) return 3;
+            Sys.WriteAddress(blocks[i], i + 1);
             if ((i & 31) == 31) Check(2000 + i);
         }
         Gc.Collect();
         Check(3);
         for (nuint i = 0; i < count; i++)
         {
-            if (Sys.ReadNative(guards[i]) != i + 1 || Sys.ReadNative(blocks[i]) != i + 1) return 4;
+            if (Sys.ReadAddress(guards[i]) != i + 1 || Sys.ReadAddress(blocks[i]) != i + 1) return 4;
             Runtime.Free((nint)guards[i]);
             guards[i] = 0;
         }

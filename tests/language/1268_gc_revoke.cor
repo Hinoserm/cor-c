@@ -42,7 +42,7 @@ static class Program
         Victim first = _first;
         Victim second = _second;
         Bystander other = _other;
-        nuint vtable = Sys.ReadNative(Sys.ObjectAddress(first));
+        nuint vtable = Sys.ReadAddress(Sys.ObjectAddress(first));
         Console.WriteLine("census " + Gc.CountIn(vtable, vtable + 1));
         long count = Gc.Revoke(vtable, vtable + 1);
         Console.WriteLine("revoked " + count);

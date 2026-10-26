@@ -164,7 +164,7 @@ static partial class Os
     public static int Close(long fd) => Close((int)fd);
 
     /// read(2): the end of a file, and of a pipe whose writer has gone, is 0.
-    public static nint Read(int fd, nuint into, nuint count)
+    public static long Read(int fd, nuint into, nuint count)
     {
         nuint handle = HandleOf(fd);
         if (handle == 0) return -Err.BadF;
@@ -187,7 +187,7 @@ static partial class Os
     /// A read at an offset that moves no file position, as pread(2): the
     /// overlapped form's offset, which a handle opened for ordinary reads
     /// takes on NT.
-    public static nint Pread(int fd, nuint into, nuint count, long offset)
+    public static long Pread(int fd, nuint into, nuint count, long offset)
     {
         nuint handle = HandleOf(fd);
         if (handle == 0) return -Err.BadF;
@@ -211,7 +211,7 @@ static partial class Os
     }
 
     /// write(2); a descriptor opened to append writes at the end each time.
-    public static nint Write(int fd, nuint at, nuint count)
+    public static long Write(int fd, nuint at, nuint count)
     {
         nuint handle = HandleOf(fd);
         if (handle == 0) return -Err.BadF;
@@ -640,7 +640,7 @@ static partial class Os
     public static int Shutdown(int fd, int how) => (int)-Err.BadF;
 
     /// ioctl(2): Windows has none of Linux's.
-    public static nint Ioctl(int fd, uint request, nuint argument) => -25;
+    public static long Ioctl(int fd, uint request, nuint argument) => -25;
 
 
     // ---- signals ----------------------------------------------------------

@@ -42,8 +42,8 @@ public sealed class RegionPointsTo : IModulePass
     public const string Enter = Corsac.Lang.Lto.RuntimeAbi.RegionEnter;
     public const string Leave = Corsac.Lang.Lto.RuntimeAbi.RegionLeave;
     public const string InRegion = Corsac.Lang.Lto.RuntimeAbi.AllocRegion;
-    public const string Near = "m_Runtime_AllocNear_4_V$NInt_V$NInt_V$NInt_V$NInt";
-    public const string Catch = "m_Runtime_RegionCatch_1_V$NInt";
+    public const string Near = "m_Runtime_AllocNear_4_V$NUInt_V$NUInt_V$NUInt_V$NUInt";
+    public const string Catch = "m_Runtime_RegionCatch_1_V$NUInt";
     private const long LeafKind = 0x4C454146, ObjectKind = 0x4F424A54;
 
     private const int Global = 0;

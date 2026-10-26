@@ -7,9 +7,9 @@ using System.IO;
 
 static class SystemPower
 {
-    const long Restart = 0x01234567;
-    const long PowerOffCommand = 0x4321FEDC;
-    const long HaltCommand = 0xCDEF0123;
+    const uint Restart = 0x01234567;
+    const uint PowerOffCommand = 0x4321FEDC;
+    const uint HaltCommand = 0xCDEF0123;
 
     /// Every dirty block to the disc first.
     public static void Sync()

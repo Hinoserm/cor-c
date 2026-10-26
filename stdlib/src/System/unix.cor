@@ -92,12 +92,12 @@ static class UnixMount
     public static int Mount(string source, string target, string type,
                             MountFlags flags, string? data)
     {
-        return Os.Mount(source, target, type, (long)flags, data);
+        return Os.Mount(source, target, type, (ulong)flags, data);
     }
 
     public static int Mount(string source, string target, string type, MountFlags flags)
     {
-        return Os.Mount(source, target, type, (long)flags, null);
+        return Os.Mount(source, target, type, (ulong)flags, null);
     }
 
     /// umount2(2). Detach is the lazy unmount: the tree comes away now and the

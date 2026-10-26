@@ -1220,7 +1220,7 @@ static class Platform
         nuint cExit = Runtime.NativeSymbol("exit");
         if (cExit != 0)
         {
-            Runtime.CallC(cExit, code, 0, 0, 0);
+            Runtime.CallC(cExit, (nuint)code, 0, 0, 0);
         }
         Sys.Syscall(LinuxCall.ExitGroup, (SyscallWord)code, 0, 0);
         // The kernel does not return from that; if it somehow did, the plain
@@ -1930,7 +1930,8 @@ static partial class Os
     /// Seconds since the epoch.
     public static long Time()
     {
-        return Platform.Result(Sys.Syscall(LinuxCall.Time, 0, 0, 0));
+        byte[] now = TimeSpec.Room();
+        return ClockGetTime(ClockId.Realtime, now) < 0 ? 0 : TimeSpec.Seconds(now);
     }
 
     /// clock_gettime(2) into a timespec of TimeSpec.Bytes.
@@ -1960,7 +1961,7 @@ static partial class Os
         return TimeSpec.Seconds(t) * 1000000000 + TimeSpec.Nanos(t);
     }
 
-    /// nanosleep(2), restarted when a signal interrupts it, so that asking to
+    /// clock_nanosleep(2) on the monotonic clock, restarted when a signal interrupts it, so that asking to
     /// sleep for a second sleeps for a second.
     public static void Sleep(long nanoseconds)
     {
@@ -1971,7 +1972,7 @@ static partial class Os
 
         while (true)
         {
-            long r = Platform.Result(Platform.Blocking(LinuxCall.NanoSleep, (SyscallWord)Sys.ArrayData(want), (SyscallWord)Sys.ArrayData(left), 0));
+            long r = Platform.Result(Platform.Blocking(LinuxCall.ClockNanosleep, ClockId.Monotonic, 0, (SyscallWord)Sys.ArrayData(want), (SyscallWord)Sys.ArrayData(left)));
 
             if (r != 0 - Err.Intr)
             {

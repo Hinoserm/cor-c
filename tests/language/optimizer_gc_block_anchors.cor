@@ -23,8 +23,8 @@ sealed class Roots
 
     public nuint this[nuint i]
     {
-        get { return Sys.ReadNative(_at + i * 8); }
-        set { Sys.WriteNative(_at + i * 8, value); }
+        get { return Sys.ReadAddress(_at + i * 8); }
+        set { Sys.WriteAddress(_at + i * 8, value); }
     }
 }
 static class Program
@@ -50,7 +50,7 @@ static class Program
         for (nuint i = 0; i < count; i++)
         {
             nuint memory = Runtime.Alloc(64);
-            Sys.WriteNative(memory + 16, i + 1);
+            Sys.WriteAddress(memory + 16, i + 1);
             // A 64-byte request's actual payload ends at OnePast(64) (+64 in
             // a 72-byte class block on i386), which is also a valid conservative root.
             roots[i] = memory + (i % 7 == 0 ? OnePast(64) : 16);
@@ -58,7 +58,7 @@ static class Program
         for (nuint i = 0; i < 2; i++)
         {
             nuint memory = Runtime.Alloc(20000);
-            Sys.WriteNative(memory + 15000, 9000 + i);
+            Sys.WriteAddress(memory + 15000, 9000 + i);
             roots[count + i] = memory + (i == 0 ? 15000 : OnePast(20000));
         }
         long before = Gc.WalkSteps;
@@ -69,20 +69,20 @@ static class Program
         for (nuint i = 0; i < count; i++)
         {
             nuint memory = roots[i] - (i % 7 == 0 ? OnePast(64) : 16);
-            if (Sys.ReadNative(memory + 16) != i + 1) return 2;
+            if (Sys.ReadAddress(memory + 16) != i + 1) return 2;
         }
-        if (Sys.ReadNative(roots[count]) != 9000 || Sys.ReadNative(roots[count + 1] - OnePast(20000) + 15000) != 9001) return 3;
+        if (Sys.ReadAddress(roots[count]) != 9000 || Sys.ReadAddress(roots[count + 1] - OnePast(20000) + 15000) != 9001) return 3;
         nuint chunk = HeapChunks.Of(roots[count / 2]);
         // Sweep invalidates boundaries. Outside marking the helper must not
         // consult the previous collection's now-stale page entries.
         if (HeapChunks.MarkStart(chunk, roots[count / 2]) != HeapChunks.First(chunk)) return 4;
         GcLock.Enter();
-        nuint saved = Sys.ReadNative(chunk + 3 * WordSize.Bytes);
-        Sys.WriteNative(chunk + 3 * WordSize.Bytes, 0);
+        nuint saved = Sys.ReadAddress(chunk + 3 * WordSize.Bytes);
+        Sys.WriteAddress(chunk + 3 * WordSize.Bytes, 0);
         HeapChunks.SetBlockAnchorsActive(true);
         bool fallback = HeapChunks.MarkStart(chunk, roots[count / 2]) == HeapChunks.First(chunk);
         HeapChunks.SetBlockAnchorsActive(false);
-        Sys.WriteNative(chunk + 3 * WordSize.Bytes, saved);
+        Sys.WriteAddress(chunk + 3 * WordSize.Bytes, saved);
         GcLock.Exit();
         if (!fallback) return 5;
         long metadata = HeapChunks.BlockAnchorBytes;
