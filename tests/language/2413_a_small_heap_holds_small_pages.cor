@@ -30,9 +30,9 @@ static class Program
     static byte[][] _kept = new byte[Sizes.Length + 1][];
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void Fill(long heap)
+    static void Fill(nuint heap)
     {
-        long first = Runtime.EnterHeap(heap);
+        nuint first = Runtime.EnterHeap(heap);
         for (int k = 0; k < Sizes.Length; k++)
         {
             for (int n = 0; n < 40; n++)
@@ -50,7 +50,7 @@ static class Program
 
     static int Main()
     {
-        long heap = Gc.NewHeap();
+        nuint heap = Gc.NewHeap();
         Fill(heap);
         Gc.DropShelves(Gc.KernelHeap);
         Gc.Collect();

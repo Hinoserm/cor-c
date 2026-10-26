@@ -26,14 +26,14 @@ using System.Threading;
 
 static class Program
 {
-    static long[] _heaps = new long[2];
+    static nuint[] _heaps = new nuint[2];
     static long[] _sums = new long[2];
     static bool[] _theirs = new bool[2];
     static string[]?[] _keep = new string[]?[2];
 
     static void Work(int which)
     {
-        long previous = Runtime.EnterHeap(_heaps[which]);
+        nuint previous = Runtime.EnterHeap(_heaps[which]);
         var ring = new string[1000];
         _keep[which] = ring;
         for (int round = 0; round < 40; round++)
@@ -42,7 +42,7 @@ static class Program
             if (round % 8 == 3)
             {
                 // Out to the first heap and back, as through a gate.
-                long mine = Runtime.EnterHeap(previous);
+                nuint mine = Runtime.EnterHeap(previous);
                 string between = "between " + round;
                 Runtime.EnterHeap(mine);
                 if (between.Length < 9) _sums[which] = -1;

@@ -29,9 +29,9 @@ static class Program
     static long[]? _word;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void Make(long heap)
+    static void Make(nuint heap)
     {
-        long first = Runtime.EnterHeap(heap);
+        nuint first = Runtime.EnterHeap(heap);
         _key = "key " + 17;
         _word = new long[1];
         _word[0] = 1;
@@ -47,7 +47,7 @@ static class Program
 
     static int Main()
     {
-        long heap = Gc.NewHeap();
+        nuint heap = Gc.NewHeap();
         Make(heap);
         Say("released", Gc.ReleaseHeap(heap));
         Churn();

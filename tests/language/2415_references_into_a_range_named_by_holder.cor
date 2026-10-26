@@ -33,18 +33,18 @@ static class Program
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static long Make()
+    static nuint Make()
     {
         string target = "a literal of the image, held twice";
         _static = target;
         _holder = new Holder { Held = target };
         _numbers = new long[] { Sys.Word(target), 0 };
-        return Sys.Word(target);
+        return Sys.ObjectAddress(target);
     }
 
     static int Main()
     {
-        long at = Make();
+        nuint at = Make();
         long found = Gc.ReferencesIntoReport(at, at + 8, 10);
         Sys.Print("found ");
         Sys.PrintInt((int)found);

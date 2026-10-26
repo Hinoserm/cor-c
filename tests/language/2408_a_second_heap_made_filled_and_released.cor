@@ -58,9 +58,9 @@ static class Program
 
     /// Sixteen lists of strings made in the second heap, the eighth kept by
     /// the first heap's holder and the rest dropped as they are made.
-    static void FillSecond(Holder holder, long second)
+    static void FillSecond(Holder holder, nuint second)
     {
-        long first = Runtime.EnterHeap(second);
+        nuint first = Runtime.EnterHeap(second);
         for (int l = 0; l < 16; l++)
         {
             var list = new List<string>();
@@ -74,7 +74,7 @@ static class Program
     static int Main()
     {
         var holder = new Holder();
-        long second = Gc.NewHeap();
+        nuint second = Gc.NewHeap();
         Say("made", second != 0 && second != Gc.KernelHeap);
 
         FillSecond(holder, second);

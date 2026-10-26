@@ -20,18 +20,18 @@ using System.Diagnostics;
 
 static class Program
 {
-    static long _sink;
-    static long _garbage;
+    static nuint _sink;
+    static nuint _garbage;
 
     static int Child()
     {
         // Three objects side by side, made old by a whole collection taken
         // while the middle one is held on the stack.
-        long a = Runtime.AllocObject(48);
-        long b = Runtime.AllocObject(48);
-        long c = Runtime.AllocObject(48);
+        nuint a = Runtime.AllocObject(48);
+        nuint b = Runtime.AllocObject(48);
+        nuint c = Runtime.AllocObject(48);
         // One block apart each, whatever a 48-byte request's block is now.
-        if (b - a < 48 || c - b != b - a)
+        if (b < a + 48 || c - b != b - a)
         {
             Console.WriteLine("not side by side");
             return 3;

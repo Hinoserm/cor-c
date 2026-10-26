@@ -22,7 +22,7 @@ static class Program
 {
     static int Main()
     {
-        long before = HeapChunks.Newest();
+        nuint before = HeapChunks.Newest();
         HeapChunks.MixedChunkMost = 131072;
         Cell? head = null;
         for (int i = 0; i < 2000; i++)
@@ -42,11 +42,11 @@ static class Program
         Console.WriteLine("sum " + sum + " " + (count == 2000 && whole));
         // The chunks made since the bound was set, newest first, down to the
         // newest of before: eight megabytes need dozens of them.
-        long largest = 0;
+        nuint largest = 0;
         int made = 0;
-        for (long chunk = HeapChunks.Newest(); chunk != 0 && chunk != before; chunk = HeapChunks.Next(chunk))
+        for (nuint chunk = HeapChunks.Newest(); chunk != 0 && chunk != before; chunk = HeapChunks.Next(chunk))
         {
-            long size = HeapChunks.Limit(chunk) - chunk;
+            nuint size = HeapChunks.Limit(chunk) - chunk;
             if (HeapChunks.PageClass(chunk) != 0) continue;
             made++;
             if (size > largest) largest = size;

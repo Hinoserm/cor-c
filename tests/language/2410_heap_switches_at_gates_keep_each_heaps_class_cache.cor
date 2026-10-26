@@ -23,13 +23,13 @@ using System.Threading;
 
 static class Program
 {
-    static long[] _heaps = new long[2];
+    static nuint[] _heaps = new nuint[2];
     static long[] _sums = new long[2];
 
     /// A gate: into the module's heap, a call that makes a little, out.
-    static string Gate(long heap, int which, long n)
+    static string Gate(nuint heap, int which, long n)
     {
-        long was = Runtime.EnterHeap(heap);
+        nuint was = Runtime.EnterHeap(heap);
         string made = "g" + which + " " + n;
         Runtime.LeaveHeap(was);
         return made;
