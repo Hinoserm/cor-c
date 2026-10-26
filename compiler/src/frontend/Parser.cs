@@ -10729,7 +10729,11 @@ public sealed class Parser
             case Tok.Ident:
             {
                 _i++;
-                NameExpr name = new() { Name = at.Text, Global = at.Global, Line = at.Line, Col = at.Col };
+                // AN ALIAS OF A BUILT-IN TYPE, named for its static member --
+                // `Word.MaxValue` under `using Word = uint;` -- is that type
+                // (ParseUsings reads its alias as one where a type is written).
+                string spelt = At(Tok.Dot) && _typeAliases.TryGetValue(at.Text, out string? aliasTarget) && aliasTarget.IndexOf(' ') < 0 ? aliasTarget : at.Text;
+                NameExpr name = new() { Name = spelt, Global = at.Global, Line = at.Line, Col = at.Col };
 
                 if (At(Tok.Lt))
                 {
