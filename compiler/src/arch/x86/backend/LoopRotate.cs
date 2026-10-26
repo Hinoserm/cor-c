@@ -150,7 +150,7 @@ internal static class LoopRotate
         MInstr made = new(i.Op) { Width = i.Width, Cond = i.Cond, Native = i.Native, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Probed = i.Probed };
         foreach (MOperand o in i.Operands)
             made.Operands.Add(o is MMem mem
-                ? new MMem(mem.Base, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, IsSpill = mem.IsSpill }
+                ? new MMem(mem.Base, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, IsSpill = mem.IsSpill, Device = mem.Device }
                 : o);
         return made;
     }

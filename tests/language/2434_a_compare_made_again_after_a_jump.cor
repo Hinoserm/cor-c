@@ -5,6 +5,7 @@
 // changed 7 5
 // field 3 0
 // moved 2 1
+// joined 3 0 7
 //
 // `cmp i, [a+8] ; jge out ; cmp i, [a+8] ; jae throw` -- a test followed by
 // an index's bounds check -- reads the same flags twice: the second compare
@@ -12,7 +13,8 @@
 // throws for a negative index (the unsigned jump on the signed test's
 // flags), and a compare stays wherever what it reads may have changed
 // between: an array's element written, a field stored to, a register
-// moved.
+// moved -- and where the second compare is in a block entered from more
+// than one way, whose flags each way may have left otherwise.
 
 using System;
 using System.Runtime.CompilerServices;
@@ -52,6 +54,16 @@ static class Program
         return n;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Joined(int x, int y, int z)
+    {
+        int n = 0;
+        if (x < y) n++;
+        else if (z < y) { n += 5; x = z - 1; }
+        if (x < y) n += 2;
+        return n;
+    }
+
     static int Main()
     {
         Walk w = new Walk();
@@ -73,6 +85,7 @@ static class Program
         f.Limit = 4;
         Console.WriteLine("field " + Field(f, 1) + " " + Field(f, 1));
         Console.WriteLine("moved " + Moved(1, 2) + " " + Moved(3, 2));
+        Console.WriteLine("joined " + Joined(1, 2, 0) + " " + Joined(3, 2, 9) + " " + Joined(9, 5, 1));
         GC.KeepAlive(b);
         return 0;
     }

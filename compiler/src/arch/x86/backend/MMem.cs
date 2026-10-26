@@ -13,6 +13,14 @@ public sealed class MMem : MOperand
 {
     /// <summary>Private allocator storage, never an address-taken source-language slot.</summary>
     public bool IsSpill { get; init; }
+
+    /// <summary>
+    /// A device's register (Instr.Device: Sys.PeekByte, PeekHalf, PeekWord):
+    /// read every time the source reads it, never one read for two -- a
+    /// status changes by itself, and a register may clear as it is read.
+    /// Carried by every rebuild of the operand, as IsSpill is.
+    /// </summary>
+    public bool Device { get; init; }
     public MReg? Base { get; set; }
     public MReg? Index { get; set; }
     public int Scale { get; init; } = 1;

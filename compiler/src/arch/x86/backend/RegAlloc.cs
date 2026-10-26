@@ -1938,6 +1938,7 @@ internal sealed class Allocator
                         Reloc = m.Reloc,
                         Label = m.Label,
                         IsSpill = m.IsSpill,
+                        Device = m.Device,
                     });
                     break;
                 default:

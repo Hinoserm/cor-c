@@ -419,7 +419,7 @@ internal static class IfConvert
     {
         MReg r => !r.IsPhys,
         MImm => true,
-        MMem mem => mem.Index is null
+        MMem mem => mem.Index is null && !mem.Device
             && (mem.Base is { IsPhys: true, Phys: Gpr.Ebp or Gpr.Esp }
                 || mem.Base is null && (mem.Symbol is not null || mem.Label is not null)),
         _ => false,

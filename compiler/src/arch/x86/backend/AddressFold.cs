@@ -274,7 +274,7 @@ internal static class AddressFold
                 foreach ((int j, int k) in uses)
                 {
                     MMem mem = (MMem)ins[j].Operands[k];
-                    ins[j].Operands[k] = new MMem(null, checked(mem.Disp + (int)sym.Value)) { Index = mem.Index, Scale = mem.Scale, Symbol = sym.Symbol };
+                    ins[j].Operands[k] = new MMem(null, checked(mem.Disp + (int)sym.Value)) { Index = mem.Index, Scale = mem.Scale, Symbol = sym.Symbol, Device = mem.Device };
                 }
                 occurrences[t.Id] = 0;
                 ins[q] = Gone();
@@ -340,7 +340,7 @@ internal static class AddressFold
             foreach ((MInstr at, int k) in all)
             {
                 MMem mem = (MMem)at.Operands[k];
-                at.Operands[k] = new MMem(t, mem.Disp) { Index = mem.Index, Scale = mem.Scale };
+                at.Operands[k] = new MMem(t, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
             }
             occurrences[t.Id] += all.Count - 1;
             occurrences[u.Id] = 0;
@@ -398,7 +398,7 @@ internal static class AddressFold
             foreach ((int j, int k) in uses)
             {
                 MMem mem = (MMem)ins[j].Operands[k];
-                ins[j].Operands[k] = new MMem(ebp, mem.Disp + frame.Disp) { Index = mem.Index, Scale = mem.Scale };
+                ins[j].Operands[k] = new MMem(ebp, mem.Disp + frame.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
             }
             occurrences[t.Id] = 0;
             ins[q] = Gone();
@@ -503,8 +503,8 @@ internal static class AddressFold
             {
                 MMem mem = (MMem)at.Operands[k];
                 at.Operands[k] = y is MImm imm
-                    ? new MMem(x, checked(mem.Disp + (int)imm.Value))
-                    : new MMem(x, mem.Disp) { Index = (MReg)y, Scale = 1 };
+                    ? new MMem(x, checked(mem.Disp + (int)imm.Value)) { Device = mem.Device }
+                    : new MMem(x, mem.Disp) { Index = (MReg)y, Scale = 1, Device = mem.Device };
             }
             occurrences[x.Id] += all.Count - 1;
             if (y is MReg ym)
@@ -571,7 +571,7 @@ internal static class AddressFold
             foreach ((int j, int k) in uses)
             {
                 MMem mem = (MMem)ins[j].Operands[k];
-                ins[j].Operands[k] = new MMem(mem.Base, checked(mem.Disp + (int)delta)) { Index = mem.Index, Scale = mem.Scale };
+                ins[j].Operands[k] = new MMem(mem.Base, checked(mem.Disp + (int)delta)) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
             }
             occurrences[t.Id]--;
             defs[t.Id]--;
@@ -648,7 +648,7 @@ internal static class AddressFold
             foreach ((int j, int k) in uses)
             {
                 MMem mem = (MMem)ins[j].Operands[k];
-                ins[j].Operands[k] = new MMem(mem.Base, mem.Disp) { Index = z, Scale = 1 << (int)amount.Value };
+                ins[j].Operands[k] = new MMem(mem.Base, mem.Disp) { Index = z, Scale = 1 << (int)amount.Value, Device = mem.Device };
             }
             occurrences[z.Id] += uses.Count - 1;
             occurrences[yv.Id] = 0;

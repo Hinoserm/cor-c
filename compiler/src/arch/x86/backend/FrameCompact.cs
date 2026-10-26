@@ -92,7 +92,7 @@ internal static class FrameCompact
                     i.Operands[n] = new MMem(mem.Base, to)
                     {
                         IsSpill = mem.IsSpill, Index = mem.Index, Scale = mem.Scale,
-                        Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label,
+                        Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, Device = mem.Device,
                     };
                 }
         foreach (Safepoint point in m.Safepoints.Values)

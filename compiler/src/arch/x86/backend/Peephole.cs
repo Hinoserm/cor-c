@@ -2,15 +2,17 @@
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// Block-local clean-up after register allocation, on physical registers.
+/// Clean-up after register allocation, on physical registers.
 ///
 /// The selector writes straightforward code and the allocator adds spill
 /// traffic without looking at its neighbours; what is left over is local
 /// and mechanical: a reload straight after the store that filled the slot,
 /// a load whose register is overwritten before it is read, a conditional
-/// jump around an unconditional one. Each rule here is a pattern over a
-/// few adjacent instructions and never needs to know anything about the
-/// rest of the function, which is what keeps this pass safe to run last.
+/// jump around an unconditional one. Most rules are a pattern over a few
+/// adjacent instructions of one block. The few that see the whole function
+/// -- the parameters' homes, the blocks nothing reaches, a compare made
+/// again past a jump -- say what they need of it, and the last of them
+/// leaves flags live into a block, which no rule before it allows.
 /// </summary>
 internal static class Peephole
 {
@@ -134,7 +136,11 @@ internal static class Peephole
         }
     }
 
-    private static bool ReadsMemory(MInstr compare) => compare.Operands.Any(o => o is MMem);
+    private static bool ReadsMemory(MInstr compare)
+    {
+        for (int k = 0; k < compare.Operands.Count; k++) if (compare.Operands[k] is MMem) return true;
+        return false;
+    }
 
     private static bool CompareReads(MInstr compare, int reg)
     {
@@ -478,8 +484,10 @@ internal static class Peephole
 
     // ---- store, then reload from the same slot ----------------------------------
 
+    // A DEVICE'S REGISTER IS NEVER THE SAME READ TWICE (MMem.Device): no
+    // rule that reads one for two may match it.
     private static bool SameMem(MMem a, MMem b)
-        => a.Disp == b.Disp && a.Scale == b.Scale && a.Symbol == b.Symbol && a.Reloc == b.Reloc && a.Label == b.Label
+        => !a.Device && !b.Device && a.Disp == b.Disp && a.Scale == b.Scale && a.Symbol == b.Symbol && a.Reloc == b.Reloc && a.Label == b.Label
            && (a.Base?.Id ?? -1) == (b.Base?.Id ?? -1) && (a.Index?.Id ?? -1) == (b.Index?.Id ?? -1);
 
     private static bool IsMov(MInstr i) => i.Op == MOp.Mov && i.Width == 4;
@@ -1204,6 +1212,7 @@ internal static class Peephole
                         Reloc = m.Reloc,
                         Label = m.Label,
                         IsSpill = m.IsSpill,
+                        Device = m.Device,
                     };
                     break;
             }

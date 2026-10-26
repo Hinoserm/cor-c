@@ -271,7 +271,7 @@ internal sealed partial class Selector
     private void Fstp(VReg d) => EmitW(MOp.Fstp, FWidth(d.Type), FHome(d));
 
     private static MMem Displaced(MMem source, int delta) => new(source.Base, source.Disp + delta)
-    { Index = source.Index, Scale = source.Scale, Symbol = source.Symbol, Reloc = source.Reloc, Label = source.Label, IsSpill = source.IsSpill };
+    { Index = source.Index, Scale = source.Scale, Symbol = source.Symbol, Reloc = source.Reloc, Label = source.Label, IsSpill = source.IsSpill, Device = source.Device };
 
     // Copy bits, not numbers: this also preserves signaling-NaN payloads and
     // avoids touching x87 state for ordinary same-width floating-point moves.
@@ -1932,6 +1932,7 @@ internal sealed partial class Selector
     {
         VReg d = i.Dest!;
         MMem m = Address(i.Operands[0], i.Offset);
+        if (i.Device) m = new MMem(m.Base, m.Disp) { Index = m.Index, Scale = m.Scale, Symbol = m.Symbol, Reloc = m.Reloc, Label = m.Label, Device = true };
         if (d.Type.IsFloat())
         {
             if (i.Size == FWidth(d.Type)) { CopyFloatBits(FHome(d), m, i.Size); return; }
