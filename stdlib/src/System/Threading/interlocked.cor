@@ -227,7 +227,7 @@ public static class Interlocked
     // timer's handler incrementing a long cannot come in on the processor
     // whose thread holds it and spin there for ever with interrupts off.
 
-    static nint _wide;
+    static nuint _wide;
 
     static long Held(nuint at) { return (long)Sys.Read32(at) | ((long)Sys.Read32(at + 4) << 32); }
 
@@ -381,7 +381,7 @@ public static class Interlocked
         if (width == 1) Sys.Write8(into, (byte)was8); else Sys.Write16(into, (ushort)was8);
     }
 
-    static long Wide(nuint at) { return (Sys.Read32(at) & 0xFFFFFFFF) | (Sys.Read32(at + 4) << 32); }
+    static long Wide(nuint at) { return (long)Sys.Read32(at) | ((long)Sys.Read32(at + 4) << 32); }
 
     static int Part(nuint at, int width) { return width == 1 ? (int)Sys.Read8(at) : (int)Sys.Read16(at); }
 

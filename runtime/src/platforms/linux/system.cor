@@ -430,11 +430,11 @@ static class Platform
         if (Runtime.CollectorLinked())
         {
             // The collector times its pauses by this system's clock.
-            Gc.PauseClock = Sys.AddressOf(Clock.NowMicroseconds);
+            Gc.PauseClock = Sys.AddressOf(MicrosecondsHook);
             // And the collector's workers: how many, and how one is started.
-            Gc.WorkerCountHook = Sys.AddressOf(Platform.CollectorWorkers);
-            Gc.WorkerStartHook = Sys.AddressOf(Platform.StartCollectorWorker);
-            Gc.WorkerQuietHook = Sys.AddressOf(Platform.QuietWorker);
+            Gc.WorkerCountHook = Sys.AddressOf(Platform.WorkerCountHook);
+            Gc.WorkerStartHook = Sys.AddressOf(Platform.WorkerStartHook);
+            Gc.WorkerQuietHook = Sys.AddressOf(Platform.WorkerQuietHook);
             // And its statics read by their cards in a minor cycle: a user-mode
             // program's statics take a reference only through a store the
             // compiler marks (Gc.ScanStatics).
@@ -543,6 +543,14 @@ static class Platform
     /// processors this process may run on less one, at most seven, or the
     /// image's Corsac.GC.Workers, at most fifteen. Read without the heap: the
     /// collector asks this holding its lock.
+    // THE COLLECTOR'S HOOKS, as Sys.Call makes them: three words in, a word out.
+    // The clock's microseconds are answered as their low word (the collector
+    // takes differences of those as 32-bit numbers).
+    static nuint MicrosecondsHook(nuint a, nuint b, nuint c) { return (nuint)Clock.NowMicroseconds(); }
+    static nuint WorkerCountHook(nuint a, nuint b, nuint c) { return (nuint)CollectorWorkers(); }
+    static nuint WorkerStartHook(nuint entry, nuint b, nuint c) { return (nuint)StartCollectorWorker(entry); }
+    static nuint WorkerQuietHook(nuint a, nuint b, nuint c) { QuietWorker(); return 0; }
+
     public static long CollectorWorkers()
     {
         if (Runtime.KnobValue("Corsac.GC.Workers") != 0)

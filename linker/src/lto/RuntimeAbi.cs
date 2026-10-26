@@ -66,7 +66,7 @@ public static class RuntimeAbi
     /// <summary>What a coroutine's machine holds, reported before its frame is saved over it (Runtime.ShadeObject).</summary>
     public const string ShadeObject = "m_Runtime_ShadeObject_1_" + Word;
     /// <summary>An array grown where it is, at its region's top: keeps no pointer (Runtime.GrowInPlace).</summary>
-    public const string GrowInPlace = "m_Runtime_GrowInPlace_2_" + Word + "_" + Word;
+    public const string GrowInPlace = "m_Runtime_GrowInPlace_2_" + Word + "_V$I32";
     /// <summary>
     /// THE STORE SEQUENCES (images whose threads stop anywhere: CORSAC's
     /// kernels, i386 and long mode): a reference store with its Marking test,

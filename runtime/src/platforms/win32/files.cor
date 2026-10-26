@@ -298,11 +298,11 @@ static partial class Os
         Raw.SetI64(st, StatBuf.SizeAt, size);
         Raw.SetU32(st, StatBuf.BlkSizeAt, 4096);
         Raw.SetI64(st, StatBuf.BlocksAt, (size + 511) / 512);
-        Raw.SetU32(st, StatBuf.AtimeAt, Seconds(accessed));
+        Raw.SetI64(st, StatBuf.AtimeAt, Seconds(accessed));
         Raw.SetU32(st, StatBuf.AtimeNsecAt, Nanos(accessed));
-        Raw.SetU32(st, StatBuf.MtimeAt, Seconds(written));
+        Raw.SetI64(st, StatBuf.MtimeAt, Seconds(written));
         Raw.SetU32(st, StatBuf.MtimeNsecAt, Nanos(written));
-        Raw.SetU32(st, StatBuf.CtimeAt, Seconds(created));
+        Raw.SetI64(st, StatBuf.CtimeAt, Seconds(created));
         Raw.SetU32(st, StatBuf.CtimeNsecAt, Nanos(created));
         Raw.SetI64(st, StatBuf.InoAt, index);
     }

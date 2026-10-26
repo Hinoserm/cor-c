@@ -228,7 +228,7 @@ static class LinuxCall
     public const int Umount2 = 52;     // (target, flags)
     public const int Statfs64 = 268;   // (path, size, buffer)
     public const int Fstatfs64 = 269;  // (fd, size, buffer)
-    public const int Reboot = 88;      // (magic1, magic2, cmd, arg)  // (dirfd, path, times[2], flags)  // (buffer, count, flags)
+    public const int Reboot = 88;      // (magic1, magic2, cmd, arg)
     public const int Munmap = 91;
     public const int Mprotect = 125;   // (address, length, protection)
     public const int Membarrier = 375; // (cmd, flags, cpu)
@@ -241,12 +241,8 @@ static class LinuxCall
 
     // ---- sockets ---------------------------------------------------------
     //
-    // TWO WAYS IN, and which one works is the kernel's choice. i386 grew
-    // separate socket calls in Linux 4.3; before that every one of them went
-    // through socketcall(2) with its arguments in a block of words. Os.Sock
-    // below tries the direct call and falls back on -ENOSYS, so this library
-    // runs on either without being told which it is on.
-    public const int SocketCall = 102; // (which, args): the old, universal door
+    // One call each, as x86-64 has always had and i386 has since Linux 4.3:
+    // no socketcall(2).
     public const int Socket = 359;
     public const int SocketPair = 360;
     public const int Bind = 361;

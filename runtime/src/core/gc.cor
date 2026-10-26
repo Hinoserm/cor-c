@@ -17325,7 +17325,7 @@ static class GcLock
         {
             return false;
         }
-        return Sys.ReadAddress(at + Collecting) != 0;
+        return Sys.Read32(at + Collecting) != 0;
     }
 
     /// Whether THIS thread holds the heap lock. On a kernel an interrupt

@@ -43,7 +43,7 @@ static class Program
     static nuint Map(nuint bytes, nuint b, nuint c)
     {
         SyscallWord at = Sys.Syscall(Mmap, 0, (SyscallWord)bytes, 3, 0x22, SyscallWord.MaxValue, 0);
-        return at > SyscallWord.MaxValue - 4096 ? 0 : (nuint)at;
+        return at >= SyscallWord.MaxValue - 4094 ? 0 : (nuint)at;
     }
 
     static nuint Unmap(nuint at, nuint bytes, nuint c)

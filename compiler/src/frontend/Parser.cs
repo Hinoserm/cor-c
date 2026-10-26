@@ -902,6 +902,12 @@ public sealed class Parser
     public static IReadOnlyDictionary<string, string>? GlobalTypeAliases;
 
     /// <summary>
+    /// Both sides' aliases together, for a parse that is on no side: a declaration header read
+    /// from the index, on whatever thread asks for it.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string>? IndexedGlobalTypeAliases { get; set; }
+
+    /// <summary>
     /// The record classes the program declares, in any of its files, by name
     /// (Frontend.RecordNames, read before any is parsed): a record deriving
     /// from one declared in another file, or later in its own, chains its
@@ -928,8 +934,8 @@ public sealed class Parser
         // SyscallWord, in every file of every side: the type of a system
         // call's register, which --syscall-abi decides (the target's own
         // where it is not given).
-        if (GlobalTypeAliases is not null)
-            foreach ((string alias, string aimed) in GlobalTypeAliases) _typeAliases[alias] = aimed;
+        if ((GlobalTypeAliases ?? IndexedGlobalTypeAliases) is { } globalAliases)
+            foreach ((string alias, string aimed) in globalAliases) _typeAliases[alias] = aimed;
         _typeAliases["SyscallWord"] = SyscallWordType ?? (Target.Current.WordSize == 8 ? "ulong" : "uint");
         ParseUsings(unit);
 

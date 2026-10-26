@@ -499,16 +499,17 @@ public static class Frontend
     /// </summary>
     private static (Dictionary<string, string> Program, Dictionary<string, string> Library) GlobalTypeAliases(
         List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
-        List<string>? indexedProgram, List<string>? indexedLibrary)
+        List<string>? indexedProgram, List<string>? indexedLibrary, IReadOnlyCollection<string>? symbols)
     {
         Dictionary<string, string> program = new(StringComparer.Ordinal), library = new(StringComparer.Ordinal);
         foreach ((string name, string? path, bool fromLibrary, bool _) in sources)
         {
             if (path is null) continue;
             string text = SourceText(path);
-            if (!text.Contains("global", StringComparison.Ordinal)) continue;
+            if (!text.Contains("global using", StringComparison.Ordinal)) continue;
             List<Token> read;
-            try { read = Lexer.Tokenize(text, name); }
+            // With the compile's own symbols: a `#if` around an alias reads as it will be parsed.
+            try { read = Lexer.Tokenize(text, name, 1, 1, symbols); }
             catch (CompileError) { continue; }
             for (int i = 0; i + 3 < read.Count; i++)
             {
@@ -547,7 +548,11 @@ public static class Frontend
         HashSet<string> records = RecordNames(sources);
         if (indexedRecords is not null) records.UnionWith(indexedRecords);
         Parser.ProjectRecords = records;
-        (Dictionary<string, string> program, Dictionary<string, string> library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals);
+        (Dictionary<string, string> program, Dictionary<string, string> library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals, symbols);
+        // What a declaration header read from the index (another thread, no side) falls back on.
+        Dictionary<string, string> everywhere = new(library, StringComparer.Ordinal);
+        foreach ((string alias, string aimed) in program) everywhere[alias] = aimed;
+        Parser.IndexedGlobalTypeAliases = everywhere;
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
