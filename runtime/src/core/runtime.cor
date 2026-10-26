@@ -2550,9 +2550,10 @@ static class Runtime
         Gc.Barrier((long)(nuint)slot, (long)(nuint)value);
     }
 
-    /// THE STORE SEQUENCES' BARRIERS (X86Backend: __corsac_refstore,
-    /// __corsac_refxchg, __corsac_refcas), called while Marking is set: the
-    /// report, the store and its card made together (Gc.BarrierStore).
+    /// THE STORE SEQUENCES' BARRIERS (X86Backend and X64Backend:
+    /// __corsac_refstore, __corsac_refxchg, __corsac_refcas), called while
+    /// Marking is set: the report, the store and its card made together
+    /// (Gc.BarrierStore).
     public static void WriteBarrierStore(nint slot, nint value)
     {
         Gc.BarrierStore((long)(nuint)slot, (long)(nuint)value);

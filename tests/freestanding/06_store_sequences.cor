@@ -6,8 +6,9 @@
 // expect-asm-x86: Swap: __corsac_refxchg
 // expect-no-asm-x86: Swap: [s_Runtime_Marking] __corsac_cardmark __corsac_barrier
 // expect-asm-x86-64: Store: __corsac_refstore
-// expect-no-asm-x86-64: Store: cmp
+// expect-no-asm-x86-64: Store: cmp s_Runtime_Marking s_Runtime_Cards shr __corsac_cardstore
 // expect-asm-x86-64: Swap: __corsac_refxchg
+// expect-no-asm-x86-64: Swap: s_Runtime_Marking s_Runtime_Cards shr
 //
 // THE WINDOW, CLOSED. A ring-1 kernel's thread can be sent to its
 // collector's handshake at any instruction (Ring1Kernel.SendToAnswer). Made
@@ -21,7 +22,11 @@
 // kernel never sends a thread out of -- and Store itself compares nothing (no CMP of Marking),
 // stores no reference and marks no card. Interlocked's exchange is the same:
 // __corsac_refxchg, with no test of Marking (its address never read: Swap
-// compares Interlocked's type-ready word) and no card of its own. Compiled and read, not run: the
+// compares Interlocked's type-ready word) and no card of its own. In long
+// mode the same, read off the disassembly's symbol notes: Store and Swap
+// name neither Runtime.Marking nor Runtime.Cards and shift no address to
+// its card (an XCHG of Swap's own cannot be told by its word from the
+// stub's name, __corsac_refxchg, which its CALL prints). Compiled and read, not run: the
 // gate is CORSAC's (09_store_sequences_run runs the sequences).
 //
 // A PROGRAM WITH A COLLECTOR. Main asks for a collection itself (Gc.Collect,

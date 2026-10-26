@@ -789,9 +789,12 @@ public static class Driver
         // image that defines the runtime -- not in a position-independent
         // one, whose stubs would be another image's and are not made: there
         // the flag would do nothing, and a build that asked for them would
-        // believe it had them.
+        // believe it had them. A kernel's module is such an image (--kernel
+        // makes it --shared), so a long-mode kernel built with sequences has
+        // no modules yet: how a module reaches its kernel's stubs is still
+        // to be settled with the kernel.
         if (longMode && args.Contains("--store-sequences") && (args.Contains("--pic") || args.Contains("--shared")))
-            return Fail("--store-sequences in long mode is for an image that is not position-independent: the kernel and its modules");
+            return Fail("--store-sequences in long mode is for an image that is not position-independent: a kernel's image, not its modules (--kernel, --shared or --pic)");
         Corsac.Lang.Lower.Lowering.StoreSequences = args.Contains("--store-sequences");
         Corsac.Lang.Lower.Lowering.CardMarkBefore = Corsac.Lang.Lower.Lowering.StoreSequences;
         Corsac.Lang.Lower.Lowering.ThreadBlockPerProcessor = Corsac.Lang.Lower.Lowering.StoreSequences && freestanding;

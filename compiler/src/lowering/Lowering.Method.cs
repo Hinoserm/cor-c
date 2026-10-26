@@ -1279,11 +1279,12 @@ public sealed partial class Lowering
 
     /// <summary>
     /// Whether this compile's reference stores are made as sequences
-    /// (StoreSequences): asked, on i386, of a runtime with a concurrent
-    /// collector's barrier and a card table, which the sequences read.
+    /// (StoreSequences): asked, on i386 or in long mode, of a runtime with a
+    /// concurrent collector's barrier and a card table, which the sequences
+    /// read.
     /// </summary>
     /// <summary>
-    /// What the store sequences call (X86Backend, "THE STORE SEQUENCES"):
+    /// What the store sequences call (X86Backend and X64Backend, "THE STORE SEQUENCES"):
     /// Runtime.WriteBarrier, and the three routines that report, store and
     /// mark the card while a mark is under way. The backend writes the stubs
     /// only into a module that has all four, and a program compiled whole,

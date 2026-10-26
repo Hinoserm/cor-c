@@ -475,16 +475,17 @@ public sealed class X64Backend : IBackend
         // While Marking: `routine` does the whole operation. `saves` the
         // registers pushed (RAX among them where the stub answers nothing),
         // `args` the moves into RDI, RSI, RDX; RET with the routine's answer
-        // in RAX. Else on past it.
-        void Marked(byte[] saves, byte[] args, string routine, byte[] restores)
+        // in RAX. Else on past it. Every XMM register is saved, since the
+        // routine may use any: 256 bytes, and 72 of pushes, on the stack of
+        // a thread stopped mid-store -- only while a mark is under way.
+        void Marked(byte[] saves, int pushes, byte[] args, string routine, byte[] restores)
         {
             Bytes(0x83, 0x3D); Rip(MarkingFlag, 1); Bytes(0x00);       // cmp dword [rip+Marking], 0
             Bytes(0x0F, 0x84); int skip = b.Count; Bytes(0, 0, 0, 0);    // je past
             Bytes(saves);
-            // RSP is 8 past a 16 at entry; the saves and the XMM area keep
-            // it 16 at the call (`pad` where the saves are an odd count).
-            int pushes = 0;
-            for (int k = 0; k < saves.Length; k++) if (saves[k] != 0x41) pushes++;
+            // RSP is 8 past a 16 at entry; the saves (`pushes` of them) and
+            // the XMM area keep it 16 at the call, 8 more where the saves are
+            // an even count.
             int frame = 256 + ((8 + 8 * pushes) % 16 == 0 ? 0 : 8);
             Bytes(0x48, 0x81, 0xEC); b.AddRange(BitConverter.GetBytes(frame));   // sub rsp, frame
             Xmms(true);
@@ -504,7 +505,7 @@ public sealed class X64Backend : IBackend
         byte[] restoreButRax = { 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5A, 0x59 };
 
         // __corsac_refstore: slot RAX, value RDX; every register kept.
-        Marked(saveAll, new byte[] { 0x48, 0x89, 0xC7, 0x48, 0x89, 0xD6 }, Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore, restoreAll); // mov rdi, rax; mov rsi, rdx
+        Marked(saveAll, 9, new byte[] { 0x48, 0x89, 0xC7, 0x48, 0x89, 0xD6 }, Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore, restoreAll); // mov rdi, rax; mov rsi, rdx
         Bytes(0x48, 0x89, 0x10);                                                  // mov [rax], rdx
         CardOfRax();
         // __corsac_cardstore: the same from the store on, for a new block's.
@@ -513,12 +514,12 @@ public sealed class X64Backend : IBackend
         CardOfRax();
         // __corsac_refxchg: slot RAX, value RDX; the old reference in RAX.
         int exchange = b.Count;
-        Marked(saveButRax, new byte[] { 0x48, 0x89, 0xC7, 0x48, 0x89, 0xD6 }, Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange, restoreButRax);
+        Marked(saveButRax, 8, new byte[] { 0x48, 0x89, 0xC7, 0x48, 0x89, 0xD6 }, Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange, restoreButRax);
         Bytes(0x51, 0x48, 0x89, 0xC1, 0x48, 0x89, 0xD0, 0x48, 0x87, 0x01);      // push rcx; mov rcx, rax; mov rax, rdx; xchg [rcx], rax
         CardOfRcx(popRcx: true);
         // __corsac_refcas: slot RCX, value RDX, expected RAX; what the slot held in RAX.
         int compareExchange = b.Count;
-        Marked(saveButRax, new byte[] { 0x48, 0x89, 0xCF, 0x48, 0x89, 0xD6, 0x48, 0x89, 0xC2 },   // mov rdi, rcx; mov rsi, rdx; mov rdx, rax
+        Marked(saveButRax, 8, new byte[] { 0x48, 0x89, 0xCF, 0x48, 0x89, 0xD6, 0x48, 0x89, 0xC2 },   // mov rdi, rcx; mov rsi, rdx; mov rdx, rax
             Corsac.Lang.Lto.RuntimeAbi.WriteBarrierCompareExchange, restoreButRax);
         Bytes(0xF0, 0x48, 0x0F, 0xB1, 0x11);                                      // lock cmpxchg [rcx], rdx
         CardOfRcx(popRcx: false);

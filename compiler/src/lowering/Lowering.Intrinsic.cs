@@ -309,7 +309,7 @@ public sealed partial class Lowering
             // A REFERENCE EXCHANGED, with what every reference store takes:
             // the snapshot barrier and the card (Interlocked's reference
             // exchanges). As the image's sequence where stores are
-            // (StoreSequences, X86Backend.RefStoreStub): the test, the
+            // (StoreSequences, X86Backend/X64Backend.RefStoreStub): the test, the
             // barrier, the atomic exchange and the card in a stub no thread
             // is stopped inside. Elsewhere the barrier's test before it, as
             // a field's store has it, and the card after, and before too

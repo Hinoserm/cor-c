@@ -65,8 +65,9 @@ public sealed class CardMarks : IModulePass
     /// <summary>
     /// EVERY REFERENCE STORE MADE ONE SEQUENCE (Lowering.StoreSequences): an
     /// image whose threads its kernel stops at any instruction stores
-    /// through stubs that kernel sends no thread out of (X86Backend's store
-    /// sequences). Lowering wrote each store as every pass reads one --
+    /// through stubs that kernel sends no thread out of (the store sequences
+    /// of X86Backend, and X64Backend's in long mode). Lowering wrote each
+    /// store as every pass reads one --
     ///
     ///     t = load Runtime.Marking          the barrier's test
     ///     branch t -> report, stored
