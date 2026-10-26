@@ -3415,14 +3415,15 @@ static class Gc
         // by counts that may be stale.
         for (long tries = 0; ; tries++)
         {
-            Collect();
+            // A THREAD THAT MAY NOT WAIT (CollectMade false) gives no heap
+            // back: the counts would be another cycle's, and the sweep it
+            // would wait out below may never end.
+            if (!CollectMade()) return false;
             GcLock.Enter();
-            while (_collecting || _sweeping || Runtime.Marking != 0)
+            if (!WaitOutAnyCycle())
             {
                 GcLock.Exit();
-                GcThreads.Park();
-                Sys.Pause();
-                GcLock.Enter();
+                return false;
             }
             if (_unowned == _unownedAtMajorSweep) break;
             GcLock.Exit();
@@ -7463,6 +7464,7 @@ static class Gc
             {
                 long waited = _cycle;
                 cannotWait = !WaitOutCycle();
+                if (cannotWait) RefusedAllocations = RefusedAllocations + 1;
                 early = !cannotWait && waited <= failedAt;
             }
             else early = CollectedNothing(ref givenUp);
@@ -7483,6 +7485,7 @@ static class Gc
             // memory.
             _growPast = attempt == 2 || cannotWait;
             HeapChunks.ReserveOpen = dedicated && !early || attempt == 2 || cannotWait;
+            HeapChunks.PastCap = cannotWait;
             block = dedicated ? TakeDedicated(need) : Take(need);
 
             if (block == 0 && !dedicated && Grow(need))
@@ -7493,6 +7496,7 @@ static class Gc
             if (block == 0 && dedicated) block = Take(need);
             _growPast = false;
             HeapChunks.ReserveOpen = false;
+            HeapChunks.PastCap = false;
             if (block == 0 && cannotWait) break;
             if (block == 0 && early)
             {
@@ -7548,6 +7552,7 @@ static class Gc
             // thread's request grows into the reserve on this one's behalf.
             _growPast = attempt == 3;
             HeapChunks.ReserveOpen = attempt == 3;
+            HeapChunks.PastCap = cannotWait;
             long cache = EnsureCache(tb);
             if (cache != 0)
             {
@@ -7627,6 +7632,7 @@ static class Gc
                 long waited = _cycle;
                 if (!WaitOutCycle())
                 {
+                    RefusedAllocations = RefusedAllocations + 1;
                     cannotWait = true;
                     attempt = 2;
                     continue;
@@ -7655,6 +7661,7 @@ static class Gc
     {
         _growPast = false;
         HeapChunks.ReserveOpen = false;
+        HeapChunks.PastCap = false;
     }
 
     /// A FREE SLOT OF A BIGGER CLASS, for a request of class `c` that found
@@ -9443,7 +9450,8 @@ static class Gc
     const long RevokedDepth = 256;
     const long DescNameWord = 0;
 
-    /// Every object whose vtable is in [low, high) tombstoned; how many.
+    /// Every object whose vtable is in [low, high) tombstoned; how many, or
+    /// -1 when no collection could be made (CollectMade): nothing was.
     /// Runs a full collection to do it.
     public static long Revoke(long low, long high)
     {
@@ -9459,20 +9467,20 @@ static class Gc
         _revokeSlots = slots;
         _revokeLow = low;
         _revokeHigh = high;
-        Collect();
+        bool made = CollectMade();
         _revokeLow = 0;
         _revokeHigh = 0;
-        return _revokedCount;
+        return made ? _revokedCount : -1;
     }
 
     /// How many objects not yet freed have their vtable in [low, high),
     /// touching none: whether a module is free of objects of its types
     /// before its image goes. Runs a full collection first, so garbage of
     /// its types has been swept and what is counted is what lived through
-    /// one.
+    /// one. -1 when no collection could be made (CollectMade).
     public static long CountIn(long low, long high)
     {
-        Collect();
+        if (!CollectMade()) return -1;
         _revokeCountOnly = true;
         try { return Revoke(low, high); }
         finally { _revokeCountOnly = false; }
@@ -9937,17 +9945,17 @@ static class Gc
     static long _referencesBelow, _referencesEnd, _references;
 
     /// How many words the mark finds pointing into [low, high). Runs a full
-    /// collection to know.
+    /// collection to know; -1 when none could be made (CollectMade).
     public static long CountReferencesInto(long low, long high)
     {
         if (high <= low) return 0;
         _references = 0;
         _referencesBelow = low - 1;
         _referencesEnd = high;
-        Collect();
+        bool made = CollectMade();
         _referencesEnd = 0;
         _referencesBelow = 0;
-        return _references;
+        return made ? _references : -1;
     }
 
     /// WHO HOLDS WHAT POINTS INTO [low, high): a forced-out module's range
@@ -9966,13 +9974,12 @@ static class Gc
     {
         if (high <= low || !_ready) return 0;
         long marked = CountReferencesInto(low, high);
+        if (marked < 0) return -1;
         GcLock.Enter();
-        while (_collecting || _sweeping || Runtime.Marking != 0)
+        if (!WaitOutAnyCycle())
         {
             GcLock.Exit();
-            GcThreads.Park();
-            Sys.Pause();
-            GcLock.Enter();
+            return -1;
         }
         long found = ReferencesInRange(Sys.DataStart(), Sys.DataEnd(), low, high, max, 0, "gc refs: static at ");
         long i = 0;
@@ -12639,11 +12646,21 @@ static class Gc
     /// see GcRoots for the reasoning -- and reached only from Alloc.
     public static void Collect()
     {
+        CollectMade();
+    }
+
+    /// Collect, answering whether a collection was made: false when another
+    /// thread's was under way and the platform said this thread may not
+    /// wait it out (WaitForCollector). What needs the collection's walk or
+    /// its counts -- Revoke, CountIn, CountReferencesInto, ReleaseHeap --
+    /// asks this, and says it could not.
+    public static bool CollectMade()
+    {
         // ASKED FOR, it is whole: GC.Collect promises every unreachable
         // object is gone, and a minor collection leaves the old ones be.
         // No heap yet, nothing to collect: and asking its lock would map
         // the lock's words before SetHeap (Free).
-        if (!HeapChunks.Any()) return;
+        if (!HeapChunks.Any()) return true;
         _forceMajor = true;
         long tries = 0;
         while (true)
@@ -12662,7 +12679,7 @@ static class Gc
                 // larger (FitBarrier). Not for ever: a ring that overflows
                 // every time leaves the call as an allocation's would.
                 tries = tries + 1;
-                if (Collections != had || Aborted == abortedHad || tries >= 4) return;
+                if (Collections != had || Aborted == abortedHad || tries >= 4) return true;
                 _forceMajor = true;
                 continue;
             }
@@ -12683,8 +12700,36 @@ static class Gc
             }
 
             GcThreads.EndBlocking();
-            if (!waited) return;
+            if (!waited) return false;
         }
+    }
+
+    /// Waits for another thread's collection the platform refused
+    /// (WaitForCollector false), and of them the allocations that went
+    /// without it, taking their last try at once. Counted without a lock:
+    /// a figure to read, not to reckon with.
+    public static long RefusedWaits, RefusedAllocations;
+
+    /// With the heap lock held, until no cycle is under way at all -- none
+    /// marking, none sweeping -- answering every round meanwhile, the lock
+    /// let go while waiting. False, the lock held again, when the platform
+    /// says this thread may not wait (YieldHook with 1, as WaitForCollector
+    /// asks it).
+    static bool WaitOutAnyCycle()
+    {
+        while (_collecting || _sweeping || Runtime.Marking != 0)
+        {
+            GcLock.Exit();
+            if (YieldHook != 0 && Sys.Call(YieldHook, 1, 0, 0) != 0)
+            {
+                GcLock.Enter();
+                return false;
+            }
+            GcThreads.Park();
+            Sys.Pause();
+            GcLock.Enter();
+        }
+        return true;
     }
 
     /// One wait for another thread's collection to end: the platform asked
@@ -12697,7 +12742,11 @@ static class Gc
     /// count raised): the caller does without the cycle's end.
     static bool WaitForCollector(long cycling)
     {
-        if (YieldHook != 0 && Sys.Call(YieldHook, 1, 0, 0) != 0) return false;
+        if (YieldHook != 0 && Sys.Call(YieldHook, 1, 0, 0) != 0)
+        {
+            RefusedWaits = RefusedWaits + 1;
+            return false;
+        }
         if (Sys.Peek(cycling) != 0) Platform.Wait(cycling, 1);
         return true;
     }
@@ -13169,8 +13218,8 @@ static class Gc
         // 2. Every thread's own buffer. THE ROUND IS ASKED WITHOUT THE LOCK
         //    LET GO since stamping opened: an allocator waits for it there
         //    (AnswerBeforeTaking), and on a kernel one that may not give the
-        //    processor away spun for ever behind a collector preempted in
-        //    between. Asked, the round is one it answers itself.
+        //    processor away could wait there for ever, were the collector
+        //    preempted in between. Asked, the round is one it answers itself.
         GcThreads.Round(GcThreads.Stamp, true);
 
         if (Sys.Peek(ctl + GcLock.BarrierLost) != 0)
@@ -15526,11 +15575,22 @@ static class HeapChunks
     }
 
     /// The cap for the request being answered now: the whole of it while the
-    /// reserve is open, else the soft cap. 0 for none.
+    /// reserve is open, else the soft cap. 0 for none -- and none for a
+    /// request the cap is lifted for (PastCap).
     static long CapNow()
     {
+        if (PastCap) return 0;
         return ReserveOpen ? _cap : SoftCap;
     }
+
+    /// Set by the allocator, with the heap lock held, around the last try of
+    /// a request whose thread may not wait for another's collection (a
+    /// kernel's, its preemption count raised), and cleared before the lock
+    /// goes: such a request can neither wait for the cycle that would free
+    /// its room nor fail where it stands, and takes it from the system
+    /// instead, as an allocation that may not sleep does in a kernel. The
+    /// cap paces the heap; the next cycle brings it back under.
+    public static bool PastCap;
 
     /// The bytes held back below the cap, for the out-of-memory report.
     public static long ReserveBytes
@@ -16877,9 +16937,10 @@ static class GcThreads
     const long PromptGapMost = 1024;
 
     /// Asks every other thread for `request` and returns when all have
-    /// answered. Called by the collector, without the heap lock. While it
-    /// waits it answers for the blocked, marks what is queued, prompts the
-    /// ones that have not answered, and waits a turn.
+    /// answered. Called by the collector without the heap lock, or holding
+    /// it (the overload below). While it waits it answers for the blocked,
+    /// marks what is queued, prompts the ones that have not answered, and
+    /// waits a turn.
     public static void Round(long request) => Round(request, false);
 
     /// The same with the heap lock already held (`held`), let go once the

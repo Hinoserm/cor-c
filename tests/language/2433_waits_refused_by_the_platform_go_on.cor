@@ -4,18 +4,22 @@
 // count 348174
 // bad 0
 // refused True
+// allocations went on True
 //
 // On one processor a kernel's thread with its preemption count raised can
 // never wait for another thread's collection: that cycle's collector may be
 // a thread that yielded between budgets, and nothing runs it again while
 // the waiter spins. Such a wait asks the platform first (Gc.YieldHook with
 // 1), which answers nonzero for a thread that may not give the processor
-// away. Then an allocation takes its last try at once -- the reserve under
-// the cap, growth past the ceiling -- and a collection asked for is not
-// made. Here the hook refuses every such wait, six threads allocate under a
-// cap that keeps cycles running beside them, and the main thread asks for
-// collections throughout: every allocation is answered, every name read
-// back is its own, and waits were refused.
+// away. Then an allocation takes its last try at once, the cap lifted for
+// it -- it takes its room from the system, as an allocation that may not
+// sleep does in a kernel -- and a collection asked for is not made. Here
+// the hook refuses every such wait, six threads allocate under a cap that
+// keeps cycles running beside them (allocations come up short and meet
+// them, as in 1011), and the main thread asks for collections throughout:
+// every allocation is answered, every name read back is its own, and
+// allocations went on without the cycle. With the cap kept for them, five
+// runs in six at this load ran out of memory.
 
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -115,7 +119,7 @@ static class Program
     static int Main()
     {
         int workers = 6;
-        Gc.SetLimit(25165824);
+        Gc.SetLimit(16777216);
         Gc.YieldHook = Sys.AddressOf(Program.Refuse);
         Worker[] w = new Worker[workers];
         Thread[] t = new Thread[workers];
@@ -130,6 +134,7 @@ static class Program
         Console.WriteLine("count " + count);
         Console.WriteLine("bad " + bad);
         Console.WriteLine("refused " + (Interlocked.Read(ref _refused) > 0));
+        Console.WriteLine("allocations went on " + (Gc.RefusedAllocations > 0));
         return 0;
     }
 }
