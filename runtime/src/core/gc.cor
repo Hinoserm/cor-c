@@ -12194,7 +12194,7 @@ static class Gc
     /// Root ranges marked from as they were registered, a mark under way.
     public static long RegisteredMidMark;
 
-    // ---- marking in words ----------------------------------------------------
+    // ---- marking ---------------------------------------------------------------
     //
     // THE MARKER'S INNER LOOP: from a word read out of a live object to its
     // block, the block's flag, the grey queue and back, for every word of
@@ -12471,6 +12471,9 @@ static class Gc
         }
     }
 
+    /// The next queued block, or 0 when none is ready to take -- the queue is
+    /// empty, or the next place is claimed and not yet written, which its
+    /// pusher is a few instructions from doing.
     static nuint PopGrey()
     {
         nuint ctl = (nuint)GcLock.Words();
@@ -12503,7 +12506,10 @@ static class Gc
         }
     }
 
-    /// `tail`: what follows its payload (TailIn).
+    /// A marked block's references marked in turn: none for a leaf, the ones
+    /// its descriptor names for an object, every word for the rest. `tail`:
+    /// what follows its payload (TailIn). `local`: the draining thread's own
+    /// stack (ClaimLocal) for what this marks, or 0 for the shared queue.
     static void ScanBlock(nuint block, nuint size, nuint tail, nuint local = 0)
     {
         nuint kind = Sys.ReadAddress(block + KindAt);
@@ -12519,7 +12525,9 @@ static class Gc
         }
     }
 
-    public static void ScanRange(nuint from, nuint to, nuint local = 0)
+    /// Every word-aligned word of [from, to) marked from, as a reference may
+    /// be any of them; `local` as ScanBlock's.
+    static void ScanRange(nuint from, nuint to, nuint local = 0)
     {
         const int w = WordSize.Bytes;
         nuint p = (from + w - 1) & ~(nuint)(w - 1);
@@ -12531,9 +12539,14 @@ static class Gc
         }
     }
 
-    /// ScanObject in words. The array's count is checked against the room
-    /// before it is multiplied: in 32 bits count * w can wrap, which in 64
-    /// it could not, and `last > end` alone would then pass.
+    /// AN OBJECT BY ITS DESCRIPTOR: the words its reference map names, or,
+    /// for an array of references, its elements. False when the object
+    /// cannot be read that way -- no vtable yet (made, not yet described:
+    /// nothing is in it), a first word that is not a descriptor's vtable, an
+    /// array of anything but references, a count past the block -- and the
+    /// caller scans every word instead, which is never wrong. The array's
+    /// count is checked against the room before it is multiplied: in 32 bits
+    /// count * w can wrap, and `last > end` alone would then pass.
     static bool ScanObject(nuint payload, nuint end, nuint local)
     {
         const int w = WordSize.Bytes;
@@ -12554,7 +12567,10 @@ static class Gc
             {
                 return true;
             }
-            // An array of numbers holds no reference: see ScanObject.
+            // AN ARRAY OF NUMBERS HOLDS NO REFERENCE, as in .NET: read word by
+            // word, every hash code and offset that looked like an address
+            // was looked up -- a large part of marking a compiler's heap --
+            // and kept whatever it happened to land on.
             if ((Sys.ReadAddress(desc + (nuint)DescGcFlagsWord * w) & (nuint)ElementsAreReferences) == 0)
             {
                 return true;
@@ -12598,7 +12614,7 @@ static class Gc
         return true;
     }
 
-    /// SnapshotBlock in words, the chunk's start bits read once, in the
+    /// The block of `at` as SnapshotBlock finds it, the chunk's start bits read once, in the
     /// snapshot's chunk of `at` (HeapChunks.OfSnapshot), which the caller
     /// has found: it says too whether the block has a footer.
     static nuint SnapshotBlockIn(nuint chunk, nuint at)
@@ -15359,7 +15375,7 @@ static class HeapChunks
     // neighbours on its class's list of pages with room, and the thread that
     // owns it, or 0. On a page the largest-hole word is its free bytes.
     const int ChunkClass = 8 * WordSize.Bytes;
-    /// For the marker's lookups in words (Gc.MarkWord): where a chunk's end,
+    /// For the marker's lookups (Gc.MarkWord): where a chunk's end,
     /// limit and class are, and where its first block is.
     public const int EndAt = ChunkEnd, LimitAt = ChunkLimit, ClassAt = ChunkClass, FirstAt = ChunkBytes, OwnerAt = ChunkOwner;
 
@@ -15589,7 +15605,9 @@ static class HeapChunks
 
     public static nuint BlockAnchorCount(nuint chunk)
     {
-        return (Limit(chunk) - chunk + 4095) / 4096;
+        // A shift, not a divide: the marker asks this (Starts) for every word
+        // it resolves in a mixed chunk.
+        return (Limit(chunk) - chunk + 4095) >> 12;
     }
 
     // After the anchors, in the same mapping: the cycle the start bits are
@@ -16742,7 +16760,7 @@ static class HeapChunks
         }
         return raw;
     }
-    // ---- the snapshot's lookups, in words (Gc.MarkWord) -----------------------
+    // ---- the marker's start-bit lookup (Gc.MarkWord) --------------------------
 
     /// The highest start at or below `address` -- `address` itself when its
     /// bit is set, which `exact` asks for first -- or 0. IsStart and
@@ -16770,7 +16788,6 @@ static class HeapChunks
         nuint top = (nuint)(StartBitMask - Runtime.LeadingZeroCount(bits));
         return chunk + (word * (nuint)StartBits + top) * 8;
     }
-
 }
 
 // ---- roots: where the live pointers begin ----------------------------------------
