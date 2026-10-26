@@ -52,7 +52,7 @@ static class P
         Console.WriteLine("mapped at least used " + (Gc.ArenaMappedPeak >= Gc.ArenaUsedPeak));
         Console.WriteLine("chunks mapped " + (Gc.ArenaChunksMapped > 0));
         Console.WriteLine("chunks unmapped no more than mapped " + (Gc.ArenaChunksUnmapped <= Gc.ArenaChunksMapped));
-        Console.WriteLine("asked at least the peak " + (Gc.ArenaAskedBytes >= Gc.ArenaMappedPeak));
+        Console.WriteLine("asked at least the peak " + (Gc.ArenaAskedBytes >= (long)Gc.ArenaMappedPeak));
         Console.WriteLine("mapped now no more than the peak " + (Gc.ArenaMappedNow <= Gc.ArenaMappedPeak));
         Console.WriteLine("blocks made in regions " + (Gc.RegionBlocks > 0));
         return 0;
