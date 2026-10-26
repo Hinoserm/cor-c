@@ -7633,10 +7633,10 @@ static class Gc
                 if (!WaitOutCycle())
                 {
                     // The pool is not given back first, as the last try's
-                    // way otherwise is (attempt 2, below): a cycle is under
-                    // way, whose snapshot names its pages (DrainPool). A
-                    // class's refill takes a pooled page before a mapping
-                    // all the same (ClassRefill).
+                    // way otherwise is (attempt 2, below): a cycle is almost
+                    // always still under way, whose snapshot names its pages
+                    // (DrainPool refuses then). A class's refill takes a
+                    // pooled page before a mapping all the same (ClassRefill).
                     RefusedAllocations = RefusedAllocations + 1;
                     cannotWait = true;
                     attempt = 2;
@@ -15586,11 +15586,18 @@ static class HeapChunks
     }
 
     /// The cap for the request being answered now: the whole of it while the
-    /// reserve is open, else the soft cap; an eighth more for a request the
-    /// cap is lifted for (PastCap). 0 for none.
+    /// reserve is open, else the soft cap; an eighth more (a batch of pages
+    /// at least) for a request the cap is lifted for (PastCap). 0 for none.
     static long CapNow()
     {
-        if (PastCap && _cap != 0) return _cap + (_cap >> 3);
+        if (PastCap && _cap != 0)
+        {
+            // An eighth, and never less than one batch of pages: under a
+            // small cap an eighth is not a page.
+            long lift = _cap >> 3;
+            if (lift < BatchPageBytes()) lift = BatchPageBytes();
+            return _cap + lift;
+        }
         return ReserveOpen ? _cap : SoftCap;
     }
 
