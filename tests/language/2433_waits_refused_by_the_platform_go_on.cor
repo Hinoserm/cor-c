@@ -22,8 +22,8 @@
 // the refused worker meets a cycle when it comes up short is the race's:
 // in nine runs of twelve it did (Gc.RefusedAllocations), with the heap's
 // peak within the lifted cap, 18 MB -- measured then, not asserted here.
-// The hook's [ThreadStatic] is written by every thread before its first
-// wait, so reading it there allocates nothing. With the cap kept for it, it ran out of
+// Every worker writes the hook's [ThreadStatic] at its first step, before
+// it allocates anything. With the cap kept for it, it ran out of
 // memory. With every thread refused at every step nothing ever waits for
 // a cycle to end, and the heap outgrew a 16 MB cap twelve times over
 // before the lift was bounded; bounded, that load is out of memory, as it

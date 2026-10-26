@@ -15607,8 +15607,9 @@ static class HeapChunks
     /// goes: such a request can neither wait for the cycle that would free
     /// its room nor fail where it stands, and takes it from the system
     /// instead, as an allocation that may not sleep does in a kernel -- up to
-    /// an eighth past the cap (CapNow), so that a thread allocating in a
-    /// loop while a cycle stands still cannot take the machine's memory.
+    /// an eighth past the cap, a batch of pages at least (CapNow), so that a
+    /// thread allocating in a loop while a cycle stands still cannot take
+    /// the machine's memory.
     /// The next cycle brings the heap back under.
     public static bool PastCap;
 
