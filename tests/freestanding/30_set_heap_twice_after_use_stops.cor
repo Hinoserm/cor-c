@@ -19,13 +19,13 @@ static class Program
     static int Main()
     {
         nuint bytes = 1024 * 1024;
-#if TARGET_64BIT
-        const nint Mmap = 9;
+#if SYSCALL64
+        const int Mmap = 9;
 #else
-        const nint Mmap = 192;
+        const int Mmap = 192;
 #endif
-        nuint a = (nuint)Sys.Syscall(Mmap, 0, (nint)bytes, 3, 0x22, -1, 0);
-        nuint b = (nuint)Sys.Syscall(Mmap, 0, (nint)bytes, 3, 0x22, -1, 0);
+        nuint a = (nuint)Sys.Syscall(Mmap, 0, (SyscallWord)bytes, 3, 0x22, SyscallWord.MaxValue, 0);
+        nuint b = (nuint)Sys.Syscall(Mmap, 0, (SyscallWord)bytes, 3, 0x22, SyscallWord.MaxValue, 0);
         Platform.SetHeap(a, a + bytes);
         Platform.SetHeap(b, b + bytes);
         int[] first = new int[8];

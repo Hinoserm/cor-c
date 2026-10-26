@@ -981,7 +981,7 @@ static class Platform
         Runtime.ExitHandler();
         if (ExitHook != 0)
         {
-            Sys.Call(ExitHook, code, 0, 0);
+            Sys.Call(ExitHook, (nuint)code, 0, 0);
         }
         if (!RingZero())
         {

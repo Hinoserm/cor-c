@@ -9,10 +9,9 @@
 //
 // THE SECOND MISTAKE THE PORT WAS ABOUT. os/ read a stat buffer with one
 // Sys.Peek at a byte offset, because the old kernel's stat was an array of
-// 64-bit words. Linux's struct stat64 is not that: st_mode is 32 bits at 16
-// and st_size is 64 bits at 44 on a four-byte alignment, so a word peek
-// answers two fields glued together. This proves the accessors read what the
-// kernel actually wrote.
+// 64-bit words. Linux's struct statx is not that: stx_mode is 16 bits at 28
+// and stx_size is 64 bits at 40, so a word peek answers fields glued
+// together. This proves the accessors read what the kernel actually wrote.
 
 using System;
 using System.IO;

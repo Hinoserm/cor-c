@@ -510,7 +510,7 @@ static class Win32
     {
         byte[] info = new byte[36];
         GetSystemInfo(Sys.ArrayData(info));
-        return info[20] | (info[21] << 8) | (info[22] << 16) | (info[23] << 24);
+        return (nuint)(info[20] | (info[21] << 8) | (info[22] << 16) | (info[23] << 24));
     }
 
     static nuint Exit(nuint code, nuint b, nuint c)

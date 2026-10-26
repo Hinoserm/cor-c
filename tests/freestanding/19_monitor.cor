@@ -68,21 +68,20 @@ static class Program
             }
         }
         long[] ts = new long[2];
-#if TARGET_64BIT
-        Sys.Syscall(228, 1, (nint)Sys.ArrayData(ts), 0);
-        return ts[0] * 1000000000 + ts[1];
+        // clock_gettime64 on i386, clock_gettime on x86-64: the same 64-bit timespec.
+#if SYSCALL64
+        Sys.Syscall(228, 1, (SyscallWord)Sys.ArrayData(ts), 0);
 #else
-        Sys.Syscall(265, 1, (nint)Sys.ArrayData(ts), 0);
-        long w = ts[0];
-        return (w & 0xFFFFFFFF) * 1000000000 + (w >> 32);
+        Sys.Syscall(403, 1, (SyscallWord)Sys.ArrayData(ts), 0);
 #endif
+        return ts[0] * 1000000000 + ts[1];
     }
 
     /// Platform.TypeInitOwnerHook: the parked call running now, or 0 for
     /// the thread block.
-    static nint Owner(nint a, nint b, nint c)
+    static nuint Owner(nuint a, nuint b, nuint c)
     {
-        return (nint)_owner;
+        return _owner;
     }
 
     static void Inner()

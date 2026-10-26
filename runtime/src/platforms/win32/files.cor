@@ -675,7 +675,7 @@ static partial class Os
     {
         nuint handler = type <= 1 ? _onInterrupt : _onTerminate;
         if (handler <= 1) return handler == 1 ? 1 : 0;
-        Sys.Call(handler, type <= 1 ? 2 : 15, 0, 0);
+        Sys.Call(handler, type <= 1 ? 2u : 15u, 0, 0);
         return 1;
     }
 

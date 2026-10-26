@@ -30,25 +30,25 @@ sealed class Box
 
 static class Program
 {
-#if TARGET_64BIT
-    const nint Mmap = 9;
-    const nint Munmap = 11;
+#if SYSCALL64
+    const int Mmap = 9;
+    const int Munmap = 11;
 #else
-    const nint Mmap = 192;
-    const nint Munmap = 91;
+    const int Mmap = 192;
+    const int Munmap = 91;
 #endif
 
     /// Platform.MapHook: anonymous pages, committed by the kernel as they
     /// are touched.
-    static nint Map(nint bytes, nint b, nint c)
+    static nuint Map(nuint bytes, nuint b, nuint c)
     {
-        nint at = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);
-        return at < 0 && at > -4096 ? 0 : at;
+        SyscallWord at = Sys.Syscall(Mmap, 0, (SyscallWord)bytes, 3, 0x22, SyscallWord.MaxValue, 0);
+        return at > SyscallWord.MaxValue - 4096 ? 0 : (nuint)at;
     }
 
-    static nint Unmap(nint at, nint bytes, nint c)
+    static nuint Unmap(nuint at, nuint bytes, nuint c)
     {
-        return Sys.Syscall(Munmap, at, bytes, 0, 0, 0, 0);
+        return (nuint)Sys.Syscall(Munmap, (SyscallWord)at, (SyscallWord)bytes, 0, 0, 0, 0);
     }
 
     static long Sum(Box? head)

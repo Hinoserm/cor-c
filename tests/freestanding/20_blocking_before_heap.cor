@@ -24,22 +24,22 @@ using System;
 
 static class Program
 {
-#if TARGET_64BIT
-    const nint Write = 1;
-    const nint Mmap = 9;
+#if SYSCALL64
+    const int Write = 1;
+    const int Mmap = 9;
 #else
-    const nint Write = 4;
-    const nint Mmap = 192;
+    const int Write = 4;
+    const int Mmap = 192;
 #endif
 
     static long _given;
     static long _givenBytes;
 
     /// Platform.UnmapHook: the kernel's, which takes its frames back.
-    static nint Unmapped(nint at, nint bytes, nint unused)
+    static nuint Unmapped(nuint at, nuint bytes, nuint unused)
     {
         _given = _given + 1;
-        _givenBytes = bytes;
+        _givenBytes = (long)bytes;
         return 0;
     }
 
@@ -48,7 +48,7 @@ static class Program
         string text = "before the heap\n";
         nuint units = Sys.StringData(text);
         long wrote = 0;
-        for (int i = 0; i < text.Length; i++) wrote = wrote + Platform.Blocking(Write, 1, (nint)(units + (nuint)(i * 2)), 1);
+        for (int i = 0; i < text.Length; i++) wrote = wrote + Err.Result(Platform.Blocking(Write, 1, (SyscallWord)(units + (nuint)(i * 2)), 1));
 
         Host.Start(8 * 1024 * 1024);
         Host.Line("wrote " + wrote);
@@ -72,7 +72,7 @@ static class Program
         Platform.Unmap(made, 4096);
         Host.Line("given back " + _given);
 
-        nuint page = (nuint)Sys.Syscall(Mmap, 0, 4096, 3, 0x22, -1, 0);
+        nuint page = (nuint)Sys.Syscall(Mmap, 0, 4096, 3, 0x22, SyscallWord.MaxValue, 0);
         Platform.Unmap(page, 4096);
         Host.Line("given back " + _given + " " + _givenBytes);
         Platform.UnmapHook = 0;

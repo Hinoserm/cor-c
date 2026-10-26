@@ -92,26 +92,26 @@ static class Program
     static nuint[] _word = new nuint[1];
     static long[] _status = new long[1];
     static nuint[] _heads = new nuint[Gc.Classes];
-    static nint _child;
+    static int _child;
     static nuint _block;
     static nuint _lock;
     static string _broken = "";
 
-    static nint Sys4(SystemCall call, nint a, nint b, nint c, nint d)
+    static SyscallWord Sys4(SystemCall call, SyscallWord a, SyscallWord b, SyscallWord c, SyscallWord d)
     {
-        return Sys.Syscall((nint)call, a, b, c, d, 0, 0);
+        return Sys.Syscall((int)call, a, b, c, d, 0, 0);
     }
 
     static nuint Peek(nuint at)
     {
         _word[0] = 0;
-        Sys4(SystemCall.Ptrace, (nint)Trace.PeekData, _child, (nint)at, (nint)Sys.ArrayData(_word));
+        Sys4(SystemCall.Ptrace, (SyscallWord)Trace.PeekData, (SyscallWord)_child, (SyscallWord)at, (SyscallWord)Sys.ArrayData(_word));
         return _word[0];
     }
 
     static void Poke(nuint at, nuint value)
     {
-        Sys4(SystemCall.Ptrace, (nint)Trace.PokeData, _child, (nint)at, (nint)value);
+        Sys4(SystemCall.Ptrace, (SyscallWord)Trace.PokeData, (SyscallWord)_child, (SyscallWord)at, (SyscallWord)value);
     }
 
     /// The child's next stop: the signal it stopped with, or -1 when it did
@@ -119,7 +119,7 @@ static class Program
     static long Stopped()
     {
         _status[0] = 0;
-        Sys4(SystemCall.Wait4, _child, (nint)Sys.ArrayData(_status), WaitAll, 0);
+        Sys4(SystemCall.Wait4, (SyscallWord)_child, (SyscallWord)Sys.ArrayData(_status), WaitAll, 0);
         long status = _status[0] & 0xFFFF;
         if ((status & 0xFF) != 0x7F) return -1;
         return (status >> 8) & 0xFF;
@@ -146,11 +146,11 @@ static class Program
 
     static void Child()
     {
-        Sys4(SystemCall.Ptrace, (nint)Trace.Me, 0, 0, 0);
-        nint me = Sys4(SystemCall.GetPid, 0, 0, 0, 0);
+        Sys4(SystemCall.Ptrace, (SyscallWord)Trace.Me, 0, 0, 0);
+        SyscallWord me = Sys4(SystemCall.GetPid, 0, 0, 0, 0);
         while (true)
         {
-            Sys4(SystemCall.Kill, me, (nint)Signal.Stop, 0, 0);
+            Sys4(SystemCall.Kill, me, (SyscallWord)Signal.Stop, 0, 0);
             nuint at = (Path)_mailbox[0] == Path.Word ? Gc.AllocWord(Size, 0) : Gc.Alloc(Size);
             _mailbox[1] = at;
         }
@@ -165,7 +165,7 @@ static class Program
         nuint cache = Peek(_block + Tls.Classes);
         if (cache == 0) return false;
         ReadHeads(cache);
-        Sys4(SystemCall.Ptrace, (nint)Trace.Continue, _child, 0, 0);
+        Sys4(SystemCall.Ptrace, (SyscallWord)Trace.Continue, (SyscallWord)_child, 0, 0);
         if (Stopped() != (long)Signal.Stop) return false;
         return AHead(Peek(Sys.ArrayData(_mailbox) + WordSize.Bytes));
     }
@@ -174,7 +174,7 @@ static class Program
     static void Warm(Path path)
     {
         Poke(Sys.ArrayData(_mailbox), (nuint)path);
-        Sys4(SystemCall.Ptrace, (nint)Trace.Continue, _child, 0, 0);
+        Sys4(SystemCall.Ptrace, (SyscallWord)Trace.Continue, (SyscallWord)_child, 0, 0);
         Stopped();
     }
 
@@ -210,7 +210,7 @@ static class Program
             }
             // Once the cache is taken, the rest of the allocation runs at
             // full speed to the child's next stop.
-            Sys4(SystemCall.Ptrace, (nint)(taken ? Trace.Continue : Trace.SingleStep), _child, 0, 0);
+            Sys4(SystemCall.Ptrace, (SyscallWord)(taken ? Trace.Continue : Trace.SingleStep), (SyscallWord)_child, 0, 0);
             long signal = Stopped();
             if (signal == (long)Signal.Stop)
             {
@@ -260,7 +260,7 @@ static class Program
         _block = Sys.ThreadBlock();
         _lock = GcLock.Words();
 
-        _child = Sys4(SystemCall.Fork, 0, 0, 0, 0);
+        _child = (int)Sys4(SystemCall.Fork, 0, 0, 0, 0);
         if (_child == 0)
         {
             Child();
@@ -275,7 +275,7 @@ static class Program
         Check("word", Path.Word);
         Check("long", Path.Long);
 
-        Sys4(SystemCall.Kill, _child, (nint)Signal.Kill, 0, 0);
+        Sys4(SystemCall.Kill, (SyscallWord)_child, (SyscallWord)Signal.Kill, 0, 0);
         Stopped();
         return 0;
     }

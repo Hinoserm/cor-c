@@ -225,12 +225,12 @@ static class WinSeat
     /// The call's words: an address and a length (write, read), or a request
     /// and its argument -- 64 bits in two words, and, for the requests that
     /// point at a record, the address in the first of them (b).
-    public static long Call(nint call, nint a, nint b, nint c)
+    public static long Call(int call, SyscallWord a, SyscallWord b, SyscallWord c)
     {
         Start();
         if (call == CallWrite) return Batch((nuint)a, (nuint)b);
         if (call == CallRead) return Read((nuint)a, (nuint)b);
-        if (call == CallIoctl) return Ioctl(a, (long)c << 32 | (uint)b, (nuint)b);
+        if (call == CallIoctl) return Ioctl((long)a, (long)c << 32 | (uint)b, (nuint)b);
         return -NoSys;
     }
 
