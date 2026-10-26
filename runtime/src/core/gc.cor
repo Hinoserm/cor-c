@@ -1966,6 +1966,17 @@ static class Gc
         }
     }
 
+    // WHERE THE CARDS' TAKING IS, between steps of the stop: the snapshot
+    // chunk by its index, and the next card of it (-1: not begun).
+    static long _cardsWhich, _cardsCard, _cardsLast;
+    static bool _cardsYoung, _cardsUnwalked;
+
+    static void BeginCards()
+    {
+        _cardsWhich = 0;
+        _cardsCard = -1;
+    }
+
     /// AT THE SNAPSHOT: every set card over the heap cleared, with the heap
     /// lock held, and -- for a minor cycle -- moved into the taken table, to
     /// be read while marking (ScanTakenCards). A card a store sets afterwards
@@ -1979,23 +1990,39 @@ static class Gc
     /// (OldCards), whether set yet or not -- a store may land between the
     /// walk and this -- and only a set card so flagged, or one over a
     /// thread's buffer (which the walk stepped over), is kept.
-    static void TakeCards(bool minor)
+    ///
+    /// On from where they were, until `budget` cards are done (-1: all):
+    /// true when every snapshot chunk's are.
+    static bool TakeCardsSome(bool minor, long budget)
     {
         long cards = Runtime.Cards;
-        long which = 0;
-        long chunk = HeapChunks.SnapshotChunk(0);
-        while (chunk != 0)
+        long work = 0;
+        while (true)
         {
-            // A page this cycle did not walk (_pagesUnwalked): young by its
-            // flag, and its old blocks' cards in _oldCards, which its last
-            // sweep wrote.
-            bool unwalked = _pagesUnwalked && HeapChunks.PageClass(chunk) != 0;
-            bool young = unwalked ? HeapChunks.IsYoung(chunk) : HeapChunks.StartsCycle(chunk) == _cycle;
-            if (CheckOldCards && minor && unwalked && young) CheckOldCardsOf(chunk);
-            long card = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
-            long last = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+            long chunk = HeapChunks.SnapshotChunk(_cardsWhich);
+            if (chunk == 0) return true;
+            if (_cardsCard < 0)
+            {
+                // A page this cycle did not walk (_pagesUnwalked): young by its
+                // flag, and its old blocks' cards in _oldCards, which its last
+                // sweep wrote.
+                _cardsUnwalked = _pagesUnwalked && HeapChunks.PageClass(chunk) != 0;
+                _cardsYoung = _cardsUnwalked ? HeapChunks.IsYoung(chunk) : HeapChunks.StartsCycle(chunk) == _cycle;
+                if (CheckOldCards && minor && _cardsUnwalked && _cardsYoung) CheckOldCardsOf(chunk);
+                _cardsCard = (HeapChunks.First(chunk) & WordSize.AddressMask) >> Runtime.CardShift;
+                _cardsLast = ((HeapChunks.End(chunk) - 1) & WordSize.AddressMask) >> Runtime.CardShift;
+            }
+            bool young = _cardsYoung, unwalked = _cardsUnwalked;
+            long card = _cardsCard;
+            long last = _cardsLast;
             while (card <= last)
             {
+                if (budget >= 0 && work >= budget)
+                {
+                    _cardsCard = card;
+                    return false;
+                }
+                work = work + 1;
                 bool set = Sys.PeekByte(cards + card) != 0;
                 if (set)
                 {
@@ -2018,8 +2045,8 @@ static class Gc
                 }
                 card = card + 1;
             }
-            which = which + 1;
-            chunk = HeapChunks.SnapshotChunk(which);
+            _cardsWhich = _cardsWhich + 1;
+            _cardsCard = -1;
         }
     }
 
@@ -6177,6 +6204,46 @@ static class Gc
         }
     }
 
+    // THE COLLECTOR'S OWN PAGES IN STEPS (CollectConcurrently's stop): its
+    // own cache, then its shelf's, a page at a time, from where the last
+    // step left. Nothing of the program runs on the collector meanwhile, so
+    // its caches stand still.
+    static long _selfShelf, _selfClass;
+
+    static void BeginSelfStamp()
+    {
+        _selfShelf = -1;
+        _selfClass = 0;
+    }
+
+    /// StampPages(tb), on from where it was, until `budget` pages are done
+    /// (-1: all): true when all are.
+    static bool StampPagesSome(long tb, long budget)
+    {
+        long work = 0;
+        long shelf = Sys.Peek(tb + Tls.Shelf);
+        while (true)
+        {
+            long cache;
+            if (_selfShelf < 0)
+            {
+                cache = Sys.Peek(tb + Tls.Classes);
+                if (cache == 0) cache = Sys.Peek(tb + Tls.ClassesSaved);
+            }
+            else if (shelf == 0 || _selfShelf >= ShelfUsed) return true;
+            else cache = Sys.Peek(shelf + _selfShelf * WordSize.Bytes);
+            while (cache != 0 && _selfClass < Classes)
+            {
+                if (budget >= 0 && work >= budget) return false;
+                StampPage(Sys.Peek(cache + _selfClass * (2 * WordSize.Bytes)));
+                _selfClass = _selfClass + 1;
+                work = work + 1;
+            }
+            _selfShelf = _selfShelf + 1;
+            _selfClass = 0;
+        }
+    }
+
     /// WHETHER THREAD `tb` HAS ANSWERED THIS CYCLE'S STAMP: the round is
     /// the open one and its epoch is the round's. What it made before it
     /// answered, its answer wrote in; what it has made since is new, and
@@ -7081,6 +7148,10 @@ static class Gc
         if (_stamping && !StampedAlready(block))
         {
             StampBuffer(block);
+            // And written down whole while a stop is open: the walk steps
+            // over it as captured, and a chunk it has not reached yet has no
+            // start table for StampBuffer to write in (FlushStopBlocks).
+            if (_stopOpen && started != 0 && at > started) NoteStopBlock(started, at);
         }
 
         // What Free left in place goes to the bins now that the buffer is
@@ -7216,7 +7287,10 @@ static class Gc
     /// The heap lock is held, and let go of and taken again while waiting.
     static void AnswerBeforeTaking(long tb)
     {
-        while (tb != 0 && Sys.Peek(tb + Tls.InAlloc) == 0 && _stamping && !StampedAlready(tb))
+        // NOT WHILE A STOP IS OPEN: nothing taken then but single blocks,
+        // written down and marked at its end (_stopOpen), and the round this
+        // waits for is not asked until the stop is done.
+        while (tb != 0 && Sys.Peek(tb + Tls.InAlloc) == 0 && _stamping && !_stopOpen && !StampedAlready(tb))
         {
             GcLock.Exit();
             GcThreads.Park();
@@ -7373,7 +7447,7 @@ static class Gc
         bool tight = HeapChunks.SoftCap != 0 && HeapChunks.HeapBytes + BufferBytes > HeapChunks.SoftCap
             || HeapCeiling != 0 && HeapChunks.HeapBytes + BufferBytes > HeapCeiling;
         if (need + Smallest <= BufferBytes
-            && (room || Recycle(tb, need) || (!(tight && HasReusableFree(need)) && Refill(tb, need))))
+            && (room || !_stopOpen && (Recycle(tb, need) || (!(tight && HasReusableFree(need)) && Refill(tb, need)))))
         {
             long from = Sys.Peek(tb + Tls.AllocPtr);
 
@@ -7519,6 +7593,7 @@ static class Gc
         Count(Sys.ThreadBlock(), SizeOfBlock(block));
         Sys.Poke(block + KindAt, kind);
         StampHandedOut(tb, block, Zero);
+        if (_stopOpen) NoteStopBlock(block, 0);
         GcLock.Exit();
         return block + HeaderBytes;
     }
@@ -7558,7 +7633,7 @@ static class Gc
             {
                 long slot = cache + c * (2 * WordSize.Bytes);
                 long at = PopClass(slot, c, kind);
-                if (at == 0 && ClassRefill(tb, c))
+                if (at == 0 && !_stopOpen && ClassRefill(tb, c))
                 {
                     at = PopClass(slot, c, kind);
                 }
@@ -7583,6 +7658,7 @@ static class Gc
                     Count(tb, SizeOfBlock(block));
                     Sys.Poke(block + KindAt, kind);
                     if (_heapCheck) CheckMade(block, "a bigger class's slot", Zero);
+                    if (_stopOpen) NoteStopBlock(block, 0);
                     ShutLastTry();
                     GcLock.Exit();
                     return block + HeaderBytes;
@@ -7606,6 +7682,7 @@ static class Gc
                 Sys.Poke(block + KindAt, kind);
                 if (_heapCheck) CheckMade(block, "class fallback", FooterBytes);
                 StampHandedOut(tb, block, Zero);
+                if (_stopOpen) NoteStopBlock(block, 0);
                 ShutLastTry();
                 GcLock.Exit();
                 return block + HeaderBytes;
@@ -13157,6 +13234,134 @@ static class Gc
     public static long MarkMicros;
     public static long SweepMicros;
 
+    // ---- the stop, in steps --------------------------------------------------
+    //
+    // THE STOP NEVER HOLDS THE HEAP LOCK FOR LONG. Its walk of the heap
+    // (BuildBlockAnchors), its taking of the cards and its stamping of the
+    // collector's own pages are each O(heap); held whole under the lock -- on
+    // a kernel, with nothing preemptible -- they were 110-280 ms in which a
+    // K6-III's audio mixer did not run. So the collector does them in steps
+    // of StopBudget blocks, letting the lock go and asking the platform
+    // (YieldHook) between two.
+    //
+    // WHAT THE STEPS MUST NOT LET IN: space a slow path takes in a chunk the
+    // walk has passed holds objects with no start bit, newcomers, kept and
+    // never traced -- and its thread has not answered STAMP, so a snapshot
+    // string it stores in a new array (no barrier fills one) and drops from
+    // its stack was swept from under the array. So WHILE A STOP IS OPEN
+    // (_stopOpen) a slow path refills no buffer and no page: each request is
+    // answered by one block, and that block is written down (NoteStopBlock).
+    // At the stop's end every one is given its start bit where its chunk is
+    // the snapshot's and is marked and queued (FlushStopBlocks): kept, and
+    // what it holds traced -- what it held before its thread answered, by
+    // the scan after the round; what it was given after, from that thread's
+    // stack copy or through the barrier. A buffer retired meanwhile (a thread
+    // ending) is written down whole, for its objects the walk steps over.
+    // Fast paths go on in the buffers and pages captured before the stop,
+    // as they always did beside it. Nobody but the collector does the
+    // stop's work, and nobody waits on it: a thread with its preemption
+    // count raised allocates as any other.
+
+    /// Blocks a step of the stop does before the lock is let go: about a
+    /// millisecond of the walk on a K6-III.
+    public static long StopBudget = 8192;
+
+    static bool _stopOpen;
+    // What was handed out or retired while it was: pairs of words, a block
+    // and 0, or a retired buffer's [from, upto). Mapped, never the heap's.
+    static long _stopList, _stopCount, _stopCap;
+    static bool _stopListLost;
+
+    /// Blocks answered one by one in a stop's steps; the stop's steps; the
+    /// longest a step held the heap lock, in microseconds (PauseClock).
+    public static long StopBlocks, StopSteps, LongestStopStep;
+    static long _stepFrom;
+
+    static void NoteStopBlock(long from, long upto)
+    {
+        if (_stopCount == _stopCap)
+        {
+            long cap = _stopCap == 0 ? 1024 : _stopCap * 2;
+            long list = Platform.Map(cap * 2 * WordSize.Bytes);
+            if (list == 0)
+            {
+                // No room to write it down: the snapshot is not whole, and
+                // the cycle is given up at the stop's end.
+                _stopListLost = true;
+                return;
+            }
+            if (_stopList != 0)
+            {
+                Sys.MemoryCopy(list, _stopList, _stopCount * 2 * WordSize.Bytes);
+                Platform.Unmap(_stopList, _stopCap * 2 * WordSize.Bytes);
+            }
+            _stopList = list;
+            _stopCap = cap;
+        }
+        Sys.Poke(_stopList + _stopCount * 2 * WordSize.Bytes, from);
+        Sys.Poke(_stopList + (_stopCount * 2 + 1) * WordSize.Bytes, upto);
+        _stopCount = _stopCount + 1;
+        if (upto == 0) StopBlocks = StopBlocks + 1;
+    }
+
+    /// The heap lock let go between two of the stop's steps, the platform
+    /// asked, and the lock taken again.
+    static void StopStep()
+    {
+        StopSteps = StopSteps + 1;
+        StopStepTimed();
+        GcLock.Exit();
+        if (YieldHook != 0) Sys.Call(YieldHook, 0, 0, 0);
+        GcLock.Enter();
+        long clock = PauseClock;
+        _stepFrom = clock != 0 ? Sys.Call(clock, 0, 0, 0) : 0;
+    }
+
+    static void StopStepTimed()
+    {
+        long clock = PauseClock;
+        if (clock == 0 || _stepFrom == 0) return;
+        long took = (Sys.Call(clock, 0, 0, 0) - _stepFrom) & 0xFFFFFFFF;
+        if (took > LongestStopStep) LongestStopStep = took;
+    }
+
+    /// Every block written down while the stop was open: its start bit where
+    /// its chunk is the snapshot's, and marked -- queued, unless a leaf.
+    /// The heap lock is held; the walk is done.
+    static void FlushStopBlocks()
+    {
+        for (long i = 0; i < _stopCount; i++)
+        {
+            long from = Sys.Peek(_stopList + i * 2 * WordSize.Bytes);
+            long upto = Sys.Peek(_stopList + (i * 2 + 1) * WordSize.Bytes);
+            if (upto == 0)
+            {
+                MarkHandedOut(from);
+                continue;
+            }
+            while (from < upto)
+            {
+                long word = Sys.Peek(from);
+                long size = word & SizeMask;
+                if (size < Smallest || from + size > upto) break;
+                if ((word & FlagFree) == 0) MarkHandedOut(from);
+                from = from + size;
+            }
+        }
+        _stopCount = 0;
+    }
+
+    static void MarkHandedOut(long block)
+    {
+        long chunk = HeapChunks.OfSnapshot(block);
+        if (chunk != 0 && HeapChunks.StartsCycle(chunk) == _cycle) HeapChunks.SetStartShared(chunk, block);
+        long tail = TailOf(block);
+        bool leaf = Sys.Peek(block + KindAt) == KindLeaf;
+        if (!MarkFlagsW((nuint)block, leaf ? (nuint)(FlagMark | FlagScan) : (nuint)FlagMark, (nuint)tail)) return;
+        if (leaf) return;
+        PushGreyW(tail == 0 ? (nuint)(block | PagedBit) : (nuint)block);
+    }
+
     /// Several threads: the collection runs beside them. Entered and left
     /// with the heap lock held.
     static void CollectConcurrently()
@@ -13207,10 +13412,29 @@ static class Gc
         }
         RetireClasses(self);
         GcThreads.CaptureBuffers();
-        BuildBlockAnchors(true);
 
-        if (!_snapshots)
+        // THE STOP, IN STEPS (above): the walk, the cards, the collector's
+        // own pages, each a StopBudget at a time with the lock let go
+        // between, and nothing but single blocks handed out meanwhile.
+        _stopOpen = true;
+        _stopListLost = false;
+        long stepClock = PauseClock;
+        _stepFrom = stepClock != 0 ? Sys.Call(stepClock, 0, 0, 0) : 0;
+        BeginAnchors(true);
+        while (!WalkAnchors(StopBudget)) StopStep();
+        EndAnchors();
+        if (_generational)
         {
+            BeginCards();
+            while (!TakeCardsSome(_minor, StopBudget)) StopStep();
+            TakeStaticCards(_minor);
+        }
+
+        if (!_snapshots || _stopListLost)
+        {
+            _stopOpen = false;
+            _stopCount = 0;
+            StopStepTimed();
             GcLock.Exit();
             GiveUp(false);
             return;
@@ -13221,7 +13445,13 @@ static class Gc
         // (ScanAll, step 3) -- only the rounds, the barrier and the marking --
         // so no region of it ends and nothing moves off its stack in between,
         // and what they hold then is what they held at the snapshot.
-        StampBuffer(self);
+        BeginSelfStamp();
+        long pages = StopBudget / 2048 > 0 ? StopBudget / 2048 : 1;
+        while (!StampPagesSome(self, pages)) StopStep();
+        StampOwnBuffer(self);
+        FlushStopBlocks();
+        _stopOpen = false;
+        StopStepTimed();
 
         _concurrent = true;
         ConcurrentCycles = ConcurrentCycles + 1;
@@ -13780,6 +14010,13 @@ static class Gc
     public static void StampBuffer(long block)
     {
         StampPages(block);
+        StampOwnBuffer(block);
+    }
+
+    /// The objects in a thread's buffer written into the snapshot: StampBuffer
+    /// without the pages.
+    static void StampOwnBuffer(long block)
+    {
         long at = Sys.Peek(block + Tls.AllocBase);
         long upto = Sys.Peek(block + Tls.AllocPtr);
 
@@ -14162,13 +14399,37 @@ static class Gc
     // blocks, and rebuilt next time.
     static void BuildBlockAnchors(bool stepping)
     {
+        BeginAnchors(stepping);
+        WalkAnchors(-1);
+        EndAnchors();
+        // THE CARDS, taken at the same stop: kept to be read by a minor cycle,
+        // simply cleared by a major one, which marks everything anyway.
+        if (_generational)
+        {
+            BeginCards();
+            TakeCardsSome(_minor, -1);
+            TakeStaticCards(_minor);
+        }
+    }
+
+    // THE WALK IN STEPS (CollectConcurrently's stop): where it is, so that it
+    // goes on after the heap lock was let go between two of them. A chunk is
+    // begun -- its anchors prepared, its starts cleared -- and its blocks
+    // walked, as many as a step's budget, and resumed at the block it left.
+    static long _walkChunk;         // the chunk in hand or next to begin; 0 at the end
+    static long _walkBlock;         // the next block of a mixed chunk in hand; 0 for none
+    static long _walkEnd, _walkPage, _walkStep, _walkAnchors;
+    static bool _walkEvery, _walkTogether, _walkStepping;
+
+    static void BeginAnchors(bool stepping)
+    {
         HeapChunks.SetBlockAnchorsActive(false);
-        bool every = HeapChunks.SnapshotIndex();
+        _walkEvery = HeapChunks.SnapshotIndex();
         // THE SIZE-CLASS PAGES SNAPSHOTTED TOGETHER, with the world stopped
         // and the workers there: each page's anchors, starts and stamps are
         // its own, and its cards are bytes set to the same value whoever
         // sets them. Listed in the walk below, done after it (SnapshotTogether).
-        bool together = !stepping && Workers > 0 && !_census && !_heapCheck && !_verify && !_deadCensus
+        _walkTogether = !stepping && Workers > 0 && !_census && !_heapCheck && !_verify && !_deadCensus
                      && HeapChunks.HeapBytes >= WorkersWorthBytes && SnapshotQueue();
         // A MINOR CYCLE WITH THE WORLD STOPPED WALKS NO PAGE. A page's walk
         // wrote each block's start bit, flagged the cards its old blocks lie
@@ -14185,103 +14446,155 @@ static class Gc
                       && !_verify && !_verifyGenerations && !VerifyHeap && !VerifyMarks && !WalkPages && _referencesEnd == 0
                       && HeapChunks.Whole;
         _snapCount = 0;
-        long chunk = HeapChunks.Newest();
-        while (chunk != 0)
+        _walkStepping = stepping;
+        _walkChunk = HeapChunks.Newest();
+        _walkBlock = 0;
+    }
+
+    /// The walk, on from where it was, until `budget` blocks are done (-1:
+    /// all): true when every chunk is.
+    static bool WalkAnchors(long budget)
+    {
+        long work = 0;
+        bool stepping = _walkStepping;
+        while (true)
         {
+            if (_walkBlock != 0)
+            {
+                if (!WalkMixed(budget, ref work)) return false;
+                _walkChunk = HeapChunks.Next(_walkChunk);
+                continue;
+            }
+            long chunk = _walkChunk;
+            if (chunk == 0) return true;
+            if (budget >= 0 && work >= budget) return false;
             // A MINOR CYCLE LOOKS ONLY AT YOUNG CHUNKS: an old chunk keeps
             // the start table of its last cycle, which SnapshotBlock does not
             // trust for this one, so a pointer into it is not followed -- its
             // blocks are all old, and old is kept.
             if (_minor && !HeapChunks.IsYoung(chunk))
             {
-                chunk = HeapChunks.Next(chunk);
+                _walkChunk = HeapChunks.Next(chunk);
                 continue;
             }
             if (_pagesUnwalked && HeapChunks.PageClass(chunk) != 0)
             {
                 PagesUnwalked = PagesUnwalked + 1;
-                chunk = HeapChunks.Next(chunk);
+                _walkChunk = HeapChunks.Next(chunk);
                 continue;
             }
             long anchors = HeapChunks.PrepareBlockAnchors(chunk);
-            if (anchors == 0) every = false;
-            if (anchors != 0)
+            if (anchors == 0)
             {
-                long pages = HeapChunks.BlockAnchorCount(chunk);
-                for (long i = 0; i < pages; i++) Sys.Poke(anchors + i * WordSize.Bytes, Zero);
-                HeapChunks.ClearStarts(chunk, _cycle);
-                // A SIZE-CLASS PAGE by arithmetic, not by chain (SnapshotPage).
-                if (HeapChunks.PageClass(chunk) != 0)
+                _walkEvery = false;
+                _walkChunk = HeapChunks.Next(chunk);
+                continue;
+            }
+            long pages = HeapChunks.BlockAnchorCount(chunk);
+            for (long i = 0; i < pages; i++) Sys.Poke(anchors + i * WordSize.Bytes, Zero);
+            HeapChunks.ClearStarts(chunk, _cycle);
+            work = work + pages;
+            // A SIZE-CLASS PAGE by arithmetic, not by chain (SnapshotPage).
+            if (HeapChunks.PageClass(chunk) != 0)
+            {
+                long first = HeapChunks.First(chunk);
+                long at = stepping ? GcThreads.BufferAtOrAbove(first) : GcThreads.BufferCount();
+                bool captured = at < GcThreads.BufferCount() && GcThreads.BufferBase(at) == first;
+                if (!captured && !HeapChunks.IsPooled(chunk))
                 {
-                    long first = HeapChunks.First(chunk);
-                    long at = stepping ? GcThreads.BufferAtOrAbove(first) : GcThreads.BufferCount();
-                    bool captured = at < GcThreads.BufferCount() && GcThreads.BufferBase(at) == first;
-                    if (!captured && !HeapChunks.IsPooled(chunk))
+                    if (_walkTogether && _snapCount < _snapCap)
                     {
-                        if (together && _snapCount < _snapCap)
-                        {
-                            Sys.Poke(_snapQueue + _snapCount * 2 * WordSize.Bytes, chunk);
-                            Sys.Poke(_snapQueue + (_snapCount * 2 + 1) * WordSize.Bytes, anchors);
-                            _snapCount = _snapCount + 1;
-                        }
-                        else if (!SnapshotPage(chunk, anchors))
-                        {
-                            every = false;
-                        }
+                        Sys.Poke(_snapQueue + _snapCount * 2 * WordSize.Bytes, chunk);
+                        Sys.Poke(_snapQueue + (_snapCount * 2 + 1) * WordSize.Bytes, anchors);
+                        _snapCount = _snapCount + 1;
                     }
-                    chunk = HeapChunks.Next(chunk);
+                    else
+                    {
+                        if (!SnapshotPage(chunk, anchors)) _walkEvery = false;
+                        work = work + (HeapChunks.End(chunk) - first) / ClassSize(HeapChunks.PageClass(chunk) - 1);
+                    }
+                }
+                _walkChunk = HeapChunks.Next(chunk);
+                continue;
+            }
+            _walkBlock = HeapChunks.First(chunk);
+            _walkEnd = HeapChunks.End(chunk);
+            _walkPage = 0;
+            _walkStep = stepping ? GcThreads.BufferAtOrAbove(_walkBlock) : GcThreads.BufferCount();
+            _walkAnchors = anchors;
+        }
+    }
+
+    /// A mixed chunk's blocks from _walkBlock: false when the budget ran out
+    /// first, with where it was kept; true when the chunk is done.
+    static bool WalkMixed(long budget, ref long work)
+    {
+        long chunk = _walkChunk;
+        long block = _walkBlock;
+        long end = _walkEnd;
+        long page = _walkPage;
+        long step = _walkStep;
+        long anchors = _walkAnchors;
+        bool stepping = _walkStepping;
+        while (block < end)
+        {
+            if (budget >= 0 && work >= budget)
+            {
+                _walkBlock = block;
+                _walkPage = page;
+                _walkStep = step;
+                return false;
+            }
+            work = work + 1;
+            if (stepping)
+            {
+                while (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) < block) step = step + 1;
+                if (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) == block)
+                {
+                    block = GcThreads.BufferLimit(step);
+                    step = step + 1;
                     continue;
                 }
-                long block = HeapChunks.First(chunk);
-                long end = HeapChunks.End(chunk);
-                long page = 0;
-                long step = stepping ? GcThreads.BufferAtOrAbove(block) : GcThreads.BufferCount();
-                while (block < end)
-                {
-                    if (stepping)
-                    {
-                        while (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) < block) step = step + 1;
-                        if (step < GcThreads.BufferCount() && GcThreads.BufferBase(step) == block)
-                        {
-                            block = GcThreads.BufferLimit(step);
-                            step = step + 1;
-                            continue;
-                        }
-                    }
-                    long header = Sys.Peek(block);
-                    long size = header & SizeMask;
-                    // A CHAIN THAT BREAKS leaves the rest of the chunk without
-                    // starts, and an object without a start is a newcomer: kept
-                    // and never traced. No snapshot, then, and the collection
-                    // is given up rather than run on half of one.
-                    if (size < Smallest || block + size > end
-                        || Sys.Peek(block + size - FooterBytes) != header) { every = false; break; }
-                    long last = (block + size - 1 - chunk) / 4096;
-                    while (page <= last)
-                    {
-                        Sys.Poke(anchors + page * WordSize.Bytes, block);
-                        page = page + 1;
-                    }
-                    // WHERE EVERY OBJECT STARTS, as of this stop: what the
-                    // marker finds objects by from here on (SnapshotBlock).
-                    if ((header & FlagFree) == 0) HeapChunks.SetStart(chunk, block);
-                    // WHICH KILOBYTES HOLD AN OLD OBJECT, for TakeCards: a card
-                    // over nothing but young blocks is not read (OldCards).
-                    if (_minor && (header & (FlagFree | FlagMark | FlagScan)) == (FlagMark | FlagScan)) OldCards(block, size);
-                    // A MAJOR CYCLE MAKES EVERY BLOCK YOUNG AGAIN, taking off
-                    // the marks the old kept, and finds the live ones afresh.
-                    if (_generational && !_minor && (header & (FlagMark | FlagScan)) != 0)
-                    {
-                        Stamp(block, size, header & FlagMask & ~(FlagMark | FlagScan));
-                    }
-                    block = block + size;
-                }
             }
-            chunk = HeapChunks.Next(chunk);
+            long header = Sys.Peek(block);
+            long size = header & SizeMask;
+            // A CHAIN THAT BREAKS leaves the rest of the chunk without
+            // starts, and an object without a start is a newcomer: kept
+            // and never traced. No snapshot, then, and the collection
+            // is given up rather than run on half of one.
+            if (size < Smallest || block + size > end
+                || Sys.Peek(block + size - FooterBytes) != header) { _walkEvery = false; break; }
+            long last = (block + size - 1 - chunk) / 4096;
+            while (page <= last)
+            {
+                Sys.Poke(anchors + page * WordSize.Bytes, block);
+                page = page + 1;
+            }
+            // WHERE EVERY OBJECT STARTS, as of this stop: what the
+            // marker finds objects by from here on (SnapshotBlock).
+            if ((header & FlagFree) == 0) HeapChunks.SetStart(chunk, block);
+            // WHICH KILOBYTES HOLD AN OLD OBJECT, for TakeCards: a card
+            // over nothing but young blocks is not read (OldCards).
+            if (_minor && (header & (FlagFree | FlagMark | FlagScan)) == (FlagMark | FlagScan)) OldCards(block, size);
+            // A MAJOR CYCLE MAKES EVERY BLOCK YOUNG AGAIN, taking off
+            // the marks the old kept, and finds the live ones afresh.
+            if (_generational && !_minor && (header & (FlagMark | FlagScan)) != 0)
+            {
+                Stamp(block, size, header & FlagMask & ~(FlagMark | FlagScan));
+            }
+            block = block + size;
         }
-        if (_snapCount > 0 && !SnapshotTogether()) every = false;
+        _walkBlock = 0;
+        return true;
+    }
+
+    /// The walk's end: the pages left for the workers, the anchors on, and
+    /// whether the snapshot is whole.
+    static void EndAnchors()
+    {
+        if (_snapCount > 0 && !SnapshotTogether()) _walkEvery = false;
         HeapChunks.SetBlockAnchorsActive(true);
-        _snapshots = every;
+        _snapshots = _walkEvery;
         // THE MARKER'S LOOKUP BY THE 4 KB TABLE (MarkWord), where the
         // snapshot is whole and no quarantined range's references are being
         // counted -- which wants every word that is not the heap's said.
@@ -14289,14 +14602,7 @@ static class Gc
         // (HeapChunks.Whole): a word outside it is then no heap's, and is
         // turned away before the table is read (InWindow).
         _markSlots = 0;
-        if (every && _referencesEnd == 0 && HeapChunks.Whole) _markSlots = (nuint)HeapChunks.SlotTable;
-        // THE CARDS, taken at the same stop: kept to be read by a minor cycle,
-        // simply cleared by a major one, which marks everything anyway.
-        if (_generational)
-        {
-            TakeCards(_minor);
-            TakeStaticCards(_minor);
-        }
+        if (_walkEvery && _referencesEnd == 0 && HeapChunks.Whole) _markSlots = (nuint)HeapChunks.SlotTable;
     }
 
     /// Whether this cycle's snapshot left the pages unwalked (BuildBlockAnchors).

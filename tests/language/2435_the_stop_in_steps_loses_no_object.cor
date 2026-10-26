@@ -1,0 +1,146 @@
+// test: the collector's stop taken in steps, the threads answered block by block between, loses no object
+// expect-exit: 0
+// expect-output:
+// count 406203
+// bad 0
+// stepped True
+// answered block by block True
+//
+// THE STOP IN STEPS (Gc.StopBudget): the snapshot's walk of the heap, the
+// cards and the collector's own pages, a few blocks at a time with the heap
+// lock let go between. While it is open a slow path refills no buffer and
+// no page: each request is one block, written down and, at the stop's end,
+// given its start bit and marked, so that what a thread made before it
+// answered STAMP -- an array of names filled with no barrier, the string
+// only the array holds -- is traced. 1011's workload, six threads under a
+// cap that keeps cycles coming, with a budget of 32 blocks and a platform
+// that lingers between steps (YieldHook), so the threads run out of their
+// buffers inside stops: tens of thousands of blocks answered one by one a
+// run, and every name read back is its own.
+
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System;
+
+class Holder
+{
+    public string? S;
+    public Holder? Next;
+}
+
+class Node
+{
+    public string[]? Names;
+    public int Value;
+    public Node? Next;
+}
+
+class Worker : Action
+{
+    public static Node?[] Sink = new Node?[1024];
+    public int Seed;
+    public long Bad;
+    public long Count;
+
+    public Worker(int seed) { Seed = seed; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Holder? Chain(int v, int len)
+    {
+        Holder? head = null;
+        for (int k = 0; k < len; k++)
+        {
+            Holder h = new Holder();
+            h.S = "n" + v;
+            h.Next = head;
+            head = h;
+        }
+        return head;
+    }
+
+    // The name is made first; the array that alone holds it once this
+    // returns is made after, with no barrier on its elements.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node Make(int v)
+    {
+        Holder? c = Chain(v, 8);
+        for (int k = 0; k < 4; k++)
+        {
+            Sink[(v * 4 + k) & 1023] = new Node();
+        }
+        Node n = new Node();
+        n.Value = v;
+        Holder p = c!;
+        while (p.Next != null) p = p.Next;
+        n.Names = new string[] { p.S!, p.S! };
+        return n;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Invoke()
+    {
+        Node? head = null;
+        int live = 0;
+        for (int i = 0; i < Program.Steps; i++)
+        {
+            Node n = Make(Seed * 1000000 + i);
+            n.Next = head;
+            head = n;
+            live++;
+            if (live > 2000)
+            {
+                Node? p = head;
+                while (p != null)
+                {
+                    if (p.Names![1] != "n" + p.Value) Bad++;
+                    Count++;
+                    p = p.Next;
+                }
+                head = null;
+                live = 0;
+            }
+        }
+    }
+}
+
+static class Program
+{
+    public static int Steps = 60000;
+    static long _spin;
+
+    // Between two of the stop's steps: a while spent, as a platform that
+    // gives the processor to others does.
+    static long Linger(long a, long b, long c)
+    {
+        if (a != 0) return 0;
+        for (int i = 0; i < 20000; i++) _spin = _spin + i;
+        return 0;
+    }
+
+    static int Main()
+    {
+        // A cap the threads' garbage reaches between collections: small
+        // allocations find no page and wait out the collection under way.
+        int workers = 6;
+        Gc.SetLimit(16777216);
+        // A stop of a few blocks a step: hundreds of steps a cycle, and the
+        // threads' slow paths answered block by block in between.
+        Gc.StopBudget = 32;
+        Gc.YieldHook = Sys.AddressOf(Program.Linger);
+        Worker[] w = new Worker[workers];
+        Thread[] t = new Thread[workers];
+        for (int i = 0; i < workers; i++) { w[i] = new Worker(i); t[i] = Thread.Start(w[i]); }
+        Worker solo = new Worker(9);
+        solo.Invoke();
+        for (int i = 0; i < workers; i++) t[i].Join();
+        long bad = solo.Bad;
+        long count = solo.Count;
+        for (int i = 0; i < workers; i++) { bad += w[i].Bad; count += w[i].Count; }
+        System.Console.WriteLine("count " + count);
+        System.Console.WriteLine("bad " + bad);
+        Gc.YieldHook = 0;
+        System.Console.WriteLine("stepped " + (Gc.StopSteps > 0));
+        System.Console.WriteLine("answered block by block " + (Gc.StopBlocks > 0));
+        return 0;
+    }
+}
