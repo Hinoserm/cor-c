@@ -1,0 +1,35 @@
+// test: deconstructing_assignment_as_an_expression
+// expect-exit: 0
+// expect-output:
+// 3 4
+// 4 3
+// 10 11
+// 6 5
+//
+// `(a, b) = pair` where an expression goes: a lambda's body, an
+// expression-bodied method, a for loop's step. As a statement only the
+// assignment is done; used as a value it is the places read back.
+
+using System;
+
+static class Program
+{
+    static int _x = 3, _y = 4;
+    static (uint, uint) Two(int x) => ((uint)x, (uint)x + 1);
+    static void Run(Action<int> f) => f(10);
+    static void Swap() => (_x, _y) = (_y, _x);
+
+    static int Main()
+    {
+        Console.WriteLine($"{_x} {_y}");
+        Swap();
+        Console.WriteLine($"{_x} {_y}");
+        uint a = 0, b = 0;
+        Run(l => (a, b) = Two(l));
+        Console.WriteLine($"{a} {b}");
+        int i = 0, j = 0;
+        for ((i, j) = (0, 11); i < j; (i, j) = (i + 1, j - 1)) { }
+        Console.WriteLine($"{i} {j}");
+        return 0;
+    }
+}

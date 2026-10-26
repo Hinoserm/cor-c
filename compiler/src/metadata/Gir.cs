@@ -1035,6 +1035,7 @@ public static class Gir
 
                 case SequenceExpr seq:
                     U8((byte)E.Sequence);
+                    U8((byte)((seq.Assignment ? 1 : 0) | (seq.ReadBackPure ? 2 : 0)));
                     Stmt(seq.Effect);
                     Expr(seq.Value);
                     break;
@@ -1994,9 +1995,10 @@ public static class Gir
 
                 case E.Sequence:
                 {
+                    byte kind = U8();
                     Stmt effect = NeedStmt();
 
-                    return new SequenceExpr { Effect = effect, Value = Need() };
+                    return new SequenceExpr { Effect = effect, Value = Need(), Assignment = (kind & 1) != 0, ReadBackPure = (kind & 2) != 0 };
                 }
 
                 default:

@@ -516,28 +516,12 @@ public sealed class UnitBackend : IUnitBackend
     }
 
     /// <summary>
-    /// WHAT A CLOSED IMAGE DOES NOT KEEP, taken out once the late passes have
-    /// read it: every record the link's reachability left out, as the decode
-    /// left it out before. What the passes made has no record and stays; so
-    /// does a definition of the unit's own that what stays now names -- a
-    /// body inlined from a copy the image keeps elsewhere names the unit's
-    /// locals, which nothing reached in the IR the link judged. An exported
-    /// one is the copy another unit keeps.
-    /// </summary>
-    /// <summary>
     /// What a unit's late passes need of it (Recompile): the entries the
     /// image keeps, those they reach through the archive's references within
     /// the unit, and the runtime's routines the passes call by name, whose
     /// calls they may add (RuntimeAbi). Null -- the whole unit -- where
     /// the link kept nothing of it to start from.
     /// </summary>
-    /// <summary>The routines the late passes call by name (RuntimeAbi's every name).</summary>
-    private static readonly string[] RuntimeHelpers = typeof(RuntimeAbi)
-        .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-        .Where(field => field.IsLiteral && field.FieldType == typeof(string))
-        .Select(field => (string)field.GetRawConstantValue()!)
-        .Where(name => name.StartsWith("m_", StringComparison.Ordinal) || name.StartsWith("__", StringComparison.Ordinal)).ToArray();
-
     private static HashSet<string>? ReachableInUnit(IrArchive archive, IReadOnlySet<string>? retained)
     {
         if (retained is null) return null;
@@ -548,7 +532,7 @@ public sealed class UnitBackend : IUnitBackend
             if (archive.Entries.ContainsKey(key) && wanted.Add(key)) pending.Push(key);
         }
         foreach (string key in retained) Want(key);
-        foreach (string helper in RuntimeHelpers) { Want("F:" + helper); Want("D:" + helper); }
+        foreach (string helper in RuntimeAbi.Helpers) { Want("F:" + helper); Want("D:" + helper); }
         while (pending.Count > 0)
             foreach (string named in archive.Entries[pending.Pop()].References)
             {
@@ -559,6 +543,15 @@ public sealed class UnitBackend : IUnitBackend
         return wanted;
     }
 
+    /// <summary>
+    /// WHAT A CLOSED IMAGE DOES NOT KEEP, taken out once the late passes have
+    /// read it: every record the link's reachability left out, as the decode
+    /// left it out before. What the passes made has no record and stays; so
+    /// does a definition of the unit's own that what stays now names -- a
+    /// body inlined from a copy the image keeps elsewhere names the unit's
+    /// locals, which nothing reached in the IR the link judged. An exported
+    /// one is the copy another unit keeps.
+    /// </summary>
     private static void PruneAfterLate(Module module, IrArchive archive, IReadOnlySet<string> retained)
     {
         bool Kept(string key) => !archive.Entries.ContainsKey(key) || retained.Contains(key);

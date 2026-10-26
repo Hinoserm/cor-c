@@ -1,0 +1,32 @@
+// test: conditional_constant
+// expect-exit: 0
+// expect-output:
+// 1 7 200 -1 1
+//
+// `c ? a : b` with all three constant is a constant (C# 12.23): a const may
+// be initialised with one, and a compile-time assert written
+// `1 / (A == B ? 1 : 0)` reads constants declared after it and in another
+// class. Arms of two whole types meet at the type both convert to.
+
+using System;
+
+namespace Other
+{
+    static class Packer { public const int SelfWord = 5; }
+}
+
+static class Program
+{
+    private const int Agrees = 1 / (Self == Other.Packer.SelfWord ? 1 : 0);
+    private const int Self = 5;
+    private const int Picked = Self > 3 ? 7 : 9;
+    private const long Wide = Self == 5 ? 200 : 300L;
+    private const int Negative = false ? 1 : -1;
+    private const bool Both = Self == 5 ? true : false;
+
+    static int Main()
+    {
+        Console.WriteLine($"{Agrees} {Picked} {Wide} {Negative} {(Both ? 1 : 0)}");
+        return 0;
+    }
+}

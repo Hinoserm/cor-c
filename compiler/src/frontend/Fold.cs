@@ -208,6 +208,34 @@ public static class Fold
                 return Apply(b.Op, x, left, y, right, out value, out type);
             }
 
+            // `c ? a : b` is a constant when all three are (C# 12.23): the
+            // compile-time asserts written `1 / (A == B ? 1 : 0)` are this.
+            // Its type is the arms' own where they agree, else the whole
+            // type both convert to; a float arm meeting another type is left
+            // to the binder.
+            case ConditionalExpr c:
+            {
+                if (!Eval(c.Cond, out long cond, out Prim condType, named) || condType != Prim.Bool
+                    || !Eval(c.Then, out long x, out Prim left, named) || !Eval(c.Else, out long y, out Prim right, named))
+                {
+                    return false;
+                }
+                if (left == right)
+                {
+                    type = left;
+                }
+                else if (IsWhole(left) && IsWhole(right) && Common(left, x, right, y) is Prim common)
+                {
+                    type = common;
+                }
+                else
+                {
+                    return false;
+                }
+                value = Wrap(cond != 0 ? x : y, type);
+                return true;
+            }
+
             default:
                 return false;
         }

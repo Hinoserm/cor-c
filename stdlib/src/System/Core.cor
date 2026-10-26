@@ -10127,6 +10127,14 @@ abstract class Encoding {
         Array.Copy(made, 0, bytes, byteIndex, made.Length);
         return made.Length;
     }
+    /// Into a span the caller owns (a string is a ReadOnlySpan<char>); answers how many bytes were written.
+    public virtual int GetBytes(ReadOnlySpan<char> chars, Span<byte> bytes) {
+        byte[] made = GetBytes(chars.ToString());
+        if (made.Length > bytes.Length) { throw TooSmall(); }
+        for (int i = 0; i < made.Length; i++) { bytes[i] = made[i]; }
+        return made.Length;
+    }
+    public virtual int GetByteCount(ReadOnlySpan<char> chars) { return GetByteCount(chars.ToString()); }
     public virtual int GetBytes(char[] chars, int charIndex, int charCount, byte[] bytes, int byteIndex) {
         if (bytes == null) { throw NoArray("bytes"); }
         CheckChars(chars, charIndex, charCount, "charIndex", "charCount");

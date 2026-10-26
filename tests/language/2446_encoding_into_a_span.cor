@@ -1,0 +1,24 @@
+// test: encoding_into_a_span
+// expect-exit: 0
+// expect-output:
+// 2 104 105 0
+// 3 3
+//
+// Encoding.GetBytes(ReadOnlySpan<char>, Span<byte>), a string given for
+// the chars as .NET allows, writes into the caller's bytes and answers how
+// many; GetByteCount of a span counts them.
+
+using System;
+using System.Text;
+
+static class Program
+{
+    static int Main()
+    {
+        byte[] buf = new byte[8];
+        int n = Encoding.ASCII.GetBytes("hi", buf.AsSpan(2));
+        Console.WriteLine($"{n} {buf[2]} {buf[3]} {buf[4]}");
+        Console.WriteLine($"{Encoding.UTF8.GetByteCount("éa".AsSpan())} {Encoding.ASCII.GetByteCount("abc".AsSpan())}");
+        return 0;
+    }
+}

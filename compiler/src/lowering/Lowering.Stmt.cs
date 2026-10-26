@@ -162,6 +162,12 @@ public sealed partial class Lowering
                 EmitLocalDecl(u.Declaration);
                 break;
 
+            // `(a, b) = pair` as an expression statement: the assignment, and
+            // not its places read back (SequenceExpr.Assignment).
+            case ExprStmt { Expr: SequenceExpr { Assignment: true } deconstructing }:
+                EmitStmt(deconstructing.Effect);
+                break;
+
             case ExprStmt e:
                 Eval(e.Expr);
                 break;

@@ -1310,6 +1310,12 @@ public sealed partial class Lowering
 
             // A STATEMENT, THEN A VALUE: a positional pattern taking its subject
             // apart before its elements are tested.
+            // A deconstructing assignment used as a value is its places read
+            // back, which only places that do nothing can be.
+            case SequenceExpr { Assignment: true, ReadBackPure: false } impure:
+                Error(impure, "a deconstructing assignment whose places do something (a call, an index that moves) cannot be used as a value; write it as a statement");
+                return _e.Const(0, IrType.I32);
+
             case SequenceExpr seq:
                 EmitStmt(seq.Effect);
                 return Eval(seq.Value);

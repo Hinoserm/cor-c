@@ -114,4 +114,21 @@ public static class RuntimeAbi
     public const string ReleaseRegion = "m_Gc_ReleaseRegion_1_" + Address;
     /// <summary>Made in the region of another object, or on the heap beside one there is none of (RegionPointsTo.Near).</summary>
     public const string AllocNear = "m_Runtime_AllocNear_4_" + Word + "_" + Word + "_" + Word + "_" + Word;
+
+    /// <summary>
+    /// Every label above: the routines the late passes call by name, and so
+    /// may add calls to (UnitBackend.ReachableInUnit keeps them). Written out,
+    /// not gathered by reflection, which the compiler does not have for its
+    /// own build; a label added above goes here too.
+    /// </summary>
+    public static readonly string[] Helpers =
+    {
+        Alloc, AllocLeaf, AllocObject, AllocFastSized, AllocFast, AllocMissed, Poll, AllocManual, AllocManualObject,
+        FreeManual, ManualObject, Free, FreeReplaced, FreeOwnedReplaced, FreeField, KeepField,
+        WriteBarrier, WriteBarrierValues, WriteBarrierStore, WriteBarrierExchange, WriteBarrierCompareExchange,
+        CardMark, CardMarkObject, ShadeObject, GrowInPlace,
+        RefStore, CardStore, RefExchange, RefCompareExchange, SequencesStart, SequencesEnd,
+        RegionEnter, RegionLeave, RegionLoop, RegionCatch, AllocRegion, AllocRegionSized,
+        SetThreadBlock, ReleaseRegion, AllocNear,
+    };
 }

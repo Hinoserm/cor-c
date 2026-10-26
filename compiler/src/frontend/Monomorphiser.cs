@@ -4189,6 +4189,7 @@ public sealed class Monomorphiser
                 return new SequenceExpr
                 {
                     Effect = Rewrite(seq.Effect, map), Value = Rewrite(seq.Value, map),
+                    Assignment = seq.Assignment, ReadBackPure = seq.ReadBackPure,
                     Line = seq.Line, Col = seq.Col,
                 };
 

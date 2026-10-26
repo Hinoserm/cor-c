@@ -10247,7 +10247,9 @@ public sealed partial class Binder
         Block block = new() { Line = value.Line, Col = value.Col };
 
         block.WritableStatements.Add(returns.IsVoid
-            ? new ExprStmt { Expr = value, Line = value.Line, Col = value.Col }
+            ? value is SequenceExpr { Assignment: true } deconstructing
+                ? deconstructing.Effect
+                : new ExprStmt { Expr = value, Line = value.Line, Col = value.Col }
             : new ReturnStmt { Value = value, Line = value.Line, Col = value.Col });
 
         return block;
@@ -13823,7 +13825,7 @@ public sealed partial class Binder
     /// </summary>
     private static bool StatementExpression(Expr e) => e switch
     {
-        CallExpr or AssignExpr or NewExpr or AwaitExpr or ThrowExpr => true,
+        CallExpr or AssignExpr or NewExpr or AwaitExpr or ThrowExpr or SequenceExpr { Assignment: true } => true,
         UnaryExpr { Op: UnOp.PreInc or UnOp.PreDec or UnOp.PostInc or UnOp.PostDec } => true,
         SuppressExpr { Operand: var inner } => StatementExpression(inner),
         _ => false,

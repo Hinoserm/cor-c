@@ -8694,6 +8694,7 @@ public sealed class Parser
     /// </summary>
     private Stmt Statement(Expr e, Token at)
     {
+        if (e is SequenceExpr { Assignment: true } deconstructing) return deconstructing.Effect;
         if (e is not AssignExpr assign || Unlinked(assign.Target, out string held) is not (Expr receiver, Expr rest))
             return new ExprStmt { Expr = e, Line = at.Line, Col = at.Col };
         Block block = new() { Line = at.Line, Col = at.Col };
@@ -8771,6 +8772,26 @@ public sealed class Parser
     {
         Expr left = ParseConditional();
         Token at = Cur;
+
+        // `(a, b) = pair` WHERE AN EXPRESSION GOES: `l => (x, y) = Next(l)`,
+        // `void Swap() => (a, b) = (b, a);`. At the head of a statement the
+        // statement parser takes it (DeconstructStmt); here the places come
+        // back as the tuple, and the value is them read again afterwards,
+        // as C# answers such an assignment.
+        if (left is TupleExpr { Items.Count: > 1 } places && At(Tok.Assign))
+        {
+            _i++;
+            DeconstructStmt into = new() { Value = ParseAssign(), Line = left.Line, Col = left.Col };
+            foreach (Expr place in places.Items)
+            {
+                into.Names.Add(new Binding { Name = $"$assign${_hidden++}", Target = place, Line = place.Line, Col = place.Col });
+            }
+            return new SequenceExpr
+            {
+                Effect = into, Value = places, Assignment = true, ReadBackPure = places.Items.All(Rereadable),
+                Line = left.Line, Col = left.Col,
+            };
+        }
 
         // `x ??= v` IS `x = x ?? v`, and it is written out as that rather than
         // carried to the binder as a compound operation. Coalesce is not an
@@ -9693,7 +9714,7 @@ public sealed class Parser
     /// <summary>What C# lets stand as a statement (CS0201), as written.</summary>
     internal static bool StatementExpressionSyntax(Expr e) => e switch
     {
-        CallExpr or AssignExpr or NewExpr or AwaitExpr or ThrowExpr => true,
+        CallExpr or AssignExpr or NewExpr or AwaitExpr or ThrowExpr or SequenceExpr { Assignment: true } => true,
         UnaryExpr { Op: UnOp.PreInc or UnOp.PreDec or UnOp.PostInc or UnOp.PostDec } => true,
         SuppressExpr { Operand: var inner } => StatementExpressionSyntax(inner),
         _ => false,
