@@ -411,10 +411,13 @@ public sealed partial class Lowering
             // this_cpu_read and this_cpu_write: one instruction, so no
             // preemption falls between finding the processor and reading it.
             // Only where GS is a processor's (a kernel's ring 0).
+            // A WORD, the target's: in long mode eight bytes, a pointer of the
+            // higher half among them; typed as 32 bits, its high half was
+            // cut on the way in and on the way out.
             case "PerCpuRead":
-                return Widen(_e.Call(MachineIntrinsics.PerCpuRead, IrType.I32, R(ToI32(Arg(call, target, 0))))!);
+                return Widen(_e.Call(MachineIntrinsics.PerCpuRead, IrTypes.Word, R(ToWord(Arg(call, target, 0))))!);
             case "PerCpuWrite":
-                _e.Call(MachineIntrinsics.PerCpuWrite, IrType.Void, R(ToI32(Arg(call, target, 0))), R(ToI32(Arg(call, target, 1))));
+                _e.Call(MachineIntrinsics.PerCpuWrite, IrType.Void, R(ToWord(Arg(call, target, 0))), R(ToWord(Arg(call, target, 1))));
                 return Void();
             case "SetGs":
                 // The selector of the descriptor whose base is the block. Only

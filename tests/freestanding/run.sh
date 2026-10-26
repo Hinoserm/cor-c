@@ -55,7 +55,8 @@
 #                                (SYM) a rel32 that reaches SYM (a call's or
 #                                a jump's, counted from the end of the four)
 #
-# Environment: CORC (the compiler), TARGETS (default "x86 x86-64").
+# The compiler and targets: --corc=PATH and --targets="x86 x86-64" (the
+# default), or CORC and TARGETS in the environment where no flag is given.
 
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
