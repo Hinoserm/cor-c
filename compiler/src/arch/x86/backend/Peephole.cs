@@ -58,6 +58,109 @@ internal static class Peephole
             InvertJumpAroundJump(block.Instrs, next);
         }
         Unreachable(m);
+        // LAST: it leaves flags live into a block, which every rule above
+        // takes as never so (ZeroWithXor, ChooseForCpu's xor).
+        CompareAgainAfterJump(m);
+    }
+
+    // ---- a compare made again on the way a jump fell through --------------------------
+
+    /// <summary>
+    /// `cmp a, b ; jcc X ; cmp a, b` -- the second compare where the jump fell
+    /// through (or with no jump between), nothing between writing the flags,
+    /// a or b, or memory: the flags are already what it would set, and it
+    /// goes. 11,047 of them over
+    /// a kernel, its modules and its userland, most a loop's test followed by
+    /// an index's bounds check (`cmp i, [a+8] ; jge out ; cmp i, [a+8] ; jae
+    /// throw`). A memory operand read once instead of twice is a read no
+    /// other thread's write came between, which any interleaving allows: the
+    /// path is straight, and no loop is made of it. Followed from a jump's
+    /// block into the next only when nothing else enters that one -- no jump,
+    /// table, taken label or landing pad.
+    /// </summary>
+    private static void CompareAgainAfterJump(MFunction m)
+    {
+        int n = m.Blocks.Count;
+        Dictionary<MBlock, int> entries = new(ReferenceEqualityComparer.Instance);
+        void Enter(MBlock? b) { if (b is not null) entries[b] = entries.GetValueOrDefault(b) + 1; }
+        foreach (MBlock block in m.Blocks)
+        {
+            if (block.Source is { IsLandingPad: true }) Enter(block);
+            foreach (MInstr i in block.Instrs)
+            {
+                if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to }) Enter(to);
+                else if (i.Op == MOp.JmpTable && i.Table is { } table) foreach (MBlock t in table) Enter(t);
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MImm { Label: { } taken }) Enter(taken);
+                    else if (o is MMem { Label: { } at }) Enter(at);
+                }
+            }
+        }
+        MInstr? last = null;            // the compare whose flags still stand
+        for (int b = 0; b < n; b++)
+        {
+            MBlock block = m.Blocks[b];
+            // Into a block only by falling through from the one before.
+            if (b == 0 || m.Blocks[b - 1].EndsUnconditionally || entries.GetValueOrDefault(block) != 0) last = null;
+            List<MInstr> instrs = block.Instrs;
+            for (int k = 0; k < instrs.Count; k++)
+            {
+                MInstr i = instrs[k];
+                if (i.Op is MOp.Cmp or MOp.Test && !i.Lock)
+                {
+                    if (last is not null && SameCompare(last, i))
+                    {
+                        instrs.RemoveAt(k);
+                        k--;
+                        continue;
+                    }
+                    last = i;
+                    continue;
+                }
+                if (last is null) continue;
+                if (i.Op == MOp.Jcc) continue;
+                // What leaves the flags be, and writes a register or memory
+                // the compare may read, ends it; anything else ends it too.
+                if (i.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Setcc or MOp.Cmov && !i.Lock && i.Operands.Count >= 1)
+                {
+                    if (i.Operands[0] is MMem) { if (ReadsMemory(last)) last = null; }
+                    else if (i.Operands[0] is MReg w && CompareReads(last, w.Id)) last = null;
+                    continue;
+                }
+                if (i.Op == MOp.Nop) continue;
+                last = null;
+            }
+        }
+    }
+
+    private static bool ReadsMemory(MInstr compare) => compare.Operands.Any(o => o is MMem);
+
+    private static bool CompareReads(MInstr compare, int reg)
+    {
+        foreach (MOperand o in compare.Operands)
+        {
+            if (o is MReg r && r.Id == reg) return true;
+            if (o is MMem mem && ((mem.Base?.Id ?? -1) == reg || (mem.Index?.Id ?? -1) == reg)) return true;
+        }
+        return false;
+    }
+
+    private static bool SameCompare(MInstr a, MInstr b)
+    {
+        if (a.Op != b.Op || a.Width != b.Width || a.Operands.Count != b.Operands.Count) return false;
+        for (int k = 0; k < a.Operands.Count; k++)
+        {
+            bool same = (a.Operands[k], b.Operands[k]) switch
+            {
+                (MReg x, MReg y) => x.Id == y.Id,
+                (MMem x, MMem y) => SameMem(x, y),
+                (MImm { IsPlain: true } x, MImm { IsPlain: true } y) => x.Value == y.Value,
+                _ => false,
+            };
+            if (!same) return false;
+        }
+        return true;
     }
 
     // ---- a parameter spilled to its own slot ------------------------------------------
