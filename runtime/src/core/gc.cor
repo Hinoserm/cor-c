@@ -17797,7 +17797,18 @@ static class GcThreads
             {
                 Gc.ScanRoots(block + Tls.Spill, block + Tls.Spill + Sys.Peek(block + Tls.SpillCount) * WordSize.Bytes);
             }
-            Work(block, request, Sys.Peek(block + Tls.StackLimit), true);
+            // HELD BUSY ONLY UNDER THE HEAP LOCK (Work): let go with the
+            // thread still claimed, a one-processor kernel preempted the
+            // collector there, and the thread, leaving its blocking, spun on
+            // Busy for ever (EndBlocking). Given back between steps instead:
+            // a thread that leaves meanwhile answers for itself, and then
+            // nothing is left to do here.
+            if (!Work(block, request, Sys.Peek(block + Tls.StackLimit), true, epoch))
+            {
+                GcLock.Exit();
+                if (Gc.YieldHook != 0) Sys.Call(Gc.YieldHook, 0, 0, 0);
+                continue;
+            }
             if (Claim(block, epoch))
             {
                 Sys.AtomicAdd(ctl + GcLock.Pending, -1);
@@ -17812,7 +17823,10 @@ static class GcThreads
     }
 
     /// What a round asks, done on `block`'s behalf with its stack from `from`.
-    static void Work(long block, long request, long from, bool locked)
+    /// False when a blocked thread (`locked`, held Busy) left its blocking
+    /// while its pages were stamped in steps: it has answered for itself,
+    /// and is not held Busy any longer.
+    static bool Work(long block, long request, long from, bool locked, long epoch)
     {
         if (request == Stamp && !locked)
         {
@@ -17827,16 +17841,38 @@ static class GcThreads
             // the lock let go and the platform asked between two. A thread
             // with a shelf of module heaps holds hundreds of pages, and
             // stamped whole under the lock they kept a one-processor kernel's
-            // mixer from running. The thread is held Busy throughout, so it
-            // cannot leave its blocking and its pages stand still; a free
-            // into one is dropped while marking.
+            // mixer from running.
+            //
+            // THE THREAD GIVEN BACK BETWEEN STEPS (Stopped), and claimed
+            // again (Busy) with the lock. Busy is a word spun on: the thread
+            // leaving its blocking waits it out (EndBlocking), and a kernel's
+            // wait for it gives the processor to nobody. Held across the
+            // lock let go, the collector was preempted holding it, and the
+            // thread -- a one-processor kernel's audio mixer -- spun on it
+            // for ever. Claimed again and still owing the round, the thread
+            // has not run in between: leaving its blocking it answers at
+            // once (EndBlocking), so its pages and its stack are as they
+            // were, and the steps go on. Gone, or answered, it did that
+            // itself, and nothing is left to do.
             Gc.BeginSelfStamp();
             long pages = Gc.StopBudget / 2048 > 0 ? Gc.StopBudget / 2048 : 1;
             while (!Gc.StampPagesSome(block, pages))
             {
+                Sys.AtomicSwap(block + Tls.State, Stopped);
+                Platform.Wake(block + Tls.State, 1);
                 GcLock.Exit();
                 if (Gc.YieldHook != 0) Sys.Call(Gc.YieldHook, 0, 0, 0);
                 GcLock.Enter();
+                if ((Sys.Cas(block + Tls.State, Stopped, Busy) & WordSize.AddressMask) != Stopped)
+                {
+                    return false;
+                }
+                if (Sys.Peek(block + Tls.Epoch) == epoch)
+                {
+                    Sys.AtomicSwap(block + Tls.State, Stopped);
+                    Platform.Wake(block + Tls.State, 1);
+                    return false;
+                }
             }
             Gc.StampOwnBuffer(block);
             CopyStack(block, from);
@@ -17850,6 +17886,7 @@ static class GcThreads
             Gc.ScanRoots(block + Tls.AsyncContext, block + Tls.AsyncContext + WordSize.Bytes);
             Gc.ScanRoots(block + Tls.Owner, block + Tls.Owner + WordSize.Bytes);
         }
+        return true;
     }
 
     /// The blocks that owe the open round, into `blocks` with each one's
@@ -18101,7 +18138,7 @@ static class GcThreads
         long epoch = Sys.Peek(ctl + GcLock.Epoch);
         long request = Sys.Peek(ctl + GcLock.Request);
 
-        Work(block, request, stack, false);
+        Work(block, request, stack, false, 0);
         Settle(block);
         Answered = Answered + 1;
         Sys.Poke(block + Tls.HandshakeArmed, 0);
