@@ -113,9 +113,18 @@ public sealed partial class Lowering
 
             // WHERE A REFERENCE POINTS, and the reference at an address: its
             // word, unconverted (Word is the bits of any value as a long).
+            // A FLOAT, WHERE A GENERIC IS MADE FOR ONE, is its bits: the branch
+            // that frees an element is dead for a number (IsObject is false),
+            // but is lowered, and its call takes a word, not a register of the
+            // other bank (OwnedElements.Release<float>).
             case "ObjectAddress":
             case "ObjectAt":
-                return ToWord(Arg(call, target, 0));
+            {
+                VReg held = Arg(call, target, 0);
+                if (held.Type == IrType.F64) held = _e.Unary(Opcode.Bits, R(held), IrType.I64);
+                else if (held.Type == IrType.F32) held = _e.Unary(Opcode.Bits, R(held), IrType.I32);
+                return ToWord(held);
+            }
 
             case "Word":
             {

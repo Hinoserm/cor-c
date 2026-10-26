@@ -29,8 +29,8 @@ static class Program
 
     static int Main()
     {
-        long good = Runtime.Alloc(64);
-        long other = Runtime.Alloc(128);
+        nuint good = Runtime.Alloc(64);
+        nuint other = Runtime.Alloc(128);
 
         Runtime.Free(0);                    // null
         Runtime.Free(4);                    // below any chunk
