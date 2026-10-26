@@ -15,7 +15,7 @@ sealed class Roots
     public Roots(int count)
     {
         Length = (nuint)count;
-        _at = Runtime.Alloc(count * 8);
+        _at = Runtime.Alloc((nuint)(count * 8));
         _block = Sys.ObjectAt(_at);
     }
 
@@ -53,7 +53,7 @@ static class Program
             nuint large = objects[i];
             if (Sys.ReadAddress(large) != i + 1) return 4;
             objects[i] = 0;
-            Runtime.Free((nint)large);
+            Runtime.Free(large);
             if (HeapChunks.Of(large) != 0) return 5;
         }
         if (peak - HeapChunks.HeapBytes < 128 * 131072) return 6;
@@ -61,7 +61,7 @@ static class Program
         for (nuint i = 0; i < survivors.Length; i++)
         {
             if (Sys.ReadAddress(survivors[i]) != i + 10) return 7;
-            Runtime.Free((nint)survivors[i]);
+            Runtime.Free(survivors[i]);
             survivors[i] = 0;
         }
         if (!Gc.CheckFreeIndex()) return 8;

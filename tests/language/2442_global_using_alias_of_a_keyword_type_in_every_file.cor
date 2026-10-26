@@ -13,6 +13,8 @@
 // as a field, a local and a parameter, and the value wraps at 32 bits
 // as a uint does.
 
+using System;
+
 static class Program
 {
     static Word total;

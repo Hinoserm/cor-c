@@ -22,7 +22,7 @@ sealed class Roots
     public Roots(int count)
     {
         Length = (nuint)count;
-        _at = Runtime.Alloc(count * 8);
+        _at = Runtime.Alloc((nuint)(count * 8));
         _block = Sys.ObjectAt(_at);
     }
 
@@ -53,18 +53,18 @@ static class Program
         nuint largeGuard = Runtime.Alloc(64);
         for (nuint i = 0; i < count; i++)
         {
-            blocks[i] = Runtime.Alloc(40000 + (int)(i % 7) * 8);
+            blocks[i] = Runtime.Alloc((nuint)(40000 + (int)(i % 7) * 8));
             // Stay below the dedicated-mapping threshold so this exercises
             // the free bins rather than immediate whole-chunk unmapping.
             guards[i] = Runtime.Alloc(64);
             Sys.WriteAddress(guards[i], i + 1);
         }
         Check(1);
-        Runtime.Free((nint)large);
+        Runtime.Free(large);
         for (nuint i = 0; i < count; i++)
         {
             nuint index = (i * 73) & (count - 1);
-            Runtime.Free((nint)blocks[index]);
+            Runtime.Free(blocks[index]);
             blocks[index] = 0;
             if ((i & 31) == 31) Check(1000 + i);
         }
@@ -87,19 +87,19 @@ static class Program
         for (nuint i = 0; i < count; i++)
         {
             if (Sys.ReadAddress(guards[i]) != i + 1 || Sys.ReadAddress(blocks[i]) != i + 1) return 4;
-            Runtime.Free((nint)guards[i]);
+            Runtime.Free(guards[i]);
             guards[i] = 0;
         }
         Check(4);
         for (nuint i = 0; i < count; i++)
         {
             nuint index = (i * 173) & (count - 1);
-            Runtime.Free((nint)blocks[index]);
+            Runtime.Free(blocks[index]);
             blocks[index] = 0;
             if ((i & 31) == 31) Check(3000 + i);
         }
-        Runtime.Free((nint)large);
-        Runtime.Free((nint)largeGuard);
+        Runtime.Free(large);
+        Runtime.Free(largeGuard);
         Gc.Collect();
         Check(5);
         Sys.Print("free tree passed\n");

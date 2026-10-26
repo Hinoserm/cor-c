@@ -20,7 +20,7 @@ static class Program
         Sys.WriteAddress(reusable, 333);
         nuint leftPage = HeapChunks.Of(left);
         if (leftPage == 0 || HeapChunks.PageClass(leftPage) == 0) return 1;
-        Runtime.Free((nint)reusable);
+        Runtime.Free(reusable);
         nuint again = Runtime.Alloc(32);
         if (again != reusable) return 2;
         for (nuint i = 0; i < 32; i += WordSize.Bytes)
@@ -47,12 +47,12 @@ static class Program
         for (nuint i = 0; i < 32; i += WordSize.Bytes)
             if (Sys.ReadAddress(after + i) != 0) return 11;
 
-        Runtime.Free((nint)after);
-        Runtime.Free((nint)large);
-        Runtime.Free((nint)other);
-        Runtime.Free((nint)again);
-        Runtime.Free((nint)right);
-        Runtime.Free((nint)left);
+        Runtime.Free(after);
+        Runtime.Free(large);
+        Runtime.Free(other);
+        Runtime.Free(again);
+        Runtime.Free(right);
+        Runtime.Free(left);
         Gc.Collect();
         if (!Gc.CheckFreeIndex()) return 12;
         Sys.Print("size-class buffer passed\n");

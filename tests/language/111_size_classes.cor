@@ -44,7 +44,7 @@ static class Program
 
         for (int i = 0; i < 256; i++)
         {
-            live[i] = Runtime.Alloc(SizeFor(i));
+            live[i] = Runtime.Alloc((nuint)SizeFor(i));
         }
 
         // The high-water mark of the bump pointer: everything allocated after
@@ -57,7 +57,7 @@ static class Program
         // memory rather than the top block handed back.
         for (int i = 1; i < 254; i = i + 2)
         {
-            Runtime.Free((nint)live[i]);
+            Runtime.Free(live[i]);
             holes[holeCount] = live[i];
             holeCount = holeCount + 1;
             live[i] = 0;
@@ -73,7 +73,7 @@ static class Program
 
         for (int i = 1; i < 254; i = i + 2)
         {
-            nuint at = Runtime.Alloc(SizeFor(i));
+            nuint at = Runtime.Alloc((nuint)SizeFor(i));
             bool reused = false;
 
             for (int h = 0; h < holeCount; h++)

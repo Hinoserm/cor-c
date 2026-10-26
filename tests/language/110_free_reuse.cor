@@ -41,7 +41,7 @@ static class Program
         // Wake the heap up first, so that the address of the first block in
         // the loop is a bump-pointer address like all the others.
         nuint warm = Runtime.Alloc(64);
-        Runtime.Free((nint)warm);
+        Runtime.Free(warm);
 
         // Freeing what was never allocated must be safe and do nothing: the
         // compiler emits these calls from a proof, and a proof about a
@@ -69,7 +69,7 @@ static class Program
 
             Sys.WriteAddress(at, 64);
             sum = sum + Sys.ReadAddress(at);
-            Runtime.Free((nint)at);
+            Runtime.Free(at);
         }
 
         Say("checksum ", (long)sum);

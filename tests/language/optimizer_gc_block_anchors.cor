@@ -15,7 +15,7 @@ sealed class Roots
     public Roots(int count)
     {
         Length = count;
-        _at = Runtime.Alloc(count * 8);
+        _at = Runtime.Alloc((nuint)(count * 8));
         _block = Sys.ObjectAt(_at);
     }
 
