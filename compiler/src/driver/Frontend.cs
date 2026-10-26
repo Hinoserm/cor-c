@@ -126,10 +126,12 @@ public static class Frontend
         Program.BenchmarkStage("parse");
 #endif
         List<string> programGlobals = new(), libraryGlobals = new();
+        Dictionary<string, string> programAliases, libraryAliases;
         try
         {
             Meter parsing = Meter.Start();
-            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, declarations?.Tokens, declarations?.RecordNames(),
+            CompilationUnit[] parsed = ParseSources(sources, symbols, workers, out programAliases, out libraryAliases,
+                declarations?.Tokens, declarations?.RecordNames(),
                 declarations?.GlobalUsings(library: false), declarations?.GlobalUsings(library: true));
             parsing.Stop("front:parse");
             int sourceIndex = 0;
@@ -204,6 +206,17 @@ public static class Frontend
         {
             bool every = library && paths.All(path => fromLibrary.Contains(Path.GetFullPath(path)));
             declarations.LibrarySide = LibrarySideOf(every, fromLibrary);
+            // AND THE GLOBAL ALIASES ITS HEADERS PARSE WITH, by the same rule
+            // (IndexedDeclarations.EnterSide): this compile's, so units compiled
+            // at once in one process each keep their own. A library's compile
+            // whose files are all the library's has both sides' as its own.
+            Dictionary<string, string> libraryHas = libraryAliases;
+            if (every)
+            {
+                libraryHas = new Dictionary<string, string>(programAliases, StringComparer.Ordinal);
+                foreach ((string alias, string aimed) in libraryAliases) libraryHas[alias] = aimed;
+            }
+            declarations.SetGlobalAliases(programAliases, libraryHas);
         }
         declarations?.AddHeaders(unit);
         // WHAT THE INDEX BROUGHT IS LIBRARY CODE BY ITS FILE, as what was
@@ -542,16 +555,15 @@ public static class Frontend
 
     private static CompilationUnit[] ParseSources(
         List<(string Name, string? Path, bool FromLibrary, bool Elsewhere)> sources,
-        IReadOnlyCollection<string>? symbols, int workers, SyntaxTokenCache? tokens = null, List<string>? indexedRecords = null,
+        IReadOnlyCollection<string>? symbols, int workers,
+        out Dictionary<string, string> program, out Dictionary<string, string> library,
+        SyntaxTokenCache? tokens = null, List<string>? indexedRecords = null,
         List<string>? indexedProgramGlobals = null, List<string>? indexedLibraryGlobals = null)
     {
         HashSet<string> records = RecordNames(sources);
         if (indexedRecords is not null) records.UnionWith(indexedRecords);
         Parser.ProjectRecords = records;
-        (Dictionary<string, string> program, Dictionary<string, string> library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals, symbols);
-        // Each side's, for the declaration headers read from the index later (Parser.EnterSide).
-        Parser.ProgramGlobalTypeAliases = program;
-        Parser.LibraryGlobalTypeAliases = library;
+        (program, library) = GlobalTypeAliases(sources, indexedProgramGlobals, indexedLibraryGlobals, symbols);
         CompilationUnit[] parsed = new CompilationUnit[sources.Count];
         if (workers <= 1)
         {
@@ -625,8 +637,8 @@ public static class Frontend
         SyntaxTokenCache? tokens = null, bool elsewhere = false, IReadOnlyDictionary<string, string>? globalAliases = null)
     {
         // THIS FILE'S SIDE'S ALIASES, for this parse only: left set, a later
-        // parse on the same thread -- an index header's, which is on no side,
-        // or the next compile's -- would read them instead of its own.
+        // parse on the same thread -- an index header's, or the next
+        // compile's -- would read them instead of its own.
         Parser.GlobalTypeAliases = globalAliases;
         try
         {

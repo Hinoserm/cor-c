@@ -897,36 +897,13 @@ public sealed class Parser
     /// The `global using` aliases of a type that the side of the file being
     /// parsed has, by name (Frontend.GlobalTypeAliases): per thread, as
     /// files of both sides are parsed at once. Set for the one parse and
-    /// cleared after it -- a source's by Frontend.ParseSource, an index
-    /// header's by EnterSide/LeaveSide -- and null otherwise: a parse that
-    /// is no file's sees no global alias.
+    /// put back after it -- a source's by Frontend.ParseSource, an index
+    /// header's by IndexedDeclarations.EnterSide -- and null otherwise: text
+    /// the compiler makes itself (ComDeclarations, DynamicDeclarations)
+    /// names types already resolved, and sees no global alias.
     /// </summary>
     [ThreadStatic]
     public static IReadOnlyDictionary<string, string>? GlobalTypeAliases;
-
-    /// <summary>
-    /// Each side's aliases for this compile (Frontend.ParseSources), for a
-    /// declaration header read later from the index: the program's, and the
-    /// library's -- another assembly, whose aliases are its own.
-    /// </summary>
-    public static IReadOnlyDictionary<string, string>? ProgramGlobalTypeAliases { get; set; }
-    public static IReadOnlyDictionary<string, string>? LibraryGlobalTypeAliases { get; set; }
-
-    /// <summary>
-    /// The aliases of the side the file at `path` is on (Binder.LibrarySource),
-    /// for a parse of part of it: what LeaveSide puts back.
-    /// </summary>
-    public static IReadOnlyDictionary<string, string>? EnterSide(string path)
-    {
-        IReadOnlyDictionary<string, string>? was = GlobalTypeAliases;
-        GlobalTypeAliases = Binder.LibrarySource?.Invoke(path) == true ? LibraryGlobalTypeAliases : ProgramGlobalTypeAliases;
-        return was;
-    }
-
-    public static void LeaveSide(IReadOnlyDictionary<string, string>? was)
-    {
-        GlobalTypeAliases = was;
-    }
 
     /// <summary>
     /// The record classes the program declares, in any of its files, by name

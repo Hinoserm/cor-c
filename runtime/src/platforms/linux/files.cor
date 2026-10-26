@@ -519,9 +519,11 @@ static partial class Os
     /// DateTime.UtcNow, which System.IO's file times are compared with.
     public static long Micros()
     {
+        // The call itself, not Os.ClockGetTime: this file is also the kernel's
+        // file layer (--kernel-syscalls), compiled without system.cor.
         byte[] now = TimeSpec.Room();
 
-        if (ClockGetTime(ClockId.Realtime, now) < 0)
+        if (Err.Result(Sys.Syscall(LinuxCall.ClockGetTime, (SyscallWord)ClockId.Realtime, (SyscallWord)Sys.ArrayData(now), 0)) < 0)
         {
             return 0;
         }

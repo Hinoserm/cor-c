@@ -59,6 +59,37 @@ public sealed class IndexedDeclarations : IDisposable
     /// </summary>
     public Func<string, bool>? LibrarySide { get; set; }
 
+    /// <summary>
+    /// This compile's `global using` aliases of a type, each side's
+    /// (Frontend), for the headers read out of the index: a header parses
+    /// with its own side's, by LibrarySide as its types are marked. Held here
+    /// and not in a static, so units compiled at once in one process keep
+    /// their own.
+    /// </summary>
+    IReadOnlyDictionary<string, string>? _programAliases, _libraryAliases;
+
+    public void SetGlobalAliases(IReadOnlyDictionary<string, string> program, IReadOnlyDictionary<string, string> library)
+    {
+        _programAliases = program;
+        _libraryAliases = library;
+    }
+
+    /// <summary>The aliases a header of the file at `path` parses with.</summary>
+    IReadOnlyDictionary<string, string>? SideAliases(string path)
+        => LibrarySide?.Invoke(path) == true ? _libraryAliases : _programAliases;
+
+    /// <summary>Those aliases set for a parse on this thread: what LeaveSide puts back.</summary>
+    IReadOnlyDictionary<string, string>? EnterSide(string path) => SwapAliases(SideAliases(path));
+
+    static IReadOnlyDictionary<string, string>? SwapAliases(IReadOnlyDictionary<string, string>? aliases)
+    {
+        IReadOnlyDictionary<string, string>? was = Parser.GlobalTypeAliases;
+        Parser.GlobalTypeAliases = aliases;
+        return was;
+    }
+
+    static void LeaveSide(IReadOnlyDictionary<string, string>? was) => Parser.GlobalTypeAliases = was;
+
     /// <summary>The stamp of the kernel's index this unit's index was made on (a module's), or null.</summary>
     public byte[]? UnderStamp => catalog.UnderStamp;
     public byte[]? BaseStamp => catalog.BaseStamp;
@@ -640,7 +671,7 @@ public sealed class IndexedDeclarations : IDisposable
                 var spanKey = (source.Path, symbols, at.From, at.To);
                 if (!templateFiles.TryGetValue(spanKey, out CompilationUnit? parsed))
                 {
-                    var side = Parser.EnterSide(source.Path);
+                    var side = EnterSide(source.Path);
                     try
                     {
                         parsed = Tokens.ParseRange(text, at.From, at.To, at.Line, at.Column, displayFile,
@@ -649,7 +680,7 @@ public sealed class IndexedDeclarations : IDisposable
                         if (hoisted) parsed = null;
                     }
                     catch (CompileError) { parsed = null; }
-                    finally { Parser.LeaveSide(side); }
+                    finally { LeaveSide(side); }
                     templateFiles[spanKey] = parsed;
                 }
                 if (parsed is not null && parsed.Types.Any(type => type.SourceFrom == source.From && type.SourceTo == source.To))
@@ -658,9 +689,9 @@ public sealed class IndexedDeclarations : IDisposable
             var wholeKey = (source.Path, symbols, 0, -1);
             if (!templateFiles.TryGetValue(wholeKey, out CompilationUnit? whole) || whole is null)
             {
-                var side = Parser.EnterSide(source.Path);
+                var side = EnterSide(source.Path);
                 try { whole = Tokens.Parse(text, displayFile, source.ConditionalSymbols, declarationsOnly: true, includeTemplateBodies: true); }
-                finally { Parser.LeaveSide(side); }
+                finally { LeaveSide(side); }
                 templateFiles[wholeKey] = whole;
             }
             return (whole, wholeKey);
@@ -704,9 +735,9 @@ public sealed class IndexedDeclarations : IDisposable
                 if (!template)
                 {
                     CompilationUnit header;
-                    var side = Parser.EnterSide(source.Path);
+                    var side = EnterSide(source.Path);
                     try { header = Tokens.Parse(source.Text, displayFile, declarationsOnly: true, line: source.Line); }
-                    finally { Parser.LeaveSide(side); }
+                    finally { LeaveSide(side); }
                     // A CLASS OF ANOTHER RING parses to nothing (Parser.Ring): an
                     // index built for every ring holds it, and this compile does
                     // not, any more than its own sources' copy of it.
@@ -894,15 +925,16 @@ public sealed class IndexedDeclarations : IDisposable
     private Func<List<MemberDecl>> ReadAgain(SourceDeclaration source, string displayFile)
     {
         SyntaxTokenCache tokens = Tokens;
-        string text = source.Text, key = source.Key, space = source.Namespace, path = source.Path;
+        string text = source.Text, key = source.Key, space = source.Namespace;
         int line = source.Line;
         FileScope scope = source.Scope;
+        IReadOnlyDictionary<string, string>? aliases = SideAliases(source.Path);
         return () =>
         {
             CompilationUnit header;
-            var side = Parser.EnterSide(path);
+            var side = SwapAliases(aliases);
             try { header = tokens.Parse(text, displayFile, declarationsOnly: true, line: line); }
-            finally { Parser.LeaveSide(side); }
+            finally { LeaveSide(side); }
             List<MemberDecl> members = Wanted(header, key).Members;
             Place(members, space, scope, displayFile);
             return members;
