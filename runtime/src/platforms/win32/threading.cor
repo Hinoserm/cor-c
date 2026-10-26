@@ -38,9 +38,9 @@ static class Native
 {
     /// Linux's: where a thread's own mapping says its length. A Windows thread
     /// stands on the stack Windows gave it and has no mapping to give back.
-    public const long UnmapLengthAt = 4096 - 8;
+    public const int UnmapLengthAt = 4096 - 8;
 
-    public const long WakeAll = 0x7FFFFFFF;
+    public const int WakeAll = 0x7FFFFFFF;
 
     [DllImport("kernel32"), SuppressGCTransition] static extern int GetCurrentThreadId();
 
@@ -49,7 +49,7 @@ static class Native
     /// Sleeps until the word at `at` stops being `expect`, or someone wakes it;
     /// a spurious return is normal, every caller reads its word again. Asleep
     /// is stopped, as far as a collection is concerned (Linux's note).
-    public static void Wait(long at, long expect)
+    public static void Wait(nuint at, nint expect)
     {
         Runtime.BeginBlocking();
         Win32.Park(at, expect, -1);
@@ -57,7 +57,7 @@ static class Native
     }
 
     /// As Wait, giving up after `nanoseconds`.
-    public static void WaitFor(long at, long expect, long nanoseconds)
+    public static void WaitFor(nuint at, nint expect, long nanoseconds)
     {
         long ms = (nanoseconds + 999999) / 1000000;
         Runtime.BeginBlocking();
@@ -66,39 +66,38 @@ static class Native
     }
 
     /// Wakes up to `count` waiters on the word at `at`.
-    public static void Wake(long at, long count) => Win32.Unpark(at, count);
+    public static void Wake(nuint at, nint count) => Win32.Unpark(at, count);
 }
 
 namespace System.Threading
 {
 partial class Thread
 {
-    [DllImport("kernel32")] static extern nint CreateThread(nint security, nint stack, nint start, nint argument, int flags, nint id);
-    [DllImport("kernel32")] static extern int CloseHandle(nint handle);
-    [DllImport("kernel32"), SuppressGCTransition] static extern nint VirtualAlloc(nint at, nint bytes, int type, int protect);
+    [DllImport("kernel32")] static extern nuint CreateThread(nuint security, nuint stack, nuint start, nuint argument, int flags, nuint id);
+    [DllImport("kernel32")] static extern int CloseHandle(nuint handle);
+    [DllImport("kernel32"), SuppressGCTransition] static extern nuint VirtualAlloc(nuint at, nuint bytes, int type, int protect);
 
     /// The start routine Windows calls, `DWORD WINAPI start(LPVOID)`, made
     /// once: a stub on a page of its own that calls ThreadEntry(slot) by this
-    /// compiler's convention -- the slot a long, two words -- and returns 0,
+    /// compiler's convention -- the slot one word -- and returns 0,
     /// taking its argument off. Not a method C calls ([UnmanagedCallersOnly]):
     /// that would give the new thread a block of its own on the way in, and
     /// it has one already, made and registered by its parent (Launch).
-    static long _windowsEntry;
+    static nuint _windowsEntry;
 
-    static long WindowsEntry()
+    static nuint WindowsEntry()
     {
         if (_windowsEntry != 0) return _windowsEntry;
-        long stub = (long)(nuint)VirtualAlloc(0, 32, 0x3000, 0x40);    // MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE
+        nuint stub = VirtualAlloc(0, 32, 0x3000, 0x40);    // MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE
         if (stub == 0) return 0;
-        long entry = Sys.AddressOf(Thread.ThreadEntry);
-        int at = 0;
+        nuint entry = Sys.AddressOf(Thread.ThreadEntry);
+        nuint at = 0;
         Sys.Write8(stub + at++, 0x8B); Sys.Write8(stub + at++, 0x44); Sys.Write8(stub + at++, 0x24); Sys.Write8(stub + at++, 0x04); // mov eax, [esp+4]
-        Sys.Write8(stub + at++, 0x6A); Sys.Write8(stub + at++, 0x00);                                                              // push 0     slot, high
         Sys.Write8(stub + at++, 0x50);                                                                                               // push eax   slot
         Sys.Write8(stub + at++, 0xB9);                                                                                               // mov ecx, ThreadEntry
-        for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (int)(entry >> (8 * i)) & 0xFF);
+        for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (byte)(entry >> (8 * i)));
         Sys.Write8(stub + at++, 0xFF); Sys.Write8(stub + at++, 0xD1);                                                              // call ecx
-        Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xC4); Sys.Write8(stub + at++, 0x08);                            // add esp, 8
+        Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xC4); Sys.Write8(stub + at++, 0x04);                            // add esp, 4
         Sys.Write8(stub + at++, 0x31); Sys.Write8(stub + at++, 0xC0);                                                              // xor eax, eax
         Sys.Write8(stub + at++, 0xC2); Sys.Write8(stub + at++, 0x04); Sys.Write8(stub + at++, 0x00);                            // ret 4
         _windowsEntry = stub;
@@ -111,16 +110,16 @@ partial class Thread
     /// the thread says where its stack is once it stands on it (BeginNative).
     void Launch()
     {
-        long block = Platform.Map(4096);
+        nuint block = Platform.Map(4096);
         if (block == 0) throw new InvalidOperationException("threading: no memory for a thread block");
-        long start = WindowsEntry();
+        nuint start = WindowsEntry();
         if (start == 0) throw new InvalidOperationException("threading: no memory for the thread start");
         _block = block;
         _stack = 0;
         _stackBytes = 0;
         Runtime.RegisterThread(_block, 0);
         int id = 0;
-        nint handle = CreateThread(0, (nint)StackSize(), (nint)start, (nint)_slot, 0, (nint)Sys.AddressOf(ref id));
+        nuint handle = CreateThread(0, StackSize(), start, (nuint)_slot, 0, Sys.AddressOf(ref id));
         if (handle == 0)
         {
             Runtime.ForgetThread(_block);
@@ -132,9 +131,9 @@ partial class Thread
     }
 
     /// Where a Windows thread begins (WindowsEntry's stub calls it).
-    static long ThreadEntry(long slot)
+    static int ThreadEntry(int slot)
     {
-        Thread? t = _all[(int)slot];
+        Thread? t = _all[slot];
         if (t != null) t.BeginNative(Sys.FramePointer());
         return 0;
     }

@@ -23,10 +23,10 @@
 //
 // THE ONE FACT ABOUT THE KERNEL'S ANSWERS. A Linux system call returns its
 // result in EAX, and an error is a SMALL NEGATIVE number: -errno, in
-// -4095..-1. Sys.Syscall hands that 32-bit register back zero-extended into a
-// long, so -2 arrives as 4294967294. Result() below turns that range, and
-// only that range, back into the negative number it is; an address above
-// 2 GB (which brk can legitimately return) stays positive.
+// -4095..-1. Sys.Syscall hands the register back as an nint, unchanged. An
+// error is one of the top 4095 values of the unsigned range (Err.Failed);
+// an address is read with Err.Address, never by its sign, since one above
+// 2 GB (which brk and mmap can legitimately return) is negative as an nint.
 
 /// Which socket operation, when they go through socketcall(2). The numbers
 /// are the kernel's SYS_SOCKET family from linux/net.h and have nothing to do
@@ -127,8 +127,8 @@ static class Cmsg
 /// A string LITERAL is data the compiler laid out, and is fine.
 static class Platform
 {
-    // Sys.Syscall answers the 32-bit EAX zero-extended. -errno lives in
-    // the top 4095 values of the unsigned range; nothing else does.
+    // The raw answer, as is: -errno for a call that answers a count or
+    // zero. An address-returning call goes through Err.Failed/Err.Address.
     public static nint Result(nint raw)
     {
         return Err.Result(raw);
@@ -800,7 +800,7 @@ static class Platform
         // rt_sigreturn, seven bytes on a page of their own that may run, as
         // PosixSignalRegistration's restorer is.
         nint mapped = Sys.Syscall(LinuxCall.Mmap, 0, 4096, 7, 0x22, 0 - 1, 0);
-        nuint back = Err.Failed(mapped) ? 0 : Err.Address(mapped);
+        nuint back = Err.Address(mapped);
         if (back != 0)
         {
 #if TARGET_64BIT
@@ -885,7 +885,7 @@ static class Platform
             _faulting = 1;
 #if TARGET_64BIT
             // siginfo's si_addr at 16; mcontext's gregs from 40, RBP the
-            // eleventh and RIP the seventeenth.
+            // 10th and RIP the 16th.
             nuint address = Sys.ReadNative(si + 16);
             nuint pc = Sys.ReadNative(uc + 168);
             nuint frame = Sys.ReadNative(uc + 120);
@@ -1571,7 +1571,7 @@ static partial class Os
     /// Does not return when it works; -errno when it does not.
     public static long Reboot(long command)
     {
-        return Platform.Result(Sys.Syscall(LinuxCall.Reboot, (nint)0xFEE1DEAD, 672274793, (nint)command, 0, 0, 0));
+        return Platform.Result(Sys.Syscall(LinuxCall.Reboot, -18751827 /* 0xFEE1DEAD */, 672274793, (nint)command, 0, 0, 0));
     }
 
     // ---- waiting, randomness, signals ----------------------------------------
@@ -1687,7 +1687,7 @@ static partial class Os
     public static long Available(int fd)
     {
         byte[] n = new byte[4];
-        long r = Ioctl(fd, 0x541B, (nuint)((nint)Sys.ArrayData(n)));
+        long r = Ioctl(fd, 0x541B, Sys.ArrayData(n));
         return r < 0 ? r : Raw.U32(n, 0);
     }
 
@@ -2028,13 +2028,13 @@ static partial class Os
     public static bool IsTty(int fd)
     {
         byte[] t = Termios.Room();
-        return Ioctl(fd, Tio.GetAttributes, (nuint)((nint)Sys.ArrayData(t))) >= 0;
+        return Ioctl(fd, Tio.GetAttributes, Sys.ArrayData(t)) >= 0;
     }
 
     public static long GetAttributes(int fd, byte[] into)
     {
         Termios.Check(into);
-        return Ioctl(fd, Tio.GetAttributes, (nuint)((nint)Sys.ArrayData(into)));
+        return Ioctl(fd, Tio.GetAttributes, Sys.ArrayData(into));
     }
 
     /// The change takes effect at once. Tio.SetAttributesDrain is the form
@@ -2043,7 +2043,7 @@ static partial class Os
     public static long SetAttributes(int fd, byte[] from)
     {
         Termios.Check(from);
-        return Ioctl(fd, Tio.SetAttributes, (nuint)((nint)Sys.ArrayData(from)));
+        return Ioctl(fd, Tio.SetAttributes, Sys.ArrayData(from));
     }
 
     /// Characters as they are typed, no echo: what a full-screen program does
@@ -2081,7 +2081,7 @@ static partial class Os
     {
         byte[] w = new byte[8];
 
-        if (Ioctl(fd, Tio.WindowSize, (nuint)((nint)Sys.ArrayData(w))) < 0)
+        if (Ioctl(fd, Tio.WindowSize, Sys.ArrayData(w)) < 0)
         {
             return 0;
         }
@@ -2090,9 +2090,11 @@ static partial class Os
 
     // ---- memory -----------------------------------------------------------
 
+    /// The raw answer: test it with Err.Failed and read the address with
+    /// Err.Address, never by its sign (a mapping above 2 GB is negative).
     public static nint Mmap(nuint address, nuint length, nint protection, nint flags, nint fd, long pages)
     {
-        return Platform.Result(Sys.Syscall(LinuxCall.Mmap, (nint)address, (nint)length, protection, flags, fd, (nint)(pages << LinuxCall.MmapOffsetShift)));
+        return Sys.Syscall(LinuxCall.Mmap, (nint)address, (nint)length, protection, flags, fd, (nint)(pages << LinuxCall.MmapOffsetShift));
     }
 
     public static int Munmap(nuint address, nuint length)

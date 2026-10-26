@@ -177,16 +177,16 @@ static class DrawEngine
     /// at (x, y): rows of `stride` bytes at `at`, the first pixel the top
     /// bit, as a glyph is kept. What a glyph is drawn as through a clip
     /// region, which the card's colour expansion cannot cut to.
-    public static void Bits(DrawTarget t, long at, int stride, int x, int y, int width, int height, bool set, RegionShape? clip)
+    public static void Bits(DrawTarget t, nuint at, int stride, int x, int y, int width, int height, bool set, RegionShape? clip)
     {
         List<int> rects = new List<int>();
         for (int row = 0; row < height; row++)
         {
-            long line = at + (long)row * stride;
+            nuint line = at + (nuint)(row * stride);
             int run = -1;
             for (int column = 0; column <= width; column++)
             {
-                bool on = column < width && ((Sys.Read8(line + (column >> 3)) & (0x80 >> (column & 7))) != 0) == set;
+                bool on = column < width && ((Sys.Read8(line + (nuint)(column >> 3)) & (0x80 >> (column & 7))) != 0) == set;
                 if (on && run < 0) run = column;
                 else if (!on && run >= 0) { rects.Add(x + run); rects.Add(y + row); rects.Add(x + column); rects.Add(y + row + 1); run = -1; }
             }
@@ -583,15 +583,16 @@ static class DrawEngine
     /// world units -- through the transform, as GraphicsPath's PathPoints
     /// and PathTypes describe it. Beziers come in threes; a figure's points
     /// that do not make one whole are drawn as lines.
-    public static DevicePath FromPoints(long source, int count, DrawTransform? world)
+    public static DevicePath FromPoints(nuint source, int count, DrawTransform? world)
     {
         long[] xs = new long[count], ys = new long[count];
         int[] types = new int[count];
-        for (int i = 0; i < count; i++)
+        nuint point = source;
+        for (int i = 0; i < count; i++, point += 12)
         {
-            xs[i] = Signed(Sys.Read32(source + i * 12));
-            ys[i] = Signed(Sys.Read32(source + i * 12 + 4));
-            types[i] = (int)(Sys.Read32(source + i * 12 + 8) & 0xFF);
+            xs[i] = Signed(Sys.Read32(point));
+            ys[i] = Signed(Sys.Read32(point + 4));
+            types[i] = (int)(Sys.Read32(point + 8) & 0xFF);
         }
         if (world != null) world.Apply(xs, ys, count);
         DevicePath path = new DevicePath();

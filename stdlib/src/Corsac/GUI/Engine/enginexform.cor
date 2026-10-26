@@ -364,13 +364,13 @@ class XformMatrix
 
     /// The first `bytes` of the matrix at `at` (0x38 without flAccel, 0x3C
     /// with), as win32k copies it with rep movsd.
-    public void Store(long at, int bytes)
+    public void Store(nuint at, int bytes)
     {
         EFloat[] e = new EFloat[] { M11, M12, M21, M22, Dx, Dy };
-        for (int i = 0; i < 6; i++) { Sys.Write32(at + i * 8, e[i].Mant & 0xFFFFFFFFL); Sys.Write32(at + i * 8 + 4, e[i].Exp & 0xFFFFFFFFL); }
-        Sys.Write32(at + 0x30, FxDx & 0xFFFFFFFFL);
-        Sys.Write32(at + 0x34, FxDy & 0xFFFFFFFFL);
-        if (bytes >= 0x3C) Sys.Write32(at + 0x38, Accel);
+        for (int i = 0; i < 6; i++) { Sys.Write32(at, (uint)e[i].Mant); Sys.Write32(at + 4, (uint)e[i].Exp); at += 8; }
+        Sys.Write32(at, (uint)FxDx);
+        Sys.Write32(at + 4, (uint)FxDy);
+        if (bytes >= 0x3C) Sys.Write32(at + 8, (uint)Accel);
     }
 
     public bool SameAs(XformMatrix o)

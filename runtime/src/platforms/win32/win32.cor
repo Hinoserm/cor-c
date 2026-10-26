@@ -23,7 +23,7 @@ static class Win32
     const int MemRelease = 0x8000;
     const int PageExecuteReadWrite = 0x40;
 
-    const int AccessViolation = unchecked((int)0xC0000005);
+    const uint AccessViolation = 0xC0000005;
     /// EXCEPTION_UNWINDING and EXCEPTION_EXIT_UNWIND: a handler called to unwind, not to handle.
     const int Unwinding = 6;
     const int ContinueExecution = 0;
@@ -31,6 +31,8 @@ static class Win32
     const int PageReadWrite = 0x04;
     const int StdErrorHandle = -12;
     const int TlsOutOfIndexes = -1;
+    const nuint InvalidHandle = 0xFFFFFFFF;
+    const nint One = 1, MinusOne = -1;
 
     /// WHERE THE TLS SLOTS ARE. NT keeps 64 in the TEB, at 0xE10 of it, and
     /// a slot past them in an expansion array (Windows 2000 on) this does not
@@ -46,6 +48,9 @@ static class Win32
     /// MEMORY_BASIC_INFORMATION's size on i386.
     const int InfoBytes = 28;
 
+    /// FaultAddress's answer for an address it cannot say (also Windows 9x's -1).
+    const nuint NoAddress = 0xFFFFFFFF;
+
     // Every call made before the thread has a block is SuppressGCTransition:
     // the transition reads the block.
 
@@ -56,66 +61,66 @@ static class Win32
     static extern uint GetVersion();
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern nint GetModuleHandleW(nint name);
+    static extern nuint GetModuleHandleW(nuint name);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern nint CreateSemaphoreA(nint security, int initial, int maximum, nint name);
+    static extern nuint CreateSemaphoreA(nuint security, int initial, int maximum, nuint name);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int ReleaseSemaphore(nint semaphore, int count, nint previous);
+    static extern int ReleaseSemaphore(nuint semaphore, uint count, nuint previous);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int WaitForSingleObject(nint handle, int milliseconds);
+    static extern int WaitForSingleObject(nuint handle, int milliseconds);
 
     [DllImport("kernel32"), SuppressGCTransition]
     static extern int TlsFree(int slot);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern nint VirtualAlloc(nint at, nint bytes, int type, int protect);
+    static extern nuint VirtualAlloc(nuint at, nuint bytes, int type, int protect);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int VirtualFree(nint at, nint bytes, int type);
+    static extern int VirtualFree(nuint at, nuint bytes, int type);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern nint VirtualQuery(nint at, nint info, nint bytes);
+    static extern nuint VirtualQuery(nuint at, nuint info, nuint bytes);
 
     [DllImport("kernel32"), SuppressGCTransition]
     static extern void ExitProcess(int code);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern nint GetStdHandle(int which);
+    static extern nuint GetStdHandle(int which);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int WriteFile(nint file, nint bytes, int count, nint written, nint overlapped);
+    static extern int WriteFile(nuint file, nuint bytes, int count, nuint written, nuint overlapped);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int QueryPerformanceCounter(nint count);
+    static extern int QueryPerformanceCounter(nuint count);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int QueryPerformanceFrequency(nint frequency);
+    static extern int QueryPerformanceFrequency(nuint frequency);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int GetTickCount();
+    static extern uint GetTickCount();
 
     [DllImport("kernel32"), SuppressGCTransition]
     static extern void Sleep(int milliseconds);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int GetModuleFileNameA(nint module, nint name, int size);
+    static extern int GetModuleFileNameA(nuint module, nuint name, int size);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern nint LoadLibraryA(nint name);
+    static extern nuint LoadLibraryA(nuint name);
 
     [DllImport("kernel32"), SuppressGCTransition]
-    static extern int VirtualProtect(nint at, nint bytes, int protect, nint old);
+    static extern int VirtualProtect(nuint at, nuint bytes, uint protect, nuint old);
 
     /// The slot taken, plus one: 0, none. No initialiser, so touching the
     /// class runs nothing before the thread has a block.
     static int _slotTaken;
 
-    static long _imageStart;
-    static long _imageEnd;
-    static long _nullStub;
+    static nuint _imageStart;
+    static nuint _imageEnd;
+    static nuint _nullStub;
     static long _frequency;
     static long _count;
 
@@ -123,7 +128,7 @@ static class Win32
     /// anything else of the image runs): a TLS slot for the threads' blocks,
     /// this thread's block in it, and the hooks. False -- the load fails --
     /// when there is no slot the TEB holds.
-    public static bool Attach(long instance)
+    public static bool Attach(nuint instance)
     {
         // The hooks first: with none, the bare-metal answers are the
         // machine's -- a port write and a HLT -- which a process may not make.
@@ -151,16 +156,16 @@ static class Win32
         // The image's own extent, which a fault must be in to be ours:
         // SizeOfImage from the PE header e_lfanew names.
         _imageStart = instance;
-        _imageEnd = instance + (Sys.Read32(instance + Sys.Read32(instance + 0x3C) + 0x50) & 0xFFFFFFFF);
+        _imageEnd = instance + Sys.Read32(instance + Sys.Read32(instance + 0x3C) + 0x50);
         _nullStub = NullStub();
 
-        long block = Sys.MainThreadBlock();
+        nuint block = Sys.MainThreadBlock();
         Sys.WriteNative(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
-        long scratch = (long)(nuint)VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
+        nuint scratch = VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
         if (scratch == 0) return false;
         Sys.WriteNative(block + Tls.StackBase, StackTop(scratch));
-        VirtualFree((nint)scratch, 0, MemRelease);
+        VirtualFree(scratch, 0, MemRelease);
         return true;
     }
 
@@ -177,9 +182,9 @@ static class Win32
     static void Adopt()
     {
         // The block, and after it the scratch StackTop fills.
-        long block = (long)(nuint)VirtualAlloc(0, (nint)(Tls.Bytes + InfoBytes), MemCommit | MemReserve, PageReadWrite);
+        nuint block = VirtualAlloc(0, Tls.Bytes + InfoBytes, MemCommit | MemReserve, PageReadWrite);
         if (block == 0) ExitProcess(137);
-        long top = StackTop(block + Tls.Bytes);
+        nuint top = StackTop(block + Tls.Bytes);
         Sys.WriteNative(block + Tls.Self, block);
         Sys.SetThreadBlock(block);
         Runtime.RegisterThread(block, top);
@@ -190,12 +195,12 @@ static class Win32
     /// thread's block is static memory, and stays.
     public static void ThreadDetach()
     {
-        long block = Sys.ThreadBlock();
+        nuint block = Sys.ThreadBlock();
         if (block == 0) return;
         Runtime.EndBlocking();
         Runtime.EndThread();
         Sys.SetThreadBlock(0);
-        if (block != Sys.MainThreadBlock()) VirtualFree((nint)block, 0, MemRelease);
+        if (block != Sys.MainThreadBlock()) VirtualFree(block, 0, MemRelease);
     }
 
     /// THE WAY INTO Runtime.NullFault from a fault, made once: Fault cannot
@@ -204,20 +209,19 @@ static class Win32
     /// faulting instruction in EAX and its frame in EDX, and this builds it:
     /// NullFault(frame, pc), its return address the faulting instruction, as
     /// if that instruction had called it; the stack aligned as a call leaves it.
-    static long NullStub()
+    static nuint NullStub()
     {
-        long stub = (long)(nuint)VirtualAlloc(0, 32, MemCommit | MemReserve, PageExecuteReadWrite);
+        nuint stub = VirtualAlloc(0, 32, MemCommit | MemReserve, PageExecuteReadWrite);
         if (stub == 0) return 0;
-        long entry = Sys.AddressOf(Runtime.NullFault);
-        int at = 0;
+        nuint entry = Sys.AddressOf(Runtime.NullFault);
+        nuint at = 0;
         Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xE4); Sys.Write8(stub + at++, 0xF0); // and esp, -16
-        Sys.Write8(stub + at++, 0x6A); Sys.Write8(stub + at++, 0x00);                                 // push 0     pc, high
+        Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xEC); Sys.Write8(stub + at++, 0x08); // sub esp, 8: after the three pushes, aligned as a call leaves it
         Sys.Write8(stub + at++, 0x50);                                                                  // push eax   pc
-        Sys.Write8(stub + at++, 0x6A); Sys.Write8(stub + at++, 0x00);                                 // push 0     frame, high
         Sys.Write8(stub + at++, 0x52);                                                                  // push edx   frame
         Sys.Write8(stub + at++, 0x50);                                                                  // push eax   the return address
         Sys.Write8(stub + at++, 0xB9);                                                                  // mov ecx, NullFault
-        for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (int)(entry >> (8 * i)) & 0xFF);
+        for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (byte)(entry >> (8 * i)));
         Sys.Write8(stub + at++, 0xFF); Sys.Write8(stub + at++, 0xE1);                                 // jmp ecx
         return stub;
     }
@@ -232,21 +236,19 @@ static class Win32
     /// EXCEPTION_RECORD: ExceptionCode at 0, ExceptionFlags 4,
     /// NumberParameters 16, the address 24. CONTEXT: Edx 0xA8, Eax 0xB0,
     /// Ebp 0xB4, Eip 0xB8.
-    public static int Fault(nint record, nint registration, nint context, nint dispatcher)
+    public static int Fault(nuint rec, nuint registration, nuint ctx, nuint dispatcher)
     {
-        long rec = (long)(nuint)record;
-        long ctx = (long)(nuint)context;
         if ((Sys.Read32(rec + 4) & Unwinding) != 0) return ContinueSearch;
-        if ((int)Sys.Read32(rec) != AccessViolation || _nullStub == 0 || Sys.Read32(rec + 16) < 2) return ContinueSearch;
-        long pc = Sys.Read32(ctx + 0xB8) & 0xFFFFFFFF;
+        if (Sys.Read32(rec) != AccessViolation || _nullStub == 0 || Sys.Read32(rec + 16) < 2) return ContinueSearch;
+        nuint pc = Sys.Read32(ctx + 0xB8);
         // Ours: this image's code, or code of an image over it that the
         // runtime knows by its frames (Runtime.KnowsCode).
         if ((pc < _imageStart || pc >= _imageEnd) && !Runtime.KnowsCode(pc)) return ContinueSearch;
         // The address read or written. Windows 9x gives -1 there, and the
         // faulting instruction says it instead (FaultAddress).
-        long address = Sys.Read32(rec + 24) & 0xFFFFFFFF;
-        if (address == 0xFFFFFFFF) address = FaultAddress(ctx, pc);
-        if (address < 0 || !Runtime.NullFaultCatchable(address)) return ContinueSearch;
+        nuint address = Sys.Read32(rec + 24);
+        if (address == NoAddress) address = FaultAddress(ctx, pc);
+        if (address == NoAddress || !Runtime.NullFaultCatchable(address)) return ContinueSearch;
 
         Sys.WriteNative(ctx + 0xB0, pc);
         Sys.WriteNative(ctx + 0xA8, Sys.Read32(ctx + 0xB4));
@@ -261,23 +263,23 @@ static class Win32
     /// code uses -- a ModRM operand after a one- or two-byte opcode, or the
     /// accumulator's absolute moves (A0-A3) -- and -1 for anything else, or
     /// for an operand through FS or GS, which is never a null reference's.
-    static long FaultAddress(long ctx, long pc)
+    static nuint FaultAddress(nuint ctx, nuint pc)
     {
-        long at = pc;
-        int b = (int)Sys.Read8(at);
+        nuint at = pc;
+        int b = Sys.Read8(at);
         // Prefixes: operand size, repeats, lock, the segments but FS and GS.
         while (b is 0x66 or 0x67 or 0xF0 or 0xF2 or 0xF3 or 0x26 or 0x2E or 0x36 or 0x3E)
         {
             at++;
-            b = (int)Sys.Read8(at);
+            b = Sys.Read8(at);
         }
-        if (b is 0x64 or 0x65) return -1;
-        if (b is >= 0xA0 and <= 0xA3) return Sys.Read32(at + 1) & 0xFFFFFFFF;
+        if (b is 0x64 or 0x65) return NoAddress;
+        if (b is >= 0xA0 and <= 0xA3) return Sys.Read32(at + 1);
         bool modrm;
         if (b == 0x0F)
         {
             at++;
-            int c = (int)Sys.Read8(at);
+            int c = Sys.Read8(at);
             modrm = c is (>= 0x10 and <= 0x17) or (>= 0x28 and <= 0x2F) or (>= 0x40 and <= 0x4F) or (>= 0x90 and <= 0x9F)
                 or 0xA3 or 0xA4 or 0xA5 or 0xAB or 0xAC or 0xAD or 0xAF or (>= 0xB0 and <= 0xB7) or (>= 0xBA and <= 0xBF)
                 or 0xC0 or 0xC1 or 0xC7;
@@ -287,46 +289,46 @@ static class Win32
             modrm = (b < 0x40 && (b & 7) < 4) || b is 0x62 or 0x63 or 0x69 or 0x6B or (>= 0x80 and <= 0x8F) or 0xC0 or 0xC1
                 or (>= 0xC4 and <= 0xC7) or (>= 0xD0 and <= 0xD3) or (>= 0xD8 and <= 0xDF) or 0xF6 or 0xF7 or 0xFE or 0xFF;
         }
-        if (!modrm) return -1;
+        if (!modrm) return NoAddress;
         at++;
-        int m = (int)Sys.Read8(at);
+        int m = Sys.Read8(at);
         int mod = m >> 6, rm = m & 7;
-        if (mod == 3) return -1;
+        if (mod == 3) return NoAddress;
         at++;
-        long address = 0;
+        nuint address = 0;
         if (rm == 4)
         {
-            int sib = (int)Sys.Read8(at);
+            int sib = Sys.Read8(at);
             at++;
             int scale = sib >> 6, index = (sib >> 3) & 7, bas = sib & 7;
             if (index != 4) address = Register(ctx, index) << scale;
             if (bas == 5 && mod == 0)
             {
-                address = address + (Sys.Read32(at) & 0xFFFFFFFF);
+                address = address + Sys.Read32(at);
                 at = at + 4;
             }
             else address = address + Register(ctx, bas);
         }
         else if (rm == 5 && mod == 0)
         {
-            address = Sys.Read32(at) & 0xFFFFFFFF;
+            address = Sys.Read32(at);
             at = at + 4;
         }
         else address = Register(ctx, rm);
-        if (mod == 1) address = address + (long)(sbyte)Sys.Read8(at);
-        else if (mod == 2) address = address + (long)(int)Sys.Read32(at);
-        return address & 0xFFFFFFFF;
+        if (mod == 1) address = address + (nuint)(nint)(sbyte)Sys.Read8(at);
+        else if (mod == 2) address = address + (nuint)(nint)(int)Sys.Read32(at);
+        return address;
     }
 
     /// A general register as CONTEXT holds it, by its encoding: EAX ECX EDX EBX ESP EBP ESI EDI.
-    static long Register(long ctx, int number)
+    static nuint Register(nuint ctx, int number)
     {
-        long offset = number switch { 0 => 0xB0, 1 => 0xAC, 2 => 0xA8, 3 => 0xA4, 4 => 0xC4, 5 => 0xB4, 6 => 0xA0, _ => 0x9C };
-        return Sys.Read32(ctx + offset) & 0xFFFFFFFF;
+        nuint offset = number switch { 0 => 0xB0, 1 => 0xAC, 2 => 0xA8, 3 => 0xA4, 4 => 0xC4, 5 => 0xB4, 6 => 0xA0, _ => 0x9C };
+        return Sys.Read32(ctx + offset);
     }
 
     /// A PROGRAM'S IMAGE: the module the process was started from (its handle is its base).
-    public static long ProgramImage() => (long)(nuint)GetModuleHandleW(0);
+    public static nuint ProgramImage() => GetModuleHandleW(0);
 
     /// The process ends, with `code`: a program that could not even start.
     public static void Fail(int code) => ExitProcess(code);
@@ -345,46 +347,47 @@ static class Win32
     // again. Made in Attach, in memory of its own: a wait may be the
     // collector's, with nothing to be had of the heap.
     const int ParkBuckets = 64;
-    static long _parkSemaphores;
-    static long _parkWaiters;
+    static nuint _parkSemaphores;
+    static nuint _parkWaiters;
 
     static bool MakeParking()
     {
         if (_parkSemaphores != 0) return true;
-        long table = (long)(nuint)VirtualAlloc(0, ParkBuckets * 8, MemCommit | MemReserve, PageReadWrite);
+        nuint table = VirtualAlloc(0, ParkBuckets * 8, MemCommit | MemReserve, PageReadWrite);
         if (table == 0) return false;
         for (int i = 0; i < ParkBuckets; i++)
         {
-            long semaphore = (long)(nuint)CreateSemaphoreA(0, 0, 0x7FFFFFFF, 0);
+            nuint semaphore = CreateSemaphoreA(0, 0, 0x7FFFFFFF, 0);
             if (semaphore == 0) return false;
-            Sys.WriteNative(table + i * 4, semaphore);
+            Sys.WriteNative(table + 4 * (nuint)i, semaphore);
         }
-        _parkWaiters = table + ParkBuckets * 4;
+        _parkWaiters = table + 4 * ParkBuckets;
         _parkSemaphores = table;
         return true;
     }
 
-    static int Bucket(long at) => (int)(((at >> 2) * 0x9E3779B1L >> 26) & (ParkBuckets - 1));
+    static nuint Bucket(nuint at) => ((at >> 2) * 0x9E3779B1 >> 26) & (ParkBuckets - 1);
 
     /// Waits while the word at `at` is `expect`, for at most `milliseconds`
     /// (-1, none -- looked at again each second all the same).
-    public static void Park(long at, long expect, int milliseconds)
+    public static void Park(nuint at, nint expect, int milliseconds)
     {
-        int b = Bucket(at);
-        long waiters = _parkWaiters + b * 4;
-        Sys.AtomicAdd(waiters, 1);
-        if (Sys.Read32(at) == expect)
-            WaitForSingleObject((nint)Sys.Read32(_parkSemaphores + b * 4), milliseconds < 0 || milliseconds > 1000 ? 1000 : milliseconds);
-        Sys.AtomicAdd(waiters, -1);
+        nuint b = Bucket(at);
+        nuint waiters = _parkWaiters + b * 4;
+        Sys.AtomicAdd(waiters, One);
+        if (Sys.Read32(at) == (uint)expect)
+            WaitForSingleObject(Sys.Read32(_parkSemaphores + b * 4), milliseconds < 0 || milliseconds > 1000 ? 1000 : milliseconds);
+        Sys.AtomicAdd(waiters, MinusOne);
     }
 
     /// Wakes up to `count` of what waits on the word at `at`.
-    public static void Unpark(long at, long count)
+    public static void Unpark(nuint at, nint count)
     {
-        int b = Bucket(at);
-        long waiting = Sys.Read32(_parkWaiters + b * 4);
-        if (waiting <= 0) return;
-        ReleaseSemaphore((nint)Sys.Read32(_parkSemaphores + b * 4), (int)(count < waiting ? count : waiting), 0);
+        nuint b = Bucket(at);
+        uint waiting = Sys.Read32(_parkWaiters + b * 4);
+        if (waiting == 0) return;
+        uint wake = (uint)count;
+        ReleaseSemaphore(Sys.Read32(_parkSemaphores + b * 4), wake < waiting ? wake : waiting, 0);
     }
 
     /// The runtime is running: what wants it.
@@ -405,13 +408,13 @@ static class Win32
     /// An image loaded for good: its own name loaded once more (Pin). An
     /// image over the runtime DLL pins itself so (Lowering.EmitImageAttach):
     /// the runtime holds its statics and frames from then on.
-    public static void PinImage(long instance)
+    public static void PinImage(nuint instance)
     {
-        long name = (long)(nuint)VirtualAlloc(0, 264, MemCommit | MemReserve, PageReadWrite);
+        nuint name = VirtualAlloc(0, 264, MemCommit | MemReserve, PageReadWrite);
         if (name == 0) return;
-        int length = GetModuleFileNameA((nint)instance, (nint)name, 260);
-        if (length > 0 && length < 260) LoadLibraryA((nint)name);
-        VirtualFree((nint)name, 0, MemRelease);
+        int length = GetModuleFileNameA(instance, name, 260);
+        if (length > 0 && length < 260) LoadLibraryA(name);
+        VirtualFree(name, 0, MemRelease);
     }
 
     /// THE WORDS AN IMPORT'S ADDRESS GOES IN, filled as an image over the
@@ -423,32 +426,32 @@ static class Win32
     /// functions'; it has no relocation that names another image's symbol,
     /// and this is that relocation. Every section is made writable for the
     /// while, and each is given back the protection it had.
-    public static void FillImports(long instance, long table, long end)
+    public static void FillImports(nuint instance, nuint table, nuint end)
     {
         if (table == end) return;
-        long pe = instance + (Sys.Read32(instance + 0x3C) & 0xFFFFFFFF);
-        long sections = Sys.Read32(pe + 6) & 0xFFFF;
-        long headers = pe + 24 + (Sys.Read32(pe + 20) & 0xFFFF);
+        nuint pe = instance + Sys.Read32(instance + 0x3C);
+        nuint sections = Sys.Read16(pe + 6);
+        nuint headers = pe + 24 + Sys.Read16(pe + 20);
         // A word of protection kept for each section, in a page of its own.
-        long kept = (long)(nuint)VirtualAlloc(0, (nint)(sections * 4 + 4), MemCommit | MemReserve, PageReadWrite);
+        nuint kept = VirtualAlloc(0, sections * 4 + 4, MemCommit | MemReserve, PageReadWrite);
         if (kept == 0) ExitProcess(137);
-        for (long i = 0; i < sections; i++)
+        for (nuint i = 0; i < sections; i++)
         {
-            long header = headers + i * 40;
-            VirtualProtect((nint)(instance + (Sys.Read32(header + 12) & 0xFFFFFFFF)), (nint)(Sys.Read32(header + 8) & 0xFFFFFFFF), PageExecuteReadWrite, (nint)(kept + i * 4));
+            nuint header = headers + i * 40;
+            VirtualProtect(instance + Sys.Read32(header + 12), Sys.Read32(header + 8), PageExecuteReadWrite, kept + i * 4);
         }
-        for (long at = table; at < end; at = at + 8)
+        for (nuint at = table; at < end; at = at + 8)
         {
-            long word = instance + (Sys.Read32(at) & 0xFFFFFFFF);
-            long slot = instance + (Sys.Read32(at + 4) & 0xFFFFFFFF);
-            Sys.WriteNative(word, (Sys.Read32(word) + Sys.Read32(slot)) & 0xFFFFFFFF);
+            nuint word = instance + Sys.Read32(at);
+            nuint slot = instance + Sys.Read32(at + 4);
+            Sys.WriteNative(word, Sys.Read32(word) + Sys.Read32(slot));
         }
-        for (long i = 0; i < sections; i++)
+        for (nuint i = 0; i < sections; i++)
         {
-            long header = headers + i * 40;
-            VirtualProtect((nint)(instance + (Sys.Read32(header + 12) & 0xFFFFFFFF)), (nint)(Sys.Read32(header + 8) & 0xFFFFFFFF), (int)Sys.Read32(kept + i * 4), (nint)(kept + sections * 4));
+            nuint header = headers + i * 40;
+            VirtualProtect(instance + Sys.Read32(header + 12), Sys.Read32(header + 8), Sys.Read32(kept + i * 4), kept + sections * 4);
         }
-        VirtualFree((nint)kept, 0, MemRelease);
+        VirtualFree(kept, 0, MemRelease);
     }
 
     /// THE TOP OF THIS THREAD'S STACK, where a scan of it ends: the end of
@@ -457,33 +460,33 @@ static class Win32
     /// at `scratch` (28 bytes; BaseAddress first, RegionSize the fourth word),
     /// which is memory the heap never handed out: this runs before the
     /// thread may allocate.
-    static long StackTop(long scratch)
+    static nuint StackTop(nuint scratch)
     {
-        VirtualQuery((nint)Sys.FramePointer(), (nint)scratch, InfoBytes);
-        return (Sys.ReadNative(scratch) & 0xFFFFFFFF) + (Sys.ReadNative(scratch + 12) & 0xFFFFFFFF);
+        VirtualQuery(Sys.FramePointer(), scratch, InfoBytes);
+        return Sys.ReadNative(scratch) + Sys.ReadNative(scratch + 12);
     }
 
     /// Zeroed pages, or 0: VirtualAlloc's are zeroed.
-    static long Map(long bytes, long b, long c)
+    static nuint Map(nuint bytes, nuint b, nuint c)
     {
-        return (long)(nuint)VirtualAlloc(0, (nint)bytes, MemCommit | MemReserve, PageReadWrite);
+        return VirtualAlloc(0, bytes, MemCommit | MemReserve, PageReadWrite);
     }
 
     /// Given back by DECOMMIT: the heap gives back pieces of what it was
     /// mapped, and only a whole reservation can be released.
-    static long Unmap(long at, long bytes, long c)
+    static nint Unmap(nuint at, nuint bytes, nuint c)
     {
-        VirtualFree((nint)at, (nint)bytes, MemDecommit);
+        VirtualFree(at, bytes, MemDecommit);
         return 0;
     }
 
     /// The performance counter as nanoseconds, or the tick count's
     /// milliseconds on a machine without one.
-    static long Nanos(long a, long b, long c)
+    static long Nanos(nint a, nint b, nint c)
     {
-        if (_frequency == 0 && QueryPerformanceFrequency((nint)Sys.AddressOf(ref _frequency)) == 0) _frequency = -1;
-        if (_frequency < 0) return (long)(uint)GetTickCount() * 1000000;
-        QueryPerformanceCounter((nint)Sys.AddressOf(ref _count));
+        if (_frequency == 0 && QueryPerformanceFrequency(Sys.AddressOf(ref _frequency)) == 0) _frequency = -1;
+        if (_frequency < 0) { long ticks = GetTickCount(); return ticks * 1000000; }
+        QueryPerformanceCounter(Sys.AddressOf(ref _count));
         long seconds = _count / _frequency;
         return seconds * 1000000000 + (_count - seconds * _frequency) * 1000000000 / _frequency;
     }
@@ -493,36 +496,36 @@ static class Win32
     /// change, so this one gives up the rest of its time slice.
     /// Sleep(0), which every Windows has; nothing wakes a sleeper, which
     /// looks again on its next turn.
-    static long Yield(long at, long value, long c)
+    static nint Yield(nuint at, nint value, nint c)
     {
         Sleep(0);
         return 0;
     }
 
-    [DllImport("kernel32")] static extern void GetSystemInfo(nint info);
+    [DllImport("kernel32")] static extern void GetSystemInfo(nuint info);
 
     /// How many processors (Os.ProcessorCount): SYSTEM_INFO's count, at 20.
-    static long Processors(long a, long b, long c)
+    static nint Processors(nint a, nint b, nint c)
     {
         byte[] info = new byte[36];
-        GetSystemInfo((nint)Sys.ArrayData(info));
+        GetSystemInfo(Sys.ArrayData(info));
         return info[20] | (info[21] << 8) | (info[22] << 16) | (info[23] << 24);
     }
 
-    static long Exit(long code, long b, long c)
+    static nint Exit(int code, nint b, nint c)
     {
-        ExitProcess((int)code);
+        ExitProcess(code);
         return 0;
     }
 
     /// What the runtime prints -- an unhandled exception's report -- goes to
     /// the process's standard error, when it has one (Platform.WriteHook).
-    static long Write(long fd, long address, long count)
+    static nuint Write(int fd, nuint address, nuint count)
     {
-        nint handle = GetStdHandle(StdErrorHandle);
-        if (handle == 0 || handle == -1) return 0;
+        nuint handle = GetStdHandle(StdErrorHandle);
+        if (handle == 0 || handle == InvalidHandle) return 0;
         long written = 0;
-        WriteFile(handle, (nint)address, (int)count, (nint)Sys.AddressOf(ref written), 0);
+        WriteFile(handle, address, (int)count, Sys.AddressOf(ref written), 0);
         return count;
     }
 }
