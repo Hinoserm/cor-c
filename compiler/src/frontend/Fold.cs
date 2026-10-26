@@ -211,10 +211,10 @@ public static class Fold
             // `c ? a : b` is a constant when all three are (C# 12.23): the
             // compile-time asserts written `1 / (A == B ? 1 : 0)` are this.
             // Its type is the arms' own where they agree, else the one arm's
-            // type the other converts to implicitly and not back (C# 12.18):
-            // `c ? (short)1 : (byte)2` is a short, `c ? 200 : 300L` a long.
-            // Anything else -- `c ? -1 : 2u`, a float meeting another type --
-            // is left to the binder.
+            // type the other's type converts to implicitly and not back (C#
+            // 12.18): `c ? (short)1 : (byte)2` is a short, `c ? 200 : 300L` a
+            // long. Anything else -- `c ? -1 : 2u`, a float meeting another
+            // type -- is left to the binder.
             case ConditionalExpr c:
             {
                 if (!Eval(c.Cond, out long cond, out Prim condType, named) || condType != Prim.Bool
@@ -226,11 +226,11 @@ public static class Fold
                 {
                     type = left;
                 }
-                else if (ConvertsTo(right, y, left) && !ConvertsTo(left, x, right))
+                else if (ConvertsTo(right, left) && !ConvertsTo(left, right))
                 {
                     type = left;
                 }
-                else if (ConvertsTo(left, x, right) && !ConvertsTo(right, y, left))
+                else if (ConvertsTo(left, right) && !ConvertsTo(right, left))
                 {
                     type = right;
                 }
@@ -469,35 +469,23 @@ public static class Fold
     private static bool IsNumber(Prim p) => IsWhole(p) || IsReal(p);
 
     /// <summary>
-    /// Whether a constant `value` of whole type `from` converts implicitly to
-    /// whole type `to` (C# 10.2.3, 10.2.11): a widening, or an int constant
-    /// that fits (a long one, to ulong, when not negative). The native
-    /// integers take part only as themselves.
+    /// Whether whole type `from` converts implicitly to whole type `to` (C#
+    /// 10.2.3): what the conditional operator types its arms by (C# 12.18),
+    /// which is the TYPES' conversion, not a constant's -- `c ? 5 : (byte)2`
+    /// is an int, though 5 would fit a byte. The native integers take part
+    /// only as themselves.
     /// </summary>
-    private static bool ConvertsTo(Prim from, long value, Prim to)
+    private static bool ConvertsTo(Prim from, Prim to) => (from, to) switch
     {
-        if (!IsWhole(from) || !IsWhole(to) || from is Prim.NInt or Prim.NUInt || to is Prim.NInt or Prim.NUInt) return false;
-        if (from == Prim.I32 && to != Prim.Char) return to switch
-        {
-            Prim.I8 => value is >= sbyte.MinValue and <= sbyte.MaxValue,
-            Prim.U8 => value is >= 0 and <= byte.MaxValue,
-            Prim.I16 => value is >= short.MinValue and <= short.MaxValue,
-            Prim.U16 => value is >= 0 and <= ushort.MaxValue,
-            Prim.U32 or Prim.U64 => value >= 0,
-            _ => true,
-        };
-        if (from == Prim.I64 && to == Prim.U64) return value >= 0;
-        return (from, to) switch
-        {
-            (Prim.I8, Prim.I16 or Prim.I32 or Prim.I64) => true,
-            (Prim.U8, Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64) => true,
-            (Prim.I16, Prim.I32 or Prim.I64) => true,
-            (Prim.U16 or Prim.Char, Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64) => true,
-            (Prim.Char, Prim.U16) => true,
-            (Prim.U32, Prim.I64 or Prim.U64) => true,
-            _ => false,
-        };
-    }
+        (Prim.I8, Prim.I16 or Prim.I32 or Prim.I64) => true,
+        (Prim.U8, Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64) => true,
+        (Prim.I16, Prim.I32 or Prim.I64) => true,
+        (Prim.U16 or Prim.Char, Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64) => true,
+        (Prim.Char, Prim.U16) => true,
+        (Prim.I32, Prim.I64) => true,
+        (Prim.U32, Prim.I64 or Prim.U64) => true,
+        _ => false,
+    };
 
     private static bool IsWhole(Prim p) => p is Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64
         or Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64 or Prim.Char or Prim.NInt or Prim.NUInt;
