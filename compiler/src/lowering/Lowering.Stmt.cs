@@ -9,6 +9,17 @@ using AstBlock = Corsac.Lang.Block;
 
 public sealed partial class Lowering
 {
+    /// <summary>
+    /// An expression evaluated for what it does, its value dropped: a
+    /// statement's, a for step's. `(a, b) = pair` there is its assignment,
+    /// not its places read back (SequenceExpr.Assignment).
+    /// </summary>
+    private void EvalForEffect(Expr e)
+    {
+        if (e is SequenceExpr { Assignment: true } deconstructing) EmitStmt(deconstructing.Effect);
+        else Eval(e);
+    }
+
     private void EmitStmt(Stmt s)
     {
         // One of a block's own statements leaves the arrays it addressed to
@@ -162,14 +173,8 @@ public sealed partial class Lowering
                 EmitLocalDecl(u.Declaration);
                 break;
 
-            // `(a, b) = pair` as an expression statement: the assignment, and
-            // not its places read back (SequenceExpr.Assignment).
-            case ExprStmt { Expr: SequenceExpr { Assignment: true } deconstructing }:
-                EmitStmt(deconstructing.Effect);
-                break;
-
             case ExprStmt e:
-                Eval(e.Expr);
+                EvalForEffect(e.Expr);
                 break;
 
             case IfStmt i:
@@ -301,8 +306,7 @@ public sealed partial class Lowering
                 {
                     // A step is a statement: `(i, j) = (i + 1, j - 1)` is
                     // its assignment, not its places read back.
-                    if (e2 is SequenceExpr { Assignment: true } deconstructing) EmitStmt(deconstructing.Effect);
-                    else Eval(e2);
+                    EvalForEffect(e2);
                 }
                 _e.Jump(top);
                 _e.SetBlock(end);

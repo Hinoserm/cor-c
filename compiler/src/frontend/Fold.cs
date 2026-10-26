@@ -213,8 +213,9 @@ public static class Fold
             // Its type is the arms' own where they agree, else the one arm's
             // type the other's type converts to implicitly and not back (C#
             // 12.18): `c ? (short)1 : (byte)2` is a short, `c ? 200 : 300L` a
-            // long. Anything else -- `c ? -1 : 2u`, a float meeting another
-            // type -- is left to the binder.
+            // long. Arms neither of whose types converts to the other's --
+            // `c ? -1 : 2u`, int and uint -- and a float meeting another type
+            // are left to the binder.
             case ConditionalExpr c:
             {
                 if (!Eval(c.Cond, out long cond, out Prim condType, named) || condType != Prim.Bool
