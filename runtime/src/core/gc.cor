@@ -7592,6 +7592,7 @@ static class Gc
         //
         // WHY A LARGE REQUEST CAN FAIL WITH THE HEAP HALF FREE: free memory
         // serves it only as a whole mapping. A request of a megabyte or more
+        // -- or of MixedChunkMost, where a platform bounds the mixed chunks --
         // is larger than any mixed chunk (ChunkAsk), so no hole can hold it,
         // and the collector moves nothing to make one; a size-class page's
         // free slots serve only its class. Under a cap the heap's room is
@@ -14774,7 +14775,8 @@ static class Gc
     /// at once by whoever needs it, if the stop's walk has not been through
     /// it, and that walk passes it after. The chunk the walk has in hand is
     /// finished. Only this one chunk: a page is 32 KB, a mixed chunk a
-    /// megabyte at most. Under the heap lock, so no two walk one chunk. Not
+    /// megabyte at most, or what a platform bounds it to (MixedChunkMost).
+    /// Under the heap lock, so no two walk one chunk. Not
     /// a chunk the snapshot does not hold (mapped since), nor an old one in
     /// a minor cycle (old as the stop began, HeapChunks.Walks, whatever it
     /// has become since) -- neither is walked at all.
@@ -15554,7 +15556,8 @@ static class HeapChunks
     }
 
     // WHAT A CHUNK IS NORMALLY: a sixteenth of the heap as it stands,
-    // between 64 KiB and a megabyte (ChunkAsk). A large heap -- a compiler's
+    // between 64 KiB and a megabyte, or MixedChunkMost where a platform
+    // sets it (ChunkAsk). A large heap -- a compiler's
     // -- still asks the operating system rarely and keeps its chunk list
     // short; a small one grows and gives back in small steps. A megabyte
     // always kept a megabyte for a few live blocks: a 32 MB machine's GUI
@@ -15563,6 +15566,16 @@ static class HeapChunks
     const long ChunkLeast = 65536, ChunkMost = 1048576;
     /// The least a heap other than the first grows by (ChunkAsk).
     const long ModuleChunkLeast = 16384;
+
+    /// THE MOST A MIXED CHUNK MAY BE, as a platform sets it (0: ChunkMost,
+    /// a megabyte). A chunk's blocks are found by their chain from its first,
+    /// so its size is what one walk of it costs -- the stop's walk in steps
+    /// passes chunk by chunk, but a thread that needs a chunk's snapshot
+    /// mid-stop walks the whole of it (Gc.EnsureWalked), and every thread
+    /// waiting for the heap lock waits as long. A kernel on a K6-III asks a
+    /// quarter of a megabyte. Never below ChunkLeast; a request larger than
+    /// a mixed chunk takes one of its own, as ever.
+    public static long MixedChunkMost;
 
     static long ChunkAsk()
     {
@@ -15573,8 +15586,10 @@ static class HeapChunks
         long most = ChunkMost;
         long cap = Platform.GcThreshold();
         if (cap > 0) most = (cap / 8 + 4095) & -4096;
+        long ceiling = MixedChunkMost > 0 && MixedChunkMost < ChunkMost ? MixedChunkMost : ChunkMost;
+        if (ceiling < ChunkLeast) ceiling = ChunkLeast;
         if (most < ChunkLeast) most = ChunkLeast;
-        if (most > ChunkMost) most = ChunkMost;
+        if (most > ceiling) most = ceiling;
         // A KERNEL MODULE'S HEAP BY ITS OWN SIZE, not the machine's: a
         // driver's first object past a kilobyte took a chunk measured on
         // every heap together, a quarter of a megabyte for a ring buffer.
@@ -16157,8 +16172,9 @@ static class HeapChunks
     // mixed chunks, slots of size-class pages, none of them a whole chunk
     // the system could take back -- refused a two-megabyte Dictionary rehash
     // with eighty-five megabytes free: no hole of a mixed chunk is larger
-    // than the chunk (a megabyte at most, ChunkAsk), the collector moves
-    // nothing, and a large array is only ever a new mapping. And a rehash, or
+    // than the chunk (a megabyte at most, or MixedChunkMost; ChunkAsk), the
+    // collector moves nothing, and a large array is only ever a new mapping.
+    // And a rehash, or
     // a list's growth, needs the new array while the old one is still alive:
     // the old one goes back the moment the copy is made (OutgrownStorage),
     // but not before. Held back from ordinary growth, the reserve is there
