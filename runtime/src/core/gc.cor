@@ -6275,9 +6275,10 @@ static class Gc
     // a time, from where the last step left -- the collector's own in its
     // stop (nothing of the program runs on it meanwhile), and a blocked
     // thread's that the collector answers STAMP for (GcThreads.Work). That
-    // thread is given back between steps and claimed again; it can leave
-    // its blocking meanwhile only by answering, which ends the steps, so
-    // when they go on its caches have stood still.
+    // thread is given back between steps and claimed again. Its caches
+    // stand still when the steps go on: it can leave its blocking only by
+    // answering (EndBlocking), and the steps end if it has answered, is
+    // claimed by another, or was moved to another stack (MoveStack).
     static long _selfShelf, _selfClass;
 
     public static void BeginSelfStamp()
@@ -17856,7 +17857,10 @@ static class GcThreads
             // its blocking it answers at once (EndBlocking), so its pages
             // and its stack are as they were, and the steps go on. Not
             // claimed again (Busy in a MoveStack, Running in its answer,
-            // Gone), or answered, it is left to itself. Moved to another
+            // Gone), or answered, it is left to itself: its answer, or the
+            // MoveStack's end, stirs the collector to look again. A pair
+            // stored back unchanged (the same trap's stack again) is
+            // harmless: the read is the same one. Moved to another
             // stack meanwhile (MoveStack: a trap from a program, the thread
             // still counted stopped), `from` is the old stack's: given back,
             // and the next look (AnswerForStopped) begins it again from the
@@ -18319,6 +18323,12 @@ static class GcThreads
                 Sys.Poke(block + Tls.StackLimit, limit);
                 Sys.Poke(block + Tls.StackBase, top);
                 Sys.AtomicSwap(block + Tls.State, Stopped);
+                // THE COLLECTOR TOLD, when the thread owes the round: one
+                // that found it Busy here passed it by (AnswerForStopped),
+                // and with nobody else to answer for went to sleep on the
+                // stirs -- which a thread stopped and owing, with nothing
+                // more to come from it, never moved.
+                if (Owes(block)) Stir();
                 return;
             }
 
