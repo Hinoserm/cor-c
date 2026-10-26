@@ -1,0 +1,60 @@
+// test: correlated_equality_branches
+// expect-exit: 0
+// expect-output:
+// zero 5 zero 3
+// 18 36 55 DivideByZero
+// 11 0 1 1
+//
+// A branch on `a != b` under one on `a == b` is decided by it
+// (DominatingBranch) only where the operands cannot have changed: a
+// divisor written in a loop is tested again each lap, a division that no
+// test guards still throws, and the same compare asked the same way stays.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Pick(int n, int a)
+    {
+        if (n == 0) return "zero";
+        // Here n != 0 is known: the division's own check is not needed.
+        return (a / n).ToString();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Laps(int a)
+    {
+        int n = 3, sum = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            if (n == 0) return -1;
+            sum += a / n;
+            n = n - 1;
+            if (n == 0) { n = 1; }
+        }
+        return sum;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Unguarded(int a, int n) { return a / n; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Same(int a, int b, int c)
+    {
+        int r = 0;
+        if (a == b) { if (a == b) r = r + 1; }
+        if (a != c) { if (a != c) r = r + 10; else r = r + 100; }
+        return r;
+    }
+
+    static void Main()
+    {
+        Console.WriteLine(Pick(0, 10) + " " + Pick(2, 10) + " " + Pick(0, 1) + " " + Pick(3, 10));
+        string caught = "none";
+        try { Unguarded(5, 0); } catch (DivideByZeroException) { caught = "DivideByZero"; }
+        Console.WriteLine(Laps(10) + " " + Laps(20) + " " + Laps(30) + " " + caught);
+        Console.WriteLine(Same(1, 1, 2) + " " + Same(2, 3, 2) + " " + (Same(4, 4, 5) - 10) + " " + Same(5, 5, 5));
+    }
+}
