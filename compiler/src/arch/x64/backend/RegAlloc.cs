@@ -356,7 +356,11 @@ internal sealed class Allocator
     private int[][] _succ = Array.Empty<int[]>();
     private int[][] _pred = Array.Empty<int[]>();
     private int[] _blockOfInstr = Array.Empty<int>();
+    // Kept for the GLOBAL registers alone (ComputeLiveness), by their own
+    // numbers: _globalOf a register's, -1 for one no block reads before it
+    // writes it -- in no block's use or live-out set, ever.
     private BitSet[] _useOf = Array.Empty<BitSet>(), _defOf = Array.Empty<BitSet>(), _liveOut = Array.Empty<BitSet>();
+    private int[] _globalOf = Array.Empty<int>();
     /// <summary>Reads of a spilled register that its register already holds: no reload (HeldBeforeSpill).</summary>
     private readonly HashSet<(int VReg, int Instr)> _noReload = new();
 
@@ -526,28 +530,55 @@ internal sealed class Allocator
             at += count[b];
         }
 
+        // ONLY A REGISTER READ IN SOME BLOCK BEFORE THAT BLOCK WRITES IT can
+        // be live into a block, or out of one, as in the i386 allocator: the
+        // blocks' sets are kept for those registers alone, numbered apart
+        // (_globalOf, globals). Three sets a block as wide as every register
+        // were the dynamic family's undoing in long mode: 1320's Main ran out
+        // of a 4 GB heap here, where i386 compiles it in 2 GB.
+        int[] lastDef = new int[_n];
+        Array.Fill(lastDef, -1);
+        int[] globalOf = new int[_n];
+        Array.Fill(globalOf, -1);
+        List<int> globals = new();
+        for (int b = 0; b < nb; b++)
+        {
+            for (int i = first[b]; i < first[b] + count[b]; i++)
+            {
+                foreach ((MReg r, Roles.Role role, _, _) in RegsOf(_lin[i]))
+                    if (Tracked(r) && (role & Roles.Role.Use) != 0 && lastDef[r.Id] != b && globalOf[r.Id] < 0)
+                    {
+                        globalOf[r.Id] = globals.Count;
+                        globals.Add(r.Id);
+                    }
+                foreach ((MReg r, Roles.Role role, _, _) in RegsOf(_lin[i]))
+                    if (Tracked(r) && (role & Roles.Role.Def) != 0) lastDef[r.Id] = b;
+            }
+        }
+        int g = globals.Count;
+
         BitSet[] use = new BitSet[nb];
         BitSet[] def = new BitSet[nb];
         BitSet[] live = new BitSet[nb];
         for (int b = 0; b < nb; b++)
         {
-            use[b] = new BitSet(_n);
-            def[b] = new BitSet(_n);
-            live[b] = new BitSet(_n);
+            use[b] = new BitSet(g);
+            def[b] = new BitSet(g);
+            live[b] = new BitSet(g);
             for (int i = first[b]; i < first[b] + count[b]; i++)
             {
                 foreach ((MReg r, Roles.Role role, _, _) in RegsOf(_lin[i]))
                 {
-                    if (Tracked(r) && (role & Roles.Role.Use) != 0 && !def[b].Get(r.Id))
+                    if (Tracked(r) && (role & Roles.Role.Use) != 0 && globalOf[r.Id] is >= 0 and var at && !def[b].Get(at))
                     {
-                        use[b].Set(r.Id);
+                        use[b].Set(at);
                     }
                 }
                 foreach ((MReg r, Roles.Role role, _, _) in RegsOf(_lin[i]))
                 {
-                    if (Tracked(r) && (role & Roles.Role.Def) != 0)
+                    if (Tracked(r) && (role & Roles.Role.Def) != 0 && globalOf[r.Id] is >= 0 and var at)
                     {
-                        def[b].Set(r.Id);
+                        def[b].Set(at);
                     }
                 }
             }
@@ -570,27 +601,36 @@ internal sealed class Allocator
         _useOf = use;
         _defOf = def;
         _liveOut = live;
+        _globalOf = globalOf;
 
-        BitSet tmp = new(_n);
-        BitSet inS = new(_n);
-        bool changed = true;
-        while (changed)
+        // live-out(b) = union over successors s of use(s) | (live-out(s) & ~def(s)),
+        // to the least fixed point by a worklist, as the i386 allocator has it:
+        // a block is worked out again only when a successor's live-out moved,
+        // where sweeping every block backwards until nothing changed moved
+        // what is live one block a sweep along a chain of backward jumps.
+        BitSet tmp = new(g);
+        BitSet inS = new(g);
+        Stack<int> work = new();
+        bool[] owed = new bool[nb];
+        for (int b = 0; b < nb; b++) { work.Push(b); owed[b] = true; }
+        while (work.Count > 0)
         {
-            changed = false;
-            for (int b = nb - 1; b >= 0; b--)
+            int b = work.Pop();
+            owed[b] = false;
+            tmp.Clear();
+            foreach (int s in succ[b])
             {
-                tmp.Clear();
-                foreach (int s in succ[b])
+                inS.CopyFrom(live[s]);
+                inS.AndNot(def[s]);
+                inS.Or(use[s]);
+                tmp.Or(inS);
+            }
+            if (!tmp.Equals(live[b]))
+            {
+                live[b].CopyFrom(tmp);
+                foreach (int p in _pred[b])
                 {
-                    inS.CopyFrom(live[s]);
-                    inS.AndNot(def[s]);
-                    inS.Or(use[s]);
-                    tmp.Or(inS);
-                }
-                if (!tmp.Equals(live[b]))
-                {
-                    live[b].CopyFrom(tmp);
-                    changed = true;
+                    if (!owed[p]) { owed[p] = true; work.Push(p); }
                 }
             }
         }
@@ -598,7 +638,8 @@ internal sealed class Allocator
         BitSet cur = new(_n);
         for (int b = 0; b < nb; b++)
         {
-            cur.CopyFrom(live[b]);
+            cur.Clear();
+            foreach (int at in live[b].Members()) cur.Set(globals[at]);
             for (int i = first[b] + count[b] - 1; i >= first[b]; i--)
             {
                 int p = i * 4;
@@ -1166,7 +1207,7 @@ internal sealed class Allocator
             bool[] held = new bool[hi - lo + 1];
             Stack<int> work = new();
             for (int b = lo; b <= hi; b++)
-                if (_useOf[b].Get(v) || _liveOut[b].Get(v) && !_defOf[b].Get(v)) { held[b - lo] = true; work.Push(b); }
+                if (_globalOf[v] is >= 0 and var at && (_useOf[b].Get(at) || _liveOut[b].Get(at) && !_defOf[b].Get(at))) { held[b - lo] = true; work.Push(b); }
             while (work.Count > 0)
             {
                 int b = work.Pop();
