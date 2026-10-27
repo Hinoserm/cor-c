@@ -934,10 +934,11 @@ public sealed partial class Lowering
                 bool enters = name == "PackedEnter";
                 if (!KeepsState(kind)) return Void();
                 if (PackedVariantNeverRuns(number, features)) return Void();
-                // FXSAVE's room also for the compiler's own block where --cpu
-                // has SSE: a callee's $inside copy may use the XMM registers
-                // in it (Selector.SettlePackedSaves).
-                bool fx = (features & PackedOps.Sse) != 0 || kind == Corsac.Lang.Parser.ImplicitKind && _t.X86Profile.Has(X86Feature.Sse);
+                // FXSAVE's room wherever --cpu has SSE: a callee's $inside
+                // copy, or one inlined, may use the XMM registers in it
+                // (Selector.SettlePackedSaves), which shrinks the area to the
+                // x87's 112 bytes where its save settles so.
+                bool fx = (features & PackedOps.Sse) != 0 || _t.X86Profile.Has(X86Feature.Sse);
                 if (!_packedAreas.TryGetValue((_f, number), out FrameSlot? area))
                     _packedAreas[(_f, number)] = area = _f.NewSlot(fx ? 544 : 112, 16, "packed");
                 _e.Call(enters ? MachineIntrinsics.PackedSave(kind, number, features) : MachineIntrinsics.PackedRestore(kind, number, features),

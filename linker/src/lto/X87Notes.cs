@@ -300,7 +300,7 @@ public static class X87Notes
         }
 
         foreach (Fact f in facts.Values.Where(f => f.Floats && outside.Contains(f.Name)).OrderBy(f => f.File, StringComparer.Ordinal).ThenBy(f => f.FloatLine))
-            errors.Add($"'{f.Display}' has float code where no kept state is ({Where(f, f.FloatLine)}) and can run there: {Way(f, out bool call)}; "
+            errors.Add($"'{f.Display}' has float code ({Where(f, f.FloatLine)}) that can run where no kept state is: {Way(f, out bool call)}; "
                 + (call ? "the float code, or the outermost call named, belongs in a method the compiler keeps the state around -- not a lambda, an async body, a virtual method reached by a table, or code reached from assembly"
                         : "the float code belongs in a method the compiler keeps the state around -- not a lambda, an async body, a virtual method reached by a table, or code reached from assembly")
                 + ", whose save keeps the interrupted thread's x87 state first");
@@ -317,7 +317,7 @@ public static class X87Notes
             call = false;
             while (by.TryGetValue(at.Name, out var step))
             {
-                steps.Add($"'{step.Caller.Display}' calls '{at.Display}' at {Where(step.Caller, step.At.Line)}, outside a packed block");
+                steps.Add($"'{step.Caller.Display}' calls '{at.Display}' at {Where(step.Caller, step.At.Line)}, where no kept state is");
                 call = true;
                 at = step.Caller;
             }

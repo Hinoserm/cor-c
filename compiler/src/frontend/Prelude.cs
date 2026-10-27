@@ -524,7 +524,7 @@ public static class Prelude
             public static void TraceRead(out nuint source, out nuint destination, out long kind, out long valid) { source = 0; destination = 0; kind = 0; valid = 0; }
             // `value` is the byte every one of `count` is set to.
             public static void MemorySet(nuint dst, int value, nuint count) { }
-            // A packed block's state taken and given back -- its kind (1
+            // A packed block's state taken and given back -- its kind (4,
             // the compiler's own around a body, Parser.ImplicitKind), its
             // number in its method, and its variant's features (PackedOps'
             // bits) -- and which of its variants runs: the first whose

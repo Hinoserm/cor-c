@@ -1711,12 +1711,20 @@ public sealed partial class Binder
                     break;
                 // A CALL PAST A `?.` OR `?[`, its own or one earlier in its
                 // chain (a?.B().C()): made only where the receiver is not
-                // null; its arguments with it. The receiver is not.
+                // null; its arguments with it. The receiver is not. So an
+                // accessor's (a?.P, a?.X.P) and an indexer's (a?[i]), whose
+                // site is the member or the index itself. A parenthesised
+                // receiver, (a?.B).C(), is read as a?.B.C(): the parser keeps
+                // no parentheses, and C is judged conditional too.
                 case CallExpr call when !maybe.Contains(call) && PastNullTest(call.Target):
                     maybe.Add(call);
                     foreach (Expr arg in call.Args) Add(arg);
                     break;
-                case IndexExpr { NullConditional: true } index:
+                case MemberExpr member when PastNullTest(member):
+                    maybe.Add(member);
+                    break;
+                case IndexExpr index when PastNullTest(index):
+                    maybe.Add(index);
                     foreach (Expr arg in index.Args) if (!maybe.Contains(arg)) Add(arg);
                     break;
             }

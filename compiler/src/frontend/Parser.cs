@@ -5379,7 +5379,7 @@ public sealed class Parser
     /// </summary>
     private void ImplicitMember(MemberDecl m, int from, int to)
     {
-        if (InPrelude) return;
+        if (InPrelude || SkipImplementation) return;
         bool packedOps = PackedOpsIn(from, to), suspends = SuspendsIn(from, to);
         if (suspends || !(PackedEverywhere || packedOps)) return;
         Block?[] bodies = m switch { PropertyDecl p => [p.Getter, p.Setter], MethodDecl d => [d.Body], _ => [] };
@@ -5449,7 +5449,7 @@ public sealed class Parser
             }
             else if (knownEnd >= 0) _i = knownEnd;
             else ReadBody(0);
-            int used = kind switch { 1 => PackedOps.Mmx, 2 => PackedOps.Mmx | PackedOps.Sse | PackedOps.Sse2, _ => 0 };
+            int used = 0;
             for (int k = start; k + 2 < _i; k++)
                 if (_t[k] is { Kind: Tok.Ident, Text: "Packed" } && _t[k + 1].Kind == Tok.Dot && _t[k + 2].Kind == Tok.Ident)
                     used |= PackedOps.FeaturesOf(_t[k + 2].Text);
