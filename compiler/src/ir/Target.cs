@@ -124,7 +124,7 @@ public sealed class Target
 
     public static Target? ByName(string name) => name switch
     {
-        "x86" or "i386" or "i486" => X86,
+        "x86" or "x86-32" or "x86_32" or "i386" or "i486" => X86,
         "x86-64" or "x86_64" or "amd64" or "x64" => X86_64,
         _ => null,
     };

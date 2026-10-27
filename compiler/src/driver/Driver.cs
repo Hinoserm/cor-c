@@ -77,6 +77,10 @@ public static class Driver
         // not skipped -- skipped, `--tune k6` made a source file of `k6`.
         if (args.TakeWhile(a => a != "--").Any(a => a == "--tune" || a.StartsWith("--tune=", StringComparison.Ordinal)))
             return Fail("--tune is gone: code is optimised for the processor --cpu names");
+        // -m32 AND -m64, gcc's spelling, are --target x86 and --target x86-64
+        // for every command; with a --target too, the two must agree.
+        if (WidthFlags(args, out string? widthRefused) is not string[] widened) return Fail(widthRefused!);
+        args = widened;
         List<string> taken;
         try { taken = Switches.Take(args); }
         // A RANGE OR A NULL REFUSED INSIDE THE COMPILER is a bug in it, not a
@@ -256,7 +260,8 @@ public static class Driver
               corc asm --target x86-64 <file.asm> --obj -o <output.o>
 
             options:
-              --target <name>    x86 (default) or x86-64
+              --target <name>    x86 (default; also x86-32, i386) or x86-64 (also amd64)
+              -m32, -m64         --target x86, --target x86-64
               --lib              build a library rather than a program
               --shared           build an ELF shared object (implies --lib and --pic)
               --ref <file.cor>   compile this source for its declarations only:
@@ -422,6 +427,43 @@ public static class Driver
     /// spelling was a word no command knew, skipped like any other, and
     /// `--target=x86-64` compiled for i386 without a word said.
     /// </summary>
+    /// <summary>
+    /// `args` with -m32 or -m64 made --target x86 or --target x86-64, before
+    /// any `--` (what follows is the program's); null, and why, where two
+    /// widths are asked for or a --target names the other one.
+    /// </summary>
+    private static string[]? WidthFlags(string[] args, out string? refused)
+    {
+        refused = null;
+        int end = Array.IndexOf(args, "--");
+        if (end < 0) end = args.Length;
+        string? asked = null;
+        List<string> kept = new();
+        for (int i = 0; i < end; i++)
+        {
+            if (args[i] is "-m32" or "-m64")
+            {
+                if (asked is not null && asked != args[i]) { refused = "-m32 and -m64 both given"; return null; }
+                asked = args[i];
+                continue;
+            }
+            kept.Add(args[i]);
+        }
+        if (asked is null) return args;
+        Target wanted = asked == "-m64" ? Target.X86_64 : Target.X86;
+        if (Value(kept.ToArray(), "--target") is string given)
+        {
+            if (Target.ByName(given) != wanted) { refused = $"{asked} and --target {given} disagree"; return null; }
+        }
+        else
+        {
+            kept.Add("--target");
+            kept.Add(wanted == Target.X86_64 ? "x86-64" : "x86");
+        }
+        kept.AddRange(args[end..]);
+        return kept.ToArray();
+    }
+
     internal static string? Value(string[] args, string name)
     {
         for (int i = 0; i < args.Length; i++)
@@ -493,7 +535,10 @@ public static class Driver
         }
 
         string targetName = Value(args, "--target") ?? "x86-16";
-        if (targetName is not ("x86-16" or "x86_16" or "x86-32" or "x86-64" or "x86_64"))
+        // The compiler's names for the other two (Target.ByName): x86 and
+        // x86-32 alike, amd64 and x86-64 alike, here as there.
+        Target? named = targetName is "x86-16" or "x86_16" ? null : Target.ByName(targetName);
+        if (named is null && targetName is not ("x86-16" or "x86_16"))
         {
             return Fail($"unknown build target '{targetName}'");
         }
@@ -501,7 +546,7 @@ public static class Driver
         // --target names the assembler's default mode, which `.bits` in the
         // source still overrides: x86-16 for a boot sector, x86-32 for the
         // kernel's own assembly, which has no real mode left to speak of.
-        int bits = targetName == "x86-32" ? 32 : targetName is "x86-64" or "x86_64" ? 64 : 16;
+        int bits = named == Target.X86 ? 32 : named == Target.X86_64 ? 64 : 16;
         // A long-mode assembly runs on a K8 or later, whatever mode each of
         // its parts is in, and the assembler holds it to no profile; --cpu
         // may name the K8, as for compile, and nothing else.
