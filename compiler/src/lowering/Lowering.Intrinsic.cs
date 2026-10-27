@@ -618,7 +618,10 @@ public sealed partial class Lowering
                 // (Int64.GetHashCode is (int)v ^ (int)(v >> 32)).
                 Type of = _b.TypeOf(call.Args[0]);
                 VReg held = Arg(call, target, 0);
-                Prim prim = of.IsEnumValue && of.Symbol is { } counted ? counted.EnumUnderlying : of.Prim;
+                // A number's own type: an enum by its underlying one; a pointer
+                // or a nullable is no number here, whatever Prim it carries.
+                Prim prim = of.IsPointer || of.IsNullableValue ? Prim.Void
+                    : of.IsEnumValue && of.Symbol is { } counted ? counted.EnumUnderlying : of.Prim;
                 VReg hash;
                 if (held.Type == IrType.F64)
                 {
@@ -645,8 +648,9 @@ public sealed partial class Lowering
                     // Bool, Byte, SByte, Int16, UInt16, Int32, UInt32, a native
                     // integer of 32 bits: the value itself (SByte and Int16 too,
                     // as .NET's own answer -2 for (short)-2). Anything else (a
-                    // reference, a pointer): its word, as before.
-                    return Fit(held, returns);
+                    // reference, a pointer): its word, as before. Sign-extended
+                    // as every other hash here is, an int widened to the long.
+                    return Fit(held.Type == IrType.I32 && returns == IrType.I64 ? _e.Unary(Opcode.SExt32, R(held), IrType.I64) : held, returns);
                 }
                 return Fit(hash.Type == IrType.I64 ? hash : _e.Unary(Opcode.SExt32, R(hash), IrType.I64), returns);
             }

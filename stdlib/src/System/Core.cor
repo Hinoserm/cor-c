@@ -20941,7 +20941,7 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
             }
             // AN OBJECT IS ASKED, as .NET's default comparer asks it: text
             // for a string, its own Equals for anything that has one -- a
-            // tuple, a type made of types. A number is the word it is.
+            // tuple, a type made of types. A number is equal as its Equals has it.
             if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
             return Sys.EqualValues(a, b);
         }
@@ -25658,7 +25658,7 @@ class DefaultEqualityComparer<T> : EqualityComparer<T> {
     public override bool Equals(T a, T b) {
         // AN OBJECT IS ASKED, as .NET's default comparer asks it: text for a
         // string, its own Equals for anything that has one -- a tuple, a type
-        // made of types. A number is the word it is.
+        // made of types. A number is equal as its Equals has it.
         if (Sys.IsObject(a)) { return Sys.KeyEquals(a, b); }
         return Sys.EqualValues(a, b);
     }
