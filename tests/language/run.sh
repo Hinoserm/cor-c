@@ -99,6 +99,13 @@ for arg in "$@"; do
             compiler_flags+=("--cpu" "${arg#--cpu=}")
             passthrough+=("$arg")
             ;;
+        --enable-*|--disable-*)
+            # A processor feature granted or taken away beyond --cpu's
+            # (corc's --enable-NAME, --disable-NAME): --cpu=athlon64
+            # --disable-3dnow is this machine, loosely.
+            compiler_flags+=("$arg")
+            passthrough+=("$arg")
+            ;;
         --runtime-knob=*)
             # Every test's program built with this setting of the runtime's:
             # the collector's checked modes are asked for so, never through

@@ -7,7 +7,7 @@ internal sealed partial class Selector
     private bool TryPackedShifts(List<Instr> instructions, int start, out int consumed)
     {
         consumed = 0;
-        if (!_automaticPacked || !Target.Current.X86Profile.Mmx || start + 5 >= instructions.Count) return false;
+        if (!PackedHere || !Target.Current.X86Profile.Mmx || start + 5 >= instructions.Count) return false;
         Instr first = instructions[start], firstShift = instructions[start + 1], firstStore = instructions[start + 2];
         int width = first.Size;
         if (width is not (2 or 4) || first.Operands.Count != 1 || firstShift.Operands.Count != 2 || firstStore.Operands.Count != 2

@@ -6,13 +6,12 @@
 // nested 3
 //
 // `using (Packed.Mmx())` and `using (Packed.Sse())` mark code that owns the
-// x87, MMX and SSE state while it runs (Parser.ParsePackedBlock): its body is
-// compiled as a function of its own, which the backend may select packed
-// instructions in as --cpu allows -- freestanding code too, which saves the
-// thread's state first and gives it back on every way out. Hosted, as here,
-// the process owns the state already; the body still runs as written, its
-// variables the method's, and the finally that gives the state back runs on
-// a throw.
+// x87, MMX and SSE state while it runs (Parser.ParsePackedBlock): the body
+// stays where it is written, and the backend may select packed instructions
+// in it as --cpu allows -- freestanding code too, which saves the thread's
+// state first and gives it back on every way out. Hosted, as here, the
+// process owns the state already; the body runs as written, its variables
+// the method's, and the finally that gives the state back runs on a throw.
 
 using System;
 

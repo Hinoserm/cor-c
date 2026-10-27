@@ -64,6 +64,10 @@ public sealed class X86Cpu
         ("mmx", X86Feature.Mmx, X86Feature.Mmx,
             X86Feature.Mmx | X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended | X86Feature.MmxExtensions),
         ("3dnow", X86Feature.ThreeDNow, X86Feature.Mmx | X86Feature.ThreeDNow, X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended),
+        // The five 3DNow! extensions alone (the K6-2+, K6-III+, Athlon), and
+        // AMD's MMX extensions -- SSE's integer half, which SSE goes with.
+        ("3dnow-ext", X86Feature.ThreeDNowExtended, X86Feature.Mmx | X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended, X86Feature.ThreeDNowExtended),
+        ("mmx-ext", X86Feature.MmxExtensions, X86Feature.Mmx | X86Feature.MmxExtensions, X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2),
         ("cmov", X86Feature.Cmov, X86Feature.Cmov | X86Feature.FloatCmov, X86Feature.Cmov | X86Feature.FloatCmov),
         ("sse", X86Feature.Sse, X86Feature.MmxExtensions | X86Feature.Sse, X86Feature.Sse | X86Feature.Sse2),
         ("sse2", X86Feature.Sse2, X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2, X86Feature.Sse2),
@@ -163,6 +167,7 @@ public sealed class X86Cpu
         if ((features & X86Feature.Mmx) == 0) features &= ~(X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended | X86Feature.MmxExtensions);
         if ((features & X86Feature.ThreeDNow) == 0) features &= ~X86Feature.ThreeDNowExtended;
         if ((features & X86Feature.Sse) == 0) features &= ~X86Feature.Sse2;
+        if ((features & X86Feature.MmxExtensions) == 0) features &= ~(X86Feature.Sse | X86Feature.Sse2);
         if ((features & X86Feature.Cmov) == 0) features &= ~X86Feature.FloatCmov;
         return features;
     }

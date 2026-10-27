@@ -871,7 +871,7 @@ internal static class Peephole
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     if (i.Operands[k] is not MMem mem || !PrivateSpill(mem) || Roles.Of(i.Op, k) != Roles.Role.Use || Held(mem) is not (not 0 and var h)) continue;
-                    MInstr copy = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed };
+                    MInstr copy = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState };
                     for (int j = 0; j < i.Operands.Count; j++) copy.Operands.Add(j == k ? MReg.Of(Lowest(h)) : i.Operands[j]);
                     i = copy;
                     break;

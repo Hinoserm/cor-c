@@ -43,8 +43,22 @@ internal sealed partial class Selector
     private Block _sourceBlock = null!;
     private int _splits;
     private readonly bool _automaticPacked;
-    /// <summary>Whether SSE may be selected here (MFunction.SseState).</summary>
+    /// <summary>Whether SSE may be selected anywhere in the function (MFunction.SseState): hosted code.</summary>
     private readonly bool _packedSse;
+
+    /// <summary>
+    /// THE PACKED BLOCK SELECTION IS INSIDE (PackedRegions): 1 MMX, 2 SSE, 0
+    /// none. Hosted code may pack anywhere already (_automaticPacked); a
+    /// freestanding function only between a block's save and its give-back,
+    /// and what is selected there says so (MInstr.OwnsState).
+    /// </summary>
+    private int _packedNow;
+
+    /// <summary>Whether a packed group may be selected here: hosted code, or inside a packed block.</summary>
+    private bool PackedHere => _automaticPacked || _packedNow != 0;
+
+    /// <summary>Whether SSE may be selected here: hosted code, or inside an SSE block.</summary>
+    private bool SseHere => _packedSse || _packedNow == 2;
 
     private static readonly MReg Eax = MReg.Of(Gpr.Eax);
     private static readonly MReg Ecx = MReg.Of(Gpr.Ecx);
@@ -124,14 +138,47 @@ internal sealed partial class Selector
             }
     }
 
-    /// <summary>The kind of packed block a function's body is (Sys.PackedEnter): 1 MMX, 2 SSE, 0 none.</summary>
-    private static int PackedBlockKind(Function f)
+    /// <summary>
+    /// WHERE A FUNCTION'S PACKED BLOCKS ARE, by the block each IR block
+    /// starts inside (0 outside one): after a save (PackedSaveX87,
+    /// PackedSaveFxsr) and before its give-back, on every path there -- a
+    /// block some path reaches outside is outside, and a handler's landing,
+    /// which no edge reaches, is too, so only its give-back runs there. The
+    /// saves and give-backs are calls, which no packed group spans, so the
+    /// blocks the optimiser splits or joins keep their places.
+    /// </summary>
+    private static Dictionary<Block, int>? PackedRegions(Function f)
     {
-        foreach (Block b in f.Blocks)
-        foreach (Instr i in b.Instrs)
-            if (i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedSaveX87 or MachineIntrinsics.PackedSaveFxsr)
-                return i.Callee == MachineIntrinsics.PackedSaveFxsr ? 2 : 1;
-        return 0;
+        static int After(Block b, int kind)
+        {
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call)
+                    kind = i.Callee switch
+                    {
+                        MachineIntrinsics.PackedSaveX87 => 1,
+                        MachineIntrinsics.PackedSaveFxsr => 2,
+                        MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => 0,
+                        _ => kind,
+                    };
+            return kind;
+        }
+        if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedSaveX87 or MachineIntrinsics.PackedSaveFxsr)))
+            return null;
+        Dictionary<Block, int> at = new(ReferenceEqualityComparer.Instance) { [f.Entry] = 0 };
+        Stack<Block> work = new();
+        work.Push(f.Entry);
+        while (work.Count > 0)
+        {
+            Block b = work.Pop();
+            int leaving = After(b, at[b]);
+            foreach (Block next in b.Successors)
+            {
+                int was = at.TryGetValue(next, out int known) ? known : -1;
+                int now = was == -1 ? leaving : was == leaving ? was : 0;
+                if (now != was) { at[next] = now; work.Push(next); }
+            }
+        }
+        return at;
     }
 
     public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false, bool windowsTls = false,
@@ -141,13 +188,7 @@ internal sealed partial class Selector
         // the long way they fall back on: a block overlapping itself copied
         // there called the routine again, and again, until the stack ran out.
         bool stream = automaticPacked && f.Name != streamCopy && f.Name != streamFill;
-        // A PACKED BLOCK OWNS THE STATE in freestanding code too: the
-        // function its body became saves it first (PackedSave), so it may
-        // use what its kind allows -- the MMX registers, and the SSE ones in
-        // an SSE block. Not the streamed copies, which are the hosted
-        // runtime's.
-        int block = PackedBlockKind(f);
-        Selector s = new(f, errors, automaticPacked || block != 0, automaticPacked || block == 2)
+        Selector s = new(f, errors, automaticPacked, automaticPacked)
         {
             _positionIndependent = positionIndependent, _windowsTls = windowsTls,
             _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null,
@@ -165,12 +206,21 @@ internal sealed partial class Selector
 
     private MInstr Emit(MInstr i)
     {
+        if (_packedNow != 0 && i.OwnsState == 0) i = Owning(i);
         i.Line = _line;
         _cur.Instrs.Add(i);
         return i;
     }
 
     private MInstr Emit(MOp op, params MOperand[] ops) => Emit(new MInstr(op, ops));
+
+    /// <summary>The same instruction, marked as selected inside the packed block (MInstr.OwnsState).</summary>
+    private MInstr Owning(MInstr i)
+    {
+        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = (byte)_packedNow };
+        n.Operands.AddRange(i.Operands);
+        return n;
+    }
 
     // The common arities written out, so no `params` array is made per instruction.
     private MInstr Emit(MOp op) => Emit(new MInstr(op));
@@ -388,11 +438,13 @@ internal sealed partial class Selector
         Emit(MOp.Prologue);
         LoadParams();
 
+        Dictionary<Block, int>? packedIn = _automaticPacked ? null : PackedRegions(_f);
         foreach (Block b in _f.Blocks)
         {
             _cur = _heads[b];
             _sourceBlock = b;
             _constants.Clear();
+            _packedNow = packedIn?.GetValueOrDefault(b) ?? 0;
             for (int n = 0; n < b.Instrs.Count; n++)
             {
                 Instr i = b.Instrs[n];
@@ -1907,7 +1959,7 @@ internal sealed partial class Selector
         // AutomaticPacked borrows. 32-bit SSE has no 64-bit integer result, so
         // Int64, and the UInt32 that needs the 64-bit store, stay on the x87.
         bool single = FWidth(i.Operands[0].Type) == 4;
-        if (!unsignedHighHalf && i.Op == Opcode.FToI && d.Type == IrType.I32 && _packedSse
+        if (!unsignedHighHalf && i.Op == Opcode.FToI && d.Type == IrType.I32 && SseHere
             && Target.Current.X86Profile.Has(single ? X86Feature.Sse : X86Feature.Sse2))
         {
             Emit(single ? MOp.Cvttss2si : MOp.Cvttsd2si, Lo(d), FHome(i.Operands[0]));
@@ -2886,21 +2938,26 @@ internal sealed partial class Selector
             {
                 // The area's address in EAX, which the sequences name; an
                 // SSE block's FXSAVE wants it at sixteen (Lowering: 16 bytes
-                // more than the 528 it fills).
+                // more than the 528 it fills). Selected outside the block it
+                // opens or closes, and the selection inside it from here on.
                 bool fx = name is MachineIntrinsics.PackedSaveFxsr or MachineIntrinsics.PackedRestoreFxsr;
+                _packedNow = 0;
                 Mov(Eax, R(i.Operands[0]));
                 if (fx)
                 {
                     Emit(MOp.Add, Eax, Imm(15));
                     Emit(MOp.And, Eax, Imm(-16));
                 }
+                // The save and its give-back are the block's own: FXSAVE is
+                // SSE's state, which the audit lets only an SSE block touch.
                 Emit(new MInstr(name switch
                 {
                     MachineIntrinsics.PackedSaveX87 => MOp.PackedSaveX87,
                     MachineIntrinsics.PackedRestoreX87 => MOp.PackedRestoreX87,
                     MachineIntrinsics.PackedSaveFxsr => MOp.PackedSaveFxsr,
                     _ => MOp.PackedRestoreFxsr,
-                }));
+                }) { OwnsState = (byte)(fx ? 2 : 1) });
+                _packedNow = name == MachineIntrinsics.PackedSaveX87 ? 1 : name == MachineIntrinsics.PackedSaveFxsr ? 2 : 0;
                 return;
             }
             case MachineIntrinsics.PackedEnd:

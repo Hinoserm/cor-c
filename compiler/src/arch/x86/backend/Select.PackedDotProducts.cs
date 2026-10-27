@@ -7,7 +7,7 @@ internal sealed partial class Selector
     private bool TryPackedDotProducts(List<Instr> instructions, int start, out int consumed)
     {
         consumed = 0;
-        if (!_automaticPacked || !Target.Current.X86Profile.Mmx || start + 7 >= instructions.Count) return false;
+        if (!PackedHere || !Target.Current.X86Profile.Mmx || start + 7 >= instructions.Count) return false;
         Instr first = instructions[start], second = instructions[start + 1], firstStore = instructions[start + 7];
         if (first.Operands.Count != 1 || second.Operands.Count != 1 || firstStore.Operands.Count != 2) return false;
         FrameSlot? left = FrameStorage(first.Operands[0]), right = FrameStorage(second.Operands[0]), destination = FrameStorage(firstStore.Operands[0]);

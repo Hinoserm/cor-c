@@ -107,8 +107,8 @@ internal static class MachineIntrinsics
     /// A packed block's taking and giving back of the x87, MMX and SSE state
     /// (Sys.PackedEnter, PackedLeave: using (Packed.Mmx())): the save area's
     /// address, by the block's kind: the x87's save for an MMX block, FXSAVE
-    /// for an SSE one. In freestanding code only; the function that holds
-    /// them may use the packed registers (Selector.Run).
+    /// for an SSE one. In freestanding code only; the code between them may
+    /// use the packed registers (Selector.PackedRegions).
     /// </summary>
     public const string PackedSaveX87 = Prefix + "packedsavex87";
     public const string PackedRestoreX87 = Prefix + "packedrestorex87";

@@ -38,6 +38,11 @@ public sealed class Peephole : IPass
                 Instr i = b.Instrs[k];
                 if (i.Dest is null)
                 {
+                    if (i.Op == Opcode.Store && i.Size is 1 or 2)
+                    {
+                        defs ??= _ssa ? PipelineAnalyses.SsaDefsOf(f) : PipelineAnalyses.DefsOf(f);
+                        NarrowStore(i, b, k, defs);
+                    }
                     continue;
                 }
                 Instr? r = Algebra(i);
@@ -57,6 +62,26 @@ public sealed class Peephole : IPass
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// A NARROW STORE OF AN EXTENSION stores what was extended: the bytes it
+    /// writes are the operand's own low bytes either way. `r.A = (short)(a.A +
+    /// b.A)` stored the sign-extended sum, which made each lane a load, a
+    /// load, an add, an extension and a store, and no packed group
+    /// (Selector.TryPackedArithmetic) found one; the extension, unused, goes
+    /// with dead code. Block-local, as CancelUnary is.
+    /// </summary>
+    private static void NarrowStore(Instr i, Block block, int index, Defs defs)
+    {
+        int at = i.Operands.Count > 2 ? 2 : 1;
+        if (i.Operands[at] is not RegOperand stored || defs.Site(stored.Reg) is not { } site
+            || !ReferenceEquals(site.Block, block) || site.Index >= index) return;
+        Instr widen = site.Block.Instrs[site.Index];
+        int bytes = widen.Op switch { Opcode.SExt8 or Opcode.ZExt8 => 1, Opcode.SExt16 or Opcode.ZExt16 => 2, _ => 0 };
+        if (bytes == 0 || i.Size > bytes || widen.Operands.Count != 1 || widen.Operands[0] is not RegOperand source
+            || source.Type != stored.Type || !defs.CanForward(source.Reg, block, site.Index, block, index)) return;
+        i.Operands[at] = source;
     }
 
     private static Instr? CancelUnary(Instr i, Block block, int index, Defs defs)

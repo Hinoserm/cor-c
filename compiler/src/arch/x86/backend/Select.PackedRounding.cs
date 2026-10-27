@@ -7,7 +7,7 @@ internal sealed partial class Selector
     private bool TryPackedRounding(List<Instr> instructions, int start, out int consumed)
     {
         consumed = 0;
-        if (!_automaticPacked || !Target.Current.X86Profile.Mmx || start + 4 >= instructions.Count) return false;
+        if (!PackedHere || !Target.Current.X86Profile.Mmx || start + 4 >= instructions.Count) return false;
         Instr first = instructions[start]; int width = first.Size;
         bool average = width == 1, rounded = instructions[start + 3].Op == Opcode.Add;
         if (width is not (1 or 2) || (average && !rounded) || (rounded && !Target.Current.X86Profile.ThreeDNow)) return false;

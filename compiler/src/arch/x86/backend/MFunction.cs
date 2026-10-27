@@ -43,10 +43,9 @@ public sealed class MFunction
     public bool AutomaticPacked { get; init; }
 
     /// <summary>
-    /// Whether it may use the SSE registers: hosted code, whose operating
-    /// system enables them, and a freestanding SSE block (Sys.PackedEnter 2),
-    /// which saved what was there. An MMX block may not: its save is the
-    /// x87's.
+    /// Whether it may use the SSE registers anywhere: hosted code, whose
+    /// operating system enables them. A freestanding SSE block's own
+    /// instructions say so themselves (MInstr.OwnsState).
     /// </summary>
     public bool SseState { get; init; }
 

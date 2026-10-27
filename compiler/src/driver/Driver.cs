@@ -366,11 +366,16 @@ public static class Driver
               --disable-mmx      exclude MMX and what needs it: 3DNow! and the
                                  MMX extensions
               --disable-3dnow    exclude 3DNow! while retaining MMX
+              --disable-3dnow-ext exclude the 3DNow! extensions (PF2IW, PI2FW,
+                                 PFNACC, PFPNACC, PSWAPD), retaining 3DNow!
+              --disable-mmx-ext  exclude the MMX extensions (PAVGB, PSHUFW,
+                                 PMOVMSKB, MOVNTQ, SFENCE...), and SSE with them
               --disable-cmov     exclude CMOV, and FCMOV/FCOMI with it
               --disable-sse      exclude SSE and SSE2
               --disable-sse2     exclude SSE2 while retaining SSE
-              --enable-<name>    the same five extensions granted beyond the
-                                 CPU's own: a promise the processor has them
+              --enable-<name>    the same seven extensions granted beyond the
+                                 CPU's own: a promise the processor has them;
+                                 a disable wins over an enable
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --no-collector     link no collector: what cannot be proved freed or

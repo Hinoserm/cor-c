@@ -17,7 +17,7 @@ internal sealed partial class Selector
     private bool TryPackedConversions(List<Instr> instructions, int start, out int consumed)
     {
         consumed = 0;
-        if (!_automaticPacked || !Target.Current.X86Profile.ThreeDNow || start + 5 >= instructions.Count) return false;
+        if (!PackedHere || !Target.Current.X86Profile.ThreeDNow || start + 5 >= instructions.Count) return false;
         Instr first = instructions[start], convert = instructions[start + 1], firstStore = instructions[start + 2];
         if (first.Size != 2 || first.Operands.Count != 1 || firstStore.Operands.Count != 2
             || convert.Op is not (Opcode.IToF or Opcode.UToF) || (first.Signed && convert.Op == Opcode.UToF)) return false;

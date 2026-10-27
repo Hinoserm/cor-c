@@ -1563,14 +1563,14 @@ public sealed partial class Binder
         }
     }
 
-    /// <summary>The awaits and allocations a body makes itself, in order, with what each does.</summary>
-    /// <summary>Whether a lambda is a packed block's body: its first statement Sys.PackedEnter (Parser.ParsePackedBlock).</summary>
-    private static bool PackedBlock(LambdaExpr l)
-        => l.BlockBody is { Statements: [ExprStmt { Expr: CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedEnter" } } }, ..] };
+    /// <summary>Whether a call is a packed block's start, Sys.PackedEnter (Parser.ParsePackedBlock).</summary>
+    private static bool PackedEnter(CallExpr call)
+        => call is { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedEnter" } };
 
     /// <summary>What an interrupt handler's report says it must not do: open a packed block, or allocate.</summary>
     private static string Forbidden(string what) => what.StartsWith("opens a packed block", StringComparison.Ordinal) ? "must not open a packed block" : "must not allocate";
 
+    /// <summary>The awaits and allocations a body makes itself, in order, with what each does.</summary>
     private IEnumerable<(Node Site, string What)> AllocationsIn(Node body)
     {
         foreach (Node n in SafetyNodes(body))
@@ -1587,7 +1587,7 @@ public sealed partial class Binder
                 // x87, MMX and SSE state, which an interrupt handler -- run on
                 // whatever thread was interrupted, mid-instruction -- has not
                 // saved: refused, as an allocation is.
-                case LambdaExpr l when PackedBlock(l):
+                case CallExpr enters when PackedEnter(enters):
                     yield return (n, "opens a packed block (using (Packed.Mmx()) or Sse), which takes the interrupted thread's x87 and MMX state");
                     break;
                 case LambdaExpr l:

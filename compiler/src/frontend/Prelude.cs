@@ -522,10 +522,11 @@ public static class Prelude
             public static void TraceRead(out nuint source, out nuint destination, out long kind, out long valid) { source = 0; destination = 0; kind = 0; valid = 0; }
             // `value` is the byte every one of `count` is set to.
             public static void MemorySet(nuint dst, int value, nuint count) { }
-            // A packed block's state taken and given back, 1 MMX or 2 SSE
-            // (using (Packed.Mmx()), which the parser writes these for).
-            public static void PackedEnter(int kind) { }
-            public static void PackedLeave(int kind) { }
+            // A packed block's state taken and given back, 1 MMX or 2 SSE,
+            // the block's number in its method (using (Packed.Mmx()), which
+            // the parser writes these for).
+            public static void PackedEnter(int kind, int block) { }
+            public static void PackedLeave(int kind, int block) { }
             // `count` bytes from `src` to `dst`, overlapping or not (memmove)
             // where `oneBlock` -- both in one array -- and forward where not:
             // for bytes that hold no reference (Span.Move's elements).

@@ -1892,7 +1892,7 @@ internal sealed class Allocator
         after.Clear();
         _rwDone.Clear();
         _rwRoles.Clear();
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed };
+        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState };
 
         if (_liveAtCall.TryGetValue(index, out List<int>? live))
         {

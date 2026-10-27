@@ -150,10 +150,10 @@ internal sealed class Encoder
             if (missing != X86Feature.None && !i.Probed)
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} needs {Isa.Describe(missing)}, which --cpu={profile.Name} does not permit");
-            if (!m.AutomaticPacked && Isa.UsesPackedState(i.Op))
+            if (!m.AutomaticPacked && i.OwnsState == 0 && Isa.UsesPackedState(i.Op))
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} uses the MMX registers in code that does not own the x87 state");
-            if (!m.SseState && Isa.UsesSseState(i.Op))
+            if (!m.SseState && i.OwnsState != 2 && Isa.UsesSseState(i.Op))
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} uses SSE in code that runs without an operating system to enable it");
         }

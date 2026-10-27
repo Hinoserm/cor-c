@@ -1,0 +1,52 @@
+// test: a return, a break and a continue inside a packed block leave it, as they leave any block
+// expect-exit: 0
+// expect-output:
+// found 3
+// 0 1 2 3 4 skipped 2
+// 10
+//
+// A packed block's body stays where it is written, between the state's
+// taking and its giving back (Parser.ParsePackedBlock), which a finally
+// makes on every way out: a return from the method, a break out of a loop
+// around it, a continue to the loop's next lap.
+
+using System;
+
+static class Program
+{
+    static int Find(int[] values, int wanted)
+    {
+        for (int i = 0; i < values.Length; i++)
+        {
+            using (Packed.Mmx())
+            {
+                if (values[i] == wanted) return i;
+            }
+        }
+        return -1;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("found " + Find(new[] { 5, 6, 7, 8, 9 }, 8));
+        string seen = "";
+        int skipped = 0;
+        for (int i = 0; i < 10; i++)
+        {
+            using (Packed.Mmx())
+            {
+                if (i == 5) break;
+                if (i % 2 == 1) { skipped++; seen += i + " "; continue; }
+                seen += i + " ";
+            }
+        }
+        Console.WriteLine(seen + "skipped " + skipped);
+        int total = 0;
+        foreach (int v in new[] { 1, 2, 3, 4 })
+        {
+            using (Packed.Sse()) { total += v; }
+        }
+        Console.WriteLine(total);
+        return 0;
+    }
+}

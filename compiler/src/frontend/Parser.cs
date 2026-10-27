@@ -96,6 +96,9 @@ public sealed class Parser
     /// </summary>
     private int _packedBlock;
 
+    /// <summary>The packed blocks read so far: each block's number, its save area's (Lowering's PackedEnter).</summary>
+    private int _packedSerial;
+
     /// <summary>
     /// The async iterator whose body is being read, or null: its `yield
     /// return v` is read as `await machine.Yield(v)` and its `yield break` as
@@ -5239,18 +5242,20 @@ public sealed class Parser
     /// code that owns the x87 and MMX state -- and, for Sse, the XMM
     /// registers -- while it runs, so the backend may select packed
     /// instructions in it as --cpu allows, freestanding code included. The
-    /// body becomes a local function of its own, called where the block was
-    /// (its variables the method's, in the method's frame: no allocation),
-    /// which takes the state on entry and gives it back on every way out
-    /// (Sys.PackedEnter, Sys.PackedLeave: the finally runs on a throw). The
-    /// backend saves what a kernel's thread had there (Selector's
-    /// PackedSave): the 28-byte environment where the x87 stack is empty,
-    /// the whole state where it is not. One function is the unit the
-    /// backend's per-function permission (MFunction.AutomaticPacked) covers.
+    /// body stays where it is written, between the state's taking and its
+    /// giving back (Sys.PackedEnter, Sys.PackedLeave), which a finally makes
+    /// on every way out -- a throw, a return, a break. Its variables are the
+    /// method's own, in the method's frame, which is what the packed groups
+    /// read and write (Selector.TryPackedArithmetic and the rest); only the
+    /// code between the two may pack in freestanding code
+    /// (Selector.PackedRegions). The backend saves what a kernel's thread had
+    /// there (MOp.PackedSaveX87, PackedSaveFxsr): the 28-byte environment
+    /// where the x87 stack is empty, the whole state where it is not.
     /// </summary>
     private Stmt ParsePackedBlock(Token at, int kind)
     {
         int line = at.Line, col = at.Col;
+        int number = _packedSerial++;
         int saved = _packedBlock;
         _packedBlock = kind;
         Stmt read = ParseStmt();
@@ -5263,25 +5268,20 @@ public sealed class Parser
             Expr = new CallExpr
             {
                 Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = name, Line = line, Col = col },
-                Args = { new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), Line = line, Col = col } },
+                Args =
+                {
+                    new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), Line = line, Col = col },
+                    new LiteralExpr { Kind = Lit.Int, Text = number.ToString(), Line = line, Col = col },
+                },
                 Line = line, Col = col,
             },
             Line = line, Col = col,
         };
         Block leave = new() { Line = line, Col = col };
         leave.WritableStatements.Add(State("PackedLeave"));
-        Block inner = new() { Line = line, Col = col };
-        inner.WritableStatements.Add(State("PackedEnter"));
-        inner.WritableStatements.Add(new TryStmt { Body = body, Finally = leave, Line = line, Col = col });
-
-        string run = "$packed$" + _lockSerial++;
         Block built = new() { Line = line, Col = col };
-        built.WritableStatements.Add(new LocalDecl
-        {
-            Type = new TypeRef { Name = "Action", Line = line, Col = col }, Name = run,
-            Init = new LambdaExpr { BlockBody = inner, Line = line, Col = col }, LocalFunction = true, Line = line, Col = col,
-        });
-        built.WritableStatements.Add(new ExprStmt { Expr = new CallExpr { Target = new NameExpr { Name = run, Line = line, Col = col }, Line = line, Col = col }, Line = line, Col = col });
+        built.WritableStatements.Add(State("PackedEnter"));
+        built.WritableStatements.Add(new TryStmt { Body = body, Finally = leave, Line = line, Col = col });
         return built;
     }
 
@@ -5642,6 +5642,11 @@ public sealed class Parser
             // This deliberately recognises `yield` contextually, as C# does;
             // it remains a legal identifier everywhere it is not followed by
             // return or break.
+            // A SUSPENSION INSIDE A PACKED BLOCK would hand the thread's
+            // packed state, the block's until it ends, to whatever ran next
+            // (ParsePackedBlock).
+            case Tok.Ident when _packedBlock != 0 && Cur.Text == "yield" && Ahead().Kind is Tok.KwReturn or Tok.KwBreak:
+                throw new CompileError(_file, at.Line, at.Col, "a yield inside a packed block (using (Packed." + (_packedBlock == 1 ? "Mmx" : "Sse") + "())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next");
             case Tok.Ident when Cur.Text == "yield" && Ahead().Kind == Tok.KwReturn:
             {
                 if (_iteratorTarget is null)
@@ -5679,12 +5684,6 @@ public sealed class Parser
 
             case Tok.KwReturn:
             {
-                // A PACKED BLOCK IS A FUNCTION OF ITS OWN (ParsePackedBlock):
-                // a return in it would leave the block, not the method.
-                if (_packedBlock != 0)
-                {
-                    throw new CompileError(_file, at.Line, at.Col, "a return inside a packed block (using (Packed." + (_packedBlock == 1 ? "Mmx" : "Sse") + "())): the block is compiled as a function of its own, and the return would leave only it");
-                }
                 // An async iterator ends with `yield break` (CS1622), as an
                 // iterator does; its body's return is the one AsyncYield writes.
                 if (_asyncIterator is not null)
@@ -9509,6 +9508,8 @@ public sealed class Parser
                 return new UnaryExpr { Op = UnOp.AddressOf, Operand = ParseUnary(), Line = at.Line, Col = at.Col };
 
             case Tok.KwAwait:
+                if (_packedBlock != 0)
+                    throw new CompileError(_file, at.Line, at.Col, "an await inside a packed block (using (Packed." + (_packedBlock == 1 ? "Mmx" : "Sse") + "())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next");
                 _i++;
                 return new AwaitExpr { Operand = ParseUnary(), Line = at.Line, Col = at.Col };
 

@@ -7,7 +7,7 @@ internal sealed partial class Selector
     private bool TryPackedFloatArithmetic(List<Instr> instructions, int start, out int consumed)
     {
         consumed = 0;
-        if (!_automaticPacked || !Target.Current.X86Profile.ThreeDNow || start + 5 >= instructions.Count) return false;
+        if (!PackedHere || !Target.Current.X86Profile.ThreeDNow || start + 5 >= instructions.Count) return false;
         Instr first = instructions[start], second = instructions[start + 2], math = instructions[start + 4];
         if (first.Size != 2 || second.Size != 2 || first.Operands.Count != 1 || second.Operands.Count != 1
             || math.Op is not (Opcode.FAdd or Opcode.FSub or Opcode.FMul)) return false;

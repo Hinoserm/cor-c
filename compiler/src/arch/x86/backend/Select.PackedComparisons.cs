@@ -9,7 +9,7 @@ internal sealed partial class Selector
     private bool TryPackedComparisons(List<Instr> instructions, int start, out int consumed)
     {
         consumed = 0;
-        if (!_automaticPacked || !Target.Current.X86Profile.Mmx || start + 9 >= instructions.Count) return false;
+        if (!PackedHere || !Target.Current.X86Profile.Mmx || start + 9 >= instructions.Count) return false;
         Instr first = instructions[start], second = instructions[start + 1], comparison = instructions[start + 2], store0 = instructions[start + 4];
         int width = first.Size;
         if (width is not (1 or 2 or 4) || comparison.Op is not (Opcode.Eq or Opcode.GtS)

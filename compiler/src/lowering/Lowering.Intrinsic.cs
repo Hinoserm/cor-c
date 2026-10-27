@@ -911,16 +911,20 @@ public sealed partial class Lowering
                 return got ?? Void();
             }
             // A PACKED BLOCK'S STATE, taken and given back (Parser.
-            // ParsePackedBlock: 1 MMX, 2 SSE). Hosted code owns it already --
-            // the operating system saves it at a switch -- and needs nothing.
-            // Freestanding code borrows a thread's: saved in the function's
-            // own frame (PackedSaveX87: 112 bytes; FXSAVE: 512 at sixteen,
-            // and MXCSR's word), and the function kept whole, never inlined
-            // into a caller that does not own the state.
+            // ParsePackedBlock: the kind, 1 MMX or 2 SSE, and the block's
+            // number in its method). Hosted code owns it already -- the
+            // operating system saves it at a switch -- and needs nothing: it
+            // packs anywhere. Freestanding code borrows a thread's: saved in
+            // a frame slot of the block's own (PackedSaveX87: 112 bytes;
+            // FXSAVE: 512 at sixteen, and MXCSR's word) -- one per block, so
+            // a block inside another keeps the outer one's save -- and the
+            // code between the two may pack (Selector.PackedRegions). The
+            // block moves with its method wherever it is inlined.
             case "PackedEnter":
             case "PackedLeave":
             {
-                int kind = call.Args.Count == 1 && call.Args[0] is LiteralExpr { Text: "2" } ? 2 : 1;
+                int kind = call.Args.Count == 2 && call.Args[0] is LiteralExpr { Text: "2" } ? 2 : 1;
+                int number = call.Args.Count == 2 && call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : 0;
                 if (!Freestanding) return Void();
                 // Refused once, at the block's start: its finally is lowered
                 // on every way out, and said it again on each.
@@ -937,9 +941,12 @@ public sealed partial class Lowering
                     Error(call, "using (Packed.Sse()) needs SSE, which --cpu=" + _t.X86Profile.Name + " does not have");
                     return Void();
                 }
-                _f.NoInlining = true;
-                if (!_packedAreas.TryGetValue(_f, out FrameSlot? area))
-                    _packedAreas[_f] = area = _f.NewSlot(kind == 2 ? 544 : 112, 16, "packed");
+                // NOTHING PACKED RUNS on a processor with neither MMX nor
+                // 3DNow! (a 486): the block is its body alone, saving nothing
+                // -- FNSTENV and FLDENV are tens of a 486's cycles each.
+                if (kind == 1 && !_t.X86Profile.Mmx) return Void();
+                if (!_packedAreas.TryGetValue((_f, number), out FrameSlot? area))
+                    _packedAreas[(_f, number)] = area = _f.NewSlot(kind == 2 ? 544 : 112, 16, "packed");
                 string machine = (name == "PackedEnter", kind == 2) switch
                 {
                     (true, false) => MachineIntrinsics.PackedSaveX87,
@@ -1101,8 +1108,8 @@ public sealed partial class Lowering
         }
     }
 
-    /// <summary>Each function's packed-block save area (PackedEnter, PackedLeave): one, the two calls' alike.</summary>
-    private readonly Dictionary<Function, FrameSlot> _packedAreas = new(ReferenceEqualityComparer.Instance);
+    /// <summary>Each packed block's save area, by its function and its number (PackedEnter, PackedLeave): one for its start and every give-back alike.</summary>
+    private readonly Dictionary<(Function, int), FrameSlot> _packedAreas = new();
 
     /// <summary>
     /// `n` bytes from `from` to `into`: forward a word at a time (MemCopy);
