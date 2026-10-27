@@ -1301,7 +1301,7 @@ public sealed partial class Lowering
     private VReg HashOfWide(VReg v)
     {
         VReg low = _e.Unary(Opcode.Trunc64, R(v), IrType.I32);
-        VReg high = _e.Unary(Opcode.Trunc64, R(_e.Binary(Opcode.ShrU, R(v), Imm(32, IrType.I64), IrType.I64)), IrType.I32);
+        VReg high = _e.Unary(Opcode.Trunc64, R(_e.Binary(Opcode.ShrU, R(v), Imm(32, IrType.I32), IrType.I64)), IrType.I32);
         return _e.Binary(Opcode.Xor, R(low), R(high), IrType.I32);
     }
 
