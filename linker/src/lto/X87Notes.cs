@@ -128,10 +128,11 @@ public static class X87Notes
     /// this one's functions as this link saw them. Only what can reach float
     /// code by calls made outside a block: a float function, and every
     /// function that calls one of these outside a block of its own. Written
-    /// where the image's units carry facts (Judges), with nothing in it where
-    /// nothing floats; taken away where they carry none -- units compiled
-    /// with --x87-outside-blocks, or hosted -- so that a missing file says
-    /// the image's float code was never judged (ReadBeside).
+    /// where the image's units carry facts (Judges: every freestanding i386
+    /// unit's, the rule kept or not), with nothing in it where nothing
+    /// floats; taken away where they carry none -- hosted units, assembly --
+    /// so that a missing file says the image's calls were never written down
+    /// (ReadBeside).
     /// </summary>
     public static void WriteBeside(string path, IEnumerable<ObjectFile> objects)
     {
@@ -169,7 +170,7 @@ public static class X87Notes
         string beside = path + ".x87";
         if (!File.Exists(beside))
         {
-            if (needed) throw new LinkException(new List<string> { $"{path}: no float-code facts beside it ({beside}), so this link cannot judge its calls into {Path.GetFileName(path)}: it was linked without them (by an older compiler, or from units compiled with --x87-outside-blocks or hosted); link it again from units that keep the rule" });
+            if (needed) throw new LinkException(new List<string> { $"{path}: no float-code facts beside it ({beside}), so this link cannot judge its calls into {Path.GetFileName(path)}: it was linked without them (by an older compiler, or from hosted units); link it again with this compiler" });
             return new List<Fact>();
         }
         using FileStream stream = File.OpenRead(beside);

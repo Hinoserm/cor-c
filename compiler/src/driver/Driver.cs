@@ -391,12 +391,13 @@ public static class Driver
                                  known: the compile of a program, else the
                                  link. Refused for hosted code
               --x87-outside-blocks
-                                 freestanding: float code allowed outside
-                                 packed blocks (wins over the above), and
-                                 no facts kept: an image linked from such
-                                 units has its float code unjudged, and a
-                                 link that keeps the rule refuses to link
-                                 against it; refused for hosted code
+                                 freestanding: this unit's own float code
+                                 allowed outside packed blocks (wins over
+                                 the above); what it calls is still judged,
+                                 and its calls outside a block are outside
+                                 for a function whose float code relies on
+                                 its callers' blocks; refused for hosted
+                                 code
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --no-collector     link no collector: what cannot be proved freed or

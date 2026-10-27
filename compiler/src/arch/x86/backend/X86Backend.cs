@@ -164,18 +164,22 @@ public sealed class X86Backend : IBackend
     /// (Packed.X87()) { ... }), which saves the interrupted thread's state
     /// first, or under its callers' blocks only; outside every one it is an
     /// error the link makes, which alone sees every caller (Lto.X87Notes:
-    /// each function's facts, Selector.X87Fact, in the object).
+    /// each function's facts, Selector.X87Fact, in the object). Off
+    /// (--x87-outside-blocks), the unit's own float code is judged nowhere,
+    /// and its calls still are: what it calls outside a block runs outside.
     /// </summary>
     public bool X87InBlocksOnly { get; set; }
 
     /// <summary>The facts Selector.X87Fact makes, from every worker at once: each function's, and every symbol whose address the unit's code takes.</summary>
-    internal sealed class X87Facts
+    internal sealed class X87Facts(bool judged)
     {
         private readonly List<Corsac.Lang.Lto.X87Notes.Fact> _facts = new();
         private readonly HashSet<string> _taken = new(StringComparer.Ordinal);
 
+        /// <summary>Whether the unit keeps the rule (X87InBlocksOnly): where it does not, no float code of its own is said, its calls are.</summary>
         public void Add(Function f, bool floats)
         {
+            floats &= judged;
             HashSet<string> taken = new(StringComparer.Ordinal);
             Corsac.Lang.Lto.X87Notes.Fact fact = Selector.X87Fact(f, floats, taken);
             lock (_facts)
@@ -216,7 +220,11 @@ public sealed class X86Backend : IBackend
         _streamFill = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill) ? Corsac.Lang.Lto.RuntimeAbi.StreamFill : null;
         ObjectFile obj = new();
         (Target.X86Profile.Contract with { AutomaticPacked = AutomaticPacked }).Attach(obj);
-        _x87 = X87InBlocksOnly && !AutomaticPacked ? new X87Facts() : null;
+        // FACTS FROM EVERY FREESTANDING UNIT, the rule kept or not
+        // (--x87-outside-blocks): a unit that lets its own float code run
+        // anywhere still says whom it calls, and where, so that what it calls
+        // is judged and an image of it can be linked against.
+        _x87 = !AutomaticPacked ? new X87Facts(X87InBlocksOnly) : null;
         OptimizationSummary summary = new();
         // THE SECTION AS ALIGNED AS ITS FUNCTIONS: a duplicate the link cuts
         // out of it must be a whole number of the section's alignment.
