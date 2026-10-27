@@ -68,7 +68,7 @@ internal sealed partial class Selector
     /// <summary>Whether a packed group may be selected here: hosted code, or inside a packed block.</summary>
     private bool PackedHere => _automaticPacked || _packedNow != 0;
 
-    /// <summary>Whether SSE may be selected here: hosted code, or inside an SSE block.</summary>
+    /// <summary>Whether SSE may be selected here: hosted code, or inside a state FXSAVE kept.</summary>
     private bool SseHere => _packedSse || _packedNow == 2;
 
     private static readonly MReg Eax = MReg.Of(Gpr.Eax);
@@ -461,9 +461,11 @@ internal sealed partial class Selector
 
     /// <summary>
     /// Every register of either file holding bytes of [place, place +
-    /// bytes) let go but `keep`'s -- written back first, unless `replaced`
-    /// and the range covers all of its bytes, which the operation is about
-    /// to make anew.
+    /// bytes) let go -- written back first, unless `replaced` and the range
+    /// covers all of its bytes, which the operation is about to make anew --
+    /// but `keep`'s, which the operation still reads: written back and
+    /// held, clean. Clean registers may share bytes, all as memory has them;
+    /// a dirty one shares none.
     /// </summary>
     private void PackedLetGo(PackedPlace place, int bytes, bool replaced, bool keepXmm = false, int keep = -1)
     {
@@ -473,7 +475,8 @@ internal sealed partial class Selector
             PackedRegisters file = PackedFile(xmm);
             for (int r = 0; r < 8; r++)
             {
-                if (xmm == keepXmm && r == keep || !file.Overlaps(r, place.Root, place.Offset, bytes)) continue;
+                if (!file.Overlaps(r, place.Root, place.Offset, bytes)) continue;
+                if (xmm == keepXmm && r == keep) { if (!replaced) PackedWriteBack(xmm, r); continue; }
                 bool covered = place.Offset <= file.Offset[r] && file.Offset[r] + file.Bytes[r] <= place.Offset + bytes;
                 if (!(replaced && covered)) PackedWriteBack(xmm, r);
                 file.Name[r] = null;
@@ -728,9 +731,9 @@ internal sealed partial class Selector
     /// A PACKED BLOCK'S SAVE, SETTLED from what its code uses, before the
     /// function is selected (Lowering's PackedEnter writes it unsettled,
     /// MachineIntrinsics.PackedSave): FXSAVE where an XMM register may be
-    /// used -- an SSE block in a variant with SSE, SSE's packed operations
-    /// in it, or a call to a method's $inside copy, which may use them in
-    /// its caller's state; the x87's (FNSTENV, or FNSAVE where the stack is in
+    /// used, where --cpu has SSE -- SSE's packed operations in it, its own
+    /// or a callee's inlined there, or a call to a method's $inside copy,
+    /// which may use them in its caller's state; the x87's (FNSTENV, or FNSAVE where the stack is in
     /// use) where its code has float code, a packed operation, a call (the
     /// callee's own float code), a packed block inside it, or the packed
     /// groups may run (a variant with MMX on a --cpu with it); none where it
@@ -794,18 +797,26 @@ internal sealed partial class Selector
             // $inside copy called, which saves nothing and may run its own
             // SSE variant -- wherever --cpu has SSE: only there does
             // freestanding code have an SSE variant at all.
-            bool fx = (save.Features & PackedOps.Sse) != 0 && (save.Kind == 2 || xmm) || profile.Has(X86Feature.Sse) && (xmm || inside);
+            bool fx = profile.Has(X86Feature.Sse) && (xmm || inside);
             string key = save.Kind + "." + save.Number + "." + save.Features;
             string? kind = fx ? "fx" : x87 && fpu ? "x87" : null;
             string? had = settled.GetValueOrDefault(key);
             settled[key] = had == "fx" || kind == "fx" ? "fx" : had ?? kind;
         }
         List<Operand> dropped = new();
+        // An area settled to the x87's save is its 112 bytes, not FXSAVE's
+        // room Lowering gave a block that might have needed it.
+        Dictionary<VReg, FrameSlot> areas = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Copy && i.Dest is { } d && i.Operands is [SlotOperand area]) areas[d] = area.Slot;
         foreach (var m in marks)
         {
             string? kind = settled.GetValueOrDefault(m.Kind + "." + m.Number + "." + m.Features);
             int at = m.Block.Instrs.IndexOf(m.At);
             if (kind is null) { m.Block.Instrs.RemoveAt(at); dropped.Add(m.At.Operands[0]); continue; }
+            if (kind == "x87" && m.At.Operands[0] is RegOperand { Reg: var named } && areas.TryGetValue(named, out FrameSlot? x87Area) && x87Area.Bytes > 112)
+                x87Area.Bytes = 112;
             string callee = (kind, m.Saves) switch
             {
                 ("fx", true) => MachineIntrinsics.PackedSaveFxsr,
@@ -3784,8 +3795,8 @@ internal sealed partial class Selector
             case MachineIntrinsics.PackedSaveFxsr:
             case MachineIntrinsics.PackedRestoreFxsr:
             {
-                // The area's address in EAX, which the sequences name; an
-                // SSE block's FXSAVE wants it at sixteen (Lowering: 16 bytes
+                // The area's address in EAX, which the sequences name;
+                // FXSAVE wants it at sixteen (Lowering: 16 bytes
                 // more than the 528 it fills). The selection inside the block
                 // from here on, or back in the one around it.
                 bool fx = name is MachineIntrinsics.PackedSaveFxsr or MachineIntrinsics.PackedRestoreFxsr;
@@ -3796,7 +3807,7 @@ internal sealed partial class Selector
                     Emit(MOp.And, Eax, Imm(-16));
                 }
                 // The save and its give-back are the block's own: FXSAVE is
-                // SSE's state, which the audit lets only an SSE block touch.
+                // SSE's state, which the audit lets only a state FXSAVE keeps touch.
                 Emit(new MInstr(name switch
                 {
                     MachineIntrinsics.PackedSaveX87 => MOp.PackedSaveX87,

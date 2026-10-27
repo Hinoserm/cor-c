@@ -5319,7 +5319,7 @@ public sealed class Parser
     /// <summary>A braced body at the current token, in the compiler's own block where it wants one: read once per processor's version where it names a packed operation.</summary>
     private Block ImplicitBody(Func<Block> read)
     {
-        if (InPrelude) return read();
+        if (InPrelude || SkipImplementation) return read();
         int start = _i, end = At(Tok.LBrace) ? BraceEnd(start) : start;
         bool packedOps = PackedOpsIn(start, end), suspends = SuspendsIn(start, end);
         if (!packedOps || suspends) return ImplicitBlock(read(), packedOps, suspends);
@@ -5339,7 +5339,8 @@ public sealed class Parser
     /// </summary>
     private Block ImplicitExpression(Token at, Func<Block> read)
     {
-        if (InPrelude) return read();
+        // Declarations only: no body is kept, nor read twice (OmittedBodies).
+        if (InPrelude || SkipImplementation) return read();
         int start = _i, end = ExpressionEnd(start);
         bool packedOps = PackedOpsIn(start, end), suspends = SuspendsIn(start, end);
         if (!packedOps || suspends) return ImplicitBlock(read(), packedOps, suspends);

@@ -911,7 +911,7 @@ public sealed partial class Lowering
                 return got ?? Void();
             }
             // A PACKED BLOCK'S STATE, taken and given back (Parser.
-            // ParsePackedBlock: the kind, 1 Mmx, 2 Sse, 3 X87; the block's
+            // ParsePackedBlock: the kind, the compiler's own Parser.ImplicitKind; the block's
             // number in its method; its variant's features, PackedOps' bits).
             // Hosted code owns it already -- the operating system saves it at
             // a switch -- and needs nothing: the MMX registers a packed

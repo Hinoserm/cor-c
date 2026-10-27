@@ -44,8 +44,8 @@ public sealed class MFunction
 
     /// <summary>
     /// Whether it may use the SSE registers anywhere: hosted code, whose
-    /// operating system enables them. A freestanding SSE block's own
-    /// instructions say so themselves (MInstr.OwnsState).
+    /// operating system enables them. Freestanding, the instructions inside
+    /// a state FXSAVE keeps say so themselves (MInstr.OwnsState 2).
     /// </summary>
     public bool SseState { get; init; }
 

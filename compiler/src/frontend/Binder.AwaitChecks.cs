@@ -1691,7 +1691,7 @@ public sealed partial class Binder
         return true;
     }
 
-    /// <summary>The nodes of a body that only some of its runs reach: the arms of ?: and of a switch expression, the right of &&, || and ??.</summary>
+    /// <summary>The nodes of a body that only some of its runs reach: the arms of ?: and of a switch expression, the right of &&, || and ??, a call past a `?.` and its arguments.</summary>
     private HashSet<Node> ConditionalSites(Node body)
     {
         HashSet<Node> maybe = new(ReferenceEqualityComparer.Instance);
@@ -1709,8 +1709,32 @@ public sealed partial class Binder
                 case SwitchExpr sw:
                     foreach (Node arm in sw.Arms) if (!maybe.Contains(arm)) Add(arm);
                     break;
+                // A CALL PAST A `?.` OR `?[`, its own or one earlier in its
+                // chain (a?.B().C()): made only where the receiver is not
+                // null; its arguments with it. The receiver is not.
+                case CallExpr call when !maybe.Contains(call) && PastNullTest(call.Target):
+                    maybe.Add(call);
+                    foreach (Expr arg in call.Args) Add(arg);
+                    break;
+                case IndexExpr { NullConditional: true } index:
+                    foreach (Expr arg in index.Args) if (!maybe.Contains(arg)) Add(arg);
+                    break;
             }
         return maybe;
+
+        static bool PastNullTest(Expr target)
+        {
+            for (Expr? t = target; t is not null;)
+                switch (t)
+                {
+                    case MemberExpr { NullConditional: true } or IndexExpr { NullConditional: true }: return true;
+                    case MemberExpr m: t = m.Target; break;
+                    case IndexExpr i: t = i.Target; break;
+                    case CallExpr c: t = c.Target; break;
+                    default: return false;
+                }
+            return false;
+        }
     }
 
     /// <summary>Whether a call is a packed block's start, Sys.PackedEnter (Parser.ParsePackedBlock).</summary>

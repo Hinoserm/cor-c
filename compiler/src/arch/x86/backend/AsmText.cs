@@ -347,6 +347,9 @@ internal static class AsmText
                 yield return "fninit";
                 yield return "mov dword [eax+512], 0x1F80";
                 yield return "ldmxcsr [eax+512]";
+                yield return "push 0x027F";
+                yield return "fldcw [esp]";
+                yield return "add esp, 4";
                 yield break;
             case MOp.PackedRestoreFxsr:
                 yield return "fxrstor [eax]";

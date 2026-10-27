@@ -300,10 +300,10 @@ public static class X87Notes
         }
 
         foreach (Fact f in facts.Values.Where(f => f.Floats && outside.Contains(f.Name)).OrderBy(f => f.File, StringComparer.Ordinal).ThenBy(f => f.FloatLine))
-            errors.Add($"'{f.Display}' has float code outside a packed block ({Where(f, f.FloatLine)}) and can run outside one: {Way(f, out bool call)}; "
-                + (call ? "put the outermost call named, or the float code, inside using (Packed.X87()) { ... }"
-                        : "give it a packed block of its own, using (Packed.X87()) { ... }")
-                + ", which saves the interrupted thread's x87 state first");
+            errors.Add($"'{f.Display}' has float code where no kept state is ({Where(f, f.FloatLine)}) and can run there: {Way(f, out bool call)}; "
+                + (call ? "the float code, or the outermost call named, belongs in a method the compiler keeps the state around -- not a lambda, an async body, a virtual method reached by a table, or code reached from assembly"
+                        : "the float code belongs in a method the compiler keeps the state around -- not a lambda, an async body, a virtual method reached by a table, or code reached from assembly")
+                + ", whose save keeps the interrupted thread's x87 state first");
         return errors;
 
         // HOW IT GETS THERE: back along the calls that took each function

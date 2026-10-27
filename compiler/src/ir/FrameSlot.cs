@@ -7,7 +7,8 @@ namespace Corsac.Lang.Ir;
 public sealed class FrameSlot
 {
     public int Id { get; }
-    public int Bytes { get; }
+    /// <summary>Its size: set again only before the backend places it -- a packed block's save area shrinks to the x87's 112 bytes where its save settles so (Selector.SettlePackedSaves).</summary>
+    public int Bytes { get; internal set; }
     public int Align { get; }
     public string? Name { get; init; }
 

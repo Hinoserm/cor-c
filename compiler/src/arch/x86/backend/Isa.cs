@@ -56,7 +56,7 @@ internal static class Isa
         MOp.XmmLoad or MOp.XmmStore or MOp.XmmLoadLow or MOp.XmmStoreLow or MOp.XmmOp or MOp.XmmOpRR => X86Feature.Sse,
         MOp.XmmShiftImm or MOp.XmmExtractW or MOp.XmmInsertW => X86Feature.Sse | X86Feature.Sse2,
         MOp.ThreeDNowOp => X86Feature.Mmx | X86Feature.ThreeDNow,
-        // FXSAVE with LDMXCSR: an SSE block's, so the SSE state's.
+        // FXSAVE with LDMXCSR: the SSE state's.
         MOp.PackedSaveFxsr or MOp.PackedRestoreFxsr => X86Feature.Sse,
         MOp.Cvttsd2si => X86Feature.Sse | X86Feature.Sse2,
         // PAUSE is F3 90, REP NOP: a plain no-op to anything before the
@@ -92,7 +92,7 @@ internal static class Isa
     /// </summary>
     public static bool UsesPackedState(MOp op) => (Requires(op) & PackedState) != 0;
 
-    /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code the hosted ABI selected (X86Backend.AutomaticPacked), or an SSE block's (MInstr.OwnsState 2), may use.</summary>
+    /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code the hosted ABI selected (X86Backend.AutomaticPacked), or code inside a state FXSAVE keeps (MInstr.OwnsState 2), may use.</summary>
     public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0;
 
     /// <summary>The features in <paramref name="features"/>, by the names a programmer knows them by.</summary>

@@ -16,7 +16,9 @@ public static class IrFunctionCodec
     /// the link rebuilds from archived IR (its late passes, its lifetime runs,
     /// the copy a refused run is taken back from, UnitBackend) reads them as
     /// the compile left them; and the bytes a stdcall function pops
-    /// (CalleePops), an async frame's MayMove and StackSymbol, and each class
+    /// (CalleePops), whether a slot may call it (Dispatched) and whether it
+    /// runs inside its caller's kept state (InsideState), an async frame's
+    /// MayMove and StackSymbol, and each class
     /// parameter's chain and interfaces. Names (a register's, a slot's) are
     /// for the dump alone and stay out.
     /// </summary>
@@ -115,6 +117,7 @@ public static class IrFunctionCodec
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary); writer.Write(function.SystemCode);
         writer.Write(function.NoInlining);
         writer.Write(function.CalleePops);
+        writer.Write(function.Dispatched); writer.Write(function.InsideState);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
         // EACH REGISTER'S TYPE BY NUMBER, in an array, every instruction walked
         // without an enumerator: a table and a query a function were most of
@@ -245,6 +248,7 @@ public static class IrFunctionCodec
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader), SystemCode = IrBinary.Flag(reader),
                 NoInlining = IrBinary.Flag(reader), CalleePops = reader.ReadInt32(),
+                Dispatched = IrBinary.Flag(reader), InsideState = IrBinary.Flag(reader),
                 SourceFile = IrBinary.NameOrNull(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };
             int count = IrBinary.Count(reader);
