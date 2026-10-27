@@ -8,14 +8,20 @@
 // delegate, which may run from anywhere, and its float code is refused.
 
 using System;
+using System.Runtime.CompilerServices;
 
 static class Program
 {
+    // Kept where the call cannot see it: a delegate anything may call.
+    static Func<double, int> _twice = d => (int)(d * 2.0);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Call(Func<double, int> f, double x) => f(x);
+
     static int Main()
     {
         Host.Start(1024 * 1024);
-        Func<double, int> twice = d => (int)(d * 2.0);
-        Host.Line("twice " + twice(1.5));
+        Host.Line("twice " + Call(_twice, 1.5));
         Host.Done(0);
         return 0;
     }

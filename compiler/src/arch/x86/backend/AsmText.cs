@@ -326,13 +326,13 @@ internal static class AsmText
                 yield return "cmp word [eax+8], 0xFFFF";
                 yield return "jne 1f";
                 yield return "mov dword [eax+108], 0";
-                yield return "mov dword [eax+28], 0x037F";
-                yield return "fldcw [eax+28]";
                 yield return "jmp 2f";
                 yield return "1: fldenv [eax]";
                 yield return "fnsave [eax]";
                 yield return "mov dword [eax+108], 1";
-                yield return "2:";
+                yield return "2: push 0x027F";
+                yield return "fldcw [esp]";
+                yield return "add esp, 4";
                 yield break;
             case MOp.PackedRestoreX87:
                 yield return "cmp dword [eax+108], 0";

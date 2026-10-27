@@ -167,9 +167,10 @@ public enum MOp : byte
     /// A packed block's save of the x87 state, at [eax] in 112 bytes, as the
     /// kernel's gfx3d_fpu_save makes it: fnstenv [eax]; the tag word all
     /// empty -- a thread at a system call -- keeps the 28-byte environment,
-    /// flagged 0 at +108, with the control word FNSAVE leaves (0x037F) loaded;
-    /// otherwise fldenv and fnsave [eax] whole, flagged 1. No MMX instruction,
-    /// so a 486 runs it.
+    /// flagged 0 at +108; otherwise fldenv and fnsave [eax] whole, flagged 1;
+    /// then the program's own control word loaded, a double's 53 bits
+    /// (0x027F, as the entry sets it: MachineIntrinsics.DoublePrecision). No
+    /// MMX instruction, so a 486 runs it.
     /// </summary>
     PackedSaveX87,
     /// <summary>

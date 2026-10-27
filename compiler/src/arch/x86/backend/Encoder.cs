@@ -955,15 +955,19 @@ internal sealed class Encoder
             case MOp.PackedSaveX87:
                 B(0xD9, 0x30);                                  // fnstenv [eax]
                 B(0x66, 0x83, 0x78, 0x08, 0xFF);                // cmp word [eax+8], 0xFFFF: the tag word
-                B(0x75, 0x13);                                  // jne whole
+                B(0x75, 0x09);                                  // jne whole
                 B(0xC7, 0x40, 0x6C, 0x00, 0x00, 0x00, 0x00);    // mov dword [eax+108], 0
-                B(0xC7, 0x40, 0x1C, 0x7F, 0x03, 0x00, 0x00);    // mov dword [eax+28], 0x037F
-                B(0xD9, 0x68, 0x1C);                            // fldcw [eax+28]
-                B(0xEB, 0x0B);                                  // jmp done
+                B(0xEB, 0x0B);                                  // jmp control
                 B(0xD9, 0x20);                                  // whole: fldenv [eax]
                 B(0xDD, 0x30);                                  // fnsave [eax]
                 B(0xC7, 0x40, 0x6C, 0x01, 0x00, 0x00, 0x00);    // mov dword [eax+108], 1
-                break;                                          // done:
+                // control: the program's own control word, a double's 53
+                // bits (MachineIntrinsics.DoublePrecision), not FNSAVE's or
+                // FNSTENV's -- extended precision rounded every double twice.
+                B(0x68, 0x7F, 0x02, 0x00, 0x00);                // push 0x027F
+                B(0xD9, 0x2C, 0x24);                            // fldcw [esp]
+                B(0x83, 0xC4, 0x04);                            // add esp, 4
+                break;
             case MOp.PackedRestoreX87:
                 B(0x83, 0x78, 0x6C, 0x00);                      // cmp dword [eax+108], 0
                 B(0x75, 0x04);                                  // jne whole
