@@ -168,6 +168,18 @@ static class Gc
     // that would leave one gives the caller the extra bytes instead.
     const int Smallest = 4 * WordSize.Bytes;
 
+    // THE SMALLEST BLOCK ANY CHUNK HOLDS: a size-class page's least class
+    // (StartClasses), a header and a word. A WALK OF A CHAIN OF BLOCKS stops
+    // only below this -- a mixed chunk's never are, a page's 16- and 24-byte
+    // classes are. Smallest, four words, is a mixed chunk's floor: in long
+    // mode it is 32 bytes, and walks that stopped below it read a page of the
+    // two least classes as empty. Its blocks were given no start in the
+    // snapshot (StampPage) and could not be found by the marker
+    // (SnapshotBlockIn): kept as newcomers, never scanned, and what only they
+    // held was swept from under them (1247, 1472). Their marks were not taken
+    // off either (UnmarkRange). On i386 the two are the same 16 bytes.
+    const int LeastBlock = 16;
+
     // Collect when this much has been allocated since the last collection:
     // 256 KB to begin with, and thereafter between one and three times the
     // live size, as the machine has room (NextThreshold). The live size
@@ -588,7 +600,7 @@ static class Gc
             {
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
-                if (size < Smallest || Beyond(block, size, end) || !Whole(chunk, block, word))
+                if (size < LeastBlock || Beyond(block, size, end) || !Whole(chunk, block, word))
                 {
                     break;
                 }
@@ -650,7 +662,7 @@ static class Gc
             {
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
-                if (size < Smallest || Beyond(block, size, end) || !Whole(chunk, block, word))
+                if (size < LeastBlock || Beyond(block, size, end) || !Whole(chunk, block, word))
                 {
                     break;
                 }
@@ -791,7 +803,7 @@ static class Gc
             {
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
-                if (size < Smallest || Beyond(block, size, end) || !Whole(chunk, block, word))
+                if (size < LeastBlock || Beyond(block, size, end) || !Whole(chunk, block, word))
                 {
                     break;
                 }
@@ -852,7 +864,7 @@ static class Gc
         {
             nuint word = Sys.ReadAddress(block);
             nuint size = word & SizeMask;
-            if (size < Smallest || Beyond(block, size, end)) break;
+            if (size < LeastBlock || Beyond(block, size, end)) break;
             if ((word & FlagFree) == 0)
             {
                 live = live + 1;
@@ -914,7 +926,7 @@ static class Gc
             {
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
-                if (size < Smallest || Beyond(block, size, end) || !Whole(chunk, block, word))
+                if (size < LeastBlock || Beyond(block, size, end) || !Whole(chunk, block, word))
                 {
                     break;
                 }
@@ -1192,7 +1204,7 @@ static class Gc
         }
         nuint word = Sys.ReadAddress(block);
         nuint size = word & SizeMask;
-        if (size < Smallest || Beyond(block, size, HeapChunks.End(chunk)) || (word & FlagFree) != 0
+        if (size < LeastBlock || Beyond(block, size, HeapChunks.End(chunk)) || (word & FlagFree) != 0
             || !Whole(chunk, block, word))
         {
             return 0;
@@ -2417,7 +2429,7 @@ static class Gc
         {
             nuint word = Sys.ReadAddress(block);
             nuint size = word & SizeMask;
-            if (size < Smallest)
+            if (size < LeastBlock)
             {
                 return;
             }
@@ -2527,7 +2539,7 @@ static class Gc
         // page is not looked up here (no lock is held): a kilobyte or less is
         // two cards at most, and a card set over something else costs a scan
         // of it, never a miss.
-        if (size >= Smallest && size < 0x40000000 && (size <= ClassMax || Sys.ReadAddress(block + size - FooterBytes) == word))
+        if (size >= LeastBlock && size < 0x40000000 && (size <= ClassMax || Sys.ReadAddress(block + size - FooterBytes) == word))
         {
             end = block + size - 1;
         }
@@ -2569,7 +2581,7 @@ static class Gc
         nuint kind = Sys.ReadAddress(block + KindAt);
         // A machine still in its kickoff's frame is on a stack, which the
         // stack copies hold as it was; a size no block has is not read.
-        if (size < Smallest || size >= 0x1000000 || kind == KindLeaf) return;
+        if (size < LeastBlock || size >= 0x1000000 || kind == KindLeaf) return;
         // A footer, where there is one, repeats the header: no reference.
         nuint end = block + size;
         nuint vt = Sys.ReadAddress(payload);
@@ -5269,7 +5281,7 @@ static class Gc
         _classSize = tables;
         _classOf = tables + 64 * WordSize.Bytes;
         _classStep = tables + 256 * WordSize.Bytes;
-        nuint size = 16;
+        nuint size = LeastBlock;
         nuint c = 0;
         while (size <= ClassMax)
         {
@@ -6140,7 +6152,7 @@ static class Gc
         for (long n = 0; at < block && n < 100000; n++)
         {
             nuint size = Sys.ReadAddress(at) & SizeMask;
-            if (size < Smallest || Beyond(at, size, end) || Sys.ReadAddress(at + size - FooterBytes) != Sys.ReadAddress(at)) return true;
+            if (size < LeastBlock || Beyond(at, size, end) || Sys.ReadAddress(at + size - FooterBytes) != Sys.ReadAddress(at)) return true;
             at = at + size;
         }
         return at == block;
@@ -6179,7 +6191,7 @@ static class Gc
             nuint word = Sys.ReadAddress(block);
             nuint size = word & SizeMask;
             // Freed since, or taken again: no longer the block it was.
-            if ((word & FlagFree) != 0 || size < Smallest || size > 65536) { Sys.WriteAddress(e, 0); continue; }
+            if ((word & FlagFree) != 0 || size < LeastBlock || size > 65536) { Sys.WriteAddress(e, 0); continue; }
             // Or no block starts there any more: freed, folded into a free
             // run and handed out again inside a bigger block, whose contents
             // may look like a header at the old address.
@@ -6305,12 +6317,12 @@ static class Gc
         }
         nuint word = Sys.ReadAddress(block);
         nuint size = word & SizeMask;
-        if (size >= Smallest && (tail == 0 || Sys.ReadAddress(block + size - FooterBytes) == word)) return;
+        if (size >= LeastBlock && (tail == 0 || Sys.ReadAddress(block + size - FooterBytes) == word)) return;
         Runtime.WriteLiteral(2, "gc owner check: handed out with its footer wrong by the ");
         Runtime.WriteLiteral(2, how);
         SayNumber(" -- block ", block);
         SayNumber("gc owner check:   header ", word);
-        SayNumber("gc owner check:   footer ", size >= Smallest && tail != 0 ? Sys.ReadAddress(block + size - FooterBytes) : 0);
+        SayNumber("gc owner check:   footer ", size >= LeastBlock && tail != 0 ? Sys.ReadAddress(block + size - FooterBytes) : 0);
         Runtime.SayTrace(2, Sys.FramePointer());
     }
 
@@ -6463,7 +6475,7 @@ static class Gc
             {
                 nuint word = Sys.ReadAddress(at);
                 nuint size = word & SizeMask;
-                if (size < Smallest || Beyond(at, size, end)) break;
+                if (size < LeastBlock || Beyond(at, size, end)) break;
                 if ((word & FlagFree) == 0)
                 {
                     HeapChunks.SetStartShared(page, at);
@@ -6486,7 +6498,7 @@ static class Gc
         {
             nuint word = Sys.ReadAddress(at);
             nuint size = word & SizeMask;
-            if (size < Smallest || Beyond(at, size, end)) return;
+            if (size < LeastBlock || Beyond(at, size, end)) return;
             if ((word & FlagFree) == 0 && (word & (FlagMark | FlagScan)) != 0)
             {
                 StampClass(at, size, word & FlagMask & ~(nuint)(FlagMark | FlagScan));
@@ -8080,7 +8092,7 @@ static class Gc
         {
             nuint word = Sys.ReadAddress(block);
             nuint size = word & SizeMask;
-            if (size < Smallest || Beyond(block, size, end)) break;
+            if (size < LeastBlock || Beyond(block, size, end)) break;
             if ((word & FlagFree) == 0) AllocSamples.Collected(block + HeaderBytes);
             block = block + size;
         }
@@ -8095,7 +8107,7 @@ static class Gc
         {
             nuint word = Sys.ReadAddress(block);
             nuint size = word & SizeMask;
-            if (size < Smallest || Beyond(block, size, end)) break;
+            if (size < LeastBlock || Beyond(block, size, end)) break;
             if ((word & FlagFree) == 0) total = total + (long)size;
             block = block + size;
         }
@@ -9876,7 +9888,7 @@ static class Gc
                     continue;
                 }
                 nuint size = Sys.ReadAddress(block) & SizeMask;
-                if (size < Smallest || Beyond(block, size, end)) break;
+                if (size < LeastBlock || Beyond(block, size, end)) break;
                 AtStart(block, vtable);
                 block = block + size;
             }
@@ -9890,7 +9902,7 @@ static class Gc
             {
                 nuint word = Sys.ReadAddress(at);
                 nuint size = word & SizeMask;
-                if (word == 0 || size < Smallest || Beyond(at, size, upto)) break;
+                if (word == 0 || size < LeastBlock || Beyond(at, size, upto)) break;
                 AtStart(at, vtable);
                 at = at + size;
             }
@@ -10184,7 +10196,7 @@ static class Gc
                 while (block < end)
                 {
                     nuint size = Sys.ReadAddress(block) & SizeMask;
-                    if (size < Smallest || Beyond(block, size, end)) break;
+                    if (size < LeastBlock || Beyond(block, size, end)) break;
                     CountHeldBlock(block);
                     block = block + size;
                 }
@@ -10284,7 +10296,7 @@ static class Gc
                 }
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
-                if (size < Smallest || Beyond(block, size, end)) break;
+                if (size < LeastBlock || Beyond(block, size, end)) break;
                 if ((word & FlagFree) == 0) found = BlockReferencesInto(block, size, paged, low, high, max, found);
                 block = block + size;
             }
@@ -10528,7 +10540,7 @@ static class Gc
                 }
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
-                if (size < Smallest || Beyond(block, size, end)) break;
+                if (size < LeastBlock || Beyond(block, size, end)) break;
                 if ((word & FlagFree) != 0)
                 {
                     nuint b = 0;
@@ -10617,7 +10629,7 @@ static class Gc
                 }
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
-                if (size < Smallest || Beyond(block, size, end))
+                if (size < LeastBlock || Beyond(block, size, end))
                 {
                     CheckFault("gc heap check: a chunk's chain breaks", block, word, when);
                     break;
@@ -10672,7 +10684,7 @@ static class Gc
                 {
                     break;
                 }
-                if (size < Smallest || Beyond(at, size, upto))
+                if (size < LeastBlock || Beyond(at, size, upto))
                 {
                     CheckFault("gc heap check: a buffer's chain breaks", at, word, when);
                     break;
@@ -11251,7 +11263,7 @@ static class Gc
         }
         nuint word = Sys.ReadAddress(block);
         nuint size = word & SizeMask;
-        if (size < Smallest || Beyond(block, size, HeapChunks.End(chunk)) || (word & FlagFree) != 0
+        if (size < LeastBlock || Beyond(block, size, HeapChunks.End(chunk)) || (word & FlagFree) != 0
             || !Whole(chunk, block, word))
         {
             return;
@@ -11526,7 +11538,7 @@ static class Gc
         nuint word = Sys.ReadAddress(block);
         nuint size = word & SizeMask;
 
-        if (size < Smallest || Beyond(block, size, end) || (word & FlagFree) != 0)
+        if (size < LeastBlock || Beyond(block, size, end) || (word & FlagFree) != 0)
         {
             return 0;
         }
@@ -11661,7 +11673,7 @@ static class Gc
             nuint word = Sys.ReadAddress(exact);
             nuint size = word & SizeMask;
 
-            if (size >= Smallest && !Beyond(exact, size, end)
+            if (size >= LeastBlock && !Beyond(exact, size, end)
                 && Whole(chunk, exact, word))
             {
                 return exact;
@@ -11681,7 +11693,7 @@ static class Gc
             nuint word = Sys.ReadAddress(block);
             nuint size = word & SizeMask;
 
-            if (size < Smallest || Beyond(block, size, end)
+            if (size < LeastBlock || Beyond(block, size, end)
                 || !Whole(chunk, block, word))
             {
                 // The chain of sizes is broken; nothing below is trustworthy.
@@ -11747,7 +11759,7 @@ static class Gc
 
         // One past its payload included, as BlockForPointer's walk does: in
         // a page the block's own end (TailIn).
-        if (size < Smallest || at > block + size - TailIn(chunk))
+        if (size < LeastBlock || at > block + size - TailIn(chunk))
         {
             return 0;
         }
@@ -12645,7 +12657,7 @@ static class Gc
             return block;
         }
         nuint size = Sys.ReadAddress(block) & ~(nuint)7;
-        if (size < Smallest || at > block + size - (nuint)TailIn(chunk))
+        if (size < LeastBlock || at > block + size - (nuint)TailIn(chunk))
         {
             return 0;
         }
@@ -13385,7 +13397,7 @@ static class Gc
                 nuint block = entry & ~(nuint)1;
                 nuint tail = (entry & 1) != 0 ? 0 : (nuint)FooterBytes;
                 nuint size = Sys.ReadAddress(block) & SizeMask;
-                if (size < Smallest) continue;
+                if (size < LeastBlock) continue;
                 MarkFlags((nuint)block, (nuint)(FlagMark | FlagScan), (nuint)tail);
                 if (Sys.ReadAddress(block + KindAt) == KindLeaf) continue;
                 ScanRootsAttributed(block + HeaderBytes, block + size - tail, 3, false);
@@ -13463,7 +13475,7 @@ static class Gc
                 nuint target = w - HeaderBytes;
                 nuint word = Sys.ReadAddress(target);
                 nuint size2 = word & SizeMask;
-                if (size2 >= Smallest && !Beyond(target, size2, HeapChunks.End(chunk)) && Whole(chunk, target, word)
+                if (size2 >= LeastBlock && !Beyond(target, size2, HeapChunks.End(chunk)) && Whole(chunk, target, word)
                     && (word & (FlagMark | FlagFree)) == 0)
                 {
                     SayNumber("gc verify stop block: block ", block);
@@ -14112,7 +14124,7 @@ static class Gc
                 nuint word = Sys.ReadAddress(block);
                 nuint size = word & SizeMask;
 
-                if (size < Smallest || Beyond(block, size, end))
+                if (size < LeastBlock || Beyond(block, size, end))
                 {
                     // Broken metadata cannot be walked safely; stop at
                     // this chunk rather than read what is not there.
@@ -14967,7 +14979,7 @@ static class Gc
             nuint word = Sys.ReadAddress(block);
             nuint size = word & SizeMask;
 
-            if (size < Smallest || Beyond(block, size, end))
+            if (size < LeastBlock || Beyond(block, size, end))
             {
                 return false;
             }
