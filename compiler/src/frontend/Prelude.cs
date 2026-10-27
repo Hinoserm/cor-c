@@ -855,6 +855,15 @@ public static class Prelude
             public static void Cpuid(int leaf, int subleaf, nuint into) { }
             // rdtsc: the time-stamp counter.
             public static long ReadTsc() { return 0; }
+            // bsf / bsr: the index of the lowest or highest set bit of a value
+            // that is not zero (undefined for zero: ask first).
+            public static int BitScanForward(uint value) { return 0; }
+            public static int BitScanReverse(uint value) { return 0; }
+            // 1 where the processor has CPUID (EFLAGS.ID can be flipped), else 0.
+            public static int CpuidPresent() { return 0; }
+            // A 64-bit compare-exchange at `at`: lock cmpxchg8b on i386, which
+            // needs CPUID's CX8 bit (Processor.Cas64); answers what was there.
+            public static long Cas64(nuint at, long expect, long value) { return 0; }
             // pushfd; pop (pushfq on x86-64): the flags register, which a
             // kernel asks for the interrupt flag (bit 9) before it turns
             // interrupts off and on again.

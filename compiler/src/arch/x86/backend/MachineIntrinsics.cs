@@ -79,6 +79,13 @@ internal static class MachineIntrinsics
     public const string Cpuid = Prefix + "cpuid";
     public const string ReadTsc = Prefix + "rdtsc";
     public const string ReadFlags = Prefix + "readflags";
+    /// <summary>bsf / bsr: the lowest or highest set bit of a nonzero 32-bit value (Sys.BitScanForward, BitScanReverse).</summary>
+    public const string BitScanForward = Prefix + "bsf";
+    public const string BitScanReverse = Prefix + "bsr";
+    /// <summary>Whether the processor has CPUID: EFLAGS.ID flipped and read back (Sys.CpuidPresent).</summary>
+    public const string CpuidPresent = Prefix + "hascpuid";
+    /// <summary>A 64-bit compare-exchange on i386: lock cmpxchg8b (Sys.Cas64).</summary>
+    public const string Cas64 = Prefix + "cas64";
     public const string ReadCodeSegment = Prefix + "readcs";
     public const string SwapGs = Prefix + "swapgs";
     public const string LoadTaskRegister = Prefix + "ltr";

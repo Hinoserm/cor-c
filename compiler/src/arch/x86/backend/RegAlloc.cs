@@ -272,8 +272,11 @@ internal sealed class Allocator
                     if (i.Op == MOp.Cmov && !i.Lock && i.Operands[0] is MReg { IsPhys: false }) deadFlags.Add(i);
                     // Fucomipp writes every status flag, as cmp does: ZF, PF and CF
                     // from the comparison, OF, SF and AF cleared.
+                    // BSF and BSR leave ZF and every other flag undefined; POPFD
+                    // writes them all.
                     if (i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or
-                        or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg or MOp.Fucomipp) flagsLive = false;
+                        or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg or MOp.Fucomipp
+                        or MOp.Bsf or MOp.Bsr or MOp.WriteFlags) flagsLive = false;
                     if (i.Op is MOp.Adc or MOp.Sbb or MOp.Jcc or MOp.Setcc or MOp.Cmov) flagsLive = true;
                     else if (!KnownFlagEffect(i.Op)) flagsLive = true;
                 }
@@ -319,7 +322,8 @@ internal sealed class Allocator
         or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg or MOp.Not or MOp.Bswap
         or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Cdq
         or MOp.Setcc or MOp.Cmov or MOp.Jcc or MOp.Jmp or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Nop or MOp.Pause
-        or MOp.RepMovsb or MOp.RepMovsd or MOp.RepStosb or MOp.RepStosd or MOp.Fucomipp;
+        or MOp.RepMovsb or MOp.RepMovsd or MOp.RepStosb or MOp.RepStosd or MOp.Fucomipp
+        or MOp.Bsf or MOp.Bsr or MOp.WriteFlags;
 
     // ---- occurrences ----------------------------------------------------------
 

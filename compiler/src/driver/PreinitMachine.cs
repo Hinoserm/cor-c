@@ -135,6 +135,10 @@ public sealed class PreinitMachine : Preinit.IMachine
                 case "cli" or "sti" or "barrier" or "cardmark" or "keepalive" or "doubleprecision": return true;
                 // Interrupts off, as they are when the image starts.
                 case "readflags": result = new Num(0x2); return true;
+                // The bit scans of a nonzero value, as the instructions answer;
+                // CPUID's presence and a 64-bit exchange are the real machine's.
+                case "bsf": result = new Num(System.Numerics.BitOperations.TrailingZeroCount((uint)Number(args[0]))); return true;
+                case "bsr": result = new Num(31 - System.Numerics.BitOperations.LeadingZeroCount((uint)Number(args[0]))); return true;
                 case "refstore" or "cardstore": w.Store(args[0], w.WordSize, args[1]); return true;
                 case "refxchg":
                     result = w.Load(args[0], w.WordSize, signed: false);

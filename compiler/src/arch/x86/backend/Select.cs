@@ -2766,6 +2766,54 @@ internal sealed partial class Selector
                 // gate asks before it turns interrupts off.
                 if (i.Dest is not null) Emit(MOp.ReadFlags, Lo(i.Dest));
                 return;
+            case MachineIntrinsics.BitScanForward:
+            case MachineIntrinsics.BitScanReverse:
+                // One instruction from the 386 on; the source is never zero
+                // (its caller asks first), where the result is undefined.
+                if (i.Dest is not null) Emit(name == MachineIntrinsics.BitScanForward ? MOp.Bsf : MOp.Bsr, Lo(i.Dest), R(i.Operands[0]));
+                return;
+            case MachineIntrinsics.CpuidPresent:
+            {
+                // WHETHER CPUID IS THERE: EFLAGS.ID (bit 21) can be changed
+                // only on a processor that has it -- every Pentium, and the
+                // later 486s. Flipped, read back, and put as it was.
+                if (i.Dest is null) return;
+                MReg flags = Temp(), was = Temp();
+                Emit(MOp.ReadFlags, flags);
+                Mov(was, flags);
+                Emit(MOp.Xor, flags, Imm(1 << 21));
+                Emit(MOp.WriteFlags, flags);
+                Emit(MOp.ReadFlags, flags);
+                Emit(MOp.WriteFlags, was);
+                Emit(MOp.Xor, flags, was);
+                Emit(MOp.Shr, flags, Imm(21));
+                Emit(MOp.And, flags, Imm(1));
+                Mov(Lo(i.Dest), flags);
+                return;
+            }
+            case MachineIntrinsics.Cas64:
+            {
+                // LOCK CMPXCHG8B: the Pentium's, reached only after its CPUID
+                // bit was seen (Processor.Cas64), so Probed. Every register it
+                // names is a fixed one -- the address in ESI too -- so none is
+                // left for the allocator to find beside the four it takes:
+                // with the address in a register of its own and a CAS loop's
+                // guess live across it, i386's six ran out.
+                (MOperand expectLo, MOperand expectHi) = PairRM(i.Operands[1]);
+                (MOperand valueLo, MOperand valueHi) = PairRM(i.Operands[2]);
+                Mov(Esi, R(i.Operands[0]));
+                Mov(Eax, expectLo);
+                Mov(Edx, expectHi);
+                Mov(Ebx, valueLo);
+                Mov(Ecx, valueHi);
+                Emit(new MInstr(MOp.Cmpxchg8b, new MMem(Esi, 0)) { Lock = true, Probed = true, Width = 8 });
+                if (i.Dest is not null)
+                {
+                    Mov(Lo(i.Dest), Eax);
+                    Mov(Hi(i.Dest), Edx);
+                }
+                return;
+            }
             case MachineIntrinsics.ReadCodeSegment:
                 if (i.Dest is not null) Emit(MOp.ReadCs, Lo(i.Dest));
                 return;

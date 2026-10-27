@@ -125,6 +125,102 @@ static class WordSize
 #endif
 }
 
+/// WHAT THIS PROCESSOR HAS, asked of CPUID once and kept: the instructions
+/// the runtime and the libraries take a faster way with where the processor
+/// has them, whatever --cpu the image was made for. One image runs on the
+/// 486, the Pentium and the K6 alike (--cpu 486); a K7 or a K8 under it
+/// still has CMPXCHG8B and the streaming stores, and this says so.
+///
+/// Asked the first time any feature is, on whichever thread: two threads
+/// asking at once get the same answer from the same processor, and the word
+/// is written whole, so no lock is needed. A 486 without CPUID (EFLAGS.ID
+/// fixed) has none of these.
+static class Processor
+{
+    /// lock cmpxchg8b (CPUID 1, EDX bit 8, CX8): a long's compare-exchange, the Pentium's.
+    public const int Cas64 = 1 << 0;
+    /// cmovcc (EDX bit 15).
+    public const int Cmov = 1 << 1;
+    /// MMX (EDX bit 23).
+    public const int Mmx = 1 << 2;
+    /// SSE's integer half in the MMX registers: the streaming store (movntq),
+    /// the prefetches and sfence. Intel's SSE bit (EDX bit 25) or AMD's
+    /// extended MMX (CPUID 0x80000001, EDX bit 22): the Pentium III, the
+    /// Athlon and every K8. None of it needs the operating system to have
+    /// enabled SSE's own state (CR4.OSFXSR).
+    public const int MmxExtensions = 1 << 3;
+    /// SSE and SSE2 (EDX bits 25 and 26): their XMM state is the operating
+    /// system's to enable, which this does not ask.
+    public const int Sse = 1 << 4;
+    public const int Sse2 = 1 << 5;
+    /// 3DNow! (CPUID 0x80000001, EDX bit 31).
+    public const int ThreeDNow = 1 << 6;
+    /// Set once asked, so a processor with none of the above is not asked again.
+    const int Asked = 1 << 30;
+
+    static int _features;
+
+    /// Whether the processor has every one of `features`.
+    public static bool Has(int features) { return (Features & features) == features; }
+
+    public static int Features
+    {
+        get
+        {
+            int known = _features;
+            return known != 0 ? known : Ask();
+        }
+    }
+
+    /// CPUID's four registers, as Sys.Cpuid writes them.
+    struct Answer
+    {
+        public int A;
+        public int B;
+        public int C;
+        public int D;
+    }
+
+    static int Ask()
+    {
+#if TARGET_64BIT
+        // Every processor that runs long mode has all of them.
+        int found = Asked | Cas64 | Cmov | Mmx | MmxExtensions | Sse | Sse2;
+#else
+        int found = Asked;
+        if (Sys.CpuidPresent() != 0)
+        {
+            Answer r = new Answer();
+            nuint at = Sys.AddressOf(ref r);
+            Sys.Cpuid(0, 0, at);
+            if (r.A >= 1)
+            {
+                Sys.Cpuid(1, 0, at);
+                int d = r.D;
+                if ((d & (1 << 8)) != 0) found |= Cas64;
+                if ((d & (1 << 15)) != 0) found |= Cmov;
+                if ((d & (1 << 23)) != 0) found |= Mmx;
+                if ((d & (1 << 25)) != 0) found |= MmxExtensions | Sse;
+                if ((d & (1 << 26)) != 0) found |= Sse2;
+            }
+            // The extended leaves, where the answer is one: a processor
+            // without them answers its last basic leaf's figures instead.
+            Sys.Cpuid(unchecked((int)0x80000000), 0, at);
+            uint last = (uint)r.A;
+            if (last >= 0x80000001 && last <= 0x8000FFFF)
+            {
+                Sys.Cpuid(unchecked((int)0x80000001), 0, at);
+                int d = r.D;
+                if ((d & (1 << 22)) != 0) found |= MmxExtensions;
+                if ((d & unchecked((int)0x80000000)) != 0) found |= ThreeDNow;
+            }
+        }
+#endif
+        _features = found;
+        return found;
+    }
+}
+
 /// The shape of a thread's block of runtime state.
 ///
 /// ONE OF THESE PER THREAD, and everything in it used to be one word of .bss
@@ -5164,47 +5260,17 @@ static class Runtime
     // shifts, compares, subtraction and bit operations, all of which the
     // backend does on register pairs.
 
-    /// Leading zero bits of an unsigned value; 64 for zero. A binary search
-    /// rather than a 64-step loop, because DivU calls it twice per division.
+    /// Leading zero bits of an unsigned value; 64 for zero. BSR on a half
+    /// (Sys.BitScanReverse), because DivU calls it twice per division.
     private static int Clz64(ulong x)
     {
-        if (x == (ulong)0)
+        uint high = (uint)(x >> 32);
+        if (high != 0)
         {
-            return 64;
+            return 31 - Sys.BitScanReverse(high);
         }
-
-        int n = 0;
-
-        if ((x >> 32) == (ulong)0)
-        {
-            n = n + 32;
-            x = x << 32;
-        }
-        if ((x >> 48) == (ulong)0)
-        {
-            n = n + 16;
-            x = x << 16;
-        }
-        if ((x >> 56) == (ulong)0)
-        {
-            n = n + 8;
-            x = x << 8;
-        }
-        if ((x >> 60) == (ulong)0)
-        {
-            n = n + 4;
-            x = x << 4;
-        }
-        if ((x >> 62) == (ulong)0)
-        {
-            n = n + 2;
-            x = x << 2;
-        }
-        if ((x >> 63) == (ulong)0)
-        {
-            n = n + 1;
-        }
-        return n;
+        uint low = (uint)x;
+        return low == 0 ? 64 : 63 - Sys.BitScanReverse(low);
     }
 
     /// Unsigned quotient. The divisor is lined up with the dividend's top set
@@ -5224,14 +5290,7 @@ static class Runtime
     /// Leading zero bits of a 32-bit value; 32 for zero.
     private static int Clz32(uint x)
     {
-        if (x == (uint)0) return 32;
-        int n = 0;
-        if ((x >> 16) == (uint)0) { n = n + 16; x = x << 16; }
-        if ((x >> 24) == (uint)0) { n = n + 8; x = x << 8; }
-        if ((x >> 28) == (uint)0) { n = n + 4; x = x << 4; }
-        if ((x >> 30) == (uint)0) { n = n + 2; x = x << 2; }
-        if ((x >> 31) == (uint)0) { n = n + 1; }
-        return n;
+        return x == 0 ? 32 : 31 - Sys.BitScanReverse(x);
     }
 
     /// (u1:u0) / v and its remainder, for u1 < v and v nonzero: the quotient

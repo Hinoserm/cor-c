@@ -40,6 +40,8 @@ public static class Roles
             case MOp.GetGs:
             case MOp.ReadCs:
             case MOp.ReadFlags:
+            case MOp.Bsf:
+            case MOp.Bsr:
             case MOp.Cvttss2si:
             case MOp.Cvttsd2si:
                 return operand == 0 ? Role.Def : Role.Use;
@@ -94,6 +96,7 @@ public static class Roles
     private static readonly Gpr[] Gpr_ImplicitUses4 = { Gpr.Eax };
     private static readonly Gpr[] Gpr_ImplicitUses5 = { Gpr.Eax, Gpr.Edx };
     private static readonly Gpr[] Gpr_ImplicitUses6 = { Gpr.Eax };
+    private static readonly Gpr[] Gpr_Cmpxchg8bUses = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi };
     private static readonly Gpr[] Gpr_ImplicitUses7 = { Gpr.Esi, Gpr.Edi, Gpr.Ecx };
     private static readonly Gpr[] Gpr_ImplicitUses8 = { Gpr.Eax, Gpr.Edi, Gpr.Ecx };
     private static readonly Gpr[] Gpr_ImplicitUses9 = { Gpr.Eax };
@@ -129,6 +132,8 @@ public static class Roles
                 return Gpr_ImplicitUses1;
             case MOp.Cpuid:
                 return Gpr_ImplicitUses2;
+            case MOp.Cmpxchg8b:
+                return Gpr_Cmpxchg8bUses;
             case MOp.Cdq:
                 return Gpr_ImplicitUses3;
             case MOp.Mul:
@@ -190,6 +195,7 @@ public static class Roles
             case MOp.ImulWide:
             case MOp.Div:
             case MOp.Idiv:
+            case MOp.Cmpxchg8b:
                 return Gpr_ImplicitDefs4;
             case MOp.Cmpxchg:
             // A reference exchange's stub answers in EAX (X86Backend).

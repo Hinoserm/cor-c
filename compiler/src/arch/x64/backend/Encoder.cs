@@ -383,6 +383,12 @@ internal sealed class Encoder
             case MOp.Imul:
                 Op(w, Hw(i.Operands[0]), i.Operands[1], 0, 0x0F, 0xAF);
                 break;
+            case MOp.Bsf:
+                Op(w, Hw(i.Operands[0]), i.Operands[1], 0, 0x0F, 0xBC);
+                break;
+            case MOp.Bsr:
+                Op(w, Hw(i.Operands[0]), i.Operands[1], 0, 0x0F, 0xBD);
+                break;
             case MOp.Imul3:
             {
                 MImm k = (MImm)i.Operands[2];

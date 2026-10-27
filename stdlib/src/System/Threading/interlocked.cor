@@ -221,13 +221,22 @@ public static class Interlocked
     /// was, as .NET has it.
     static long Read64(nuint at) { return (long)Sys.Cas(at, 0, 0); }
 #else
-    // TWO WORDS, UNDER THE ONE LOCK, read and written a word at a time. Each
-    // answers what was there before. A LOCK A HANDLER TAKES TOO (Platform.
-    // HandlerLockEnter): interrupts off on bare metal while it is held, so a
-    // timer's handler incrementing a long cannot come in on the processor
-    // whose thread holds it and spin there for ever with interrupts off.
+    // LOCK CMPXCHG8B where the processor has it (CPUID's CX8: every Pentium,
+    // K6, K7 and K8): each operation a compare-exchange of the eight bytes,
+    // retried until no other processor or handler changed them between. A
+    // 486 has no such instruction, and there the TWO WORDS go UNDER THE ONE
+    // LOCK, read and written a word at a time. The choice is the processor's,
+    // the same for every thread of the process, so the two ways never meet on
+    // one long. Each answers what was there before.
+    //
+    // The lock is one A HANDLER TAKES TOO (Platform.HandlerLockEnter):
+    // interrupts off on bare metal while it is held, so a timer's handler
+    // incrementing a long cannot come in on the processor whose thread holds
+    // it and spin there for ever with interrupts off.
 
     static nuint _wide;
+
+    static bool Exchanges8 { get { return Processor.Has(Processor.Cas64); } }
 
     static long Held(nuint at) { return (long)Sys.Read32(at) | ((long)Sys.Read32(at + 4) << 32); }
 
@@ -237,8 +246,21 @@ public static class Interlocked
         Sys.Write32(at + 4, (uint)(value >> 32));
     }
 
+    // A first guess read a word at a time may be torn; the compare-exchange
+    // then fails, answers the whole eight bytes, and the next turn has them.
+
     static long Add64(nuint at, long value)
     {
+        if (Exchanges8)
+        {
+            long guess = Held(at);
+            while (true)
+            {
+                long seen = Sys.Cas64(at, guess, guess + value);
+                if (seen == guess) return seen;
+                guess = seen;
+            }
+        }
         uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, was + value);
@@ -248,6 +270,16 @@ public static class Interlocked
 
     static long Swap64(nuint at, long value)
     {
+        if (Exchanges8)
+        {
+            long guess = Held(at);
+            while (true)
+            {
+                long seen = Sys.Cas64(at, guess, value);
+                if (seen == guess) return seen;
+                guess = seen;
+            }
+        }
         uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, value);
@@ -257,6 +289,7 @@ public static class Interlocked
 
     static long Cas64(nuint at, long expect, long value)
     {
+        if (Exchanges8) return Sys.Cas64(at, expect, value);
         uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         if (was == expect) Put(at, value);
@@ -266,6 +299,16 @@ public static class Interlocked
 
     static long Combine64(nuint at, long value, bool or)
     {
+        if (Exchanges8)
+        {
+            long guess = Held(at);
+            while (true)
+            {
+                long seen = Sys.Cas64(at, guess, or ? guess | value : guess & value);
+                if (seen == guess) return seen;
+                guess = seen;
+            }
+        }
         uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Put(at, or ? was | value : was & value);
@@ -273,8 +316,11 @@ public static class Interlocked
         return was;
     }
 
+    /// A compare-exchange of 0 with 0, which leaves whatever is there as it
+    /// was and answers all eight bytes at once, as .NET has it.
     static long Read64(nuint at)
     {
+        if (Exchanges8) return Sys.Cas64(at, 0, 0);
         uint held = Platform.HandlerLockEnter(Sys.AddressOf(ref _wide));
         long was = Held(at);
         Platform.HandlerLockLeave(Sys.AddressOf(ref _wide), held);

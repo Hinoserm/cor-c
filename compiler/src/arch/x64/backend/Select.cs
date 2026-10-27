@@ -2008,6 +2008,16 @@ internal sealed class Selector
             case Corsac.Lang.X86.MachineIntrinsics.ReadFlags:
                 if (i.Dest is not null) Emit(MOp.ReadFlags, V(i.Dest));
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.BitScanForward:
+            case Corsac.Lang.X86.MachineIntrinsics.BitScanReverse:
+                // Of the 32-bit value, never zero (its caller asks first).
+                if (i.Dest is not null)
+                    EmitW(name == Corsac.Lang.X86.MachineIntrinsics.BitScanForward ? MOp.Bsf : MOp.Bsr, 4, V(i.Dest), R(i.Operands[0]));
+                return;
+            case Corsac.Lang.X86.MachineIntrinsics.CpuidPresent:
+                // Every processor that runs long mode has CPUID.
+                if (i.Dest is not null) EmitW(MOp.Mov, 4, V(i.Dest), Imm(1));
+                return;
             case Corsac.Lang.X86.MachineIntrinsics.ReadCodeSegment:
                 if (i.Dest is not null) Emit(MOp.ReadCs, V(i.Dest));
                 return;

@@ -1,0 +1,87 @@
+// test: bit_scans_and_long_atomics
+// expect-exit: 0
+// expect-output:
+// u32 0 lz 32 tz 32 pop 0 log2 0
+// u32 1 lz 31 tz 0 pop 1 log2 0
+// u32 2 lz 30 tz 1 pop 1 log2 1
+// u32 3 lz 30 tz 0 pop 2 log2 1
+// u32 80 lz 24 tz 7 pop 1 log2 7
+// u32 8000 lz 16 tz 15 pop 1 log2 15
+// u32 10000 lz 15 tz 16 pop 1 log2 16
+// u32 7fffffff lz 1 tz 0 pop 31 log2 30
+// u32 80000000 lz 0 tz 31 pop 1 log2 31
+// u32 ffffffff lz 0 tz 0 pop 32 log2 31
+// u32 12345678 lz 3 tz 3 pop 13 log2 28
+// u64 0 lz 64 tz 64 pop 0 log2 0
+// u64 1 lz 63 tz 0 pop 1 log2 0
+// u64 100000000 lz 31 tz 32 pop 1 log2 32
+// u64 8000000000000000 lz 0 tz 63 pop 1 log2 63
+// u64 ffffffffffffffff lz 0 tz 0 pop 64 log2 63
+// u64 100000001 lz 31 tz 0 pop 2 log2 32
+// u64 f0000000000000 lz 8 tz 52 pop 4 log2 55
+// div 6148914691236517205 0 1249999988 725308641 8388607 1099452907526
+// add 100000000
+// exchange was 100000000 now 123456789abcdef0
+// cas miss was 123456789abcdef0 now 123456789abcdef0
+// cas hit was 123456789abcdef0 now 7fffffff00000001
+// or 7fffffff00000001 now 7ffffffff0000001
+// and 7ffffffff0000001 now 7fff0000f0000000
+// read 7fff0000f0000000
+// threads 400000
+//
+// BitOperations' counts by BSF and BSR (Sys.BitScanForward, BitScanReverse)
+// and the sums in place, a long's division whose normalising shift is BSR's
+// (Runtime.Clz64), and Interlocked on a long: lock cmpxchg8b where the
+// processor has CPUID's CX8 bit (Processor.Cas64), the lock elsewhere. The
+// figures are Python's, not the compiler's: the high word's carry, a
+// compare-exchange that misses and one that hits, four threads adding at once.
+
+using System;
+using System.Numerics;
+using System.Threading;
+
+static class P
+{
+    static long _shared;
+
+    static void Bump()
+    {
+        for (int i = 0; i < 100000; i++) Interlocked.Increment(ref _shared);
+    }
+
+    static int Main()
+    {
+        uint[] small = { 0, 1, 2, 3, 0x80, 0x8000, 0x10000, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0x12345678 };
+        foreach (uint v in small)
+            Console.WriteLine("u32 " + v.ToString("x") + " lz " + BitOperations.LeadingZeroCount(v) + " tz " + BitOperations.TrailingZeroCount(v)
+                + " pop " + BitOperations.PopCount(v) + " log2 " + BitOperations.Log2(v));
+        ulong[] wide = { 0, 1, 0x100000000, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF, 0x0000000100000001, 0x00F0000000000000 };
+        foreach (ulong v in wide)
+            Console.WriteLine("u64 " + v.ToString("x") + " lz " + BitOperations.LeadingZeroCount(v) + " tz " + BitOperations.TrailingZeroCount(v)
+                + " pop " + BitOperations.PopCount(v) + " log2 " + BitOperations.Log2(v));
+
+        ulong all = ulong.MaxValue, three = 3;
+        long big = 1234567890123456789, by = 987654321, most = long.MaxValue, odd = (1L << 40) + 7;
+        Console.WriteLine("div " + (all / three) + " " + (all % three) + " " + (big / by) + " " + (big % by) + " " + (most / odd) + " " + (most % odd));
+
+        long x = 0x00000000FFFFFFFF;
+        Console.WriteLine("add " + Interlocked.Add(ref x, 1).ToString("x"));
+        long was = Interlocked.Exchange(ref x, 0x123456789ABCDEF0);
+        Console.WriteLine("exchange was " + was.ToString("x") + " now " + x.ToString("x"));
+        was = Interlocked.CompareExchange(ref x, 1, 2);
+        Console.WriteLine("cas miss was " + was.ToString("x") + " now " + x.ToString("x"));
+        was = Interlocked.CompareExchange(ref x, 0x7FFFFFFF00000001, 0x123456789ABCDEF0);
+        Console.WriteLine("cas hit was " + was.ToString("x") + " now " + x.ToString("x"));
+        was = Interlocked.Or(ref x, 0x00000000F0000000);
+        Console.WriteLine("or " + was.ToString("x") + " now " + x.ToString("x"));
+        was = Interlocked.And(ref x, unchecked((long)0xFFFF0000FFFF0000));
+        Console.WriteLine("and " + was.ToString("x") + " now " + x.ToString("x"));
+        Console.WriteLine("read " + Interlocked.Read(ref x).ToString("x"));
+
+        Thread[] threads = new Thread[4];
+        for (int t = 0; t < threads.Length; t++) { threads[t] = new Thread(Bump); threads[t].Start(); }
+        foreach (Thread t in threads) t.Join();
+        Console.WriteLine("threads " + Interlocked.Read(ref _shared));
+        return 0;
+    }
+}

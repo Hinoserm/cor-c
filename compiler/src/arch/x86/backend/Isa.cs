@@ -27,7 +27,7 @@ internal static class Isa
     public static X86Feature Requires(MOp op) => op switch
     {
         MOp.Bswap or MOp.Xadd or MOp.Cmpxchg or MOp.Invlpg => X86Feature.I486,
-        MOp.Cpuid or MOp.Rdtsc or MOp.Rdmsr or MOp.Wrmsr => X86Feature.Pentium,
+        MOp.Cpuid or MOp.Rdtsc or MOp.Rdmsr or MOp.Wrmsr or MOp.Cmpxchg8b => X86Feature.Pentium,
         MOp.MmxLoad or MOp.MmxStore or MOp.MmxZero or MOp.Emms
             or MOp.MmxAddB or MOp.MmxAddW or MOp.MmxAddD or MOp.MmxSubB or MOp.MmxSubW or MOp.MmxSubD
             or MOp.MmxAnd or MOp.MmxOr or MOp.MmxXor or MOp.MmxMulW or MOp.MmxMulHighW

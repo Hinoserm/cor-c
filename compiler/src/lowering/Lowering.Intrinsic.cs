@@ -321,6 +321,23 @@ public sealed partial class Lowering
                 EmitAtomic(Opcode.AtomicCas, old, R(at), R(expect), R(value));
                 return old;
             }
+            // A LONG'S EIGHT BYTES compared and exchanged at once: in long
+            // mode the word's own compare-exchange; on i386 lock cmpxchg8b,
+            // which its caller reaches only after CPUID's CX8 bit
+            // (Processor.Cas64): a 486 has no such instruction.
+            case "Cas64":
+            {
+                VReg at = Address(call, target, 0);
+                VReg expect = ToI64(Arg(call, target, 1));
+                VReg value = ToI64(Arg(call, target, 2));
+                if (_t.WordSize == 8)
+                {
+                    VReg old = _e.Reg(IrType.I64);
+                    EmitAtomic(Opcode.AtomicCas, old, R(at), R(expect), R(value));
+                    return old;
+                }
+                return _e.Call(MachineIntrinsics.Cas64, IrType.I64, R(at), R(expect), R(value))!;
+            }
             case "AtomicAdd32":
                 return Atomic32(call, target, Opcode.AtomicAdd);
             case "AtomicSwap32":
@@ -851,6 +868,15 @@ public sealed partial class Lowering
                 return Void();
             case "ReadTsc":
                 return _e.Call(MachineIntrinsics.ReadTsc, IrType.I64)!;
+            // The lowest or highest set bit of a nonzero 32-bit value: BSF and
+            // BSR, from the 386 on. Undefined for zero, which BitOperations
+            // answers itself before it asks.
+            case "BitScanForward":
+                return _e.Call(MachineIntrinsics.BitScanForward, IrType.I32, R(ToI32(Arg(call, target, 0))))!;
+            case "BitScanReverse":
+                return _e.Call(MachineIntrinsics.BitScanReverse, IrType.I32, R(ToI32(Arg(call, target, 0))))!;
+            case "CpuidPresent":
+                return _e.Call(MachineIntrinsics.CpuidPresent, IrType.I32)!;
             case "ReadFlags":
                 return Fit(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!, returns);
             case "ReadCodeSegment":

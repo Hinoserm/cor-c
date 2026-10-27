@@ -1617,83 +1617,60 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
 /// .NET's exactly: a count of set bits, and the number of zeroes at either
 /// end of a word -- 32 or 64 for a zero word, which is what .NET returns.
 static class BitOperations {
+    // BY THE BITS' SUMS IN PLACE, not a turn of a loop for each bit set: the
+    // pairs, then the nibbles, then one multiply adds the four bytes into the
+    // top one. Twelve instructions whatever the value; the K8 has no POPCNT.
     public static int PopCount(uint value) {
-        uint v = value;
-        int n = 0;
-
-        while (v != 0) {
-            v = v & (v - 1);
-            n = n + 1;
-        }
-        return n;
+        uint v = value - ((value >> 1) & 0x55555555);
+        v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
+        return (int)((((v + (v >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24);
     }
 
     public static int PopCount(ulong value) {
-        ulong v = value;
-        int n = 0;
-
-        while (v != 0) {
-            v = v & (v - 1);
-            n = n + 1;
-        }
-        return n;
+        return PopCount((uint)value) + PopCount((uint)(value >> 32));
     }
 
-    // BY HALVES, not a bit at a time: five steps for a 32-bit value and six
-    // for a 64-bit one whatever it holds, where the loop they replace took
-    // up to 64 turns of 64-bit shifts and tests on a machine with 32-bit
-    // registers. The register allocator counts bits in every set it walks.
+    // ONE INSTRUCTION, BSF or BSR, from the 386 on (Sys.BitScanForward,
+    // BitScanReverse), for what took five halving steps: undefined of zero,
+    // so zero is answered here first, as .NET answers it. A 64-bit value
+    // goes by its halves on a machine with 32-bit registers.
 
     public static int TrailingZeroCount(uint value) {
-        if (value == 0) { return 32; }
-
-        int n = 0;
-        uint v = value;
-
-        if ((v & 0xFFFF) == 0) { n = n + 16; v = v >> 16; }
-        if ((v & 0xFF) == 0) { n = n + 8; v = v >> 8; }
-        if ((v & 0xF) == 0) { n = n + 4; v = v >> 4; }
-        if ((v & 0x3) == 0) { n = n + 2; v = v >> 2; }
-        if ((v & 0x1) == 0) { n = n + 1; }
-        return n;
+        return value == 0 ? 32 : Sys.BitScanForward(value);
     }
 
     public static int TrailingZeroCount(int value) { return TrailingZeroCount((uint)value); }
 
     public static int TrailingZeroCount(ulong value) {
         uint low = (uint)value;
-        if (low != 0) { return TrailingZeroCount(low); }
+        if (low != 0) { return Sys.BitScanForward(low); }
         uint high = (uint)(value >> 32);
-        return high == 0 ? 64 : 32 + TrailingZeroCount(high);
+        return high == 0 ? 64 : 32 + Sys.BitScanForward(high);
     }
 
     public static int TrailingZeroCount(long value) { return TrailingZeroCount((ulong)value); }
 
     public static int LeadingZeroCount(uint value) {
-        if (value == 0) { return 32; }
-
-        int n = 0;
-        uint v = value;
-
-        if ((v & 0xFFFF0000) == 0) { n = n + 16; v = v << 16; }
-        if ((v & 0xFF000000) == 0) { n = n + 8; v = v << 8; }
-        if ((v & 0xF0000000) == 0) { n = n + 4; v = v << 4; }
-        if ((v & 0xC0000000) == 0) { n = n + 2; v = v << 2; }
-        if ((v & 0x80000000) == 0) { n = n + 1; }
-        return n;
+        return value == 0 ? 32 : 31 - Sys.BitScanReverse(value);
     }
 
     public static int LeadingZeroCount(ulong value) {
         uint high = (uint)(value >> 32);
-        if (high != 0) { return LeadingZeroCount(high); }
-        return 32 + LeadingZeroCount((uint)value);
+        if (high != 0) { return 31 - Sys.BitScanReverse(high); }
+        uint low = (uint)value;
+        return low == 0 ? 64 : 63 - Sys.BitScanReverse(low);
     }
 
     /// The position of the highest set bit, which is what .NET's Log2 answers;
     /// undefined for zero in .NET and zero here, as its implementation gives.
-    public static int Log2(uint value) { return value == 0 ? 0 : 31 - LeadingZeroCount(value); }
+    public static int Log2(uint value) { return value == 0 ? 0 : Sys.BitScanReverse(value); }
 
-    public static int Log2(ulong value) { return value == 0 ? 0 : 63 - LeadingZeroCount(value); }
+    public static int Log2(ulong value) {
+        uint high = (uint)(value >> 32);
+        if (high != 0) { return 32 + Sys.BitScanReverse(high); }
+        uint low = (uint)value;
+        return low == 0 ? 0 : Sys.BitScanReverse(low);
+    }
 
     public static bool IsPow2(uint value) { return value != 0 && (value & (value - 1)) == 0; }
 

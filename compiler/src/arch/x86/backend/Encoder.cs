@@ -792,6 +792,24 @@ internal sealed class Encoder
             case MOp.Wrmsr: B(0x0F, 0x30); break;
             case MOp.Cpuid: B(0x0F, 0xA2); break;
             case MOp.Rdtsc: B(0x0F, 0x31); break;
+            case MOp.WriteFlags:
+                // 50+r push r32, then 9D popfd.
+                _out.Add((byte)(0x50 + ((MReg)i.Operands[0]).Id));
+                B(0x9D);
+                break;
+            case MOp.Bsf:
+                B(0x0F, 0xBC);
+                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.Bsr:
+                B(0x0F, 0xBD);
+                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.Cmpxchg8b:
+                // 0F C7 /1, its lock prefix with the others' (MInstr.Lock).
+                B(0x0F, 0xC7);
+                ModRM(1, i.Operands[0]);
+                break;
             case MOp.ReadFlags:
                 // 9C pushfd, then 58+r pop r32.
                 B(0x9C);

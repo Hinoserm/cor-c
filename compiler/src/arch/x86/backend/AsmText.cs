@@ -242,6 +242,10 @@ internal static class AsmText
             case MOp.Wrmsr: yield return "wrmsr"; yield break;
             case MOp.Cpuid: yield return "cpuid"; yield break;
             case MOp.Rdtsc: yield return "rdtsc"; yield break;
+            case MOp.WriteFlags:
+                yield return $"push {Op(i.Operands[0], 4, false)}";
+                yield return "popfd";
+                yield break;
             case MOp.ReadFlags:
                 yield return "pushfd";
                 yield return $"pop {Op(i.Operands[0], 4, false)}";

@@ -923,7 +923,10 @@ public sealed class Devirtualize : IModulePass
 
     private static bool StoreSequence(string callee) =>
         callee is CardMarks.RefStore or CardMarks.CardStore
-            || callee == Corsac.Lang.X86.MachineIntrinsics.RefExchange || callee == Corsac.Lang.X86.MachineIntrinsics.RefCompareExchange;
+            || callee == Corsac.Lang.X86.MachineIntrinsics.RefExchange || callee == Corsac.Lang.X86.MachineIntrinsics.RefCompareExchange
+            // A long compare-exchanged writes the eight bytes it was given,
+            // which may be a field's (Interlocked on a long field).
+            || callee == Corsac.Lang.X86.MachineIntrinsics.Cas64;
 
     private static readonly string? Trace = Switches.TraceForward;
 

@@ -16567,30 +16567,31 @@ readonly struct UInt128 : IComparable, IComparable<UInt128>, IEquatable<UInt128>
     }
 
     // The bit counts of a ulong, here rather than BitOperations', which is
-    // the hosted library's and a freestanding image has not.
+    // the hosted library's and a freestanding image has not: BSR and BSF on
+    // a half (Sys.BitScanReverse, BitScanForward), the ones by their sums
+    // in place.
     internal static int Zeros64(ulong value) {
-        if (value == 0) { return 64; }
-        int count = 0;
-        if ((value >> 32) == 0) { count += 32; value <<= 32; }
-        if ((value >> 48) == 0) { count += 16; value <<= 16; }
-        if ((value >> 56) == 0) { count += 8; value <<= 8; }
-        if ((value >> 60) == 0) { count += 4; value <<= 4; }
-        if ((value >> 62) == 0) { count += 2; value <<= 2; }
-        if ((value >> 63) == 0) { count += 1; }
-        return count;
+        uint high = (uint)(value >> 32);
+        if (high != 0) { return 31 - Sys.BitScanReverse(high); }
+        uint low = (uint)value;
+        return low == 0 ? 64 : 63 - Sys.BitScanReverse(low);
     }
 
     internal static int TrailingZeros64(ulong value) {
-        if (value == 0) { return 64; }
-        int count = 0;
-        while ((value & 1) == 0) { value >>= 1; count++; }
-        return count;
+        uint low = (uint)value;
+        if (low != 0) { return Sys.BitScanForward(low); }
+        uint high = (uint)(value >> 32);
+        return high == 0 ? 64 : 32 + Sys.BitScanForward(high);
     }
 
     internal static int Ones64(ulong value) {
-        int count = 0;
-        while (value != 0) { value &= value - 1; count++; }
-        return count;
+        return Ones32((uint)value) + Ones32((uint)(value >> 32));
+    }
+
+    static int Ones32(uint value) {
+        uint v = value - ((value >> 1) & 0x55555555);
+        v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
+        return (int)((((v + (v >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24);
     }
 
     /// The top bit's place; nought's is nought, as .NET's Log2 has it.
@@ -18335,10 +18336,7 @@ static class DecimalCalc {
     static ulong Mul64(ulong a, ulong b, out ulong low) { return Math.BigMul(a, b, out low); }
 
     static int LeadingZeros(uint value) {
-        if (value == 0) { return 32; }
-        int count = 0;
-        while ((value & 0x80000000) == 0) { value = value << 1; count++; }
-        return count;
+        return value == 0 ? 32 : 31 - Sys.BitScanReverse(value);
     }
 
     static void UInt64x64To128(ulong a, ulong b, ref uint high, ref ulong low64) {

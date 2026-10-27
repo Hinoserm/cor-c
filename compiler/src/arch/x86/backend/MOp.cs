@@ -132,6 +132,12 @@ public enum MOp : byte
     Rdtsc,
     /// <summary>pushfd; pop r32 -- EFLAGS into a register.</summary>
     ReadFlags,
+    /// <summary>push r32; popfd -- a register into EFLAGS (the CPUID probe's ID bit: Sys.CpuidPresent).</summary>
+    WriteFlags,
+    /// <summary>bsf / bsr r32, r/m32: the lowest or highest set bit's index; the source is never zero (Sys.BitScanForward).</summary>
+    Bsf, Bsr,
+    /// <summary>lock cmpxchg8b m64: EDX:EAX expected, ECX:EBX stored; EDX:EAX what was there (Sys.Cas64).</summary>
+    Cmpxchg8b,
     /// <summary>xor r, r; mov r16, cs -- the code selector, its low two bits the privilege level.</summary>
     ReadCs,
     /// <summary>ltr r16.</summary>
