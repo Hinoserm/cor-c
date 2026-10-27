@@ -384,7 +384,8 @@ public static class Driver
                                  state first; refused for hosted code
               --x87-outside-blocks
                                  freestanding: float code allowed outside
-                                 packed blocks (wins over the above)
+                                 packed blocks (wins over the above);
+                                 refused for hosted code
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --no-collector     link no collector: what cannot be proved freed or
@@ -1260,7 +1261,8 @@ public static class Driver
                 linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
                     !args.Contains("--no-stackmaps"),
                     new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
-                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit && !relocatedText, Regions: regions, Polls: m.SafepointPolls));
+                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit && !relocatedText, Regions: regions, Polls: m.SafepointPolls,
+                        X87InBlocksOnly: freestanding && !args.Contains("--x87-outside-blocks")));
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
                 // Nor under --no-regions: the link would place the unit's sites in regions all the same.
@@ -1395,8 +1397,9 @@ public static class Driver
         // --x87-in-blocks-only says it again; hosted code owns its state, and
         // a block there saves nothing to tell inside from outside by, so the
         // check is refused there by name.
-        if (!freestanding && args.Contains("--x87-in-blocks-only"))
-            return Fail("--x87-in-blocks-only is for freestanding code: hosted code owns its x87 state, and its packed blocks save nothing to tell inside from outside by");
+        if (!freestanding && (args.Contains("--x87-in-blocks-only") || args.Contains("--x87-outside-blocks")))
+            return Fail((args.Contains("--x87-in-blocks-only") ? "--x87-in-blocks-only" : "--x87-outside-blocks")
+                + " is for freestanding code: hosted code owns its x87 state, and its float code may be anywhere");
         X86Backend x86Backend = new()
         {
             AutomaticPacked = !freestanding,

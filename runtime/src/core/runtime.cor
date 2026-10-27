@@ -2595,7 +2595,7 @@ static partial class Runtime
     // opcode byte, 0F xx, which names it.
 
     /// WHETHER THE PROCESSOR HAS A PACKED BLOCK'S VARIANT'S FEATURES
-    /// (Sys.PackedHas: Processor's bits), capped by the image's knob
+    /// (PackedChoose: Processor's bits), capped by the image's knob
     /// Corsac.Cpu.Features -- a mask of them -- so a test runs each variant
     /// on one machine. The knob is read once the image's knobs are there.
     public static bool PackedHas(int features)
@@ -2612,13 +2612,17 @@ static partial class Runtime
     static int _packedCap;
 
     /// WHICH OF A PACKED BLOCK'S VARIANTS RUNS (Sys.PackedChoose): the first
-    /// of `count` whose features the processor has -- a byte each in
-    /// `features`, the first lowest; the last asks for none. Asked once a
-    /// block, whose word keeps the answer.
-    public static int PackedChoose(ulong features, int count)
+    /// of `count` whose features the processor has and the image allows
+    /// (`allowed`: a freestanding image without SSE in its --cpu never turns
+    /// SSE on) -- a byte each in `features`, the first lowest; the last asks
+    /// for none. Asked once a block, whose word keeps the answer.
+    public static int PackedChoose(ulong features, int count, int allowed)
     {
         for (int k = 0; k < count - 1; k++)
-            if (PackedHas((int)((features >> (8 * k)) & 0xFF))) return k;
+        {
+            int wanted = (int)((features >> (8 * k)) & 0xFF);
+            if ((wanted & ~allowed) == 0 && PackedHas(wanted)) return k;
+        }
         return count - 1;
     }
 

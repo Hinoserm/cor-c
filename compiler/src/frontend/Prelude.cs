@@ -1066,8 +1066,11 @@ public static class Prelude
         // MMX, the MMX extensions, 3DNow!, SSE, SSE2 -- and its lanes one at
         // a time where it has not (Lowering.PackedIntrinsic, PackedOps). On
         // Packed64 MMX's, on Packed128 SSE's; the F32 ones two floats or
-        // four. The counts, orders and places are integer literals, which
-        // the instruction holds in its own bytes.
+        // four, through 3DNow! where there is no SSE only for AddF32, SubF32,
+        // MulF32 and the compares, whose answers there are IEEE's for
+        // ordinary values only (no denormal result, no infinity, no NaN:
+        // PackedOps.Float). The counts, orders and places are integer
+        // literals, which the instruction holds in its own bytes.
         static class Packed {
             public static void Mmx() { }
             public static void Sse() { }

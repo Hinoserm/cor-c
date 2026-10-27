@@ -1,0 +1,36 @@
+// test: a Packed128 stored whole, plainly and non-temporally, and Packed128 operations inside an MMX block, alike in every variant
+// expect-exit: 0
+// expect-output:
+// stored 1111111122222222 3333333344444444
+// streamed 5555555566666666 7777777788888888
+// wide 0004000400040004 0008000800080008
+//
+// A Store of a Packed128 is sixteen bytes, and its StoreNonTemporal two
+// MOVNTQ (Lowering.PackedIntrinsic); the width comes from the value, not
+// from the address before it. And a Packed128's operations inside an MMX
+// block are SSE2's where the variant has it: SSE2 is SSE's registers, so a
+// variant with it has SSE too (PackedOps.FeaturesOf).
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        ulong[] memory = new ulong[4];
+        nuint at = Sys.ArrayData(memory);
+        Packed128 sum;
+        using (Packed.Mmx())
+        {
+            Packed.Store(at, Packed.FromBits(0x1111111122222222UL, 0x3333333344444444UL));
+            Packed.StoreNonTemporal(at + 16, Packed.FromBits(0x5555555566666666UL, 0x7777777788888888UL));
+            Packed.Fence();
+            Packed128 one = Packed.FromBits(0x0001000100010001UL, 0x0002000200020002UL);
+            sum = Packed.Add16(Packed.Add16(one, one), Packed.Add16(one, one));
+        }
+        Console.WriteLine("stored " + memory[0].ToString("X16") + " " + memory[1].ToString("X16"));
+        Console.WriteLine("streamed " + memory[2].ToString("X16") + " " + memory[3].ToString("X16"));
+        Console.WriteLine("wide " + sum.Lo.ToString("X16") + " " + sum.Hi.ToString("X16"));
+        return 0;
+    }
+}

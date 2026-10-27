@@ -431,6 +431,7 @@ public sealed class UnitBackend : IUnitBackend
                 PositionIndependent = positionIndependent,
                 AutomaticPacked = cpu.AutomaticPacked,
                 OptimizeSize = read.Settings?.OptimizeSize ?? false,
+                X87InBlocksOnly = read.Settings?.X87InBlocksOnly ?? false,
                 StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
                 SafepointPolls = module.SafepointPolls && module.LinkHeap != false,

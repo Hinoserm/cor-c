@@ -961,7 +961,7 @@ public sealed partial class Lowering
                 if (_t.WordSize != 4) return Fit(_e.Const(count - 1, IrType.I32), returns);
                 int first = (int)(masks & 0xFF);
                 if ((ProfileFeatures & first) == first) return Fit(_e.Const(0, IrType.I32), returns);
-                MethodSymbol? asked = RequireRuntime(call, "PackedChoose", 2, "Sys.PackedChoose");
+                MethodSymbol? asked = RequireRuntime(call, "PackedChoose", 3, "Sys.PackedChoose");
                 if (asked is null) return Fit(_e.Const(count - 1, IrType.I32), returns);
                 string choice = "pk_pick$" + _f.Name + "$" + block;
                 if (_packedPicks.Add(choice))
@@ -970,7 +970,13 @@ public sealed partial class Lowering
                 Block ask = _f.NewBlock("packedask"), known = _f.NewBlock("packedknown");
                 _e.Branch(_e.Load(IrType.I32, at, 0), known, ask);
                 _e.SetBlock(ask);
-                VReg answer = _e.Call(CallLabel(asked), IrType.I32, R(AsParam(_e.Const((long)masks, IrType.I64), asked.Params[0].Type)), R(_e.Const(count, IrType.I32)))!;
+                // FREESTANDING, SSE ONLY WHERE --cpu HAS IT: the operating
+                // system that runs this code turns SSE's state on (CR4.OSFXSR)
+                // for the processors its build is for, and a variant with SSE
+                // picked by CPUID alone on a newer one would fault there.
+                int allowed = Freestanding && !_t.X86Profile.Has(X86Feature.Sse) ? ~(PackedOps.Sse | PackedOps.Sse2) : ~0;
+                VReg answer = _e.Call(CallLabel(asked), IrType.I32, R(AsParam(_e.Const((long)masks, IrType.I64), asked.Params[0].Type)),
+                    R(_e.Const(count, IrType.I32)), R(_e.Const(allowed, IrType.I32)))!;
                 _e.Store(RegOperand.Of(at), RegOperand.Of(_e.Binary(Opcode.Add, answer, 1)), 0, 4);
                 _e.Jump(known);
                 _e.SetBlock(known);

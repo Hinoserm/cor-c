@@ -122,13 +122,13 @@ internal static class MachineIntrinsics
     public const string PackedSaveFxsr = Prefix + "packedsavefxsr";
     public const string PackedRestoreFxsr = Prefix + "packedrestorefxsr";
     /// <summary>
-    /// THE PACKED OPERATIONS (Lowering.PackedIntrinsic), each one MMX
-    /// instruction, named with what the instruction holds in its own bytes:
-    /// a two-operand one by its opcode, 0F xx (the result's address, the
-    /// first operand's, the second's); a shift by group, /digit and count; a
-    /// shuffle by its order; a word's extraction or insertion by its place.
-    /// The level of the block they are in was asked of the processor, so they
-    /// are Probed.
+    /// THE PACKED OPERATIONS (Lowering.PackedIntrinsic), each one MMX, SSE,
+    /// SSE2 or 3DNow! instruction, named with what the instruction holds in
+    /// its own bytes: a two-operand one by its opcode (the result's address,
+    /// the first operand's, the second's); a shift by group, /digit and
+    /// count; a shuffle by its order; a word's extraction or insertion by its
+    /// place. The variant of the block they are in runs only where the
+    /// processor has its features (Sys.PackedChoose), so they are Probed.
     /// </summary>
     public const string PackedOpPrefix = Prefix + "pk.";
     public static string PackedOp(byte op) => PackedOpPrefix + "op." + op.ToString("x2");

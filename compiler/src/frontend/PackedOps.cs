@@ -68,12 +68,17 @@ public static class PackedOps
     /// Packed128: SSE's opcode (0F xx, or 0F C2 with a predicate), 3DNow!'s
     /// suffix (0F 0F /r xx, 0 where it has none exact), and whether 3DNow!'s
     /// takes its operands the other way round (its compares are greater
-    /// ones: a less is b's greater).
+    /// ones: a less is b's greater). 3DNow! is IEEE's only for ordinary
+    /// values: it flushes a denormal result to zero, gives the largest
+    /// number where SSE overflows to infinity, and takes no infinity or NaN;
+    /// its min and max say nothing of a NaN, and its conversions round
+    /// toward zero and saturate where SSE's round to nearest and give
+    /// 0x80000000. Those are the scalar forms' where there is no SSE.
     /// </summary>
     public static readonly Dictionary<string, (byte Sse, int Predicate, byte ThreeDNow, bool Swapped)> Float = new(StringComparer.Ordinal)
     {
         ["AddF32"] = (0x58, -1, 0x9E, false), ["SubF32"] = (0x5C, -1, 0x9A, false), ["MulF32"] = (0x59, -1, 0xB4, false),
-        ["DivF32"] = (0x5E, -1, 0x00, false), ["MinF32"] = (0x5D, -1, 0x94, false), ["MaxF32"] = (0x5F, -1, 0xA4, false),
+        ["DivF32"] = (0x5E, -1, 0x00, false), ["MinF32"] = (0x5D, -1, 0x00, false), ["MaxF32"] = (0x5F, -1, 0x00, false),
         ["EqualF32"] = (0xC2, 0, 0xB0, false), ["LessF32"] = (0xC2, 1, 0xA0, true), ["LessEqualF32"] = (0xC2, 2, 0x90, true),
     };
 
@@ -85,16 +90,21 @@ public static class PackedOps
         _ => 0,
     };
 
-    /// <summary>The 128-bit operations whose lanes cross a 64-bit half, with no MMX form: shuffles of doublewords and of a half's words, and shufps, unpcklps, unpckhps.</summary>
-    public static bool Crossing(string name) => name is "Shuffle32" or "ShuffleLow16" or "ShuffleHigh16" or "ShuffleF32" or "UnpackLowF32" or "UnpackHighF32"
-        or "ShiftLeftBytes" or "ShiftRightBytes";
-
     /// <summary>
     /// The features an operation of this name can use, on either width: what
     /// a block's variants are told apart by. A name the table does not know
     /// uses none.
     /// </summary>
     public static int FeaturesOf(string name)
+    {
+        int features = Named(name);
+        // SSE2'S INSTRUCTIONS ARE SSE'S REGISTERS: a variant with SSE2 has SSE
+        // too, or the operations that want it would never find it (Lowering.
+        // PackedIntrinsic asks for both).
+        return (features & Sse2) != 0 ? features | Sse : features;
+    }
+
+    private static int Named(string name)
     {
         if (Binary.TryGetValue(name, out var b)) return Mmx | Sse2 | (b.Ext ? MmxExtensions : 0);
         if (Shift.ContainsKey(name)) return name.Contains("Bytes") ? Sse2 : Mmx | Sse2;

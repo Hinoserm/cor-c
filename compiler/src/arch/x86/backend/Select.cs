@@ -143,10 +143,11 @@ internal sealed partial class Selector
 
     /// <summary>
     /// A PACKED OPERATION (Lowering.PackedIntrinsic, MachineIntrinsics.
-    /// PackedOp and the rest): its first operand loaded into mm0, the
-    /// instruction, and mm0 stored into the result's buffer -- nothing kept
-    /// in an MMX register from one to the next. Probed: the block's variant
-    /// that holds it runs only where the processor said it has its level.
+    /// PackedOp and the rest): its operands loaded into mm0 or xmm0 and
+    /// xmm1, the instruction, and the result stored into its buffer --
+    /// nothing kept in a packed register from one to the next. Probed: the
+    /// block's variant that holds it runs only where the processor has its
+    /// features (Sys.PackedChoose).
     /// </summary>
     private void SelectPackedOp(string name, Instr i)
     {
@@ -257,6 +258,25 @@ internal sealed partial class Selector
         return false;
     }
 
+    /// <summary>
+    /// Whether an IR instruction in a packed block needs the x87's save
+    /// (SettlePackedSaves): float code, a call through a pointer or to the
+    /// operating system, a call to a routine that may run float code -- not
+    /// the runtime's integer packed forms (Runtime.PackedScalar and kin, all
+    /// but PackedScalarFloat), nor a trap or a throw, which leave the block.
+    /// </summary>
+    private static bool SettleWantsX87(Instr i)
+    {
+        if (i.Op is Opcode.CallIndirect or Opcode.Syscall) return true;
+        if (i.Op == Opcode.Call)
+            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal)
+                && !(c.StartsWith("m_Runtime_PackedScalar", StringComparison.Ordinal) && !c.StartsWith("m_Runtime_PackedScalarFloat", StringComparison.Ordinal));
+        if (i.Op is Opcode.Ret or Opcode.Unwind or Opcode.Trap) return false;
+        if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
+        foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
+        return false;
+    }
+
     /// <summary>Whether an IR instruction leaves the MMX registers empty: the x87 wanted (an EMMS before it), an EMMS of its own, a packed block's save or give-back.</summary>
     private static bool EmptiesMmx(Instr i)
         => WantsX87(i) || i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedEnd or MachineIntrinsics.PackedEndFast or MachineIntrinsics.StreamEnd
@@ -296,7 +316,11 @@ internal sealed partial class Selector
         if (marks.Count == 0) return;
         X86Cpu profile = Target.Current.X86Profile;
         bool fpu = profile.Fpu != "none";
-        Dictionary<int, string?> settled = new();
+        // BY THE BLOCK'S WHOLE NAME -- kind, number and features: blocks of
+        // two files' methods inlined into one may share a number, and a
+        // block's copies (a finally's, a loop's) settle as one, the largest
+        // save any copy needs.
+        Dictionary<string, string?> settled = new(StringComparer.Ordinal);
         foreach (var save in marks.Where(m => m.Saves))
         {
             bool xmm = false, x87 = false;
@@ -318,7 +342,7 @@ internal sealed partial class Selector
                         else if (c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
                             || c.StartsWith(MachineIntrinsics.PackedSavePrefix, StringComparison.Ordinal)) x87 = true;
                     }
-                    if (WantsX87(i) && i.Op != Opcode.Ret) x87 = true;
+                    if (SettleWantsX87(i)) x87 = true;
                 }
                 if (closed) continue;
                 foreach (Block next in b.Successors)
@@ -326,11 +350,14 @@ internal sealed partial class Selector
             }
             if ((save.Features & PackedOps.Mmx) != 0 && profile.Mmx) x87 = true;
             bool fx = (save.Features & PackedOps.Sse) != 0 && (save.Kind == 2 || xmm);
-            settled[save.Number] = fx ? "fx" : x87 && fpu ? "x87" : null;
+            string key = save.Kind + "." + save.Number + "." + save.Features;
+            string? kind = fx ? "fx" : x87 && fpu ? "x87" : null;
+            string? had = settled.GetValueOrDefault(key);
+            settled[key] = had == "fx" || kind == "fx" ? "fx" : had ?? kind;
         }
         foreach (var m in marks)
         {
-            string? kind = settled.GetValueOrDefault(m.Number);
+            string? kind = settled.GetValueOrDefault(m.Kind + "." + m.Number + "." + m.Features);
             int at = m.Block.Instrs.IndexOf(m.At);
             if (kind is null) { m.Block.Instrs.RemoveAt(at); continue; }
             string callee = (kind, m.Saves) switch
@@ -3241,7 +3268,7 @@ internal sealed partial class Selector
                     MachineIntrinsics.PackedRestoreX87 => MOp.PackedRestoreX87,
                     MachineIntrinsics.PackedSaveFxsr => MOp.PackedSaveFxsr,
                     _ => MOp.PackedRestoreFxsr,
-                }) { OwnsState = (byte)(fx ? 2 : 1) });
+                }) { OwnsState = (byte)(fx ? 2 : 1), Probed = fx });
                 _packedState = name switch
                 {
                     MachineIntrinsics.PackedSaveX87 => _packedState << 2 | 1,

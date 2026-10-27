@@ -35,7 +35,9 @@ public sealed partial class Lowering
     {
         string name = target.Name;
         Type returns = target.Returns;
-        bool wide = target.Params.Count > 0 && target.Params[0].Type.Symbol?.Name == "Packed128"
+        // SIXTEEN BYTES where any operand or the result is a Packed128: a
+        // Store's is its last, after the address.
+        bool wide = target.Params.Any(p => p.Type.Symbol?.Name == "Packed128")
             || returns.Symbol?.Name == "Packed128" || name == "Load128";
         int bytes = wide ? 16 : 8;
         switch (name)
@@ -160,13 +162,10 @@ public sealed partial class Lowering
                 return made;
             }
             // 3DNow!'s, where it has the operation exactly: a half each.
-            byte suffix = name switch
-            {
-                "IntToFloat32" => 0x0D,
-                "FloatToInt32" => 0x1D,
-                "SqrtF32" => 0,
-                _ => flt.ThreeDNow,
-            };
+            // Not the conversions, which round and saturate otherwise than
+            // SSE's (PackedOps.Float), nor a square root, which 3DNow! has
+            // only as an estimate.
+            byte suffix = unary ? (byte)0 : flt.ThreeDNow;
             bool swapped = !unary && flt.Swapped;
             for (int half = 0; half < bytes; half += 8)
             {

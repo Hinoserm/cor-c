@@ -1588,7 +1588,7 @@ public sealed partial class Binder
                 // whatever thread was interrupted, mid-instruction -- has not
                 // saved: refused, as an allocation is.
                 case CallExpr enters when PackedEnter(enters):
-                    yield return (n, "opens a packed block (using (Packed.Mmx()) or Sse), which takes the interrupted thread's x87 and MMX state");
+                    yield return (n, "opens a packed block (using (Packed.Mmx()), Sse or X87), which takes the interrupted thread's x87 and MMX state");
                     break;
                 case LambdaExpr l:
                     yield return (n, l.GroupIdentity is not null ? "makes a delegate of a method" : "makes a lambda");
