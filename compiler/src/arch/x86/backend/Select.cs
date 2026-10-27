@@ -470,6 +470,15 @@ internal sealed partial class Selector
         Dictionary<Block, int>? regions = PackedRegions(f);
         int floatLine = -1;
         List<Corsac.Lang.Lto.X87Notes.Call> calls = new();
+        // A CALL THROUGH A FIELD'S LOAD (Sys.CallNative of a native whose
+        // address the kernel's start left in a static): a call to the
+        // routine in it (X87Notes.InField). The load's value used any other
+        // way takes that routine anywhere: its address is taken.
+        Dictionary<VReg, string> loaded = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Load && i.Dest is { } d && i.Offset == 0 && i.Operands is [SymOperand { Name: var field, Offset: 0 }])
+                    loaded[d] = field;
         foreach (Block b in f.Blocks)
         {
             int state = regions?.GetValueOrDefault(b) ?? 0;
@@ -486,6 +495,13 @@ internal sealed partial class Selector
                 foreach (Operand o in i.Operands) if (o is SymOperand sym) taken.Add(sym.Name);
                 if (i.Op == Opcode.Call && i.Callee is { } callee && !callee.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
                     calls.Add(new(callee, i.Line, state != 0));
+                if (loaded.Count > 0)
+                    for (int k = 0; k < i.Operands.Count; k++)
+                        if (i.Operands[k] is RegOperand { Reg: var used } && loaded.TryGetValue(used, out string? holder))
+                        {
+                            if (k == 0 && i.Op == Opcode.CallIndirect) calls.Add(new(Corsac.Lang.Lto.X87Notes.InField(holder), i.Line, state != 0));
+                            else taken.Add(Corsac.Lang.Lto.X87Notes.InField(holder));
+                        }
                 if (!floats || floatLine >= 0 || state != 0 || i.Op == Opcode.Ret) continue;
                 if (i.Op == Opcode.Store && i.Operands is [SlotOperand { Slot.Name: { } home }, RegOperand { Reg: var stored }]
                     && home.StartsWith("home", StringComparison.Ordinal) && f.Params.Contains(stored))

@@ -26,6 +26,14 @@ public static class X87Notes
     public const string SectionName = ".corsac.x87";
     const int Version = 1;
 
+    /// <summary>
+    /// The routine whose address `field` holds, as a call through a load of
+    /// it names it (Selector.X87Fact) and as an assembled object that stores
+    /// one there says what it is (X86Assembler.FloatFacts): a kernel's
+    /// natives, called through Sys.CallNative.
+    /// </summary>
+    public static string InField(string field) => "*" + field;
+
     /// <summary>A direct call: whom, at which line, and whether inside a packed block of the caller's.</summary>
     public readonly record struct Call(string Callee, int Line, bool Inside);
 

@@ -232,6 +232,9 @@ public sealed partial class X86Assembler : ISymbols
         {
             (_cpu.Contract with { AutomaticPacked = false }).Attach(obj);
         }
+        // What the link judges where float code runs (X87Notes), as every
+        // freestanding unit's object carries: an i386 object's routines.
+        if (!_everLongMode) Corsac.Lang.Lto.X87Notes.Attach(obj, FloatFacts());
         Dictionary<string, Section> byName = new(StringComparer.Ordinal);
         foreach (Sec sec in _sections)
         {
@@ -587,8 +590,10 @@ public sealed partial class X86Assembler : ISymbols
         }
 
         BeginInstruction();
+        NoteInstruction(lower, rest);
         Instruction(lower, rest);
         EndInstruction();
+        NotedInstruction();
     }
 
     /// <summary>
@@ -1213,6 +1218,7 @@ public sealed partial class X86Assembler : ISymbols
             return;
         }
         string name = refs[0];
+        NoteReference(name);
         bool external = SectionOf(name) is null;
         string section = SectionOf(name) ?? "";
 
