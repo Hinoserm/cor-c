@@ -214,11 +214,21 @@ public static class ObjectLinkCommand
         // drain stopped making its messages.
         if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
         if (Switches.IrqLocksReport) foreach (string line in InterruptNotes.IrqLocksReport(inputs.Select(input => input.Item2))) Console.Error.WriteLine(line);
+        // WHERE EVERY UNIT'S FREESTANDING FLOAT CODE RUNS (X87Notes): inside
+        // a packed block, its own or every caller's -- the kernel's and the
+        // modules' linked with, as their links saw them, beside them.
+        List<X87Notes.Fact> floatsImported = new();
+        if (kernelPath is not null) floatsImported.AddRange(X87Notes.ReadBeside(kernelPath));
+        foreach (string library in sharedLibraries) floatsImported.AddRange(X87Notes.ReadBeside(library));
+        List<string> floatErrors = X87Notes.Check(inputs.Select(input => input.Item2), floatsImported);
+        if (floatErrors.Count > 0) throw new LinkException(floatErrors);
         // AN IMAGE OTHERS LINK AGAINST says what its units call and take
         // beside it, for their links' checks: a kernel's beside its exports,
         // a module's beside itself.
         if (exportsPath is not null) InterruptNotes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
         else if (kernel is not null) InterruptNotes.WriteBeside(destination, inputs.Select(input => input.Item2));
+        if (exportsPath is not null) X87Notes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
+        else if (kernel is not null) X87Notes.WriteBeside(destination, inputs.Select(input => input.Item2));
         byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
         // The kernel's small functions for its modules, read before this link's
         // own optimiser takes the units' IR out (KernelExports.SmallBodies).
@@ -277,7 +287,8 @@ public static class ObjectLinkCommand
         foreach (var input in inputs)
             input.Item2.Sections.RemoveAll(section => Linker.ConsumedContract(section.Name)
                 || section.Name == UsesNotes.SectionName
-                || section.Name == InterruptNotes.SectionName);
+                || section.Name == InterruptNotes.SectionName
+                || section.Name == X87Notes.SectionName);
         // Every unit's frame table names from one pool (FramePool).
         if (lto) FramePool.Run(inputs, longMode);
         LinkTimings.Phase("frame names");

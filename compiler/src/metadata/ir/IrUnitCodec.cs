@@ -25,8 +25,7 @@ public static class IrUnitCodec
     /// (Module.SafepointPolls), as its compile said.
     /// </summary>
     public sealed record Settings(bool PreLate, bool NoCollector, bool CallsCollector, bool LeavesLinkHints,
-        bool OptimizeSize, bool ExperimentalBatch, string[] RuntimeHelpers, bool PositionIndependent = false, bool Regions = true, bool Polls = false,
-        bool X87InBlocksOnly = false);
+        bool OptimizeSize, bool ExperimentalBatch, string[] RuntimeHelpers, bool PositionIndependent = false, bool Regions = true, bool Polls = false);
 
     public static void Attach(ObjectFile obj, Module module, bool stackMaps)
         => IrArchive.Attach(obj, Snapshot(module, stackMaps, null));
@@ -57,7 +56,6 @@ public static class IrUnitCodec
                 writer.Write(settings.PositionIndependent);
                 writer.Write(settings.Regions);
                 writer.Write(settings.Polls);
-                writer.Write(settings.X87InBlocksOnly);
             }
         }
         records.Add(new("M:unit", false, 0, Array.Empty<string>(), stream.ToArray()));
@@ -161,8 +159,7 @@ public static class IrUnitCodec
         bool pic = IrBinary.Flag(reader);
         bool regions = IrBinary.Flag(reader);
         bool polls = IrBinary.Flag(reader);
-        bool x87 = IrBinary.Flag(reader);
-        return new(true, noCollector, callsCollector, hints, size, batch, helpers, pic, regions, polls, x87);
+        return new(true, noCollector, callsCollector, hints, size, batch, helpers, pic, regions, polls);
     }
 
     public static (Module Module, bool StackMaps, long AccountedBytes) Read(IrArchive archive, long memoryBudget = 64L * 1024 * 1024,

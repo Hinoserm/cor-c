@@ -122,7 +122,7 @@ public static partial class Linker
         List<string> said = ModuleInfo.Take(inputs, ModuleInfo.SectionName);
         // Consumed: what remains of them is the module's stamp and modinfo.
         foreach (var input in inputs)
-            input.Object.Sections.RemoveAll(section => ConsumedContract(section.Name) || section.Name == UsesNotes.SectionName);
+            input.Object.Sections.RemoveAll(section => ConsumedContract(section.Name) || section.Name == UsesNotes.SectionName || section.Name == X87Notes.SectionName);
 
         // WHAT IT NEEDS OF ITS DEPENDENCIES: the ones that define a name it
         // does not, as a program's DT_NEEDED is worked out (Driver.Needed).

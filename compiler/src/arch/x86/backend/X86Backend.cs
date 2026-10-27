@@ -162,10 +162,49 @@ public sealed class X86Backend : IBackend
     /// inside the blocks that call them, nor the compiler's own helpers --
     /// may use the x87 only inside a packed block (using
     /// (Packed.X87()) { ... }), which saves the interrupted thread's state
-    /// first; outside one it is an error naming the function
-    /// (Selector.RefuseX87OutsideBlocks).
+    /// first, or under its callers' blocks only; outside every one it is an
+    /// error the link makes, which alone sees every caller (Lto.X87Notes:
+    /// each function's facts, Selector.X87Fact, in the object).
     /// </summary>
     public bool X87InBlocksOnly { get; set; }
+
+    /// <summary>The facts Selector.X87Fact makes, from every worker at once: each function's, and every symbol whose address the unit's code takes.</summary>
+    internal sealed class X87Facts
+    {
+        private readonly List<Corsac.Lang.Lto.X87Notes.Fact> _facts = new();
+        private readonly HashSet<string> _taken = new(StringComparer.Ordinal);
+
+        public void Add(Function f, bool floats)
+        {
+            HashSet<string> taken = new(StringComparer.Ordinal);
+            Corsac.Lang.Lto.X87Notes.Fact fact = Selector.X87Fact(f, floats, taken);
+            lock (_facts)
+            {
+                _facts.Add(fact);
+                _taken.UnionWith(taken);
+            }
+        }
+
+        /// <summary>
+        /// Into the object: every function's facts, and a fact of its address
+        /// taken for every function a symbol names that the code or the data
+        /// (a delegate's target, a type's slots) refers to otherwise than by a
+        /// direct call -- the unit's data items' names left out, which are no
+        /// function's.
+        /// </summary>
+        public void Attach(ObjectFile obj, Module module)
+        {
+            HashSet<string> data = new(module.Data.Select(d => d.Name), StringComparer.Ordinal);
+            foreach (DataItem d in module.Data)
+                foreach (DataReloc r in d.Relocs) _taken.Add(r.Symbol);
+            List<Corsac.Lang.Lto.X87Notes.Fact> all = new(_facts);
+            foreach (string name in _taken.Where(name => !data.Contains(name)).OrderBy(name => name, StringComparer.Ordinal))
+                all.Add(new(name, "", "", -1, true, Array.Empty<Corsac.Lang.Lto.X87Notes.Call>()));
+            Corsac.Lang.Lto.X87Notes.Attach(obj, all);
+        }
+    }
+
+    private X87Facts? _x87;
 
     public ObjectFile Generate(Module module, List<string> errors)
     {
@@ -177,6 +216,7 @@ public sealed class X86Backend : IBackend
         _streamFill = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill) ? Corsac.Lang.Lto.RuntimeAbi.StreamFill : null;
         ObjectFile obj = new();
         (Target.X86Profile.Contract with { AutomaticPacked = AutomaticPacked }).Attach(obj);
+        _x87 = X87InBlocksOnly && !AutomaticPacked ? new X87Facts() : null;
         OptimizationSummary summary = new();
         // THE SECTION AS ALIGNED AS ITS FUNCTIONS: a duplicate the link cuts
         // out of it must be a whole number of the section's alignment.
@@ -793,6 +833,7 @@ public sealed class X86Backend : IBackend
         {
             summary.Attach(obj);
         }
+        _x87?.Attach(obj, module);
         return obj;
     }
 
@@ -858,7 +899,7 @@ public sealed class X86Backend : IBackend
         Corsac.Lang.Opt.SharedTrapFrees.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill, X87InBlocksOnly);
+        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill, _x87);
         if (errors.Count > before)
         {
             return null;

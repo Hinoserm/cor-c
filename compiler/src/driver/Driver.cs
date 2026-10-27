@@ -385,7 +385,11 @@ public static class Driver
                                  program's own float code only inside a
                                  packed block (using (Packed.X87()) { ... }),
                                  which saves the interrupted thread's x87
-                                 state first; refused for hosted code
+                                 state first -- its own, or every caller's:
+                                 a function called only inside blocks runs
+                                 under theirs. Judged where every caller is
+                                 known: the compile of a program, else the
+                                 link. Refused for hosted code
               --x87-outside-blocks
                                  freestanding: float code allowed outside
                                  packed blocks (wins over the above);
@@ -1265,8 +1269,7 @@ public static class Driver
                 linkRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m,
                     !args.Contains("--no-stackmaps"),
                     new(true, m.NoCollector, m.CallsCollector, m.LeavesLinkHints, args.Contains("--opt-size"), args.Contains("--experimental-batch"),
-                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit && !relocatedText, Regions: regions, Polls: m.SafepointPolls,
-                        X87InBlocksOnly: freestanding && !args.Contains("--x87-outside-blocks")));
+                        m.RuntimeHelpers.ToArray(), PositionIndependent: moduleUnit && !relocatedText, Regions: regions, Polls: m.SafepointPolls));
                 // Not without an operating system: no arena there (baremetal.cor),
                 // and a unit with no summary keeps the link from finding regions.
                 // Nor under --no-regions: the link would place the unit's sites in regions all the same.
@@ -1592,6 +1595,11 @@ public static class Driver
         {
             List<string> handlerErrors = Corsac.Lang.Lto.InterruptNotes.Check(new[] { obj }, Corsac.Lang.Lto.Preinit.Peek(new[] { obj }, longMode: false)?.FrozenSteps);
             if (handlerErrors.Count > 0) throw new LinkException(handlerErrors);
+            // And where its float code runs (X87Notes): against the kernel's
+            // functions as the kernel's link saw them.
+            List<string> moduleFloats = Corsac.Lang.Lto.X87Notes.Check(new[] { obj }, kernelPath is null ? null : Corsac.Lang.Lto.X87Notes.ReadBeside(kernelPath));
+            if (moduleFloats.Count > 0) throw new LinkException(moduleFloats);
+            Corsac.Lang.Lto.X87Notes.Strip(new[] { obj });
             Corsac.Lang.Lto.UsesNotes.Strip(new[] { obj });
             Corsac.Lang.Lto.InterruptNotes.Strip(new[] { obj });
             Corsac.Lang.Lto.LinkTimeOptimizer.StripLinkNotes(new[] { obj });
@@ -1670,6 +1678,11 @@ public static class Driver
         // drain stopped making its messages.
         if (interruptErrors.Count > 0) throw new LinkException(interruptErrors);
         if (Switches.IrqLocksReport) foreach (string line in Corsac.Lang.Lto.InterruptNotes.IrqLocksReport(link.Select(input => input.Item2))) Console.Error.WriteLine(line);
+        // Where every unit's freestanding float code runs (X87Notes): what no
+        // one unit's compile could see, its callers in the others.
+        List<string> floatErrors = Corsac.Lang.Lto.X87Notes.Check(link.Select(input => input.Item2));
+        if (floatErrors.Count > 0) throw new LinkException(floatErrors);
+        Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
 
         if (flat)
         {

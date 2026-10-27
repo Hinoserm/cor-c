@@ -217,7 +217,7 @@ public static class ElfReader
     internal static bool LeftInFile(string name)
         => name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName or Corsac.Lang.Lto.HeapRecords.SectionName
             or Corsac.Lang.Lto.RegionHints.SectionName or ManagedLayoutContract.SectionName
-            or Corsac.Lang.Lto.CoalescingContract.SectionName or Corsac.Lang.Lto.InterruptNotes.SectionName;
+            or Corsac.Lang.Lto.CoalescingContract.SectionName or Corsac.Lang.Lto.InterruptNotes.SectionName or Corsac.Lang.Lto.X87Notes.SectionName;
 
     /// <summary>
     /// An object read from a file that stays where it is while the object is

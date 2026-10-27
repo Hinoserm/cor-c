@@ -454,13 +454,22 @@ internal sealed partial class Selector
     }
 
     /// <summary>
-    /// FLOAT CODE OUTSIDE EVERY PACKED BLOCK, refused where it was asked
-    /// (X86Backend.X87InBlocksOnly): it would take the interrupted thread's
-    /// x87 state as its own. Once for the function, at its first.
+    /// WHAT THE LINK NEEDS TO SAY WHERE A FUNCTION'S FLOAT CODE RUNS
+    /// (Lto.X87Notes, X86Backend.X87InBlocksOnly): the line of its first
+    /// float code outside its own packed blocks, where `floats` asks (-1
+    /// for none), and its direct calls, each with whether it is made inside
+    /// a block; every symbol it takes the address of goes into `taken`. A
+    /// function whose every call is made inside a block runs under its
+    /// callers' block -- whose save covers a call -- and needs none of its
+    /// own: the link alone sees every caller. A parameter's landing-pad home
+    /// stored on entry (Opt.LandingPadHomes) is words copied from the
+    /// arguments, no x87.
     /// </summary>
-    private static void RefuseX87OutsideBlocks(Function f, List<string> errors)
+    internal static Corsac.Lang.Lto.X87Notes.Fact X87Fact(Function f, bool floats, HashSet<string> taken)
     {
         Dictionary<Block, int>? regions = PackedRegions(f);
+        int floatLine = -1;
+        List<Corsac.Lang.Lto.X87Notes.Call> calls = new();
         foreach (Block b in f.Blocks)
         {
             int state = regions?.GetValueOrDefault(b) ?? 0;
@@ -474,18 +483,17 @@ internal sealed partial class Selector
                         MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => state >> 2,
                         _ => state,
                     };
-                // A parameter's landing-pad home (Opt.LandingPadHomes), stored
-                // on entry: words copied from the arguments, no x87.
+                foreach (Operand o in i.Operands) if (o is SymOperand sym) taken.Add(sym.Name);
+                if (i.Op == Opcode.Call && i.Callee is { } callee && !callee.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
+                    calls.Add(new(callee, i.Line, state != 0));
+                if (!floats || floatLine >= 0 || state != 0 || i.Op == Opcode.Ret) continue;
                 if (i.Op == Opcode.Store && i.Operands is [SlotOperand { Slot.Name: { } home }, RegOperand { Reg: var stored }]
                     && home.StartsWith("home", StringComparison.Ordinal) && f.Params.Contains(stored))
                     continue;
-                if (state == 0 && i.Op != Opcode.Ret && (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)))
-                {
-                    errors.Add($"{f.Display ?? f.Name}: float code outside a packed block in freestanding code: put it inside using (Packed.X87()) {{ ... }}, which saves the interrupted thread's x87 state first" + (i.Line > 0 ? $" (line {i.Line})" : ""));
-                    return;
-                }
+                if (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)) floatLine = i.Line;
             }
         }
+        return new(f.Name, f.Display ?? f.Name, Path.GetFileName(f.SourceFile ?? ""), floatLine, false, calls.ToArray());
     }
 
     /// <summary>
@@ -538,7 +546,7 @@ internal sealed partial class Selector
     }
 
     public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false, bool windowsTls = false,
-        string? streamCopy = null, string? streamFill = null, bool x87InBlocksOnly = false)
+        string? streamCopy = null, string? streamFill = null, X86Backend.X87Facts? x87 = null)
     {
         // NOT IN THE STREAM ROUTINES THEMSELVES, whose own copy and fill are
         // the long way they fall back on: a block overlapping itself copied
@@ -552,8 +560,7 @@ internal sealed partial class Selector
         // with --lib is the program's all the same (FromLibrary says so of
         // every function in it): a kernel's every unit but its entry is one,
         // and the check passed over all of them.
-        if (!automaticPacked && x87InBlocksOnly && !f.SystemCode && !f.Name.StartsWith("__", StringComparison.Ordinal))
-            RefuseX87OutsideBlocks(f, errors);
+        if (!automaticPacked && x87 is not null) x87.Add(f, floats: !f.SystemCode && !f.Name.StartsWith("__", StringComparison.Ordinal));
         Selector s = new(f, errors, automaticPacked, automaticPacked)
         {
             _positionIndependent = positionIndependent, _windowsTls = windowsTls,

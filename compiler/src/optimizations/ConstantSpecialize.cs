@@ -69,7 +69,7 @@ public sealed class ConstantSpecialize : IModulePass
                     Exported = false, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
                     // Whose code it is goes with the copy: the x86 backend's
                     // check that float code is in packed blocks asks it
-                    // (Selector.RefuseX87OutsideBlocks).
+                    // (Selector.X87Fact).
                     FromLibrary = target.FromLibrary, SystemCode = target.SystemCode,
                 };
                 foreach (VReg parameter in target.Params)

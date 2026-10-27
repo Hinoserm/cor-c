@@ -20,6 +20,8 @@
 #   // expect-output:            then the lines, each after "// "
 #   // flags: ...                extra compiler flags
 #   // flags-<target>: ...       the same, for one target (instead of flags)
+#   // targets: x86              the targets the test is for, of those asked
+#                                (its rule is theirs alone); the others skip it
 #   // sources: a b              library sources compiled in as well, from
 #                                the repository's root: what a kernel lists
 #                                beside the runtime (System.Collections',
@@ -27,6 +29,10 @@
 #   // expect-readelf-<target>: text
 #                                readelf -hl of the image shows this text
 #   // run: no                   compile and read, do not run
+#   // expect-compile-error: text
+#                                the compile refuses the program, saying
+#                                text; with apart: yes, its object compiles
+#                                and `corc link --closed` refuses it so
 #   // apart: yes                compiled to an object as well and linked by
 #                                `corc link`, as an image built of units is:
 #                                closed, run and compared like the compile's,
@@ -158,10 +164,18 @@ for source in "$here"/[0-9]*.cor; do
     want_exit="$(header "$source" expect-exit)"; want_exit="${want_exit:-0}"
     awk '/^\/\/ expect-output:/{on=1;next} on&&/^\/\/ [a-z0-9-]+:/{exit} on&&/^\/\/ /{print substr($0,4);next} on{exit}' "$source" > "$work/$name.want"
 
+    only="$(header "$source" targets)"
     for target in $targets; do
         label="$name ($target)"
+        if [ -n "$only" ] && [[ " $only " != *" $target "* ]]; then echo "SKIP $label (for $only only)"; continue; fi
         flags="$(header "$source" "flags-$target")"
         [ -n "$flags" ] || flags="$common_flags"
+        # FLOAT CODE ANYWHERE in these programs, which run as processes on
+        # this machine and test the runtime, not where a kernel keeps its
+        # x87 state: an i386 freestanding build refuses it outside a packed
+        # block by default (--x87-outside-blocks takes that away). A test of
+        # that rule asks for it (--x87-in-blocks-only in its flags).
+        if [ "$target" = x86 ] && [[ " $flags " != *" --x87-in-blocks-only "* ]]; then flags="$flags --x87-outside-blocks"; fi
         exe="$work/$name.$target"
         with=""
         asm="$(header "$source" with-asm)"
@@ -173,6 +187,32 @@ for source in "$here"/[0-9]*.cor; do
                 failed=$((failed + 1)); failed_names="$failed_names $label"; echo "FAIL $label (the assembly did not assemble)"; continue
             fi
             with="--with $object"
+        fi
+        want_error="$(header "$source" expect-compile-error)"
+        if [ -n "$want_error" ]; then
+            wrong=""
+            # shellcheck disable=SC2086
+            if "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then
+                wrong="compiled; expected the error: $want_error"
+            elif ! grep -qF -- "$want_error" "$work/$name.$target.log"; then
+                wrong="refused, but not with: $want_error"
+            elif [ "$(header "$source" apart)" = yes ]; then
+                object="$work/$name.$target.apart.o"
+                # shellcheck disable=SC2086
+                if ! "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" --obj -o "$object" > "$work/$name.$target.apart.log" 2>&1; then
+                    wrong="did not compile to an object"
+                elif "$corc" link --closed "$object" -o "$exe.apart" >> "$work/$name.$target.apart.log" 2>&1; then
+                    wrong="its object linked; expected the error: $want_error"
+                elif ! grep -qF -- "$want_error" "$work/$name.$target.apart.log"; then
+                    wrong="its object's link refused, but not with: $want_error"
+                fi
+            fi
+            if [ -z "$wrong" ]; then passed=$((passed + 1)); echo "PASS $label"
+            else
+                sed 's/^/    /' "$work/$name.$target.log" | grep -v ': warning' | head -n 10
+                failed=$((failed + 1)); failed_names="$failed_names $label"; echo "FAIL $label ($wrong)"
+            fi
+            continue
         fi
         # shellcheck disable=SC2086
         if ! "$corc" compile --target "$target" --freestanding $flags $with $sources "$here/host.cor" "$source" -o "$exe" > "$work/$name.$target.log" 2>&1; then

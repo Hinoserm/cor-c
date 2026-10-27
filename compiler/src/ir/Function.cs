@@ -34,7 +34,7 @@ public sealed class Function
     /// against FromLibrary, which a unit compiled with --lib says of all its
     /// code. The unused-code report reads it (UsesCapture), and the x86
     /// backend's check that float code is inside packed blocks
-    /// (Selector.RefuseX87OutsideBlocks), after the IR archive's round trip:
+    /// (Selector.X87Fact), after the IR archive's round trip:
     /// kept there (IrFunctionCodec).
     /// </summary>
     public bool SystemCode { get; set; }
