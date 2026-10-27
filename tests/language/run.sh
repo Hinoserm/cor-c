@@ -422,6 +422,9 @@ for f in "${tests[@]}"; do
     test_flags=("${compiler_flags[@]}" "${this_cpu[@]}")
     lacks=""
     for need in $(header_value "$f" requires-host); do
+        # AMD's name for the MMX extensions, which Intel's processors have
+        # with SSE without naming them (as Processor reads them).
+        [ "$need" = mmxext ] && [[ "$host_flags" == *" sse "* ]] && continue
         [[ "$host_flags" == *" $need "* ]] || lacks="$lacks $need"
     done
     if [ -n "$lacks" ]; then
@@ -433,6 +436,14 @@ for f in "${tests[@]}"; do
     # the check unmade (303's "// expect: ok" was compared with nothing).
     unknown="$(sed -n 's|^// \(expect[a-z-]*\):.*|\1|p' "$f" \
         | grep -vxE 'expect-exit|expect-output|expect-compile-error|expect-(no-)?compile-warning|expect-no-symbol' | head -1)"
+    # A RUN'S SECTION holds its own expect-exit and expect-output, and
+    # nothing else a run could be held to: any other there is refused, not
+    # left unchecked.
+    if [ -z "$unknown" ]; then
+        unknown="$(awk '/^\/\/ run-with:/ { on = 1 } on' "$f" | sed -n 's|^// \(expect[a-z-]*\):.*|\1|p' \
+            | grep -vxE 'expect-exit|expect-output' | head -1)"
+        [ -n "$unknown" ] && unknown="$unknown (in a // run-with: section, which holds expect-exit and expect-output only)"
+    fi
     if [ -n "$unknown" ]; then
         echo "FAIL $name (unknown header // $unknown:)"
         failed=$((failed + 1))
@@ -576,11 +587,11 @@ for f in "${tests[@]}"; do
     while IFS= read -r want; do
         [ -n "$want" ] && ! grep -qF -- "$want" "$work/$name.compile" && warn_miss="$warn_miss
     missing warning: $want"
-    done < <(sed -n 's|^// expect-compile-warning: ||p' "$f")
+    done < <(main_part "$f" | sed -n 's|^// expect-compile-warning: ||p')
     while IFS= read -r unwanted; do
         [ -n "$unwanted" ] && grep -qF -- "$unwanted" "$work/$name.compile" && warn_miss="$warn_miss
     unexpected warning: $unwanted"
-    done < <(sed -n 's|^// expect-no-compile-warning: ||p' "$f")
+    done < <(main_part "$f" | sed -n 's|^// expect-no-compile-warning: ||p')
     if [ -n "$warn_miss" ]; then
         echo "FAIL $name (compiler diagnostics)$warn_miss"
         sed "s/^/    /" "$work/$name.compile" | head -30
@@ -629,7 +640,7 @@ for f in "${tests[@]}"; do
         found="$(nm "$exe" 2>/dev/null | awk -v p="$prefix" 'index($3, p) == 1 { print $3 }' | head -3 | tr '\n' ' ')"
         [ -n "$found" ] && unwanted="$unwanted
     $prefix: $found"
-    done < <(sed -n 's|^// expect-no-symbol: ||p' "$f")
+    done < <(main_part "$f" | sed -n 's|^// expect-no-symbol: ||p')
     if [ -n "$unwanted" ]; then
         echo "FAIL $name (symbols the image must not hold)$unwanted"
         failed=$((failed + 1))
@@ -647,6 +658,8 @@ for f in "${tests[@]}"; do
             # Run N: built again with its flags, the same way as the first.
             more_flags="$(run_part "$f" "$run" | sed -n 's|^// run-with: *||p' | head -1)"
             label="run $run ($more_flags)"
+            # Nothing of the run before: its program, its output.
+            rm -f "$exe" "$work/$name.out"
             if [ "$through_link" = 1 ]; then
                 # shellcheck disable=SC2086
                 {

@@ -153,16 +153,33 @@ internal sealed partial class Selector
     {
         MInstr P(MOp op, params MOperand[] operands) => Emit(new MInstr(op, operands) { Probed = true });
         MMem At(int k) => new(R(i.Operands[k]), 0);
+        // AN OPERAND THE LAST INSTRUCTION STORED FROM mm0 IS IN mm0: the
+        // result of the operation before, handed on (Packed.ShiftLeft16 of
+        // a MultiplyHigh16) -- its reload left out.
+        // Past what touches neither mm0 nor memory: the next buffer's
+        // address (Lea), a register's move.
+        void Load(int k)
+        {
+            int back = _cur.Instrs.Count - 1;
+            while (back >= 0 && _cur.Instrs[back] is { Op: MOp.Lea or MOp.Mov } between && between.Operands[0] is MReg) back--;
+            if (back >= 0 && _cur.Instrs[back] is { Op: MOp.MmxStore } last && last.Operands[0] is MMem { Index: null, Symbol: null } stored
+                && stored.Disp == 0 && i.Operands[k] is RegOperand { Reg: var held } && ReferenceEquals(stored.Base, Lo(held))) return;
+            P(MOp.MmxLoad, At(k));
+        }
         string[] part = name[MachineIntrinsics.PackedOpPrefix.Length..].Split('.');
         switch (part[0])
         {
+            case "mov":
+                Load(1);
+                P(MOp.MmxStore, At(0));
+                break;
             case "op":
-                P(MOp.MmxLoad, At(1));
+                Load(1);
                 P(MOp.MmxOp, Imm(Convert.ToByte(part[1], 16)), At(2));
                 P(MOp.MmxStore, At(0));
                 break;
             case "shift":
-                P(MOp.MmxLoad, At(1));
+                Load(1);
                 P(MOp.MmxShiftImm, Imm(Convert.ToByte(part[1], 16)), Imm(int.Parse(part[2])), Imm(int.Parse(part[3])));
                 P(MOp.MmxStore, At(0));
                 break;
@@ -175,19 +192,19 @@ internal sealed partial class Selector
                 P(MOp.MmxExtractW, i.Dest is not null ? Lo(i.Dest) : Temp(), Imm(int.Parse(part[1])));
                 break;
             case "insert":
-                P(MOp.MmxLoad, At(1));
+                Load(1);
                 P(MOp.MmxInsertW, R(i.Operands[2]), Imm(int.Parse(part[1])));
                 P(MOp.MmxStore, At(0));
                 break;
             case "storent":
-                P(MOp.MmxLoad, At(1));
+                Load(1);
                 P(MOp.MmxStoreNt, At(0));
                 break;
             case "fence":
                 P(MOp.Sfence);
                 return;
             case "3d":
-                P(MOp.MmxLoad, At(1));
+                Load(1);
                 P(MOp.ThreeDNowOp, Imm(Convert.ToByte(part[1], 16)), At(2));
                 P(MOp.MmxStore, At(0));
                 break;
@@ -526,8 +543,11 @@ internal sealed partial class Selector
         // The program's own code: not the system library's -- written in its
         // trees (Function.SystemCode), however a kernel names their files --
         // nor what the compiler makes itself (__box_tostring_System_Double
-        // and its kin); both run where their callers do.
-        if (!automaticPacked && x87InBlocksOnly && !f.FromLibrary && !f.SystemCode && !f.Name.StartsWith("__", StringComparison.Ordinal))
+        // and its kin); both run where their callers do. A unit compiled
+        // with --lib is the program's all the same (FromLibrary says so of
+        // every function in it): a kernel's every unit but its entry is one,
+        // and the check passed over all of them.
+        if (!automaticPacked && x87InBlocksOnly && !f.SystemCode && !f.Name.StartsWith("__", StringComparison.Ordinal))
             RefuseX87OutsideBlocks(f, errors);
         Selector s = new(f, errors, automaticPacked, automaticPacked)
         {

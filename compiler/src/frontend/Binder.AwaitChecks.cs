@@ -1568,8 +1568,7 @@ public sealed partial class Binder
     private static bool PackedEnter(CallExpr call)
         => call is { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedEnter" } };
 
-    /// <summary>What an interrupt handler's report says it must not do: open a packed block, or allocate.</summary>
-    private static string Forbidden(string what) => what.StartsWith("opens a packed block", StringComparison.Ordinal) ? "must not open a packed block" : "must not allocate";
+    private static string Forbidden(string what) => Corsac.Lang.Lto.InterruptNotes.Forbidden(what);
 
     /// <summary>The awaits and allocations a body makes itself, in order, with what each does.</summary>
     private IEnumerable<(Node Site, string What)> AllocationsIn(Node body)
@@ -1589,7 +1588,7 @@ public sealed partial class Binder
                 // whatever thread was interrupted, mid-instruction -- has not
                 // saved: refused, as an allocation is.
                 case CallExpr enters when PackedEnter(enters):
-                    yield return (n, "opens a packed block (using (Packed.Mmx()), Sse or X87), which takes the interrupted thread's x87 and MMX state");
+                    yield return (n, Corsac.Lang.Lto.InterruptNotes.PackedBlock + " (using (Packed.Mmx()), Sse or X87), which takes the interrupted thread's x87 and MMX state");
                     break;
                 case LambdaExpr l:
                     yield return (n, l.GroupIdentity is not null ? "makes a delegate of a method" : "makes a lambda");

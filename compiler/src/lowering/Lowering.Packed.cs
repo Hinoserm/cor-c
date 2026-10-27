@@ -31,6 +31,40 @@ public sealed partial class Lowering
 
     private Stack<int> _packedFeatures => _packedOpen.TryGetValue(_f, out Stack<int>? open) ? open : _packedOpen[_f] = new();
 
+    /// <summary>
+    /// A PACKED OPERATION'S OPERAND where its lanes are, not a copy: a
+    /// Packed64 or Packed128 is read and never written, so a local's own
+    /// storage -- EvalAs's copy of a struct argument was a heap object on
+    /// every pass in freestanding code -- and a Packed.Load's own address,
+    /// where nothing the operation's operands do can write memory before it
+    /// reads them (PackedPure): one movq from the source, not two moves into
+    /// a slot and one out. Any other parameter as Arg makes it.
+    /// </summary>
+    private VReg PackedArg(CallExpr call, MethodSymbol target, int i)
+    {
+        if (target.Params[i].ByRef || target.Params[i].Type.Symbol?.Name is not ("Packed64" or "Packed128")) return Arg(call, target, i);
+        if (call.Args[i] is CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Packed" }, Name: "Load" or "Load128" }, Args: [Expr from] }
+            && call.Args.All(PackedPure))
+            return ToWord(Eval(from));
+        return Eval(call.Args[i]);
+    }
+
+    /// <summary>Whether a Packed64's eight bytes move through mm0 here (PackedMove): inside a packed block whose variant has MMX, in i386 code; elsewhere, and a Packed128's sixteen, a copy.</summary>
+    private bool PackedMoveHere(bool wide)
+        => !wide && _t.WordSize == 4 && _packedFeatures.Count > 0 && (_packedFeatures.Peek() & PackedOps.Mmx) != 0;
+
+    /// <summary>Whether an operand's evaluation writes no memory: names, literals, arithmetic on them, conversions, and the packed operations themselves (each writes only its own result), but no store, fence, assignment, step or other call.</summary>
+    private static bool PackedPure(Expr e) => e switch
+    {
+        LiteralExpr or NameExpr => true,
+        BinaryExpr b => PackedPure(b.Left) && PackedPure(b.Right),
+        UnaryExpr { Op: UnOp.Neg or UnOp.Not or UnOp.BitNot } u => PackedPure(u.Operand),
+        CastExpr c => PackedPure(c.Operand),
+        CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Packed" }, Name: var op } } c
+            => op is not ("Store" or "StoreNonTemporal" or "Fence") && c.Args.All(PackedPure),
+        _ => false,
+    };
+
     private VReg PackedIntrinsic(CallExpr call, MethodSymbol target)
     {
         string name = target.Name;
@@ -50,20 +84,26 @@ public sealed partial class Lowering
             case "FromBits":
             {
                 VReg made = ResultBuffer(call, returns);
-                _e.Store(RegOperand.Of(made), RegOperand.Of(ToI64(Arg(call, target, 0))), 0, 8);
-                if (wide) _e.Store(RegOperand.Of(made), RegOperand.Of(ToI64(Arg(call, target, 1))), 8, 8);
+                _e.Store(RegOperand.Of(made), RegOperand.Of(ToI64(PackedArg(call, target, 0))), 0, 8);
+                if (wide) _e.Store(RegOperand.Of(made), RegOperand.Of(ToI64(PackedArg(call, target, 1))), 8, 8);
                 return made;
             }
             case "Load":
             case "Load128":
             {
                 VReg made = ResultBuffer(call, returns);
-                _e.Emit(Opcode.MemCopy, null, R(made), R(ToWord(Arg(call, target, 0))), Imm(bytes, IrTypes.Word));
+                VReg from = ToWord(PackedArg(call, target, 0));
+                if (PackedMoveHere(wide)) _e.Call(MachineIntrinsics.PackedMove, IrType.Void, R(made), R(from));
+                else _e.Emit(Opcode.MemCopy, null, R(made), R(from), Imm(bytes, IrTypes.Word));
                 return made;
             }
             case "Store":
-                _e.Emit(Opcode.MemCopy, null, R(ToWord(Arg(call, target, 0))), R(Arg(call, target, 1)), Imm(bytes, IrTypes.Word));
+            {
+                VReg into = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1);
+                if (PackedMoveHere(wide)) _e.Call(MachineIntrinsics.PackedMove, IrType.Void, R(into), R(value));
+                else _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
                 return Void();
+            }
         }
 
         if (_packedFeatures.Count == 0)
@@ -84,7 +124,7 @@ public sealed partial class Lowering
             // which want no alignment, as MOVNTDQ would.
             case "StoreNonTemporal":
             {
-                VReg at = ToWord(Arg(call, target, 0)), value = Arg(call, target, 1);
+                VReg at = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1);
                 if (!ext)
                 {
                     _e.Emit(Opcode.MemCopy, null, R(at), R(value), Imm(bytes, IrTypes.Word));
@@ -101,7 +141,7 @@ public sealed partial class Lowering
 
         if (PackedOps.Binary.TryGetValue(name, out var binary))
         {
-            VReg a = Arg(call, target, 0), b = Arg(call, target, 1);
+            VReg a = PackedArg(call, target, 0), b = PackedArg(call, target, 1);
             VReg made = ResultBuffer(call, returns);
             // PADDQ and PSUBQ are SSE2's, on the MMX registers too.
             bool quad = binary.Op is 0xD4 or 0xFB;
@@ -122,7 +162,7 @@ public sealed partial class Lowering
         if (PackedOps.Shift.TryGetValue(name, out var shift))
         {
             if (PackedConstant(call, target, 1, 0, 255) is not int count) return Void();
-            VReg a = Arg(call, target, 0);
+            VReg a = PackedArg(call, target, 0);
             VReg made = ResultBuffer(call, returns);
             bool bytewise = shift.Sub is 7 or 3 && shift.Group == 0x73;
             if (wide && sse2)
@@ -147,7 +187,7 @@ public sealed partial class Lowering
         if (PackedOps.Float.TryGetValue(name, out var flt) || name is "SqrtF32" or "IntToFloat32" or "FloatToInt32")
         {
             bool unary = name is "SqrtF32" or "IntToFloat32" or "FloatToInt32";
-            VReg a = Arg(call, target, 0), b = unary ? a : Arg(call, target, 1);
+            VReg a = PackedArg(call, target, 0), b = unary ? a : PackedArg(call, target, 1);
             VReg made = ResultBuffer(call, returns);
             // SSE's form: MOVUPS or MOVLPS in, the operation, out. The
             // conversions are SSE2's (CVTDQ2PS, CVTTPS2DQ).
@@ -190,7 +230,7 @@ public sealed partial class Lowering
             case "Shuffle16":
             {
                 if (PackedConstant(call, target, 1, 0, 255) is not int order) return Void();
-                VReg a = Arg(call, target, 0);
+                VReg a = PackedArg(call, target, 0);
                 VReg made = ResultBuffer(call, returns);
                 if (ext)
                 {
@@ -206,7 +246,7 @@ public sealed partial class Lowering
             case "ShuffleHigh16":
             {
                 if (PackedConstant(call, target, 1, 0, 255) is not int order) return Void();
-                VReg a = Arg(call, target, 0);
+                VReg a = PackedArg(call, target, 0);
                 VReg made = ResultBuffer(call, returns);
                 byte prefix = name switch { "Shuffle32" => 0x66, "ShuffleLow16" => 0xF2, _ => 0xF3 };
                 if (sse2) _e.Call(MachineIntrinsics.PackedWideShuffle(prefix, order), IrType.Void, R(made), R(a));
@@ -223,7 +263,7 @@ public sealed partial class Lowering
                     if (PackedConstant(call, target, 2, 0, 255) is not int given) return Void();
                     order = given;
                 }
-                VReg a = Arg(call, target, 0), b = Arg(call, target, 1);
+                VReg a = PackedArg(call, target, 0), b = PackedArg(call, target, 1);
                 VReg made = ResultBuffer(call, returns);
                 byte op = name switch { "ShuffleF32" => 0xC6, "UnpackLowF32" => 0x14, _ => 0x15 };
                 if (sse) _e.Call(MachineIntrinsics.PackedFloat(true, 0, op, order, false), IrType.Void, R(made), R(a), R(b));
@@ -233,7 +273,7 @@ public sealed partial class Lowering
             case "Extract16":
             {
                 if (PackedConstant(call, target, 1, 0, wide ? 7 : 3) is not int at) return Void();
-                VReg a = Arg(call, target, 0);
+                VReg a = PackedArg(call, target, 0);
                 if (wide && sse2) return _e.Call(MachineIntrinsics.PackedWideExtract(at), IrType.I32, R(a))!;
                 VReg half = Plus(a, at >= 4 ? 8 : 0);
                 if (ext) return _e.Call(MachineIntrinsics.PackedExtract(at & 3), IrType.I32, R(half))!;
@@ -242,8 +282,8 @@ public sealed partial class Lowering
             case "Insert16":
             {
                 if (PackedConstant(call, target, 2, 0, wide ? 7 : 3) is not int at) return Void();
-                VReg a = Arg(call, target, 0);
-                VReg value = ToI32(Arg(call, target, 1));
+                VReg a = PackedArg(call, target, 0);
+                VReg value = ToI32(PackedArg(call, target, 1));
                 VReg made = ResultBuffer(call, returns);
                 if (wide && sse2)
                 {

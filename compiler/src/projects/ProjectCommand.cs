@@ -341,6 +341,19 @@ public static class ProjectCommand
     }
 
     /// <summary>
+    /// The i386 profile's arguments for every unit and the link: the
+    /// contract's (what its code may use) and the bans (X86Cpu.BanArguments),
+    /// which the contract does not carry -- a --disable of a feature the
+    /// model lacks keeps its packed blocks' run-time variants out too.
+    /// </summary>
+    private static string[] CpuArguments(global::Corsac.Lang.X86.X86Cpu profile)
+    {
+        List<string> made = new(profile.Contract.Arguments());
+        foreach (string ban in profile.BanArguments) if (!made.Contains(ban)) made.Add(ban);
+        return made.ToArray();
+    }
+
+    /// <summary>
     /// How many processes to spread a group of units over. One, as a rule:
     /// the units share a process's caches and its heap. But a 32-bit process
     /// has four gigabytes of address space at most, and the self-hosted
@@ -357,19 +370,6 @@ public static class ProjectCommand
     /// of it with 1.8 GB live in a 4.1 GB heap. A worker is a process of its
     /// own instead, as many as the machine has spaces for.
     /// </summary>
-    /// <summary>
-    /// The i386 profile's arguments for every unit and the link: the
-    /// contract's (what its code may use) and the bans (X86Cpu.BanArguments),
-    /// which the contract does not carry -- a --disable of a feature the
-    /// model lacks keeps its packed blocks' run-time variants out too.
-    /// </summary>
-    private static string[] CpuArguments(global::Corsac.Lang.X86.X86Cpu profile)
-    {
-        List<string> made = new(profile.Contract.Arguments());
-        foreach (string ban in profile.BanArguments) if (!made.Contains(ban)) made.Add(ban);
-        return made.ToArray();
-    }
-
     private static int Processes(int workers, int units)
     {
         // WHAT A CHILD HOLDS, not what its address space could: a child of

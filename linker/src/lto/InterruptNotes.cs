@@ -200,6 +200,12 @@ public static class InterruptNotes
         return facts;
     }
 
+    /// <summary>What an interrupt handler's report says it must not do, by what was found -- the compile's words and the link's alike: open a packed block (PackedBlock; the facts carry one as an allocation) or allocate.</summary>
+    public static string Forbidden(string what) => what.StartsWith(PackedBlock, StringComparison.Ordinal) ? "must not open a packed block" : "must not allocate";
+
+    /// <summary>How a packed block's report begins (Binder.AllocationsIn), which Forbidden tells it by.</summary>
+    public const string PackedBlock = "opens a packed block";
+
     /// <summary>
     /// Every handler of every unit walked through every unit's facts: what
     /// each that reaches an allocation reaches, as an error naming the
@@ -207,9 +213,6 @@ public static class InterruptNotes
     /// describes -- assembled code, a unit compiled without facts -- are not
     /// followed.
     /// </summary>
-    /// <summary>What a handler's report says it must not do, by what was found (Binder's own words): open a packed block -- the facts carry it as an allocation -- or allocate.</summary>
-    private static string Forbidden(string what) => what.StartsWith("opens a packed block", StringComparison.Ordinal) ? "must not open a packed block" : "must not allocate";
-
     public static List<string> Check(IEnumerable<ObjectFile> objects, IReadOnlySet<string>? neverRun = null, IReadOnlyList<Fact>? imported = null)
     {
         // NO HANDLER ANYWHERE, NOTHING TO WALK: each object's header says how

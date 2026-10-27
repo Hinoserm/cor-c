@@ -137,6 +137,8 @@ internal static class MachineIntrinsics
     public static string PackedExtract(int at) => PackedOpPrefix + "extract." + at;
     public static string PackedInsert(int at) => PackedOpPrefix + "insert." + at;
     public const string PackedStoreNonTemporal = PackedOpPrefix + "storent";
+    /// <summary>Eight bytes moved through mm0 (Packed.Load, Packed.Store in a variant with MMX): one movq each way, not two 32-bit moves.</summary>
+    public const string PackedMove = PackedOpPrefix + "mov";
     /// <summary>An SSE2 integer operation on sixteen bytes: its prefix and opcode (66 0F xx).</summary>
     public static string PackedWide(byte prefix, byte op) => PackedOpPrefix + "x." + prefix.ToString("x2") + "." + op.ToString("x2");
     public static string PackedWideShift(byte group, byte sub, int count) => PackedOpPrefix + "xshift." + group.ToString("x2") + "." + sub + "." + count;
