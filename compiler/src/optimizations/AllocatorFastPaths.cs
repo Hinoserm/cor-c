@@ -59,8 +59,8 @@ public static class AllocatorFastPaths
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
-                if (i.Op != Opcode.Call || i.Callee != Region || i.Operands.Count != 3
-                    || i.Operands[0] is not ImmOperand constant || RegionBlock(constant.Value, w) is not long need) continue;
+                if (!TakesRegion(i, w)) continue;
+                long need = RegionBlock(((ImmOperand)i.Operands[0]).Value, w)!.Value;
                 b.Instrs[k] = new Instr
                 {
                     Op = Opcode.Call, Dest = i.Dest, Callee = RegionSized,
@@ -111,6 +111,19 @@ public static class AllocatorFastPaths
     }
 
     /// <summary>
+    /// Whether Retarget makes `i` AllocFastSized or AllocFast: an allocation
+    /// of a size not known, or of a constant size a class holds. Not a site
+    /// the link chose for a region, which is its call still, for
+    /// MakeSitesInRegion to make so.
+    /// </summary>
+    private static bool Takes(Instr i, int w) => i.Op == Opcode.Call && i.Operands.Count == 1 && !i.RegionSite && KindOf(i.Callee) is not null
+        && (i.Operands[0] is not ImmOperand constant || ClassOf(constant.Value, w) is not null);
+
+    /// <summary>Whether RetargetRegions makes `i` AllocRegionSized: a region's allocation of a size known.</summary>
+    private static bool TakesRegion(Instr i, int w) => i.Op == Opcode.Call && i.Callee == Region && i.Operands.Count == 3
+        && i.Operands[0] is ImmOperand constant && RegionBlock(constant.Value, w) is not null;
+
+    /// <summary>
     /// Each allocation call of `f` made AllocFastSized (a constant size a
     /// class holds) or AllocFast (a size not known); whether any was, both
     /// to be put in place.
@@ -125,12 +138,9 @@ public static class AllocatorFastPaths
             for (int k = 0; k < b.Instrs.Count; k++)
             {
                 Instr i = b.Instrs[k];
-                // A site the link chose for a region is its call still, for
-                // MakeSitesInRegion to make so.
-                if (i.Op != Opcode.Call || i.Operands.Count != 1 || i.RegionSite || KindOf(i.Callee) is not long kind) continue;
-                if (i.Operands[0] is ImmOperand constant)
+                if (!Takes(i, w) || KindOf(i.Callee) is not long kind) continue;
+                if (i.Operands[0] is ImmOperand constant && ClassOf(constant.Value, w) is (long slot, long size))
                 {
-                    if (ClassOf(constant.Value, w) is not (long slot, long size)) continue;
                     b.Instrs[k] = new Instr
                     {
                         Op = Opcode.Call, Dest = i.Dest, Callee = Sized,
@@ -176,6 +186,16 @@ public static class AllocatorFastPaths
         cleanup.Run(tail);
     }
 
+    /// <summary>AllocRegionSized's body (`region`) inlined into `f`, whose sites RetargetRegions has made calls of it, and `cleanup` run over what came in.</summary>
+    public static void PlaceRegions(Function f, Module local, Function region, Pipeline cleanup)
+    {
+        Module tail = new(local.Name) { Entry = f.Name, PreserveExports = true, NeedsHeap = local.NeedsHeap };
+        tail.Functions.Add(f);
+        tail.Functions.Add(region);
+        new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
+        cleanup.Run(tail);
+    }
+
     /// <summary>
     /// THE ALLOCATION PUT IN PLACE AS EACH FUNCTION IS SELECTED (the x86
     /// backend's Prepare), not by the late passes over the whole module: each
@@ -201,16 +221,6 @@ public static class AllocatorFastPaths
     /// allocator is the kernel's; a program without the runtime), or
     /// --skip-passes InlineAllocators.
     /// </summary>
-    /// <summary>AllocRegionSized's body (`region`) inlined into `f`, whose sites RetargetRegions has made calls of it, and `cleanup` run over what came in.</summary>
-    public static void PlaceRegions(Function f, Module local, Function region, Pipeline cleanup)
-    {
-        Module tail = new(local.Name) { Entry = f.Name, PreserveExports = true, NeedsHeap = local.NeedsHeap };
-        tail.Functions.Add(f);
-        tail.Functions.Add(region);
-        new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
-        cleanup.Run(tail);
-    }
-
     public static Action<Function>? AtCodegen(Module m)
     {
         if (Skipped) return null;
@@ -225,11 +235,11 @@ public static class AllocatorFastPaths
         return f =>
         {
             if (f.Name is Sized or Fast or Missed or Region or RegionSized || f.Async is not null) return;
-            bool allocates = sizedBytes is not null
-                && f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Operands.Count == 1 && KindOf(i.Callee) is not null));
-            // Only a region site RetargetRegions would take: one of a size known.
-            bool regions = regionBytes is not null && f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee == Region
-                && i.Operands.Count == 3 && i.Operands[0] is ImmOperand size && RegionBlock(size.Value, Target.Current.WordSize) is not null));
+            // Only where Retarget or RetargetRegions would take a site: a
+            // function with none keeps its landing pads' homes untouched.
+            int w = Target.Current.WordSize;
+            bool allocates = sizedBytes is not null && f.Blocks.Any(b => b.Instrs.Any(i => Takes(i, w)));
+            bool regions = regionBytes is not null && f.Blocks.Any(b => b.Instrs.Any(i => TakesRegion(i, w)));
             if (!allocates && !regions) return;
             bool pads = f.Blocks.Any(b => b.IsLandingPad);
             if (pads) LandingPadHomes.Strip(f);
