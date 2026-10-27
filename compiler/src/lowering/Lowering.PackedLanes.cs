@@ -149,7 +149,8 @@ public sealed partial class Lowering
                 0xDA => LaneChoose(LaneCompare(Opcode.LtU, x, y), x, y),
                 0xDE => LaneChoose(LaneCompare(Opcode.GtU, x, y), x, y),
                 0xEA => LaneChoose(LaneCompare(Opcode.LtS, x, y), x, y),
-                _ => LaneChoose(LaneCompare(Opcode.GtS, x, y), x, y),
+                0xEE => LaneChoose(LaneCompare(Opcode.GtS, x, y), x, y),
+                _ => throw new InvalidOperationException($"no lane form of the packed opcode 0x{op:X2}"),
             };
             LanePut(made, width, k, v);
         }

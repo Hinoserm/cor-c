@@ -980,6 +980,11 @@ internal sealed class Encoder
                 B(0xDB, 0xE3);                                  // fninit
                 B(0xC7, 0x80, 0x00, 0x02, 0x00, 0x00, 0x80, 0x1F, 0x00, 0x00); // mov dword [eax+512], 0x1F80
                 B(0x0F, 0xAE, 0x90, 0x00, 0x02, 0x00, 0x00);    // ldmxcsr [eax+512]
+                // The program's control word, as the x87's save loads it:
+                // FNINIT's is extended precision.
+                B(0x68, 0x7F, 0x02, 0x00, 0x00);                // push 0x027F
+                B(0xD9, 0x2C, 0x24);                            // fldcw [esp]
+                B(0x83, 0xC4, 0x04);                            // add esp, 4
                 break;
             case MOp.PackedRestoreFxsr:
                 B(0x0F, 0xAE, 0x08);                            // fxrstor [eax]

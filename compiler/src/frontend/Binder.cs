@@ -6373,6 +6373,11 @@ public sealed partial class Binder
     private bool LeaveUntilUsed(TypeDecl d, TypeSymbol sym, MethodDecl md)
     {
         if (Switches.EagerCopyBodies || d.Template is null || _freshOnly) return false;
+        // NOT WHERE THE PROCESSOR'S STATE IS KEPT (Parser.PackedEverywhere):
+        // where it is kept is judged across every body once binding is over
+        // (PackedStateOf), and a body lowering first asked for after that
+        // would run its float code under no save.
+        if (Parser.PackedEverywhere) return false;
         // EVERY INSTANCE BODY OF A CANONICAL COPY, used here or not: what its
         // calls of shared method copies need is held in the type context of
         // each instantiation sharing it (NoteCopyNeeds), which every unit

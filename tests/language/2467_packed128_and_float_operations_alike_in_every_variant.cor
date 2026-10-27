@@ -97,8 +97,8 @@
 //
 // Packed128's integer operations are SSE2's (66 0F xx) where the block's
 // variant has it, two MMX operations a half each where the lanes keep to
-// their halves, and the runtime's lanes otherwise (Runtime.PackedScalar,
-// PackedScalar128); the float ones SSE's, 3DNow!'s where it has them
+// their halves, and plain integer code lane by lane inline otherwise
+// (Lowering.PackedLanes); the float ones SSE's, 3DNow!'s where it has them
 // exactly, and the x87's one float at a time. The same program prints
 // alike under every variant (the image's Corsac.Cpu.Features knob caps
 // what the processor is said to have) and in long mode, whose are the

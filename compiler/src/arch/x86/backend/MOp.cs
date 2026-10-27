@@ -221,7 +221,7 @@ public enum MOp : byte
     ThreeDNowOp,
     /// <summary>The save's give-back at [eax]: fldenv where +108 is 0, frstor where not.</summary>
     PackedRestoreX87,
-    /// <summary>An SSE block's: fxsave [eax] (16-aligned), fninit, and MXCSR 0x1F80 loaded from [eax+512].</summary>
+    /// <summary>A save that keeps the XMM registers too: fxsave [eax] (16-aligned), fninit, MXCSR 0x1F80 loaded from [eax+512], and the program's control word (0x027F), as PackedSaveX87's.</summary>
     PackedSaveFxsr,
     /// <summary>fxrstor [eax].</summary>
     PackedRestoreFxsr,

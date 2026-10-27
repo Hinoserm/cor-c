@@ -27,7 +27,8 @@ using Block = Corsac.Lang.Ir.Block;
 /// pattern to each; a copy between two such slots of one shape a copy field
 /// by field; and a copy of the whole slot from or to other memory a load or
 /// a store of each field there. The register allocator then keeps them in
-/// registers like any other local. Only slots whose accesses agree on their
+/// registers like any other local. Only slots a load or a store reads or
+/// writes a field of (or copied whole to or from one), whose accesses agree on their
 /// fields (two that overlap otherwise leave the slot in memory), whose
 /// address is never taken except by a copy of it, or that copy plus a
 /// constant, used the same ways, and only outside an async or iterator
@@ -75,12 +76,15 @@ public static class SlotScalars
         // Each candidate's fields as its accesses make them: offset -> width.
         Dictionary<FrameSlot, SortedDictionary<long, int>> shape = new(ReferenceEqualityComparer.Instance);
         List<(FrameSlot Dest, FrameSlot Source)> copies = new();
+        // The slots a load or a store reads or writes a field of.
+        HashSet<FrameSlot> accessed = new(ReferenceEqualityComparer.Instance);
         void Refuse(Operand o) { if (SlotOf(o) is { } s) candidates.Remove(s.Slot); }
         void Field(FrameSlot s, long at, int width, IrType type)
         {
             bool fits = width is 1 or 2 or 4 && type == IrType.I32 || width == 8 && type == IrType.I64;
             if (!fits || at < 0 || at + width > s.Bytes || at % width != 0) { candidates.Remove(s); return; }
             if (!shape.TryGetValue(s, out var fields)) shape[s] = fields = new();
+            accessed.Add(s);
             if (fields.TryGetValue(at, out int had)) { if (had != width) candidates.Remove(s); return; }
             foreach ((long start, int w) in fields)
                 if (start < at + width && at < start + w) { candidates.Remove(s); return; }
@@ -143,6 +147,18 @@ public static class SlotScalars
             }
             foreach ((long start, int w) in fill) fields[start] = w;
         }
+        // ONLY A SLOT SOMETHING READS OR WRITES A FIELD OF, or one copied
+        // whole to or from such a slot: one only filled and copied, or only
+        // copied through, is memory moved to memory, and as registers it was
+        // every field loaded and then every field stored -- sixteen live at
+        // once for a slot of 64 bytes, spilled on a machine of six.
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            foreach ((FrameSlot to, FrameSlot from) in copies)
+                if (accessed.Contains(to) != accessed.Contains(from)) { accessed.Add(to); accessed.Add(from); changed = true; }
+        }
+        candidates.RemoveWhere(s => !accessed.Contains(s));
         // A copy between two slots is one only both sides of which stay, and
         // only between two of one shape.
         for (bool changed = true; changed;)

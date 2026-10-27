@@ -468,7 +468,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>The method a shared helper was asked for in, set aside while it is built.</summary>
-    private readonly record struct HelperContext(MethodSymbol? Method, VReg[]? TypeArgs, bool InBarrier, int CheckedDepth, VReg? StructContext);
+    private readonly record struct HelperContext(MethodSymbol? Method, VReg[]? TypeArgs, bool InBarrier, int CheckedDepth, VReg? StructContext, int StateKept, bool InsideCopy);
 
     /// <summary>
     /// A SHARED HELPER IS BUILT AS NOBODY'S: every unit that needs one makes
@@ -483,12 +483,17 @@ public sealed partial class Lowering
     private HelperContext EnterHelper()
     {
         // And no `checked` of the asker's: a shared helper's arithmetic is unchecked.
-        HelperContext saved = new(_method, _typeArgs, _inBarrier, _checkedDepth, _structContext);
+        HelperContext saved = new(_method, _typeArgs, _inBarrier, _checkedDepth, _structContext, _stateKept, _insideCopy);
         _method = null;
         _typeArgs = null;
         _structContext = null;
         _inBarrier = false;
         _checkedDepth = 0;
+        // Nor the asker's kept state: a helper runs wherever it is called,
+        // and its calls are to methods as themselves, not their $inside
+        // copies.
+        _stateKept = 0;
+        _insideCopy = false;
         return saved;
     }
 
@@ -499,6 +504,8 @@ public sealed partial class Lowering
         _structContext = saved.StructContext;
         _inBarrier = saved.InBarrier;
         _checkedDepth = saved.CheckedDepth;
+        _stateKept = saved.StateKept;
+        _insideCopy = saved.InsideCopy;
     }
 
     /// <summary>How an element is passed, as a refusal is named by it: its machine type.</summary>

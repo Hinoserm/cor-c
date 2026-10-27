@@ -298,6 +298,7 @@ public sealed partial class Lowering
             NoInlining = NoInlining(decl) || (m.Static && decl.Name == "StaticInitBody$"), Unjudged = decl.AutoAccessor,
             // A copy that runs inside its caller's state is called directly only.
             Dispatched = !_insideCopy && !m.Static && (m.Virtual || m.Override || m.Abstract || ImplementsAny(m.Owner)),
+            InsideState = _insideCopy,
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);

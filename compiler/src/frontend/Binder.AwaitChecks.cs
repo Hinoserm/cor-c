@@ -1598,14 +1598,29 @@ public sealed partial class Binder
             // behind a condition -- the body's, or the compiler's own block's
             // inside it (Parser.ImplicitKind): keeping the state here instead
             // costs no run that would not have kept it.
+            // Not a call behind ?:, &&, || or ??, or in a switch's arm, which
+            // only some runs make (ConditionalSites).
+            HashSet<Node> maybe = ConditionalSites(d.Body);
             List<MethodSymbol> sure = new();
             foreach (Stmt top in TopStatements(d.Body))
                 if (top is ExprStmt or LocalDecl or ReturnStmt)
-                    foreach ((Node _, MethodSymbol callee) in DirectCalls(top, m.Owner)) sure.Add(callee);
+                    foreach ((Node site, MethodSymbol callee) in DirectCalls(top, m.Owner))
+                        if (!maybe.Contains(site)) sure.Add(callee);
             always[m] = sure;
-            Dictionary<MethodSymbol, int> counted = new(ReferenceEqualityComparer.Instance);
-            foreach ((Node _, MethodSymbol callee) in DirectCalls(d.Body, m.Owner)) counted[callee] = counted.GetValueOrDefault(callee) + 1;
-            twice[m] = counted.Where(c => c.Value > 1).Select(c => c.Key).ToList();
+            // MORE THAN ONCE ON A RUN: twice in one list of statements, each
+            // call where that list's every run makes it -- not one in each
+            // arm of an if, which is once whichever runs.
+            HashSet<MethodSymbol> again = new(ReferenceEqualityComparer.Instance);
+            foreach (Node n in SafetyNodes(d.Body))
+            {
+                if (n is not Block list) continue;
+                Dictionary<MethodSymbol, int> counted = new(ReferenceEqualityComparer.Instance);
+                foreach (Stmt one in list.Statements)
+                    if (one is ExprStmt or LocalDecl or ReturnStmt)
+                        foreach ((Node site, MethodSymbol callee) in DirectCalls(one, m.Owner))
+                            if (!maybe.Contains(site) && (counted[callee] = counted.GetValueOrDefault(callee) + 1) == 2) again.Add(callee);
+            }
+            twice[m] = again.ToList();
             List<MethodSymbol> looped = new();
             string? own = null;
             bool copyable = !d.IsCtor && d.Name is not ("StaticInit$" or "StaticInitBody$");
@@ -1653,18 +1668,49 @@ public sealed partial class Binder
     }
 
     /// <summary>A body's own statements, run on every path to its first branch: through the compiler's own block around it (its one variant's try), as far as it goes.</summary>
-    private static IEnumerable<Stmt> TopStatements(Block body)
+    private static List<Stmt> TopStatements(Block body)
     {
         IReadOnlyList<Stmt> at = body.Statements;
         // The compiler's own block: { PackedEnter; try { body } finally { ... } }, one variant.
         if (at is [Block { Statements: [ExprStmt, TryStmt { Body: Block inner }] }]) at = inner.Statements;
-        foreach (Stmt s in at)
+        List<Stmt> made = new();
+        Along(at, made);
+        return made;
+    }
+
+    /// <summary>The statements of `list` up to its first branch, added to `made`; false where it branched -- past it, a nested block's or its own, nothing runs on every path.</summary>
+    private static bool Along(IReadOnlyList<Stmt> list, List<Stmt> made)
+    {
+        foreach (Stmt s in list)
         {
-            if (s is Block nested) { foreach (Stmt n in TopStatements(nested)) yield return n; continue; }
-            yield return s;
+            if (s is Block nested) { if (!Along(nested.Statements, made)) return false; continue; }
+            made.Add(s);
             // Past a return, a throw, a branch: no longer every path.
-            if (s is not (ExprStmt or LocalDecl)) yield break;
+            if (s is not (ExprStmt or LocalDecl)) return false;
         }
+        return true;
+    }
+
+    /// <summary>The nodes of a body that only some of its runs reach: the arms of ?: and of a switch expression, the right of &&, || and ??.</summary>
+    private HashSet<Node> ConditionalSites(Node body)
+    {
+        HashSet<Node> maybe = new(ReferenceEqualityComparer.Instance);
+        void Add(Node part) { foreach (Node n in SafetyNodes(part)) maybe.Add(n); }
+        foreach (Node n in SafetyNodes(body))
+            switch (n)
+            {
+                case ConditionalExpr c when !maybe.Contains(c.Then) || !maybe.Contains(c.Else):
+                    Add(c.Then);
+                    Add(c.Else);
+                    break;
+                case BinaryExpr { Op: BinOp.AndAlso or BinOp.OrElse or BinOp.Coalesce } b when !maybe.Contains(b.Right):
+                    Add(b.Right);
+                    break;
+                case SwitchExpr sw:
+                    foreach (Node arm in sw.Arms) if (!maybe.Contains(arm)) Add(arm);
+                    break;
+            }
+        return maybe;
     }
 
     /// <summary>Whether a call is a packed block's start, Sys.PackedEnter (Parser.ParsePackedBlock).</summary>

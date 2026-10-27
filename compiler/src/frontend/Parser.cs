@@ -91,8 +91,9 @@ public sealed class Parser
     private int _lockSerial;
 
     /// <summary>
-    /// Inside a packed block's body (ParsePackedBlock): 1 for MMX, 2 for SSE,
-    /// else 0. A lambda's or a local function's body is its own.
+    /// Inside a packed block's body (ParsePackedBlock): its kind, the
+    /// compiler's own block around a body (ImplicitKind), else 0. A lambda's
+    /// or a local function's body is its own.
     /// </summary>
     private int _packedBlock;
 
@@ -109,7 +110,7 @@ public sealed class Parser
     private void RefuseSuspensionInPackedBlock(Token at, string what)
     {
         if (_packedBlock != 0)
-            throw new CompileError(_file, at.Line, at.Col, what + " inside a packed block (using (Packed." + (_packedBlock switch { 2 => "Sse", 3 => "X87", _ => "Mmx" }) + "())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next");
+            throw new CompileError(_file, at.Line, at.Col, what + " in a body that keeps the thread's x87, MMX and SSE state: the state is the body's until it ends, and a suspension would hand it to whatever ran next");
     }
 
     /// <summary>
@@ -3187,11 +3188,13 @@ public sealed class Parser
         if (Take(Tok.FatArrow))
         {
             Token bodyAt = Cur;
-            Expr value = ReadBodyExpression();
+            Block getter = ImplicitExpression(bodyAt, () =>
+            {
+                Block read = new() { Line = bodyAt.Line, Col = bodyAt.Col };
+                read.WritableStatements.Add(new ReturnStmt { Value = ReadBodyExpression(), Line = bodyAt.Line, Col = bodyAt.Col });
+                return read;
+            });
             Expect(Tok.Semi, "';' after an expression-bodied property");
-
-            Block getter = new() { Line = bodyAt.Line, Col = bodyAt.Col };
-            getter.WritableStatements.Add(new ReturnStmt { Value = value, Line = bodyAt.Line, Col = bodyAt.Col });
 
             PropertyDecl read = new()
             {
@@ -3912,7 +3915,6 @@ public sealed class Parser
             // `=> throw ...` is a throw expression, the whole of the body.
             neverReturns = At(Tok.KwThrow);
             bodyAt = at.Pos;
-            int expressionAt = _i;
             Block Read()
             {
                 Expr value = ReadBodyExpression();
@@ -3922,20 +3924,7 @@ public sealed class Parser
                     : new ReturnStmt { Value = value, Line = at.Line, Col = at.Col });
                 return read;
             }
-            body = Read();
-            // In the compiler's own block (ImplicitBody): read again for each
-            // processor's version where it names a packed operation.
-            bool packedOps = PackedOpsIn(expressionAt, _i), suspends = SuspendsIn(expressionAt, _i);
-            if (packedOps && !suspends && !InPrelude)
-            {
-                int after = _i;
-                _i = expressionAt;
-                Stmt wrapped = ParsePackedBlock(at, ImplicitKind, Read);
-                if (_i != after) throw new CompileError(_file, at.Line, at.Col, "an expression body read again ended elsewhere");
-                body = new Block { Line = at.Line, Col = at.Col };
-                body.WritableStatements.Add(wrapped);
-            }
-            else body = ImplicitBlock(body, packedOps, suspends);
+            body = ImplicitExpression(at, Read);
 
             Expect(Tok.Semi, "';' after an expression body");
         }
@@ -4159,11 +4148,13 @@ public sealed class Parser
         if (Take(Tok.FatArrow))
         {
             Token bodyAt = Cur;
-            Expr only = ReadBodyExpression();
+            Block body = ImplicitExpression(bodyAt, () =>
+            {
+                Block read = new() { Line = bodyAt.Line, Col = bodyAt.Col };
+                read.WritableStatements.Add(new ReturnStmt { Value = ReadBodyExpression(), Line = bodyAt.Line, Col = bodyAt.Col });
+                return read;
+            });
             Expect(Tok.Semi, "';' after an expression-bodied property");
-
-            Block body = new() { Line = bodyAt.Line, Col = bodyAt.Col };
-            body.WritableStatements.Add(new ReturnStmt { Value = only, Line = bodyAt.Line, Col = bodyAt.Col });
 
             return new PropertyDecl
             {
@@ -4215,13 +4206,13 @@ public sealed class Parser
                 {
                     auto = false;
                     Token at = Cur;
-                    Expr value = ReadBodyExpression();
-                    Expect(Tok.Semi, "';' after the expression-bodied getter");
-                    getter = new Block { Line = at.Line, Col = at.Col };
-                    getter.WritableStatements.Add(new ReturnStmt
+                    getter = ImplicitExpression(at, () =>
                     {
-                        Value = value, Line = at.Line, Col = at.Col,
+                        Block read = new() { Line = at.Line, Col = at.Col };
+                        read.WritableStatements.Add(new ReturnStmt { Value = ReadBodyExpression(), Line = at.Line, Col = at.Col });
+                        return read;
                     });
+                    Expect(Tok.Semi, "';' after the expression-bodied getter");
                 }
                 else
                 {
@@ -4262,19 +4253,19 @@ public sealed class Parser
                 if (At(Tok.LBrace))
                 {
                     auto = false;
-                    setter = ParseBlock();
+                    setter = ImplicitBody(ParseBlock);
                 }
                 else if (Take(Tok.FatArrow))
                 {
                     auto = false;
                     Token at = Cur;
-                    Expr value = ReadBodyExpression();
-                    Expect(Tok.Semi, "';' after the expression-bodied setter");
-                    setter = new Block { Line = at.Line, Col = at.Col };
-                    setter.WritableStatements.Add(new ExprStmt
+                    setter = ImplicitExpression(at, () =>
                     {
-                        Expr = value, Line = at.Line, Col = at.Col,
+                        Block read = new() { Line = at.Line, Col = at.Col };
+                        read.WritableStatements.Add(new ExprStmt { Expr = ReadBodyExpression(), Line = at.Line, Col = at.Col });
+                        return read;
                     });
+                    Expect(Tok.Semi, "';' after the expression-bodied setter");
                 }
                 else
                 {
@@ -5339,16 +5330,51 @@ public sealed class Parser
         return made;
     }
 
+    /// <summary>
+    /// An expression body at the current token, as `read` makes it a block,
+    /// in the compiler's own block where it wants one: read once per
+    /// processor's version where it names a packed operation, and only as
+    /// often as it is kept -- its end found by its tokens, the `;` outside
+    /// every bracket (ExpressionEnd), not by a read thrown away.
+    /// </summary>
+    private Block ImplicitExpression(Token at, Func<Block> read)
+    {
+        if (InPrelude) return read();
+        int start = _i, end = ExpressionEnd(start);
+        bool packedOps = PackedOpsIn(start, end), suspends = SuspendsIn(start, end);
+        if (!packedOps || suspends) return ImplicitBlock(read(), packedOps, suspends);
+        Stmt wrapped = ParsePackedBlock(at, ImplicitKind, read, end);
+        if (_i != end) throw new CompileError(_file, at.Line, at.Col, "an expression body read again ended elsewhere");
+        Block made = new() { Line = at.Line, Col = at.Col };
+        made.WritableStatements.Add(wrapped);
+        return made;
+    }
+
+    /// <summary>The index of the `;` that ends the expression at `start`: the first outside every bracket it opens.</summary>
+    private int ExpressionEnd(int start)
+    {
+        int depth = 0, k = start;
+        for (; k < _t.Count; k++)
+        {
+            if (_t[k].Kind is Tok.LParen or Tok.LBracket or Tok.LBrace) depth++;
+            else if (_t[k].Kind is Tok.RParen or Tok.RBracket or Tok.RBrace) depth--;
+            else if (_t[k].Kind == Tok.Semi && depth == 0) break;
+        }
+        return k;
+    }
+
     /// <summary>Whether a body is already in the compiler's own block (ImplicitBody, ImplicitBlock): its one statement the variant or the variants' choice.</summary>
     private static bool Wrapped(Block b)
         => b.Statements is [Block { Statements: [ExprStmt { Expr: CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedEnter" } } }, ..] }]
         || b.Statements is [Block { Statements: [LocalDecl { Name: var pick }, ..] }] && pick.StartsWith("$packedpick$", StringComparison.Ordinal);
 
     /// <summary>
-    /// A MEMBER'S BODIES NOT READ AS A METHOD'S (a property's getter and
-    /// setter, an event's or an extension's accessors) in the compiler's own
-    /// block where they want one, each as one variant: what they hold moved
-    /// into the block, in place -- their syntax is init-only.
+    /// A MEMBER'S BODIES NOT READ THROUGH ImplicitBody OR ImplicitExpression
+    /// (an event's accessors, a record's) in the compiler's own block where
+    /// they want one, each as one variant: what they hold moved into the
+    /// block, in place -- their syntax is init-only. A method's, a
+    /// property's and an indexer's bodies are read per processor's version
+    /// where they are read.
     /// </summary>
     private void ImplicitMember(MemberDecl m, int from, int to)
     {
@@ -5395,7 +5421,7 @@ public sealed class Parser
     /// is the answer at the compile. A block inside another is read once,
     /// with the outer variant's features.
     /// </summary>
-    private Stmt ParsePackedBlock(Token at, int kind, Func<Stmt>? reader = null)
+    private Stmt ParsePackedBlock(Token at, int kind, Func<Stmt>? reader = null, int knownEnd = -1)
     {
         int line = at.Line, col = at.Col;
         if (_packedNesting >= 15)
@@ -5408,8 +5434,8 @@ public sealed class Parser
             // What the body can use: the packed operations' names between its
             // start and its end -- a braced body's end found by its braces,
             // so nothing in it is read (a generic local function read is
-            // hoisted, and a read thrown away left one behind); a single
-            // statement, which declares none, read once to find it.
+            // hoisted, and a read thrown away left one behind); an
+            // expression body's by its tokens (ImplicitExpression).
             if (_t[start].Kind == Tok.LBrace)
             {
                 int depth = 0, k = start;
@@ -5420,6 +5446,7 @@ public sealed class Parser
                 }
                 _i = k + 1;
             }
+            else if (knownEnd >= 0) _i = knownEnd;
             else ReadBody(0);
             int used = kind switch { 1 => PackedOps.Mmx, 2 => PackedOps.Mmx | PackedOps.Sse | PackedOps.Sse2, _ => 0 };
             for (int k = start; k + 2 < _i; k++)
@@ -5894,7 +5921,7 @@ public sealed class Parser
             // packed state, the block's until it ends, to whatever ran next
             // (ParsePackedBlock).
             case Tok.Ident when _packedBlock != 0 && Cur.Text == "yield" && Ahead().Kind is Tok.KwReturn or Tok.KwBreak:
-                throw new CompileError(_file, at.Line, at.Col, "a yield inside a packed block (using (Packed." + (_packedBlock switch { 2 => "Sse", 3 => "X87", _ => "Mmx" }) + "())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next");
+                throw new CompileError(_file, at.Line, at.Col, "a yield in a body that keeps the thread's x87, MMX and SSE state: the state is the body's until it ends, and a suspension would hand it to whatever ran next");
             case Tok.Ident when Cur.Text == "yield" && Ahead().Kind == Tok.KwReturn:
             {
                 if (_iteratorTarget is null)

@@ -54,8 +54,9 @@ public sealed class MInstr : MOperandList
     public bool Probed { get; init; }
 
     /// <summary>
-    /// Selected inside a packed block (Selector's region walk: 1 MMX, 2 SSE),
-    /// between the save of the thread's x87 state and its give-back: the
+    /// Selected inside a kept state (Selector's region walk, or a $inside
+    /// copy's whole body: 1 the x87's save, 2 FXSAVE's), between the save of
+    /// the thread's state and its give-back: the
     /// emitted-code audit lets it use the MMX registers -- and, at 2, SSE's --
     /// in freestanding code. Carried by every pass that rebuilds an
     /// instruction, as Probed is.

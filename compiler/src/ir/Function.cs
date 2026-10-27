@@ -61,6 +61,13 @@ public sealed class Function
     public bool Dispatched { get; set; }
 
     /// <summary>
+    /// Whether it is a method's copy that runs inside its caller's kept
+    /// state ($inside): every instruction of it owns the state its caller
+    /// saved, and saves none of its own (Selector's _packedBase).
+    /// </summary>
+    public bool InsideState { get; set; }
+
+    /// <summary>
     /// The escape pass's renewal frees, for the region pass to place where
     /// each lap ends (Escape.NoteLapFree, PlaceLapFrees), taken there. Held
     /// here so they go with the function: a table keyed by the function is
