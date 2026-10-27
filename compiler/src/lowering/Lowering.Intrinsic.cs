@@ -219,33 +219,41 @@ public sealed partial class Lowering
                 VReg n = Scaled(WordOf(Arg(call, target, 4)));
                 VReg into = _e.Binary(Opcode.Add, dst, _t.ArrayHeaderBytes);
                 VReg from = _e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes);
-                MoveBytes(into, from, n, overlapping: name == "Copy");
+                MoveBytes(into, from, n, overlapping: name == "Copy", numbers: true);
                 return Void();
             }
             // AN ADDRESS'S BYTES MOVED, overlapping or not (Sys.MemoryMove):
             // what Copy does to two arrays' elements, for a block an address
             // names -- Array.Copy's of elements holding no reference
-            // (Span.Move).
+            // (Span.Move). NumbersMove where every element is a number that
+            // is never an address (Instr.Number: Sys.ElementsAreNumbers); a
+            // long's, a nint's or a pointer's may be one, which the runtime
+            // keeps addresses in, and region inference follows those.
             case "MemoryMove":
+            case "NumbersMove":
             {
                 VReg into = Address(call, target, 0);
                 VReg from = Address(call, target, 1);
                 VReg n = ToWord(Arg(call, target, 2));
-                MoveBytes(into, from, n, overlapping: true);
+                MoveBytes(into, from, n, overlapping: true, numbers: name == "NumbersMove");
                 return Void();
             }
             // WHETHER AN ARRAY'S ELEMENTS HOLD A REFERENCE, a constant of the
             // array's static element type, as the collector reads the array:
-            // its descriptor's flag (ElementsAreReferences) and its leaf
-            // allocation are the same question. A type parameter -- a shared
-            // copy's T -- may be one. And the bytes from one element to the
-            // next (ElementStride), a struct held in line padded as laid.
+            // its descriptor's flag (ElementsAreReferences). A type parameter
+            // -- a shared copy's T -- may be one. Whether each is a number
+            // that is never an address (ElementsAreNumbers: NeverAddress).
+            // And the bytes from one element to the next (ElementStride), a
+            // struct held in line padded as laid.
             case "ElementsHoldReferences":
+            case "ElementsAreNumbers":
             case "ElementStride":
             {
                 Type? element = target.Params[0].Type.Element;
                 if (name == "ElementStride")
                     return _e.Const(element is null ? _t.WordSize : ElementStride(element), IrType.I32);
+                if (name == "ElementsAreNumbers")
+                    return Fit(_e.Const(element is not null && NeverAddress(element) ? 1 : 0, IrType.I32), returns);
                 bool holds = element is null || element.ParamName is not null || element.Prim is Prim.Any
                     || (InlineElement(element) ? InlineHasReferences(StructOf(element)) : HoldsReference(element));
                 return Fit(_e.Const(holds ? 1 : 0, IrType.I32), returns);
@@ -1054,7 +1062,7 @@ public sealed partial class Lowering
     /// where `overlapping` may be and the destination starts inside the
     /// source, from the end down.
     /// </summary>
-    private void MoveBytes(VReg into, VReg from, VReg n, bool overlapping)
+    private void MoveBytes(VReg into, VReg from, VReg n, bool overlapping, bool numbers)
     {
         // COPY IS MEMMOVE (the Prelude's word for it): where the
         // destination starts inside the source -- src <= dst < src + n,
@@ -1109,8 +1117,9 @@ public sealed partial class Lowering
         // was made from went with the exception to where nobody follows --
         // the name a front end's node looked up, and with it, merged over the
         // node's class, the tree (test 1200). A long one is streamed by the
-        // backend (Select.SelectMemCopy), past every pass that reads it.
-        _e.Block.Instrs[^1].Number = true;
+        // backend (Select.SelectMemCopy), past every pass that reads it. Only
+        // `numbers`: elements of a long or a nint may be addresses.
+        if (numbers) _e.Block.Instrs[^1].Number = true;
         _e.Jump(done);
         _e.SetBlock(done);
     }

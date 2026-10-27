@@ -152,6 +152,9 @@ public sealed class X86Backend : IBackend
 
     private string? _streamCopy, _streamFill;
 
+    /// <summary>--opt-size: the layout's own padding left out (Encoder.LoopAlign).</summary>
+    public bool OptimizeSize { get; set; }
+
     public ObjectFile Generate(Module module, List<string> errors)
     {
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
@@ -202,7 +205,7 @@ public sealed class X86Backend : IBackend
         obj.Sections.Add(relocatedConstants);
 
         HashSet<string> defined = new(StringComparer.Ordinal);
-        Encoder encoder = new(text);
+        Encoder encoder = new(text, OptimizeSize);
         List<FrameTable.Entry> frames = new();
         FunctionSizes.Clear();
         // THE STACK MAPS AS THE TABLE WILL HOLD THEM, a record a function and

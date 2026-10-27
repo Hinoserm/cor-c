@@ -29,6 +29,9 @@ internal sealed class Encoder
     /// Empty for every other processor.
     /// </summary>
     private readonly HashSet<MBlock> _loopHeads = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>--opt-size: no loop head padded (LoopAlign), the bytes kept.</summary>
+    public bool OptimizeSize { get; init; }
     private bool _widen;
 
     /// <summary>Jump tables this function needs in .rodata: the symbol to place them at, and their entries.</summary>
@@ -52,10 +55,11 @@ internal sealed class Encoder
     /// </summary>
     public List<(int Offset, int Line)> Lines { get; } = new();
 
-    public Encoder(Section text)
+    public Encoder(Section text, bool optimizeSize = false)
     {
         _text = text;
         _out = text.Bytes;
+        OptimizeSize = optimizeSize;
     }
 
     public void ReleaseFunction()
@@ -72,7 +76,7 @@ internal sealed class Encoder
         _funcStart = _out.Count;
         _long.Clear();
         _loopHeads.Clear();
-        if (CpuModel.Athlon)
+        if (CpuModel.Athlon && !OptimizeSize)
         {
             // A JUMP TO ITS OWN BLOCK OR ONE BEFORE IT: a loop's latch, and its
             // target the head every lap starts at.
@@ -116,7 +120,7 @@ internal sealed class Encoder
             _out.Truncate(_funcStart);
             grew = Pass();
             moved = before is not null && !before.SequenceEqual(m.Blocks.Select(b => b.Offset));
-            if (++passes > 64) throw new InvalidOperationException($"{m.Source.Name}: the layout of its loop heads did not settle");
+            if (_loopHeads.Count > 0 && ++passes > 64) throw new InvalidOperationException($"{m.Source.Name}: the layout of its loop heads did not settle");
         }
         while (grew || moved);
         _text.Relocs.AddRange(_pending);
@@ -1214,19 +1218,14 @@ internal sealed class Encoder
     }
 
     /// <summary>
-    /// Padding that executes as nothing on a 486: mov esi,esi and
-    /// lea esi,[esi+0] in its various widths, as GAS emits for i486
-    /// targets. The 0F 1F multi-byte nop is Pentium Pro and later and is
-    /// not used.
-    /// </summary>
-    /// <summary>
     /// A LOOP'S HEAD AT A SIXTEEN-BYTE LINE on the K7 and the K8, which fetch
     /// and predecode an aligned sixteen bytes a clock (AMD 22007 and 25112,
     /// "Align branch targets"): a head near a line's end costs a fetch more on
-    /// every lap. The pad runs only where the block laid out before the head
-    /// falls into it -- the way into the loop, as a rule -- and is AMD's K8
-    /// guide's NOP: 0x66 prefixes on 0x90, one decoded operation apiece,
-    /// which the K7 decodes as it does (it has no 0F 1F).
+    /// every lap. The pad is put before every head, and runs only where the
+    /// block laid out before it falls into it -- the way into the loop, as a
+    /// rule; behind a jump it is bytes nothing runs. AMD's K8 guide's NOP:
+    /// 0x66 prefixes on 0x90, one decoded operation apiece, which the K7
+    /// decodes as it does (it has no 0F 1F). Not under --opt-size.
     /// </summary>
     private void LoopAlign()
     {
@@ -1240,6 +1239,12 @@ internal sealed class Encoder
         }
     }
 
+    /// <summary>
+    /// Padding that executes as nothing on a 486: mov esi,esi and
+    /// lea esi,[esi+0] in its various widths, as GAS emits for i486
+    /// targets. The 0F 1F multi-byte nop is Pentium Pro and later and is
+    /// not used.
+    /// </summary>
     public static void Nops(ChunkedBytes into, int count)
     {
         while (count > 0)

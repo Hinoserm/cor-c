@@ -94,10 +94,6 @@ public sealed partial class Escape
             or OwnedElements.Marker;
 
     /// <summary>
-    /// The notes the barrier is built from, which are never inlined. Whether
-    /// Gc.Report fit the inliner's budget used to depend on the word size.
-    /// </summary>
-    /// <summary>
     /// A USE OF WHAT IT IS HANDED AND NOTHING MORE, for whether an object
     /// escapes: KeepAlive's `test r, r`, and the MMX scans and prefetches
     /// (Runtime.PackedStringFind and the rest), which read bytes at the
@@ -114,6 +110,10 @@ public sealed partial class Escape
             or Corsac.Lang.X86.MachineIntrinsics.PackedEqual8
             or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetch or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetchLine;
 
+    /// <summary>
+    /// The notes the barrier is built from, which are never inlined. Whether
+    /// Gc.Report fit the inliner's budget used to depend on the word size.
+    /// </summary>
     internal static bool IsCollectorLeaf(string? callee) =>
         callee is "m_Gc_MarkAt_1_V$NUInt" or "m_Gc_Report_1_V$NUInt" or CardMarks.CardMark;
 

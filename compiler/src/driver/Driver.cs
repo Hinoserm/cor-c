@@ -451,7 +451,8 @@ public static class Driver
             if (Target.ByName(given) != wanted) { refused = $"{asked} and --target {given} disagree"; return null; }
         }
         // A --target with nothing after it is the command's to refuse, as it
-        // would without the width: a second one put after it is its value.
+        // would be without the width: one more added here would be read as
+        // its value.
         else if (!kept.Any(a => a == "--target" || a.StartsWith("--target=", StringComparison.Ordinal)))
         {
             kept.Add("--target");
@@ -1377,6 +1378,7 @@ public static class Driver
         X86Backend x86Backend = new()
         {
             AutomaticPacked = !freestanding,
+            OptimizeSize = args.Contains("--opt-size"),
             // AN EXECUTABLE'S OBJECT IS NOT POSITION-INDEPENDENT, made apart
             // (--obj) or not: it is linked at an address of its own, so its
             // names are absolute and a library's are reached through its GOT

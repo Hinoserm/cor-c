@@ -525,12 +525,16 @@ public static class Prelude
             // `count` bytes from `src` to `dst`, overlapping or not (memmove):
             // for bytes that hold no reference (Span.Move's elements).
             public static void MemoryMove(nuint dst, nuint src, nuint count) { }
+            // The same for bytes that are numbers never an address (Instr.
+            // Number): characters, the 32-bit integers and smaller, floats.
+            public static void NumbersMove(nuint dst, nuint src, nuint count) { }
             // Whether the elements of an array of T hold references, as the
             // collector reads the array, and the bytes from one to the next:
             // constants of each instantiation, the array itself not read (a
             // shared copy's T may hold one). RuntimeHelpers.
             // IsReferenceOrContainsReferences is the first.
             public static bool ElementsHoldReferences<T>(T[]? array) { return true; }
+            public static bool ElementsAreNumbers<T>(T[]? array) { return false; }
             public static int ElementStride<T>(T[]? array) { return 0; }
 
             // Mandatory core arithmetic and bit operations. MultiplyHigh is

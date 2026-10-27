@@ -10727,7 +10727,12 @@ struct Span<T> {
         if (n == 0) { return; }
         if (!Sys.ElementsHoldReferences(source)) {
             nuint stride = (nuint)Sys.ElementStride(source);
-            Sys.MemoryMove(Sys.ArrayData(into) + (nuint)to * stride, Sys.ArrayData(source) + (nuint)at * stride, (nuint)n * stride);
+            nuint dst = Sys.ArrayData(into) + (nuint)to * stride, src = Sys.ArrayData(source) + (nuint)at * stride;
+            // NUMBERS NEVER AN ADDRESS -- characters, ints, floats -- as such
+            // to region inference; a long's or a nint's may be one, and moves
+            // as bytes it follows (Sys.NumbersMove, MemoryMove).
+            if (Sys.ElementsAreNumbers(source)) { Sys.NumbersMove(dst, src, (nuint)n * stride); }
+            else { Sys.MemoryMove(dst, src, (nuint)n * stride); }
             return;
         }
         if ((object)source == (object)into && to > at) {

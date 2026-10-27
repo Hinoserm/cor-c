@@ -2694,7 +2694,7 @@ public class ManualResetEventSlim : IDisposable
 static partial class Runtime
 {
     /// THE COPY AROUND THE CACHES of a block too long to be read again soon
-    /// (Lowering.StreamBytes and over, a length known only as it runs):
+    /// (Selector.StreamBytes and over, a length known only as it runs):
     /// movntq stores whole cache lines, each line read ahead by prefetchnta,
     /// so the copy neither evicts the caches' working set nor reads the
     /// destination's lines in first only to overwrite them. The MMX
