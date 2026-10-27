@@ -8,7 +8,7 @@ namespace Corsac.Lang;
 /// it can use at all -- what picks a packed block's variants
 /// (Parser.ParsePackedBlock) and what each variant makes of the operation
 /// (Lowering.PackedIntrinsic). The features are Processor's bits, which a
-/// variant's mask and Sys.PackedHas are written in.
+/// variant's mask and Sys.PackedChoose's are written in.
 /// </summary>
 public static class PackedOps
 {

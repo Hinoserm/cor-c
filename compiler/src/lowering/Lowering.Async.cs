@@ -256,7 +256,7 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
+        _f = new Function(Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, Exported = m.Owner.Decl?.LocalOnly != true };
         _e = new Builder(_f, _f.NewBlock("entry"));
 
@@ -352,7 +352,7 @@ public sealed partial class Lowering
     /// </summary>
     private void EmitValueKickoff(MethodSymbol m, MethodDecl decl, AsyncMethod am, ValueTaskShape vt)
     {
-        _f = new Function(Label(m), ReturnIr(m)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
+        _f = new Function(Label(m), ReturnIr(m)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, Exported = m.Owner.Decl?.LocalOnly != true,
             // ITS FRAME HOLDS THE MACHINE: inlined, the machine would be the
             // caller's frame's, which nothing here sizes.
@@ -469,7 +469,7 @@ public sealed partial class Lowering
         Function kickoff = _f;
         Builder kickoffBuilder = _e;
         MethodSymbol m = am.Method;
-        _f = new Function(vt.BoxLabel, IrTypes.Word) { SourceFile = _in, Line = am.Decl.Line, Display = Display(m) + " (box)", FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner), Exported = false };
+        _f = new Function(vt.BoxLabel, IrTypes.Word) { SourceFile = _in, Line = am.Decl.Line, Display = Display(m) + " (box)", FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner), Exported = false };
         _e = new Builder(_f, _f.NewBlock("entry"));
         VReg machine = _f.NewReg(IrTypes.Word, "machine");
         _f.Params.Add(machine);
@@ -586,7 +586,7 @@ public sealed partial class Lowering
         // state machines the unit happened to lower first.
         int outsideAwaits = _awaitPoints;
         _awaitPoints = 0;
-        _f = new Function(Label(am.MoveNext), IrType.Void) { SourceFile = _in, Line = decl.Line, Display = Display(am.MoveNext), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner), Exported = false };
+        _f = new Function(Label(am.MoveNext), IrType.Void) { SourceFile = _in, Line = decl.Line, Display = Display(am.MoveNext), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner), Exported = false };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
 

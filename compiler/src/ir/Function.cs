@@ -32,10 +32,12 @@ public sealed class Function
     /// <summary>
     /// Written in the system library's own sources (stdlib, runtime), as
     /// against FromLibrary, which a unit compiled with --lib says of all its
-    /// code. Only the unused-code report reads it (UsesCapture); not kept
-    /// in IR archives.
+    /// code. The unused-code report reads it (UsesCapture), and the x86
+    /// backend's check that float code is inside packed blocks
+    /// (Selector.RefuseX87OutsideBlocks), after the IR archive's round trip:
+    /// kept there (IrFunctionCodec).
     /// </summary>
-    public bool SystemCode { get; init; }
+    public bool SystemCode { get; set; }
 
     /// <summary>What the unused-code report passes over: an auto-property's accessor, whose field is judged (MethodDecl.AutoAccessor).</summary>
     public bool Unjudged { get; init; }

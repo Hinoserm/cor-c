@@ -5268,10 +5268,11 @@ public sealed class Parser
     /// ONE VARIANT FOR EACH PROCESSOR THE BODY CAN TELL APART (PackedOps.
     /// Classes): the features its packed operations can use, read off their
     /// names, and each class of processor's projected onto them; the first
-    /// whose features the processor has runs (Sys.PackedHas, asked of
-    /// Processor), and a --cpu that has them folds the question, the others
-    /// going with dead code. A block inside another is read once, with the
-    /// outer variant's features.
+    /// whose features the processor has runs, chosen the first time the
+    /// block is reached and kept (Sys.PackedChoose), and a --cpu that has
+    /// the first one's features answers it at the compile, the others going
+    /// with dead code. A block inside another is read once, with the outer
+    /// variant's features.
     /// </summary>
     private Stmt ParsePackedBlock(Token at, int kind)
     {
@@ -5303,20 +5304,46 @@ public sealed class Parser
             end = _i;
             variants[v] = Variant(read, masks[v], _packedSerial++);
         }
-        // The first variant whose features the processor has: the last asks
-        // for nothing.
+        if (variants.Length == 1) return variants[0];
+        // THE VARIANT THAT RUNS, chosen once: the first whose features the
+        // processor has, asked the first time the block is reached and kept
+        // in a word of its own (Sys.PackedChoose); every time after, a load
+        // and the variant's compare. A --cpu with the first one's features
+        // answers it at the compile. The variants stay where the block is
+        // written, the method's own code.
+        ulong packed = 0;
+        for (int v = 0; v < masks.Count; v++) packed |= (ulong)(uint)masks[v] << (8 * v);
+        int chooser = _packedSerial++;
+        string pick = "$packedpick$" + chooser;
+        Block built = new() { Line = line, Col = col };
+        built.WritableStatements.Add(new LocalDecl
+        {
+            Type = null, Name = pick,
+            Init = new CallExpr
+            {
+                Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedChoose", Line = line, Col = col },
+                Args =
+                {
+                    new LiteralExpr { Kind = Lit.Int, Text = chooser.ToString(), Line = line, Col = col },
+                    new LiteralExpr { Kind = Lit.Int, Text = "0x" + packed.ToString("X") + "UL", Line = line, Col = col },
+                    new LiteralExpr { Kind = Lit.Int, Text = masks.Count.ToString(), Line = line, Col = col },
+                },
+                Line = line, Col = col,
+            },
+            Line = line, Col = col,
+        });
         Stmt chosen = variants[^1];
         for (int v = masks.Count - 2; v >= 0; v--)
         {
-            CallExpr has = new()
+            Expr picked = new BinaryExpr
             {
-                Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedHas", Line = line, Col = col },
-                Args = { new LiteralExpr { Kind = Lit.Int, Text = masks[v].ToString(), Line = line, Col = col } },
-                Line = line, Col = col,
+                Op = BinOp.Eq, Left = new NameExpr { Name = pick, Line = line, Col = col },
+                Right = new LiteralExpr { Kind = Lit.Int, Text = v.ToString(), Line = line, Col = col }, Line = line, Col = col,
             };
-            chosen = new IfStmt { Cond = has, Then = variants[v], Else = chosen, Line = line, Col = col };
+            chosen = new IfStmt { Cond = picked, Then = variants[v], Else = chosen, Line = line, Col = col };
         }
-        return chosen;
+        built.WritableStatements.Add(chosen);
+        return built;
 
         Stmt ReadBody(int mask)
         {

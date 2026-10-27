@@ -112,7 +112,7 @@ public static class IrFunctionCodec
             throw new InvalidDataException("An async body's suspension result is not a constant");
         BinaryWriter writer = IrBinary.Writer();
         writer.Write(Version); IrBinary.Text(writer, function.Name); writer.Write((byte)function.Returns);
-        writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary);
+        writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary); writer.Write(function.SystemCode);
         writer.Write(function.NoInlining);
         writer.Write(function.CalleePops);
         IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
@@ -243,7 +243,7 @@ public static class IrFunctionCodec
             if (reader.ReadInt32() != Version) throw new InvalidDataException("Unsupported IR function version");
             Function function = new(IrBinary.Name(reader, budget), IrBinary.Type(reader))
             {
-                Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader),
+                Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader), SystemCode = IrBinary.Flag(reader),
                 NoInlining = IrBinary.Flag(reader), CalleePops = reader.ReadInt32(),
                 SourceFile = IrBinary.NameOrNull(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };

@@ -164,7 +164,7 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(ContextStatic(m) ? BodyLabel(m) : Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
+        _f = new Function(ContextStatic(m) ? BodyLabel(m) : Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, Exported = m.Owner.Decl?.LocalOnly != true };
         _e = new Builder(_f, _f.NewBlock("entry"));
 
@@ -442,7 +442,7 @@ public sealed partial class Lowering
         int outsideYields = _yieldPoints;
         _yieldPoints = 0;
         _f = new Function(Label(it.MoveNext), IrType.I32) { SourceFile = _in, Line = decl.Line, Display = Display(it.MoveNext),
-            FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner), Coalescible = true, Exported = false };
+            FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner), Coalescible = true, Exported = false };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
 

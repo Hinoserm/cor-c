@@ -434,6 +434,14 @@ public sealed partial class Lowering
     private static bool SystemCode(TypeSymbol? t)
         => t?.Decl is TypeDecl d && (d.SourcePath is string path ? LibraryPath(path) : d.FromLibrary);
 
+    /// <summary>
+    /// A routine written in the system library's sources (Function.
+    /// SystemCode): its type's, or the file being lowered -- a method of a
+    /// type whose declaration carries no path of its own, as the
+    /// freestanding library's types compiled by name do, is its file's.
+    /// </summary>
+    private bool SystemCodeHere(TypeSymbol? t) => SystemCode(t) || _in.Length > 0 && LibraryPath(_in);
+
     /// <summary>The full path of the file a type is declared in (Function.SourcePath).</summary>
     private static string? SourcePathOf(TypeSymbol? t) => t?.Decl?.SourcePath;
 

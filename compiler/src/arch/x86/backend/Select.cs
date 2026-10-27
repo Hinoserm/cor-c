@@ -395,7 +395,7 @@ internal sealed partial class Selector
                     };
                 if (state == 0 && i.Op != Opcode.Ret && (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)))
                 {
-                    errors.Add($"{f.Display ?? f.Name}: float code outside a packed block (--x87-in-blocks-only): put it inside using (Packed.X87()) {{ ... }}, which saves the interrupted thread's x87 state first" + (i.Line > 0 ? $" (line {i.Line})" : ""));
+                    errors.Add($"{f.Display ?? f.Name}: float code outside a packed block in freestanding code: put it inside using (Packed.X87()) {{ ... }}, which saves the interrupted thread's x87 state first" + (i.Line > 0 ? $" (line {i.Line})" : ""));
                     return;
                 }
             }
@@ -455,7 +455,12 @@ internal sealed partial class Selector
         // there called the routine again, and again, until the stack ran out.
         bool stream = automaticPacked && f.Name != streamCopy && f.Name != streamFill;
         if (!automaticPacked) SettlePackedSaves(f);
-        if (!automaticPacked && x87InBlocksOnly && !f.FromLibrary) RefuseX87OutsideBlocks(f, errors);
+        // The program's own code: not the system library's -- written in its
+        // trees (Function.SystemCode), however a kernel names their files --
+        // nor what the compiler makes itself (__box_tostring_System_Double
+        // and its kin); both run where their callers do.
+        if (!automaticPacked && x87InBlocksOnly && !f.FromLibrary && !f.SystemCode && !f.Name.StartsWith("__", StringComparison.Ordinal))
+            RefuseX87OutsideBlocks(f, errors);
         Selector s = new(f, errors, automaticPacked, automaticPacked)
         {
             _positionIndependent = positionIndependent, _windowsTls = windowsTls,

@@ -377,10 +377,14 @@ public static class Driver
                                  CPU's own: a promise the processor has them;
                                  a disable wins over an enable
               --x87-in-blocks-only
-                                 freestanding: the program's own float code
-                                 only inside a packed block (using
-                                 (Packed.X87()) { ... }), which saves the
-                                 interrupted thread's x87 state first
+                                 freestanding (the default there): the
+                                 program's own float code only inside a
+                                 packed block (using (Packed.X87()) { ... }),
+                                 which saves the interrupted thread's x87
+                                 state first; refused for hosted code
+              --x87-outside-blocks
+                                 freestanding: float code allowed outside
+                                 packed blocks (wins over the above)
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --no-collector     link no collector: what cannot be proved freed or
@@ -1385,11 +1389,19 @@ public static class Driver
             }
         }
 
+        // FLOAT CODE ONLY INSIDE A PACKED BLOCK, bare metal: there the x87
+        // state is the interrupted thread's, which only a block saves. On by
+        // default freestanding, --x87-outside-blocks takes it away and
+        // --x87-in-blocks-only says it again; hosted code owns its state, and
+        // a block there saves nothing to tell inside from outside by, so the
+        // check is refused there by name.
+        if (!freestanding && args.Contains("--x87-in-blocks-only"))
+            return Fail("--x87-in-blocks-only is for freestanding code: hosted code owns its x87 state, and its packed blocks save nothing to tell inside from outside by");
         X86Backend x86Backend = new()
         {
             AutomaticPacked = !freestanding,
             OptimizeSize = args.Contains("--opt-size"),
-            X87InBlocksOnly = args.Contains("--x87-in-blocks-only"),
+            X87InBlocksOnly = freestanding && !args.Contains("--x87-outside-blocks"),
             // AN EXECUTABLE'S OBJECT IS NOT POSITION-INDEPENDENT, made apart
             // (--obj) or not: it is linked at an address of its own, so its
             // names are absolute and a library's are reached through its GOT

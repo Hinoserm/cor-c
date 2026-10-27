@@ -947,17 +947,34 @@ public sealed partial class Lowering
                 return Void();
             }
             // WHICH OF A PACKED BLOCK'S VARIANTS RUNS (Parser.ParsePackedBlock):
-            // true where --cpu has the variant's features, false in long mode
-            // for any (its packed operations are their scalar forms), else the
-            // processor's answer (Runtime.PackedHas: Processor's, asked once).
-            case "PackedHas":
+            // the first, where --cpu has its features; the last, featureless,
+            // in long mode (its packed operations are their scalar forms);
+            // else the processor's answer, asked the first time the block is
+            // reached (Runtime.PackedChoose) and kept in a word of the
+            // block's own, one more than the variant so that 0 is unasked:
+            // every time after, one load.
+            case "PackedChoose":
             {
-                int features = call.Args[0] is LiteralExpr { Text: var told } ? int.Parse(told) : 0;
-                if (_t.WordSize != 4) return Fit(_e.Const(features == 0 ? 1 : 0, IrType.I32), returns);
-                if ((ProfileFeatures & features) == features) return Fit(_e.Const(1, IrType.I32), returns);
-                MethodSymbol? asked = RequireRuntime(call, "PackedHas", 1, "Sys.PackedHas");
-                if (asked is null) return Fit(_e.Const(0, IrType.I32), returns);
-                return Fit(_e.Call(CallLabel(asked), IrType.I32, R(_e.Const(features, IrType.I32)))!, returns);
+                int block = LiteralInteger(call.Args[0]) is long b ? (int)b : 0;
+                ulong masks = LiteralInteger(call.Args[1]) is long m ? (ulong)m : 0;
+                int count = LiteralInteger(call.Args[2]) is long c ? (int)c : 1;
+                if (_t.WordSize != 4) return Fit(_e.Const(count - 1, IrType.I32), returns);
+                int first = (int)(masks & 0xFF);
+                if ((ProfileFeatures & first) == first) return Fit(_e.Const(0, IrType.I32), returns);
+                MethodSymbol? asked = RequireRuntime(call, "PackedChoose", 2, "Sys.PackedChoose");
+                if (asked is null) return Fit(_e.Const(count - 1, IrType.I32), returns);
+                string choice = "pk_pick$" + _f.Name + "$" + block;
+                if (_packedPicks.Add(choice))
+                    _m.Data.Add(new DataItem(choice, new byte[4]) { Zero = true, Align = 4, Exported = false });
+                VReg at = _e.Address(choice);
+                Block ask = _f.NewBlock("packedask"), known = _f.NewBlock("packedknown");
+                _e.Branch(_e.Load(IrType.I32, at, 0), known, ask);
+                _e.SetBlock(ask);
+                VReg answer = _e.Call(CallLabel(asked), IrType.I32, R(AsParam(_e.Const((long)masks, IrType.I64), asked.Params[0].Type)), R(_e.Const(count, IrType.I32)))!;
+                _e.Store(RegOperand.Of(at), RegOperand.Of(_e.Binary(Opcode.Add, answer, 1)), 0, 4);
+                _e.Jump(known);
+                _e.SetBlock(known);
+                return Fit(_e.Binary(Opcode.Sub, _e.Load(IrType.I32, at, 0), 1), returns);
             }
             case "ReadFlags":
                 return Fit(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!, returns);
@@ -1123,6 +1140,9 @@ public sealed partial class Lowering
     /// alone.
     /// </summary>
     private bool PackedStateHere => Freestanding && _t.WordSize == 4;
+
+    /// <summary>The packed blocks' choice words this unit defines (PackedChoose): one each.</summary>
+    private readonly HashSet<string> _packedPicks = new(StringComparer.Ordinal);
 
     /// <summary>The features --cpu promises, as PackedOps' bits (Processor's).</summary>
     private int ProfileFeatures

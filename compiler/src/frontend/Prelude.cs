@@ -526,13 +526,14 @@ public static class Prelude
             public static void MemorySet(nuint dst, int value, nuint count) { }
             // A packed block's state taken and given back -- its kind (1
             // Mmx, 2 Sse, 3 X87: a hint the backend weighs), its number in
-            // its method, and its variant's features (PackedOps' bits) -- and
-            // whether the processor has a variant's features, which picks
-            // the one that runs (using (Packed.Mmx()), which the parser
-            // writes these for).
+            // its method, and its variant's features (PackedOps' bits) --
+            // and which of its variants runs: the first whose features the
+            // processor has, asked the first time and kept (using
+            // (Packed.Mmx()), which the parser writes these for). `features`
+            // is the variants' masks, a byte each, the first lowest.
             public static void PackedEnter(int kind, int block, int features) { }
             public static void PackedLeave(int kind, int block, int features) { }
-            public static bool PackedHas(int features) { return false; }
+            public static int PackedChoose(int block, ulong features, int count) { return 0; }
             // `count` bytes from `src` to `dst`, overlapping or not (memmove)
             // where `oneBlock` -- both in one array -- and forward where not:
             // for bytes that hold no reference (Span.Move's elements).

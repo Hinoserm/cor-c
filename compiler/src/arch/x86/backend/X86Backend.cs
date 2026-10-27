@@ -156,14 +156,14 @@ public sealed class X86Backend : IBackend
     public bool OptimizeSize { get; set; }
 
     /// <summary>
-    /// --x87-in-blocks-only: freestanding code of the program's own -- not
-    /// the class library's, whose float routines run inside the blocks that
-    /// call them -- may use the x87 only inside a packed block (using
+    /// On by default freestanding (Driver: --x87-outside-blocks takes it
+    /// away, --x87-in-blocks-only says it again): freestanding code of the program's own -- not
+    /// the system library's (Function.SystemCode), whose float routines run
+    /// inside the blocks that call them, nor the compiler's own helpers --
+    /// may use the x87 only inside a packed block (using
     /// (Packed.X87()) { ... }), which saves the interrupted thread's state
     /// first; outside one it is an error naming the function
-    /// (Selector.RefuseX87OutsideBlocks). Off unless asked: a kernel whose
-    /// float code is bracketed by hand turns it on once that code is in
-    /// blocks.
+    /// (Selector.RefuseX87OutsideBlocks).
     /// </summary>
     public bool X87InBlocksOnly { get; set; }
 

@@ -283,7 +283,7 @@ public sealed partial class Lowering
 
         _f = new Function(TakesContext(m) ? BodyLabel(m) : Label(m), ReturnIr(m))
         {
-            SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCode(m.Owner), SourcePath = SourcePathOf(m.Owner),
+            SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
             // A TYPE'S INITIALISER BODY STAYS A ROUTINE OF ITS OWN: the link

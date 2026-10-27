@@ -2611,6 +2611,17 @@ static partial class Runtime
 
     static int _packedCap;
 
+    /// WHICH OF A PACKED BLOCK'S VARIANTS RUNS (Sys.PackedChoose): the first
+    /// of `count` whose features the processor has -- a byte each in
+    /// `features`, the first lowest; the last asks for none. Asked once a
+    /// block, whose word keeps the answer.
+    public static int PackedChoose(ulong features, int count)
+    {
+        for (int k = 0; k < count - 1; k++)
+            if (PackedHas((int)((features >> (8 * k)) & 0xFF))) return k;
+        return count - 1;
+    }
+
     static ulong LaneOf(ulong v, int bits, int k)
     {
         ulong mask = bits == 64 ? ulong.MaxValue : (1UL << bits) - 1;
