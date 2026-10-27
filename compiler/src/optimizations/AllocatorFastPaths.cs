@@ -191,28 +191,48 @@ public static class AllocatorFastPaths
     ///   around its own late steps: what it brings in is homed with the rest;
     /// - an async method's homes are its state machine's, placed by the async
     ///   transform: its allocations stay calls.
-    /// Null where there is nothing to put in place: no AllocFastSized in the
-    /// module (a kernel module's unit, whose allocator is the kernel's; a
-    /// program without the runtime), or --skip-passes InlineAllocators.
+    /// AND A REGION'S ALLOCATION OF A SIZE KNOWN, as InlineAllocators makes
+    /// it (RetargetRegions, then AllocRegionSized's body): left to the late
+    /// pass, which steps aside for this, every region site stayed the long
+    /// call.
+    /// Null where there is nothing to put in place: neither AllocFastSized
+    /// nor AllocRegionSized in the module (a kernel module's unit, whose
+    /// allocator is the kernel's; a program without the runtime), or
+    /// --skip-passes InlineAllocators.
     /// </summary>
     public static Action<Function>? AtCodegen(Module m)
     {
         if (Skipped) return null;
         Function? sized = m.Functions.FirstOrDefault(f => f.Name == Sized);
-        if (sized is null || sized.Blocks.Count == 0) return null;
         Function? unsized = m.Functions.FirstOrDefault(f => f.Name == Fast);
-        byte[] sizedBytes = Corsac.Lang.Metadata.IrFunctionCodec.Write(sized);
+        Function? region = m.Functions.FirstOrDefault(f => f.Name == RegionSized);
+        byte[]? sizedBytes = sized is { Blocks.Count: > 0 } ? Corsac.Lang.Metadata.IrFunctionCodec.Write(sized) : null;
         byte[]? unsizedBytes = unsized is { Blocks.Count: > 0 } ? Corsac.Lang.Metadata.IrFunctionCodec.Write(unsized) : null;
+        byte[]? regionBytes = region is { Blocks.Count: > 0 } ? Corsac.Lang.Metadata.IrFunctionCodec.Write(region) : null;
+        if (sizedBytes is null && regionBytes is null) return null;
         Module shape = new(m.Name) { NeedsHeap = m.NeedsHeap };
         return f =>
         {
-            if (f.Name is Sized or Fast or Missed || f.Async is not null) return;
-            if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Operands.Count == 1 && KindOf(i.Callee) is not null))) return;
+            if (f.Name is Sized or Fast or Missed or Region or RegionSized || f.Async is not null) return;
+            bool allocates = sizedBytes is not null
+                && f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Operands.Count == 1 && KindOf(i.Callee) is not null));
+            bool regions = regionBytes is not null
+                && f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee == Region));
+            if (!allocates && !regions) return;
             bool pads = f.Blocks.Any(b => b.IsLandingPad);
             if (pads) LandingPadHomes.Strip(f);
-            Run(f, shape, name => name == Sized ? Corsac.Lang.Metadata.IrFunctionCodec.Read(sizedBytes)
-                                : name == Fast && unsizedBytes is not null ? Corsac.Lang.Metadata.IrFunctionCodec.Read(unsizedBytes) : null,
-                Cleanup());
+            if (allocates)
+                Run(f, shape, name => name == Sized ? Corsac.Lang.Metadata.IrFunctionCodec.Read(sizedBytes!)
+                                    : name == Fast && unsizedBytes is not null ? Corsac.Lang.Metadata.IrFunctionCodec.Read(unsizedBytes) : null,
+                    Cleanup());
+            if (regions && RetargetRegions(f))
+            {
+                Module tail = new(shape.Name) { Entry = f.Name, PreserveExports = true, NeedsHeap = shape.NeedsHeap };
+                tail.Functions.Add(f);
+                tail.Functions.Add(Corsac.Lang.Metadata.IrFunctionCodec.Read(regionBytes!));
+                new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
+                Cleanup().Run(tail);
+            }
             if (pads) LandingPadHomes.Place(f, _ => true);
         };
     }

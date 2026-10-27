@@ -1213,10 +1213,9 @@ public static class Driver
                         + " KiB of bodies held in " + (linkRecords.Sum(r => (long)r.Payload.Length) >> 10) + " KiB, region hints " + ((regionHintBytes?.Length ?? 0) >> 10) + " KiB");
             };
             // The backend puts each function's allocations in place as it
-            // selects it (AllocatorFastPaths.AtCodegen): not the late passes.
-            // In long mode they grew the whole module's IR at once, and 1320's
-            // optimise ended holding ten times what i386's did.
-            module.AllocatorsAtCodegen = Target.Current.Name is "x86" or "x86-64";
+            // selects it (AllocatorFastPaths.AtCodegen), on both targets: not
+            // the late passes, where they grew the whole module's IR at once.
+            module.AllocatorsAtCodegen = true;
             if (beforeLate is null && module.Preinit is { Types.Count: > 0 })
                 beforeLate = m => preinitRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m, false, null);
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: regions);
@@ -1307,9 +1306,16 @@ public static class Driver
             // specialised for a constant argument -- has a name the shared
             // object does not export, and outlived the caller it was made for:
             // a program linked against libcorsacrt carried a piece of Gc.
+            // The allocator's own bodies stay where the backend puts them in
+            // place (Module.AllocatorsAtCodegen): no call names them until it
+            // does, and swept here, every `new` stayed the runtime's call.
             if (module.Entry is not null)
             {
-                Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, new HashSet<string>(StringComparer.Ordinal));
+                HashSet<string> placedLater = new(StringComparer.Ordinal);
+                if (module.AllocatorsAtCodegen)
+                    placedLater.UnionWith(new[] { Corsac.Lang.Opt.AllocatorFastPaths.Sized, Corsac.Lang.Opt.AllocatorFastPaths.Fast,
+                        Corsac.Lang.Opt.AllocatorFastPaths.Missed, Corsac.Lang.Opt.AllocatorFastPaths.RegionSized });
+                Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, placedLater);
             }
             HashSet<string> defined = new(
                 module.Functions.Select(f => f.Name).Concat(module.Data.Select(d => d.Name)),
