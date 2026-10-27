@@ -911,8 +911,9 @@ public sealed partial class Lowering
                 return got ?? Void();
             }
             // A PACKED BLOCK'S STATE, taken and given back (Parser.
-            // ParsePackedBlock: the kind, the compiler's own Parser.ImplicitKind; the block's
-            // number in its method; its variant's features, PackedOps' bits).
+            // ParsePackedBlock: the kind, the compiler's own block's,
+            // Parser.ImplicitKind; the block's number in its method; its
+            // variant's features, PackedOps' bits).
             // Hosted code owns it already -- the operating system saves it at
             // a switch -- and needs nothing: the MMX registers a packed
             // operation used are emptied before the x87 code, call or return
@@ -1160,7 +1161,7 @@ public sealed partial class Lowering
     }
 
     /// <summary>A packed block's give-back's kind (Sys.PackedLeave's first).</summary>
-    private static int PackedKindOf(CallExpr call) => call.Args[0] is LiteralExpr { Text: var kind } ? int.Parse(kind) : 0;
+    private static int PackedKindOf(CallExpr call) => call.Args[0] is LiteralExpr { Text: var kind } ? int.Parse(kind) : Corsac.Lang.Parser.ImplicitKind;
 
     /// <summary>A packed block's give-back's number (Sys.PackedLeave's second): its variant's, which Sys.PackedChoose finds it by.</summary>
     private static int PackedNumberOf(CallExpr call) => call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : -1;
