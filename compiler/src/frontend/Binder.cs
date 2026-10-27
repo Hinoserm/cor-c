@@ -6595,6 +6595,11 @@ public sealed partial class Binder
             _gotoStates.Clear();
             PushScope(functionBoundary: true);
 
+            // THE DECLARATION AND ITS SYMBOL NAME THE SAME PARAMETERS, or the
+            // symbol is not this declaration's: said with both, not left to
+            // an index out of range below.
+            if (md.Params.Count != _method.Params.Count)
+                throw new InvalidOperationException($"{sym.Name}.{md.Name} declares {md.Params.Count} parameters and its symbol {_method.Name} has {_method.Params.Count}");
             for (int i = 0; i < _method.Params.Count; i++)
             {
                 // A parameter that may be null inside whatever its type says (Param.MaybeNull).
