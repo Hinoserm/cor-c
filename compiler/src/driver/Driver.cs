@@ -423,11 +423,6 @@ public static class Driver
     }
 
     /// <summary>
-    /// A flag's value, written `--name value` or `--name=value`: the second
-    /// spelling was a word no command knew, skipped like any other, and
-    /// `--target=x86-64` compiled for i386 without a word said.
-    /// </summary>
-    /// <summary>
     /// `args` with -m32 or -m64 made --target x86 or --target x86-64, before
     /// any `--` (what follows is the program's); null, and why, where two
     /// widths are asked for or a --target names the other one.
@@ -455,7 +450,9 @@ public static class Driver
         {
             if (Target.ByName(given) != wanted) { refused = $"{asked} and --target {given} disagree"; return null; }
         }
-        else
+        // A --target with nothing after it is the command's to refuse, as it
+        // would without the width: a second one put after it is its value.
+        else if (!kept.Any(a => a == "--target" || a.StartsWith("--target=", StringComparison.Ordinal)))
         {
             kept.Add("--target");
             kept.Add(wanted == Target.X86_64 ? "x86-64" : "x86");
@@ -464,6 +461,11 @@ public static class Driver
         return kept.ToArray();
     }
 
+    /// <summary>
+    /// A flag's value, written `--name value` or `--name=value`: the second
+    /// spelling was a word no command knew, skipped like any other, and
+    /// `--target=x86-64` compiled for i386 without a word said.
+    /// </summary>
     internal static string? Value(string[] args, string name)
     {
         for (int i = 0; i < args.Length; i++)

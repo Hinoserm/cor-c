@@ -635,7 +635,7 @@ internal static class OwnedElements
                         && BarrierOnly(f, i.Dest):
                         continue;
                     case Opcode.Call when i.Callee is not null && at == 0 && count == 1:
-                        if (i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive) continue;
+                        if (Escape.IsPlainUse(i.Callee)) continue;
                         Role role = RoleOf(kind, i.Callee);
                         // Lent to a reader as its first argument: `Join(parts)`.
                         if (!role.Known && lenders?.Lends(i, at, kind) is not null) { calls.Add((b, i, new(true, Lent: at))); continue; }
@@ -874,7 +874,7 @@ internal static class OwnedElements
                 // Its vtable read, as a call on it checks it is there.
                 if (i.Op == Opcode.Load && at == 0 && count == 1 && i.Offset == 0) continue;
                 if (i.Op != Opcode.Call || i.Callee is not { } callee || count != 1) return null;
-                if (callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(callee)) continue;
+                if (Escape.IsPlainUse(callee) || Escape.IsCollectorNote(callee)) continue;
                 if (at != 0 || !callee.StartsWith(collection, StringComparison.Ordinal)) return null;
                 if (callee.EndsWith("_get_Count_0", StringComparison.Ordinal) && i.Operands.Count == 1) calls?.Add((b, i, new(true)));
                 else if (callee.EndsWith("_GetEnumerator_0", StringComparison.Ordinal) && ViewEnumerator(callee) is { } enumerator
@@ -955,7 +955,7 @@ internal static class OwnedElements
                 if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && (walker.Contains(i.Dest) || address.Contains(i.Dest))) continue;
                 if (ReferenceEquals(i, get) && count == 0 && addresses == 1 && at == -1) continue;
                 if (i.Op != Opcode.Call || i.Callee is not { } calledAt || count != 1 || addresses != 0) return null;
-                if (calledAt == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(calledAt)) continue;
+                if (Escape.IsPlainUse(calledAt) || Escape.IsCollectorNote(calledAt)) continue;
                 (string callee, int lead) = Member(calledAt);
                 if (at == lead && i.Operands.Count == 2 + lead && enumerator is null && kind == "Dictionary" && callee.StartsWith(prefix, StringComparison.Ordinal)
                     && callee.EndsWith("_get_Current_0", StringComparison.Ordinal))
@@ -1051,7 +1051,7 @@ internal static class OwnedElements
                 // The frame slot's block zeroed as it is made.
                 if (i.Op == Opcode.MemSet && answers + addresses == 0 && pairs == 1 && pairAt == 0 && frames.Count > 0) continue;
                 if (i.Op != Opcode.Call || i.Callee is not { } calledAt || answers + addresses != 0 || pairs != 1) return false;
-                if (calledAt == Corsac.Lang.X86.MachineIntrinsics.KeepAlive || Escape.IsCollectorNote(calledAt)) continue;
+                if (Escape.IsPlainUse(calledAt) || Escape.IsCollectorNote(calledAt)) continue;
                 (string callee, int lead) = Member(calledAt);
                 if (pairAt != lead || i.Operands.Count != 1 + lead || !callee.StartsWith("m_KeyValuePair$", StringComparison.Ordinal)) return false;
                 if (callee.EndsWith("_get_Value_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: true)));
@@ -2952,7 +2952,7 @@ public sealed partial class Escape
                     if (i.Op is Opcode.Copy && i.Dest is not null && addresses.Contains(i.Dest)) continue;
                     if (k == 0 && i.Op is Opcode.Store or Opcode.Load or Opcode.MemSet) continue;
                     if (k == 0 && i.Op == Opcode.Add && i.Operands[1] is ImmOperand && i.Dest is not null && OwnedElements.BarrierOnly(g, i.Dest)) continue;
-                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive)) continue;
+                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || Escape.IsPlainUse(i.Callee))) continue;
                     if (ReferenceEquals(i, add) && k == value) continue;
                     // The block made for the tuple: its allocation.
                     if (block is not null && i.Op is Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && block.Contains(i.Dest)) continue;
@@ -3033,7 +3033,7 @@ public sealed partial class Escape
                     if (k == 0 && i.Op == Opcode.Load && i.Dest is not null) { loads.Add((i, i.Offset, i.Size)); continue; }
                     if (i.Op == Opcode.MemCopy && k <= 1) continue;
                     if (k == 0 && i.Op is Opcode.Store or Opcode.MemSet) continue;
-                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive)) continue;
+                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || Escape.IsPlainUse(i.Callee))) continue;
                     return null;
                 }
         return loads;
@@ -3443,7 +3443,7 @@ public sealed partial class Escape
                     if (o == 0 && i.Op is Opcode.Store or Opcode.Load or Opcode.MemSet) continue;
                     if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null) continue;
                     if (o == 0 && i.Op == Opcode.Add && i.Operands[1] is ImmOperand && i.Dest is not null && OwnedElements.BarrierOnly(g, i.Dest)) continue;
-                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive)) continue;
+                    if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || Escape.IsPlainUse(i.Callee))) continue;
                     return false;
                 }
             }
@@ -3709,7 +3709,7 @@ public sealed partial class Escape
                         if (i.Operands[0] is RegOperand into && addresses.Contains(into.Reg)) stores.Add(i);
                         continue;
                     case Opcode.Call when i.Callee is { } callee
-                        && (IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
+                        && (IsCollectorNote(callee) || Escape.IsPlainUse(callee)
                             || callee.StartsWith("m_Runtime_ArrayStoreCheck_2", StringComparison.Ordinal) || callee == Escape.ArrayStoreRefused
                             || callee == Escape.ArrayCopyCheck || callee == Escape.ArrayCopyRefused):
                         continue;
@@ -3832,7 +3832,7 @@ public sealed partial class Escape
                         if (i.Operands[0] is RegOperand into && addresses.Contains(into.Reg)) stores.Add(i);
                         continue;
                     case Opcode.Call when i.Callee is { } callee
-                        && (IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
+                        && (IsCollectorNote(callee) || Escape.IsPlainUse(callee)
                             || callee.StartsWith("m_Runtime_ArrayStoreCheck_2", StringComparison.Ordinal) || callee == Escape.ArrayStoreRefused
                             || callee == Escape.ArrayCopyCheck || callee == Escape.ArrayCopyRefused):
                         continue;

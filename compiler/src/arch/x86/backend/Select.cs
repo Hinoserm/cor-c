@@ -76,6 +76,22 @@ internal sealed partial class Selector
     public const string TlsBaseSymbol = "__corsac_tls_base";
     public const string TlsOffsetSymbol = "__corsac_tls_offset";
 
+    /// <summary>
+    /// The runtime's copy and fill around the caches (Runtime.StreamCopy,
+    /// StreamFill), where the image has them and this code owns the x87
+    /// state they borrow: a copy or fill whose length is known only as it
+    /// runs calls them at StreamBytes and over (StreamedOr). Null otherwise.
+    /// </summary>
+    private string? _streamCopy, _streamFill;
+
+    /// <summary>
+    /// The streaming length: beyond what a K7's or a K8's level-two cache
+    /// (256 KB to 1 MB) would keep of the block anyway. A shorter one is read
+    /// again soon, and stored around the cache it would be fetched back from
+    /// memory; the inline REP MOVSD is the copy for it.
+    /// </summary>
+    private const int StreamBytes = 256 * 1024;
+
     private Selector(Function f, List<string> errors, bool automaticPacked)
     {
         _f = f;
@@ -105,9 +121,18 @@ internal sealed partial class Selector
             }
     }
 
-    public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false, bool windowsTls = false)
+    public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false, bool windowsTls = false,
+        string? streamCopy = null, string? streamFill = null)
     {
-        Selector s = new(f, errors, automaticPacked) { _positionIndependent = positionIndependent, _windowsTls = windowsTls };
+        // NOT IN THE STREAM ROUTINES THEMSELVES, whose own copy and fill are
+        // the long way they fall back on: a block overlapping itself copied
+        // there called the routine again, and again, until the stack ran out.
+        bool stream = automaticPacked && f.Name != streamCopy && f.Name != streamFill;
+        Selector s = new(f, errors, automaticPacked)
+        {
+            _positionIndependent = positionIndependent, _windowsTls = windowsTls,
+            _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null,
+        };
         s.Select();
         return s._m;
     }
@@ -993,8 +1018,11 @@ internal sealed partial class Selector
     /// clocks or more (AMD 21924, "Use integer multiply over shift-add
     /// sequences"); 4 on a Pentium Pro; on a 486 about 10 plus the bits of
     /// the constant, 13 to 42, where a shift is 2 clocks and a LEA with an
-    /// index 2 (AP-500), and each step waits on the last. So at most 5, 2, 3
-    /// or 5 instructions replace it -- on a 486, 7 to 9 clocks at worst.
+    /// index 2 (AP-500), and each step waits on the last; the K7's IMUL is 4
+    /// and the K8's 3, a scaled LEA 2 on both (Agner Fog's tables). So at most
+    /// 5, 2, 3 or 5 instructions replace it on the Pentium, the K6, the
+    /// Pentium Pro and the 486 -- on a 486, 7 to 9 clocks at worst -- and 2 on
+    /// the K7, 1 on the K8.
     /// The forms: n * 2^k, with n one of 1; 3, 5, 9 (one LEA); their
     /// products two at a time (two); 1 + {2,4,8} * {3,5,9} (two: 7, 11, 13,
     /// 19, 21, 25, 37, 41, 73); 2^j - 1 (a move, a shift and a subtract);
@@ -1005,8 +1033,6 @@ internal sealed partial class Selector
     /// </summary>
     private void MulByConstant(MReg dest, MReg src, int factor)
     {
-        // The K7's IMUL is four clocks and a scaled LEA two, so two steps at
-        // most; the K8's IMUL three, so one (Agner Fog's tables for both).
         int limit = CpuModel.K6 ? 2 : CpuModel.K8 ? 1 : CpuModel.K7 ? 2 : CpuModel.P5 ? 5 : CpuModel.Scalar ? 5 : 3;
         long c = Math.Abs((long)factor);
         bool negate = factor < 0;
@@ -2079,6 +2105,40 @@ internal sealed partial class Selector
     // shows it; the board was asked and said so.
     private void SelectMemSet(Instr i)
     {
+        if (i.Operands[2] is not ImmOperand && _streamFill is { } fill) StreamedOr(i, fill, () => InlineMemSet(i));
+        else InlineMemSet(i);
+    }
+
+    /// <summary>
+    /// A LONG BLOCK THE RUNTIME'S WAY: `inline`, the REP form, where the
+    /// length is under StreamBytes, and a call of `routine` (the destination,
+    /// the source or the fill value, the length: cdecl, as Runtime.StreamCopy
+    /// and StreamFill take them) where it is not. Here, past every pass that
+    /// reads the MemCopy or the MemSet as what it is (escape, regions, the
+    /// fields' rules), and not in the IR, where it would be a call to them.
+    /// </summary>
+    private void StreamedOr(Instr i, string routine, Action inline)
+    {
+        MReg n = Temp();
+        Mov(n, RM(i.Operands[2]));
+        Emit(MOp.Cmp, n, Imm(StreamBytes));
+        MBlock big = Aside();
+        MBlock done = _m.NewBlock($"{_cur.Name}.{_splits++}", big);
+        Jcc(Cond.Ae, big);
+        inline();
+        Jmp(done);
+        _cur = big;
+        Emit(MOp.Push, n);
+        Emit(MOp.Push, RM(i.Operands[1]));
+        Emit(MOp.Push, RM(i.Operands[0]));
+        CallSymbol(routine);
+        Emit(MOp.Add, Esp, Imm(12));
+        Jmp(done);
+        _cur = done;
+    }
+
+    private void InlineMemSet(Instr i)
+    {
         Mov(Edi, RM(i.Operands[0]));
 
         // The fill byte in all four lanes, so the words below carry it.
@@ -2124,6 +2184,12 @@ internal sealed partial class Selector
     {
         if (SelectMmxFrameCopy(i)) return;
         if (SelectSmallCopy(i)) return;
+        if (i.Operands[2] is not ImmOperand && _streamCopy is { } copy) StreamedOr(i, copy, () => InlineMemCopy(i));
+        else InlineMemCopy(i);
+    }
+
+    private void InlineMemCopy(Instr i)
+    {
         Mov(Edi, RM(i.Operands[0]));
         Mov(Esi, RM(i.Operands[1]));
         if (i.Operands[2] is ImmOperand n)

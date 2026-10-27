@@ -158,8 +158,7 @@ public sealed partial class Lowering
                 VReg dst = Address(call, target, 0);
                 VReg src = Address(call, target, 1);
                 VReg n = ToWord(Arg(call, target, 2));
-                Streamed(n, "StreamCopy", R(dst), R(src),
-                    () => _e.Emit(Opcode.MemCopy, null, R(dst), R(src), R(n)));
+                _e.Emit(Opcode.MemCopy, null, R(dst), R(src), R(n));
                 return Void();
             }
             case "MemorySet":
@@ -167,8 +166,7 @@ public sealed partial class Lowering
                 VReg dst = Address(call, target, 0);
                 VReg v = ToI32(Arg(call, target, 1));
                 VReg n = ToWord(Arg(call, target, 2));
-                Streamed(n, "StreamFill", R(dst), R(v),
-                    () => _e.Emit(Opcode.MemSet, null, R(dst), R(v), R(n)));
+                _e.Emit(Opcode.MemSet, null, R(dst), R(v), R(n));
                 return Void();
             }
 
@@ -221,52 +219,36 @@ public sealed partial class Lowering
                 VReg n = Scaled(WordOf(Arg(call, target, 4)));
                 VReg into = _e.Binary(Opcode.Add, dst, _t.ArrayHeaderBytes);
                 VReg from = _e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes);
-                // COPY IS MEMMOVE (the Prelude's word for it): where the
-                // destination starts inside the source -- src <= dst < src + n,
-                // one unsigned compare of dst - src against n -- the bytes go
-                // last first, so that none is overwritten before it is read.
-                // The forward copy below moves words at a time from the
-                // front, and an upward overlapping Copy wrote the source's
-                // first words over its own tail before reading it.
-                // CopyNoOverlap's callers promise there is none.
-                Block forward = _f.NewBlock("copyfwd"), done = _f.NewBlock("copydone");
-                if (name == "Copy")
-                {
-                    Block backward = _f.NewBlock("copyback"), step = _f.NewBlock("copystep");
-                    _e.Branch(_e.Binary(Opcode.LtU, _e.Binary(Opcode.Sub, into, from), n), backward, forward);
-                    _e.SetBlock(backward);
-                    VReg left = _f.NewReg(IrTypes.Word, "copyleft");
-                    _e.CopyTo(left, R(n));
-                    _e.Jump(step);
-                    _e.SetBlock(step);
-                    Block each = _f.NewBlock("copyeach");
-                    _e.Branch(left, each, done);
-                    _e.SetBlock(each);
-                    _e.CopyTo(left, R(_e.Binary(Opcode.Sub, left, 1)));
-                    VReg unit8 = _e.Load(IrType.I32, _e.Binary(Opcode.Add, from, left), 0, 1, signed: false);
-                    _e.Store(_e.Binary(Opcode.Add, into, left), unit8, 0, 1);
-                    _e.Jump(step);
-                }
-                else
-                {
-                    _e.Jump(forward);
-                }
-                _e.SetBlock(forward);
-                Streamed(n, "StreamCopy", R(into), R(from), () =>
-                {
-                    _e.Emit(Opcode.MemCopy, null, R(into), R(from), R(n));
-                    // CHARACTERS OR BYTES, NEVER AN ADDRESS (Instr.Number): read
-                    // as a copy of words that might be, every string a join was
-                    // handed held what its parts held, and a key a dictionary's
-                    // missing-key message was made from went with the exception
-                    // to where nobody follows -- the name a front end's node
-                    // looked up, and with it, merged over the node's class, the
-                    // tree (test 1200).
-                    _e.Block.Instrs[^1].Number = true;
-                });
-                _e.Jump(done);
-                _e.SetBlock(done);
+                MoveBytes(into, from, n, overlapping: name == "Copy");
                 return Void();
+            }
+            // AN ADDRESS'S BYTES MOVED, overlapping or not (Sys.MemoryMove):
+            // what Copy does to two arrays' elements, for a block an address
+            // names -- Array.Copy's of elements holding no reference
+            // (Span.Move).
+            case "MemoryMove":
+            {
+                VReg into = Address(call, target, 0);
+                VReg from = Address(call, target, 1);
+                VReg n = ToWord(Arg(call, target, 2));
+                MoveBytes(into, from, n, overlapping: true);
+                return Void();
+            }
+            // WHETHER AN ARRAY'S ELEMENTS HOLD A REFERENCE, a constant of the
+            // array's static element type, as the collector reads the array:
+            // its descriptor's flag (ElementsAreReferences) and its leaf
+            // allocation are the same question. A type parameter -- a shared
+            // copy's T -- may be one. And the bytes from one element to the
+            // next (ElementStride), a struct held in line padded as laid.
+            case "ElementsHoldReferences":
+            case "ElementStride":
+            {
+                Type? element = target.Params[0].Type.Element;
+                if (name == "ElementStride")
+                    return _e.Const(element is null ? _t.WordSize : ElementStride(element), IrType.I32);
+                bool holds = element is null || element.ParamName is not null || element.Prim is Prim.Any
+                    || (InlineElement(element) ? InlineHasReferences(StructOf(element)) : HoldsReference(element));
+                return Fit(_e.Const(holds ? 1 : 0, IrType.I32), returns);
             }
             // Two byte ranges equal or not, and in which order. Two ranges of a
             // string's code units are Runtime.StringEqual and StringCompare,
@@ -1068,49 +1050,80 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// `n` bytes from `from` to `into`: forward a word at a time (MemCopy);
+    /// where `overlapping` may be and the destination starts inside the
+    /// source, from the end down.
+    /// </summary>
+    private void MoveBytes(VReg into, VReg from, VReg n, bool overlapping)
+    {
+        // COPY IS MEMMOVE (the Prelude's word for it): where the
+        // destination starts inside the source -- src <= dst < src + n,
+        // one unsigned compare of dst - src against n -- the bytes go
+        // last first, so that none is overwritten before it is read.
+        // The forward copy below moves words at a time from the
+        // front, and an upward overlapping Copy wrote the source's
+        // first words over its own tail before reading it.
+        // CopyNoOverlap's callers promise there is none.
+        Block forward = _f.NewBlock("copyfwd"), done = _f.NewBlock("copydone");
+        if (overlapping)
+        {
+            Block backward = _f.NewBlock("copyback"), step = _f.NewBlock("copystep");
+            _e.Branch(_e.Binary(Opcode.LtU, _e.Binary(Opcode.Sub, into, from), n), backward, forward);
+            _e.SetBlock(backward);
+            VReg left = _f.NewReg(IrTypes.Word, "copyleft");
+            _e.CopyTo(left, R(n));
+            // FOUR BYTES A STEP FROM THE END while four are left, then
+            // the bytes before them, where it was a byte a step: a
+            // block moved up within itself (the crypto library's
+            // Copy) was a load and a store per byte. Each word is
+            // read whole before it is written, and the destination
+            // is above the source, so what a step writes is never
+            // what a later step reads.
+            Block words = _f.NewBlock("copywords"), aWord = _f.NewBlock("copyword");
+            _e.Jump(words);
+            _e.SetBlock(words);
+            _e.Branch(_e.Binary(Opcode.LtU, left, _e.Const(4, IrTypes.Word)), step, aWord);
+            _e.SetBlock(aWord);
+            _e.CopyTo(left, R(_e.Binary(Opcode.Sub, left, 4)));
+            VReg unit32 = _e.Load(IrType.I32, _e.Binary(Opcode.Add, from, left), 0, 4, signed: false);
+            _e.Store(_e.Binary(Opcode.Add, into, left), unit32, 0, 4);
+            _e.Jump(words);
+            _e.SetBlock(step);
+            Block each = _f.NewBlock("copyeach");
+            _e.Branch(left, each, done);
+            _e.SetBlock(each);
+            _e.CopyTo(left, R(_e.Binary(Opcode.Sub, left, 1)));
+            VReg unit8 = _e.Load(IrType.I32, _e.Binary(Opcode.Add, from, left), 0, 1, signed: false);
+            _e.Store(_e.Binary(Opcode.Add, into, left), unit8, 0, 1);
+            _e.Jump(step);
+        }
+        else
+        {
+            _e.Jump(forward);
+        }
+        _e.SetBlock(forward);
+        _e.Emit(Opcode.MemCopy, null, R(into), R(from), R(n));
+        // CHARACTERS OR BYTES, NEVER AN ADDRESS (Instr.Number): read as a
+        // copy of words that might be, every string a join was handed held
+        // what its parts held, and a key a dictionary's missing-key message
+        // was made from went with the exception to where nobody follows --
+        // the name a front end's node looked up, and with it, merged over the
+        // node's class, the tree (test 1200). A long one is streamed by the
+        // backend (Select.SelectMemCopy), past every pass that reads it.
+        _e.Block.Instrs[^1].Number = true;
+        _e.Jump(done);
+        _e.SetBlock(done);
+    }
+
+    /// <summary>The runtime's routines with a packed form (Runtime.Packed*), hosted i386 code's to call instead.</summary>
+    private static readonly HashSet<string> PackedForms = new(StringComparer.Ordinal)
+        { "StringFind", "StringFindReverse", "StringSearch", "StringEqual", "StringCompare", "BytesEqual" };
+
+    /// <summary>
     /// Anything without instructions here becomes a call to a runtime routine
     /// of the same name and shape. Print, the string routines, the bit tricks
     /// and the checksum all live in the runtime (runtime/src/core) as ordinary source.
     /// </summary>
-    /// <summary>
-    /// The streaming size: a copy or a fill at least this long whose length
-    /// is not known until it runs is the runtime's Stream routine's (its
-    /// cache lines stored around the caches, movntq). Beyond what a K7's or a
-    /// K8's level-two cache (256 KB to 1 MB) would hold of it anyway, as the
-    /// processors' own guides put the line: a shorter block is read again
-    /// soon, and stored around the cache it is fetched back from memory.
-    /// </summary>
-    private const long StreamBytes = 256 * 1024;
-
-    /// <summary>
-    /// `small` -- the inline copy or fill -- and, in hosted i386 code where
-    /// the runtime has the routine, a call of it in its stead for `n` of at
-    /// least StreamBytes. Not inside the Stream routines themselves, whose
-    /// own copies are the long way it falls back on.
-    /// </summary>
-    private void Streamed(VReg n, string routine, Operand first, Operand second, Action small)
-    {
-        bool inside = _method is { } current && current.Owner.Name == RuntimeType && current.Name.StartsWith("Stream", StringComparison.Ordinal);
-        if (Freestanding || _t.WordSize != 4 || inside || RuntimeMethod(routine, 3) is not MethodSymbol stream)
-        {
-            small();
-            return;
-        }
-        Require(stream);
-        Block big = _f.NewBlock("streamed"), near = _f.NewBlock("inline"), after = _f.NewBlock("copied");
-        _e.Branch(_e.Binary(Opcode.LtU, n, _e.Const(StreamBytes, IrTypes.Word)), near, big);
-        _e.SetBlock(big);
-        _e.Call(CallLabel(stream), IrType.Void, first, second, R(n));
-        _e.Jump(after);
-        _e.SetBlock(near);
-        small();
-        _e.Jump(after);
-        _e.SetBlock(after);
-    }
-
-    /// <summary>The runtime's routines with a packed form (Runtime.Packed*), hosted i386 code's to call instead.</summary>
-    private static readonly HashSet<string> PackedForms = new(StringComparer.Ordinal) { "StringFind", "StringEqual", "StringCompare" };
-
     private VReg RuntimeFallback(CallExpr call, MethodSymbol target)
     {
         MethodSymbol? rt = RuntimeMethod(target.Name, target.Params.Count, target.Params);

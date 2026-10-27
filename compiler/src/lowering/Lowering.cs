@@ -241,7 +241,16 @@ public sealed partial class Lowering
                                Dictionary<string, string>? entries = null)
     {
         Lowering l = new(bound, file, library);
+        // THE STREAMING COPY AND FILL, in hosted i386 code: the backend calls
+        // them for a block of 256 KB and more (Select.SelectMemCopy), and no
+        // IR does, so they are lowered and kept as the store sequences'
+        // routines are (Module.RuntimeHelpers).
+        List<MethodSymbol> streams = new();
+        if (!Freestanding && Target.Current.WordSize == 4)
+            foreach (string name in new[] { "StreamCopy", "StreamFill" })
+                if (l.RuntimeMethod(name, 3) is MethodSymbol stream) { l.Require(stream); streams.Add(stream); }
         l.Run(unit);
+        foreach (MethodSymbol stream in streams) l._m.RuntimeHelpers.Add(Label(stream));
         l.FillUnreachedSlots();
         l.SayWhy();
         l._m.InterruptFacts = bound.InterruptFacts;

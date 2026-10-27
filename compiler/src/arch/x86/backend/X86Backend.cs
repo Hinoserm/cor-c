@@ -150,9 +150,16 @@ public sealed class X86Backend : IBackend
         return sb.ToString();
     }
 
+    private string? _streamCopy, _streamFill;
+
     public ObjectFile Generate(Module module, List<string> errors)
     {
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
+        // The runtime's streaming copy and fill, where the module has them to
+        // call (Module.RuntimeHelpers: lowering kept them) and its code owns
+        // the x87 state (Selector.StreamedOr).
+        _streamCopy = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamCopy) ? Corsac.Lang.Lto.RuntimeAbi.StreamCopy : null;
+        _streamFill = AutomaticPacked && module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.StreamFill) ? Corsac.Lang.Lto.RuntimeAbi.StreamFill : null;
         ObjectFile obj = new();
         (Target.X86Profile.Contract with { AutomaticPacked = AutomaticPacked }).Attach(obj);
         OptimizationSummary summary = new();
@@ -836,7 +843,7 @@ public sealed class X86Backend : IBackend
         Corsac.Lang.Opt.SharedTrapFrees.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls);
+        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill);
         if (errors.Count > before)
         {
             return null;

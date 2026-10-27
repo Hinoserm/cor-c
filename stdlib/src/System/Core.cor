@@ -10481,7 +10481,7 @@ struct ReadOnlySpan<T> {
     public T[] ToArray() {
         T[] made = new T[count];
 
-        for (int i = 0; i < count; i++) { made[i] = items[from + i]; }
+        if (count != 0) { Span<T>.Move(items!, from, made, 0, count); }
         return made;
     }
 
@@ -10698,7 +10698,7 @@ struct Span<T> {
     public T[] ToArray() {
         T[] made = new T[count];
 
-        for (int i = 0; i < count; i++) { made[i] = items[from + i]; }
+        if (count != 0) { Move(items!, from, made, 0, count); }
         return made;
     }
 
@@ -10717,8 +10717,19 @@ struct Span<T> {
     /// moves them: two windows onto one array may overlap, and a move up the
     /// array is made from the top down so nothing is overwritten before it is
     /// read.
+    ///
+    /// ELEMENTS HOLDING NO REFERENCE ARE BYTES, moved as one block (Sys.
+    /// MemoryMove: a word at a time, streamed when it is long, from the end
+    /// down where it moves up over itself) -- a constant of the element type,
+    /// so the loops below are only an array of references' code. Those stay
+    /// a store an element: each takes the collector's barrier and its card.
     internal static void Move(T[] source, int at, T[] into, int to, int n) {
         if (n == 0) { return; }
+        if (!Sys.ElementsHoldReferences(source)) {
+            nuint stride = (nuint)Sys.ElementStride(source);
+            Sys.MemoryMove(Sys.ArrayData(into) + (nuint)to * stride, Sys.ArrayData(source) + (nuint)at * stride, (nuint)n * stride);
+            return;
+        }
         if ((object)source == (object)into && to > at) {
             for (int i = n - 1; i >= 0; i--) { into[to + i] = source[at + i]; }
             return;
@@ -10938,17 +10949,11 @@ public static class MemoryExtensions {
     static nuint Data(ReadOnlySpan<byte> s) { return s.Length == 0 ? 0 : Sys.ArrayData(s.Items) + (nuint)s.Start; }
     static nuint Data(Span<byte> s) { return s.Length == 0 ? 0 : Sys.ArrayData(s.Array) + (nuint)s.Start; }
 
-    /// Whether `n` bytes at `a` and `b` are the same: a machine word at a time.
+    /// Whether `n` bytes at `a` and `b` are the same: the runtime's
+    /// (Runtime.BytesEqual, a machine word at a time; its packed form eight
+    /// bytes a step where the image is hosted and the processor has MMX).
     static bool Same(nuint a, nuint b, int n) {
-        nuint count = (nuint)n;
-        nuint i = 0;
-        for (; i + WordSize.Bytes <= count; i += WordSize.Bytes) {
-            if (Sys.ReadAddress(a + i) != Sys.ReadAddress(b + i)) { return false; }
-        }
-        for (; i < count; i++) {
-            if (Sys.Read8(a + i) != Sys.Read8(b + i)) { return false; }
-        }
-        return true;
+        return Sys.BytesEqual(a, b, (nuint)n);
     }
 
     /// Where byte `b` first is in `n` bytes at `p`, or -1.
@@ -13051,7 +13056,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
     public void RemoveAt(int index) {
         if (index < 0 || index >= count) { throw new ArgumentOutOfRangeException("index", "Index was out of range. Must be non-negative and less than the size of the collection."); }
         version = version + 1;
-        for (int i = index; i < count - 1; i++) { items[i] = items[i + 1]; }
+        Span<T>.Move(items, index + 1, items, index, count - 1 - index);
         count = count - 1;
         items[count] = default(T)!;
     }
@@ -13060,7 +13065,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
         if (index < 0 || index > count) { throw new ArgumentOutOfRangeException("index", "Index must be within the bounds of the List."); }
         version = version + 1;
         if (items == null || count == items.Length) { Grow(); }
-        for (int i = count; i > index; i--) { items[i] = items[i - 1]; }
+        Span<T>.Move(items, index, items, index + 1, count - index);
         items[index] = value;
         count = count + 1;
     }
@@ -13139,7 +13144,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
     // .NET's CopyTo, which writes the elements into something the caller owns
     // rather than allocating.
     public void CopyTo(Span<T> into) {
-        for (int i = 0; i < count; i++) { into[i] = items[i]; }
+        if (count != 0) { new ReadOnlySpan<T>(items, 0, count).CopyTo(into); }
     }
 
     // ARRAY.COPY'S, as .NET's list copies: its refusals in its words. Its
@@ -13161,7 +13166,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
     public T[] ToArray() {
         T[] made = new T[count];
 
-        for (int i = 0; i < count; i++) { made[i] = items[i]; }
+        if (count != 0) { Span<T>.Move(items, 0, made, 0, count); }
         return made;
     }
 
@@ -13253,7 +13258,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
         if (n == 0) { return; }
         version = version + 1;
         EnsureCapacity(count + n);
-        for (int i = 0; i < n; i++) { items[count + i] = more[i]; }
+        more.CopyTo(new Span<T>(items, count, n));
         count = count + n;
     }
 
@@ -13262,7 +13267,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
         if (n == 0) { return; }
         version = version + 1;
         EnsureCapacity(count + n);
-        for (int i = 0; i < n; i++) { items[count + i] = more[i]; }
+        more.CopyTo(new Span<T>(items, count, n));
         count = count + n;
     }
 
@@ -13350,7 +13355,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
             if (old != null && value > old.Length && !lent && Runtime.GrowInPlace(Sys.ObjectAddress(old), value)) { return; }
 
             T[] bigger = new T[value];
-            for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
+            if (count != 0) { Span<T>.Move(old, 0, bigger, 0, count); }
             items = bigger;
             Outgrown(old);
         }
@@ -13592,7 +13597,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
         if (items != null && !lent && Runtime.GrowInPlace(Sys.ObjectAddress(items), size)) { return; }
         T[] bigger = new T[size];
         T[] old = items;
-        for (int i = 0; i < count; i++) { bigger[i] = old[i]; }
+        if (count != 0) { Span<T>.Move(old, 0, bigger, 0, count); }
         items = bigger;
         Outgrown(old);
     }
@@ -19805,9 +19810,13 @@ static class RuntimeHelpers {
 
         T[] made = new T[length];
 
-        for (int i = 0; i < length; i++) { made[i] = source[start + i]; }
+        Span<T>.Move(source, start, made, 0, length);
         return made;
     }
+
+    /// Whether a T is a reference or a struct holding one, as .NET answers:
+    /// a constant of each instantiation (Sys.ElementsHoldReferences).
+    public static bool IsReferenceOrContainsReferences<T>() { return Sys.ElementsHoldReferences<T>(null); }
 }
 
 /// .NET'S System.Array: what every array is, beside the helpers .NET keeps
@@ -20152,11 +20161,9 @@ abstract class Array : IList, ICollection {
         if ((uint)(intoAt + howMany) > (uint)into.Length) {
             throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
         }
-        if ((object)from == (object)into && intoAt > fromAt) {
-            for (int i = howMany - 1; i >= 0; i--) { into[intoAt + i] = from[fromAt + i]; }
-            return;
-        }
-        for (int i = 0; i < howMany; i++) { into[intoAt + i] = from[fromAt + i]; }
+        // ONE MOVE, overlapping or not: a block of bytes where the elements
+        // hold no reference, a store an element where they do (Span.Move).
+        Span<T>.Move(from, fromAt, into, intoAt, howMany);
     }
 
     public static void Copy<T>(T[] from, T[] into, int howMany) {

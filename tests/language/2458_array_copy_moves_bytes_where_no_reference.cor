@@ -1,0 +1,117 @@
+// test: array_copy_moves_bytes_where_no_reference
+// expect-exit: 0
+// expect-output:
+// int False string True double False S False R True int? False object True int[] True KeyValuePair True ValueTuple False
+// array copy 0 wrong
+// list 0 wrong
+//
+// Array.Copy, the spans' moves and List<T>'s inserts, removals, appends and
+// growth are one block of bytes where the element type holds no reference
+// (Span.Move: Sys.ElementsHoldReferences and ElementStride, constants of each
+// instantiation; Sys.MemoryMove) and a store an element where it does. The
+// first line is .NET's RuntimeHelpers.IsReferenceOrContainsReferences; the
+// rest are each element type moved up and down over itself and into another
+// array, against a plain loop.
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+
+struct S { public int A; public long B; public byte C; }
+struct R { public int A; public string N; }
+
+static class P
+{
+    static int Check<T>(T[] made, Func<int, T> value, Func<T, T, bool> same)
+    {
+        int wrong = 0;
+        int[] shifts = { 1, 2, 3, 7, 50 };
+        foreach (int shift in shifts)
+        {
+            foreach (int n in new[] { 0, 1, 5, 64, 200 })
+            {
+                for (int i = 0; i < made.Length; i++) made[i] = value(i);
+                T[] want = (T[])made.Clone();
+                for (int i = n - 1; i >= 0; i--) want[10 + shift + i] = want[10 + i];
+                Array.Copy(made, 10, made, 10 + shift, n);
+                for (int i = 0; i < made.Length; i++) if (!same(made[i], want[i])) { wrong++; break; }
+
+                for (int i = 0; i < made.Length; i++) made[i] = value(i);
+                want = (T[])made.Clone();
+                for (int i = 0; i < n; i++) want[10 + i] = want[10 + shift + i];
+                Array.Copy(made, 10 + shift, made, 10, n);
+                for (int i = 0; i < made.Length; i++) if (!same(made[i], want[i])) { wrong++; break; }
+
+                T[] other = new T[made.Length];
+                Array.Copy(made, 3, other, 5, n);
+                for (int i = 0; i < n; i++) if (!same(other[5 + i], made[3 + i])) { wrong++; break; }
+            }
+        }
+        return wrong;
+    }
+
+    static int Lists<T>(Func<int, T> value, Func<T, T, bool> same)
+    {
+        int wrong = 0;
+        List<T> list = new List<T>();
+        List<T> mirror = new List<T>();
+        for (int i = 0; i < 300; i++)
+        {
+            T v = value(i);
+            int at = (i * 7) % (list.Count + 1);
+            list.Insert(at, v);
+            mirror.Add(default!);
+            for (int k = mirror.Count - 1; k > at; k--) mirror[k] = mirror[k - 1];
+            mirror[at] = v;
+            if (i % 5 == 4)
+            {
+                int gone = (i * 3) % list.Count;
+                list.RemoveAt(gone);
+                for (int k = gone; k < mirror.Count - 1; k++) mirror[k] = mirror[k + 1];
+                mirror.RemoveAt(mirror.Count - 1);
+            }
+        }
+        T[] extra = new T[37];
+        for (int i = 0; i < extra.Length; i++) extra[i] = value(1000 + i);
+        list.AddRange(new ReadOnlySpan<T>(extra, 2, 30));
+        for (int i = 0; i < 30; i++) mirror.Add(extra[2 + i]);
+        if (list.Count != mirror.Count) wrong++;
+        T[] flat = list.ToArray();
+        T[] copied = new T[list.Count + 4];
+        list.CopyTo(new Span<T>(copied, 4, list.Count));
+        for (int i = 0; i < list.Count; i++)
+            if (!same(list[i], mirror[i]) || !same(flat[i], mirror[i]) || !same(copied[4 + i], mirror[i])) { wrong++; break; }
+        return wrong;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("int " + RuntimeHelpers.IsReferenceOrContainsReferences<int>()
+            + " string " + RuntimeHelpers.IsReferenceOrContainsReferences<string>()
+            + " double " + RuntimeHelpers.IsReferenceOrContainsReferences<double>()
+            + " S " + RuntimeHelpers.IsReferenceOrContainsReferences<S>()
+            + " R " + RuntimeHelpers.IsReferenceOrContainsReferences<R>()
+            + " int? " + RuntimeHelpers.IsReferenceOrContainsReferences<int?>()
+            + " object " + RuntimeHelpers.IsReferenceOrContainsReferences<object>()
+            + " int[] " + RuntimeHelpers.IsReferenceOrContainsReferences<int[]>()
+            + " KeyValuePair " + RuntimeHelpers.IsReferenceOrContainsReferences<KeyValuePair<int, string>>()
+            + " ValueTuple " + RuntimeHelpers.IsReferenceOrContainsReferences<(int, long)>());
+
+        int wrong = 0;
+        wrong += Check(new int[300], i => i * 31 + 7, (a, b) => a == b);
+        wrong += Check(new char[300], i => (char)('a' + i % 26), (a, b) => a == b);
+        wrong += Check(new double[300], i => i * 0.5, (a, b) => a == b);
+        wrong += Check(new S[300], i => new S { A = i, B = (long)i << 33, C = (byte)i }, (a, b) => a.A == b.A && a.B == b.B && a.C == b.C);
+        wrong += Check(new R[300], i => new R { A = i, N = "r" + i }, (a, b) => a.A == b.A && a.N == b.N);
+        wrong += Check(new string[300], i => "s" + i, (a, b) => a == b);
+        Console.WriteLine("array copy " + wrong + " wrong");
+
+        int lists = 0;
+        lists += Lists(i => i * 13, (a, b) => a == b);
+        lists += Lists(i => "v" + i, (a, b) => a == b);
+        lists += Lists(i => new S { A = i, B = i * 3L, C = (byte)(i * 5) }, (a, b) => a.A == b.A && a.B == b.B && a.C == b.C);
+        lists += Lists(i => new R { A = i, N = "n" + i }, (a, b) => a.A == b.A && a.N == b.N);
+        Console.WriteLine("list " + lists + " wrong");
+        return 0;
+    }
+}

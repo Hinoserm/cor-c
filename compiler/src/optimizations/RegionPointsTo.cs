@@ -2797,7 +2797,7 @@ public sealed class RegionPointsTo : IModulePass
 
     // The collector's notes and the runtime's frees keep no pointer.
     internal static bool Harmless(string callee) =>
-        Opt.Escape.IsCollectorNote(callee) || callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive
+        Opt.Escape.IsCollectorNote(callee) || Opt.Escape.IsPlainUse(callee)
         || callee.StartsWith("m_Runtime_Free", StringComparison.Ordinal)
         // NOR GROWING AN ARRAY WHERE IT LIES (Runtime.GrowInPlace): it is handed
         // the array's address as a number, writes the array's own length and

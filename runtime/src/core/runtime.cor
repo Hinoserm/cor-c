@@ -174,15 +174,17 @@ static class Processor
 
     // NOTHING WRITTEN TO MEMORY to ask: one register of each leaf straight
     // out of the instruction (Sys.CpuidEax, CpuidEdx). A struct of the four
-    // registers, its address taken for Sys.Cpuid, was made on the heap -- and
+    // registers, its address taken for Sys.Cpuid, was made on the heap (its
+    // IR, 10-27: two Runtime.Alloc calls, a barrier and a card) -- and
     // the allocator reaches Interlocked's longs, which ask here: a cycle that
     // kept this from being inlined anywhere, and that would recurse if the
     // first long an allocation updated came before any other question.
     //
     // NEVER INLINED: asked once a process, it is the cold half of Features.
     // Expanded into its one caller, it made Features and Has seventy units
-    // where the inliner takes forty, and every Has stayed a call -- two
-    // calls for one load and a test at each question.
+    // where the inliner takes forty (--trace-opt, 10-27: "keep: body=72
+    // small-limit=40"), and every Has stayed a call -- two calls for one load
+    // and a test at each question.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     static int Ask()
     {
@@ -6591,6 +6593,22 @@ static partial class Runtime
             }
         }
         return 0;
+    }
+
+    /// Whether `count` bytes at `a` and `b` are the same: a machine word at a
+    /// time, then the bytes left (Sys.BytesEqual: a byte span's SequenceEqual).
+    public static bool BytesEqual(nuint a, nuint b, nuint count)
+    {
+        nuint i = 0;
+        for (; i + WordSize.Bytes <= count; i += WordSize.Bytes)
+        {
+            if (Sys.ReadAddress(a + i) != Sys.ReadAddress(b + i)) return false;
+        }
+        for (; i < count; i++)
+        {
+            if (Sys.Read8(a + i) != Sys.Read8(b + i)) return false;
+        }
+        return true;
     }
 
     /// Whether two spans of `count` code units are the same units: two at a

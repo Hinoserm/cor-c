@@ -3489,7 +3489,7 @@ continue;
                             // the program's end. Not kept here.
                             break;
 
-                        case Opcode.Call when i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
+                        case Opcode.Call when IsPlainUse(i.Callee):
                             // A use and nothing more: the object stays live
                             // to here (an address taken from it, GC.KeepAlive)
                             // and nothing gets a pointer it could keep. On a
@@ -4021,7 +4021,7 @@ continue;
                 case Opcode.Ne:
                 case Opcode.Branch:
                     return;
-                case Opcode.Call when IsCollectorNote(i.Callee) || i.Callee == Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
+                case Opcode.Call when IsCollectorNote(i.Callee) || IsPlainUse(i.Callee):
                     return;
                 // A call no object here has the method for (Devirtualize): never made.
                 case Opcode.CallIndirect when i.DispatchType == Devirtualize.NoTarget:
@@ -4042,7 +4042,7 @@ continue;
                 case Opcode.Call when holderConsumers?.Contains(i) == true:
                     HeldBy(i);
                     return;
-                case Opcode.Call or Opcode.CallIndirect when !IsCollectorNote(i.Callee) && i.Callee != Corsac.Lang.X86.MachineIntrinsics.KeepAlive:
+                case Opcode.Call or Opcode.CallIndirect when !IsCollectorNote(i.Callee) && !IsPlainUse(i.Callee):
                     if (!HolderCall(i)) flow.Escapes = true;
                     else HeldBy(i);
                     return;

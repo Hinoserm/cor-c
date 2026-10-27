@@ -1,0 +1,109 @@
+// test: packed_reverse_search_bytes_and_backward_copy
+// expect-exit: 0
+// expect-output:
+// lastindexof 0 wrong
+// indexof string 0 wrong
+// sequenceequal 0 wrong
+// backward copy 0 wrong
+//
+// The packed forms past the first four (Runtime.PackedStringFindReverse,
+// PackedStringSearch, PackedBytesEqual) and Sys.Copy's move up within one
+// block four bytes a step, each against a plain loop in this program: a unit
+// at every place of strings of 1 to 200 with another below it, windows of
+// them; needles of 1 to 40 at every place of haystacks full of their first
+// unit; byte spans of 0 to 300 alike and differing at each byte; a block
+// moved up by 1 to 9 bytes over itself (the crypto library's Copy).
+
+using System;
+using Corsac.Security.Cryptography;
+
+static class P
+{
+    static int NaiveLast(string s, char c, int start, int count)
+    {
+        for (int i = start; i > start - count && i >= 0; i--) if (s[i] == c) return i;
+        return -1;
+    }
+
+    static int NaiveFind(string s, string what)
+    {
+        for (int i = 0; i + what.Length <= s.Length; i++)
+        {
+            int k = 0;
+            while (k < what.Length && s[i + k] == what[k]) k++;
+            if (k == what.Length) return i;
+        }
+        return -1;
+    }
+
+    static int Main()
+    {
+        int last = 0;
+        for (int n = 1; n <= 200; n++)
+        {
+            char[] units = new char[n];
+            for (int i = 0; i < n; i++) units[i] = (char)('a' + i % 19);
+            for (int at = -1; at < n; at++)
+            {
+                if (at >= 0) units[at] = 'Z';
+                if (at >= 3) units[at / 3] = 'Z';
+                string s = new string(units);
+                if (s.LastIndexOf('Z') != NaiveLast(s, 'Z', n - 1, n)) last++;
+                if (n > 2 && s.LastIndexOf('Z', n - 2, n - 2) != NaiveLast(s, 'Z', n - 2, n - 2)) last++;
+                if (at >= 0) units[at] = (char)('a' + at % 19);
+                if (at >= 3) units[at / 3] = (char)('a' + at / 3 % 19);
+            }
+        }
+        Console.WriteLine("lastindexof " + last + " wrong");
+
+        int search = 0;
+        for (int len = 1; len <= 40; len++)
+        {
+            string needle = new string('a', len - 1) + "b";
+            for (int size = len; size <= 300; size += 37)
+            {
+                for (int at = -1; at + len <= size; at += 5)
+                {
+                    char[] hay = new char[size];
+                    for (int i = 0; i < size; i++) hay[i] = 'a';
+                    if (at >= 0) for (int k = 0; k < len; k++) hay[at + k] = needle[k];
+                    string s = new string(hay);
+                    if (s.IndexOf(needle, StringComparison.Ordinal) != NaiveFind(s, needle)) search++;
+                }
+            }
+        }
+        Console.WriteLine("indexof string " + search + " wrong");
+
+        int same = 0;
+        for (int n = 0; n <= 300; n++)
+        {
+            byte[] a = new byte[n + 3], b = new byte[n + 5];
+            for (int i = 0; i < n; i++) { a[i + 3] = (byte)(i * 7); b[i + 5] = (byte)(i * 7); }
+            if (!a.AsSpan(3, n).SequenceEqual(b.AsSpan(5, n))) same++;
+            for (int d = 0; d < n; d += 13)
+            {
+                b[d + 5] ^= 0x40;
+                if (a.AsSpan(3, n).SequenceEqual(b.AsSpan(5, n))) same++;
+                b[d + 5] ^= 0x40;
+            }
+        }
+        Console.WriteLine("sequenceequal " + same + " wrong");
+
+        int moved = 0;
+        int[] counts = { 0, 1, 3, 4, 5, 7, 8, 13, 31, 64, 1000 };
+        for (int shift = 1; shift <= 9; shift++)
+        {
+            foreach (int count in counts)
+            {
+                byte[] block = new byte[count + 32];
+                for (int i = 0; i < block.Length; i++) block[i] = (byte)(i * 11 + 1);
+                byte[] want = (byte[])block.Clone();
+                for (int i = count - 1; i >= 0; i--) want[4 + shift + i] = want[4 + i];
+                CorsacSecureCrypto_Bytes.Copy(block, 4 + shift, block, 4, count);
+                for (int i = 0; i < block.Length; i++) if (block[i] != want[i]) { moved++; break; }
+            }
+        }
+        Console.WriteLine("backward copy " + moved + " wrong");
+        return 0;
+    }
+}

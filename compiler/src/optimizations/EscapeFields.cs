@@ -91,20 +91,29 @@ public sealed partial class Escape
             // reads after them, and took the collection for gone -- a
             // parser's tokens, stored into the parser, then no field of the
             // parser freed with it.
-            or OwnedElements.Marker
-            // The MMX scans and the prefetches (Runtime.PackedStringFind,
-            // StreamCopy): bytes read at an address, nothing kept. Taken for
-            // escapes, every string a packed search or compare was handed
-            // stayed alive. Not the streaming copy itself, which may move
-            // references, nor its fill: those stay calls that may keep.
-            or Corsac.Lang.X86.MachineIntrinsics.PackedFindChar4 or Corsac.Lang.X86.MachineIntrinsics.PackedFindChar8
-            or Corsac.Lang.X86.MachineIntrinsics.PackedEqual8
-            or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetch or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetchLine;
+            or OwnedElements.Marker;
 
     /// <summary>
     /// The notes the barrier is built from, which are never inlined. Whether
     /// Gc.Report fit the inliner's budget used to depend on the word size.
     /// </summary>
+    /// <summary>
+    /// A USE OF WHAT IT IS HANDED AND NOTHING MORE, for whether an object
+    /// escapes: KeepAlive's `test r, r`, and the MMX scans and prefetches
+    /// (Runtime.PackedStringFind and the rest), which read bytes at the
+    /// address and keep nothing. Taken for escapes, every string a packed
+    /// search or compare was handed stayed alive. Not a collector's note
+    /// (IsCollectorNote), whose readers take its operands for a barrier's and
+    /// drop it where the collector is gone; and to every pass that asks what
+    /// memory a call reads, still a call that may read it -- the scans' pattern
+    /// is a frame slot they read through its address.
+    /// </summary>
+    internal static bool IsPlainUse(string? callee) =>
+        callee is Corsac.Lang.X86.MachineIntrinsics.KeepAlive
+            or Corsac.Lang.X86.MachineIntrinsics.PackedFindChar4 or Corsac.Lang.X86.MachineIntrinsics.PackedFindChar8
+            or Corsac.Lang.X86.MachineIntrinsics.PackedEqual8
+            or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetch or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetchLine;
+
     internal static bool IsCollectorLeaf(string? callee) =>
         callee is "m_Gc_MarkAt_1_V$NUInt" or "m_Gc_Report_1_V$NUInt" or CardMarks.CardMark;
 

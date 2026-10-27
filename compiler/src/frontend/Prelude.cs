@@ -491,6 +491,8 @@ public static class Prelude
             // friendly checked operations and the no-unit fallback.
             public static int StringCompare(string a, int aAt, string b, int bAt, int count) { return 0; }
             public static bool StringEqual(string a, int aAt, string b, int bAt, int count) { return false; }
+            // Whether `count` bytes at `a` and at `b` are the same (Runtime.BytesEqual).
+            public static bool BytesEqual(nuint a, nuint b, nuint count) { return false; }
             public static long StringHash(string s, int at, int count, long seed) { return 0; }
             public static int StringCopy(string dst, int dstAt, string src, int srcAt, int count) { return 0; }
             public static int StringFill(string dst, int dstAt, int value, int count) { return 0; }
@@ -520,6 +522,16 @@ public static class Prelude
             public static void TraceRead(out nuint source, out nuint destination, out long kind, out long valid) { source = 0; destination = 0; kind = 0; valid = 0; }
             // `value` is the byte every one of `count` is set to.
             public static void MemorySet(nuint dst, int value, nuint count) { }
+            // `count` bytes from `src` to `dst`, overlapping or not (memmove):
+            // for bytes that hold no reference (Span.Move's elements).
+            public static void MemoryMove(nuint dst, nuint src, nuint count) { }
+            // Whether the elements of an array of T hold references, as the
+            // collector reads the array, and the bytes from one to the next:
+            // constants of each instantiation, the array itself not read (a
+            // shared copy's T may hold one). RuntimeHelpers.
+            // IsReferenceOrContainsReferences is the first.
+            public static bool ElementsHoldReferences<T>(T[]? array) { return true; }
+            public static int ElementStride<T>(T[]? array) { return 0; }
 
             // Mandatory core arithmetic and bit operations. MultiplyHigh is
             // the upper half of the full 128-bit product; BitFieldInsert keeps

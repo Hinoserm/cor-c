@@ -22,6 +22,13 @@ internal sealed class Encoder
     private MFunction _m = null!;
     private int _funcStart;
     private readonly HashSet<MInstr> _long = new();
+
+    /// <summary>
+    /// The blocks a backward jump of the function goes to -- its loops' heads
+    /// -- which on the K7 and the K8 start at a sixteen-byte line (LoopAlign).
+    /// Empty for every other processor.
+    /// </summary>
+    private readonly HashSet<MBlock> _loopHeads = new(ReferenceEqualityComparer.Instance);
     private bool _widen;
 
     /// <summary>Jump tables this function needs in .rodata: the symbol to place them at, and their entries.</summary>
@@ -64,6 +71,19 @@ internal sealed class Encoder
         _m = m;
         _funcStart = _out.Count;
         _long.Clear();
+        _loopHeads.Clear();
+        if (CpuModel.Athlon)
+        {
+            // A JUMP TO ITS OWN BLOCK OR ONE BEFORE IT: a loop's latch, and its
+            // target the head every lap starts at.
+            Dictionary<MBlock, int> at = new(ReferenceEqualityComparer.Instance);
+            for (int k = 0; k < m.Blocks.Count; k++) at[m.Blocks[k]] = k;
+            for (int k = 0; k < m.Blocks.Count; k++)
+                foreach (MInstr i in m.Blocks[k].Instrs)
+                    if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands.Count > 0 && i.Operands[0] is MLabel label
+                        && at.TryGetValue(label.Target, out int to) && to <= k && to > 0)
+                        _loopHeads.Add(label.Target);
+        }
 
         // Layout passes until no jump needs widening. A forward jump reads
         // its target's offset from the previous pass, so the first pass
@@ -81,14 +101,24 @@ internal sealed class Encoder
         _widen = false;
         Pass();
         _widen = true;
-        bool grew;
+        // AND UNTIL THE LAYOUT HOLDS where loop heads are padded: a pad is what
+        // the head's offset leaves of its line, so code before it that grew
+        // can shrink it, and a pass that widened nothing may still have moved
+        // the blocks after the pad from where the forward jumps took them to
+        // be. With the jumps' sizes settled every pass lays out the same, so
+        // one more pass than the widening needed is the end of it.
+        bool grew, moved;
+        int passes = 0;
         do
         {
+            int[]? before = _loopHeads.Count == 0 ? null : m.Blocks.Select(b => b.Offset).ToArray();
             _pending.Clear();
             _out.Truncate(_funcStart);
             grew = Pass();
+            moved = before is not null && !before.SequenceEqual(m.Blocks.Select(b => b.Offset));
+            if (++passes > 64) throw new InvalidOperationException($"{m.Source.Name}: the layout of its loop heads did not settle");
         }
-        while (grew);
+        while (grew || moved);
         _text.Relocs.AddRange(_pending);
         return _out.Count - _funcStart;
     }
@@ -136,6 +166,7 @@ internal sealed class Encoder
         for (int b = 0; b < _m.Blocks.Count; b++)
         {
             MBlock block = _m.Blocks[b];
+            if (_loopHeads.Contains(block)) LoopAlign();
             block.Offset = _out.Count - _funcStart;
             MBlock? next = b + 1 < _m.Blocks.Count ? _m.Blocks[b + 1] : null;
             foreach (MInstr i in block.Instrs)
@@ -1188,6 +1219,27 @@ internal sealed class Encoder
     /// targets. The 0F 1F multi-byte nop is Pentium Pro and later and is
     /// not used.
     /// </summary>
+    /// <summary>
+    /// A LOOP'S HEAD AT A SIXTEEN-BYTE LINE on the K7 and the K8, which fetch
+    /// and predecode an aligned sixteen bytes a clock (AMD 22007 and 25112,
+    /// "Align branch targets"): a head near a line's end costs a fetch more on
+    /// every lap. The pad runs only where the block laid out before the head
+    /// falls into it -- the way into the loop, as a rule -- and is AMD's K8
+    /// guide's NOP: 0x66 prefixes on 0x90, one decoded operation apiece,
+    /// which the K7 decodes as it does (it has no 0F 1F).
+    /// </summary>
+    private void LoopAlign()
+    {
+        int pad = (16 - _out.Count % 16) % 16;
+        while (pad > 0)
+        {
+            int run = Math.Min(pad, 4);
+            for (int k = 1; k < run; k++) _out.Add(0x66);
+            _out.Add(0x90);
+            pad -= run;
+        }
+    }
+
     public static void Nops(ChunkedBytes into, int count)
     {
         while (count > 0)

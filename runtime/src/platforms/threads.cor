@@ -2682,8 +2682,12 @@ public class ManualResetEventSlim : IDisposable
 // processor has not the instructions, or the work is too short to pay for
 // leaving the x87's state (EMMS, FEMMS) at the end.
 //
-// NEVER INLINED: MM0 and MM1 are the x87's registers, and a caller with a
-// double held on the x87 stack would find it gone. A call is the boundary at
+// THE SHORT SPAN AT THE CALL: each Packed* is a front that inlines -- a
+// count's test, then the scalar routine as before -- and its packed body
+// (*Long) is a call of its own only for a span that pays for one.
+//
+// NEVER INLINED, those bodies: MM0 and MM1 are the x87's registers, and a
+// caller with a double held on the x87 stack would find it gone. A call is the boundary at
 // which that stack is empty. No safepoint poll goes in a Runtime routine's
 // loop (BackEdgePolls), and nothing is left in an MMX register from one
 // instruction to the next: the scans read their pattern from memory.
@@ -2700,13 +2704,14 @@ static partial class Runtime
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     public static void StreamCopy(nuint to, nuint from, nuint count)
     {
-        if (!Processor.Has(Processor.Mmx | Processor.MmxExtensions) || to - from < count || from - to < count)
+        if (count < StreamLeast || !Processor.Has(Processor.Mmx | Processor.MmxExtensions) || to - from < count || from - to < count)
         {
             Sys.MemoryCopy(to, from, count);
             return;
         }
-        // To the destination's eight-byte line: a movntq is one store there.
-        nuint head = (0 - to) & 7;
+        // To the destination's cache line, so each 64-byte step's eight
+        // movntq fill one line of the write-combining buffer.
+        nuint head = (0 - to) & 63;
         Sys.MemoryCopy(to, from, head);
         to = to + head;
         from = from + head;
@@ -2724,18 +2729,23 @@ static partial class Runtime
         Sys.MemoryCopy(to, from, count & 63);
     }
 
+    /// The least a stream is made of: a line to align to and one to store.
+    /// The backend calls these at 256 KB and over; a caller of a short block
+    /// gets the ordinary copy.
+    const int StreamLeast = 128;
+
     /// THE SAME, FILLED: every byte `value`'s low eight bits (Sys.MemorySet's
     /// sense), whole cache lines stored by movntq. A large array a `new`
     /// zeroes, a block the collector clears.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     public static void StreamFill(nuint to, int value, nuint count)
     {
-        if (!Processor.Has(Processor.Mmx | Processor.MmxExtensions))
+        if (count < StreamLeast || !Processor.Has(Processor.Mmx | Processor.MmxExtensions))
         {
             Sys.MemorySet(to, value, count);
             return;
         }
-        nuint head = (0 - to) & 7;
+        nuint head = (0 - to) & 63;
         Sys.MemorySet(to, value, head);
         to = to + head;
         count = count - head;
@@ -2756,8 +2766,8 @@ static partial class Runtime
     /// (EMMS) costs what a few dozen units compared one at a time do.
     const int PackedUnits = 32;
 
-    /// The MMX registers given back to the x87: FEMMS where 3DNow! has it,
-    /// the faster on a K6 and a K7, EMMS elsewhere.
+    /// The MMX registers given back to the x87: FEMMS where 3DNow! has it --
+    /// the faster on the K6 (AMD 21924), the same on the K7 -- EMMS elsewhere.
     static void PackedDone()
     {
         if (Processor.Has(Processor.ThreeDNow)) Sys.PackedEndFast();
@@ -2767,8 +2777,10 @@ static partial class Runtime
     /// StringFind, four units a step by pcmpeqw (plain MMX: the P55C and the
     /// K6 on), eight by pmovmskb where the MMX extensions are; the first
     /// equal unit's place is BSF's of the step's mask.
+    public static int PackedStringFind(string s, int at, int value, int count) { return count < PackedUnits ? StringFind(s, at, value, count) : PackedStringFindLong(s, at, value, count); }
+
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    public static int PackedStringFind(string s, int at, int value, int count)
+    static int PackedStringFindLong(string s, int at, int value, int count)
     {
         if (count < PackedUnits || !Processor.Has(Processor.Mmx))
         {
@@ -2811,10 +2823,128 @@ static partial class Runtime
         return found >= 0 ? found : StringFind(s, i, value, end - i);
     }
 
+    /// StringFindReverse, from `at` down for `count` units: the same
+    /// compares, a step's highest equal unit BSR's of its mask.
+    public static int PackedStringFindReverse(string s, int at, int value, int count) { return count < PackedUnits ? StringFindReverse(s, at, value, count) : PackedStringFindReverseLong(s, at, value, count); }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static int PackedStringFindReverseLong(string s, int at, int value, int count)
+    {
+        if (count < PackedUnits || !Processor.Has(Processor.Mmx))
+        {
+            return StringFindReverse(s, at, value, count);
+        }
+        // The units looked at are [low, top), top coming down a step at a time.
+        int low = at - count + 1;
+        if (low < 0) low = 0;
+        int top = at + 1;
+        uint pair = ((uint)value & 0xFFFF) * 0x00010001;
+        ulong pattern = pair | ((ulong)pair << 32);
+        nuint want = Sys.AddressOf(ref pattern);
+        nuint data = Sys.StringData(s);
+        int found = -1;
+        if (Processor.Has(Processor.MmxExtensions))
+        {
+            while (top - 8 >= low)
+            {
+                int mask = Sys.PackedFindChar8(data + (nuint)(top - 8) * 2, want);
+                if (mask != 0)
+                {
+                    found = top - 8 + Sys.BitScanReverse((uint)mask);
+                    break;
+                }
+                top = top - 8;
+            }
+        }
+        else
+        {
+            while (top - 4 >= low)
+            {
+                int mask = Sys.PackedFindChar4(data + (nuint)(top - 4) * 2, want);
+                if (mask != 0)
+                {
+                    found = top - 4 + (Sys.BitScanReverse((uint)mask) >> 3);
+                    break;
+                }
+                top = top - 4;
+            }
+        }
+        PackedDone();
+        return found >= 0 ? found : StringFindReverse(s, top - 1, value, top - low);
+    }
+
+    /// StringSearch: each place the needle's first unit is, found by the
+    /// packed scan, and the rest of the needle compared there.
+    public static int PackedStringSearch(string s, int at, string what, int whatAt, int count)
+    {
+        return count < PackedUnits ? StringSearch(s, at, what, whatAt, count) : PackedStringSearchLong(s, at, what, whatAt, count);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static int PackedStringSearchLong(string s, int at, string what, int whatAt, int count)
+    {
+        int needle = what.Length - whatAt;
+        if (needle <= 0)
+        {
+            return at;
+        }
+        if (needle > count)
+        {
+            return -1;
+        }
+        if (count < PackedUnits || !Processor.Has(Processor.Mmx))
+        {
+            return StringSearch(s, at, what, whatAt, count);
+        }
+        int first = Sys.GetChar(what, whatAt);
+        int last = at + count - needle;
+        int i = at;
+        while (i <= last)
+        {
+            int k = PackedStringFind(s, i, first, last - i + 1);
+            if (k < 0)
+            {
+                return -1;
+            }
+            if (needle == 1 || PackedStringEqual(s, k + 1, what, whatAt + 1, needle - 1))
+            {
+                return k;
+            }
+            i = k + 1;
+        }
+        return -1;
+    }
+
+    /// BytesEqual, eight bytes a step by pcmpeqd; the bytes left the
+    /// runtime's word-and-byte way.
+    public static bool PackedBytesEqual(nuint a, nuint b, nuint count) { return count < PackedBytes ? BytesEqual(a, b, count) : PackedBytesEqualLong(a, b, count); }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static bool PackedBytesEqualLong(nuint a, nuint b, nuint count)
+    {
+        if (count < PackedBytes || !Processor.Has(Processor.Mmx))
+        {
+            return BytesEqual(a, b, count);
+        }
+        nuint i = 0;
+        while (count - i >= 8 && Sys.PackedEqual8(a + i, b + i) == -1)
+        {
+            i = i + 8;
+        }
+        PackedDone();
+        return count - i < 8 && BytesEqual(a + i, b + i, count - i);
+    }
+
+    /// The bytes under which BytesEqual stays the word compare: the units'
+    /// span, in bytes.
+    const int PackedBytes = PackedUnits * 2;
+
     /// StringEqual, four units (eight bytes) a step by pcmpeqd; the units
     /// left over the scalar way.
+    public static bool PackedStringEqual(string a, int aAt, string b, int bAt, int count) { return count < PackedUnits ? StringEqual(a, aAt, b, bAt, count) : PackedStringEqualLong(a, aAt, b, bAt, count); }
+
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    public static bool PackedStringEqual(string a, int aAt, string b, int bAt, int count)
+    static bool PackedStringEqualLong(string a, int aAt, string b, int bAt, int count)
     {
         if (count < PackedUnits || !Processor.Has(Processor.Mmx))
         {
@@ -2826,8 +2956,10 @@ static partial class Runtime
 
     /// StringCompare: the equal steps passed over four units at a time, the
     /// first that differs, and what follows, ordered the scalar way.
+    public static int PackedStringCompare(string a, int aAt, string b, int bAt, int count) { return count < PackedUnits ? StringCompare(a, aAt, b, bAt, count) : PackedStringCompareLong(a, aAt, b, bAt, count); }
+
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    public static int PackedStringCompare(string a, int aAt, string b, int bAt, int count)
+    static int PackedStringCompareLong(string a, int aAt, string b, int bAt, int count)
     {
         if (count < PackedUnits || !Processor.Has(Processor.Mmx))
         {

@@ -130,6 +130,10 @@ public static class IrLinkOptimizer
             linkRoots.Add(RuntimeAbi.WriteBarrierExchange);
             linkRoots.Add(RuntimeAbi.WriteBarrierCompareExchange);
         }
+        // And the streaming copy and fill, where the image has them: only the
+        // i386 backend's code for a long block calls them, and no IR does.
+        if (owners.ContainsKey(RuntimeAbi.StreamCopy)) linkRoots.Add(RuntimeAbi.StreamCopy);
+        if (owners.ContainsKey(RuntimeAbi.StreamFill)) linkRoots.Add(RuntimeAbi.StreamFill);
         // A KERNEL WITH EXPORTS, PRUNED (reachableFrom, keep): open -- its
         // types are subclassed and its virtual calls overridden by modules, so
         // no closed fact holds -- but what neither the kernel nor any module
