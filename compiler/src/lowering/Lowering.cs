@@ -440,7 +440,11 @@ public sealed partial class Lowering
     /// type whose declaration carries no path of its own, as the
     /// freestanding library's types compiled by name do, is its file's.
     /// </summary>
-    private bool SystemCodeHere(TypeSymbol? t) => SystemCode(t) || _in.Length > 0 && LibraryPath(_in);
+    private bool SystemCodeHere(TypeSymbol? t)
+        // A TYPE WITH NO PATH OF ITS OWN -- a lambda's closure, made where its
+        // lambda is -- is its file's alone: its declaration's FromLibrary is
+        // the compiler's making, and took a program's lambda for the library's.
+        => t?.Decl is { SourcePath: null } && _in.Length > 0 ? LibraryPath(_in) : SystemCode(t) || _in.Length > 0 && LibraryPath(_in);
 
     /// <summary>The full path of the file a type is declared in (Function.SourcePath).</summary>
     private static string? SourcePathOf(TypeSymbol? t) => t?.Decl?.SourcePath;

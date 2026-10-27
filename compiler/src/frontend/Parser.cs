@@ -3926,7 +3926,7 @@ public sealed class Parser
             // In the compiler's own block (ImplicitBody): read again for each
             // processor's version where it names a packed operation.
             bool packedOps = PackedOpsIn(expressionAt, _i), suspends = SuspendsIn(expressionAt, _i);
-            if (packedOps && !suspends)
+            if (packedOps && !suspends && !InPrelude)
             {
                 int after = _i;
                 _i = expressionAt;
@@ -5277,6 +5277,14 @@ public sealed class Parser
     /// </summary>
     public static bool PackedEverywhere { get; set; }
 
+    /// <summary>
+    /// Whether the file is the prelude, whose bodies are the intrinsics'
+    /// stand-ins and never in the compiler's own block: Sys.PackedLeave's in
+    /// one called Sys.PackedLeave, a recursion that only recursed, and every
+    /// call through a block was proved never to return (Binder.NeverReturns).
+    /// </summary>
+    private bool InPrelude => _file == "<prelude>";
+
     /// <summary>The kind of the compiler's own packed block around a body (Sys.PackedEnter's first argument).</summary>
     public const int ImplicitKind = 4;
 
@@ -5311,7 +5319,7 @@ public sealed class Parser
     /// <summary>A body, already read, in the compiler's own block -- one variant, which nothing packed in it tells apart -- where it wants one.</summary>
     private Block ImplicitBlock(Block body, bool packedOps, bool suspends)
     {
-        if (suspends || !(PackedEverywhere || packedOps)) return body;
+        if (suspends || !(PackedEverywhere || packedOps) || InPrelude) return body;
         Block made = new() { Line = body.Line, Col = body.Col };
         made.WritableStatements.Add(PackedVariant(body, ImplicitKind, 0, _packedSerial++, body.Line, body.Col));
         return made;
@@ -5320,6 +5328,7 @@ public sealed class Parser
     /// <summary>A braced body at the current token, in the compiler's own block where it wants one: read once per processor's version where it names a packed operation.</summary>
     private Block ImplicitBody(Func<Block> read)
     {
+        if (InPrelude) return read();
         int start = _i, end = At(Tok.LBrace) ? BraceEnd(start) : start;
         bool packedOps = PackedOpsIn(start, end), suspends = SuspendsIn(start, end);
         if (!packedOps || suspends) return ImplicitBlock(read(), packedOps, suspends);
@@ -5343,6 +5352,7 @@ public sealed class Parser
     /// </summary>
     private void ImplicitMember(MemberDecl m, int from, int to)
     {
+        if (InPrelude) return;
         bool packedOps = PackedOpsIn(from, to), suspends = SuspendsIn(from, to);
         if (suspends || !(PackedEverywhere || packedOps)) return;
         Block?[] bodies = m switch { PropertyDecl p => [p.Getter, p.Setter], MethodDecl d => [d.Body], _ => [] };

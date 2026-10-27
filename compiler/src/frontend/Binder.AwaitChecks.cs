@@ -1587,9 +1587,25 @@ public sealed partial class Binder
     {
         Dictionary<MethodSymbol, string> state = new(ReferenceEqualityComparer.Instance);
         Dictionary<MethodSymbol, List<MethodSymbol>> inLoops = new(ReferenceEqualityComparer.Instance);
+        Dictionary<MethodSymbol, List<MethodSymbol>> always = new(ReferenceEqualityComparer.Instance);
+        Dictionary<MethodSymbol, List<MethodSymbol>> twice = new(ReferenceEqualityComparer.Instance);
+        HashSet<MethodSymbol> handlers = new(ReferenceEqualityComparer.Instance);
         foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
         {
             if (m.Async || d.Body is null || d.Body.Iterator) continue;
+            if (IsInterruptHandler(m)) handlers.Add(m);
+            // WHAT EVERY RUN OF IT CALLS: the calls of its own statements, not
+            // behind a condition -- the body's, or the compiler's own block's
+            // inside it (Parser.ImplicitKind): keeping the state here instead
+            // costs no run that would not have kept it.
+            List<MethodSymbol> sure = new();
+            foreach (Stmt top in TopStatements(d.Body))
+                if (top is ExprStmt or LocalDecl or ReturnStmt)
+                    foreach ((Node _, MethodSymbol callee) in DirectCalls(top, m.Owner)) sure.Add(callee);
+            always[m] = sure;
+            Dictionary<MethodSymbol, int> counted = new(ReferenceEqualityComparer.Instance);
+            foreach ((Node _, MethodSymbol callee) in DirectCalls(d.Body, m.Owner)) counted[callee] = counted.GetValueOrDefault(callee) + 1;
+            twice[m] = counted.Where(c => c.Value > 1).Select(c => c.Key).ToList();
             List<MethodSymbol> looped = new();
             string? own = null;
             bool copyable = !d.IsCtor && d.Name is not ("StaticInit$" or "StaticInitBody$");
@@ -1612,20 +1628,43 @@ public sealed partial class Binder
             if (copyable) _r.PackedCopyable.Add(m);
             inLoops[m] = looped;
         }
+        // AS FAR OUT AS IT GOES FOR NOTHING: a method that calls one keeping
+        // the state in a loop, more than once, or on every run of its own
+        // keeps it itself, and the callee runs inside (its $inside copy) --
+        // up through its callers so, as long as each holds: one that calls it
+        // only on some of its paths keeps none, which would cost the others.
+        // Never an interrupt handler, which may not keep it at all.
         for (bool more = true; more;)
         {
             more = false;
             foreach ((MethodSymbol m, List<MethodSymbol> looped) in inLoops)
             {
-                if (state.ContainsKey(m)) continue;
-                if (looped.FirstOrDefault(c => state.ContainsKey(c)) is { } callee)
-                {
-                    state[m] = $"calls '{callee.Owner.Name}.{callee.Name}' in a loop";
-                    more = true;
-                }
+                if (state.ContainsKey(m) || handlers.Contains(m)) continue;
+                string? why = looped.FirstOrDefault(c => state.ContainsKey(c)) is { } inLoop ? $"calls '{inLoop.Owner.Name}.{inLoop.Name}' in a loop"
+                    : twice[m].FirstOrDefault(c => state.ContainsKey(c)) is { } again ? $"calls '{again.Owner.Name}.{again.Name}' more than once"
+                    : always[m].FirstOrDefault(c => state.ContainsKey(c)) is { } sure ? $"calls '{sure.Owner.Name}.{sure.Name}' on every run"
+                    : null;
+                if (why is null) continue;
+                state[m] = why;
+                more = true;
             }
         }
         return state;
+    }
+
+    /// <summary>A body's own statements, run on every path to its first branch: through the compiler's own block around it (its one variant's try), as far as it goes.</summary>
+    private static IEnumerable<Stmt> TopStatements(Block body)
+    {
+        IReadOnlyList<Stmt> at = body.Statements;
+        // The compiler's own block: { PackedEnter; try { body } finally { ... } }, one variant.
+        if (at is [Block { Statements: [ExprStmt, TryStmt { Body: Block inner }] }]) at = inner.Statements;
+        foreach (Stmt s in at)
+        {
+            if (s is Block nested) { foreach (Stmt n in TopStatements(nested)) yield return n; continue; }
+            yield return s;
+            // Past a return, a throw, a branch: no longer every path.
+            if (s is not (ExprStmt or LocalDecl)) yield break;
+        }
     }
 
     /// <summary>Whether a call is a packed block's start, Sys.PackedEnter (Parser.ParsePackedBlock).</summary>
