@@ -228,8 +228,9 @@ public static class ObjectLinkCommand
         // a module's beside itself.
         if (exportsPath is not null) InterruptNotes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
         else if (kernel is not null) InterruptNotes.WriteBeside(destination, inputs.Select(input => input.Item2));
+        // And a shared object's: what links against it calls into it too.
         if (exportsPath is not null) X87Notes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
-        else if (kernel is not null) X87Notes.WriteBeside(destination, inputs.Select(input => input.Item2));
+        else if (kernel is not null || shared) X87Notes.WriteBeside(destination, inputs.Select(input => input.Item2));
         byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
         // The kernel's small functions for its modules, read before this link's
         // own optimiser takes the units' IR out (KernelExports.SmallBodies).

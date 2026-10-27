@@ -392,8 +392,11 @@ public static class Driver
                                  link. Refused for hosted code
               --x87-outside-blocks
                                  freestanding: float code allowed outside
-                                 packed blocks (wins over the above);
-                                 refused for hosted code
+                                 packed blocks (wins over the above), and
+                                 no facts kept: an image linked from such
+                                 units has its float code unjudged, and a
+                                 link that keeps the rule refuses to link
+                                 against it; refused for hosted code
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --no-collector     link no collector: what cannot be proved freed or
@@ -1604,7 +1607,7 @@ public static class Driver
             foreach (string lib in sharedLibs) beside.AddRange(Corsac.Lang.Lto.X87Notes.ReadBeside(lib, judges));
             List<string> moduleFloats = Corsac.Lang.Lto.X87Notes.Check(new[] { obj }, beside);
             if (moduleFloats.Count > 0) throw new LinkException(moduleFloats);
-            if (judges) Corsac.Lang.Lto.X87Notes.WriteBeside(output, new[] { obj });
+            Corsac.Lang.Lto.X87Notes.WriteBeside(output, new[] { obj });
             Corsac.Lang.Lto.X87Notes.Strip(new[] { obj });
             Corsac.Lang.Lto.UsesNotes.Strip(new[] { obj });
             Corsac.Lang.Lto.InterruptNotes.Strip(new[] { obj });
@@ -1686,7 +1689,10 @@ public static class Driver
         if (Switches.IrqLocksReport) foreach (string line in Corsac.Lang.Lto.InterruptNotes.IrqLocksReport(link.Select(input => input.Item2))) Console.Error.WriteLine(line);
         // Where every unit's freestanding float code runs (X87Notes): what no
         // one unit's compile could see, its callers in the others.
-        List<string> floatErrors = Corsac.Lang.Lto.X87Notes.Check(link.Select(input => input.Item2), entries: new[] { entry });
+        bool judgesFloats = Corsac.Lang.Lto.X87Notes.Judges(link.Select(input => input.Item2));
+        List<Corsac.Lang.Lto.X87Notes.Fact> floatsBeside = new();
+        foreach (string lib in sharedLibs) floatsBeside.AddRange(Corsac.Lang.Lto.X87Notes.ReadBeside(lib, judgesFloats));
+        List<string> floatErrors = Corsac.Lang.Lto.X87Notes.Check(link.Select(input => input.Item2), floatsBeside, new[] { entry });
         if (floatErrors.Count > 0) throw new LinkException(floatErrors);
 
         if (flat)
@@ -1697,7 +1703,7 @@ public static class Driver
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
             Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
-            Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
+        Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
             // --map FILE: every symbol of the image, largest first, as `corc link` writes it.
             Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000, mapPath: Value(args, "--map"));
             File.WriteAllBytes(output, image.Bytes);
@@ -1724,7 +1730,7 @@ public static class Driver
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
             Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
-            Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
+        Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
             Linker.LinkPeTo(output, link, new Linker.PeOptions
             {
                 Dll = dll,
@@ -1753,7 +1759,7 @@ public static class Driver
         else Corsac.Lang.Lto.LinkTimeOptimizer.StripLinkNotes(link.Select(input => input.Item2));
         Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
         Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
-            Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
+        Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
         // What a CORSAC program carries beyond its code: --subsystem
         // console|gui|service, --resources <segment file>, --icon-resource <id>.
         // See docs/software/GUI-EXECUTABLE.md in the OS repository.

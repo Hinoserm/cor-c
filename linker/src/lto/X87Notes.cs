@@ -24,7 +24,7 @@ namespace Corsac.Lang.Lto;
 public static class X87Notes
 {
     public const string SectionName = ".corsac.x87";
-    const int Version = 0;
+    const int Version = 1;
 
     /// <summary>A direct call: whom, at which line, and whether inside a packed block of the caller's.</summary>
     public readonly record struct Call(string Callee, int Line, bool Inside);
@@ -128,12 +128,16 @@ public static class X87Notes
     /// this one's functions as this link saw them. Only what can reach float
     /// code by calls made outside a block: a float function, and every
     /// function that calls one of these outside a block of its own. Written
-    /// always, with nothing in it where nothing floats, so that a missing
-    /// file says the image was linked without them (ReadBeside).
+    /// where the image's units carry facts (Judges), with nothing in it where
+    /// nothing floats; taken away where they carry none -- units compiled
+    /// with --x87-outside-blocks, or hosted -- so that a missing file says
+    /// the image's float code was never judged (ReadBeside).
     /// </summary>
     public static void WriteBeside(string path, IEnumerable<ObjectFile> objects)
     {
-        Dictionary<string, Fact> all = Joined(objects.Select(Read).Where(read => read is not null).SelectMany(read => read!));
+        List<ObjectFile> units = objects.ToList();
+        if (!Judges(units)) { if (File.Exists(path + ".x87")) File.Delete(path + ".x87"); return; }
+        Dictionary<string, Fact> all = Joined(units.Select(Read).Where(read => read is not null).SelectMany(read => read!));
         Dictionary<string, List<string>> outsideCallers = new(StringComparer.Ordinal);
         foreach (Fact f in all.Values)
             foreach (Call c in f.Calls)
@@ -165,7 +169,7 @@ public static class X87Notes
         string beside = path + ".x87";
         if (!File.Exists(beside))
         {
-            if (needed) throw new LinkException(new List<string> { $"{path}: no float-code facts beside it ({beside}), so this link cannot judge its calls into {Path.GetFileName(path)}: link {Path.GetFileName(path)} again with this compiler" });
+            if (needed) throw new LinkException(new List<string> { $"{path}: no float-code facts beside it ({beside}), so this link cannot judge its calls into {Path.GetFileName(path)}: it was linked without them (by an older compiler, or from units compiled with --x87-outside-blocks or hosted); link it again from units that keep the rule" });
             return new List<Fact>();
         }
         using FileStream stream = File.OpenRead(beside);
@@ -199,7 +203,8 @@ public static class X87Notes
     /// <summary>
     /// Every function with float code outside its own blocks that can run
     /// outside every block, as an error naming the way it gets there. A
-    /// function RUNS OUTSIDE when it is the image's entry (`entries`), when
+    /// function RUNS OUTSIDE when it is where the image starts (`entries`,
+    /// and every unit's module initializers, which the link calls), when
     /// its address is taken, when code no fact describes refers to it (an
     /// object with no facts -- assembly -- calls whatever its relocations
     /// name), or when a function that runs outside calls it outside a block
@@ -232,6 +237,14 @@ public static class X87Notes
             foreach (Section section in obj.Sections)
                 foreach (Relocation r in section.Relocs)
                     unknown.Add(r.Symbol);
+        // AND WHAT THE LINK ITSELF CALLS: each unit's [ModuleInitializer]
+        // methods (ModuleInfo.InitializerSection), from the stub it writes
+        // after this -- at a module's load, before a program's Main.
+        HashSet<string> started = new(entries ?? Array.Empty<string>(), StringComparer.Ordinal);
+        foreach (ObjectFile obj in all)
+            foreach (Section section in obj.Sections)
+                if (section.Name == ModuleInfo.InitializerSection)
+                    started.UnionWith(ModuleInfo.Entries(section.Content()));
 
         // WHAT RUNS OUTSIDE, from its seeds along the calls made outside a
         // block: what is left runs only inside one. Each keeps the call that
@@ -240,7 +253,7 @@ public static class X87Notes
         Dictionary<string, (Fact Caller, Call At)> by = new(StringComparer.Ordinal);
         Stack<string> work = new();
         foreach (Fact f in facts.Values)
-            if (f.Escapes || unknown.Contains(f.Name) || entries?.Contains(f.Name) == true)
+            if (f.Escapes || unknown.Contains(f.Name) || started.Contains(f.Name))
                 if (outside.Add(f.Name)) work.Push(f.Name);
         while (work.Count > 0)
         {
@@ -255,7 +268,7 @@ public static class X87Notes
 
         foreach (Fact f in facts.Values.Where(f => f.Floats && outside.Contains(f.Name)).OrderBy(f => f.File, StringComparer.Ordinal).ThenBy(f => f.FloatLine))
             errors.Add($"'{f.Display}' has float code outside a packed block ({Where(f, f.FloatLine)}) and can run outside one: {Way(f, out bool call)}; "
-                + (call ? "put that call (the last named), or the float code, inside using (Packed.X87()) { ... }"
+                + (call ? "put the outermost call named, or the float code, inside using (Packed.X87()) { ... }"
                         : "give it a packed block of its own, using (Packed.X87()) { ... }")
                 + ", which saves the interrupted thread's x87 state first");
         return errors;
@@ -277,7 +290,7 @@ public static class X87Notes
             }
             if (at.Escapes) steps.Add($"'{at.Display}' has its address taken (a delegate, a function pointer or a virtual method), so whatever calls it may");
             else if (unknown.Contains(at.Name)) steps.Add($"'{at.Display}' is called from code the link has no facts for (assembly, a foreign object)");
-            else steps.Add($"'{at.Display}' is the image's entry");
+            else steps.Add($"'{at.Display}' is where the image starts (its entry, or a module initializer the link calls)");
             return string.Join(", and ", steps);
         }
     }
