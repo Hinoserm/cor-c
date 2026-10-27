@@ -1045,7 +1045,7 @@ public sealed class RegionPointsTo : IModulePass
     {
         Function made = new(name, f.Returns)
         {
-            Exported = false, SourceFile = f.SourceFile, Line = f.Line, Display = f.Display, FromLibrary = f.FromLibrary,
+            Exported = false, SourceFile = f.SourceFile, Line = f.Line, Display = f.Display, FromLibrary = f.FromLibrary, SystemCode = f.SystemCode,
             NoInlining = f.NoInlining, CalleePops = f.CalleePops,
         };
         Dictionary<VReg, VReg> regs = new();

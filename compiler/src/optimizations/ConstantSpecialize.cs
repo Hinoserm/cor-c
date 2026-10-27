@@ -65,7 +65,13 @@ public sealed class ConstantSpecialize : IModulePass
                 string name = target.Name + "$constant$" + versions.Count;
                 if (originals.ContainsKey(name)) continue;
                 version = new Function(name, target.Returns)
-                { Exported = false, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display };
+                {
+                    Exported = false, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
+                    // Whose code it is goes with the copy: the x86 backend's
+                    // check that float code is in packed blocks asks it
+                    // (Selector.RefuseX87OutsideBlocks).
+                    FromLibrary = target.FromLibrary, SystemCode = target.SystemCode,
+                };
                 foreach (VReg parameter in target.Params)
                 {
                     VReg copy = version.NewReg(parameter.Type, parameter.Name);
