@@ -151,7 +151,7 @@ static partial class Os
         return Adopt(handle, (flags & O.Append) != 0);
     }
 
-    public static int Open(string path, int flags) => Open(path, flags, 0x1A4);
+    public static int Open(string path, int flags) => Open(path, flags, 0x1B6);
 
     public static int Close(int fd)
     {
@@ -403,7 +403,7 @@ static partial class Os
         return CreateDirectoryW(At(name), 0) != 0 ? 0 : Failed();
     }
 
-    public static int Mkdir(string path) => Mkdir(path, 0x1ED);
+    public static int Mkdir(string path) => Mkdir(path, 0x1FF);
 
     public static int Rmdir(string path)
     {

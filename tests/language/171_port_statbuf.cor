@@ -46,9 +46,11 @@ class Program
         Os.Unlink(path);
         Console.WriteLine(Os.Exists(path) ? "STILL THERE" : "not there");
 
-        // 0644 is what File.WriteAllText creates with, and the permission
-        // bits are the low twelve of the mode -- 420 in decimal.
+        // 0666 through a 022 umask is what File.WriteAllText creates with
+        // (0644), and the permission bits are the low twelve of the mode --
+        // 420 in decimal. The mask set here, so the runner's does not decide.
         string second = String.Concat(path, "-mode");
+        UnixProcess.Umask(0x12);
 
         File.WriteAllText(second, "x");
         Console.Write("mode ");

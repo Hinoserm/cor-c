@@ -2217,7 +2217,10 @@ static partial class Path
             string full = directory + name;
             try
             {
-                using (FileStream made = new FileStream(full, FileMode.CreateNew, FileAccess.ReadWrite)) { }
+                // 0600, as .NET's (mkstemp's) is: a file in a directory every
+                // user writes to is the user's alone, whatever the umask.
+                using (FileStream made = new FileStream(full, new FileStreamOptions
+                    { Mode = FileMode.CreateNew, Access = FileAccess.ReadWrite, UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite })) { }
                 return full;
             }
             catch (IOException) when (File.Exists(full))
@@ -3485,7 +3488,14 @@ partial static class File
             {
                 throw new IOException("The target file '" + FileSystem.Full(destination) + "' is a directory, not a file.");
             }
-            to = new FileStream(destination, overwrite ? FileMode.OpenOrCreate : FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            // MADE WITH THE SOURCE'S MODE, through the umask, so a 0600 file's
+            // copy is never more open than it while the bytes go in; the chmod
+            // below then gives it the source's exactly, as .NET's does.
+            to = new FileStream(destination, new FileStreamOptions
+            {
+                Mode = overwrite ? FileMode.OpenOrCreate : FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None,
+                UnixCreateMode = (UnixFileMode)((int)GetUnixFileMode(source) & 4095),
+            });
         }
         catch
         {

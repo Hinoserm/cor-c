@@ -3,12 +3,14 @@
 // expect-output:
 // umask 22: writealltext 644 create 644 filestream 644 openhandle 644 options 600 directory 755
 // umask 2: writealltext 664 create 664 filestream 664 openhandle 664 options 600 directory 775
+// tempfile 600 copy 600 755
 //
 // A file .NET creates is 0666 and a directory 0777, the umask taking its
 // bits off as open(2) and mkdir(2) apply it; UnixCreateMode is the mode
 // asked for instead of 0666. FileStream made every file 0644 whatever the
-// mask: under `umask 002`, 0644 where 0664 was due, and the CORSAC shell's
-// `> file` with it.
+// mask: under `umask 002`, 0644 where 0664 was due -- the CORSAC shell's
+// `> file`, which opens through FileStream, until corsac86 c7c46529b passed
+// its own mode.
 
 using System;
 using System.IO;
@@ -42,6 +44,19 @@ static class P
         {
             Round(dir, 0x12);
             Round(dir, 0x02);
+            // A temporary file is the user's alone, whatever the mask, and a
+            // copy takes its source's mode exactly.
+            string temp = Path.GetTempFileName();
+            string secret = Path.Combine(dir, "secret"), tool = Path.Combine(dir, "tool");
+            File.WriteAllText(secret, "s");
+            File.SetUnixFileMode(secret, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.WriteAllText(tool, "t");
+            File.SetUnixFileMode(tool, (UnixFileMode)0x1ED);
+            File.Copy(secret, secret + ".copy");
+            File.Copy(tool, tool + ".copy");
+            Console.WriteLine("tempfile " + Octal(File.GetUnixFileMode(temp)) + " copy " + Octal(File.GetUnixFileMode(secret + ".copy"))
+                + " " + Octal(File.GetUnixFileMode(tool + ".copy")));
+            File.Delete(temp);
         }
         finally
         {

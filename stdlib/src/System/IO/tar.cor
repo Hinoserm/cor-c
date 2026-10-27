@@ -390,7 +390,12 @@ abstract class TarEntry
                 + " entry cannot be written to a file");
         }
 
-        FileStream into = new FileStream(destinationFileName, FileMode.Create, FileAccess.Write);
+        // MADE WITH THE ENTRY'S MODE, through the umask, so a 0600 entry is
+        // never more open while its bytes go in; the chmod after gives it the
+        // mode exactly. The old GNU format stores the whole st_mode, file
+        // type and all; only the permission bits belong in either.
+        FileStream into = new FileStream(destinationFileName, new FileStreamOptions
+            { Mode = FileMode.Create, Access = FileAccess.Write, UnixCreateMode = (UnixFileMode)(_mode & 4095) });
         Stream? from = _dataStream;
         if (from != null)
         {
@@ -403,8 +408,6 @@ abstract class TarEntry
             }
         }
         into.Dispose();
-        // The old GNU format stores the whole st_mode, file type and all;
-        // only the permission bits belong in a chmod.
         File.SetUnixFileMode(destinationFileName, (UnixFileMode)(_mode & 4095));
         File.SetLastWriteTimeUtc(destinationFileName, DateTime.FromUnixTimeSeconds(_mtime));
     }
