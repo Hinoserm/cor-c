@@ -150,6 +150,21 @@ public static class LifetimeTests
         Check(dBack.Functions.Single(f => f.Name == "Box").Held is [LifetimeHeld { Offsets: [8] } heldHint] && heldHint.Condition.Stays.Single() == ("Read", 0),
             "held hints round trip");
         Check(dBack.Functions.Single(f => f.Name == "Plain").Held is null, "no held hints round trip");
+
+        // Past their bounds a field summary is written opaque and held offsets
+        // as none stated, naming nothing: never refused, never trusted.
+        LifetimeFields wide = new();
+        for (int i = 0; i <= LifetimeFields.Limit; i++) wide.Merges.Add(("Wide" + i, 0));
+        LifetimeHints e = new();
+        e.Functions.Add(new("Grown", true, new LifetimeCondition?[] { null }, null, new LifetimeFields?[] { wide }, null,
+            new LifetimeHeld?[] { new(Stays(("Many", 0)), Enumerable.Range(0, LifetimeFields.Limit + 1).Select(i => 8L * i).ToArray()) }));
+        byte[] eBytes = e.Write();
+        LifetimeFunction grown = LifetimeHints.Read(eBytes).Functions.Single();
+        Check(grown.ParameterFields is [LifetimeFields { Opaque: true, Dirty.Count: 0, Fresh.Count: 0, Conditional.Count: 0, Merges.Count: 0 }],
+            "a field summary past its bound reads back opaque");
+        Check(grown.Held is [null], "held offsets past their bound read back as none stated");
+        Check(!System.Text.Encoding.UTF8.GetString(eBytes).Contains("Wide") && !System.Text.Encoding.UTF8.GetString(eBytes).Contains("Many"),
+            "nothing written past a bound names a function");
         Dictionary<string, string[]> heldVirtuals = new() { ["v$walk"] = new[] { "Box", "Plain" }, ["v$lost"] = new[] { "Box", "BoxLost" } };
         LifetimeHints asks = new();
         asks.Pending.Add(Stays(("v$walk", 0), ("v$lost", 0)));

@@ -282,6 +282,13 @@ public sealed class LifetimeHints
         obj.Sections.Add(section);
     }
 
+    /// <summary>
+    /// Held offsets as written: more than the bound, none that can be stated
+    /// (null, the conservative answer), as a field summary past its bound is
+    /// written opaque -- not refused.
+    /// </summary>
+    private static LifetimeHeld? Stated(LifetimeHeld? held) => held is not null && held.Offsets.Length > LifetimeFields.Limit ? null : held;
+
     public byte[] Write()
     {
         // Every name once, in ordinal order: the same hints are the same bytes.
@@ -294,7 +301,7 @@ public sealed class LifetimeHints
             Names(function.Fresh);
             foreach (LifetimeFields? fields in function.ParameterFields ?? Array.Empty<LifetimeFields?>()) FieldNames(fields);
             FieldNames(function.FreshFields);
-            foreach (LifetimeHeld? held in function.Held ?? Array.Empty<LifetimeHeld?>()) Names(held?.Condition);
+            foreach (LifetimeHeld? held in function.Held ?? Array.Empty<LifetimeHeld?>()) Names(Stated(held)?.Condition);
         }
         foreach (LifetimeCondition condition in Pending) Names(condition);
         foreach (LifetimeThrow thrown in Throws) Names(thrown.Unless);
@@ -311,9 +318,11 @@ public sealed class LifetimeHints
             foreach ((string callee, int _) in condition.Fields) names.Add(callee);
             foreach ((string callee, int _, LifetimeCondition or) in condition.Either) { names.Add(callee); Names(or); }
         }
+        // A summary written opaque, or held offsets written as none stated,
+        // writes no name: none is put in the table for it.
         void FieldNames(LifetimeFields? fields)
         {
-            if (fields is null) return;
+            if (fields is null || !fields.Bounded) return;
             foreach (var item in fields.Conditional) Names(item.Condition);
             foreach ((string callee, int _) in fields.Merges) names.Add(callee);
         }
@@ -346,10 +355,7 @@ public sealed class LifetimeHints
             writer.Write(function.Held?.Length ?? -1);
             foreach (LifetimeHeld? given in function.Held ?? Array.Empty<LifetimeHeld?>())
             {
-                // More held offsets than the bound: written as none that can
-                // be stated (null, the conservative answer), as a field
-                // summary past its bound is written opaque -- not refused.
-                LifetimeHeld? held = given is not null && given.Offsets.Length > LifetimeFields.Limit ? null : given;
+                LifetimeHeld? held = Stated(given);
                 Condition(held?.Condition);
                 if (held is null) continue;
                 if (held.Offsets.Length == 0) throw new ElfFormatException("Lifetime held offsets are empty");
@@ -404,12 +410,14 @@ public sealed class LifetimeHints
             if (fields is null) { writer.Write(false); return; }
             // PAST THE BOUND THE OBJECT IS OPAQUE, as LifetimeFields.Limit
             // says: written so -- no field of it ever freed -- not refused.
-            // Only some producers collapsed a summary that grew past it
-            // (EscapeFields' parameter hints); one that grew by a callee's
-            // hint or a fresh object's stopped the build here instead, and
-            // a kernel source change that added a few fields to an object
-            // could no longer be built.
-            if (!fields.Bounded) { writer.Write(true); writer.Write(true); writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0); return; }
+            // EscapeFields collapses its parameter hints past the bound, but
+            // one grown by a callee's hint or a fresh object's reaches here.
+            if (!fields.Bounded)
+            {
+                writer.Write(true); writer.Write(true); // present, opaque
+                for (int none = 0; none < 4; none++) writer.Write(0); // no dirty, fresh, conditional or merged entries
+                return;
+            }
             writer.Write(true); writer.Write(fields.Opaque);
             writer.Write(fields.Dirty.Count);
             foreach (long offset in fields.Dirty) writer.Write(offset);
