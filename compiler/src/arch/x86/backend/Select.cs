@@ -50,9 +50,12 @@ internal sealed partial class Selector
     /// THE PACKED BLOCK SELECTION IS INSIDE (PackedRegions): 1 MMX, 2 SSE, 0
     /// none. Hosted code may pack anywhere already (_automaticPacked); a
     /// freestanding function only between a block's save and its give-back,
-    /// and what is selected there says so (MInstr.OwnsState).
+    /// and what is selected there says so (MInstr.OwnsState). The blocks a
+    /// selection is inside, innermost lowest, two bits each (PackedRegions):
+    /// an inner block's give-back is back inside the outer one.
     /// </summary>
-    private int _packedNow;
+    private int _packedState;
+    private int _packedNow => _packedState & 3;
 
     /// <summary>Whether a packed group may be selected here: hosted code, or inside a packed block.</summary>
     private bool PackedHere => _automaticPacked || _packedNow != 0;
@@ -139,8 +142,8 @@ internal sealed partial class Selector
     }
 
     /// <summary>
-    /// WHERE A FUNCTION'S PACKED BLOCKS ARE, by the block each IR block
-    /// starts inside (0 outside one): after a save (PackedSaveX87,
+    /// WHERE A FUNCTION'S PACKED BLOCKS ARE, by the blocks each IR block
+    /// starts inside (0 outside every one): after a save (PackedSaveX87,
     /// PackedSaveFxsr) and before its give-back, on every path there -- a
     /// block some path reaches outside is outside, and a handler's landing,
     /// which no edge reaches, is too, so only its give-back runs there. The
@@ -149,18 +152,20 @@ internal sealed partial class Selector
     /// </summary>
     private static Dictionary<Block, int>? PackedRegions(Function f)
     {
-        static int After(Block b, int kind)
+        // The blocks open, innermost in the low two bits: a save pushes its
+        // kind, a give-back pops back to the block around it.
+        static int After(Block b, int state)
         {
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Call)
-                    kind = i.Callee switch
+                    state = i.Callee switch
                     {
-                        MachineIntrinsics.PackedSaveX87 => 1,
-                        MachineIntrinsics.PackedSaveFxsr => 2,
-                        MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => 0,
-                        _ => kind,
+                        MachineIntrinsics.PackedSaveX87 => state << 2 | 1,
+                        MachineIntrinsics.PackedSaveFxsr => state << 2 | 2,
+                        MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => state >> 2,
+                        _ => state,
                     };
-            return kind;
+            return state;
         }
         if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedSaveX87 or MachineIntrinsics.PackedSaveFxsr)))
             return null;
@@ -444,7 +449,7 @@ internal sealed partial class Selector
             _cur = _heads[b];
             _sourceBlock = b;
             _constants.Clear();
-            _packedNow = packedIn?.GetValueOrDefault(b) ?? 0;
+            _packedState = packedIn?.GetValueOrDefault(b) ?? 0;
             for (int n = 0; n < b.Instrs.Count; n++)
             {
                 Instr i = b.Instrs[n];
@@ -2938,10 +2943,9 @@ internal sealed partial class Selector
             {
                 // The area's address in EAX, which the sequences name; an
                 // SSE block's FXSAVE wants it at sixteen (Lowering: 16 bytes
-                // more than the 528 it fills). Selected outside the block it
-                // opens or closes, and the selection inside it from here on.
+                // more than the 528 it fills). The selection inside the block
+                // from here on, or back in the one around it.
                 bool fx = name is MachineIntrinsics.PackedSaveFxsr or MachineIntrinsics.PackedRestoreFxsr;
-                _packedNow = 0;
                 Mov(Eax, R(i.Operands[0]));
                 if (fx)
                 {
@@ -2957,7 +2961,12 @@ internal sealed partial class Selector
                     MachineIntrinsics.PackedSaveFxsr => MOp.PackedSaveFxsr,
                     _ => MOp.PackedRestoreFxsr,
                 }) { OwnsState = (byte)(fx ? 2 : 1) });
-                _packedNow = name == MachineIntrinsics.PackedSaveX87 ? 1 : name == MachineIntrinsics.PackedSaveFxsr ? 2 : 0;
+                _packedState = name switch
+                {
+                    MachineIntrinsics.PackedSaveX87 => _packedState << 2 | 1,
+                    MachineIntrinsics.PackedSaveFxsr => _packedState << 2 | 2,
+                    _ => _packedState >> 2,
+                };
                 return;
             }
             case MachineIntrinsics.PackedEnd:

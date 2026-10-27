@@ -99,6 +99,13 @@ public sealed class Parser
     /// <summary>The packed blocks read so far: each block's number, its save area's (Lowering's PackedEnter).</summary>
     private int _packedSerial;
 
+    /// <summary>An await, an await using or an await foreach inside a packed block, refused: a suspension would hand the thread's packed state, the block's until it ends, to whatever ran next.</summary>
+    private void RefuseSuspensionInPackedBlock(Token at, string what)
+    {
+        if (_packedBlock != 0)
+            throw new CompileError(_file, at.Line, at.Col, what + " inside a packed block (using (Packed." + (_packedBlock == 1 ? "Mmx" : "Sse") + "())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next");
+    }
+
     /// <summary>
     /// The async iterator whose body is being read, or null: its `yield
     /// return v` is read as `await machine.Yield(v)` and its `yield break` as
@@ -5403,6 +5410,7 @@ public sealed class Parser
             // Both using forms (ParseUsing), and `await using`.
             case Tok.KwAwait when Ahead().Kind == Tok.KwUsing:
             {
+                RefuseSuspensionInPackedBlock(at, "an await using");
                 _i++;
                 return ParseUsing(at, async: true);
             }
@@ -5577,6 +5585,7 @@ public sealed class Parser
             case Tok.KwAwait when Ahead().Kind == Tok.KwForeach:
             case Tok.KwForeach:
             {
+                if (At(Tok.KwAwait)) RefuseSuspensionInPackedBlock(at, "an await foreach");
                 bool awaited = Take(Tok.KwAwait);
                 _i++;
                 Expect(Tok.LParen, "'(' after 'foreach'");
@@ -9508,8 +9517,7 @@ public sealed class Parser
                 return new UnaryExpr { Op = UnOp.AddressOf, Operand = ParseUnary(), Line = at.Line, Col = at.Col };
 
             case Tok.KwAwait:
-                if (_packedBlock != 0)
-                    throw new CompileError(_file, at.Line, at.Col, "an await inside a packed block (using (Packed." + (_packedBlock == 1 ? "Mmx" : "Sse") + "())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next");
+                RefuseSuspensionInPackedBlock(at, "an await");
                 _i++;
                 return new AwaitExpr { Operand = ParseUnary(), Line = at.Line, Col = at.Col };
 

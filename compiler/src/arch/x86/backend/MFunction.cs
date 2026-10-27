@@ -38,7 +38,7 @@ public sealed class MFunction
     /// the MMX registers (X86Backend.AutomaticPacked). Recorded here because
     /// the emitted-code audit refuses a packed instruction in a function
     /// selected without it: freestanding code does not own the x87 state the
-    /// MMX registers alias.
+    /// MMX registers alias, except inside a packed block (MInstr.OwnsState).
     /// </summary>
     public bool AutomaticPacked { get; init; }
 

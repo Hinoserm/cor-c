@@ -9,6 +9,10 @@
 #   tests/language/run.sh --target=x86-64   every test compiled for long mode
 #   tests/language/run.sh --opt-size  exercise size-oriented compilation
 #   tests/language/run.sh --cpu=pentium   every test compiled for that processor
+#   tests/language/run.sh --cpu=athlon64 --disable-3dnow
+#                                          and a processor feature taken away
+#                                          (or given, --enable-NAME): corc's
+#                                          switches, passed to every compile
 #   tests/language/run.sh --experimental-batch  exercise the staged optimizer group
 #   tests/language/run.sh --runtime-knob=Corsac.GC.VerifyFrees=1
 #                                every test built with that runtime setting

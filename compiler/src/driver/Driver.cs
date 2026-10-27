@@ -363,8 +363,8 @@ public static class Driver
                                  pentium-pro, pentium2, pentium3, pentium4, k6,
                                  k6-2, k6-3, k6-2+, k6-3+, athlon, athlon-xp,
                                  athlon64, 6x86mx
-              --disable-mmx      exclude MMX and what needs it: 3DNow! and the
-                                 MMX extensions
+              --disable-mmx      exclude MMX and what needs it: 3DNow!, the
+                                 MMX extensions and SSE
               --disable-3dnow    exclude 3DNow! while retaining MMX
               --disable-3dnow-ext exclude the 3DNow! extensions (PF2IW, PI2FW,
                                  PFNACC, PFPNACC, PSWAPD), retaining 3DNow!

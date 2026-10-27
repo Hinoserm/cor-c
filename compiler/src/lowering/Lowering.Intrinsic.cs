@@ -1108,6 +1108,20 @@ public sealed partial class Lowering
         }
     }
 
+    /// <summary>The kind of the packed block a call gives back (Sys.PackedLeave, Parser.ParsePackedBlock), or null for any other call.</summary>
+    private static int? PackedLeaveOf(CallExpr call)
+        => call is { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedLeave" }, Args: [LiteralExpr { Text: var kind }, ..] }
+            ? kind == "2" ? 2 : 1 : null;
+
+    /// <summary>
+    /// Whether a packed block of this kind takes and gives back anything
+    /// here (PackedEnter, PackedLeave): freestanding i386 code only, and an
+    /// MMX block only where --cpu has MMX. An SSE block where it has no SSE,
+    /// or one in long mode, is refused at its start.
+    /// </summary>
+    private bool PackedStateHere(int kind)
+        => Freestanding && (_t.WordSize != 4 || kind == 2 || _t.X86Profile.Mmx);
+
     /// <summary>Each packed block's save area, by its function and its number (PackedEnter, PackedLeave): one for its start and every give-back alike.</summary>
     private readonly Dictionary<(Function, int), FrameSlot> _packedAreas = new();
 

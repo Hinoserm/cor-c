@@ -357,6 +357,15 @@ public sealed partial class Lowering
                 else EmitThrow(th.Value, th);
                 break;
 
+            // A PACKED BLOCK WHOSE STATE IS NOTHING HERE -- hosted code, long
+            // mode, a processor with no MMX -- is its body alone: its finally
+            // gave nothing back, and a landing pad for it cost a handler on
+            // every run and kept the method from being inlined.
+            case TryStmt { Catches.Count: 0, Finally.Statements: [ExprStmt { Expr: CallExpr leave }] } t
+                when PackedLeaveOf(leave) is int kind && !PackedStateHere(kind):
+                EmitStmt(t.Body);
+                break;
+
             case TryStmt t:
                 EmitTry(t);
                 break;

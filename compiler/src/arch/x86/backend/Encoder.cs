@@ -137,8 +137,10 @@ internal sealed class Encoder
     /// processor check (MInstr.Probed).
     ///
     /// The packed registers have a second rule: they are the x87's, and only
-    /// code selected with the hosted ABI's leave (MFunction.AutomaticPacked)
-    /// may use them, whatever the processor has.
+    /// code selected with the hosted ABI's leave (MFunction.AutomaticPacked),
+    /// or inside a packed block, between its save of the thread's state and
+    /// its give-back (MInstr.OwnsState), may use them, whatever the
+    /// processor has.
     /// </summary>
     private static void Audit(MFunction m)
     {

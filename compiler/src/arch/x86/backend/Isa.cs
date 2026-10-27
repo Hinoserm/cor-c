@@ -71,12 +71,13 @@ internal static class Isa
     /// <summary>
     /// Whether <paramref name="op"/> reads or writes the MMX registers, whose
     /// state is the x87's: code may touch it only where the hosted ABI owns
-    /// that state for it (X86Backend.AutomaticPacked). Read off the table, so
+    /// that state for it (X86Backend.AutomaticPacked), or inside a packed
+    /// block that saved it (MInstr.OwnsState). Read off the table, so
     /// a new packed instruction is counted the moment it has its row.
     /// </summary>
     public static bool UsesPackedState(MOp op) => (Requires(op) & PackedState) != 0;
 
-    /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code the hosted ABI selected may use (X86Backend.AutomaticPacked).</summary>
+    /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code the hosted ABI selected (X86Backend.AutomaticPacked), or an SSE block's (MInstr.OwnsState 2), may use.</summary>
     public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0;
 
     /// <summary>The features in <paramref name="features"/>, by the names a programmer knows them by.</summary>

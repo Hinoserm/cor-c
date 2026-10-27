@@ -57,7 +57,7 @@ public sealed class X86Cpu
     /// presence a switch decides, what enabling it brings with it, and what
     /// disabling it takes away. Enabling 3DNow! brings MMX and enabling SSE2
     /// brings SSE, as no processor has one without the other; SSE brings the
-    /// MMX extensions, its own integer half.
+    /// MMX extensions, its own integer half, and MMX with them.
     /// </summary>
     private static readonly (string Name, X86Feature Feature, X86Feature Enables, X86Feature Disables)[] Switches =
     [
@@ -69,8 +69,8 @@ public sealed class X86Cpu
         ("3dnow-ext", X86Feature.ThreeDNowExtended, X86Feature.Mmx | X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended, X86Feature.ThreeDNowExtended),
         ("mmx-ext", X86Feature.MmxExtensions, X86Feature.Mmx | X86Feature.MmxExtensions, X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2),
         ("cmov", X86Feature.Cmov, X86Feature.Cmov | X86Feature.FloatCmov, X86Feature.Cmov | X86Feature.FloatCmov),
-        ("sse", X86Feature.Sse, X86Feature.MmxExtensions | X86Feature.Sse, X86Feature.Sse | X86Feature.Sse2),
-        ("sse2", X86Feature.Sse2, X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2, X86Feature.Sse2),
+        ("sse", X86Feature.Sse, X86Feature.Mmx | X86Feature.MmxExtensions | X86Feature.Sse, X86Feature.Sse | X86Feature.Sse2),
+        ("sse2", X86Feature.Sse2, X86Feature.Mmx | X86Feature.MmxExtensions | X86Feature.Sse | X86Feature.Sse2, X86Feature.Sse2),
     ];
 
     /// <summary>
@@ -155,7 +155,8 @@ public sealed class X86Cpu
 
     /// <summary>
     /// <paramref name="features"/> with whatever depends on a missing feature
-    /// taken away: 3DNow! and the MMX extensions need MMX, the 3DNow!
+    /// taken away: 3DNow! and the MMX extensions need MMX, SSE the MMX
+    /// extensions (its integer half), the 3DNow!
     /// extensions need 3DNow!, SSE2 needs SSE, FCMOV/FCOMI need CMOV, and
     /// without an FPU nothing of the x87's is left (NeedsFpu). A lone 387
     /// keeps the x87 but never had FCMOV or FCOMI.

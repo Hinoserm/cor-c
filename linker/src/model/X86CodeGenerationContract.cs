@@ -19,10 +19,10 @@ public sealed record X86CodeGenerationContract(string Cpu, string Fpu, X86Featur
         // A 32-BIT PROFILE IS WHAT --cpu AND THE SWITCHES SAY: a model
         // X86Cpu knows, an FPU, features with nothing left that depends
         // on a missing one (X86Cpu.Settled: no 3DNow! without MMX, no SSE2
-        // without SSE, nothing of the x87's without one), and a set Arguments
-        // writes and X86Cpu.Parse reads back as it is -- which keeps the
-        // extensions no switch grants, the five 3DNow! ones, to the models
-        // that have them, and lets LTO restore the unit's permissions exactly.
+        // without SSE, no SSE without the MMX extensions, nothing of the
+        // x87's without one), and a set Arguments writes and X86Cpu.Parse
+        // reads back as it is -- which lets LTO restore the unit's
+        // permissions exactly.
         if (!X86Cpu.IsModel(Cpu) || Fpu is not ("none" or "387" or "x87")
             || X86Cpu.Settled(Features, Fpu) != Features || X86Cpu.Parse(Arguments()).Features != Features)
             throw new ElfFormatException("invalid x86 code-generation contract");
