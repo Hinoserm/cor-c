@@ -1,0 +1,66 @@
+// test: a packed operation's operands read where they are keep C#'s order: a pointer moved between a store and a load, an overlapping store, an operand assigned by a later one, and a getter that writes what a load reads
+// expect-exit: 0
+// expect-output:
+// moved 0000000000000002
+// overlap 2222222222222222 3333333311111111
+// assigned 0FFF0FFF0FFF0FFF
+// getter 0101010101010108
+//
+// run-with: --runtime-knob Corsac.Cpu.Features=0
+// run-with: --runtime-knob Corsac.Cpu.Features=4
+//
+// A Packed64 local and a Packed.Load's source are read in place, not
+// copied, where nothing the operation's other operands do can write memory
+// first; where one can -- an assignment, a property's getter -- the operand
+// is taken as C# takes it, before. The store of an overlapping load is one
+// move in a variant with MMX and through a copy in one without.
+static class Program
+{
+    static ulong[] _memory = new ulong[4];
+    static nuint _at;
+
+    static ulong Seven
+    {
+        get { _memory[0] = 0x5555; return 7; }
+    }
+
+    static int Main()
+    {
+        _at = Sys.ArrayData(_memory);
+        nuint p = _at, q = _at + 8;
+        _memory[1] = 2;
+        ulong moved;
+        using (Packed.Mmx())
+        {
+            Packed.Store(p, Packed.FromBits(0x1111UL));
+            p = q;
+            moved = Packed.Add16(Packed.Load(p), Packed.FromBits(0UL)).Bits;
+        }
+        System.Console.WriteLine("moved " + moved.ToString("X16"));
+
+        _memory[0] = 0x1111111122222222UL;
+        _memory[1] = 0x3333333344444444UL;
+        using (Packed.Mmx())
+        {
+            Packed.Store(_at + 4, Packed.Load(_at));
+        }
+        System.Console.WriteLine("overlap " + _memory[0].ToString("X16") + " " + _memory[1].ToString("X16"));
+
+        ulong assigned;
+        using (Packed.Mmx())
+        {
+            Packed64 a = Packed.FromBits(0x00FF00FF00FF00FFUL), b = Packed.FromBits(0x0F0F0F0F0F0F0F0FUL);
+            assigned = Packed.Or(a, a = Packed.Xor(a, b)).Bits;
+        }
+        System.Console.WriteLine("assigned " + assigned.ToString("X16"));
+
+        _memory[0] = 0x0101010101010101UL;
+        ulong got;
+        using (Packed.Mmx())
+        {
+            got = Packed.Add8(Packed.Load(_at), Packed.FromBits(Seven)).Bits;
+        }
+        System.Console.WriteLine("getter " + got.ToString("X16"));
+        return 0;
+    }
+}

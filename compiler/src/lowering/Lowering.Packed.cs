@@ -32,38 +32,72 @@ public sealed partial class Lowering
     private Stack<int> _packedFeatures => _packedOpen.TryGetValue(_f, out Stack<int>? open) ? open : _packedOpen[_f] = new();
 
     /// <summary>
-    /// A PACKED OPERATION'S OPERAND where its lanes are, not a copy: a
-    /// Packed64 or Packed128 is read and never written, so a local's own
-    /// storage -- EvalAs's copy of a struct argument was a heap object on
-    /// every pass in freestanding code -- and a Packed.Load's own address,
-    /// where nothing the operation's operands do can write memory before it
-    /// reads them (PackedPure): one movq from the source, not two moves into
-    /// a slot and one out. Any other parameter as Arg makes it.
+    /// A PACKED OPERATION'S OPERAND where its lanes are, not a copy, where
+    /// nothing the operation's operands do can write memory before it reads
+    /// them (every one PackedPure): a local's or parameter's own storage --
+    /// EvalAs's copy of a struct argument was a heap object on every pass in
+    /// freestanding code -- and a Packed.Load's own address, one movq from
+    /// the source, not two moves into a slot and one out. Not a Load for a
+    /// value a store writes other than whole, in one move (`direct` false):
+    /// a copy word by word over an overlapping source would read what it
+    /// wrote. Anything else taken when it is (PackedSnapshot).
     /// </summary>
-    private VReg PackedArg(CallExpr call, MethodSymbol target, int i)
+    private VReg PackedArg(CallExpr call, MethodSymbol target, int i, bool direct = true)
     {
         if (target.Params[i].ByRef || target.Params[i].Type.Symbol?.Name is not ("Packed64" or "Packed128")) return Arg(call, target, i);
-        if (call.Args[i] is CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Packed" }, Name: "Load" or "Load128" }, Args: [Expr from] }
-            && call.Args.All(PackedPure))
+        if (!call.Args.All(PackedPure)) return PackedSnapshot(call.Args[i], target.Params[i].Type.Symbol?.Name == "Packed128" ? 16 : 8);
+        if (direct && PackedCall(call.Args[i], "Load", "Load128") is { Args: [Expr from] })
             return ToWord(Eval(from));
-        return Eval(call.Args[i]);
+        if (call.Args[i] is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? sym) && sym is LocalSym or ParamSym { ByRef: false })
+            return Eval(n);
+        return PackedSnapshot(call.Args[i], target.Params[i].Type.Symbol?.Name == "Packed128" ? 16 : 8);
     }
+
+    /// <summary>
+    /// An operand as C# takes it, when it is taken -- what a later operand
+    /// does cannot change it: a packed operation's result as it is (a buffer
+    /// of its own), anything else copied into a frame slot of its own. Not
+    /// EvalAs's copy, which freestanding code made on the heap.
+    /// </summary>
+    private VReg PackedSnapshot(Expr e, int bytes)
+    {
+        VReg value = Eval(e);
+        if (PackedCall(e) is not null) return value;
+        VReg copy = _e.SlotAddress(_f.NewSlot(bytes, 8, "operand"));
+        _e.Emit(Opcode.MemCopy, null, R(copy), R(value), Imm(bytes, IrTypes.Word));
+        return copy;
+    }
+
+    /// <summary>A call of the prelude's Packed.NAME, by the binder's resolution: one of `names`, or any where none is given; else null.</summary>
+    private CallExpr? PackedCall(Expr e, params string[] names)
+        => e is CallExpr c && _b.Calls.TryGetValue(c, out MethodSymbol? m) && m.Owner.Name == "Packed" && m.Owner.Decl?.FromLibrary != false
+            && (names.Length == 0 || names.Contains(m.Name)) ? c : null;
 
     /// <summary>Whether a Packed64's eight bytes move through mm0 here (PackedMove): inside a packed block whose variant has MMX, in i386 code; elsewhere, and a Packed128's sixteen, a copy.</summary>
     private bool PackedMoveHere(bool wide)
         => !wide && _t.WordSize == 4 && _packedFeatures.Count > 0 && (_packedFeatures.Peek() & PackedOps.Mmx) != 0;
 
-    /// <summary>Whether an operand's evaluation writes no memory: names, literals, arithmetic on them, conversions, and the packed operations themselves (each writes only its own result), but no store, fence, assignment, step or other call.</summary>
-    private static bool PackedPure(Expr e) => e switch
+    /// <summary>
+    /// Whether an operand's evaluation writes no memory: a local, parameter,
+    /// field or constant (not a property, whose getter may), a literal, the
+    /// built-in arithmetic and conversions of numbers on them (not a type's
+    /// own operator or conversion), and the packed operations themselves,
+    /// each of which writes only its own result -- no store, fence,
+    /// assignment, step or other call.
+    /// </summary>
+    private bool PackedPure(Expr e) => e switch
     {
-        LiteralExpr or NameExpr => true,
-        BinaryExpr b => PackedPure(b.Left) && PackedPure(b.Right),
-        UnaryExpr { Op: UnOp.Neg or UnOp.Not or UnOp.BitNot } u => PackedPure(u.Operand),
-        CastExpr c => PackedPure(c.Operand),
-        CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Packed" }, Name: var op } } c
-            => op is not ("Store" or "StoreNonTemporal" or "Fence") && c.Args.All(PackedPure),
+        LiteralExpr => true,
+        NameExpr n => _b.Resolved.TryGetValue(n, out Sym? sym) && sym is LocalSym or ParamSym or FieldSym or ConstSym,
+        BinaryExpr b => PackedNumber(b) && PackedNumber(b.Left) && PackedNumber(b.Right) && PackedPure(b.Left) && PackedPure(b.Right),
+        UnaryExpr { Op: UnOp.Neg or UnOp.Not or UnOp.BitNot } u => PackedNumber(u) && PackedNumber(u.Operand) && PackedPure(u.Operand),
+        CastExpr c => !_b.UserConversions.Contains(c) && PackedNumber(c) && PackedNumber(c.Operand) && PackedPure(c.Operand),
+        CallExpr c when PackedCall(c) is not null => PackedCall(c, "Store", "StoreNonTemporal", "Fence") is null && c.Args.All(PackedPure),
         _ => false,
     };
+
+    /// <summary>Whether an expression is a number or a bool, whose operators are the language's own.</summary>
+    private bool PackedNumber(Expr e) => _b.TypeOf(e) is { } t && (t.IsNumeric || t.Prim == Prim.Bool);
 
     private VReg PackedIntrinsic(CallExpr call, MethodSymbol target)
     {
@@ -84,8 +118,8 @@ public sealed partial class Lowering
             case "FromBits":
             {
                 VReg made = ResultBuffer(call, returns);
-                _e.Store(RegOperand.Of(made), RegOperand.Of(ToI64(PackedArg(call, target, 0))), 0, 8);
-                if (wide) _e.Store(RegOperand.Of(made), RegOperand.Of(ToI64(PackedArg(call, target, 1))), 8, 8);
+                _e.Store(RegOperand.Of(made), RegOperand.Of(ToI64(Arg(call, target, 0))), 0, 8);
+                if (wide) _e.Store(RegOperand.Of(made), RegOperand.Of(ToI64(Arg(call, target, 1))), 8, 8);
                 return made;
             }
             case "Load":
@@ -99,7 +133,7 @@ public sealed partial class Lowering
             }
             case "Store":
             {
-                VReg into = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1);
+                VReg into = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1, direct: PackedMoveHere(wide));
                 if (PackedMoveHere(wide)) _e.Call(MachineIntrinsics.PackedMove, IrType.Void, R(into), R(value));
                 else _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
                 return Void();
@@ -124,7 +158,7 @@ public sealed partial class Lowering
             // which want no alignment, as MOVNTDQ would.
             case "StoreNonTemporal":
             {
-                VReg at = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1);
+                VReg at = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1, direct: ext && !wide);
                 if (!ext)
                 {
                     _e.Emit(Opcode.MemCopy, null, R(at), R(value), Imm(bytes, IrTypes.Word));
@@ -283,7 +317,7 @@ public sealed partial class Lowering
             {
                 if (PackedConstant(call, target, 2, 0, wide ? 7 : 3) is not int at) return Void();
                 VReg a = PackedArg(call, target, 0);
-                VReg value = ToI32(PackedArg(call, target, 1));
+                VReg value = ToI32(Arg(call, target, 1));
                 VReg made = ResultBuffer(call, returns);
                 if (wide && sse2)
                 {

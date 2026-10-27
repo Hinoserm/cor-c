@@ -144,8 +144,9 @@ internal sealed partial class Selector
     /// <summary>
     /// A PACKED OPERATION (Lowering.PackedIntrinsic, MachineIntrinsics.
     /// PackedOp and the rest): its operands loaded into mm0 or xmm0 and
-    /// xmm1, the instruction, and the result stored into its buffer --
-    /// nothing kept in a packed register from one to the next. Probed: the
+    /// xmm1, the instruction, and the result stored into its buffer; the
+    /// next operation's operand that buffer is taken from mm0 as it is
+    /// (Load), nothing else kept from one to the next. Probed: the
     /// block's variant that holds it runs only where the processor has its
     /// features (Sys.PackedChoose).
     /// </summary>
@@ -160,10 +161,14 @@ internal sealed partial class Selector
         // address (Lea), a register's move.
         void Load(int k)
         {
+            // Not past one that sets the address itself: the same register
+            // then names other memory (p = q between a Store and a Load).
+            if (i.Operands[k] is not RegOperand { Reg: var held }) { P(MOp.MmxLoad, At(k)); return; }
+            MReg address = Lo(held);
             int back = _cur.Instrs.Count - 1;
-            while (back >= 0 && _cur.Instrs[back] is { Op: MOp.Lea or MOp.Mov } between && between.Operands[0] is MReg) back--;
+            while (back >= 0 && _cur.Instrs[back] is { Op: MOp.Lea or MOp.Mov } between && between.Operands[0] is MReg set && !ReferenceEquals(set, address)) back--;
             if (back >= 0 && _cur.Instrs[back] is { Op: MOp.MmxStore } last && last.Operands[0] is MMem { Index: null, Symbol: null } stored
-                && stored.Disp == 0 && i.Operands[k] is RegOperand { Reg: var held } && ReferenceEquals(stored.Base, Lo(held))) return;
+                && stored.Disp == 0 && ReferenceEquals(stored.Base, address)) return;
             P(MOp.MmxLoad, At(k));
         }
         string[] part = name[MachineIntrinsics.PackedOpPrefix.Length..].Split('.');
