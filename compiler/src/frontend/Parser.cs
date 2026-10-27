@@ -958,6 +958,15 @@ public sealed class Parser
         }
 
         ParseNamespaceMembers(unit, StartNamespace, StartTypePath ?? StartNamespace);
+        // A '}' THAT CLOSES NOTHING ends the members above, and the file must
+        // end there too: C#'s CS1022. Left unsaid, the rest of the file was
+        // dropped unread and the build went on -- a driver whose method's
+        // closing brace stayed behind after an edit closed its class early,
+        // and its last members were never compiled.
+        if (!At(Tok.End))
+        {
+            throw Error($"type or namespace definition, or end-of-file expected: '{Cur.Text}' closes nothing");
+        }
         unit.UsesDynamic = _sawDynamic;
         // The anonymous types the file's `new { … }` made (ParseAnonymousObject).
         unit.Types.AddRange(_anonymousTypes);
