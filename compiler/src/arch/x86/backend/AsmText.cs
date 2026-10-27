@@ -272,6 +272,33 @@ internal static class AsmText
             case MOp.MmxOp:
                 yield return $"mmx 0f {((MImm)i.Operands[0]).Value:x2}, mm0, {Op(i.Operands[1], 8, false)}";
                 yield break;
+            case MOp.XmmLoad:
+                yield return $"movups xmm{((MImm)i.Operands[0]).Value}, {Op(i.Operands[1], 16, false)}";
+                yield break;
+            case MOp.XmmStore:
+                yield return $"movups {Op(i.Operands[0], 16, false)}, xmm0";
+                yield break;
+            case MOp.XmmLoadLow:
+                yield return $"movlps xmm{((MImm)i.Operands[0]).Value}, {Op(i.Operands[1], 8, false)}";
+                yield break;
+            case MOp.XmmStoreLow:
+                yield return $"movlps {Op(i.Operands[0], 8, false)}, xmm0";
+                yield break;
+            case MOp.XmmOp:
+                yield return $"sse {((MImm)i.Operands[0]).Value:x2} 0f {((MImm)i.Operands[1]).Value:x2}, xmm0, xmm1" + (i.Operands.Count > 2 ? $", {((MImm)i.Operands[2]).Value}" : "");
+                yield break;
+            case MOp.XmmShiftImm:
+                yield return $"sse 66 0f {((MImm)i.Operands[0]).Value:x2} /{((MImm)i.Operands[1]).Value}, xmm0, {((MImm)i.Operands[2]).Value}";
+                yield break;
+            case MOp.XmmExtractW:
+                yield return $"pextrw {Op(i.Operands[0], 4, false)}, xmm0, {((MImm)i.Operands[1]).Value}";
+                yield break;
+            case MOp.XmmInsertW:
+                yield return $"pinsrw xmm0, {Op(i.Operands[0], 4, false)}, {((MImm)i.Operands[1]).Value}";
+                yield break;
+            case MOp.ThreeDNowOp:
+                yield return $"3dnow 0f 0f {((MImm)i.Operands[0]).Value:x2}, mm0, {Op(i.Operands[1], 8, false)}";
+                yield break;
             case MOp.MmxShiftImm:
                 yield return $"mmx 0f {((MImm)i.Operands[0]).Value:x2} /{((MImm)i.Operands[1]).Value}, mm0, {((MImm)i.Operands[2]).Value}";
                 yield break;

@@ -155,6 +155,18 @@ public sealed class X86Backend : IBackend
     /// <summary>--opt-size: the layout's own padding left out (Encoder.LoopAlign).</summary>
     public bool OptimizeSize { get; set; }
 
+    /// <summary>
+    /// --x87-in-blocks-only: freestanding code of the program's own -- not
+    /// the class library's, whose float routines run inside the blocks that
+    /// call them -- may use the x87 only inside a packed block (using
+    /// (Packed.X87()) { ... }), which saves the interrupted thread's state
+    /// first; outside one it is an error naming the function
+    /// (Selector.RefuseX87OutsideBlocks). Off unless asked: a kernel whose
+    /// float code is bracketed by hand turns it on once that code is in
+    /// blocks.
+    /// </summary>
+    public bool X87InBlocksOnly { get; set; }
+
     public ObjectFile Generate(Module module, List<string> errors)
     {
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
@@ -846,7 +858,7 @@ public sealed class X86Backend : IBackend
         Corsac.Lang.Opt.SharedTrapFrees.Run(f);
         // Frame slots whose lives do not meet share their bytes (SlotShare).
         Corsac.Lang.Opt.SlotShare.Run(f);
-        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill);
+        MFunction m = Selector.Run(f, errors, AutomaticPacked, PositionIndependent, WindowsTls, _streamCopy, _streamFill, X87InBlocksOnly);
         if (errors.Count > before)
         {
             return null;

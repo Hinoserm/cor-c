@@ -1,0 +1,73 @@
+// test: a float block, a packed operation after an early return, a block inside another, and x87 code after packed operations in a loop
+// expect-exit: 0
+// expect-output:
+// hyp 13
+// found 2 sum 0016001600160016
+// nested 0003000300030003 0006000600060006
+// loop 40 7.5
+//
+// Packed.X87() is a block for float code (Parser.ParsePackedBlock): its
+// save is the x87's, or none where the code needs none. A packed operation
+// after a return inside its block keeps its block's variant: the return's
+// copy of the finally does not close it (Lowering.Stmt). A block inside
+// another is read once, with the outer variant's features. And the x87
+// code that follows packed operations finds its stack empty (EMMS before
+// it: Selector.PackedDirty), in a loop as anywhere.
+
+using System;
+
+static class Program
+{
+    static double Hyp(double x, double y)
+    {
+        double r;
+        using (Packed.X87()) { r = Math.Sqrt(x * x + y * y); }
+        return r;
+    }
+
+    static int Find(int[] values, int wanted, out ulong sum)
+    {
+        sum = 0;
+        for (int i = 0; i < values.Length; i++)
+        {
+            using (Packed.Mmx())
+            {
+                if (values[i] == wanted) return i;
+                Packed64 s = Packed.Add16(Packed.FromBits(sum), Packed.FromBits(0x000B000B000B000BUL));
+                sum = s.Bits;
+            }
+        }
+        return -1;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("hyp " + Hyp(5, 12));
+        int at = Find(new[] { 1, 2, 3 }, 3, out ulong sum);
+        Console.WriteLine("found " + at + " sum " + sum.ToString("X16"));
+        ulong inner = 0, outer = 0;
+        using (Packed.Mmx())
+        {
+            Packed64 one = Packed.FromBits(0x0001000100010001UL);
+            using (Packed.Mmx())
+            {
+                inner = Packed.Add16(Packed.Add16(one, one), one).Bits;
+            }
+            outer = Packed.Add16(Packed.FromBits(inner), Packed.FromBits(inner)).Bits;
+        }
+        Console.WriteLine("nested " + inner.ToString("X16") + " " + outer.ToString("X16"));
+        int total = 0;
+        double half = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            using (Packed.Mmx())
+            {
+                Packed64 t = Packed.Add16(Packed.FromBits((ulong)total), Packed.FromBits(10));
+                total = (int)(t.Bits & 0xFFFF);
+                half += 1.875;
+            }
+        }
+        Console.WriteLine("loop " + total + " " + half);
+        return 0;
+    }
+}

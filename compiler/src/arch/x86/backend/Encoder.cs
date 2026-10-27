@@ -728,6 +728,34 @@ internal sealed class Encoder
             case MOp.MmxInsertW:
                 // pinsrw mm0, r32, ib: 0F C4 /r, mm0 in reg, the register in r/m.
                 B(0x0f, 0xc4, (byte)(0xC0 | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
+            case MOp.XmmLoad:
+                // movups xmmN, m128: 0F 10 /r.
+                B(0x0f, 0x10); ModRM((int)((MImm)i.Operands[0]).Value, i.Operands[1]); break;
+            case MOp.XmmStore:
+                B(0x0f, 0x11); ModRM(0, i.Operands[0]); break;
+            case MOp.XmmLoadLow:
+                // movlps xmmN, m64: 0F 12 /r.
+                B(0x0f, 0x12); ModRM((int)((MImm)i.Operands[0]).Value, i.Operands[1]); break;
+            case MOp.XmmStoreLow:
+                B(0x0f, 0x13); ModRM(0, i.Operands[0]); break;
+            case MOp.XmmOp:
+            {
+                // [prefix] 0F op /r with xmm0 the register and xmm1 the r/m,
+                // and the immediate where there is one.
+                long prefix = ((MImm)i.Operands[0]).Value;
+                if (prefix != 0) B((byte)prefix);
+                B(0x0f, (byte)((MImm)i.Operands[1]).Value, 0xC1);
+                if (i.Operands.Count > 2) B((byte)((MImm)i.Operands[2]).Value);
+                break;
+            }
+            case MOp.XmmShiftImm:
+                B(0x66, 0x0f, (byte)((MImm)i.Operands[0]).Value, (byte)(0xC0 | (((MImm)i.Operands[1]).Value << 3)), (byte)((MImm)i.Operands[2]).Value); break;
+            case MOp.XmmExtractW:
+                B(0x66, 0x0f, 0xc5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3)), (byte)((MImm)i.Operands[1]).Value); break;
+            case MOp.XmmInsertW:
+                B(0x66, 0x0f, 0xc4, (byte)(0xC0 | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
+            case MOp.ThreeDNowOp:
+                B(0x0f, 0x0f); ModRM(0, i.Operands[1]); B((byte)((MImm)i.Operands[0]).Value); break;
             case MOp.Emms:
                 B(0x0f, 0x77); break;
             case MOp.Femms:

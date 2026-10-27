@@ -357,14 +357,22 @@ public sealed partial class Lowering
                 else EmitThrow(th.Value, th);
                 break;
 
-            // A PACKED BLOCK WHOSE STATE IS NOTHING HERE -- long mode, the
-            // variant for a processor with no MMX -- is its body alone: its
-            // finally gave nothing back, and a landing pad for it cost a
-            // handler on every run and kept the method from being inlined.
+            // A PACKED BLOCK'S BODY, its variant's features known to every
+            // packed operation in it (Lowering.PackedIntrinsic) for as long as
+            // it is lowered -- its finally's copies, at a return or a break,
+            // among it. Where its state is nothing (hosted code, long mode) it
+            // is its body alone: its finally gave nothing back, and a landing
+            // pad for it cost a handler on every run and kept the method from
+            // being inlined.
             case TryStmt { Catches.Count: 0, Finally.Statements: [ExprStmt { Expr: CallExpr leave }] } t
-                when PackedLeaveOf(leave) is var (number, level) && !PackedStateHere(level):
-                EmitStmt(t.Body);
-                PackedLevelTrack(enters: false, number, level);
+                when PackedLeaveOf(leave) is int features:
+                _packedFeatures.Push(features);
+                try
+                {
+                    if (PackedStateHere) EmitTry(t);
+                    else EmitStmt(t.Body);
+                }
+                finally { _packedFeatures.Pop(); }
                 break;
 
             case TryStmt t:

@@ -187,6 +187,30 @@ public enum MOp : byte
     MmxExtractW,
     /// <summary>PINSRW mm0, r32, place: the register and the place (an MImm). The MMX extensions'.</summary>
     MmxInsertW,
+    /// <summary>MOVUPS xmmN, m128: which of xmm0 and xmm1 (an MImm), and the memory. SSE's, unaligned.</summary>
+    XmmLoad,
+    /// <summary>MOVUPS m128, xmm0.</summary>
+    XmmStore,
+    /// <summary>MOVLPS xmmN, m64: two floats' eight bytes into the low half.</summary>
+    XmmLoadLow,
+    /// <summary>MOVLPS m64, xmm0.</summary>
+    XmmStoreLow,
+    /// <summary>
+    /// An SSE or SSE2 operation, xmm0 with xmm1 (a one-operand one, of xmm1
+    /// into xmm0): its prefix (0, 66, F2, F3) and opcode (0F xx), and an
+    /// immediate where it has one (CMPPS's predicate, SHUFPS's and PSHUFD's
+    /// order), MImms. Which the processor must have is read off them
+    /// (Isa.Requires).
+    /// </summary>
+    XmmOp,
+    /// <summary>PSLLW/D/Q, PSRLW/D/Q, PSRAW/D, PSLLDQ, PSRLDQ of xmm0 by a constant: the group (66 0F 71, 72, 73), its /digit and the count. SSE2's.</summary>
+    XmmShiftImm,
+    /// <summary>PEXTRW r32, xmm0, place. SSE2's.</summary>
+    XmmExtractW,
+    /// <summary>PINSRW xmm0, r32, place. SSE2's.</summary>
+    XmmInsertW,
+    /// <summary>A 3DNow! operation, mm0 with memory: its suffix (0F 0F /r xx, an MImm) and the memory.</summary>
+    ThreeDNowOp,
     /// <summary>The save's give-back at [eax]: fldenv where +108 is 0, frstor where not.</summary>
     PackedRestoreX87,
     /// <summary>An SSE block's: fxsave [eax] (16-aligned), fninit, and MXCSR 0x1F80 loaded from [eax+512].</summary>

@@ -105,11 +105,18 @@ internal static class MachineIntrinsics
     public const string PackedEnd = Prefix + "emms";
     /// <summary>
     /// A packed block's taking and giving back of the x87, MMX and SSE state
-    /// (Sys.PackedEnter, PackedLeave: using (Packed.Mmx())): the save area's
-    /// address, by the block's kind: the x87's save for an MMX block, FXSAVE
-    /// for an SSE one. In freestanding code only; the code between them may
-    /// use the packed registers (Selector.PackedRegions).
+    /// in freestanding code (Sys.PackedEnter, PackedLeave: using
+    /// (Packed.Mmx())), at the save area's address: as lowering writes them
+    /// (PackedSave, PackedRestore: the block's kind, number and variant's
+    /// features), then as the backend settles them from what the block's
+    /// code uses (Selector.SettlePackedSaves) -- the x87's save, FXSAVE, or
+    /// none. The code between them may use the packed registers
+    /// (Selector.PackedRegions).
     /// </summary>
+    public const string PackedSavePrefix = Prefix + "packedsave.";
+    public const string PackedRestorePrefix = Prefix + "packedrestore.";
+    public static string PackedSave(int kind, int number, int features) => PackedSavePrefix + kind + "." + number + "." + features;
+    public static string PackedRestore(int kind, int number, int features) => PackedRestorePrefix + kind + "." + number + "." + features;
     public const string PackedSaveX87 = Prefix + "packedsavex87";
     public const string PackedRestoreX87 = Prefix + "packedrestorex87";
     public const string PackedSaveFxsr = Prefix + "packedsavefxsr";
@@ -130,6 +137,17 @@ internal static class MachineIntrinsics
     public static string PackedExtract(int at) => PackedOpPrefix + "extract." + at;
     public static string PackedInsert(int at) => PackedOpPrefix + "insert." + at;
     public const string PackedStoreNonTemporal = PackedOpPrefix + "storent";
+    /// <summary>An SSE2 integer operation on sixteen bytes: its prefix and opcode (66 0F xx).</summary>
+    public static string PackedWide(byte prefix, byte op) => PackedOpPrefix + "x." + prefix.ToString("x2") + "." + op.ToString("x2");
+    public static string PackedWideShift(byte group, byte sub, int count) => PackedOpPrefix + "xshift." + group.ToString("x2") + "." + sub + "." + count;
+    public static string PackedWideShuffle(byte prefix, int order) => PackedOpPrefix + "xshuffle." + prefix.ToString("x2") + "." + order;
+    public static string PackedWideExtract(int at) => PackedOpPrefix + "xextract." + at;
+    public static string PackedWideInsert(int at) => PackedOpPrefix + "xinsert." + at;
+    /// <summary>An SSE float operation: on sixteen bytes or two floats' eight, its prefix and opcode, its immediate (a compare's predicate, a shuffle's order; -1 none), whether it takes one operand.</summary>
+    public static string PackedFloat(bool wide, byte prefix, byte op, int immediate, bool unary)
+        => PackedOpPrefix + (wide ? "xf." : "f2.") + prefix.ToString("x2") + "." + op.ToString("x2") + "." + immediate + "." + (unary ? 1 : 0);
+    /// <summary>A 3DNow! operation on two floats: its suffix (0F 0F /r xx).</summary>
+    public static string Packed3DNow(byte suffix) => PackedOpPrefix + "3d." + suffix.ToString("x2");
     public const string PackedFence = PackedOpPrefix + "fence";
     public const string PackedEndFast = Prefix + "femms";
     public const string ReadCodeSegment = Prefix + "readcs";

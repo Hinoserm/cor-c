@@ -376,6 +376,11 @@ public static class Driver
               --enable-<name>    the same seven extensions granted beyond the
                                  CPU's own: a promise the processor has them;
                                  a disable wins over an enable
+              --x87-in-blocks-only
+                                 freestanding: the program's own float code
+                                 only inside a packed block (using
+                                 (Packed.X87()) { ... }), which saves the
+                                 interrupted thread's x87 state first
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --no-collector     link no collector: what cannot be proved freed or
@@ -1384,6 +1389,7 @@ public static class Driver
         {
             AutomaticPacked = !freestanding,
             OptimizeSize = args.Contains("--opt-size"),
+            X87InBlocksOnly = args.Contains("--x87-in-blocks-only"),
             // AN EXECUTABLE'S OBJECT IS NOT POSITION-INDEPENDENT, made apart
             // (--obj) or not: it is linked at an address of its own, so its
             // names are absolute and a library's are reached through its GOT

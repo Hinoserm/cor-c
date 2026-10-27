@@ -2594,14 +2594,22 @@ static partial class Runtime
     // shift counts past a lane's width. `op` is the instruction's second
     // opcode byte, 0F xx, which names it.
 
-    /// The packed level the processor answers (Sys.PackedLevel): 2 with the
-    /// MMX extensions (PAVGB, PSHUFW, PMINUB, PSADBW, MOVNTQ), 1 with MMX
-    /// alone, 0 without.
-    public static int PackedLevel()
+    /// WHETHER THE PROCESSOR HAS A PACKED BLOCK'S VARIANT'S FEATURES
+    /// (Sys.PackedHas: Processor's bits), capped by the image's knob
+    /// Corsac.Cpu.Features -- a mask of them -- so a test runs each variant
+    /// on one machine. The knob is read once the image's knobs are there.
+    public static bool PackedHas(int features)
     {
-        if (Processor.Has(Processor.MmxExtensions)) return 2;
-        return Processor.Has(Processor.Mmx) ? 1 : 0;
+        int cap = _packedCap;
+        if (cap == 0)
+        {
+            cap = KnobValue("Corsac.Cpu.Features") != 0 ? (int)KnobNumber("Corsac.Cpu.Features") | 1 << 30 : ~0;
+            if (_knobs != 0) _packedCap = cap;
+        }
+        return (cap & features) == features && Processor.Has(features);
     }
+
+    static int _packedCap;
 
     static ulong LaneOf(ulong v, int bits, int k)
     {
@@ -2636,6 +2644,8 @@ static partial class Runtime
         ulong r = 0;
         switch (op)
         {
+            case 0xD4: return a + b;
+            case 0xFB: return a - b;
             case 0xDB: return a & b;
             case 0xEB: return a | b;
             case 0xEF: return a ^ b;
@@ -2742,6 +2752,136 @@ static partial class Runtime
             r = PutLane(r, bits, k, v);
         }
         return r;
+    }
+
+    /// A FLOAT OPERATION, two floats at a time (Packed.AddF32 and the rest,
+    /// where the block's variant has neither SSE nor the operation in
+    /// 3DNow!): the x87's, IEEE's single precision. `op` is PackedOps'
+    /// FloatCode: 1 add, 2 sub, 3 mul, 4 div, 5 min, 6 max, 7 equal, 8 less,
+    /// 9 less or equal, 10 square root, 11 int to float, 12 float to int (as
+    /// CVTTPS2DQ: truncated, 0x80000000 where it does not fit). A compare's
+    /// lanes are all ones or all zeros; min and max answer b where either is
+    /// a NaN, as MINPS and MAXPS do.
+    public static ulong PackedScalarFloat(int op, ulong a, ulong b)
+    {
+        ulong r = 0;
+        for (int k = 0; k < 2; k++)
+        {
+            int xa = (int)(uint)(a >> (32 * k)), xb = (int)(uint)(b >> (32 * k));
+            float x = Sys.FromSingleBits(xa), y = Sys.FromSingleBits(xb);
+            uint v;
+            switch (op)
+            {
+                case 1: v = (uint)Sys.SingleBits(x + y); break;
+                case 2: v = (uint)Sys.SingleBits(x - y); break;
+                case 3: v = (uint)Sys.SingleBits(x * y); break;
+                case 4: v = (uint)Sys.SingleBits(x / y); break;
+                case 5: v = x < y ? (uint)xa : (uint)xb; break;
+                case 6: v = x > y ? (uint)xa : (uint)xb; break;
+                case 7: v = x == y ? 0xFFFFFFFFu : 0u; break;
+                case 8: v = x < y ? 0xFFFFFFFFu : 0u; break;
+                case 9: v = x <= y ? 0xFFFFFFFFu : 0u; break;
+                case 10: v = (uint)Sys.SingleBits((float)Math.Sqrt(x)); break;
+                case 11: v = (uint)Sys.SingleBits((float)xa); break;
+                default:
+                {
+                    // Truncated toward zero; out of range or a NaN, the
+                    // "integer indefinite".
+                    double d = x;
+                    if (!(d > -2147483649.0 && d < 2147483648.0)) v = 0x80000000u;
+                    else v = (uint)(int)d;
+                    break;
+                }
+            }
+            r |= (ulong)v << (32 * k);
+        }
+        return r;
+    }
+
+    /// A PACKED128 OPERATION WHOSE LANES CROSS ITS HALVES, one lane at a
+    /// time, where the block's variant has no SSE2 (or no SSE, for the float
+    /// ones): `op` the instruction's opcode -- PACKUSWB and the other packs,
+    /// PUNPCKLBW and the other unpacks, 0x70 the shuffles (detail: the prefix
+    /// 66, F2 or F3 << 8 | the order), 0x73 the byte shifts (detail: /7 left
+    /// or /3 right << 8 | the count), 0xC6 SHUFPS (detail: the order), 0x14
+    /// and 0x15 UNPCKLPS and UNPCKHPS. The result, and the operands, at
+    /// their addresses.
+    public static void PackedScalar128(int op, int detail, nuint made, nuint a, nuint b)
+    {
+        Span<uint> x = stackalloc uint[4], y = stackalloc uint[4], r = stackalloc uint[4];
+        for (int k = 0; k < 4; k++) { x[k] = Sys.Read32(a + (nuint)(4 * k)); y[k] = Sys.Read32(b + (nuint)(4 * k)); }
+        if (op is 0x67 or 0x63 or 0x6B or 0x60 or 0x61 or 0x62 or 0x68 or 0x69 or 0x6A)
+        {
+            ulong alo = x[0] | (ulong)x[1] << 32, ahi = x[2] | (ulong)x[3] << 32;
+            ulong blo = y[0] | (ulong)y[1] << 32, bhi = y[2] | (ulong)y[3] << 32;
+            ulong lo, hi;
+            if (op is 0x67 or 0x63 or 0x6B)
+            {
+                // A pack: a's lanes narrowed into the low half, b's the high.
+                lo = PackedScalar(op, alo, ahi);
+                hi = PackedScalar(op, blo, bhi);
+            }
+            else if (op is 0x60 or 0x61 or 0x62)
+            {
+                // The low halves interleaved, then the next.
+                lo = PackedScalar(op, alo, blo);
+                hi = PackedScalar(op + 8, alo, blo);
+            }
+            else
+            {
+                lo = PackedScalar(op - 8, ahi, bhi);
+                hi = PackedScalar(op, ahi, bhi);
+            }
+            Sys.Write64(made, lo);
+            Sys.Write64(made + 8, hi);
+            return;
+        }
+        int order = detail & 0xFF;
+        switch (op)
+        {
+            case 0x70:
+            {
+                int prefix = detail >> 8;
+                Span<ushort> w = stackalloc ushort[8], o = stackalloc ushort[8];
+                for (int k = 0; k < 8; k++) w[k] = (ushort)(x[k / 2] >> (16 * (k & 1)));
+                if (prefix == 0x66)
+                {
+                    for (int k = 0; k < 4; k++) r[k] = x[(order >> (2 * k)) & 3];
+                    break;
+                }
+                for (int k = 0; k < 8; k++) o[k] = w[k];
+                int at = prefix == 0xF2 ? 0 : 4;
+                for (int k = 0; k < 4; k++) o[at + k] = w[at + ((order >> (2 * k)) & 3)];
+                for (int k = 0; k < 4; k++) r[k] = o[2 * k] | (uint)o[2 * k + 1] << 16;
+                break;
+            }
+            case 0x73:
+            {
+                int count = order, left = detail >> 8;
+                Span<byte> by = stackalloc byte[16], ob = stackalloc byte[16];
+                for (int k = 0; k < 16; k++) by[k] = (byte)(x[k / 4] >> (8 * (k & 3)));
+                for (int k = 0; k < 16; k++)
+                {
+                    int from = left == 7 ? k - count : k + count;
+                    ob[k] = from >= 0 && from < 16 ? by[from] : (byte)0;
+                }
+                for (int k = 0; k < 4; k++) r[k] = ob[4 * k] | (uint)ob[4 * k + 1] << 8 | (uint)ob[4 * k + 2] << 16 | (uint)ob[4 * k + 3] << 24;
+                break;
+            }
+            case 0xC6:
+                r[0] = x[order & 3];
+                r[1] = x[(order >> 2) & 3];
+                r[2] = y[(order >> 4) & 3];
+                r[3] = y[(order >> 6) & 3];
+                break;
+            case 0x14:
+                r[0] = x[0]; r[1] = y[0]; r[2] = x[1]; r[3] = y[1];
+                break;
+            case 0x15:
+                r[0] = x[2]; r[1] = y[2]; r[2] = x[3]; r[3] = y[3];
+                break;
+        }
+        for (int k = 0; k < 4; k++) Sys.Write32(made + (nuint)(4 * k), r[k]);
     }
 
     /// PSHUFW's words: each of the four from the one its two bits of

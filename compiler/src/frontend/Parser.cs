@@ -102,6 +102,9 @@ public sealed class Parser
     /// <summary>The packed blocks open around what is being read: fifteen at most, the blocks a selection can be inside (Selector.PackedRegions, two bits each).</summary>
     private int _packedNesting;
 
+    /// <summary>The features of the packed block variant being read (ParsePackedBlock), or -1 outside one: a block inside it is read once, with these.</summary>
+    private int _packedMask = -1;
+
     /// <summary>An await, an await using or an await foreach inside a packed block, refused: a suspension would hand the thread's packed state, the block's until it ends, to whatever ran next.</summary>
     private void RefuseSuspensionInPackedBlock(Token at, string what)
     {
@@ -5242,78 +5245,96 @@ public sealed class Parser
         return result;
     }
 
-    /// <summary>The packed block a using names: `using (Packed.Mmx())` 1, `using (Packed.Sse())` 2, anything else 0.</summary>
+    /// <summary>The packed block a using names: `using (Packed.Mmx())` 1, `using (Packed.Sse())` 2, `using (Packed.X87())` 3, anything else 0.</summary>
     private static int PackedKind(Stmt resource)
         => resource is ExprStmt { Expr: CallExpr { Args.Count: 0, Target: MemberExpr { Target: NameExpr { Name: "Packed" }, Name: var name } } }
-            ? name switch { "Mmx" => 1, "Sse" => 2, _ => 0 } : 0;
+            ? name switch { "Mmx" => 1, "Sse" => 2, "X87" => 3, _ => 0 } : 0;
 
     /// <summary>
-    /// A PACKED BLOCK, `using (Packed.Mmx()) body` or `using (Packed.Sse())`:
-    /// code that owns the x87 and MMX state -- and, for Sse, the XMM
-    /// registers -- while it runs, so the backend may select packed
-    /// instructions in it as --cpu allows, freestanding code included. The
-    /// body stays where it is written, between the state's taking and its
-    /// giving back (Sys.PackedEnter, Sys.PackedLeave), which a finally makes
-    /// on every way out -- a throw, a return, a break. Its variables are the
-    /// method's own, in the method's frame, which is what the packed groups
-    /// read and write (Selector.TryPackedArithmetic and the rest); only the
-    /// code between the two may pack in freestanding code
-    /// (Selector.PackedRegions). The backend saves what a kernel's thread had
-    /// there (MOp.PackedSaveX87, PackedSaveFxsr): the 28-byte environment
-    /// where the x87 stack is empty, the whole state where it is not.
+    /// A PACKED BLOCK, `using (Packed.Mmx())`, `using (Packed.Sse())` or
+    /// `using (Packed.X87())`: code that owns the thread's x87, MMX and SSE
+    /// state while it runs, which the backend saves first and gives back on
+    /// every way out -- the save chosen from what the code uses (Selector.
+    /// SettlePackedSaves): FXSAVE where an SSE register may be touched, the
+    /// x87's where float code, an MMX register or a call is, none where
+    /// nothing of the FPU's is. The kind is a hint: Sse lets the backend
+    /// choose SSE where it may, X87 says the code is float code. The body
+    /// stays where it is written, between the state's taking and its giving
+    /// back (Sys.PackedEnter, Sys.PackedLeave), which a finally makes on
+    /// every way out -- a throw, a return, a break. Its variables are the
+    /// method's own, which is what the packed groups and the packed
+    /// operations read and write.
+    ///
+    /// ONE VARIANT FOR EACH PROCESSOR THE BODY CAN TELL APART (PackedOps.
+    /// Classes): the features its packed operations can use, read off their
+    /// names, and each class of processor's projected onto them; the first
+    /// whose features the processor has runs (Sys.PackedHas, asked of
+    /// Processor), and a --cpu that has them folds the question, the others
+    /// going with dead code. A block inside another is read once, with the
+    /// outer variant's features.
     /// </summary>
     private Stmt ParsePackedBlock(Token at, int kind)
     {
         int line = at.Line, col = at.Col;
-        // AN MMX BLOCK IS READ THREE TIMES, once for each level a processor
-        // may answer (Sys.PackedLevel): 2 with the MMX extensions, 1 with
-        // MMX alone, 0 with neither, whose packed operations are their
-        // scalar forms (Lowering.PackedIntrinsic) and which saves nothing.
-        // The variant the processor answers runs, asked once and kept
-        // (Processor); a --cpu that says folds the question, and the
-        // variants it rules out go with dead code. An SSE block is one,
-        // where --cpu has SSE.
-        int[] levels = kind == 2 ? [2] : [2, 1, 0];
         if (_packedNesting >= 15)
             throw new CompileError(_file, line, col, "a packed block inside fifteen others: the backend keeps the blocks a selection is inside in one word, two bits each");
-        int start = _i, end = -1;
-        Stmt[] variants = new Stmt[levels.Length];
-        for (int v = 0; v < levels.Length; v++)
+        int start = _i;
+        List<int> masks = new();
+        if (_packedMask >= 0) masks.Add(_packedMask);
+        else
         {
-            _i = start;
-            int saved = _packedBlock;
-            _packedBlock = kind;
-            _packedNesting++;
-            Stmt read = ParseStmt();
-            _packedNesting--;
-            _packedBlock = saved;
+            // What the body can use: read it once to find its end -- a block
+            // inside it read once too, as no variant's -- and the packed
+            // operations' names between.
+            ReadBody(0);
+            int used = kind switch { 1 => PackedOps.Mmx, 2 => PackedOps.Mmx | PackedOps.Sse | PackedOps.Sse2, _ => 0 };
+            for (int k = start; k + 2 < _i; k++)
+                if (_t[k] is { Kind: Tok.Ident, Text: "Packed" } && _t[k + 1].Kind == Tok.Dot && _t[k + 2].Kind == Tok.Ident)
+                    used |= PackedOps.FeaturesOf(_t[k + 2].Text);
+            foreach (int c in PackedOps.Classes)
+                if (!masks.Contains(c & used)) masks.Add(c & used);
+        }
+        int end = -1;
+        Stmt[] variants = new Stmt[masks.Count];
+        for (int v = 0; v < masks.Count; v++)
+        {
+            Stmt read = ReadBody(masks[v]);
             if (end >= 0 && _i != end) throw new CompileError(_file, line, col, "a packed block's body read again ended elsewhere");
             end = _i;
-            variants[v] = Variant(read, levels[v], _packedSerial++);
+            variants[v] = Variant(read, masks[v], _packedSerial++);
         }
-        if (variants.Length == 1) return variants[0];
+        // The first variant whose features the processor has: the last asks
+        // for nothing.
+        Stmt chosen = variants[^1];
+        for (int v = masks.Count - 2; v >= 0; v--)
+        {
+            CallExpr has = new()
+            {
+                Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedHas", Line = line, Col = col },
+                Args = { new LiteralExpr { Kind = Lit.Int, Text = masks[v].ToString(), Line = line, Col = col } },
+                Line = line, Col = col,
+            };
+            chosen = new IfStmt { Cond = has, Then = variants[v], Else = chosen, Line = line, Col = col };
+        }
+        return chosen;
 
-        NameExpr Level() => new() { Name = "$packedlevel$" + (_packedSerial - 1), Line = line, Col = col };
-        Expr AtLeast(int n) => new BinaryExpr
+        Stmt ReadBody(int mask)
         {
-            Op = BinOp.Ge, Left = Level(), Right = new LiteralExpr { Kind = Lit.Int, Text = n.ToString(), Line = line, Col = col }, Line = line, Col = col,
-        };
-        Block built = new() { Line = line, Col = col };
-        built.WritableStatements.Add(new LocalDecl
-        {
-            Type = null, Name = "$packedlevel$" + (_packedSerial - 1),
-            Init = new CallExpr { Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedLevel", Line = line, Col = col }, Line = line, Col = col },
-            Line = line, Col = col,
-        });
-        built.WritableStatements.Add(new IfStmt
-        {
-            Cond = AtLeast(2), Then = variants[0],
-            Else = new IfStmt { Cond = AtLeast(1), Then = variants[1], Else = variants[2], Line = line, Col = col },
-            Line = line, Col = col,
-        });
-        return built;
+            _i = start;
+            int savedBlock = _packedBlock, savedMask = _packedMask;
+            _packedBlock = kind;
+            _packedMask = mask;
+            _packedNesting++;
+            try { return ParseStmt(); }
+            finally
+            {
+                _packedNesting--;
+                _packedBlock = savedBlock;
+                _packedMask = savedMask;
+            }
+        }
 
-        Stmt Variant(Stmt read, int level, int number)
+        Stmt Variant(Stmt read, int mask, int number)
         {
             Block body = read as Block ?? new Block { Line = read.Line, Col = read.Col };
             if (read is not Block) body.WritableStatements.Add(read);
@@ -5326,7 +5347,7 @@ public sealed class Parser
                     {
                         new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), Line = line, Col = col },
                         new LiteralExpr { Kind = Lit.Int, Text = number.ToString(), Line = line, Col = col },
-                        new LiteralExpr { Kind = Lit.Int, Text = level.ToString(), Line = line, Col = col },
+                        new LiteralExpr { Kind = Lit.Int, Text = mask.ToString(), Line = line, Col = col },
                     },
                     Line = line, Col = col,
                 },

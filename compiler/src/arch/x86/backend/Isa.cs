@@ -53,6 +53,9 @@ internal static class Isa
         MOp.Cvttss2si => X86Feature.Sse,
         MOp.MmxOp or MOp.MmxShiftImm => X86Feature.Mmx,
         MOp.MmxShuffleW or MOp.MmxExtractW or MOp.MmxInsertW => X86Feature.Mmx | X86Feature.MmxExtensions,
+        MOp.XmmLoad or MOp.XmmStore or MOp.XmmLoadLow or MOp.XmmStoreLow or MOp.XmmOp => X86Feature.Sse,
+        MOp.XmmShiftImm or MOp.XmmExtractW or MOp.XmmInsertW => X86Feature.Sse | X86Feature.Sse2,
+        MOp.ThreeDNowOp => X86Feature.Mmx | X86Feature.ThreeDNow,
         // FXSAVE with LDMXCSR: an SSE block's, so the SSE state's.
         MOp.PackedSaveFxsr or MOp.PackedRestoreFxsr => X86Feature.Sse,
         MOp.Cvttsd2si => X86Feature.Sse | X86Feature.Sse2,
@@ -69,7 +72,13 @@ internal static class Isa
     /// </summary>
     public static X86Feature Requires(MInstr i)
         => Requires(i.Op) | (i.Op is MOp.MovFromCr or MOp.MovToCr && i.Operands.Any(o => o is MImm { Value: 4 }) ? X86Feature.Pentium : X86Feature.None)
-        | (i.Op == MOp.MmxOp && i.Operands[0] is MImm { Value: var op } && ExtendedOp((byte)op) ? X86Feature.MmxExtensions : X86Feature.None);
+        | (i.Op == MOp.MmxOp && i.Operands[0] is MImm { Value: var op } && ExtendedOp((byte)op) ? X86Feature.MmxExtensions : X86Feature.None)
+        // PADDQ and PSUBQ on the MMX registers are SSE2's.
+        | (i.Op == MOp.MmxOp && i.Operands[0] is MImm { Value: 0xD4 or 0xFB } ? X86Feature.Sse | X86Feature.Sse2 : X86Feature.None)
+        // SSE2's: the integer ones (66), the word shuffles (F2, F3 0F 70),
+        // and the conversions between doublewords and floats (0F 5B, F3 0F 5B).
+        | (i.Op == MOp.XmmOp && i.Operands[0] is MImm { Value: var prefix } && i.Operands[1] is MImm { Value: var code }
+           && (prefix is 0x66 or 0xF2 || code == 0x5B || prefix == 0xF3 && code == 0x70) ? X86Feature.Sse2 : X86Feature.None);
 
     /// <summary>Whether a packed operation's opcode (0F xx: MOp.MmxOp) is one of the MMX extensions' -- PMULHUW, PAVGB/W, PMINUB, PMAXUB, PMINSW, PMAXSW, PSADBW.</summary>
     public static bool ExtendedOp(byte op) => op is 0xE4 or 0xE0 or 0xE3 or 0xDA or 0xDE or 0xEA or 0xEE or 0xF6;

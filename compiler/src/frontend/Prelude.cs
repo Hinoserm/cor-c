@@ -524,14 +524,15 @@ public static class Prelude
             public static void TraceRead(out nuint source, out nuint destination, out long kind, out long valid) { source = 0; destination = 0; kind = 0; valid = 0; }
             // `value` is the byte every one of `count` is set to.
             public static void MemorySet(nuint dst, int value, nuint count) { }
-            // A packed block's state taken and given back, 1 MMX or 2 SSE,
-            // the block's number in its method, and its variant's level --
-            // 2 with the MMX extensions, 1 with MMX alone, 0 with neither
-            // (using (Packed.Mmx()), which the parser writes these for); and
-            // the level the processor answers, which picks the variant.
-            public static void PackedEnter(int kind, int block, int level) { }
-            public static void PackedLeave(int kind, int block, int level) { }
-            public static int PackedLevel() { return 0; }
+            // A packed block's state taken and given back -- its kind (1
+            // Mmx, 2 Sse, 3 X87: a hint the backend weighs), its number in
+            // its method, and its variant's features (PackedOps' bits) -- and
+            // whether the processor has a variant's features, which picks
+            // the one that runs (using (Packed.Mmx()), which the parser
+            // writes these for).
+            public static void PackedEnter(int kind, int block, int features) { }
+            public static void PackedLeave(int kind, int block, int features) { }
+            public static bool PackedHas(int features) { return false; }
             // `count` bytes from `src` to `dst`, overlapping or not (memmove)
             // where `oneBlock` -- both in one array -- and forward where not:
             // for bytes that hold no reference (Span.Move's elements).
@@ -1049,30 +1050,44 @@ public static class Prelude
         }
 
         // EIGHT BYTES OF PACKED LANES, as MMX holds them (Packed): bytes,
-        // words, doublewords or the quadword, by the operation that reads
-        // them. Bits is all eight, lowest lane lowest.
+        // words, doublewords, the quadword or two floats, by the operation
+        // that reads them. Bits is all eight, lowest lane lowest.
         struct Packed64 {
             public ulong Bits;
         }
-        // THE PACKED OPERATIONS, each one MMX instruction inside a packed
-        // block (using (Packed.Mmx()) { ... }), or its lanes one at a time
-        // where the block's variant has no such instruction (Lowering.
-        // PackedIntrinsic). Named for what they compute; the counts, orders
-        // and places are constants the instruction holds in its own bytes.
+        // SIXTEEN, as SSE holds them: Lo the low eight, Hi the high.
+        struct Packed128 {
+            public ulong Lo;
+            public ulong Hi;
+        }
+        // THE PACKED OPERATIONS, each one instruction inside a packed block
+        // (using (Packed.Mmx()) { ... }) where the block's variant has it --
+        // MMX, the MMX extensions, 3DNow!, SSE, SSE2 -- and its lanes one at
+        // a time where it has not (Lowering.PackedIntrinsic, PackedOps). On
+        // Packed64 MMX's, on Packed128 SSE's; the F32 ones two floats or
+        // four. The counts, orders and places are integer literals, which
+        // the instruction holds in its own bytes.
         static class Packed {
             public static void Mmx() { }
             public static void Sse() { }
+            public static void X87() { }
             public static Packed64 FromBits(ulong bits) { return new Packed64(); }
+            public static Packed128 FromBits(ulong lo, ulong hi) { return new Packed128(); }
             public static Packed64 Load(nuint address) { return new Packed64(); }
+            public static Packed128 Load128(nuint address) { return new Packed128(); }
             public static void Store(nuint address, Packed64 value) { }
+            public static void Store(nuint address, Packed128 value) { }
             public static void StoreNonTemporal(nuint address, Packed64 value) { }
+            public static void StoreNonTemporal(nuint address, Packed128 value) { }
             public static void Fence() { }
             public static Packed64 Add8(Packed64 a, Packed64 b) { return a; }
             public static Packed64 Add16(Packed64 a, Packed64 b) { return a; }
             public static Packed64 Add32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 Add64(Packed64 a, Packed64 b) { return a; }
             public static Packed64 Sub8(Packed64 a, Packed64 b) { return a; }
             public static Packed64 Sub16(Packed64 a, Packed64 b) { return a; }
             public static Packed64 Sub32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 Sub64(Packed64 a, Packed64 b) { return a; }
             public static Packed64 AddSaturateU8(Packed64 a, Packed64 b) { return a; }
             public static Packed64 AddSaturateS8(Packed64 a, Packed64 b) { return a; }
             public static Packed64 AddSaturateU16(Packed64 a, Packed64 b) { return a; }
@@ -1119,9 +1134,97 @@ public static class Prelude
             public static Packed64 ShiftRightU64(Packed64 a, int count) { return a; }
             public static Packed64 ShiftRightS16(Packed64 a, int count) { return a; }
             public static Packed64 ShiftRightS32(Packed64 a, int count) { return a; }
+            public static Packed64 AddF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 SubF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 MulF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 DivF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 MinF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 MaxF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 EqualF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 LessF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 LessEqualF32(Packed64 a, Packed64 b) { return a; }
+            public static Packed64 SqrtF32(Packed64 a) { return a; }
+            public static Packed64 IntToFloat32(Packed64 a) { return a; }
+            public static Packed64 FloatToInt32(Packed64 a) { return a; }
+            public static Packed128 Add8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Add16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Add32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Add64(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Sub8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Sub16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Sub32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Sub64(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 AddSaturateU8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 AddSaturateS8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 AddSaturateU16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 AddSaturateS16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 SubSaturateU8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 SubSaturateS8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 SubSaturateU16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 SubSaturateS16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MultiplyLow16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MultiplyHigh16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MultiplyHighU16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MultiplyAdd16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 And(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Or(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Xor(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 AndNot(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Equal8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Equal16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Equal32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Greater8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Greater16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Greater32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 PackSaturateU8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 PackSaturateS8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 PackSaturateS16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 UnpackLow8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 UnpackLow16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 UnpackLow32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 UnpackHigh8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 UnpackHigh16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 UnpackHigh32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Average8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Average16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MinU8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MaxU8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Min16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 Max16(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 SumAbsoluteDifferences8(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 ShiftLeft16(Packed128 a, int count) { return a; }
+            public static Packed128 ShiftLeft32(Packed128 a, int count) { return a; }
+            public static Packed128 ShiftLeft64(Packed128 a, int count) { return a; }
+            public static Packed128 ShiftRightU16(Packed128 a, int count) { return a; }
+            public static Packed128 ShiftRightU32(Packed128 a, int count) { return a; }
+            public static Packed128 ShiftRightU64(Packed128 a, int count) { return a; }
+            public static Packed128 ShiftRightS16(Packed128 a, int count) { return a; }
+            public static Packed128 ShiftRightS32(Packed128 a, int count) { return a; }
+            public static Packed128 AddF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 SubF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MulF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 DivF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MinF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 MaxF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 EqualF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 LessF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 LessEqualF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 SqrtF32(Packed128 a) { return a; }
+            public static Packed128 IntToFloat32(Packed128 a) { return a; }
+            public static Packed128 FloatToInt32(Packed128 a) { return a; }
             public static Packed64 Shuffle16(Packed64 a, int order) { return a; }
             public static int Extract16(Packed64 a, int at) { return 0; }
+            public static int Extract16(Packed128 a, int at) { return 0; }
             public static Packed64 Insert16(Packed64 a, int value, int at) { return a; }
+            public static Packed128 Insert16(Packed128 a, int value, int at) { return a; }
+            public static Packed128 Shuffle32(Packed128 a, int order) { return a; }
+            public static Packed128 ShuffleLow16(Packed128 a, int order) { return a; }
+            public static Packed128 ShuffleHigh16(Packed128 a, int order) { return a; }
+            public static Packed128 ShiftLeftBytes(Packed128 a, int count) { return a; }
+            public static Packed128 ShiftRightBytes(Packed128 a, int count) { return a; }
+            public static Packed128 ShuffleF32(Packed128 a, Packed128 b, int order) { return a; }
+            public static Packed128 UnpackLowF32(Packed128 a, Packed128 b) { return a; }
+            public static Packed128 UnpackHighF32(Packed128 a, Packed128 b) { return a; }
         }
         static class Math {
             public static double Sqrt(double x) { return 0.0; }

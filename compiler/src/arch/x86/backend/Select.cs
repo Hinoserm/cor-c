@@ -185,6 +185,53 @@ internal sealed partial class Selector
             case "fence":
                 P(MOp.Sfence);
                 return;
+            case "3d":
+                P(MOp.MmxLoad, At(1));
+                P(MOp.ThreeDNowOp, Imm(Convert.ToByte(part[1], 16)), At(2));
+                P(MOp.MmxStore, At(0));
+                break;
+            // THE XMM REGISTERS' (SSE, SSE2): xmm0 and xmm1 in, xmm0 out. They
+            // are not the x87's, and leave the MMX registers as they were.
+            case "x":
+                P(MOp.XmmLoad, Imm(0), At(1));
+                P(MOp.XmmLoad, Imm(1), At(2));
+                P(MOp.XmmOp, Imm(Convert.ToByte(part[1], 16)), Imm(Convert.ToByte(part[2], 16)));
+                P(MOp.XmmStore, At(0));
+                return;
+            case "xshift":
+                P(MOp.XmmLoad, Imm(0), At(1));
+                P(MOp.XmmShiftImm, Imm(Convert.ToByte(part[1], 16)), Imm(int.Parse(part[2])), Imm(int.Parse(part[3])));
+                P(MOp.XmmStore, At(0));
+                return;
+            case "xshuffle":
+                P(MOp.XmmLoad, Imm(1), At(1));
+                P(MOp.XmmOp, Imm(Convert.ToByte(part[1], 16)), Imm(0x70), Imm(int.Parse(part[2])));
+                P(MOp.XmmStore, At(0));
+                return;
+            case "xextract":
+                P(MOp.XmmLoad, Imm(0), At(0));
+                P(MOp.XmmExtractW, i.Dest is not null ? Lo(i.Dest) : Temp(), Imm(int.Parse(part[1])));
+                return;
+            case "xinsert":
+                P(MOp.XmmLoad, Imm(0), At(1));
+                P(MOp.XmmInsertW, R(i.Operands[2]), Imm(int.Parse(part[1])));
+                P(MOp.XmmStore, At(0));
+                return;
+            case "xf":
+            case "f2":
+            {
+                bool wide = part[0] == "xf";
+                byte prefix = Convert.ToByte(part[1], 16), op = Convert.ToByte(part[2], 16);
+                int immediate = int.Parse(part[3]);
+                bool unary = part[4] == "1";
+                MOp load = wide ? MOp.XmmLoad : MOp.XmmLoadLow;
+                if (!unary) P(load, Imm(0), At(1));
+                P(load, Imm(1), At(unary ? 1 : 2));
+                if (immediate >= 0) P(MOp.XmmOp, Imm(prefix), Imm(op), Imm(immediate));
+                else P(MOp.XmmOp, Imm(prefix), Imm(op));
+                P(wide ? MOp.XmmStore : MOp.XmmStoreLow, At(0));
+                return;
+            }
             default:
                 Error("unknown packed operation " + name);
                 return;
@@ -203,7 +250,7 @@ internal sealed partial class Selector
     /// <summary>Whether an IR instruction wants the x87 stack empty: a real call, a system call, a return, or anything of a float type (the x87's).</summary>
     private static bool WantsX87(Instr i)
     {
-        if (i.Op is Opcode.CallIndirect or Opcode.Syscall or Opcode.Ret) return true;
+        if (i.Op is Opcode.CallIndirect or Opcode.Syscall or Opcode.Ret or Opcode.Unwind or Opcode.Trap) return true;
         if (i.Op == Opcode.Call) return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal);
         if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
         foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
@@ -215,8 +262,89 @@ internal sealed partial class Selector
         => WantsX87(i) || i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedEnd or MachineIntrinsics.PackedEndFast or MachineIntrinsics.StreamEnd
             or MachineIntrinsics.PackedSaveX87 or MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedSaveFxsr or MachineIntrinsics.PackedRestoreFxsr;
 
+    /// <summary>Whether an IR instruction is a packed operation that leaves lanes in the MMX registers: MMX's and 3DNow!'s, not the XMM registers' nor SFENCE.</summary>
     private static bool PackedOpCall(Instr i)
-        => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal) && c != MachineIntrinsics.PackedFence;
+        => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal) && c != MachineIntrinsics.PackedFence
+            && !c.StartsWith(MachineIntrinsics.PackedOpPrefix + "x", StringComparison.Ordinal) && !c.StartsWith(MachineIntrinsics.PackedOpPrefix + "f2.", StringComparison.Ordinal);
+
+    /// <summary>
+    /// A PACKED BLOCK'S SAVE, SETTLED from what its code uses, before the
+    /// function is selected (Lowering's PackedEnter writes it unsettled,
+    /// MachineIntrinsics.PackedSave): FXSAVE where an XMM register may be
+    /// used -- an SSE block in a variant with SSE, or SSE's packed
+    /// operations in it; the x87's (FNSTENV, or FNSAVE where the stack is in
+    /// use) where its code has float code, a packed operation, a call (the
+    /// callee's own float code), a packed block inside it, or the packed
+    /// groups may run (a variant with MMX on a --cpu with it); none where it
+    /// touches nothing of the FPU's, or there is no FPU. The code a block
+    /// holds is what its save reaches before its give-back, along the
+    /// function's edges; a handler's landing, which no edge reaches, holds
+    /// only a give-back.
+    /// </summary>
+    private static void SettlePackedSaves(Function f)
+    {
+        List<(Block Block, Instr At, int Kind, int Number, int Features, bool Saves)> marks = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op != Opcode.Call || i.Callee is not { } c) continue;
+                bool saves = c.StartsWith(MachineIntrinsics.PackedSavePrefix, StringComparison.Ordinal);
+                if (!saves && !c.StartsWith(MachineIntrinsics.PackedRestorePrefix, StringComparison.Ordinal)) continue;
+                string[] part = c[(saves ? MachineIntrinsics.PackedSavePrefix : MachineIntrinsics.PackedRestorePrefix).Length..].Split('.');
+                marks.Add((b, i, int.Parse(part[0]), int.Parse(part[1]), int.Parse(part[2]), saves));
+            }
+        if (marks.Count == 0) return;
+        X86Cpu profile = Target.Current.X86Profile;
+        bool fpu = profile.Fpu != "none";
+        Dictionary<int, string?> settled = new();
+        foreach (var save in marks.Where(m => m.Saves))
+        {
+            bool xmm = false, x87 = false;
+            HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+            Stack<(Block, int)> work = new();
+            work.Push((save.Block, save.Block.Instrs.IndexOf(save.At) + 1));
+            while (work.Count > 0)
+            {
+                (Block b, int from) = work.Pop();
+                bool closed = false;
+                for (int k = from; k < b.Instrs.Count && !closed; k++)
+                {
+                    Instr i = b.Instrs[k];
+                    if (i.Op == Opcode.Call && i.Callee is { } c)
+                    {
+                        if (c == MachineIntrinsics.PackedRestore(save.Kind, save.Number, save.Features)) { closed = true; continue; }
+                        if (c.StartsWith(MachineIntrinsics.PackedOpPrefix + "x", StringComparison.Ordinal)
+                            || c.StartsWith(MachineIntrinsics.PackedOpPrefix + "f2.", StringComparison.Ordinal)) xmm = true;
+                        else if (c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
+                            || c.StartsWith(MachineIntrinsics.PackedSavePrefix, StringComparison.Ordinal)) x87 = true;
+                    }
+                    if (WantsX87(i) && i.Op != Opcode.Ret) x87 = true;
+                }
+                if (closed) continue;
+                foreach (Block next in b.Successors)
+                    if (seen.Add(next)) work.Push((next, 0));
+            }
+            if ((save.Features & PackedOps.Mmx) != 0 && profile.Mmx) x87 = true;
+            bool fx = (save.Features & PackedOps.Sse) != 0 && (save.Kind == 2 || xmm);
+            settled[save.Number] = fx ? "fx" : x87 && fpu ? "x87" : null;
+        }
+        foreach (var m in marks)
+        {
+            string? kind = settled.GetValueOrDefault(m.Number);
+            int at = m.Block.Instrs.IndexOf(m.At);
+            if (kind is null) { m.Block.Instrs.RemoveAt(at); continue; }
+            string callee = (kind, m.Saves) switch
+            {
+                ("fx", true) => MachineIntrinsics.PackedSaveFxsr,
+                ("fx", false) => MachineIntrinsics.PackedRestoreFxsr,
+                (_, true) => MachineIntrinsics.PackedSaveX87,
+                _ => MachineIntrinsics.PackedRestoreX87,
+            };
+            Instr made = new() { Op = Opcode.Call, Callee = callee, Line = m.At.Line };
+            made.Operands.AddRange(m.At.Operands);
+            m.Block.Instrs[at] = made;
+        }
+    }
 
     /// <summary>
     /// WHERE THE MMX REGISTERS MAY HOLD A PACKED OPERATION'S LANES as each IR
@@ -242,6 +370,36 @@ internal sealed partial class Selector
             }
         }
         return at;
+    }
+
+    /// <summary>
+    /// FLOAT CODE OUTSIDE EVERY PACKED BLOCK, refused where it was asked
+    /// (X86Backend.X87InBlocksOnly): it would take the interrupted thread's
+    /// x87 state as its own. Once for the function, at its first.
+    /// </summary>
+    private static void RefuseX87OutsideBlocks(Function f, List<string> errors)
+    {
+        Dictionary<Block, int>? regions = PackedRegions(f);
+        foreach (Block b in f.Blocks)
+        {
+            int state = regions?.GetValueOrDefault(b) ?? 0;
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op == Opcode.Call)
+                    state = i.Callee switch
+                    {
+                        MachineIntrinsics.PackedSaveX87 => state << 2 | 1,
+                        MachineIntrinsics.PackedSaveFxsr => state << 2 | 2,
+                        MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => state >> 2,
+                        _ => state,
+                    };
+                if (state == 0 && i.Op != Opcode.Ret && (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)))
+                {
+                    errors.Add($"{f.Display ?? f.Name}: float code outside a packed block (--x87-in-blocks-only): put it inside using (Packed.X87()) {{ ... }}, which saves the interrupted thread's x87 state first" + (i.Line > 0 ? $" (line {i.Line})" : ""));
+                    return;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -290,12 +448,14 @@ internal sealed partial class Selector
     }
 
     public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false, bool windowsTls = false,
-        string? streamCopy = null, string? streamFill = null)
+        string? streamCopy = null, string? streamFill = null, bool x87InBlocksOnly = false)
     {
         // NOT IN THE STREAM ROUTINES THEMSELVES, whose own copy and fill are
         // the long way they fall back on: a block overlapping itself copied
         // there called the routine again, and again, until the stack ran out.
         bool stream = automaticPacked && f.Name != streamCopy && f.Name != streamFill;
+        if (!automaticPacked) SettlePackedSaves(f);
+        if (!automaticPacked && x87InBlocksOnly && !f.FromLibrary) RefuseX87OutsideBlocks(f, errors);
         Selector s = new(f, errors, automaticPacked, automaticPacked)
         {
             _positionIndependent = positionIndependent, _windowsTls = windowsTls,

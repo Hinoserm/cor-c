@@ -1,0 +1,211 @@
+// test: every Packed128 operation and every float operation, SSE's instruction where the block's variant has it, MMX's or 3DNow!'s where not, and the lanes one at a time where neither, alike
+// expect-exit: 0
+// expect-output:
+// Add8 1010101010101000 807F00800000FFFF
+// Add16 1110111011101100 817F00800100FFFF
+// Add32 1111111011111100 818000800100FFFF
+// Add64 1111111111111100 818000810100FFFF
+// Sub8 14589CE02468ACE0 7E81FE8002FC0101
+// Sub16 13589BE02468ACE0 7D81FD8002FC0001
+// Sub32 13579BE02468ACE0 7D81FD8002FC0001
+// Sub64 13579BE02468ACE0 7D81FD7F02FC0001
+// AddSaturateU8 FFFFFFFFFFFFFFFF 80FFFF80FFFFFFFF
+// AddSaturateS8 1010101010101000 7F8000800000FFFF
+// AddSaturateU16 FFFFFFFFFFFFFFFF 817FFFFFFFFFFFFF
+// AddSaturateS16 1110111011101100 7FFF00800100FFFF
+// SubSaturateU8 000000002468ACE0 7E00FE0000FC0100
+// SubSaturateS8 14587F7F8080ACE0 7E81FE7F02FC8001
+// SubSaturateU16 000000002468ACE0 7D81FD8000000001
+// SubSaturateS16 13587FFF8000ACE0 7D81FD8002FC8000
+// MultiplyLow16 3CB087406DB0CF00 8080800005FC8000
+// MultiplyHigh16 FFEBE88ED131F988 00FEFFFEFFFEC000
+// MultiplyHighU16 121F3F0647852B98 00FE017E01FC3FFF
+// MultiplyAdd16 E879C3F0CABA3CB0 00FD0080BFFE85FC
+// And 1214121812141210 0180010001020000
+// Or FEFCFEF8FEFCFEF0 7FFFFF80FFFEFFFF
+// Xor ECE8ECE0ECE8ECE0 7E7FFE80FEFCFFFF
+// AndNot ECC8A88064402000 007F0080FE007FFF
+// Equal8 0000000000000000 0000000000000000
+// Equal16 0000000000000000 0000000000000000
+// Equal32 0000000000000000 0000000000000000
+// Greater8 FFFFFFFF00000000 FF0000FFFF0000FF
+// Greater16 FFFFFFFF00000000 FFFF0000FFFF0000
+// Greater32 FFFFFFFF00000000 FFFFFFFFFFFFFFFF
+// PackSaturateU8 0000FFFFFFFF00FF FFFF0000FF00FF00
+// PackSaturateS8 80807F7F7F7F807F 7F7F80807F807F80
+// PackSaturateS16 80007FFF7FFF8000 7FFF80007FFF7FFF
+// UnpackLow8 017FFF8001FF8000 FF0102FE7F80FF00
+// UnpackLow16 01FF7F800180FF00 FF0201FE7FFF8000
+// UnpackLow32 01FF01807F80FF00 FF027FFF01FE8000
+// UnpackHigh8 FE12DC34BA569878 769A54BC32DE10F0
+// UnpackHigh16 FEDC1234BA985678 76549ABC3210DEF0
+// UnpackHigh32 FEDCBA9812345678 765432109ABCDEF0
+// Average8 8888888888888880 40C0804080808080
+// Average16 8888888888888880 40C0804080808000
+// MinU8 1234567876543210 0180010001027F00
+// MaxU8 FEDCBA989ABCDEF0 7FFFFF80FFFE80FF
+// Min16 FEDCBA989ABCDEF0 01FFFF00FF028000
+// Max16 1234567876543210 7F80018001FE7FFF
+// SumAbsoluteDifferences8 0000000000000430 0000000000000575
+// ShiftLeft16 3 91A0B3C0D5E0F780 FC00F8000FF00000
+// ShiftLeft32 17 ACF00000BDE00000 FE00000000000000
+// ShiftLeft64 40 BCDEF00000000000 FE80000000000000
+// ShiftRightU16 5 009102B304D506F7 03FC07F8000F0400
+// ShiftRightU32 31 0000000000000001 0000000000000000
+// ShiftRightU64 63 0000000000000000 0000000000000000
+// ShiftRightS16 7 002400ACFF35FFBD 00FFFFFE0003FF00
+// ShiftRightS32 33 00000000FFFFFFFF 0000000000000000
+// ShiftLeftBytes 3 789ABCDEF07F80FF 0001FE8000000000
+// ShiftRightBytes 5 0000000000123456 789ABCDEF07F80FF
+// Shuffle32 0x1B 01FE80007F80FF00 9ABCDEF012345678
+// ShuffleLow16 0x1B 123456789ABCDEF0 800001FEFF007F80
+// ShuffleHigh16 0b01_00_11_10 9ABCDEF012345678 7F80FF0001FE8000
+// Extract16 510 22136
+// Insert16 5 123456782345DEF0 7F80FF0001FE8000
+// AddF32 4116000042C90000 C090000040B00000
+// AddF32 41980000C0B80000
+// SubF32 C10A000042C70000 00000000C0200000
+// SubF32 C1500000C11C0000
+// MulF32 4058000042480000 40A2000040C00000
+// MulF32 42400000C1780000
+// DivF32 3D2AAAAB43480000 3F8000003EC00000
+// DivF32 3E400000C0780000
+// MinF32 3EC000003F000000 C01000003FC00000
+// MinF32 40400000C0F80000
+// MaxF32 4110000042C80000 C010000040800000
+// MaxF32 4180000040000000
+// EqualF32 0000000000000000 FFFFFFFF00000000
+// EqualF32 0000000000000000
+// LessF32 FFFFFFFF00000000 00000000FFFFFFFF
+// LessF32 FFFFFFFFFFFFFFFF
+// LessEqualF32 FFFFFFFF00000000 FFFFFFFFFFFFFFFF
+// LessEqualF32 FFFFFFFFFFFFFFFF
+// SqrtF32 404000003F3504F3 FFC0000040000000
+// SqrtF32 408000003FB504F3
+// IntToFloat32 44800000CF000000 C0E0000040400000
+// FloatToInt32 0000000000000064 FFFFFFFE00000001
+// FloatToInt32 00000003FFFFFFF9
+// ShuffleF32 0x4E C010000040800000 3EC0000042C80000
+// UnpackLowF32 C0100000C0100000 408000003FC00000
+// UnpackHighF32 411000003EC00000 3F00000042C80000
+//
+// Packed128's integer operations are SSE2's (66 0F xx) where the block's
+// variant has it, two MMX operations a half each where the lanes keep to
+// their halves, and the runtime's lanes otherwise (Runtime.PackedScalar,
+// PackedScalar128); the float ones SSE's, 3DNow!'s where it has them
+// exactly, and the x87's one float at a time. The same program prints
+// alike under every variant (the image's Corsac.Cpu.Features knob caps
+// what the processor is said to have) and in long mode, whose are the
+// scalar forms: the instructions' answers are the processor's own. The
+// floats are ordinary ones, and every conversion fits.
+
+using System;
+
+static class Program
+{
+    static string H(ulong v) => v.ToString("X16");
+    static void W(string name, Packed128 v) => Console.WriteLine(name + " " + H(v.Hi) + " " + H(v.Lo));
+    static void N(string name, Packed64 v) => Console.WriteLine(name + " " + H(v.Bits));
+    static ulong F(float lo, float hi) => (uint)Sys.SingleBits(lo) | (ulong)(uint)Sys.SingleBits(hi) << 32;
+
+    static int Main()
+    {
+        Packed128 a = Packed.FromBits(0x7F80FF0001FE8000UL, 0x123456789ABCDEF0UL);
+        Packed128 b = Packed.FromBits(0x01FF0180FF027FFFUL, 0xFEDCBA9876543210UL);
+        Packed128 f = Packed.FromBits(F(1.5f, -2.25f), F(100.0f, 0.375f));
+        Packed128 g = Packed.FromBits(F(4.0f, -2.25f), F(0.5f, 9.0f));
+        Packed128 ints = Packed.FromBits(0xFFFFFFF900000003UL, 0x0000040080000000UL);
+        Packed64 p = Packed.FromBits(F(-7.75f, 3.0f)), q = Packed.FromBits(F(2.0f, 16.0f));
+        using (Packed.Sse())
+        {
+            W("Add8", Packed.Add8(a, b));
+            W("Add16", Packed.Add16(a, b));
+            W("Add32", Packed.Add32(a, b));
+            W("Add64", Packed.Add64(a, b));
+            W("Sub8", Packed.Sub8(a, b));
+            W("Sub16", Packed.Sub16(a, b));
+            W("Sub32", Packed.Sub32(a, b));
+            W("Sub64", Packed.Sub64(a, b));
+            W("AddSaturateU8", Packed.AddSaturateU8(a, b));
+            W("AddSaturateS8", Packed.AddSaturateS8(a, b));
+            W("AddSaturateU16", Packed.AddSaturateU16(a, b));
+            W("AddSaturateS16", Packed.AddSaturateS16(a, b));
+            W("SubSaturateU8", Packed.SubSaturateU8(a, b));
+            W("SubSaturateS8", Packed.SubSaturateS8(a, b));
+            W("SubSaturateU16", Packed.SubSaturateU16(a, b));
+            W("SubSaturateS16", Packed.SubSaturateS16(a, b));
+            W("MultiplyLow16", Packed.MultiplyLow16(a, b));
+            W("MultiplyHigh16", Packed.MultiplyHigh16(a, b));
+            W("MultiplyHighU16", Packed.MultiplyHighU16(a, b));
+            W("MultiplyAdd16", Packed.MultiplyAdd16(a, b));
+            W("And", Packed.And(a, b));
+            W("Or", Packed.Or(a, b));
+            W("Xor", Packed.Xor(a, b));
+            W("AndNot", Packed.AndNot(a, b));
+            W("Equal8", Packed.Equal8(a, b));
+            W("Equal16", Packed.Equal16(a, b));
+            W("Equal32", Packed.Equal32(a, b));
+            W("Greater8", Packed.Greater8(a, b));
+            W("Greater16", Packed.Greater16(a, b));
+            W("Greater32", Packed.Greater32(a, b));
+            W("PackSaturateU8", Packed.PackSaturateU8(a, b));
+            W("PackSaturateS8", Packed.PackSaturateS8(a, b));
+            W("PackSaturateS16", Packed.PackSaturateS16(a, b));
+            W("UnpackLow8", Packed.UnpackLow8(a, b));
+            W("UnpackLow16", Packed.UnpackLow16(a, b));
+            W("UnpackLow32", Packed.UnpackLow32(a, b));
+            W("UnpackHigh8", Packed.UnpackHigh8(a, b));
+            W("UnpackHigh16", Packed.UnpackHigh16(a, b));
+            W("UnpackHigh32", Packed.UnpackHigh32(a, b));
+            W("Average8", Packed.Average8(a, b));
+            W("Average16", Packed.Average16(a, b));
+            W("MinU8", Packed.MinU8(a, b));
+            W("MaxU8", Packed.MaxU8(a, b));
+            W("Min16", Packed.Min16(a, b));
+            W("Max16", Packed.Max16(a, b));
+            W("SumAbsoluteDifferences8", Packed.SumAbsoluteDifferences8(a, b));
+            W("ShiftLeft16 3", Packed.ShiftLeft16(a, 3));
+            W("ShiftLeft32 17", Packed.ShiftLeft32(a, 17));
+            W("ShiftLeft64 40", Packed.ShiftLeft64(a, 40));
+            W("ShiftRightU16 5", Packed.ShiftRightU16(a, 5));
+            W("ShiftRightU32 31", Packed.ShiftRightU32(a, 31));
+            W("ShiftRightU64 63", Packed.ShiftRightU64(a, 63));
+            W("ShiftRightS16 7", Packed.ShiftRightS16(a, 7));
+            W("ShiftRightS32 33", Packed.ShiftRightS32(a, 33));
+            W("ShiftLeftBytes 3", Packed.ShiftLeftBytes(a, 3));
+            W("ShiftRightBytes 5", Packed.ShiftRightBytes(a, 5));
+            W("Shuffle32 0x1B", Packed.Shuffle32(a, 0x1B));
+            W("ShuffleLow16 0x1B", Packed.ShuffleLow16(a, 0x1B));
+            W("ShuffleHigh16 0b01_00_11_10", Packed.ShuffleHigh16(a, 0b01_00_11_10));
+            Console.WriteLine("Extract16 " + Packed.Extract16(a, 1) + " " + Packed.Extract16(a, 6));
+            W("Insert16 5", Packed.Insert16(a, 0x12345, 5));
+            W("AddF32", Packed.AddF32(f, g));
+            N("AddF32", Packed.AddF32(p, q));
+            W("SubF32", Packed.SubF32(f, g));
+            N("SubF32", Packed.SubF32(p, q));
+            W("MulF32", Packed.MulF32(f, g));
+            N("MulF32", Packed.MulF32(p, q));
+            W("DivF32", Packed.DivF32(f, g));
+            N("DivF32", Packed.DivF32(p, q));
+            W("MinF32", Packed.MinF32(f, g));
+            N("MinF32", Packed.MinF32(p, q));
+            W("MaxF32", Packed.MaxF32(f, g));
+            N("MaxF32", Packed.MaxF32(p, q));
+            W("EqualF32", Packed.EqualF32(f, g));
+            N("EqualF32", Packed.EqualF32(p, q));
+            W("LessF32", Packed.LessF32(f, g));
+            N("LessF32", Packed.LessF32(p, q));
+            W("LessEqualF32", Packed.LessEqualF32(f, g));
+            N("LessEqualF32", Packed.LessEqualF32(p, q));
+            W("SqrtF32", Packed.SqrtF32(g));
+            N("SqrtF32", Packed.SqrtF32(q));
+            W("IntToFloat32", Packed.IntToFloat32(ints));
+            W("FloatToInt32", Packed.FloatToInt32(f));
+            N("FloatToInt32", Packed.FloatToInt32(p));
+            W("ShuffleF32 0x4E", Packed.ShuffleF32(f, g, 0x4E));
+            W("UnpackLowF32", Packed.UnpackLowF32(f, g));
+            W("UnpackHighF32", Packed.UnpackHighF32(f, g));
+        }
+        return 0;
+    }
+}
