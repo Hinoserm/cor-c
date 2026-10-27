@@ -939,6 +939,7 @@ public sealed partial class Lowering
                     if (enters) Error(call, "a packed block (using (Packed." + (kind switch { 2 => "Sse", 3 => "X87", _ => "Mmx" }) + "())) is the i386 kernel's: long mode has no freestanding packed state here");
                     return Void();
                 }
+                if (PackedVariantNeverRuns(number, features)) return Void();
                 bool fx = (features & PackedOps.Sse) != 0;
                 if (!_packedAreas.TryGetValue((_f, number), out FrameSlot? area))
                     _packedAreas[(_f, number)] = area = _f.NewSlot(fx ? 544 : 112, 16, "packed");
@@ -959,8 +960,26 @@ public sealed partial class Lowering
                 ulong masks = LiteralInteger(call.Args[1]) is long m ? (ulong)m : 0;
                 int count = LiteralInteger(call.Args[2]) is long c ? (int)c : 1;
                 if (_t.WordSize != 4) return Fit(_e.Const(count - 1, IrType.I32), returns);
-                int first = (int)(masks & 0xFF);
-                if ((ProfileFeatures & first) == first) return Fit(_e.Const(0, IrType.I32), returns);
+                // --cpu IS THE FLOOR: the processor has at least its features,
+                // so the first variant they cover always wins over every one
+                // after it, which never runs; nor does one with a feature a
+                // --disable-NAME bans (X86Cpu.Banned), nor one with SSE in
+                // freestanding code whose --cpu has none. Each is nothing
+                // (PackedVariantNeverRuns), and a single one left is the
+                // answer at the compile. Not where the image's knob caps the
+                // processor's features (Corsac.Cpu.Features): then the run
+                // decides, every variant kept.
+                bool capped = RuntimeKnobs.Any(k => k.StartsWith("Corsac.Cpu.Features=", StringComparison.Ordinal));
+                int profile = ProfileFeatures, floor = count - 1, live = -1, alive = 0;
+                for (int v = 0; v < count; v++)
+                    if ((profile & (int)(masks >> (8 * v) & 0xFF)) == (int)(masks >> (8 * v) & 0xFF)) { floor = v; break; }
+                for (int v = 0; v < count; v++)
+                {
+                    int mask = (int)(masks >> (8 * v) & 0xFF);
+                    if (!capped && v > floor || PackedFeaturesNeverRun(mask)) _packedDead.Add((_f, block - count + v));
+                    else { live = v; alive++; }
+                }
+                if (alive == 1) return Fit(_e.Const(live, IrType.I32), returns);
                 MethodSymbol? asked = RequireRuntime(call, "PackedChoose", 3, "Sys.PackedChoose");
                 if (asked is null) return Fit(_e.Const(count - 1, IrType.I32), returns);
                 string choice = "pk_pick$" + _f.Name + "$" + block;
@@ -974,9 +993,13 @@ public sealed partial class Lowering
                 // system that runs this code turns SSE's state on (CR4.OSFXSR)
                 // for the processors its build is for, and a variant with SSE
                 // picked by CPUID alone on a newer one would fault there.
-                int allowed = Freestanding && !_t.X86Profile.Has(X86Feature.Sse) ? ~(PackedOps.Sse | PackedOps.Sse2) : ~0;
+                // Nor a banned feature (X86Cpu.Banned), and none after the
+                // floor: those variants are nothing here, and the floor -- the
+                // run's last word, which needs nothing the processor lacks --
+                // is where it falls back.
+                int allowed = (Freestanding && !_t.X86Profile.Has(X86Feature.Sse) ? ~(PackedOps.Sse | PackedOps.Sse2) : ~0) & ~PackedBits(_t.X86Profile.Banned);
                 VReg answer = _e.Call(CallLabel(asked), IrType.I32, R(AsParam(_e.Const((long)masks, IrType.I64), asked.Params[0].Type)),
-                    R(_e.Const(count, IrType.I32)), R(_e.Const(allowed, IrType.I32)))!;
+                    R(_e.Const(capped ? count : floor + 1, IrType.I32)), R(_e.Const(allowed, IrType.I32)))!;
                 _e.Store(RegOperand.Of(at), RegOperand.Of(_e.Binary(Opcode.Add, answer, 1)), 0, 4);
                 _e.Jump(known);
                 _e.SetBlock(known);
@@ -1134,6 +1157,8 @@ public sealed partial class Lowering
     }
 
     /// <summary>The packed block a call gives back (Sys.PackedLeave, Parser.ParsePackedBlock): its variant's features; null for any other call.</summary>
+    private static int PackedNumberOf(CallExpr call) => call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : -1;
+
     private static int? PackedLeaveOf(CallExpr call)
         => call is { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedLeave" },
                      Args: [LiteralExpr, LiteralExpr, LiteralExpr { Text: var features }] }
@@ -1150,11 +1175,23 @@ public sealed partial class Lowering
     /// <summary>The packed blocks' choice words this unit defines (PackedChoose): one each.</summary>
     private readonly HashSet<string> _packedPicks = new(StringComparer.Ordinal);
 
+    /// <summary>The packed blocks' variants never picked here, by their functions and numbers (PackedChoose).</summary>
+    private readonly HashSet<(Function, int)> _packedDead = new();
+
+    /// <summary>Whether a packed block's variant, by its number and features, is never picked here (Sys.PackedChoose): one after the first --cpu covers, or one with SSE in freestanding i386 code whose --cpu has none.</summary>
+    private bool PackedVariantNeverRuns(int number, int features) => _packedDead.Contains((_f, number)) || PackedFeaturesNeverRun(features);
+
+    /// <summary>Whether a variant's features are never picked here, whatever the processor: one a --disable-NAME bans, or one with SSE in freestanding i386 code whose --cpu has none.</summary>
+    private bool PackedFeaturesNeverRun(int features)
+        => (features & PackedBits(_t.X86Profile.Banned)) != 0 || Freestanding && _t.WordSize == 4 && !_t.X86Profile.Has(X86Feature.Sse) && (features & (PackedOps.Sse | PackedOps.Sse2)) != 0;
+
     /// <summary>The features --cpu promises, as PackedOps' bits (Processor's).</summary>
-    private int ProfileFeatures
-        => (_t.X86Profile.Has(X86Feature.Mmx) ? PackedOps.Mmx : 0) | (_t.X86Profile.Has(X86Feature.MmxExtensions) ? PackedOps.MmxExtensions : 0)
-         | (_t.X86Profile.Has(X86Feature.Sse) ? PackedOps.Sse : 0) | (_t.X86Profile.Has(X86Feature.Sse2) ? PackedOps.Sse2 : 0)
-         | (_t.X86Profile.Has(X86Feature.ThreeDNow) ? PackedOps.ThreeDNow : 0);
+    private int ProfileFeatures => PackedBits(_t.X86Profile.Features);
+
+    private static int PackedBits(X86Feature f)
+        => ((f & X86Feature.Mmx) != 0 ? PackedOps.Mmx : 0) | ((f & X86Feature.MmxExtensions) != 0 ? PackedOps.MmxExtensions : 0)
+         | ((f & X86Feature.Sse) != 0 ? PackedOps.Sse : 0) | ((f & X86Feature.Sse2) != 0 ? PackedOps.Sse2 : 0)
+         | ((f & X86Feature.ThreeDNow) != 0 ? PackedOps.ThreeDNow : 0);
 
     /// <summary>Each packed block's save area, by its function and its number (PackedEnter, PackedLeave): one for its start and every give-back alike.</summary>
     private readonly Dictionary<(Function, int), FrameSlot> _packedAreas = new();

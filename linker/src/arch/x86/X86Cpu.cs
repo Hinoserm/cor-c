@@ -81,6 +81,13 @@ public sealed class X86Cpu
     public string Name { get; }
     public string Fpu { get; }
     public X86Feature Features { get; }
+    /// <summary>
+    /// What --disable-NAME (and --fpu=none) forbids outright, beyond leaving
+    /// it out of what --cpu promises: no code of it at all, not even a
+    /// packed block's variant picked at run time on a processor that has it
+    /// (Lowering's Sys.PackedChoose). --cpu alone is a floor; a disable is a ban.
+    /// </summary>
+    public X86Feature Banned { get; }
     public bool Pentium => Has(X86Feature.Pentium);
     public bool Mmx => Has(X86Feature.Mmx);
     public bool ThreeDNow => Has(X86Feature.ThreeDNow);
@@ -89,9 +96,9 @@ public sealed class X86Cpu
     public bool FloatCmov => Has(X86Feature.FloatCmov);
     public global::Corsac.Lang.Ir.X86CodeGenerationContract Contract => new(Name, Fpu, Features);
 
-    private X86Cpu(string name, string fpu, X86Feature features)
+    private X86Cpu(string name, string fpu, X86Feature features, X86Feature banned = X86Feature.None)
     {
-        Name = name; Fpu = fpu; Features = features;
+        Name = name; Fpu = fpu; Features = features; Banned = banned;
     }
 
     /// <summary>Whether every feature in <paramref name="feature"/> may be used.</summary>
@@ -232,8 +239,9 @@ public sealed class X86Cpu
             if (said[i] == false) disabled |= Switches[i].Feature;
         for (int i = 0; i < Switches.Length; i++)
             if (said[i] == true && (Switches[i].Enables & disabled) == 0) features |= Switches[i].Enables;
+        X86Feature banned = fpu == "none" ? NeedsFpu : X86Feature.None;
         for (int i = 0; i < Switches.Length; i++)
-            if (said[i] == false) features &= ~Switches[i].Disables;
-        return new X86Cpu(cpu, fpu, Settled(features, fpu));
+            if (said[i] == false) { features &= ~Switches[i].Disables; banned |= Switches[i].Disables; }
+        return new X86Cpu(cpu, fpu, Settled(features, fpu), banned);
     }
 }

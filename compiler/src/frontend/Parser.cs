@@ -5284,10 +5284,22 @@ public sealed class Parser
         if (_packedMask >= 0) masks.Add(_packedMask);
         else
         {
-            // What the body can use: read it once to find its end -- a block
-            // inside it read once too, as no variant's -- and the packed
-            // operations' names between.
-            ReadBody(0);
+            // What the body can use: the packed operations' names between its
+            // start and its end -- a braced body's end found by its braces,
+            // so nothing in it is read (a generic local function read is
+            // hoisted, and a read thrown away left one behind); a single
+            // statement, which declares none, read once to find it.
+            if (_t[start].Kind == Tok.LBrace)
+            {
+                int depth = 0, k = start;
+                for (; k < _t.Count; k++)
+                {
+                    if (_t[k].Kind == Tok.LBrace) depth++;
+                    else if (_t[k].Kind == Tok.RBrace && --depth == 0) break;
+                }
+                _i = k + 1;
+            }
+            else ReadBody(0);
             int used = kind switch { 1 => PackedOps.Mmx, 2 => PackedOps.Mmx | PackedOps.Sse | PackedOps.Sse2, _ => 0 };
             for (int k = start; k + 2 < _i; k++)
                 if (_t[k] is { Kind: Tok.Ident, Text: "Packed" } && _t[k + 1].Kind == Tok.Dot && _t[k + 2].Kind == Tok.Ident)
@@ -5295,6 +5307,11 @@ public sealed class Parser
             foreach (int c in PackedOps.Classes)
                 if (!masks.Contains(c & used)) masks.Add(c & used);
         }
+        // The variants' numbers and then the chooser's, in a row, before the
+        // bodies' own blocks take theirs: lowering finds a variant by the
+        // chooser's number less the count (Sys.PackedChoose).
+        int numbered = _packedSerial;
+        _packedSerial += masks.Count + 1;
         int end = -1;
         Stmt[] variants = new Stmt[masks.Count];
         for (int v = 0; v < masks.Count; v++)
@@ -5302,7 +5319,7 @@ public sealed class Parser
             Stmt read = ReadBody(masks[v]);
             if (end >= 0 && _i != end) throw new CompileError(_file, line, col, "a packed block's body read again ended elsewhere");
             end = _i;
-            variants[v] = Variant(read, masks[v], _packedSerial++);
+            variants[v] = Variant(read, masks[v], numbered + v);
         }
         if (variants.Length == 1) return variants[0];
         // THE VARIANT THAT RUNS, chosen once: the first whose features the
@@ -5313,7 +5330,7 @@ public sealed class Parser
         // written, the method's own code.
         ulong packed = 0;
         for (int v = 0; v < masks.Count; v++) packed |= (ulong)(uint)masks[v] << (8 * v);
-        int chooser = _packedSerial++;
+        int chooser = numbered + masks.Count;
         string pick = "$packedpick$" + chooser;
         Block built = new() { Line = line, Col = col };
         built.WritableStatements.Add(new LocalDecl
@@ -5324,9 +5341,9 @@ public sealed class Parser
                 Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedChoose", Line = line, Col = col },
                 Args =
                 {
-                    new LiteralExpr { Kind = Lit.Int, Text = chooser.ToString(), Line = line, Col = col },
-                    new LiteralExpr { Kind = Lit.Int, Text = "0x" + packed.ToString("X") + "UL", Line = line, Col = col },
-                    new LiteralExpr { Kind = Lit.Int, Text = masks.Count.ToString(), Line = line, Col = col },
+                    new LiteralExpr { Kind = Lit.Int, Text = chooser.ToString(), IntValue = chooser, Line = line, Col = col },
+                    new LiteralExpr { Kind = Lit.Int, Text = "0x" + packed.ToString("X") + "UL", IntValue = (long)packed, Line = line, Col = col },
+                    new LiteralExpr { Kind = Lit.Int, Text = masks.Count.ToString(), IntValue = masks.Count, Line = line, Col = col },
                 },
                 Line = line, Col = col,
             },
@@ -5338,7 +5355,7 @@ public sealed class Parser
             Expr picked = new BinaryExpr
             {
                 Op = BinOp.Eq, Left = new NameExpr { Name = pick, Line = line, Col = col },
-                Right = new LiteralExpr { Kind = Lit.Int, Text = v.ToString(), Line = line, Col = col }, Line = line, Col = col,
+                Right = new LiteralExpr { Kind = Lit.Int, Text = v.ToString(), IntValue = v, Line = line, Col = col }, Line = line, Col = col,
             };
             chosen = new IfStmt { Cond = picked, Then = variants[v], Else = chosen, Line = line, Col = col };
         }
@@ -5372,9 +5389,9 @@ public sealed class Parser
                     Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = name, Line = line, Col = col },
                     Args =
                     {
-                        new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), Line = line, Col = col },
-                        new LiteralExpr { Kind = Lit.Int, Text = number.ToString(), Line = line, Col = col },
-                        new LiteralExpr { Kind = Lit.Int, Text = mask.ToString(), Line = line, Col = col },
+                        new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), IntValue = kind, Line = line, Col = col },
+                        new LiteralExpr { Kind = Lit.Int, Text = number.ToString(), IntValue = number, Line = line, Col = col },
+                        new LiteralExpr { Kind = Lit.Int, Text = mask.ToString(), IntValue = mask, Line = line, Col = col },
                     },
                     Line = line, Col = col,
                 },

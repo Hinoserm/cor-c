@@ -71,6 +71,9 @@ public sealed partial class Lowering
         // What this variant may use: nothing in long mode, whose packed
         // operations are their scalar forms.
         int has = _t.WordSize == 4 ? _packedFeatures.Peek() : 0;
+        // THE VARIANT RUNNING, as the features it may use (PackedOps' bits):
+        // a constant in each, which says which one the processor got.
+        if (name == "Features") return _e.Const(has, IrType.I32);
         bool mmx = (has & PackedOps.Mmx) != 0, ext = mmx && (has & PackedOps.MmxExtensions) != 0;
         bool sse = (has & PackedOps.Sse) != 0, sse2 = sse && (has & PackedOps.Sse2) != 0, amd = mmx && (has & PackedOps.ThreeDNow) != 0;
 

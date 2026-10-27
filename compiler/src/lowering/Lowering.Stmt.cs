@@ -364,6 +364,14 @@ public sealed partial class Lowering
             // is its body alone: its finally gave nothing back, and a landing
             // pad for it cost a handler on every run and kept the method from
             // being inlined.
+            // A VARIANT THAT NEVER RUNS -- one after the first --cpu covers, or
+            // one with SSE in freestanding code whose --cpu has none (Sys.
+            // PackedChoose never picks either) -- is nothing: its bytes would
+            // be dead weight in a kernel.
+            case TryStmt { Catches.Count: 0, Finally.Statements: [ExprStmt { Expr: CallExpr leave }] }
+                when PackedLeaveOf(leave) is int features && PackedVariantNeverRuns(PackedNumberOf(leave), features):
+                break;
+
             case TryStmt { Catches.Count: 0, Finally.Statements: [ExprStmt { Expr: CallExpr leave }] } t
                 when PackedLeaveOf(leave) is int features:
                 _packedFeatures.Push(features);

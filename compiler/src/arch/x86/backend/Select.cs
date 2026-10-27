@@ -277,6 +277,10 @@ internal sealed partial class Selector
         return false;
     }
 
+    /// <summary>The handler landing an instruction sets up -- its label taken (Lowering's handler records) -- which no edge reaches, or null.</summary>
+    private static Block? LandingOf(Instr i)
+        => i.Op == Opcode.LabelAddr && i.Targets.Count > 0 && i.Targets[0].IsLandingPad ? i.Targets[0] : null;
+
     /// <summary>Whether an IR instruction leaves the MMX registers empty: the x87 wanted (an EMMS before it), an EMMS of its own, a packed block's save or give-back.</summary>
     private static bool EmptiesMmx(Instr i)
         => WantsX87(i) || i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedEnd or MachineIntrinsics.PackedEndFast or MachineIntrinsics.StreamEnd
@@ -343,6 +347,7 @@ internal sealed partial class Selector
                             || c.StartsWith(MachineIntrinsics.PackedSavePrefix, StringComparison.Ordinal)) x87 = true;
                     }
                     if (SettleWantsX87(i)) x87 = true;
+                    if (LandingOf(i) is { } pad && seen.Add(pad)) work.Push((pad, 0));
                 }
                 if (closed) continue;
                 foreach (Block next in b.Successors)
@@ -355,11 +360,12 @@ internal sealed partial class Selector
             string? had = settled.GetValueOrDefault(key);
             settled[key] = had == "fx" || kind == "fx" ? "fx" : had ?? kind;
         }
+        List<Operand> dropped = new();
         foreach (var m in marks)
         {
             string? kind = settled.GetValueOrDefault(m.Kind + "." + m.Number + "." + m.Features);
             int at = m.Block.Instrs.IndexOf(m.At);
-            if (kind is null) { m.Block.Instrs.RemoveAt(at); continue; }
+            if (kind is null) { m.Block.Instrs.RemoveAt(at); dropped.Add(m.At.Operands[0]); continue; }
             string callee = (kind, m.Saves) switch
             {
                 ("fx", true) => MachineIntrinsics.PackedSaveFxsr,
@@ -371,6 +377,28 @@ internal sealed partial class Selector
             made.Operands.AddRange(m.At.Operands);
             m.Block.Instrs[at] = made;
         }
+        // A DROPPED SAVE'S AREA goes with it: the copy of its address that
+        // nothing reads now, and the slot nothing names, so the frame keeps
+        // none of its bytes.
+        HashSet<VReg> unused = new(dropped.OfType<VReg>(), ReferenceEqualityComparer.Instance);
+        if (unused.Count == 0) return;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                foreach (Operand o in i.Operands)
+                    if (o is VReg v) unused.Remove(v);
+        HashSet<FrameSlot> freed = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+            b.Instrs.RemoveAll(i =>
+            {
+                if (i.Op != Opcode.Copy || i.Dest is not { } d || !unused.Contains(d) || i.Operands.Count != 1 || i.Operands[0] is not SlotOperand slot) return false;
+                freed.Add(slot.Slot);
+                return true;
+            });
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                foreach (Operand o in i.Operands)
+                    if (o is SlotOperand s) freed.Remove(s.Slot);
+        f.Slots.RemoveAll(freed.Contains);
     }
 
     /// <summary>
@@ -388,13 +416,17 @@ internal sealed partial class Selector
         {
             Block b = work.Pop();
             bool dirty = at[b];
-            foreach (Instr i in b.Instrs)
-                dirty = PackedOpCall(i) || (!EmptiesMmx(i) && dirty);
-            foreach (Block next in b.Successors)
+            void Join(Block next, bool now)
             {
                 bool had = at.TryGetValue(next, out bool known);
-                if (!had || (dirty && !known)) { at[next] = (had && known) || dirty; work.Push(next); }
+                if (!had || (now && !known)) { at[next] = (had && known) || now; work.Push(next); }
             }
+            foreach (Instr i in b.Instrs)
+            {
+                dirty = PackedOpCall(i) || (!EmptiesMmx(i) && dirty);
+                if (LandingOf(i) is { } pad) Join(pad, dirty);
+            }
+            foreach (Block next in b.Successors) Join(next, dirty);
         }
         return at;
     }
@@ -420,6 +452,11 @@ internal sealed partial class Selector
                         MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => state >> 2,
                         _ => state,
                     };
+                // A parameter's landing-pad home (Opt.LandingPadHomes), stored
+                // on entry: words copied from the arguments, no x87.
+                if (i.Op == Opcode.Store && i.Operands is [SlotOperand { Slot.Name: { } home }, RegOperand { Reg: var stored }]
+                    && home.StartsWith("home", StringComparison.Ordinal) && f.Params.Contains(stored))
+                    continue;
                 if (state == 0 && i.Op != Opcode.Ret && (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)))
                 {
                     errors.Add($"{f.Display ?? f.Name}: float code outside a packed block in freestanding code: put it inside using (Packed.X87()) {{ ... }}, which saves the interrupted thread's x87 state first" + (i.Line > 0 ? $" (line {i.Line})" : ""));
@@ -442,19 +479,14 @@ internal sealed partial class Selector
     {
         // The blocks open, innermost in the low two bits: a save pushes its
         // kind, a give-back pops back to the block around it.
-        static int After(Block b, int state)
-        {
-            foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Call)
-                    state = i.Callee switch
-                    {
-                        MachineIntrinsics.PackedSaveX87 => state << 2 | 1,
-                        MachineIntrinsics.PackedSaveFxsr => state << 2 | 2,
-                        MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => state >> 2,
-                        _ => state,
-                    };
-            return state;
-        }
+        static int After1(Instr i, int state)
+            => i.Op != Opcode.Call ? state : i.Callee switch
+            {
+                MachineIntrinsics.PackedSaveX87 => state << 2 | 1,
+                MachineIntrinsics.PackedSaveFxsr => state << 2 | 2,
+                MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => state >> 2,
+                _ => state,
+            };
         if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedSaveX87 or MachineIntrinsics.PackedSaveFxsr)))
             return null;
         Dictionary<Block, int> at = new(ReferenceEqualityComparer.Instance) { [f.Entry] = 0 };
@@ -463,13 +495,22 @@ internal sealed partial class Selector
         while (work.Count > 0)
         {
             Block b = work.Pop();
-            int leaving = After(b, at[b]);
-            foreach (Block next in b.Successors)
+            void Join(Block next, int leaving)
             {
                 int was = at.TryGetValue(next, out int known) ? known : -1;
                 int now = was == -1 ? leaving : was == leaving ? was : 0;
                 if (now != was) { at[next] = now; work.Push(next); }
             }
+            // A HANDLER'S LANDING is reached from where it was set up (its
+            // label taken, LandingOf), in the blocks open there: a catch or a
+            // finally's throw copy inside a block is inside it.
+            int state = at[b];
+            foreach (Instr i in b.Instrs)
+            {
+                state = After1(i, state);
+                if (LandingOf(i) is { } pad) Join(pad, state);
+            }
+            foreach (Block next in b.Successors) Join(next, state);
         }
         return at;
     }

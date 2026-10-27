@@ -1075,6 +1075,7 @@ public static class Prelude
             public static void Mmx() { }
             public static void Sse() { }
             public static void X87() { }
+            public static int Features() { return 0; }
             public static Packed64 FromBits(ulong bits) { return new Packed64(); }
             public static Packed128 FromBits(ulong lo, ulong hi) { return new Packed128(); }
             public static Packed64 Load(nuint address) { return new Packed64(); }
