@@ -7,8 +7,9 @@
 // below is what the kernel is told to call, through Sys.AddressOf. It
 // runs at any instruction of the program, so it does the minimum: it
 // remembers which signal arrived and returns; the program's handlers are
-// run on the next PosixSignalRegistration.Deliver, which the console and
-// the scheduler call at their quiet moments. That is the discipline .NET
+// run on the next PosixSignalRegistration.Deliver, which the console, the
+// scheduler, the waits (Os.Poll, Os.Pause, a thread's sleep) and the GUI
+// seat (Seat.Next) call at their quiet moments. That is the discipline .NET
 // itself keeps (its handlers run on a thread pool thread, not in the
 // signal frame).
 
@@ -48,7 +49,8 @@ class PosixSignalRegistration : IDisposable
     // runs between any two instructions -- of Deliver too, and on another
     // thread -- and a read followed by a clear lost the signal that landed
     // between them (an alarm, a child's end: a wait that then slept on).
-    // Signals 1 to 31: one 32-bit word, which a 486 swaps whole.
+    // Signals 1 to 31: one 32-bit word, which a 486 swaps whole; the or is
+    // Interlocked's compare-and-swap loop, retried if a signal lands inside it.
     static int _pending;
 
     PosixSignal _signal;
@@ -114,22 +116,37 @@ class PosixSignalRegistration : IDisposable
             return;
         }
         int got = System.Threading.Interlocked.Exchange(ref _pending, 0);
-        for (int n = 1; n < MaxSignal; n++)
+        // WHAT IS NOT YET RUN GOES BACK if a handler throws: taken all at
+        // once, the signals after the thrower's were lost with it. Its own
+        // is taken off first, so it is not run again.
+        int left = got;
+        try
         {
-            if ((got & (1 << n)) == 0)
+            for (int n = 1; n < MaxSignal; n++)
             {
-                continue;
+                if ((got & (1 << n)) == 0)
+                {
+                    continue;
+                }
+                left &= ~(1 << n);
+                PosixSignalHandler? h = _handlers == null ? null : _handlers[n];
+                PosixSignalContext context = new PosixSignalContext();
+                context.Signal = (PosixSignal)n;
+                if (h != null)
+                {
+                    h.Invoke(context);
+                }
+                if (!context.Cancel && n != (int)PosixSignal.SIGCHLD && n != (int)PosixSignal.SIGWINCH && n != (int)PosixSignal.SIGCONT)
+                {
+                    Os.Exit(128 + n);
+                }
             }
-            PosixSignalHandler? h = _handlers == null ? null : _handlers[n];
-            PosixSignalContext context = new PosixSignalContext();
-            context.Signal = (PosixSignal)n;
-            if (h != null)
+        }
+        finally
+        {
+            if (left != 0)
             {
-                h.Invoke(context);
-            }
-            if (!context.Cancel && n != (int)PosixSignal.SIGCHLD && n != (int)PosixSignal.SIGWINCH && n != (int)PosixSignal.SIGCONT)
-            {
-                Os.Exit(128 + n);
+                System.Threading.Interlocked.Or(ref _pending, left);
             }
         }
     }

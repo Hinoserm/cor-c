@@ -2806,6 +2806,11 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         int got = 0;
         while (got < 16)
         {
+            // A SIGNAL NOTED OUTSIDE THE READ -- during the flush, or while
+            // another's handlers ran -- is delivered before the read blocks,
+            // as Os.Poll and Os.Pause look first: else its handlers waited
+            // for the seat's next event, which might never come.
+            if (PosixSignalRegistration.Pending) PosixSignalRegistration.Deliver();
             int n = Read(_event, got, 16 - got);
             // A SIGNAL IS NOT THE SEAT'S END: its handlers run (this is a
             // quiet moment) and the read is made again. Taken for the end,
