@@ -103,6 +103,17 @@ internal static class MachineIntrinsics
     public const string PackedFindChar8 = Prefix + "findchar8";
     public const string PackedEqual8 = Prefix + "equal8";
     public const string PackedEnd = Prefix + "emms";
+    /// <summary>
+    /// A packed block's taking and giving back of the x87, MMX and SSE state
+    /// (Sys.PackedEnter, PackedLeave: using (Packed.Mmx())): the save area's
+    /// address, by the block's kind: the x87's save for an MMX block, FXSAVE
+    /// for an SSE one. In freestanding code only; the function that holds
+    /// them may use the packed registers (Selector.Run).
+    /// </summary>
+    public const string PackedSaveX87 = Prefix + "packedsavex87";
+    public const string PackedRestoreX87 = Prefix + "packedrestorex87";
+    public const string PackedSaveFxsr = Prefix + "packedsavefxsr";
+    public const string PackedRestoreFxsr = Prefix + "packedrestorefxsr";
     public const string PackedEndFast = Prefix + "femms";
     public const string ReadCodeSegment = Prefix + "readcs";
     public const string SwapGs = Prefix + "swapgs";

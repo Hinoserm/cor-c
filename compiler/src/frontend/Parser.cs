@@ -91,6 +91,12 @@ public sealed class Parser
     private int _lockSerial;
 
     /// <summary>
+    /// Inside a packed block's body (ParsePackedBlock): 1 for MMX, 2 for SSE,
+    /// else 0. A lambda's or a local function's body is its own.
+    /// </summary>
+    private int _packedBlock;
+
+    /// <summary>
     /// The async iterator whose body is being read, or null: its `yield
     /// return v` is read as `await machine.Yield(v)` and its `yield break` as
     /// a return, the body becoming an async local function the method's
@@ -3623,6 +3629,8 @@ public sealed class Parser
         AsyncIteratorBody? savedAsync = _asyncIterator;
         int savedFinally = _finallyDepth, savedCatch = _catchDepth;
         List<Token>? savedTryYields = _tryYields;
+        int savedPacked = _packedBlock;
+        _packedBlock = 0;
 
         int serial = _iteratorSerial++;
         _iteratorTarget = "__yield" + serial;
@@ -3685,6 +3693,7 @@ public sealed class Parser
         _finallyDepth = savedFinally;
         _catchDepth = savedCatch;
         _tryYields = savedTryYields;
+        _packedBlock = savedPacked;
         return body;
     }
 
@@ -5220,6 +5229,62 @@ public sealed class Parser
         return result;
     }
 
+    /// <summary>The packed block a using names: `using (Packed.Mmx())` 1, `using (Packed.Sse())` 2, anything else 0.</summary>
+    private static int PackedKind(Stmt resource)
+        => resource is ExprStmt { Expr: CallExpr { Args.Count: 0, Target: MemberExpr { Target: NameExpr { Name: "Packed" }, Name: var name } } }
+            ? name switch { "Mmx" => 1, "Sse" => 2, _ => 0 } : 0;
+
+    /// <summary>
+    /// A PACKED BLOCK, `using (Packed.Mmx()) body` or `using (Packed.Sse())`:
+    /// code that owns the x87 and MMX state -- and, for Sse, the XMM
+    /// registers -- while it runs, so the backend may select packed
+    /// instructions in it as --cpu allows, freestanding code included. The
+    /// body becomes a local function of its own, called where the block was
+    /// (its variables the method's, in the method's frame: no allocation),
+    /// which takes the state on entry and gives it back on every way out
+    /// (Sys.PackedEnter, Sys.PackedLeave: the finally runs on a throw). The
+    /// backend saves what a kernel's thread had there (Selector's
+    /// PackedSave): the 28-byte environment where the x87 stack is empty,
+    /// the whole state where it is not. One function is the unit the
+    /// backend's per-function permission (MFunction.AutomaticPacked) covers.
+    /// </summary>
+    private Stmt ParsePackedBlock(Token at, int kind)
+    {
+        int line = at.Line, col = at.Col;
+        int saved = _packedBlock;
+        _packedBlock = kind;
+        Stmt read = ParseStmt();
+        _packedBlock = saved;
+        Block body = read as Block ?? new Block { Line = read.Line, Col = read.Col };
+        if (read is not Block) body.WritableStatements.Add(read);
+
+        Stmt State(string name) => new ExprStmt
+        {
+            Expr = new CallExpr
+            {
+                Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = name, Line = line, Col = col },
+                Args = { new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), Line = line, Col = col } },
+                Line = line, Col = col,
+            },
+            Line = line, Col = col,
+        };
+        Block leave = new() { Line = line, Col = col };
+        leave.WritableStatements.Add(State("PackedLeave"));
+        Block inner = new() { Line = line, Col = col };
+        inner.WritableStatements.Add(State("PackedEnter"));
+        inner.WritableStatements.Add(new TryStmt { Body = body, Finally = leave, Line = line, Col = col });
+
+        string run = "$packed$" + _lockSerial++;
+        Block built = new() { Line = line, Col = col };
+        built.WritableStatements.Add(new LocalDecl
+        {
+            Type = new TypeRef { Name = "Action", Line = line, Col = col }, Name = run,
+            Init = new LambdaExpr { BlockBody = inner, Line = line, Col = col }, LocalFunction = true, Line = line, Col = col,
+        });
+        built.WritableStatements.Add(new ExprStmt { Expr = new CallExpr { Target = new NameExpr { Name = run, Line = line, Col = col }, Line = line, Col = col }, Line = line, Col = col });
+        return built;
+    }
+
     /// <summary>
     /// A using, at `using` (after any `await`). THE STATEMENT FORM:
     /// `using (Res r = new Res()) body`, or `using (expression) body`. It is
@@ -5237,6 +5302,7 @@ public sealed class Parser
         {
             Stmt resource = ParseSimpleStmt();
             Expect(Tok.RParen, "')' after the resource");
+            if (!async && PackedKind(resource) is int kind and not 0) return ParsePackedBlock(at, kind);
             Stmt body = ParseStmt();
 
             Block built = new() { Line = at.Line, Col = at.Col };
@@ -5613,6 +5679,12 @@ public sealed class Parser
 
             case Tok.KwReturn:
             {
+                // A PACKED BLOCK IS A FUNCTION OF ITS OWN (ParsePackedBlock):
+                // a return in it would leave the block, not the method.
+                if (_packedBlock != 0)
+                {
+                    throw new CompileError(_file, at.Line, at.Col, "a return inside a packed block (using (Packed." + (_packedBlock == 1 ? "Mmx" : "Sse") + "())): the block is compiled as a function of its own, and the return would leave only it");
+                }
                 // An async iterator ends with `yield break` (CS1622), as an
                 // iterator does; its body's return is the one AsyncYield writes.
                 if (_asyncIterator is not null)
@@ -6629,6 +6701,8 @@ public sealed class Parser
         // Nor are its yields an async iterator's around it.
         AsyncIteratorBody? savedAsync = _asyncIterator;
         _asyncIterator = null;
+        int savedPacked = _packedBlock;
+        _packedBlock = 0;
         // `=> ref a[0]`: the body of a lambda that returns by reference is
         // the variable it answers (ParseRefValue).
         // EVERY TYPE WRITTEN, or none: C# allows no mixture, and only the
@@ -6639,6 +6713,7 @@ public sealed class Parser
             : new LambdaExpr { Body = At(Tok.KwRef) ? ParseRefValue() : ParseExpr(), Line = made.Line, Col = made.Col, Async = made.Async, TypesWritten = typed };
         _returns = savedReturns;
         _asyncIterator = savedAsync;
+        _packedBlock = savedPacked;
 
         for (int k = 0; k < names.Count; k++)
         {

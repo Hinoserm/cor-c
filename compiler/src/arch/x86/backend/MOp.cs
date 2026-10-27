@@ -163,6 +163,21 @@ public enum MOp : byte
     /// Sys.PackedEqual8).
     /// </summary>
     MmxEqual8,
+    /// <summary>
+    /// A packed block's save of the x87 state, at [eax] in 112 bytes, as the
+    /// kernel's gfx3d_fpu_save makes it: fnstenv [eax]; the tag word all
+    /// empty -- a thread at a system call -- keeps the 28-byte environment,
+    /// flagged 0 at +108, with the control word FNSAVE leaves (0x037F) loaded;
+    /// otherwise fldenv and fnsave [eax] whole, flagged 1. No MMX instruction,
+    /// so a 486 runs it.
+    /// </summary>
+    PackedSaveX87,
+    /// <summary>The save's give-back at [eax]: fldenv where +108 is 0, frstor where not.</summary>
+    PackedRestoreX87,
+    /// <summary>An SSE block's: fxsave [eax] (16-aligned), fninit, and MXCSR 0x1F80 loaded from [eax+512].</summary>
+    PackedSaveFxsr,
+    /// <summary>fxrstor [eax].</summary>
+    PackedRestoreFxsr,
     /// <summary>xor r, r; mov r16, cs -- the code selector, its low two bits the privilege level.</summary>
     ReadCs,
     /// <summary>ltr r16.</summary>

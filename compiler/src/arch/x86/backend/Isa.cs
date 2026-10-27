@@ -51,6 +51,8 @@ internal static class Isa
         // FUCOMIP: the x87 half of what CPUID calls CMOV.
         MOp.Fucomipp => X86Feature.FloatCmov,
         MOp.Cvttss2si => X86Feature.Sse,
+        // FXSAVE with LDMXCSR: an SSE block's, so the SSE state's.
+        MOp.PackedSaveFxsr or MOp.PackedRestoreFxsr => X86Feature.Sse,
         MOp.Cvttsd2si => X86Feature.Sse | X86Feature.Sse2,
         // PAUSE is F3 90, REP NOP: a plain no-op to anything before the
         // Pentium 4, and so needs nothing.

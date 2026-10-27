@@ -108,7 +108,31 @@ public sealed partial class Binder
     }
 
     private static bool InlineInEnvironment(Type t)
-        => !t.IsNullableValue && t.Size <= 8 && (t.IsReference || t.IsPointer || t.IsEnumValue || t.Symbol is null || t.Symbol.Kind == TypeKind.Interface);
+        => !t.IsNullableValue && (t.Size <= 8 && (t.IsReference || t.IsPointer || t.IsEnumValue || t.Symbol is null || t.Symbol.Kind == TypeKind.Interface)
+            || NumbersOnly(t, 0));
+
+    /// <summary>
+    /// A STRUCT OF NUMBERS, held whole in the block however large: a packed
+    /// block's lanes (Parser.ParsePackedBlock) -- a struct of eight shorts a
+    /// local function wrote put the whole closure on the heap, which a
+    /// kernel's packed block cannot have. Nothing in it the collector
+    /// follows: no reference, array, pointer or type parameter, nested
+    /// structs alike.
+    /// </summary>
+    private static bool NumbersOnly(Type t, int depth)
+    {
+        if (depth > 8 || t.IsNullableValue || t.IsReference || t.IsArray || t.IsPointer || t.ParamName is not null || t.Function is not null
+            || t.Symbol is not { Kind: TypeKind.Struct } held) return false;
+        foreach (FieldSymbol f in held.Fields)
+        {
+            if (f.Static) continue;
+            Type ft = f.Type;
+            if (ft.IsReference || ft.IsArray || ft.IsPointer || ft.IsNullableValue || ft.ParamName is not null || ft.Function is not null) return false;
+            if (ft.IsEnumValue || ft.Symbol is null) continue;
+            if (!NumbersOnly(ft, depth + 1)) return false;
+        }
+        return true;
+    }
 
     // What a capture is in the environment: a cell variable (a declared local
     // or a written parameter), a value (an unwritten parameter, `this`), or

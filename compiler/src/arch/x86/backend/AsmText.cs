@@ -269,6 +269,36 @@ internal static class AsmText
                 yield return $"pmovmskb {Op(i.Operands[0], 4, false)}, mm0";
                 yield break;
             }
+            case MOp.PackedSaveX87:
+                yield return "fnstenv [eax]";
+                yield return "cmp word [eax+8], 0xFFFF";
+                yield return "jne 1f";
+                yield return "mov dword [eax+108], 0";
+                yield return "mov dword [eax+28], 0x037F";
+                yield return "fldcw [eax+28]";
+                yield return "jmp 2f";
+                yield return "1: fldenv [eax]";
+                yield return "fnsave [eax]";
+                yield return "mov dword [eax+108], 1";
+                yield return "2:";
+                yield break;
+            case MOp.PackedRestoreX87:
+                yield return "cmp dword [eax+108], 0";
+                yield return "jne 1f";
+                yield return "fldenv [eax]";
+                yield return "jmp 2f";
+                yield return "1: frstor [eax]";
+                yield return "2:";
+                yield break;
+            case MOp.PackedSaveFxsr:
+                yield return "fxsave [eax]";
+                yield return "fninit";
+                yield return "mov dword [eax+512], 0x1F80";
+                yield return "ldmxcsr [eax+512]";
+                yield break;
+            case MOp.PackedRestoreFxsr:
+                yield return "fxrstor [eax]";
+                yield break;
             case MOp.MmxEqual8:
                 yield return $"movq mm0, {Op(i.Operands[1], 8, false)}";
                 yield return $"pcmpeqd mm0, {Op(i.Operands[2], 8, false)}";

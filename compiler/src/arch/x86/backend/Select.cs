@@ -43,6 +43,8 @@ internal sealed partial class Selector
     private Block _sourceBlock = null!;
     private int _splits;
     private readonly bool _automaticPacked;
+    /// <summary>Whether SSE may be selected here (MFunction.SseState).</summary>
+    private readonly bool _packedSse;
 
     private static readonly MReg Eax = MReg.Of(Gpr.Eax);
     private static readonly MReg Ecx = MReg.Of(Gpr.Ecx);
@@ -92,10 +94,11 @@ internal sealed partial class Selector
     /// </summary>
     private const int StreamBytes = 256 * 1024;
 
-    private Selector(Function f, List<string> errors, bool automaticPacked)
+    private Selector(Function f, List<string> errors, bool automaticPacked, bool sse)
     {
         _f = f;
-        _m = new MFunction(f) { AutomaticPacked = automaticPacked };
+        _m = new MFunction(f) { AutomaticPacked = automaticPacked, SseState = sse };
+        _packedSse = sse;
         _lo = new ByRegister<MReg>(f.RegCount);
         _hi = new ByRegister<MReg>(f.RegCount);
         _useCount = new UseCounts(f.RegCount);
@@ -121,6 +124,16 @@ internal sealed partial class Selector
             }
     }
 
+    /// <summary>The kind of packed block a function's body is (Sys.PackedEnter): 1 MMX, 2 SSE, 0 none.</summary>
+    private static int PackedBlockKind(Function f)
+    {
+        foreach (Block b in f.Blocks)
+        foreach (Instr i in b.Instrs)
+            if (i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedSaveX87 or MachineIntrinsics.PackedSaveFxsr)
+                return i.Callee == MachineIntrinsics.PackedSaveFxsr ? 2 : 1;
+        return 0;
+    }
+
     public static MFunction Run(Function f, List<string> errors, bool automaticPacked = true, bool positionIndependent = false, bool windowsTls = false,
         string? streamCopy = null, string? streamFill = null)
     {
@@ -128,7 +141,13 @@ internal sealed partial class Selector
         // the long way they fall back on: a block overlapping itself copied
         // there called the routine again, and again, until the stack ran out.
         bool stream = automaticPacked && f.Name != streamCopy && f.Name != streamFill;
-        Selector s = new(f, errors, automaticPacked)
+        // A PACKED BLOCK OWNS THE STATE in freestanding code too: the
+        // function its body became saves it first (PackedSave), so it may
+        // use what its kind allows -- the MMX registers, and the SSE ones in
+        // an SSE block. Not the streamed copies, which are the hosted
+        // runtime's.
+        int block = PackedBlockKind(f);
+        Selector s = new(f, errors, automaticPacked || block != 0, automaticPacked || block == 2)
         {
             _positionIndependent = positionIndependent, _windowsTls = windowsTls,
             _streamCopy = stream ? streamCopy : null, _streamFill = stream ? streamFill : null,
@@ -1888,7 +1907,7 @@ internal sealed partial class Selector
         // AutomaticPacked borrows. 32-bit SSE has no 64-bit integer result, so
         // Int64, and the UInt32 that needs the 64-bit store, stay on the x87.
         bool single = FWidth(i.Operands[0].Type) == 4;
-        if (!unsignedHighHalf && i.Op == Opcode.FToI && d.Type == IrType.I32 && _automaticPacked
+        if (!unsignedHighHalf && i.Op == Opcode.FToI && d.Type == IrType.I32 && _packedSse
             && Target.Current.X86Profile.Has(single ? X86Feature.Sse : X86Feature.Sse2))
         {
             Emit(single ? MOp.Cvttss2si : MOp.Cvttsd2si, Lo(d), FHome(i.Operands[0]));
@@ -2860,6 +2879,30 @@ internal sealed partial class Selector
                 Emit(new MInstr(MOp.Sfence) { Probed = true });
                 Emit(new MInstr(MOp.Emms) { Probed = true });
                 return;
+            case MachineIntrinsics.PackedSaveX87:
+            case MachineIntrinsics.PackedRestoreX87:
+            case MachineIntrinsics.PackedSaveFxsr:
+            case MachineIntrinsics.PackedRestoreFxsr:
+            {
+                // The area's address in EAX, which the sequences name; an
+                // SSE block's FXSAVE wants it at sixteen (Lowering: 16 bytes
+                // more than the 528 it fills).
+                bool fx = name is MachineIntrinsics.PackedSaveFxsr or MachineIntrinsics.PackedRestoreFxsr;
+                Mov(Eax, R(i.Operands[0]));
+                if (fx)
+                {
+                    Emit(MOp.Add, Eax, Imm(15));
+                    Emit(MOp.And, Eax, Imm(-16));
+                }
+                Emit(new MInstr(name switch
+                {
+                    MachineIntrinsics.PackedSaveX87 => MOp.PackedSaveX87,
+                    MachineIntrinsics.PackedRestoreX87 => MOp.PackedRestoreX87,
+                    MachineIntrinsics.PackedSaveFxsr => MOp.PackedSaveFxsr,
+                    _ => MOp.PackedRestoreFxsr,
+                }));
+                return;
+            }
             case MachineIntrinsics.PackedEnd:
             case MachineIntrinsics.PackedEndFast:
                 Emit(new MInstr(name == MachineIntrinsics.PackedEnd ? MOp.Emms : MOp.Femms) { Probed = true });

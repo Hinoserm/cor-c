@@ -62,6 +62,8 @@ public sealed class PreinitWorld
         public Dictionary<int, Val> Refs = new();
         /// <summary>Read-only data: a descriptor, a literal. Never written.</summary>
         public bool ReadOnly { get; init; }
+        /// <summary>A symbol the image does not define, made for the run alone (Address): never laid down, nor kept.</summary>
+        public bool Dropped { get; init; }
         /// <summary>The section's alignment, for laying it down again.</summary>
         public int Align { get; init; } = 16;
         internal int SavedIn = -1;
@@ -241,6 +243,7 @@ public sealed class PreinitWorld
                 string? why = v switch
                 {
                     Ptr { Region.Kind: RegionKind.Frame or RegionKind.Thread } => "an address of a stack or a thread",
+                    Ptr { Region.Dropped: true } p => "'" + p.Region + "', which the image does not define",
                     Ptr { Region.Local: ObjectFile own } p when MadeAgain(own) => "'" + p.Region + "', a unit's own",
                     Code { Local: ObjectFile own } c when MadeAgain(own) => "'" + c.Label + "', a unit's own",
                     _ => null,
@@ -347,20 +350,27 @@ public sealed class PreinitWorld
     {
         if (Data(symbol, from) is Region r) return new Ptr(r, offset);
         if (Find(symbol, from) is var (owner, sym, local) && sym.Section!.Kind == SectionKind.Code) return new Code(symbol, offset, local ? owner : null);
-        // THE COLLECTOR'S STATE THE IMAGE DROPPED: a word the late passes
+        // THE COLLECTOR'S FREE KNOB THE IMAGE DROPPED: a word the late passes
         // left nothing reading -- Gc.IgnoredFrees, once the free that read it
-        // was put in its caller (List.Grow) -- read as the zero it starts as.
-        // The run's IR is the snapshot from before those passes.
-        if (Collector.Contains(symbol)) return new Ptr(DefineStorage(symbol, 8, "the collector"), offset);
+        // was put in its caller (List.Grow) -- read as the zero it starts as;
+        // it only steers frees, which are nothing here. The run's IR is the
+        // snapshot from before those passes. Marking and Cards, which say
+        // what a store does, are not guessed.
+        if (symbol == "s_Gc_IgnoredFrees")
+        {
+            if (!_regions.TryGetValue(symbol, out Region? knob))
+                _regions[symbol] = knob = new() { Kind = RegionKind.Storage, Symbol = symbol, Bytes = new byte[8], Maker = "the collector", Dropped = true };
+            return new Ptr(knob, offset);
+        }
         // A CONTEXT TOKEN THE IMAGE DROPPED (Lowering.ContextToken, "tk_"): a
         // shared generic copy's static handed its instantiation's context --
         // Span<string>.Move, from Array.Copy -- whose call the late passes
         // made without it. Handed on, it is an address; read, it is the
-        // image's, which MayRead refuses.
+        // image's, which MayRead refuses; kept, Commit refuses it.
         if (symbol.StartsWith("tk_", StringComparison.Ordinal))
         {
             if (!_regions.TryGetValue(symbol, out Region? token))
-                _regions[symbol] = token = new() { Kind = RegionKind.Data, Symbol = symbol, Bytes = new byte[WordSize], Align = WordSize };
+                _regions[symbol] = token = new() { Kind = RegionKind.Data, Symbol = symbol, Bytes = new byte[WordSize], Align = WordSize, Dropped = true };
             return new Ptr(token, offset);
         }
         throw new Refused("'" + symbol + "' is defined nowhere the link can see");

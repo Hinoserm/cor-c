@@ -910,6 +910,46 @@ public sealed partial class Lowering
                 VReg? got = _e.Call(machine, answers, given.ToArray());
                 return got ?? Void();
             }
+            // A PACKED BLOCK'S STATE, taken and given back (Parser.
+            // ParsePackedBlock: 1 MMX, 2 SSE). Hosted code owns it already --
+            // the operating system saves it at a switch -- and needs nothing.
+            // Freestanding code borrows a thread's: saved in the function's
+            // own frame (PackedSaveX87: 112 bytes; FXSAVE: 512 at sixteen,
+            // and MXCSR's word), and the function kept whole, never inlined
+            // into a caller that does not own the state.
+            case "PackedEnter":
+            case "PackedLeave":
+            {
+                int kind = call.Args.Count == 1 && call.Args[0] is LiteralExpr { Text: "2" } ? 2 : 1;
+                if (!Freestanding) return Void();
+                // Refused once, at the block's start: its finally is lowered
+                // on every way out, and said it again on each.
+                bool enters = name == "PackedEnter";
+                if (_t.WordSize != 4)
+                {
+                    if (!enters) return Void();
+                    Error(call, "a packed block (using (Packed." + (kind == 2 ? "Sse" : "Mmx") + "())) is the i386 kernel's: long mode has no freestanding packed state here");
+                    return Void();
+                }
+                if (kind == 2 && !_t.X86Profile.Has(X86Feature.Sse))
+                {
+                    if (!enters) return Void();
+                    Error(call, "using (Packed.Sse()) needs SSE, which --cpu=" + _t.X86Profile.Name + " does not have");
+                    return Void();
+                }
+                _f.NoInlining = true;
+                if (!_packedAreas.TryGetValue(_f, out FrameSlot? area))
+                    _packedAreas[_f] = area = _f.NewSlot(kind == 2 ? 544 : 112, 16, "packed");
+                string machine = (name == "PackedEnter", kind == 2) switch
+                {
+                    (true, false) => MachineIntrinsics.PackedSaveX87,
+                    (false, false) => MachineIntrinsics.PackedRestoreX87,
+                    (true, true) => MachineIntrinsics.PackedSaveFxsr,
+                    _ => MachineIntrinsics.PackedRestoreFxsr,
+                };
+                _e.Call(machine, IrType.Void, R(_e.SlotAddress(area)));
+                return Void();
+            }
             case "ReadFlags":
                 return Fit(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!, returns);
             case "ReadCodeSegment":
@@ -1061,10 +1101,13 @@ public sealed partial class Lowering
         }
     }
 
+    /// <summary>Each function's packed-block save area (PackedEnter, PackedLeave): one, the two calls' alike.</summary>
+    private readonly Dictionary<Function, FrameSlot> _packedAreas = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>
     /// `n` bytes from `from` to `into`: forward a word at a time (MemCopy);
-    /// where `overlapping` may be and the destination starts inside the
-    /// source, from the end down.
+    /// where `oneBlock` -- both in one object -- and the destination starts
+    /// inside the source, from the end down.
     /// </summary>
     private void MoveBytes(VReg into, VReg from, VReg n, VReg? oneBlock, bool numbers)
     {

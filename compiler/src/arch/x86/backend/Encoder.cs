@@ -153,7 +153,7 @@ internal sealed class Encoder
             if (!m.AutomaticPacked && Isa.UsesPackedState(i.Op))
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} uses the MMX registers in code that does not own the x87 state");
-            if (!m.AutomaticPacked && Isa.UsesSseState(i.Op))
+            if (!m.SseState && Isa.UsesSseState(i.Op))
                 throw new InvalidOperationException(
                     $"{m.Source.Name}: {i.Op}{At(i)} uses SSE in code that runs without an operating system to enable it");
         }
@@ -886,6 +886,34 @@ internal sealed class Encoder
                 B(0x0F, 0x7E); _out.Add((byte)(0xC0 | r));      // movd r32, mm0
                 break;
             }
+            case MOp.PackedSaveX87:
+                B(0xD9, 0x30);                                  // fnstenv [eax]
+                B(0x66, 0x83, 0x78, 0x08, 0xFF);                // cmp word [eax+8], 0xFFFF: the tag word
+                B(0x75, 0x13);                                  // jne whole
+                B(0xC7, 0x40, 0x6C, 0x00, 0x00, 0x00, 0x00);    // mov dword [eax+108], 0
+                B(0xC7, 0x40, 0x1C, 0x7F, 0x03, 0x00, 0x00);    // mov dword [eax+28], 0x037F
+                B(0xD9, 0x68, 0x1C);                            // fldcw [eax+28]
+                B(0xEB, 0x0B);                                  // jmp done
+                B(0xD9, 0x20);                                  // whole: fldenv [eax]
+                B(0xDD, 0x30);                                  // fnsave [eax]
+                B(0xC7, 0x40, 0x6C, 0x01, 0x00, 0x00, 0x00);    // mov dword [eax+108], 1
+                break;                                          // done:
+            case MOp.PackedRestoreX87:
+                B(0x83, 0x78, 0x6C, 0x00);                      // cmp dword [eax+108], 0
+                B(0x75, 0x04);                                  // jne whole
+                B(0xD9, 0x20);                                  // fldenv [eax]
+                B(0xEB, 0x02);                                  // jmp done
+                B(0xDD, 0x20);                                  // whole: frstor [eax]
+                break;
+            case MOp.PackedSaveFxsr:
+                B(0x0F, 0xAE, 0x00);                            // fxsave [eax]
+                B(0xDB, 0xE3);                                  // fninit
+                B(0xC7, 0x80, 0x00, 0x02, 0x00, 0x00, 0x80, 0x1F, 0x00, 0x00); // mov dword [eax+512], 0x1F80
+                B(0x0F, 0xAE, 0x90, 0x00, 0x02, 0x00, 0x00);    // ldmxcsr [eax+512]
+                break;
+            case MOp.PackedRestoreFxsr:
+                B(0x0F, 0xAE, 0x08);                            // fxrstor [eax]
+                break;
             case MOp.Cmpxchg8b:
                 // 0F C7 /1, its lock prefix with the others' (MInstr.Lock).
                 B(0x0F, 0xC7);

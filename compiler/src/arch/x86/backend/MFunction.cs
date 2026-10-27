@@ -42,6 +42,14 @@ public sealed class MFunction
     /// </summary>
     public bool AutomaticPacked { get; init; }
 
+    /// <summary>
+    /// Whether it may use the SSE registers: hosted code, whose operating
+    /// system enables them, and a freestanding SSE block (Sys.PackedEnter 2),
+    /// which saved what was there. An MMX block may not: its save is the
+    /// x87's.
+    /// </summary>
+    public bool SseState { get; init; }
+
     /// <summary>Virtual registers that must land in a register with an 8-bit form (EAX..EBX).</summary>
     public HashSet<int> ByteRegs { get; } = new();
 

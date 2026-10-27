@@ -1,0 +1,60 @@
+// test: a packed block runs its body where it stands: the method's variables read and written, a throw through it, one inside another
+// expect-exit: 0
+// expect-output:
+// 4 6 8 10 12 14 16 18
+// sum 88 caught 7 after 1
+// nested 3
+//
+// `using (Packed.Mmx())` and `using (Packed.Sse())` mark code that owns the
+// x87, MMX and SSE state while it runs (Parser.ParsePackedBlock): its body is
+// compiled as a function of its own, which the backend may select packed
+// instructions in as --cpu allows -- freestanding code too, which saves the
+// thread's state first and gives it back on every way out. Hosted, as here,
+// the process owns the state already; the body still runs as written, its
+// variables the method's, and the finally that gives the state back runs on
+// a throw.
+
+using System;
+
+struct Lanes { public short A, B, C, D, E, F, G, H; }
+
+static class Program
+{
+    static int Main()
+    {
+        Lanes x = new() { A = 1, B = 2, C = 3, D = 4, E = 5, F = 6, G = 7, H = 8 };
+        Lanes y = new() { A = 3, B = 4, C = 5, D = 6, E = 7, F = 8, G = 9, H = 10 };
+        Lanes z = default;
+        int sum = 0;
+        using (Packed.Mmx())
+        {
+            z.A = (short)(x.A + y.A); z.B = (short)(x.B + y.B); z.C = (short)(x.C + y.C); z.D = (short)(x.D + y.D);
+            z.E = (short)(x.E + y.E); z.F = (short)(x.F + y.F); z.G = (short)(x.G + y.G); z.H = (short)(x.H + y.H);
+            sum = z.A + z.B + z.C + z.D + z.E + z.F + z.G + z.H;
+        }
+        Console.WriteLine(z.A + " " + z.B + " " + z.C + " " + z.D + " " + z.E + " " + z.F + " " + z.G + " " + z.H);
+
+        int caught = 0, after = 0;
+        try
+        {
+            using (Packed.Sse())
+            {
+                if (sum > 80) throw new InvalidOperationException("7");
+                after = 99;
+            }
+        }
+        catch (InvalidOperationException e) { caught = int.Parse(e.Message); }
+        after++;
+        Console.WriteLine("sum " + sum + " caught " + caught + " after " + after);
+
+        int nested = 0;
+        using (Packed.Mmx())
+        {
+            nested++;
+            using (Packed.Mmx()) { nested++; }
+            nested++;
+        }
+        Console.WriteLine("nested " + nested);
+        return 0;
+    }
+}

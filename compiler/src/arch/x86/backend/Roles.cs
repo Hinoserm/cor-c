@@ -100,6 +100,7 @@ public static class Roles
     private static readonly Gpr[] Gpr_ImplicitUses5 = { Gpr.Eax, Gpr.Edx };
     private static readonly Gpr[] Gpr_ImplicitUses6 = { Gpr.Eax };
     private static readonly Gpr[] Gpr_Cmpxchg8bUses = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi };
+    private static readonly Gpr[] Gpr_PackedStateUses = { Gpr.Eax };
     private static readonly Gpr[] Gpr_ImplicitUses7 = { Gpr.Esi, Gpr.Edi, Gpr.Ecx };
     private static readonly Gpr[] Gpr_ImplicitUses8 = { Gpr.Eax, Gpr.Edi, Gpr.Ecx };
     private static readonly Gpr[] Gpr_ImplicitUses9 = { Gpr.Eax };
@@ -137,6 +138,11 @@ public static class Roles
                 return Gpr_ImplicitUses2;
             case MOp.Cmpxchg8b:
                 return Gpr_Cmpxchg8bUses;
+            case MOp.PackedSaveX87:
+            case MOp.PackedRestoreX87:
+            case MOp.PackedSaveFxsr:
+            case MOp.PackedRestoreFxsr:
+                return Gpr_PackedStateUses;
             case MOp.Cdq:
                 return Gpr_ImplicitUses3;
             case MOp.Mul:

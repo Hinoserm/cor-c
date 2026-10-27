@@ -1,0 +1,29 @@
+// test: an interrupt handler may not open a packed block, itself or through a method it calls
+// expect-compile-error: 'Program.Tick' is an interrupt handler and must not open a packed block
+// A packed block takes the thread's x87 and MMX state for its own; an
+// interrupt handler runs on whatever thread it interrupted, in the middle of
+// whatever that thread was doing with them, and has not saved them.
+
+using System;
+
+static class Program
+{
+    static int _n;
+
+    static void Blend()
+    {
+        using (Packed.Mmx()) { _n++; }
+    }
+
+    [InterruptHandler]
+    static void Tick()
+    {
+        Blend();
+    }
+
+    static int Main()
+    {
+        Tick();
+        return _n == 1 ? 0 : 1;
+    }
+}
