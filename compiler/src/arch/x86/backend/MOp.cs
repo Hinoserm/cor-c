@@ -172,6 +172,21 @@ public enum MOp : byte
     /// so a 486 runs it.
     /// </summary>
     PackedSaveX87,
+    /// <summary>
+    /// A PACKED OPERATION's instruction, mm0 combined with memory: Operands
+    /// the opcode's second byte (0F xx, an MImm) and the memory (Lowering.
+    /// PackedIntrinsic). One MOp for the forty-odd: which the processor must
+    /// have is read off the opcode (Isa.Requires).
+    /// </summary>
+    MmxOp,
+    /// <summary>PSLLW/D/Q, PSRLW/D/Q, PSRAW/D of mm0 by a constant: the group (0F 71, 72, 73), its /digit and the count, MImms.</summary>
+    MmxShiftImm,
+    /// <summary>PSHUFW mm0, m64, order: the memory and the order (an MImm). The MMX extensions'.</summary>
+    MmxShuffleW,
+    /// <summary>PEXTRW r32, mm0, place: the register and the place (an MImm). The MMX extensions'.</summary>
+    MmxExtractW,
+    /// <summary>PINSRW mm0, r32, place: the register and the place (an MImm). The MMX extensions'.</summary>
+    MmxInsertW,
     /// <summary>The save's give-back at [eax]: fldenv where +108 is 0, frstor where not.</summary>
     PackedRestoreX87,
     /// <summary>An SSE block's: fxsave [eax] (16-aligned), fninit, and MXCSR 0x1F80 loaded from [eax+512].</summary>

@@ -99,6 +99,9 @@ public sealed class Parser
     /// <summary>The packed blocks read so far: each block's number, its save area's (Lowering's PackedEnter).</summary>
     private int _packedSerial;
 
+    /// <summary>The packed blocks open around what is being read: fifteen at most, the blocks a selection can be inside (Selector.PackedRegions, two bits each).</summary>
+    private int _packedNesting;
+
     /// <summary>An await, an await using or an await foreach inside a packed block, refused: a suspension would hand the thread's packed state, the block's until it ends, to whatever ran next.</summary>
     private void RefuseSuspensionInPackedBlock(Token at, string what)
     {
@@ -5262,34 +5265,80 @@ public sealed class Parser
     private Stmt ParsePackedBlock(Token at, int kind)
     {
         int line = at.Line, col = at.Col;
-        int number = _packedSerial++;
-        int saved = _packedBlock;
-        _packedBlock = kind;
-        Stmt read = ParseStmt();
-        _packedBlock = saved;
-        Block body = read as Block ?? new Block { Line = read.Line, Col = read.Col };
-        if (read is not Block) body.WritableStatements.Add(read);
-
-        Stmt State(string name) => new ExprStmt
+        // AN MMX BLOCK IS READ THREE TIMES, once for each level a processor
+        // may answer (Sys.PackedLevel): 2 with the MMX extensions, 1 with
+        // MMX alone, 0 with neither, whose packed operations are their
+        // scalar forms (Lowering.PackedIntrinsic) and which saves nothing.
+        // The variant the processor answers runs, asked once and kept
+        // (Processor); a --cpu that says folds the question, and the
+        // variants it rules out go with dead code. An SSE block is one,
+        // where --cpu has SSE.
+        int[] levels = kind == 2 ? [2] : [2, 1, 0];
+        if (_packedNesting >= 15)
+            throw new CompileError(_file, line, col, "a packed block inside fifteen others: the backend keeps the blocks a selection is inside in one word, two bits each");
+        int start = _i, end = -1;
+        Stmt[] variants = new Stmt[levels.Length];
+        for (int v = 0; v < levels.Length; v++)
         {
-            Expr = new CallExpr
+            _i = start;
+            int saved = _packedBlock;
+            _packedBlock = kind;
+            _packedNesting++;
+            Stmt read = ParseStmt();
+            _packedNesting--;
+            _packedBlock = saved;
+            if (end >= 0 && _i != end) throw new CompileError(_file, line, col, "a packed block's body read again ended elsewhere");
+            end = _i;
+            variants[v] = Variant(read, levels[v], _packedSerial++);
+        }
+        if (variants.Length == 1) return variants[0];
+
+        NameExpr Level() => new() { Name = "$packedlevel$" + (_packedSerial - 1), Line = line, Col = col };
+        Expr AtLeast(int n) => new BinaryExpr
+        {
+            Op = BinOp.Ge, Left = Level(), Right = new LiteralExpr { Kind = Lit.Int, Text = n.ToString(), Line = line, Col = col }, Line = line, Col = col,
+        };
+        Block built = new() { Line = line, Col = col };
+        built.WritableStatements.Add(new LocalDecl
+        {
+            Type = null, Name = "$packedlevel$" + (_packedSerial - 1),
+            Init = new CallExpr { Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedLevel", Line = line, Col = col }, Line = line, Col = col },
+            Line = line, Col = col,
+        });
+        built.WritableStatements.Add(new IfStmt
+        {
+            Cond = AtLeast(2), Then = variants[0],
+            Else = new IfStmt { Cond = AtLeast(1), Then = variants[1], Else = variants[2], Line = line, Col = col },
+            Line = line, Col = col,
+        });
+        return built;
+
+        Stmt Variant(Stmt read, int level, int number)
+        {
+            Block body = read as Block ?? new Block { Line = read.Line, Col = read.Col };
+            if (read is not Block) body.WritableStatements.Add(read);
+            Stmt State(string name) => new ExprStmt
             {
-                Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = name, Line = line, Col = col },
-                Args =
+                Expr = new CallExpr
                 {
-                    new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), Line = line, Col = col },
-                    new LiteralExpr { Kind = Lit.Int, Text = number.ToString(), Line = line, Col = col },
+                    Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = name, Line = line, Col = col },
+                    Args =
+                    {
+                        new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), Line = line, Col = col },
+                        new LiteralExpr { Kind = Lit.Int, Text = number.ToString(), Line = line, Col = col },
+                        new LiteralExpr { Kind = Lit.Int, Text = level.ToString(), Line = line, Col = col },
+                    },
+                    Line = line, Col = col,
                 },
                 Line = line, Col = col,
-            },
-            Line = line, Col = col,
-        };
-        Block leave = new() { Line = line, Col = col };
-        leave.WritableStatements.Add(State("PackedLeave"));
-        Block built = new() { Line = line, Col = col };
-        built.WritableStatements.Add(State("PackedEnter"));
-        built.WritableStatements.Add(new TryStmt { Body = body, Finally = leave, Line = line, Col = col });
-        return built;
+            };
+            Block leave = new() { Line = line, Col = col };
+            leave.WritableStatements.Add(State("PackedLeave"));
+            Block made = new() { Line = line, Col = col };
+            made.WritableStatements.Add(State("PackedEnter"));
+            made.WritableStatements.Add(new TryStmt { Body = body, Finally = leave, Line = line, Col = col });
+            return made;
+        }
     }
 
     /// <summary>

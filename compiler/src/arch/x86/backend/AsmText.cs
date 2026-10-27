@@ -269,6 +269,21 @@ internal static class AsmText
                 yield return $"pmovmskb {Op(i.Operands[0], 4, false)}, mm0";
                 yield break;
             }
+            case MOp.MmxOp:
+                yield return $"mmx 0f {((MImm)i.Operands[0]).Value:x2}, mm0, {Op(i.Operands[1], 8, false)}";
+                yield break;
+            case MOp.MmxShiftImm:
+                yield return $"mmx 0f {((MImm)i.Operands[0]).Value:x2} /{((MImm)i.Operands[1]).Value}, mm0, {((MImm)i.Operands[2]).Value}";
+                yield break;
+            case MOp.MmxShuffleW:
+                yield return $"pshufw mm0, {Op(i.Operands[0], 8, false)}, {((MImm)i.Operands[1]).Value}";
+                yield break;
+            case MOp.MmxExtractW:
+                yield return $"pextrw {Op(i.Operands[0], 4, false)}, mm0, {((MImm)i.Operands[1]).Value}";
+                yield break;
+            case MOp.MmxInsertW:
+                yield return $"pinsrw mm0, {Op(i.Operands[0], 4, false)}, {((MImm)i.Operands[1]).Value}";
+                yield break;
             case MOp.PackedSaveX87:
                 yield return "fnstenv [eax]";
                 yield return "cmp word [eax+8], 0xFFFF";

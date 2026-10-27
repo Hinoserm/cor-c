@@ -142,6 +142,109 @@ internal sealed partial class Selector
     }
 
     /// <summary>
+    /// A PACKED OPERATION (Lowering.PackedIntrinsic, MachineIntrinsics.
+    /// PackedOp and the rest): its first operand loaded into mm0, the
+    /// instruction, and mm0 stored into the result's buffer -- nothing kept
+    /// in an MMX register from one to the next. Probed: the block's variant
+    /// that holds it runs only where the processor said it has its level.
+    /// </summary>
+    private void SelectPackedOp(string name, Instr i)
+    {
+        MInstr P(MOp op, params MOperand[] operands) => Emit(new MInstr(op, operands) { Probed = true });
+        MMem At(int k) => new(R(i.Operands[k]), 0);
+        string[] part = name[MachineIntrinsics.PackedOpPrefix.Length..].Split('.');
+        switch (part[0])
+        {
+            case "op":
+                P(MOp.MmxLoad, At(1));
+                P(MOp.MmxOp, Imm(Convert.ToByte(part[1], 16)), At(2));
+                P(MOp.MmxStore, At(0));
+                break;
+            case "shift":
+                P(MOp.MmxLoad, At(1));
+                P(MOp.MmxShiftImm, Imm(Convert.ToByte(part[1], 16)), Imm(int.Parse(part[2])), Imm(int.Parse(part[3])));
+                P(MOp.MmxStore, At(0));
+                break;
+            case "shuffle":
+                P(MOp.MmxShuffleW, At(1), Imm(int.Parse(part[1])));
+                P(MOp.MmxStore, At(0));
+                break;
+            case "extract":
+                P(MOp.MmxLoad, At(0));
+                P(MOp.MmxExtractW, i.Dest is not null ? Lo(i.Dest) : Temp(), Imm(int.Parse(part[1])));
+                break;
+            case "insert":
+                P(MOp.MmxLoad, At(1));
+                P(MOp.MmxInsertW, R(i.Operands[2]), Imm(int.Parse(part[1])));
+                P(MOp.MmxStore, At(0));
+                break;
+            case "storent":
+                P(MOp.MmxLoad, At(1));
+                P(MOp.MmxStoreNt, At(0));
+                break;
+            case "fence":
+                P(MOp.Sfence);
+                return;
+            default:
+                Error("unknown packed operation " + name);
+                return;
+        }
+        _mmxDirty = true;
+    }
+
+    /// <summary>
+    /// THE MMX REGISTERS HOLD A PACKED OPERATION'S LANES (SelectPackedOp)
+    /// from it to the next x87 instruction, call or return, which finds the
+    /// x87 stack full unless it is emptied first (EMMS): where each IR block
+    /// starts so (PackedDirty), and as its selection goes.
+    /// </summary>
+    private bool _mmxDirty;
+
+    /// <summary>Whether an IR instruction wants the x87 stack empty: a real call, a system call, a return, or anything of a float type (the x87's).</summary>
+    private static bool WantsX87(Instr i)
+    {
+        if (i.Op is Opcode.CallIndirect or Opcode.Syscall or Opcode.Ret) return true;
+        if (i.Op == Opcode.Call) return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal);
+        if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
+        foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
+        return false;
+    }
+
+    /// <summary>Whether an IR instruction leaves the MMX registers empty: the x87 wanted (an EMMS before it), an EMMS of its own, a packed block's save or give-back.</summary>
+    private static bool EmptiesMmx(Instr i)
+        => WantsX87(i) || i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedEnd or MachineIntrinsics.PackedEndFast or MachineIntrinsics.StreamEnd
+            or MachineIntrinsics.PackedSaveX87 or MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedSaveFxsr or MachineIntrinsics.PackedRestoreFxsr;
+
+    private static bool PackedOpCall(Instr i)
+        => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal) && c != MachineIntrinsics.PackedFence;
+
+    /// <summary>
+    /// WHERE THE MMX REGISTERS MAY HOLD A PACKED OPERATION'S LANES as each IR
+    /// block starts, on any path there (null where the function has none):
+    /// what SelectPackedOp leaves, until an instruction empties them.
+    /// </summary>
+    private static Dictionary<Block, bool>? PackedDirty(Function f)
+    {
+        if (!f.Blocks.Any(b => b.Instrs.Any(PackedOpCall))) return null;
+        Dictionary<Block, bool> at = new(ReferenceEqualityComparer.Instance) { [f.Entry] = false };
+        Stack<Block> work = new();
+        work.Push(f.Entry);
+        while (work.Count > 0)
+        {
+            Block b = work.Pop();
+            bool dirty = at[b];
+            foreach (Instr i in b.Instrs)
+                dirty = PackedOpCall(i) || (!EmptiesMmx(i) && dirty);
+            foreach (Block next in b.Successors)
+            {
+                bool had = at.TryGetValue(next, out bool known);
+                if (!had || (dirty && !known)) { at[next] = (had && known) || dirty; work.Push(next); }
+            }
+        }
+        return at;
+    }
+
+    /// <summary>
     /// WHERE A FUNCTION'S PACKED BLOCKS ARE, by the blocks each IR block
     /// starts inside (0 outside every one): after a save (PackedSaveX87,
     /// PackedSaveFxsr) and before its give-back, on every path there -- a
@@ -444,17 +547,25 @@ internal sealed partial class Selector
         LoadParams();
 
         Dictionary<Block, int>? packedIn = _automaticPacked ? null : PackedRegions(_f);
+        Dictionary<Block, bool>? dirtyIn = PackedDirty(_f);
         foreach (Block b in _f.Blocks)
         {
             _cur = _heads[b];
             _sourceBlock = b;
             _constants.Clear();
             _packedState = packedIn?.GetValueOrDefault(b) ?? 0;
+            _mmxDirty = dirtyIn?.GetValueOrDefault(b) ?? false;
             for (int n = 0; n < b.Instrs.Count; n++)
             {
                 Instr i = b.Instrs[n];
                 _line = i.Line;
                 NoteConstant(i);
+                if (_mmxDirty && WantsX87(i))
+                {
+                    Emit(new MInstr(MOp.Emms) { Probed = true });
+                    _mmxDirty = false;
+                }
+                else if (_mmxDirty && EmptiesMmx(i)) _mmxDirty = false;
                 if (TryPackedArithmetic(b.Instrs, n, out int consumed) || TryPackedRounding(b.Instrs, n, out consumed)
                     || TryPackedShifts(b.Instrs, n, out consumed)
                     || TryPackedConversions(b.Instrs, n, out consumed)
@@ -2639,6 +2750,11 @@ internal sealed partial class Selector
 
     private void SelectMachineIntrinsic(string name, Instr i)
     {
+        if (name.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal))
+        {
+            SelectPackedOp(name, i);
+            return;
+        }
         switch (name)
         {
             case MachineIntrinsics.In8:

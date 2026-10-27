@@ -51,6 +51,8 @@ internal static class Isa
         // FUCOMIP: the x87 half of what CPUID calls CMOV.
         MOp.Fucomipp => X86Feature.FloatCmov,
         MOp.Cvttss2si => X86Feature.Sse,
+        MOp.MmxOp or MOp.MmxShiftImm => X86Feature.Mmx,
+        MOp.MmxShuffleW or MOp.MmxExtractW or MOp.MmxInsertW => X86Feature.Mmx | X86Feature.MmxExtensions,
         // FXSAVE with LDMXCSR: an SSE block's, so the SSE state's.
         MOp.PackedSaveFxsr or MOp.PackedRestoreFxsr => X86Feature.Sse,
         MOp.Cvttsd2si => X86Feature.Sse | X86Feature.Sse2,
@@ -66,7 +68,11 @@ internal static class Isa
     /// INVLPG is (Select): a kernel that runs on a 486 too asks first.
     /// </summary>
     public static X86Feature Requires(MInstr i)
-        => Requires(i.Op) | (i.Op is MOp.MovFromCr or MOp.MovToCr && i.Operands.Any(o => o is MImm { Value: 4 }) ? X86Feature.Pentium : X86Feature.None);
+        => Requires(i.Op) | (i.Op is MOp.MovFromCr or MOp.MovToCr && i.Operands.Any(o => o is MImm { Value: 4 }) ? X86Feature.Pentium : X86Feature.None)
+        | (i.Op == MOp.MmxOp && i.Operands[0] is MImm { Value: var op } && ExtendedOp((byte)op) ? X86Feature.MmxExtensions : X86Feature.None);
+
+    /// <summary>Whether a packed operation's opcode (0F xx: MOp.MmxOp) is one of the MMX extensions' -- PMULHUW, PAVGB/W, PMINUB, PMAXUB, PMINSW, PMAXSW, PSADBW.</summary>
+    public static bool ExtendedOp(byte op) => op is 0xE4 or 0xE0 or 0xE3 or 0xDA or 0xDE or 0xEA or 0xEE or 0xF6;
 
     /// <summary>
     /// Whether <paramref name="op"/> reads or writes the MMX registers, whose

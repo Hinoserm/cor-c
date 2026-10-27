@@ -640,6 +640,10 @@ public sealed partial class Lowering
         {
             return EmitIntrinsic(call, target);
         }
+        if (target.Owner.Name == Prelude.PackedType && target.Decl?.File == "<prelude>")
+        {
+            return PackedIntrinsic(call, target);
+        }
 
         VReg? receiver = null;
         List<Operand> args = new();

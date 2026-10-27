@@ -1,0 +1,27 @@
+// test: an await using inside a packed block is refused, as an await is
+// expect-compile-error: an await using inside a packed block (using (Packed.Mmx())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next
+// A packed block owns the thread's x87 and MMX state until it ends; giving
+// back an IAsyncDisposable suspends, as an await does.
+
+using System;
+using System.Threading.Tasks;
+
+sealed class Resource : IAsyncDisposable
+{
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+static class Program
+{
+    static async Task<int> Run()
+    {
+        int n = 0;
+        using (Packed.Mmx())
+        {
+            await using (Resource r = new()) { n++; }
+        }
+        return n;
+    }
+
+    static int Main() => Run().Result;
+}

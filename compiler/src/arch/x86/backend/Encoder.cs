@@ -714,6 +714,20 @@ internal sealed class Encoder
                 B(0x0f, i.Op is MOp.MmxShlW or MOp.MmxShrW or MOp.MmxSarW ? (byte)0x71 : (byte)0x72);
                 B(i.Op is MOp.MmxShlW or MOp.MmxShlD ? (byte)0xf0 : i.Op is MOp.MmxShrW or MOp.MmxShrD ? (byte)0xd0 : (byte)0xe0);
                 B((byte)shift.Value); break;
+            case MOp.MmxOp:
+                // mm0 op= m64: 0F xx /r with mm0 as the register.
+                B(0x0f, (byte)((MImm)i.Operands[0]).Value); ModRM(0, i.Operands[1]); break;
+            case MOp.MmxShiftImm:
+                // 0F 71/72/73 /digit ib, mm0 the operand.
+                B(0x0f, (byte)((MImm)i.Operands[0]).Value, (byte)(0xC0 | (((MImm)i.Operands[1]).Value << 3)), (byte)((MImm)i.Operands[2]).Value); break;
+            case MOp.MmxShuffleW:
+                B(0x0f, 0x70); ModRM(0, i.Operands[0]); B((byte)((MImm)i.Operands[1]).Value); break;
+            case MOp.MmxExtractW:
+                // pextrw r32, mm0, ib: 0F C5 /r, the register in reg.
+                B(0x0f, 0xc5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3)), (byte)((MImm)i.Operands[1]).Value); break;
+            case MOp.MmxInsertW:
+                // pinsrw mm0, r32, ib: 0F C4 /r, mm0 in reg, the register in r/m.
+                B(0x0f, 0xc4, (byte)(0xC0 | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.Emms:
                 B(0x0f, 0x77); break;
             case MOp.Femms:

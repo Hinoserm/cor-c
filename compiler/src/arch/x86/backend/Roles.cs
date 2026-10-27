@@ -45,6 +45,7 @@ public static class Roles
             case MOp.MmxFindW4:
             case MOp.MmxFindW8:
             case MOp.MmxEqual8:
+            case MOp.MmxExtractW:
             case MOp.Cvttss2si:
             case MOp.Cvttsd2si:
                 return operand == 0 ? Role.Def : Role.Use;

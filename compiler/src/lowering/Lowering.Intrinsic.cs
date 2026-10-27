@@ -923,12 +923,22 @@ public sealed partial class Lowering
             case "PackedEnter":
             case "PackedLeave":
             {
-                int kind = call.Args.Count == 2 && call.Args[0] is LiteralExpr { Text: "2" } ? 2 : 1;
-                int number = call.Args.Count == 2 && call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : 0;
-                if (!Freestanding) return Void();
+                int kind = call.Args.Count >= 2 && call.Args[0] is LiteralExpr { Text: "2" } ? 2 : 1;
+                int number = call.Args.Count >= 2 && call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : 0;
+                int level = call.Args.Count == 3 && call.Args[2] is LiteralExpr { Text: var told } ? int.Parse(told) : 2;
                 // Refused once, at the block's start: its finally is lowered
                 // on every way out, and said it again on each.
                 bool enters = name == "PackedEnter";
+                PackedLevelTrack(enters, number, level);
+                // HOSTED, the state is the process's, saved by its operating
+                // system at a switch: what the block's packed operations left
+                // in the MMX registers is emptied on the way out (EMMS), so
+                // the x87 code after it finds its stack empty.
+                if (!Freestanding)
+                {
+                    if (!enters && level >= 1 && _t.WordSize == 4) _e.Call(MachineIntrinsics.PackedEnd, IrType.Void);
+                    return Void();
+                }
                 if (_t.WordSize != 4)
                 {
                     if (!enters) return Void();
@@ -941,10 +951,10 @@ public sealed partial class Lowering
                     Error(call, "using (Packed.Sse()) needs SSE, which --cpu=" + _t.X86Profile.Name + " does not have");
                     return Void();
                 }
-                // NOTHING PACKED RUNS on a processor with neither MMX nor
-                // 3DNow! (a 486): the block is its body alone, saving nothing
-                // -- FNSTENV and FLDENV are tens of a 486's cycles each.
-                if (kind == 1 && !_t.X86Profile.Mmx) return Void();
+                // NOTHING PACKED RUNS in the variant for a processor without
+                // MMX (a 486): the block is its body alone, saving nothing --
+                // FNSTENV and FLDENV are tens of a 486's cycles each.
+                if (level == 0) return Void();
                 if (!_packedAreas.TryGetValue((_f, number), out FrameSlot? area))
                     _packedAreas[(_f, number)] = area = _f.NewSlot(kind == 2 ? 544 : 112, 16, "packed");
                 string machine = (name == "PackedEnter", kind == 2) switch
@@ -956,6 +966,19 @@ public sealed partial class Lowering
                 };
                 _e.Call(machine, IrType.Void, R(_e.SlotAddress(area)));
                 return Void();
+            }
+            // WHICH OF A PACKED BLOCK'S VARIANTS RUNS (Parser.ParsePackedBlock):
+            // a constant where --cpu says -- 2 with the MMX extensions, 0 in
+            // long mode, whose packed operations are their scalar forms --
+            // else the processor's answer, asked once (Runtime.PackedLevel,
+            // Processor).
+            case "PackedLevel":
+            {
+                if (_t.WordSize != 4) return Fit(_e.Const(0, IrType.I32), returns);
+                if (_t.X86Profile.Has(X86Feature.MmxExtensions)) return Fit(_e.Const(2, IrType.I32), returns);
+                MethodSymbol? asked = RequireRuntime(call, "PackedLevel", 0, "Sys.PackedLevel");
+                if (asked is null) return Fit(_e.Const(0, IrType.I32), returns);
+                return Fit(_e.Call(CallLabel(asked), IrType.I32)!, returns);
             }
             case "ReadFlags":
                 return Fit(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!, returns);
@@ -1108,19 +1131,32 @@ public sealed partial class Lowering
         }
     }
 
-    /// <summary>The kind of the packed block a call gives back (Sys.PackedLeave, Parser.ParsePackedBlock), or null for any other call.</summary>
-    private static int? PackedLeaveOf(CallExpr call)
-        => call is { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedLeave" }, Args: [LiteralExpr { Text: var kind }, ..] }
-            ? kind == "2" ? 2 : 1 : null;
+    /// <summary>The packed block a call gives back (Sys.PackedLeave, Parser.ParsePackedBlock): its number and its variant's level; null for any other call.</summary>
+    private static (int Number, int Level)? PackedLeaveOf(CallExpr call)
+        => call is { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedLeave" },
+                     Args: [LiteralExpr, LiteralExpr { Text: var number }, LiteralExpr { Text: var level }] }
+            ? (int.Parse(number), int.Parse(level)) : null;
 
     /// <summary>
-    /// Whether a packed block of this kind takes and gives back anything
-    /// here (PackedEnter, PackedLeave): freestanding i386 code only, and an
-    /// MMX block only where --cpu has MMX. An SSE block where it has no SSE,
-    /// or one in long mode, is refused at its start.
+    /// Whether a packed block's give-back does anything here (PackedLeave):
+    /// i386 code in a variant with MMX -- the save given back, freestanding;
+    /// the MMX registers emptied, hosted. A block refused at its start (an
+    /// SSE one where --cpu has no SSE, one in long mode) is refused there.
     /// </summary>
-    private bool PackedStateHere(int kind)
-        => Freestanding && (_t.WordSize != 4 || kind == 2 || _t.X86Profile.Mmx);
+    private bool PackedStateHere(int level) => _t.WordSize == 4 && level >= 1;
+
+    /// <summary>
+    /// The levels of the packed blocks open in this function, as their
+    /// starts and their first give-backs are lowered (Lowering.Packed's
+    /// PackedLevelHere): a block's finally is lowered once for every way out
+    /// of it, and its first copy closes it.
+    /// </summary>
+    private void PackedLevelTrack(bool enters, int number, int level)
+    {
+        if (!_packedLevels.TryGetValue(_f, out Stack<int>? open)) _packedLevels[_f] = open = new();
+        if (enters) open.Push(level);
+        else if (_packedLeft.Add((_f, number)) && open.Count > 0) open.Pop();
+    }
 
     /// <summary>Each packed block's save area, by its function and its number (PackedEnter, PackedLeave): one for its start and every give-back alike.</summary>
     private readonly Dictionary<(Function, int), FrameSlot> _packedAreas = new();

@@ -1,0 +1,151 @@
+// test: every packed operation, one MMX instruction where the block's variant has it and its lanes one at a time where not, alike
+// expect-exit: 0
+// expect-output:
+// Add8 807F00800000FFFF 1010101010101000
+// Add16 817F00800100FFFF 1110111011101100
+// Add32 818000800100FFFF 1111111011111100
+// Sub8 7E81FE8002FC0101 14589CE02468ACE0
+// Sub16 7D81FD8002FC0001 13589BE02468ACE0
+// Sub32 7D81FD8002FC0001 13579BE02468ACE0
+// AddSaturateU8 80FFFF80FFFFFFFF FFFFFFFFFFFFFFFF
+// AddSaturateS8 7F8000800000FFFF 1010101010101000
+// AddSaturateU16 817FFFFFFFFFFFFF FFFFFFFFFFFFFFFF
+// AddSaturateS16 7FFF00800100FFFF 1110111011101100
+// SubSaturateU8 7E00FE0000FC0100 000000002468ACE0
+// SubSaturateS8 7E81FE7F02FC8001 14587F7F8080ACE0
+// SubSaturateU16 7D81FD8000000001 000000002468ACE0
+// SubSaturateS16 7D81FD8002FC8000 13587FFF8000ACE0
+// MultiplyLow16 8080800005FC8000 3CB087406DB0CF00
+// MultiplyHigh16 00FEFFFEFFFEC000 FFEBE88ED131F988
+// MultiplyHighU16 00FE017E01FC3FFF 121F3F0647852B98
+// MultiplyAdd16 00FD0080BFFE85FC E879C3F0CABA3CB0
+// And 0180010001020000 1214121812141210
+// Or 7FFFFF80FFFEFFFF FEFCFEF8FEFCFEF0
+// Xor 7E7FFE80FEFCFFFF ECE8ECE0ECE8ECE0
+// AndNot 007F0080FE007FFF ECC8A88064402000
+// Equal8 0000000000000000 0000000000000000
+// Equal16 0000000000000000 0000000000000000
+// Equal32 0000000000000000 0000000000000000
+// Greater8 FF0000FFFF0000FF FFFFFFFF00000000
+// Greater16 FFFF0000FFFF0000 FFFFFFFF00000000
+// Greater32 FFFFFFFFFFFFFFFF FFFFFFFF00000000
+// PackSaturateU8 FFFF00FFFF00FF00 0000FFFFFFFF0000
+// PackSaturateS8 7F7F807F7F807F80 80807F7F7F7F8080
+// PackSaturateS16 7FFF80007FFF7FFF 80007FFF7FFF8000
+// UnpackLow8 FF0102FE7F80FF00 769A54BC32DE10F0
+// UnpackLow16 FF0201FE7FFF8000 76549ABC3210DEF0
+// UnpackLow32 FF027FFF01FE8000 765432109ABCDEF0
+// UnpackHigh8 017FFF8001FF8000 FE12DC34BA569878
+// UnpackHigh16 01FF7F800180FF00 FEDC1234BA985678
+// UnpackHigh32 01FF01807F80FF00 FEDCBA9812345678
+// Average8 40C0804080808080 8888888888888880
+// Average16 40C0804080808000 8888888888888880
+// MinU8 0180010001027F00 1234567876543210
+// MaxU8 7FFFFF80FFFE80FF FEDCBA989ABCDEF0
+// Min16 01FFFF00FF028000 FEDCBA989ABCDEF0
+// Max16 7F80018001FE7FFF 1234567876543210
+// SumAbsoluteDifferences8 0000000000000575 0000000000000430
+// ShiftLeft16 3 FC00F8000FF00000 91A0B3C0D5E0F780
+// ShiftLeft32 17 FE00000000000000 ACF00000BDE00000
+// ShiftLeft64 40 FE80000000000000 BCDEF00000000000
+// ShiftRightU16 5 03FC07F8000F0400 009102B304D506F7
+// ShiftRightU32 31 0000000000000000 0000000000000001
+// ShiftRightU64 63 0000000000000000 0000000000000000
+// ShiftRightS16 7 00FFFFFE0003FF00 002400ACFF35FFBD
+// ShiftRightS32 33 0000000000000000 00000000FFFFFFFF
+// Shuffle16 0x1B 800001FEFF007F80 1234DEF056789ABC
+// Extract16 510 4660
+// Insert16 7F80234501FE8000 123456789ABCFFFF
+// Memory 123456789ABCDEF0 FEDCBA9876543210
+//
+// Packed.Add16 and the rest (Lowering.PackedIntrinsic) are each one MMX
+// instruction inside a packed block whose variant has it, and the runtime's
+// scalar form of the same lanes in one that has not (Runtime.PackedScalar):
+// a --cpu with the MMX extensions selects the instructions, the 486's asks
+// the processor which variant runs, and long mode has only the scalar
+// forms. The three print alike, the instructions' answers being the
+// processor's own: saturations, wrap-arounds, a shift past a lane's width,
+// the word PSHUFW and PEXTRW name.
+
+using System;
+
+static class Program
+{
+    static string Hex(Packed64 v) => v.Bits.ToString("X16");
+
+    static void Say(string name, Packed64 one, Packed64 two) => Console.WriteLine(name + " " + Hex(one) + " " + Hex(two));
+
+    static int Main()
+    {
+        Packed64 a = Packed.FromBits(0x7F80FF0001FE8000UL), b = Packed.FromBits(0x01FF0180FF027FFFUL);
+        Packed64 c = Packed.FromBits(0x123456789ABCDEF0UL), d = Packed.FromBits(0xFEDCBA9876543210UL);
+        using (Packed.Mmx())
+        {
+            Say("Add8", Packed.Add8(a, b), Packed.Add8(c, d));
+            Say("Add16", Packed.Add16(a, b), Packed.Add16(c, d));
+            Say("Add32", Packed.Add32(a, b), Packed.Add32(c, d));
+            Say("Sub8", Packed.Sub8(a, b), Packed.Sub8(c, d));
+            Say("Sub16", Packed.Sub16(a, b), Packed.Sub16(c, d));
+            Say("Sub32", Packed.Sub32(a, b), Packed.Sub32(c, d));
+            Say("AddSaturateU8", Packed.AddSaturateU8(a, b), Packed.AddSaturateU8(c, d));
+            Say("AddSaturateS8", Packed.AddSaturateS8(a, b), Packed.AddSaturateS8(c, d));
+            Say("AddSaturateU16", Packed.AddSaturateU16(a, b), Packed.AddSaturateU16(c, d));
+            Say("AddSaturateS16", Packed.AddSaturateS16(a, b), Packed.AddSaturateS16(c, d));
+            Say("SubSaturateU8", Packed.SubSaturateU8(a, b), Packed.SubSaturateU8(c, d));
+            Say("SubSaturateS8", Packed.SubSaturateS8(a, b), Packed.SubSaturateS8(c, d));
+            Say("SubSaturateU16", Packed.SubSaturateU16(a, b), Packed.SubSaturateU16(c, d));
+            Say("SubSaturateS16", Packed.SubSaturateS16(a, b), Packed.SubSaturateS16(c, d));
+            Say("MultiplyLow16", Packed.MultiplyLow16(a, b), Packed.MultiplyLow16(c, d));
+            Say("MultiplyHigh16", Packed.MultiplyHigh16(a, b), Packed.MultiplyHigh16(c, d));
+            Say("MultiplyHighU16", Packed.MultiplyHighU16(a, b), Packed.MultiplyHighU16(c, d));
+            Say("MultiplyAdd16", Packed.MultiplyAdd16(a, b), Packed.MultiplyAdd16(c, d));
+            Say("And", Packed.And(a, b), Packed.And(c, d));
+            Say("Or", Packed.Or(a, b), Packed.Or(c, d));
+            Say("Xor", Packed.Xor(a, b), Packed.Xor(c, d));
+            Say("AndNot", Packed.AndNot(a, b), Packed.AndNot(c, d));
+            Say("Equal8", Packed.Equal8(a, b), Packed.Equal8(c, d));
+            Say("Equal16", Packed.Equal16(a, b), Packed.Equal16(c, d));
+            Say("Equal32", Packed.Equal32(a, b), Packed.Equal32(c, d));
+            Say("Greater8", Packed.Greater8(a, b), Packed.Greater8(c, d));
+            Say("Greater16", Packed.Greater16(a, b), Packed.Greater16(c, d));
+            Say("Greater32", Packed.Greater32(a, b), Packed.Greater32(c, d));
+            Say("PackSaturateU8", Packed.PackSaturateU8(a, b), Packed.PackSaturateU8(c, d));
+            Say("PackSaturateS8", Packed.PackSaturateS8(a, b), Packed.PackSaturateS8(c, d));
+            Say("PackSaturateS16", Packed.PackSaturateS16(a, b), Packed.PackSaturateS16(c, d));
+            Say("UnpackLow8", Packed.UnpackLow8(a, b), Packed.UnpackLow8(c, d));
+            Say("UnpackLow16", Packed.UnpackLow16(a, b), Packed.UnpackLow16(c, d));
+            Say("UnpackLow32", Packed.UnpackLow32(a, b), Packed.UnpackLow32(c, d));
+            Say("UnpackHigh8", Packed.UnpackHigh8(a, b), Packed.UnpackHigh8(c, d));
+            Say("UnpackHigh16", Packed.UnpackHigh16(a, b), Packed.UnpackHigh16(c, d));
+            Say("UnpackHigh32", Packed.UnpackHigh32(a, b), Packed.UnpackHigh32(c, d));
+            Say("Average8", Packed.Average8(a, b), Packed.Average8(c, d));
+            Say("Average16", Packed.Average16(a, b), Packed.Average16(c, d));
+            Say("MinU8", Packed.MinU8(a, b), Packed.MinU8(c, d));
+            Say("MaxU8", Packed.MaxU8(a, b), Packed.MaxU8(c, d));
+            Say("Min16", Packed.Min16(a, b), Packed.Min16(c, d));
+            Say("Max16", Packed.Max16(a, b), Packed.Max16(c, d));
+            Say("SumAbsoluteDifferences8", Packed.SumAbsoluteDifferences8(a, b), Packed.SumAbsoluteDifferences8(c, d));
+            Say("ShiftLeft16 3", Packed.ShiftLeft16(a, 3), Packed.ShiftLeft16(c, 3));
+            Say("ShiftLeft32 17", Packed.ShiftLeft32(a, 17), Packed.ShiftLeft32(c, 17));
+            Say("ShiftLeft64 40", Packed.ShiftLeft64(a, 40), Packed.ShiftLeft64(c, 40));
+            Say("ShiftRightU16 5", Packed.ShiftRightU16(a, 5), Packed.ShiftRightU16(c, 5));
+            Say("ShiftRightU32 31", Packed.ShiftRightU32(a, 31), Packed.ShiftRightU32(c, 31));
+            Say("ShiftRightU64 63", Packed.ShiftRightU64(a, 63), Packed.ShiftRightU64(c, 63));
+            Say("ShiftRightS16 7", Packed.ShiftRightS16(a, 7), Packed.ShiftRightS16(c, 7));
+            Say("ShiftRightS32 33", Packed.ShiftRightS32(a, 33), Packed.ShiftRightS32(c, 33));
+            Say("Shuffle16 0x1B", Packed.Shuffle16(a, 0x1B), Packed.Shuffle16(c, 0b11_00_10_01));
+            Console.WriteLine("Extract16 " + Packed.Extract16(a, 1) + " " + Packed.Extract16(c, 3));
+            Say("Insert16", Packed.Insert16(a, 0x12345, 2), Packed.Insert16(c, -1, 0));
+        }
+        ulong[] memory = new ulong[2];
+        using (Packed.Mmx())
+        {
+            nuint at = Sys.ArrayData(memory);
+            Packed.Store(at, Packed.Add16(Packed.Load(at), c));
+            Packed.StoreNonTemporal(at + 8, d);
+            Packed.Fence();
+        }
+        Console.WriteLine("Memory " + memory[0].ToString("X16") + " " + memory[1].ToString("X16"));
+        return 0;
+    }
+}

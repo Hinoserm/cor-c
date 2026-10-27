@@ -114,6 +114,23 @@ internal static class MachineIntrinsics
     public const string PackedRestoreX87 = Prefix + "packedrestorex87";
     public const string PackedSaveFxsr = Prefix + "packedsavefxsr";
     public const string PackedRestoreFxsr = Prefix + "packedrestorefxsr";
+    /// <summary>
+    /// THE PACKED OPERATIONS (Lowering.PackedIntrinsic), each one MMX
+    /// instruction, named with what the instruction holds in its own bytes:
+    /// a two-operand one by its opcode, 0F xx (the result's address, the
+    /// first operand's, the second's); a shift by group, /digit and count; a
+    /// shuffle by its order; a word's extraction or insertion by its place.
+    /// The level of the block they are in was asked of the processor, so they
+    /// are Probed.
+    /// </summary>
+    public const string PackedOpPrefix = Prefix + "pk.";
+    public static string PackedOp(byte op) => PackedOpPrefix + "op." + op.ToString("x2");
+    public static string PackedShift(byte group, byte sub, int count) => PackedOpPrefix + "shift." + group.ToString("x2") + "." + sub + "." + count;
+    public static string PackedShuffle(int order) => PackedOpPrefix + "shuffle." + order;
+    public static string PackedExtract(int at) => PackedOpPrefix + "extract." + at;
+    public static string PackedInsert(int at) => PackedOpPrefix + "insert." + at;
+    public const string PackedStoreNonTemporal = PackedOpPrefix + "storent";
+    public const string PackedFence = PackedOpPrefix + "fence";
     public const string PackedEndFast = Prefix + "femms";
     public const string ReadCodeSegment = Prefix + "readcs";
     public const string SwapGs = Prefix + "swapgs";

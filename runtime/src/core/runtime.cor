@@ -2585,6 +2585,188 @@ static partial class Runtime
         Sys.WriteAddress(entry + 3 * WordSize.Bytes, site);
     }
 
+    // ---- packed blocks' scalar forms ----------------------------------------
+    //
+    // WHAT A PACKED OPERATION IS WITHOUT MMX (Packed.Add16 and the rest, in a
+    // packed block's variant for a processor without the instruction:
+    // Lowering.PackedIntrinsic): the same lanes, one at a time, as the
+    // instruction computes them -- its saturations, its wrap-arounds, its
+    // shift counts past a lane's width. `op` is the instruction's second
+    // opcode byte, 0F xx, which names it.
+
+    /// The packed level the processor answers (Sys.PackedLevel): 2 with the
+    /// MMX extensions (PAVGB, PSHUFW, PMINUB, PSADBW, MOVNTQ), 1 with MMX
+    /// alone, 0 without.
+    public static int PackedLevel()
+    {
+        if (Processor.Has(Processor.MmxExtensions)) return 2;
+        return Processor.Has(Processor.Mmx) ? 1 : 0;
+    }
+
+    static ulong LaneOf(ulong v, int bits, int k)
+    {
+        ulong mask = bits == 64 ? ulong.MaxValue : (1UL << bits) - 1;
+        return (v >> (k * bits)) & mask;
+    }
+
+    static long SignedLane(ulong v, int bits, int k)
+    {
+        ulong lane = LaneOf(v, bits, k);
+        if (bits == 64) return (long)lane;
+        ulong top = 1UL << (bits - 1);
+        return (long)(lane ^ top) - (long)top;
+    }
+
+    static ulong PutLane(ulong into, int bits, int k, long value)
+    {
+        ulong mask = bits == 64 ? ulong.MaxValue : (1UL << bits) - 1;
+        return into | (((ulong)value & mask) << (k * bits));
+    }
+
+    static long Clamp(long v, long low, long high)
+    {
+        if (v < low) return low;
+        if (v > high) return high;
+        return v;
+    }
+
+    /// Two lanes' sets combined by the instruction `op` names.
+    public static ulong PackedScalar(int op, ulong a, ulong b)
+    {
+        ulong r = 0;
+        switch (op)
+        {
+            case 0xDB: return a & b;
+            case 0xEB: return a | b;
+            case 0xEF: return a ^ b;
+            case 0xDF: return ~a & b;
+            case 0xF6:
+            {
+                long sum = 0;
+                for (int k = 0; k < 8; k++)
+                {
+                    long d = (long)LaneOf(a, 8, k) - (long)LaneOf(b, 8, k);
+                    sum += d < 0 ? -d : d;
+                }
+                return (ulong)sum;
+            }
+            case 0xF5:
+                for (int k = 0; k < 2; k++)
+                {
+                    long s = SignedLane(a, 16, 2 * k) * SignedLane(b, 16, 2 * k) + SignedLane(a, 16, 2 * k + 1) * SignedLane(b, 16, 2 * k + 1);
+                    r = PutLane(r, 32, k, s);
+                }
+                return r;
+            case 0x67: case 0x63:
+            {
+                long low = op == 0x67 ? 0 : -128, high = op == 0x67 ? 255 : 127;
+                for (int k = 0; k < 4; k++) r = PutLane(r, 8, k, Clamp(SignedLane(a, 16, k), low, high));
+                for (int k = 0; k < 4; k++) r = PutLane(r, 8, k + 4, Clamp(SignedLane(b, 16, k), low, high));
+                return r;
+            }
+            case 0x6B:
+                for (int k = 0; k < 2; k++) r = PutLane(r, 16, k, Clamp(SignedLane(a, 32, k), -32768, 32767));
+                for (int k = 0; k < 2; k++) r = PutLane(r, 16, k + 2, Clamp(SignedLane(b, 32, k), -32768, 32767));
+                return r;
+            case 0x60: case 0x61: case 0x62: case 0x68: case 0x69: case 0x6A:
+            {
+                int bits = op is 0x60 or 0x68 ? 8 : op is 0x61 or 0x69 ? 16 : 32;
+                int half = 32 / bits, from = op >= 0x68 ? half : 0;
+                for (int k = 0; k < half; k++)
+                {
+                    r = PutLane(r, bits, 2 * k, (long)LaneOf(a, bits, from + k));
+                    r = PutLane(r, bits, 2 * k + 1, (long)LaneOf(b, bits, from + k));
+                }
+                return r;
+            }
+        }
+        int width = op switch
+        {
+            0xFC or 0xF8 or 0xDC or 0xEC or 0xD8 or 0xE8 or 0x74 or 0x64 or 0xE0 or 0xDA or 0xDE => 8,
+            0xFE or 0xFA or 0x76 or 0x66 => 32,
+            _ => 16,
+        };
+        int lanes = 64 / width;
+        for (int k = 0; k < lanes; k++)
+        {
+            ulong x = LaneOf(a, width, k), y = LaneOf(b, width, k);
+            long sx = SignedLane(a, width, k), sy = SignedLane(b, width, k);
+            long v = op switch
+            {
+                0xFC or 0xFD or 0xFE => (long)(x + y),
+                0xF8 or 0xF9 or 0xFA => (long)(x - y),
+                0xDC => Clamp((long)(x + y), 0, 255),
+                0xDD => Clamp((long)(x + y), 0, 65535),
+                0xEC => Clamp(sx + sy, -128, 127),
+                0xED => Clamp(sx + sy, -32768, 32767),
+                0xD8 => Clamp((long)x - (long)y, 0, 255),
+                0xD9 => Clamp((long)x - (long)y, 0, 65535),
+                0xE8 => Clamp(sx - sy, -128, 127),
+                0xE9 => Clamp(sx - sy, -32768, 32767),
+                0xD5 => sx * sy,
+                0xE5 => (sx * sy) >> 16,
+                0xE4 => (long)((x * y) >> 16),
+                0x74 or 0x75 or 0x76 => x == y ? -1 : 0,
+                0x64 or 0x65 or 0x66 => sx > sy ? -1 : 0,
+                0xE0 or 0xE3 => (long)((x + y + 1) >> 1),
+                0xDA => (long)(x < y ? x : y),
+                0xDE => (long)(x > y ? x : y),
+                0xEA => sx < sy ? sx : sy,
+                0xEE => sx > sy ? sx : sy,
+                _ => 0,
+            };
+            r = PutLane(r, width, k, v);
+        }
+        return r;
+    }
+
+    /// A shift of every lane by `count`, as PSLLW/D/Q, PSRLW/D/Q and
+    /// PSRAW/D make it: `group` 0x71 words, 0x72 doublewords, 0x73 the
+    /// quadword; `sub` 6 left, 2 right, 4 right arithmetic. A count past a
+    /// lane's width empties it, or fills it with its sign.
+    public static ulong PackedScalarShift(int group, int sub, int count, ulong a)
+    {
+        int bits = group == 0x71 ? 16 : group == 0x72 ? 32 : 64;
+        ulong r = 0;
+        for (int k = 0; k < 64 / bits; k++)
+        {
+            long v;
+            if (sub == 4)
+            {
+                int n = count >= bits ? bits - 1 : count;
+                v = SignedLane(a, bits, k) >> n;
+            }
+            else if (count >= bits) v = 0;
+            else if (sub == 6) v = (long)(LaneOf(a, bits, k) << count);
+            else v = (long)(LaneOf(a, bits, k) >> count);
+            r = PutLane(r, bits, k, v);
+        }
+        return r;
+    }
+
+    /// PSHUFW's words: each of the four from the one its two bits of
+    /// `order` name, lowest first.
+    public static ulong PackedScalarShuffle(ulong a, int order)
+    {
+        ulong r = 0;
+        for (int k = 0; k < 4; k++) r = PutLane(r, 16, k, (long)LaneOf(a, 16, (order >> (2 * k)) & 3));
+        return r;
+    }
+
+    /// PEXTRW: the word `at` names, unsigned.
+    public static int PackedScalarExtract(ulong a, int at)
+    {
+        return (int)LaneOf(a, 16, at & 3);
+    }
+
+    /// PINSRW: the word `at` names, replaced by the low half of `value`.
+    public static ulong PackedScalarInsert(ulong a, int value, int at)
+    {
+        int k = at & 3;
+        ulong mask = 0xFFFFUL << (16 * k);
+        return (a & ~mask) | (((ulong)(uint)value & 0xFFFFUL) << (16 * k));
+    }
+
     /// What a field free becomes when the link finds the field is not clean
     /// after all: nothing. A unit compiled on its own cannot tell whether a
     /// field another unit fills holds only objects made for it; it calls a
