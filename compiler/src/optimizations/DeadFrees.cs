@@ -106,9 +106,9 @@ public sealed class DeadFrees : IPass
                 Block on = f.NewBlock(b.Label + "$freed");
                 on.Instrs.AddRange(b.Instrs.GetRange(k + 1, b.Instrs.Count - k - 1));
                 b.Instrs.RemoveRange(k, b.Instrs.Count - k);
-                // A BRANCH TESTS 32 BITS: in long mode a word is eight bytes, and
-                // the test is `freed != 0` -- branched on the word itself, the
-                // IR was wrong there (Verifier: a branch's operand is I32).
+                // THE TEST IS `freed != 0`, an I32: in long mode a word is
+                // eight bytes, and the branch below is the I32 form (the
+                // Verifier takes a word too, but this pass has no need of it).
                 Operand test = freed;
                 if (freed.Type != IrType.I32)
                 {

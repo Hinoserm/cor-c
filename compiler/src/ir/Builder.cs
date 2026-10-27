@@ -197,8 +197,10 @@ public sealed class Builder
         => Append(new Instr { Op = Opcode.Branch, Operands = { cond }, InitialTargets = new[] { ifTrue, ifFalse } });
 
     /// <summary>
-    /// A branch tests a 32-bit condition; a wider value (a pointer in long
-    /// mode) is compared with zero first.
+    /// A branch on a register: an I64 (a pointer in long mode) is compared
+    /// with zero first, so the branch made here tests an I32. The IR also
+    /// allows a branch on the target's word itself (Verifier), tested whole:
+    /// lowering makes those directly, through the operand form below.
     /// </summary>
     public void Branch(VReg cond, Block ifTrue, Block ifFalse)
     {

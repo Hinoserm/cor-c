@@ -7,8 +7,9 @@
 // number, or a count and that many UTF-16 units or bytes, or a count and
 // that many strings, little-endian.
 //
-// KEEP IN STEP with os/ring1/servicewire.cor: the system's image build
-// compares ServiceRequest (CheckEnumCopy). The other sets carry Wire in
+// KEEP IN STEP with os/gui/servicewire.cor: the system's image build
+// compares ServiceRequest (CheckEnumCopy), and nothing else -- WireError,
+// WireState and the other sets are kept in step by hand. They carry Wire in
 // their names here, .NET's own ServiceType and the rest being this
 // namespace's.
 
@@ -277,7 +278,7 @@ namespace System.ServiceProcess
         public uint Word()
         {
             if (_at + 4 > _end) { Short = true; _at = _end; return 0; }
-            uint v = (uint)(_b[_at] | (_b[_at + 1] << 8) | (_b[_at + 2] << 16) | (_b[_at + 3] << 24));
+            uint v = unchecked((uint)(_b[_at] | (_b[_at + 1] << 8) | (_b[_at + 2] << 16) | (_b[_at + 3] << 24)));
             _at += 4;
             return v;
         }

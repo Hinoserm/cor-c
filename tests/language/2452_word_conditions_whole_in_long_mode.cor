@@ -7,12 +7,13 @@
 // folded True
 // low False
 //
-// In long mode a branch can test a whole word -- a pointer, a handle, a
-// lazily made block's word -- and the optimizer decides a known one at
-// compile time. Decided as an int, 0x1_0000_0000 was zero: the arm that runs
-// was dropped as dead (ConstantFold, Sccp, DeadStatics, BranchSimplify, and
-// the backends' known-branch shortcut). Each value here is known to the
-// compiler and has only its high half set.
+// A word known at compile time and tested in long mode, with only its high
+// half set, is not zero: the compare and the branch after it are decided on
+// the whole word. Source code reaches a branch through a compare (Builder
+// wraps a word in `!= 0`); the bare word branches the IR allows come from
+// lowering's own words, and the passes that decide them (ConstantFold, Sccp,
+// DeadStatics, BranchSimplify, the backends' known-branch shortcut) are
+// guarded here only as far as the compares that feed them are.
 
 using System;
 

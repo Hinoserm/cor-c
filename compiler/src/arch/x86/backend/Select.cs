@@ -2402,8 +2402,8 @@ internal sealed partial class Selector
         MBlock f = _heads[i.Targets[1]];
         Operand c = i.Operands[0];
         // A KNOWN CONDITION IS TESTED AT ITS OWN WIDTH, as the TEST below
-        // would: a word whose low half is zero is true, and an I32 whose
-        // long carries junk above bit 31 is only its low half.
+        // would: an I32 whose long carries junk above bit 31 is only its
+        // low half (a word here is an I32).
         if (c is ImmOperand imm)
         {
             Jmp(Corsac.Lang.Opt.IrInfo.Normalise(imm.Value, c.Type) != 0 ? t : f);

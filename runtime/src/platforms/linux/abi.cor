@@ -410,7 +410,7 @@ static class Raw
     /// widens first.
     public static uint U32(byte[] b, int at)
     {
-        return (uint)(b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24));
+        return unchecked((uint)(b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24)));
     }
 
     /// The same four bytes read as a signed number, which is what a mode, a

@@ -26,7 +26,8 @@
 //       Word(status)
 //   SpoolSetPrinter (PrinterRecord), SpoolDeletePrinter (Text name)
 //
-// KEEP IN STEP with os/ring1/spoolwire.cor in the system's repository.
+// KEEP IN STEP with os/gui/spoolwire.cor in the system's repository:
+// nothing checks the two agree.
 
 using System;
 using System.Collections.Generic;
