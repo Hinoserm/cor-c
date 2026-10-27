@@ -805,6 +805,52 @@ internal sealed class Encoder
                 B(0x0F, 0xBD);
                 ModRM(Reg(i.Operands[0]), i.Operands[1]);
                 break;
+            case MOp.MmxStoreNt:
+                B(0x0F, 0xE7);
+                ModRM(0, i.Operands[0]);
+                break;
+            case MOp.PrefetchNta:
+                B(0x0F, 0x18);
+                ModRM(0, i.Operands[0]);
+                break;
+            case MOp.PrefetchLine:
+                B(0x0F, 0x0D);
+                ModRM(0, i.Operands[0]);
+                break;
+            case MOp.Sfence:
+                B(0x0F, 0xAE, 0xF8);
+                break;
+            case MOp.MmxFindW4:
+            {
+                int r = Reg(i.Operands[0]);
+                B(0x0F, 0x6F); ModRM(0, i.Operands[1]);         // movq mm0, m
+                B(0x0F, 0x75); ModRM(0, i.Operands[2]);         // pcmpeqw mm0, p
+                B(0x0F, 0x63, 0xC0);                            // packsswb mm0, mm0
+                B(0x0F, 0x7E); _out.Add((byte)(0xC0 | r));      // movd r32, mm0
+                break;
+            }
+            case MOp.MmxFindW8:
+            {
+                int r = Reg(i.Operands[0]);
+                MMem at = (MMem)i.Operands[1];
+                MMem next = new(at.Base, at.Disp + 8) { Index = at.Index, Scale = at.Scale, Symbol = at.Symbol, Reloc = at.Reloc, Label = at.Label };
+                B(0x0F, 0x6F); ModRM(0, at);                    // movq mm0, m
+                B(0x0F, 0x6F); ModRM(1, next);                  // movq mm1, m + 8
+                B(0x0F, 0x75); ModRM(0, i.Operands[2]);         // pcmpeqw mm0, p
+                B(0x0F, 0x75); ModRM(1, i.Operands[2]);         // pcmpeqw mm1, p
+                B(0x0F, 0x63, 0xC1);                            // packsswb mm0, mm1
+                B(0x0F, 0xD7); _out.Add((byte)(0xC0 | (r << 3))); // pmovmskb r32, mm0
+                break;
+            }
+            case MOp.MmxEqual8:
+            {
+                int r = Reg(i.Operands[0]);
+                B(0x0F, 0x6F); ModRM(0, i.Operands[1]);         // movq mm0, a
+                B(0x0F, 0x76); ModRM(0, i.Operands[2]);         // pcmpeqd mm0, b
+                B(0x0F, 0x6B, 0xC0);                            // packssdw mm0, mm0
+                B(0x0F, 0x7E); _out.Add((byte)(0xC0 | r));      // movd r32, mm0
+                break;
+            }
             case MOp.Cmpxchg8b:
                 // 0F C7 /1, its lock prefix with the others' (MInstr.Lock).
                 B(0x0F, 0xC7);

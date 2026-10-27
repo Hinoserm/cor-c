@@ -172,15 +172,18 @@ static class Processor
         }
     }
 
-    /// CPUID's four registers, as Sys.Cpuid writes them.
-    struct Answer
-    {
-        public int A;
-        public int B;
-        public int C;
-        public int D;
-    }
-
+    // NOTHING WRITTEN TO MEMORY to ask: one register of each leaf straight
+    // out of the instruction (Sys.CpuidEax, CpuidEdx). A struct of the four
+    // registers, its address taken for Sys.Cpuid, was made on the heap -- and
+    // the allocator reaches Interlocked's longs, which ask here: a cycle that
+    // kept this from being inlined anywhere, and that would recurse if the
+    // first long an allocation updated came before any other question.
+    //
+    // NEVER INLINED: asked once a process, it is the cold half of Features.
+    // Expanded into its one caller, it made Features and Has seventy units
+    // where the inliner takes forty, and every Has stayed a call -- two
+    // calls for one load and a test at each question.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     static int Ask()
     {
 #if TARGET_64BIT
@@ -190,13 +193,9 @@ static class Processor
         int found = Asked;
         if (Sys.CpuidPresent() != 0)
         {
-            Answer r = new Answer();
-            nuint at = Sys.AddressOf(ref r);
-            Sys.Cpuid(0, 0, at);
-            if (r.A >= 1)
+            if (Sys.CpuidEax(0) >= 1)
             {
-                Sys.Cpuid(1, 0, at);
-                int d = r.D;
+                int d = Sys.CpuidEdx(1);
                 if ((d & (1 << 8)) != 0) found |= Cas64;
                 if ((d & (1 << 15)) != 0) found |= Cmov;
                 if ((d & (1 << 23)) != 0) found |= Mmx;
@@ -205,12 +204,10 @@ static class Processor
             }
             // The extended leaves, where the answer is one: a processor
             // without them answers its last basic leaf's figures instead.
-            Sys.Cpuid(unchecked((int)0x80000000), 0, at);
-            uint last = (uint)r.A;
+            uint last = (uint)Sys.CpuidEax(unchecked((int)0x80000000));
             if (last >= 0x80000001 && last <= 0x8000FFFF)
             {
-                Sys.Cpuid(unchecked((int)0x80000001), 0, at);
-                int d = r.D;
+                int d = Sys.CpuidEdx(unchecked((int)0x80000001));
                 if ((d & (1 << 22)) != 0) found |= MmxExtensions;
                 if ((d & unchecked((int)0x80000000)) != 0) found |= ThreeDNow;
             }
@@ -880,7 +877,7 @@ interface IOwnsElements : IOwnsStorage
     void OwnElements();
 }
 
-static class Runtime
+static partial class Runtime
 {
     /// THE 386'S ATOMICS. A 386 reads and writes memory as one only with
     /// XCHG: it has no XADD (Interlocked.Add and Increment) and no CMPXCHG

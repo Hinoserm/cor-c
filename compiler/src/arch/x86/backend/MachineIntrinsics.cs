@@ -84,8 +84,26 @@ internal static class MachineIntrinsics
     public const string BitScanReverse = Prefix + "bsr";
     /// <summary>Whether the processor has CPUID: EFLAGS.ID flipped and read back (Sys.CpuidPresent).</summary>
     public const string CpuidPresent = Prefix + "hascpuid";
+    /// <summary>cpuid's EAX or EDX alone, of a leaf with subleaf 0 (Sys.CpuidEax, CpuidEdx).</summary>
+    public const string CpuidEax = Prefix + "cpuideax";
+    public const string CpuidEdx = Prefix + "cpuidedx";
     /// <summary>A 64-bit compare-exchange on i386: lock cmpxchg8b (Sys.Cas64).</summary>
     public const string Cas64 = Prefix + "cas64";
+    /// <summary>
+    /// The MMX registers' bulk and scanning instructions, for the hosted
+    /// runtime's routines that reach them only after Processor says the
+    /// processor has them (Runtime.StreamCopy, PackedStringFind): i386 only.
+    /// </summary>
+    public const string StreamPrefetch = Prefix + "prefetchnta";
+    public const string StreamPrefetchLine = Prefix + "prefetch";
+    public const string StreamCopy64 = Prefix + "streamcopy64";
+    public const string StreamFill64 = Prefix + "streamfill64";
+    public const string StreamEnd = Prefix + "streamend";
+    public const string PackedFindChar4 = Prefix + "findchar4";
+    public const string PackedFindChar8 = Prefix + "findchar8";
+    public const string PackedEqual8 = Prefix + "equal8";
+    public const string PackedEnd = Prefix + "emms";
+    public const string PackedEndFast = Prefix + "femms";
     public const string ReadCodeSegment = Prefix + "readcs";
     public const string SwapGs = Prefix + "swapgs";
     public const string LoadTaskRegister = Prefix + "ltr";

@@ -158,7 +158,8 @@ public sealed partial class Lowering
                 VReg dst = Address(call, target, 0);
                 VReg src = Address(call, target, 1);
                 VReg n = ToWord(Arg(call, target, 2));
-                _e.Emit(Opcode.MemCopy, null, R(dst), R(src), R(n));
+                Streamed(n, "StreamCopy", R(dst), R(src),
+                    () => _e.Emit(Opcode.MemCopy, null, R(dst), R(src), R(n)));
                 return Void();
             }
             case "MemorySet":
@@ -166,7 +167,8 @@ public sealed partial class Lowering
                 VReg dst = Address(call, target, 0);
                 VReg v = ToI32(Arg(call, target, 1));
                 VReg n = ToWord(Arg(call, target, 2));
-                _e.Emit(Opcode.MemSet, null, R(dst), R(v), R(n));
+                Streamed(n, "StreamFill", R(dst), R(v),
+                    () => _e.Emit(Opcode.MemSet, null, R(dst), R(v), R(n)));
                 return Void();
             }
 
@@ -250,15 +252,18 @@ public sealed partial class Lowering
                     _e.Jump(forward);
                 }
                 _e.SetBlock(forward);
-                _e.Emit(Opcode.MemCopy, null, R(into), R(from), R(n));
-                // CHARACTERS OR BYTES, NEVER AN ADDRESS (Instr.Number): read
-                // as a copy of words that might be, every string a join was
-                // handed held what its parts held, and a key a dictionary's
-                // missing-key message was made from went with the exception
-                // to where nobody follows -- the name a front end's node
-                // looked up, and with it, merged over the node's class, the
-                // tree (test 1200).
-                _e.Block.Instrs[^1].Number = true;
+                Streamed(n, "StreamCopy", R(into), R(from), () =>
+                {
+                    _e.Emit(Opcode.MemCopy, null, R(into), R(from), R(n));
+                    // CHARACTERS OR BYTES, NEVER AN ADDRESS (Instr.Number): read
+                    // as a copy of words that might be, every string a join was
+                    // handed held what its parts held, and a key a dictionary's
+                    // missing-key message was made from went with the exception
+                    // to where nobody follows -- the name a front end's node
+                    // looked up, and with it, merged over the node's class, the
+                    // tree (test 1200).
+                    _e.Block.Instrs[^1].Number = true;
+                });
                 _e.Jump(done);
                 _e.SetBlock(done);
                 return Void();
@@ -877,6 +882,40 @@ public sealed partial class Lowering
                 return _e.Call(MachineIntrinsics.BitScanReverse, IrType.I32, R(ToI32(Arg(call, target, 0))))!;
             case "CpuidPresent":
                 return _e.Call(MachineIntrinsics.CpuidPresent, IrType.I32)!;
+            case "CpuidEax" or "CpuidEdx":
+                if (_t.WordSize != 4)
+                {
+                    Error(call, $"Sys.{name} is i386's; long mode asks Sys.Cpuid");
+                    return Void();
+                }
+                return _e.Call(name == "CpuidEax" ? MachineIntrinsics.CpuidEax : MachineIntrinsics.CpuidEdx, IrType.I32, R(ToI32(Arg(call, target, 0))))!;
+            case "StreamPrefetch" or "StreamPrefetchLine" or "StreamCopy64" or "StreamFill64" or "StreamEnd"
+                or "PackedFindChar4" or "PackedFindChar8" or "PackedEqual8" or "PackedEnd" or "PackedEndFast":
+            {
+                if (_t.WordSize != 4)
+                {
+                    Error(call, $"Sys.{name} is an i386 instruction; long mode has its own");
+                    return Void();
+                }
+                string machine = name switch
+                {
+                    "StreamPrefetch" => MachineIntrinsics.StreamPrefetch,
+                    "StreamPrefetchLine" => MachineIntrinsics.StreamPrefetchLine,
+                    "StreamCopy64" => MachineIntrinsics.StreamCopy64,
+                    "StreamFill64" => MachineIntrinsics.StreamFill64,
+                    "StreamEnd" => MachineIntrinsics.StreamEnd,
+                    "PackedFindChar4" => MachineIntrinsics.PackedFindChar4,
+                    "PackedFindChar8" => MachineIntrinsics.PackedFindChar8,
+                    "PackedEqual8" => MachineIntrinsics.PackedEqual8,
+                    "PackedEnd" => MachineIntrinsics.PackedEnd,
+                    _ => MachineIntrinsics.PackedEndFast,
+                };
+                List<Operand> given = new();
+                for (int k = 0; k < target.Params.Count; k++) given.Add(R(ToWord(Arg(call, target, k))));
+                IrType answers = name is "PackedFindChar4" or "PackedFindChar8" or "PackedEqual8" ? IrType.I32 : IrType.Void;
+                VReg? got = _e.Call(machine, answers, given.ToArray());
+                return got ?? Void();
+            }
             case "ReadFlags":
                 return Fit(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!, returns);
             case "ReadCodeSegment":
@@ -1033,9 +1072,53 @@ public sealed partial class Lowering
     /// of the same name and shape. Print, the string routines, the bit tricks
     /// and the checksum all live in the runtime (runtime/src/core) as ordinary source.
     /// </summary>
+    /// <summary>
+    /// The streaming size: a copy or a fill at least this long whose length
+    /// is not known until it runs is the runtime's Stream routine's (its
+    /// cache lines stored around the caches, movntq). Beyond what a K7's or a
+    /// K8's level-two cache (256 KB to 1 MB) would hold of it anyway, as the
+    /// processors' own guides put the line: a shorter block is read again
+    /// soon, and stored around the cache it is fetched back from memory.
+    /// </summary>
+    private const long StreamBytes = 256 * 1024;
+
+    /// <summary>
+    /// `small` -- the inline copy or fill -- and, in hosted i386 code where
+    /// the runtime has the routine, a call of it in its stead for `n` of at
+    /// least StreamBytes. Not inside the Stream routines themselves, whose
+    /// own copies are the long way it falls back on.
+    /// </summary>
+    private void Streamed(VReg n, string routine, Operand first, Operand second, Action small)
+    {
+        bool inside = _method is { } current && current.Owner.Name == RuntimeType && current.Name.StartsWith("Stream", StringComparison.Ordinal);
+        if (Freestanding || _t.WordSize != 4 || inside || RuntimeMethod(routine, 3) is not MethodSymbol stream)
+        {
+            small();
+            return;
+        }
+        Require(stream);
+        Block big = _f.NewBlock("streamed"), near = _f.NewBlock("inline"), after = _f.NewBlock("copied");
+        _e.Branch(_e.Binary(Opcode.LtU, n, _e.Const(StreamBytes, IrTypes.Word)), near, big);
+        _e.SetBlock(big);
+        _e.Call(CallLabel(stream), IrType.Void, first, second, R(n));
+        _e.Jump(after);
+        _e.SetBlock(near);
+        small();
+        _e.Jump(after);
+        _e.SetBlock(after);
+    }
+
+    /// <summary>The runtime's routines with a packed form (Runtime.Packed*), hosted i386 code's to call instead.</summary>
+    private static readonly HashSet<string> PackedForms = new(StringComparer.Ordinal) { "StringFind", "StringEqual", "StringCompare" };
+
     private VReg RuntimeFallback(CallExpr call, MethodSymbol target)
     {
         MethodSymbol? rt = RuntimeMethod(target.Name, target.Params.Count, target.Params);
+        // THE MMX REGISTERS' FORM where the hosted runtime has one: it asks
+        // Processor itself, and takes the scalar routine for a short span.
+        if (!Freestanding && _t.WordSize == 4 && PackedForms.Contains(target.Name)
+            && RuntimeMethod("Packed" + target.Name, target.Params.Count, target.Params) is MethodSymbol packed)
+            rt = packed;
         if (rt is null)
         {
             Error(call, $"'{target.Owner.Name}.{target.Name}' is not an instruction on {_t.Name}; "

@@ -242,6 +242,39 @@ internal static class AsmText
             case MOp.Wrmsr: yield return "wrmsr"; yield break;
             case MOp.Cpuid: yield return "cpuid"; yield break;
             case MOp.Rdtsc: yield return "rdtsc"; yield break;
+            case MOp.MmxStoreNt:
+                yield return $"movntq {Op(i.Operands[0], 8, false)}, mm0";
+                yield break;
+            case MOp.PrefetchNta:
+                yield return $"prefetchnta {Op(i.Operands[0], 1, false)}";
+                yield break;
+            case MOp.PrefetchLine:
+                yield return $"prefetch {Op(i.Operands[0], 1, false)}";
+                yield break;
+            case MOp.MmxFindW4:
+                yield return $"movq mm0, {Op(i.Operands[1], 8, false)}";
+                yield return $"pcmpeqw mm0, {Op(i.Operands[2], 8, false)}";
+                yield return "packsswb mm0, mm0";
+                yield return $"movd {Op(i.Operands[0], 4, false)}, mm0";
+                yield break;
+            case MOp.MmxFindW8:
+            {
+                MMem at = (MMem)i.Operands[1];
+                MMem next = new(at.Base, at.Disp + 8) { Index = at.Index, Scale = at.Scale, Symbol = at.Symbol, Reloc = at.Reloc, Label = at.Label };
+                yield return $"movq mm0, {Op(at, 8, false)}";
+                yield return $"movq mm1, {Op(next, 8, false)}";
+                yield return $"pcmpeqw mm0, {Op(i.Operands[2], 8, false)}";
+                yield return $"pcmpeqw mm1, {Op(i.Operands[2], 8, false)}";
+                yield return "packsswb mm0, mm1";
+                yield return $"pmovmskb {Op(i.Operands[0], 4, false)}, mm0";
+                yield break;
+            }
+            case MOp.MmxEqual8:
+                yield return $"movq mm0, {Op(i.Operands[1], 8, false)}";
+                yield return $"pcmpeqd mm0, {Op(i.Operands[2], 8, false)}";
+                yield return "packssdw mm0, mm0";
+                yield return $"movd {Op(i.Operands[0], 4, false)}, mm0";
+                yield break;
             case MOp.WriteFlags:
                 yield return $"push {Op(i.Operands[0], 4, false)}";
                 yield return "popfd";

@@ -2673,3 +2673,184 @@ public class ManualResetEventSlim : IDisposable
 
     public void Dispose() { }
 }
+
+#if !TARGET_64BIT
+// THE MMX REGISTERS' BULK AND SCANNING ROUTINES, hosted i386 only: what owns
+// the x87 state may borrow it (a freestanding image never runs these). Each
+// asks Processor first, whatever --cpu the image was made for -- one image
+// runs on the 486 and the K8 alike -- and takes the ordinary way where the
+// processor has not the instructions, or the work is too short to pay for
+// leaving the x87's state (EMMS, FEMMS) at the end.
+//
+// NEVER INLINED: MM0 and MM1 are the x87's registers, and a caller with a
+// double held on the x87 stack would find it gone. A call is the boundary at
+// which that stack is empty. No safepoint poll goes in a Runtime routine's
+// loop (BackEdgePolls), and nothing is left in an MMX register from one
+// instruction to the next: the scans read their pattern from memory.
+static partial class Runtime
+{
+    /// THE COPY AROUND THE CACHES of a block too long to be read again soon
+    /// (Lowering.StreamBytes and over, a length known only as it runs):
+    /// movntq stores whole cache lines, each line read ahead by prefetchnta,
+    /// so the copy neither evicts the caches' working set nor reads the
+    /// destination's lines in first only to overwrite them. The MMX
+    /// extensions' (the Pentium III, the Athlon, every K8). Not where the two
+    /// blocks overlap, either way: Sys.MemoryCopy's forward order, a word at
+    /// a time, is then the copy.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void StreamCopy(nuint to, nuint from, nuint count)
+    {
+        if (!Processor.Has(Processor.Mmx | Processor.MmxExtensions) || to - from < count || from - to < count)
+        {
+            Sys.MemoryCopy(to, from, count);
+            return;
+        }
+        // To the destination's eight-byte line: a movntq is one store there.
+        nuint head = (0 - to) & 7;
+        Sys.MemoryCopy(to, from, head);
+        to = to + head;
+        from = from + head;
+        count = count - head;
+        nuint lines = count >> 6;
+        for (nuint k = 0; k < lines; k++)
+        {
+            // Eight lines ahead; a prefetch past the source's end never faults.
+            Sys.StreamPrefetch(from + 512);
+            Sys.StreamCopy64(to, from);
+            to = to + 64;
+            from = from + 64;
+        }
+        Sys.StreamEnd();
+        Sys.MemoryCopy(to, from, count & 63);
+    }
+
+    /// THE SAME, FILLED: every byte `value`'s low eight bits (Sys.MemorySet's
+    /// sense), whole cache lines stored by movntq. A large array a `new`
+    /// zeroes, a block the collector clears.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void StreamFill(nuint to, int value, nuint count)
+    {
+        if (!Processor.Has(Processor.Mmx | Processor.MmxExtensions))
+        {
+            Sys.MemorySet(to, value, count);
+            return;
+        }
+        nuint head = (0 - to) & 7;
+        Sys.MemorySet(to, value, head);
+        to = to + head;
+        count = count - head;
+        uint quad = (uint)(value & 0xFF) * 0x01010101;
+        ulong pattern = quad | ((ulong)quad << 32);
+        nuint at = Sys.AddressOf(ref pattern);
+        nuint lines = count >> 6;
+        for (nuint k = 0; k < lines; k++)
+        {
+            Sys.StreamFill64(to, at);
+            to = to + 64;
+        }
+        Sys.StreamEnd();
+        Sys.MemorySet(to, value, count & 63);
+    }
+
+    /// The span under which a scan stays scalar: leaving the MMX registers
+    /// (EMMS) costs what a few dozen units compared one at a time do.
+    const int PackedUnits = 32;
+
+    /// The MMX registers given back to the x87: FEMMS where 3DNow! has it,
+    /// the faster on a K6 and a K7, EMMS elsewhere.
+    static void PackedDone()
+    {
+        if (Processor.Has(Processor.ThreeDNow)) Sys.PackedEndFast();
+        else Sys.PackedEnd();
+    }
+
+    /// StringFind, four units a step by pcmpeqw (plain MMX: the P55C and the
+    /// K6 on), eight by pmovmskb where the MMX extensions are; the first
+    /// equal unit's place is BSF's of the step's mask.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static int PackedStringFind(string s, int at, int value, int count)
+    {
+        if (count < PackedUnits || !Processor.Has(Processor.Mmx))
+        {
+            return StringFind(s, at, value, count);
+        }
+        uint pair = ((uint)value & 0xFFFF) * 0x00010001;
+        ulong pattern = pair | ((ulong)pair << 32);
+        nuint want = Sys.AddressOf(ref pattern);
+        nuint data = Sys.StringData(s);
+        int i = at;
+        int end = at + count;
+        int found = -1;
+        if (Processor.Has(Processor.MmxExtensions))
+        {
+            while (i + 8 <= end)
+            {
+                int mask = Sys.PackedFindChar8(data + (nuint)i * 2, want);
+                if (mask != 0)
+                {
+                    found = i + Sys.BitScanForward((uint)mask);
+                    break;
+                }
+                i = i + 8;
+            }
+        }
+        else
+        {
+            while (i + 4 <= end)
+            {
+                int mask = Sys.PackedFindChar4(data + (nuint)i * 2, want);
+                if (mask != 0)
+                {
+                    found = i + (Sys.BitScanForward((uint)mask) >> 3);
+                    break;
+                }
+                i = i + 4;
+            }
+        }
+        PackedDone();
+        return found >= 0 ? found : StringFind(s, i, value, end - i);
+    }
+
+    /// StringEqual, four units (eight bytes) a step by pcmpeqd; the units
+    /// left over the scalar way.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static bool PackedStringEqual(string a, int aAt, string b, int bAt, int count)
+    {
+        if (count < PackedUnits || !Processor.Has(Processor.Mmx))
+        {
+            return StringEqual(a, aAt, b, bAt, count);
+        }
+        int i = Packed8Alike(Sys.StringData(a) + (nuint)aAt * 2, Sys.StringData(b) + (nuint)bAt * 2, count);
+        return i == count || (count - i >= 4 ? false : StringEqual(a, aAt + i, b, bAt + i, count - i));
+    }
+
+    /// StringCompare: the equal steps passed over four units at a time, the
+    /// first that differs, and what follows, ordered the scalar way.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static int PackedStringCompare(string a, int aAt, string b, int bAt, int count)
+    {
+        if (count < PackedUnits || !Processor.Has(Processor.Mmx))
+        {
+            return StringCompare(a, aAt, b, bAt, count);
+        }
+        int i = Packed8Alike(Sys.StringData(a) + (nuint)aAt * 2, Sys.StringData(b) + (nuint)bAt * 2, count);
+        return StringCompare(a, aAt + i, b, bAt + i, count - i);
+    }
+
+    /// How many of `count` units at x and y the equal eight-byte steps from
+    /// the start cover: a multiple of four, short of count by the step that
+    /// differs or by the units fewer than four at the end.
+    static int Packed8Alike(nuint x, nuint y, int count)
+    {
+        int i = 0;
+        while (count - i >= 4 && Sys.PackedEqual8(x, y) == -1)
+        {
+            x = x + 8;
+            y = y + 8;
+            i = i + 4;
+        }
+        PackedDone();
+        return i;
+    }
+}
+#endif

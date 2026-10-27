@@ -926,7 +926,9 @@ public sealed class Devirtualize : IModulePass
             || callee == Corsac.Lang.X86.MachineIntrinsics.RefExchange || callee == Corsac.Lang.X86.MachineIntrinsics.RefCompareExchange
             // A long compare-exchanged writes the eight bytes it was given,
             // which may be a field's (Interlocked on a long field).
-            || callee == Corsac.Lang.X86.MachineIntrinsics.Cas64;
+            || callee == Corsac.Lang.X86.MachineIntrinsics.Cas64
+            // The streaming stores write a block's 64 bytes.
+            || callee == Corsac.Lang.X86.MachineIntrinsics.StreamCopy64 || callee == Corsac.Lang.X86.MachineIntrinsics.StreamFill64;
 
     private static readonly string? Trace = Switches.TraceForward;
 

@@ -1005,7 +1005,9 @@ internal sealed partial class Selector
     /// </summary>
     private void MulByConstant(MReg dest, MReg src, int factor)
     {
-        int limit = CpuModel.K6 ? 2 : CpuModel.P5 ? 5 : CpuModel.Scalar ? 5 : 3;
+        // The K7's IMUL is four clocks and a scaled LEA two, so two steps at
+        // most; the K8's IMUL three, so one (Agner Fog's tables for both).
+        int limit = CpuModel.K6 ? 2 : CpuModel.K8 ? 1 : CpuModel.K7 ? 2 : CpuModel.P5 ? 5 : CpuModel.Scalar ? 5 : 3;
         long c = Math.Abs((long)factor);
         bool negate = factor < 0;
         if (c == 0)
@@ -2766,12 +2768,64 @@ internal sealed partial class Selector
                 // gate asks before it turns interrupts off.
                 if (i.Dest is not null) Emit(MOp.ReadFlags, Lo(i.Dest));
                 return;
+            // THE PACKED ROUTINES' INSTRUCTIONS, each Probed: the runtime
+            // reaches them only after Processor said the processor has them.
+            // MM0 and MM1 only, nothing left in them from one to the next.
+            case MachineIntrinsics.StreamPrefetch:
+            case MachineIntrinsics.StreamPrefetchLine:
+                Emit(new MInstr(name == MachineIntrinsics.StreamPrefetch ? MOp.PrefetchNta : MOp.PrefetchLine, new MMem(R(i.Operands[0]), 0)) { Probed = true });
+                return;
+            case MachineIntrinsics.StreamCopy64:
+            case MachineIntrinsics.StreamFill64:
+            {
+                // A cache line: eight movq loads (one, of the pattern, for a
+                // fill) and eight movntq stores through MM0.
+                MReg to = R(i.Operands[0]), from = R(i.Operands[1]);
+                bool fill = name == MachineIntrinsics.StreamFill64;
+                if (fill) Emit(new MInstr(MOp.MmxLoad, new MMem(from, 0)) { Probed = true });
+                for (int k = 0; k < 64; k += 8)
+                {
+                    if (!fill) Emit(new MInstr(MOp.MmxLoad, new MMem(from, k)) { Probed = true });
+                    Emit(new MInstr(MOp.MmxStoreNt, new MMem(to, k)) { Probed = true });
+                }
+                return;
+            }
+            case MachineIntrinsics.StreamEnd:
+                Emit(new MInstr(MOp.Sfence) { Probed = true });
+                Emit(new MInstr(MOp.Emms) { Probed = true });
+                return;
+            case MachineIntrinsics.PackedEnd:
+            case MachineIntrinsics.PackedEndFast:
+                Emit(new MInstr(name == MachineIntrinsics.PackedEnd ? MOp.Emms : MOp.Femms) { Probed = true });
+                return;
+            case MachineIntrinsics.PackedFindChar4:
+            case MachineIntrinsics.PackedFindChar8:
+                if (i.Dest is not null)
+                    Emit(new MInstr(name == MachineIntrinsics.PackedFindChar4 ? MOp.MmxFindW4 : MOp.MmxFindW8, Lo(i.Dest),
+                        new MMem(R(i.Operands[0]), 0), new MMem(R(i.Operands[1]), 0)) { Probed = true });
+                return;
+            case MachineIntrinsics.PackedEqual8:
+                if (i.Dest is not null)
+                    Emit(new MInstr(MOp.MmxEqual8, Lo(i.Dest), new MMem(R(i.Operands[0]), 0), new MMem(R(i.Operands[1]), 0)) { Probed = true });
+                return;
             case MachineIntrinsics.BitScanForward:
             case MachineIntrinsics.BitScanReverse:
                 // One instruction from the 386 on; the source is never zero
                 // (its caller asks first), where the result is undefined.
                 if (i.Dest is not null) Emit(name == MachineIntrinsics.BitScanForward ? MOp.Bsf : MOp.Bsr, Lo(i.Dest), R(i.Operands[0]));
                 return;
+            case MachineIntrinsics.CpuidEax:
+            case MachineIntrinsics.CpuidEdx:
+            {
+                // One register of the leaf, straight out of the instruction:
+                // nothing stored, so the asker needs no memory to ask with.
+                MReg leaf = R(i.Operands[0]);
+                Mov(Eax, leaf);
+                Mov(Ecx, Imm(0));
+                Emit(new MInstr(MOp.Cpuid) { Probed = true });
+                if (i.Dest is not null) Mov(Lo(i.Dest), name == MachineIntrinsics.CpuidEax ? Eax : Edx);
+                return;
+            }
             case MachineIntrinsics.CpuidPresent:
             {
                 // WHETHER CPUID IS THERE: EFLAGS.ID (bit 21) can be changed

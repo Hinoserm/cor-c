@@ -42,6 +42,12 @@ internal static class Isa
         // PI2FW: one of the five the K6-2+ and K6-III+ added to 3DNow!.
         MOp.ThreeDNowShortToFloat => X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended,
         MOp.Cmov => X86Feature.Cmov,
+        // The MMX registers' streaming store and the extensions' byte mask:
+        // MMX and the MMX extensions both, so they count as the packed state.
+        MOp.MmxStoreNt or MOp.MmxFindW8 => X86Feature.Mmx | X86Feature.MmxExtensions,
+        MOp.PrefetchNta or MOp.Sfence => X86Feature.MmxExtensions,
+        MOp.PrefetchLine => X86Feature.ThreeDNow,
+        MOp.MmxFindW4 or MOp.MmxEqual8 => X86Feature.Mmx,
         // FUCOMIP: the x87 half of what CPUID calls CMOV.
         MOp.Fucomipp => X86Feature.FloatCmov,
         MOp.Cvttss2si => X86Feature.Sse,

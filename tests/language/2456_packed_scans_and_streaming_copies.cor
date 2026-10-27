@@ -1,0 +1,105 @@
+// test: packed_scans_and_streaming_copies
+// expect-exit: 0
+// expect-output:
+// find 0 wrong of 20300
+// equal 0 wrong of 400
+// compare 0 wrong of 400
+// copy 0 wrong
+// overlap up 0 wrong down 0 wrong
+// concat 0 wrong
+// clear 0 wrong fill 0 wrong
+//
+// The MMX registers' routines (Runtime.PackedStringFind, PackedStringEqual,
+// PackedStringCompare; StreamCopy, StreamFill for a block of 256 KB and more)
+// against plain loops in this program: every place a character can be found
+// in strings of 1 to 200, below and above the packed span, the scalar tail
+// after a four- or eight-unit step; strings alike or differing at each place;
+// a megabyte copied to an odd offset, one overlapping up and down, a join of
+// two 200,000-character strings, a megabyte cleared and filled.
+
+using System;
+
+static class P
+{
+    static int NaiveFind(string s, char c)
+    {
+        for (int i = 0; i < s.Length; i++) if (s[i] == c) return i;
+        return -1;
+    }
+
+    static int Sign(int v) => v < 0 ? -1 : v > 0 ? 1 : 0;
+
+    static int Main()
+    {
+        int wrong = 0, tried = 0;
+        for (int n = 1; n <= 200; n++)
+        {
+            char[] units = new char[n];
+            for (int i = 0; i < n; i++) units[i] = (char)('a' + i % 23);
+            for (int at = -1; at < n; at++)
+            {
+                if (at >= 0) units[at] = 'Z';
+                string s = new string(units);
+                if (s.IndexOf('Z') != NaiveFind(s, 'Z')) wrong++;
+                tried++;
+                if (at >= 0) units[at] = (char)('a' + at % 23);
+            }
+        }
+        Console.WriteLine("find " + wrong + " wrong of " + tried);
+
+        int eq = 0, cmp = 0, pairs = 0;
+        for (int n = 1; n <= 200; n += 1)
+        {
+            char[] x = new char[n];
+            for (int i = 0; i < n; i++) x[i] = (char)('A' + i % 17);
+            string a = new string(x);
+            string same = new string(x);
+            if (!(a == same) || string.CompareOrdinal(a, same) != 0) { eq++; cmp++; }
+            int place = (n * 7) % n;
+            x[place] = (char)(x[place] + 1);
+            string b = new string(x);
+            if (a == b || a.Equals(b)) eq++;
+            if (Sign(string.CompareOrdinal(a, b)) != -1 || Sign(string.CompareOrdinal(b, a)) != 1) cmp++;
+            pairs += 2;
+        }
+        Console.WriteLine("equal " + eq + " wrong of " + pairs);
+        Console.WriteLine("compare " + cmp + " wrong of " + pairs);
+
+        const int Big = 1 << 20;
+        byte[] source = new byte[Big];
+        for (int i = 0; i < Big; i++) source[i] = (byte)(i * 31 + (i >> 9));
+        byte[] target = new byte[Big + 8];
+        Array.Copy(source, 0, target, 3, Big);
+        int copied = 0;
+        for (int i = 0; i < Big; i++) if (target[i + 3] != source[i]) copied++;
+        if (target[0] != 0 || target[1] != 0 || target[2] != 0 || target[Big + 3] != 0) copied++;
+        Console.WriteLine("copy " + copied + " wrong");
+
+        byte[] up = (byte[])source.Clone();
+        Array.Copy(up, 0, up, 100, Big - 100);
+        int upWrong = 0;
+        for (int i = 100; i < Big; i++) if (up[i] != source[i - 100]) upWrong++;
+        byte[] down = (byte[])source.Clone();
+        Array.Copy(down, 100, down, 0, Big - 100);
+        int downWrong = 0;
+        for (int i = 0; i < Big - 100; i++) if (down[i] != source[i + 100]) downWrong++;
+        Console.WriteLine("overlap up " + upWrong + " wrong down " + downWrong + " wrong");
+
+        string left = new string('x', 200000), right = new string('y', 200001);
+        string joined = left + right;
+        int joinWrong = joined.Length == 400001 ? 0 : 1;
+        for (int i = 0; i < joined.Length; i++) if (joined[i] != (i < 200000 ? 'x' : 'y')) joinWrong++;
+        Console.WriteLine("concat " + joinWrong + " wrong");
+
+        byte[] cleared = (byte[])source.Clone();
+        Array.Clear(cleared, 5, Big - 10);
+        int clearWrong = 0;
+        for (int i = 0; i < Big; i++) if (cleared[i] != (i >= 5 && i < Big - 5 ? 0 : source[i])) clearWrong++;
+        byte[] filled = new byte[Big];
+        filled.AsSpan(7, Big - 9).Fill(0xA5);
+        int fillWrong = 0;
+        for (int i = 0; i < Big; i++) if (filled[i] != (i >= 7 && i < Big - 2 ? 0xA5 : 0)) fillWrong++;
+        Console.WriteLine("clear " + clearWrong + " wrong fill " + fillWrong + " wrong");
+        return 0;
+    }
+}

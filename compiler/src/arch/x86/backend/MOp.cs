@@ -138,6 +138,31 @@ public enum MOp : byte
     Bsf, Bsr,
     /// <summary>lock cmpxchg8b m64: EDX:EAX expected, ECX:EBX stored; EDX:EAX what was there (Sys.Cas64).</summary>
     Cmpxchg8b,
+    /// <summary>movntq m64, mm0: MM0 stored around the caches (the MMX extensions: Sys.StreamCopy64).</summary>
+    MmxStoreNt,
+    /// <summary>prefetchnta m8 (the MMX extensions) and 3DNow!'s prefetch m8: a cache line asked for ahead.</summary>
+    PrefetchNta, PrefetchLine,
+    /// <summary>sfence: the streaming stores before it seen before any store after.</summary>
+    Sfence,
+    /// <summary>
+    /// The four UTF-16 units at m compared with the four at p:
+    /// movq mm0, m; pcmpeqw mm0, p; packsswb mm0, mm0; movd r32, mm0 -- a
+    /// byte of r 0xFF for each equal unit, lowest first (plain MMX:
+    /// Sys.PackedFindChar4).
+    /// </summary>
+    MmxFindW4,
+    /// <summary>
+    /// The eight units at m against the four at p twice: two movq, two
+    /// pcmpeqw, packsswb mm0, mm1, pmovmskb r32, mm0 -- a bit of r for each
+    /// equal unit, lowest first (the MMX extensions: Sys.PackedFindChar8).
+    /// </summary>
+    MmxFindW8,
+    /// <summary>
+    /// The eight bytes at a and at b alike or not: movq mm0, a; pcmpeqd mm0, b;
+    /// packssdw mm0, mm0; movd r32, mm0 -- -1 where all eight are (plain MMX:
+    /// Sys.PackedEqual8).
+    /// </summary>
+    MmxEqual8,
     /// <summary>xor r, r; mov r16, cs -- the code selector, its low two bits the privilege level.</summary>
     ReadCs,
     /// <summary>ltr r16.</summary>

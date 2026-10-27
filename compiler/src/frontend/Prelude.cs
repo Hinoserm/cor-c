@@ -861,6 +861,29 @@ public static class Prelude
             public static int BitScanReverse(uint value) { return 0; }
             // 1 where the processor has CPUID (EFLAGS.ID can be flipped), else 0.
             public static int CpuidPresent() { return 0; }
+            // cpuid of a leaf (subleaf 0), its EAX or its EDX: nothing written
+            // to memory, so a caller asks with no frame or heap to put the four
+            // registers in (Processor.Ask). i386 only.
+            public static int CpuidEax(int leaf) { return 0; }
+            public static int CpuidEdx(int leaf) { return 0; }
+            // THE MMX REGISTERS' BULK AND SCANNING INSTRUCTIONS, i386 only, for
+            // the hosted runtime's routines that ask Processor first (each is
+            // an instruction the --cpu profile may not have): prefetchnta and
+            // 3DNow!'s prefetch; a cache line copied, or filled with the eight
+            // bytes at `pattern`, by movntq; sfence and emms after them; four
+            // UTF-16 units at `at` against the four at `pattern` (a byte 0xFF
+            // each that is equal), eight by pmovmskb (a bit each); eight bytes
+            // alike (-1) or not; emms, or 3DNow!'s femms.
+            public static void StreamPrefetch(nuint at) { }
+            public static void StreamPrefetchLine(nuint at) { }
+            public static void StreamCopy64(nuint to, nuint from) { }
+            public static void StreamFill64(nuint to, nuint pattern) { }
+            public static void StreamEnd() { }
+            public static int PackedFindChar4(nuint at, nuint pattern) { return 0; }
+            public static int PackedFindChar8(nuint at, nuint pattern) { return 0; }
+            public static int PackedEqual8(nuint a, nuint b) { return 0; }
+            public static void PackedEnd() { }
+            public static void PackedEndFast() { }
             // A 64-bit compare-exchange at `at`: lock cmpxchg8b on i386, which
             // needs CPUID's CX8 bit (Processor.Cas64); answers what was there.
             public static long Cas64(nuint at, long expect, long value) { return 0; }
