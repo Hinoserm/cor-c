@@ -1,9 +1,9 @@
-// test: an await foreach inside a packed block is refused, as an await is
-// expect-compile-error: an await foreach inside a packed block (using (Packed.Mmx())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next
-// A packed block owns the thread's x87 and MMX state until it ends; a
-// suspension in it would leave that state to whatever the thread ran next.
-// An await using and an await foreach suspend as an await does, and are
-// statements the expression's refusal never saw.
+// test: packed operations in a body that suspends (an await foreach) are refused: its frame outlives a run
+// expect-compile-error: outside a method's own body -- in a lambda, or in a body that awaits or yields
+// The compiler makes each processor's version of a method's body, and keeps
+// the thread's x87 and MMX state around it; a body that suspends would hand
+// that state to whatever the thread ran next. An await foreach suspends as
+// an await does: the packed operation goes into a method of its own.
 
 using System;
 using System.Collections.Generic;
@@ -20,9 +20,9 @@ static class Program
     static async Task<int> Sum()
     {
         int total = 0;
-        using (Packed.Mmx())
         {
             await foreach (int x in Items()) total += x;
+            total += (int)Packed.Add8(Packed.FromBits(1UL), Packed.FromBits(0UL)).Bits;
         }
         return total;
     }

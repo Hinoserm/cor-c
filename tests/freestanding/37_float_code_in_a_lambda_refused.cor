@@ -1,0 +1,22 @@
+// test: float code in a lambda is refused: the compiler keeps the x87's state around methods, and a lambda's body is no method's
+// targets: x86
+// flags: --x87-in-blocks-only
+// expect-compile-error: has its address taken (a delegate
+//
+// The compiler keeps the interrupted thread's x87 state around a method
+// with float code, and around a method's callers' calls; a lambda is a
+// delegate, which may run from anywhere, and its float code is refused.
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Func<double, int> twice = d => (int)(d * 2.0);
+        Host.Line("twice " + twice(1.5));
+        Host.Done(0);
+        return 0;
+    }
+}

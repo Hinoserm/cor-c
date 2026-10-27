@@ -141,7 +141,7 @@ public sealed partial class Lowering
         }
 
         if (_packedFeatures.Count == 0)
-            return Fail(call, "Packed." + name + " in a lambda: write the packed operations in a method, whose body the compiler makes each processor's version of");
+            return Fail(call, "Packed." + name + " outside a method's own body -- in a lambda, or in a body that awaits or yields, whose frame outlives a run: write the packed operations in a method of their own, whose body the compiler makes each processor's version of");
         // What this variant may use: nothing in long mode, whose packed
         // operations are their scalar forms.
         int has = _t.WordSize == 4 ? _packedFeatures.Peek() : 0;

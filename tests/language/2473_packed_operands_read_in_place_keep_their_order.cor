@@ -37,7 +37,6 @@ static class Program
 
     static ulong ByRef(ref Packed64 a, Packed64 b)
     {
-        using (Packed.Mmx())
         {
             return Packed.Add8(a, b).Bits;
         }
@@ -54,7 +53,6 @@ static class Program
         nuint p = _at, q = _at + 8;
         Memory[1] = 2;
         ulong moved;
-        using (Packed.Mmx())
         {
             Packed64 zero = Packed.FromBits(0UL);
             Packed.Store(p, Packed.FromBits(0x1111UL));
@@ -65,14 +63,12 @@ static class Program
 
         Memory[0] = 0x1111111122222222UL;
         Memory[1] = 0x3333333344444444UL;
-        using (Packed.Mmx())
         {
             Packed.Store(_at + 4, Packed.Load(_at));
         }
         System.Console.WriteLine("overlap " + Memory[0].ToString("X16") + " " + Memory[1].ToString("X16"));
 
         ulong assigned;
-        using (Packed.Mmx())
         {
             Packed64 a = Packed.FromBits(0x00FF00FF00FF00FFUL), b = Packed.FromBits(0x0F0F0F0F0F0F0F0FUL);
             assigned = Packed.Or(a, a = Packed.Xor(a, b)).Bits;
@@ -81,7 +77,6 @@ static class Program
 
         Memory[0] = 0x0101010101010101UL;
         ulong got;
-        using (Packed.Mmx())
         {
             got = Packed.Add8(Packed.Load(_at), Packed.FromBits(Seven)).Bits;
         }
@@ -89,7 +84,6 @@ static class Program
 
         Memory[0] = 0x0101010101010101UL;
         Handle seven = new Handle { Value = 7 };
-        using (Packed.Mmx())
         {
             got = Packed.Add8(Packed.Load(_at), Packed.FromBits(seven)).Bits;
         }
@@ -99,7 +93,6 @@ static class Program
         System.Console.WriteLine("by-ref " + ByRef(ref one, Packed.FromBits(0x0202020202020202UL)).ToString("X16"));
         _four = Packed.FromBits(0x0404040404040404UL);
         ulong field;
-        using (Packed.Mmx())
         {
             field = Packed.Add8(_four, one).Bits;
         }

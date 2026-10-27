@@ -1,4 +1,4 @@
-// test: a packed block runs the variant its processor's features pick: one at the compile where --cpu's floor and its bans leave one, the processor's own among those kept otherwise, and never a banned one
+// test: a method with packed operations runs the version its processor's features pick: one at the compile where --cpu's floor and its bans leave one, the processor's own among those kept otherwise, and never a banned one
 // cpu: --cpu=athlon64 --disable-3dnow
 // requires-host: mmx sse sse2
 // only-target: x86
@@ -39,26 +39,28 @@
 //
 // The features each variant may use (PackedOps' bits: MMX 04, the MMX
 // extensions 08, SSE 10, SSE2 20, 3DNow! 40), as Packed.Features() says inside
-// it. The knob caps what the run sees, so every variant kept runs on one
+// it -- each method's own. The knob caps what the run sees, so every variant kept runs on one
 // machine; a --disable-NAME bans its feature from the variants a run may pick
 // as well as from --cpu, so with SSE2 banned no cap brings it back.
 static class Program
 {
+    // Each method its processors' versions, by its own packed operations.
+    static int FloatAverage(out ulong x)
+    {
+        x = Packed.AddF32(Packed.FromBits(0x3F8000003F800000UL), Packed.FromBits(0x4000000040000000UL)).Bits
+          ^ Packed.Average8(Packed.FromBits(1UL), Packed.FromBits(3UL)).Bits;
+        return Packed.Features();
+    }
+
+    static int AddEight(out ulong y)
+    {
+        y = Packed.Add8(Packed.FromBits(0x0102030405060708UL), Packed.FromBits(0x1010101010101010UL)).Bits;
+        return Packed.Features();
+    }
+
     static int Main()
     {
-        int a = 0, b = 0;
-        ulong x, y;
-        using (Packed.Mmx())
-        {
-            a = Packed.Features();
-            x = Packed.AddF32(Packed.FromBits(0x3F8000003F800000UL), Packed.FromBits(0x4000000040000000UL)).Bits
-              ^ Packed.Average8(Packed.FromBits(1UL), Packed.FromBits(3UL)).Bits;
-        }
-        using (Packed.Mmx())
-        {
-            b = Packed.Features();
-            y = Packed.Add8(Packed.FromBits(0x0102030405060708UL), Packed.FromBits(0x1010101010101010UL)).Bits;
-        }
+        int a = FloatAverage(out ulong x), b = AddEight(out ulong y);
         System.Console.WriteLine("float+average " + a.ToString("X2") + " " + x.ToString("X16"));
         System.Console.WriteLine("add8 " + b.ToString("X2") + " " + y.ToString("X16"));
         return 0;

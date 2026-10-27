@@ -1,11 +1,11 @@
-// test: an interrupt handler reaching a packed block in another unit refused at the link
+// test: an interrupt handler reaching packed operations in another unit refused at the link
 // units: tests/language/support/2471_irq_packed_units.cor
-// expect-compile-error: 'Disc.OnIrq' is an interrupt handler and must not open a packed block: 'IrqBlend.Blend' opens a packed block
+// expect-compile-error: 'Disc.OnIrq' is an interrupt handler and must not use the packed registers: 'IrqBlend.Blend' uses the packed registers
 //
 // The compile of this unit cannot see into IrqBlend, which another unit
-// compiles; its facts carry the block Mix opens, and the link walks from the
-// handler through Blend to it. A packed block takes the interrupted thread's
-// x87 and MMX state, which an interrupt handler has not saved.
+// compiles; its facts carry the packed operation Mix makes, and the link
+// walks from the handler through Blend to it. A packed operation takes the
+// interrupted thread's x87 and MMX state, which a handler has not saved.
 
 using System;
 

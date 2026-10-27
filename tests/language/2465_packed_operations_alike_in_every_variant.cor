@@ -85,7 +85,6 @@ static class Program
     {
         Packed64 a = Packed.FromBits(0x7F80FF0001FE8000UL), b = Packed.FromBits(0x01FF0180FF027FFFUL);
         Packed64 c = Packed.FromBits(0x123456789ABCDEF0UL), d = Packed.FromBits(0xFEDCBA9876543210UL);
-        using (Packed.Mmx())
         {
             Say("Add8", Packed.Add8(a, b), Packed.Add8(c, d));
             Say("Add16", Packed.Add16(a, b), Packed.Add16(c, d));
@@ -144,7 +143,6 @@ static class Program
             Say("Insert16", Packed.Insert16(a, 0x12345, 2), Packed.Insert16(c, -1, 0));
         }
         ulong[] memory = new ulong[2];
-        using (Packed.Mmx())
         {
             nuint at = Sys.ArrayData(memory);
             Packed.Store(at, Packed.Add16(Packed.Load(at), c));

@@ -1,6 +1,6 @@
-// test: an interrupt handler may not open a packed block, itself or through a method it calls
-// expect-compile-error: 'Program.Tick' is an interrupt handler and must not open a packed block
-// A packed block takes the thread's x87 and MMX state for its own; an
+// test: an interrupt handler may not use the packed registers, itself or through a method it calls
+// expect-compile-error: 'Program.Tick' is an interrupt handler and must not use the packed registers
+// A packed operation takes the thread's x87 and MMX state for its own; an
 // interrupt handler runs on whatever thread it interrupted, in the middle of
 // whatever that thread was doing with them, and has not saved them.
 
@@ -12,7 +12,7 @@ static class Program
 
     static void Blend()
     {
-        using (Packed.Mmx()) { _n++; }
+        _n += (int)Packed.Add8(Packed.FromBits(1UL), Packed.FromBits(0UL)).Bits;
     }
 
     [InterruptHandler]

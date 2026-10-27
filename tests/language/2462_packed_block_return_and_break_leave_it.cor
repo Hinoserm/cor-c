@@ -18,7 +18,6 @@ static class Program
     {
         for (int i = 0; i < values.Length; i++)
         {
-            using (Packed.Mmx())
             {
                 if (values[i] == wanted) return i;
             }
@@ -33,7 +32,6 @@ static class Program
         int skipped = 0;
         for (int i = 0; i < 10; i++)
         {
-            using (Packed.Mmx())
             {
                 if (i == 5) break;
                 if (i % 2 == 1) { skipped++; seen += i + " "; continue; }
@@ -44,7 +42,7 @@ static class Program
         int total = 0;
         foreach (int v in new[] { 1, 2, 3, 4 })
         {
-            using (Packed.Sse()) { total += v; }
+            { total += v; }
         }
         Console.WriteLine(total);
         return 0;

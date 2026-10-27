@@ -1,0 +1,29 @@
+// test: an interrupt handler may not use float code: it runs on whatever thread it interrupted, whose x87 state it has not saved
+// targets: x86
+// flags: --x87-in-blocks-only
+// expect-compile-error: 'Program.Tick' is an interrupt handler and must not use float code
+//
+// An interrupt handler runs in the middle of whatever the interrupted thread
+// was doing with the x87; the compiler keeps no state there, and refuses
+// the float code instead.
+
+using System;
+
+static class Program
+{
+    static double _sum;
+
+    [InterruptHandler]
+    static void Tick()
+    {
+        _sum = _sum + 1.5;
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Tick();
+        Host.Done(0);
+        return 0;
+    }
+}

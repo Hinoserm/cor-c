@@ -20,7 +20,6 @@ static class Program
         ulong[] memory = new ulong[4];
         nuint at = Sys.ArrayData(memory);
         Packed128 sum;
-        using (Packed.Mmx())
         {
             Packed.Store(at, Packed.FromBits(0x1111111122222222UL, 0x3333333344444444UL));
             Packed.StoreNonTemporal(at + 16, Packed.FromBits(0x5555555566666666UL, 0x7777777788888888UL));

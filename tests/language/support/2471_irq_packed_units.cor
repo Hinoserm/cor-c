@@ -1,5 +1,5 @@
 // The other unit of 2471: what an interrupt handler in the test's own unit
-// calls. Blend opens a packed block, through Mix.
+// calls. Blend reaches a packed operation, through Mix.
 
 static class IrqBlend
 {
@@ -9,7 +9,6 @@ static class IrqBlend
 
     static void Mix(ulong a, ulong b)
     {
-        using (Packed.Mmx())
         {
             _out = Packed.Add8(Packed.FromBits(a), Packed.FromBits(b)).Bits;
         }

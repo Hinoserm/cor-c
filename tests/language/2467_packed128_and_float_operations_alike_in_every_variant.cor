@@ -122,7 +122,6 @@ static class Program
         Packed128 g = Packed.FromBits(F(4.0f, -2.25f), F(0.5f, 9.0f));
         Packed128 ints = Packed.FromBits(0xFFFFFFF900000003UL, 0x0000040080000000UL);
         Packed64 p = Packed.FromBits(F(-7.75f, 3.0f)), q = Packed.FromBits(F(2.0f, 16.0f));
-        using (Packed.Sse())
         {
             W("Add8", Packed.Add8(a, b));
             W("Add16", Packed.Add16(a, b));

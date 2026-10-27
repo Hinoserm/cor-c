@@ -1,4 +1,4 @@
-// test: float code in a function called only inside packed blocks runs under its callers' blocks, with no block of its own
+// test: float code in a method called only from where the state is kept runs under its caller's state, keeping none of its own
 // targets: x86
 // flags: --x87-in-blocks-only
 // apart: yes
@@ -8,13 +8,12 @@
 // shade 191 0 255
 // round 3 8
 //
-// Ceil and Clamp255 are each called only inside a block, Clamp255 through
-// Shade, which has no block of its own either: the link sees every call and
-// lets them run under Main's block, whose save covers its calls. A block
-// in each would save and restore the x87 state on every call. Round is
-// inlined at both its calls (Main's code names it nowhere): the body left
-// behind in the unit's object, which nothing calls, never runs, and is no
-// error at the link.
+// Main keeps the x87 state for its own float code (the compiler's, once at
+// its start); Ceil, Clamp255 and Shade, called only from inside it, run as
+// copies that keep none of their own ($inside), so the state is saved once
+// and not on every call. Round is inlined at both its calls (Main's code
+// names it nowhere): the body left behind in the unit's object, which
+// nothing calls, never runs, and is no error at the link.
 
 using System;
 using System.Runtime.CompilerServices;
@@ -36,7 +35,6 @@ static class Program
     {
         Host.Start(1024 * 1024);
         int a, b, c, s, t, u, r, q;
-        using (Packed.X87())
         {
             a = Ceil(3.25); b = Ceil(-2.5); c = Ceil(3.0);
             s = Shade(0.75, 255.0); t = Shade(-1.0, 3.0); u = Shade(2.0, 255.0);

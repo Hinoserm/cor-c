@@ -1599,6 +1599,11 @@ public sealed partial class Binder
                 // would make their functions twice (Lowering's $inside).
                 if (n is LambdaExpr or LocalDecl { LocalFunction: true }) copyable = false;
                 if (own is null && n is CallExpr call && PackedOperation(call)) own = "packed operations";
+                // A NATIVE (Sys.CallNative) may use the x87, MMX or SSE -- a
+                // kernel's blits and its 3D engine's routines do -- which
+                // nothing here can see: its caller keeps the state.
+                else if (own is null && n is CallExpr native && _r.Calls.TryGetValue(native, out MethodSymbol? sys)
+                         && sys.Name == "CallNative" && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>") own = "a call of a native";
                 else if (own is null && n is Expr e && FloatTyped(e)) own = "float code";
                 if (n is WhileStmt or DoStmt or ForStmt or ForeachStmt)
                     foreach ((Node _, MethodSymbol callee) in DirectCalls(n, m.Owner)) looped.Add(callee);

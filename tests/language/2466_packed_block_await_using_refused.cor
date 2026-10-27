@@ -1,7 +1,7 @@
-// test: an await using inside a packed block is refused, as an await is
-// expect-compile-error: an await using inside a packed block (using (Packed.Mmx())): the thread's packed state is the block's until it ends, and a suspension would hand it to whatever ran next
-// A packed block owns the thread's x87 and MMX state until it ends; giving
-// back an IAsyncDisposable suspends, as an await does.
+// test: packed operations in a body that suspends (an await using) are refused: its frame outlives a run
+// expect-compile-error: outside a method's own body -- in a lambda, or in a body that awaits or yields
+// Giving back an IAsyncDisposable suspends, as an await does; a body that
+// suspends is no method the compiler makes processors' versions of.
 
 using System;
 using System.Threading.Tasks;
@@ -16,9 +16,9 @@ static class Program
     static async Task<int> Run()
     {
         int n = 0;
-        using (Packed.Mmx())
         {
             await using (Resource r = new()) { n++; }
+            n += (int)Packed.Add8(Packed.FromBits(1UL), Packed.FromBits(0UL)).Bits;
         }
         return n;
     }

@@ -21,7 +21,7 @@ static class Program
     static double Hyp(double x, double y)
     {
         double r;
-        using (Packed.X87()) { r = Math.Sqrt(x * x + y * y); }
+        { r = Math.Sqrt(x * x + y * y); }
         return r;
     }
 
@@ -30,7 +30,6 @@ static class Program
         sum = 0;
         for (int i = 0; i < values.Length; i++)
         {
-            using (Packed.Mmx())
             {
                 if (values[i] == wanted) return i;
                 Packed64 s = Packed.Add16(Packed.FromBits(sum), Packed.FromBits(0x000B000B000B000BUL));
@@ -46,10 +45,8 @@ static class Program
         int at = Find(new[] { 1, 2, 3 }, 3, out ulong sum);
         Console.WriteLine("found " + at + " sum " + sum.ToString("X16"));
         ulong inner = 0, outer = 0;
-        using (Packed.Mmx())
         {
             Packed64 one = Packed.FromBits(0x0001000100010001UL);
-            using (Packed.Mmx())
             {
                 inner = Packed.Add16(Packed.Add16(one, one), one).Bits;
             }
@@ -60,7 +57,6 @@ static class Program
         double half = 0;
         for (int i = 0; i < 4; i++)
         {
-            using (Packed.Mmx())
             {
                 Packed64 t = Packed.Add16(Packed.FromBits((ulong)total), Packed.FromBits(10));
                 total = (int)(t.Bits & 0xFFFF);
