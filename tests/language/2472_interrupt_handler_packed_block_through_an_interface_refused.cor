@@ -1,0 +1,48 @@
+// test: an interrupt handler reaching a packed block through an interface call refused
+// expect-compile-error: 'Disc.OnIrq' is an interrupt handler and must not open a packed block
+//
+// Disc's handler calls a mixer it holds by its interface; the one filler
+// the program has opens a packed block, which the handler would run on the
+// interrupted thread's x87 and MMX state.
+
+using System;
+
+interface IIrqHandler
+{
+    void OnIrq(long n);
+}
+
+interface IMixer
+{
+    void Mix(ulong a);
+}
+
+class Mmx : IMixer
+{
+    public ulong Out;
+    public void Mix(ulong a)
+    {
+        using (Packed.Mmx())
+        {
+            Out = Packed.Add8(Packed.FromBits(a), Packed.FromBits(a)).Bits;
+        }
+    }
+}
+
+class Disc : IIrqHandler
+{
+    public IMixer Mixer = new Mmx();
+    public void OnIrq(long n)
+    {
+        Mixer.Mix((ulong)n);
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        new Disc().OnIrq(3);
+        return 0;
+    }
+}

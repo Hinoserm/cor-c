@@ -207,6 +207,9 @@ public static class InterruptNotes
     /// describes -- assembled code, a unit compiled without facts -- are not
     /// followed.
     /// </summary>
+    /// <summary>What a handler's report says it must not do, by what was found (Binder's own words): open a packed block -- the facts carry it as an allocation -- or allocate.</summary>
+    private static string Forbidden(string what) => what.StartsWith("opens a packed block", StringComparison.Ordinal) ? "must not open a packed block" : "must not allocate";
+
     public static List<string> Check(IEnumerable<ObjectFile> objects, IReadOnlySet<string>? neverRun = null, IReadOnlyList<Fact>? imported = null)
     {
         // NO HANDLER ANYWHERE, NOTHING TO WALK: each object's header says how
@@ -319,7 +322,7 @@ public static class InterruptNotes
             if (!said.Add(handler.Name)) continue;
             if (handler.Allocates is string own)
             {
-                errors.Add($"'{handler.Display}' is an interrupt handler and must not allocate: here it {own}");
+                errors.Add($"'{handler.Display}' is an interrupt handler and {Forbidden(own)}: here it {own}");
                 continue;
             }
             foreach (string call in handler.Calls)
@@ -329,7 +332,7 @@ public static class InterruptNotes
                 (string What, Fact Where)? found = Reaches(callee, ref low);
                 if (!found.HasValue) continue;
                 string inner = ReferenceEquals(found.Value.Where, callee) ? "" : $" (in '{found.Value.Where.Display}', which it reaches)";
-                errors.Add($"'{handler.Display}' is an interrupt handler and must not allocate: '{callee.Display}' {found.Value.What}{inner}");
+                errors.Add($"'{handler.Display}' is an interrupt handler and {Forbidden(found.Value.What)}: '{callee.Display}' {found.Value.What}{inner}");
                 break;
             }
         }

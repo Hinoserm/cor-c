@@ -1219,8 +1219,9 @@ public sealed partial class Binder
             }
             // AND THE CALLS THROUGH A SLOT (virtual, abstract, interface): to
             // the slot's fact, which names every method this unit knows to
-            // fill it (below); the link joins every unit's. Followed by the
-            // wait check only (InterruptNotes.Dispatch).
+            // fill it (below); the link joins every unit's, and every check it
+            // makes follows them (InterruptNotes.Dispatch): an allocation or
+            // a packed block an interface's filler holds is refused there.
             foreach (MethodSymbol callee in DispatchedCalls(d.Body!))
             {
                 string slot = SlotOf(callee);
