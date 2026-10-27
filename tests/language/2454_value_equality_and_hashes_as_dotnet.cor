@@ -1,0 +1,56 @@
+// test: value_equality_and_hashes_as_dotnet
+// expect-exit: 0
+// expect-output:
+// record struct a == b False, c == d False, a == a True
+// record struct hashes 1848439739 -300092485 1222090391
+// dictionary count 2, has 0x300000000 False, [0x200000000] 2
+// list contains 7 False, index of 0x500000007 0
+// EqualityComparer<ulong> False
+// long hash -2004318072 0 -2
+// short hash -2 300
+// char hash 4259905 sbyte hash -5
+// enum hash -3 byte 200 bool 1
+// double hash 1073217536 NaN 2146435072 -0 0 inf 2146435072
+// float hash 1069547520 NaN 2139095040 -0 0
+// record class x == y True, y == z False, hashes equal True
+//
+// A value's equality and hash as .NET's EqualityComparer<T>.Default and a
+// record's synthesized members give them; the output is real .NET's. On
+// i386 a long or ulong was compared on its low word alone -- record struct
+// keys that differed in a high half were equal, a Dictionary<long, V>
+// merged keys, List<long>.Contains found 7 in 0x500000007 -- and the
+// compiler's own expression keys merged `x & 0x7FFF...` with
+// `x & 0xFFFFF...`, so stage 1 and stage 2 differed. A value's hash was its
+// low word: a long's high half, a char's mixing, a NaN's and a zero's
+// canonical forms were left out.
+
+using System;
+using System.Collections.Generic;
+
+enum Small : short { A = -3, B = 7 }
+readonly record struct Key(int Op, bool Flag, long First, ulong Second);
+record class Box(long Wide, short Half, char Letter, sbyte Tiny, double Real, float Single);
+
+static class Program
+{
+    static void Main()
+    {
+        Key a = new(9, true, 1, 0x7FFFFFFFFFFFFFFFUL), b = new(9, true, 1, 0xFFFFFFFFFFFFFUL);
+        Key c = new(9, true, 0x100000001L, 5), d = new(9, true, 1, 5);
+        Console.WriteLine("record struct a == b " + (a == b) + ", c == d " + (c == d) + ", a == a " + (a == new Key(9, true, 1, 0x7FFFFFFFFFFFFFFFUL)));
+        Console.WriteLine("record struct hashes " + a.GetHashCode() + " " + b.GetHashCode() + " " + c.GetHashCode());
+        Dictionary<long, int> map = new() { [0x100000000L] = 1, [0x200000000L] = 2 };
+        Console.WriteLine("dictionary count " + map.Count + ", has 0x300000000 " + map.ContainsKey(0x300000000L) + ", [0x200000000] " + map[0x200000000L]);
+        List<long> list = new() { 0x500000007L };
+        Console.WriteLine("list contains 7 " + list.Contains(7L) + ", index of 0x500000007 " + list.IndexOf(0x500000007L));
+        Console.WriteLine("EqualityComparer<ulong> " + EqualityComparer<ulong>.Default.Equals(0xFFFFFFFF00000001UL, 1UL));
+        Console.WriteLine("long hash " + EqualityComparer<long>.Default.GetHashCode(0x123456789ABCDEF0L) + " " + (-1L).GetHashCode() + " " + EqualityComparer<ulong>.Default.GetHashCode(0xFFFFFFFF00000001UL));
+        Console.WriteLine("short hash " + EqualityComparer<short>.Default.GetHashCode((short)-2) + " " + EqualityComparer<short>.Default.GetHashCode((short)300));
+        Console.WriteLine("char hash " + EqualityComparer<char>.Default.GetHashCode('A') + " sbyte hash " + EqualityComparer<sbyte>.Default.GetHashCode((sbyte)-5));
+        Console.WriteLine("enum hash " + EqualityComparer<Small>.Default.GetHashCode(Small.A) + " byte " + EqualityComparer<byte>.Default.GetHashCode((byte)200) + " bool " + EqualityComparer<bool>.Default.GetHashCode(true));
+        Console.WriteLine("double hash " + EqualityComparer<double>.Default.GetHashCode(1.5) + " NaN " + EqualityComparer<double>.Default.GetHashCode(double.NaN) + " -0 " + EqualityComparer<double>.Default.GetHashCode(-0.0) + " inf " + EqualityComparer<double>.Default.GetHashCode(double.PositiveInfinity));
+        Console.WriteLine("float hash " + EqualityComparer<float>.Default.GetHashCode(1.5f) + " NaN " + EqualityComparer<float>.Default.GetHashCode(float.NaN) + " -0 " + EqualityComparer<float>.Default.GetHashCode(-0.0f));
+        Box x = new(0x1234567800000000L, -2, 'z', -5, double.NaN, -0.0f), y = new(0x1234567800000000L, -2, 'z', -5, double.NaN, 0.0f), z = new(0x1234567900000000L, -2, 'z', -5, double.NaN, 0.0f);
+        Console.WriteLine("record class x == y " + (x == y) + ", y == z " + (y == z) + ", hashes equal " + (x.GetHashCode() == y.GetHashCode()));
+    }
+}

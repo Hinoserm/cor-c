@@ -598,36 +598,57 @@ public sealed partial class Lowering
                                              R(_e.Binary(Opcode.FNe, R(y), R(y), IrType.I32)), IrType.I32);
                     return _e.Binary(Opcode.Or, R(same), R(bothNaN), IrType.I32);
                 }
-                VReg wx = Fit(x, returns), wy = Fit(y, returns);
+                // AT THE VALUES' OWN WIDTH, never the answer's: cut to the
+                // bool's 32 bits, two longs that differed only in their high
+                // halves were equal on i386 -- a record struct's Equals, a
+                // Dictionary<long, V>'s keys, List<long>.Contains -- and the
+                // compiler's own expression keys merged `x & 0x7FFF...` with
+                // `x & 0xFFFFF...` (stage 1 and stage 2 differed by it).
+                IrType width = x.Type == IrType.I64 || y.Type == IrType.I64 ? IrType.I64 : x.Type;
+                VReg wx = Fit(x, width), wy = Fit(y, width);
                 return _e.Binary(Opcode.Eq, R(wx), R(wy), IrType.I32);
             }
             case "HashValue":
             {
+                // THE HASH .NET's GetHashCode GIVES THE VALUE'S TYPE, as an int
+                // widened to the long this answers: a record's GetHashCode and
+                // EqualityComparer<T>.Default.GetHashCode are observable, and
+                // were the value's low word -- a long's high half, a char's
+                // mixing, a NaN's or a zero's canonical form all left out
+                // (Int64.GetHashCode is (int)v ^ (int)(v >> 32)).
+                Type of = _b.TypeOf(call.Args[0]);
                 VReg held = Arg(call, target, 0);
-                if (held.Type is IrType.F32 or IrType.F64)
+                Prim prim = of.IsEnumValue && of.Symbol is { } counted ? counted.EnumUnderlying : of.Prim;
+                VReg hash;
+                if (held.Type == IrType.F64)
                 {
-                    // Every zero hashes as 0 and every NaN alike, as they are equal.
-                    bool wide = held.Type == IrType.F64;
-                    VReg bits = wide ? _e.Unary(Opcode.Bits, R(held), IrType.I64) : Fit(_e.Unary(Opcode.Bits, R(held), IrType.I32), returns);
-                    VReg zero = _e.Unary(Opcode.IToF, R(_e.Const(0, IrType.I32)), held.Type);
-                    VReg isZero = _e.Binary(Opcode.FEq, R(held), R(zero), IrType.I32);
-                    VReg isNaN = _e.Binary(Opcode.FNe, R(held), R(held), IrType.I32);
-                    VReg result = _f.NewReg(IrType.I64, "hashv");
-                    Block nan = _f.NewBlock("hvnan"), number = _f.NewBlock("hvnum"), zeroed = _f.NewBlock("hvzero"), end = _f.NewBlock("hvend");
-                    _e.Branch(isNaN, nan, number);
-                    _e.SetBlock(nan);
-                    _e.CopyTo(result, Imm(0x7FF8000000000000, IrType.I64));
-                    _e.Jump(end);
-                    _e.SetBlock(number);
-                    _e.CopyTo(result, R(bits.Type == IrType.I64 ? bits : _e.Unary(Opcode.ZExt32, R(bits), IrType.I64)));
-                    _e.Branch(isZero, zeroed, end);
-                    _e.SetBlock(zeroed);
-                    _e.CopyTo(result, Imm(0, IrType.I64));
-                    _e.Jump(end);
-                    _e.SetBlock(end);
-                    return Fit(result, returns);
+                    // Double.GetHashCode: a NaN or a zero by its exponent alone.
+                    VReg bits = _e.Unary(Opcode.Bits, R(held), IrType.I64);
+                    hash = HashOfWide(Canonical(bits, IrType.I64, 0x7FF0000000000000L));
                 }
-                return Fit(held, returns);
+                else if (held.Type == IrType.F32)
+                {
+                    VReg bits = _e.Unary(Opcode.Bits, R(held), IrType.I32);
+                    hash = Canonical(bits, IrType.I32, 0x7F800000L);
+                }
+                else if (held.Type == IrType.I64 && prim is Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt)
+                {
+                    hash = HashOfWide(held);
+                }
+                else if (held.Type == IrType.I32 && prim == Prim.Char)
+                {
+                    // Char: (int)m_value | ((int)m_value << 16).
+                    hash = _e.Binary(Opcode.Or, R(held), R(_e.Binary(Opcode.Shl, R(held), Imm(16, IrType.I32), IrType.I32)), IrType.I32);
+                }
+                else
+                {
+                    // Bool, Byte, SByte, Int16, UInt16, Int32, UInt32, a native
+                    // integer of 32 bits: the value itself (SByte and Int16 too,
+                    // as .NET's own answer -2 for (short)-2). Anything else (a
+                    // reference, a pointer): its word, as before.
+                    return Fit(held, returns);
+                }
+                return Fit(hash.Type == IrType.I64 ? hash : _e.Unary(Opcode.SExt32, R(hash), IrType.I64), returns);
             }
             case "CompareValues":
             {
@@ -1271,6 +1292,38 @@ public sealed partial class Lowering
     }
 
     private VReg ToI64(VReg v) => v.Type == IrType.I32 ? _e.Unary(Opcode.ZExt32, v) : v;
+
+    /// <summary>(int)v ^ (int)(v >> 32): Int64's GetHashCode, an I32.</summary>
+    private VReg HashOfWide(VReg v)
+    {
+        VReg low = _e.Unary(Opcode.Trunc64, R(v), IrType.I32);
+        VReg high = _e.Unary(Opcode.Trunc64, R(_e.Binary(Opcode.ShrU, R(v), Imm(32, IrType.I64), IrType.I64)), IrType.I32);
+        return _e.Binary(Opcode.Xor, R(low), R(high), IrType.I32);
+    }
+
+    /// <summary>
+    /// A float's bits as its GetHashCode takes them: a NaN or a zero
+    /// (((bits - 1) &amp; magnitude) at or above infinity's) by its exponent
+    /// field alone, `infinity`; anything else as it is.
+    /// </summary>
+    private VReg Canonical(VReg bits, IrType type, long infinity)
+    {
+        long magnitude = type == IrType.I64 ? long.MaxValue : int.MaxValue;
+        VReg less = _e.Binary(Opcode.Sub, R(bits), Imm(1, type), type);
+        VReg masked = _e.Binary(Opcode.And, R(less), Imm(magnitude, type), type);
+        VReg special = _e.Binary(Opcode.GeU, R(masked), Imm(infinity, type), IrType.I32);
+        VReg result = _f.NewReg(type, "hashbits");
+        Block canonical = _f.NewBlock("hcanon"), plain = _f.NewBlock("hplain"), end = _f.NewBlock("hend");
+        _e.Branch(special, canonical, plain);
+        _e.SetBlock(canonical);
+        _e.CopyTo(result, R(_e.Binary(Opcode.And, R(bits), Imm(infinity, type), type)));
+        _e.Jump(end);
+        _e.SetBlock(plain);
+        _e.CopyTo(result, R(bits));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
 
     /// <summary>
     /// The kernel's KernelFiles.Syscall(int number, SyscallWord a .. f), whatever
