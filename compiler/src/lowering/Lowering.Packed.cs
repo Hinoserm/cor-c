@@ -22,7 +22,8 @@ namespace Corsac.Lang.Lower;
 ///
 /// Every machine form loads its operands from memory, computes in mm0 or
 /// xmm0, and stores the result into the call's result buffer (Selector.
-/// SelectPackedOp): nothing is kept in a packed register between two.
+/// SelectPackedOp); an operand the operation before left in mm0 is taken
+/// from there, and nothing else is kept in a packed register between two.
 /// </summary>
 public sealed partial class Lowering
 {
@@ -34,11 +35,12 @@ public sealed partial class Lowering
     /// <summary>
     /// A PACKED OPERATION'S OPERAND where its lanes are, not a copy, where
     /// nothing the operation's operands do can write memory before it reads
-    /// them (every one PackedPure): a local's or parameter's own storage --
+    /// them (every one PackedPure): a local's, parameter's or field's own storage --
     /// EvalAs's copy of a struct argument was a heap object on every pass in
     /// freestanding code -- and a Packed.Load's own address, one movq from
-    /// the source, not two moves into a slot and one out. Not a Load for a
-    /// value a store writes other than whole, in one move (`direct` false):
+    /// the source, not two moves into a slot and one out; a field and a ref
+    /// parameter as a local. Not a Load for a value a store writes other
+    /// than whole, in one move (`direct` false):
     /// a copy word by word over an overlapping source would read what it
     /// wrote. Anything else taken when it is (PackedSnapshot).
     /// </summary>
@@ -48,7 +50,7 @@ public sealed partial class Lowering
         if (!call.Args.All(PackedPure)) return PackedSnapshot(call.Args[i], target.Params[i].Type.Symbol?.Name == "Packed128" ? 16 : 8);
         if (direct && PackedCall(call.Args[i], "Load", "Load128") is { Args: [Expr from] })
             return ToWord(Eval(from));
-        if (call.Args[i] is NameExpr n && _b.Resolved.TryGetValue(n, out Sym? sym) && sym is LocalSym or ParamSym { ByRef: false })
+        if (call.Args[i] is NameExpr n && !_b.Rewrites.TryGetValue(n, out _) && _b.Resolved.TryGetValue(n, out Sym? sym) && sym is LocalSym or ParamSym or FieldSym)
             return Eval(n);
         return PackedSnapshot(call.Args[i], target.Params[i].Type.Symbol?.Name == "Packed128" ? 16 : 8);
     }
@@ -68,10 +70,10 @@ public sealed partial class Lowering
         return copy;
     }
 
-    /// <summary>A call of the prelude's Packed.NAME, by the binder's resolution: one of `names`, or any where none is given; else null.</summary>
+    /// <summary>A call of the prelude's Packed.NAME, by the binder's resolution, as a call is told one (Lowering.Call): one of `names`, or any where none is given; else null.</summary>
     private CallExpr? PackedCall(Expr e, params string[] names)
-        => e is CallExpr c && _b.Calls.TryGetValue(c, out MethodSymbol? m) && m.Owner.Name == "Packed" && m.Owner.Decl?.FromLibrary != false
-            && (names.Length == 0 || names.Contains(m.Name)) ? c : null;
+        => e is CallExpr c && !_b.Rewrites.TryGetValue(c, out _) && _b.Calls.TryGetValue(c, out MethodSymbol? m)
+            && m.Owner.Name == Prelude.PackedType && m.Decl?.File == "<prelude>" && (names.Length == 0 || names.Contains(m.Name)) ? c : null;
 
     /// <summary>Whether a Packed64's eight bytes move through mm0 here (PackedMove): inside a packed block whose variant has MMX, in i386 code; elsewhere, and a Packed128's sixteen, a copy.</summary>
     private bool PackedMoveHere(bool wide)
@@ -81,17 +83,18 @@ public sealed partial class Lowering
     /// Whether an operand's evaluation writes no memory: a local, parameter,
     /// field or constant (not a property, whose getter may), a literal, the
     /// built-in arithmetic and conversions of numbers on them (not a type's
-    /// own operator or conversion), and the packed operations themselves,
-    /// each of which writes only its own result -- no store, fence,
-    /// assignment, step or other call.
+    /// own operator or conversion, nor one the binder made a call of -- an
+    /// implicit conversion of a name, its Rewrites), and the packed
+    /// operations themselves, each of which writes only its own result -- no
+    /// store, fence, assignment, step or other call.
     /// </summary>
-    private bool PackedPure(Expr e) => e switch
+    private bool PackedPure(Expr e) => !_b.Rewrites.TryGetValue(e, out _) && e switch
     {
         LiteralExpr => true,
         NameExpr n => _b.Resolved.TryGetValue(n, out Sym? sym) && sym is LocalSym or ParamSym or FieldSym or ConstSym,
         BinaryExpr b => PackedNumber(b) && PackedNumber(b.Left) && PackedNumber(b.Right) && PackedPure(b.Left) && PackedPure(b.Right),
         UnaryExpr { Op: UnOp.Neg or UnOp.Not or UnOp.BitNot } u => PackedNumber(u) && PackedNumber(u.Operand) && PackedPure(u.Operand),
-        CastExpr c => !_b.UserConversions.Contains(c) && PackedNumber(c) && PackedNumber(c.Operand) && PackedPure(c.Operand),
+        CastExpr c => PackedNumber(c) && PackedNumber(c.Operand) && PackedPure(c.Operand),
         CallExpr c when PackedCall(c) is not null => PackedCall(c, "Store", "StoreNonTemporal", "Fence") is null && c.Args.All(PackedPure),
         _ => false,
     };
@@ -133,7 +136,7 @@ public sealed partial class Lowering
             }
             case "Store":
             {
-                VReg into = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1, direct: PackedMoveHere(wide));
+                VReg into = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1, direct: PackedMoveHere(wide) || bytes <= _t.WordSize);
                 if (PackedMoveHere(wide)) _e.Call(MachineIntrinsics.PackedMove, IrType.Void, R(into), R(value));
                 else _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(bytes, IrTypes.Word));
                 return Void();
