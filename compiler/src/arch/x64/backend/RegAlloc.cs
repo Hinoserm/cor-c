@@ -534,8 +534,8 @@ internal sealed class Allocator
         // be live into a block, or out of one, as in the i386 allocator: the
         // blocks' sets are kept for those registers alone, numbered apart
         // (_globalOf, globals). Three sets a block as wide as every register
-        // were the dynamic family's undoing in long mode: 1320's Main ran out
-        // of a 4 GB heap here, where i386 compiles it in 2 GB.
+        // are blocks x registers bits: in long mode 1320_dynamic_members ran
+        // out of a 4 GB heap in this pass, where i386 compiles it in 2 GB.
         int[] lastDef = new int[_n];
         Array.Fill(lastDef, -1);
         int[] globalOf = new int[_n];
@@ -1206,8 +1206,10 @@ internal sealed class Allocator
             // its end: assumed of all, given up to a fixed point.
             bool[] held = new bool[hi - lo + 1];
             Stack<int> work = new();
-            for (int b = lo; b <= hi; b++)
-                if (_globalOf[v] is >= 0 and var at && (_useOf[b].Get(at) || _liveOut[b].Get(at) && !_defOf[b].Get(at))) { held[b - lo] = true; work.Push(b); }
+            // Only a global register is in any block's sets (ComputeLiveness).
+            if (_globalOf[v] is >= 0 and var at)
+                for (int b = lo; b <= hi; b++)
+                    if (_useOf[b].Get(at) || _liveOut[b].Get(at) && !_defOf[b].Get(at)) { held[b - lo] = true; work.Push(b); }
             while (work.Count > 0)
             {
                 int b = work.Pop();

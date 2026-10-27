@@ -2591,7 +2591,8 @@ static class Gc
         // A machine still in its kickoff's frame is on a stack, which the
         // stack copies hold as it was; a size no block has is not read.
         if (size < LeastBlock || size >= 0x1000000 || kind == KindLeaf || size <= HeaderBytes) return;
-        // A footer, where there is one, repeats the header: no reference.
+        // A footer, where there is one, is read too: it repeats the header,
+        // a size, which no block's address is, and Note passes it by.
         nuint end = block + size;
         nuint vt = Sys.ReadAddress(payload);
         if (kind != KindObject || vt == 0 || (_anyQuarantined && InQuarantine(vt)))
@@ -4497,8 +4498,7 @@ static class Gc
             return AllocWord(bytes, kind);
         }
         nuint at = Sys.ReadAddress(tb + Tls.RegionAt);
-        nuint need = (bytes + Overhead + 7) & SizeMask;
-        if (need < Smallest) need = Smallest;
+        nuint need = MixedNeed(bytes);
         if (need > Sys.ReadAddress(tb + Tls.RegionEnd) - at)
         {
             // NO MORE THAN A SIXTEENTH OF THE MACHINE IN REGIONS. A region
