@@ -41,7 +41,10 @@ namespace Corsac.Lang.X86;
 /// </summary>
 internal static class AddressFold
 {
-    /// <summary>Where each register is written: in one block only (its index), or -1, and the last write's place there.</summary>
+    /// <summary>
+    /// Where each register is written: in one block only (its index), or -1,
+    /// and the last write's place there; and where each occurs (Sites).
+    /// </summary>
     private sealed class WriteSites
     {
         public required MFunction M;
@@ -67,10 +70,10 @@ internal static class AddressFold
         // Where each register occurs, by block, instruction and operand, made
         // when Beyond first asks, so a base read in other blocks is found
         // among its own occurrences and not by walking the whole function for
-        // every candidate (x86-64's 1320 Main took half an hour so). A block
-        // is indexed again once folded and a fold's rewrite in another block
-        // is noted; an occurrence rewritten away or removed is passed over
-        // where read. Beyond never reads its own block's.
+        // every candidate (a function of ten thousand blocks took half an
+        // hour so). A block is indexed again once folded and a fold's rewrite
+        // in another block is noted; an occurrence rewritten away or removed
+        // is passed over where read. Beyond never reads its own block's.
         private List<(int Block, MInstr I, int K)>[]? _sites;
         private readonly HashSet<MInstr> _removed = new(ReferenceEqualityComparer.Instance);
 
@@ -117,10 +120,13 @@ internal static class AddressFold
 
         public bool IsRemoved(MInstr i) => _removed.Contains(i);
 
-        public void Remove(List<MInstr> ins, int at)
+        public void Remove(List<MInstr> ins, int at) => Replace(ins, at, Gone());
+
+        /// <summary>An instruction put in another's place: the old one's occurrences are passed over from now on.</summary>
+        public void Replace(List<MInstr> ins, int at, MInstr with)
         {
             _removed.Add(ins[at]);
-            ins[at] = Gone();
+            ins[at] = with;
         }
     }
 
@@ -805,8 +811,7 @@ internal static class AddressFold
                     && (mem.Index is null || !Writes(between, mem.Index.Id));
             }
             if (!quiet) continue;
-            writes.Remove(ins, q);
-            ins[q] = new MInstr(MOp.Cmp, mem, against) { Width = 4, Line = cmp.Line };
+            writes.Replace(ins, q, new MInstr(MOp.Cmp, mem, against) { Width = 4, Line = cmp.Line });
             occurrences[t.Id] = 0;
             writes.Remove(ins, p);
             any = true;

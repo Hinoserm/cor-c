@@ -57,7 +57,8 @@ internal sealed class AddressFold
     // when Beyond first asks: an occurrence a fold adds is noted, and one it
     // rewrites away or removes is passed over where read -- so a base read
     // in other blocks is found among its own occurrences, not by walking the
-    // whole function for every candidate (1320's Main, half an hour).
+    // whole function for every candidate: a function of ten thousand blocks
+    // spent half an hour here.
     private List<(int Block, MInstr I, int K)>[]? _sites;
     private readonly HashSet<MInstr> _removed = new(ReferenceEqualityComparer.Instance);
 
