@@ -6,12 +6,12 @@
 // nested 0003000300030003 0006000600060006
 // loop 40 7.5
 //
-// Float code keeps the x87 state in the compiler's own block around its
-// method (Parser.ImplicitBody): its save is the x87's, or none where the
-// code needs none. A packed operation after a return keeps the method's
-// variant: the return's copy of the finally does not close it
-// (Lowering.Stmt). A block inside another is read once, with the outer
-// variant's features. And the x87
+// Float code and packed operations in the compiler's own block around
+// their method (Parser.ImplicitBody), which keeps the x87 state in
+// freestanding code and is the body alone here: a packed operation after a
+// return keeps the method's variant, the return's copy of the finally not
+// closing it (Lowering.Stmt), and plain braces inside change nothing. And
+// the x87
 // code that follows packed operations finds its stack empty (EMMS before
 // it: Selector.PackedDirty), in a loop as anywhere.
 

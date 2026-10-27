@@ -317,7 +317,7 @@ public static class X87Notes
             call = false;
             while (by.TryGetValue(at.Name, out var step))
             {
-                steps.Add($"'{step.Caller.Display}' calls '{at.Display}' at {Where(step.Caller, step.At.Line)}, where no kept state is");
+                steps.Add($"'{step.Caller.Display}' calls '{at.Display}' at {Where(step.Caller, step.At.Line)}");
                 call = true;
                 at = step.Caller;
             }

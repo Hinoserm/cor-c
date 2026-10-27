@@ -68,9 +68,10 @@ public sealed class ConstantSpecialize : IModulePass
                 {
                     Exported = false, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
                     // Whose code it is goes with the copy: the x86 backend's
-                    // check that float code is in packed blocks asks it
-                    // (Selector.X87Fact).
-                    FromLibrary = target.FromLibrary, SystemCode = target.SystemCode,
+                    // check that float code runs in a kept state asks it
+                    // (Selector.X87Fact). And whether it runs inside its
+                    // caller's (a $inside copy's, Function.InsideState).
+                    FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, InsideState = target.InsideState,
                 };
                 foreach (VReg parameter in target.Params)
                 {

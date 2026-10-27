@@ -927,7 +927,7 @@ public sealed partial class Lowering
             case "PackedEnter":
             case "PackedLeave":
             {
-                int kind = call.Args[0] is LiteralExpr { Text: var k } ? int.Parse(k) : 1;
+                int kind = call.Args[0] is LiteralExpr { Text: var k } ? int.Parse(k) : Corsac.Lang.Parser.ImplicitKind;
                 int number = call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : 0;
                 int features = call.Args[2] is LiteralExpr { Text: var told } ? int.Parse(told) : 0;
                 if (!Freestanding) return Void();

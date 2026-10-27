@@ -1691,7 +1691,7 @@ public sealed partial class Binder
         return true;
     }
 
-    /// <summary>The nodes of a body that only some of its runs reach: the arms of ?: and of a switch expression, the right of &&, || and ??, a call past a `?.` and its arguments.</summary>
+    /// <summary>The nodes of a body that only some of its runs reach: the arms of ?: and of a switch expression, the right of &&, || and ??, a call, an accessor or an indexer past a `?.` or `?[`, and their arguments.</summary>
     private HashSet<Node> ConditionalSites(Node body)
     {
         HashSet<Node> maybe = new(ReferenceEqualityComparer.Instance);
