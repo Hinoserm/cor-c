@@ -777,7 +777,7 @@ internal sealed partial class Selector
                 if (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)) floatLine = i.Line;
             }
         }
-        return new(f.Name, f.Display ?? f.Name, Path.GetFileName(f.SourceFile ?? ""), floatLine, false, calls.ToArray());
+        return new(f.Name, f.Display ?? f.Name, Path.GetFileName(f.SourceFile ?? ""), floatLine, f.Dispatched, calls.ToArray());
     }
 
     /// <summary>

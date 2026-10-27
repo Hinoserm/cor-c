@@ -249,6 +249,13 @@ public sealed partial class Lowering
         return false;
     }
 
+    /// <summary>Whether a type, or one it derives from, implements an interface: its instance methods may be reached through one's table.</summary>
+    private static bool ImplementsAny(TypeSymbol t)
+    {
+        for (TypeSymbol? s = t; s is not null; s = s.Base) if (s.Interfaces.Count > 0) return true;
+        return false;
+    }
+
     private void EmitMethod(MethodSymbol m, MethodDecl decl)
     {
         ResetMethodState();
@@ -289,6 +296,8 @@ public sealed partial class Lowering
             // A TYPE'S INITIALISER BODY STAYS A ROUTINE OF ITS OWN: the link
             // runs it in the type's place (Lto.Preinit, NotePreinitType).
             NoInlining = NoInlining(decl) || (m.Static && decl.Name == "StaticInitBody$"), Unjudged = decl.AutoAccessor,
+            // A copy that runs inside its caller's state is called directly only.
+            Dispatched = !_insideCopy && !m.Static && (m.Virtual || m.Override || m.Abstract || ImplementsAny(m.Owner)),
         };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);

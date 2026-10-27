@@ -53,6 +53,14 @@ public sealed class Function
     public bool NoInlining { get; set; }
 
     /// <summary>
+    /// Whether a call through a slot may run it -- a virtual method, an
+    /// override, an interface's implementation, a lambda's Invoke -- by a
+    /// table the link may make: what reaches it no fact of this unit's says
+    /// (Lto.X87Notes: its address taken).
+    /// </summary>
+    public bool Dispatched { get; set; }
+
+    /// <summary>
     /// The escape pass's renewal frees, for the region pass to place where
     /// each lap ends (Escape.NoteLapFree, PlaceLapFrees), taken there. Held
     /// here so they go with the function: a table keyed by the function is
