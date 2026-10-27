@@ -1191,6 +1191,41 @@ public sealed partial class Lowering
     private bool PackedFeaturesNeverRun(int features)
         => (features & PackedBits(_t.X86Profile.Banned)) != 0 || Freestanding && _t.WordSize == 4 && !_t.X86Profile.Has(X86Feature.Sse) && (features & (PackedOps.Sse | PackedOps.Sse2)) != 0;
 
+    /// <summary>
+    /// PROCESSOR.HAS OF CONSTANT FEATURES, AT THE COMPILE (Runtime's
+    /// Processor): true where --cpu promises every one -- the processor has
+    /// at least its features -- and false where a --disable-NAME bans one
+    /// (X86Cpu.Banned): the image may not use it, whatever the processor
+    /// has. The branch it guards goes with dead code. Otherwise null, the
+    /// question the run asks (the cached word, CPUID asked once); and never
+    /// where the image's knob caps the features (Corsac.Cpu.Features), or in
+    /// long mode, whose profile is another's.
+    /// </summary>
+    private bool? ProcessorHasFolded(CallExpr call, MethodSymbol target)
+    {
+        if (target.Name != "Has" || target.Owner.Name != "Processor" || target.Owner.Decl?.FromLibrary != true || call.Args.Count != 1
+            || _t.WordSize != 4 || IntegerConstantOf(call.Args[0]) is not long asked
+            || RuntimeKnobs.Any(k => k.StartsWith("Corsac.Cpu.Features=", StringComparison.Ordinal)))
+            return null;
+        int promised = ProcessorBits(_t.X86Profile.Features), banned = ProcessorBits(_t.X86Profile.Banned);
+        if (((int)asked & promised) == (int)asked) return true;
+        if (((int)asked & banned) != 0) return false;
+        return null;
+    }
+
+    /// <summary>Processor's feature bits of X86Feature's: Cas64 the Pentium's CMPXCHG8B, Cmov, and the packed ones (PackedBits).</summary>
+    private static int ProcessorBits(X86Feature f)
+        => PackedBits(f) | ((f & X86Feature.Pentium) != 0 ? 1 << 0 : 0) | ((f & X86Feature.Cmov) != 0 ? 1 << 1 : 0);
+
+    /// <summary>An integer the expression is at the compile: a literal, a const, and the bitwise or of such.</summary>
+    private long? IntegerConstantOf(Expr e) => e switch
+    {
+        LiteralExpr { Kind: Lit.Int } l => l.IntValue,
+        NameExpr or MemberExpr when _b.Resolved.TryGetValue(e, out Sym? sym) && sym is ConstSym { Type.IsInteger: true } k => k.Value,
+        BinaryExpr { Op: BinOp.Or } b when IntegerConstantOf(b.Left) is long l && IntegerConstantOf(b.Right) is long r => l | r,
+        _ => null,
+    };
+
     /// <summary>The features --cpu promises, as PackedOps' bits (Processor's).</summary>
     private int ProfileFeatures => PackedBits(_t.X86Profile.Features);
 

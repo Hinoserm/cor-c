@@ -1,0 +1,25 @@
+// test: Processor.Has of features --cpu promises is true at the compile, of a feature a --disable bans false, and the branches it guards go
+// targets: x86
+// flags-x86: --cpu=athlon64 --disable-3dnow
+// expect-output:
+// sse2 yes
+// 3dnow no
+//
+// The K8 floor has SSE2, so the question is no question: the else branch
+// is dead code, and Main reads no processor word at all. 3DNow! is banned
+// by --disable-3dnow, so its question is answered no the same way.
+// expect-no-asm-x86: Main: [s_Processor__features]
+
+static class Program
+{
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        if (Processor.Has(Processor.Sse2 | Processor.Mmx)) Host.Line("sse2 yes");
+        else Host.Line("sse2 no");
+        if (Processor.Has(Processor.ThreeDNow)) Host.Line("3dnow yes");
+        else Host.Line("3dnow no");
+        Host.Done(0);
+        return 0;
+    }
+}

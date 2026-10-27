@@ -16,10 +16,19 @@ _start:
     int 0x80
     jmp $                       ; the exit does not come back: nothing falls into float_one
 
-; float_one(at): the float 1.0 written at `at`, through the x87.
+; float_one(at): the float 1.0 written at `at`, through the x87 -- twice,
+; in a loop, with a branch past a null `at`: a kernel's natives branch and
+; loop, which is no address taken.
 float_one:
     mov eax, [esp + 4]
+    test eax, eax
+    jz .none
+    mov ecx, 2
+.again:
     fld1
     fstp dword [eax]
+    dec ecx
+    jnz .again
+.none:
     xor eax, eax
     ret

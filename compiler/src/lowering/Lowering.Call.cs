@@ -644,6 +644,10 @@ public sealed partial class Lowering
         {
             return PackedIntrinsic(call, target);
         }
+        if (ProcessorHasFolded(call, target) is bool known)
+        {
+            return _e.Const(known ? 1 : 0, IrTypes.Of(target.Returns));
+        }
 
         VReg? receiver = null;
         List<Operand> args = new();

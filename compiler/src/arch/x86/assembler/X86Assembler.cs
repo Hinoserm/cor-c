@@ -1218,7 +1218,7 @@ public sealed partial class X86Assembler : ISymbols
             return;
         }
         string name = refs[0];
-        NoteReference(name);
+        NoteReference(name, pcRelative);
         bool external = SectionOf(name) is null;
         string section = SectionOf(name) ?? "";
 

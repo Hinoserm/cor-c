@@ -24,7 +24,7 @@ namespace Corsac.Lang.Lto;
 public static class X87Notes
 {
     public const string SectionName = ".corsac.x87";
-    const int Version = 1;
+    const int Version = 2;
 
     /// <summary>
     /// The routine whose address `field` holds, as a call through a load of
@@ -48,6 +48,14 @@ public static class X87Notes
     public sealed record Fact(string Name, string Display, string File, int FloatLine, bool Escapes, Call[] Calls)
     {
         public bool Floats => FloatLine >= 0;
+
+        /// <summary>
+        /// Whether the processor or a loader may enter it by itself -- an
+        /// assembled routine's (X86Assembler.FloatFacts): nothing this link
+        /// knows calling it, it runs outside every block, where a compiled
+        /// function nothing calls never runs.
+        /// </summary>
+        public bool Entered { get; init; }
     }
 
     public static byte[] Encode(IReadOnlyList<Fact> facts)
@@ -65,6 +73,7 @@ public static class X87Notes
                 writer.Write(f.File);
                 writer.Write(f.FloatLine);
                 writer.Write(f.Escapes);
+                writer.Write(f.Entered);
                 writer.Write(f.Calls.Length);
                 foreach (Call c in f.Calls)
                 {
@@ -89,9 +98,10 @@ public static class X87Notes
             string name = reader.ReadString(), display = reader.ReadString(), file = reader.ReadString();
             int floatLine = reader.ReadInt32();
             bool escapes = reader.ReadBoolean();
+            bool entered = reader.ReadBoolean();
             Call[] calls = new Call[reader.ReadInt32()];
             for (int c = 0; c < calls.Length; c++) calls[c] = new Call(reader.ReadString(), reader.ReadInt32(), reader.ReadBoolean());
-            facts.Add(new Fact(name, display, file, floatLine, escapes, calls));
+            facts.Add(new Fact(name, display, file, floatLine, escapes, calls) { Entered = entered });
         }
         return facts;
     }
@@ -138,7 +148,7 @@ public static class X87Notes
     /// function that calls one of these outside a block of its own. Written
     /// where the image's units carry facts (Judges: every freestanding i386
     /// unit's, the rule kept or not), with nothing in it where nothing
-    /// floats; taken away where they carry none -- hosted units, assembly --
+    /// floats; taken away where they carry none -- hosted units, foreign objects --
     /// so that a missing file says the image's calls were never written down
     /// (ReadBeside).
     /// </summary>
@@ -204,6 +214,7 @@ public static class X87Notes
                 File = had.File.Length > 0 ? had.File : f.File,
                 FloatLine = had.Floats ? had.FloatLine : f.FloatLine,
                 Escapes = had.Escapes || f.Escapes,
+                Entered = had.Entered || f.Entered,
                 Calls = had.Calls.Length == 0 ? f.Calls : f.Calls.Length == 0 ? had.Calls : had.Calls.Concat(f.Calls).ToArray(),
             };
         }
@@ -214,11 +225,11 @@ public static class X87Notes
     /// Every function with float code outside its own blocks that can run
     /// outside every block, as an error naming the way it gets there. A
     /// function RUNS OUTSIDE when it is where the image starts (`entries`,
-    /// and every unit's module initializers, which the link calls), when
-    /// its address is taken, when code no fact describes refers to it (an
-    /// object with no facts -- assembly -- calls whatever its relocations
-    /// name), or when a function that runs outside calls it outside a block
-    /// of its own; every other function runs only inside its callers'
+    /// and every unit's module initializers, which the link calls, and an
+    /// assembled routine nothing calls), when its address is taken, when
+    /// code no fact describes refers to it (an object with no facts -- a
+    /// foreign one -- calls whatever its relocations name), or when a
+    /// function that runs outside calls it outside a block of its own; every other function runs only inside its callers'
     /// blocks. One nothing calls at all never runs here -- a body left
     /// behind where every call was inlined -- and another image's calls into
     /// this one are that image's link's to judge, against the facts this
@@ -254,6 +265,11 @@ public static class X87Notes
         // none): a refusal there is of code that never runs, which a block
         // costs nothing to keep.
         HashSet<string> started = new(entries ?? Array.Empty<string>(), StringComparer.Ordinal);
+        // AND AN ASSEMBLED ROUTINE NOTHING KNOWN CALLS (Fact.Entered): a
+        // processor's or a loader's to enter.
+        HashSet<string> called = new(StringComparer.Ordinal);
+        foreach (Fact f in facts.Values) foreach (Call c in f.Calls) called.Add(c.Callee);
+        foreach (Fact f in facts.Values) if (f.Entered && !called.Contains(f.Name)) started.Add(f.Name);
         foreach (ObjectFile obj in all)
             foreach (Section section in obj.Sections)
                 if (section.Name == ModuleInfo.InitializerSection)
@@ -301,9 +317,9 @@ public static class X87Notes
                 call = true;
                 at = step.Caller;
             }
-            if (at.Escapes) steps.Add($"'{at.Display}' has its address taken (a delegate, a function pointer or a virtual method), so whatever calls it may");
+            if (at.Escapes) steps.Add($"'{at.Display}' has its address taken (a delegate, a function pointer, a virtual method, a datum or an assembled reference), so whatever calls it may");
             else if (unknown.Contains(at.Name)) steps.Add($"'{at.Display}' is called from code the link has no facts for (assembly, a foreign object)");
-            else steps.Add($"'{at.Display}' is where the image starts (its entry, or a module initializer the link calls)");
+            else steps.Add($"'{at.Display}' is where the image starts (its entry, a module initializer the link calls, or an assembled routine nothing here calls)");
             return string.Join(", and ", steps);
         }
     }

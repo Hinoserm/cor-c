@@ -473,12 +473,21 @@ internal sealed partial class Selector
         // A CALL THROUGH A FIELD'S LOAD (Sys.CallNative of a native whose
         // address the kernel's start left in a static): a call to the
         // routine in it (X87Notes.InField). The load's value used any other
-        // way takes that routine anywhere: its address is taken.
+        // way takes that routine anywhere: its address is taken -- but its
+        // test against 0 (`if (Natives.X != 0)`) and a branch on it, which
+        // take nothing. A register loaded from two fields takes both.
         Dictionary<VReg, string> loaded = new(ReferenceEqualityComparer.Instance);
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Load && i.Dest is { } d && i.Offset == 0 && i.Operands is [SymOperand { Name: var field, Offset: 0 }])
+                {
+                    if (loaded.TryGetValue(d, out string? other) && other != field)
+                    {
+                        taken.Add(Corsac.Lang.Lto.X87Notes.InField(other));
+                        taken.Add(Corsac.Lang.Lto.X87Notes.InField(field));
+                    }
                     loaded[d] = field;
+                }
         foreach (Block b in f.Blocks)
         {
             int state = regions?.GetValueOrDefault(b) ?? 0;
@@ -492,7 +501,14 @@ internal sealed partial class Selector
                         MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => state >> 2,
                         _ => state,
                     };
-                foreach (Operand o in i.Operands) if (o is SymOperand sym) taken.Add(sym.Name);
+                // A static named otherwise than by such a load -- its address,
+                // a store to it -- takes the routine in it too.
+                foreach (Operand o in i.Operands)
+                    if (o is SymOperand sym)
+                    {
+                        taken.Add(sym.Name);
+                        if (!(i.Op == Opcode.Load && i.Dest is not null && loaded.ContainsKey(i.Dest))) taken.Add(Corsac.Lang.Lto.X87Notes.InField(sym.Name));
+                    }
                 if (i.Op == Opcode.Call && i.Callee is { } callee && !callee.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
                     calls.Add(new(callee, i.Line, state != 0));
                 if (loaded.Count > 0)
@@ -500,6 +516,8 @@ internal sealed partial class Selector
                         if (i.Operands[k] is RegOperand { Reg: var used } && loaded.TryGetValue(used, out string? holder))
                         {
                             if (k == 0 && i.Op == Opcode.CallIndirect) calls.Add(new(Corsac.Lang.Lto.X87Notes.InField(holder), i.Line, state != 0));
+                            else if (i.Op == Opcode.Branch || i.Op is >= Opcode.Eq and <= Opcode.GeU && i.Operands.Count == 2
+                                     && i.Operands[1 - k] is ImmOperand { Value: 0 }) { }
                             else taken.Add(Corsac.Lang.Lto.X87Notes.InField(holder));
                         }
                 if (!floats || floatLine >= 0 || state != 0 || i.Op == Opcode.Ret) continue;

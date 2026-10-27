@@ -9,7 +9,8 @@
 // Program.Native, as a kernel's entry leaves its natives'. The assembled
 // object's facts say float_one uses the x87 and is the routine in that
 // static; the call through it is made inside Main's block, so it runs under
-// that block's save, and is no error.
+// that block's save, and is no error -- the test of Native against 0 before
+// it takes nothing, nor do float_one's own branch and loop.
 
 static class Program
 {
@@ -19,9 +20,12 @@ static class Program
     {
         Host.Start(1024 * 1024);
         uint[] cell = new uint[1];
-        using (Packed.X87())
+        if (Native != 0)
         {
-            Sys.CallNative(Native, Sys.ArrayData(cell));
+            using (Packed.X87())
+            {
+                Sys.CallNative(Native, Sys.ArrayData(cell));
+            }
         }
         Host.Line("one " + cell[0].ToString("X8"));
         Host.Done(0);
