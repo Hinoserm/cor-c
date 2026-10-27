@@ -134,8 +134,9 @@ public sealed class Module
     /// <summary>
     /// The allocation at every `new` put in place as each function is
     /// selected (AllocatorFastPaths.AtCodegen, the backend's Prepare) and not
-    /// by the late passes (InlineAllocators): set by the driver for a unit
-    /// whose backend does so.
+    /// by the late passes (InlineAllocators): set by the driver for every
+    /// unit it compiles; the late pass is left to whatever compiles a module
+    /// without it.
     /// </summary>
     public bool AllocatorsAtCodegen { get; set; }
 

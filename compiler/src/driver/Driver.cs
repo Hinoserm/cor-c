@@ -1306,16 +1306,14 @@ public static class Driver
             // specialised for a constant argument -- has a name the shared
             // object does not export, and outlived the caller it was made for:
             // a program linked against libcorsacrt carried a piece of Gc.
-            // The allocator's own bodies stay where the backend puts them in
-            // place (Module.AllocatorsAtCodegen): no call names them until it
-            // does, and swept here, every `new` stayed the runtime's call.
+            // THE ALLOCATOR'S BODIES GO TOO, unnamed by any call until the
+            // backend puts them in place (Module.AllocatorsAtCodegen): against
+            // a shared runtime or the kernel, every `new` stays the call. Kept
+            // here, a program carried its own copy of the collector's slow
+            // path beside the library's, or the kernel's allocator inlined.
             if (module.Entry is not null)
             {
-                HashSet<string> placedLater = new(StringComparer.Ordinal);
-                if (module.AllocatorsAtCodegen)
-                    placedLater.UnionWith(new[] { Corsac.Lang.Opt.AllocatorFastPaths.Sized, Corsac.Lang.Opt.AllocatorFastPaths.Fast,
-                        Corsac.Lang.Opt.AllocatorFastPaths.Missed, Corsac.Lang.Opt.AllocatorFastPaths.RegionSized });
-                Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, placedLater);
+                Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, new HashSet<string>(StringComparer.Ordinal));
             }
             HashSet<string> defined = new(
                 module.Functions.Select(f => f.Name).Concat(module.Data.Select(d => d.Name)),

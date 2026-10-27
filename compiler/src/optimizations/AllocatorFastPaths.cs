@@ -190,7 +190,8 @@ public static class AllocatorFastPaths
     ///   placed again after (LandingPadHomes.Strip, Place), as the link does
     ///   around its own late steps: what it brings in is homed with the rest;
     /// - an async method's homes are its state machine's, placed by the async
-    ///   transform: its allocations stay calls.
+    ///   transform: its allocations stay calls, a region's too (the late
+    ///   pass, before the transform, had put those in place).
     /// AND A REGION'S ALLOCATION OF A SIZE KNOWN, as InlineAllocators makes
     /// it (RetargetRegions, then AllocRegionSized's body): left to the late
     /// pass, which steps aside for this, every region site stayed the long
@@ -200,6 +201,16 @@ public static class AllocatorFastPaths
     /// allocator is the kernel's; a program without the runtime), or
     /// --skip-passes InlineAllocators.
     /// </summary>
+    /// <summary>AllocRegionSized's body (`region`) inlined into `f`, whose sites RetargetRegions has made calls of it, and `cleanup` run over what came in.</summary>
+    public static void PlaceRegions(Function f, Module local, Function region, Pipeline cleanup)
+    {
+        Module tail = new(local.Name) { Entry = f.Name, PreserveExports = true, NeedsHeap = local.NeedsHeap };
+        tail.Functions.Add(f);
+        tail.Functions.Add(region);
+        new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
+        cleanup.Run(tail);
+    }
+
     public static Action<Function>? AtCodegen(Module m)
     {
         if (Skipped) return null;
@@ -216,8 +227,9 @@ public static class AllocatorFastPaths
             if (f.Name is Sized or Fast or Missed or Region or RegionSized || f.Async is not null) return;
             bool allocates = sizedBytes is not null
                 && f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Operands.Count == 1 && KindOf(i.Callee) is not null));
-            bool regions = regionBytes is not null
-                && f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee == Region));
+            // Only a region site RetargetRegions would take: one of a size known.
+            bool regions = regionBytes is not null && f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee == Region
+                && i.Operands.Count == 3 && i.Operands[0] is ImmOperand size && RegionBlock(size.Value, Target.Current.WordSize) is not null));
             if (!allocates && !regions) return;
             bool pads = f.Blocks.Any(b => b.IsLandingPad);
             if (pads) LandingPadHomes.Strip(f);
@@ -225,14 +237,7 @@ public static class AllocatorFastPaths
                 Run(f, shape, name => name == Sized ? Corsac.Lang.Metadata.IrFunctionCodec.Read(sizedBytes!)
                                     : name == Fast && unsizedBytes is not null ? Corsac.Lang.Metadata.IrFunctionCodec.Read(unsizedBytes) : null,
                     Cleanup());
-            if (regions && RetargetRegions(f))
-            {
-                Module tail = new(shape.Name) { Entry = f.Name, PreserveExports = true, NeedsHeap = shape.NeedsHeap };
-                tail.Functions.Add(f);
-                tail.Functions.Add(Corsac.Lang.Metadata.IrFunctionCodec.Read(regionBytes!));
-                new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
-                Cleanup().Run(tail);
-            }
+            if (regions && RetargetRegions(f)) PlaceRegions(f, shape, Corsac.Lang.Metadata.IrFunctionCodec.Read(regionBytes!), Cleanup());
             if (pads) LandingPadHomes.Place(f, _ => true);
         };
     }
@@ -302,11 +307,7 @@ public sealed class InlineAllocators : IModulePass
             foreach (Function f in m.Functions.ToArray())
             {
                 if (ReferenceEquals(f, region) || !AllocatorFastPaths.RetargetRegions(f)) continue;
-                Module tail = new(m.Name) { Entry = f.Name, PreserveExports = true, NeedsHeap = m.NeedsHeap };
-                tail.Functions.Add(f);
-                tail.Functions.Add(region);
-                new Inline { SmallBody = 200, GrowthLimit = 1 << 20, ConstantBranchBody = 200, FreshOwnerBody = 0, PlacesAllocations = true }.Run(tail);
-                cleanup.Run(tail);
+                AllocatorFastPaths.PlaceRegions(f, m, region, cleanup);
             }
         }
     }
