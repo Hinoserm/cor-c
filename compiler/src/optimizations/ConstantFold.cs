@@ -121,9 +121,9 @@ public sealed class ConstantFold : IPass
                 x = tested; k = imm.Value;
                 where = test.Op == Opcode.Eq ? branch.Targets[0] : branch.Targets[1];
             }
-            // A branch on an I32 says its register is zero on the false edge;
-            // one on a word (an I64) is tested whole, and no fact is kept of it.
-            else if (c.Type == IrType.I32)
+            // A branch says its register is zero on the false edge, an I32's
+            // or a word's alike: the TEST is of the whole register.
+            else
             {
                 x = c; k = 0; where = branch.Targets[1];
             }

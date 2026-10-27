@@ -198,7 +198,9 @@ public static class IrInfo
     /// <summary>
     /// An immediate as the machine sees it. I32 immediates may arrive with
     /// junk in the high half (a negative int stored in a long, or not), so
-    /// comparisons and arithmetic go through the width first.
+    /// comparisons and arithmetic go through the width first. An I64 is
+    /// whole: a long-mode word whose low half is zero is not zero, and a
+    /// branch's truth is decided here at the condition's own type.
     /// </summary>
     public static long Normalise(long v, IrType t) => t == IrType.I32 ? (int)v : v;
 }

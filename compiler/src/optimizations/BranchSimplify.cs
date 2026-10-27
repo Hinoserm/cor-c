@@ -133,7 +133,7 @@ public sealed class BranchSimplify : IPass
             {
                 continue;
             }
-            Block to = known.Value != 0 ? branch.Targets[0] : branch.Targets[1];
+            Block to = IrInfo.Normalise(known.Value, tested.Reg.Type) != 0 ? branch.Targets[0] : branch.Targets[1];
             if (ReferenceEquals(to, b) || !Phi.CanAddIncoming(to, b, p))
             {
                 continue;

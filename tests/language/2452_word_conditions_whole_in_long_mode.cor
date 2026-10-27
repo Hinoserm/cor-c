@@ -1,0 +1,59 @@
+// test: a known word tested in long mode is true when only its high half is set
+// only-target: x86-64
+// expect-exit: 0
+// expect-output:
+// local True
+// static True
+// folded True
+// low False
+//
+// In long mode a branch can test a whole word -- a pointer, a handle, a
+// lazily made block's word -- and the optimizer decides a known one at
+// compile time. Decided as an int, 0x1_0000_0000 was zero: the arm that runs
+// was dropped as dead (ConstantFold, Sccp, DeadStatics, BranchSimplify, and
+// the backends' known-branch shortcut). Each value here is known to the
+// compiler and has only its high half set.
+
+using System;
+
+static class P
+{
+    static readonly nuint High = (nuint)(1UL << 32);
+    static nuint _set = (nuint)(1UL << 33);
+
+    static bool Local()
+    {
+        nuint w = (nuint)(1UL << 32);
+        if (w != 0) return true;
+        return false;
+    }
+
+    static bool Static()
+    {
+        if (_set != 0 && High != 0) return true;
+        return false;
+    }
+
+    static bool Folded()
+    {
+        nuint w = (nuint)(3UL << 40);
+        nuint low = w & 0xFFFFFFFF;
+        nuint high = w >> 32;
+        return low == 0 && high != 0 && w != 0;
+    }
+
+    static bool Low()
+    {
+        nuint w = (nuint)(1UL << 32);
+        return (uint)w != 0;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("local " + Local());
+        Console.WriteLine("static " + Static());
+        Console.WriteLine("folded " + Folded());
+        Console.WriteLine("low " + Low());
+        return 0;
+    }
+}

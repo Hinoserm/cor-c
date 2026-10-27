@@ -2401,14 +2401,17 @@ internal sealed partial class Selector
         MBlock t = _heads[i.Targets[0]];
         MBlock f = _heads[i.Targets[1]];
         Operand c = i.Operands[0];
+        // A KNOWN CONDITION IS TESTED AT ITS OWN WIDTH, as the TEST below
+        // would: a word whose low half is zero is true, and an I32 whose
+        // long carries junk above bit 31 is only its low half.
         if (c is ImmOperand imm)
         {
-            Jmp(imm.Value != 0 ? t : f);
+            Jmp(Corsac.Lang.Opt.IrInfo.Normalise(imm.Value, c.Type) != 0 ? t : f);
             return;
         }
         if (c is RegOperand cr && _constants.TryGetValue(cr.Reg.Id, out long known))
         {
-            Jmp(known != 0 ? t : f);
+            Jmp(Corsac.Lang.Opt.IrInfo.Normalise(known, c.Type) != 0 ? t : f);
             return;
         }
         MReg r = R(c);

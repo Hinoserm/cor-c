@@ -364,7 +364,7 @@ public static class UnwrittenStatics
                     if (i.Op == Opcode.Branch)
                     {
                         Known test = Of(i.Operands[0]);
-                        if (test.Fact == Fact.Constant) Reach((int)test.Value != 0 ? i.Targets[0] : i.Targets[1]);
+                        if (test.Fact == Fact.Constant) Reach(IrInfo.Normalise(test.Value, i.Operands[0].Type) != 0 ? i.Targets[0] : i.Targets[1]);
                         else if (test.Fact == Fact.Varies) { Reach(i.Targets[0]); Reach(i.Targets[1]); }
                     }
                     else if (i.IsTerminator)
