@@ -373,10 +373,10 @@ public static class Driver
               --disable-cmov     exclude CMOV, and FCMOV/FCOMI with it
               --disable-sse      exclude SSE and SSE2
               --disable-sse2     exclude SSE2 while retaining SSE
-                                 (--cpu is a floor: a packed block keeps
+                                 --cpu is a floor: a packed block keeps
                                  variants for newer processors, picked at
-                                 run time; a disable bans its feature from
-                                 those too)
+                                 run time. Every --disable-NAME is a ban:
+                                 no such variant is kept either.
               --enable-<name>    the same seven extensions granted beyond the
                                  CPU's own: a promise the processor has them;
                                  a disable wins over an enable

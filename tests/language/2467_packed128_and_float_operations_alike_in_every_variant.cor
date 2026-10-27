@@ -89,6 +89,12 @@
 // UnpackLowF32 C0100000C0100000 408000003FC00000
 // UnpackHighF32 411000003EC00000 3F00000042C80000
 //
+// run-with: --runtime-knob Corsac.Cpu.Features=0
+// run-with: --runtime-knob Corsac.Cpu.Features=4
+// run-with: --runtime-knob Corsac.Cpu.Features=12
+// run-with: --runtime-knob Corsac.Cpu.Features=28
+// run-with: --runtime-knob Corsac.Cpu.Features=60
+//
 // Packed128's integer operations are SSE2's (66 0F xx) where the block's
 // variant has it, two MMX operations a half each where the lanes keep to
 // their halves, and the runtime's lanes otherwise (Runtime.PackedScalar,

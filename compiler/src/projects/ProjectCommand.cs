@@ -85,7 +85,7 @@ public static class ProjectCommand
         string[] cpuArguments = target == Target.X86_64
             ? (profileArguments.Count == 0 ? new[] { "--target", "x86-64", "--cpu", "k8" }
                 : throw new ArgumentException("--cpu/--fpu and the --enable-/--disable- extension switches are for the i386 target"))
-            : global::Corsac.Lang.X86.X86Cpu.Parse(defaults).Contract.Arguments();
+            : CpuArguments(global::Corsac.Lang.X86.X86Cpu.Parse(defaults));
         // The link validates each object's CPU contract against the i386
         // profile; a long-mode object carries its own (k8/sse2).
         List<string> linkArguments = new(target == Target.X86_64 ? Array.Empty<string>() : cpuArguments);
@@ -219,7 +219,11 @@ public static class ProjectCommand
             // The program's runtime settings go where its entry stub is made:
             // the project's own, as only the program's runtimeconfig.json
             // carries them under the SDK.
-            if (entry) foreach (string knob in project.RuntimeKnobs) { options.Add("--runtime-knob"); options.Add(knob); }
+            // The processor-feature cap goes to every unit: a packed block's
+            // choice (Sys.PackedChoose) keeps its variants for the run where
+            // the image has one, in whichever unit the block is.
+            foreach (string knob in project.RuntimeKnobs)
+                if (entry || knob.StartsWith("Corsac.Cpu.Features=", StringComparison.Ordinal)) { options.Add("--runtime-knob"); options.Add(knob); }
             if (!owner.WarningsAsErrors) options.Add("-Wno-error");
             foreach (string define in owner.Defines) { options.Add("--define"); options.Add(define); }
             foreach (string use in owner.Usings) { options.Add("--using"); options.Add(use); }
@@ -353,6 +357,19 @@ public static class ProjectCommand
     /// of it with 1.8 GB live in a 4.1 GB heap. A worker is a process of its
     /// own instead, as many as the machine has spaces for.
     /// </summary>
+    /// <summary>
+    /// The i386 profile's arguments for every unit and the link: the
+    /// contract's (what its code may use) and the bans (X86Cpu.BanArguments),
+    /// which the contract does not carry -- a --disable of a feature the
+    /// model lacks keeps its packed blocks' run-time variants out too.
+    /// </summary>
+    private static string[] CpuArguments(global::Corsac.Lang.X86.X86Cpu profile)
+    {
+        List<string> made = new(profile.Contract.Arguments());
+        foreach (string ban in profile.BanArguments) if (!made.Contains(ban)) made.Add(ban);
+        return made.ToArray();
+    }
+
     private static int Processes(int workers, int units)
     {
         // WHAT A CHILD HOLDS, not what its address space could: a child of

@@ -88,6 +88,8 @@ public sealed class X86Cpu
     /// (Lowering's Sys.PackedChoose). --cpu alone is a floor; a disable is a ban.
     /// </summary>
     public X86Feature Banned { get; }
+    /// <summary>The --disable-NAME switches Banned came from, to hand on with the profile's own arguments: a unit compiled from a contract alone (X86CodeGenerationContract.Arguments) keeps no disable of a feature its model lacks.</summary>
+    public IReadOnlyList<string> BanArguments { get; }
     public bool Pentium => Has(X86Feature.Pentium);
     public bool Mmx => Has(X86Feature.Mmx);
     public bool ThreeDNow => Has(X86Feature.ThreeDNow);
@@ -96,9 +98,9 @@ public sealed class X86Cpu
     public bool FloatCmov => Has(X86Feature.FloatCmov);
     public global::Corsac.Lang.Ir.X86CodeGenerationContract Contract => new(Name, Fpu, Features);
 
-    private X86Cpu(string name, string fpu, X86Feature features, X86Feature banned = X86Feature.None)
+    private X86Cpu(string name, string fpu, X86Feature features, X86Feature banned = X86Feature.None, IReadOnlyList<string>? banArguments = null)
     {
-        Name = name; Fpu = fpu; Features = features; Banned = banned;
+        Name = name; Fpu = fpu; Features = features; Banned = banned; BanArguments = banArguments ?? Array.Empty<string>();
     }
 
     /// <summary>Whether every feature in <paramref name="feature"/> may be used.</summary>
@@ -242,6 +244,7 @@ public sealed class X86Cpu
         X86Feature banned = fpu == "none" ? NeedsFpu : X86Feature.None;
         for (int i = 0; i < Switches.Length; i++)
             if (said[i] == false) { features &= ~Switches[i].Disables; banned |= Switches[i].Disables; }
-        return new X86Cpu(cpu, fpu, Settled(features, fpu), banned);
+        string[] bans = Switches.Where((s, i) => said[i] == false).Select(s => "--disable-" + s.Name).ToArray();
+        return new X86Cpu(cpu, fpu, Settled(features, fpu), banned, bans);
     }
 }

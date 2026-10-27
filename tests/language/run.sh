@@ -58,6 +58,9 @@ passthrough=()
 # in an ordinary run.
 through_link=0
 link_flags=()
+# The run's processor (--cpu, --enable-NAME, --disable-NAME), apart from the
+# other flags: a test's "// cpu:" takes their place.
+cpu_flags=()
 engine_next=0
 
 for arg in "$@"; do
@@ -100,14 +103,14 @@ for arg in "$@"; do
             # code chosen for its timing is exercised. The tests run on this
             # machine, so name a processor whose instructions it has (k6,
             # not k6-2: no 3DNow! here).
-            compiler_flags+=("--cpu" "${arg#--cpu=}")
+            cpu_flags+=("--cpu" "${arg#--cpu=}")
             passthrough+=("$arg")
             ;;
         --enable-*|--disable-*)
             # A processor feature granted or taken away beyond --cpu's
             # (corc's --enable-NAME, --disable-NAME): --cpu=athlon64
             # --disable-3dnow is this machine, loosely.
-            compiler_flags+=("$arg")
+            cpu_flags+=("$arg")
             passthrough+=("$arg")
             ;;
         --runtime-knob=*)
@@ -250,24 +253,41 @@ fi
 
 # ---- header parsing --------------------------------------------------------
 
+# THE TEST'S OWN HEADER, above its first "// run-with:"; and run N's section,
+# from its "// run-with:" line to the next (N from 1).
+main_part() {
+    awk '/^\/\/ run-with:/ { exit } { print }' "$1"
+}
+run_part() {
+    awk -v n="$2" '/^\/\/ run-with:/ { k++ } k == n { print }' "$1"
+}
+
 # Prints the value of a "// key: value" header line, or nothing.
 header_value() {
-    sed -n "s|^// $2: *||p" "$1" | head -1
+    main_part "$1" | sed -n "s|^// $2: *||p" | head -1
 }
 
 # Prints the expected stdout: every "// text" line after "// expect-output:"
 # up to the first line that is not one -- a bare "//" or the code itself.
-expected_output() {
+# Read from stdin.
+expected_output_of() {
     awk '
         /^\/\/ expect-output:/ { on = 1; next }
         on && /^\/\/ / { print substr($0, 4); next }
         on { exit }
-    ' "$1"
+    '
+}
+expected_output() {
+    main_part "$1" | expected_output_of
 }
 
 has_expected_output() {
-    grep -q '^// expect-output:' "$1"
+    main_part "$1" | grep -q '^// expect-output:'
 }
+
+# WHAT THE HOST'S PROCESSOR HAS, by /proc/cpuinfo's names: a "// requires-host:"
+# test the host cannot run is skipped, saying what it lacks.
+host_flags=" $(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -1) "
 
 # ---- run -------------------------------------------------------------------
 
@@ -394,6 +414,20 @@ for f in "${tests[@]}"; do
         echo "SKIP $name (only for $only_target)"
         continue
     fi
+    # A TEST'S OWN PROCESSOR: "// cpu: --cpu=NAME [--enable-NAME|--disable-NAME
+    # ...]" in place of the run's, whatever the run was asked for -- a test
+    # whose answers depend on the processor's features names them.
+    test_cpu="$(header_value "$f" cpu)"
+    if [ -n "$test_cpu" ]; then read -r -a this_cpu <<< "$test_cpu"; else this_cpu=("${cpu_flags[@]}"); fi
+    test_flags=("${compiler_flags[@]}" "${this_cpu[@]}")
+    lacks=""
+    for need in $(header_value "$f" requires-host); do
+        [[ "$host_flags" == *" $need "* ]] || lacks="$lacks $need"
+    done
+    if [ -n "$lacks" ]; then
+        echo "SKIP $name (the host lacks:$lacks)"
+        continue
+    fi
     # A HEADER NOTHING READS IS A CHECK NOTHING MAKES: an "// expect...:" key
     # this runner does not know fails its test, rather than passing it with
     # the check unmade (303's "// expect: ok" was compared with nothing).
@@ -448,6 +482,16 @@ for f in "${tests[@]}"; do
     for src in $(header_value "$f" apart); do
         apart_sources="$apart_sources $root/$src"
     done
+    # MORE RUNS OF IT: each "// run-with: FLAGS" builds and runs the test again
+    # with FLAGS after its own, expecting what its section says (its own
+    # "// expect-exit:" and "// expect-output:") or else what the test does.
+    run_count="$(grep -c '^// run-with:' "$f")"
+    if [ "$run_count" -gt 0 ] && [ -n "$unit_sources$apart_sources" ]; then
+        echo "FAIL $name (// run-with: is for a test compiled whole, not // units: or // apart:)"
+        failed=$((failed + 1))
+        failed_names="$failed_names $name"
+        continue
+    fi
     # WHAT REGIONS TOOK, on every run: a link says it in its summary line
     # whether asked or not; a single compile says it when asked.
     want_regions="$(header_value "$f" regions)"
@@ -463,8 +507,8 @@ for f in "${tests[@]}"; do
             refs=""
             for lib in ${lib_paths:-$($CORC library-sources)}; do refs="$refs --ref $lib"; done
             $CORC index "${index_flags[@]}" --assembly Units $unit_sources -o "$work/$name.idx" \
-            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --assembly Units $unit_sources --obj -o "$work/$name.units.o" \
-            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib $refs --decl-index "$work/$name.idx" --assembly Units \
+            && $CORC compile -Wno-error "${test_flags[@]}" $own_flags --lib --assembly Units $unit_sources --obj -o "$work/$name.units.o" \
+            && $CORC compile -Wno-error "${test_flags[@]}" $own_flags --nostdlib $refs --decl-index "$work/$name.idx" --assembly Units \
                 $extra "$f" --obj -o "$work/$name.o" \
             && $CORC link --closed "${link_flags[@]}" "$work/$name.o" "$work/$name.units.o" -o "$exe"
         } >"$work/$name.compile" 2>&1
@@ -476,16 +520,16 @@ for f in "${tests[@]}"; do
         # shellcheck disable=SC2086
         compile_apart() {
             for src in $apart_sources; do
-                $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --no-shared-init --nostdlib \
+                $CORC compile -Wno-error "${test_flags[@]}" $own_flags --lib --no-shared-init --nostdlib \
                     --decl-index "$work/$name.idx" --assembly Units "$src" --obj -o "$work/$name.$(basename "$src" .cor).o" || return 1
             done
         }
         # shellcheck disable=SC2086
         {
             $CORC index "${index_flags[@]}" --assembly Units $extra "$f" $apart_sources $libraries -o "$work/$name.idx" \
-            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --lib --assembly Units $libraries --obj -o "$work/$name.library.o" \
+            && $CORC compile -Wno-error "${test_flags[@]}" $own_flags --lib --assembly Units $libraries --obj -o "$work/$name.library.o" \
             && compile_apart \
-            && $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags --nostdlib --decl-index "$work/$name.idx" --assembly Units \
+            && $CORC compile -Wno-error "${test_flags[@]}" $own_flags --nostdlib --decl-index "$work/$name.idx" --assembly Units \
                 $extra "$f" --obj -o "$work/$name.o" \
             && $CORC link --closed "${link_flags[@]}" $objects -o "$exe"
         } >"$work/$name.compile" 2>&1
@@ -496,13 +540,13 @@ for f in "${tests[@]}"; do
         # linked: the link-time optimiser and its regions decide.
         # shellcheck disable=SC2086
         {
-            $CORC compile -Wno-error "${compiler_flags[@]}" $own_flags $lib_paths $extra "$f" --obj -o "$work/$name.o" \
+            $CORC compile -Wno-error "${test_flags[@]}" $own_flags $lib_paths $extra "$f" --obj -o "$work/$name.o" \
             && $CORC link --closed "${link_flags[@]}" "$work/$name.o" -o "$exe"
         } >"$work/$name.compile" 2>&1
         cc_status=$?
     else
     # shellcheck disable=SC2086
-    $CORC compile -Wno-error "${compiler_flags[@]}" "${region_flags[@]}" $own_flags $lib_paths $extra "$f" -o "$exe" >"$work/$name.compile" 2>&1
+    $CORC compile -Wno-error "${test_flags[@]}" "${region_flags[@]}" $own_flags $lib_paths $extra "$f" -o "$exe" >"$work/$name.compile" 2>&1
     cc_status=$?
     fi
     if [ "$verbose" = 1 ] && [ -s "$work/$name.compile" ]; then
@@ -595,38 +639,79 @@ for f in "${tests[@]}"; do
 
     # "// args: WORDS" are the command line the program is run with.
     read -r -a run_args <<< "$(header_value "$f" args)"
-    run_with_timeout "$exe" "${run_args[@]}" >"$work/$name.out" 2>"$work/$name.err"
-    got_exit=$?
-
     ok=1
     reason=""
-    if [ "$got_exit" -eq 124 ] && [ "$want_exit" != 124 ]; then
-        ok=0
-        reason="timed out after ${timeout_s}s"
-    elif [ "$want_exit" = "nonzero" ]; then
-        if [ "$got_exit" -eq 0 ]; then
-            ok=0
-            reason="expected a non-zero exit code, got 0"
+    run=0
+    while :; do
+        if [ "$run" -gt 0 ]; then
+            # Run N: built again with its flags, the same way as the first.
+            more_flags="$(run_part "$f" "$run" | sed -n 's|^// run-with: *||p' | head -1)"
+            label="run $run ($more_flags)"
+            if [ "$through_link" = 1 ]; then
+                # shellcheck disable=SC2086
+                {
+                    $CORC compile -Wno-error "${test_flags[@]}" $own_flags $more_flags $lib_paths $extra "$f" --obj -o "$work/$name.o" \
+                    && $CORC link --closed "${link_flags[@]}" "$work/$name.o" -o "$exe"
+                } >"$work/$name.compile" 2>&1
+            else
+                # shellcheck disable=SC2086
+                $CORC compile -Wno-error "${test_flags[@]}" $own_flags $more_flags $lib_paths $extra "$f" -o "$exe" >"$work/$name.compile" 2>&1
+            fi
+            if [ $? -ne 0 ] || [ ! -x "$exe" ]; then
+                ok=0
+                reason="$label: compile error"
+                sed "s/^/    /" "$work/$name.compile" | head -30 > "$work/$name.err"
+                break
+            fi
+            section="$(run_part "$f" "$run")"
+            want_exit="$(printf '%s\n' "$section" | sed -n 's|^// expect-exit: *||p' | head -1)"
+            [ -n "$want_exit" ] || want_exit="$(header_value "$f" expect-exit)"
+            [ -n "$want_exit" ] || want_exit=0
+            if printf '%s\n' "$section" | grep -q '^// expect-output:'; then
+                printf '%s\n' "$section" | expected_output_of >"$work/$name.want"
+                want_output=1
+            elif has_expected_output "$f"; then
+                expected_output "$f" >"$work/$name.want"
+                want_output=1
+            else
+                want_output=0
+            fi
+        else
+            label=""
+            if has_expected_output "$f"; then expected_output "$f" >"$work/$name.want"; want_output=1; else want_output=0; fi
         fi
-    elif [ "$got_exit" -ne "$want_exit" ]; then
-        ok=0
-        reason="expected exit $want_exit, got $got_exit"
-    fi
-
-    if [ "$ok" = 1 ] && has_expected_output "$f"; then
-        expected_output "$f" >"$work/$name.want"
-        if ! cmp -s "$work/$name.want" "$work/$name.out"; then
+        run_with_timeout "$exe" "${run_args[@]}" >"$work/$name.out" 2>"$work/$name.err"
+        got_exit=$?
+        if [ "$got_exit" -eq 124 ] && [ "$want_exit" != 124 ]; then
+            ok=0
+            reason="timed out after ${timeout_s}s"
+        elif [ "$want_exit" = "nonzero" ]; then
+            if [ "$got_exit" -eq 0 ]; then
+                ok=0
+                reason="expected a non-zero exit code, got 0"
+            fi
+        elif [ "$got_exit" -ne "$want_exit" ]; then
+            ok=0
+            reason="expected exit $want_exit, got $got_exit"
+        fi
+        if [ "$ok" = 1 ] && [ "$want_output" = 1 ] && ! cmp -s "$work/$name.want" "$work/$name.out"; then
             ok=0
             reason="stdout differs"
         fi
-    fi
+        if [ "$ok" = 0 ]; then
+            [ -n "$label" ] && reason="$label: $reason"
+            break
+        fi
+        run=$((run + 1))
+        [ "$run" -le "$run_count" ] || break
+    done
 
     if [ "$ok" = 1 ]; then
         echo "PASS $name"
         passed=$((passed + 1))
     else
         echo "FAIL $name ($reason)"
-        if [ "$reason" = "stdout differs" ]; then
+        if [[ "$reason" == *"stdout differs" ]]; then
             diff -u --label expected --label actual "$work/$name.want" "$work/$name.out" | sed "s/^/    /"
         else
             if [ -s "$work/$name.out" ]; then

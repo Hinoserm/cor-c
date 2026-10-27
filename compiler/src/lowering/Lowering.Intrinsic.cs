@@ -948,9 +948,10 @@ public sealed partial class Lowering
                 return Void();
             }
             // WHICH OF A PACKED BLOCK'S VARIANTS RUNS (Parser.ParsePackedBlock):
-            // the first, where --cpu has its features; the last, featureless,
-            // in long mode (its packed operations are their scalar forms);
-            // else the processor's answer, asked the first time the block is
+            // the last, featureless, in long mode (its packed operations are
+            // their scalar forms), the others nothing; the one left, where
+            // --cpu's floor and its bans leave one; else the processor's
+            // answer among those left, asked the first time the block is
             // reached (Runtime.PackedChoose) and kept in a word of the
             // block's own, one more than the variant so that 0 is unasked:
             // every time after, one load.
@@ -959,7 +960,11 @@ public sealed partial class Lowering
                 int block = LiteralInteger(call.Args[0]) is long b ? (int)b : 0;
                 ulong masks = LiteralInteger(call.Args[1]) is long m ? (ulong)m : 0;
                 int count = LiteralInteger(call.Args[2]) is long c ? (int)c : 1;
-                if (_t.WordSize != 4) return Fit(_e.Const(count - 1, IrType.I32), returns);
+                if (_t.WordSize != 4)
+                {
+                    for (int v = 0; v < count - 1; v++) _packedDead.Add((_f, block - count + v));
+                    return Fit(_e.Const(count - 1, IrType.I32), returns);
+                }
                 // --cpu IS THE FLOOR: the processor has at least its features,
                 // so the first variant they cover always wins over every one
                 // after it, which never runs; nor does one with a feature a
@@ -1156,9 +1161,10 @@ public sealed partial class Lowering
         }
     }
 
-    /// <summary>The packed block a call gives back (Sys.PackedLeave, Parser.ParsePackedBlock): its variant's features; null for any other call.</summary>
+    /// <summary>A packed block's give-back's number (Sys.PackedLeave's second): its variant's, which Sys.PackedChoose finds it by.</summary>
     private static int PackedNumberOf(CallExpr call) => call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : -1;
 
+    /// <summary>The packed block a call gives back (Sys.PackedLeave, Parser.ParsePackedBlock): its variant's features; null for any other call.</summary>
     private static int? PackedLeaveOf(CallExpr call)
         => call is { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedLeave" },
                      Args: [LiteralExpr, LiteralExpr, LiteralExpr { Text: var features }] }

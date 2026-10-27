@@ -98,6 +98,22 @@ Every test starts with a comment block the runner reads:
 - `flags` is optional: compiler options this test is always compiled with,
   on top of any the run was given -- `// flags: --experimental-batch` holds a
   test about that optimiser's input to it on every run.
+- `cpu` (optional): the processor this test is compiled for, in corc's
+  words -- `// cpu: --cpu=athlon64 --disable-3dnow` -- in place of the run's
+  `--cpu`, `--enable-NAME` and `--disable-NAME`, none of which then apply. For
+  a test whose answers depend on which features the build has: which of a
+  packed block's variants are kept, which one runs.
+- `requires-host` (optional): processor features the host must have, by
+  `/proc/cpuinfo`'s names (`mmx mmxext sse sse2`); a host without one skips
+  the test (`SKIP`), saying what it lacks.
+- `run-with` (optional, any number): one more build and run of the test, with
+  the options given after its own -- `// run-with: --runtime-knob
+  Corsac.Cpu.Features=4` runs it again with the processor's features capped
+  to MMX. Each `run-with` line opens a section of its own, up to the next one,
+  which may hold an `expect-exit` and an `expect-output` for that run; a run
+  whose section has none expects what the test above its first `run-with`
+  does. Every header but these two is read above the first `run-with` only. A
+  test with `units` or `apart` cannot have one.
 - `expect-compile-error` makes the test one the compiler must refuse: it
   passes when compilation fails cleanly (no crash) with output containing
   the text given, and nothing is run.

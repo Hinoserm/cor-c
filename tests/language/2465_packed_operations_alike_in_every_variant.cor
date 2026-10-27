@@ -58,6 +58,12 @@
 // Insert16 7F80234501FE8000 123456789ABCFFFF
 // Memory 123456789ABCDEF0 FEDCBA9876543210
 //
+// run-with: --runtime-knob Corsac.Cpu.Features=0
+// run-with: --runtime-knob Corsac.Cpu.Features=4
+// run-with: --runtime-knob Corsac.Cpu.Features=12
+// run-with: --runtime-knob Corsac.Cpu.Features=28
+// run-with: --runtime-knob Corsac.Cpu.Features=60
+//
 // Packed.Add16 and the rest (Lowering.PackedIntrinsic) are each one MMX
 // instruction inside a packed block whose variant has it, and the runtime's
 // scalar form of the same lanes in one that has not (Runtime.PackedScalar):

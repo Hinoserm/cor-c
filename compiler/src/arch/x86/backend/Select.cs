@@ -302,8 +302,8 @@ internal sealed partial class Selector
     /// groups may run (a variant with MMX on a --cpu with it); none where it
     /// touches nothing of the FPU's, or there is no FPU. The code a block
     /// holds is what its save reaches before its give-back, along the
-    /// function's edges; a handler's landing, which no edge reaches, holds
-    /// only a give-back.
+    /// function's edges, and a handler's landing from where its label is
+    /// taken (LandingOf): a catch inside the block is the block's code.
     /// </summary>
     private static void SettlePackedSaves(Function f)
     {

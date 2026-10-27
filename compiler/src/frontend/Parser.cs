@@ -5269,10 +5269,11 @@ public sealed class Parser
     /// Classes): the features its packed operations can use, read off their
     /// names, and each class of processor's projected onto them; the first
     /// whose features the processor has runs, chosen the first time the
-    /// block is reached and kept (Sys.PackedChoose), and a --cpu that has
-    /// the first one's features answers it at the compile, the others going
-    /// with dead code. A block inside another is read once, with the outer
-    /// variant's features.
+    /// block is reached and kept (Sys.PackedChoose). --cpu is the floor:
+    /// the first variant its features cover always wins over those after it,
+    /// which lowering drops, as it does any a --disable-NAME bans; one left
+    /// is the answer at the compile. A block inside another is read once,
+    /// with the outer variant's features.
     /// </summary>
     private Stmt ParsePackedBlock(Token at, int kind)
     {
