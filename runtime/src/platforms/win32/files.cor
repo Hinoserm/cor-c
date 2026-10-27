@@ -314,7 +314,7 @@ static partial class Os
         char[] name = Wide(path);
         if (GetFileAttributesExW(At(name), 0, At(data)) == 0) return Failed();
         Fill(into, (int)Raw.U32(data, 0), Raw.I64(data, 4), Raw.I64(data, 12), Raw.I64(data, 20),
-            (Raw.U32(data, 28) << 32) | Raw.U32(data, 32), 1, 0);
+            ((long)Raw.U32(data, 28) << 32) | Raw.U32(data, 32), 1, 0);
         return 0;
     }
 
@@ -337,7 +337,7 @@ static partial class Os
         byte[] info = new byte[52];      // BY_HANDLE_FILE_INFORMATION
         if (GetFileInformationByHandle(handle, At(info)) == 0) return Failed();
         Fill(into, (int)Raw.U32(info, 0), Raw.I64(info, 4), Raw.I64(info, 12), Raw.I64(info, 20),
-            (Raw.U32(info, 32) << 32) | Raw.U32(info, 36), Raw.U32(info, 40), (Raw.U32(info, 44) << 32) | Raw.U32(info, 48));
+            ((long)Raw.U32(info, 32) << 32) | Raw.U32(info, 36), Raw.U32(info, 40), ((long)Raw.U32(info, 44) << 32) | Raw.U32(info, 48));
         return 0;
     }
 

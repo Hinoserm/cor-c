@@ -203,8 +203,8 @@ namespace System.Drawing.Printing
         public bool PrintToFile { get; set; }
         public string PrintFileName { get; set; } = "";
 
-        internal int Dpi { get { PrinterRecord? r = Record(); return r != null ? (int)r.Dpi : 150; } }
-        internal PaperSize Paper() { PrinterRecord? r = Record(); return PaperSize.Of(r != null ? (int)r.PaperWidth : 850, r != null ? (int)r.PaperHeight : 1100); }
+        internal int Dpi { get { PrinterRecord? r = Record(); return r != null ? r.Dpi : 150; } }
+        internal PaperSize Paper() { PrinterRecord? r = Record(); return PaperSize.Of(r != null ? r.PaperWidth : 850, r != null ? r.PaperHeight : 1100); }
 
         public PageSettings DefaultPageSettings { get { if (_defaults == null) _defaults = new PageSettings(this); return _defaults; } }
 
@@ -379,7 +379,7 @@ namespace System.Drawing.Printing
     /// seat's for each page.
     public class StandardPrintController : PrintController
     {
-        long _job;
+        uint _job;
         int _page;
         Seat? _seat;
 
@@ -395,14 +395,14 @@ namespace System.Drawing.Printing
                 output = Path.GetFullPath(ps.PrintFileName);
             }
             _seat = Seat.Current;
-            _job = PrintSpooler.StartDoc(printer.Name, document.DocumentName, "PAGES", output, ps.Copies < 1 ? 1 : ps.Copies);
+            _job = PrintSpooler.StartDoc(printer.Name, document.DocumentName, "PAGES", output, ps.Copies < 1 ? 1u : (uint)ps.Copies);
         }
 
         public override Graphics? OnStartPage(PrintDocument document, PrintPageEventArgs e)
         {
             if (_seat == null || _job == 0) return null;
             PrinterRecord? printer = document.PrinterSettings.Record();
-            int dpi = printer != null ? (int)printer.Dpi : 150;
+            int dpi = printer != null ? printer.Dpi : 150;
             int w = printer != null ? printer.PixelWidth : 1275, h = printer != null ? printer.PixelHeight : 1650;
             // A landscape page is the paper turned: the seat turns it back
             // onto the paper as it hands it in.
@@ -422,13 +422,13 @@ namespace System.Drawing.Printing
             _page = 0;
             if (e.Cancel) { _seat.DiscardPage(page); return; }
             long answer = _seat.SubmitPage(page);
-            if (answer != 0) throw new SpoolerException("the page was not printed", answer == -125 ? 63 : 1);
+            if (answer != 0) throw new SpoolerException("the page was not printed", answer == -125 ? 63u : 1u);
         }
 
         public override void OnEndPrint(PrintDocument document, PrintEventArgs e)
         {
             if (_job == 0) return;
-            long job = _job;
+            uint job = _job;
             _job = 0;
             if (_page != 0 && _seat != null) { _seat.DiscardPage(_page); _page = 0; }
             if (e.Cancel) PrintSpooler.AbortDoc(job);

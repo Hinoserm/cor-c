@@ -88,6 +88,8 @@ namespace System.Runtime.InteropServices
         public void Short(long v) { Align(2); Byte(v); Byte(v >> 8); }
         public void Long(long v) { Align(4); Room(4); for (int i = 0; i < 4; i++) _b[_n++] = (byte)(v >> (8 * i)); }
         public void Hyper(long v) { Align(8); Room(8); for (int i = 0; i < 8; i++) _b[_n++] = (byte)(v >> (8 * i)); }
+        /// An unsigned hyper (an OXID, an OID).
+        public void Hyper(ulong v) { Align(8); Room(8); for (int i = 0; i < 8; i++) _b[_n++] = (byte)(v >> (8 * i)); }
         public void Raw(byte[] bytes) { Room(bytes.Length); Array.Copy(bytes, 0, _b, _n, bytes.Length); _n += bytes.Length; }
         public void Raw(byte[] bytes, int at, int count) { Room(count); Array.Copy(bytes, at, _b, _n, count); _n += count; }
         public void Guid(byte[] bytes) { Align(4); Raw(bytes, 0, 16); }

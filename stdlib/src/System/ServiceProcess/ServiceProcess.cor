@@ -53,9 +53,9 @@ namespace System.ServiceProcess
     /// Win32Exception.
     static class ServiceFailure
     {
-        public static Exception Of(string what, string name, long error)
+        public static Exception Of(string what, string name, uint error)
         {
-            return new InvalidOperationException("Cannot " + what + " service " + name + " on computer '.'.", new Win32Exception((int)error));
+            return new InvalidOperationException("Cannot " + what + " service " + name + " on computer '.'.", new Win32Exception(unchecked((int)error)));
         }
     }
 
@@ -87,10 +87,10 @@ namespace System.ServiceProcess
                 if (_record != null) return _record;
                 WireWriter w = new WireWriter();
                 w.Text(_name);
-                long error;
+                uint error;
                 WireReader? r = WireClient.Ask(ServiceRequest.Query, w, out error);
                 if (r == null || error != WireError.Success)
-                    throw new InvalidOperationException("Service " + _name + " was not found on computer '.'.", new Win32Exception((int)error));
+                    throw new InvalidOperationException("Service " + _name + " was not found on computer '.'.", new Win32Exception(unchecked((int)error)));
                 _record = WireService.Read(r);
                 return _record;
             }
@@ -139,18 +139,18 @@ namespace System.ServiceProcess
             WireWriter w = new WireWriter();
             w.Text(_name);
             w.Texts(new List<string>(args));
-            long error;
+            uint error;
             WireClient.Ask(ServiceRequest.Start, w, out error);
             _record = null;
             if (error != WireError.Success) throw ServiceFailure.Of("start", _name, error);
         }
 
-        void Control(int control, string what)
+        void Control(uint control, string what)
         {
             WireWriter w = new WireWriter();
             w.Text(_name);
-            w.Int(control);
-            long error;
+            w.Word(control);
+            uint error;
             WireClient.Ask(ServiceRequest.Control, w, out error);
             _record = null;
             if (error != WireError.Success) throw ServiceFailure.Of(what, _name, error);
@@ -161,14 +161,14 @@ namespace System.ServiceProcess
         {
             foreach (ServiceController d in DependentServices)
                 if (d.Status != ServiceControllerStatus.Stopped) { d.Stop(); d.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(30)); }
-            Control((int)WireControl.Stop, "stop");
+            Control(WireControl.Stop, "stop");
         }
 
-        public void Pause() { Control((int)WireControl.Pause, "pause"); }
-        public void Continue() { Control((int)WireControl.Continue, "resume"); }
+        public void Pause() { Control(WireControl.Pause, "pause"); }
+        public void Continue() { Control(WireControl.Continue, "resume"); }
 
         /// A command of the service's own, 128 to 255.
-        public void ExecuteCommand(int command) { Control(command, "control"); }
+        public void ExecuteCommand(int command) { Control(unchecked((uint)command), "control"); }
 
         public void WaitForStatus(ServiceControllerStatus desiredStatus) { Wait(desiredStatus, -1); }
 
@@ -195,19 +195,19 @@ namespace System.ServiceProcess
         static List<WireService> All()
         {
             List<WireService> all = new List<WireService>();
-            long from = 0;
+            int from = 0;
             for (int pages = 0; pages < 64 && from >= 0; pages++)
             {
                 WireWriter w = new WireWriter();
                 w.Int(from);
-                long error;
+                uint error;
                 WireReader? r = WireClient.Ask(ServiceRequest.List, w, out error);
                 if (r == null || error != WireError.Success) break;
                 r.Int();
-                long count = r.Int();
-                for (long i = 0; i < count && !r.Short; i++) all.Add(WireService.Read(r));
-                long next = r.Int();
-                from = next == 0xFFFFFFFF ? -1 : next;
+                int count = r.Int();
+                for (int i = 0; i < count && !r.Short; i++) all.Add(WireService.Read(r));
+                // Where to go on, or -1 at the end.
+                from = r.Int();
             }
             return all;
         }
@@ -247,7 +247,7 @@ namespace System.ServiceProcess
         public int ExitCode { get; set; }
 
         int _fd = -1;
-        long _state = (long)WireState.Stopped;
+        uint _state = WireState.Stopped;
 
         protected virtual void OnStart(string[] args) { }
         protected virtual void OnStop() { }
@@ -258,36 +258,36 @@ namespace System.ServiceProcess
 
         /// More time asked for a start or a stop: the wait hint the manager
         /// is told.
-        public void RequestAdditionalTime(int milliseconds) { Say(_state, milliseconds); }
+        public void RequestAdditionalTime(int milliseconds) { Say(_state, unchecked((uint)milliseconds)); }
 
         /// The service stopped from inside, as if the manager had said so.
         public void Stop()
         {
-            Say((long)WireState.StopPending, 0);
+            Say(WireState.StopPending, 0);
             OnStop();
-            Say((long)WireState.Stopped, 0);
+            Say(WireState.Stopped, 0);
         }
 
         /// What the service accepts, as SERVICE_ACCEPT_* bits.
-        long Accepted()
+        uint Accepted()
         {
-            return (CanStop ? 1 : 0) | (CanPauseAndContinue ? 2 : 0) | (CanShutdown ? 4 : 0);
+            return (CanStop ? 1u : 0u) | (CanPauseAndContinue ? 2u : 0u) | (CanShutdown ? 4u : 0u);
         }
 
         /// SetStatus on the service's own connection; no answer comes back
         /// for it there, the controls being all that comes.
-        void Say(long state, long waitHint)
+        void Say(uint state, uint waitHint)
         {
             _state = state;
             if (_fd < 0) return;
             WireWriter w = new WireWriter();
             w.Text(ServiceName);
-            w.Int(state);
-            w.Int(state == (long)WireState.Running || state == (long)WireState.Paused ? Accepted() : 0);
-            w.Int(ExitCode != 0 ? 1066 : 0);                               // ERROR_SERVICE_SPECIFIC_ERROR
-            w.Int(ExitCode);
-            w.Int(0);
-            w.Int(waitHint);
+            w.Word(state);
+            w.Word(state == WireState.Running || state == WireState.Paused ? Accepted() : 0);
+            w.Word(ExitCode != 0 ? 1066u : 0u);                            // ERROR_SERVICE_SPECIFIC_ERROR
+            w.Word(unchecked((uint)ExitCode));
+            w.Word(0);
+            w.Word(waitHint);
             WireClient.Send(_fd, WireClient.Message(ServiceRequest.SetStatus, w));
         }
 
@@ -312,22 +312,22 @@ namespace System.ServiceProcess
             w.Int(Environment.ProcessId);
             if (!WireClient.Send(fd, WireClient.Message(ServiceRequest.Register, w))) throw new InvalidOperationException("The service manager would not take the service.");
             byte[]? answer = WireClient.Receive(fd);
-            if (answer == null || answer.Length < 4 || new WireReader(answer, answer.Length).Int() != WireError.Success)
+            if (answer == null || answer.Length < 4 || new WireReader(answer, answer.Length).Word() != WireError.Success)
                 throw new InvalidOperationException("The service manager would not take " + service.ServiceName + ".");
             string[] all = Environment.GetCommandLineArgs();
             string[] args = new string[Math.Max(0, all.Length - 1)];
             for (int i = 1; i < all.Length; i++) args[i - 1] = all[i];
-            service.Say((long)WireState.StartPending, 30000);
+            service.Say(WireState.StartPending, 30000);
             try { service.OnStart(args); }
             catch (Exception e)
             {
                 Console.Error.WriteLine(service.ServiceName + ": OnStart failed: " + e.Message);
                 if (service.ExitCode == 0) service.ExitCode = 1064;          // ERROR_EXCEPTION_IN_SERVICE
-                service.Say((long)WireState.Stopped, 0);
+                service.Say(WireState.Stopped, 0);
                 Os.Close(fd);
                 return;
             }
-            service.Say((long)WireState.Running, 0);
+            service.Say(WireState.Running, 0);
             service.Serve();
             Os.Close(fd);
         }
@@ -340,16 +340,16 @@ namespace System.ServiceProcess
                 byte[]? m = WireClient.Receive(_fd);
                 if (m == null) return;
                 WireReader r = new WireReader(m, m.Length);
-                if (r.Int() != (long)ServiceRequest.ControlMessage) continue;
-                long control = r.Int();
-                long result = 0;
+                if (r.Word() != ServiceRequest.ControlMessage) continue;
+                uint control = r.Word();
+                uint result = 0;
                 bool stopping = false;
                 try
                 {
-                    if (control == (long)WireControl.Stop) { Say((long)WireState.StopPending, 0); OnStop(); stopping = true; }
-                    else if (control == (long)WireControl.Pause) { Say((long)WireState.PausePending, 0); OnPause(); Say((long)WireState.Paused, 0); }
-                    else if (control == (long)WireControl.Continue) { Say((long)WireState.ContinuePending, 0); OnContinue(); Say((long)WireState.Running, 0); }
-                    else if (control == (long)WireControl.Shutdown) { OnShutdown(); stopping = true; }
+                    if (control == WireControl.Stop) { Say(WireState.StopPending, 0); OnStop(); stopping = true; }
+                    else if (control == WireControl.Pause) { Say(WireState.PausePending, 0); OnPause(); Say(WireState.Paused, 0); }
+                    else if (control == WireControl.Continue) { Say(WireState.ContinuePending, 0); OnContinue(); Say(WireState.Running, 0); }
+                    else if (control == WireControl.Shutdown) { OnShutdown(); stopping = true; }
                     else if (control >= 128 && control <= 255) OnCustomCommand((int)control);
                 }
                 catch (Exception e)
@@ -358,9 +358,9 @@ namespace System.ServiceProcess
                     result = 1064;
                 }
                 WireWriter done = new WireWriter();
-                done.Int(result);
+                done.Word(result);
                 WireClient.Send(_fd, WireClient.Message(ServiceRequest.ControlDone, done));
-                if (stopping) { Say((long)WireState.Stopped, 0); return; }
+                if (stopping) { Say(WireState.Stopped, 0); return; }
             }
         }
     }

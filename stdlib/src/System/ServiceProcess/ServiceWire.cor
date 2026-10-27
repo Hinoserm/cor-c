@@ -8,190 +8,191 @@
 // that many strings, little-endian.
 //
 // KEEP IN STEP with os/ring1/servicewire.cor: the system's image build
-// compares ServiceRequest (CheckEnumCopy). The other enums carry Wire in
+// compares ServiceRequest (CheckEnumCopy). The other sets carry Wire in
 // their names here, .NET's own ServiceType and the rest being this
 // namespace's.
 
 namespace System.ServiceProcess
 {
-    public enum ServiceRequest
+    public static class ServiceRequest
     {
         // The service manager.
-        List = 1,
-        Query = 2,
-        Start = 3,
-        Control = 4,
-        Change = 5,
-        Create = 6,
-        Delete = 7,
-        Register = 8,
-        SetStatus = 9,
-        ControlDone = 10,
+        public const uint List = 1;
+        public const uint Query = 2;
+        public const uint Start = 3;
+        public const uint Control = 4;
+        public const uint Change = 5;
+        public const uint Create = 6;
+        public const uint Delete = 7;
+        public const uint Register = 8;
+        public const uint SetStatus = 9;
+        public const uint ControlDone = 10;
 
         // The secret store.
-        Protect = 20,
-        Unprotect = 21,
-        ItemWrite = 22,
-        ItemRead = 23,
-        ItemDelete = 24,
-        ItemList = 25,
-        TypeCreate = 26,
-        TypeDelete = 27,
-        TypeList = 28,
-        TypeInfo = 29,
-        SubtypeCreate = 30,
-        SubtypeDelete = 31,
-        SubtypeList = 32,
-        SubtypeInfo = 33,
+        public const uint Protect = 20;
+        public const uint Unprotect = 21;
+        public const uint ItemWrite = 22;
+        public const uint ItemRead = 23;
+        public const uint ItemDelete = 24;
+        public const uint ItemList = 25;
+        public const uint TypeCreate = 26;
+        public const uint TypeDelete = 27;
+        public const uint TypeList = 28;
+        public const uint TypeInfo = 29;
+        public const uint SubtypeCreate = 30;
+        public const uint SubtypeDelete = 31;
+        public const uint SubtypeList = 32;
+        public const uint SubtypeInfo = 33;
 
         // From the manager to a registered service.
-        ControlMessage = 100,
+        public const uint ControlMessage = 100;
 
         // COM's object broker: processes, IDs and object exporters.
-        ComConnect = 200,
-        ComProcessGone = 201,
-        ComReserveIds = 202,
-        ComThreadId = 203,
-        ComOxidRegister = 204,
-        ComOxidResolve = 205,
-        ComOxidFree = 206,
+        public const uint ComConnect = 200;
+        public const uint ComProcessGone = 201;
+        public const uint ComReserveIds = 202;
+        public const uint ComThreadId = 203;
+        public const uint ComOxidRegister = 204;
+        public const uint ComOxidResolve = 205;
+        public const uint ComOxidFree = 206;
 
         // Class objects, activation and the class registry.
-        ComClassRegister = 210,
-        ComClassRevoke = 211,
-        ComActivate = 212,
-        ComClassInfo = 213,
+        public const uint ComClassRegister = 210;
+        public const uint ComClassRevoke = 211;
+        public const uint ComActivate = 212;
+        public const uint ComClassInfo = 213;
 
         // The running object table.
-        RotRegister = 220,
-        RotRevoke = 221,
-        RotIsRunning = 222,
-        RotGetObject = 223,
-        RotNoteChangeTime = 224,
-        RotGetTimeOfLastChange = 225,
-        RotEnumRunning = 226,
+        public const uint RotRegister = 220;
+        public const uint RotRevoke = 221;
+        public const uint RotIsRunning = 222;
+        public const uint RotGetObject = 223;
+        public const uint RotNoteChangeTime = 224;
+        public const uint RotGetTimeOfLastChange = 225;
+        public const uint RotEnumRunning = 226;
 
         // Interfaces kept for windows (OLE drag and drop's drop targets).
-        WindowPropRegister = 230,
-        WindowPropGet = 231,
+        public const uint WindowPropRegister = 230;
+        public const uint WindowPropGet = 231;
 
         // The endpoint mapper.
-        EpInsert = 240,
-        EpDelete = 241,
-        EpLookup = 242,
-        EpMap = 243,
+        public const uint EpInsert = 240;
+        public const uint EpDelete = 241;
+        public const uint EpLookup = 242;
+        public const uint EpMap = 243;
 
         // The print spooler (System.Drawing.Printing's SpoolWire.cor says
         // each one's fields).
-        SpoolPrinters = 300,
-        SpoolPrinter = 301,
-        SpoolStartDoc = 302,
-        SpoolWrite = 303,
-        SpoolStartPage = 304,
-        SpoolEndPage = 305,
-        SpoolEndDoc = 306,
-        SpoolAbortDoc = 307,
-        SpoolJobs = 308,
-        SpoolJob = 309,
-        SpoolJobControl = 310,
-        SpoolPrinterControl = 311,
-        SpoolWatch = 312,
-        SpoolEvent = 313,
-        SpoolSetPrinter = 314,
-        SpoolDeletePrinter = 315,
+        public const uint SpoolPrinters = 300;
+        public const uint SpoolPrinter = 301;
+        public const uint SpoolStartDoc = 302;
+        public const uint SpoolWrite = 303;
+        public const uint SpoolStartPage = 304;
+        public const uint SpoolEndPage = 305;
+        public const uint SpoolEndDoc = 306;
+        public const uint SpoolAbortDoc = 307;
+        public const uint SpoolJobs = 308;
+        public const uint SpoolJob = 309;
+        public const uint SpoolJobControl = 310;
+        public const uint SpoolPrinterControl = 311;
+        public const uint SpoolWatch = 312;
+        public const uint SpoolEvent = 313;
+        public const uint SpoolSetPrinter = 314;
+        public const uint SpoolDeletePrinter = 315;
     }
 
     /// When a service starts (winsvc.h's SERVICE_*_START, the same numbers).
-    public enum WireStartType
+    public static class WireStartType
     {
-        Boot = 0,
-        System = 1,
-        Automatic = 2,
-        Manual = 3,
-        Disabled = 4,
+        public const uint Boot = 0;
+        public const uint System = 1;
+        public const uint Automatic = 2;
+        public const uint Manual = 3;
+        public const uint Disabled = 4;
     }
 
     /// A service's state (SERVICE_STOPPED .. SERVICE_PAUSED).
-    public enum WireState
+    public static class WireState
     {
-        Stopped = 1,
-        StartPending = 2,
-        StopPending = 3,
-        Running = 4,
-        ContinuePending = 5,
-        PausePending = 6,
-        Paused = 7,
+        public const uint Stopped = 1;
+        public const uint StartPending = 2;
+        public const uint StopPending = 3;
+        public const uint Running = 4;
+        public const uint ContinuePending = 5;
+        public const uint PausePending = 6;
+        public const uint Paused = 7;
     }
 
     /// What a service is (winsvc.h's SERVICE_* type bits, which Windows' own
     /// services carry in their keys); Native marks one of CORSAC's own programs.
-    public enum WireType
+    public static class WireType
     {
-        KernelDriver = 0x1,
-        FileSystemDriver = 0x2,
-        OwnProcess = 0x10,
-        ShareProcess = 0x20,
-        Interactive = 0x100,
-        Native = 0x10000,
+        public const uint KernelDriver = 0x1;
+        public const uint FileSystemDriver = 0x2;
+        public const uint OwnProcess = 0x10;
+        public const uint ShareProcess = 0x20;
+        public const uint Interactive = 0x100;
+        public const uint Native = 0x10000;
     }
 
     /// The controls (SERVICE_CONTROL_*); 128 to 255 are the service's own.
-    public enum WireControl
+    public static class WireControl
     {
-        Stop = 1,
-        Pause = 2,
-        Continue = 3,
-        Interrogate = 4,
-        Shutdown = 5,
-        ParamChange = 6,
+        public const uint Stop = 1;
+        public const uint Pause = 2;
+        public const uint Continue = 3;
+        public const uint Interrogate = 4;
+        public const uint Shutdown = 5;
+        public const uint ParamChange = 6;
     }
 
     /// What a protected blob may be read by (DataProtectionScope's numbers).
-    public enum WireScope
+    public static class WireScope
     {
-        CurrentUser = 0,
-        LocalMachine = 1,
+        public const uint CurrentUser = 0;
+        public const uint LocalMachine = 1;
     }
 
     /// Win32 errors the wire carries (winerror.h).
     public static class WireError
     {
-        public const long Success = 0, AccessDenied = 5, InvalidHandle = 6, InvalidData = 13, InvalidParameter = 87;
-        public const long InsufficientBuffer = 122, NotSupported = 50, AlreadyExists = 183, NoMoreItems = 259;
-        public const long DependentServicesRunning = 1051, InvalidServiceControl = 1052, RequestTimeout = 1053;
-        public const long NoServiceThread = 1054, ServiceAlreadyRunning = 1056, InvalidServiceAccount = 1057;
-        public const long ServiceDisabled = 1058, ServiceDoesNotExist = 1060, CannotAcceptControl = 1061;
-        public const long ServiceNotActive = 1062, ServiceSpecificError = 1066, ProcessAborted = 1067;
-        public const long DependencyFailed = 1068, ServiceMarkedForDelete = 1072, ServiceExists = 1073;
-        public const long NeverStarted = 1077, NotFound = 1168, PathNotFound = 3, FileNotFound = 2;
-        public const long DecryptionFailed = 6000, Unavailable = 1722;
+        public const uint Success = 0, AccessDenied = 5, InvalidHandle = 6, InvalidData = 13, InvalidParameter = 87;
+        public const uint InsufficientBuffer = 122, NotSupported = 50, AlreadyExists = 183, NoMoreItems = 259;
+        public const uint DependentServicesRunning = 1051, InvalidServiceControl = 1052, RequestTimeout = 1053;
+        public const uint NoServiceThread = 1054, ServiceAlreadyRunning = 1056, InvalidServiceAccount = 1057;
+        public const uint ServiceDisabled = 1058, ServiceDoesNotExist = 1060, CannotAcceptControl = 1061;
+        public const uint ServiceNotActive = 1062, ServiceSpecificError = 1066, ProcessAborted = 1067;
+        public const uint DependencyFailed = 1068, ServiceMarkedForDelete = 1072, ServiceExists = 1073;
+        public const uint NeverStarted = 1077, NotFound = 1168, PathNotFound = 3, FileNotFound = 2;
+        public const uint DecryptionFailed = 6000, Unavailable = 1722;
     }
 
     /// One service, as the manager tells it.
     public class WireService
     {
         public string Name = "", Display = "", Description = "", Image = "", Account = "", Group = "";
-        public long Type, Start = (long)WireStartType.Manual, ErrorControl = 1, Tag;
+        public uint Type, Start = WireStartType.Manual, ErrorControl = 1, Tag;
         public List<string> DependsOn = new List<string>(), DependsOnGroup = new List<string>();
-        public long State = (long)WireState.Stopped, Controls, ExitCode, SpecificExitCode, CheckPoint, WaitHint, ProcessId;
+        public uint State = WireState.Stopped, Controls, ExitCode, SpecificExitCode, CheckPoint, WaitHint;
+        public int ProcessId;
 
-        public bool Native { get { return (Type & (long)WireType.Native) != 0; } }
+        public bool Native { get { return (Type & WireType.Native) != 0; } }
 
         public void Write(WireWriter w)
         {
             w.Text(Name); w.Text(Display); w.Text(Description); w.Text(Image); w.Text(Account); w.Text(Group);
-            w.Int(Type); w.Int(Start); w.Int(ErrorControl); w.Int(Tag);
+            w.Word(Type); w.Word(Start); w.Word(ErrorControl); w.Word(Tag);
             w.Texts(DependsOn); w.Texts(DependsOnGroup);
-            w.Int(State); w.Int(Controls); w.Int(ExitCode); w.Int(SpecificExitCode); w.Int(CheckPoint); w.Int(WaitHint); w.Int(ProcessId);
+            w.Word(State); w.Word(Controls); w.Word(ExitCode); w.Word(SpecificExitCode); w.Word(CheckPoint); w.Word(WaitHint); w.Int(ProcessId);
         }
 
         public static WireService Read(WireReader r)
         {
             WireService s = new WireService();
             s.Name = r.Text(); s.Display = r.Text(); s.Description = r.Text(); s.Image = r.Text(); s.Account = r.Text(); s.Group = r.Text();
-            s.Type = r.Int(); s.Start = r.Int(); s.ErrorControl = r.Int(); s.Tag = r.Int();
+            s.Type = r.Word(); s.Start = r.Word(); s.ErrorControl = r.Word(); s.Tag = r.Word();
             s.DependsOn = r.Texts(); s.DependsOnGroup = r.Texts();
-            s.State = r.Int(); s.Controls = r.Int(); s.ExitCode = r.Int(); s.SpecificExitCode = r.Int(); s.CheckPoint = r.Int(); s.WaitHint = r.Int(); s.ProcessId = r.Int();
+            s.State = r.Word(); s.Controls = r.Word(); s.ExitCode = r.Word(); s.SpecificExitCode = r.Word(); s.CheckPoint = r.Word(); s.WaitHint = r.Word(); s.ProcessId = r.Int();
             return s;
         }
     }
@@ -214,12 +215,16 @@ namespace System.ServiceProcess
             _b = bigger;
         }
 
-        public void Int(long v)
+        /// A DWORD: an error, a state, a control, a request's number.
+        public void Word(uint v)
         {
             Room(4);
             _b[_n] = (byte)v; _b[_n + 1] = (byte)(v >> 8); _b[_n + 2] = (byte)(v >> 16); _b[_n + 3] = (byte)(v >> 24);
             _n += 4;
         }
+
+        /// A signed 32-bit number -- a pid, a count, a handle -- as its bits.
+        public void Int(int v) { Word(unchecked((uint)v)); }
 
         public void Text(string? s)
         {
@@ -244,8 +249,9 @@ namespace System.ServiceProcess
             if (list != null) foreach (string s in list) Text(s);
         }
 
-        /// A 64-bit number: its low word, then its high one.
-        public void Quad(long v) { Int(v & 0xFFFFFFFF); Int((v >> 32) & 0xFFFFFFFF); }
+        /// A 64-bit number (an OXID, an OID, a FILETIME): its low word, then
+        /// its high one -- the halves of the number, each its own field.
+        public void Quad(ulong v) { Word(unchecked((uint)v)); Word((uint)(v >> 32)); }
 
         public byte[] ToArray()
         {
@@ -267,43 +273,48 @@ namespace System.ServiceProcess
 
         public WireReader(byte[] b, int count) { _b = b; _end = Math.Min(count, b.Length); }
 
-        public long Int()
+        /// A DWORD.
+        public uint Word()
         {
             if (_at + 4 > _end) { Short = true; _at = _end; return 0; }
-            long v = (_b[_at] & 0xFF) | ((_b[_at + 1] & 0xFF) << 8) | ((_b[_at + 2] & 0xFF) << 16) | ((long)(_b[_at + 3] & 0xFF) << 24);
+            uint v = (uint)(_b[_at] | (_b[_at + 1] << 8) | (_b[_at + 2] << 16) | (_b[_at + 3] << 24));
             _at += 4;
             return v;
         }
 
+        /// A signed 32-bit number -- a pid, a count, a handle: the word's bits.
+        /// A count past 2^31 reads negative, which its reader refuses.
+        public int Int() { return unchecked((int)Word()); }
+
         public string Text()
         {
-            long n = Int();
-            if (n < 0 || _at + n * 2 > _end) { Short = true; _at = _end; return ""; }
-            char[] c = new char[(int)n];
-            for (int i = 0; i < n; i++) c[i] = (char)((_b[_at + i * 2] & 0xFF) | ((_b[_at + i * 2 + 1] & 0xFF) << 8));
-            _at += (int)n * 2;
+            int n = Int();
+            if (n < 0 || n > (_end - _at) / 2) { Short = true; _at = _end; return ""; }
+            char[] c = new char[n];
+            for (int i = 0; i < n; i++) c[i] = (char)(_b[_at + i * 2] | (_b[_at + i * 2 + 1] << 8));
+            _at += n * 2;
             return new string(c);
         }
 
         public byte[] Bytes()
         {
-            long n = Int();
-            if (n < 0 || _at + n > _end) { Short = true; _at = _end; return new byte[0]; }
-            byte[] made = new byte[(int)n];
-            Array.Copy(_b, _at, made, 0, (int)n);
-            _at += (int)n;
+            int n = Int();
+            if (n < 0 || n > _end - _at) { Short = true; _at = _end; return new byte[0]; }
+            byte[] made = new byte[n];
+            Array.Copy(_b, _at, made, 0, n);
+            _at += n;
             return made;
         }
 
         public List<string> Texts()
         {
-            long n = Int();
+            int n = Int();
             List<string> list = new List<string>();
-            for (long i = 0; i < n && !Short; i++) list.Add(Text());
+            for (int i = 0; i < n && !Short; i++) list.Add(Text());
             return list;
         }
 
-        public long Quad() { long low = Int(); return low | (Int() << 32); }
+        public ulong Quad() { ulong low = Word(); ulong high = Word(); return low | high << 32; }
     }
 
     /// One request on its own connection, or on one held open (AskOn), and
@@ -332,11 +343,11 @@ namespace System.ServiceProcess
             return fd;
         }
 
-        public static byte[] Message(ServiceRequest op, WireWriter fields)
+        public static byte[] Message(uint op, WireWriter fields)
         {
             WireWriter w = new WireWriter();
-            w.Int((long)op);
-            w.Int(0xFFFFFFFF);
+            w.Word(op);
+            w.Word(0xFFFFFFFF);
             byte[] head = w.ToArray(), body = fields.ToArray();
             byte[] all = new byte[head.Length + body.Length];
             Array.Copy(head, 0, all, 0, head.Length);
@@ -357,7 +368,7 @@ namespace System.ServiceProcess
             return made;
         }
 
-        public static WireReader? Ask(ServiceRequest op, WireWriter fields, out long error)
+        public static WireReader? Ask(uint op, WireWriter fields, out uint error)
         {
             error = WireError.Unavailable;
             int fd = Connect();
@@ -369,14 +380,14 @@ namespace System.ServiceProcess
         /// One request on a connection held open (Connect), and its answer,
         /// as Ask: the manager answers any number of requests on one
         /// connection, one at a time, so the caller asks one at a time.
-        public static WireReader? AskOn(int fd, ServiceRequest op, WireWriter fields, out long error)
+        public static WireReader? AskOn(int fd, uint op, WireWriter fields, out uint error)
         {
             error = WireError.Unavailable;
             if (!Send(fd, Message(op, fields))) return null;
             byte[]? answer = Receive(fd);
             if (answer == null || answer.Length < 4) return null;
             WireReader r = new WireReader(answer, answer.Length);
-            error = r.Int();
+            error = r.Word();
             return r;
         }
     }

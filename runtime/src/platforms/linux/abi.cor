@@ -394,24 +394,23 @@ static class SyscallRegister
 /// machine spells a number wider than a byte.
 static class Raw
 {
-    public static long U8(byte[] b, int at)
+    public static byte U8(byte[] b, int at)
     {
         return b[at];
     }
 
-    /// An unsigned 16-bit field at byte offset `at`, as U32 reads one.
-    public static long U16(byte[] b, int at)
+    /// An unsigned 16-bit field at byte offset `at`, little-endian.
+    public static ushort U16(byte[] b, int at)
     {
-        return b[at] | (b[at + 1] << 8);
+        return (ushort)(b[at] | (b[at + 1] << 8));
     }
 
-    /// An unsigned 32-bit field, widened into a long so that 0x80000000 is
-    /// two billion and not minus two billion.
-    public static long U32(byte[] b, int at)
+    /// An unsigned 32-bit field at its own width: 0x80000000 is two billion
+    /// wherever it is widened, and a caller that puts it in a high half
+    /// widens first.
+    public static uint U32(byte[] b, int at)
     {
-        long low = b[at + 0] | (b[at + 1] << 8);
-        long high = b[at + 2] | (b[at + 3] << 8);
-        return low | (high << 16);
+        return (uint)(b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24));
     }
 
     /// The same four bytes read as a signed number, which is what a mode, a
@@ -423,7 +422,7 @@ static class Raw
 
     public static long I64(byte[] b, int at)
     {
-        return U32(b, at) | (((long)I32(b, at + 4)) << 32);
+        return (long)U32(b, at) | ((long)I32(b, at + 4) << 32);
     }
 
     public static void SetU32(byte[] b, int at, long value)

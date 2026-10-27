@@ -1541,8 +1541,8 @@ public class Form : ScrollableControl
         _wantsDrops = true;
         if (_handle == 0 || _dropRegistered) return;
         _dropRegistered = true;
-        long cookie = 0;
-        Func<Form, long>? com = DragDrop_.ComRegister;
+        uint cookie = 0;
+        Func<Form, uint>? com = DragDrop_.ComRegister;
         if (com != null) { try { cookie = com(this); } catch (Exception) { cookie = 0; } }
         try { Seat.Current.RegisterDropTarget(_handle, cookie); } catch (IOException) { }
     }
@@ -8393,7 +8393,7 @@ static class DragDrop_
     /// broker's cookie answered, which the seat puts in the window's
     /// "OleEndPointID" so a Windows program's DoDragDrop finds it. Taken back
     /// when the form closes. Null: native drags still reach the window.
-    public static Func<Form, long>? ComRegister = form => OleDrop.Register(form);
+    public static Func<Form, uint>? ComRegister = form => OleDrop.Register(form);
     public static Action<Form>? ComRevoke = form => OleDrop.Revoke(form);
 
     // ---- the source -----------------------------------------------------------------
@@ -8999,7 +8999,7 @@ sealed class OleDropEndpoint : System.Runtime.InteropServices.ComTypes.IInterfac
     readonly Form _form;
     readonly object _lock = new object();
     ComDragData? _data;
-    public long Cookie;
+    public uint Cookie;
     public byte[] Ipid = new byte[0];
 
     public OleDropEndpoint(Form form) { _form = form; }
@@ -9077,13 +9077,13 @@ static class OleDrop
 {
     static readonly Dictionary<int, OleDropEndpoint> _endpoints = new Dictionary<int, OleDropEndpoint>();
 
-    internal static long Register(Form form)
+    internal static uint Register(Form form)
     {
         System.Runtime.InteropServices.OleNdr.FormatOfName = name => Seat.Current.RegisterClipboardFormat(name);
         int window = form.Handle;
         OleDropEndpoint endpoint = new OleDropEndpoint(form);
         byte[] ipid;
-        long cookie = System.Runtime.InteropServices.OleWindows.Register(window, endpoint, out ipid);
+        uint cookie = System.Runtime.InteropServices.OleWindows.Register(window, endpoint, out ipid);
         endpoint.Cookie = cookie;
         endpoint.Ipid = ipid;
         lock (_endpoints) { _endpoints[window] = endpoint; }
@@ -9132,7 +9132,7 @@ sealed class OleDragBridge
         {
             int hwnd = Seat.Current.DragBridgeWindow(window);
             if (hwnd == 0) return 0;
-            long cookie = Seat.Current.DragBridgeTarget(window);
+            uint cookie = Seat.Current.DragBridgeTarget(window);
             if (cookie == 0) return 0;
             _target = System.Runtime.InteropServices.OleWindows.Endpoint(hwnd, cookie);
             _window = window;

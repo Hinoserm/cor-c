@@ -302,7 +302,7 @@ static class UnixProcess
         if (master < 0) return master;
         byte[] word = new byte[4];
         long result = Os.Ioctl(master, 0x80045430, Sys.ArrayData(word)); // TIOCGPTN
-        long number = Raw.U32(word, 0);
+        uint number = Raw.U32(word, 0);
         if (result >= 0)
         {
             Raw.SetU32(word, 0, 0);
@@ -328,7 +328,7 @@ static class UnixProcess
     {
         byte[] size = new byte[8];
         long result = Os.Ioctl(fd, 0x5413, Sys.ArrayData(size));
-        long packed = Raw.U32(size, 0);
+        uint packed = Raw.U32(size, 0);
         rows = (int)(packed & 65535);
         columns = (int)((packed >> 16) & 65535);
         return (int)result;

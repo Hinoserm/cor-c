@@ -44,11 +44,14 @@ static class Program
         return a;
     }
 
-    static void Answer(int fd, long job)
+    // The answer: success, then the job's id (a Word) or the bytes a write
+    // took (an Int), when the request has one.
+    static void Answer(int fd, uint job, int taken)
     {
         WireWriter w = new WireWriter();
-        w.Int(0);
-        if (job != 0) w.Int(job);
+        w.Word(WireError.Success);
+        if (job != 0) w.Word(job);
+        if (taken != 0) w.Int(taken);
         byte[] m = w.ToArray();
         Os.Send(fd, m, 0, m.Length, 0x4000);
     }
@@ -57,7 +60,7 @@ static class Program
     // each when the job keeps its connection.
     static void Serve()
     {
-        long jobs = 0;
+        uint jobs = 0;
         for (int n = 1; n <= 2; n++)
         {
             int fd = Os.Accept(_listener, null);
@@ -68,22 +71,23 @@ static class Program
                 int got = Os.Recv(fd, b, 0, b.Length, 0);
                 if (got <= 0) break;
                 WireReader r = new WireReader(b, got);
-                ServiceRequest op = (ServiceRequest)r.Int();
-                r.Int();
+                uint op = r.Word();
+                r.Word();
                 string what;
-                long job = 0;
+                uint job = 0;
+                int taken = 0;
                 switch (op)
                 {
                     case ServiceRequest.SpoolStartDoc: job = ++jobs; open = true; what = "start, job " + job; break;
                     case ServiceRequest.SpoolStartPage: what = "page begun"; break;
-                    case ServiceRequest.SpoolWrite: r.Int(); job = r.Bytes().Length; what = job + " bytes"; break;
+                    case ServiceRequest.SpoolWrite: r.Word(); taken = r.Bytes().Length; what = taken + " bytes"; break;
                     case ServiceRequest.SpoolEndPage: what = "page ended"; break;
                     case ServiceRequest.SpoolEndDoc: open = false; what = "ended"; break;
                     case ServiceRequest.SpoolAbortDoc: open = false; what = "cancelled"; break;
-                    default: what = "asked " + (long)op; break;
+                    default: what = "asked " + op; break;
                 }
                 lock (Said) Said.Add("connection " + n + ": " + what);
-                Answer(fd, job);
+                Answer(fd, job, taken);
             }
             if (open) _lost++;
             lock (Said) Said.Add("connection " + n + ": closed");
@@ -102,13 +106,13 @@ static class Program
         Thread server = new Thread(Serve);
         server.Start();
 
-        long job = PrintSpooler.StartDoc("Printer", "Document", "RAW", "", 1);
+        uint job = PrintSpooler.StartDoc("Printer", "Document", "RAW", "", 1);
         PrintSpooler.StartPage(job);
         PrintSpooler.Write(job, new byte[] { 1, 2, 3 }, 0, 3);
         PrintSpooler.EndPage(job);
         PrintSpooler.EndDoc(job);
 
-        long other = PrintSpooler.StartDoc("Printer", "Another", "PAGES", "", 1);
+        uint other = PrintSpooler.StartDoc("Printer", "Another", "PAGES", "", 1);
         PrintSpooler.AbortDoc(other);
 
         server.Join();

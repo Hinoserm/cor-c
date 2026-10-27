@@ -51,14 +51,14 @@ namespace System.Runtime.InteropServices
     public static class ComBroker
     {
         static readonly object _lock = new object();
-        static long _key;
-        static long _thread;
+        static uint _key;
+        static uint _thread;
 
-        public const int ClassContextLocalServer = 4;
+        public const uint ClassContextLocalServer = 4;
         const int RpcServerUnavailable = unchecked((int)0x800706BA);
 
         /// This process's key with the broker (ComConnect), made on first use.
-        public static long Key
+        public static uint Key
         {
             get
             {
@@ -67,25 +67,25 @@ namespace System.Runtime.InteropServices
                     if (_key != 0) return _key;
                     WireWriter w = new WireWriter();
                     w.Int(Os.Getpid());
-                    w.Int(0);                                         // native
+                    w.Word(0);                                        // native
                     w.Text("");
-                    w.Int(0);
+                    w.Word(0);                                        // no IDs reserved
                     WireReader r = Ask(ServiceRequest.ComConnect, w);
-                    _key = r.Int();
-                    _thread = r.Int();
+                    _key = r.Word();
+                    _thread = r.Word();
                     r.Quad();
                     return _key;
                 }
             }
         }
 
-        public static long Thread { get { long k = Key; return _thread; } }
+        public static uint Thread { get { uint k = Key; return _thread; } }
 
         /// One request: the reader past its status; a failed status thrown
         /// as its HRESULT (a Win32 error made one).
-        public static WireReader Ask(ServiceRequest op, WireWriter fields)
+        public static WireReader Ask(uint op, WireWriter fields)
         {
-            long error;
+            uint error;
             WireReader? r = WireClient.Ask(op, fields, out error);
             if (r == null) throw new COMException("The COM broker is not running (RPC_S_SERVER_UNAVAILABLE).", RpcServerUnavailable);
             if (error != 0) throw ComMarshal.ExceptionFor(Hr(error));
@@ -93,15 +93,15 @@ namespace System.Runtime.InteropServices
         }
 
         /// The same, its status answered rather than thrown.
-        public static WireReader? Try(ServiceRequest op, WireWriter fields, out int hr)
+        public static WireReader? Try(uint op, WireWriter fields, out int hr)
         {
-            long error;
+            uint error;
             WireReader? r = WireClient.Ask(op, fields, out error);
             hr = r == null ? RpcServerUnavailable : Hr(error);
             return r;
         }
 
-        static int Hr(long error)
+        static int Hr(uint error)
         {
             if (error == 0) return 0;
             if ((error & 0x80000000) != 0) return unchecked((int)error);
@@ -125,13 +125,13 @@ namespace System.Runtime.InteropServices
     /// <summary>An object exporter's whereabouts, from the broker: its endpoint, whether Windows serves it, its IRemUnknown.</summary>
     public sealed class ComOxid
     {
-        public long Oxid;
+        public ulong Oxid;
         public string Endpoint = "";
         public bool Windows;
         public byte[] RemUnknown = new byte[16];
-        static readonly Dictionary<long, ComOxid> _known = new Dictionary<long, ComOxid>();
+        static readonly Dictionary<ulong, ComOxid> _known = new Dictionary<ulong, ComOxid>();
 
-        public static ComOxid Resolve(long oxid)
+        public static ComOxid Resolve(ulong oxid)
         {
             lock (_known)
             {
@@ -151,7 +151,7 @@ namespace System.Runtime.InteropServices
             return made;
         }
 
-        public static ComOxid From(long oxid, byte[] info, byte[] bindings, bool windows)
+        public static ComOxid From(ulong oxid, byte[] info, byte[] bindings, bool windows)
         {
             ComOxid made = new ComOxid { Oxid = oxid, Windows = windows };
             if (info.Length >= 32) Array.Copy(info, 16, made.RemUnknown, 0, 16);
@@ -265,7 +265,10 @@ namespace System.Runtime.InteropServices
         }
 
         public static void Put(byte[] b, int at, long v) { for (int i = 0; i < 4; i++) b[at + i] = (byte)(v >> (8 * i)); }
+        /// A DWORD (a half of an OXID or an OID, a thread's id).
+        public static void Put(byte[] b, int at, uint v) { for (int i = 0; i < 4; i++) b[at + i] = (byte)(v >> (8 * i)); }
         public static int Get(byte[] b, int at) { return b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24); }
+        public static uint GetWord(byte[] b, int at) { return (uint)Get(b, at); }
 
         public static void PutText(List<byte> into, string s)
         {
@@ -384,7 +387,7 @@ namespace System.Runtime.InteropServices
         public string Iid = "";
         public int Flags;
         public int PublicRefs;
-        public long Oxid, Oid;
+        public ulong Oxid, Oid;
         public byte[] Ipid = new byte[16];
 
         public static ComObjRef? Read(byte[] b)
@@ -397,8 +400,8 @@ namespace System.Runtime.InteropServices
             r.Iid = ComMarshal.Normal(new Guid(iid).ToString());
             r.Flags = ComTransport.Get(b, 24);
             r.PublicRefs = ComTransport.Get(b, 28);
-            r.Oxid = (ComTransport.Get(b, 32) & 0xFFFFFFFFL) | ((long)ComTransport.Get(b, 36) << 32);
-            r.Oid = (ComTransport.Get(b, 40) & 0xFFFFFFFFL) | ((long)ComTransport.Get(b, 44) << 32);
+            r.Oxid = ComTransport.GetWord(b, 32) | (ulong)ComTransport.GetWord(b, 36) << 32;
+            r.Oid = ComTransport.GetWord(b, 40) | (ulong)ComTransport.GetWord(b, 44) << 32;
             Array.Copy(b, 48, r.Ipid, 0, 16);
             return r;
         }
@@ -413,8 +416,8 @@ namespace System.Runtime.InteropServices
             Array.Copy(ComMarshal.GuidBytes(Iid), 0, b, 8, 16);
             ComTransport.Put(b, 24, Flags);
             ComTransport.Put(b, 28, PublicRefs);
-            ComTransport.Put(b, 32, Oxid); ComTransport.Put(b, 36, Oxid >> 32);
-            ComTransport.Put(b, 40, Oid); ComTransport.Put(b, 44, Oid >> 32);
+            ComTransport.Put(b, 32, unchecked((uint)Oxid)); ComTransport.Put(b, 36, (uint)(Oxid >> 32));
+            ComTransport.Put(b, 40, unchecked((uint)Oid)); ComTransport.Put(b, 44, (uint)(Oid >> 32));
             Array.Copy(Ipid, 0, b, 48, 16);
             // DUALSTRINGARRAY: four entries, the security part at 2 -- no
             // string bindings, one empty security binding.
@@ -433,13 +436,13 @@ namespace System.Runtime.InteropServices
         public const string IidIRemUnknown = "00000131-0000-0000-C000-000000000046";
         const int Refs = 5;
         readonly ComOxid _where;
-        readonly long _oid;
+        readonly ulong _oid;
         readonly Dictionary<string, byte[]> _ipids = new Dictionary<string, byte[]>();
         readonly Dictionary<string, int> _held = new Dictionary<string, int>();
         readonly object _lock = new object();
         bool _released;
 
-        public RemoteObject(ComOxid where, long oid, string iid, byte[] ipid, int publicRefs)
+        public RemoteObject(ComOxid where, ulong oid, string iid, byte[] ipid, int publicRefs)
         {
             _where = where;
             _oid = oid;
@@ -449,7 +452,7 @@ namespace System.Runtime.InteropServices
         }
 
         public ComOxid Where { get { return _where; } }
-        public long Oid { get { return _oid; } }
+        public ulong Oid { get { return _oid; } }
 
         static byte[] Cid() { return Guid.NewGuid().ToByteArray(); }
 
@@ -936,7 +939,7 @@ namespace System.Runtime.InteropServices
         const int RpcBadStub = 0x6F7, OperationRange = 0x1C010002, UnknownInterface = 0x1C010003, Disconnected = unchecked((int)0x80010108);
         static readonly object _lock = new object();
         static bool _started;
-        static long _oxid, _nextOid;
+        static ulong _oxid, _nextOid;
         static int _nextIpid;
         static string _endpoint = "";
         static byte[] _remUnknown = new byte[16];
@@ -953,7 +956,7 @@ namespace System.Runtime.InteropServices
         sealed class Exported
         {
             public object Target = null!;
-            public long Oid;
+            public ulong Oid;
             public readonly Dictionary<string, ExportEntry> ByIid = new Dictionary<string, ExportEntry>();
         }
 
@@ -968,9 +971,9 @@ namespace System.Runtime.InteropServices
         }
 
         public static string Endpoint { get { Start(); return _endpoint; } }
-        public static long Oxid { get { Start(); return _oxid; } }
+        public static ulong Oxid { get { Start(); return _oxid; } }
 
-        public static bool IsOwn(long oxid) { return _started && oxid == _oxid; }
+        public static bool IsOwn(ulong oxid) { return _started && oxid == _oxid; }
 
         static string Key(byte[] ipid)
         {
@@ -998,7 +1001,7 @@ namespace System.Runtime.InteropServices
             lock (_lock)
             {
                 if (_started) return;
-                long key = ComBroker.Key;
+                uint key = ComBroker.Key;
                 int pid = Os.Getpid();
                 // NO DOT IN IT: "ncalrpc:[CORSAC.124]" was refused by
                 // Windows' RPC runtime as an invalid string binding
@@ -1034,12 +1037,12 @@ namespace System.Runtime.InteropServices
                 List<byte> dsa = new List<byte> { (byte)security, (byte)(security >> 8) };
                 foreach (int w in words) { dsa.Add((byte)w); dsa.Add((byte)(w >> 8)); }
                 WireWriter req = new WireWriter();
-                req.Int(key);
-                req.Int(0);                                         // free-threaded
+                req.Word(key);
+                req.Word(0);                                        // free-threaded
                 req.Bytes(info);
                 req.Bytes(dsa.ToArray());
                 req.Bytes(new byte[0]);
-                req.Int(4096);
+                req.Word(4096);                                     // OIDs reserved
                 WireReader r = ComBroker.Ask(ServiceRequest.ComOxidRegister, req);
                 _oxid = r.Quad();
                 _nextOid = r.Quad();
@@ -1563,28 +1566,28 @@ namespace System.Runtime.InteropServices
 
         /// A class's object registered with the broker (CoRegisterClassObject):
         /// its IClassFactory's IPID, REGCLS_MULTIPLEUSE. The broker's key.
-        public static long RegisterClass(string clsid, Func<object> create)
+        public static uint RegisterClass(string clsid, Func<object> create)
         {
             Start();
             ComClassObject factory = new ComClassObject(create);
             ExportEntry e = ExportOf(factory, IidIClassFactory, 1);
             WireWriter w = new WireWriter();
-            w.Int(ComBroker.Key);
+            w.Word(ComBroker.Key);
             w.Int(1);
             w.Text(ComMarshal.Normal(clsid));
             w.Quad(_oxid);
             w.Bytes(e.Ipid);
-            w.Int(1);
+            w.Word(1);                                              // REGCLS_MULTIPLEUSE
             WireReader r = ComBroker.Ask(ServiceRequest.ComClassRegister, w);
             r.Int();
-            return r.Int();
+            return r.Word();
         }
 
-        public static void RevokeClass(long key)
+        public static void RevokeClass(uint key)
         {
             WireWriter w = new WireWriter();
             w.Int(1);
-            w.Int(key);
+            w.Word(key);
             ComBroker.Ask(ServiceRequest.ComClassRevoke, w);
         }
     }
@@ -1606,9 +1609,9 @@ namespace System.Runtime.InteropServices
     /// </summary>
     public static class ComServer
     {
-        public static long RegisterClassObject(Guid clsid, Func<object> create) { return ComExporter.RegisterClass(clsid.ToString(), create); }
+        public static uint RegisterClassObject(Guid clsid, Func<object> create) { return ComExporter.RegisterClass(clsid.ToString(), create); }
 
-        public static void RevokeClassObject(long cookie) { ComExporter.RevokeClass(cookie); }
+        public static void RevokeClassObject(uint cookie) { ComExporter.RevokeClass(cookie); }
 
         public static bool IsEmbedding(string[] args)
         {
@@ -1619,30 +1622,31 @@ namespace System.Runtime.InteropServices
         /// RegisterActiveObject: the object entered in the running object
         /// table under its class's item moniker ("!{CLSID}"), as oleaut32
         /// enters it. The entry's key, for RevokeActiveObject.
-        public static long RegisterActiveObject(object o, Guid clsid)
+        public static ulong RegisterActiveObject(object o, Guid clsid)
         {
             byte[] objref = ComExporter.Export(o, ComMarshal.IidIUnknown);
             WireWriter w = new WireWriter();
-            w.Int(ComBroker.Key);
+            w.Word(ComBroker.Key);
             w.Text("");
             w.Bytes(RunningObjects.ClassMoniker(clsid.ToString()));
             w.Bytes(objref);
             w.Bytes(new byte[0]);
-            w.Quad(DateTime.UtcNow.ToFileTimeUtc());
+            // A FILETIME, which is never negative: the count of ticks since 1601.
+            w.Quad((ulong)DateTime.UtcNow.ToFileTimeUtc());
             w.Int(Os.Getpid());
             w.Text(Environment.ProcessPath ?? "");
             WireReader r = ComBroker.Ask(ServiceRequest.RotRegister, w);
-            long entry = r.Quad();
-            long scm = r.Int();
-            return entry | (scm << 48);
+            ulong entry = r.Quad();
+            uint scm = r.Word();
+            return entry | (ulong)scm << 48;
         }
 
-        public static void RevokeActiveObject(long cookie)
+        public static void RevokeActiveObject(ulong cookie)
         {
             WireWriter w = new WireWriter();
             w.Quad(cookie & 0xFFFFFFFFFFFF);
-            w.Int(cookie >> 48);
-            w.Int(1);
+            w.Word((uint)(cookie >> 48));
+            w.Word(1);                                              // the server's own revocation
             ComBroker.Ask(ServiceRequest.RotRevoke, w);
         }
     }
@@ -1679,13 +1683,13 @@ namespace System.Runtime.InteropServices
             }
             WireWriter w = new WireWriter();
             w.Text("");
-            w.Int(0);
+            w.Int(0);                                               // any process's
             w.Bytes(ClassMoniker(clsid));
             int hr;
             WireReader? r = ComBroker.Try(ServiceRequest.RotGetObject, w, out hr);
             if (r == null || hr != 0) throw new COMException("Operation unavailable (MK_E_UNAVAILABLE).", hr != 0 ? hr : unchecked((int)0x800401E3));
             r.Quad();
-            r.Int();
+            r.Word();
             byte[] objref = r.Bytes();
             object? o = ComObjRefs.Need().Unmarshal(objref);
             if (o == null) throw new COMException("Operation unavailable (MK_E_UNAVAILABLE).", unchecked((int)0x800401E3));
@@ -1707,12 +1711,12 @@ namespace System.Runtime.InteropServices
             if (ComObjRefs.Current == null) ComObjRefs.Current = new ComObjRefCodec();
             WireWriter w = new WireWriter();
             w.Text(ComMarshal.Normal(clsid));
-            w.Int(ComBroker.ClassContextLocalServer);
+            w.Word(ComBroker.ClassContextLocalServer);
             w.Texts(new List<string>());
             w.Text("");
             WireReader r = ComBroker.Ask(ServiceRequest.ComActivate, w);
             bool windows = r.Int() != 0;
-            long oxid = r.Quad();
+            ulong oxid = r.Quad();
             byte[] ipid = r.Bytes();
             byte[] info = r.Bytes();
             byte[] bindings = r.Bytes();

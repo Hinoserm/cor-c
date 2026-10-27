@@ -1254,7 +1254,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
 
     /// The window a drop target; `cookie` the COM broker's for its endpoint
     /// (the COM runtime's IInterfaceFromWindowProp), 0 none.
-    public void RegisterDropTarget(int window, long cookie)
+    public void RegisterDropTarget(int window, uint cookie)
     {
         byte[] args = new byte[8];
         PutWord(args, 0, window); PutWord(args, 4, cookie);
@@ -1304,10 +1304,10 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         return target < 0 ? 0 : (int)target;
     }
 
-    public long DragBridgeTarget(int window)
+    public uint DragBridgeTarget(int window)
     {
         long cookie = Ioctl(SeatIoctl.DragBridgeTarget, window);
-        return cookie < 0 ? 0 : cookie;
+        return cookie < 0 ? 0 : (uint)cookie;
     }
 
     /// What the Windows program's window would do with the drag (its answer
@@ -2105,11 +2105,11 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     /// A page for `job`, `width` by `height` pixels at `dpi` (the paper's
     /// size the job says, either way round): its window, or an
     /// IOException.
-    public int CreatePage(long job, int width, int height, int dpi)
+    public int CreatePage(uint job, int width, int height, int dpi)
     {
         Flush();
         byte[] args = new byte[16];
-        Put(args, 0, (int)job); Put(args, 4, width); Put(args, 8, height); Put(args, 12, dpi);
+        PutWord(args, 0, job); Put(args, 4, width); Put(args, 8, height); Put(args, 12, dpi);
         long handle = Ioctl(SeatIoctl.PageCreate, Sys.ArrayData(args));
         if (handle <= 0) throw new IOException("the seat made no page (" + (-handle) + ")");
         return (int)handle;

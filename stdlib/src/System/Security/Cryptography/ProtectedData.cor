@@ -22,11 +22,11 @@ public static class ProtectedData
     {
         if (userData == null) throw new ArgumentNullException("userData");
         System.ServiceProcess.WireWriter w = new System.ServiceProcess.WireWriter();
-        w.Int((long)scope);
+        w.Word(scope == DataProtectionScope.LocalMachine ? System.ServiceProcess.WireScope.LocalMachine : System.ServiceProcess.WireScope.CurrentUser);
         w.Bytes(optionalEntropy ?? new byte[0]);
         w.Bytes(userData);
         w.Text("");
-        long error;
+        uint error;
         System.ServiceProcess.WireReader? r = System.ServiceProcess.WireClient.Ask(System.ServiceProcess.ServiceRequest.Protect, w, out error);
         if (r == null || error != 0) throw new CryptographicException("The data could not be protected (" + error + ").");
         return r.Bytes();
@@ -38,7 +38,7 @@ public static class ProtectedData
         System.ServiceProcess.WireWriter w = new System.ServiceProcess.WireWriter();
         w.Bytes(optionalEntropy ?? new byte[0]);
         w.Bytes(encryptedData);
-        long error;
+        uint error;
         System.ServiceProcess.WireReader? r = System.ServiceProcess.WireClient.Ask(System.ServiceProcess.ServiceRequest.Unprotect, w, out error);
         if (r == null || error != 0) throw new CryptographicException("The data is invalid.");
         return r.Bytes();

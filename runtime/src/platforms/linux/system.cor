@@ -2074,7 +2074,7 @@ static partial class Os
         {
             return 0;
         }
-        return (Raw.U16(w, 2) << 16) | Raw.U16(w, 0);
+        return ((long)Raw.U16(w, 2) << 16) | Raw.U16(w, 0);
     }
 
     // ---- memory -----------------------------------------------------------

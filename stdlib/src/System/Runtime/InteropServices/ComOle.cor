@@ -938,7 +938,7 @@ namespace System.Runtime.InteropServices
         /// it and registered for `window`, as AssignEndpointProperty does: the
         /// broker's cookie, for the window's "OleEndPointID", and the IPID to
         /// give Revoke.
-        public static long Register(int window, object endpoint, out byte[] ipid)
+        public static uint Register(int window, object endpoint, out byte[] ipid)
         {
             byte[] objref = ComExporter.ExportTable(endpoint, OleCodes.IidIInterfaceFromWindowProp);
             byte[] std = new byte[40];
@@ -946,28 +946,28 @@ namespace System.Runtime.InteropServices
             ipid = new byte[16];
             Array.Copy(objref, 48, ipid, 0, 16);
             WireWriter w = new WireWriter();
-            w.Int(window);
+            w.Word(unchecked((uint)window));
             w.Bytes(std);
             w.Bytes(ComExporter.OxidInfo);
             w.Bytes(ComExporter.Bindings);
             try
             {
                 WireReader r = ComBroker.Ask(ServiceRequest.WindowPropRegister, w);
-                return r.Int();
+                return r.Word();
             }
             catch (Exception) { ComExporter.Unexport(ipid); throw; }
         }
 
         /// The cookie taken back from the broker (asked with revoke, as
         /// UnAssignEndpointProperty does, 0x77A62F79) and the export let go.
-        public static void Revoke(int window, long cookie, byte[] ipid)
+        public static void Revoke(int window, uint cookie, byte[] ipid)
         {
             try
             {
                 WireWriter w = new WireWriter();
-                w.Int(window);
-                w.Int(cookie);
-                w.Int(1);
+                w.Word(unchecked((uint)window));
+                w.Word(cookie);
+                w.Word(1);                                          // revoke
                 ComBroker.Ask(ServiceRequest.WindowPropGet, w);
             }
             catch (Exception) { }
@@ -978,20 +978,20 @@ namespace System.Runtime.InteropServices
         /// (GetWindowPropInterface, as UnmarshalFromEndpointProperty asks):
         /// the object of its process -- this one's own, or one elsewhere --
         /// as an IInterfaceFromWindowProp.
-        public static IInterfaceFromWindowProp Endpoint(int window, long cookie)
+        public static IInterfaceFromWindowProp Endpoint(int window, uint cookie)
         {
             WireWriter w = new WireWriter();
-            w.Int(window);
-            w.Int(cookie);
-            w.Int(0);
+            w.Word(unchecked((uint)window));
+            w.Word(cookie);
+            w.Word(0);
             WireReader r = ComBroker.Ask(ServiceRequest.WindowPropGet, w);
             byte[] std = r.Bytes();
             byte[] info = r.Bytes();
             byte[] bindings = r.Bytes();
             if (std.Length < 40) throw new COMException("the broker's STDOBJREF is short", unchecked((int)0x800706F7));
             int refs = ComTransport.Get(std, 4);
-            long oxid = (ComTransport.Get(std, 8) & 0xFFFFFFFFL) | ((long)ComTransport.Get(std, 12) << 32);
-            long oid = (ComTransport.Get(std, 16) & 0xFFFFFFFFL) | ((long)ComTransport.Get(std, 20) << 32);
+            ulong oxid = ComTransport.GetWord(std, 8) | (ulong)ComTransport.GetWord(std, 12) << 32;
+            ulong oid = ComTransport.GetWord(std, 16) | (ulong)ComTransport.GetWord(std, 20) << 32;
             byte[] ipid = new byte[16];
             Array.Copy(std, 24, ipid, 0, 16);
             if (ComExporter.IsOwn(oxid))
