@@ -9,11 +9,11 @@
 // bits 1 then 3
 // long 5000000000 then 5000000001
 // ref missed a ref a then b
-// expect-no-asm-x86: Bump: xadd cmpxchg
-// expect-no-asm-x86: Swap: xadd cmpxchg
+// expect-no-asm-x86: Bump: xadd =cmpxchg
+// expect-no-asm-x86: Swap: xadd =cmpxchg
 // expect-asm-x86: Exchange: xchg
 // expect-asm-x86: SwapName: __corsac_refcas
-// expect-no-asm-x86: Main: xadd cmpxchg
+// expect-no-asm-x86: Main: xadd =cmpxchg
 //
 // The 386 has XCHG and no other instruction that reads and writes memory as
 // one: XADD and CMPXCHG are the 486's, so --cpu=386 was refused outright.
@@ -25,7 +25,10 @@
 // interrupt handler's atomic included -- and IF put back as it was; run as
 // a process, as here, where it may not turn them off (its ring above
 // EFLAGS.IOPL), under one lock taken by XCHG. An exchange stays XCHG.
-// Interlocked's long forms, under their own lock, are made of these too.
+// Interlocked's long forms are LOCK CMPXCHG8B where CPUID says the
+// processor has it (a Pentium's, never a 386's: Processor.Cas64) and under
+// their own lock where not -- so the checks below name CMPXCHG as a word of
+// its own (=cmpxchg), which CMPXCHG8B is not.
 // A reference's compare-exchange, made as a store sequence
 // (--store-sequences), is the stub's 386 form: the same choice, made in
 // the stub, under the same lock (Runtime.Atomics386).

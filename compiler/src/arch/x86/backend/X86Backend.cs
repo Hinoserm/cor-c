@@ -157,8 +157,9 @@ public sealed class X86Backend : IBackend
 
     /// <summary>
     /// On by default freestanding (Driver: --x87-outside-blocks takes it
-    /// away, --x87-in-blocks-only says it again): freestanding code of the program's own -- not
-    /// the system library's (Function.SystemCode), whose float routines run
+    /// away, --x87-in-blocks-only says it again): freestanding code of the
+    /// program's own -- not the system library's (Function.SystemCode),
+    /// whose float routines run
     /// inside the blocks that call them, nor the compiler's own helpers --
     /// may use the x87 only inside a packed block (using
     /// (Packed.X87()) { ... }), which saves the interrupted thread's state
@@ -170,13 +171,24 @@ public sealed class X86Backend : IBackend
     /// </summary>
     public bool X87InBlocksOnly { get; set; }
 
-    /// <summary>The facts Selector.X87Fact makes, from every worker at once: each function's, and every symbol whose address the unit's code takes.</summary>
+    /// <summary>
+    /// Whether the object carries those facts (Lto.X87Notes): every
+    /// freestanding unit's, but not a unit the link makes again from its IR
+    /// (UnitBackend), which judged the units' own facts before.
+    /// </summary>
+    public bool KeepsX87Facts { get; set; } = true;
+
+    /// <summary>
+    /// The facts Selector.X87Fact makes, from every worker at once: each
+    /// function's, and every symbol whose address the unit's code takes.
+    /// `judged`: whether the unit keeps the rule (X87InBlocksOnly); where it
+    /// does not, no float code of its own is said, and its calls are.
+    /// </summary>
     internal sealed class X87Facts(bool judged)
     {
         private readonly List<Corsac.Lang.Lto.X87Notes.Fact> _facts = new();
         private readonly HashSet<string> _taken = new(StringComparer.Ordinal);
 
-        /// <summary>Whether the unit keeps the rule (X87InBlocksOnly): where it does not, no float code of its own is said, its calls are.</summary>
         public void Add(Function f, bool floats)
         {
             floats &= judged;
@@ -224,7 +236,7 @@ public sealed class X86Backend : IBackend
         // (--x87-outside-blocks): a unit that lets its own float code run
         // anywhere still says whom it calls, and where, so that what it calls
         // is judged and an image of it can be linked against.
-        _x87 = !AutomaticPacked ? new X87Facts(X87InBlocksOnly) : null;
+        _x87 = KeepsX87Facts && !AutomaticPacked ? new X87Facts(X87InBlocksOnly) : null;
         OptimizationSummary summary = new();
         // THE SECTION AS ALIGNED AS ITS FUNCTIONS: a duplicate the link cuts
         // out of it must be a whole number of the section's alignment.

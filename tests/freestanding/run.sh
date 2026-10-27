@@ -50,7 +50,9 @@
 #                                be given more than once). In either, a word
 #                                [SYM] is SYM's address as objdump writes an
 #                                operand (0x8049000): a read of a static
-#                                named, which objdump prints only as a number
+#                                named, which objdump prints only as a number;
+#                                and =WORD is WORD as a word of its own
+#                                (=cmpxchg: CMPXCHG, not CMPXCHG8B)
 #   // expect-asm-count-<target>: F: word N
 #                                the same function's disassembly has at
 #                                least N lines containing word
@@ -111,13 +113,23 @@ word_bytes() {
     printf '%02x %02x %02x %02x' $(( v & 255 )) $(( (v >> 8) & 255 )) $(( (v >> 16) & 255 )) $(( (v >> 24) & 255 ))
 }
 
+# Whether a disassembly holds an expect-asm word: anywhere in a line, or,
+# written =WORD, as a word of its own.
+asm_has() {
+    local exe="$1" word="$2" body="$3"
+    if [ "${word:0:1}" = "=" ]; then grep -qw -- "$(asm_word "$exe" "$word")" <<< "$body"
+    else grep -qF -- "$(asm_word "$exe" "$word")" <<< "$body"; fi
+}
+
 # An expect-asm word as the disassembly has it: [SYM] made SYM's address.
+# =WORD is the word whole (asm_has): =cmpxchg is CMPXCHG and not CMPXCHG8B.
 asm_word() {
     local exe="$1" word="$2" address
     case "$word" in
         \[*\])
             read -r address _ < <(symbol "$exe" "${word:1:${#word}-2}")
             if [ -n "$address" ]; then printf '0x%x' "$address"; else printf 'no-symbol-%s' "$word"; fi ;;
+        =*) printf '%s' "${word:1}" ;;
         *) printf '%s' "$word" ;;
     esac
 }
@@ -247,7 +259,7 @@ for source in "$here"/[0-9]*.cor; do
             else
                 set -f
                 for word in $words; do
-                    if ! grep -qF -- "$(asm_word "$exe" "$word")" <<< "$body"; then wrong="$wrong $word"; fi
+                    if ! asm_has "$exe" "$word" "$body"; then wrong="$wrong $word"; fi
                 done
                 set +f
                 [ -n "$wrong" ] && wrong="$function lacks:$wrong"
@@ -260,7 +272,7 @@ for source in "$here"/[0-9]*.cor; do
             body="$(body_of "$function")"
             set -f
             for word in $words; do
-                if grep -qF -- "$(asm_word "$exe" "$word")" <<< "$body"; then wrong="$wrong $word"; fi
+                if asm_has "$exe" "$word" "$body"; then wrong="$wrong $word"; fi
             done
             set +f
             [ -n "$wrong" ] && wrong="$function has:$wrong"

@@ -174,7 +174,8 @@ public static class X87Notes
             return new List<Fact>();
         }
         using FileStream stream = File.OpenRead(beside);
-        return Decode(stream);
+        try { return Decode(stream); }
+        catch (ElfFormatException e) { throw new LinkException(new List<string> { $"{beside}: {e.Message}: link {Path.GetFileName(path)} again with this compiler" }); }
     }
 
     /// <summary>Whether any of the objects carries facts: a link that judges float code, and so needs the facts of the images it links against.</summary>
@@ -240,7 +241,10 @@ public static class X87Notes
                     unknown.Add(r.Symbol);
         // AND WHAT THE LINK ITSELF CALLS: each unit's [ModuleInitializer]
         // methods (ModuleInfo.InitializerSection), from the stub it writes
-        // after this -- at a module's load, before a program's Main.
+        // after this -- at a module's load, before a program's Main. Seeded
+        // where no stub calls them too (a freestanding _start that names
+        // none): a refusal there is of code that never runs, which a block
+        // costs nothing to keep.
         HashSet<string> started = new(entries ?? Array.Empty<string>(), StringComparer.Ordinal);
         foreach (ObjectFile obj in all)
             foreach (Section section in obj.Sections)

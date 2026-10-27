@@ -433,7 +433,7 @@ public sealed class UnitBackend : IUnitBackend
                 OptimizeSize = read.Settings?.OptimizeSize ?? false,
                 // Not again: the link judged the units' own facts
                 // (Lto.X87Notes) before it regenerated any of them.
-                X87InBlocksOnly = false,
+                X87InBlocksOnly = false, KeepsX87Facts = false,
                 StackMaps = unit.StackMaps, EmitLinkSummary = true, Workers = workers,
                 FunctionLoader = Load, FunctionLoadBytes = Cost, FunctionMemoryBudget = budget,
                 SafepointPolls = module.SafepointPolls && module.LinkHeap != false,

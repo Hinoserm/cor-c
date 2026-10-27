@@ -393,11 +393,11 @@ public static class Driver
               --x87-outside-blocks
                                  freestanding: this unit's own float code
                                  allowed outside packed blocks (wins over
-                                 the above); what it calls is still judged,
-                                 and its calls outside a block are outside
-                                 for a function whose float code relies on
-                                 its callers' blocks; refused for hosted
-                                 code
+                                 the above). A call it makes outside a block
+                                 is judged as any caller's: a function whose
+                                 float code relies on its callers' blocks is
+                                 refused if reached that way. Refused for
+                                 hosted code
               --tag <text>       name and version the image carries in a
                                  .corsac.tag note, for the bootloader's menu
               --no-collector     link no collector: what cannot be proved freed or
@@ -1704,7 +1704,7 @@ public static class Driver
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
             Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
-        Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
+            Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
             // --map FILE: every symbol of the image, largest first, as `corc link` writes it.
             Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000, mapPath: Value(args, "--map"));
             File.WriteAllBytes(output, image.Bytes);
@@ -1731,7 +1731,7 @@ public static class Driver
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
             Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
-        Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
+            Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
             Linker.LinkPeTo(output, link, new Linker.PeOptions
             {
                 Dll = dll,
