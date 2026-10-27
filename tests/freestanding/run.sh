@@ -65,12 +65,16 @@
 #
 # The compiler and targets: --corc=PATH and --targets="x86 x86-64" (the
 # default), or CORC and TARGETS in the environment where no flag is given.
+# --jobs=N tests at once (default 8, the cores a run may take; JOBS in the
+# environment where no flag is given): each in a copy of this script of its
+# own, its lines printed in the tests' order when all are done.
 
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 corc="${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}"
 targets="${TARGETS:-x86 x86-64}"
+jobs="${JOBS:-8}"
 work=""
 made=""
 while [ $# -gt 0 ]; do
@@ -78,6 +82,7 @@ while [ $# -gt 0 ]; do
         --work=*) work="${1#--work=}"; shift; mkdir -p "$work" || exit 2 ;;
         --corc=*) corc="${1#--corc=}"; shift ;;
         --targets=*) targets="${1#--targets=}"; shift ;;
+        --jobs=*) jobs="${1#--jobs=}"; shift ;;
         *) break ;;
     esac
 done
@@ -86,6 +91,36 @@ filter="${1:-}"
 passed=0
 failed=0
 failed_names=""
+
+# MANY AT ONCE: each test by a copy of this script (FS_ONE names it), its
+# output kept apart and printed in order, its counts added up here; the
+# listings after are this copy's own.
+parallel=""
+if [ -z "${FS_ONE:-}" ] && [ "$jobs" -gt 1 ]; then
+    parts="$work/parts.$$"
+    mkdir -p "$parts"
+    names=()
+    for source in "$here"/[0-9]*.cor; do
+        name="$(basename "$source" .cor)"
+        if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then continue; fi
+        names+=("$name")
+    done
+    if [ "${#names[@]}" -gt 0 ]; then
+        # Each into a file of its own, so that no two tests' lines interleave.
+        printf '%s\n' "${names[@]}" | xargs -P "$jobs" -I{} sh -c \
+            'FS_ONE="$1" bash "$2" --work="$3" --corc="$4" --targets="$5" --jobs=1 "$1" > "$6/$1.txt" 2>&1 < /dev/null' \
+            sh {} "${BASH_SOURCE[0]}" "$work" "$corc" "$targets" "$parts"
+    fi
+    for name in "${names[@]}"; do
+        out="$parts/$name.txt"
+        [ -f "$out" ] || { failed=$((failed + 1)); failed_names="$failed_names $name"; echo "FAIL $name (its run left no output)"; continue; }
+        sed -n '/^[0-9]* passed, [0-9]* failed$/q; /^$/d; p' "$out"
+        read -r p _ f _ < <(grep -m1 -E '^[0-9]+ passed, [0-9]+ failed$' "$out")
+        passed=$((passed + ${p:-0})); failed=$((failed + ${f:-0}))
+        [ "${f:-0}" -gt 0 ] && failed_names="$failed_names $(sed -n 's/^failed://p' "$out")"
+    done
+    parallel=1
+fi
 
 header() { sed -n "s|^// $2: *||p" "$1" | head -n 1; }
 
@@ -167,7 +202,9 @@ check_bytes() {
 }
 
 for source in "$here"/[0-9]*.cor; do
+    [ -z "$parallel" ] || break
     name="$(basename "$source" .cor)"
+    if [ -n "${FS_ONE:-}" ] && [ "$name" != "$FS_ONE" ]; then continue; fi
     if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then continue; fi
     common_flags="$(header "$source" flags)"
     sources=""
@@ -350,6 +387,7 @@ done
 # .expected file says.
 for listing in "$here"/*.listing.asm; do
     [ -e "$listing" ] || continue
+    [ -z "${FS_ONE:-}" ] || break
     name="$(basename "$listing" .asm)"
     if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then continue; fi
     if ! "$corc" asm --target x86-64 "$listing" -o "$work/$name.bin" > "$work/$name.log" 2>&1; then
