@@ -67,6 +67,12 @@ public sealed class X64Backend : IBackend
     /// backend, which holds only headers until a batch is compiled; with
     /// its working cost, batches are sized to FunctionMemoryBudget.
     /// </summary>
+    /// <summary>
+    /// Done to each function just before it is selected, on whichever worker
+    /// selects it (the allocation put in place, AllocatorFastPaths.AtCodegen),
+    /// as the i386 backend does.
+    /// </summary>
+    public Action<Function>? Prepare { get; set; }
     public Func<int, Function>? FunctionLoader { get; set; }
     public Func<int, long>? FunctionLoadBytes { get; set; }
     public long FunctionMemoryBudget { get; set; } = 64L * 1024 * 1024;
@@ -373,6 +379,7 @@ public sealed class X64Backend : IBackend
     private MFunction? Compile(Function f, List<string> errors, bool entry = false, Func<string, bool>? isExternal = null)
     {
         int before = errors.Count;
+        Prepare?.Invoke(f);
         if (SafepointPolls) Corsac.Lang.Opt.BackEdgePolls.Run(f);
         // The frees before a trap, one copy for every trap that has them (SharedTrapFrees).
         Corsac.Lang.Opt.SharedTrapFrees.Run(f);

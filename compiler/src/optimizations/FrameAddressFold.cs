@@ -6,7 +6,15 @@ using Block = Corsac.Lang.Ir.Block;
 
 /// <summary>Expose in-bounds compiler-owned frame accesses hidden behind
 /// pointer copies and constant offsets. Memory operations remain in place;
-/// the original address computation may die only through ordinary DCE.</summary>
+/// the original address computation may die only through ordinary DCE.
+///
+/// IN LONG MODE TOO. Skipped there, every owned slot's null store went
+/// through a copy of its address, DeadFrees could not follow the slot, and
+/// each free of it stayed and was guarded: a dynamic dispatcher kept 105,000
+/// frees, two blocks each, and 1320 ran out of memory compiling. A width
+/// change is an address only where a word is 32 bits: in long mode a
+/// truncated address is not the address, and nothing zero-extended to a
+/// word was one.</summary>
 public sealed class FrameAddressFold : IPass
 {
     public string Name => "frame-address-fold";
@@ -14,7 +22,8 @@ public sealed class FrameAddressFold : IPass
 
     public void Run(Function function)
     {
-        if (function.Async is not null || IrTypes.Word != IrType.I32) return;
+        if (function.Async is not null) return;
+        bool narrowWord = IrTypes.Word == IrType.I32;
         // NOTHING TO FOLD, NO GRAPH: a function with no access through a
         // register gets no Cfg and no Defs, which were built for every
         // function and dropped. The blocks are numbered as the Cfg would
@@ -36,7 +45,7 @@ public sealed class FrameAddressFold : IPass
                 || (site.Block == function.Entry && cfg.Preds(function.Entry).Count == 0);
             if (!stable) return null;
             Instr definition = site.Block.Instrs[site.Index];
-            if (definition.Op is Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64)
+            if (definition.Op is Opcode.Copy || narrowWord && definition.Op is Opcode.ZExt32 or Opcode.Trunc64)
                 return Resolve(definition.Operands[0], site.Block, site.Index, depth + 1);
             if (definition.Op is Opcode.Add or Opcode.Sub && definition.Operands[1] is ImmOperand displacement
                 && Resolve(definition.Operands[0], site.Block, site.Index, depth + 1) is { } address)

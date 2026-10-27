@@ -1212,9 +1212,11 @@ public static class Driver
                     Console.Error.WriteLine("phase snapshot: " + linkRecords.Count + " records, " + (linkRecords.Sum(r => (long)r.BodyLength) >> 10)
                         + " KiB of bodies held in " + (linkRecords.Sum(r => (long)r.Payload.Length) >> 10) + " KiB, region hints " + ((regionHintBytes?.Length ?? 0) >> 10) + " KiB");
             };
-            // The x86 backend puts each function's allocations in place as it
+            // The backend puts each function's allocations in place as it
             // selects it (AllocatorFastPaths.AtCodegen): not the late passes.
-            module.AllocatorsAtCodegen = Target.Current.Name == "x86";
+            // In long mode they grew the whole module's IR at once, and 1320's
+            // optimise ended holding ten times what i386's did.
+            module.AllocatorsAtCodegen = Target.Current.Name is "x86" or "x86-64";
             if (beforeLate is null && module.Preinit is { Types.Count: > 0 })
                 beforeLate = m => preinitRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m, false, null);
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: regions);
@@ -1377,7 +1379,12 @@ public static class Driver
 
         // THE ALLOCATION PUT IN PLACE AS EACH FUNCTION IS SELECTED, where the
         // late passes left it to the backend (Module.AllocatorsAtCodegen).
-        if (backend == x86Backend && module.AllocatorsAtCodegen) x86Backend.Prepare = Corsac.Lang.Opt.AllocatorFastPaths.AtCodegen(module);
+        if (module.AllocatorsAtCodegen)
+        {
+            Action<Function>? prepare = Corsac.Lang.Opt.AllocatorFastPaths.AtCodegen(module);
+            if (backend == x86Backend) x86Backend.Prepare = prepare;
+            else x64Backend.Prepare = prepare;
+        }
 
         if (args.Contains("--asm"))
         {
