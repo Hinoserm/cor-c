@@ -398,7 +398,14 @@ public sealed class LifetimeHints
         void Fields(LifetimeFields? fields)
         {
             if (fields is null) { writer.Write(false); return; }
-            if (!fields.Bounded) throw new ElfFormatException("Lifetime field summary exceeds its bound");
+            // PAST THE BOUND THE OBJECT IS OPAQUE, as LifetimeFields.Limit
+            // says: written so -- no field of it ever freed -- not refused.
+            // Only some producers collapsed a summary that grew past it
+            // (EscapeFields' parameter hints); one that grew by a callee's
+            // hint or a fresh object's stopped the build here instead, and
+            // a kernel source change that added a few fields to an object
+            // could no longer be built.
+            if (!fields.Bounded) { writer.Write(true); writer.Write(true); writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0); return; }
             writer.Write(true); writer.Write(fields.Opaque);
             writer.Write(fields.Dirty.Count);
             foreach (long offset in fields.Dirty) writer.Write(offset);
