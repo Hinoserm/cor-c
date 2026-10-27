@@ -593,6 +593,15 @@ class FileStream : Stream
             {
                 throw Interop.GetExceptionForIoErrnoOnHandle(n, _name);
             }
+            // NOTHING WRITTEN of bytes asked for: no error to retry on, and
+            // asked again it answers the same -- a loop that never ends.
+            // Linux never answers so for a file, but a device or a kernel
+            // may; refused, with what was written counted.
+            if (n == 0)
+            {
+                if (_at >= 0) _at = _at + done;
+                throw new IOException("The write to '" + _name + "' wrote nothing.");
+            }
             done = done + n;
         }
         if (_at >= 0) _at = _at + count;
