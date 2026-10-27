@@ -44,7 +44,12 @@ class PosixSignalRegistration : IDisposable
 {
     const int MaxSignal = 32;
     static PosixSignalHandler?[]? _handlers;
-    static long _pending;                       // a bit per signal that arrived
+    // A BIT PER SIGNAL THAT ARRIVED, set and taken atomically: a handler
+    // runs between any two instructions -- of Deliver too, and on another
+    // thread -- and a read followed by a clear lost the signal that landed
+    // between them (an alarm, a child's end: a wait that then slept on).
+    // Signals 1 to 31: one 32-bit word, which a 486 swaps whole.
+    static int _pending;
 
     PosixSignal _signal;
 
@@ -89,7 +94,7 @@ class PosixSignalRegistration : IDisposable
     {
         if (signal > 0 && signal < MaxSignal)
         {
-            _pending = _pending | (1L << signal);
+            System.Threading.Interlocked.Or(ref _pending, 1 << signal);
         }
     }
 
@@ -104,15 +109,14 @@ class PosixSignalRegistration : IDisposable
     /// ends, as .NET's does.
     public static void Deliver()
     {
-        long got = _pending;
-        if (got == 0)
+        if (_pending == 0)
         {
             return;
         }
-        _pending = 0;
+        int got = System.Threading.Interlocked.Exchange(ref _pending, 0);
         for (int n = 1; n < MaxSignal; n++)
         {
-            if ((got & (1L << n)) == 0)
+            if ((got & (1 << n)) == 0)
             {
                 continue;
             }

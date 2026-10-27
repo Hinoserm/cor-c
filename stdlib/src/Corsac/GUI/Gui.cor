@@ -282,7 +282,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     /// loaded if it is not -- the seat up.
     const int GuiUp = 0x40000019;
     const int CallRead = 16, CallWrite = 17, CallIoctl = 18;
-    const int NoSys = 38, Io = 5, Intr = 4;
+    const int NoSys = 38, Io = 5;
 
     long _start;                    // the GUI kernel's start number this program last saw
     long _defined;                  // the start its shared definitions were last made in
@@ -2794,6 +2794,7 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
     // --- events ----------------------------------------------------------
 
     byte[] _event = new byte[16];
+    bool _endSaid;                  // Next's failure said once, not at every look after
 
     /// Blocks until the seat has a message. Everything queued is flushed
     /// first, because a program about to wait must not leave its own
@@ -2809,14 +2810,18 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
             // A SIGNAL IS NOT THE SEAT'S END: its handlers run (this is a
             // quiet moment) and the read is made again. Taken for the end,
             // it ended Application.Run, and the program with code 0.
-            if (n == -Intr) { PosixSignalRegistration.Deliver(); continue; }
+            if (n == -Err.Intr) { PosixSignalRegistration.Deliver(); continue; }
             // Anything else does end it, and says why: ended with nothing
             // said, the volume control a session starts was simply not there
             // (the K8, 10-27), and nothing told why.
             if (n <= 0)
             {
-                Console.Error.WriteLine(Environment.ProcessPath + ": the seat's events could not be read ("
-                    + (n == 0 ? "nothing answered" : Marshal.GetPInvokeErrorMessage(-n)) + "); its windows end");
+                if (!_endSaid)
+                {
+                    _endSaid = true;
+                    Console.Error.WriteLine(Environment.ProcessPath + ": the seat's events could not be read ("
+                        + (n == 0 ? "nothing answered" : Marshal.GetPInvokeErrorMessage(-n)) + "); its windows end");
+                }
                 return false;
             }
             got += n;
