@@ -1,0 +1,52 @@
+// test: created_files_take_the_umask
+// expect-exit: 0
+// expect-output:
+// umask 22: writealltext 644 create 644 filestream 644 openhandle 644 options 600 directory 755
+// umask 2: writealltext 664 create 664 filestream 664 openhandle 664 options 600 directory 775
+//
+// A file .NET creates is 0666 and a directory 0777, the umask taking its
+// bits off as open(2) and mkdir(2) apply it; UnixCreateMode is the mode
+// asked for instead of 0666. FileStream made every file 0644 whatever the
+// mask: under `umask 002`, 0644 where 0664 was due, and the CORSAC shell's
+// `> file` with it.
+
+using System;
+using System.IO;
+
+static class P
+{
+    static string Octal(UnixFileMode mode) => Convert.ToString((int)mode & 4095, 8);
+
+    static void Round(string dir, int mask)
+    {
+        UnixProcess.Umask(mask);
+        string a = Path.Combine(dir, "a" + mask), b = Path.Combine(dir, "b" + mask), c = Path.Combine(dir, "c" + mask),
+               d = Path.Combine(dir, "d" + mask), e = Path.Combine(dir, "e" + mask), f = Path.Combine(dir, "f" + mask);
+        File.WriteAllText(a, "x");
+        File.Create(b).Dispose();
+        new FileStream(c, FileMode.Create, FileAccess.Write).Dispose();
+        File.OpenHandle(d, FileMode.CreateNew, FileAccess.Write).Dispose();
+        new FileStream(e, new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite }).Dispose();
+        Directory.CreateDirectory(f);
+        Console.WriteLine("umask " + Convert.ToString(mask, 8) + ": writealltext " + Octal(File.GetUnixFileMode(a))
+            + " create " + Octal(File.GetUnixFileMode(b)) + " filestream " + Octal(File.GetUnixFileMode(c))
+            + " openhandle " + Octal(File.GetUnixFileMode(d)) + " options " + Octal(File.GetUnixFileMode(e))
+            + " directory " + Octal(File.GetUnixFileMode(f)));
+    }
+
+    static int Main()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "corc-2459-" + Environment.ProcessId);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            Round(dir, 0x12);
+            Round(dir, 0x02);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+        return 0;
+    }
+}

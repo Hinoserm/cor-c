@@ -57,11 +57,12 @@ static partial class Os
         return (int)Err.Result(Sys.Syscall(LinuxCall.Open, (SyscallWord)Sys.ArrayData(c), (SyscallWord)flags, (SyscallWord)mode));
     }
 
-    /// Two-argument open, with the 0644 (0x1A4) a Unix makes a file with when
-    /// nothing says otherwise -- user.cor's default, kept.
+    /// Two-argument open: a file it creates is 0666 (0x1B6) through the
+    /// umask, as creat(2)'s callers and .NET make one -- the mask, not this,
+    /// is what takes the group's and others' write away.
     public static int Open(string path, int flags)
     {
-        return Open(path, flags, 0x1A4);
+        return Open(path, flags, 0x1B6);
     }
 
     public static int Close(int fd)
@@ -331,10 +332,10 @@ static partial class Os
         return (int)Err.Result(Sys.Syscall(LinuxCall.Mkdir, (SyscallWord)Sys.ArrayData(c), (SyscallWord)mode, 0));
     }
 
-    /// 0755, which is what mkdir(1) makes a directory with.
+    /// 0777 through the umask, which is what mkdir(1) asks mkdir(2) for.
     public static int Mkdir(string path)
     {
-        return Mkdir(path, 0x1ED);
+        return Mkdir(path, 0x1FF);
     }
 
     public static int Rmdir(string path)

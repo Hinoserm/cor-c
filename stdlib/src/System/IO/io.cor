@@ -377,15 +377,21 @@ class FileStream : Stream
     {
     }
 
-    public FileStream(string path, FileMode mode, FileAccess access) : this(path, mode, access, 420)
+    /// A FILE THIS CREATES IS 0666 THROUGH THE UMASK, as .NET makes it
+    /// (DefaultCreateMode) and open(2) applies the mask: with `umask 002`
+    /// 0664, not the 0644 it was made with whatever the mask said.
+    public FileStream(string path, FileMode mode, FileAccess access) : this(path, mode, access, DefaultCreateMode)
     {
     }
+
+    /// 0666: what a created file's permissions are before the umask takes its bits off.
+    internal const int DefaultCreateMode = 438;
 
     /// .NET 6's options form: mode, access, sharing, buffer size, and (.NET
     /// 7) UnixCreateMode, the permissions a file this open creates is given
     /// -- through the umask, as open(2)'s mode is -- instead of 0666 & ~umask.
     public FileStream(string path, FileStreamOptions options)
-        : this(path, Checked(options).Mode, options.Access, options.UnixCreateMode.HasValue ? (int)options.UnixCreateMode.Value : 420)
+        : this(path, Checked(options).Mode, options.Access, options.UnixCreateMode.HasValue ? (int)options.UnixCreateMode.Value : DefaultCreateMode)
     {
         bool exclusive = options.Share == FileShare.None;
         if (exclusive || options.Access == FileAccess.Read)
@@ -464,7 +470,7 @@ class FileStream : Stream
     /// open it, which only an fstat finds out.
     internal static int OpenFile(string path, int flags)
     {
-        return OpenFile(path, flags, 420);
+        return OpenFile(path, flags, DefaultCreateMode);
     }
 
     internal static int OpenFile(string path, int flags, int createMode)
