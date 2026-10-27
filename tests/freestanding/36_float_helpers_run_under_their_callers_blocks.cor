@@ -5,11 +5,14 @@
 // expect-output:
 // ceil 4 -2 3
 // shade 191 0 255
+// round 3 8
 //
 // Ceil and Clamp255 are each called only inside a block, Clamp255 through
 // Shade, which has no block of its own either: the link sees every call and
 // lets them run under Main's block, whose save covers its calls. A block
-// in each would save and restore the x87 state on every call.
+// in each would save and restore the x87 state on every call. Round is
+// inlined at both its calls: the body left behind, which nothing calls,
+// never runs, and is no error.
 
 using System;
 using System.Runtime.CompilerServices;
@@ -25,17 +28,21 @@ static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Shade(double a, double b) => Clamp255(a * b + 0.5);
 
+    static int Round(double d) => (int)(d + 0.5);
+
     static int Main()
     {
         Host.Start(1024 * 1024);
-        int a, b, c, s, t, u;
+        int a, b, c, s, t, u, r, q;
         using (Packed.X87())
         {
             a = Ceil(3.25); b = Ceil(-2.5); c = Ceil(3.0);
             s = Shade(0.75, 255.0); t = Shade(-1.0, 3.0); u = Shade(2.0, 255.0);
+            r = Round(2.5); q = Round(7.75);
         }
         Host.Line("ceil " + a + " " + b + " " + c);
         Host.Line("shade " + s + " " + t + " " + u);
+        Host.Line("round " + r + " " + q);
         Host.Done(0);
         return 0;
     }

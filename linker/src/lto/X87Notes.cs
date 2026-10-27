@@ -48,6 +48,7 @@ public static class X87Notes
         using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
         {
             writer.Write(Version);
+            writer.Write(facts.Count(f => f.Floats));
             writer.Write(facts.Count);
             foreach (Fact f in facts)
             {
@@ -72,6 +73,7 @@ public static class X87Notes
     {
         using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: true);
         if (reader.ReadInt32() != Version) throw new ElfFormatException("Unknown " + SectionName + " version");
+        reader.ReadInt32();
         int count = reader.ReadInt32();
         List<Fact> facts = new(count);
         for (int k = 0; k < count; k++)
@@ -94,6 +96,17 @@ public static class X87Notes
         obj.Sections.Add(section);
     }
 
+    /// <summary>How many functions of the object's facts have float code outside their blocks: the header's count alone, read; -1 for an object with no facts.</summary>
+    public static int FloatCount(ObjectFile obj)
+    {
+        Section? section = obj.Sections.FirstOrDefault(s => s.Name == SectionName);
+        if (section is null) return -1;
+        using Stream stream = section.OpenRead();
+        using BinaryReader reader = new(stream, Encoding.UTF8);
+        if (reader.ReadInt32() != Version) throw new ElfFormatException("Unknown " + SectionName + " version");
+        return reader.ReadInt32();
+    }
+
     /// <summary>The object's facts, or null when it carries none.</summary>
     public static List<Fact>? Read(ObjectFile obj)
     {
@@ -110,27 +123,57 @@ public static class X87Notes
 
     /// <summary>
     /// FACTS BESIDE AN IMAGE OTHERS LINK AGAINST (path + ".x87"), as the
-    /// interrupt checks' are (InterruptNotes.WriteBeside): a module's call
-    /// into the kernel is judged at the module's link, against the kernel's
-    /// functions as the kernel's link saw them. With no facts, one left from
-    /// before is taken away.
+    /// interrupt checks' are (InterruptNotes.WriteBeside): a call another
+    /// image makes into this one is judged at that image's link, against
+    /// this one's functions as this link saw them. Only what can reach float
+    /// code by calls made outside a block: a float function, and every
+    /// function that calls one of these outside a block of its own. Written
+    /// always, with nothing in it where nothing floats, so that a missing
+    /// file says the image was linked without them (ReadBeside).
     /// </summary>
     public static void WriteBeside(string path, IEnumerable<ObjectFile> objects)
     {
-        string beside = path + ".x87";
-        List<Fact> all = Joined(objects.Select(Read).Where(read => read is not null).SelectMany(read => read!)).Values.ToList();
-        if (all.Count == 0) { if (File.Exists(beside)) File.Delete(beside); return; }
-        File.WriteAllBytes(beside, Encode(all));
+        Dictionary<string, Fact> all = Joined(objects.Select(Read).Where(read => read is not null).SelectMany(read => read!));
+        Dictionary<string, List<string>> outsideCallers = new(StringComparer.Ordinal);
+        foreach (Fact f in all.Values)
+            foreach (Call c in f.Calls)
+                if (!c.Inside)
+                {
+                    if (!outsideCallers.TryGetValue(c.Callee, out var list)) outsideCallers[c.Callee] = list = new();
+                    list.Add(f.Name);
+                }
+        HashSet<string> reach = new(StringComparer.Ordinal);
+        Stack<string> work = new();
+        foreach (Fact f in all.Values) if (f.Floats && reach.Add(f.Name)) work.Push(f.Name);
+        while (work.Count > 0)
+            if (outsideCallers.TryGetValue(work.Pop(), out var by))
+                foreach (string caller in by) if (reach.Add(caller)) work.Push(caller);
+        List<Fact> kept = all.Values.Where(f => reach.Contains(f.Name))
+            .Select(f => f with { Calls = f.Calls.Where(c => reach.Contains(c.Callee)).ToArray() }).ToList();
+        File.WriteAllBytes(path + ".x87", Encode(kept));
     }
 
-    /// <summary>The facts an image's link wrote beside it (WriteBeside), or none.</summary>
-    public static List<Fact> ReadBeside(string path)
+    /// <summary>
+    /// The facts an image's link wrote beside it (WriteBeside). Refused where
+    /// there are none and `needed` (this link's own units carry facts, so it
+    /// judges calls into the image): an image linked without them -- by an
+    /// older compiler, or a link that writes none -- would let every call
+    /// into its float code pass unjudged.
+    /// </summary>
+    public static List<Fact> ReadBeside(string path, bool needed)
     {
         string beside = path + ".x87";
-        if (!File.Exists(beside)) return new List<Fact>();
+        if (!File.Exists(beside))
+        {
+            if (needed) throw new LinkException(new List<string> { $"{path}: no float-code facts beside it ({beside}), so this link cannot judge its calls into {Path.GetFileName(path)}: link {Path.GetFileName(path)} again with this compiler" });
+            return new List<Fact>();
+        }
         using FileStream stream = File.OpenRead(beside);
         return Decode(stream);
     }
+
+    /// <summary>Whether any of the objects carries facts: a link that judges float code, and so needs the facts of the images it links against.</summary>
+    public static bool Judges(IEnumerable<ObjectFile> objects) => objects.Any(obj => obj.Sections.Any(s => s.Name == SectionName));
 
     // ONE FACT A NAME: a function several units compile (a generic's
     // specialisation, coalesced) is every unit's, its float code and its
@@ -156,16 +199,22 @@ public static class X87Notes
     /// <summary>
     /// Every function with float code outside its own blocks that can run
     /// outside every block, as an error naming the way it gets there. A
-    /// function RUNS OUTSIDE when its address is taken, when nothing this
-    /// link knows calls it (an entry point, an export, code in assembly: an
-    /// object with no facts calls whatever its relocations name), or when a
-    /// function that runs outside calls it outside a block of its own; every
-    /// other function runs only inside its callers' blocks. Nothing to judge
-    /// where no unit has such float code.
+    /// function RUNS OUTSIDE when it is the image's entry (`entries`), when
+    /// its address is taken, when code no fact describes refers to it (an
+    /// object with no facts -- assembly -- calls whatever its relocations
+    /// name), or when a function that runs outside calls it outside a block
+    /// of its own; every other function runs only inside its callers'
+    /// blocks. One nothing calls at all never runs here -- a body left
+    /// behind where every call was inlined -- and another image's calls into
+    /// this one are that image's link's to judge, against the facts this
+    /// link writes beside it. Nothing to judge where no unit has such float
+    /// code.
     /// </summary>
-    public static List<string> Check(IEnumerable<ObjectFile> objects, IReadOnlyList<Fact>? imported = null)
+    public static List<string> Check(IEnumerable<ObjectFile> objects, IReadOnlyList<Fact>? imported = null, IReadOnlyCollection<string>? entries = null)
     {
         List<ObjectFile> all = objects.ToList();
+        List<string> errors = new();
+        if (all.All(obj => FloatCount(obj) <= 0) && imported?.Any(f => f.Floats) != true) return errors;
         List<Fact> read = new();
         List<ObjectFile> without = new();
         foreach (ObjectFile obj in all)
@@ -174,18 +223,8 @@ public static class X87Notes
             else without.Add(obj);
         }
         if (imported is not null) read.AddRange(imported);
-        List<string> errors = new();
-        if (!read.Any(f => f.Floats)) return errors;
         Dictionary<string, Fact> facts = Joined(read);
 
-        // Who calls each function, and from where.
-        Dictionary<string, List<(Fact Caller, Call At)>> callers = new(StringComparer.Ordinal);
-        foreach (Fact f in facts.Values)
-            foreach (Call c in f.Calls)
-            {
-                if (!callers.TryGetValue(c.Callee, out var list)) callers[c.Callee] = list = new();
-                list.Add((f, c));
-            }
         // WHAT AN OBJECT WITHOUT FACTS REFERS TO is called, or its address
         // taken, by code no fact describes: assembly, a foreign object.
         HashSet<string> unknown = new(StringComparer.Ordinal);
@@ -195,40 +234,50 @@ public static class X87Notes
                     unknown.Add(r.Symbol);
 
         // WHAT RUNS OUTSIDE, from its seeds along the calls made outside a
-        // block: what is left runs only inside one.
+        // block: what is left runs only inside one. Each keeps the call that
+        // took it there (`by`), the way its error names.
         HashSet<string> outside = new(StringComparer.Ordinal);
+        Dictionary<string, (Fact Caller, Call At)> by = new(StringComparer.Ordinal);
         Stack<string> work = new();
         foreach (Fact f in facts.Values)
-            if (f.Escapes || unknown.Contains(f.Name) || !callers.ContainsKey(f.Name))
+            if (f.Escapes || unknown.Contains(f.Name) || entries?.Contains(f.Name) == true)
                 if (outside.Add(f.Name)) work.Push(f.Name);
         while (work.Count > 0)
         {
             Fact f = facts[work.Pop()];
             foreach (Call c in f.Calls)
-                if (!c.Inside && facts.ContainsKey(c.Callee) && outside.Add(c.Callee)) work.Push(c.Callee);
+                if (!c.Inside && facts.ContainsKey(c.Callee) && outside.Add(c.Callee))
+                {
+                    by[c.Callee] = (f, c);
+                    work.Push(c.Callee);
+                }
         }
 
         foreach (Fact f in facts.Values.Where(f => f.Floats && outside.Contains(f.Name)).OrderBy(f => f.File, StringComparer.Ordinal).ThenBy(f => f.FloatLine))
-            errors.Add($"'{f.Display}' has float code outside a packed block ({Where(f, f.FloatLine)}) and can run outside one: {Way(f)}; "
-                + "put it, or that call, inside using (Packed.X87()) { ... }, which saves the interrupted thread's x87 state first");
+            errors.Add($"'{f.Display}' has float code outside a packed block ({Where(f, f.FloatLine)}) and can run outside one: {Way(f, out bool call)}; "
+                + (call ? "put that call (the last named), or the float code, inside using (Packed.X87()) { ... }"
+                        : "give it a packed block of its own, using (Packed.X87()) { ... }")
+                + ", which saves the interrupted thread's x87 state first");
         return errors;
 
-        // HOW IT GETS THERE: up the calls made outside a block, from callers
-        // that run outside, to what has no caller inside one.
-        string Way(Fact from)
+        // HOW IT GETS THERE: back along the calls that took each function
+        // outside (`by`), to the seed -- the entry, a taken address, code no
+        // fact describes. `call` says whether a call outside a block is the
+        // way, which a block around it closes.
+        string Way(Fact from, out bool call)
         {
             List<string> steps = new();
-            HashSet<string> seen = new(StringComparer.Ordinal);
             Fact at = from;
-            while (seen.Add(at.Name))
+            call = false;
+            while (by.TryGetValue(at.Name, out var step))
             {
-                if (at.Escapes) { steps.Add($"'{at.Display}' has its address taken (a delegate, a function pointer or a virtual method), so whatever calls it can"); break; }
-                if (unknown.Contains(at.Name)) { steps.Add($"'{at.Display}' is called from code the link has no facts for (assembly, a foreign object)"); break; }
-                if (!callers.TryGetValue(at.Name, out var list)) { steps.Add($"nothing this link knows calls '{at.Display}' (an entry point, or an export another image calls)"); break; }
-                (Fact Caller, Call At) by = list.First(c => !c.At.Inside && outside.Contains(c.Caller.Name));
-                steps.Add($"'{by.Caller.Display}' calls '{at.Display}' at {Where(by.Caller, by.At.Line)}, outside a packed block");
-                at = by.Caller;
+                steps.Add($"'{step.Caller.Display}' calls '{at.Display}' at {Where(step.Caller, step.At.Line)}, outside a packed block");
+                call = true;
+                at = step.Caller;
             }
+            if (at.Escapes) steps.Add($"'{at.Display}' has its address taken (a delegate, a function pointer or a virtual method), so whatever calls it may");
+            else if (unknown.Contains(at.Name)) steps.Add($"'{at.Display}' is called from code the link has no facts for (assembly, a foreign object)");
+            else steps.Add($"'{at.Display}' is the image's entry");
             return string.Join(", and ", steps);
         }
     }

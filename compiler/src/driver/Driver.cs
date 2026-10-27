@@ -1595,10 +1595,16 @@ public static class Driver
         {
             List<string> handlerErrors = Corsac.Lang.Lto.InterruptNotes.Check(new[] { obj }, Corsac.Lang.Lto.Preinit.Peek(new[] { obj }, longMode: false)?.FrozenSteps);
             if (handlerErrors.Count > 0) throw new LinkException(handlerErrors);
-            // And where its float code runs (X87Notes): against the kernel's
-            // functions as the kernel's link saw them.
-            List<string> moduleFloats = Corsac.Lang.Lto.X87Notes.Check(new[] { obj }, kernelPath is null ? null : Corsac.Lang.Lto.X87Notes.ReadBeside(kernelPath));
+            // And where its float code runs (X87Notes), against the kernel's and
+            // the modules' it links with, as their links saw them; its own
+            // facts beside it, for what links against it.
+            bool judges = Corsac.Lang.Lto.X87Notes.Judges(new[] { obj });
+            List<Corsac.Lang.Lto.X87Notes.Fact> beside = new();
+            if (kernelPath is not null) beside.AddRange(Corsac.Lang.Lto.X87Notes.ReadBeside(kernelPath, judges));
+            foreach (string lib in sharedLibs) beside.AddRange(Corsac.Lang.Lto.X87Notes.ReadBeside(lib, judges));
+            List<string> moduleFloats = Corsac.Lang.Lto.X87Notes.Check(new[] { obj }, beside);
             if (moduleFloats.Count > 0) throw new LinkException(moduleFloats);
+            if (judges) Corsac.Lang.Lto.X87Notes.WriteBeside(output, new[] { obj });
             Corsac.Lang.Lto.X87Notes.Strip(new[] { obj });
             Corsac.Lang.Lto.UsesNotes.Strip(new[] { obj });
             Corsac.Lang.Lto.InterruptNotes.Strip(new[] { obj });
@@ -1680,9 +1686,8 @@ public static class Driver
         if (Switches.IrqLocksReport) foreach (string line in Corsac.Lang.Lto.InterruptNotes.IrqLocksReport(link.Select(input => input.Item2))) Console.Error.WriteLine(line);
         // Where every unit's freestanding float code runs (X87Notes): what no
         // one unit's compile could see, its callers in the others.
-        List<string> floatErrors = Corsac.Lang.Lto.X87Notes.Check(link.Select(input => input.Item2));
+        List<string> floatErrors = Corsac.Lang.Lto.X87Notes.Check(link.Select(input => input.Item2), entries: new[] { entry });
         if (floatErrors.Count > 0) throw new LinkException(floatErrors);
-        Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
 
         if (flat)
         {
@@ -1692,6 +1697,7 @@ public static class Driver
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
             Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
+            Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
             // --map FILE: every symbol of the image, largest first, as `corc link` writes it.
             Linker.FlatImage image = Linker.LinkFlat(link, entry, loadBase ?? 0x10000, mapPath: Value(args, "--map"));
             File.WriteAllBytes(output, image.Bytes);
@@ -1718,6 +1724,7 @@ public static class Driver
             Corsac.Lang.Lto.LinkTimeOptimizer.Run(link, !args.Contains("--no-lto") && !args.Contains("--no-opt"));
             Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
             Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
+            Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
             Linker.LinkPeTo(output, link, new Linker.PeOptions
             {
                 Dll = dll,
@@ -1746,6 +1753,7 @@ public static class Driver
         else Corsac.Lang.Lto.LinkTimeOptimizer.StripLinkNotes(link.Select(input => input.Item2));
         Corsac.Lang.Lto.UsesNotes.Strip(link.Select(input => input.Item2));
         Corsac.Lang.Lto.InterruptNotes.Strip(link.Select(input => input.Item2));
+            Corsac.Lang.Lto.X87Notes.Strip(link.Select(input => input.Item2));
         // What a CORSAC program carries beyond its code: --subsystem
         // console|gui|service, --resources <segment file>, --icon-resource <id>.
         // See docs/software/GUI-EXECUTABLE.md in the OS repository.

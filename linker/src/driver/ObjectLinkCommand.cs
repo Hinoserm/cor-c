@@ -217,10 +217,11 @@ public static class ObjectLinkCommand
         // WHERE EVERY UNIT'S FREESTANDING FLOAT CODE RUNS (X87Notes): inside
         // a packed block, its own or every caller's -- the kernel's and the
         // modules' linked with, as their links saw them, beside them.
+        bool judges = X87Notes.Judges(inputs.Select(input => input.Item2));
         List<X87Notes.Fact> floatsImported = new();
-        if (kernelPath is not null) floatsImported.AddRange(X87Notes.ReadBeside(kernelPath));
-        foreach (string library in sharedLibraries) floatsImported.AddRange(X87Notes.ReadBeside(library));
-        List<string> floatErrors = X87Notes.Check(inputs.Select(input => input.Item2), floatsImported);
+        if (kernelPath is not null) floatsImported.AddRange(X87Notes.ReadBeside(kernelPath, judges));
+        foreach (string library in sharedLibraries) floatsImported.AddRange(X87Notes.ReadBeside(library, judges));
+        List<string> floatErrors = X87Notes.Check(inputs.Select(input => input.Item2), floatsImported, new[] { entry });
         if (floatErrors.Count > 0) throw new LinkException(floatErrors);
         // AN IMAGE OTHERS LINK AGAINST says what its units call and take
         // beside it, for their links' checks: a kernel's beside its exports,
