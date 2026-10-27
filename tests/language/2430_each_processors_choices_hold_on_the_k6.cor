@@ -1,4 +1,5 @@
 // test: the code chosen for the K6 gives .NET's results: memory increments, constant products and quotients, byte reads, divisions, pushed arguments
+// only-target: x86
 // flags: --cpu k6
 // expect-exit: 0
 // expect-output:

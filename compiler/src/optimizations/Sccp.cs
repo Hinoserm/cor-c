@@ -205,7 +205,7 @@ public sealed class Sccp : IPass
                     Lattice c = ValueOf(i.Operands[0]);
                     if (c.Kind == Kind.Const)
                     {
-                        MarkEdge(b, (int)c.Value != 0 ? i.Targets[0] : i.Targets[1]);
+                        MarkEdge(b, IrInfo.Normalise(c.Value, i.Operands[0].Type) != 0 ? i.Targets[0] : i.Targets[1]);
                     }
                     else if (c.Kind == Kind.Bottom)
                     {

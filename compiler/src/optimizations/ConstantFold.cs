@@ -121,7 +121,8 @@ public sealed class ConstantFold : IPass
                 x = tested; k = imm.Value;
                 where = test.Op == Opcode.Eq ? branch.Targets[0] : branch.Targets[1];
             }
-            // A branch tests the I32 (an I64's top half is not looked at).
+            // A branch on an I32 says its register is zero on the false edge;
+            // one on a word (an I64) is tested whole, and no fact is kept of it.
             else if (c.Type == IrType.I32)
             {
                 x = c; k = 0; where = branch.Targets[1];
@@ -320,7 +321,7 @@ public sealed class ConstantFold : IPass
                 if (Fresh(i.Operands[0]))
                     return new Instr { Op = Opcode.Jump, InitialTargets = new[] { i.Targets[0] }, Line = i.Line };
                 if (i.Operands[0] is RegOperand r && _constant.TryGetValue(r.Reg, out long c))
-                    return new Instr { Op = Opcode.Jump, InitialTargets = new[] { IrInfo.Normalise(c, IrType.I32) != 0 ? i.Targets[0] : i.Targets[1] }, Line = i.Line };
+                    return new Instr { Op = Opcode.Jump, InitialTargets = new[] { IrInfo.Normalise(c, i.Operands[0].Type) != 0 ? i.Targets[0] : i.Targets[1] }, Line = i.Line };
                 return null;
             }
             if (i.Dest is null || i.Operands.Count != 2) return null;
@@ -344,9 +345,10 @@ public sealed class ConstantFold : IPass
             case Opcode.Branch:
                 if (IrInfo.IsImm(i.Operands[0], out long cond))
                 {
-                    // Branch tests the I32 for nonzero, so the width matters:
-                    // 0x1_0000_0000 as an I32 is zero.
-                    Block taken = IrInfo.Normalise(cond, IrType.I32) != 0 ? i.Targets[0] : i.Targets[1];
+                    // Branch tests its condition for nonzero at the condition's
+                    // own width, so the width matters: 0x1_0000_0000 as an I32 is
+                    // zero, and as a word (an I64 in long mode) it is not.
+                    Block taken = IrInfo.Normalise(cond, i.Operands[0].Type) != 0 ? i.Targets[0] : i.Targets[1];
                     return new Instr { Op = Opcode.Jump, InitialTargets = new[] { taken }, Line = i.Line };
                 }
                 return null;

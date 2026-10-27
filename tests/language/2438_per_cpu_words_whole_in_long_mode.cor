@@ -11,7 +11,7 @@
 // the high half was cut going in and coming out, and a word written read
 // back as its low half. A value past 2^32, at a constant offset and at one
 // known only at run time, is written and read back whole; and a word whose
-// high half is set by Sys.Poke is read whole.
+// high half is set by Sys.WriteAddress is read whole.
 using System;
 using System.Runtime.CompilerServices;
 
@@ -25,26 +25,27 @@ static class Program
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static long At(long offset) { return Sys.PerCpuRead(offset); }
+    static nuint At(int offset) { return Sys.PerCpuRead(offset); }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void Put(long offset, long value) { Sys.PerCpuWrite(offset, value); }
+    static void Put(int offset, nuint value) { Sys.PerCpuWrite(offset, value); }
 
     static int Main()
     {
-        long block = Sys.ThreadBlock();
-        long big = 0x123456789A;
+        nuint block = Sys.ThreadBlock();
+        nuint big = (nuint)0x123456789AUL;
         Sys.PerCpuWrite(Tls.PreemptCount, big);
-        bool constant = Sys.Peek(block + Tls.PreemptCount) == big && Sys.PerCpuRead(Tls.PreemptCount) == big;
+        bool constant = Sys.ReadAddress(block + Tls.PreemptCount) == big && Sys.PerCpuRead(Tls.PreemptCount) == big;
         Sys.PerCpuWrite(Tls.PreemptCount, 0);
         Say("constant", constant);
         Put(Tls.PreemptCount, big + 1);
-        bool register = Sys.Peek(block + Tls.PreemptCount) == big + 1 && At(Tls.PreemptCount) == big + 1;
+        bool register = Sys.ReadAddress(block + Tls.PreemptCount) == big + 1 && At(Tls.PreemptCount) == big + 1;
         Put(Tls.PreemptCount, 0);
         Say("register", register);
-        Sys.Poke(block + Tls.PreemptCount, -2);
-        bool whole = At(Tls.PreemptCount) == -2;
-        Sys.Poke(block + Tls.PreemptCount, 0);
+        nuint allOnes = ~(nuint)1;
+        Sys.WriteAddress(block + Tls.PreemptCount, allOnes);
+        bool whole = At(Tls.PreemptCount) == allOnes;
+        Sys.WriteAddress(block + Tls.PreemptCount, 0);
         Say("read whole", whole);
         return 0;
     }

@@ -1,4 +1,5 @@
 // test: the code chosen for the Pentium gives .NET's results: memory increments, constant products and quotients, byte reads, divisions, pushed arguments
+// only-target: x86
 // flags: --cpu pentium
 // expect-exit: 0
 // expect-output:
