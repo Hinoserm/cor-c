@@ -171,8 +171,12 @@ public static class X87Notes
         while (work.Count > 0)
             if (outsideCallers.TryGetValue(work.Pop(), out var by))
                 foreach (string caller in by) if (reach.Add(caller)) work.Push(caller);
+        // CALLED HERE, ENTERED NOWHERE: an assembled routine this image calls
+        // keeps that, whichever calls are written beside it (Check's start).
+        HashSet<string> called = new(StringComparer.Ordinal);
+        foreach (Fact f in all.Values) foreach (Call c in f.Calls) called.Add(c.Callee);
         List<Fact> kept = all.Values.Where(f => reach.Contains(f.Name))
-            .Select(f => f with { Calls = f.Calls.Where(c => reach.Contains(c.Callee)).ToArray() }).ToList();
+            .Select(f => f with { Calls = f.Calls.Where(c => reach.Contains(c.Callee)).ToArray(), Entered = f.Entered && !called.Contains(f.Name) }).ToList();
         File.WriteAllBytes(path + ".x87", Encode(kept));
     }
 

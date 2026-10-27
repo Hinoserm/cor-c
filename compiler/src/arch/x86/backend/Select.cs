@@ -501,13 +501,15 @@ internal sealed partial class Selector
                         MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedRestoreFxsr => state >> 2,
                         _ => state,
                     };
-                // A static named otherwise than by such a load -- its address,
-                // a store to it -- takes the routine in it too.
-                foreach (Operand o in i.Operands)
-                    if (o is SymOperand sym)
+                // A static named otherwise than by such a load or a store into
+                // it -- its address passed on -- takes the routine in it too.
+                for (int k = 0; k < i.Operands.Count; k++)
+                    if (i.Operands[k] is SymOperand sym)
                     {
                         taken.Add(sym.Name);
-                        if (!(i.Op == Opcode.Load && i.Dest is not null && loaded.ContainsKey(i.Dest))) taken.Add(Corsac.Lang.Lto.X87Notes.InField(sym.Name));
+                        bool read = i.Op == Opcode.Load && i.Dest is not null && loaded.ContainsKey(i.Dest);
+                        bool storedInto = k == 0 && i.Op is Opcode.Store or Opcode.MemCopy or Opcode.MemSet;
+                        if (!read && !storedInto) taken.Add(Corsac.Lang.Lto.X87Notes.InField(sym.Name));
                     }
                 if (i.Op == Opcode.Call && i.Callee is { } callee && !callee.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
                     calls.Add(new(callee, i.Line, state != 0));

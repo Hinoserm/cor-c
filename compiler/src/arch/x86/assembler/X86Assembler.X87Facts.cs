@@ -35,6 +35,7 @@ public sealed partial class X86Assembler
     private readonly HashSet<string> _notReferred = new(StringComparer.Ordinal);
     private string? _storeField;
     private long _instructionAt;
+    private readonly List<(string Section, long At)> _selfTaken = new();
 
     private static readonly HashSet<string> FpuStateOnly = new(StringComparer.Ordinal)
     {
@@ -45,7 +46,7 @@ public sealed partial class X86Assembler
 
     private bool NotingFloats => _pass == 2 && _object && !_everLongMode;
 
-    /// <summary>An instruction, as it is assembled (pass two): whether it is float code, and whom a call or jump names.</summary>
+    /// <summary>An instruction, as it is assembled (pass two): whether it is float code, where it is, and a routine's address it stores into a symbol; its branches are NoteReference's.</summary>
     private void NoteInstruction(string mn, string rest)
     {
         _notReferred.Clear();
@@ -92,6 +93,9 @@ public sealed partial class X86Assembler
     private void NoteReference(string name, bool pcRelative)
     {
         if (!NotingFloats) return;
+        // `$`, the instruction itself: a jump to it goes nowhere else, its
+        // value taken takes the routine it is in.
+        if (name == "$") { if (!pcRelative) _selfTaken.Add((_sec.Name, _instructionAt)); return; }
         if (pcRelative) { _branches.Add((_sec.Name, _instructionAt, _line, name)); return; }
         if (_notReferred.Contains(name)) return;
         _referred.Add(name);
@@ -161,8 +165,12 @@ public sealed partial class X86Assembler
         List<X87Notes.Fact> facts = new();
         foreach ((string name, var r) in routines)
             facts.Add(new(name, name, file, r.FloatLine, false, r.Calls.ToArray()) { Entered = true });
+        // AN ALIAS is a name of its routine, entered as it is (the routine's
+        // own fact) and not on its own: one nothing names pulls nothing out.
         foreach ((string alias, string of) in aliases)
-            facts.Add(new(alias, alias, file, -1, false, [new X87Notes.Call(of, 0, false)]) { Entered = true });
+            facts.Add(new(alias, alias, file, -1, false, [new X87Notes.Call(of, 0, false)]));
+        foreach (var self in _selfTaken)
+            facts.Add(new(Owner(self.Section, self.At), "", "", -1, true, Array.Empty<X87Notes.Call>()));
         foreach (var group in _stored.GroupBy(s => s.Field, StringComparer.Ordinal))
             facts.Add(new(X87Notes.InField(group.Key), "the routine in " + group.Key, file, -1, false,
                 group.Select(s => new X87Notes.Call(Routine(s.Routine), 0, false)).ToArray()));

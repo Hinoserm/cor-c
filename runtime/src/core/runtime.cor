@@ -127,7 +127,9 @@ static class WordSize
 
 /// WHAT THIS PROCESSOR HAS, asked of CPUID once and kept: the instructions
 /// the runtime and the libraries take a faster way with where the processor
-/// has them, whatever --cpu the image was made for. One image runs on the
+/// has them, beyond what --cpu the image was made for promises (Has of
+/// features it promises is true at the compile, of a feature a --disable
+/// bans false: Lowering.ProcessorHasFolded). One image runs on the
 /// 486, the Pentium and the K6 alike (--cpu 486); a K7 or a K8 under it
 /// still has CMPXCHG8B and the streaming stores, and this says so.
 ///
