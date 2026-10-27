@@ -455,7 +455,14 @@ public sealed class Verifier : IPass
 
             case Opcode.Branch:
                 Operands(i, 1);
-                Is(i, 0, IrType.I32);
+                // A CONDITION IS AN I32, OR A WORD: a pointer or a handle
+                // branched on directly -- a type dictionary's argument, the
+                // word of a lazily made block -- is tested nonzero at its own
+                // width, which a backend does whole (`test r, r` at the
+                // operand's width). Written so where the word is 32 bits, it
+                // was an I32 and passed; in long mode it is an I64, and the
+                // check ran only when a unit's IR was read back at the link.
+                if (i.Operands[0].Type != IrTypes.Word) Is(i, 0, IrType.I32);
                 NoDest(i);
                 if (i.Targets.Count != 2)
                 {
