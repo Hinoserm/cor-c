@@ -26,7 +26,7 @@ internal sealed class Encoder
     /// <summary>
     /// The blocks a backward jump of the function goes to -- its loops' heads
     /// -- which on the K7 and the K8 start at a sixteen-byte line (LoopAlign).
-    /// Empty for every other processor.
+    /// Empty for every other processor, and under --opt-size.
     /// </summary>
     private readonly HashSet<MBlock> _loopHeads = new(ReferenceEqualityComparer.Instance);
 

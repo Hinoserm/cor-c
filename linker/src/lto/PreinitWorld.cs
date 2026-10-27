@@ -347,6 +347,22 @@ public sealed class PreinitWorld
     {
         if (Data(symbol, from) is Region r) return new Ptr(r, offset);
         if (Find(symbol, from) is var (owner, sym, local) && sym.Section!.Kind == SectionKind.Code) return new Code(symbol, offset, local ? owner : null);
+        // THE COLLECTOR'S STATE THE IMAGE DROPPED: a word the late passes
+        // left nothing reading -- Gc.IgnoredFrees, once the free that read it
+        // was put in its caller (List.Grow) -- read as the zero it starts as.
+        // The run's IR is the snapshot from before those passes.
+        if (Collector.Contains(symbol)) return new Ptr(DefineStorage(symbol, 8, "the collector"), offset);
+        // A CONTEXT TOKEN THE IMAGE DROPPED (Lowering.ContextToken, "tk_"): a
+        // shared generic copy's static handed its instantiation's context --
+        // Span<string>.Move, from Array.Copy -- whose call the late passes
+        // made without it. Handed on, it is an address; read, it is the
+        // image's, which MayRead refuses.
+        if (symbol.StartsWith("tk_", StringComparison.Ordinal))
+        {
+            if (!_regions.TryGetValue(symbol, out Region? token))
+                _regions[symbol] = token = new() { Kind = RegionKind.Data, Symbol = symbol, Bytes = new byte[WordSize], Align = WordSize };
+            return new Ptr(token, offset);
+        }
         throw new Refused("'" + symbol + "' is defined nowhere the link can see");
     }
 

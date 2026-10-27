@@ -522,12 +522,13 @@ public static class Prelude
             public static void TraceRead(out nuint source, out nuint destination, out long kind, out long valid) { source = 0; destination = 0; kind = 0; valid = 0; }
             // `value` is the byte every one of `count` is set to.
             public static void MemorySet(nuint dst, int value, nuint count) { }
-            // `count` bytes from `src` to `dst`, overlapping or not (memmove):
+            // `count` bytes from `src` to `dst`, overlapping or not (memmove)
+            // where `oneBlock` -- both in one array -- and forward where not:
             // for bytes that hold no reference (Span.Move's elements).
-            public static void MemoryMove(nuint dst, nuint src, nuint count) { }
+            public static void MemoryMove(nuint dst, nuint src, nuint count, bool oneBlock) { }
             // The same for bytes that are numbers never an address (Instr.
             // Number): characters, the 32-bit integers and smaller, floats.
-            public static void NumbersMove(nuint dst, nuint src, nuint count) { }
+            public static void NumbersMove(nuint dst, nuint src, nuint count, bool oneBlock) { }
             // Whether the elements of an array of T hold references, as the
             // collector reads the array, and the bytes from one to the next:
             // constants of each instantiation, the array itself not read (a

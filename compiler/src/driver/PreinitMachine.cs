@@ -161,7 +161,7 @@ public sealed class PreinitMachine : Preinit.IMachine
             }
         // THE LIFETIME RULES' FREES AND REGIONS, as the compiler's late passes
         // write them into a unit's runtime: nothing to a world with no heap.
-        foreach (string nothing in new[] { "Free", "FreeField", "FreeReplaced", "FreeOwnedReplaced", "KeepField", "FreeOwnedElements", "FreeArrayElements",
+        foreach (string nothing in new[] { "Free", "FreeHeld", "FreeField", "FreeReplaced", "FreeOwnedReplaced", "KeepField", "FreeOwnedElements", "FreeArrayElements",
                      "OwnElements", "FreeStorageInFrame", "RegionLeave", "RegionCatch", "WriteBarrier", "WriteBarrierValues", "CardMark", "CardMarkObject", "ShadeObject" })
             if (Is(label, "Runtime", nothing) || Is(label, "Gc", nothing)) return true;
         if (Is(label, "Runtime", "RegionEnter") || Is(label, "Runtime", "RegionLoop")) { result = new Num(0); return true; }

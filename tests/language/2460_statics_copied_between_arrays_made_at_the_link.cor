@@ -1,0 +1,101 @@
+// test: statics made by copying from one array into another are made at the link, as an interrupt handler needs them
+// expect-exit: 0
+// expect-output:
+// 156 5 0,50 1,0 aabcd 21,99,19 xyz
+//
+// An interrupt handler that touches a type the link did not make runs its
+// initialiser, which the link refuses where that allocates (2190). Each of
+// Tables' initialisers moves elements from one array into another, or within
+// one: a span's ToArray, Array.Copy of ints, longs, chars and strings, a
+// list's growth and its insert. The block moves (Span.Move) took the bytes
+// between the two arrays' addresses to tell an overlap, which the link's run
+// of an initialiser cannot (two objects' addresses are no number): the
+// initialiser was refused, the type made at run time, and the kernel's link
+// refused every handler that reached one.
+
+using System;
+using System.Collections.Generic;
+
+static class Tables
+{
+    public static readonly byte[] Bytes = Spanned(5);
+    public static readonly int[] Ints = Copied(6);
+    public static readonly long[] Longs = Longer(4);
+    public static readonly char[] Shifted = Shift();
+    public static readonly List<int> Grown = Grow(20);
+    public static readonly string[] Names = Named();
+
+    // The source filled here: an array laid down in the image is state the
+    // link does not read (2191).
+    static byte[] Spanned(int n)
+    {
+        byte[] seed = new byte[n];
+        for (int i = 0; i < n; i++) seed[i] = (byte)(i + 1);
+        return new ReadOnlySpan<byte>(seed).ToArray();
+    }
+
+    static int[] Copied(int n)
+    {
+        int[] made = new int[n];
+        for (int i = 0; i < n; i++) made[i] = i * 10;
+        int[] copy = new int[n];
+        Array.Copy(made, 0, copy, 0, n);
+        return copy;
+    }
+
+    static long[] Longer(int n)
+    {
+        long[] made = new long[n];
+        for (int i = 0; i < n; i++) made[i] = (long)i << 40;
+        long[] copy = new long[n];
+        Array.Copy(made, 1, copy, 0, n - 1);
+        return copy;
+    }
+
+    // Within one array, upward: the overlap a move does last first.
+    static char[] Shift()
+    {
+        char[] letters = new char[5];
+        for (int i = 0; i < letters.Length; i++) letters[i] = (char)('a' + i);
+        Array.Copy(letters, 0, letters, 1, 4);
+        return letters;
+    }
+
+    static List<int> Grow(int n)
+    {
+        List<int> made = new();
+        for (int i = 0; i < n; i++) made.Add(i);
+        made.Insert(0, 99);
+        return made;
+    }
+
+    static string[] Named()
+    {
+        string[] names = new string[3];
+        names[0] = "x"; names[1] = "y"; names[2] = "z";
+        string[] copy = new string[3];
+        Array.Copy(names, 0, copy, 0, 3);
+        return copy;
+    }
+}
+
+static class Program
+{
+    static int _seen;
+
+    [InterruptHandler]
+    static void Tick()
+    {
+        _seen += Tables.Bytes[4] + Tables.Ints[5] + (int)(Tables.Longs[2] >> 40) + Tables.Shifted[1] + Tables.Names[2].Length;
+    }
+
+    static int Main()
+    {
+        Tick();
+        Console.WriteLine(_seen + " " + Tables.Bytes.Length + " " + Tables.Ints[0] + "," + Tables.Ints[5]
+            + " " + (Tables.Longs[0] >> 40) + "," + Tables.Longs[3] + " " + new string(Tables.Shifted)
+            + " " + Tables.Grown.Count + "," + Tables.Grown[0] + "," + Tables.Grown[20]
+            + " " + Tables.Names[0] + Tables.Names[1] + Tables.Names[2]);
+        return 0;
+    }
+}

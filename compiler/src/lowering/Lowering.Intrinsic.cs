@@ -214,12 +214,15 @@ public sealed partial class Lowering
             {
                 int unit = target.Params[0].Type.Prim == Prim.String ? 2 : 1;
                 VReg Scaled(VReg v) => unit == 1 ? v : _e.Binary(Opcode.Mul, v, unit);
-                VReg dst = _e.Binary(Opcode.Add, Arg(call, target, 0), Scaled(WordOf(Arg(call, target, 1))));
-                VReg src = _e.Binary(Opcode.Add, Arg(call, target, 2), Scaled(WordOf(Arg(call, target, 3))));
+                VReg dstObject = Arg(call, target, 0);
+                VReg dst = _e.Binary(Opcode.Add, dstObject, Scaled(WordOf(Arg(call, target, 1))));
+                VReg srcObject = Arg(call, target, 2);
+                VReg src = _e.Binary(Opcode.Add, srcObject, Scaled(WordOf(Arg(call, target, 3))));
                 VReg n = Scaled(WordOf(Arg(call, target, 4)));
                 VReg into = _e.Binary(Opcode.Add, dst, _t.ArrayHeaderBytes);
                 VReg from = _e.Binary(Opcode.Add, src, _t.ArrayHeaderBytes);
-                MoveBytes(into, from, n, overlapping: name == "Copy", numbers: true);
+                // Strings and byte arrays: never an address.
+                MoveBytes(into, from, n, name == "Copy" ? _e.Binary(Opcode.Eq, dstObject, srcObject) : null, numbers: true);
                 return Void();
             }
             // AN ADDRESS'S BYTES MOVED, overlapping or not (Sys.MemoryMove):
@@ -228,14 +231,15 @@ public sealed partial class Lowering
             // (Span.Move). NumbersMove where every element is a number that
             // is never an address (Instr.Number: Sys.ElementsAreNumbers); a
             // long's, a nint's or a pointer's may be one, which the runtime
-            // keeps addresses in, and region inference follows those.
+            // keeps addresses in, and region inference follows those. The
+            // fourth, whether the two are in one block (one array).
             case "MemoryMove":
             case "NumbersMove":
             {
                 VReg into = Address(call, target, 0);
                 VReg from = Address(call, target, 1);
                 VReg n = ToWord(Arg(call, target, 2));
-                MoveBytes(into, from, n, overlapping: true, numbers: name == "NumbersMove");
+                MoveBytes(into, from, n, ToI32(Arg(call, target, 3)), numbers: name == "NumbersMove");
                 return Void();
             }
             // WHETHER AN ARRAY'S ELEMENTS HOLD A REFERENCE, a constant of the
@@ -1062,7 +1066,7 @@ public sealed partial class Lowering
     /// where `overlapping` may be and the destination starts inside the
     /// source, from the end down.
     /// </summary>
-    private void MoveBytes(VReg into, VReg from, VReg n, bool overlapping, bool numbers)
+    private void MoveBytes(VReg into, VReg from, VReg n, VReg? oneBlock, bool numbers)
     {
         // COPY IS MEMMOVE (the Prelude's word for it): where the
         // destination starts inside the source -- src <= dst < src + n,
@@ -1071,11 +1075,20 @@ public sealed partial class Lowering
         // The forward copy below moves words at a time from the
         // front, and an upward overlapping Copy wrote the source's
         // first words over its own tail before reading it.
-        // CopyNoOverlap's callers promise there is none.
+        // CopyNoOverlap's callers promise there is none (no `oneBlock`).
+        //
+        // ONLY A BLOCK MOVED WITHIN ITSELF CAN OVERLAP: two arrays' bytes are
+        // copied forward without taking one's address from the other's,
+        // which the link's run of an initialiser cannot do (PreinitMachine:
+        // two objects' addresses are no number). A static made from a span's
+        // ToArray was refused there, and the type made at run time -- then
+        // reached from an interrupt handler, which the link refuses.
         Block forward = _f.NewBlock("copyfwd"), done = _f.NewBlock("copydone");
-        if (overlapping)
+        if (oneBlock is not null)
         {
-            Block backward = _f.NewBlock("copyback"), step = _f.NewBlock("copystep");
+            Block within = _f.NewBlock("copywithin"), backward = _f.NewBlock("copyback"), step = _f.NewBlock("copystep");
+            _e.Branch(oneBlock, within, forward);
+            _e.SetBlock(within);
             _e.Branch(_e.Binary(Opcode.LtU, _e.Binary(Opcode.Sub, into, from), n), backward, forward);
             _e.SetBlock(backward);
             VReg left = _f.NewReg(IrTypes.Word, "copyleft");
@@ -1118,7 +1131,8 @@ public sealed partial class Lowering
         // the name a front end's node looked up, and with it, merged over the
         // node's class, the tree (test 1200). A long one is streamed by the
         // backend (Select.SelectMemCopy), past every pass that reads it. Only
-        // `numbers`: elements of a long or a nint may be addresses.
+        // `numbers` -- Copy's strings and byte arrays, NumbersMove's elements:
+        // a long's or a nint's may be an address.
         if (numbers) _e.Block.Instrs[^1].Number = true;
         _e.Jump(done);
         _e.SetBlock(done);
