@@ -344,11 +344,15 @@ public sealed class LifetimeHints
             foreach (LifetimeFields? fields in parameterFields ?? Array.Empty<LifetimeFields?>()) Fields(fields);
             Fields(function.FreshFields);
             writer.Write(function.Held?.Length ?? -1);
-            foreach (LifetimeHeld? held in function.Held ?? Array.Empty<LifetimeHeld?>())
+            foreach (LifetimeHeld? given in function.Held ?? Array.Empty<LifetimeHeld?>())
             {
+                // More held offsets than the bound: written as none that can
+                // be stated (null, the conservative answer), as a field
+                // summary past its bound is written opaque -- not refused.
+                LifetimeHeld? held = given is not null && given.Offsets.Length > LifetimeFields.Limit ? null : given;
                 Condition(held?.Condition);
                 if (held is null) continue;
-                if (held.Offsets.Length == 0 || held.Offsets.Length > LifetimeFields.Limit) throw new ElfFormatException("Lifetime held offsets exceed their bound");
+                if (held.Offsets.Length == 0) throw new ElfFormatException("Lifetime held offsets are empty");
                 writer.Write(held.Offsets.Length);
                 foreach (long offset in held.Offsets) writer.Write(offset);
             }
