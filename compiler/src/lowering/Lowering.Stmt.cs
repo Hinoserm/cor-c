@@ -379,7 +379,14 @@ public sealed partial class Lowering
                 _packedFeatures.Push(features);
                 try
                 {
-                    if (PackedStateHere) EmitTry(t);
+                    // KEPT, the state is taken before and given back on every
+                    // way out, and the calls inside run inside it ($inside).
+                    if (KeepsState(PackedKindOf(leave)))
+                    {
+                        _stateKept++;
+                        try { EmitTry(t); }
+                        finally { _stateKept--; }
+                    }
                     else EmitStmt(t.Body);
                 }
                 finally { _packedFeatures.Pop(); }

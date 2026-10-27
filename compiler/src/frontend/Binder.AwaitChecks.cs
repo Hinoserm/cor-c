@@ -342,6 +342,9 @@ public sealed partial class Binder
                 CheckInterruptHandler(m, d, bodies, allocates);
             }
 
+            // WHERE THE PROCESSOR'S STATE IS KEPT, freestanding (PackedStateOf).
+            if (Parser.PackedEverywhere) _r.PackedState = PackedStateOf();
+
             // AND A WHOLE PROGRAM WITH A HANDLER keeps them too: the check
             // above leaves a static's step to the link's (Lto.Preinit), which
             // reads them.
@@ -1564,6 +1567,62 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>Whether a call is one of the prelude's packed operations (Packed.NAME).</summary>
+    private bool PackedOperation(CallExpr call)
+        => _r.Calls.TryGetValue(call, out MethodSymbol? m) && m.Owner.Name == Prelude.PackedType && m.Decl?.File == "<prelude>" && m.Name != "Features";
+
+    /// <summary>Whether an expression is a float's or a double's: the x87's, freestanding.</summary>
+    private bool FloatTyped(Expr e) => _r.TypeOf(e) is { Nullable: false, Prim: Prim.F32 or Prim.F64 };
+
+    /// <summary>
+    /// WHERE A FREESTANDING PROGRAM KEEPS THE PROCESSOR'S STATE (Lowering:
+    /// the compiler's own block around each body, Parser.ImplicitKind): each
+    /// method that needs it, and why -- its own float code or packed
+    /// operations, or a call in a loop to one that needs it, so that the
+    /// state is kept once around the loop and not on every call (the callee
+    /// runs inside, Lowering's $inside copy). Not an async body's, whose
+    /// frame outlives a run; nor a lambda's, a function of its own.
+    /// </summary>
+    private Dictionary<MethodSymbol, string> PackedStateOf()
+    {
+        Dictionary<MethodSymbol, string> state = new(ReferenceEqualityComparer.Instance);
+        Dictionary<MethodSymbol, List<MethodSymbol>> inLoops = new(ReferenceEqualityComparer.Instance);
+        foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
+        {
+            if (m.Async || d.Body is null || d.Body.Iterator) continue;
+            List<MethodSymbol> looped = new();
+            string? own = null;
+            bool copyable = !d.IsCtor && d.Name is not ("StaticInit$" or "StaticInitBody$");
+            foreach (Node n in SafetyNodes(d.Body))
+            {
+                // A copy of a body with a lambda or a local function in it
+                // would make their functions twice (Lowering's $inside).
+                if (n is LambdaExpr or LocalDecl { LocalFunction: true }) copyable = false;
+                if (own is null && n is CallExpr call && PackedOperation(call)) own = "packed operations";
+                else if (own is null && n is Expr e && FloatTyped(e)) own = "float code";
+                if (n is WhileStmt or DoStmt or ForStmt or ForeachStmt)
+                    foreach ((Node _, MethodSymbol callee) in DirectCalls(n, m.Owner)) looped.Add(callee);
+            }
+            if (own is not null) state[m] = own;
+            if (copyable) _r.PackedCopyable.Add(m);
+            inLoops[m] = looped;
+        }
+        for (bool more = true; more;)
+        {
+            more = false;
+            foreach ((MethodSymbol m, List<MethodSymbol> looped) in inLoops)
+            {
+                if (state.ContainsKey(m)) continue;
+                if (looped.FirstOrDefault(c => state.ContainsKey(c)) is { } callee)
+                {
+                    state[m] = $"calls '{callee.Owner.Name}.{callee.Name}' in a loop";
+                    more = true;
+                }
+            }
+        }
+        return state;
+    }
+
     /// <summary>Whether a call is a packed block's start, Sys.PackedEnter (Parser.ParsePackedBlock).</summary>
     private static bool PackedEnter(CallExpr call)
         => call is { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedEnter" } };
@@ -1573,6 +1632,7 @@ public sealed partial class Binder
     /// <summary>The awaits and allocations a body makes itself, in order, with what each does.</summary>
     private IEnumerable<(Node Site, string What)> AllocationsIn(Node body)
     {
+        bool packedSaid = false, floatSaid = false;
         foreach (Node n in SafetyNodes(body))
         {
             switch (n)
@@ -1583,12 +1643,19 @@ public sealed partial class Binder
                 case UsingDeclStmt { Async: true }:
                     yield return (n, "awaits");
                     break;
-                // A PACKED BLOCK (Parser.ParsePackedBlock) borrows the thread's
-                // x87, MMX and SSE state, which an interrupt handler -- run on
+                // FLOAT CODE AND THE PACKED OPERATIONS take the thread's x87,
+                // MMX and SSE state, which an interrupt handler -- run on
                 // whatever thread was interrupted, mid-instruction -- has not
-                // saved: refused, as an allocation is.
-                case CallExpr enters when PackedEnter(enters):
-                    yield return (n, Corsac.Lang.Lto.InterruptNotes.PackedBlock + " (using (Packed.Mmx()), Sse or X87), which takes the interrupted thread's x87 and MMX state");
+                // saved: refused, as an allocation is; once a body each. The
+                // compiler's own block around a body (Parser.ImplicitKind)
+                // is no use of it, which lowering keeps only for these.
+                case CallExpr packed when !packedSaid && PackedOperation(packed):
+                    packedSaid = true;
+                    yield return (n, Corsac.Lang.Lto.InterruptNotes.PackedBlock + " (Packed." + ((MemberExpr)packed.Target).Name + "), which takes the interrupted thread's x87, MMX and SSE state");
+                    break;
+                case Expr floats when !floatSaid && Parser.PackedEverywhere && FloatTyped(floats):
+                    floatSaid = true;
+                    yield return (n, Corsac.Lang.Lto.InterruptNotes.FloatCode + ", the x87's, which takes the interrupted thread's state");
                     break;
                 case LambdaExpr l:
                     yield return (n, l.GroupIdentity is not null ? "makes a delegate of a method" : "makes a lambda");

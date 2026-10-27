@@ -105,8 +105,8 @@ internal static class MachineIntrinsics
     public const string PackedEnd = Prefix + "emms";
     /// <summary>
     /// A packed block's taking and giving back of the x87, MMX and SSE state
-    /// in freestanding code (Sys.PackedEnter, PackedLeave: using
-    /// (Packed.Mmx())), at the save area's address: as lowering writes them
+    /// in freestanding code (Sys.PackedEnter, PackedLeave: the compiler's own
+    /// block around a body, Parser.ImplicitKind), at the save area's address: as lowering writes them
     /// (PackedSave, PackedRestore: the block's kind, number and variant's
     /// features), then as the backend settles them from what the block's
     /// code uses (Selector.SettlePackedSaves) -- the x87's save, FXSAVE, or

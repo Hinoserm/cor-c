@@ -53,7 +53,7 @@ internal static class Isa
         MOp.Cvttss2si => X86Feature.Sse,
         MOp.MmxOp or MOp.MmxShiftImm => X86Feature.Mmx,
         MOp.MmxShuffleW or MOp.MmxExtractW or MOp.MmxInsertW => X86Feature.Mmx | X86Feature.MmxExtensions,
-        MOp.XmmLoad or MOp.XmmStore or MOp.XmmLoadLow or MOp.XmmStoreLow or MOp.XmmOp => X86Feature.Sse,
+        MOp.XmmLoad or MOp.XmmStore or MOp.XmmLoadLow or MOp.XmmStoreLow or MOp.XmmOp or MOp.XmmOpRR => X86Feature.Sse,
         MOp.XmmShiftImm or MOp.XmmExtractW or MOp.XmmInsertW => X86Feature.Sse | X86Feature.Sse2,
         MOp.ThreeDNowOp => X86Feature.Mmx | X86Feature.ThreeDNow,
         // FXSAVE with LDMXCSR: an SSE block's, so the SSE state's.
@@ -77,7 +77,7 @@ internal static class Isa
         | (i.Op == MOp.MmxOp && i.Operands[0] is MImm { Value: 0xD4 or 0xFB } ? X86Feature.Sse | X86Feature.Sse2 : X86Feature.None)
         // SSE2's: the integer ones (66), the word shuffles (F2, F3 0F 70),
         // and the conversions between doublewords and floats (0F 5B, F3 0F 5B).
-        | (i.Op == MOp.XmmOp && i.Operands[0] is MImm { Value: var prefix } && i.Operands[1] is MImm { Value: var code }
+        | (i.Op is MOp.XmmOp or MOp.XmmOpRR && i.Operands[0] is MImm { Value: var prefix } && i.Operands[1] is MImm { Value: var code }
            && (prefix is 0x66 or 0xF2 || code == 0x5B || prefix == 0xF3 && code == 0x70) ? X86Feature.Sse2 : X86Feature.None);
 
     /// <summary>Whether a packed operation's opcode (0F xx: MOp.MmxOp) is one of the MMX extensions' -- PMULHUW, PAVGB/W, PMINUB, PMAXUB, PMINSW, PMAXSW, PSADBW.</summary>

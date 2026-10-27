@@ -287,6 +287,16 @@ internal sealed class Encoder
     /// [disp32]), and [ESP] always needs a SIB byte; both are handled here so
     /// nothing else has to know.
     /// </summary>
+    /// <summary>A packed instruction's register (mmN or xmmN) named at operand `k` (an MImm), or 0 -- mm0, xmm0 -- where it names none.</summary>
+    private static int Packed(MInstr i, int k) => i.Operands.Count > k && i.Operands[k] is MImm { Value: var n } ? (int)n : 0;
+
+    /// <summary>A packed instruction's source: memory, or a register (an MImm: mmS, xmmS) in r/m, with `reg` the destination's.</summary>
+    private void PackedSource(MOperand source, int reg)
+    {
+        if (source is MImm { Value: var s }) B((byte)(0xC0 | (reg << 3) | (int)s));
+        else ModRM(reg, source);
+    }
+
     private void ModRM(int reg, MOperand rm)
     {
         reg &= 7;
@@ -667,9 +677,10 @@ internal sealed class Encoder
                 break;
             case MOp.MmxLoad:
             case MOp.MmxStore:
-                if (i.Operands.Count != 1 || i.Operands[0] is not MMem)
+                // movq mmN, m64 / movq m64, mmN: mm0 unless a register is named.
+                if (i.Operands.Count is < 1 or > 2 || i.Operands[0] is not MMem)
                     throw new InvalidOperationException("MMX memory move requires memory");
-                B(0x0f, i.Op == MOp.MmxLoad ? (byte)0x6f : (byte)0x7f); ModRM(0, i.Operands[0]);
+                B(0x0f, i.Op == MOp.MmxLoad ? (byte)0x6f : (byte)0x7f); ModRM(Packed(i, 1), i.Operands[0]);
                 break;
             case MOp.MmxLoadD:
                 if (i.Operands.Count != 1 || i.Operands[0] is not MMem)
@@ -715,29 +726,40 @@ internal sealed class Encoder
                 B(i.Op is MOp.MmxShlW or MOp.MmxShlD ? (byte)0xf0 : i.Op is MOp.MmxShrW or MOp.MmxShrD ? (byte)0xd0 : (byte)0xe0);
                 B((byte)shift.Value); break;
             case MOp.MmxOp:
-                // mm0 op= m64: 0F xx /r with mm0 as the register.
-                B(0x0f, (byte)((MImm)i.Operands[0]).Value); ModRM(0, i.Operands[1]); break;
+                // mmD op= m64 or mmS: 0F xx /r, mmD (mm0 unless named) the register.
+                B(0x0f, (byte)((MImm)i.Operands[0]).Value); PackedSource(i.Operands[1], Packed(i, 2)); break;
             case MOp.MmxShiftImm:
-                // 0F 71/72/73 /digit ib, mm0 the operand.
-                B(0x0f, (byte)((MImm)i.Operands[0]).Value, (byte)(0xC0 | (((MImm)i.Operands[1]).Value << 3)), (byte)((MImm)i.Operands[2]).Value); break;
+                // 0F 71/72/73 /digit ib, mmD (mm0 unless named) the operand.
+                B(0x0f, (byte)((MImm)i.Operands[0]).Value, (byte)(0xC0 | (int)(((MImm)i.Operands[1]).Value << 3) | Packed(i, 3)), (byte)((MImm)i.Operands[2]).Value); break;
             case MOp.MmxShuffleW:
-                B(0x0f, 0x70); ModRM(0, i.Operands[0]); B((byte)((MImm)i.Operands[1]).Value); break;
+                B(0x0f, 0x70); PackedSource(i.Operands[0], Packed(i, 2)); B((byte)((MImm)i.Operands[1]).Value); break;
             case MOp.MmxExtractW:
-                // pextrw r32, mm0, ib: 0F C5 /r, the register in reg.
-                B(0x0f, 0xc5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3)), (byte)((MImm)i.Operands[1]).Value); break;
+                // pextrw r32, mmS, ib: 0F C5 /r, the register in reg.
+                B(0x0f, 0xc5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3) | Packed(i, 2)), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.MmxInsertW:
-                // pinsrw mm0, r32, ib: 0F C4 /r, mm0 in reg, the register in r/m.
-                B(0x0f, 0xc4, (byte)(0xC0 | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
+                // pinsrw mmD, r32, ib: 0F C4 /r, mmD in reg, the register in r/m.
+                B(0x0f, 0xc4, (byte)(0xC0 | (Packed(i, 2) << 3) | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.XmmLoad:
                 // movups xmmN, m128: 0F 10 /r.
                 B(0x0f, 0x10); ModRM((int)((MImm)i.Operands[0]).Value, i.Operands[1]); break;
             case MOp.XmmStore:
-                B(0x0f, 0x11); ModRM(0, i.Operands[0]); break;
+                B(0x0f, 0x11); ModRM(Packed(i, 1), i.Operands[0]); break;
             case MOp.XmmLoadLow:
                 // movlps xmmN, m64: 0F 12 /r.
                 B(0x0f, 0x12); ModRM((int)((MImm)i.Operands[0]).Value, i.Operands[1]); break;
             case MOp.XmmStoreLow:
-                B(0x0f, 0x13); ModRM(0, i.Operands[0]); break;
+                B(0x0f, 0x13); ModRM(Packed(i, 1), i.Operands[0]); break;
+            case MOp.XmmOpRR:
+            {
+                // [prefix] 0F op /r: xmmD the register, xmmS or memory the r/m;
+                // the immediate where there is one.
+                long prefix = ((MImm)i.Operands[0]).Value;
+                if (prefix != 0) B((byte)prefix);
+                B(0x0f, (byte)((MImm)i.Operands[1]).Value);
+                PackedSource(i.Operands[3], (int)((MImm)i.Operands[2]).Value);
+                if (i.Operands.Count > 4) B((byte)((MImm)i.Operands[4]).Value);
+                break;
+            }
             case MOp.XmmOp:
             {
                 // [prefix] 0F op /r with xmm0 the register and xmm1 the r/m,
@@ -749,13 +771,13 @@ internal sealed class Encoder
                 break;
             }
             case MOp.XmmShiftImm:
-                B(0x66, 0x0f, (byte)((MImm)i.Operands[0]).Value, (byte)(0xC0 | (((MImm)i.Operands[1]).Value << 3)), (byte)((MImm)i.Operands[2]).Value); break;
+                B(0x66, 0x0f, (byte)((MImm)i.Operands[0]).Value, (byte)(0xC0 | (int)(((MImm)i.Operands[1]).Value << 3) | Packed(i, 3)), (byte)((MImm)i.Operands[2]).Value); break;
             case MOp.XmmExtractW:
-                B(0x66, 0x0f, 0xc5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3)), (byte)((MImm)i.Operands[1]).Value); break;
+                B(0x66, 0x0f, 0xc5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3) | Packed(i, 2)), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.XmmInsertW:
-                B(0x66, 0x0f, 0xc4, (byte)(0xC0 | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
+                B(0x66, 0x0f, 0xc4, (byte)(0xC0 | (Packed(i, 2) << 3) | Reg(i.Operands[0])), (byte)((MImm)i.Operands[1]).Value); break;
             case MOp.ThreeDNowOp:
-                B(0x0f, 0x0f); ModRM(0, i.Operands[1]); B((byte)((MImm)i.Operands[0]).Value); break;
+                B(0x0f, 0x0f); PackedSource(i.Operands[1], Packed(i, 2)); B((byte)((MImm)i.Operands[0]).Value); break;
             case MOp.Emms:
                 B(0x0f, 0x77); break;
             case MOp.Femms:
@@ -886,7 +908,7 @@ internal sealed class Encoder
                 break;
             case MOp.MmxStoreNt:
                 B(0x0F, 0xE7);
-                ModRM(0, i.Operands[0]);
+                ModRM(Packed(i, 1), i.Operands[0]);
                 break;
             case MOp.PrefetchNta:
                 B(0x0F, 0x18);

@@ -12,6 +12,12 @@ public sealed partial class BindResult
     /// </summary>
     public byte[]? InterruptFacts { get; set; }
 
+    /// <summary>The methods a freestanding program keeps the processor's state in, and why (Binder.PackedStateOf; Lowering's implicit blocks).</summary>
+    public Dictionary<MethodSymbol, string> PackedState { get; set; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The methods whose bodies lowering may make a second function of (Lowering's $inside copy): no lambda, no local function, no constructor or type initialiser.</summary>
+    public HashSet<MethodSymbol> PackedCopyable { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>
     /// How many 64-bit words each type's ancestor mask takes.
     ///

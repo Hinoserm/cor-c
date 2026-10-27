@@ -82,14 +82,6 @@ public static class PackedOps
         ["EqualF32"] = (0xC2, 0, 0xB0, false), ["LessF32"] = (0xC2, 1, 0xA0, true), ["LessEqualF32"] = (0xC2, 2, 0x90, true),
     };
 
-    /// <summary>The scalar forms' names for the float operations (Runtime.PackedScalarFloat), by the codes it reads.</summary>
-    public static int FloatCode(string name) => name switch
-    {
-        "AddF32" => 1, "SubF32" => 2, "MulF32" => 3, "DivF32" => 4, "MinF32" => 5, "MaxF32" => 6,
-        "EqualF32" => 7, "LessF32" => 8, "LessEqualF32" => 9, "SqrtF32" => 10, "IntToFloat32" => 11, "FloatToInt32" => 12,
-        _ => 0,
-    };
-
     /// <summary>
     /// The features an operation of this name can use, on either width: what
     /// a block's variants are told apart by. A name the table does not know

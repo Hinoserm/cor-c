@@ -380,16 +380,21 @@ public static class Driver
               --enable-<name>    the same seven extensions granted beyond the
                                  CPU's own: a promise the processor has them;
                                  a disable wins over an enable
+              --packed-report    freestanding: every method that keeps the
+                                 processor's x87, MMX and SSE state, and why
+                                 (its float code, its packed operations, or
+                                 a call in a loop to one that keeps it): the
+                                 compiler's own saves, each said once
               --x87-in-blocks-only
                                  freestanding (the default there): the
-                                 program's own float code only inside a
-                                 packed block (using (Packed.X87()) { ... }),
-                                 which saves the interrupted thread's x87
-                                 state first -- its own, or every caller's:
-                                 a function called only inside blocks runs
-                                 under theirs. Judged where every caller is
-                                 known: the compile of a program, else the
-                                 link. Refused for hosted code
+                                 program's own float code only where the
+                                 processor's state is kept -- which the
+                                 compiler does around each method that
+                                 needs it, and under its callers' for one
+                                 they call -- never in a lambda or an async
+                                 body. Judged where every caller is known:
+                                 the compile of a program, else the link.
+                                 Refused for hosted code
               --x87-outside-blocks
                                  freestanding: this unit's own float code
                                  allowed outside packed blocks (wins over
@@ -1049,6 +1054,11 @@ public static class Driver
         Parser.ProjectUsings = Values(args, "--using").ToList();
         // SyscallWord, the width of a system call's registers (--syscall-abi).
         Parser.SyscallWordType = syscallAbi == 64 ? "ulong" : "uint";
+        // EVERY BODY IN THE COMPILER'S OWN PACKED BLOCK, freestanding i386
+        // (Parser.PackedEverywhere): the processor's state kept where float
+        // code and packed operations need it (Binder.PackedStateOf).
+        Parser.PackedEverywhere = freestanding && !longMode;
+        Corsac.Lang.Lower.Lowering.PackedReport = args.Contains("--packed-report");
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");
         // --check: the source read and bound, its errors and warnings

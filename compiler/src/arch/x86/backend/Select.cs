@@ -153,106 +153,135 @@ internal sealed partial class Selector
     private void SelectPackedOp(string name, Instr i)
     {
         MInstr P(MOp op, params MOperand[] operands) => Emit(new MInstr(op, operands) { Probed = true });
-        MMem At(int k) => new(R(i.Operands[k]), 0);
-        // AN OPERAND THE LAST INSTRUCTION STORED FROM mm0 IS IN mm0: the
-        // result of the operation before, handed on (Packed.ShiftLeft16 of
-        // a MultiplyHigh16) -- its reload left out.
-        // Past what touches neither mm0 nor memory: the next buffer's
-        // address (Lea), a register's move.
-        void Load(int k)
-        {
-            // Not past one that sets the address itself: the same register
-            // then names other memory (p = q between a Store and a Load).
-            if (i.Operands[k] is not RegOperand { Reg: var held }) { P(MOp.MmxLoad, At(k)); return; }
-            MReg address = Lo(held);
-            int back = _cur.Instrs.Count - 1;
-            while (back >= 0 && _cur.Instrs[back] is { Op: MOp.Lea or MOp.Mov } between && between.Operands[0] is MReg set && !ReferenceEquals(set, address)) back--;
-            if (back >= 0 && _cur.Instrs[back] is { Op: MOp.MmxStore } last && last.Operands[0] is MMem { Index: null, Symbol: null } stored
-                && stored.Disp == 0 && ReferenceEquals(stored.Base, address)) return;
-            P(MOp.MmxLoad, At(k));
-        }
+        MImm N(int register) => Imm(register);
+        MReg Address(int k) => R(i.Operands[k]);
         string[] part = name[MachineIntrinsics.PackedOpPrefix.Length..].Split('.');
         switch (part[0])
         {
             case "mov":
-                Load(1);
-                P(MOp.MmxStore, At(0));
+            {
+                int value = PackedIn(false, Address(1), 8);
+                PackedOut(false, Address(0), 8, value, copy: true);
                 break;
+            }
             case "op":
-                Load(1);
-                P(MOp.MmxOp, Imm(Convert.ToByte(part[1], 16)), At(2));
-                P(MOp.MmxStore, At(0));
+            case "3d":
+            {
+                int a = PackedIn(false, Address(1), 8);
+                (MOperand b, int pinned) = PackedSourceOf(false, Address(2), 8, a);
+                int made = PackedResult(false, a, pinned);
+                if (part[0] == "op") P(MOp.MmxOp, Imm(Convert.ToByte(part[1], 16)), b, N(made));
+                else P(MOp.ThreeDNowOp, Imm(Convert.ToByte(part[1], 16)), b, N(made));
+                PackedOut(false, Address(0), 8, made, copy: false);
                 break;
+            }
             case "shift":
-                Load(1);
-                P(MOp.MmxShiftImm, Imm(Convert.ToByte(part[1], 16)), Imm(int.Parse(part[2])), Imm(int.Parse(part[3])));
-                P(MOp.MmxStore, At(0));
+            {
+                int a = PackedIn(false, Address(1), 8);
+                int made = PackedResult(false, a, -1);
+                P(MOp.MmxShiftImm, Imm(Convert.ToByte(part[1], 16)), Imm(int.Parse(part[2])), Imm(int.Parse(part[3])), N(made));
+                PackedOut(false, Address(0), 8, made, copy: false);
                 break;
+            }
             case "shuffle":
-                P(MOp.MmxShuffleW, At(1), Imm(int.Parse(part[1])));
-                P(MOp.MmxStore, At(0));
+            {
+                (MOperand a, int pinned) = PackedSourceOf(false, Address(1), 8, -1);
+                int made = PackedFree(false, pinned, -1);
+                P(MOp.MmxShuffleW, a, Imm(int.Parse(part[1])), N(made));
+                PackedOut(false, Address(0), 8, made, copy: false);
                 break;
+            }
             case "extract":
-                P(MOp.MmxLoad, At(0));
-                P(MOp.MmxExtractW, i.Dest is not null ? Lo(i.Dest) : Temp(), Imm(int.Parse(part[1])));
+            {
+                int a = PackedIn(false, Address(0), 8);
+                P(MOp.MmxExtractW, i.Dest is not null ? Lo(i.Dest) : Temp(), Imm(int.Parse(part[1])), N(a));
                 break;
+            }
             case "insert":
-                Load(1);
-                P(MOp.MmxInsertW, R(i.Operands[2]), Imm(int.Parse(part[1])));
-                P(MOp.MmxStore, At(0));
+            {
+                int a = PackedIn(false, Address(1), 8);
+                int made = PackedResult(false, a, -1);
+                P(MOp.MmxInsertW, R(i.Operands[2]), Imm(int.Parse(part[1])), N(made));
+                PackedOut(false, Address(0), 8, made, copy: false);
                 break;
+            }
             case "storent":
-                Load(1);
-                P(MOp.MmxStoreNt, At(0));
+            {
+                int value = PackedIn(false, Address(1), 8);
+                PackedForgetOutside(Address(0));
+                P(MOp.MmxStoreNt, new MMem(Address(0), 0), N(value));
                 break;
+            }
             case "fence":
                 P(MOp.Sfence);
                 return;
-            case "3d":
-                Load(1);
-                P(MOp.ThreeDNowOp, Imm(Convert.ToByte(part[1], 16)), At(2));
-                P(MOp.MmxStore, At(0));
-                break;
-            // THE XMM REGISTERS' (SSE, SSE2): xmm0 and xmm1 in, xmm0 out. They
-            // are not the x87's, and leave the MMX registers as they were.
+            // THE XMM REGISTERS' (SSE, SSE2). They are not the x87's, and
+            // leave the MMX registers as they were.
             case "x":
-                P(MOp.XmmLoad, Imm(0), At(1));
-                P(MOp.XmmLoad, Imm(1), At(2));
-                P(MOp.XmmOp, Imm(Convert.ToByte(part[1], 16)), Imm(Convert.ToByte(part[2], 16)));
-                P(MOp.XmmStore, At(0));
+            {
+                int a = PackedIn(true, Address(1), 16);
+                (MOperand b, int pinned) = PackedSourceOf(true, Address(2), 16, a);
+                int made = PackedResult(true, a, pinned);
+                P(MOp.XmmOpRR, Imm(Convert.ToByte(part[1], 16)), Imm(Convert.ToByte(part[2], 16)), N(made), b);
+                PackedOut(true, Address(0), 16, made, copy: false);
                 return;
+            }
             case "xshift":
-                P(MOp.XmmLoad, Imm(0), At(1));
-                P(MOp.XmmShiftImm, Imm(Convert.ToByte(part[1], 16)), Imm(int.Parse(part[2])), Imm(int.Parse(part[3])));
-                P(MOp.XmmStore, At(0));
+            {
+                int a = PackedIn(true, Address(1), 16);
+                int made = PackedResult(true, a, -1);
+                P(MOp.XmmShiftImm, Imm(Convert.ToByte(part[1], 16)), Imm(int.Parse(part[2])), Imm(int.Parse(part[3])), N(made));
+                PackedOut(true, Address(0), 16, made, copy: false);
                 return;
+            }
             case "xshuffle":
-                P(MOp.XmmLoad, Imm(1), At(1));
-                P(MOp.XmmOp, Imm(Convert.ToByte(part[1], 16)), Imm(0x70), Imm(int.Parse(part[2])));
-                P(MOp.XmmStore, At(0));
+            {
+                (MOperand a, int pinned) = PackedSourceOf(true, Address(1), 16, -1);
+                int made = PackedFree(true, pinned, -1);
+                P(MOp.XmmOpRR, Imm(Convert.ToByte(part[1], 16)), Imm(0x70), N(made), a, Imm(int.Parse(part[2])));
+                PackedOut(true, Address(0), 16, made, copy: false);
                 return;
+            }
             case "xextract":
-                P(MOp.XmmLoad, Imm(0), At(0));
-                P(MOp.XmmExtractW, i.Dest is not null ? Lo(i.Dest) : Temp(), Imm(int.Parse(part[1])));
+            {
+                int a = PackedIn(true, Address(0), 16);
+                P(MOp.XmmExtractW, i.Dest is not null ? Lo(i.Dest) : Temp(), Imm(int.Parse(part[1])), N(a));
                 return;
+            }
             case "xinsert":
-                P(MOp.XmmLoad, Imm(0), At(1));
-                P(MOp.XmmInsertW, R(i.Operands[2]), Imm(int.Parse(part[1])));
-                P(MOp.XmmStore, At(0));
+            {
+                int a = PackedIn(true, Address(1), 16);
+                int made = PackedResult(true, a, -1);
+                P(MOp.XmmInsertW, R(i.Operands[2]), Imm(int.Parse(part[1])), N(made));
+                PackedOut(true, Address(0), 16, made, copy: false);
                 return;
+            }
             case "xf":
             case "f2":
             {
-                bool wide = part[0] == "xf";
+                // Four floats (xf), or two (f2: a Packed64's, its eight bytes
+                // in the register's low half, MOVLPS in and out).
+                int bytes = part[0] == "xf" ? 16 : 8;
                 byte prefix = Convert.ToByte(part[1], 16), op = Convert.ToByte(part[2], 16);
                 int immediate = int.Parse(part[3]);
                 bool unary = part[4] == "1";
-                MOp load = wide ? MOp.XmmLoad : MOp.XmmLoadLow;
-                if (!unary) P(load, Imm(0), At(1));
-                P(load, Imm(1), At(unary ? 1 : 2));
-                if (immediate >= 0) P(MOp.XmmOp, Imm(prefix), Imm(op), Imm(immediate));
-                else P(MOp.XmmOp, Imm(prefix), Imm(op));
-                P(wide ? MOp.XmmStore : MOp.XmmStoreLow, At(0));
+                int made;
+                if (unary)
+                {
+                    (MOperand a, int pinned) = PackedSourceOf(true, Address(1), bytes, -1);
+                    made = PackedFree(true, pinned, -1);
+                    if (immediate >= 0) P(MOp.XmmOpRR, Imm(prefix), Imm(op), N(made), a, Imm(immediate));
+                    else P(MOp.XmmOpRR, Imm(prefix), Imm(op), N(made), a);
+                }
+                else
+                {
+                    int a = PackedIn(true, Address(1), bytes);
+                    (MOperand b, int pinned) = PackedSourceOf(true, Address(2), bytes, a);
+                    made = PackedResult(true, a, pinned);
+                    if (immediate >= 0) P(MOp.XmmOpRR, Imm(prefix), Imm(op), N(made), b, Imm(immediate));
+                    else P(MOp.XmmOpRR, Imm(prefix), Imm(op), N(made), b);
+                }
+                PackedOut(true, Address(0), bytes, made, copy: false);
                 return;
             }
             default:
@@ -260,6 +289,227 @@ internal sealed partial class Selector
                 return;
         }
         _mmxDirty = true;
+    }
+
+    // THE PACKED REGISTERS A BLOCK'S OPERATIONS KEEP THEIR VALUES IN
+    // (SelectPackedOp): mm0-mm7 and xmm0-xmm7, each the value at an address
+    // -- a buffer's, a Packed64 or Packed128 local's, a Load's source -- as
+    // its last operation left it, written there only when it must be
+    // (PackedRegistersBefore, an eviction). The next operation on it takes
+    // it from the register: a chain of operations is a chain of registers,
+    // as a hand-written loop is. Physical registers: the allocator gives the
+    // general registers only, and nothing it inserts touches these.
+    private readonly MReg?[] _mmHeld = new MReg?[8], _xmmHeld = new MReg?[8];
+    private readonly bool[] _mmDirty = new bool[8], _xmmDirty = new bool[8];
+    private readonly int[] _mmBytes = new int[8], _xmmBytes = new int[8];
+    private readonly long[] _mmUsed = new long[8], _xmmUsed = new long[8];
+    private long _packedClock;
+
+    /// <summary>The registers that are nothing but a frame slot's address (`r = copy &slot`, once): a buffer, which no other address names.</summary>
+    private HashSet<MReg>? _packedBuffers;
+
+    private bool IsPackedBuffer(MReg address)
+    {
+        if (_packedBuffers is null)
+        {
+            _packedBuffers = new(ReferenceEqualityComparer.Instance);
+            Dictionary<VReg, int> writes = new(ReferenceEqualityComparer.Instance);
+            foreach (Block b in _f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { } d) writes[d] = writes.GetValueOrDefault(d) + 1;
+            foreach (Block b in _f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Copy && i.Dest is { } d && writes[d] == 1 && i.Operands is [SlotOperand] && !_f.Params.Contains(d))
+                        _packedBuffers.Add(Lo(d));
+        }
+        return _packedBuffers.Contains(address);
+    }
+
+    private (MReg?[] Held, bool[] Dirty, int[] Bytes, long[] Used) PackedFile(bool xmm)
+        => xmm ? (_xmmHeld, _xmmDirty, _xmmBytes, _xmmUsed) : (_mmHeld, _mmDirty, _mmBytes, _mmUsed);
+
+    private static int PackedFind(MReg?[] held, MReg address)
+    {
+        for (int r = 0; r < held.Length; r++) if (held[r] is { } a && ReferenceEquals(a, address)) return r;
+        return -1;
+    }
+
+    /// <summary>A register's value written back to its address, where its last operation left it there not.</summary>
+    private void PackedWriteBack(bool xmm, int r)
+    {
+        var file = PackedFile(xmm);
+        if (!file.Dirty[r] || file.Held[r] is not { } address) return;
+        MMem at = new(address, 0);
+        if (!xmm) Emit(new MInstr(MOp.MmxStore, at, Imm(r)) { Probed = true });
+        else Emit(new MInstr(file.Bytes[r] == 16 ? MOp.XmmStore : MOp.XmmStoreLow, at, Imm(r)) { Probed = true });
+        file.Dirty[r] = false;
+    }
+
+    /// <summary>A register for a value: a free one, else the least recently used not `pinned` (or `pinned2`), written back first.</summary>
+    private int PackedFree(bool xmm, int pinned, int pinned2)
+    {
+        var file = PackedFile(xmm);
+        int pick = -1;
+        for (int r = 0; r < 8; r++)
+        {
+            if (r == pinned || r == pinned2) continue;
+            if (file.Held[r] is null) { pick = r; break; }
+            if (pick < 0 || file.Used[r] < file.Used[pick]) pick = r;
+        }
+        PackedWriteBack(xmm, pick);
+        file.Held[pick] = null;
+        file.Used[pick] = ++_packedClock;
+        return pick;
+    }
+
+    /// <summary>The register holding the value at `address`, loaded there if no register does -- out of the other file's first, written back.</summary>
+    private int PackedIn(bool xmm, MReg address, int bytes)
+    {
+        var file = PackedFile(xmm);
+        int r = PackedFind(file.Held, address);
+        if (r >= 0 && file.Bytes[r] >= bytes) { file.Used[r] = ++_packedClock; return r; }
+        if (r >= 0) { PackedWriteBack(xmm, r); file.Held[r] = null; }
+        PackedLeaveOther(!xmm, address);
+        r = PackedFree(xmm, -1, -1);
+        MMem at = new(address, 0);
+        if (!xmm) Emit(new MInstr(MOp.MmxLoad, at, Imm(r)) { Probed = true });
+        else Emit(new MInstr(bytes == 16 ? MOp.XmmLoad : MOp.XmmLoadLow, Imm(r), at) { Probed = true });
+        file.Held[r] = address;
+        file.Dirty[r] = false;
+        file.Bytes[r] = bytes;
+        return r;
+    }
+
+    /// <summary>An operation's second operand: its register where one holds it, else the memory itself, which the instruction reads where it is.</summary>
+    private (MOperand Source, int Pinned) PackedSourceOf(bool xmm, MReg address, int bytes, int pinned)
+    {
+        var file = PackedFile(xmm);
+        int r = PackedFind(file.Held, address);
+        if (r >= 0 && file.Bytes[r] >= bytes) { file.Used[r] = ++_packedClock; return (Imm(r), r); }
+        // Not SSE's memory forms, which fault on sixteen bytes not aligned so
+        // -- a Store's target, a local, may be anywhere -- and read sixteen
+        // where a Packed64's are eight: MOVUPS or MOVLPS into a register.
+        if (xmm || PackedHeldOther(!xmm, address)) { int loaded = PackedIn(xmm, address, bytes); return (Imm(loaded), loaded); }
+        return (new MMem(address, 0), -1);
+    }
+
+    /// <summary>The register an operation's result is made in: a copy of its first operand's, which the operation then works on.</summary>
+    private int PackedResult(bool xmm, int first, int pinned)
+    {
+        int made = PackedFree(xmm, first, pinned);
+        if (!xmm) Emit(new MInstr(MOp.MmxOp, Imm(0x6F), Imm(first), Imm(made)) { Probed = true });
+        else Emit(new MInstr(MOp.XmmOpRR, Imm(0), Imm(0x28), Imm(made), Imm(first)) { Probed = true });
+        return made;
+    }
+
+    /// <summary>
+    /// The result in register `r` as the value at `address`: kept there,
+    /// written back later, for a buffer or a local, which no other address
+    /// names; stored at once anywhere else -- a Store's target may be any
+    /// memory -- and every register taken from memory that is not a
+    /// buffer's let go, which that store may have changed. `copy`: the value
+    /// is another's (a move), made in a register of its own.
+    /// </summary>
+    private void PackedOut(bool xmm, MReg address, int bytes, int r, bool copy)
+    {
+        var file = PackedFile(xmm);
+        if (!IsPackedBuffer(address))
+        {
+            PackedForgetOutside(address);
+            MMem at = new(address, 0);
+            if (!xmm) Emit(new MInstr(MOp.MmxStore, at, Imm(r)) { Probed = true });
+            else Emit(new MInstr(bytes == 16 ? MOp.XmmStore : MOp.XmmStoreLow, at, Imm(r)) { Probed = true });
+            return;
+        }
+        int old = PackedFind(file.Held, address);
+        if (old >= 0 && old != r) { file.Held[old] = null; file.Dirty[old] = false; }
+        PackedLeaveOther(!xmm, address, writeBack: false);
+        if (copy)
+        {
+            int own = PackedFree(xmm, r, -1);
+            if (!xmm) Emit(new MInstr(MOp.MmxOp, Imm(0x6F), Imm(r), Imm(own)) { Probed = true });
+            else Emit(new MInstr(MOp.XmmOpRR, Imm(0), Imm(0x28), Imm(own), Imm(r)) { Probed = true });
+            r = own;
+        }
+        file.Held[r] = address;
+        file.Dirty[r] = true;
+        file.Bytes[r] = bytes;
+        file.Used[r] = ++_packedClock;
+    }
+
+    private bool PackedHeldOther(bool xmm, MReg address) => PackedFind(PackedFile(xmm).Held, address) >= 0;
+
+    /// <summary>The value at `address` out of the other file: written back, unless it is about to be made anew, and let go.</summary>
+    private void PackedLeaveOther(bool xmm, MReg address, bool writeBack = true)
+    {
+        var file = PackedFile(xmm);
+        int r = PackedFind(file.Held, address);
+        if (r < 0) return;
+        if (writeBack) PackedWriteBack(xmm, r);
+        file.Held[r] = null;
+        file.Dirty[r] = false;
+    }
+
+    /// <summary>Every register holding a value taken from memory that is not a buffer's -- which a store to `address` may have changed -- let go.</summary>
+    private void PackedForgetOutside(MReg address)
+    {
+        foreach (bool xmm in new[] { false, true })
+        {
+            var file = PackedFile(xmm);
+            for (int r = 0; r < 8; r++)
+                if (file.Held[r] is { } a && !IsPackedBuffer(a))
+                {
+                    PackedWriteBack(xmm, r);
+                    file.Held[r] = null;
+                }
+        }
+    }
+
+    /// <summary>Every register written back; and, `forget`, let go -- what it held may change, or the registers may.</summary>
+    private void PackedFlush(bool forget)
+    {
+        foreach (bool xmm in new[] { false, true })
+        {
+            var file = PackedFile(xmm);
+            for (int r = 0; r < 8; r++)
+            {
+                PackedWriteBack(xmm, r);
+                if (forget) file.Held[r] = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// BEFORE AN IR INSTRUCTION, WHAT THE PACKED REGISTERS MUST GIVE UP
+    /// (the registers above): nothing for a packed operation, nor for the
+    /// general registers' own arithmetic; their values written back before a
+    /// load, which may read them; written back and let go before anything
+    /// else -- a store, a call, float code (the x87's registers are the MMX
+    /// ones), the block's end -- which may change what they hold, or them.
+    /// </summary>
+    private void PackedRegistersBefore(Instr i)
+    {
+        if (i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)) return;
+        bool floats = i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64);
+        if (!floats && i.Op is Opcode.Copy or Opcode.Add or Opcode.Sub or Opcode.Mul or Opcode.And or Opcode.Or or Opcode.Xor
+                or Opcode.Shl or Opcode.ShrS or Opcode.ShrU or Opcode.Neg or Opcode.Not
+                or >= Opcode.Eq and <= Opcode.GeU or Opcode.SExt8 or Opcode.SExt16 or Opcode.ZExt8 or Opcode.ZExt16
+                or Opcode.SExt32 or Opcode.ZExt32 or Opcode.Trunc64 or Opcode.LabelAddr)
+        {
+            // AN ADDRESS SET ANEW names other memory (p = q): what was taken
+            // from the old let go. A buffer's is set once, and never dirty so.
+            if (i.Dest is { } d)
+                foreach (bool xmm in new[] { false, true })
+                {
+                    var file = PackedFile(xmm);
+                    int r = PackedFind(file.Held, Lo(d));
+                    if (r < 0) continue;
+                    PackedWriteBack(xmm, r);
+                    file.Held[r] = null;
+                }
+            return;
+        }
+        PackedFlush(forget: floats || i.Op != Opcode.Load);
     }
 
     /// <summary>
@@ -284,15 +534,13 @@ internal sealed partial class Selector
     /// Whether an IR instruction in a packed block needs the x87's save
     /// (SettlePackedSaves): float code, a call through a pointer or to the
     /// operating system, a call to a routine that may run float code -- not
-    /// the runtime's integer packed forms (Runtime.PackedScalar and kin, all
-    /// but PackedScalarFloat), nor a trap or a throw, which leave the block.
+    /// a trap or a throw, which leave the block.
     /// </summary>
     private static bool SettleWantsX87(Instr i)
     {
         if (i.Op is Opcode.CallIndirect or Opcode.Syscall) return true;
         if (i.Op == Opcode.Call)
-            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal)
-                && !(c.StartsWith("m_Runtime_PackedScalar", StringComparison.Ordinal) && !c.StartsWith("m_Runtime_PackedScalarFloat", StringComparison.Ordinal));
+            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal);
         if (i.Op is Opcode.Ret or Opcode.Unwind or Opcode.Trap) return false;
         if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
         foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
@@ -856,11 +1104,14 @@ internal sealed partial class Selector
             _constants.Clear();
             _packedState = packedIn?.GetValueOrDefault(b) ?? 0;
             _mmxDirty = dirtyIn?.GetValueOrDefault(b) ?? false;
+            // A block begins with no packed register held: its last ended so.
+            for (int r = 0; r < 8; r++) { _mmHeld[r] = null; _xmmHeld[r] = null; _mmDirty[r] = false; _xmmDirty[r] = false; }
             for (int n = 0; n < b.Instrs.Count; n++)
             {
                 Instr i = b.Instrs[n];
                 _line = i.Line;
                 NoteConstant(i);
+                PackedRegistersBefore(i);
                 if (_mmxDirty && WantsX87(i))
                 {
                     Emit(new MInstr(MOp.Emms) { Probed = true });
@@ -875,12 +1126,15 @@ internal sealed partial class Selector
                     || TryPackedComparisons(b.Instrs, n, out consumed)
                     || TryRotate(b.Instrs, n, out consumed))
                 {
+                    // Their own MMX code uses mm0 and mm1.
+                    PackedFlush(forget: true);
                     n += consumed - 1;
                     continue;
                 }
                 if (IsCompare(i.Op) && i.Dest is not null && n + 1 < b.Instrs.Count
                     && FusesInto(i, b.Instrs[n + 1]))
                 {
+                    PackedRegistersBefore(b.Instrs[n + 1]);
                     SelectFusedBranch(i, b.Instrs[n + 1]);
                     n++;
                     continue;

@@ -931,14 +931,8 @@ public sealed partial class Lowering
                 int number = call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : 0;
                 int features = call.Args[2] is LiteralExpr { Text: var told } ? int.Parse(told) : 0;
                 if (!Freestanding) return Void();
-                // Refused once, at the block's start: its finally is lowered
-                // on every way out, and would say it again on each.
                 bool enters = name == "PackedEnter";
-                if (_t.WordSize != 4)
-                {
-                    if (enters) Error(call, "a packed block (using (Packed." + (kind switch { 2 => "Sse", 3 => "X87", _ => "Mmx" }) + "())) is the i386 kernel's: long mode has no freestanding packed state here");
-                    return Void();
-                }
+                if (!KeepsState(kind)) return Void();
                 if (PackedVariantNeverRuns(number, features)) return Void();
                 bool fx = (features & PackedOps.Sse) != 0;
                 if (!_packedAreas.TryGetValue((_f, number), out FrameSlot? area))
@@ -1161,6 +1155,9 @@ public sealed partial class Lowering
         }
     }
 
+    /// <summary>A packed block's give-back's kind (Sys.PackedLeave's first).</summary>
+    private static int PackedKindOf(CallExpr call) => call.Args[0] is LiteralExpr { Text: var kind } ? int.Parse(kind) : 0;
+
     /// <summary>A packed block's give-back's number (Sys.PackedLeave's second): its variant's, which Sys.PackedChoose finds it by.</summary>
     private static int PackedNumberOf(CallExpr call) => call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : -1;
 
@@ -1177,6 +1174,38 @@ public sealed partial class Lowering
     /// alone.
     /// </summary>
     private bool PackedStateHere => Freestanding && _t.WordSize == 4;
+
+    /// <summary>
+    /// WHETHER A PACKED BLOCK OF `kind` KEEPS THE PROCESSOR'S STATE here:
+    /// freestanding i386 code, and for the compiler's own block around a
+    /// body (Parser.ImplicitKind) a method that needs it (Binder's
+    /// PackedState) lowered as itself -- its $inside copy runs inside its
+    /// caller's state, and keeps none.
+    /// </summary>
+    private bool KeepsState(int kind)
+        => PackedStateHere && (kind != Corsac.Lang.Parser.ImplicitKind || !_insideCopy && _method is not null && _b.PackedState.ContainsKey(_method));
+
+    /// <summary>Lowering a method's $inside copy (EmitMethod twice): its body as it is, inside its caller's state.</summary>
+    private bool _insideCopy;
+
+    /// <summary>The kept states the code being lowered is inside (Lowering.Stmt's packed TryStmt).</summary>
+    private int _stateKept;
+
+    /// <summary>
+    /// A METHOD'S COPY THAT RUNS INSIDE ITS CALLER'S STATE ($inside): of one
+    /// that keeps the state (Binder's PackedState) and that a second
+    /// function can be made of (Binder's PackedCopyable), whose body this
+    /// unit has, called directly -- not a generic shared copy's, which
+    /// takes a context.
+    /// </summary>
+    private bool CopiesInside(MethodSymbol m)
+        => PackedStateHere && _b.PackedState.ContainsKey(m) && _b.PackedCopyable.Contains(m) && m.Decl?.Body is not null && !m.Async && !TakesContext(Canonical(m));
+
+    /// <summary>A direct call's label: the callee's $inside copy where the call is made inside a kept state.</summary>
+    private string InsideLabel(MethodSymbol m, string label) => (_insideCopy || _stateKept > 0) && CopiesInside(m) ? label + "$inside" : label;
+
+    /// <summary>--packed-report: every method that keeps the processor's state, said as it is lowered.</summary>
+    public static bool PackedReport { get; set; }
 
     /// <summary>The packed blocks' choice words this unit defines (PackedChoose): one each.</summary>
     private readonly HashSet<string> _packedPicks = new(StringComparer.Ordinal);

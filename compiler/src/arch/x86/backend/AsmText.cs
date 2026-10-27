@@ -40,6 +40,13 @@ internal static class AsmText
 
     private static string Size(int width) => width switch { 1 => "byte", 2 => "word", 8 => "qword", _ => "dword" };
 
+    /// <summary>A packed instruction's register named at operand `k` (an MImm), mm0 or xmm0 where none is.</summary>
+    private static string Mm(MInstr i, int k) => "mm" + (i.Operands.Count > k && i.Operands[k] is MImm { Value: var n } ? n : 0);
+    private static string Xmm(MInstr i, int k) => "xmm" + (i.Operands.Count > k && i.Operands[k] is MImm { Value: var n } ? n : 0);
+
+    /// <summary>A packed instruction's source: a register (an MImm) or memory.</summary>
+    private static string PackedSource(MOperand o, string file, int width) => o is MImm { Value: var n } ? file + n : Op(o, width, false);
+
     private static string Op(MOperand o, int width, bool sized)
     {
         switch (o)
@@ -117,9 +124,9 @@ internal static class AsmText
                 yield return "rep movsb";
                 yield break;
             case MOp.MmxLoad:
-                yield return "movq mm0, " + Op(i.Operands[0], 8, true); yield break;
+                yield return $"movq {Mm(i, 1)}, " + Op(i.Operands[0], 8, true); yield break;
             case MOp.MmxStore:
-                yield return "movq " + Op(i.Operands[0], 8, true) + ", mm0"; yield break;
+                yield return "movq " + Op(i.Operands[0], 8, true) + $", {Mm(i, 1)}"; yield break;
             case MOp.MmxZero:
                 yield return "pxor mm0, mm0"; yield break;
             case MOp.MmxLoadD:
@@ -243,7 +250,7 @@ internal static class AsmText
             case MOp.Cpuid: yield return "cpuid"; yield break;
             case MOp.Rdtsc: yield return "rdtsc"; yield break;
             case MOp.MmxStoreNt:
-                yield return $"movntq {Op(i.Operands[0], 8, false)}, mm0";
+                yield return $"movntq {Op(i.Operands[0], 8, false)}, {Mm(i, 1)}";
                 yield break;
             case MOp.PrefetchNta:
                 yield return $"prefetchnta {Op(i.Operands[0], 1, false)}";
@@ -270,46 +277,49 @@ internal static class AsmText
                 yield break;
             }
             case MOp.MmxOp:
-                yield return $"mmx 0f {((MImm)i.Operands[0]).Value:x2}, mm0, {Op(i.Operands[1], 8, false)}";
+                yield return $"mmx 0f {((MImm)i.Operands[0]).Value:x2}, {Mm(i, 2)}, {PackedSource(i.Operands[1], "mm", 8)}";
                 yield break;
             case MOp.XmmLoad:
                 yield return $"movups xmm{((MImm)i.Operands[0]).Value}, {Op(i.Operands[1], 16, false)}";
                 yield break;
             case MOp.XmmStore:
-                yield return $"movups {Op(i.Operands[0], 16, false)}, xmm0";
+                yield return $"movups {Op(i.Operands[0], 16, false)}, {Xmm(i, 1)}";
                 yield break;
             case MOp.XmmLoadLow:
                 yield return $"movlps xmm{((MImm)i.Operands[0]).Value}, {Op(i.Operands[1], 8, false)}";
                 yield break;
             case MOp.XmmStoreLow:
-                yield return $"movlps {Op(i.Operands[0], 8, false)}, xmm0";
+                yield return $"movlps {Op(i.Operands[0], 8, false)}, {Xmm(i, 1)}";
                 yield break;
             case MOp.XmmOp:
                 yield return $"sse {((MImm)i.Operands[0]).Value:x2} 0f {((MImm)i.Operands[1]).Value:x2}, xmm0, xmm1" + (i.Operands.Count > 2 ? $", {((MImm)i.Operands[2]).Value}" : "");
                 yield break;
+            case MOp.XmmOpRR:
+                yield return $"sse {((MImm)i.Operands[0]).Value:x2} 0f {((MImm)i.Operands[1]).Value:x2}, {Xmm(i, 2)}, {PackedSource(i.Operands[3], "xmm", 16)}" + (i.Operands.Count > 4 ? $", {((MImm)i.Operands[4]).Value}" : "");
+                yield break;
             case MOp.XmmShiftImm:
-                yield return $"sse 66 0f {((MImm)i.Operands[0]).Value:x2} /{((MImm)i.Operands[1]).Value}, xmm0, {((MImm)i.Operands[2]).Value}";
+                yield return $"sse 66 0f {((MImm)i.Operands[0]).Value:x2} /{((MImm)i.Operands[1]).Value}, {Xmm(i, 3)}, {((MImm)i.Operands[2]).Value}";
                 yield break;
             case MOp.XmmExtractW:
-                yield return $"pextrw {Op(i.Operands[0], 4, false)}, xmm0, {((MImm)i.Operands[1]).Value}";
+                yield return $"pextrw {Op(i.Operands[0], 4, false)}, {Xmm(i, 2)}, {((MImm)i.Operands[1]).Value}";
                 yield break;
             case MOp.XmmInsertW:
-                yield return $"pinsrw xmm0, {Op(i.Operands[0], 4, false)}, {((MImm)i.Operands[1]).Value}";
+                yield return $"pinsrw {Xmm(i, 2)}, {Op(i.Operands[0], 4, false)}, {((MImm)i.Operands[1]).Value}";
                 yield break;
             case MOp.ThreeDNowOp:
-                yield return $"3dnow 0f 0f {((MImm)i.Operands[0]).Value:x2}, mm0, {Op(i.Operands[1], 8, false)}";
+                yield return $"3dnow 0f 0f {((MImm)i.Operands[0]).Value:x2}, {Mm(i, 2)}, {PackedSource(i.Operands[1], "mm", 8)}";
                 yield break;
             case MOp.MmxShiftImm:
-                yield return $"mmx 0f {((MImm)i.Operands[0]).Value:x2} /{((MImm)i.Operands[1]).Value}, mm0, {((MImm)i.Operands[2]).Value}";
+                yield return $"mmx 0f {((MImm)i.Operands[0]).Value:x2} /{((MImm)i.Operands[1]).Value}, {Mm(i, 3)}, {((MImm)i.Operands[2]).Value}";
                 yield break;
             case MOp.MmxShuffleW:
-                yield return $"pshufw mm0, {Op(i.Operands[0], 8, false)}, {((MImm)i.Operands[1]).Value}";
+                yield return $"pshufw {Mm(i, 2)}, {PackedSource(i.Operands[0], "mm", 8)}, {((MImm)i.Operands[1]).Value}";
                 yield break;
             case MOp.MmxExtractW:
-                yield return $"pextrw {Op(i.Operands[0], 4, false)}, mm0, {((MImm)i.Operands[1]).Value}";
+                yield return $"pextrw {Op(i.Operands[0], 4, false)}, {Mm(i, 2)}, {((MImm)i.Operands[1]).Value}";
                 yield break;
             case MOp.MmxInsertW:
-                yield return $"pinsrw mm0, {Op(i.Operands[0], 4, false)}, {((MImm)i.Operands[1]).Value}";
+                yield return $"pinsrw {Mm(i, 2)}, {Op(i.Operands[0], 4, false)}, {((MImm)i.Operands[1]).Value}";
                 yield break;
             case MOp.PackedSaveX87:
                 yield return "fnstenv [eax]";

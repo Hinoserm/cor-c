@@ -279,6 +279,7 @@ public sealed partial class Lowering
             args.Insert(0, context);
             label = BodyLabel(canonical);
         }
+        label = InsideLabel(m, label);
         VReg? made = _e.Call(label, returns, args.ToArray());
         // A CALL THAT NEVER COMES BACK ENDS ITS BLOCK: a method proved never
         // to return (Binder.CallNeverReturns) -- ThrowHelper's, which only

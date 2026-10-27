@@ -9,13 +9,14 @@ namespace Corsac.Lang.Lower;
 /// sixteen; PackedOps), inside a packed block's body
 /// (Parser.ParsePackedBlock). Each is the instruction the block's variant
 /// has -- its features, Sys.PackedEnter's third argument -- and its lanes
-/// one at a time where it has none (Runtime.PackedScalar and kin), as in the
-/// variant for a processor without MMX, or in long mode:
+/// written out in place, one at a time, where it has none
+/// (Lowering.PackedLanes): the variant for a processor without MMX, long
+/// mode, a Packed128's lanes across its halves without SSE2:
 ///
 ///   Packed64, integer lanes: MMX (0F xx), the MMX extensions' where it has
 ///   them; Add64 and Sub64 are SSE2's.
 ///   Packed128, integer lanes: SSE2 (66 0F xx); else two MMX operations, a
-///   half each, where the lanes keep to their halves; else the scalar form.
+///   half each, where the lanes keep to their halves; else its lanes.
 ///   Float lanes (AddF32...): SSE (0F xx, on two floats through MOVLPS);
 ///   else 3DNow! (0F 0F /r xx) where it has the operation exactly; else the
 ///   x87's, one float at a time.
@@ -113,10 +114,6 @@ public sealed partial class Lowering
         int bytes = wide ? 16 : 8;
         switch (name)
         {
-            case "Mmx":
-            case "Sse":
-            case "X87":
-                return Fail(call, "Packed." + name + "() opens a packed block, as the resource of a using: using (Packed." + name + "()) { ... }");
             // The bytes as they are: no instruction, inside a block or out.
             case "FromBits":
             {
@@ -144,7 +141,7 @@ public sealed partial class Lowering
         }
 
         if (_packedFeatures.Count == 0)
-            return Fail(call, "Packed." + name + " is a packed block's: it uses the packed registers, which only a packed block owns (using (Packed.Mmx()) { ... })");
+            return Fail(call, "Packed." + name + " in a lambda: write the packed operations in a method, whose body the compiler makes each processor's version of");
         // What this variant may use: nothing in long mode, whose packed
         // operations are their scalar forms.
         int has = _t.WordSize == 4 ? _packedFeatures.Peek() : 0;
@@ -190,7 +187,7 @@ public sealed partial class Lowering
                 Half64(call, binary.Op, binary.Ext, quad, mmx, ext, sse2, made, a, b, 8);
             }
             else if (wide)
-                PackedScalar128(call, binary.Op, 0, made, a, b);
+                LanesBinary(binary.Op, made, a, b, 16);
             else
                 Half64(call, binary.Op, binary.Ext, quad, mmx, ext, sse2, made, a, b, 0);
             return made;
@@ -205,19 +202,12 @@ public sealed partial class Lowering
             if (wide && sse2)
                 _e.Call(MachineIntrinsics.PackedWideShift(shift.Group, shift.Sub, count), IrType.Void, R(made), R(a));
             else if (bytewise)
-                PackedScalar128(call, 0x73, shift.Sub << 8 | count, made, a, a);
-            else
+                LanesByteShift(shift.Sub, count, made, a);
+            else if (mmx)
                 for (int half = 0; half < bytes; half += 8)
-                {
-                    if (mmx)
-                    {
-                        _e.Call(MachineIntrinsics.PackedShift(shift.Group, shift.Sub, count), IrType.Void, R(Plus(made, half)), R(Plus(a, half)));
-                        continue;
-                    }
-                    VReg answer = PackedScalarCall(call, "PackedScalarShift", _e.Const(shift.Group, IrType.I32), _e.Const(shift.Sub, IrType.I32),
-                        _e.Const(count, IrType.I32), _e.Load(IrType.I64, a, half));
-                    _e.Store(RegOperand.Of(made), RegOperand.Of(answer), half, 8);
-                }
+                    _e.Call(MachineIntrinsics.PackedShift(shift.Group, shift.Sub, count), IrType.Void, R(Plus(made, half)), R(Plus(a, half)));
+            else
+                LanesShift(shift.Group, shift.Sub, count, made, a, bytes);
             return made;
         }
 
@@ -255,9 +245,7 @@ public sealed partial class Lowering
                     _e.Call(MachineIntrinsics.Packed3DNow(suffix), IrType.Void, R(Plus(made, half)), R(first), R(second));
                     continue;
                 }
-                VReg answer = PackedScalarCall(call, "PackedScalarFloat", _e.Const(PackedOps.FloatCode(name), IrType.I32),
-                    _e.Load(IrType.I64, a, half), _e.Load(IrType.I64, b, half));
-                _e.Store(RegOperand.Of(made), RegOperand.Of(answer), half, 8);
+                LanesFloat(name, Plus(made, half), Plus(a, half), Plus(b, half), 8);
             }
             return made;
         }
@@ -274,8 +262,7 @@ public sealed partial class Lowering
                     _e.Call(MachineIntrinsics.PackedShuffle(order), IrType.Void, R(made), R(a));
                     return made;
                 }
-                VReg answer = PackedScalarCall(call, "PackedScalarShuffle", _e.Load(IrType.I64, a, 0), _e.Const(order, IrType.I32));
-                _e.Store(RegOperand.Of(made), RegOperand.Of(answer), 0, 8);
+                LanesShuffle16(order, made, a);
                 return made;
             }
             case "Shuffle32":
@@ -287,7 +274,7 @@ public sealed partial class Lowering
                 VReg made = ResultBuffer(call, returns);
                 byte prefix = name switch { "Shuffle32" => 0x66, "ShuffleLow16" => 0xF2, _ => 0xF3 };
                 if (sse2) _e.Call(MachineIntrinsics.PackedWideShuffle(prefix, order), IrType.Void, R(made), R(a));
-                else PackedScalar128(call, 0x70, prefix << 8 | order, made, a, a);
+                else LanesShuffleWide(prefix, order, made, a);
                 return made;
             }
             case "ShuffleF32":
@@ -304,7 +291,7 @@ public sealed partial class Lowering
                 VReg made = ResultBuffer(call, returns);
                 byte op = name switch { "ShuffleF32" => 0xC6, "UnpackLowF32" => 0x14, _ => 0x15 };
                 if (sse) _e.Call(MachineIntrinsics.PackedFloat(true, 0, op, order, false), IrType.Void, R(made), R(a), R(b));
-                else PackedScalar128(call, op, Math.Max(order, 0), made, a, b);
+                else LanesShuffleF32(op, Math.Max(order, 0), made, a, b);
                 return made;
             }
             case "Extract16":
@@ -314,7 +301,7 @@ public sealed partial class Lowering
                 if (wide && sse2) return _e.Call(MachineIntrinsics.PackedWideExtract(at), IrType.I32, R(a))!;
                 VReg half = Plus(a, at >= 4 ? 8 : 0);
                 if (ext) return _e.Call(MachineIntrinsics.PackedExtract(at & 3), IrType.I32, R(half))!;
-                return PackedScalarCall(call, "PackedScalarExtract", _e.Load(IrType.I64, half, 0), _e.Const(at & 3, IrType.I32));
+                return LaneAt(half, 16, at & 3, false);
             }
             case "Insert16":
             {
@@ -335,8 +322,8 @@ public sealed partial class Lowering
                     _e.Call(MachineIntrinsics.PackedInsert(at & 3), IrType.Void, R(Plus(made, half)), R(Plus(a, half)), R(value));
                     return made;
                 }
-                VReg answer = PackedScalarCall(call, "PackedScalarInsert", _e.Load(IrType.I64, a, half), value, _e.Const(at & 3, IrType.I32));
-                _e.Store(RegOperand.Of(made), RegOperand.Of(answer), half, 8);
+                if (!wide) _e.Emit(Opcode.MemCopy, null, R(made), R(a), Imm(8, IrTypes.Word));
+                LanePut(Plus(made, half), 16, at & 3, value);
                 return made;
             }
         }
@@ -347,7 +334,7 @@ public sealed partial class Lowering
     /// One 64-bit half of an integer operation, at `half` bytes into the
     /// result and the operands: the MMX instruction where the variant has it
     /// (the extensions' where they are its; PADDQ and PSUBQ SSE2's), else the
-    /// runtime's lanes (Runtime.PackedScalar).
+    /// lanes written out in place (LanesBinary).
     /// </summary>
     private void Half64(CallExpr call, byte op, bool extension, bool quad, bool mmx, bool ext, bool sse2, VReg made, VReg a, VReg b, int half)
     {
@@ -356,17 +343,7 @@ public sealed partial class Lowering
             _e.Call(MachineIntrinsics.PackedOp(op), IrType.Void, R(Plus(made, half)), R(Plus(a, half)), R(Plus(b, half)));
             return;
         }
-        VReg answer = PackedScalarCall(call, "PackedScalar", _e.Const(op, IrType.I32), _e.Load(IrType.I64, a, half), _e.Load(IrType.I64, b, half));
-        _e.Store(RegOperand.Of(made), RegOperand.Of(answer), half, 8);
-    }
-
-    /// <summary>A Packed128 operation whose lanes cross its halves, one lane at a time (Runtime.PackedScalar128): the result's and the operands' addresses.</summary>
-    private void PackedScalar128(CallExpr call, int op, int detail, VReg made, VReg a, VReg b)
-    {
-        MethodSymbol? scalar = RequireRuntime(call, "PackedScalar128", 5, "Packed's scalar form");
-        if (scalar is null) return;
-        _e.Call(CallLabel(scalar), IrType.Void, R(_e.Const(op, IrType.I32)), R(_e.Const(detail, IrType.I32)),
-            R(AsParam(made, scalar.Params[2].Type)), R(AsParam(a, scalar.Params[3].Type)), R(AsParam(b, scalar.Params[4].Type)));
+        LanesBinary(op, Plus(made, half), Plus(a, half), Plus(b, half), 8);
     }
 
     /// <summary>An address `bytes` further on, or the address itself.</summary>
@@ -395,13 +372,4 @@ public sealed partial class Lowering
         catch (OverflowException) { return null; }
     }
 
-    /// <summary>The runtime's scalar form of a packed operation (Runtime.PackedScalar and the rest).</summary>
-    private VReg PackedScalarCall(CallExpr call, string routine, params VReg[] given)
-    {
-        MethodSymbol? scalar = RequireRuntime(call, routine, given.Length, "Packed's scalar form");
-        if (scalar is null) return _e.Const(0, IrType.I64);
-        List<Operand> args = new();
-        for (int k = 0; k < given.Length; k++) args.Add(R(AsParam(given[k], scalar.Params[k].Type)));
-        return _e.Call(CallLabel(scalar), IrTypes.Of(scalar.Returns), args.ToArray())!;
-    }
 }

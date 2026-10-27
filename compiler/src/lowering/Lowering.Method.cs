@@ -281,9 +281,9 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(TakesContext(m) ? BodyLabel(m) : Label(m), ReturnIr(m))
+        _f = new Function((TakesContext(m) ? BodyLabel(m) : Label(m)) + (_insideCopy ? "$inside" : ""), ReturnIr(m))
         {
-            SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
+            SourceFile = _in, Line = decl.Line, Display = Display(m) + (_insideCopy ? " (inside)" : ""), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
             // A TYPE'S INITIALISER BODY STAYS A ROUTINE OF ITS OWN: the link
@@ -293,10 +293,13 @@ public sealed partial class Lowering
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
 
-        if (m.Static && !m.IsCtor)
+        if (m.Static && !m.IsCtor && !_insideCopy)
         {
             Entries[$"{m.Owner.Name}.{m.Name}"] = Label(m);
         }
+        // --packed-report: where the processor's state is kept, and why.
+        if (PackedReport && !_insideCopy && PackedStateHere && _b.PackedState.TryGetValue(m, out string? why))
+            Console.Error.WriteLine($"{Path.GetFileName(_in)}:{decl.Line}: packed: '{Display(m)}' keeps the processor's state ({why})");
 
         // Parameters: `this` first, then the declared ones, each a register
         // the backend fills from wherever its convention put them.

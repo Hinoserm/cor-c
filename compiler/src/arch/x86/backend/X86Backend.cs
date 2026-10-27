@@ -159,12 +159,12 @@ public sealed class X86Backend : IBackend
     /// On by default freestanding (Driver: --x87-outside-blocks takes it
     /// away, --x87-in-blocks-only says it again): freestanding code of the
     /// program's own -- not the system library's (Function.SystemCode),
-    /// whose float routines run
-    /// inside the blocks that call them, nor the compiler's own helpers --
-    /// may use the x87 only inside a packed block (using
-    /// (Packed.X87()) { ... }), which saves the interrupted thread's state
-    /// first, or under its callers' blocks only; outside every one it is an
-    /// error the link makes, which alone sees every caller (Lto.X87Notes:
+    /// whose float routines run where their callers keep the state, nor the
+    /// compiler's own helpers -- may use the x87 only where the state is
+    /// kept: the compiler's own block around a method that needs it
+    /// (Binder.PackedStateOf), which saves the interrupted thread's state
+    /// first, or under its callers' only (an $inside copy); outside every
+    /// one -- a lambda's, an async body's -- it is an error the link makes, which alone sees every caller (Lto.X87Notes:
     /// each function's facts, Selector.X87Fact, in the object). Off
     /// (--x87-outside-blocks), the unit's own float code is judged nowhere,
     /// and its calls still are: what it calls outside a block runs outside.

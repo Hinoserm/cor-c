@@ -843,6 +843,14 @@ public sealed partial class Lowering
             // unchecked until used (Binder.WantBody), and is checked now.
             _b.BodyWantedLate?.Invoke(m);
             EmitMethod(m, m.Decl);
+            // AND ITS COPY THAT RUNS INSIDE ITS CALLER'S STATE (CopiesInside):
+            // what a kept state's calls call, keeping none of its own.
+            if (CopiesInside(m))
+            {
+                _insideCopy = true;
+                try { EmitMethod(m, m.Decl); }
+                finally { _insideCopy = false; }
+            }
             // Its syntax and what the binder said of it, now that nothing
             // will read them again (Lowering.Release).
             if (m.Decl is MethodDecl lowered) ReleaseBody(m, lowered);

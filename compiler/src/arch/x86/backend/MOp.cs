@@ -203,6 +203,13 @@ public enum MOp : byte
     /// (Isa.Requires).
     /// </summary>
     XmmOp,
+    /// <summary>
+    /// An SSE or SSE2 operation between named registers (Selector's packed
+    /// registers): its prefix and opcode, the destination xmmD (an MImm), the
+    /// source -- xmmS (an MImm) or memory -- and an immediate where it has
+    /// one. Which the processor must have is read off them, as XmmOp's.
+    /// </summary>
+    XmmOpRR,
     /// <summary>PSLLW/D/Q, PSRLW/D/Q, PSRAW/D, PSLLDQ, PSRLDQ of xmm0 by a constant: the group (66 0F 71, 72, 73), its /digit and the count. SSE2's.</summary>
     XmmShiftImm,
     /// <summary>PEXTRW r32, xmm0, place. SSE2's.</summary>

@@ -201,10 +201,16 @@ public static class InterruptNotes
     }
 
     /// <summary>What an interrupt handler's report says it must not do, by what was found -- the compile's words and the link's alike: open a packed block (PackedBlock; the facts carry one as an allocation) or allocate.</summary>
-    public static string Forbidden(string what) => what.StartsWith(PackedBlock, StringComparison.Ordinal) ? "must not open a packed block" : "must not allocate";
+    public static string Forbidden(string what)
+        => what.StartsWith(PackedBlock, StringComparison.Ordinal) ? "must not use the packed registers"
+         : what.StartsWith(FloatCode, StringComparison.Ordinal) ? "must not use float code"
+         : "must not allocate";
 
-    /// <summary>How a packed block's report begins (Binder.AllocationsIn), which Forbidden tells it by.</summary>
-    public const string PackedBlock = "opens a packed block";
+    /// <summary>How a packed operation's report begins (Binder.AllocationsIn), which Forbidden tells it by.</summary>
+    public const string PackedBlock = "uses the packed registers";
+
+    /// <summary>How float code's report begins, freestanding.</summary>
+    public const string FloatCode = "does float code";
 
     /// <summary>
     /// Every handler of every unit walked through every unit's facts: what

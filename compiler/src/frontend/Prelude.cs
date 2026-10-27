@@ -525,11 +525,11 @@ public static class Prelude
             // `value` is the byte every one of `count` is set to.
             public static void MemorySet(nuint dst, int value, nuint count) { }
             // A packed block's state taken and given back -- its kind (1
-            // Mmx, 2 Sse, 3 X87: a hint the backend weighs), its number in
-            // its method, and its variant's features (PackedOps' bits) --
-            // and which of its variants runs: the first whose features the
-            // processor has, asked the first time and kept (using
-            // (Packed.Mmx()), which the parser writes these for). `features`
+            // the compiler's own around a body, Parser.ImplicitKind), its
+            // number in its method, and its variant's features (PackedOps'
+            // bits) -- and which of its variants runs: the first whose
+            // features the processor has, asked the first time and kept
+            // (which the parser writes these for). `features`
             // is the variants' masks, a byte each, the first lowest.
             public static void PackedEnter(int kind, int block, int features) { }
             public static void PackedLeave(int kind, int block, int features) { }
@@ -1061,8 +1061,9 @@ public static class Prelude
             public ulong Lo;
             public ulong Hi;
         }
-        // THE PACKED OPERATIONS, each one instruction inside a packed block
-        // (using (Packed.Mmx()) { ... }) where the block's variant has it --
+        // THE PACKED OPERATIONS, written anywhere in a method: each one
+        // instruction in its processor's version of the method where that
+        // version has it (the compiler's own block around the body) --
         // MMX, the MMX extensions, 3DNow!, SSE, SSE2 -- and its lanes one at
         // a time where it has not (Lowering.PackedIntrinsic, PackedOps). On
         // Packed64 MMX's, on Packed128 SSE's; the F32 ones two floats or
@@ -1072,9 +1073,6 @@ public static class Prelude
         // PackedOps.Float). The counts, orders and places are integer
         // literals, which the instruction holds in its own bytes.
         static class Packed {
-            public static void Mmx() { }
-            public static void Sse() { }
-            public static void X87() { }
             public static int Features() { return 0; }
             public static Packed64 FromBits(ulong bits) { return new Packed64(); }
             public static Packed128 FromBits(ulong lo, ulong hi) { return new Packed128(); }

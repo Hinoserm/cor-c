@@ -2001,6 +2001,7 @@ public sealed class Parser
 
                 int memberFrom = _i;
                 MemberDecl member = ParseMember(name);
+                ImplicitMember(member, memberFrom, _i);
                 // All a field holds is its initialiser, and an auto-property's
                 // the same: what they name runs in the constructor.
                 if (primary && member is not FieldDecl && member is not PropertyDecl { Init: not null }) bodies.Add((memberFrom, _i));
@@ -3671,7 +3672,7 @@ public sealed class Parser
         TypeRef? savedReturns = _returns;
         _returns = produces;
 
-        Block body = ParseBlock();
+        Block body = async ? ParseBlock() : ImplicitBody(ParseBlock);
         _returns = savedReturns;
 
         asyncIterator = null;
@@ -3911,13 +3912,32 @@ public sealed class Parser
             // `=> throw ...` is a throw expression, the whole of the body.
             neverReturns = At(Tok.KwThrow);
             bodyAt = at.Pos;
-            Expr value = ReadBodyExpression();
+            int expressionAt = _i;
+            Block Read()
+            {
+                Expr value = ReadBodyExpression();
+                Block read = new() { Line = at.Line, Col = at.Col };
+                read.WritableStatements.Add(m.Returns is null or { Name: "void", ArrayRank: 0, PointerDepth: 0 }
+                    ? Statement(value, at)
+                    : new ReturnStmt { Value = value, Line = at.Line, Col = at.Col });
+                return read;
+            }
+            body = Read();
+            // In the compiler's own block (ImplicitBody): read again for each
+            // processor's version where it names a packed operation.
+            bool packedOps = PackedOpsIn(expressionAt, _i), suspends = SuspendsIn(expressionAt, _i);
+            if (packedOps && !suspends)
+            {
+                int after = _i;
+                _i = expressionAt;
+                Stmt wrapped = ParsePackedBlock(at, ImplicitKind, Read);
+                if (_i != after) throw new CompileError(_file, at.Line, at.Col, "an expression body read again ended elsewhere");
+                body = new Block { Line = at.Line, Col = at.Col };
+                body.WritableStatements.Add(wrapped);
+            }
+            else body = ImplicitBlock(body, packedOps, suspends);
 
             Expect(Tok.Semi, "';' after an expression body");
-            body = new Block { Line = at.Line, Col = at.Col };
-            body.WritableStatements.Add(m.Returns is null or { Name: "void", ArrayRank: 0, PointerDepth: 0 }
-                ? Statement(value, at)
-                : new ReturnStmt { Value = value, Line = at.Line, Col = at.Col });
         }
         else
         {
@@ -5245,20 +5265,110 @@ public sealed class Parser
         return result;
     }
 
-    /// <summary>The packed block a using names: `using (Packed.Mmx())` 1, `using (Packed.Sse())` 2, `using (Packed.X87())` 3, anything else 0.</summary>
+    /// <summary>
+    /// THE COMPILER'S OWN PACKED BLOCK AROUND A BODY (ImplicitKind): every
+    /// body of a freestanding i386 program (PackedEverywhere), whose float
+    /// code and packed operations run on the interrupted thread's x87, MMX
+    /// and SSE state unless it is kept -- lowering keeps it where the body
+    /// needs it (Binder's PackedState), and the block is the body alone
+    /// elsewhere -- and every body that names a packed operation, whose
+    /// processors' versions the block's variants are (ParsePackedBlock). Not
+    /// a body that awaits or yields, whose frame outlives a run.
+    /// </summary>
+    public static bool PackedEverywhere { get; set; }
+
+    /// <summary>The kind of the compiler's own packed block around a body (Sys.PackedEnter's first argument).</summary>
+    public const int ImplicitKind = 4;
+
+    /// <summary>Whether the tokens from `from` to `to` name a packed operation: Packed.NAME.</summary>
+    private bool PackedOpsIn(int from, int to)
+    {
+        for (int k = from; k + 2 < to && k + 2 < _t.Count; k++)
+            if (_t[k] is { Kind: Tok.Ident, Text: "Packed" } && _t[k + 1].Kind == Tok.Dot && _t[k + 2].Kind == Tok.Ident) return true;
+        return false;
+    }
+
+    /// <summary>Whether the tokens from `from` to `to` await or yield.</summary>
+    private bool SuspendsIn(int from, int to)
+    {
+        for (int k = from; k < to && k < _t.Count; k++)
+            if (_t[k].Kind == Tok.KwAwait || _t[k] is { Kind: Tok.Ident, Text: "yield" or "await" }) return true;
+        return false;
+    }
+
+    /// <summary>The end of the braced body at `start`: the index past its closing brace.</summary>
+    private int BraceEnd(int start)
+    {
+        int depth = 0, k = start;
+        for (; k < _t.Count; k++)
+        {
+            if (_t[k].Kind == Tok.LBrace) depth++;
+            else if (_t[k].Kind == Tok.RBrace && --depth == 0) break;
+        }
+        return k + 1;
+    }
+
+    /// <summary>A body, already read, in the compiler's own block -- one variant, which nothing packed in it tells apart -- where it wants one.</summary>
+    private Block ImplicitBlock(Block body, bool packedOps, bool suspends)
+    {
+        if (suspends || !(PackedEverywhere || packedOps)) return body;
+        Block made = new() { Line = body.Line, Col = body.Col };
+        made.WritableStatements.Add(PackedVariant(body, ImplicitKind, 0, _packedSerial++, body.Line, body.Col));
+        return made;
+    }
+
+    /// <summary>A braced body at the current token, in the compiler's own block where it wants one: read once per processor's version where it names a packed operation.</summary>
+    private Block ImplicitBody(Func<Block> read)
+    {
+        int start = _i, end = At(Tok.LBrace) ? BraceEnd(start) : start;
+        bool packedOps = PackedOpsIn(start, end), suspends = SuspendsIn(start, end);
+        if (!packedOps || suspends) return ImplicitBlock(read(), packedOps, suspends);
+        Token at = Cur;
+        Stmt wrapped = ParsePackedBlock(at, ImplicitKind, read);
+        Block made = new() { Line = at.Line, Col = at.Col };
+        made.WritableStatements.Add(wrapped);
+        return made;
+    }
+
+    /// <summary>Whether a body is already in the compiler's own block (ImplicitBody, ImplicitBlock): its one statement the variant or the variants' choice.</summary>
+    private static bool Wrapped(Block b)
+        => b.Statements is [Block { Statements: [ExprStmt { Expr: CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Sys" }, Name: "PackedEnter" } } }, ..] }]
+        || b.Statements is [Block { Statements: [LocalDecl { Name: var pick }, ..] }] && pick.StartsWith("$packedpick$", StringComparison.Ordinal);
+
+    /// <summary>
+    /// A MEMBER'S BODIES NOT READ AS A METHOD'S (a property's getter and
+    /// setter, an event's or an extension's accessors) in the compiler's own
+    /// block where they want one, each as one variant: what they hold moved
+    /// into the block, in place -- their syntax is init-only.
+    /// </summary>
+    private void ImplicitMember(MemberDecl m, int from, int to)
+    {
+        bool packedOps = PackedOpsIn(from, to), suspends = SuspendsIn(from, to);
+        if (suspends || !(PackedEverywhere || packedOps)) return;
+        Block?[] bodies = m switch { PropertyDecl p => [p.Getter, p.Setter], MethodDecl d => [d.Body], _ => [] };
+        foreach (Block? b in bodies)
+        {
+            if (b is null || Wrapped(b)) continue;
+            Block inner = new() { Line = b.Line, Col = b.Col };
+            inner.WritableStatements.AddRange(b.Statements);
+            b.WritableStatements.Clear();
+            b.WritableStatements.Add(PackedVariant(inner, ImplicitKind, 0, _packedSerial++, b.Line, b.Col));
+        }
+    }
+
+    /// <summary>The packed block a using names, which is no more (ParseUsing refuses it): `using (Packed.Mmx())` 1, `using (Packed.Sse())` 2, `using (Packed.X87())` 3, anything else 0.</summary>
     private static int PackedKind(Stmt resource)
         => resource is ExprStmt { Expr: CallExpr { Args.Count: 0, Target: MemberExpr { Target: NameExpr { Name: "Packed" }, Name: var name } } }
             ? name switch { "Mmx" => 1, "Sse" => 2, "X87" => 3, _ => 0 } : 0;
 
     /// <summary>
-    /// A PACKED BLOCK, `using (Packed.Mmx())`, `using (Packed.Sse())` or
-    /// `using (Packed.X87())`: code that owns the thread's x87, MMX and SSE
-    /// state while it runs, which the backend saves first and gives back on
+    /// THE COMPILER'S OWN PACKED BLOCK AROUND A BODY (ImplicitBody): code that
+    /// owns the thread's x87, MMX and SSE state while it runs, which the
+    /// backend saves first, where lowering keeps it, and gives back on
     /// every way out -- the save chosen from what the code uses (Selector.
     /// SettlePackedSaves): FXSAVE where an SSE register may be touched, the
     /// x87's where float code, an MMX register or a call is, none where
-    /// nothing of the FPU's is. The kind is a hint: Sse lets the backend
-    /// choose SSE where it may, X87 says the code is float code. The body
+    /// nothing of the FPU's is. The body
     /// stays where it is written, between the state's taking and its giving
     /// back (Sys.PackedEnter, Sys.PackedLeave), which a finally makes on
     /// every way out -- a throw, a return, a break. Its variables are the
@@ -5275,7 +5385,7 @@ public sealed class Parser
     /// is the answer at the compile. A block inside another is read once,
     /// with the outer variant's features.
     /// </summary>
-    private Stmt ParsePackedBlock(Token at, int kind)
+    private Stmt ParsePackedBlock(Token at, int kind, Func<Stmt>? reader = null)
     {
         int line = at.Line, col = at.Col;
         if (_packedNesting >= 15)
@@ -5370,7 +5480,7 @@ public sealed class Parser
             _packedBlock = kind;
             _packedMask = mask;
             _packedNesting++;
-            try { return ParseStmt(); }
+            try { return reader?.Invoke() ?? ParseStmt(); }
             finally
             {
                 _packedNesting--;
@@ -5379,32 +5489,35 @@ public sealed class Parser
             }
         }
 
-        Stmt Variant(Stmt read, int mask, int number)
+        Stmt Variant(Stmt read, int mask, int number) => PackedVariant(read, kind, mask, number, line, col);
+    }
+
+    /// <summary>One variant of a packed block: its state taken (Sys.PackedEnter), its body, the state given back on every way out (a finally's Sys.PackedLeave).</summary>
+    private static Stmt PackedVariant(Stmt read, int kind, int mask, int number, int line, int col)
+    {
+        Block body = read as Block ?? new Block { Line = read.Line, Col = read.Col };
+        if (read is not Block) body.WritableStatements.Add(read);
+        Stmt State(string name) => new ExprStmt
         {
-            Block body = read as Block ?? new Block { Line = read.Line, Col = read.Col };
-            if (read is not Block) body.WritableStatements.Add(read);
-            Stmt State(string name) => new ExprStmt
+            Expr = new CallExpr
             {
-                Expr = new CallExpr
+                Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = name, Line = line, Col = col },
+                Args =
                 {
-                    Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = name, Line = line, Col = col },
-                    Args =
-                    {
-                        new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), IntValue = kind, Line = line, Col = col },
-                        new LiteralExpr { Kind = Lit.Int, Text = number.ToString(), IntValue = number, Line = line, Col = col },
-                        new LiteralExpr { Kind = Lit.Int, Text = mask.ToString(), IntValue = mask, Line = line, Col = col },
-                    },
-                    Line = line, Col = col,
+                    new LiteralExpr { Kind = Lit.Int, Text = kind.ToString(), IntValue = kind, Line = line, Col = col },
+                    new LiteralExpr { Kind = Lit.Int, Text = number.ToString(), IntValue = number, Line = line, Col = col },
+                    new LiteralExpr { Kind = Lit.Int, Text = mask.ToString(), IntValue = mask, Line = line, Col = col },
                 },
                 Line = line, Col = col,
-            };
-            Block leave = new() { Line = line, Col = col };
-            leave.WritableStatements.Add(State("PackedLeave"));
-            Block made = new() { Line = line, Col = col };
-            made.WritableStatements.Add(State("PackedEnter"));
-            made.WritableStatements.Add(new TryStmt { Body = body, Finally = leave, Line = line, Col = col });
-            return made;
-        }
+            },
+            Line = line, Col = col,
+        };
+        Block leave = new() { Line = line, Col = col };
+        leave.WritableStatements.Add(State("PackedLeave"));
+        Block made = new() { Line = line, Col = col };
+        made.WritableStatements.Add(State("PackedEnter"));
+        made.WritableStatements.Add(new TryStmt { Body = body, Finally = leave, Line = line, Col = col });
+        return made;
     }
 
     /// <summary>
@@ -5424,7 +5537,8 @@ public sealed class Parser
         {
             Stmt resource = ParseSimpleStmt();
             Expect(Tok.RParen, "')' after the resource");
-            if (!async && PackedKind(resource) is int kind and not 0) return ParsePackedBlock(at, kind);
+            if (PackedKind(resource) is not 0)
+                throw new CompileError(_file, at.Line, at.Col, "packed blocks are no more: write the Packed operations where they are needed, and the compiler makes each processor's version and keeps its state where they run");
             Stmt body = ParseStmt();
 
             Block built = new() { Line = at.Line, Col = at.Col };
