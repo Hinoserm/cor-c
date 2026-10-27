@@ -109,6 +109,15 @@ static class Gc
     // header and no footer ("what a block looks like").
     const int ClassRounding = HeaderBytes + 7;
 
+    /// A mixed chunk's block for a request: its header, payload and footer,
+    /// rounded to eight, and never below Smallest -- in long mode a request
+    /// of nothing is 24 bytes, which no walk of a mixed chunk steps over.
+    static nuint MixedNeed(nuint bytes)
+    {
+        nuint need = (bytes + Overhead + 7) & SizeMask;
+        return need < Smallest ? Smallest : need;
+    }
+
     const int FlagFree = 1;
     const int FlagMark = 2;
     const int FlagScan = 4;
@@ -168,12 +177,12 @@ static class Gc
     // that would leave one gives the caller the extra bytes instead.
     const int Smallest = 4 * WordSize.Bytes;
 
-    // THE SMALLEST BLOCK ANY CHUNK HOLDS: a size-class page's least class
-    // (StartClasses), a header and a word. A WALK OF A CHAIN OF BLOCKS stops
-    // only below this -- a mixed chunk's never are, a page's 16- and 24-byte
-    // classes are. Smallest, four words, is a mixed chunk's floor: in long
-    // mode it is 32 bytes, and walks that stopped below it read a page of the
-    // two least classes as empty. Its blocks were given no start in the
+    // THE LEAST BLOCK OF ANY SIZE-CLASS PAGE: the 16-byte class
+    // (StartClasses), which in long mode is a bare header. A WALK OF A CHAIN
+    // OF BLOCKS a page can be part of stops only below this. A mixed chunk's
+    // blocks are at least Smallest (four words, 32 bytes in long mode;
+    // MixedNeed), and walks that stopped below that read a page of the two
+    // least classes as empty. Its blocks were given no start in the
     // snapshot (StampPage) and could not be found by the marker
     // (SnapshotBlockIn): kept as newcomers, never scanned, and what only they
     // held was swept from under them (1247, 1472). Their marks were not taken
@@ -2581,7 +2590,7 @@ static class Gc
         nuint kind = Sys.ReadAddress(block + KindAt);
         // A machine still in its kickoff's frame is on a stack, which the
         // stack copies hold as it was; a size no block has is not read.
-        if (size < LeastBlock || size >= 0x1000000 || kind == KindLeaf) return;
+        if (size < LeastBlock || size >= 0x1000000 || kind == KindLeaf || size <= HeaderBytes) return;
         // A footer, where there is one, repeats the header: no reference.
         nuint end = block + size;
         nuint vt = Sys.ReadAddress(payload);
@@ -3759,7 +3768,7 @@ static class Gc
         }
 
         // The tail of the chunk being left. If it cannot describe itself
-        // (below Smallest) it stays unused; that is at most fifteen bytes.
+        // (below Smallest) it stays unused: less than four words.
         // ITS END RAISED OVER IT FIRST: a block is found in its chunk -- and
         // so in its heap's bins (Link) -- only below the chunk's end.
         if (_current != 0)
@@ -5074,7 +5083,7 @@ static class Gc
             Sys.WriteAddress(tb + Tls.InAlloc, 0);
             return free + HeaderBytes;
         }
-        nuint need = (request + Overhead + 7) & SizeMask;
+        nuint need = MixedNeed(request);
         // Not to be stopped from outside between here and the bump: see AllocKindUnguarded.
         Sys.WriteAddress(tb + Tls.InAlloc, 1);
         nuint block = Sys.ReadAddress(tb + Tls.AllocPtr);
@@ -5124,7 +5133,7 @@ static class Gc
     static nuint AllocKindUnguarded(nuint bytes, nuint kind)
     {
         nuint tb = Sys.ThreadBlock();
-        nuint need = (bytes + Overhead + 7) & SizeMask;
+        nuint need = MixedNeed(bytes);
         nuint small = (bytes + ClassRounding) & SizeMask;
 
         // A SMALL BLOCK OFF THIS THREAD'S LIST FOR ITS CLASS (size classes):
@@ -7517,7 +7526,7 @@ static class Gc
             ThrowOutOfMemory(bytes, false);
         }
 
-        nuint need = (bytes + Overhead + 7) & SizeMask;
+        nuint need = MixedNeed(bytes);
         nuint tb = Sys.ThreadBlock();
 
         // THE SAFEPOINT every allocating thread reaches: the collector's open
@@ -12532,6 +12541,9 @@ static class Gc
         }
         nuint payload = block + HeaderBytes;
         nuint end = block + size - tail;
+        // NO PAYLOAD, NOTHING TO READ: a 16-byte page block in long mode is a
+        // bare header, and an object's type word would be the next block's.
+        if (end <= payload) return;
         if (kind != KindObject || !ScanObject(payload, end, local))
         {
             ScanRange(payload, end, local);
