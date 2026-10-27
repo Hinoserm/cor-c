@@ -53,6 +53,13 @@ internal sealed class AddressFold
     private readonly (int Block, int Instr)[] _defAt;
     private readonly int[] _defBlock;
     private int[]? _idom;
+    // Where each register occurs, by block, instruction and operand, made
+    // when Beyond first asks: an occurrence a fold adds is noted, and one it
+    // rewrites away or removes is passed over where read -- so a base read
+    // in other blocks is found among its own occurrences, not by walking the
+    // whole function for every candidate (1320's Main, half an hour).
+    private List<(int Block, MInstr I, int K)>[]? _sites;
+    private readonly HashSet<MInstr> _removed = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>What a removed instruction is replaced by until its block is swept.</summary>
     private readonly MInstr _gone = new(MOp.Nop);
@@ -82,7 +89,7 @@ internal sealed class AddressFold
         {
             MBlock block = m.Blocks[b];
             bool bases = fold.FoldBases(block.Instrs, b);
-            bool indexes = fold.FoldIndexes(block.Instrs);
+            bool indexes = fold.FoldIndexes(block.Instrs, b);
             if (bases || indexes)
             {
                 block.Instrs.RemoveAll(i => ReferenceEquals(i, fold._gone));
@@ -238,7 +245,7 @@ internal sealed class AddressFold
             }
             // Read in other blocks as well: each a base there, in a block this
             // one dominates, of an X and Y no write between can change.
-            List<(MInstr I, int K)>? beyond = null;
+            List<(int Block, MInstr I, int K)>? beyond = null;
             if (_occurrences[t.Id] != made + uses.Count)
             {
                 beyond = Beyond(t, x, y, disp, block, start, made + uses.Count);
@@ -256,9 +263,9 @@ internal sealed class AddressFold
             {
                 continue;
             }
-            List<(MInstr I, int K)> all = uses.Select(u => (ins[u.J], u.K)).ToList();
+            List<(int Block, MInstr I, int K)> all = uses.Select(u => (block, ins[u.J], u.K)).ToList();
             if (beyond is not null) all.AddRange(beyond);
-            foreach ((MInstr at, int k) in all)
+            foreach ((int where, MInstr at, int k) in all)
             {
                 MMem mem = (MMem)at.Operands[k];
                 at.Operands[k] = new MMem(x, checked((int)(mem.Disp + disp)))
@@ -267,6 +274,7 @@ internal sealed class AddressFold
                     Scale = y is not null ? scale : mem.Scale,
                     Segment = mem.Segment,
                 };
+                Noted(where, at, k, mem);
             }
             _occurrences[x.Id] += all.Count - 1;
             if (y is not null)
@@ -275,8 +283,8 @@ internal sealed class AddressFold
             }
             _occurrences[t.Id] = 0;
             _defs[t.Id] = 0;
-            ins[q] = _gone;
-            ins[start] = _gone;
+            Remove(ins, q);
+            Remove(ins, start);
             any = true;
         }
         return any;
@@ -284,7 +292,7 @@ internal sealed class AddressFold
 
     // ---- 2. index = Z << k ------------------------------------------------------------
 
-    private bool FoldIndexes(List<MInstr> ins)
+    private bool FoldIndexes(List<MInstr> ins, int block)
     {
         bool any = false;
         for (int q = 1; q < ins.Count; q++)
@@ -353,12 +361,13 @@ internal sealed class AddressFold
             {
                 MMem mem = (MMem)ins[j].Operands[k];
                 ins[j].Operands[k] = new MMem(mem.Base, mem.Disp) { Index = z, Scale = 1 << (int)amount.Value, Segment = mem.Segment };
+                Noted(block, ins[j], k, mem);
             }
             _occurrences[z.Id] += uses.Count - 1;
             _occurrences[yv.Id] = 0;
             _defs[yv.Id] = 0;
-            ins[p] = _gone;
-            ins[q] = _gone;
+            Remove(ins, p);
+            Remove(ins, q);
             any = true;
         }
         return any;
@@ -371,41 +380,99 @@ internal sealed class AddressFold
     /// otherwise. `counted`: t's occurrences in
     /// its own block, all after `start`, which with these must be all it has.
     /// </summary>
-    private List<(MInstr I, int K)>? Beyond(MReg t, MReg x, MReg? y, long disp, int block, int start, int counted)
+    private List<(int Block, MInstr I, int K)>? Beyond(MReg t, MReg x, MReg? y, long disp, int block, int start, int counted)
     {
         if (!Fixed(x, block, start) || y is not null && !Fixed(y, block, start))
         {
             return null;
         }
-        List<(MInstr I, int K)> found = new();
-        for (int b = 0; b < _m.Blocks.Count; b++)
+        List<(int Block, MInstr I, int K)> found = new();
+        // An occurrence noted twice -- read again after a fold that put it back -- counts once.
+        Dictionary<MInstr, long> seen = new(ReferenceEqualityComparer.Instance);
+        foreach ((int b, MInstr u, int k) in Sites()[t.Id])
         {
-            if (b == block)
+            if (b == block || _removed.Contains(u))
             {
                 continue;
             }
+            long bit = 1L << k;
+            seen.TryGetValue(u, out long had);
+            if ((had & bit) != 0)
+            {
+                continue;
+            }
+            seen[u] = had | bit;
+            switch (u.Operands[k])
+            {
+                case MReg r when r.Id == t.Id:
+                    return null;
+                case MMem mem when mem.Index?.Id == t.Id:
+                    return null;
+                case MMem mem when mem.Base?.Id == t.Id:
+                    if (!Plain(mem) || (y is not null && mem.Index is not null) || !FitsDisp(mem.Disp, disp) || !Dominates(block, b))
+                    {
+                        return null;
+                    }
+                    found.Add((b, u, k));
+                    break;
+            }
+        }
+        return counted + found.Count == _occurrences[t.Id] ? found : null;
+    }
+
+    /// <summary>Every register's occurrences in the function as it stands.</summary>
+    private List<(int Block, MInstr I, int K)>[] Sites()
+    {
+        if (_sites is not null)
+        {
+            return _sites;
+        }
+        _sites = new List<(int, MInstr, int)>[_m.NextVReg];
+        for (int v = 0; v < _sites.Length; v++) _sites[v] = new();
+        for (int b = 0; b < _m.Blocks.Count; b++)
+        {
             foreach (MInstr u in _m.Blocks[b].Instrs)
             {
                 for (int k = 0; k < u.Operands.Count; k++)
                 {
                     switch (u.Operands[k])
                     {
-                        case MReg r when r.Id == t.Id:
-                            return null;
-                        case MMem mem when mem.Index?.Id == t.Id:
-                            return null;
-                        case MMem mem when mem.Base?.Id == t.Id:
-                            if (!Plain(mem) || (y is not null && mem.Index is not null) || !FitsDisp(mem.Disp, disp) || !Dominates(block, b))
-                            {
-                                return null;
-                            }
-                            found.Add((u, k));
+                        case MReg { IsPhys: false } r:
+                            _sites[r.Id].Add((b, u, k));
+                            break;
+                        case MMem mem:
+                            if (mem.Base is { IsPhys: false } mb) _sites[mb.Id].Add((b, u, k));
+                            if (mem.Index is { IsPhys: false } mx && mx.Id != mem.Base?.Id) _sites[mx.Id].Add((b, u, k));
                             break;
                     }
                 }
             }
         }
-        return counted + found.Count == _occurrences[t.Id] ? found : null;
+        return _sites;
+    }
+
+    /// <summary>A memory operand rewritten from `old`: the registers it now names that `old` did not are noted.</summary>
+    private void Noted(int block, MInstr at, int k, MMem old)
+    {
+        if (_sites is null)
+        {
+            return;
+        }
+        MMem now = (MMem)at.Operands[k];
+        if (now.Base is { IsPhys: false } nb && nb.Id != old.Base?.Id && nb.Id != old.Index?.Id)
+        {
+            _sites[nb.Id].Add((block, at, k));
+        }
+        if (now.Index is { IsPhys: false } nx && nx.Id != now.Base?.Id && nx.Id != old.Base?.Id && nx.Id != old.Index?.Id)
+        {
+            _sites[nx.Id].Add((block, at, k));
+        }
+    }
+
+    private void Remove(List<MInstr> ins, int at)
+    {
+        _removed.Add(ins[at]);
+        ins[at] = _gone;
     }
 
     /// <summary>

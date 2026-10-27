@@ -63,6 +63,65 @@ internal static class AddressFold
         /// <summary>Whether a virtual register holds one value from before `start` in `block` on.</summary>
         public bool Fixed(int v, int block, int start)
             => Block[v] >= 0 && (Block[v] == block ? At[v] < start : Dominates(Block[v], block));
+
+        // Where each register occurs, by block, instruction and operand, made
+        // when Beyond first asks, so a base read in other blocks is found
+        // among its own occurrences and not by walking the whole function for
+        // every candidate (x86-64's 1320 Main took half an hour so). A block
+        // is indexed again once folded and a fold's rewrite in another block
+        // is noted; an occurrence rewritten away or removed is passed over
+        // where read. Beyond never reads its own block's.
+        private List<(int Block, MInstr I, int K)>[]? _sites;
+        private readonly HashSet<MInstr> _removed = new(ReferenceEqualityComparer.Instance);
+
+        public List<(int Block, MInstr I, int K)>[] Sites()
+        {
+            if (_sites is null)
+            {
+                _sites = new List<(int, MInstr, int)>[M.NextVReg];
+                for (int v = 0; v < _sites.Length; v++) _sites[v] = new();
+                for (int b = 0; b < M.Blocks.Count; b++) Add(b);
+            }
+            return _sites;
+        }
+
+        /// <summary>A block's occurrences as it stands, once it is folded.</summary>
+        public void Indexed(int b)
+        {
+            if (_sites is not null) Add(b);
+        }
+
+        private void Add(int b)
+        {
+            foreach (MInstr u in M.Blocks[b].Instrs)
+            {
+                for (int k = 0; k < u.Operands.Count; k++) Note(b, u, k);
+            }
+        }
+
+        /// <summary>The registers operand k of `at` names now.</summary>
+        public void Note(int b, MInstr at, int k)
+        {
+            if (_sites is null) return;
+            switch (at.Operands[k])
+            {
+                case MReg { IsPhys: false } r:
+                    _sites[r.Id].Add((b, at, k));
+                    break;
+                case MMem mem:
+                    if (mem.Base is { IsPhys: false } mb) _sites[mb.Id].Add((b, at, k));
+                    if (mem.Index is { IsPhys: false } mx && mx.Id != mem.Base?.Id) _sites[mx.Id].Add((b, at, k));
+                    break;
+            }
+        }
+
+        public bool IsRemoved(MInstr i) => _removed.Contains(i);
+
+        public void Remove(List<MInstr> ins, int at)
+        {
+            _removed.Add(ins[at]);
+            ins[at] = Gone();
+        }
     }
 
     /// <summary>
@@ -95,6 +154,7 @@ internal static class AddressFold
             {
                 m.Blocks[b].Instrs.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
             }
+            writes.Indexed(b);
         }
     }
 
@@ -186,38 +246,41 @@ internal static class AddressFold
     /// on -- null otherwise. `counted`: t's occurrences in its own block,
     /// which with these must be all it has.
     /// </summary>
-    private static List<(MInstr I, int K)>? Beyond(WriteSites writes, MReg t, MReg x, MOperand y, int block, int start, int counted, int[] occurrences)
+    private static List<(int Block, MInstr I, int K)>? Beyond(WriteSites writes, MReg t, MReg x, MOperand y, int block, int start, int counted, int[] occurrences)
     {
         if (!writes.Fixed(x.Id, block, start) || y is MReg yr && !writes.Fixed(yr.Id, block, start))
         {
             return null;
         }
-        List<(MInstr I, int K)> found = new();
-        for (int b = 0; b < writes.M.Blocks.Count; b++)
+        List<(int Block, MInstr I, int K)> found = new();
+        // An occurrence noted more than once counts once.
+        Dictionary<MInstr, long> seen = new(ReferenceEqualityComparer.Instance);
+        foreach ((int b, MInstr u, int k) in writes.Sites()[t.Id])
         {
-            if (b == block)
+            if (b == block || writes.IsRemoved(u))
             {
                 continue;
             }
-            foreach (MInstr u in writes.M.Blocks[b].Instrs)
+            long bit = 1L << k;
+            seen.TryGetValue(u, out long had);
+            if ((had & bit) != 0)
             {
-                for (int k = 0; k < u.Operands.Count; k++)
-                {
-                    switch (u.Operands[k])
+                continue;
+            }
+            seen[u] = had | bit;
+            switch (u.Operands[k])
+            {
+                case MReg r when r.Id == t.Id:
+                    return null;
+                case MMem mem when mem.Index?.Id == t.Id:
+                    return null;
+                case MMem mem when mem.Base?.Id == t.Id:
+                    if (!Plain(mem) || mem.Index is not null || (y is MImm imm && !FitsDisp(mem.Disp, imm.Value)) || !writes.Dominates(block, b))
                     {
-                        case MReg r when r.Id == t.Id:
-                            return null;
-                        case MMem mem when mem.Index?.Id == t.Id:
-                            return null;
-                        case MMem mem when mem.Base?.Id == t.Id:
-                            if (!Plain(mem) || mem.Index is not null || (y is MImm imm && !FitsDisp(mem.Disp, imm.Value)) || !writes.Dominates(block, b))
-                            {
-                                return null;
-                            }
-                            found.Add((u, k));
-                            break;
+                        return null;
                     }
-                }
+                    found.Add((b, u, k));
+                    break;
             }
         }
         return counted + found.Count == occurrences[t.Id] ? found : null;
@@ -277,7 +340,7 @@ internal static class AddressFold
                     ins[j].Operands[k] = new MMem(null, checked(mem.Disp + (int)sym.Value)) { Index = mem.Index, Scale = mem.Scale, Symbol = sym.Symbol, Device = mem.Device };
                 }
                 occurrences[t.Id] = 0;
-                ins[q] = Gone();
+                writes.Remove(ins, q);
                 any = true;
             }
         }
@@ -321,7 +384,7 @@ internal static class AddressFold
             {
                 continue;
             }
-            List<(MInstr I, int K)>? beyond = null;
+            List<(int Block, MInstr I, int K)>? beyond = null;
             if (occurrences[u.Id] != 1 + uses.Count)
             {
                 beyond = Beyond(writes, u, t, new MImm(0), block, q, 1 + uses.Count, occurrences);
@@ -335,16 +398,17 @@ internal static class AddressFold
             {
                 continue;
             }
-            List<(MInstr I, int K)> all = uses.Select(x => (ins[x.J], x.K)).ToList();
+            List<(int Block, MInstr I, int K)> all = uses.Select(x => (block, ins[x.J], x.K)).ToList();
             if (beyond is not null) all.AddRange(beyond);
-            foreach ((MInstr at, int k) in all)
+            foreach ((int where, MInstr at, int k) in all)
             {
                 MMem mem = (MMem)at.Operands[k];
                 at.Operands[k] = new MMem(t, mem.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
+                writes.Note(where, at, k);
             }
             occurrences[t.Id] += all.Count - 1;
             occurrences[u.Id] = 0;
-            ins[q] = Gone();
+            writes.Remove(ins, q);
             any = true;
         }
 
@@ -401,7 +465,7 @@ internal static class AddressFold
                 ins[j].Operands[k] = new MMem(ebp, mem.Disp + frame.Disp) { Index = mem.Index, Scale = mem.Scale, Device = mem.Device };
             }
             occurrences[t.Id] = 0;
-            ins[q] = Gone();
+            writes.Remove(ins, q);
             any = true;
         }
 
@@ -479,7 +543,7 @@ internal static class AddressFold
             {
                 continue;
             }
-            List<(MInstr I, int K)>? beyond = null;
+            List<(int Block, MInstr I, int K)>? beyond = null;
             if (occurrences[t.Id] != 2 + uses.Count)
             {
                 beyond = Beyond(writes, t, x, y, block, p, 2 + uses.Count, occurrences);
@@ -497,14 +561,15 @@ internal static class AddressFold
             {
                 continue;
             }
-            List<(MInstr I, int K)> all = uses.Select(u => (ins[u.J], u.K)).ToList();
+            List<(int Block, MInstr I, int K)> all = uses.Select(u => (block, ins[u.J], u.K)).ToList();
             if (beyond is not null) all.AddRange(beyond);
-            foreach ((MInstr at, int k) in all)
+            foreach ((int where, MInstr at, int k) in all)
             {
                 MMem mem = (MMem)at.Operands[k];
                 at.Operands[k] = y is MImm imm
                     ? new MMem(x, checked(mem.Disp + (int)imm.Value)) { Device = mem.Device }
                     : new MMem(x, mem.Disp) { Index = (MReg)y, Scale = 1, Device = mem.Device };
+                writes.Note(where, at, k);
             }
             occurrences[x.Id] += all.Count - 1;
             if (y is MReg ym)
@@ -512,8 +577,8 @@ internal static class AddressFold
                 occurrences[ym.Id] += all.Count - 1;
             }
             occurrences[t.Id] = 0;
-            ins[p] = Gone();
-            ins[q] = Gone();
+            writes.Remove(ins, p);
+            writes.Remove(ins, q);
             any = true;
         }
 
@@ -575,7 +640,7 @@ internal static class AddressFold
             }
             occurrences[t.Id]--;
             defs[t.Id]--;
-            ins[q] = Gone();
+            writes.Remove(ins, q);
             any = true;
         }
 
@@ -652,8 +717,8 @@ internal static class AddressFold
             }
             occurrences[z.Id] += uses.Count - 1;
             occurrences[yv.Id] = 0;
-            ins[p] = Gone();
-            ins[q] = Gone();
+            writes.Remove(ins, p);
+            writes.Remove(ins, q);
             any = true;
         }
         // ---- 3. a load read once, as an ALU instruction's source ----
@@ -695,7 +760,7 @@ internal static class AddressFold
             if (!quiet) continue;
             alu.Operands[1] = mem;
             occurrences[t.Id] = 0;
-            ins[p] = Gone();
+            writes.Remove(ins, p);
             any = true;
         }
 
@@ -740,9 +805,10 @@ internal static class AddressFold
                     && (mem.Index is null || !Writes(between, mem.Index.Id));
             }
             if (!quiet) continue;
+            writes.Remove(ins, q);
             ins[q] = new MInstr(MOp.Cmp, mem, against) { Width = 4, Line = cmp.Line };
             occurrences[t.Id] = 0;
-            ins[p] = Gone();
+            writes.Remove(ins, p);
             any = true;
         }
 
@@ -785,7 +851,7 @@ internal static class AddressFold
             if (!quiet) continue;
             call.Operands[0] = mem;
             occurrences[t.Id] = 0;
-            ins[p] = Gone();
+            writes.Remove(ins, p);
             any = true;
         }
         return any;
