@@ -437,8 +437,11 @@ public static class Prelude
             // And back: the reference an address holds, as FromWord is Word's.
             public static object? ObjectAt(nuint address) { return null; }
             // The other way: a word read out of memory, taken as the reference
-            // it holds. What an atomic swap of a reference field hands back.
-            public static object? FromWord(long word) { return null; }
+            // it holds -- what an atomic swap of a reference field hands back,
+            // a block Runtime.Alloc made. An address, so a nuint, as every
+            // address intrinsic takes (ReadAddress, ArrayData); ObjectAt by
+            // its other name.
+            public static object? FromWord(nuint word) { return null; }
             // A STRING'S UNITS AS THE char[] THEY ARE LAID OUT AS: the same
             // object -- header, count, UTF-16 units -- typed so a span can
             // view it (string.AsSpan) without a copy. Read only once anybody

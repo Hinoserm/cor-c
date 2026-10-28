@@ -782,7 +782,7 @@ public static class Driver
                     or "--load" or "--paddr" or "--cpu" or "--fpu" or "--with" or "--asm-entry"
                     or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type" or "--runtime-knob"
-                    or "--syscall-abi" or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring" or "--module-index")
+                    or "--syscall-abi" or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring" or "--module-index" or "--inside-facts")
                 {
                     i++;
                 }
@@ -1082,6 +1082,12 @@ public static class Driver
             if (covers)
                 foreach (string under in sharedLibs)
                     insideElsewhere.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(under)).Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
+            // AND THE OTHER UNITS OF THIS IMAGE'S (--inside-facts, ProjectCompile's
+            // InsideFacts): compiled apart, a unit knows its neighbours' copies
+            // only as the project build says them. One --cpu for every unit of
+            // an image, so whatever its saves are, they cover their copies.
+            if (Value(args, "--inside-facts") is string facts)
+                insideElsewhere.UnionWith(File.ReadAllLines(facts).Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
         }
         Corsac.Lang.Lower.Lowering.InsideElsewhere = insideElsewhere;
         Binder.KeepsStateElsewhere = insideElsewhere.Count == 0 ? null

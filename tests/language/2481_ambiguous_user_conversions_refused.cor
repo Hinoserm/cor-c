@@ -1,0 +1,29 @@
+// test: a user-defined conversion two operators make equally is refused as ambiguous, as C# refuses it (CS0457)
+// expect-compile-error: CS0457: Ambiguous user defined conversions 'Feet.implicit operator Meters(Feet)' and 'Meters.implicit operator Meters(Feet)' when converting from 'Feet' to 'Meters'
+//
+// Two types each declaring the same conversion, Feet to Meters, leave no
+// most specific operator (C# 10.5.5): C# refuses the conversion where it is
+// made. It was the first operator found, taken without a word.
+
+struct Feet
+{
+    public double Value;
+    public static implicit operator Meters(Feet f) => new Meters { Value = f.Value * 0.3048 };
+}
+
+struct Meters
+{
+    public double Value;
+    public static implicit operator Meters(Feet f) => new Meters { Value = f.Value * 0.3 };
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Feet f = new Feet { Value = 10 };
+        Meters m = f;
+        System.Console.WriteLine(m.Value);
+        return 0;
+    }
+}

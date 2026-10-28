@@ -1,0 +1,28 @@
+// test: with no operator to the target itself, the conversion takes the one whose result is most encompassing; results neither converts to are ambiguous (CS0457)
+// expect-output:
+// 333 333
+// 77
+//
+// C# 10.5.5: `(long)w` with operators to byte and to int is the one to int,
+// every other result (the byte) converting to it; whichever came first was
+// taken before. `(byte)w` is the one to byte itself. Checked against .NET.
+
+struct W
+{
+    public int V;
+    public static explicit operator byte(W w) => (byte)(w.V & 0xFF);
+    public static explicit operator int(W w) => w.V;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        W w = new W { V = 333 };
+        long a = (long)w;
+        long? b = (long?)w;
+        System.Console.WriteLine(a + " " + b);
+        System.Console.WriteLine((byte)w);
+        return 0;
+    }
+}

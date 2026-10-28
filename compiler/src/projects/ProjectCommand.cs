@@ -466,6 +466,27 @@ public static class ProjectCommand
         }
         foreach (Thread wait in waits) wait.Join();
         try { Directory.Delete(claims, recursive: true); } catch (IOException) { }
+        // THE CALLS BETWEEN UNITS INSIDE A KEPT STATE (ProjectCompile's
+        // InsideRounds) need every unit's object, which no child had: one run
+        // more over the whole list, which finds each unit current by its stamp
+        // and does only those rounds. Bare-metal builds alone make copies.
+        if (ok && (options.Contains("--freestanding") || options.Contains("--kernel")) && !options.Contains("--windows"))
+        {
+            System.Diagnostics.ProcessStartInfo last = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            last.ArgumentList.Add("--compiler-identity"); last.ArgumentList.Add(ProjectCompile.CompilerIdentity());
+            foreach (string flag in Driver.ChildFlags) last.ArgumentList.Add(flag);
+            last.ArgumentList.Add("compile-project");
+            last.ArgumentList.Add("--units"); last.ArgumentList.Add(share);
+            last.ArgumentList.Add("--jobs"); last.ArgumentList.Add(Math.Max(1, workers).ToString());
+            foreach (string option in options) last.ArgumentList.Add(option);
+            using System.Diagnostics.Process rounds = System.Diagnostics.Process.Start(last)!;
+            rounds.WaitForExit();
+            if (rounds.ExitCode != 0)
+            {
+                Console.Error.WriteLine("corc: the compile-project process for the units' calls into each other (pid " + rounds.Id + ") exited with code " + rounds.ExitCode);
+                ok = false;
+            }
+        }
         return ok;
     }
 

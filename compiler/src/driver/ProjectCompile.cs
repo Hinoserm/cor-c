@@ -176,6 +176,15 @@ public static class ProjectCompile
         // with the last unit's names and function tables still reachable --
         // up to a hundred thousand strings a thread, held while the units
         // still running are the ones that need the room.
+        // CALLS BETWEEN UNITS INSIDE A KEPT STATE (InsideRounds): the
+        // copies of the other units' methods that run inside their caller's
+        // state, as this build knows them, handed to each unit compiled; a
+        // reason that compiles a unit whatever its stamp says; and the units
+        // compiled since the facts were last written.
+        string? factsFile = null;
+        string? forced = null;
+        List<Unit> compiledNow = new();
+
         static void ForgetUnit()
         {
             Corsac.Lang.Interned.Forget();
@@ -191,7 +200,7 @@ public static class ProjectCompile
 
         int OneUnit(Unit unit)
         {
-            string? reason = Stale(unit);
+            string? reason = forced ?? Stale(unit);
             if (reason is null)
             {
                 lock (gate) { done++; skipped++; }
@@ -243,6 +252,7 @@ public static class ProjectCompile
             if (!unit.Entry) { one.Add("--lib"); one.Add("--no-shared-init"); }
             one.Add("--dependency-file"); one.Add(unit.Receipt);
             one.Add("-o"); one.Add(unit.Object);
+            if (factsFile is not null) { one.Add("--inside-facts"); one.Add(factsFile); }
             long before = GC.GetTotalAllocatedBytes();
             // A UNIT BEGUN IS SAID AT ONCE: only its end was, and a unit that
             // never ended -- the compile caught in a loop -- looked like one
@@ -302,6 +312,7 @@ public static class ProjectCompile
                 {
                     try { File.WriteAllText(unit.Receipt + ".stamp", StampOf(unit, compiled)); }
                     catch (IOException) { }
+                    lock (gate) compiledNow.Add(unit);
                 }
             }
             lock (gate)
@@ -480,6 +491,14 @@ public static class ProjectCompile
             }
             catch (IOException) { return false; }
         }
+        // THE FACTS THE LAST BUILD LEFT, the units' objects as they are: an
+        // edit that moves no copy compiles its units right the first time.
+        bool insideRounds = claims is null && InsideFactsApply(common);
+        if (insideRounds)
+        {
+            factsFile = list + ".inside";
+            WriteFacts(factsFile, ReadUnits(units).SelectMany(read => read.Copies));
+        }
         if (dynamic)
         {
             int e = 0;
@@ -519,6 +538,37 @@ public static class ProjectCompile
             foreach (Thread thread in running) thread.Join();
         }
 
+        // EACH UNIT ONCE MORE WHERE ITS NEIGHBOURS' COPIES MOVED under it, until
+        // none did (InsideRounds).
+        if (insideRounds && failures == 0)
+        {
+            List<Unit> again = new();
+            int RunAgain(List<Unit> batch)
+            {
+                int failed = 0;
+                if (dynamic)
+                    foreach (Unit unit in batch.Where(unit => unit.Entry))
+                        if (Gated(unit) != 0) failed++;
+                Unit[] others = batch.Where(unit => !unit.Entry || !dynamic).OrderByDescending(Size).ToArray();
+                int taken = -1;
+                void Again()
+                {
+                    while (true)
+                    {
+                        int i = Interlocked.Increment(ref taken);
+                        if (i >= others.Length) return;
+                        if (Gated(others[i]) != 0) Interlocked.Increment(ref failed);
+                    }
+                }
+                int count = Math.Min(limit, others.Length);
+                Thread[] going = new Thread[count];
+                for (int w = 0; w < count; w++) { going[w] = new Thread(Again, 16 * 1024 * 1024) { IsBackground = true, Name = "inside-" + w }; going[w].Start(); }
+                foreach (Thread thread in going) thread.Join();
+                return failed;
+            }
+            failures += InsideRounds(units, factsFile!, compiledNow, RunAgain, why => forced = why);
+        }
+
         Driver.Session = null;
         Console.Error.WriteLine("project " + assembly + ": " + units.Count + " units, " + skipped + " already current, "
             + session.Tokens.Hits + " header lexes reused, " + session.Catalog.PayloadLoads + " index payload loads, "
@@ -531,6 +581,104 @@ public static class ProjectCompile
             + " gen1=" + GC.CollectionCount(1) + " gen2=" + GC.CollectionCount(2) + ", "
             + "allocated=" + GC.GetTotalAllocatedBytes());
         return failures == 0 ? 0 : 1;
+    }
+
+    // ---- calls between units inside a kept state -------------------------------------
+    //
+    // A UNIT'S CALL TO A NEIGHBOUR'S METHOD INSIDE A KEPT STATE takes the
+    // neighbour's copy that runs inside it ($inside, Lowering.InsideElsewhere),
+    // and a call in a loop keeps the state there (Binder.KeepsStateElsewhere)
+    // -- as a call within one unit does, and a module's into the kernel. But
+    // a unit is compiled apart, and which of its neighbours' methods keep the
+    // state is theirs to find out. So the build says it: the copies every
+    // unit's object defines, written to a file each unit is compiled with
+    // (--inside-facts); and beside each receipt, which of the unit's own
+    // calls into other units had a copy as it was compiled (.inside). A unit
+    // whose calls would now answer otherwise is compiled again with the
+    // facts as they are, and again until no unit's answers move -- a unit
+    // that keeps the state for a call now may make a copy of its own, which
+    // its callers then take. The first build takes the extra round; one after
+    // it starts from the facts the last left, and compiles a unit once. Only
+    // where copies are made at all: bare-metal i386 (Lowering.PackedStateHere).
+
+    /// <summary>Whether a project's units can make $inside copies: compiled bare-metal (--freestanding, a kernel module), not for Windows.</summary>
+    private static bool InsideFactsApply(List<string> common)
+        => (common.Contains("--freestanding") || common.Contains("--kernel")) && !common.Contains("--windows") && !common.Contains("--dll")
+           && Driver.Value(common.ToArray(), "--target") is null or "x86" or "i386";
+
+    /// <summary>What one unit's object says of the copies: those it defines, and the methods it calls in other units (a copy's name taken back to its method's).</summary>
+    private readonly record struct UnitCalls(Unit Unit, List<string> Copies, HashSet<string> Calls);
+
+    /// <summary>Each unit's object read for its symbols, one after another (the reader's switches are the process's).</summary>
+    private static List<UnitCalls> ReadUnits(IEnumerable<Unit> units)
+    {
+        List<UnitCalls> read = new();
+        foreach (Unit unit in units)
+        {
+            if (!File.Exists(unit.Object)) continue;
+            Corsac.Lang.Ir.ObjectFile obj = Corsac.Lang.Elf.ElfReader.ReadObjectMetadata(unit.Object);
+            List<string> copies = new();
+            HashSet<string> calls = new(StringComparer.Ordinal);
+            foreach (Corsac.Lang.Ir.Symbol symbol in obj.Symbols)
+            {
+                bool copy = symbol.Name.EndsWith(Corsac.Lang.Elf.Linker.InsideSuffix, StringComparison.Ordinal);
+                if (symbol.IsDefined) { if (copy) copies.Add(symbol.Name); }
+                else calls.Add(copy ? symbol.Name[..^Corsac.Lang.Elf.Linker.InsideSuffix.Length] : symbol.Name);
+            }
+            read.Add(new UnitCalls(unit, copies, calls));
+        }
+        return read;
+    }
+
+    private static void WriteFacts(string path, IEnumerable<string> copies)
+        => File.WriteAllLines(path, copies.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+
+    /// <summary>A unit's answers under `facts`: which of the methods it calls in other units have a copy.</summary>
+    private static string Answers(UnitCalls read, HashSet<string> facts)
+        => string.Join('\n', read.Calls.Where(name => facts.Contains(name + Corsac.Lang.Elf.Linker.InsideSuffix)).Order(StringComparer.Ordinal));
+
+    private static string AnswersOf(Unit unit)
+        => File.Exists(unit.Receipt + ".inside") ? File.ReadAllText(unit.Receipt + ".inside") : "";
+
+    /// <summary>
+    /// The rounds: the answers of the units just compiled written under the
+    /// facts they were compiled with; then, while some unit's answers under
+    /// the facts its neighbours now give differ from its own, those units
+    /// compiled again with them. Four rounds at most -- each one a unit taking
+    /// its neighbours' copies, a chain that long is the program's longest --
+    /// and said if more were wanted. Answers the units that failed.
+    /// </summary>
+    private static int InsideRounds(List<Unit> units, string factsFile, List<Unit> compiledNow, Func<List<Unit>, int> compile, Action<string?> force)
+    {
+        HashSet<string> facts = new(File.ReadAllLines(factsFile), StringComparer.Ordinal);
+        for (int round = 0; ; round++)
+        {
+            // What was just compiled answers under the facts it was given.
+            HashSet<Unit> fresh = new(compiledNow);
+            compiledNow.Clear();
+            List<UnitCalls> read = ReadUnits(units);
+            foreach (UnitCalls one in read.Where(one => fresh.Contains(one.Unit)))
+                File.WriteAllText(one.Unit.Receipt + ".inside", Answers(one, facts));
+            // The facts as the objects now are, and who would answer otherwise.
+            facts = new(read.SelectMany(one => one.Copies), StringComparer.Ordinal);
+            List<Unit> moved = read.Where(one => Answers(one, facts) != AnswersOf(one.Unit)).Select(one => one.Unit).ToList();
+            if (moved.Count == 0) return 0;
+            if (round == 4)
+            {
+                Console.Error.WriteLine("corc: the units' calls into each other's packed methods still move after four rounds ("
+                    + string.Join(", ", moved.Take(6).Select(unit => Path.GetFileName(unit.Source))) + "); the build is right, its last round's answers not taken");
+                return 0;
+            }
+            WriteFacts(factsFile, facts);
+            Console.Error.WriteLine("inside facts round " + (round + 1) + ": " + moved.Count + " unit(s) call into other units' packed methods as they now are");
+            force("its calls into other units' packed methods moved");
+            try
+            {
+                int failed = compile(moved);
+                if (failed != 0) return failed;
+            }
+            finally { force(null); }
+        }
     }
 
     static string? _compilerIdentity;

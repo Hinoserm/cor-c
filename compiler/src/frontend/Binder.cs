@@ -8067,6 +8067,7 @@ public sealed partial class Binder
             Expr converted = _r.Rewrites.TryGetValue(e, out Expr? rewritten) ? rewritten : e;
             if (UserConversion(t, Type.Bool, explicitToo: false) is MethodSymbol toBool)
             {
+                ReportAmbiguity(e, t, Type.Bool, explicitToo: false);
                 ConvertByOperator(converted, toBool);
                 return;
             }
@@ -8582,6 +8583,7 @@ public sealed partial class Binder
         if (at is Expr converted && !StandardConvertible(from, to) && !Variant(from, to)
             && UserConversion(from, to, explicitToo: false, IntegerConstant(converted, from)) is { } implicitOp)
         {
+            ReportAmbiguity(converted, from, to, explicitToo: false, IntegerConstant(converted, from));
             if (!_r.Rewrites.TryGetValue(converted, out Expr? priorRewrite))
             {
                 ConvertByOperator(converted, implicitOp);
@@ -8861,24 +8863,78 @@ public sealed partial class Binder
             }
         }
 
-        // THE MOST SPECIFIC OPERATOR (C# 10.5.5): among those whose operand
-        // is the source itself when any is, the one whose result is the
-        // target itself. `(UInt128)(-1)` is UInt128's operator from int, not
-        // the one from uint that the int also reaches by a cast; `(long)node`
-        // is JsonNode's operator to long, not the one to int that widens.
-        // To a T? the operator to T is as exact: `(int?)300m` is decimal's
-        // operator to int, not its first, to byte, and `(double?)node` the
-        // one to double, not to int. Failing one exactly, the most
-        // encompassing result, the one every other converts to: `(long)x`
-        // through operators to byte and to int is the one to int. (Two
-        // results neither converts to, C#'s ambiguity, take the first.)
-        List<MethodSymbol> fromExactly = candidates.Where(m => MethodSignatures.SameType(m.Params[0].Type, from)).ToList();
-        if (fromExactly.Count > 0) candidates = fromExactly;
+        // THE MOST SPECIFIC OPERATOR (C# 10.5.5). Its source: the source
+        // itself where an operator takes it, else the most encompassed of
+        // the operands -- the one every other's takes. `(UInt128)(-1)` is
+        // UInt128's operator from int, not the one from uint that the int
+        // also reaches by a cast. Its target: the target itself where an
+        // operator makes it -- `(long)node` is JsonNode's operator to long,
+        // not the one to int that widens; to a T?, the operator to T is as
+        // exact, `(int?)300m` decimal's operator to int, not its first, to
+        // byte -- else the most encompassing of the results, the one every
+        // other's converts to: `(long)x` through operators to byte and to
+        // int is the one to int. The operator is the one from that source
+        // to that target; where there is none, or more than one -- two
+        // results neither converts to, two types declaring the same
+        // conversion -- the conversion is AMBIGUOUS (CS0457): the first
+        // answers whoever only asks whether there is one, and a site that
+        // makes the conversion is refused (ReportAmbiguity).
+        _ambiguity = null;
+        if (candidates.Count <= 1) return candidates.FirstOrDefault();
         Type toPlain = to.IsNullableValue ? to.Underlying : to;
-        return candidates.FirstOrDefault(m => MethodSignatures.SameType(m.Returns, to))
-            ?? candidates.FirstOrDefault(m => MethodSignatures.SameType(m.Returns, toPlain))
-            ?? candidates.FirstOrDefault(m => candidates.All(o => o == m || StandardConvertible(o.Returns, m.Returns)))
-            ?? candidates.FirstOrDefault();
+        Type? fromMost = candidates.Any(m => MethodSignatures.SameType(m.Params[0].Type, from)) ? from
+            : MostSpecific(candidates.Select(m => m.Params[0].Type), encompassed: true);
+        Type? toMost = candidates.Any(m => MethodSignatures.SameType(m.Returns, to)) ? to
+            : candidates.Any(m => MethodSignatures.SameType(m.Returns, toPlain)) ? toPlain
+            : MostSpecific(candidates.Select(m => m.Returns), encompassed: false);
+        List<MethodSymbol> chosen = fromMost is null || toMost is null ? new()
+            : candidates.Where(m => MethodSignatures.SameType(m.Params[0].Type, fromMost) && MethodSignatures.SameType(m.Returns, toMost)).ToList();
+        if (chosen.Count == 1) return chosen[0];
+        List<MethodSymbol> rivals = chosen.Count > 1 ? chosen : candidates;
+        _ambiguity = (rivals[0], rivals[1], from, to);
+        return rivals[0];
+    }
+
+    /// <summary>
+    /// The most encompassed of `types` -- the one that converts implicitly
+    /// to every other -- or the most encompassing, the one every other
+    /// converts to (C# 10.5.3). Null where there is none, or where those
+    /// that qualify are not all one type converting both ways (an object,
+    /// a T and its T?).
+    /// </summary>
+    private Type? MostSpecific(IEnumerable<Type> types, bool encompassed)
+    {
+        List<Type> distinct = new();
+        foreach (Type t in types)
+            if (!distinct.Any(d => MethodSignatures.SameType(d, t))) distinct.Add(t);
+        List<Type> best = distinct.Where(t => distinct.All(o => MethodSignatures.SameType(o, t)
+            || (encompassed ? StandardConvertible(t, o) : StandardConvertible(o, t)))).ToList();
+        if (best.Count == 0) return null;
+        if (best.Count > 1 && !best.All(a => best.All(b => StandardConvertible(a, b) && StandardConvertible(b, a)))) return null;
+        return best[0];
+    }
+
+    /// <summary>The last conversion asked for that is ambiguous (UserConversionWhere): two of its operators, and what it converts.</summary>
+    private (MethodSymbol A, MethodSymbol B, Type From, Type To)? _ambiguity;
+
+    /// <summary>The sites an ambiguous conversion was refused at (ReportAmbiguity).</summary>
+    private readonly HashSet<Node> _ambiguityReported = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// A SITE THAT MAKES A USER-DEFINED CONVERSION refuses an ambiguous one
+    /// (C# CS0457), naming the two operators: asked again here, as every
+    /// other ask in between may have been another conversion's.
+    /// </summary>
+    private void ReportAmbiguity(Node at, Type from, Type to, bool explicitToo, long? constant = null)
+    {
+        UserConversion(from, to, explicitToo, constant);
+        if (_ambiguity is not { } two) return;
+        _ambiguity = null;
+        // Once a site: a value is checked again where it is converted again.
+        if (!_ambiguityReported.Add(at)) return;
+        Error(at, $"CS0457: Ambiguous user defined conversions '{Describe(two.A)}' and '{Describe(two.B)}' when converting from '{two.From}' to '{two.To}'");
+
+        static string Describe(MethodSymbol m) => $"{m.Owner.Name}.{(m.Name == "op_Implicit" ? "implicit" : "explicit")} operator {m.Returns}({m.Params[0].Type})";
     }
 
     /// <summary>
@@ -18037,6 +18093,7 @@ public sealed partial class Binder
                     && (!wanted.IsNullableValue || ValueOperand(plain) && ValueOperand(liftOp.Returns))
                     && !(UserConversion(operand, wanted, explicitToo: true) is { } onNullable && onNullable.Params[0].Type.IsNullableValue))
                 {
+                    ReportAmbiguity(cast, operand.Underlying, plain, explicitToo: true);
                     SubjectExpr held = new() { Line = cast.Line, Col = cast.Col };
                     CallExpr onValue = new()
                     {
@@ -18069,6 +18126,7 @@ public sealed partial class Binder
                 if (!StandardConvertible(operand, wanted) && !StandardConvertible(wanted, operand)
                     && !_r.Rewrites.ContainsKey(cast) && UserConversion(operand, wanted, explicitToo: true) is { } castOp)
                 {
+                    ReportAmbiguity(cast, operand, wanted, explicitToo: true);
                     CallExpr call = new()
                     {
                         Target = new MemberExpr { Target = Qualified(castOp.Owner, cast), Name = castOp.Name, Line = cast.Line, Col = cast.Col, File = cast.File },
