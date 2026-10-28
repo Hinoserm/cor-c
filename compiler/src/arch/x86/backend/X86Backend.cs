@@ -952,7 +952,7 @@ public sealed class X86Backend : IBackend
             LoopRotate.Run(m);
             Peephole.Run(m);
             FrameCompact.Run(m);
-            if (CountSpills && !PositionIndependent) SpillCount.Run(m);
+            if (CountSpills) SpillCount.Run(m);
         }
         catch (InvalidOperationException e)
         {

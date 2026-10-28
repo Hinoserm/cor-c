@@ -88,7 +88,8 @@ public sealed class DeadStatics : IModulePass
         HashSet<string> dead = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data)
         {
-            if (d.Zero && !read.Contains(d.Name) && written.Contains(d.Name))
+            // A volatile one is read where the IR cannot see (UnwrittenStatics): its stores stay.
+            if (d.Zero && !d.Volatile && !read.Contains(d.Name) && written.Contains(d.Name))
             {
                 dead.Add(d.Name);
             }

@@ -3,6 +3,7 @@
 
 using System;
 using System.Diagnostics;
+using Corsac.Security.Cryptography;
 
 static class Program
 {

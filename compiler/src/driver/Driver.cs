@@ -307,9 +307,9 @@ public static class Driver
               --no-opt           skip the optimiser
               --opt-size         use experimental size-oriented inlining budgets
               --count-spills     count the register allocator's spill-slot reads and
-                                 writes as the program runs, said at its end (a program,
-                                 compiled whole: not a shared object, nor units the
-                                 link makes again)
+                                 writes as the program runs, said at its end (an i386
+                                 Linux program, compiled whole: not a shared object,
+                                 nor units the link makes again; one thread's counts)
               --region-report <names> say, for the boundaries whose names hold one of
                                  these (comma-separated), which allocations their return
                                  is proved to leave dead; corc link takes it too, for
@@ -970,6 +970,18 @@ public static class Driver
         }
 
         bool shared = args.Contains("--shared");
+        // --count-spills counts into the runtime's counters at absolute
+        // addresses, from the i386 backend, and Linux's exit says them: a
+        // compile it cannot count, or whose counts nothing would say, is
+        // refused by name rather than built without them.
+        if (args.Contains("--count-spills"))
+        {
+            string? why = longMode ? "x86-64 code"
+                : shared || args.Contains("--pic") ? "position-independent code (--shared, --pic)"
+                : freestanding || windows ? "a program not run under Linux, whose exit says nothing of them"
+                : null;
+            if (why is not null) return Fail("--count-spills counts in i386 Linux programs only, not " + why);
+        }
         // A shared object has no entry point and exports its declarations,
         // which is what --lib already means to the front end.
         bool library = args.Contains("--lib") || shared;

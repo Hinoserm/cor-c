@@ -17,12 +17,7 @@ read -r -a workloads <<< "${BENCHMARKS:-allocation loops division power-divide b
 for workload in "${workloads[@]}"; do
   sources=()
   case "$workload" in
-    crypto|chacha)
-      : "${CRYPTO_ROOT:?Set CRYPTO_ROOT to a read-only CORSAC86 os/lib directory for crypto workloads}"
-      sources+=("$CRYPTO_ROOT/crypto_base.cor")
-      if [ "$workload" = crypto ]; then sources+=("$CRYPTO_ROOT/crypto_field25519.cor" "$CRYPTO_ROOT/crypto_x25519.cor")
-      else sources+=("$CRYPTO_ROOT/crypto_chacha.cor"); fi ;;
-    allocation|loops|division|power-divide|byte-swap|byte-packing|arithmetic|constant-chains|owned-paths|memory-compare|region-allocation) ;;
+    crypto|chacha|allocation|loops|division|power-divide|byte-swap|byte-packing|arithmetic|constant-chains|owned-paths|memory-compare|region-allocation) ;;
     *) echo "Unknown benchmark: $workload" >&2; exit 2 ;;
   esac
   sources+=("tests/benchmarks/$workload.cor")

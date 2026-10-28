@@ -154,18 +154,30 @@ static class SpillCounts
         SayCount(page, "spills: writes ", writes);
     }
 
+    /// The digits by 32-bit division alone, the total's four 16-bit pieces
+    /// at a time, so every program -- this is in all of them -- carries no
+    /// 64-bit divide for it.
     static void SayCount(nuint page, string label, ulong n)
     {
         Runtime.WriteLiteral(2, label);
+        uint high = (uint)(n >> 32), low = (uint)n;
         nuint at = 23;
         Sys.Write8(page + at, 10);
         do
         {
+            uint left = high >> 16, digit;
+            uint top = left / 10;
+            left = ((left % 10) << 16) | (high & 0xFFFF);
+            high = (top << 16) | (left / 10);
+            left = ((left % 10) << 16) | (low >> 16);
+            uint mid = left / 10;
+            left = ((left % 10) << 16) | (low & 0xFFFF);
+            low = (mid << 16) | (left / 10);
+            digit = left % 10;
             at = at - 1;
-            Sys.Write8(page + at, (byte)(48 + n % 10));
-            n = n / 10;
+            Sys.Write8(page + at, (byte)(48 + digit));
         }
-        while (n > 0);
+        while (high != 0 || low != 0);
         Platform.WriteBytes(2, page + at, 24 - at);
     }
 }

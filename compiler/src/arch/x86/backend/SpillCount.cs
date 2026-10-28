@@ -12,7 +12,10 @@ namespace Corsac.Lang.X86;
 /// or the flags (pushfd, then an add and an adc to each 64-bit total's two
 /// halves, then popfd), so the allocation and the code around it are as they are
 /// without it. Absolute addresses: code that is not position-independent
-/// only -- a program, not a shared object. Braun and Hack's measure of a
+/// only -- a program, not a shared object, refused elsewhere (Driver). The
+/// adds are not locked: the counts are a single thread's, as a benchmark's
+/// are. A block left early -- a call that throws -- counts all of its own.
+/// Braun and Hack's measure of a
 /// spiller (CC 2009): executed spills and reloads (REGALLOC-RESEARCH).
 /// </summary>
 internal static class SpillCount
@@ -51,19 +54,24 @@ internal static class SpillCount
     }
 
     /// <summary>
-    /// What an instruction does to its operand `k`, a spill slot: a mov's
-    /// destination is written, a push's or a compare's operand read, a
-    /// one-operand arithmetic's or a two-operand one's destination read and
-    /// written, any source read.
+    /// What an instruction does to its operand `k`, a spill slot. Written
+    /// alone: a move's, a pop's, a setcc's or a store's destination. Read and
+    /// written: the destination of the operations that combine into it (the
+    /// two-operand arithmetic, the shifts, neg and not, and xchg's either
+    /// side). Everything else only reads: any source, a push's or a
+    /// compare's operand, and one-operand mul and div (Foldable), whose
+    /// results are EDX:EAX.
     /// </summary>
     private static (bool Read, bool Write) Access(MInstr i, int k)
     {
+        if (i.Op == MOp.Xchg) return (true, true);
         if (k > 0) return (true, false);
         return i.Op switch
         {
-            MOp.Mov or MOp.Movsx or MOp.Movzx or MOp.Setcc or MOp.Pop => (false, true),
-            MOp.Push or MOp.Cmp or MOp.Test or MOp.CallInd => (true, false),
-            _ => (true, true),
+            MOp.Mov or MOp.Movsx or MOp.Movzx or MOp.Setcc or MOp.Pop or MOp.Fstp or MOp.Fistp or MOp.Fnstcw => (false, true),
+            MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Neg or MOp.Not
+                or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Xadd or MOp.Cmpxchg => (true, true),
+            _ => (true, false),
         };
     }
 }
