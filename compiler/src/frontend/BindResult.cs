@@ -1242,8 +1242,8 @@ public sealed class CallTargets
     public bool ContainsKey(CallExpr c) => c.BoundCallBy == _binding.Current && c.BoundCall is not null;
 
     /// <summary>
-    /// A conversion's call bound to `op` for good (Binder.Converting): checked
-    /// again, it keeps it (Pinned). Overload resolution sees only the
+    /// A conversion's call bound to `op` for this binding (Binder.Converting):
+    /// checked again, it keeps it (Pinned). Overload resolution sees only the
     /// argument, and a type's conversions can differ in nothing else.
     /// </summary>
     public void Pin(CallExpr c, MethodSymbol op)
@@ -1260,6 +1260,7 @@ public sealed class CallTargets
     {
         if (!ContainsKey(c)) return false;
         c.BoundCall = null;
+        c.PinnedCall = null;
         return true;
     }
 }

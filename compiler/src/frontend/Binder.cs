@@ -15597,7 +15597,7 @@ public sealed partial class Binder
     private Type CheckExpr(Expr e)
     {
         Type t = CheckExprCore(e);
-        if (e is CallExpr pinnedCall && _r.Calls.Pinned(pinnedCall) is { } pinnedOp)
+        if (!t.IsError && e is CallExpr pinnedCall && _r.Calls.Pinned(pinnedCall) is { } pinnedOp)
         {
             _r.Calls[pinnedCall] = pinnedOp;
             t = pinnedOp.Returns;
@@ -18066,8 +18066,8 @@ public sealed partial class Binder
                         Line = cast.Line, Col = cast.Col, File = cast.File,
                     };
                     call.Args.Add(cast.Operand);
-                    CheckExpr(call);
                     Type produced = Converting(call, castOp);
+                    CheckExpr(call);
                     // TO A NULLABLE, THE OPERATOR'S ANSWER WRAPPED (C# 10.6.2:
                     // the user-defined conversion, then S -> S?): `(decimal?)300`
                     // is `(decimal?)decimal.op_Implicit(300)`. The call alone,
