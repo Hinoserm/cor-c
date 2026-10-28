@@ -17964,7 +17964,8 @@ public sealed partial class Binder
                 // reference.
                 // A nullable enum the same, through its number's nullable
                 // (`(decimal)(short?)level`), and to a decimal? as to a
-                // decimal (IsDecimalType answers for decimal itself).
+                // decimal: IsDecimalType refuses a nullable, so it is asked of
+                // the wanted type's underlying one.
                 if (!_r.Rewrites.ContainsKey(cast) && operand.Underlying is { IsEnumValue: true, Symbol: { } fromEnum }
                     && IsDecimalType(wanted.Underlying))
                 {
@@ -17983,10 +17984,15 @@ public sealed partial class Binder
                 // decimal's operator from short on n's value, and empty where
                 // n is; `(decimal)n` the operator on n.Value, which throws
                 // where n is empty. The operand is held once.
+                // Lifted only over value types on both sides (C# 10.6.2, as
+                // UserUnary lifts), and never where the type declares an
+                // operator on the nullable itself, which takes it whole.
                 if (!_r.Rewrites.ContainsKey(cast) && operand.IsNullableValue && !wanted.IsError
                     && !StandardConvertible(operand, wanted) && !StandardConvertible(wanted, operand)
                     && (wanted.IsNullableValue ? wanted.Underlying : wanted) is { } plain && ValueOperand(plain)
-                    && UserConversion(operand.Underlying, plain, explicitToo: true) is { } liftOp)
+                    && !(UserConversion(operand, wanted, explicitToo: true) is { } onNullable && onNullable.Params[0].Type.IsNullableValue)
+                    && UserConversion(operand.Underlying, plain, explicitToo: true) is { } liftOp
+                    && ValueOperand(liftOp.Params[0].Type) && ValueOperand(liftOp.Returns))
                 {
                     SubjectExpr held = new() { Line = cast.Line, Col = cast.Col };
                     CallExpr onValue = new()
@@ -17995,6 +18001,7 @@ public sealed partial class Binder
                         Line = cast.Line, Col = cast.Col, File = cast.File,
                     };
                     onValue.Args.Add(new MemberExpr { Target = held, Name = "Value", Line = cast.Line, Col = cast.Col });
+                    onValue.WritableArgNames.Add(null);
                     Expr test = !wanted.IsNullableValue ? onValue : new ConditionalExpr
                     {
                         Cond = new MemberExpr { Target = new SubjectExpr { Line = cast.Line, Col = cast.Col }, Name = "HasValue", Line = cast.Line, Col = cast.Col },
@@ -18005,6 +18012,9 @@ public sealed partial class Binder
                     PatternExpr lifted = new() { Subject = cast.Operand, Test = test, Line = cast.Line, Col = cast.Col };
                     _r.Rewrites[cast] = lifted;
                     CheckExpr(lifted);
+                    // The operator chosen, not the first its overloading finds:
+                    // conversions differ only in what they make (Converting).
+                    Converting(onValue, liftOp);
                     return wanted;
                 }
 
@@ -18031,7 +18041,11 @@ public sealed partial class Binder
                     {
                         CastExpr wrapped = new() { Type = cast.Type, Operand = call, Line = cast.Line, Col = cast.Col, File = cast.File };
                         _r.Rewrites[cast] = wrapped;
-                        return CheckExpr(wrapped);
+                        Type wrappedType = CheckExpr(wrapped);
+                        // Checked again inside the wrap, the call is overloaded
+                        // again: the operator chosen pinned once more.
+                        Converting(call, castOp);
+                        return wrappedType;
                     }
                     _r.Rewrites[cast] = call;
                     return produced;

@@ -6,6 +6,9 @@
 // 9 1
 // empty throws
 // 300 Big4 300 2
+// 3 3 3.75 null 4
+// True:True 7 7.5 7 null
+// whole -1 1
 //
 // C# 10.3.3: an enum's explicit conversion to decimal is its underlying
 // type's, `(decimal)level` is `(decimal)(short)level` -- with no implicit
@@ -15,7 +18,9 @@
 // (`(decimal?)300` came out null, `(Big?)s` a value from the struct's
 // padding), and one from S? is lifted: the operator on the value, empty
 // where it is empty to a T?, InvalidOperationException to a T. The operand
-// is evaluated once.
+// is evaluated once. The operator taken is the one for the type asked, among
+// operators that differ only in what they make; one declared on S? itself
+// takes the nullable whole, empty included.
 
 using System;
 
@@ -26,6 +31,21 @@ struct Big
     public int V;
     public static implicit operator Big(short x) => new Big { V = x };
     public override string ToString() => "Big" + V;
+}
+
+struct Node
+{
+    public double V;
+    public static explicit operator Node(bool b) => new Node { V = b ? 1 : 0 };
+    public static explicit operator bool(Node n) => n.V != 0;
+    public static explicit operator int(Node n) => (int)n.V;
+    public static explicit operator double(Node n) => n.V;
+    public override string ToString() => "Node:" + V;
+}
+
+struct Whole
+{
+    public static explicit operator int(Whole? w) => w.HasValue ? 1 : -1;
 }
 
 class Program
@@ -44,6 +64,12 @@ class Program
         try { decimal bad = (decimal)none; Console.WriteLine("no throw " + bad); }
         catch (InvalidOperationException) { Console.WriteLine("empty throws"); }
         Console.WriteLine(S((decimal?)300) + " " + S((Big?)(short)4) + " " + S((double?)lv) + " " + S((decimal)Level.Low));
+        decimal? dn = 3.75m; decimal? dnull = null;
+        Console.WriteLine(S((int)dn) + " " + S((long)dn) + " " + S((double)dn) + " " + S((int?)dnull) + " " + S((int?)(decimal?)4.5m));
+        Node? nd = new Node { V = 7.5 }; Node? ndnull = null;
+        Console.WriteLine(S((bool)nd) + ":" + ((bool)nd) + " " + S((int)nd) + " " + S((double?)nd) + " " + S((int?)nd) + " " + S((double?)ndnull));
+        Whole? wnull = null; Whole? wsome = new Whole();
+        Console.WriteLine("whole " + (int)wnull + " " + (int)wsome);
         return 0;
     }
 }
