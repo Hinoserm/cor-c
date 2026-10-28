@@ -24,6 +24,8 @@ public enum MOp : byte
     Shl, Shr, Sar, Ror,  // count is an immediate or CL
     Shld, Shrd,     // dest, source, count
     Cdq,
+    /// <summary>pushfd and popfd: the flags kept across what a measure inserts (SpillCount).</summary>
+    Pushfd, Popfd,
     Setcc,
     /// <summary>
     /// cmovcc r32, r/m32, the P6's conditional move (X86Feature.Cmov): operand 0

@@ -601,6 +601,12 @@ internal sealed class Encoder
             case MOp.Cdq:
                 B(0x99);
                 break;
+            case MOp.Pushfd:
+                B(0x9C);
+                break;
+            case MOp.Popfd:
+                B(0x9D);
+                break;
             case MOp.Setcc:
                 B(0x0F, (byte)(0x90 + (int)i.Cond));
                 ModRM(0, i.Operands[0]);

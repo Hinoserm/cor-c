@@ -306,6 +306,10 @@ public static class Driver
               --jobs <count>     compiler task workers (positive count; default 1)
               --no-opt           skip the optimiser
               --opt-size         use experimental size-oriented inlining budgets
+              --count-spills     count the register allocator's spill-slot reads and
+                                 writes as the program runs, said at its end (a program,
+                                 compiled whole: not a shared object, nor units the
+                                 link makes again)
               --region-report <names> say, for the boundaries whose names hold one of
                                  these (comma-separated), which allocations their return
                                  is proved to leave dead; corc link takes it too, for
@@ -1461,6 +1465,7 @@ public static class Driver
         {
             AutomaticPacked = ownsFpu,
             OptimizeSize = args.Contains("--opt-size"),
+            CountSpills = args.Contains("--count-spills"),
             X87InBlocksOnly = !ownsFpu && !args.Contains("--x87-outside-blocks"),
             // AN EXECUTABLE'S OBJECT IS NOT POSITION-INDEPENDENT, made apart
             // (--obj) or not: it is linked at an address of its own, so its

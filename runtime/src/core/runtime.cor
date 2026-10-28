@@ -125,6 +125,51 @@ static class WordSize
 #endif
 }
 
+/// THE SPILL SLOTS' TRAFFIC, as a program built with --count-spills runs:
+/// each block that reads or writes a register allocator's spill slot adds
+/// how many of each it does to these as it is entered (the backend's
+/// SpillCount), and the program says them at its end. The measure of a
+/// register allocator: what its spills cost as the program runs, not as it
+/// reads (REGALLOC-RESEARCH). Nought, and nothing said, in a program built
+/// without it.
+//
+// VOLATILE: nothing in the program's IR writes them -- the counting is the
+// backend's, after the IR is gone -- and a field only ever read was folded
+// to nought and dropped, Say with it. A volatile one is kept and read.
+// Each total two 32-bit halves, as C# allows no volatile ulong: the add to
+// the low half and the adc to the high.
+static class SpillCounts
+{
+    public static volatile uint ReadsLow, ReadsHigh, WritesLow, WritesHigh;
+
+    /// Said on standard error at the end, in a page of its own: a program
+    /// with no collector -- a benchmark's loop alone -- has the counts too.
+    public static void Say()
+    {
+        ulong reads = ((ulong)ReadsHigh << 32) | ReadsLow, writes = ((ulong)WritesHigh << 32) | WritesLow;
+        if (reads == 0 && writes == 0) return;
+        nuint page = Platform.Map(4096);
+        if (page == 0) return;
+        SayCount(page, "spills: reads ", reads);
+        SayCount(page, "spills: writes ", writes);
+    }
+
+    static void SayCount(nuint page, string label, ulong n)
+    {
+        Runtime.WriteLiteral(2, label);
+        nuint at = 23;
+        Sys.Write8(page + at, 10);
+        do
+        {
+            at = at - 1;
+            Sys.Write8(page + at, (byte)(48 + n % 10));
+            n = n / 10;
+        }
+        while (n > 0);
+        Platform.WriteBytes(2, page + at, 24 - at);
+    }
+}
+
 /// WHAT THIS PROCESSOR HAS, asked of CPUID once and kept: the instructions
 /// the runtime and the libraries take a faster way with where the processor
 /// has them, beyond what --cpu the image was made for promises (Has of
@@ -3409,6 +3454,7 @@ static partial class Runtime
     {
         // What the collector counted, and what it sampled: nothing to say
         // where there is none.
+        SpillCounts.Say();
         if (CollectorLinked())
         {
             AllocSamples.Dump();

@@ -155,6 +155,9 @@ public sealed class X86Backend : IBackend
     /// <summary>--opt-size: the layout's own padding left out (Encoder.LoopAlign).</summary>
     public bool OptimizeSize { get; set; }
 
+    /// <summary>--count-spills: each block counts its spill slots' reads and writes as it runs (SpillCount).</summary>
+    public bool CountSpills { get; set; }
+
     /// <summary>
     /// On by default on bare metal (Driver: --x87-outside-blocks takes it
     /// away, --x87-in-blocks-only says it again): bare-metal code of the
@@ -949,6 +952,7 @@ public sealed class X86Backend : IBackend
             LoopRotate.Run(m);
             Peephole.Run(m);
             FrameCompact.Run(m);
+            if (CountSpills && !PositionIndependent) SpillCount.Run(m);
         }
         catch (InvalidOperationException e)
         {
