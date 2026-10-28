@@ -696,7 +696,7 @@ namespace System.Runtime.InteropServices
 
         /// A native pointer for native code: a COM-callable stand-in
         /// forwarding IDispatch to this object.
-        public override nint Pointer(string iid)
+        public override nuint Pointer(string iid)
         {
             string want = ComMarshal.Normal(iid);
             if (want != ComMarshal.IidIUnknown && want != ComMarshal.IidIDispatch) return 0;
@@ -731,7 +731,7 @@ namespace System.Runtime.InteropServices
     /// <summary>A ComFrame slot read and written by its kind's name: what remote calls fill.</summary>
     public static class ComSlots
     {
-        public static object? Read(string kind, nint at)
+        public static object? Read(string kind, nuint at)
         {
             switch (kind)
             {
@@ -760,15 +760,15 @@ namespace System.Runtime.InteropServices
             throw new NotSupportedException("a " + kind + " does not cross processes");
         }
 
-        public static void Write(string kind, nint at, object? v, string iid)
+        public static void Write(string kind, nuint at, object? v, string iid)
         {
             switch (kind)
             {
-                case "I1": case "U1": case "Bool1": Sys.Write8((nuint)at, (byte)(kind == "Bool1" ? (ComMarshal.Bool(v) ? 1 : 0) : ComMarshal.Long(v))); return;
-                case "I2": case "U2": Sys.Write16((nuint)at, (ushort)(ComMarshal.Long(v))); return;
-                case "Char": Sys.Write16((nuint)at, (ushort)(v is char c ? c : ComMarshal.Long(v))); return;
+                case "I1": case "U1": case "Bool1": Sys.Write8(at, (byte)(kind == "Bool1" ? (ComMarshal.Bool(v) ? 1 : 0) : ComMarshal.Long(v))); return;
+                case "I2": case "U2": Sys.Write16(at, (ushort)(ComMarshal.Long(v))); return;
+                case "Char": Sys.Write16(at, (ushort)(v is char c ? c : ComMarshal.Long(v))); return;
                 case "VBool": ComMarshal.WriteVBool(at, ComMarshal.Bool(v)); return;
-                case "I4": case "U4": Sys.Write32((nuint)at, (uint)(ComMarshal.Long(v))); return;
+                case "I4": case "U4": Sys.Write32(at, (uint)(ComMarshal.Long(v))); return;
                 case "Bool": ComMarshal.WriteBool(at, ComMarshal.Bool(v)); return;
                 case "R4": ComMarshal.WriteR4(at, (float)ComMarshal.Double(v)); return;
                 case "I8": case "U8": ComMarshal.WriteI8(at, ComMarshal.Long(v)); return;
@@ -786,7 +786,7 @@ namespace System.Runtime.InteropServices
             throw new NotSupportedException("a " + kind + " does not cross processes");
         }
 
-        public static void Replace(string kind, nint at, object? v, string iid)
+        public static void Replace(string kind, nuint at, object? v, string iid)
         {
             switch (kind)
             {
@@ -838,15 +838,15 @@ namespace System.Runtime.InteropServices
         /// GetInterface: an object of another process as its stand-in
         /// (RemoteStandIn), whose own object comes back; any other as
         /// WriteInterface puts it.
-        public static void WriteObject(nint at, object? v, string iid)
+        public static void WriteObject(nuint at, object? v, string iid)
         {
             System.__ComObject? c = v as System.__ComObject;
             RemoteObject? remote = c != null ? c._remote as RemoteObject : null;
             if (remote == null) { ComMarshal.WriteInterface(at, v, iid); return; }
-            Sys.WriteAddress((nuint)at, (nuint)(ComCallable.For(new RemoteStandIn(remote, c)).Query(ComMarshal.IidIUnknown)));
+            Sys.WriteAddress(at, (nuint)(ComCallable.For(new RemoteStandIn(remote, c)).Query(ComMarshal.IidIUnknown)));
         }
 
-        public static object? Take(string kind, nint at)
+        public static object? Take(string kind, nuint at)
         {
             switch (kind)
             {
@@ -966,7 +966,7 @@ namespace System.Runtime.InteropServices
             public string Iid = "";
             public byte[] Ipid = new byte[16];
             public int PublicRefs;
-            public nint Pointer;
+            public nuint Pointer;
             public ComInterfaceEntry? Entry;
         }
 
@@ -1181,7 +1181,7 @@ namespace System.Runtime.InteropServices
                 if (!x.ByIid.TryGetValue(iid, out e) || e == null)
                 {
                     ComCallableWrapper ccw = ComCallable.For(o);
-                    nint pointer = o is ComClassObject ? 0 : ccw.Query(iid);
+                    nuint pointer = o is ComClassObject ? 0 : ccw.Query(iid);
                     if (pointer == 0 && !(o is ComClassObject && (iid == IidIClassFactory || iid == ComMarshal.IidIUnknown)))
                         throw new InvalidCastException("The object does not have the interface " + iid + " (E_NOINTERFACE).");
                     e = new ExportEntry { Owner = x, Iid = iid, Ipid = NewIpid(), Pointer = pointer, Entry = pointer == 0 ? null : ccw.EntryOf(pointer) };
@@ -1273,7 +1273,7 @@ namespace System.Runtime.InteropServices
             bool preserve = signature.StartsWith("!");
             string[] tokens = (preserve ? signature.Substring(1) : signature).Split(',');
             ComFrame f = new ComFrame(e.Pointer);
-            List<nint> slots = new List<nint>();
+            List<nuint> slots = new List<nuint>();
             List<string> kinds = new List<string>(), iids = new List<string>();
             try
             {
@@ -1287,7 +1287,7 @@ namespace System.Runtime.InteropServices
                     string iid = colon < 0 ? "" : rest.Substring(colon + 1);
                     if (dir == 'p') continue;                       // a [PreserveSig] member's answer
                     if (dir == 'i') { ComSlots.In(f, kind, r.Value(kind), iid); continue; }
-                    nint slot = f.Out(kind, iid);
+                    nuint slot = f.Out(kind, iid);
                     if (dir == 'r') ComSlots.Write(kind, slot, r.Value(kind), iid);
                     slots.Add(slot); kinds.Add(kind); iids.Add(iid);
                 }
@@ -1785,13 +1785,14 @@ namespace System.Runtime.InteropServices
                 Type? had;
                 if (_byClsid.TryGetValue(key, out had) && had != null) return had;
                 nuint original = (nuint)Sys.Word(typeof(System.__ComObject));
-                int bytes = 12 * (int)WordSize.Bytes;
-                nint copy = Marshal.AllocHGlobal(bytes);
-                for (int i = 0; i < bytes; i++) Sys.Write8((nuint)(copy + i), Sys.Read8(original + (nuint)i));
+                int bytes = 12 * WordSize.Bytes;
+                nuint copy = MarshalHeap.Alloc((nuint)bytes);
+                for (int i = 0; i < bytes; i++) Sys.Write8(copy + (nuint)i, Sys.Read8(original + (nuint)i));
                 Type made = Sys.As<Type>(copy);
                 // KEYED BY THE WORD ClsidOf READS, Sys.Word's: the address
-                // as an nint widens with its sign, and a 32-bit process's
-                // heap above 2 GB came out negative, a key no lookup made.
+                // as a signed word widens with its sign, and a 32-bit
+                // process's heap above 2 GB came out negative, a key no
+                // lookup made.
                 _clsidOf[Sys.Word(made)] = key;
                 _byClsid[key] = made;
                 return made;

@@ -8779,7 +8779,7 @@ sealed class OleDataExport : System.Runtime.InteropServices.ComTypes.IDataObject
     }
 
     /// Whether the FORMATETC at `at` is one given here: the content, in an HGLOBAL.
-    int Check(nint at)
+    int Check(nuint at)
     {
         if (at == 0) return System.Runtime.InteropServices.ComMarshal.EInvalidArg;
         System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(at);
@@ -8789,7 +8789,7 @@ sealed class OleDataExport : System.Runtime.InteropServices.ComTypes.IDataObject
         return 0;
     }
 
-    public int GetData(nint pformatetcIn, nint pmedium)
+    public int GetData(nuint pformatetcIn, nuint pmedium)
     {
         int hr = Check(pformatetcIn);
         if (hr != 0) return hr;
@@ -8799,11 +8799,11 @@ sealed class OleDataExport : System.Runtime.InteropServices.ComTypes.IDataObject
         return 0;
     }
 
-    public int GetDataHere(nint pformatetc, nint pmedium) { return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
+    public int GetDataHere(nuint pformatetc, nuint pmedium) { return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
 
-    public int QueryGetData(nint pformatetc) { return Check(pformatetc); }
+    public int QueryGetData(nuint pformatetc) { return Check(pformatetc); }
 
-    public int GetCanonicalFormatEtc(nint pformatectIn, nint pformatetcOut)
+    public int GetCanonicalFormatEtc(nuint pformatectIn, nuint pformatetcOut)
     {
         if (pformatectIn == 0 || pformatetcOut == 0) return System.Runtime.InteropServices.ComMarshal.EInvalidArg;
         System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(pformatectIn);
@@ -8812,7 +8812,7 @@ sealed class OleDataExport : System.Runtime.InteropServices.ComTypes.IDataObject
         return System.Runtime.InteropServices.OleCodes.DataSSameFormatEtc;
     }
 
-    public int SetData(nint pformatetc, nint pmedium, bool fRelease) { return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
+    public int SetData(nuint pformatetc, nuint pmedium, bool fRelease) { return System.Runtime.InteropServices.ComMarshal.ENotImpl; }
 
     public int EnumFormatEtc(int dwDirection, out System.Runtime.InteropServices.ComTypes.IEnumFORMATETC ppenumFormatEtc)
     {
@@ -8821,7 +8821,7 @@ sealed class OleDataExport : System.Runtime.InteropServices.ComTypes.IDataObject
         return 0;
     }
 
-    public int DAdvise(nint pformatetc, int advf, object pAdvSink, out int pdwConnection) { pdwConnection = 0; return System.Runtime.InteropServices.OleCodes.OleEAdviseNotSupported; }
+    public int DAdvise(nuint pformatetc, int advf, object pAdvSink, out int pdwConnection) { pdwConnection = 0; return System.Runtime.InteropServices.OleCodes.OleEAdviseNotSupported; }
     public int DUnadvise(int dwConnection) { return System.Runtime.InteropServices.OleCodes.OleENoConnection; }
     public int EnumDAdvise(out object ppenumAdvise) { ppenumAdvise = null!; return System.Runtime.InteropServices.OleCodes.OleEAdviseNotSupported; }
 }
@@ -8835,12 +8835,12 @@ sealed class OleFormatList : System.Runtime.InteropServices.ComTypes.IEnumFORMAT
 
     public OleFormatList(int[] formats, int next) { _formats = formats; _next = next; }
 
-    public int Next(int celt, nint rgelt, nint pceltFetched)
+    public int Next(int celt, nuint rgelt, nuint pceltFetched)
     {
         int n = 0;
         while (n < celt && _next < _formats.Length && rgelt != 0)
         {
-            System.Runtime.InteropServices.OleMemory.WriteFormatEtc(rgelt + n * System.Runtime.InteropServices.OleMemory.FormatEtcBytes, System.Runtime.InteropServices.OleMemory.Hglobal(_formats[_next]));
+            System.Runtime.InteropServices.OleMemory.WriteFormatEtc(rgelt + (nuint)(n * System.Runtime.InteropServices.OleMemory.FormatEtcBytes), System.Runtime.InteropServices.OleMemory.Hglobal(_formats[_next]));
             n++;
             _next++;
         }
@@ -8894,8 +8894,8 @@ sealed class ComDragData : DataObject
     {
         byte[]? had;
         if (_got.TryGetValue(cf, out had)) return had;
-        nint f = System.Runtime.InteropServices.OleMemory.NewFormatEtc(System.Runtime.InteropServices.OleMemory.Hglobal(cf));
-        nint m = System.Runtime.InteropServices.OleMemory.NewStgMedium();
+        nuint f = System.Runtime.InteropServices.OleMemory.NewFormatEtc(System.Runtime.InteropServices.OleMemory.Hglobal(cf));
+        nuint m = System.Runtime.InteropServices.OleMemory.NewStgMedium();
         byte[]? made = null;
         try
         {
@@ -8953,8 +8953,8 @@ sealed class ComDragData : DataObject
             System.Runtime.InteropServices.ComTypes.IEnumFORMATETC e;
             if (_source.EnumFormatEtc((int)System.Runtime.InteropServices.ComTypes.DATADIR.DATADIR_GET, out e) < 0 || e == null) return all.ToArray();
             const int AtOnce = 16;
-            nint list = System.Runtime.InteropServices.OleMemory.NewFormatEtcs(AtOnce);
-            nint fetched = System.Runtime.InteropServices.Marshal.AllocHGlobal(4);
+            nuint list = System.Runtime.InteropServices.OleMemory.NewFormatEtcs(AtOnce);
+            nuint fetched = MarshalHeap.Alloc(4);
             try
             {
                 for (int rounds = 0; rounds < 64; rounds++)
@@ -8964,7 +8964,7 @@ sealed class ComDragData : DataObject
                     int got = Math.Min(System.Runtime.InteropServices.ComMarshal.ReadI4(fetched), AtOnce);
                     for (int i = 0; i < got; i++)
                     {
-                        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(list + i * System.Runtime.InteropServices.OleMemory.FormatEtcBytes);
+                        System.Runtime.InteropServices.ComTypes.FORMATETC f = System.Runtime.InteropServices.OleMemory.ReadFormatEtc(list + (nuint)(i * System.Runtime.InteropServices.OleMemory.FormatEtcBytes));
                         if (((int)f.tymed & (int)System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL) == 0) continue;
                         string name = OleData.NameOf((ushort)f.cfFormat);
                         if (!all.Contains(name)) all.Add(name);
@@ -8974,8 +8974,8 @@ sealed class ComDragData : DataObject
             }
             finally
             {
-                System.Runtime.InteropServices.Marshal.FreeHGlobal(list);
-                System.Runtime.InteropServices.Marshal.FreeHGlobal(fetched);
+                MarshalHeap.Free(list);
+                MarshalHeap.Free(fetched);
                 if (e is System.__ComObject c) System.Runtime.InteropServices.Marshal.ReleaseComObject(c);
             }
         }
@@ -9004,14 +9004,14 @@ sealed class OleDropEndpoint : System.Runtime.InteropServices.ComTypes.IInterfac
 
     public OleDropEndpoint(Form form) { _form = form; }
 
-    public int GetInterfaceFromWindowProp(nint hWnd, nint riid, out object ppunk, nint pwszPropName)
+    public int GetInterfaceFromWindowProp(nuint hWnd, nuint riid, out object ppunk, nuint pwszPropName)
     {
         ppunk = null!;
         return System.Runtime.InteropServices.ComMarshal.ENotImpl;
     }
 
-    public int PrivDragDrop(nint hWnd, nint pInterfaceData, int dop, int grfKeyState, long pt, ref int pdwEffect,
-        int dwSourceThread, object pDataObject, nint hwndSource)
+    public int PrivDragDrop(nuint hWnd, nuint pInterfaceData, int dop, int grfKeyState, long pt, ref int pdwEffect,
+        int dwSourceThread, object pDataObject, nuint hwndSource)
     {
         int kind = dop == System.Runtime.InteropServices.OleCodes.DragOpEnter ? Seat.DragEnterEvent
                  : dop == System.Runtime.InteropServices.OleCodes.DragOpOver ? Seat.DragOverEvent
@@ -9115,7 +9115,7 @@ static class OleDrop
 sealed class OleDragBridge
 {
     readonly OleDataExport _data;
-    nint _interfaceData;
+    nuint _interfaceData;
     byte[] _ipid = new byte[0];
     System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? _target;
     /// The seat's window the drag is over, and the Windows window in it
@@ -9187,7 +9187,8 @@ sealed class OleDragBridge
         System.Runtime.InteropServices.ComTypes.IInterfaceFromWindowProp? target = _target;
         if (target == null) return 0;
         int effect = allowed;
-        int hr = target.PrivDragDrop((nint)_hwnd, _interfaceData, dop, keys, System.Runtime.InteropServices.OleMemory.Point(x, y), ref effect,
+        // The window's 32-bit HWND a word, sign-extended as Win64 makes one.
+        int hr = target.PrivDragDrop(unchecked((nuint)(long)_hwnd), _interfaceData, dop, keys, System.Runtime.InteropServices.OleMemory.Point(x, y), ref effect,
             (int)System.Runtime.InteropServices.ComBroker.Thread, null!, 0);
         return hr < 0 ? 0 : effect & allowed;
     }
@@ -9205,7 +9206,7 @@ sealed class OleDragBridge
     public void Close()
     {
         if (_target != null) Leave(_window);
-        if (_interfaceData != 0) { System.Runtime.InteropServices.Marshal.FreeHGlobal(_interfaceData); _interfaceData = 0; }
+        if (_interfaceData != 0) { MarshalHeap.Free(_interfaceData); _interfaceData = 0; }
         if (_ipid.Length == 16) System.Runtime.InteropServices.ComExporter.Unexport(_ipid);
     }
 }

@@ -97,16 +97,7 @@ static partial class Marshal
     /// A NUL-terminated UTF-8 string C made, as a string; null for zero.
     public static string? PtrToStringUTF8(nint ptr)
     {
-        if (ptr == 0)
-        {
-            return null;
-        }
-        int length = 0;
-        while (Sys.Read8((nuint)(ptr + length)) != 0)
-        {
-            length++;
-        }
-        return PtrToStringUTF8(ptr, length);
+        return MarshalHeap.FromUtf8((nuint)ptr);
     }
 
     /// `byteLen` bytes of UTF-8 at `ptr`, as a string.
@@ -672,14 +663,14 @@ namespace System.Runtime.InteropServices
     }
 }
 
-/// MARSHAL'S HEAP WORDS, in a class of their own: Marshal is a partial class
-/// split across two libraries (System.Runtime.InteropServices and COM's), and
-/// a static of a split class lost its storage in one library's link.
 /// MEMORY C OWNS, by address: what Marshal's HGlobal members (.NET's, in
 /// IntPtr) and the library's own interop (COM's slots, BSTRs' and
 /// VARIANTs' memory, OLE's HGLOBALs) take and give back. The C library's
 /// malloc when a C library is loaded (so free(3) in C may release it, and
-/// the other way round), and pages of the process's own otherwise.
+/// the other way round), and pages of the process's own otherwise. In a
+/// class of its own, not Marshal: Marshal is a partial class split across
+/// two libraries (System.Runtime.InteropServices and COM's), and a static
+/// of a split class lost its storage in one library's link.
 static class MarshalHeap
 {
     public static nuint malloc;
@@ -783,6 +774,37 @@ static class MarshalHeap
         Sys.MemoryCopy(made, at, had < bytes ? had : bytes);
         Free(at);
         return made;
+    }
+
+    /// `bytes` put at `at`.
+    public static void Put(nuint at, byte[] bytes)
+    {
+        Sys.MemoryCopy(at, Sys.ArrayData(bytes), (nuint)bytes.Length);
+        System.GC.KeepAlive(bytes);
+    }
+
+    /// The `count` bytes at `at`, as an array of their own.
+    public static byte[] Get(nuint at, int count)
+    {
+        byte[] made = new byte[count];
+        Sys.MemoryCopy(Sys.ArrayData(made), at, (nuint)count);
+        System.GC.KeepAlive(made);
+        return made;
+    }
+
+    /// The NUL-terminated UTF-8 string at `at`, as a string; null for 0.
+    public static string? FromUtf8(nuint at)
+    {
+        if (at == 0)
+        {
+            return null;
+        }
+        int length = 0;
+        while (Sys.Read8(at + (nuint)length) != 0)
+        {
+            length++;
+        }
+        return Utf8Transcoder.Decode(at, length);
     }
 
     /// A copy of `s` as C reads one -- its UTF-8, not its UTF-16 code

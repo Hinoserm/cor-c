@@ -73,7 +73,7 @@ public class Bitmap : Image
     }
 
     /// A handle Icon.FromHandle makes an icon of, as .NET's is.
-    public nint GetHicon() { return Icon.HandleOf(this); }
+    public nint GetHicon() { return (nint)Icon.HandleOf(this); }
 
     public int AlphaAt(int x, int y) { return Pixels[(y * Width + x) * 4 + 3] & 255; }
 }
@@ -545,7 +545,7 @@ public class Icon : IDisposable
     Bitmap? _drawn;
     static List<Bitmap> _handles = new List<Bitmap>();
 
-    internal static nint HandleOf(Bitmap picture)
+    internal static long HandleOf(Bitmap picture)
     {
         int[] argb = new int[picture.Width * picture.Height];
         for (int i = 0; i < argb.Length; i++)
@@ -553,7 +553,7 @@ public class Icon : IDisposable
         long made;
         try { made = Seat.Current.CreateImage(Seat.ImageIcon, picture.Width, picture.Height, picture.Width / 2, picture.Height / 2, argb); }
         catch (IOException) { made = -1; }
-        if (made > 0) return (nint)made;
+        if (made > 0) return made;
         _handles.Add(picture);
         return _handles.Count;
     }

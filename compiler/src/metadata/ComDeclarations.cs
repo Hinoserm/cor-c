@@ -289,8 +289,11 @@ public static class ComDeclarations
     {
         why = null;
         if (r.ArrayRank > 0) return marshalAs is null or "SafeArray" ? new Kind("SafeArray", 1, Reference: true) : Unsupported(out why, "an array marshalled as " + marshalAs);
-        if (r.PointerDepth > 0) return new Kind("Ptr", 1);
-        if (r.IsFunctionPointer) return new Kind("Ptr", 1);
+        // A POINTER'S WORD IS A nuint in the library (ComFrame's words, the
+        // vtable thunks' parameters): a pointer, a function pointer and
+        // .NET's IntPtr reach it through a conversion, UIntPtr as it is.
+        if (r.PointerDepth > 0) return new Kind("Ptr", 1, Through: "nuint");
+        if (r.IsFunctionPointer) return new Kind("Ptr", 1, Through: "nuint");
         string n = r.Name.StartsWith("System.", StringComparison.Ordinal) ? r.Name["System.".Length..] : r.Name;
         switch (n)
         {
@@ -307,8 +310,8 @@ public static class ComDeclarations
             case "float": case "Single": return new Kind("R4", 1);
             case "double": case "Double": return new Kind("R8", 2);
             case "char": case "Char": return new Kind("Char", 1);
-            case "nint": case "IntPtr": return new Kind("Ptr", 1);
-            case "nuint": case "UIntPtr": return new Kind("Ptr", 1, Through: "nint");
+            case "nint": case "IntPtr": return new Kind("Ptr", 1, Through: "nuint");
+            case "nuint": case "UIntPtr": return new Kind("Ptr", 1);
             case "string": case "String":
                 return marshalAs switch
                 {
@@ -463,11 +466,11 @@ public static class ComDeclarations
         string name = RcwName(i);
         string iid = Iid(i);
         s.Append("sealed class ").Append(name).Append(" : System.__ComObject, ").Append(i.Name).Append("\n{\n");
-        s.Append("    ").Append(name).Append("(System.__ComObject from, nint pointer, string iid) : base(from, pointer, iid) { }\n");
+        s.Append("    ").Append(name).Append("(System.__ComObject from, nuint pointer, string iid) : base(from, pointer, iid) { }\n");
         s.Append("    public static object? ").Append(WrapMethod).Append("(object? o)\n    {\n");
         s.Append("        System.__ComObject? c = o as System.__ComObject;\n");
         s.Append("        if (c == null) return null;\n");
-        s.Append("        nint p = c.__Query(\"").Append(iid).Append("\");\n");
+        s.Append("        nuint p = c.__Query(\"").Append(iid).Append("\");\n");
         s.Append("        if (p == 0) return null;\n");
         s.Append("        return new ").Append(name).Append("(c, p, \"").Append(iid).Append("\");\n    }\n");
 
@@ -540,12 +543,12 @@ public static class ComDeclarations
             string extra = k.IsInterface ? ", \"" + k.Iid + "\"" : "";
             if (p.IsOut)
             {
-                s.Append(inner).Append("nint __p_").Append(p.Name).Append(" = __f.Out(\"").Append(k.Name).Append('"').Append(extra).Append(");\n");
+                s.Append(inner).Append("nuint __p_").Append(p.Name).Append(" = __f.Out(\"").Append(k.Name).Append('"').Append(extra).Append(");\n");
                 back.Add((p, k));
             }
             else if (p.IsRef && !p.IsReadOnlyRef)
             {
-                s.Append(inner).Append("nint __p_").Append(p.Name).Append(" = __f.Ref").Append(k.Name).Append('(').Append(value).Append(extra).Append(");\n");
+                s.Append(inner).Append("nuint __p_").Append(p.Name).Append(" = __f.Ref").Append(k.Name).Append('(').Append(value).Append(extra).Append(");\n");
                 back.Add((p, k));
             }
             else
@@ -580,7 +583,7 @@ public static class ComDeclarations
         }
         else
         {
-            if (result is not null) s.Append(inner).Append("nint __ret = __f.Out(\"").Append(result.Name).Append('"').Append(Extra(result)).Append(");\n");
+            if (result is not null) s.Append(inner).Append("nuint __ret = __f.Out(\"").Append(result.Name).Append('"').Append(Extra(result)).Append(");\n");
             s.Append(inner).Append(Ns).Append(".ComMarshal.Check(__f.Call(").Append(vtableSlot).Append("));\n");
             WriteBack(s, back, inner);
             if (result is not null) s.Append(inner).Append("return ").Append(Get(result, slot.Returns!, "__ret")).Append(";\n");
@@ -673,13 +676,13 @@ public static class ComDeclarations
             int baseSlots = BaseSlots(i);
             int first = baseSlots < 0 ? 7 : baseSlots;
             int count = baseSlots < 0 ? 7 : baseSlots + slots.Count;
-            s.Append("    static nint V").Append(n).Append("()\n    {\n");
-            s.Append("        nint v = ").Append(Ns).Append(".ComCallable.NewVtable(").Append(count).Append(", ").Append(first >= 7 ? "true" : "false").Append(");\n");
+            s.Append("    static nuint V").Append(n).Append("()\n    {\n");
+            s.Append("        nuint v = ").Append(Ns).Append(".ComCallable.NewVtable(").Append(count).Append(", ").Append(first >= 7 ? "true" : "false").Append(");\n");
             if (baseSlots >= 0)
             {
                 for (int k = 0; k < slots.Count; k++)
                 {
-                    s.Append("        ").Append(Ns).Append(".ComCallable.SetSlot(v, ").Append(baseSlots + k).Append(", (nint)&I").Append(n).Append('_').Append(k).Append(");\n");
+                    s.Append("        ").Append(Ns).Append(".ComCallable.SetSlot(v, ").Append(baseSlots + k).Append(", (nuint)&I").Append(n).Append('_').Append(k).Append(");\n");
                     foreach (bool is64 in new[] { true, false })
                     {
                         StringBuilder into = is64 ? wide : narrow;
@@ -737,7 +740,7 @@ public static class ComDeclarations
     /// </summary>
     static void Thunk(Pass pass, StringBuilder s, TypeDecl c, TypeDecl i, Slot slot, string name, bool is64)
     {
-        List<string> words = new() { "nint __self" };
+        List<string> words = new() { "nuint __self" };
         List<string> before = new(), args = new(), after = new();
         int w = 0;
         string Word() => "__w" + (w++);
@@ -749,7 +752,7 @@ public static class ComDeclarations
             if (p.IsOut || (p.IsRef && !p.IsReadOnlyRef))
             {
                 string at = Word();
-                words.Add("nint " + at);
+                words.Add("nuint " + at);
                 string read = Read(k, p.Type, at);
                 before.Add((p.IsOut ? Plain(p.Type) + " " + local + ";" : Plain(p.Type) + " " + local + " = " + read + ";"));
                 args.Add((p.IsOut ? "out " : "ref ") + local);
@@ -758,7 +761,7 @@ public static class ComDeclarations
             }
             int n = is64 ? 1 : k.Words32;
             List<string> mine = new();
-            for (int x = 0; x < n; x++) { string one = Word(); words.Add("nint " + one); mine.Add(one); }
+            for (int x = 0; x < n; x++) { string one = Word(); words.Add("nuint " + one); mine.Add(one); }
             string arg = Ns + ".ComMarshal.Arg" + k.Name + "(" + string.Join(", ", mine) + ")";
             if (k.Enum is not null || k.Through is not null) arg = "(" + Plain(p.Type) + ")" + arg;
             else if (k.Name is "Interface" or "Unknown" or "Dispatch" or "Variant" or "SafeArray") arg = "(" + Plain(p.Type) + ")" + arg + "!";
@@ -773,7 +776,7 @@ public static class ComDeclarations
             if (result is null) { pass.Error(slot.Member, $"'{i.Name}.{slot.Name}': its result is {why}"); return; }
         }
         string? retWord = null;
-        if (result is not null && !slot.PreserveSig) { retWord = Word(); words.Add("nint " + retWord); }
+        if (result is not null && !slot.PreserveSig) { retWord = Word(); words.Add("nuint " + retWord); }
 
         string target = "((" + Qualified(i) + ")__o)";
         string call = slot.Accessor switch
@@ -784,7 +787,7 @@ public static class ComDeclarations
         };
         string nativeReturn = "int";
         if (slot.PreserveSig && result is not null)
-            nativeReturn = result.Name switch { "I8" or "U8" => "long", "R8" => "double", "R4" => "float", "Ptr" => "nint", _ => "int" };
+            nativeReturn = result.Name switch { "I8" or "U8" => "long", "R8" => "double", "R4" => "float", "Ptr" => "nuint", _ => "int" };
 
         s.Append("    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]\n");
         s.Append("    static ").Append(nativeReturn).Append(' ').Append(name).Append('(').Append(string.Join(", ", words)).Append(")\n    {\n");

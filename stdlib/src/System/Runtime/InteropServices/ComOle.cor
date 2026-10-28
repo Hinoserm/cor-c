@@ -25,7 +25,7 @@
 //
 // THE STRUCTURES are pointers here: the compiler does not marshal a
 // structure as a COM parameter (ComDeclarations), so a FORMATETC* or
-// STGMEDIUM* is an nint in a member's signature, read and written with
+// STGMEDIUM* is an nuint in a member's signature, read and written with
 // OleMemory, and a POINTL by value is a long (x the low half, y the high),
 // which is how i386 passes it. On the wire they are as ole32's stubs have
 // them:
@@ -91,13 +91,13 @@ namespace System.Runtime.InteropServices.ComTypes
     [ComImport, Guid("0000010E-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IDataObject
     {
-        [PreserveSig] int GetData(nint pformatetcIn, nint pmedium);
-        [PreserveSig] int GetDataHere(nint pformatetc, nint pmedium);
-        [PreserveSig] int QueryGetData(nint pformatetc);
-        [PreserveSig] int GetCanonicalFormatEtc(nint pformatectIn, nint pformatetcOut);
-        [PreserveSig] int SetData(nint pformatetc, nint pmedium, [MarshalAs(UnmanagedType.Bool)] bool fRelease);
+        [PreserveSig] int GetData(nuint pformatetcIn, nuint pmedium);
+        [PreserveSig] int GetDataHere(nuint pformatetc, nuint pmedium);
+        [PreserveSig] int QueryGetData(nuint pformatetc);
+        [PreserveSig] int GetCanonicalFormatEtc(nuint pformatectIn, nuint pformatetcOut);
+        [PreserveSig] int SetData(nuint pformatetc, nuint pmedium, [MarshalAs(UnmanagedType.Bool)] bool fRelease);
         [PreserveSig] int EnumFormatEtc(int dwDirection, out IEnumFORMATETC ppenumFormatEtc);
-        [PreserveSig] int DAdvise(nint pformatetc, int advf, [MarshalAs(UnmanagedType.IUnknown)] object pAdvSink, out int pdwConnection);
+        [PreserveSig] int DAdvise(nuint pformatetc, int advf, [MarshalAs(UnmanagedType.IUnknown)] object pAdvSink, out int pdwConnection);
         [PreserveSig] int DUnadvise(int dwConnection);
         [PreserveSig] int EnumDAdvise([MarshalAs(UnmanagedType.IUnknown)] out object ppenumAdvise);
     }
@@ -106,7 +106,7 @@ namespace System.Runtime.InteropServices.ComTypes
     [ComImport, Guid("00000103-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IEnumFORMATETC
     {
-        [PreserveSig] int Next(int celt, nint rgelt, nint pceltFetched);
+        [PreserveSig] int Next(int celt, nuint rgelt, nuint pceltFetched);
         [PreserveSig] int Skip(int celt);
         [PreserveSig] int Reset();
         [PreserveSig] int Clone(out IEnumFORMATETC ppenum);
@@ -139,9 +139,9 @@ namespace System.Runtime.InteropServices.ComTypes
     [ComImport, Guid("00000135-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IInterfaceFromWindowProp
     {
-        [PreserveSig] int GetInterfaceFromWindowProp(nint hWnd, nint riid, [MarshalAs(UnmanagedType.IUnknown)] out object ppunk, nint pwszPropName);
-        [PreserveSig] int PrivDragDrop(nint hWnd, nint pInterfaceData, int dop, int grfKeyState, long pt, ref int pdwEffect,
-            int dwSourceThread, [MarshalAs(UnmanagedType.IUnknown)] object pDataObject, nint hwndSource);
+        [PreserveSig] int GetInterfaceFromWindowProp(nuint hWnd, nuint riid, [MarshalAs(UnmanagedType.IUnknown)] out object ppunk, nuint pwszPropName);
+        [PreserveSig] int PrivDragDrop(nuint hWnd, nuint pInterfaceData, int dop, int grfKeyState, long pt, ref int pdwEffect,
+            int dwSourceThread, [MarshalAs(UnmanagedType.IUnknown)] object pDataObject, nuint hwndSource);
     }
 }
 
@@ -172,27 +172,25 @@ namespace System.Runtime.InteropServices
     /// </summary>
     public static class OleGlobal
     {
-        static int Head { get { return 2 * (int)WordSize.Bytes; } }
+        const int Head = 2 * WordSize.Bytes;
 
-        public static nint Alloc(byte[] bytes)
+        public static nuint Alloc(byte[] bytes)
         {
-            nint block = Marshal.AllocHGlobal(Head + Math.Max(bytes.Length, 1));
-            Sys.Write32((nuint)block, (uint)bytes.Length);
-            nint h = block + Head;
-            if (bytes.Length > 0) Marshal.Copy(bytes, 0, h, bytes.Length);
+            nuint block = MarshalHeap.Alloc((nuint)(Head + Math.Max(bytes.Length, 1)));
+            Sys.Write32(block, (uint)bytes.Length);
+            nuint h = block + Head;
+            MarshalHeap.Put(h, bytes);
             return h;
         }
 
-        public static int Size(nint h) { return h == 0 ? 0 : (int)Sys.Read32((nuint)(h - Head)); }
+        public static int Size(nuint h) { return h == 0 ? 0 : (int)Sys.Read32(h - Head); }
 
-        public static byte[] Bytes(nint h)
+        public static byte[] Bytes(nuint h)
         {
-            byte[] made = new byte[Size(h)];
-            if (made.Length > 0) Marshal.Copy(h, made, 0, made.Length);
-            return made;
+            return MarshalHeap.Get(h, Size(h));
         }
 
-        public static void Free(nint h) { if (h != 0) Marshal.FreeHGlobal(h - Head); }
+        public static void Free(nuint h) { if (h != 0) MarshalHeap.Free(h - Head); }
     }
 
     /// <summary>
@@ -204,50 +202,50 @@ namespace System.Runtime.InteropServices
     /// </summary>
     public static class OleMemory
     {
-        static int W { get { return (int)WordSize.Bytes; } }
+        const int W = WordSize.Bytes;
 
-        public static int FormatEtcBytes { get { return W == 8 ? 32 : 20; } }
-        public static int StgMediumBytes { get { return 3 * W; } }
+        public const int FormatEtcBytes = W == 8 ? 32 : 20;
+        public const int StgMediumBytes = 3 * W;
 
-        static nint Zeroed(int bytes)
+        static nuint Zeroed(int bytes)
         {
-            nint at = Marshal.AllocHGlobal(bytes);
-            for (int i = 0; i < bytes; i++) Sys.Write8((nuint)(at + i), 0);
+            nuint at = MarshalHeap.Alloc((nuint)bytes);
+            Sys.MemorySet(at, 0, (nuint)bytes);
             return at;
         }
 
-        public static FORMATETC ReadFormatEtc(nint at)
+        public static FORMATETC ReadFormatEtc(nuint at)
         {
             FORMATETC f = new FORMATETC();
             f.cfFormat = (short)ComMarshal.ReadU2(at);
-            f.ptd = ComMarshal.ReadPtr(at + W);
+            f.ptd = (nint)ComMarshal.ReadPtr(at + W);                 // .NET's FORMATETC.ptd is an IntPtr
             f.dwAspect = (DVASPECT)ComMarshal.ReadI4(at + 2 * W);
             f.lindex = ComMarshal.ReadI4(at + 2 * W + 4);
             f.tymed = (TYMED)ComMarshal.ReadI4(at + 2 * W + 8);
             return f;
         }
 
-        public static void WriteFormatEtc(nint at, FORMATETC f)
+        public static void WriteFormatEtc(nuint at, FORMATETC f)
         {
-            for (int i = 0; i < FormatEtcBytes; i++) Sys.Write8((nuint)(at + i), 0);
+            for (int i = 0; i < FormatEtcBytes; i++) Sys.Write8(at + (nuint)i, 0);
             ComMarshal.WriteU2(at, (ushort)f.cfFormat);
-            ComMarshal.WritePtr(at + W, f.ptd);
+            ComMarshal.WritePtr(at + W, (nuint)f.ptd);
             ComMarshal.WriteI4(at + 2 * W, (int)f.dwAspect);
             ComMarshal.WriteI4(at + 2 * W + 4, f.lindex);
             ComMarshal.WriteI4(at + 2 * W + 8, (int)f.tymed);
         }
 
         /// A native FORMATETC holding `f`, to give FreeFormatEtc.
-        public static nint NewFormatEtc(FORMATETC f)
+        public static nuint NewFormatEtc(FORMATETC f)
         {
-            nint at = Zeroed(FormatEtcBytes);
+            nuint at = Zeroed(FormatEtcBytes);
             WriteFormatEtc(at, f);
             return at;
         }
 
-        public static nint NewFormatEtcs(int count) { return Zeroed(Math.Max(count, 1) * FormatEtcBytes); }
+        public static nuint NewFormatEtcs(int count) { return Zeroed(Math.Max(count, 1) * FormatEtcBytes); }
 
-        public static void FreeFormatEtc(nint at) { if (at != 0) Marshal.FreeHGlobal(at); }
+        public static void FreeFormatEtc(nuint at) { if (at != 0) MarshalHeap.Free(at); }
 
         /// FORMATETC for `cf` as a native program asks for one: the content, all of it, in an HGLOBAL.
         public static FORMATETC Hglobal(int cf)
@@ -260,58 +258,56 @@ namespace System.Runtime.InteropServices
             return f;
         }
 
-        public static nint NewStgMedium() { return Zeroed(StgMediumBytes); }
+        public static nuint NewStgMedium() { return Zeroed(StgMediumBytes); }
 
-        public static int MediumTymed(nint at) { return ComMarshal.ReadI4(at); }
-        public static nint MediumHandle(nint at) { return ComMarshal.ReadPtr(at + W); }
-        public static nint MediumRelease(nint at) { return ComMarshal.ReadPtr(at + 2 * W); }
+        public static int MediumTymed(nuint at) { return ComMarshal.ReadI4(at); }
+        public static nuint MediumHandle(nuint at) { return ComMarshal.ReadPtr(at + W); }
+        public static nuint MediumRelease(nuint at) { return ComMarshal.ReadPtr(at + 2 * W); }
 
-        public static void WriteStgMedium(nint at, int tymed, nint handle, nint unkForRelease)
+        public static void WriteStgMedium(nuint at, int tymed, nuint handle, nuint unkForRelease)
         {
-            for (int i = 0; i < StgMediumBytes; i++) Sys.Write8((nuint)(at + i), 0);
+            for (int i = 0; i < StgMediumBytes; i++) Sys.Write8(at + (nuint)i, 0);
             ComMarshal.WriteI4(at, tymed);
             ComMarshal.WritePtr(at + W, handle);
             ComMarshal.WritePtr(at + 2 * W, unkForRelease);
         }
 
         /// An HGLOBAL medium holding `bytes` (OleGlobal's), written at `at`.
-        public static void WriteHglobal(nint at, byte[] bytes) { WriteStgMedium(at, (int)TYMED.TYMED_HGLOBAL, OleGlobal.Alloc(bytes), 0); }
+        public static void WriteHglobal(nuint at, byte[] bytes) { WriteStgMedium(at, (int)TYMED.TYMED_HGLOBAL, OleGlobal.Alloc(bytes), 0); }
 
         /// ReleaseStgMedium: pUnkForRelease released when there is one, else
         /// the handle freed as its kind is (an HGLOBAL OleGlobal's, an IStream
         /// or IStorage released); the medium left TYMED_NULL.
-        public static void ReleaseStgMedium(nint at)
+        public static void ReleaseStgMedium(nuint at)
         {
             if (at == 0) return;
             int tymed = MediumTymed(at);
-            nint handle = MediumHandle(at), unk = MediumRelease(at);
+            nuint handle = MediumHandle(at), unk = MediumRelease(at);
             if (unk != 0) ComMarshal.Release(unk);
             else if (tymed == (int)TYMED.TYMED_HGLOBAL) OleGlobal.Free(handle);
             else if ((tymed == (int)TYMED.TYMED_ISTREAM || tymed == (int)TYMED.TYMED_ISTORAGE) && handle != 0) ComMarshal.Release(handle);
             WriteStgMedium(at, 0, 0, 0);
         }
 
-        public static void FreeStgMedium(nint at) { if (at != 0) { ReleaseStgMedium(at); Marshal.FreeHGlobal(at); } }
+        public static void FreeStgMedium(nuint at) { if (at != 0) { ReleaseStgMedium(at); MarshalHeap.Free(at); } }
 
         /// A native InterfaceData: ulCntData, then the OBJREF's bytes.
-        public static nint InterfaceData(byte[] objref)
+        public static nuint InterfaceData(byte[] objref)
         {
-            nint at = Marshal.AllocHGlobal(4 + Math.Max(objref.Length, 1));
-            Sys.Write32((nuint)at, (uint)objref.Length);
-            if (objref.Length > 0) Marshal.Copy(objref, 0, at + 4, objref.Length);
+            nuint at = MarshalHeap.Alloc((nuint)(4 + Math.Max(objref.Length, 1)));
+            Sys.Write32(at, (uint)objref.Length);
+            MarshalHeap.Put(at + 4, objref);
             return at;
         }
 
-        public static byte[] InterfaceDataBytes(nint at)
+        public static byte[] InterfaceDataBytes(nuint at)
         {
             int count = Math.Min(Math.Max(ComMarshal.ReadI4(at), 0), OleCodes.InterfaceDataRoom);
-            byte[] made = new byte[count];
-            if (count > 0) Marshal.Copy(at + 4, made, 0, count);
-            return made;
+            return MarshalHeap.Get(at + 4, count);
         }
 
         /// The object an InterfaceData's OBJREF stands for (CoUnmarshalInterface).
-        public static object? Unmarshal(nint interfaceData)
+        public static object? Unmarshal(nuint interfaceData)
         {
             if (interfaceData == 0) return null;
             byte[] objref = InterfaceDataBytes(interfaceData);
@@ -368,12 +364,14 @@ namespace System.Runtime.InteropServices
         /// aligned to four as its FC_USER_MARSHAL says -- to eight, after a
         /// 32-byte ORPCTHIS and the marker, ole32's HWND_UserUnmarshal read
         /// the padding as the tag and raised RPC_S_INVALID_TAG.
-        public static void Hwnd(NdrWriter w, nint hwnd) { w.User(() => { w.Long(WdtInproc); w.Long(hwnd); }, 4); }
+        /// The wire carries a handle's 32 significant bits; read back, they
+        /// are sign-extended to a word, as Win64 makes a 32-bit HWND.
+        public static void Hwnd(NdrWriter w, nuint hwnd) { w.User(() => { w.Long(WdtInproc); w.Long((int)hwnd); }, 4); }
 
-        public static nint Hwnd(NdrReader r)
+        public static nuint Hwnd(NdrReader r)
         {
-            nint got = 0;
-            r.User(() => { r.Long(); got = (nint)r.Int(); }, 4);
+            nuint got = 0;
+            r.User(() => { r.Long(); got = unchecked((nuint)(long)r.Int()); }, 4);
             return got;
         }
 
@@ -398,7 +396,7 @@ namespace System.Runtime.InteropServices
         }
 
         /// A [unique] FORMATETC*: its referent, and the FORMATETC.
-        public static void UniqueFormatEtc(NdrWriter w, nint at)
+        public static void UniqueFormatEtc(NdrWriter w, nuint at)
         {
             if (at == 0) { w.Long(0); return; }
             w.Long(w.Referent());
@@ -538,7 +536,7 @@ namespace System.Runtime.InteropServices
 
         /// A [unique] InterfaceData*: ulCntData, the varying array's offset
         /// and count, the bytes.
-        public static void InterfaceData(NdrWriter w, nint at)
+        public static void InterfaceData(NdrWriter w, nuint at)
         {
             if (at == 0) { w.Long(0); return; }
             byte[] objref = OleMemory.InterfaceDataBytes(at);
@@ -574,10 +572,10 @@ namespace System.Runtime.InteropServices
         }
 
         public static object? Arg(ComFrame f, int i) { return i < f.Args.Count ? f.Args[i].Value : null; }
-        public static nint Ptr(ComFrame f, int i) { object? v = Arg(f, i); return v is nint p ? p : v is long l ? (nint)l : 0; }
+        public static nuint Ptr(ComFrame f, int i) { object? v = Arg(f, i); return v is nuint p ? p : v is long l ? unchecked((nuint)l) : 0; }
         public static int Int(ComFrame f, int i) { object? v = Arg(f, i); return v == null ? 0 : (int)ComMarshal.Long(v); }
         public static long Long(ComFrame f, int i) { object? v = Arg(f, i); return v == null ? 0 : ComMarshal.Long(v); }
-        public static nint Slot(ComFrame f, int i) { return i < f.Args.Count ? f.Args[i].Slot : 0; }
+        public static nuint Slot(ComFrame f, int i) { return i < f.Args.Count ? f.Args[i].Slot : 0; }
     }
 
     /// <summary>
@@ -665,7 +663,7 @@ namespace System.Runtime.InteropServices
             {
                 OleNdr.WireMedium m = OleNdr.StgMedium(r);
                 int hr = r.Int();
-                nint medium = OleWires.Ptr(f, 1);
+                nuint medium = OleWires.Ptr(f, 1);
                 if (hr < 0) return hr;
                 if (m.Tymed == (int)TYMED.TYMED_HGLOBAL && m.Bytes != null) { if (medium != 0) OleMemory.WriteHglobal(medium, m.Bytes); return hr; }
                 // An IStream or IStorage is not handed to native code here.
@@ -676,7 +674,7 @@ namespace System.Runtime.InteropServices
             if (opnum == 6)
             {
                 FORMATETC got = OleNdr.FormatEtc(r);
-                nint into = OleWires.Ptr(f, 1);
+                nuint into = OleWires.Ptr(f, 1);
                 if (into != 0) OleMemory.WriteFormatEtc(into, got);
                 return r.Int();
             }
@@ -710,7 +708,7 @@ namespace System.Runtime.InteropServices
                 {
                     FORMATETC f;
                     if (!OleNdr.UniqueFormatEtc(r, out f)) { w.Long(ComMarshal.EInvalidArg); return true; }
-                    nint at = OleMemory.NewFormatEtc(f);
+                    nuint at = OleMemory.NewFormatEtc(f);
                     try { w.Long(d.QueryGetData(at)); }
                     finally { OleMemory.FreeFormatEtc(at); }
                     return true;
@@ -718,8 +716,8 @@ namespace System.Runtime.InteropServices
                 case 6:
                 {
                     FORMATETC f;
-                    nint input = OleNdr.UniqueFormatEtc(r, out f) ? OleMemory.NewFormatEtc(f) : 0;
-                    nint output = OleMemory.NewFormatEtcs(1);
+                    nuint input = OleNdr.UniqueFormatEtc(r, out f) ? OleMemory.NewFormatEtc(f) : 0;
+                    nuint output = OleMemory.NewFormatEtcs(1);
                     try
                     {
                         int hr = input == 0 ? ComMarshal.EInvalidArg : d.GetCanonicalFormatEtc(input, output);
@@ -764,8 +762,8 @@ namespace System.Runtime.InteropServices
         {
             FORMATETC f;
             if (!OleNdr.UniqueFormatEtc(r, out f)) { OleNdr.StgMedium(w, 0, null); w.Long(ComMarshal.EInvalidArg); return; }
-            nint at = OleMemory.NewFormatEtc(f);
-            nint medium = OleMemory.NewStgMedium();
+            nuint at = OleMemory.NewFormatEtc(f);
+            nuint medium = OleMemory.NewStgMedium();
             try
             {
                 int hr = d.GetData(at, medium);
@@ -812,10 +810,10 @@ namespace System.Runtime.InteropServices
                 });
                 int fetched = r.Int();
                 int hr = r.Int();
-                nint rgelt = OleWires.Ptr(f, 1), into = OleWires.Ptr(f, 2);
+                nuint rgelt = OleWires.Ptr(f, 1), into = OleWires.Ptr(f, 2);
                 int celt = OleWires.Int(f, 0);
                 int n = Math.Min(Math.Min(fetched, got.Count), celt);
-                if (rgelt != 0) for (int i = 0; i < n; i++) OleMemory.WriteFormatEtc(rgelt + i * OleMemory.FormatEtcBytes, got[i].Made());
+                if (rgelt != 0) for (int i = 0; i < n; i++) OleMemory.WriteFormatEtc(rgelt + (nuint)(i * OleMemory.FormatEtcBytes), got[i].Made());
                 if (into != 0) ComMarshal.WriteI4(into, n);
                 return hr;
             }
@@ -834,8 +832,8 @@ namespace System.Runtime.InteropServices
             if (opnum == 3)
             {
                 int celt = Math.Max(0, Math.Min(r.Int(), MostAtOnce));
-                nint rgelt = OleMemory.NewFormatEtcs(celt);
-                nint fetched = Marshal.AllocHGlobal(4);
+                nuint rgelt = OleMemory.NewFormatEtcs(celt);
+                nuint fetched = MarshalHeap.Alloc(4);
                 Sys.Write32((nuint)fetched, 0);
                 try
                 {
@@ -844,11 +842,11 @@ namespace System.Runtime.InteropServices
                     w.Long(celt);
                     w.Long(0);
                     w.Long(n);
-                    w.Embedding(() => { for (int i = 0; i < n; i++) OleNdr.FormatEtcFlat(w, OleMemory.ReadFormatEtc(rgelt + i * OleMemory.FormatEtcBytes)); });
+                    w.Embedding(() => { for (int i = 0; i < n; i++) OleNdr.FormatEtcFlat(w, OleMemory.ReadFormatEtc(rgelt + (nuint)(i * OleMemory.FormatEtcBytes))); });
                     w.Long(n);
                     w.Long(hr);
                 }
-                finally { Marshal.FreeHGlobal(rgelt); Marshal.FreeHGlobal(fetched); }
+                finally { MarshalHeap.Free(rgelt); MarshalHeap.Free(fetched); }
                 return true;
             }
             if (opnum == 4) { w.Long(e.Skip(r.Int())); return true; }
@@ -905,7 +903,7 @@ namespace System.Runtime.InteropServices
                 w.Long(ComMarshal.ENotImpl);
                 return true;
             }
-            nint hwnd = OleNdr.Hwnd(r);
+            nuint hwnd = OleNdr.Hwnd(r);
             byte[]? data = OleNdr.InterfaceData(r);
             int dop = r.Int();
             int keys = r.Int();
@@ -914,8 +912,8 @@ namespace System.Runtime.InteropServices
             int effect = hasEffect ? r.Int() : 0;
             int thread = r.Int();
             object? local = r.Interface();
-            nint source = OleNdr.Hwnd(r);
-            nint interfaceData = data == null ? 0 : OleMemory.InterfaceData(data);
+            nuint source = OleNdr.Hwnd(r);
+            nuint interfaceData = data == null ? 0 : OleMemory.InterfaceData(data);
             try
             {
                 int hr = p.PrivDragDrop(hwnd, interfaceData, dop, keys, OleMemory.Point(x, y), ref effect, thread, local!, source);
@@ -923,7 +921,7 @@ namespace System.Runtime.InteropServices
                 else w.Long(0);
                 w.Long(hr);
             }
-            finally { if (interfaceData != 0) Marshal.FreeHGlobal(interfaceData); }
+            finally { if (interfaceData != 0) MarshalHeap.Free(interfaceData); }
             return true;
         }
     }
