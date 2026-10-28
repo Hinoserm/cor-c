@@ -53,9 +53,10 @@
 #                                named, which objdump prints only as a number;
 #                                and =WORD is WORD as a word of its own
 #                                (=cmpxchg: CMPXCHG, not CMPXCHG8B)
-#   // expect-asm-count-<target>: F: word N
+#   // expect-asm-count-<target>: F: word N [M]
 #                                the same function's disassembly has at
-#                                least N lines containing word
+#                                least N lines containing word, and at
+#                                most M where M is given
 #   // expect-bytes-<target>: SYMBOL: b b [SYM] (SYM) b ...
 #                                the symbol's bytes in the image, all of them
 #                                and nothing more: each b a byte in hex,
@@ -319,13 +320,14 @@ for source in "$here"/[0-9]*.cor; do
         if [ -z "$wrong" ] && [ -n "$counted" ]; then
             function="${counted%%:*}"
             set -- ${counted#*:}
-            word="$1"; least="$2"
+            word="$1"; least="$2"; most="${3:-}"
             body="$(objdump -d --no-show-raw-insn "$exe" | awk -v f="_${function}_" '
                 /^[0-9a-f]+ <.*>:$/ { on = index($0, f) > 0 }
                 on { print }')"
             [ -z "$body" ] && body="$(objdump -d --no-show-raw-insn "$exe" | awk '/^[0-9a-f]+ <.*>:$/ { on = index($0, "_Main_") > 0 } on { print }')"
             got="$(grep -cF -- "$word" <<< "$body")"
             [ "$got" -ge "$least" ] || wrong="$function has $got of $word, not $least"
+            [ -z "$most" ] || [ "$got" -le "$most" ] || wrong="$function has $got of $word, more than $most"
         fi
 
         while IFS= read -r line; do

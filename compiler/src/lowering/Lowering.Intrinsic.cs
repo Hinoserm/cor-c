@@ -961,7 +961,7 @@ public sealed partial class Lowering
                 int count = LiteralInteger(call.Args[2]) is long c ? (int)c : 1;
                 // A CUTOFF'S (Parser.PackedCutoff): the last variant kept for
                 // little work, outside the floor's choice.
-                bool keepLast = call.Args.Count > 3 && LiteralInteger(call.Args[3]) is 1;
+                bool keepLast = call.Args.Count > 3 && LiteralInteger(call.Args[3]) is 1 && CutoffLive;
                 if (_t.WordSize != 4)
                 {
                     for (int v = 0; v < count - 1; v++) _packedDead.Add((_f, block - count + v));
@@ -976,7 +976,7 @@ public sealed partial class Lowering
                 // answer at the compile. Not where the image's knob caps the
                 // processor's features (Corsac.Cpu.Features): then the run
                 // decides, every variant kept.
-                bool capped = RuntimeKnobs.Any(k => k.StartsWith("Corsac.Cpu.Features=", StringComparison.Ordinal));
+                bool capped = CpuCapped;
                 int profile = ProfileFeatures, floor = count - 1, live = -1, alive = 0;
                 for (int v = 0; v < count; v++)
                     if ((profile & (int)(masks >> (8 * v) & 0xFF)) == (int)(masks >> (8 * v) & 0xFF)) { floor = v; break; }
@@ -1014,22 +1014,23 @@ public sealed partial class Lowering
                 return Fit(_e.Binary(Opcode.Sub, _e.Load(IrType.I32, at, 0), 1), returns);
             }
             // LITTLE WORK FOR A PACKED METHOD (Parser.PackedCutoff): fewer
-            // turns than the save and give-back of the thread's state cost --
-            // FNSTENV and FLDENV near a hundred cycles, FXSAVE and FXRSTOR
-            // more -- against what a packed turn wins over its lanes, a few
-            // to tens each: eight turns, sixteen where the save is FXSAVE's.
-            // Only where the method keeps the state for its own packed
-            // operations: in its $inside copy, or one keeping it for float
-            // code or its callees', the plain version saves nothing more.
+            // turns than the save and give-back of the thread's state cost
+            // against what a packed turn wins over its lanes. An estimate,
+            // not a measurement: FNSTENV and FLDENV near a hundred cycles on
+            // the P5 and the K6, FXSAVE and FXRSTOR more where the XMM
+            // registers are touched, a turn winning a few to tens -- eight
+            // turns; sixteen where --cpu has SSE, which the later cores'
+            // longer saves and quicker scalar code come with. Only where the
+            // method keeps the state for its own packed operations (CutoffLive);
+            // a bound of 32 bits or less compared in 32.
             case "PackedSmall":
             {
-                bool guarded = PackedStateHere && !_insideCopy && _method is not null
-                    && _b.PackedState.TryGetValue(_method, out string? why) && why == "packed operations";
-                if (!guarded) return Fit(_e.Const(0, IrType.I32), returns);
-                VReg work = ToI64(Arg(call, target, 0));
+                if (!CutoffLive) return Fit(_e.Const(0, IrType.I32), returns);
                 long step = LiteralInteger(call.Args[1]) is long given && given > 0 ? given : 1;
-                int turns = _t.X86Profile.Has(X86Feature.Sse) ? 16 : 8;
-                return Fit(_e.Binary(Opcode.LtS, R(work), R(_e.Const(step * turns, IrType.I64)), IrType.I32), returns);
+                long least = step * (_t.X86Profile.Has(X86Feature.Sse) ? 16 : 8);
+                if (_b.TypeOf(call.Args[0]) is { Prim: Prim.I32 or Prim.I16 or Prim.I8 or Prim.U16 or Prim.U8 } && least <= int.MaxValue)
+                    return Fit(_e.Binary(Opcode.LtS, R(ToI32(Eval(call.Args[0]))), R(_e.Const(least, IrType.I32)), IrType.I32), returns);
+                return Fit(_e.Binary(Opcode.LtS, R(ToI64(Arg(call, target, 0))), R(_e.Const(least, IrType.I64)), IrType.I32), returns);
             }
             case "ReadFlags":
                 return Fit(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!, returns);
@@ -1218,6 +1219,13 @@ public sealed partial class Lowering
     /// </summary>
     private bool KeepsState(int kind)
         => PackedStateHere && (kind != Corsac.Lang.Parser.ImplicitKind || !_insideCopy && _method is not null && _b.PackedState.ContainsKey(_method));
+
+    /// <summary>Whether a packed method's cutoff decides anything here (Sys.PackedSmall, PackedChoose's keepLast): where the method keeps the state for its own packed operations, as itself -- its $inside copy, or one keeping it for float code or its callees, saves nothing more in its plain version.</summary>
+    private bool CutoffLive => PackedStateHere && !_insideCopy && _method is not null
+        && _b.PackedState.TryGetValue(_method, out string? why) && why == "packed operations";
+
+    /// <summary>Whether the image's knob caps the processor's features (Corsac.Cpu.Features): then --cpu is no floor, and a variant runs only what its own features give.</summary>
+    private bool CpuCapped => RuntimeKnobs.Any(k => k.StartsWith("Corsac.Cpu.Features=", StringComparison.Ordinal));
 
     /// <summary>Lowering a method's $inside copy (EmitMethod twice): its body as it is, inside its caller's state.</summary>
     private bool _insideCopy;

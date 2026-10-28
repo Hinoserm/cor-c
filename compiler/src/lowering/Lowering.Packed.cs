@@ -170,7 +170,7 @@ public sealed partial class Lowering
                 // The test is a branch, at which the packed registers are
                 // written back: a value made just before is stored and
                 // loaded again, two moves more for sixteen bytes streamed.
-                if (wide && (sse2 || _t.X86Profile.Has(X86Feature.Sse2)))
+                if (wide && (sse2 || !CpuCapped && _t.X86Profile.Has(X86Feature.Sse2)))
                 {
                     Corsac.Lang.Ir.Block aligned = _f.NewBlock("ntaligned"), apart = _f.NewBlock("ntapart"), done = _f.NewBlock("ntdone");
                     _e.Branch(_e.Binary(Opcode.And, at, 15), apart, aligned);
@@ -201,8 +201,11 @@ public sealed partial class Lowering
             case "PrefetchWrite":
             {
                 VReg at = ToWord(Arg(call, target, 0));
-                bool three = (has & PackedOps.ThreeDNow) != 0 || _t.WordSize == 4 && _t.X86Profile.Has(X86Feature.ThreeDNow);
-                bool nta = (has & PackedOps.MmxExtensions) != 0 || _t.WordSize == 4 && _t.X86Profile.Has(X86Feature.MmxExtensions);
+                // --cpu only where it is the floor: a knob capping the
+                // processor's features (CpuCapped) may run any variant anywhere.
+                bool floor = _t.WordSize == 4 && !CpuCapped;
+                bool three = (has & PackedOps.ThreeDNow) != 0 || floor && _t.X86Profile.Has(X86Feature.ThreeDNow);
+                bool nta = (has & PackedOps.MmxExtensions) != 0 || floor && _t.X86Profile.Has(X86Feature.MmxExtensions);
                 string? kind = name == "PrefetchWrite" && three ? "write" : nta ? "nta" : three ? "line" : null;
                 if (kind is not null) _e.Call(MachineIntrinsics.PackedPrefetch(kind), IrType.Void, R(at));
                 return Void();

@@ -1,0 +1,17 @@
+// test: an enum's value reaches no uint parameter without a cast, as C# refuses it (CS1503)
+// expect-compile-error: argument 1: 'Step' is not 'uint'
+//
+// `F(Step.Page)` for an F(uint) chose F, the enum taken as its number; in
+// C# no overload takes it. The cast says what is meant: F((uint)Step.Page).
+
+enum Step : uint { Page = 4096 }
+
+static class Program
+{
+    static uint F(uint x) { return x; }
+
+    static int Main()
+    {
+        return (int)F(Step.Page);
+    }
+}

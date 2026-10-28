@@ -3888,7 +3888,14 @@ public sealed class Parser
             int open = _i;
             bodyAt = Cur.Pos;
             HashSet<string>? savedParams = _bodyParams;
-            _bodyParams = m.Params.Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+            // A cutoff's bound (PackedCutoff): a parameter whose value an
+            // integer that widens to a long holds, read at the entry -- not
+            // an out one, nor a ulong, nuint or float, which Sys.PackedSmall
+            // would not take without a cast.
+            _bodyParams = m.Params.Where(p => !p.IsOut && p.Type is { ArrayRank: 0, PointerDepth: 0, Nullable: false, Args.Count: 0 }
+                    && p.Type.Name is "int" or "uint" or "short" or "ushort" or "byte" or "sbyte" or "long"
+                        or "Int32" or "UInt32" or "Int16" or "UInt16" or "Byte" or "SByte" or "Int64")
+                .Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
             AsyncIteratorBody? asyncIterator;
             try { body = ReadBodyBlock(m.Returns, m.Line, m.Col, m.Mods.HasFlag(Mods.Async), out asyncIterator); }
             finally { _bodyParams = savedParams; }
@@ -5557,12 +5564,14 @@ public sealed class Parser
     /// (FNSTENV, FXSAVE: tens to a hundred and more cycles) would cost more
     /// than the packed loop wins (Sys.PackedSmall, by --cpu). Read off the
     /// body's first loop at its own level: `for (int i = S; i < E; i += C)`
-    /// (or i++, or <=), or `while (E >= K)` (or >); E the method's
-    /// parameters, integer literals and + - * << >> of them -- nothing that
-    /// can throw or run code at the method's entry, where the guard is
-    /// evaluated. Null where there is none. The guard only chooses a
-    /// version, every one of which computes the same: a parameter set again
-    /// before the loop misjudges the work, never the answer.
+    /// (or i++, or <=), or `while (E >= K)` (or >); E the method's integer
+    /// parameters (_bodyParams), integer literals and + - * << >> of them --
+    /// nothing that runs code at the method's entry, where the guard is
+    /// evaluated, nor throws but where the method is `checked`, whose
+    /// arithmetic the guard's is. Null where there is none. The guard only
+    /// chooses a version, every one of which computes the same: a parameter
+    /// set again before the loop, an overflow, or a `while (n > 0)` whose
+    /// body eats eight a turn misjudge the work, never the answer.
     /// </summary>
     private Expr? PackedCutoff(Stmt read, int line, int col)
     {

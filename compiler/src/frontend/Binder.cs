@@ -2623,7 +2623,8 @@ public sealed partial class Binder
     // AND THE CONSTANT NOUGHT, of any integral type, into every enum (10.2.4).
     private static bool ConstantConverts(Type from, long value, Type to) => to.Symbol is { Kind: TypeKind.Enum }
         ? value == 0 && from.IsInteger && from.Symbol is null && from.Prim != Prim.Char
-        : to.Prim != Prim.Char && from.Prim switch
+        // An enum's constant is no number's (C# 10.2): it takes a cast.
+        : from.Symbol is null && to.Prim != Prim.Char && from.Prim switch
     {
         Prim.I32 => to.Prim == Prim.U64 ? value >= 0 : Fits(value, to),
         Prim.I64 => to.Prim == Prim.U64 && value >= 0,
@@ -9108,6 +9109,15 @@ public sealed partial class Binder
         // constant conversion takes (ConstantConverts). `F(2)` for an F(E)
         // was E's third member, where C# refuses it.
         if (to.Symbol is { Kind: TypeKind.Enum })
+        {
+            return false;
+        }
+
+        // NOR DOES AN ENUM BECOME A NUMBER without a cast (C# 10.2: no
+        // implicit conversion from an enum but boxing): `uint u = Step.Page;`
+        // and `F(Step.Page)` for an F(uint) are CS0266 and CS1503 there. Its
+        // value as a number is written `(uint)Step.Page`.
+        if (from.Symbol is { Kind: TypeKind.Enum } && to.Symbol is null && (to.IsInteger || to.IsFloat))
         {
             return false;
         }

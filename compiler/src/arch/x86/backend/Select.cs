@@ -981,7 +981,7 @@ internal sealed partial class Selector
                         bool storedInto = k == 0 && i.Op is Opcode.Store or Opcode.MemCopy or Opcode.MemSet;
                         if (!read && !storedInto) taken.Add(Corsac.Lang.Lto.X87Notes.InField(sym.Name));
                     }
-                if (i.Op == Opcode.Call && i.Callee is { } callee && !callee.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
+                if (i.Op == Opcode.Call && i.Callee is { } callee && !callee.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && callee != "__exception")
                     calls.Add(new(callee, i.Line, state != 0));
                 if (loaded.Count > 0)
                     for (int k = 0; k < i.Operands.Count; k++)

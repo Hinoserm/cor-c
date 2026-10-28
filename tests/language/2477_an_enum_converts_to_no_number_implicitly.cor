@@ -1,0 +1,17 @@
+// test: an enum's value is no number without a cast, as C# refuses it (CS0266)
+// expect-compile-error: initialiser for 'u': cannot convert 'Step' to 'uint'
+//
+// `uint u = Step.Page;` compiled, the enum's member taken as its underlying
+// number; C# gives no implicit conversion from an enum but boxing (10.2),
+// a constant member included. `(uint)Step.Page` is how it is written.
+
+enum Step : uint { Page = 4096 }
+
+static class Program
+{
+    static int Main()
+    {
+        uint u = Step.Page;
+        return (int)u;
+    }
+}
