@@ -60,9 +60,10 @@
 //     goes out of QEMU's isa-debug-exit port when one is attached -- that
 //     machine exits with (code << 1) | 1 -- and then the processor is halted
 //     with interrupts off, forever -- that processor only: the others run on,
-//     and with the boot processor go the 8259's interrupts. An image that
-//     installed ExitHook calls it first. A ring-1 kernel's ends the image
-//     through the kernel below and does not return; the kernel's own ends a
+//     and the interrupts delivered to it alone stop with it. Before any of
+//     that the program's end handlers run (Runtime.ExitHandler), then the
+//     ExitHook an image installed. A ring-1 kernel's ends the image through
+//     the kernel below and does not return. The ring-0 kernel's own ends a
 //     program thread whose exception nothing caught and returns only for a
 //     kernel thread, an interrupt, or a thread already ending, and the
 //     processor then stops as above.
