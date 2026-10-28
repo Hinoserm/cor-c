@@ -825,7 +825,7 @@ public sealed partial class Lowering
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
                 Zero = true, Align = heldInline ? Math.Max(1, StructOf(f.Type).InlineAlign) : AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
-                Coalescible = f.Owner.Decl?.Specialised == true,
+                Coalescible = f.Owner.Decl?.Specialised == true, Volatile = f.Volatile,
                 SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
             });
         }

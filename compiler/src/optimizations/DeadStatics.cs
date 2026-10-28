@@ -141,6 +141,7 @@ public sealed class DeadStatics : IModulePass
 ///   kernel's entry stub writes the loader's pointer into a static by its
 ///   mangled name;
 /// - it is not an export another unit may write;
+/// - it is not volatile (DataItem.Volatile): written where nothing here sees;
 /// - and every store to it that can run writes 0, with every load of the
 ///   items taken read as the 0 it is (Unzeroed): `_verify = _verify ||
 ///   false`, a switch copied from another that is never set, a store under
@@ -165,7 +166,7 @@ public static class UnwrittenStatics
         Dictionary<string, DataItem> zero = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data)
         {
-            if (d.Zero && !(m.PreserveExports && d.Exported) && !m.ObjectNames.Contains(d.Name)) zero[d.Name] = d;
+            if (d.Zero && !d.Volatile && !(m.PreserveExports && d.Exported) && !m.ObjectNames.Contains(d.Name)) zero[d.Name] = d;
         }
         foreach (DataItem d in m.Data)
         {

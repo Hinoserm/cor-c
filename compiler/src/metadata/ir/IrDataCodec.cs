@@ -10,7 +10,7 @@ public static class IrDataCodec
         BinaryWriter writer = IrBinary.Writer();
         writer.Write(0); IrBinary.Text(writer, item.Name); writer.Write(item.Align);
         writer.Write(item.ReadOnly); writer.Write(item.Zero); writer.Write(item.Exported);
-        writer.Write(item.FromLibrary); writer.Write(item.Coalescible); writer.Write(item.NoReferences);
+        writer.Write(item.FromLibrary); writer.Write(item.Coalescible); writer.Write(item.NoReferences); writer.Write(item.Volatile);
         writer.Write(item.SharedCopies?.Length ?? 0);
         foreach (string copy in item.SharedCopies ?? Array.Empty<string>()) IrBinary.Text(writer, copy);
         writer.Write(item.Bytes.Length);
@@ -33,7 +33,7 @@ public static class IrDataCodec
             string name = IrBinary.Name(reader, budget); int align = reader.ReadInt32();
             bool readOnly = IrBinary.Flag(reader), zero = IrBinary.Flag(reader), exported = IrBinary.Flag(reader);
             bool library = IrBinary.Flag(reader), coalescible = IrBinary.Flag(reader);
-            bool noReferences = IrBinary.Flag(reader);
+            bool noReferences = IrBinary.Flag(reader), isVolatile = IrBinary.Flag(reader);
             int copies = IrBinary.Count(reader);
             budget.Charge(copies, 64, "shared copies");
             string[]? shared = copies > 0 ? new string[copies] : null;
@@ -43,7 +43,7 @@ public static class IrDataCodec
                 || !zero && size > stream.Length - stream.Position) throw new InvalidDataException("Invalid IR data layout");
             budget.Charge(size, 1, "data bytes");
             byte[] bytes = zero ? new byte[size] : reader.ReadBytes(size);
-            DataItem item = new(name, bytes) { Align = align, ReadOnly = readOnly, Zero = zero, Exported = exported, FromLibrary = library, Coalescible = coalescible, NoReferences = noReferences, SharedCopies = shared };
+            DataItem item = new(name, bytes) { Align = align, ReadOnly = readOnly, Zero = zero, Exported = exported, FromLibrary = library, Coalescible = coalescible, NoReferences = noReferences, Volatile = isVolatile, SharedCopies = shared };
             int relocations = IrBinary.Count(reader);
             budget.Charge(relocations, 48, "data relocations");
             for (int i = 0; i < relocations; i++)

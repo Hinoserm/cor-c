@@ -29,6 +29,14 @@ public sealed class DataItem
     /// </summary>
     public bool NoReferences { get; init; }
 
+    /// <summary>
+    /// A volatile static's: written where the program's IR cannot see -- by
+    /// native code, a device, another thread through its address, the
+    /// backend's own counting (SpillCount) -- so never taken for the zero
+    /// nothing here stores in it (UnwrittenStatics).
+    /// </summary>
+    public bool Volatile { get; init; }
+
     /// <summary>The class library's rather than the program's; see Function.FromLibrary.</summary>
     public bool FromLibrary { get; init; }
 
