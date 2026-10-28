@@ -47,10 +47,10 @@ public sealed partial class Binder
 
     /// <summary>
     /// Whether a method another image defines keeps the processor's state
-    /// there, with a copy that runs inside its
-    /// caller's (Lowering.InsideElsewhere): a call to it in a loop, twice,
-    /// or on every run keeps the state here instead (PackedStateOf), as a
-    /// call to one of this unit's own does. Set by the driver.
+    /// there, with a copy that runs inside its caller's
+    /// (Lowering.InsideElsewhere): a call to it in a loop, twice, or on
+    /// every run keeps the state here instead (PackedStateOf), as a call to
+    /// one of this unit's own does. Set by the driver.
     /// </summary>
     public static Func<MethodSymbol, bool>? KeepsStateElsewhere { get; set; }
 

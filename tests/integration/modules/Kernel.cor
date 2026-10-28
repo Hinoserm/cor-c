@@ -73,9 +73,9 @@ public static class Log
 // what it was given so the test can see every argument arrived.
 public static class KernelFiles
 {
-    public static long Syscall(long number, long a, long b, long c, long d, long e, long f)
+    public static SyscallWord Syscall(int number, SyscallWord a, SyscallWord b, SyscallWord c, SyscallWord d, SyscallWord e, SyscallWord f)
     {
-        return number * 1000 + a + b + c + d + e + f;
+        return (SyscallWord)number * 1000 + a + b + c + d + e + f;
     }
 }
 

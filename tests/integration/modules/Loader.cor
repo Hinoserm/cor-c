@@ -63,6 +63,8 @@ public static class Modules
         SyscallWord mapped = Sys.Syscall(Mmap, 0, (size + 0xFFF) & ~0xFFFu, 7, 0x22, unchecked((SyscallWord)(-1)), 0);
         // An answer from -4095 to -1 is an error's.
         if (mapped > unchecked((SyscallWord)(-4096))) return Refuse("no memory");
+        // A 32-bit image's words hold its addresses: below 4 GB, all of it.
+        if ((ulong)mapped + size > uint.MaxValue) return Refuse("mapped above 4 GB");
         nuint bias = (nuint)mapped;
         for (int p = 0; p < phnum; p++)
         {
@@ -136,7 +138,7 @@ public static class Modules
         uint h = 0;
         for (int i = 0; i < name.Length; i++)
         {
-            h = (h << 4) + name[i];
+            h = unchecked((h << 4) + name[i]);
             uint g = h & 0xF0000000u;
             if (g != 0) h ^= g >> 24;
             h &= ~g;

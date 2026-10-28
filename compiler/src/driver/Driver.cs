@@ -1063,16 +1063,25 @@ public static class Driver
         // CALLS INTO ANOTHER IMAGE'S PACKED METHODS (Lowering.InsideElsewhere):
         // the $inside copies the kernel's exports and the modules this one is
         // built on (--link-shared) define, which a kept state's calls take.
+        // ONLY WHERE THIS UNIT'S SAVE COVERS THEIR COPY: a copy may use the
+        // XMM registers where its image's --cpu has SSE, and a kept state
+        // here is saved by FXSAVE for a call to one only where this --cpu has
+        // it (Selector.SettlePackedSaves). So the kernel's copies where either
+        // has SSE but not the kernel's alone (its exports carry its --cpu); a
+        // module's, whose image says nothing of its --cpu, where this has SSE.
         HashSet<string> insideElsewhere = new(StringComparer.Ordinal);
         if (Parser.PackedEverywhere)
         {
-            if (kernel is not null) insideElsewhere.UnionWith(kernel.Names.Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
-            foreach (string under in sharedLibs)
-                insideElsewhere.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(under)).Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
+            bool covers = Target.Current.X86Profile.Has(X86Feature.Sse);
+            if (kernel is not null && (covers || !KernelHasSse(kernel)))
+                insideElsewhere.UnionWith(kernel.Names.Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
+            if (covers)
+                foreach (string under in sharedLibs)
+                    insideElsewhere.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(under)).Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
         }
         Corsac.Lang.Lower.Lowering.InsideElsewhere = insideElsewhere;
         Binder.KeepsStateElsewhere = insideElsewhere.Count == 0 ? null
-            : m => Corsac.Lang.Lower.Lowering.DefinedElsewhere(m) && insideElsewhere.Contains(Corsac.Lang.Lower.Lowering.Label(m) + Linker.InsideSuffix);
+            : m => Corsac.Lang.Lower.Lowering.InsideCandidate(m) && insideElsewhere.Contains(Corsac.Lang.Lower.Lowering.Label(m) + Linker.InsideSuffix);
         Corsac.Lang.Lower.Lowering.PackedReport = args.Contains("--packed-report");
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");
@@ -1871,6 +1880,17 @@ public static class Driver
     /// The order they were given in is kept, which for the build's own
     /// directory listing is the bottom of the stack first.
     /// </summary>
+    /// <summary>Whether the kernel's units were compiled for a --cpu with SSE, as its exports say (KernelExports.Cpu); a kernel that says nothing is taken to.</summary>
+    private static bool KernelHasSse(KernelExports kernel)
+    {
+        if (kernel.Cpu is null) return true;
+        ObjectFile carrier = new();
+        Section cpu = new(X86CodeGenerationContract.SectionName, SectionKind.Note);
+        cpu.Bytes.AddRange(kernel.Cpu);
+        carrier.Sections.Add(cpu);
+        return X86CodeGenerationContract.Read(carrier) is not { } contract || contract.Fpu == "sse2" || (contract.Features & X86Feature.Sse) != 0;
+    }
+
     private static List<string> Needed(ObjectFile obj, List<string> offered, Dictionary<string, HashSet<string>> exports)
     {
         if (offered.Count == 0)
@@ -1879,6 +1899,11 @@ public static class Driver
         }
         HashSet<string> undefined = new(
             obj.Symbols.Where(s => !s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
+        // A call of a method's $inside copy is of the method itself where the
+        // library no longer has the copy (Linker.InsideOrItself, after this):
+        // the library that has the method is needed all the same.
+        foreach (string name in undefined.Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)).ToList())
+            undefined.Add(name[..^Linker.InsideSuffix.Length]);
         return offered.Where(lib => exports.TryGetValue(lib, out HashSet<string>? e) && e.Overlaps(undefined)).ToList();
     }
 

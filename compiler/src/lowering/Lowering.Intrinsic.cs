@@ -1294,7 +1294,7 @@ public sealed partial class Lowering
 
     /// <summary>Whether a method is another image's with a copy that runs inside (InsideElsewhere).</summary>
     private bool InsideElsewhereOf(MethodSymbol m, string label)
-        => PackedStateHere && InsideElsewhere.Count > 0 && DefinedElsewhere(m) && InsideElsewhere.Contains(label + "$inside");
+        => PackedStateHere && InsideElsewhere.Count > 0 && InsideCandidate(m) && InsideElsewhere.Contains(label + "$inside");
 
     /// <summary>--packed-report: every method that keeps the processor's state, said as it is lowered.</summary>
     public static bool PackedReport { get; set; }

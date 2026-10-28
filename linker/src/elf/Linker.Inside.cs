@@ -21,8 +21,8 @@ public static partial class Linker
     /// it, the call is to the method itself, which keeps the state of its
     /// own: right inside a kept state as anywhere, only dearer. Done before
     /// anything is resolved, on the symbols and on the relocations naming
-    /// them. Nothing to do, and nothing read, where no unit names a copy it
-    /// lacks.
+    /// them -- the objects themselves, so linked again they call the method.
+    /// Nothing to do, and nothing read, where no unit names a copy it lacks.
     /// </summary>
     internal static void InsideOrItself(IEnumerable<ObjectFile> objects, Func<string, bool>? elsewhere = null)
     {
@@ -69,7 +69,14 @@ public static partial class Linker
             if (exported is null)
             {
                 exported = new HashSet<string>(StringComparer.Ordinal);
-                foreach (string path in paths) exported.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(path)));
+                foreach (string path in paths)
+                {
+                    try { exported.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(path))); }
+                    catch (Exception e) when (e is IOException or ElfFormatException)
+                    {
+                        throw new LinkException(new[] { path + ": its exports cannot be read: " + e.Message });
+                    }
+                }
             }
             return exported.Contains(name);
         };

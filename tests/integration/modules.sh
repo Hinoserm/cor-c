@@ -55,7 +55,7 @@ readelf -s -W "$a/kernel" | awk '$8 == "__corsac_build_stamp" && $3 == 32 { foun
     || fail "no __corsac_build_stamp in the kernel"
 readelf -h "$a/kernel.exports" | grep -q 'DYN (Shared object file)' || fail "the exports are not a shared object"
 readelf --dyn-syms -W "$a/kernel.exports" > "$work/exports.syms"
-for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver' 't_Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$I64_V$I64_V$I64' __corsac_build_stamp; do
+for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver' 't_Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt' __corsac_build_stamp; do
     awk -v n="$name" '$8 == n && $7 == "ABS" { found = 1 } END { exit !found }' "$work/exports.syms" || fail "the kernel does not export $name"
 done
 kernelAddress=$(readelf -s -W "$a/kernel" | awk '$8 == "m_Kernel$Log_Write_1_V$String" { print $2 }')
@@ -104,7 +104,7 @@ for ko in "$work/sb16.ko" "$work/linked/sb16.ko" "$work/project/sb16.ko"; do
     # No runtime of its own: the kernel's collector, allocator and strings.
     readelf --dyn-syms -W "$ko" > "$ko.syms"
     if awk '$7 != "UND" && $8 ~ /^m_(Runtime|Gc|String)_/ { found = 1 } END { exit !found }' "$ko.syms"; then fail "$ko carries a runtime"; fi
-    for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$I64_V$I64_V$I64' 't_Kernel$002eDriver'; do
+    for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt' 't_Kernel$002eDriver'; do
         awk -v n="$name" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import $name"
     done
     # DT_INIT is the link's: __corsac_init, then the [ModuleInitializer].

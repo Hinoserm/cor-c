@@ -1167,6 +1167,17 @@ public sealed partial class Lowering
     public static bool DefinedElsewhere(MethodSymbol m)
         => m.Decl is { LocalCopy: false } d && !(d.OwnedImplementation ?? m.Owner.Decl?.Elsewhere != true);
 
+    /// <summary>
+    /// Whether a call to a method could be to another image's $inside copy
+    /// (InsideElsewhere): defined there (DefinedElsewhere), called by its own
+    /// label -- not a generic one's, nor a shared canonical copy's, whose
+    /// labels are not the method's -- and not async, as a copy is made
+    /// (CopiesInside).
+    /// </summary>
+    public static bool InsideCandidate(MethodSymbol m)
+        => DefinedElsewhere(m) && !m.Async && m.Owner.Decl?.Canon is null
+        && m.Owner.Decl?.TypeParams.Count is null or 0 && m.Decl?.TypeParams.Count is null or 0;
+
     private static bool Emits(MethodSymbol m)
         // A TUPLE SHAPE'S METHODS HAVE NO DECLARATION: they are written here,
         // in EmitTupleMethod, and a vtable slot pointing at one is a symbol
