@@ -1578,10 +1578,13 @@ public sealed partial class Binder
     /// WHERE A FREESTANDING PROGRAM KEEPS THE PROCESSOR'S STATE (Lowering:
     /// the compiler's own block around each body, Parser.ImplicitKind): each
     /// method that needs it, and why -- its own float code or packed
-    /// operations, or a call in a loop to one that needs it, so that the
-    /// state is kept once around the loop and not on every call (the callee
-    /// runs inside, Lowering's $inside copy). Not an async body's, whose
-    /// frame outlives a run; nor a lambda's, a function of its own.
+    /// operations, a native that uses the FPU (Sys.CallNativeFloat), or a
+    /// call in a loop to one that needs it, so that the state is kept once
+    /// around the loop and not on every call (the callee runs inside,
+    /// Lowering's $inside copy). Not an async body's, whose frame outlives
+    /// a run; nor a lambda's, a function of its own. And what reaches a
+    /// plain native (BindResult.PackedNatives), which runs on the thread's
+    /// own state.
     /// </summary>
     private Dictionary<MethodSymbol, string> PackedStateOf()
     {
@@ -1590,9 +1593,13 @@ public sealed partial class Binder
         Dictionary<MethodSymbol, List<MethodSymbol>> always = new(ReferenceEqualityComparer.Instance);
         Dictionary<MethodSymbol, List<MethodSymbol>> twice = new(ReferenceEqualityComparer.Instance);
         HashSet<MethodSymbol> handlers = new(ReferenceEqualityComparer.Instance);
+        Dictionary<MethodSymbol, List<MethodSymbol>> callees = new(ReferenceEqualityComparer.Instance);
+        HashSet<MethodSymbol> natives = _r.PackedNatives;
         foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
         {
-            if (m.Async || d.Body is null || d.Body.Iterator) continue;
+            if (d.Body is null) continue;
+            callees[m] = DirectCalls(d.Body, m.Owner).Select(c => c.Callee).ToList();
+            if (m.Async || d.Body.Iterator) continue;
             if (IsInterruptHandler(m)) handlers.Add(m);
             // WHAT EVERY RUN OF IT CALLS: the calls of its own statements, not
             // behind a condition -- the body's, or the compiler's own block's
@@ -1603,9 +1610,13 @@ public sealed partial class Binder
             HashSet<Node> maybe = ConditionalSites(d.Body);
             List<MethodSymbol> sure = new();
             foreach (Stmt top in TopStatements(d.Body))
-                if (top is ExprStmt or LocalDecl or ReturnStmt)
-                    foreach ((Node site, MethodSymbol callee) in DirectCalls(top, m.Owner))
+            {
+                // A guard's condition runs on every path (Along).
+                Node? ran = top switch { ExprStmt or LocalDecl or ReturnStmt => top, IfStmt guard => guard.Cond, _ => null };
+                if (ran is not null)
+                    foreach ((Node site, MethodSymbol callee) in DirectCalls(ran, m.Owner))
                         if (!maybe.Contains(site)) sure.Add(callee);
+            }
             always[m] = sure;
             // MORE THAN ONCE ON A RUN: twice in one list of statements, each
             // call where that list's every run makes it -- not one in each
@@ -1629,12 +1640,18 @@ public sealed partial class Binder
                 // A copy of a body with a lambda or a local function in it
                 // would make their functions twice (Lowering's $inside).
                 if (n is LambdaExpr or LocalDecl { LocalFunction: true }) copyable = false;
+                // A NATIVE THAT USES THE x87, MMX OR SSE (Sys.CallNativeFloat)
+                // -- a kernel's blits, its 3D engine's routines -- which
+                // nothing here can see in an object assembled apart: its
+                // caller keeps the state. A plain one (Sys.CallNative) runs
+                // on the thread's own: a BIOS thunk, a CPU's bring-up, a
+                // return to user code (PackedNatives).
+                if (n is CallExpr native && _r.Calls.TryGetValue(native, out MethodSymbol? sys) && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>")
+                {
+                    if (sys.Name == "CallNative") natives.Add(m);
+                    else if (own is null && sys.Name == "CallNativeFloat") own = "a call of a native that uses the FPU (Sys.CallNativeFloat)";
+                }
                 if (own is null && n is CallExpr call && PackedOperation(call)) own = "packed operations";
-                // A NATIVE (Sys.CallNative) may use the x87, MMX or SSE -- a
-                // kernel's blits and its 3D engine's routines do -- which
-                // nothing here can see: its caller keeps the state.
-                else if (own is null && n is CallExpr native && _r.Calls.TryGetValue(native, out MethodSymbol? sys)
-                         && sys.Name == "CallNative" && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>") own = "a call of a native";
                 else if (own is null && n is Expr e && FloatTyped(e)) own = "float code";
                 if (n is WhileStmt or DoStmt or ForStmt or ForeachStmt)
                     foreach ((Node _, MethodSymbol callee) in DirectCalls(n, m.Owner)) looped.Add(callee);
@@ -1643,6 +1660,16 @@ public sealed partial class Binder
             if (copyable) _r.PackedCopyable.Add(m);
             inLoops[m] = looped;
         }
+        // WHAT REACHES A PLAIN NATIVE through the calls it makes directly:
+        // given back around in a kept state, never copied to run inside one
+        // ($inside), and no reason to keep one around its calls.
+        for (bool more = true; more;)
+        {
+            more = false;
+            foreach ((MethodSymbol m, List<MethodSymbol> called) in callees)
+                if (!natives.Contains(m) && called.Any(natives.Contains)) { natives.Add(m); more = true; }
+        }
+        _r.PackedCopyable.RemoveWhere(natives.Contains);
         // AS FAR OUT AS IT GOES FOR NOTHING: a method that calls one keeping
         // the state in a loop, more than once, or on every run of its own
         // keeps it itself, and the callee runs inside (its $inside copy) --
@@ -1655,9 +1682,10 @@ public sealed partial class Binder
             foreach ((MethodSymbol m, List<MethodSymbol> looped) in inLoops)
             {
                 if (state.ContainsKey(m) || handlers.Contains(m)) continue;
-                string? why = looped.FirstOrDefault(c => state.ContainsKey(c)) is { } inLoop ? $"calls '{inLoop.Owner.Name}.{inLoop.Name}' in a loop"
-                    : twice[m].FirstOrDefault(c => state.ContainsKey(c)) is { } again ? $"calls '{again.Owner.Name}.{again.Name}' more than once"
-                    : always[m].FirstOrDefault(c => state.ContainsKey(c)) is { } sure ? $"calls '{sure.Owner.Name}.{sure.Name}' on every run"
+                bool Hoists(MethodSymbol c) => state.ContainsKey(c) && !natives.Contains(c);
+                string? why = looped.FirstOrDefault(Hoists) is { } inLoop ? $"calls '{inLoop.Owner.Name}.{inLoop.Name}' in a loop"
+                    : twice[m].FirstOrDefault(Hoists) is { } again ? $"calls '{again.Owner.Name}.{again.Name}' more than once"
+                    : always[m].FirstOrDefault(Hoists) is { } sure ? $"calls '{sure.Owner.Name}.{sure.Name}' on every run"
                     : null;
                 if (why is null) continue;
                 state[m] = why;
@@ -1685,10 +1713,19 @@ public sealed partial class Binder
         {
             if (s is Block nested) { if (!Along(nested.Statements, made)) return false; continue; }
             made.Add(s);
-            // Past a return, a throw, a branch: no longer every path.
+            // A GUARD -- `if (!State(...)) return false;`, an if with no else
+            // that only leaves -- its condition run on every path, and the
+            // code after it on every path that goes on: a method's work
+            // after its checks, which a failed check's early way out does
+            // not do. Past a return, a throw, any other branch: no longer
+            // every path.
+            if (s is IfStmt { Else: null, Then: var then } && Leaves(then)) continue;
             if (s is not (ExprStmt or LocalDecl)) return false;
         }
         return true;
+
+        static bool Leaves(Stmt s) => s is ReturnStmt or ThrowStmt || s is Block { Statements: [.., ReturnStmt or ThrowStmt] } b
+            && b.Statements.Take(b.Statements.Count - 1).All(x => x is ExprStmt or LocalDecl);
     }
 
     /// <summary>The nodes of a body that only some of its runs reach: the arms of ?: and of a switch expression, the right of &&, || and ??, a call, an accessor or an indexer past a `?.` or `?[`, and their arguments.</summary>

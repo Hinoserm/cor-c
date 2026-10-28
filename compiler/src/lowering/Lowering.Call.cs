@@ -280,7 +280,11 @@ public sealed partial class Lowering
             label = BodyLabel(canonical);
         }
         label = InsideLabel(m, label);
-        VReg? made = _e.Call(label, returns, args.ToArray());
+        string called = label;
+        Operand[] passed = args.ToArray();
+        // One that calls a plain native runs on the thread's own state
+        // (BindResult.PackedNatives), given back around it.
+        VReg? made = _b.PackedNatives.Contains(m) ? OnOwnState(() => _e.Call(called, returns, passed)) : _e.Call(called, returns, passed);
         // A CALL THAT NEVER COMES BACK ENDS ITS BLOCK: a method proved never
         // to return (Binder.CallNeverReturns) -- ThrowHelper's, which only
         // throw, Environment.Exit, whose calls end in a loop round exit(2) --

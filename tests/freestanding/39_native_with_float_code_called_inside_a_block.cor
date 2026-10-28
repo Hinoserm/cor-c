@@ -1,4 +1,4 @@
-// test: a native whose code uses the x87, called through Sys.CallNative, runs where its caller keeps the state
+// test: a native whose code uses the x87, called through Sys.CallNativeFloat, runs where its caller keeps the state
 // targets: x86
 // with-asm: 39_native_with_float_code_called_inside_a_block
 // flags: --asm-entry corc_start --entry _start --x87-in-blocks-only
@@ -7,8 +7,9 @@
 //
 // The start (the assembly beside this) leaves float_one's address in
 // Program.Native, as a kernel's entry leaves its natives'. A method calling a
-// native keeps the state (the compiler cannot see what a native uses), so
-// the call through the static runs inside it, and is no error -- the test of
+// native through Sys.CallNativeFloat keeps the state (the compiler cannot
+// see what an object assembled apart uses: the call says so), so the call
+// through the static runs inside it, and is no error -- the test of
 // Native against 0 before it takes nothing, nor do float_one's own branch and
 // loop.
 
@@ -23,7 +24,7 @@ static class Program
         if (Native != 0)
         {
             {
-                Sys.CallNative(Native, Sys.ArrayData(cell));
+                Sys.CallNativeFloat(Native, Sys.ArrayData(cell));
             }
         }
         Host.Line("one " + cell[0].ToString("X8"));

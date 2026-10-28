@@ -798,6 +798,20 @@ public static class Prelude
             public static nuint CallNative(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e) { return 0; }
             public static nuint CallNative(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e, nuint f) { return 0; }
             public static nuint CallNative(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e, nuint f, nuint g) { return 0; }
+            // The same for a routine that uses the x87, MMX or SSE, which
+            // nothing in a separately assembled object shows the compiler:
+            // freestanding, its caller keeps the state around it (Binder.
+            // PackedStateOf). A plain CallNative runs on the thread's own
+            // state -- given back around it where its caller keeps one -- as
+            // a BIOS thunk, a CPU's bring-up or a return to user code must.
+            public static nuint CallNativeFloat(nuint fn) { return 0; }
+            public static nuint CallNativeFloat(nuint fn, nuint a) { return 0; }
+            public static nuint CallNativeFloat(nuint fn, nuint a, nuint b) { return 0; }
+            public static nuint CallNativeFloat(nuint fn, nuint a, nuint b, nuint c) { return 0; }
+            public static nuint CallNativeFloat(nuint fn, nuint a, nuint b, nuint c, nuint d) { return 0; }
+            public static nuint CallNativeFloat(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e) { return 0; }
+            public static nuint CallNativeFloat(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e, nuint f) { return 0; }
+            public static nuint CallNativeFloat(nuint fn, nuint a, nuint b, nuint c, nuint d, nuint e, nuint f, nuint g) { return 0; }
 
             // ---- the x86 I/O space and the privileged instructions ---------
             //

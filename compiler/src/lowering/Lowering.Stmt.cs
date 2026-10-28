@@ -384,8 +384,9 @@ public sealed partial class Lowering
                     if (KeepsState(PackedKindOf(leave)))
                     {
                         _stateKept++;
+                        _keptBlocks.Add((PackedKindOf(leave), PackedNumberOf(leave), features));
                         try { EmitTry(t); }
-                        finally { _stateKept--; }
+                        finally { _stateKept--; _keptBlocks.RemoveAt(_keptBlocks.Count - 1); }
                     }
                     else EmitStmt(t.Body);
                 }

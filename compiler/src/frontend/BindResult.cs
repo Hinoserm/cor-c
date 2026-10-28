@@ -19,6 +19,14 @@ public sealed partial class BindResult
     public HashSet<MethodSymbol> PackedCopyable { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
+    /// The methods that call a plain native (Sys.CallNative), themselves or
+    /// through the methods they call directly (Binder.PackedStateOf): a
+    /// kept state is given back around a call of one (Lowering), which
+    /// runs on the thread's own -- a BIOS thunk, a return to user code.
+    /// </summary>
+    public HashSet<MethodSymbol> PackedNatives { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// How many 64-bit words each type's ancestor mask takes.
     ///
     /// Program-wide: every mask in an image is the same width, so the word a

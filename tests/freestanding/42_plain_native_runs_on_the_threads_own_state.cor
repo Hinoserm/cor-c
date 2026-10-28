@@ -1,0 +1,29 @@
+// test: a plain native, called through Sys.CallNative from a method that keeps the state, runs on the thread's own: its float code is refused
+// targets: x86
+// with-asm: 42_plain_native_runs_on_the_threads_own_state
+// flags: --asm-entry corc_start --entry _start --x87-in-blocks-only
+// expect-compile-error: 'float_one' has float code (42_plain_native_runs_on_the_threads_own_state.x86.asm:22) that can run where no kept state is: 'the routine in s_Program_Native' calls 'float_one'
+//
+// As 39, but through Sys.CallNative: a native that keeps nothing -- a BIOS
+// thunk, a CPU's bring-up before its SSE is on, a return to user code --
+// which must find the state as the thread has it. Main keeps the state for
+// its own float code, and gives it back around the call (Lowering.
+// OnOwnState), so float_one's x87 code would run outside any kept state:
+// the link refuses it, naming the way there through Program.Native.
+
+static class Program
+{
+    public static nuint Native;
+    static double _scale = 2.5;
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        uint[] cell = new uint[1];
+        double scaled = _scale * 2;
+        Sys.CallNative(Native, Sys.ArrayData(cell));
+        Host.Line("one " + cell[0].ToString("X8") + " " + ((int)scaled).ToString());
+        Host.Done(0);
+        return 0;
+    }
+}

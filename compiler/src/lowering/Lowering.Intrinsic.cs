@@ -1075,6 +1075,7 @@ public sealed partial class Lowering
                 return _e.CallIndirect(R(fn), returns, args)!;
             }
             case "CallNative":
+            case "CallNativeFloat":
             {
                 VReg fn = Address(call, target, 0);
                 List<Operand> args = new();
@@ -1082,7 +1083,13 @@ public sealed partial class Lowering
                 {
                     args.Add(R(ToWord(Arg(call, target, i))));
                 }
-                return Fit(_e.CallIndirect(R(fn), word, args, NativeCall.Indirect)!, returns);
+                // A plain native runs on the thread's own state, given back
+                // around it where this code keeps one; CallNativeFloat's in
+                // the state kept for it (Binder.PackedStateOf).
+                VReg? answer = name == "CallNative"
+                    ? OnOwnState(() => _e.CallIndirect(R(fn), word, args, NativeCall.Indirect))
+                    : _e.CallIndirect(R(fn), word, args, NativeCall.Indirect);
+                return Fit(answer!, returns);
             }
             case "AddressOf":
                 return Fit(Arg(call, target, 0), returns);
@@ -1195,6 +1202,33 @@ public sealed partial class Lowering
 
     /// <summary>The kept states the code being lowered is inside (Lowering.Stmt's packed TryStmt).</summary>
     private int _stateKept;
+
+    /// <summary>Those states' blocks, innermost last: their kinds, numbers and features, which a give-back and a taking again name (OnOwnState).</summary>
+    private readonly List<(int Kind, int Number, int Features)> _keptBlocks = new();
+
+    /// <summary>
+    /// A CALL ON THE THREAD'S OWN STATE inside a kept one: every kept state
+    /// around it given back first, innermost first, and taken again after,
+    /// outermost first -- a plain native (Sys.CallNative), or a method that
+    /// reaches one (BindResult.PackedNatives): a BIOS thunk, a CPU's
+    /// bring-up before its SSE is on, a return to user code, which must
+    /// find, and leave, the state as the thread has it. A $inside copy is
+    /// never made of code that reaches one, so nothing here runs inside a
+    /// caller's state this code cannot give back.
+    /// </summary>
+    private T OnOwnState<T>(Func<T> call)
+    {
+        if (_stateKept == 0 || _insideCopy || _keptBlocks.Count == 0) return call();
+        for (int k = _keptBlocks.Count - 1; k >= 0; k--)
+        {
+            (int kind, int number, int features) = _keptBlocks[k];
+            _e.Call(MachineIntrinsics.PackedRestore(kind, number, features), IrType.Void, R(_e.SlotAddress(_packedAreas[(_f, number)])));
+        }
+        T made = call();
+        foreach ((int kind, int number, int features) in _keptBlocks)
+            _e.Call(MachineIntrinsics.PackedSave(kind, number, features), IrType.Void, R(_e.SlotAddress(_packedAreas[(_f, number)])));
+        return made;
+    }
 
     /// <summary>
     /// A METHOD'S COPY THAT RUNS INSIDE ITS CALLER'S STATE ($inside): of one
