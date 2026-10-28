@@ -141,22 +141,45 @@ static class WordSize
 static class SpillCounts
 {
     public static volatile uint ReadsLow, ReadsHigh, WritesLow, WritesHigh;
+    /// --count-spills-map: the backend's table of each counted block's runs,
+    /// a 64-bit count each, and how many blocks it has (X86Backend's
+    /// SpillTable fills these in); 0 and 0 otherwise.
+    public static volatile nuint Blocks;
+    public static volatile uint BlockCount;
 
     /// Said on standard error at the end, in a page of its own: a program
     /// with no collector -- a benchmark's loop alone -- has the counts too.
+    /// The totals and the blocks' table are taken together once the page is
+    /// had, before anything is said: what saying them runs counts too
+    /// (WriteLiteral, the write), and these functions alone are not counted
+    /// (SpillCount) -- never inlined into a caller that is.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void Say()
     {
-        ulong reads = ((ulong)ReadsHigh << 32) | ReadsLow, writes = ((ulong)WritesHigh << 32) | WritesLow;
-        if (reads == 0 && writes == 0) return;
-        nuint page = Platform.Map(4096);
+        if (ReadsLow == 0 && ReadsHigh == 0 && WritesLow == 0 && WritesHigh == 0) return;
+        uint blocks = BlockCount;
+        nuint page = Platform.Map(4096 + ((nuint)blocks * 8 + 4095) / 4096 * 4096);
         if (page == 0) return;
+        ulong reads = ((ulong)ReadsHigh << 32) | ReadsLow, writes = ((ulong)WritesHigh << 32) | WritesLow;
+        nuint table = Blocks, copy = page + 4096;
+        for (nuint at = 0; at < (nuint)blocks * 8; at += 4) Sys.Write32(copy + at, Sys.Read32(table + at));
         SayCount(page, "spills: reads ", reads);
         SayCount(page, "spills: writes ", writes);
+        // Each block run, by its number in the map: "spills: block N", then "spills: runs R".
+        for (uint k = 0; k < blocks; k++)
+        {
+            nuint at = copy + (nuint)k * 8;
+            ulong runs = ((ulong)Sys.Read32(at + 4) << 32) | Sys.Read32(at);
+            if (runs == 0) continue;
+            SayCount(page, "spills: block ", k);
+            SayCount(page, "spills: runs ", runs);
+        }
     }
 
     /// The digits by 32-bit division alone, the total's four 16-bit pieces
     /// at a time, so every program -- this is in all of them -- carries no
     /// 64-bit divide for it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static void SayCount(nuint page, string label, ulong n)
     {
         Runtime.WriteLiteral(2, label);

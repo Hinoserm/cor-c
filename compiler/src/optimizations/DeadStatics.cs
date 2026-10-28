@@ -88,7 +88,7 @@ public sealed class DeadStatics : IModulePass
         HashSet<string> dead = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data)
         {
-            // A volatile one is read where the IR cannot see (UnwrittenStatics): its stores stay.
+            // A volatile one may be read where the IR cannot see -- a device, another image by its name: its stores stay.
             if (d.Zero && !d.Volatile && !read.Contains(d.Name) && written.Contains(d.Name))
             {
                 dead.Add(d.Name);

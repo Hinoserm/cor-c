@@ -310,6 +310,9 @@ public static class Driver
                                  writes as the program runs, said at its end (an i386
                                  Linux program, compiled whole: not a shared object,
                                  nor units the link makes again; one thread's counts)
+              --count-spills-map <file> --count-spills, and each counted block's runs said
+                                 too, the blocks listed in <file>: number, function,
+                                 block, reads, writes (tools/measure/spill-blocks.py)
               --region-report <names> say, for the boundaries whose names hold one of
                                  these (comma-separated), which allocations their return
                                  is proved to leave dead; corc link takes it too, for
@@ -784,7 +787,7 @@ public static class Driver
             {
                 if (args[i] is "-o" or "--target" or "--entry" or "--link-shared" or "--base" or "--tag" or "--map" or "--why" or "--debug-keep-object"
                     or "--load" or "--paddr" or "--cpu" or "--fpu" or "--with" or "--asm-entry"
-                    or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--unused-report"
+                    or "--ref" or "--libdir" or "--runpath" or "--trace-opt" or "--batch-without" or "--region-report" or "--count-spills-map" or "--unused-report"
                     or "-D" or "--define" or "--jobs" or "--decl-index" or "--assembly" or "--dependency-file" or "--main-type" or "--runtime-knob"
                     or "--syscall-abi" or "--subsystem" or "--resources" or "--icon-resource" or "--using" or "--kernel" or "--ring" or "--module-index" or "--inside-facts")
                 {
@@ -970,18 +973,6 @@ public static class Driver
         }
 
         bool shared = args.Contains("--shared");
-        // --count-spills counts into the runtime's counters at absolute
-        // addresses, from the i386 backend, and Linux's exit says them: a
-        // compile it cannot count, or whose counts nothing would say, is
-        // refused by name rather than built without them.
-        if (args.Contains("--count-spills"))
-        {
-            string? why = longMode ? "x86-64 code"
-                : shared || args.Contains("--pic") ? "position-independent code (--shared, --pic)"
-                : freestanding || windows ? "a program not run under Linux, whose exit says nothing of them"
-                : null;
-            if (why is not null) return Fail("--count-spills counts in i386 Linux programs only, not " + why);
-        }
         // A shared object has no entry point and exports its declarations,
         // which is what --lib already means to the front end.
         bool library = args.Contains("--lib") || shared;
@@ -1024,6 +1015,22 @@ public static class Driver
                 return Fail($"--dynamic: {dir} holds no shared objects");
             }
             sharedLibs.AddRange(found.Where(f => !sharedLibs.Contains(f)));
+        }
+
+        // --count-spills counts into the runtime's counters, named by
+        // absolute address from the i386 backend after every pass that could
+        // reach them through a GOT, and Linux's exit says them: a compile it
+        // cannot count, or whose counts nothing would say, is refused by name
+        // rather than built without them.
+        bool countSpills = args.Contains("--count-spills") || Value(args, "--count-spills-map") is not null;
+        if (countSpills)
+        {
+            string? why = longMode ? "x86-64 code"
+                : windows || freestanding ? "Windows or bare-metal code, whose exit says nothing of them"
+                : shared || args.Contains("--pic") ? "a shared object or position-independent code (--shared, --pic, --kernel)"
+                : library || sharedLibs.Count > 0 ? "a library, or a program over shared ones (--lib, --dynamic, --link-shared): the runtime and its counters must be compiled in"
+                : null;
+            if (why is not null) return Fail("--count-spills counts in an i386 Linux program compiled whole, not in " + why);
         }
 
         // The default library set, so `corc compile hello.cor` is a complete
@@ -1477,7 +1484,8 @@ public static class Driver
         {
             AutomaticPacked = ownsFpu,
             OptimizeSize = args.Contains("--opt-size"),
-            CountSpills = args.Contains("--count-spills"),
+            CountSpills = countSpills,
+            SpillMap = Value(args, "--count-spills-map"),
             X87InBlocksOnly = !ownsFpu && !args.Contains("--x87-outside-blocks"),
             // AN EXECUTABLE'S OBJECT IS NOT POSITION-INDEPENDENT, made apart
             // (--obj) or not: it is linked at an address of its own, so its

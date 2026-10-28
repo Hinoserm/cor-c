@@ -158,6 +158,9 @@ public sealed class X86Backend : IBackend
     /// <summary>--count-spills: each block counts its spill slots' reads and writes as it runs (SpillCount).</summary>
     public bool CountSpills { get; set; }
 
+    /// <summary>--count-spills-map: where each counted block is listed (SpillCount.Blocks), or null.</summary>
+    public string? SpillMap { get; set; }
+
     /// <summary>
     /// On by default on bare metal (Driver: --x87-outside-blocks takes it
     /// away, --x87-in-blocks-only says it again): bare-metal code of the
@@ -370,6 +373,7 @@ public sealed class X86Backend : IBackend
         // A bounded window avoids retaining a whole module of machine IR.
         // Workers only read the symbol sets and each owns disjoint functions,
         // results and diagnostics. Encoding and layout below remain serial.
+        SpillCount.Blocks? spillBlocks = SpillMap is null ? null : new();
         int workers = Workers;
         int window = FunctionLoader is null ? workers * 4 : workers;
         MFunction?[] compiled = new MFunction?[window];
@@ -442,6 +446,9 @@ public sealed class X86Backend : IBackend
             {
                 continue;
             }
+            // Here, in the order the functions are laid down, not on the
+            // workers: the blocks' numbers are the same from run to run.
+            if (CountSpills) SpillCount.Run(m, spillBlocks);
             cardStub |= m.UsesCardStub;
             barrierStub |= m.UsesBarrierStub;
             f = m.Source;
@@ -571,6 +578,8 @@ public sealed class X86Backend : IBackend
             defined.Add(FrameTable.Symbol);
             frameSection.Relocs.Add(new Relocation(at + fixup, baseSymbol, 0, RelocKind.Abs32));
         }
+
+        if (spillBlocks is not null) SpillTable(module, spillBlocks, errors);
 
         foreach (DataItem d in module.Data)
         {
@@ -873,6 +882,7 @@ public sealed class X86Backend : IBackend
             MFunction? m = Compile(f, errors);
             if (m is not null)
             {
+                if (CountSpills) SpillCount.Run(m);
                 AsmText.Print(sb, m);
             }
         }
@@ -952,7 +962,6 @@ public sealed class X86Backend : IBackend
             LoopRotate.Run(m);
             Peephole.Run(m);
             FrameCompact.Run(m);
-            if (CountSpills) SpillCount.Run(m);
         }
         catch (InvalidOperationException e)
         {
@@ -960,6 +969,31 @@ public sealed class X86Backend : IBackend
             return null;
         }
         return m;
+    }
+
+    /// <summary>
+    /// --count-spills-map: the counted blocks' table, zero-filled, and the
+    /// runtime told where it is and how long (SpillCounts.Blocks and
+    /// BlockCount, volatile statics this fills in place of their zeros), so
+    /// its exit says each block's runs; the blocks listed in the map file,
+    /// one a line -- number, function, block, spill-slot reads, writes.
+    /// </summary>
+    private void SpillTable(Module module, SpillCount.Blocks blocks, List<string> errors)
+    {
+        int n = blocks.All.Count;
+        int at = module.Data.FindIndex(d => d.Name == "s_SpillCounts_Blocks");
+        int count = module.Data.FindIndex(d => d.Name == "s_SpillCounts_BlockCount");
+        if (at < 0 || count < 0)
+        {
+            errors.Add("--count-spills-map: the runtime's SpillCounts.Blocks and BlockCount are not in this compile (a program compiled whole is)");
+            return;
+        }
+        module.Data.Add(new DataItem(SpillCount.BlocksSymbol, new byte[Math.Max(n, 1) * 8]) { Zero = true, Align = 8, Exported = false });
+        DataItem address = new(module.Data[at].Name, new byte[4]) { Volatile = true };
+        address.Relocs.Add(new DataReloc(0, SpillCount.BlocksSymbol, 0));
+        module.Data[at] = address;
+        module.Data[count] = new DataItem(module.Data[count].Name, BitConverter.GetBytes((uint)n)) { Volatile = true, NoReferences = true };
+        File.WriteAllLines(SpillMap!, blocks.All.Select((b, k) => $"{k}\t{b.Function}\t{b.Block}\t{b.Reads}\t{b.Writes}"));
     }
 
     /// <summary>

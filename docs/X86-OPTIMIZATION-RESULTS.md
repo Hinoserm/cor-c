@@ -169,9 +169,9 @@ of an entire runtime or crypto workload. Raw data:
 compiler/bin/managed/Release/net10.0/corc build --file compiler/tests/arch/x86/corsac.build benchmark
 ```
 
-For actual OS crypto sources, the benchmark builder accepts `CPU`, `OUT`,
-`PERF_DISABLE_MMX`, `BENCHMARKS`, and `CRYPTO_ROOT` (the read-only OS `os/lib`
-directory). It records source hashes and disassembly. No OS checkout is edited.
+The benchmark builder accepts `CPU`, `OUT`, `PERF_DISABLE_MMX` and
+`BENCHMARKS`; the crypto workloads use the stdlib's own crypto
+(`Corsac.Security.Cryptography`). It records source hashes and disassembly.
 
 Broader pattern coverage, source-level uptake, alias/rejection coverage,
 real-application performance, complete per-instruction execution coverage,

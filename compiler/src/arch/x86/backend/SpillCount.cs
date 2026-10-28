@@ -24,10 +24,32 @@ internal static class SpillCount
     private const string ReadsLow = "s_SpillCounts_ReadsLow", ReadsHigh = "s_SpillCounts_ReadsHigh",
         WritesLow = "s_SpillCounts_WritesLow", WritesHigh = "s_SpillCounts_WritesHigh";
 
-    public static void Run(MFunction m)
+    /// <summary>
+    /// --count-spills-map: every counted block numbered, in the order the
+    /// functions are emitted, with what it reads and writes; its runs, a
+    /// 64-bit count each in a table of the backend's (BlocksSymbol), are
+    /// said at the end beside the totals, and the two together are where the
+    /// traffic is, function by function.
+    /// </summary>
+    public sealed class Blocks
     {
-        foreach (MBlock block in m.Blocks)
+        public readonly List<(string Function, int Block, int Reads, int Writes)> All = new();
+    }
+
+    /// <summary>The table of each counted block's runs (Blocks), eight bytes a block.</summary>
+    public const string BlocksSymbol = "spill$blocks";
+
+    /// <summary>The runtime's SpillCounts' methods, by their symbols' start.</summary>
+    private const string CountersPrefix = "m_SpillCounts_";
+
+    public static void Run(MFunction m, Blocks? numbered = null)
+    {
+        // The runtime's own saying of them (SpillCounts) is not counted: its
+        // snapshot of the totals and the blocks is then of one moment.
+        if (m.Source.Name.StartsWith(CountersPrefix, StringComparison.Ordinal)) return;
+        for (int b = 0; b < m.Blocks.Count; b++)
         {
+            MBlock block = m.Blocks[b];
             int reads = 0, writes = 0;
             foreach (MInstr i in block.Instrs)
                 for (int k = 0; k < i.Operands.Count; k++)
@@ -41,6 +63,13 @@ internal static class SpillCount
             List<MInstr> count = new() { new MInstr(MOp.Pushfd) };
             Add(count, ReadsLow, ReadsHigh, reads);
             Add(count, WritesLow, WritesHigh, writes);
+            if (numbered is not null)
+            {
+                int at = numbered.All.Count * 8;
+                numbered.All.Add((m.Source.Name, b, reads, writes));
+                count.Add(new MInstr(MOp.Add, MMem.Abs(BlocksSymbol, at), new MImm(1)));
+                count.Add(new MInstr(MOp.Adc, MMem.Abs(BlocksSymbol, at + 4), new MImm(0)));
+            }
             count.Add(new MInstr(MOp.Popfd));
             block.Instrs.InsertRange(0, count);
         }
@@ -54,24 +83,19 @@ internal static class SpillCount
     }
 
     /// <summary>
-    /// What an instruction does to its operand `k`, a spill slot. Written
-    /// alone: a move's, a pop's, a setcc's or a store's destination. Read and
-    /// written: the destination of the operations that combine into it (the
-    /// two-operand arithmetic, the shifts, neg and not, and xchg's either
-    /// side). Everything else only reads: any source, a push's or a
-    /// compare's operand, and one-operand mul and div (Foldable), whose
-    /// results are EDX:EAX.
+    /// What an instruction does to its operand `k`, a spill slot: what it
+    /// does to a register there (Roles.Of), but for the operands whose
+    /// memory form writes where the register form only reads -- xadd's and
+    /// cmpxchg's destination, read and written, and the x87 stores.
     /// </summary>
     private static (bool Read, bool Write) Access(MInstr i, int k)
     {
-        if (i.Op == MOp.Xchg) return (true, true);
-        if (k > 0) return (true, false);
-        return i.Op switch
+        Roles.Role role = i.Op switch
         {
-            MOp.Mov or MOp.Movsx or MOp.Movzx or MOp.Setcc or MOp.Pop or MOp.Fstp or MOp.Fistp or MOp.Fnstcw => (false, true),
-            MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor or MOp.Neg or MOp.Not
-                or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Xadd or MOp.Cmpxchg => (true, true),
-            _ => (true, false),
+            MOp.Xadd or MOp.Cmpxchg when k == 0 => Roles.Role.UseDef,
+            MOp.Fstp or MOp.Fistp or MOp.Fnstcw => Roles.Role.Def,
+            _ => Roles.Of(i.Op, k),
         };
+        return ((role & Roles.Role.Use) != 0, (role & Roles.Role.Def) != 0);
     }
 }
