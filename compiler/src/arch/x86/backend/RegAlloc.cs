@@ -139,6 +139,10 @@ internal sealed class Allocator
     private int[] _blockOfInstr = Array.Empty<int>();
     private BitRows _liveIn = new();
     private int _seq;
+    /// <summary>The values split at their loops (LoopSplit), or null: their pieces share a slot.</summary>
+    private LoopSplit? _split;
+    /// <summary>Each split value's shared slot, by its original (LoopSplit.Root).</summary>
+    private readonly Dictionary<int, int> _rootSlot = new();
 
     private Allocator(MFunction m)
     {
@@ -196,7 +200,9 @@ internal sealed class Allocator
     public static void Run(MFunction m)
     {
         PruneUnusedValues(m);
-        Allocator a = new(m);
+        if ((Experiment & 8) != 0) CopyFold.Run(m);
+        LoopSplit? split = (Experiment & 2) != 0 ? LoopSplit.Run(m) : null;
+        Allocator a = new(m) { _split = split };
         a.CollectOccurrences();
         a.ComputeLiveness();
         a.Scan();
@@ -333,7 +339,7 @@ internal sealed class Allocator
     /// the whole pass: as an iterator it was an object for every instruction
     /// every walk looked at.
     /// </summary>
-    private static List<(MReg Reg, Role Role, int Operand, bool InMem)> RegsOf(MInstr i, List<(MReg Reg, Role Role, int Operand, bool InMem)> into)
+    internal static List<(MReg Reg, Role Role, int Operand, bool InMem)> RegsOf(MInstr i, List<(MReg Reg, Role Role, int Operand, bool InMem)> into)
     {
         into.Clear();
         // `xor v, v` zeroes v without caring what it held: a definition
@@ -744,6 +750,9 @@ internal sealed class Allocator
     private void Scan()
     {
         FindLoops();
+        if (Tracing)
+            for (int i = 0; i < _lin.Count; i++)
+                Console.Error.WriteLine($"regalloc {_m.Source.Name} {i}: b{_blockOfInstr[i]} loop {_loopOf[_blockOfInstr[i]]}  {AsmText.Line(_m, _lin[i])}");
         _callsBefore = Table(ref _keptCallsBefore, _lin.Count + 1, clear: false);
         _callsBefore[0] = 0;
         for (int i = 0; i < _lin.Count; i++)
@@ -978,7 +987,30 @@ internal sealed class Allocator
     /// </summary>
     /// <summary>--trace-regalloc NAME: every choice of what gives up its register, in functions whose name holds NAME.</summary>
     public static string? Trace;
+    /// <summary>--ra-experiment N: the allocator's research variants (REGALLOC-RESEARCH), bits; 0 is the allocator as it is.</summary>
+    public static int Experiment;
     private bool Tracing => Trace is { } t && _m.Source.Name.Contains(t, StringComparison.Ordinal);
+
+    /// <summary>Experiment 1: outside a loop, the victim is the one whose accesses to come cost least, weighted (FutureCost).</summary>
+    private static bool Weighted => (Experiment & 1) != 0;
+
+    /// <summary>Experiment 4: a value read by the instruction only where its slot can serve may be evicted at it (FoldsAt).</summary>
+    private static bool FoldEvict => (Experiment & 4) != 0;
+
+    /// <summary>Whether every occurrence of a value at an instruction is a read that may take its spill slot instead.</summary>
+    private bool FoldsAt(int vreg, int at)
+    {
+        if (_remat[vreg] is not null) return false;
+        bool any = false;
+        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
+        {
+            Occurrence o = _occAll[occ];
+            if (o.Instr != at) continue;
+            if (o.Role != Role.Use || !CanFold(vreg, o)) return false;
+            any = true;
+        }
+        return any;
+    }
 
     private int MakeRoom(Interval cur)
     {
@@ -991,7 +1023,7 @@ internal sealed class Allocator
         // one arm, and a value written three times a lap -- each write then a
         // store -- before one written once.
         int loop = at < _lin.Count ? _loopOf[_blockOfInstr[at]] : -1;
-        int victimCost = int.MaxValue;
+        long victimCost = long.MaxValue;
         // A register is had by evicting everything placed in it that is
         // live where the current interval is; the others sit in its holes.
         foreach (Gpr g in Preference)
@@ -999,6 +1031,7 @@ internal sealed class Allocator
             int r = (int)g;
             if (!Allocatable(r, cur))
             {
+                if (Tracing) Console.Error.WriteLine($"regalloc {_m.Source.Name} at {at} for v{cur.VReg}: {g} not allocatable (fixed use where it is live)");
                 continue;
             }
             // Loops, not lambdas: each lambda was a closure over the
@@ -1013,10 +1046,16 @@ internal sealed class Allocator
                 group.Add(a);
                 if (a.Short && a.Served is null) { unservedShort = true; break; }
                 int use = a.Short ? NextServed(a, at) : NextUse(a.VReg, at);
+                // READ HERE FROM ITS SLOT AS WELL: a value this instruction
+                // only reads, in an operand that may be memory, gives way here
+                // as well as anywhere -- `mov t, [slot]` is the copy, not a
+                // reload more (Appel and George's CISC operands).
+                if (FoldEvict && use <= cur.Start && !a.Short && FoldsAt(a.VReg, at)) use = NextUse(a.VReg, at + 1);
                 if (use < next) next = use;
             }
             if (group.Count == 0 || unservedShort)
             {
+                if (Tracing) Console.Error.WriteLine($"regalloc {_m.Source.Name} at {at} for v{cur.VReg}: {g} {(unservedShort ? "holds a reload for one instruction" : "has nothing live there to give up")}");
                 continue;
             }
             if (next <= cur.Start)
@@ -1024,11 +1063,12 @@ internal sealed class Allocator
                 // Used by the very instruction the current interval starts at: not evictable.
                 continue;
             }
-            int cost = 0;
+            long cost = 0;
             if (loop >= 0) foreach (Interval a in group) cost += a.Short ? LapCostServed(a, at, loop) : LapCost(a.VReg, at, loop);
+            else if (Weighted) foreach (Interval a in group) cost += a.Short ? 2 : FutureCost(a.VReg, at);
             if (Tracing)
                 Console.Error.WriteLine($"regalloc {_m.Source.Name} at {at} loop {loop} for v{cur.VReg}{(cur.Short ? "s" : "")}: {(Gpr)r} holds {string.Join(",", group.Select(a => "v" + a.VReg + (a.Short ? "s" : "")))} cost {cost} next {next}");
-            if (loop >= 0 ? cost < victimCost || cost == victimCost && next > victimNext : next > victimNext)
+            if (loop >= 0 || Weighted ? cost < victimCost || cost == victimCost && next > victimNext : next > victimNext)
             {
                 victims = group;
                 victimNext = next;
@@ -1042,8 +1082,9 @@ internal sealed class Allocator
             // The current interval read again in its own run needs a register
             // there at once: given up, it would only take one back.
             bool curSoon = curNext != int.MaxValue && curNext / 4 < _lin.Count && _runHead[_blockOfInstr[curNext / 4]] == _runHead[_blockOfInstr[at]];
-            int curCost = loop >= 0 ? (curSoon ? int.MaxValue : LapCost(cur.VReg, at, loop)) : 0;
-            if (victims is null || (loop >= 0 ? curCost < victimCost || curCost == victimCost && curNext > victimNext : curNext > victimNext))
+            long curCost = loop >= 0 ? (curSoon ? long.MaxValue : LapCost(cur.VReg, at, loop))
+                : Weighted ? (curSoon ? long.MaxValue : FutureCost(cur.VReg, at)) : 0;
+            if (victims is null || (loop >= 0 || Weighted ? curCost < victimCost || curCost == victimCost && curNext > victimNext : curNext > victimNext))
             {
                 if (Tracing) Console.Error.WriteLine($"regalloc {_m.Source.Name} at {at}: v{cur.VReg} itself given up (cost {curCost} next {curNext})");
                 int split = SplitPrefix(cur);
@@ -1561,6 +1602,38 @@ internal sealed class Allocator
         for (int l = 0; l < _loops.Count; l++)
             for (int b = 0; b < nb; b++)
                 if (_loops[l].Body[b] && _loopOf[b] < 0) _loopOf[b] = l;
+        _weight = new long[nb];
+        for (int b = 0; b < nb; b++)
+        {
+            int depth = 0;
+            foreach ((_, bool[] body) in _loops) if (body[b]) depth++;
+            _weight[b] = 1L << (3 * Math.Min(depth, 6));
+        }
+    }
+
+    /// <summary>Each block's weight, 8 to the power of how many loops it is in.</summary>
+    private long[] _weight = Array.Empty<long>();
+
+    /// <summary>
+    /// WHAT GIVING UP A VALUE FROM `at` ON COSTS, weighted by how often each
+    /// of its accesses from there runs: a store for each write, a reload
+    /// for each straight run that reads it, 8 times over for each loop the
+    /// access is in. A constant remade costs no store and half a load.
+    /// </summary>
+    private long FutureCost(int vreg, int at)
+    {
+        bool remat = _remat[vreg] is not null;
+        long cost = 0;
+        int lastRun = -1;
+        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
+        {
+            Occurrence o = _occAll[occ];
+            if (o.Instr < at) continue;
+            int b = _blockOfInstr[o.Instr];
+            if ((o.Role & Role.Def) != 0 && !remat) cost += 2 * _weight[b];
+            if ((o.Role & Role.Use) != 0 && _runHead[b] != lastRun) { cost += (remat ? 1 : 2) * _weight[b]; lastRun = _runHead[b]; }
+        }
+        return cost;
     }
 
     /// <summary>
@@ -1729,19 +1802,32 @@ internal sealed class Allocator
     /// </summary>
     private int TakeSlot(int vreg)
     {
-        for (int k = 0; k < _freeSlots.Count; k++)
+        // A split value's pieces share one slot, held over all of them (LoopSplit).
+        int start = _start[vreg], end = _end[vreg], root = -1;
+        if (_split is not null && (_split.Root.TryGetValue(vreg, out root) || _split.Root.ContainsValue(vreg) && (root = vreg) >= 0))
         {
-            if (_freeSlots[k].FreeFrom < _start[vreg])
+            if (_rootSlot.TryGetValue(root, out int shared)) return shared;
+            for (int v = 8; v < _n; v++)
             {
-                int slot = _freeSlots[k].Slot;
-                _freeSlots.RemoveAt(k);
-                _freeSlots.Add((slot, _end[vreg]));
-                return slot;
+                if (v != root && _split.RootOf(v) != root || _end[v] < 0) continue;
+                start = Math.Min(start, _start[v]);
+                end = Math.Max(end, _end[v]);
             }
         }
-        int fresh = _m.Frame.Spill();
-        _freeSlots.Add((fresh, _end[vreg]));
-        return fresh;
+        int taken = -1;
+        for (int k = 0; k < _freeSlots.Count; k++)
+        {
+            if (_freeSlots[k].FreeFrom < start)
+            {
+                taken = _freeSlots[k].Slot;
+                _freeSlots.RemoveAt(k);
+                break;
+            }
+        }
+        if (taken < 0) taken = _m.Frame.Spill();
+        _freeSlots.Add((taken, end));
+        if (root >= 0) _rootSlot[root] = taken;
+        return taken;
     }
 
     /// <summary>Whether an operand position accepts an immediate in place of a register.</summary>
@@ -1883,6 +1969,8 @@ internal sealed class Allocator
     private readonly HashSet<int> _rwDone = new();
     private readonly Dictionary<int, Role> _rwRoles = new();
     private readonly List<(MReg Reg, Role Role, int Operand, bool InMem)> _regsOf = new();
+    /// <summary>The piece whose store back the copy being rewritten leaves out (a copy between spilled pieces), or -1.</summary>
+    private int _rwNoStore = -1;
 
     private void RewriteInstr(MInstr i, int index, List<MInstr> outList, HashSet<int> saved)
     {
@@ -1908,6 +1996,18 @@ internal sealed class Allocator
             {
                 _rwRoles[r.Id] = _rwRoles.GetValueOrDefault(r.Id) | role;
             }
+        }
+
+        // A COPY BETWEEN PIECES OF ONE SPLIT VALUE, both spilled: they share
+        // the slot, which holds the source's value already -- every write of a
+        // spilled value stores. Into the slot alone, no work at all; into a
+        // register, a load and no store back (Place).
+        _rwNoStore = -1;
+        if (_split is not null && _split.Copies.Contains(i) && i.Operands[0] is MReg cd && i.Operands[1] is MReg cs
+            && _spilledFrom[cd.Id] != int.MaxValue && _spilledFrom[cs.Id] != int.MaxValue && _slot[cd.Id] == _slot[cs.Id] && _slot[cd.Id] != 0)
+        {
+            if (_folded.Contains((index, 0))) return;
+            _rwNoStore = cd.Id;
         }
 
         // The defining move of a spilled constant is dropped: see Spill.
@@ -1994,7 +2094,7 @@ internal sealed class Allocator
                 {
                     _rwBefore.Add(new MInstr(MOp.Mov, MReg.Of(reg), MMem.Spill(_slot[r.Id])) { Line = i.Line });
                 }
-                if ((role & Role.Def) != 0)
+                if ((role & Role.Def) != 0 && r.Id != _rwNoStore)
                 {
                     _rwAfter.Add(new MInstr(MOp.Mov, MMem.Spill(_slot[r.Id]), MReg.Of(reg)) { Line = i.Line });
                 }

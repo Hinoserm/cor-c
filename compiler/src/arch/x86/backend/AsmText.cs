@@ -47,6 +47,9 @@ internal static class AsmText
     /// <summary>A packed instruction's source: a register (an MImm) or memory.</summary>
     private static string PackedSource(MOperand o, string file, int width) => o is MImm { Value: var n } ? file + n : Op(o, width, false);
 
+    /// <summary>One instruction as the listing prints it, its lines joined (the allocator's trace).</summary>
+    public static string Line(MFunction m, MInstr i) => string.Join(" ; ", Lines(m, i));
+
     private static string Op(MOperand o, int width, bool sized)
     {
         switch (o)

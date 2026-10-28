@@ -112,6 +112,12 @@ public static class Driver
             Corsac.Lang.X86.Allocator.Trace = taken[regallocAt + 1];
             taken.RemoveRange(regallocAt, 2);
         }
+        int experimentAt = taken.IndexOf("--ra-experiment");
+        if (experimentAt >= 0 && experimentAt + 1 < taken.Count)
+        {
+            Corsac.Lang.X86.Allocator.Experiment = int.Parse(taken[experimentAt + 1]);
+            taken.RemoveRange(experimentAt, 2);
+        }
         int lifetimesAt = taken.IndexOf("--trace-lifetimes");
         if (lifetimesAt >= 0 && lifetimesAt + 1 < taken.Count)
         {
