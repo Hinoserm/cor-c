@@ -7,11 +7,21 @@ namespace Kernel;
 
 public static class Pixels
 {
-    /// 0x10 added to each of `count` bytes at `p`, saturating, eight a turn.
+    /// 0x10 added to each of `count` bytes at `p`, saturating.
     public static void Brighten(nuint p, int count)
     {
         Packed64 by = Packed.FromBits(0x1010101010101010UL);
         for (int i = 0; i < count; i += 8)
             Packed.Store(p + (nuint)i, Packed.AddSaturateU8(Packed.Load(p + (nuint)i), by));
+    }
+
+    /// 0x10 taken from each of `count` bytes at `p`, saturating at nought:
+    /// what the kernel's own Shade calls, so the module's copy of Brighten
+    /// is the only one the pruned kernel may drop.
+    public static void Darken(nuint p, int count)
+    {
+        Packed64 by = Packed.FromBits(0x1010101010101010UL);
+        for (int i = 0; i < count; i += 8)
+            Packed.Store(p + (nuint)i, Packed.SubSaturateU8(Packed.Load(p + (nuint)i), by));
     }
 }

@@ -254,8 +254,12 @@ public static class ProjectCompile
             one.Add("-o"); one.Add(unit.Object);
             if (factsFile is not null) { one.Add("--inside-facts"); one.Add(factsFile); }
             // What the unit answered before (InsideRounds) is not what it will:
-            // gone, it is asked again of the facts the rounds have.
-            try { File.Delete(unit.Receipt + ".inside"); } catch (IOException) { }
+            // gone, it is asked again of the facts the rounds have. And no
+            // stamp until the object is whole: a round compiles a unit whose
+            // source and stamp agree, and killed while its object was written
+            // it would be taken as current (Stale), half an object and all.
+            try { File.Delete(unit.Receipt + ".inside"); File.Delete(unit.Receipt + ".stamp"); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             long before = GC.GetTotalAllocatedBytes();
             // A UNIT BEGUN IS SAID AT ONCE: only its end was, and a unit that
             // never ended -- the compile caught in a loop -- looked like one
@@ -501,7 +505,7 @@ public static class ProjectCompile
         {
             factsFile = list + ".inside";
             try { WriteFacts(factsFile, ReadUnits(units).SelectMany(read => read.Copies)); }
-            catch (IOException e) { return Driver.Fail("the units' facts cannot be written to " + factsFile + ": " + e.Message); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return Driver.Fail("the units' facts cannot be written to " + factsFile + ": " + e.Message); }
         }
         if (dynamic)
         {
@@ -668,7 +672,8 @@ public static class ProjectCompile
             List<UnitCalls> read = ReadUnits(units);
             // Unwritten, a unit's answers are asked again next build.
             foreach (UnitCalls one in read.Where(one => fresh.Contains(one.Unit)))
-                try { File.WriteAllText(one.Unit.Receipt + ".inside", Answers(one, facts)); } catch (IOException) { }
+                try { File.WriteAllText(one.Unit.Receipt + ".inside", Answers(one, facts)); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             // The facts as the objects now are, and who would answer otherwise.
             facts = new(read.SelectMany(one => one.Copies), StringComparer.Ordinal);
             List<Unit> moved = read.Where(one => Answers(one, facts) != AnswersOf(one.Unit)).Select(one => one.Unit).ToList();
@@ -676,11 +681,11 @@ public static class ProjectCompile
             if (round == 4)
             {
                 Console.Error.WriteLine("corc: the units' calls into each other's packed methods still move after four rounds ("
-                    + string.Join(", ", moved.Take(6).Select(unit => Path.GetFileName(unit.Source))) + "); the build is right, its last round's answers not taken");
+                    + string.Join(", ", moved.Take(6).Select(unit => Path.GetFileName(unit.Source))) + "); the build is right, and those units' calls are as the round before left them");
                 return 0;
             }
             try { WriteFacts(factsFile, facts); }
-            catch (IOException e)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 Console.Error.WriteLine("corc: the units' facts cannot be written to " + factsFile + ": " + e.Message);
                 return 1;

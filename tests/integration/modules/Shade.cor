@@ -1,6 +1,6 @@
 // A KERNEL UNIT CALLING ANOTHER UNIT'S PACKED ROUTINE in a loop, for
 // tests/integration/modules-packed.sh: compiled apart from Pixels.cor, it
-// learns of Pixels.Brighten's copy that runs inside ($inside) from the
+// learns of Pixels.Darken's copy that runs inside ($inside) from the
 // project build (ProjectCompile's InsideRounds), keeps the processor's
 // state once around its loop, and calls the copy.
 
@@ -8,10 +8,10 @@ namespace Kernel;
 
 public static class Shade
 {
-    /// `bytes` brightened `rounds` times; their sum.
+    /// `bytes` darkened `rounds` times; their sum.
     public static int Run(byte[] bytes, int rounds)
     {
-        for (int round = 0; round < rounds; round++) Pixels.Brighten(Sys.ArrayData(bytes), bytes.Length);
+        for (int round = 0; round < rounds; round++) Pixels.Darken(Sys.ArrayData(bytes), bytes.Length);
         int sum = 0;
         for (int i = 0; i < bytes.Length; i++) sum += bytes[i];
         return sum;
