@@ -42,7 +42,11 @@ public sealed partial class X86Assembler
     {
         "fxsave", "fxrstor", "fnsave", "fsave", "frstor", "fnstenv", "fstenv", "fnstsw", "fstsw", "fnstcw", "fstcw", "fwait", "wait",
         // And what sets a thread's state up or loads it: its start (FNINIT,
-        // MXCSR's first value) and a switch's other half.
+        // MXCSR's first value) and a switch's other half. Which, like the
+        // restores above, a native called where no state is kept -- an
+        // interrupt handler's -- may do to the interrupted thread's state
+        // unrefused: the facts cannot tell a thread's start or a switch from
+        // any other routine that loads them.
         "fninit", "finit", "fldcw", "fldenv", "fnclex", "fclex", "ldmxcsr", "stmxcsr",
     };
 

@@ -1603,9 +1603,16 @@ public sealed partial class Binder
             // in their caller's): its calls, and the constructors its `new`s
             // run, which lower to direct calls as its calls do.
             List<MethodSymbol> calls = DirectCalls(d.Body, m.Owner).Select(c => c.Callee).ToList();
+            // A constructor's chain: the one `: this(...)` or `: base(...)`
+            // names, or the base's parameterless one it runs unnamed.
+            if (d.IsCtor && !m.Static && (_r.Chained.TryGetValue(d, out MethodSymbol? chained) ? chained : Unnamed(m.Owner)) is { } next) calls.Add(next);
             foreach (Node n in SafetyNodes(d.Body))
             {
-                if (n is NewExpr made && _r.NewConstructors.TryGetValue(made, out MethodSymbol? ctor)) calls.Add(ctor);
+                // A `new`'s constructor, as Lowering picks it: bound, or the
+                // implicit one of a class that declares none.
+                if (n is NewExpr made && (_r.NewConstructors.TryGetValue(made, out MethodSymbol? ctor)
+                        ? ctor : made.Args.Count == 0 && _r.TypeOf(made).Symbol is { } of && !of.Methods.Any(c => c.IsCtor) ? Unnamed(of) : null) is { } runs)
+                    calls.Add(runs);
                 else if (n is CallExpr plain && _r.Calls.TryGetValue(plain, out MethodSymbol? sys) && sys.Name == "CallNative"
                          && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>") natives.Add(m);
             }
@@ -1706,6 +1713,17 @@ public sealed partial class Binder
             }
         }
         return state;
+    }
+
+    /// <summary>The parameterless constructor a class's own runs unnamed, its nearest base's that declares one (Lowering.ImplicitConstructor); null where none.</summary>
+    private static MethodSymbol? Unnamed(TypeSymbol owner)
+    {
+        for (TypeSymbol? t = owner.Base; t is not null; t = t.Base)
+        {
+            if (t.Methods.FirstOrDefault(c => c.IsCtor && !c.Static && c.Params.Count == 0) is { } found) return found;
+            if (t.Methods.Any(c => c.IsCtor && !c.Static)) return null;
+        }
+        return null;
     }
 
     /// <summary>A body's own statements, run on every path to its first branch: through the compiler's own block around it (its one variant's try), as far as it goes.</summary>
