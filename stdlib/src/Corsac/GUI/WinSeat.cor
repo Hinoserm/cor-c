@@ -66,86 +66,101 @@ static class WinSeat
     // ---- user32, gdi32 and the rest ------------------------------------------
 
     [DllImport("user32")] static extern int RegisterClassExW(nuint wc);
-    [DllImport("user32")] static extern nint CreateWindowExW(int ex, nuint cls, nuint title, int style, int x, int y, int w, int h, nint parent, nint menu, nint instance, nuint param);
-    [DllImport("user32")] static extern nint DefWindowProcW(nint hwnd, int msg, nint wParam, nint lParam);
-    [DllImport("user32")] static extern int GetMessageW(nuint msg, nint hwnd, int min, int max);
-    [DllImport("user32")] static extern int PeekMessageW(nuint msg, nint hwnd, int min, int max, int remove);
+    [DllImport("user32")] static extern nuint CreateWindowExW(int ex, nuint cls, nuint title, int style, int x, int y, int w, int h, nuint parent, nuint menu, nuint instance, nuint param);
+    [DllImport("user32")] static extern nuint DefWindowProcW(nuint hwnd, int msg, nuint wParam, nuint lParam);
+    [DllImport("user32")] static extern int GetMessageW(nuint msg, nuint hwnd, int min, int max);
+    [DllImport("user32")] static extern int PeekMessageW(nuint msg, nuint hwnd, int min, int max, int remove);
     [DllImport("user32")] static extern int TranslateMessage(nuint msg);
-    [DllImport("user32")] static extern nint DispatchMessageW(nuint msg);
+    [DllImport("user32")] static extern nuint DispatchMessageW(nuint msg);
     [DllImport("user32")] static extern int MsgWaitForMultipleObjects(int count, nuint handles, int all, int ms, int wake);
-    [DllImport("user32")] static extern int ShowWindow(nint hwnd, int how);
-    [DllImport("user32")] static extern int SetWindowPos(nint hwnd, nint after, int x, int y, int w, int h, int flags);
-    [DllImport("user32")] static extern int DestroyWindow(nint hwnd);
-    [DllImport("user32")] static extern int SetWindowLongW(nint hwnd, int index, int value);
-    [DllImport("user32")] static extern int GetWindowLongW(nint hwnd, int index);
+    [DllImport("user32")] static extern int ShowWindow(nuint hwnd, int how);
+    [DllImport("user32")] static extern int SetWindowPos(nuint hwnd, nuint after, int x, int y, int w, int h, int flags);
+    [DllImport("user32")] static extern int DestroyWindow(nuint hwnd);
+    [DllImport("user32")] static extern int SetWindowLongW(nuint hwnd, int index, int value);
+    [DllImport("user32")] static extern int GetWindowLongW(nuint hwnd, int index);
     [DllImport("user32")] static extern int AdjustWindowRectEx(nuint rect, int style, int menu, int ex);
-    [DllImport("user32")] static extern int SetWindowTextW(nint hwnd, nuint text);
-    [DllImport("user32")] static extern nint GetDC(nint hwnd);
-    [DllImport("user32")] static extern int ReleaseDC(nint hwnd, nint dc);
-    [DllImport("user32")] static extern nint BeginPaint(nint hwnd, nuint ps);
-    [DllImport("user32")] static extern int EndPaint(nint hwnd, nuint ps);
-    [DllImport("user32")] static extern int GetWindowRect(nint hwnd, nuint rect);
-    [DllImport("user32")] static extern int ClientToScreen(nint hwnd, nuint point);
-    [DllImport("user32")] static extern nint SetFocus(nint hwnd);
-    [DllImport("user32")] static extern int SetForegroundWindow(nint hwnd);
-    [DllImport("user32")] static extern int PostMessageW(nint hwnd, int msg, nint wParam, nint lParam);
-    [DllImport("user32")] static extern nint SendMessageW(nint hwnd, int msg, nint wParam, nint lParam);
+    [DllImport("user32")] static extern int SetWindowTextW(nuint hwnd, nuint text);
+    [DllImport("user32")] static extern nuint GetDC(nuint hwnd);
+    [DllImport("user32")] static extern int ReleaseDC(nuint hwnd, nuint dc);
+    [DllImport("user32")] static extern nuint BeginPaint(nuint hwnd, nuint ps);
+    [DllImport("user32")] static extern int EndPaint(nuint hwnd, nuint ps);
+    [DllImport("user32")] static extern int GetWindowRect(nuint hwnd, nuint rect);
+    [DllImport("user32")] static extern int ClientToScreen(nuint hwnd, nuint point);
+    [DllImport("user32")] static extern nuint SetFocus(nuint hwnd);
+    [DllImport("user32")] static extern int SetForegroundWindow(nuint hwnd);
+    [DllImport("user32")] static extern int PostMessageW(nuint hwnd, int msg, nuint wParam, nuint lParam);
+    [DllImport("user32")] static extern nuint SendMessageW(nuint hwnd, int msg, nuint wParam, nuint lParam);
     [DllImport("user32")] static extern int GetSystemMetrics(int index);
     [DllImport("user32")] static extern int SystemParametersInfoW(int action, int param, nuint value, int flags);
     [DllImport("user32")] static extern int GetSysColor(int index);
-    [DllImport("user32")] static extern nint LoadCursorW(nint instance, nint name);
-    [DllImport("user32")] static extern nint LoadIconW(nint instance, nint name);
-    [DllImport("user32")] static extern nint SetCursor(nint cursor);
+    [DllImport("user32")] static extern nuint LoadCursorW(nuint instance, nuint name);
+    [DllImport("user32")] static extern nuint LoadIconW(nuint instance, nuint name);
+    [DllImport("user32")] static extern nuint SetCursor(nuint cursor);
     [DllImport("user32")] static extern int GetCursorPos(nuint point);
     [DllImport("user32")] static extern int SetCursorPos(int x, int y);
-    [DllImport("user32")] static extern nint SetCapture(nint hwnd);
+    [DllImport("user32")] static extern nuint SetCapture(nuint hwnd);
     [DllImport("user32")] static extern int ReleaseCapture();
-    [DllImport("user32")] static extern nint GetCapture();
+    [DllImport("user32")] static extern nuint GetCapture();
     [DllImport("user32")] static extern short GetKeyState(int vk);
     [DllImport("user32")] static extern short GetAsyncKeyState(int vk);
     [DllImport("user32")] static extern int GetKeyboardState(nuint into);
     [DllImport("user32")] static extern short VkKeyScanW(char c);
-    [DllImport("user32")] static extern nint SetTimer(nint hwnd, nint id, int ms, nuint proc);
-    [DllImport("user32")] static extern int KillTimer(nint hwnd, nint id);
-    [DllImport("user32")] static extern int CreateCaret(nint hwnd, nint bitmap, int w, int h);
-    [DllImport("user32")] static extern int ShowCaret(nint hwnd);
-    [DllImport("user32")] static extern int HideCaret(nint hwnd);
+    [DllImport("user32")] static extern nuint SetTimer(nuint hwnd, nuint id, int ms, nuint proc);
+    [DllImport("user32")] static extern int KillTimer(nuint hwnd, nuint id);
+    [DllImport("user32")] static extern int CreateCaret(nuint hwnd, nuint bitmap, int w, int h);
+    [DllImport("user32")] static extern int ShowCaret(nuint hwnd);
+    [DllImport("user32")] static extern int HideCaret(nuint hwnd);
     [DllImport("user32")] static extern int SetCaretPos(int x, int y);
     [DllImport("user32")] static extern int DestroyCaret();
     [DllImport("user32")] static extern int GetCaretBlinkTime();
     [DllImport("user32")] static extern int SetCaretBlinkTime(int ms);
-    [DllImport("user32")] static extern int RegisterHotKey(nint hwnd, int id, int mods, int vk);
-    [DllImport("user32")] static extern int UnregisterHotKey(nint hwnd, int id);
+    [DllImport("user32")] static extern int RegisterHotKey(nuint hwnd, int id, int mods, int vk);
+    [DllImport("user32")] static extern int UnregisterHotKey(nuint hwnd, int id);
     [DllImport("user32")] static extern int TrackMouseEvent(nuint track);
-    [DllImport("user32")] static extern int SetScrollInfo(nint hwnd, int bar, nuint info, int redraw);
-    [DllImport("user32")] static extern int GetScrollInfo(nint hwnd, int bar, nuint info);
-    [DllImport("user32")] static extern int EnableScrollBar(nint hwnd, int bar, int arrows);
-    [DllImport("user32")] static extern int IsIconic(nint hwnd);
-    [DllImport("user32")] static extern nint CreateIconIndirect(nuint info);
-    [DllImport("user32")] static extern nint CreateIconFromResourceEx(nuint bits, int size, int icon, int version, int w, int h, int flags);
-    [DllImport("user32")] static extern int DestroyIcon(nint icon);
+    [DllImport("user32")] static extern int SetScrollInfo(nuint hwnd, int bar, nuint info, int redraw);
+    [DllImport("user32")] static extern int GetScrollInfo(nuint hwnd, int bar, nuint info);
+    [DllImport("user32")] static extern int EnableScrollBar(nuint hwnd, int bar, int arrows);
+    [DllImport("user32")] static extern int IsIconic(nuint hwnd);
+    [DllImport("user32")] static extern nuint CreateIconIndirect(nuint info);
+    [DllImport("user32")] static extern nuint CreateIconFromResourceEx(nuint bits, int size, int icon, int version, int w, int h, int flags);
+    [DllImport("user32")] static extern int DestroyIcon(nuint icon);
 
-    [DllImport("gdi32")] static extern nint CreateCompatibleDC(nint dc);
-    [DllImport("gdi32")] static extern nint CreateDIBSection(nint dc, nuint info, int usage, nuint bits, nint section, int offset);
-    [DllImport("gdi32")] static extern nint CreateBitmap(int w, int h, int planes, int bits, nuint data);
-    [DllImport("gdi32")] static extern nint SelectObject(nint dc, nint obj);
-    [DllImport("gdi32")] static extern int DeleteObject(nint obj);
-    [DllImport("gdi32")] static extern int DeleteDC(nint dc);
-    [DllImport("gdi32")] static extern int BitBlt(nint dst, int x, int y, int w, int h, nint src, int sx, int sy, int rop);
+    [DllImport("gdi32")] static extern nuint CreateCompatibleDC(nuint dc);
+    [DllImport("gdi32")] static extern nuint CreateDIBSection(nuint dc, nuint info, int usage, nuint bits, nuint section, int offset);
+    [DllImport("gdi32")] static extern nuint CreateBitmap(int w, int h, int planes, int bits, nuint data);
+    [DllImport("gdi32")] static extern nuint SelectObject(nuint dc, nuint obj);
+    [DllImport("gdi32")] static extern int DeleteObject(nuint obj);
+    [DllImport("gdi32")] static extern int DeleteDC(nuint dc);
+    [DllImport("gdi32")] static extern int BitBlt(nuint dst, int x, int y, int w, int h, nuint src, int sx, int sy, int rop);
     [DllImport("gdi32")] static extern int GdiFlush();
-    [DllImport("gdi32")] static extern nint GetStockObject(int which);
-    [DllImport("gdi32")] static extern int SetTextColor(nint dc, int colour);
-    [DllImport("gdi32")] static extern int SetBkColor(nint dc, int colour);
-    [DllImport("gdi32")] static extern int SetBkMode(nint dc, int mode);
-    [DllImport("gdi32")] static extern int TextOutW(nint dc, int x, int y, nuint text, int count);
+    [DllImport("gdi32")] static extern nuint GetStockObject(int which);
+    [DllImport("gdi32")] static extern int SetTextColor(nuint dc, int colour);
+    [DllImport("gdi32")] static extern int SetBkColor(nuint dc, int colour);
+    [DllImport("gdi32")] static extern int SetBkMode(nuint dc, int mode);
+    [DllImport("gdi32")] static extern int TextOutW(nuint dc, int x, int y, nuint text, int count);
 
-    [DllImport("kernel32")] static extern nint GetModuleHandleW(nuint name);
+    [DllImport("kernel32")] static extern nuint GetModuleHandleW(nuint name);
     [DllImport("kernel32")] static extern int GetCurrentThreadId();
     [DllImport("kernel32")] static extern int GetWindowsDirectoryW(nuint into, int room);
 
-    [DllImport("advapi32")] static extern int RegOpenKeyExW(nint key, nuint sub, int options, int access, nuint result);
-    [DllImport("advapi32")] static extern int RegEnumValueW(nint key, int index, nuint name, nuint nameLength, nuint reserved, nuint type, nuint data, nuint dataLength);
-    [DllImport("advapi32")] static extern int RegCloseKey(nint key);
+    [DllImport("advapi32")] static extern int RegOpenKeyExW(nuint key, nuint sub, int options, int access, nuint result);
+    [DllImport("advapi32")] static extern int RegEnumValueW(nuint key, int index, nuint name, nuint nameLength, nuint reserved, nuint type, nuint data, nuint dataLength);
+    [DllImport("advapi32")] static extern int RegCloseKey(nuint key);
+
+    /// HKEY_LOCAL_MACHINE: (HKEY)(ULONG_PTR)(LONG)0x80000002, the 32-bit
+    /// number sign-extended to a word, as Windows' headers make it (Win64's
+    /// is 0xFFFFFFFF80000002).
+    static readonly nuint LocalMachine = unchecked((nuint)(long)(int)0x80000002);
+
+    /// HWND_TOPMOST and HWND_NOTOPMOST: (HWND)-1 and (HWND)-2, words.
+    static readonly nuint Topmost = unchecked((nuint)(long)-1), NotTopmost = unchecked((nuint)(long)-2);
+
+    /// MAKEINTRESOURCE: a resource's number in place of its name, the WORD
+    /// zero-extended to a word.
+    static nuint IntResource(int id) { return (ushort)id; }
+
+    /// A timer's id is a UINT_PTR; the seat's are the program's ints, zero-extended.
+    static nuint TimerId(int id) { return (uint)id; }
 
     // Windows' messages.
     const int WmMove = 0x3, WmSize = 0x5, WmActivate = 0x6, WmPaint = 0xF, WmClose = 0x10, WmEraseBkgnd = 0x14;
@@ -169,15 +184,15 @@ static class WinSeat
     sealed class Window
     {
         public int Id;
-        public nint Hwnd;
+        public nuint Hwnd;
         public int X, Y, W, H;                  // where and how big, the frame included
         public int Style, ExStyle;
         public bool Shown, Painted, DoubleClicks, Tracking, Sizing;
         public int MinW, MinH;
-        public nint Dib, Dc;
+        public nuint Dib, Dc;
         public nuint Bits;                      // the DIB's pixels: W * H words, 0x00RRGGBB, top row first
         public int DirtyL, DirtyT, DirtyR, DirtyB;
-        public nint Icon;
+        public nuint Icon;
         public List<Bar>? Bars;
     }
 
@@ -194,12 +209,12 @@ static class WinSeat
     }
 
     static readonly Dictionary<int, Window> _windows = new Dictionary<int, Window>();
-    static readonly Dictionary<nint, Window> _byHwnd = new Dictionary<nint, Window>();
+    static readonly Dictionary<nuint, Window> _byHwnd = new Dictionary<nuint, Window>();
     static int _nextWindow = 1;
     static int _selected;
-    static nint _instance;
+    static nuint _instance;
     static char[]? _className;
-    static nint _helper;                         // timers and hot keys of no window
+    static nuint _helper;                         // timers and hot keys of no window
 
     // ---- the event queue --------------------------------------------------------
 
@@ -339,13 +354,13 @@ static class WinSeat
 
     // ---- the window procedure ---------------------------------------------------
 
-    static nint _cursor;                  // what the pointer wears over our windows' client areas
+    static nuint _cursor;                  // what the pointer wears over our windows' client areas
     static int _captured;                 // the window the program captured the pointer for (SetCapture), 0 none
     static bool _implicit;                // a button holds the pointer for its window
     static byte[] _peek = new byte[28];
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
-    static nint WindowProcedure(nint hwnd, int msg, nint wParam, nint lParam)
+    static nuint WindowProcedure(nuint hwnd, int msg, nuint wParam, nuint lParam)
     {
         Window? w;
         _byHwnd.TryGetValue(hwnd, out w);
@@ -366,7 +381,7 @@ static class WinSeat
             case WmPaint:
             {
                 byte[] ps = new byte[64];
-                nint dc = BeginPaint(hwnd, At(ps));
+                nuint dc = BeginPaint(hwnd, At(ps));
                 int l = Word(ps, 8), t = Word(ps, 12), r = Word(ps, 16), b = Word(ps, 20);
                 int ox, oy;
                 ClientOffset(w, out ox, out oy);
@@ -407,8 +422,8 @@ static class WinSeat
                 if (w.MinW > 0 || w.MinH > 0)
                 {
                     // The message's lParam points at the MINMAXINFO.
-                    if (w.MinW > 0) StoreInt((nuint)lParam + 24, w.MinW);
-                    if (w.MinH > 0) StoreInt((nuint)lParam + 28, w.MinH);
+                    if (w.MinW > 0) StoreInt(lParam + 24, w.MinW);
+                    if (w.MinH > 0) StoreInt(lParam + 28, w.MinH);
                 }
                 return 0;
             case WmSetCursor:
@@ -548,7 +563,7 @@ static class WinSeat
 
     /// A mouse message's point: in the window (the frame's top left the
     /// origin) and on the screen.
-    static void Points(Window w, nint lParam, out int wx, out int wy, out int sx, out int sy)
+    static void Points(Window w, nuint lParam, out int wx, out int wy, out int sx, out int sy)
     {
         int cx = (short)((int)lParam & 0xFFFF), cy = (short)(((int)lParam >> 16) & 0xFFFF);
         int ox, oy;
@@ -579,8 +594,8 @@ static class WinSeat
         Put(info, 0, 40); Put(info, 4, width); Put(info, 8, -height);
         info[12] = 1; info[14] = 32;                               // one plane, 32 bits, BI_RGB
         nuint bits = 0;
-        nint screen = GetDC(0);
-        nint dib = CreateDIBSection(screen, At(info), 0, Sys.AddressOf(ref bits), 0, 0);
+        nuint screen = GetDC(0);
+        nuint dib = CreateDIBSection(screen, At(info), 0, Sys.AddressOf(ref bits), 0, 0);
         if (w.Dc == 0) w.Dc = CreateCompatibleDC(screen);
         ReleaseDC(0, screen);
         if (dib == 0) return;
@@ -591,7 +606,7 @@ static class WinSeat
             int rows = Math.Min(height, w.H), cols = Math.Min(width, w.W);
             for (int y = 0; y < rows; y++) Sys.MemoryCopy(PixelIn(now, width, 0, y), PixelIn(w.Bits, w.W, 0, y), Scaled(cols, 4));
         }
-        nint old = SelectObject(w.Dc, dib);
+        nuint old = SelectObject(w.Dc, dib);
         if (w.Dib != 0) DeleteObject(w.Dib);
         w.Dib = dib;
         w.Bits = now;
@@ -609,7 +624,7 @@ static class WinSeat
             {
                 int ox, oy;
                 ClientOffset(w, out ox, out oy);
-                nint dc = GetDC(w.Hwnd);
+                nuint dc = GetDC(w.Hwnd);
                 HideCaret(w.Hwnd);
                 BitBlt(dc, w.DirtyL - ox, w.DirtyT - oy, w.DirtyR - w.DirtyL, w.DirtyB - w.DirtyT, w.Dc, w.DirtyL, w.DirtyT, 0xCC0020);
                 ShowCaret(w.Hwnd);
@@ -635,7 +650,7 @@ static class WinSeat
 
     static readonly Dictionary<int, Picture> _pictures = new Dictionary<int, Picture>();
     static readonly Dictionary<int, Glyph> _glyphs = new Dictionary<int, Glyph>();
-    static readonly Dictionary<int, nint> _pointers = new Dictionary<int, nint>();
+    static readonly Dictionary<int, nuint> _pointers = new Dictionary<int, nuint>();
 
     // The batch's state: it lasts the batch, as the seat's does.
     static Window? _w;
@@ -850,7 +865,7 @@ static class WinSeat
         _glyphs[id] = g;
     }
 
-    static nint _systemFont;
+    static nuint _systemFont;
     static char[] _one = new char[1];
 
     static void GlyphOp(Window w, int id, int x, int y, int fg, int bg, bool transparent)
@@ -864,7 +879,7 @@ static class WinSeat
             int cx = x, cy = y, cw = gw, ch = gh;
             if (!ClipTo(w, ref cx, ref cy, ref cw, ref ch)) return;
             GdiFlush();
-            nint old = SelectObject(w.Dc, _systemFont);
+            nuint old = SelectObject(w.Dc, _systemFont);
             SetTextColor(w.Dc, Swap(fg));
             SetBkColor(w.Dc, Swap(bg));
             SetBkMode(w.Dc, transparent ? 1 : 2);
@@ -1109,14 +1124,14 @@ static class WinSeat
 
     /// A cursor of the program's own, from 0xAARRGGBB pixels: a colour
     /// picture and a mask of its clear pixels, as CreateIconIndirect takes.
-    static nint MakeCursor(bool icon, int width, int height, int hotX, int hotY, nuint argb)
+    static nuint MakeCursor(bool icon, int width, int height, int hotX, int hotY, nuint argb)
     {
         byte[] info = new byte[40];
         Put(info, 0, 40); Put(info, 4, width); Put(info, 8, -height);
         info[12] = 1; info[14] = 32;
         nuint bits = 0;
-        nint screen = GetDC(0);
-        nint colour = CreateDIBSection(screen, At(info), 0, Sys.AddressOf(ref bits), 0, 0);
+        nuint screen = GetDC(0);
+        nuint colour = CreateDIBSection(screen, At(info), 0, Sys.AddressOf(ref bits), 0, 0);
         ReleaseDC(0, screen);
         if (colour == 0) return 0;
         int stride = ((width + 15) / 16) * 2;
@@ -1129,10 +1144,10 @@ static class WinSeat
                 StoreInt(PixelIn(bits, width, x, y), clear ? 0 : c);
                 if (clear) mask[y * stride + x / 8] |= (byte)(0x80 >> (x % 8));
             }
-        nint maskBitmap = CreateBitmap(width, height, 1, 1, At(mask));
+        nuint maskBitmap = CreateBitmap(width, height, 1, 1, At(mask));
         byte[] ii = new byte[20];
         Put(ii, 0, icon ? 1 : 0); Put(ii, 4, hotX); Put(ii, 8, hotY); PutHandle(ii, 12, maskBitmap); PutHandle(ii, 16, colour);
-        nint made = CreateIconIndirect(At(ii));
+        nuint made = CreateIconIndirect(At(ii));
         DeleteObject(maskBitmap);
         DeleteObject(colour);
         return made;
@@ -1141,8 +1156,8 @@ static class WinSeat
     static void DefinePointer(int id, int width, int height, int hotX, int hotY, nuint at, int bytes)
     {
         if (width <= 0 || height <= 0 || bytes < width * height * 4) return;
-        nint made = MakeCursor(false, width, height, hotX, hotY, at);
-        nint old;
+        nuint made = MakeCursor(false, width, height, hotX, hotY, at);
+        nuint old;
         if (_pointers.TryGetValue(id, out old) && old != 0) DestroyIcon(old);
         _pointers[id] = made;
     }
@@ -1160,7 +1175,7 @@ static class WinSeat
         return 32512;
     }
 
-    static void Wear(nint cursor)
+    static void Wear(nuint cursor)
     {
         _cursor = cursor;
         // At once when the pointer is over one of our client areas: the next
@@ -1495,7 +1510,7 @@ static class WinSeat
                 return 0;
             case SeatIoctl.TopMost:
                 w = Selected();
-                if (w != null) SetWindowPos(w.Hwnd, arg != 0 ? -1 : -2, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
+                if (w != null) SetWindowPos(w.Hwnd, arg != 0 ? Topmost : NotTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
                 return 0;
             case SeatIoctl.Desktop: case SeatIoctl.NoTaskbar: case SeatIoctl.ReserveBottom: case SeatIoctl.BindCursor:
             case SeatIoctl.HitCursor: case SeatIoctl.ClickActivation: case SeatIoctl.ReloadSettings: case SeatIoctl.VanishPointer:
@@ -1565,19 +1580,19 @@ static class WinSeat
             }
             case SeatIoctl.FrameIconImage:
                 w = Selected();
-                if (w != null) SendMessageW(w.Hwnd, WmSetIcon, 0, (nint)arg);
+                if (w != null) SendMessageW(w.Hwnd, WmSetIcon, 0, (nuint)arg);
                 return 0;
             case SeatIoctl.TrackMove: case SeatIoctl.TrackSize:
                 return -Inval;                               // Windows runs its own loops
             case SeatIoctl.Cursor:
             {
                 int shape = (int)arg;
-                nint made;
+                nuint made;
                 if (shape >= 256) Wear(_pointers.TryGetValue(shape - 256, out made) ? made : LoadCursorW(0, 32512));
-                else Wear(LoadCursorW(0, Standard(shape)));
+                else Wear(LoadCursorW(0, IntResource(Standard(shape))));
                 return 0;
             }
-            case SeatIoctl.CursorWear: Wear((nint)arg); return 0;
+            case SeatIoctl.CursorWear: Wear((nuint)arg); return 0;
             case SeatIoctl.CursorAt:
             {
                 byte[] p = new byte[8];
@@ -1588,7 +1603,7 @@ static class WinSeat
             case SeatIoctl.ImageSystem:
             {
                 int id = (int)(arg & 0xFFFF), kind = (int)(arg >> 32);
-                nint h = kind == 1 ? LoadIconW(0, id) : LoadCursorW(0, id);
+                nuint h = kind == 1 ? LoadIconW(0, IntResource(id)) : LoadCursorW(0, IntResource(id));
                 return h == 0 ? -Inval : (long)h & 0xFFFFFFFF;
             }
             case SeatIoctl.ImageCreate:
@@ -1597,11 +1612,11 @@ static class WinSeat
                 int hotX = LoadInt(block + 12), hotY = LoadInt(block + 16);
                 nuint pixels = Sys.Read32(block + 20);
                 if (width <= 0 || height <= 0) return -Inval;
-                nint h = MakeCursor(kind != 2, width, height, hotX, hotY, pixels);
+                nuint h = MakeCursor(kind != 2, width, height, hotX, hotY, pixels);
                 return h == 0 ? -Inval : (long)h & 0xFFFFFFFF;
             }
             case SeatIoctl.ImageLoad: return LoadImage(block);
-            case SeatIoctl.ImageDestroy: DestroyIcon((nint)arg); return 0;
+            case SeatIoctl.ImageDestroy: DestroyIcon((nuint)arg); return 0;
             case SeatIoctl.SystemMetric: return GetSystemMetrics((int)arg);
             case SeatIoctl.ParameterInfo:
             {
@@ -1625,14 +1640,14 @@ static class WinSeat
                 int window = LoadInt(block), id = LoadInt(block + 4), ms = LoadInt(block + 8);
                 if (id == 0) { id = 1; while (_timerWindow.ContainsKey(id)) id++; }
                 _timerWindow[id] = window;
-                SetTimer(_helper, id, Math.Max(ms, 1), 0);
+                SetTimer(_helper, TimerId(id), Math.Max(ms, 1), 0);
                 return id;
             }
             case SeatIoctl.TimerKill:
             {
                 int id = LoadInt(block + 4);
                 _timerWindow.Remove(id);
-                return KillTimer(_helper, id) != 0 ? 0 : -Inval;
+                return KillTimer(_helper, TimerId(id)) != 0 ? 0 : -Inval;
             }
             case SeatIoctl.CaretCreate:
             {
@@ -1660,13 +1675,13 @@ static class WinSeat
             case SeatIoctl.HotKeyRegister:
             {
                 int window = LoadInt(block);
-                nint hwnd = _windows.TryGetValue(window, out w) ? w.Hwnd : _helper;
+                nuint hwnd = _windows.TryGetValue(window, out w) ? w.Hwnd : _helper;
                 return RegisterHotKey(hwnd, LoadInt(block + 4), LoadInt(block + 8), LoadInt(block + 12)) != 0 ? 0 : -Inval;
             }
             case SeatIoctl.HotKeyUnregister:
             {
                 int window = LoadInt(block);
-                nint hwnd = _windows.TryGetValue(window, out w) ? w.Hwnd : _helper;
+                nuint hwnd = _windows.TryGetValue(window, out w) ? w.Hwnd : _helper;
                 return UnregisterHotKey(hwnd, LoadInt(block + 4)) != 0 ? 0 : -Inval;
             }
             case SeatIoctl.KeyState: return GetKeyState((int)arg) & 0xFFFF;
@@ -1772,7 +1787,7 @@ static class WinSeat
         SetWindowPos(w.Hwnd, 0, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
     }
 
-    static void SetIcon(Window w, nint icon)
+    static void SetIcon(Window w, nuint icon)
     {
         SendMessageW(w.Hwnd, WmSetIcon, 0, icon);
         SendMessageW(w.Hwnd, WmSetIcon, 1, icon);
@@ -1792,7 +1807,7 @@ static class WinSeat
         nuint entry = bytes + 6;
         int size = LoadInt(entry + 8), offset = LoadInt(entry + 12);
         if (offset < 0 || size <= 0 || offset + size > length) return -Inval;
-        nint made;
+        nuint made;
         if (type == 1) made = CreateIconFromResourceEx(bytes + Scaled(offset, 1), size, 1, 0x30000, 0, 0, 0);
         else
         {
@@ -1880,11 +1895,11 @@ static class WinSeat
         int n = GetWindowsDirectoryW(Sys.ArrayData(dir), dir.Length);
         string fonts = new string(dir, 0, Math.Max(0, n)) + "\\Fonts\\";
         char[] key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts\0".ToCharArray();
-        nint handle = 0;
-        if (RegOpenKeyExW(unchecked((nint)0x80000002), Sys.ArrayData(key), 0, 0x20019, Sys.AddressOf(ref handle)) != 0)
+        nuint handle = 0;
+        if (RegOpenKeyExW(LocalMachine, Sys.ArrayData(key), 0, 0x20019, Sys.AddressOf(ref handle)) != 0)
         {
             char[] key9x = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Fonts\0".ToCharArray();
-            if (RegOpenKeyExW(unchecked((nint)0x80000002), Sys.ArrayData(key9x), 0, 0x20019, Sys.AddressOf(ref handle)) != 0) return faces;
+            if (RegOpenKeyExW(LocalMachine, Sys.ArrayData(key9x), 0, 0x20019, Sys.AddressOf(ref handle)) != 0) return faces;
         }
         char[] name = new char[256];
         byte[] data = new byte[1024];
@@ -2018,8 +2033,8 @@ static class WinSeat
         {
             _substitutes = new Dictionary<string, string>();
             char[] key = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes\0".ToCharArray();
-            nint handle = 0;
-            if (RegOpenKeyExW(unchecked((nint)0x80000002), Sys.ArrayData(key), 0, 0x20019, Sys.AddressOf(ref handle)) == 0)
+            nuint handle = 0;
+            if (RegOpenKeyExW(LocalMachine, Sys.ArrayData(key), 0, 0x20019, Sys.AddressOf(ref handle)) == 0)
             {
                 char[] name = new char[256];
                 byte[] data = new byte[512];
@@ -2075,7 +2090,7 @@ static class WinSeat
     /// An address, and a handle, as the 32-bit word a Windows structure holds
     /// it in (this image is i386's).
     static void PutAddress(byte[] b, int at, nuint v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
-    static void PutHandle(byte[] b, int at, nint v) { b[at] = (byte)v; b[at + 1] = (byte)(v >> 8); b[at + 2] = (byte)(v >> 16); b[at + 3] = (byte)(v >> 24); }
+    static void PutHandle(byte[] b, int at, nuint v) { PutAddress(b, at, v); }
 
     /// A signed word of memory: the seat's records and pixels hold their
     /// numbers as 32-bit words, which are signed here.
