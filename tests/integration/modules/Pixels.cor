@@ -16,7 +16,7 @@ public static class Pixels
     }
 
     /// 0x10 taken from each of `count` bytes at `p`, saturating at nought:
-    /// what the kernel's own Shade calls, so Brighten's copy is called by
+    /// what the kernel's own Shade calls, so Brighten's $inside copy is called by
     /// the module alone, and the pruned kernel may drop it.
     public static void Darken(nuint p, int count)
     {

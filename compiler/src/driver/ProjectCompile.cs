@@ -231,7 +231,7 @@ public static class ProjectCompile
                         throw new InvalidDataException(DeclarationCatalog.Stale(unit.Source));
                 }
             }
-            catch (Exception failure) when (failure is InvalidDataException or IOException)
+            catch (Exception failure) when (failure is InvalidDataException or IOException or UnauthorizedAccessException)
             {
                 lock (gate)
                 {
@@ -259,7 +259,7 @@ public static class ProjectCompile
             // stamp until the object is whole: a round compiles a unit whose
             // source and stamp agree, and killed while its object was written
             // it would be taken as current (Stale), half an object and all.
-            try { File.Delete(unit.Receipt + ".stamp"); }
+            try { if (File.Exists(unit.Receipt + ".stamp")) File.Delete(unit.Receipt + ".stamp"); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 lock (gate) Console.Error.WriteLine("corc: compiling " + unit.Source + ": its stamp cannot be taken away (" + e.Message + "); killed now, the next build would keep a half-made object");
@@ -283,7 +283,7 @@ public static class ProjectCompile
             // whole process down with a core dump. What it printed was a
             // stack trace, so a stale index -- an ordinary thing to have --
             // looked like a compiler crash.
-            catch (Exception failure) when (failure is InvalidDataException or IOException)
+            catch (Exception failure) when (failure is InvalidDataException or IOException or UnauthorizedAccessException)
             {
                 lock (gate)
                 {
@@ -311,7 +311,7 @@ public static class ProjectCompile
             {
                 bool same;
                 try { same = File.ReadAllBytes(unit.Source).AsSpan().SequenceEqual(compiled); }
-                catch (IOException) { same = false; }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { same = false; }
                 if (!same)
                 {
                     // Changed while it compiled: its object is of the text
