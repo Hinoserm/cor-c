@@ -1083,7 +1083,7 @@ public static class Driver
                 foreach (string under in sharedLibs)
                     insideElsewhere.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(under)).Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
             // AND THE OTHER UNITS OF THIS IMAGE'S (--inside-facts, ProjectCompile's
-            // InsideFacts): compiled apart, a unit knows its neighbours' copies
+            // InsideRounds): compiled apart, a unit knows its neighbours' copies
             // only as the project build says them. One --cpu for every unit of
             // an image, so whatever its saves are, they cover their copies.
             if (Value(args, "--inside-facts") is string facts)

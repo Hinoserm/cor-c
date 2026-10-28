@@ -167,15 +167,6 @@ public static class ProjectCompile
             catch (IOException failure) { return failure.Message; }
         }
 
-        // WHAT A UNIT LEFT ON ITS THREAD IS LET GO, before the next and again
-        // after it. Before, so a unit starts as it would in a process of its
-        // own: names a unit before this one interned on this thread are its,
-        // not ours, and the escape analysis's thread statics answer for the
-        // functions they were made for. After, because a worker that has
-        // finished waits at the memory gate (Gated) or for the build to end
-        // with the last unit's names and function tables still reachable --
-        // up to a hundred thousand strings a thread, held while the units
-        // still running are the ones that need the room.
         // CALLS BETWEEN UNITS INSIDE A KEPT STATE (InsideRounds): the
         // copies of the other units' methods that run inside their caller's
         // state, as this build knows them, handed to each unit compiled; a
@@ -185,6 +176,15 @@ public static class ProjectCompile
         string? forced = null;
         List<Unit> compiledNow = new();
 
+        // WHAT A UNIT LEFT ON ITS THREAD IS LET GO, before the next and again
+        // after it. Before, so a unit starts as it would in a process of its
+        // own: names a unit before this one interned on this thread are its,
+        // not ours, and the escape analysis's thread statics answer for the
+        // functions they were made for. After, because a worker that has
+        // finished waits at the memory gate (Gated) or for the build to end
+        // with the last unit's names and function tables still reachable --
+        // up to a hundred thousand strings a thread, held while the units
+        // still running are the ones that need the room.
         static void ForgetUnit()
         {
             Corsac.Lang.Interned.Forget();
@@ -253,6 +253,9 @@ public static class ProjectCompile
             one.Add("--dependency-file"); one.Add(unit.Receipt);
             one.Add("-o"); one.Add(unit.Object);
             if (factsFile is not null) { one.Add("--inside-facts"); one.Add(factsFile); }
+            // What the unit answered before (InsideRounds) is not what it will:
+            // gone, it is asked again of the facts the rounds have.
+            try { File.Delete(unit.Receipt + ".inside"); } catch (IOException) { }
             long before = GC.GetTotalAllocatedBytes();
             // A UNIT BEGUN IS SAID AT ONCE: only its end was, and a unit that
             // never ended -- the compile caught in a loop -- looked like one
@@ -497,7 +500,8 @@ public static class ProjectCompile
         if (insideRounds)
         {
             factsFile = list + ".inside";
-            WriteFacts(factsFile, ReadUnits(units).SelectMany(read => read.Copies));
+            try { WriteFacts(factsFile, ReadUnits(units).SelectMany(read => read.Copies)); }
+            catch (IOException e) { return Driver.Fail("the units' facts cannot be written to " + factsFile + ": " + e.Message); }
         }
         if (dynamic)
         {
@@ -542,10 +546,11 @@ public static class ProjectCompile
         // none did (InsideRounds).
         if (insideRounds && failures == 0)
         {
-            List<Unit> again = new();
             int RunAgain(List<Unit> batch)
             {
                 int failed = 0;
+                // Counted as a build of these units alone.
+                lock (gate) done = units.Count - batch.Count;
                 if (dynamic)
                     foreach (Unit unit in batch.Where(unit => unit.Entry))
                         if (Gated(unit) != 0) failed++;
@@ -602,7 +607,7 @@ public static class ProjectCompile
     // where copies are made at all: bare-metal i386 (Lowering.PackedStateHere).
 
     /// <summary>Whether a project's units can make $inside copies: compiled bare-metal (--freestanding, a kernel module), not for Windows.</summary>
-    private static bool InsideFactsApply(List<string> common)
+    internal static bool InsideFactsApply(List<string> common)
         => (common.Contains("--freestanding") || common.Contains("--kernel")) && !common.Contains("--windows") && !common.Contains("--dll")
            && Driver.Value(common.ToArray(), "--target") is null or "x86" or "i386";
 
@@ -616,7 +621,11 @@ public static class ProjectCompile
         foreach (Unit unit in units)
         {
             if (!File.Exists(unit.Object)) continue;
-            Corsac.Lang.Ir.ObjectFile obj = Corsac.Lang.Elf.ElfReader.ReadObjectMetadata(unit.Object);
+            Corsac.Lang.Ir.ObjectFile obj;
+            // One a killed build left half written is no unit's yet: its
+            // stamp is gone too, and the unit is compiled again (Stale).
+            try { obj = Corsac.Lang.Elf.ElfReader.ReadObjectMetadata(unit.Object); }
+            catch (Exception e) when (e is IOException or Corsac.Lang.Elf.ElfFormatException or InvalidDataException or ArgumentOutOfRangeException) { continue; }
             List<string> copies = new();
             HashSet<string> calls = new(StringComparer.Ordinal);
             foreach (Corsac.Lang.Ir.Symbol symbol in obj.Symbols)
@@ -657,8 +666,9 @@ public static class ProjectCompile
             HashSet<Unit> fresh = new(compiledNow);
             compiledNow.Clear();
             List<UnitCalls> read = ReadUnits(units);
+            // Unwritten, a unit's answers are asked again next build.
             foreach (UnitCalls one in read.Where(one => fresh.Contains(one.Unit)))
-                File.WriteAllText(one.Unit.Receipt + ".inside", Answers(one, facts));
+                try { File.WriteAllText(one.Unit.Receipt + ".inside", Answers(one, facts)); } catch (IOException) { }
             // The facts as the objects now are, and who would answer otherwise.
             facts = new(read.SelectMany(one => one.Copies), StringComparer.Ordinal);
             List<Unit> moved = read.Where(one => Answers(one, facts) != AnswersOf(one.Unit)).Select(one => one.Unit).ToList();
@@ -669,7 +679,12 @@ public static class ProjectCompile
                     + string.Join(", ", moved.Take(6).Select(unit => Path.GetFileName(unit.Source))) + "); the build is right, its last round's answers not taken");
                 return 0;
             }
-            WriteFacts(factsFile, facts);
+            try { WriteFacts(factsFile, facts); }
+            catch (IOException e)
+            {
+                Console.Error.WriteLine("corc: the units' facts cannot be written to " + factsFile + ": " + e.Message);
+                return 1;
+            }
             Console.Error.WriteLine("inside facts round " + (round + 1) + ": " + moved.Count + " unit(s) call into other units' packed methods as they now are");
             force("its calls into other units' packed methods moved");
             try

@@ -2,16 +2,27 @@
 // expect-output:
 // 333 333
 // 77
+// long long
 //
 // C# 10.5.5: `(long)w` with operators to byte and to int is the one to int,
 // every other result (the byte) converting to it; whichever came first was
-// taken before. `(byte)w` is the one to byte itself. Checked against .NET.
+// taken before. `(byte)w` is the one to byte itself. And an int to Price
+// with operators from decimal and from long is the one from long, which
+// converts to decimal -- an integer reaches a decimal implicitly too.
+// Checked against .NET.
 
 struct W
 {
     public int V;
     public static explicit operator byte(W w) => (byte)(w.V & 0xFF);
     public static explicit operator int(W w) => w.V;
+}
+
+struct Price
+{
+    public string How;
+    public static implicit operator Price(decimal d) => new Price { How = "decimal" };
+    public static implicit operator Price(long l) => new Price { How = "long" };
 }
 
 static class Program
@@ -23,6 +34,9 @@ static class Program
         long? b = (long?)w;
         System.Console.WriteLine(a + " " + b);
         System.Console.WriteLine((byte)w);
+        int n = 5;
+        Price p = n;
+        System.Console.WriteLine(p.How + " " + ((Price)n).How);
         return 0;
     }
 }

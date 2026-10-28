@@ -1,0 +1,20 @@
+// Pixels.cor's routine without packed code, for tests/integration/modules-packed.sh:
+// the same declarations -- so the same build stamp -- and no copy that runs
+// inside a caller's state, which a module compiled against Pixels.cor's
+// kernel names; its link calls this routine itself instead
+// (Linker.InsideOrItself).
+
+namespace Kernel;
+
+public static class Pixels
+{
+    /// 0x10 added to each of `count` bytes at `p`, saturating, a byte a turn.
+    public static void Brighten(nuint p, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            int b = (int)Sys.Read8(p + (nuint)i) + 0x10;
+            Sys.Write8(p + (nuint)i, (byte)(b > 255 ? 255 : b));
+        }
+    }
+}

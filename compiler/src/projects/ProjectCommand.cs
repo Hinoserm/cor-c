@@ -470,7 +470,7 @@ public static class ProjectCommand
         // InsideRounds) need every unit's object, which no child had: one run
         // more over the whole list, which finds each unit current by its stamp
         // and does only those rounds. Bare-metal builds alone make copies.
-        if (ok && (options.Contains("--freestanding") || options.Contains("--kernel")) && !options.Contains("--windows"))
+        if (ok && ProjectCompile.InsideFactsApply(options))
         {
             System.Diagnostics.ProcessStartInfo last = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
             last.ArgumentList.Add("--compiler-identity"); last.ArgumentList.Add(ProjectCompile.CompilerIdentity());

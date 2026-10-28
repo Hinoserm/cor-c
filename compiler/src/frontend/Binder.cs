@@ -8824,6 +8824,7 @@ public sealed partial class Binder
 
     private MethodSymbol? UserConversionWhere(Type from, Type to, bool explicitToo, Func<Type, bool> takes)
     {
+        _ambiguity = null;
         if (from.IsError || to.IsError || from.Prim is Prim.Any or Prim.NullLiteral || to.Prim == Prim.Any
             || from.IsArray && to.IsArray)
         {
@@ -8857,7 +8858,8 @@ public sealed partial class Binder
                         && !(name == "op_Explicit" && _checked && holder.FindMethods("op_CheckedExplicit").Any(c => c.Static && c.Params.Count == 1
                              && MethodSignatures.SameType(c.Params[0].Type, m.Params[0].Type) && MethodSignatures.SameType(c.Returns, m.Returns))))
                     {
-                        candidates.Add(m);
+                        // Once: a base both holders share is found from each.
+                        if (!candidates.Contains(m)) candidates.Add(m);
                     }
                 }
             }
@@ -8879,7 +8881,6 @@ public sealed partial class Binder
         // conversion -- the conversion is AMBIGUOUS (CS0457): the first
         // answers whoever only asks whether there is one, and a site that
         // makes the conversion is refused (ReportAmbiguity).
-        _ambiguity = null;
         if (candidates.Count <= 1) return candidates.FirstOrDefault();
         Type toPlain = to.IsNullableValue ? to.Underlying : to;
         Type? fromMost = candidates.Any(m => MethodSignatures.SameType(m.Params[0].Type, from)) ? from
@@ -8907,10 +8908,14 @@ public sealed partial class Binder
         List<Type> distinct = new();
         foreach (Type t in types)
             if (!distinct.Any(d => MethodSignatures.SameType(d, t))) distinct.Add(t);
+        // An integer reaches a decimal implicitly too (IntegerToDecimal, C#
+        // 10.2.3): `Price p = n` with operators from decimal and from long is
+        // the one from long, which converts to decimal.
+        bool Implicit(Type a, Type b) => StandardConvertible(a, b) || IntegerToDecimal(a, b);
         List<Type> best = distinct.Where(t => distinct.All(o => MethodSignatures.SameType(o, t)
-            || (encompassed ? StandardConvertible(t, o) : StandardConvertible(o, t)))).ToList();
+            || (encompassed ? Implicit(t, o) : Implicit(o, t)))).ToList();
         if (best.Count == 0) return null;
-        if (best.Count > 1 && !best.All(a => best.All(b => StandardConvertible(a, b) && StandardConvertible(b, a)))) return null;
+        if (best.Count > 1 && !best.All(a => best.All(b => Implicit(a, b) && Implicit(b, a)))) return null;
         return best[0];
     }
 
