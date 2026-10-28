@@ -112,6 +112,13 @@ public static class Roles
     private static readonly Gpr[] Gpr_ImplicitUses13 = { Gpr.Edx, Gpr.Edi, Gpr.Ecx };
     private static readonly Gpr[] Gpr_ImplicitUses14 = { Gpr.Edx, Gpr.Esi, Gpr.Ecx };
     private static readonly Gpr[] Gpr_ImplicitUses15 = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi, Gpr.Edi, Gpr.Ebp };
+    /// <summary>A system call's number and its first n arguments, by n up to five (the sixth borrows EBP: all of them).</summary>
+    private static readonly Gpr[][] Gpr_SyscallUses =
+    {
+        new[] { Gpr.Eax }, new[] { Gpr.Eax, Gpr.Ebx }, new[] { Gpr.Eax, Gpr.Ebx, Gpr.Ecx },
+        new[] { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx }, new[] { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi },
+        new[] { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx, Gpr.Esi, Gpr.Edi },
+    };
     private static readonly Gpr[] Gpr_ImplicitUses16 = { Gpr.Eax, Gpr.Edx };
     private static readonly Gpr[] Gpr_ImplicitDefs0 = { Gpr.Eax, Gpr.Edx };
     private static readonly Gpr[] Gpr_ImplicitDefs1 = { Gpr.Eax, Gpr.Ebx, Gpr.Ecx, Gpr.Edx };
@@ -174,9 +181,14 @@ public static class Roles
             case MOp.RepOutsw:
                 return Gpr_ImplicitUses14;
             case MOp.SyscallTrap:
-                // Linux reads six arguments; the sixth is in EBP, which the
-                // selector borrows around the trap when there is one.
-                return Gpr_ImplicitUses15;
+                // THE ARGUMENTS THE CALL HAS, and no more: its count is the
+                // second operand (Select's SelectSyscall). All six read by
+                // every trap kept ESI and EDI alive back to whatever last set
+                // them -- a write's three arguments held both across every
+                // loop between it and an mmap before it. The sixth is in EBP,
+                // which the selector borrows around the trap when there is one.
+                return i.Operands.Count > 1 && i.Operands[1] is MImm { Value: var args and >= 0 and <= 5 }
+                    ? Gpr_SyscallUses[args] : Gpr_ImplicitUses15;
             case MOp.Epilogue:
                 // The return value is already in place; keep it alive through the pops.
                 // Only the registers it occupies: EDX read by every return of a

@@ -4034,7 +4034,8 @@ internal sealed partial class Selector
             Emit(MOp.Push, Ebp);
             Mov(Ebp, a6);
         }
-        Emit(MOp.SyscallTrap, new MImm(i.Offset == 0 ? 0x80 : i.Offset));
+        // The argument count rides along, so the trap reads only those registers (Roles.ImplicitUses).
+        Emit(MOp.SyscallTrap, new MImm(i.Offset == 0 ? 0x80 : i.Offset), new MImm(args));
         if (sixth)
         {
             Emit(MOp.Pop, Ebp);
