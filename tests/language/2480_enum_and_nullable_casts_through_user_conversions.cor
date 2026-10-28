@@ -9,6 +9,12 @@
 // 3 3 3.75 null 4
 // True:True 7 7.5 7 null
 // whole -1 1
+// 1002 2.5
+// 5 5
+// 7.5 7
+// 300 300
+// Low Low High
+// N5
 //
 // C# 10.3.3: an enum's explicit conversion to decimal is its underlying
 // type's, `(decimal)level` is `(decimal)(short)level` -- with no implicit
@@ -20,7 +26,11 @@
 // where it is empty to a T?, InvalidOperationException to a T. The operand
 // is evaluated once. The operator taken is the one for the type asked, among
 // operators that differ only in what they make; one declared on S? itself
-// takes the nullable whole, empty included.
+// takes the nullable whole, empty included. Among results none exactly the
+// target, the most encompassing (`(int?)300m` decimal's operator to int, not
+// its first, to byte); a narrower result widened (`(long)n` through an
+// operator to int); a decimal? to an enum through the enum's number; and a
+// reference result from S? the operator on the value.
 
 using System;
 
@@ -41,6 +51,20 @@ struct Node
     public static explicit operator int(Node n) => (int)n.V;
     public static explicit operator double(Node n) => n.V;
     public override string ToString() => "Node:" + V;
+}
+
+struct S2
+{
+    public double V;
+    public static explicit operator decimal(S2 s) => (decimal)s.V;
+    public static explicit operator int(S2 s) => (int)s.V + 1000;
+}
+
+struct N
+{
+    public int V;
+    public static explicit operator int(N n) => n.V;
+    public static explicit operator string(N n) => "N" + n.V;
 }
 
 struct Whole
@@ -70,6 +94,16 @@ class Program
         Console.WriteLine(S((bool)nd) + ":" + ((bool)nd) + " " + S((int)nd) + " " + S((double?)nd) + " " + S((int?)nd) + " " + S((double?)ndnull));
         Whole? wnull = null; Whole? wsome = new Whole();
         Console.WriteLine("whole " + (int)wnull + " " + (int)wsome);
+        S2? sx = new S2 { V = 2.5 };
+        N? nn = new N { V = 5 };
+        Node node = new Node { V = 7.5 };
+        decimal? two = 2m; decimal big = 300m;
+        Console.WriteLine(S((int?)sx) + " " + S((decimal?)sx));
+        Console.WriteLine(S((long)nn) + " " + S((long?)nn));
+        Console.WriteLine(S((double?)node) + " " + S((int?)node));
+        Console.WriteLine(S((int?)big) + " " + S((long?)big));
+        Console.WriteLine(S((Level)two) + " " + S((Level?)two) + " " + S((Level?)big));
+        Console.WriteLine(S((string)nn));
         return 0;
     }
 }
