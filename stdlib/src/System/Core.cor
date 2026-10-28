@@ -13361,7 +13361,8 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
             if (old != null && value > old.Length && !lent && Runtime.GrowInPlace(Sys.ObjectAddress(old), value)) { return; }
 
             T[] bigger = new T[value];
-            // Stored first, then filled (Grow).
+            // Stored first, then filled, then the old array freed, as Grow
+            // does and for its reason: the move is a call.
             items = bigger;
             if (count != 0) { Span<T>.Move(old, 0, bigger, 0, count); }
             Outgrown(old);
@@ -13605,11 +13606,13 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
         T[] bigger = new T[size];
         T[] old = items;
         // STORED FIRST, THEN FILLED: between the read of the field and the
-        // store that replaces it nothing may call out, or the free of what
-        // was read is no self-replacing one (Escape's SelfFrees) and the
-        // field is owned by no list -- the move's call, a block of bytes
-        // where the elements hold no reference, was one. The old array is
-        // still read until its free, after the move.
+        // store that replaces it nothing may call out but an allocation or a
+        // collector's note, or the free of what was read is no self-replacing
+        // one (Escape's SelfFrees) and the field is owned by no list -- the
+        // move (Span.Move) is a call. The old array is still read until its
+        // free, after the move; a reader racing the growth on another thread,
+        // which List never allows, may see the new array before it is
+        // filled, where .NET fills first.
         items = bigger;
         if (count != 0) { Span<T>.Move(old, 0, bigger, 0, count); }
         Outgrown(old);
@@ -21607,9 +21610,13 @@ class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 
         // THE NEW ARRAYS FILLED IN LOCALS, and stored only once the old ones
         // are done with: a store that replaces an owned field frees what it
-        // held, so no old array may be read after its field is written. Read
-        // after, as this was, the fields were not owned, and every array a
-        // growing table left behind was the collector's.
+        // held -- the compiler's free, where the table does not free the old
+        // array itself -- so no old array may be read after its field is
+        // written. Read after, as this was, the fields were not owned, and
+        // every array a growing table left behind was the collector's. (A
+        // field whose own free follows the store, List's Grow, is no such
+        // store: the compiler adds none there, and the old array is read
+        // until that free.)
         K[] newKeys = new K[size];
         V[] newValues = new V[size];
         int[] newHashes = new int[size];
@@ -25148,7 +25155,8 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
         int oldOrdered = ordered;
 
         // Filled in locals and stored once the old arrays are done with, as
-        // Dictionary's Grow: an owned field's store frees what it replaces.
+        // Dictionary's Rehash: an owned field's store frees what it replaces,
+        // where the set does not free the old array itself.
         T[] newItems = new T[size];
         int[] newHashes = new int[size];
         mask = size - 1;
