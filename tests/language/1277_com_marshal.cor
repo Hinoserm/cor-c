@@ -36,13 +36,13 @@ static class Program
         object? back = Marshal.GetObjectForNativeVariant(v);
         string text = back == null ? "<null>" : back is int[] ints ? string.Join(",", ints) : back is string[] strings ? string.Join(",", strings) : back.ToString()!;
         Console.WriteLine("vt " + Marshal.ReadInt16(v) + " value " + text);
-        ComMarshal.VariantClear(v);
+        ComMarshal.VariantClear((nuint)v);
     }
 
     static int Main()
     {
         nint v = Marshal.AllocHGlobal(24);
-        ComMarshal.VariantInit(v);
+        ComMarshal.VariantInit((nuint)v);
         Show(v, 42);
         Show(v, "hello");
         Show(v, true);
