@@ -333,6 +333,8 @@ public static class Gir
             // calling the library's method fills it in at its own call.
             U8((byte)p.Caller);
             Str(p.CallerArgument);
+            // And how a [DllImport] or a COM slot passes it (MarshalAs).
+            Str(p.MarshalAs);
             Expr(p.Default);
         }
 
@@ -1213,12 +1215,13 @@ public static class Gir
             bool provedWhen = Bool();
             CallerInfo caller = (CallerInfo)U8();
             string? callerArgument = StrOrNull();
+            string? marshalAs = StrOrNull();
 
             return new Param
             {
                 Name = name, Type = type, IsRef = byRef, IsOut = isOut,
                 IsReadOnlyRef = readOnly, IsParams = variadic, IsThis = receiver,
-                NotNullWhen = proves ? provedWhen : null, Caller = caller, CallerArgument = callerArgument,
+                NotNullWhen = proves ? provedWhen : null, Caller = caller, CallerArgument = callerArgument, MarshalAs = marshalAs,
                 Default = Expr(),
             };
         }

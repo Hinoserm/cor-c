@@ -3019,6 +3019,61 @@ static partial class Runtime
         return Utf8Transcoder.EncodeTerminated(s);
     }
 
+    /// A string as a Windows W function reads one (LPWSTR): its UTF-16 units
+    /// and a NUL, in an array of its own the caller keeps alive for the call.
+    public static char[]? NativeWideString(string? s)
+    {
+        if (s == null)
+        {
+            return null;
+        }
+        char[] units = new char[s.Length + 1];
+        for (int i = 0; i < s.Length; i++)
+        {
+            units[i] = s[i];
+        }
+        return units;
+    }
+
+    /// A string as a Windows A function reads one (LPSTR): Windows-1252, the
+    /// ANSI code page these images run with (CP_ACP), and a NUL. A character
+    /// it has no byte for is '?', as WideCharToMultiByte's default makes it.
+    public static byte[]? NativeAnsiString(string? s)
+    {
+        if (s == null)
+        {
+            return null;
+        }
+        byte[] bytes = new byte[s.Length + 1];
+        for (int i = 0; i < s.Length; i++)
+        {
+            bytes[i] = AnsiByte(s[i]);
+        }
+        return bytes;
+    }
+
+    /// One character's Windows-1252 byte: the same below 0x80 and from 0xA0
+    /// to 0xFF; the 27 it places at 0x80-0x9F; its five unused places as the
+    /// C1 controls Windows maps them to; '?' for the rest.
+    static byte AnsiByte(char c)
+    {
+        if (c < 0x80 || c >= 0xA0 && c <= 0xFF)
+        {
+            return (byte)c;
+        }
+        return (byte)(c switch
+        {
+            '\u20AC' => 0x80, '\u201A' => 0x82, '\u0192' => 0x83, '\u201E' => 0x84, '\u2026' => 0x85,
+            '\u2020' => 0x86, '\u2021' => 0x87, '\u02C6' => 0x88, '\u2030' => 0x89, '\u0160' => 0x8A,
+            '\u2039' => 0x8B, '\u0152' => 0x8C, '\u017D' => 0x8E, '\u2018' => 0x91, '\u2019' => 0x92,
+            '\u201C' => 0x93, '\u201D' => 0x94, '\u2022' => 0x95, '\u2013' => 0x96, '\u2014' => 0x97,
+            '\u02DC' => 0x98, '\u2122' => 0x99, '\u0161' => 0x9A, '\u203A' => 0x9B, '\u0153' => 0x9C,
+            '\u017E' => 0x9E, '\u0178' => 0x9F,
+            '\u0081' => 0x81, '\u008D' => 0x8D, '\u008F' => 0x8F, '\u0090' => 0x90, '\u009D' => 0x9D,
+            _ => 0x3F,
+        });
+    }
+
     /// The address of an array's first element, or zero for null: what C's
     /// pointer to it is.
     public static nuint NativeData(object? array)

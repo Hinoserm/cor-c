@@ -1,0 +1,43 @@
+// test: a [DllImport]'s string goes as its CharSet or the parameter's MarshalAs says: UTF-16 for Unicode and LPWStr, UTF-8 for the default on Unix and LPUTF8Str
+// expect-exit: 0
+// expect-output:
+// default 3 2
+// unicode 1 1
+// lpwstr 1
+// lputf8str 2
+// auto 2
+//
+// strlen counts bytes to the first NUL, so it shows the form a string was
+// passed in: "AB" as UTF-16 is 41 00 42 00, one byte before a NUL; "é" as
+// UTF-8 is two bytes, as UTF-16 one (E9 00). CharSet.Ansi, the default, is
+// UTF-8 off Windows, as .NET's is; CharSet.Auto is UTF-8 there too.
+
+using System;
+using System.Runtime.InteropServices;
+
+static class Program
+{
+    [DllImport("libc.so.6", EntryPoint = "strlen")]
+    static extern nint Plain(string s);
+
+    [DllImport("libc.so.6", EntryPoint = "strlen", CharSet = CharSet.Unicode)]
+    static extern nint Wide(string s);
+
+    [DllImport("libc.so.6", EntryPoint = "strlen")]
+    static extern nint WideParameter([MarshalAs(UnmanagedType.LPWStr)] string s);
+
+    [DllImport("libc.so.6", EntryPoint = "strlen", CharSet = CharSet.Unicode)]
+    static extern nint Utf8Parameter([MarshalAs(UnmanagedType.LPUTF8Str)] string s);
+
+    [DllImport("libc.so.6", EntryPoint = "strlen", CharSet = CharSet.Auto)]
+    static extern nint Auto(string s);
+
+    static void Main()
+    {
+        Console.WriteLine("default " + Plain("abc") + " " + Plain("é"));
+        Console.WriteLine("unicode " + Wide("AB") + " " + Wide("é"));
+        Console.WriteLine("lpwstr " + WideParameter("AB"));
+        Console.WriteLine("lputf8str " + Utf8Parameter("é"));
+        Console.WriteLine("auto " + Auto("é"));
+    }
+}

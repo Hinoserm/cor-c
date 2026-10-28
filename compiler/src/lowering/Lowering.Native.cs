@@ -18,7 +18,12 @@ namespace Corsac.Lang.Lower;
 /// around it is .NET's marshalling for the types that have an obvious C
 /// form, and the handshake with the collector:
 ///
-///   - a string goes as a NUL-terminated UTF-8 copy (const char *), an array
+///   - a string goes as .NET marshals it: a NUL-terminated UTF-16 copy
+///     (LPWSTR) for CharSet.Unicode, CharSet.Auto on Windows, a
+///     LibraryImport's StringMarshalling.Utf16, or a parameter's
+///     [MarshalAs(UnmanagedType.LPWStr)]; a Windows-1252 copy (LPSTR, the
+///     ANSI code page) for CharSet.Ansi, the default, on Windows; UTF-8
+///     (const char *) everywhere else and for LPUTF8Str; an array
 ///     of numbers as the address of its first element, `ref`/`out` of a
 ///     number as the variable's address, a bool as a 32-bit 0 or 1 (Win32's
 ///     BOOL, .NET's default); numbers, pointers, nint and enums as they are;
@@ -39,7 +44,7 @@ namespace Corsac.Lang.Lower;
 public sealed partial class Lowering
 {
     /// <summary>What a [DllImport] extern names: the library, the C symbol, and its options.</summary>
-    internal sealed record NativeImport(string Library, string Symbol, bool SetLastError, bool Transition, bool ByteBool);
+    internal sealed record NativeImport(string Library, string Symbol, bool SetLastError, bool Transition, bool ByteBool, string? Strings);
 
     /// <summary>The C function a method stands for, or null when it is not a native import.</summary>
     internal static NativeImport? NativeImportOf(MethodSymbol m)
@@ -55,7 +60,8 @@ public sealed partial class Lowering
                 bool byteBool = d.Attributes.Any(r => r.Target == "return" && r.Is("MarshalAs")
                     && r.Argument is { } kind && (kind.EndsWith("I1", StringComparison.Ordinal) || kind.EndsWith("U1", StringComparison.Ordinal)));
                 return new NativeImport(library, a.Named("EntryPoint") ?? m.Name, a.Says("SetLastError"),
-                    !d.Attributes.Any(r => r.Target.Length == 0 && r.Is("SuppressGCTransition")), byteBool);
+                    !d.Attributes.Any(r => r.Target.Length == 0 && r.Is("SuppressGCTransition")), byteBool,
+                    a.Named("CharSet") ?? a.Named("StringMarshalling"));
             }
         }
         return null;
@@ -77,6 +83,32 @@ public sealed partial class Lowering
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// The runtime's copy a string argument goes as (Runtime.NativeString,
+    /// NativeWideString, NativeAnsiString): the parameter's [MarshalAs] over
+    /// the import's CharSet or StringMarshalling, as .NET reads them; null
+    /// for a form there is none of (a BSTR).
+    /// </summary>
+    private string? StringForm(NativeImport import, string? marshalAs)
+    {
+        string ansi = Windows ? "NativeAnsiString" : "NativeString";
+        return marshalAs switch
+        {
+            "LPWStr" => "NativeWideString",
+            "LPStr" => ansi,
+            "LPUTF8Str" => "NativeString",
+            "LPTStr" => Windows ? "NativeWideString" : "NativeString",
+            null => import.Strings switch
+            {
+                "Unicode" or "Utf16" => "NativeWideString",
+                "Auto" => Windows ? "NativeWideString" : "NativeString",
+                "Utf8" => "NativeString",
+                _ => ansi,
+            },
+            _ => null,
+        };
     }
 
     /// <summary>The body of a native import: marshal, call, unmarshal. Leaves the builder closed.</summary>
@@ -111,7 +143,13 @@ public sealed partial class Lowering
 
             if (t.Prim == Prim.String && !t.IsArray)
             {
-                VReg? bytes = CallRuntime(at, "NativeString", IrTypes.Word, v);
+                string? form = StringForm(import, (m.Decl as MethodDecl)?.Params.ElementAtOrDefault(i)?.MarshalAs);
+                if (form is null)
+                {
+                    Error(at, $"'{m.Name}': a string marshalled as {(m.Decl as MethodDecl)?.Params.ElementAtOrDefault(i)?.MarshalAs} cannot be passed to C here; LPWStr, LPStr and LPUTF8Str can");
+                    return;
+                }
+                VReg? bytes = CallRuntime(at, form, IrTypes.Word, v);
                 if (bytes is null) return;
                 keep.Add(bytes);
                 args.Add(RegOperand.Of(CallRuntime(at, "NativeData", IrTypes.Word, bytes)!));

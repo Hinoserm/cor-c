@@ -3272,7 +3272,7 @@ public sealed class Monomorphiser
                     {
                         Name = ip.Name, Type = Sub(ip.Type, map),
                         IsRef = ip.IsRef, IsOut = ip.IsOut, IsReadOnlyRef = ip.IsReadOnlyRef,
-                        NotNullWhen = ip.NotNullWhen, MaybeNull = ip.MaybeNull, NotNull = ip.NotNull, Caller = ip.Caller, CallerArgument = ip.CallerArgument,
+                        NotNullWhen = ip.NotNullWhen, MaybeNull = ip.MaybeNull, NotNull = ip.NotNull, Caller = ip.Caller, CallerArgument = ip.CallerArgument, MarshalAs = ip.MarshalAs,
                         Line = ip.Line, Col = ip.Col,
                     });
                 }
@@ -3332,7 +3332,7 @@ public sealed class Monomorphiser
                     {
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef, IsOut = p.IsOut,
                         IsReadOnlyRef = p.IsReadOnlyRef, IsParams = p.IsParams, IsThis = p.IsThis,
-                        NotNullWhen = p.NotNullWhen, MaybeNull = p.MaybeNull, NotNull = p.NotNull, Caller = p.Caller, CallerArgument = p.CallerArgument,
+                        NotNullWhen = p.NotNullWhen, MaybeNull = p.MaybeNull, NotNull = p.NotNull, Caller = p.Caller, CallerArgument = p.CallerArgument, MarshalAs = p.MarshalAs,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
                         Line = p.Line, Col = p.Col,
                     });
@@ -4066,7 +4066,7 @@ public sealed class Monomorphiser
                         Name = p.Name, Type = Sub(p.Type, map), IsRef = p.IsRef,
                         IsOut = p.IsOut, IsReadOnlyRef = p.IsReadOnlyRef,
                         IsParams = p.IsParams, IsThis = p.IsThis,
-                        NotNullWhen = p.NotNullWhen, MaybeNull = p.MaybeNull, NotNull = p.NotNull, Caller = p.Caller, CallerArgument = p.CallerArgument,
+                        NotNullWhen = p.NotNullWhen, MaybeNull = p.MaybeNull, NotNull = p.NotNull, Caller = p.Caller, CallerArgument = p.CallerArgument, MarshalAs = p.MarshalAs,
                         Default = p.Default is null ? null : Rewrite(p.Default, map),
                         Line = p.Line, Col = p.Col,
                     });
