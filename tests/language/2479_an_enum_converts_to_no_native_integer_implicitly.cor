@@ -1,0 +1,17 @@
+// test: an enum's value is no nint or nuint without a cast either, as C# refuses it (CS0266)
+// expect-compile-error: initialiser for 'n': cannot convert 'Mode' to 'nuint'
+//
+// The native integers have a conversion rule of their own (C#'s, which
+// does not depend on the word), and an enum reached it before the rule
+// that refuses an enum to a number: `nuint n = Mode.Wide;` compiled.
+
+enum Mode : uint { Wide = 2 }
+
+static class Program
+{
+    static int Main()
+    {
+        nuint n = Mode.Wide;
+        return (int)n;
+    }
+}

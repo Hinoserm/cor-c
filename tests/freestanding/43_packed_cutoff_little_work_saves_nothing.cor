@@ -4,7 +4,7 @@
 // expect-output:
 // small FFDFBA95704B26FF 000000000000FA6C
 // large FFDFBA95704B26FF 00000000000118E3
-// expect-asm-x86: Brighten: paddusb fnstenv 0x80
+// expect-asm-x86: Brighten: paddusb fnstenv $0x80,
 // expect-asm-count-x86: Brighten: fnstenv 1 1
 //
 // Brighten's loop runs `count` bytes, eight a turn. Saving the thread's
@@ -14,8 +14,9 @@
 // version without the packed registers -- its lanes one at a time -- which
 // keeps no state, even though the K8 floor would otherwise leave only the
 // MMX one: one FNSTENV in Brighten, the MMX version's, and the guard's
-// compare with 0x80 (sixteen turns of eight bytes). Both give the same bytes: 0x10 added to each, saturating, over
-// the bytes asked for; a sum of the rest past the first eight shows which.
+// compare with 0x80 (sixteen turns of eight bytes). Both give the same
+// bytes: 0x10 added to each, saturating, over the bytes asked for; a sum of
+// the rest past the first eight shows which.
 
 using System.Runtime.CompilerServices;
 

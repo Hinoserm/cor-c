@@ -9086,15 +9086,6 @@ public sealed partial class Binder
             return true;
         }
 
-        // A NATIVE INTEGER'S WIDTH IS THE TARGET'S, so the size rule below
-        // cannot decide for it: on a 32-bit word it would let nint into int
-        // and uint into nint, and C# allows neither. These are C#'s rules
-        // for nint and nuint, which do not depend on the word.
-        if (from.IsNative || to.IsNative)
-        {
-            return NativeConvertible(from.Prim, to.Prim);
-        }
-
         // AN ENUM IS ITSELF, whatever width either side of it was read with:
         // the element of a tuple shape names the enum by its symbol and may
         // carry another word than its declaration's `: byte`.
@@ -9115,11 +9106,21 @@ public sealed partial class Binder
 
         // NOR DOES AN ENUM BECOME A NUMBER without a cast (C# 10.2: no
         // implicit conversion from an enum but boxing): `uint u = Step.Page;`
-        // and `F(Step.Page)` for an F(uint) are CS0266 and CS1503 there. Its
+        // and `F(Step.Page)` for an F(uint) are CS0266 and CS1503 there --
+        // an nint or a nuint too, so before the native integers' rule. Its
         // value as a number is written `(uint)Step.Page`.
         if (from.Symbol is { Kind: TypeKind.Enum } && to.Symbol is null && (to.IsInteger || to.IsFloat))
         {
             return false;
+        }
+
+        // A NATIVE INTEGER'S WIDTH IS THE TARGET'S, so the size rule below
+        // cannot decide for it: on a 32-bit word it would let nint into int
+        // and uint into nint, and C# allows neither. These are C#'s rules
+        // for nint and nuint, which do not depend on the word.
+        if (from.IsNative || to.IsNative)
+        {
+            return NativeConvertible(from.Prim, to.Prim);
         }
 
         // Widening only. A narrowing conversion loses information and must be

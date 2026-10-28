@@ -1225,7 +1225,8 @@ public sealed partial class Lowering
         && _b.PackedState.TryGetValue(_method, out string? why) && why == "packed operations";
 
     /// <summary>Whether the image's knob caps the processor's features (Corsac.Cpu.Features): then --cpu is no floor, and a variant runs only what its own features give.</summary>
-    private bool CpuCapped => RuntimeKnobs.Any(k => k.StartsWith("Corsac.Cpu.Features=", StringComparison.Ordinal));
+    private bool CpuCapped => _cpuCapped ??= RuntimeKnobs.Any(k => k.StartsWith("Corsac.Cpu.Features=", StringComparison.Ordinal));
+    private bool? _cpuCapped;
 
     /// <summary>Lowering a method's $inside copy (EmitMethod twice): its body as it is, inside its caller's state.</summary>
     private bool _insideCopy;
