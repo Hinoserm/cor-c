@@ -22565,8 +22565,10 @@ public sealed partial class Binder
             }
             for (int i = 0; i < c.Args.Count; i++)
             {
+                // As a method's argument converts (Fits): a constant that
+                // fits too -- `getString(0x1F00)` to a uint.
                 Type given = CheckExpr(c.Args[i]);
-                if (!given.IsError && !Convertible(given, pointer.Params[i]))
+                if (!given.IsError && !this.Fits(given, pointer.Params[i], c.Args[i]))
                 {
                     Error(c.Args[i], $"argument {i + 1}: a '{given}' is not a '{pointer.Params[i]}'");
                 }

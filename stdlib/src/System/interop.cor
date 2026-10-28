@@ -15,6 +15,7 @@
 //   Marshal.GetLastPInvokeError()         the errno of the last failed call
 //   Marshal.SetLastPInvokeError(int)      what sets it
 //   Marshal.GetLastSystemError()          the same number under its other name
+//   Marshal.GetLastWin32Error()           and under its older one
 //
 // And Interop.GetExceptionForIoErrno, which is how .NET's own System.IO turns
 // an errno into the exception the caller catches -- FileNotFoundException,
@@ -59,6 +60,13 @@ static partial class Marshal
     public static void SetLastPInvokeError(int error)
     {
         Runtime.SetNativeError(error);
+    }
+
+    /// The same number under its older name, which .NET keeps and P/Invoke
+    /// code written before .NET 6 calls: GetLastPInvokeError's.
+    public static int GetLastWin32Error()
+    {
+        return Runtime.NativeError();
     }
 
     /// The same number under the name .NET uses for it on Unix, where the

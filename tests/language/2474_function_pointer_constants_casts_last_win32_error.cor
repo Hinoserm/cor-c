@@ -1,0 +1,31 @@
+// test: a function pointer's call converts a constant that fits as a method's does; a cast to a function pointer's type reads as one; Marshal.GetLastWin32Error is GetLastPInvokeError
+// expect-exit: 0
+// expect-output:
+// twice 15872 80
+// through nint 18
+// last error 1234 1234
+//
+// C# converts a constant int to a uint parameter when it fits, through a
+// delegate* as through a method (`getString(0x1F00)`); a cast to a
+// delegate* type is a cast whatever follows it (`(nint)(delegate*<uint,
+// uint>)&Twice`); and old P/Invoke code reads the last error by its older
+// name.
+
+using System;
+using System.Runtime.InteropServices;
+
+static unsafe class Program
+{
+    static uint Twice(uint x) => x * 2;
+
+    static void Main()
+    {
+        delegate*<uint, uint> f = &Twice;
+        Console.WriteLine("twice " + f(0x1F00) + " " + f(40));
+        nint raw = (nint)(delegate*<uint, uint>)&Twice;
+        delegate*<uint, uint> back = (delegate*<uint, uint>)raw;
+        Console.WriteLine("through nint " + back(9));
+        Marshal.SetLastPInvokeError(1234);
+        Console.WriteLine("last error " + Marshal.GetLastWin32Error() + " " + Marshal.GetLastPInvokeError());
+    }
+}

@@ -10010,7 +10010,9 @@ public sealed class Parser
     /// </summary>
     private static bool CannotBeExpression(TypeRef type)
         => Predefined.Contains(type.Name) || type.ArrayRank > 0
-            || type.PointerDepth > 0 || type.Nullable;
+            || type.PointerDepth > 0 || type.Nullable
+            // A function pointer's type, `(delegate* unmanaged<nint, void>)&F`.
+            || type.IsFunctionPointer;
 
     /// <summary>
     /// `new ...` after the keyword, which `at` is: an object, an array or a
