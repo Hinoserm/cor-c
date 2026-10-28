@@ -3035,9 +3035,12 @@ static partial class Runtime
         return units;
     }
 
-    /// A string as a Windows A function reads one (LPSTR): Windows-1252, the
-    /// ANSI code page these images run with (CP_ACP), and a NUL. A character
-    /// it has no byte for is '?', as WideCharToMultiByte's default makes it.
+    /// A string as a Windows A function reads one (LPSTR): Windows-1252 and a
+    /// NUL. That is the ANSI code page (CP_ACP) of the Western systems these
+    /// images are made for, taken as fixed: a system set to another reads
+    /// other characters from the same bytes. A character it has no byte for
+    /// is '?', WideCharToMultiByte's default character -- not .NET's best fit
+    /// (U+0101 to 'a'), which guesses.
     public static byte[]? NativeAnsiString(string? s)
     {
         if (s == null)

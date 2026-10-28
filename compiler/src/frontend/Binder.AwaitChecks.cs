@@ -1605,8 +1605,16 @@ public sealed partial class Binder
             List<MethodSymbol> calls = DirectCalls(d.Body, m.Owner).Select(c => c.Callee).ToList();
             // A constructor's chain: the one `: this(...)` or `: base(...)`
             // names, or the base's parameterless one it runs unnamed.
-            if (d.IsCtor && !m.Static && (_r.Chained.TryGetValue(d, out MethodSymbol? chained) ? chained : Unnamed(m.Owner)) is { } next) calls.Add(next);
-            foreach (Node n in SafetyNodes(d.Body))
+            if (d.IsCtor && !m.Static && (_r.Chained.TryGetValue(d, out MethodSymbol? chained) ? chained : d.Init is null ? Unnamed(m.Owner) : null) is { } next) calls.Add(next);
+            // And what the chain's arguments call and make, run before the body.
+            List<Node> walked = new() { d.Body };
+            if (d.Init is { } init)
+                foreach (Expr arg in init.Args)
+                {
+                    walked.Add(arg);
+                    calls.AddRange(DirectCalls(arg, m.Owner).Select(c => c.Callee));
+                }
+            foreach (Node n in walked.SelectMany(part => SafetyNodes(part)))
             {
                 // A `new`'s constructor, as Lowering picks it: bound, or the
                 // implicit one of a class that declares none.

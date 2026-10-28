@@ -333,7 +333,8 @@ public static class Gir
             // calling the library's method fills it in at its own call.
             U8((byte)p.Caller);
             Str(p.CallerArgument);
-            // And how a [DllImport] or a COM slot passes it (MarshalAs).
+            // And how a COM slot passes it (MarshalAs); a [DllImport]'s own
+            // arguments are not kept here, so its parameters' matter only so.
             Str(p.MarshalAs);
             Expr(p.Default);
         }

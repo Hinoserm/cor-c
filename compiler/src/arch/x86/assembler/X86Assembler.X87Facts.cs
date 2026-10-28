@@ -41,12 +41,12 @@ public sealed partial class X86Assembler
     private static readonly HashSet<string> FpuStateOnly = new(StringComparer.Ordinal)
     {
         "fxsave", "fxrstor", "fnsave", "fsave", "frstor", "fnstenv", "fstenv", "fnstsw", "fstsw", "fnstcw", "fstcw", "fwait", "wait",
-        // And what sets a thread's state up or loads it: its start (FNINIT,
-        // MXCSR's first value) and a switch's other half. Which, like the
-        // restores above, a native called where no state is kept -- an
-        // interrupt handler's -- may do to the interrupted thread's state
-        // unrefused: the facts cannot tell a thread's start or a switch from
-        // any other routine that loads them.
+        // And what sets a thread's state up, loads it or reads its control
+        // words: a thread's start (FNINIT, MXCSR's first value) and a
+        // switch's other half. A native that does it where no state is kept
+        // -- an interrupt handler's -- changes the interrupted thread's state
+        // unrefused, as one that restores it does: the facts cannot tell a
+        // thread's start or a switch from any other routine.
         "fninit", "finit", "fldcw", "fldenv", "fnclex", "fclex", "ldmxcsr", "stmxcsr",
     };
 

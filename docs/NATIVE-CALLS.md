@@ -24,7 +24,7 @@ call is an ordinary call to the C symbol through the PLT.
 | integers, `char`, enums, `float`, `double` | as they are                        |
 | `nint`/`IntPtr`, pointers          | as they are                                |
 | `bool`                             | a 32-bit int, 0 or 1 (Win32's `BOOL`, .NET's default) |
-| `string`                           | a NUL-terminated UTF-8 copy (`const char *`) |
+| `string`                           | a NUL-terminated copy: UTF-16 (`LPWSTR`) for `CharSet.Unicode`, `StringMarshalling.Utf16`, `CharSet.Auto` on Windows and `[MarshalAs(UnmanagedType.LPWStr)]`; Windows-1252 for `CharSet.Ansi` (the default) and `LPStr` on Windows; UTF-8 (`const char *`) otherwise and for `LPUTF8Str` |
 | an array of numbers                | the address of its first element           |
 | `ref`/`out` of a number            | the variable's address                     |
 | a `bool` result                    | nonzero is true; `[return: MarshalAs(UnmanagedType.I1)]` reads a byte |

@@ -105,7 +105,9 @@ public sealed partial class Lowering
                 "Unicode" or "Utf16" => "NativeWideString",
                 "Auto" => Windows ? "NativeWideString" : "NativeString",
                 "Utf8" => "NativeString",
-                _ => ansi,
+                null or "Ansi" => ansi,
+                // StringMarshalling.Custom and anything unknown: no form said.
+                _ => null,
             },
             _ => null,
         };
@@ -146,7 +148,7 @@ public sealed partial class Lowering
                 string? form = StringForm(import, (m.Decl as MethodDecl)?.Params.ElementAtOrDefault(i)?.MarshalAs);
                 if (form is null)
                 {
-                    Error(at, $"'{m.Name}': a string marshalled as {(m.Decl as MethodDecl)?.Params.ElementAtOrDefault(i)?.MarshalAs} cannot be passed to C here; LPWStr, LPStr and LPUTF8Str can");
+                    Error(at, $"'{m.Name}': a string marshalled as {(m.Decl as MethodDecl)?.Params.ElementAtOrDefault(i)?.MarshalAs ?? import.Strings} cannot be passed to C here; LPWStr, LPStr and LPUTF8Str, CharSet Unicode, Ansi and Auto, and StringMarshalling Utf16 and Utf8 can");
                     return;
                 }
                 VReg? bytes = CallRuntime(at, form, IrTypes.Word, v);

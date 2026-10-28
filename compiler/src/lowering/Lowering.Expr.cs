@@ -1994,12 +1994,12 @@ public sealed partial class Lowering
     {
         for (TypeSymbol? t = sym.Base; t is not null; t = t.Base)
         {
-            MethodSymbol? found = t.Methods.FirstOrDefault(c => c.IsCtor && c.Params.Count == 0);
+            MethodSymbol? found = t.Methods.FirstOrDefault(c => c.IsCtor && !c.Static && c.Params.Count == 0);
             if (found is not null)
             {
                 return found;
             }
-            if (t.Methods.Any(c => c.IsCtor))
+            if (t.Methods.Any(c => c.IsCtor && !c.Static))
             {
                 return null;    // only parameterised constructors: the binder would have refused
             }
