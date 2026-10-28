@@ -142,15 +142,7 @@ static partial class Marshal
         {
             return 0;
         }
-        // THE TEXT'S UTF-8, not its UTF-16 code units: what C reads.
-        byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
-        nint at = AllocHGlobal(bytes.Length + 1);
-        for (int i = 0; i < bytes.Length; i++)
-        {
-            Sys.Write8((nuint)(at + i), bytes[i]);
-        }
-        Sys.Write8((nuint)(at + bytes.Length), 0);
-        return at;
+        return (nint)MarshalHeap.Utf8(s);
     }
 
     public static nint StringToHGlobalAnsi(string? s)
@@ -164,64 +156,14 @@ static partial class Marshal
     }
 
 
-    /// Whether AllocHGlobal and FreeHGlobal are C's malloc and free. ONE
-    /// ANSWER FOR EVERY THREAD, published in one word after the three
-    /// addresses it rests on: with each address published as it was found,
-    /// a second thread saw malloc found and free not yet, took pages of its
-    /// own for a block, and handed them to C's free later -- "free(): invalid
-    /// pointer", once in a few hundred runs of four threads starting at once.
-    /// Threads that ask together find the same addresses and write the same.
-    static bool CLibrary()
-    {
-        int kind = MarshalHeap.heapKind;
-        if (kind == 0)
-        {
-            nuint malloc = Runtime.NativeSymbol("malloc");
-            nuint free = Runtime.NativeSymbol("free");
-            nuint realloc = Runtime.NativeSymbol("realloc");
-            MarshalHeap.malloc = malloc;
-            MarshalHeap.free = free;
-            MarshalHeap.realloc = realloc;
-            kind = malloc != 0 && free != 0 && realloc != 0 ? 1 : 2;
-            Sys.Fence();
-            MarshalHeap.heapKind = kind;
-        }
-        return kind == 1;
-    }
-
-    /// `cb` bytes no collector will move or free.
+    /// `cb` bytes no collector will move or free (MarshalHeap.Alloc).
     public static nint AllocHGlobal(nint cb)
     {
         if (cb < 0)
         {
             throw new ArgumentOutOfRangeException("cb");
         }
-        nuint at;
-        if (CLibrary())
-        {
-            at = Runtime.CallC(MarshalHeap.malloc, cb == 0 ? 1 : (nuint)cb, 0, 0, 0);
-        }
-        else
-        {
-            // No C library to ask: pages, with the size kept in front so
-            // FreeHGlobal can give them back.
-            nuint bytes = ((nuint)cb + (nuint)(2 * WordSize.Bytes) + 4095) & ~(nuint)4095;
-            nuint pages = Platform.Map(bytes);
-            if (pages != 0)
-            {
-                Sys.WriteAddress(pages, bytes);
-                at = pages + (nuint)(2 * WordSize.Bytes);
-            }
-            else
-            {
-                at = 0;
-            }
-        }
-        if (at == 0)
-        {
-            throw new OutOfMemoryException();
-        }
-        return (nint)at;
+        return (nint)MarshalHeap.Alloc((nuint)cb);
     }
 
     public static nint AllocHGlobal(int cb)
@@ -236,17 +178,7 @@ static partial class Marshal
 
     public static void FreeHGlobal(nint hglobal)
     {
-        if (hglobal == 0)
-        {
-            return;
-        }
-        if (CLibrary())
-        {
-            Runtime.CallC(MarshalHeap.free, (nuint)hglobal, 0, 0, 0);
-            return;
-        }
-        nuint pages = (nuint)hglobal - (nuint)(2 * WordSize.Bytes);
-        Platform.Unmap(pages, Sys.ReadAddress(pages));
+        MarshalHeap.Free((nuint)hglobal);
     }
 
     public static void FreeCoTaskMem(nint ptr)
@@ -256,29 +188,11 @@ static partial class Marshal
 
     public static nint ReAllocHGlobal(nint pv, nint cb)
     {
-        if (pv == 0)
+        if (cb < 0)
         {
-            return AllocHGlobal(cb);
+            throw new ArgumentOutOfRangeException("cb");
         }
-        if (CLibrary())
-        {
-            nuint at = Runtime.CallC(MarshalHeap.realloc, (nuint)pv, cb == 0 ? 1 : (nuint)cb, 0, 0);
-            if (at == 0)
-            {
-                throw new OutOfMemoryException();
-            }
-            return (nint)at;
-        }
-        nuint pages = (nuint)pv - (nuint)(2 * WordSize.Bytes);
-        nuint had = Sys.ReadAddress(pages) - (nuint)(2 * WordSize.Bytes);
-        nint made = AllocHGlobal(cb);
-        nuint keep = had < (nuint)cb ? had : (nuint)cb;
-        for (nuint i = 0; i < keep; i++)
-        {
-            Sys.Write8((nuint)made + i, Sys.Read8((nuint)pv + i));
-        }
-        FreeHGlobal(pv);
-        return made;
+        return (nint)MarshalHeap.Realloc((nuint)pv, (nuint)cb);
     }
 
     public static byte ReadByte(nint ptr) { return (byte)Sys.Read8((nuint)ptr); }
@@ -761,6 +675,11 @@ namespace System.Runtime.InteropServices
 /// MARSHAL'S HEAP WORDS, in a class of their own: Marshal is a partial class
 /// split across two libraries (System.Runtime.InteropServices and COM's), and
 /// a static of a split class lost its storage in one library's link.
+/// MEMORY C OWNS, by address: what Marshal's HGlobal members (.NET's, in
+/// IntPtr) and the library's own interop (COM's slots, BSTRs' and
+/// VARIANTs' memory, OLE's HGLOBALs) take and give back. The C library's
+/// malloc when a C library is loaded (so free(3) in C may release it, and
+/// the other way round), and pages of the process's own otherwise.
 static class MarshalHeap
 {
     public static nuint malloc;
@@ -768,6 +687,119 @@ static class MarshalHeap
     public static nuint realloc;
     // 0 not yet asked, 1 the C library's, 2 our own pages.
     public static int heapKind;
+
+    /// Whether Alloc and Free are C's malloc and free. ONE ANSWER FOR EVERY
+    /// THREAD, published in one word after the three addresses it rests on:
+    /// with each address published as it was found, a second thread saw
+    /// malloc found and free not yet, took pages of its own for a block, and
+    /// handed them to C's free later -- "free(): invalid pointer", once in a
+    /// few hundred runs of four threads starting at once. Threads that ask
+    /// together find the same addresses and write the same.
+    static bool CLibrary()
+    {
+        int kind = heapKind;
+        if (kind == 0)
+        {
+            nuint m = Runtime.NativeSymbol("malloc");
+            nuint f = Runtime.NativeSymbol("free");
+            nuint r = Runtime.NativeSymbol("realloc");
+            malloc = m;
+            free = f;
+            realloc = r;
+            kind = m != 0 && f != 0 && r != 0 ? 1 : 2;
+            Sys.Fence();
+            heapKind = kind;
+        }
+        return kind == 1;
+    }
+
+    /// `bytes` bytes no collector will move or free; OutOfMemoryException
+    /// where there are none.
+    public static nuint Alloc(nuint bytes)
+    {
+        nuint at;
+        if (CLibrary())
+        {
+            at = Runtime.CallC(malloc, bytes == 0 ? 1 : bytes, 0, 0, 0);
+        }
+        else
+        {
+            // No C library to ask: pages, with the size kept in front so
+            // Free can give them back.
+            nuint mapped = (bytes + (nuint)(2 * WordSize.Bytes) + 4095) & ~(nuint)4095;
+            nuint pages = Platform.Map(mapped);
+            if (pages != 0)
+            {
+                Sys.WriteAddress(pages, mapped);
+                at = pages + (nuint)(2 * WordSize.Bytes);
+            }
+            else
+            {
+                at = 0;
+            }
+        }
+        if (at == 0)
+        {
+            throw new OutOfMemoryException();
+        }
+        return at;
+    }
+
+    /// What Alloc gave, given back; nothing for 0.
+    public static void Free(nuint at)
+    {
+        if (at == 0)
+        {
+            return;
+        }
+        if (CLibrary())
+        {
+            Runtime.CallC(free, at, 0, 0, 0);
+            return;
+        }
+        nuint pages = at - (nuint)(2 * WordSize.Bytes);
+        Platform.Unmap(pages, Sys.ReadAddress(pages));
+    }
+
+    /// `at`'s block grown or shrunk to `bytes`, its bytes kept up to the
+    /// shorter: Alloc for 0.
+    public static nuint Realloc(nuint at, nuint bytes)
+    {
+        if (at == 0)
+        {
+            return Alloc(bytes);
+        }
+        if (CLibrary())
+        {
+            nuint moved = Runtime.CallC(realloc, at, bytes == 0 ? 1 : bytes, 0, 0);
+            if (moved == 0)
+            {
+                throw new OutOfMemoryException();
+            }
+            return moved;
+        }
+        nuint had = Sys.ReadAddress(at - (nuint)(2 * WordSize.Bytes)) - (nuint)(2 * WordSize.Bytes);
+        nuint made = Alloc(bytes);
+        Sys.MemoryCopy(made, at, had < bytes ? had : bytes);
+        Free(at);
+        return made;
+    }
+
+    /// A copy of `s` as C reads one -- its UTF-8, not its UTF-16 code
+    /// units, and a NUL -- in memory Alloc gave; 0 for null.
+    public static nuint Utf8(string? s)
+    {
+        if (s == null)
+        {
+            return 0;
+        }
+        byte[] bytes = Utf8Transcoder.Encode(s, 0, s.Length);
+        nuint at = Alloc((nuint)bytes.Length + 1);
+        Sys.MemoryCopy(at, Sys.ArrayData(bytes), (nuint)bytes.Length);
+        Sys.Write8(at + (nuint)bytes.Length, 0);
+        System.GC.KeepAlive(bytes);
+        return at;
+    }
 }
 
 namespace System.Runtime.CompilerServices
