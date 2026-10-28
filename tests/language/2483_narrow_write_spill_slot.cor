@@ -1,0 +1,35 @@
+// test: a 32-bit value spilled and written in place keeps its whole slot: on x86-64 a narrow write folded into an eight-byte slot left the top half as it was, and the 64-bit read after it saw that half
+// expect-output:
+// 4294967295 1000 4294967295
+// 6555
+//
+// More values live across the loop than x86-64 has registers, so the
+// counter and the mask are spilled; each lap bumps the counter, and a
+// widening with no explicit extension reads its slot whole. The slot's
+// top half held a long before (the slots are shared), so a narrow write
+// folded into it would print garbage above the low word.
+
+static class Program
+{
+    static ulong Wide(uint v) => v;
+
+    static int Main()
+    {
+        long a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8;
+        long i = 9, j = 10, k = 11, l = 12, m = 13, n = 14, o = 15, p = 16;
+        long junk = -1;
+        System.Console.Write("");
+        uint mask = (uint)junk;
+        uint count = 0;
+        for (int lap = 0; lap < 1000; lap++)
+        {
+            a += b; b += c; c += d; d += e; e += f; f += g; g += h; h += i;
+            i += j; j += k; k += l; l += m; m += n; n += o; o += p; p += a;
+            count += 1;
+            mask &= 0xFFFFFFFFu;
+        }
+        System.Console.WriteLine(Wide(mask) + " " + Wide(count) + " " + (Wide(mask) | (Wide(count) >> 32)));
+        System.Console.WriteLine((a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p) % 10007);
+        return 0;
+    }
+}

@@ -84,6 +84,12 @@ public sealed class AInstr
     public int OperandCount { get; init; }
     /// <summary>The operand positions that may be a memory operand (a spill slot read or written in place).</summary>
     public uint MayMemory { get; init; }
+    /// <summary>
+    /// Of those, the positions a write may go to memory: all of the slot
+    /// written. x86-64's 32-bit or byte write of a general register leaves
+    /// the slot's top half as it was, and a reload is the whole eight bytes.
+    /// </summary>
+    public uint MayMemoryWrite { get; init; }
     /// <summary>The operand positions that are memory now.</summary>
     public uint IsMemory { get; init; }
     /// <summary>The operand positions that may be an immediate (a constant remade in place): any, or a plain number only.</summary>

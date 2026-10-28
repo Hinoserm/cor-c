@@ -110,6 +110,7 @@ internal sealed class X86Target : ITarget
             Constant = i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm : null,
             OperandCount = i.Operands.Count,
             MayMemory = mayMemory,
+            MayMemoryWrite = mayMemory,
             IsMemory = isMemory,
             MayImmediate = mayImmediate,
             MayImmediateWide = i.Width == 4 ? mayImmediate : 0,
@@ -141,8 +142,9 @@ internal sealed class X86Target : ITarget
             List<MInstr> outList = new();
             foreach (AInstr ai in ab.Instrs)
             {
-                MInstr n = Build(ai, index, p, blocks);
-                if (p.LiveAcross(index) is { } live)
+                // Asked first: a dropped instruction is not built at all.
+                MInstr? n = p.Dropped(index) ? null : Build(ai, index, p, blocks);
+                if (n is not null && p.LiveAcross(index) is { } live)
                 {
                     Safepoint map = new();
                     map.SlotOffsets.AddRange(live.Slots);
@@ -151,7 +153,7 @@ internal sealed class X86Target : ITarget
                 }
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
                     outList.Add(new MInstr(MOp.Mov, MReg.Of(reg), constant is MImm imm ? imm : MMem.Spill(slot)) { Line = ai.Line });
-                if (!p.Dropped(index)) outList.Add(n);
+                if (n is not null) outList.Add(n);
                 foreach ((int reg, int slot) in p.After(index))
                     outList.Add(new MInstr(MOp.Mov, MMem.Spill(slot), MReg.Of(reg)) { Line = ai.Line });
                 index++;

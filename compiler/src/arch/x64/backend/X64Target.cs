@@ -93,10 +93,17 @@ internal sealed class X64Target : ITarget
         List<Named> named = new();
         foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i))
             named.Add(new Named(r.Id, (Role)(byte)role, operand, inMem));
-        uint mayMemory = 0, isMemory = 0, mayImmediate = 0, mayImmediateWide = 0;
+        uint mayMemory = 0, mayMemoryWrite = 0, isMemory = 0, mayImmediate = 0, mayImmediateWide = 0;
         for (int k = 0; k < i.Operands.Count && k < 32; k++)
         {
-            if (Allocator.Foldable(i, k)) mayMemory |= 1u << k;
+            if (Allocator.Foldable(i, k))
+            {
+                mayMemory |= 1u << k;
+                // A NARROW WRITE LEAVES THE SLOT'S TOP HALF AS IT WAS, and a
+                // reload is the whole eight bytes: a general register written
+                // at less than eight bytes is written in a register.
+                if (i.Width == 8 || i.Operands[k] is MReg r && (r.IsFloat || _m.FloatRegs.Contains(r.Id))) mayMemoryWrite |= 1u << k;
+            }
             if (i.Operands[k] is MMem) isMemory |= 1u << k;
         }
         // A constant in place of a register: a move's or an ALU operation's
@@ -130,6 +137,7 @@ internal sealed class X64Target : ITarget
             Constant = constant,
             OperandCount = i.Operands.Count,
             MayMemory = mayMemory,
+            MayMemoryWrite = mayMemoryWrite,
             IsMemory = isMemory,
             MayImmediate = mayImmediate,
             MayImmediateWide = mayImmediateWide,
@@ -146,7 +154,10 @@ internal sealed class X64Target : ITarget
     /// spilled value's loads before and stores after by its class's move,
     /// eight bytes; a remade constant moved whole; the copies and jumps the
     /// allocator made, made; the callee-saved registers touched saved, or
-    /// all of them where the function enters the collector.
+    /// all of them where the function enters the collector. No stack maps
+    /// (IPlacement.LiveAcross): the runtime has none on x86-64 (gc.cor's
+    /// BuildMaps is i386's), and its conservative collector reads a stack as
+    /// a range of memory.
     /// </summary>
     public void Rebuild(AFunction f, IPlacement p)
     {
@@ -160,14 +171,15 @@ internal sealed class X64Target : ITarget
             List<MInstr> outList = new();
             foreach (AInstr ai in ab.Instrs)
             {
-                MInstr n = Build(ai, index, p, blocks);
+                // Asked first: a dropped instruction is not built at all.
+                MInstr? n = p.Dropped(index) ? null : Build(ai, index, p, blocks);
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
                 {
                     outList.Add(constant is MImm imm
                         ? new MInstr(MOp.Mov, new MReg(reg), imm) { Width = 8, Line = ai.Line }
                         : new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, new MReg(reg), MMem.Spill(slot)) { Width = 8, Line = ai.Line });
                 }
-                if (!p.Dropped(index)) outList.Add(n);
+                if (n is not null) outList.Add(n);
                 foreach ((int reg, int slot) in p.After(index))
                     outList.Add(new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, MMem.Spill(slot), new MReg(reg)) { Width = 8, Line = ai.Line });
                 index++;

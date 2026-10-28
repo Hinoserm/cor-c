@@ -20,7 +20,13 @@ namespace Corsac.Lang.RegAlloc;
 /// live at once but across the copy itself, so a copy between two spilled
 /// pieces is no work at all (Allocator's Decisions drop it).
 ///
-/// Outermost loop first, its pieces split again at the loops inside it.
+/// IN ROUNDS, INNERMOST FIRST: each round splits every loop with no unsplit
+/// loop inside it -- natural loops with different heads are nested or apart,
+/// so these are apart, and one liveness serves them all -- then the loops
+/// found again, the new blocks now inside the ones around them, and the next
+/// ring out split, its pieces copying into and out of the inner ones. The
+/// liveness is the allocator's kind: only values some block reads before it
+/// writes them, the rest being live into no block at all.
 /// Not a loop entered other than through its head, nor one headed by the
 /// entry block, nor one with a block whose address is taken or a jump to an
 /// address (left by no edge the split could see), nor one holding a landing
@@ -42,11 +48,14 @@ public sealed class LoopSplit
     private readonly AFunction _f;
     private readonly List<ABlock> _succ = new();
     private readonly Dictionary<HashSet<ABlock>, ABlock> _heads = new(ReferenceEqualityComparer.Instance);
+    /// <summary>The values whose one definition is a constant (Constants), found once: no split makes another.</summary>
+    private BitSet _constant = new(0);
+    private int _constantWidth;
 
     private LoopSplit(AFunction f) => _f = f;
 
     /// <summary>Splits the function's values at its loops; null where nothing was split.</summary>
-    public static LoopSplit? Run(AFunction f, int maxLoops = 64)
+    public static LoopSplit? Run(AFunction f)
     {
         foreach (ABlock b in f.Blocks)
         {
@@ -54,15 +63,22 @@ public sealed class LoopSplit
             foreach (AInstr i in b.Instrs) if (i.JumpsAnywhere) return null;
         }
         LoopSplit s = new(f);
-        List<HashSet<ABlock>> loops = s.FindLoops();
-        if (loops.Count == 0) return null;
-        // Outermost first: a piece split at a loop is split again at the loops inside it.
-        loops.Sort((x, y) => y.Count.CompareTo(x.Count));
-        int done = 0;
-        foreach (HashSet<ABlock> body in loops)
+        s._constant = s.Constants(s._constantWidth = f.NextVReg);
+        HashSet<ABlock> done = new(ReferenceEqualityComparer.Instance);
+        while (true)
         {
-            if (done == maxLoops) break;
-            if (s.Split(body)) done++;
+            List<HashSet<ABlock>> loops = s.FindLoops();
+            // Each unsplit loop holding no unsplit loop: apart from each other.
+            List<HashSet<ABlock>> ring = loops.Where(l => !done.Contains(s._heads[l])
+                && !loops.Any(o => !ReferenceEquals(o, l) && !done.Contains(s._heads[o]) && l.Contains(s._heads[o]) && o.Count < l.Count)).ToList();
+            if (ring.Count == 0) break;
+            Liveness live = s.LiveIn();
+            s.JumpsInto(live);
+            foreach (HashSet<ABlock> body in ring)
+            {
+                done.Add(s._heads[body]);
+                s.Split(body, live);
+            }
         }
         return s.Copies.Count == 0 ? null : s;
     }
@@ -77,6 +93,7 @@ public sealed class LoopSplit
     /// <summary>The natural loops entered only through their heads, a set of blocks each, every back edge to one head together.</summary>
     private List<HashSet<ABlock>> FindLoops()
     {
+        _heads.Clear();
         int nb = _f.Blocks.Count;
         Dictionary<ABlock, int> index = Index();
         List<int>[] succ = new List<int>[nb], pred = new List<int>[nb];
@@ -130,66 +147,130 @@ public sealed class LoopSplit
         return loops;
     }
 
-    /// <summary>Each block's virtual registers live on entry, the function as it is now.</summary>
-    private BitSet[] LiveIn(out int width)
+    /// <summary>
+    /// What is live into each block, over only the values some block reads
+    /// before it writes them (Globals; a value every block writes before it
+    /// reads is live into none), each block's row in one array (Rows).
+    /// </summary>
+    private sealed class Liveness
     {
-        int nb = _f.Blocks.Count;
-        width = _f.NextVReg;
-        int fv = _f.Registers.FirstVirtual;
-        Dictionary<ABlock, int> index = Index();
-        BitSet[] use = new BitSet[nb], def = new BitSet[nb], liveIn = new BitSet[nb];
-        int[][] succ = new int[nb][];
-        for (int b = 0; b < nb; b++)
+        public required Dictionary<ABlock, int> Index;
+        public required int[] GlobalOf;
+        public required List<int> Globals;
+        public required BitRows Rows;
+        /// <summary>
+        /// A preheader made this round stands for its head: what goes into it
+        /// goes into the head, the copies it makes reading values live there.
+        /// (A loop's exits are reached from that loop alone, apart from the
+        /// others this round.)
+        /// </summary>
+        public Dictionary<ABlock, ABlock> StandsFor { get; } = new(ReferenceEqualityComparer.Instance);
+        /// <summary>The blocks whose jumps name each block, kept as this round's splits retarget and add them.</summary>
+        public Dictionary<ABlock, HashSet<ABlock>> JumpsFrom { get; } = new(ReferenceEqualityComparer.Instance);
+        /// <summary>The values live into any landing pad, left alone: entered from anywhere in its try, a pad finds what the frame holds.</summary>
+        public HashSet<int> PadLive { get; } = new();
+        public void Jumps(ABlock from, ABlock to)
         {
-            use[b] = new BitSet(width); def[b] = new BitSet(width); liveIn[b] = new BitSet(width);
+            if (!JumpsFrom.TryGetValue(to, out HashSet<ABlock>? set)) JumpsFrom[to] = set = new(ReferenceEqualityComparer.Instance);
+            set.Add(from);
+        }
+        public bool LiveInto(ABlock b, int v)
+        {
+            if (StandsFor.TryGetValue(b, out ABlock? head)) b = head;
+            return (uint)v < (uint)GlobalOf.Length && GlobalOf[v] >= 0 && Rows.Get(Index[b], GlobalOf[v]);
+        }
+    }
+
+    private Liveness LiveIn()
+    {
+        int nb = _f.Blocks.Count, n = _f.NextVReg, fv = _f.Registers.FirstVirtual;
+        Dictionary<ABlock, int> index = Index();
+        int[] globalOf = new int[n];
+        Array.Fill(globalOf, -1);
+        int[] lastDef = new int[n];
+        Array.Fill(lastDef, -1);
+        List<int> globals = new();
+        for (int b = 0; b < nb; b++)
             foreach (AInstr i in _f.Blocks[b].Instrs)
             {
-                foreach (Named n in i.Regs)
-                    if (n.Reg >= fv && (n.Role & Role.Use) != 0 && !def[b].Get(n.Reg)) use[b].Set(n.Reg);
-                foreach (Named n in i.Regs)
-                    if (n.Reg >= fv && (n.Role & Role.Def) != 0) def[b].Set(n.Reg);
+                foreach (Named r in i.Regs)
+                    if (r.Reg >= fv && (r.Role & Role.Use) != 0 && lastDef[r.Reg] != b && globalOf[r.Reg] < 0)
+                    {
+                        globalOf[r.Reg] = globals.Count;
+                        globals.Add(r.Reg);
+                    }
+                foreach (Named r in i.Regs)
+                    if (r.Reg >= fv && (r.Role & Role.Def) != 0) lastDef[r.Reg] = b;
+            }
+        int g = globals.Count;
+        BitRows use = new() { Words = (g + 63) / 64 }, def = new() { Words = (g + 63) / 64 }, live = new() { Words = (g + 63) / 64 };
+        use.Bits = new ulong[nb * use.Words]; def.Bits = new ulong[nb * def.Words]; live.Bits = new ulong[nb * live.Words];
+        int[][] succ = new int[nb][];
+        List<int>[] pred = new List<int>[nb];
+        for (int b = 0; b < nb; b++) pred[b] = new();
+        for (int b = 0; b < nb; b++)
+        {
+            foreach (AInstr i in _f.Blocks[b].Instrs)
+            {
+                foreach (Named r in i.Regs)
+                    if (r.Reg >= fv && (r.Role & Role.Use) != 0 && globalOf[r.Reg] is >= 0 and var at && !def.Get(b, at)) use.Set(b, at);
+                foreach (Named r in i.Regs)
+                    if (r.Reg >= fv && (r.Role & Role.Def) != 0 && globalOf[r.Reg] is >= 0 and var at) def.Set(b, at);
             }
             _f.SuccessorsInto(b, _succ);
             succ[b] = _succ.Select(t => index[t]).ToArray();
+            foreach (int t in succ[b]) pred[t].Add(b);
         }
-        BitSet outSet = new(width);
-        for (bool changed = true; changed;)
+        // live-in(b) = use(b) | (live-out(b) & ~def(b)), to the least fixed
+        // point by a worklist: a block again only when a successor changed.
+        BitSet row = new(g), into = new(g);
+        Stack<int> work = new();
+        bool[] owed = new bool[nb];
+        for (int b = 0; b < nb; b++) { work.Push(b); owed[b] = true; }
+        while (work.Count > 0)
         {
-            changed = false;
-            for (int b = nb - 1; b >= 0; b--)
-            {
-                outSet.Clear();
-                foreach (int t in succ[b]) outSet.Or(liveIn[t]);
-                outSet.AndNot(def[b]);
-                outSet.Or(use[b]);
-                if (!outSet.Equals(liveIn[b])) { liveIn[b].CopyFrom(outSet); changed = true; }
-            }
+            int b = work.Pop();
+            owed[b] = false;
+            row.Clear();
+            foreach (int t in succ[b]) row.Or(live, t);
+            row.AndNot(def, b);
+            row.Or(use, b);
+            if (live.RowEquals(b, row)) continue;
+            live.CopyRow(b, row);
+            foreach (int p in pred[b]) if (!owed[p]) { owed[p] = true; work.Push(p); }
         }
-        return liveIn;
+        return new Liveness { Index = index, GlobalOf = globalOf, Globals = globals, Rows = live };
     }
 
-    private bool Split(HashSet<ABlock> body)
+    /// <summary>Who jumps where, and what landing pads want, for the round.</summary>
+    private void JumpsInto(Liveness live)
+    {
+        foreach (ABlock b in _f.Blocks)
+        {
+            foreach (AInstr i in b.Instrs)
+                if (i.Targets is { } targets)
+                    foreach (ABlock t in targets) live.Jumps(b, t);
+            if (b.LandingPad)
+                foreach (int v in live.Globals) if (live.LiveInto(b, v)) live.PadLive.Add(v);
+        }
+    }
+
+    private bool Split(HashSet<ABlock> body, Liveness live)
     {
         ABlock head = _heads[body];
         foreach (ABlock b in body) if (b.LandingPad) return false;
         int fv = _f.Registers.FirstVirtual;
-        BitSet[] liveIn = LiveIn(out int width);
-        Dictionary<ABlock, int> index = Index();
-        BitSet padLive = new(width);
-        for (int b = 0; b < _f.Blocks.Count; b++)
-            if (_f.Blocks[b].LandingPad) padLive.Or(liveIn[b]);
-
-        // What the loop reads or writes, and which values are constants.
-        BitSet constant = Constants(width);
+        int width = _f.NextVReg;
+        // What the loop reads or writes.
         BitSet touched = new(width);
         foreach (ABlock b in body)
             foreach (AInstr i in b.Instrs)
                 foreach (Named named in i.Regs)
                     if (named.Reg >= fv) touched.Set(named.Reg);
         List<int> values = new();
-        BitSet headIn = liveIn[index[head]];
-        for (int v = fv; v < width; v++)
-            if (headIn.Get(v) && touched.Get(v) && !padLive.Get(v) && !constant.Get(v)) values.Add(v);
+        foreach (int v in live.Globals)
+            if (v < width && live.LiveInto(head, v) && touched.Get(v) && !live.PadLive.Contains(v) && !(v < _constantWidth && _constant.Get(v))) values.Add(v);
+        values.Sort();
         if (values.Count == 0) return false;
 
         int line = head.Instrs.Count > 0 ? head.Instrs[0].Line : 0;
@@ -212,14 +293,15 @@ public sealed class LoopSplit
         // The ways out, found before anything moves: each edge from the loop
         // to a block outside it where some value split here is live.
         List<(ABlock From, ABlock To, List<int> Live)> exits = new();
+        Dictionary<ABlock, int> index = Index();
         foreach (ABlock b in body)
         {
             _f.SuccessorsInto(index[b], _succ);
             foreach (ABlock t in _succ.Distinct(ReferenceEqualityComparer.Instance).Cast<ABlock>())
             {
                 if (body.Contains(t)) continue;
-                List<int> live = values.Where(v => liveIn[index[t]].Get(v)).ToList();
-                if (live.Count > 0) exits.Add((b, t, live));
+                List<int> wanted = values.Where(v => live.LiveInto(t, v)).ToList();
+                if (wanted.Count > 0) exits.Add((b, t, wanted));
             }
         }
 
@@ -229,9 +311,15 @@ public sealed class LoopSplit
         ABlock? before = at > 0 ? _f.Blocks[at - 1] : null;
         if (before is not null && body.Contains(before) && !before.EndsUnconditionally)
             before.Instrs.Add(MakeJump(head, before.Instrs.Count > 0 ? before.Instrs[^1].Line : line));
-        foreach (ABlock b in _f.Blocks)
-            if (!body.Contains(b)) Retarget(b, head, pre);
+        if (live.JumpsFrom.TryGetValue(head, out HashSet<ABlock>? into))
+            foreach (ABlock b in into.ToList())
+                if (!body.Contains(b))
+                {
+                    Retarget(b, head, pre);
+                    live.Jumps(b, pre);
+                }
         _f.Blocks.Insert(at, pre);
+        live.StandsFor[pre] = head;
 
         // The loop reads and writes its own pieces.
         foreach (ABlock b in body)
@@ -242,17 +330,18 @@ public sealed class LoopSplit
         // own on the edge: after the block it leaves where that one fell
         // through to it, else at the end, jumping on.
         int n = 0;
-        foreach ((ABlock from, ABlock to, List<int> live) in exits)
+        foreach ((ABlock from, ABlock to, List<int> wanted) in exits)
         {
             ABlock exit = new() { Name = from.Name + "$out" + n++ };
             int exitLine = from.Instrs.Count > 0 ? from.Instrs[^1].Line : line;
-            foreach (int v in live)
+            foreach (int v in wanted)
             {
                 AInstr copy = MakeCopy(v, renamed[v], exitLine);
                 exit.Instrs.Add(copy);
                 Copies.Add(copy);
             }
             exit.Instrs.Add(MakeJump(to, exitLine));
+            live.Jumps(exit, to);
             int fromAt = _f.Blocks.IndexOf(from);
             bool fallsInto = !from.EndsUnconditionally && fromAt + 1 < _f.Blocks.Count && ReferenceEquals(_f.Blocks[fromAt + 1], to);
             Retarget(from, to, exit);
@@ -266,7 +355,7 @@ public sealed class LoopSplit
     private static AInstr MakeCopy(int dst, int src, int line) => new()
     {
         Regs = new[] { new Named(dst, Role.Def, 0, false), new Named(src, Role.Use, 1, false) },
-        OperandCount = 2, IsCopy = true, WholeCopy = true, DropsSelf = true, MayMemory = 3, Line = line, Made = Made.Copy,
+        OperandCount = 2, IsCopy = true, WholeCopy = true, DropsSelf = true, MayMemory = 3, MayMemoryWrite = 3, Line = line, Made = Made.Copy,
     };
 
     private static AInstr MakeJump(ABlock to, int line) => new()

@@ -13,9 +13,9 @@ namespace Corsac.Lang.RegAlloc;
 /// is not SSA and a virtual register may be defined in several places. Each
 /// virtual register gets one interval, the exact ranges of positions it is
 /// live at, holes and all: another interval may share its register in the
-/// holes. The physical registers the selector named (EAX around a
-/// divide, ECX for a shift count, the caller-saved three at every call) are
-/// not intervals but fixed busy positions that no interval may overlap.
+/// holes. The physical registers a selector named (a divide's, a shift
+/// count's, the caller-saved ones at every call) are not intervals but
+/// fixed busy positions that no interval may overlap.
 ///
 /// Positions: instruction i owns 4i .. 4i+3. A reload lands at 4i, reads
 /// happen at 4i+1, writes at 4i+2, a spill store at 4i+3. An interval that
@@ -89,7 +89,18 @@ public sealed class Allocator
     /// <summary>The positions each virtual register is live at, as ranges.</summary>
     private readonly List<(int S, int E)>?[] _ranges;
     private readonly int[] _runS, _runE;
-    private readonly int[][] _busy;
+    /// <summary>
+    /// Each physical register's fixed busy positions: a prefix-summed table
+    /// four words an instruction, made only for a register the function fixes
+    /// somewhere (null: never busy) -- or, in a function too large for
+    /// tables (BusyTables), a sorted list of the positions, searched by halves.
+    /// Tables for every register of x86-64's thirty-two were three quarters
+    /// of a gigabyte for a 1.4-million-instruction Main.
+    /// </summary>
+    private readonly int[]?[] _busy;
+    private readonly List<int>?[]? _busyList;
+    /// <summary>The positions past which a function's busy registers are kept as lists, not tables.</summary>
+    private const int BusyTables = 1 << 22;
     // How much of each busy table this function uses: the tables are a
     // thread's, kept from one function to the next (SpareBusy).
     private readonly int _busyLength;
@@ -99,7 +110,7 @@ public sealed class Allocator
     // the collector. Grown as a function needs, cleared as far as it uses
     // them; one past KeptBusy is made for that function alone, so that one
     // huge function does not hold its tables for the rest of the run.
-    [ThreadStatic] private static int[][]? _spareBusy;
+    [ThreadStatic] private static int[]?[]? _spareBusy;
     private const int KeptBusy = 1 << 16;
     private readonly int[] _assigned;
     private readonly int[] _spilledFrom;
@@ -153,7 +164,7 @@ public sealed class Allocator
         _rf = m.Registers;
         _fv = _rf.FirstVirtual;
         _physCount = _rf.PhysCount;
-        _busy = new int[_physCount][];
+        _busy = new int[]?[_physCount];
         foreach (ABlock b in m.Blocks)
         {
             foreach (AInstr i in b.Instrs)
@@ -187,28 +198,29 @@ public sealed class Allocator
             _spilledFrom[v] = int.MaxValue;
         }
         _busyLength = _lin.Count * 4 + 1;
-        int[][] spare = _spareBusy is { } kept0 && kept0.Length >= _physCount ? kept0 : _spareBusy = new int[_physCount][];
-        for (int r = 0; r < _physCount; r++)
+        if (_busyLength > BusyTables) _busyList = new List<int>?[_physCount];
+    }
+
+    /// <summary>A register's busy table, made the first time the function fixes it: the thread's kept one where it is long enough.</summary>
+    private int[] BusyTable(int reg)
+    {
+        int[]?[] spare = _spareBusy is { } kept0 && kept0.Length >= _physCount ? kept0 : _spareBusy = new int[]?[_physCount];
+        int[]? kept = spare[reg];
+        if (kept is not null && kept.Length >= _busyLength)
         {
-            int[]? kept = spare[r];
-            if (kept is not null && kept.Length >= _busyLength)
-            {
-                Array.Clear(kept, 0, _busyLength);
-                _busy[r] = kept;
-            }
-            else
-            {
-                _busy[r] = new int[_busyLength];
-                if (_busyLength <= KeptBusy) spare[r] = _busy[r];
-            }
+            Array.Clear(kept, 0, _busyLength);
+            return kept;
         }
+        int[] made = new int[_busyLength];
+        if (_busyLength <= KeptBusy) spare[reg] = made;
+        return made;
     }
 
     /// <summary>Allocates the function's registers, and has its target rebuild it from what was decided.</summary>
     public static void Run(AFunction m)
     {
-        if ((Experiment & 8) != 0) CopyFold.Run(m);
-        LoopSplit? split = (Experiment & 2) != 0 ? LoopSplit.Run(m) : null;
+        CopyFold.Run(m);
+        LoopSplit? split = LoopSplit.Run(m);
         Allocator a = new(m) { _split = split };
         a.CollectOccurrences();
         a.ComputeLiveness();
@@ -319,7 +331,8 @@ public sealed class Allocator
     {
         if (reg < _fv)
         {
-            _busy[reg][pos] = 1;
+            if (_busyList is not null) (_busyList[reg] ??= new()).Add(pos);
+            else (_busy[reg] ??= BusyTable(reg))[pos] = 1;
         }
         else
         {
@@ -605,10 +618,18 @@ public sealed class Allocator
             list.RemoveRange(w + 1, list.Count - w - 1);
         }
 
-        // Prefix sums so "is r busy anywhere in [a, b]" is a subtraction.
+        // Prefix sums so "is r busy anywhere in [a, b]" is a subtraction;
+        // a list sorted and each position once, for a search by halves.
         for (int r = 0; r < _physCount; r++)
         {
-            int[] arr = _busy[r];
+            if (_busyList?[r] is { } list)
+            {
+                list.Sort();
+                int w = 0;
+                for (int k = 0; k < list.Count; k++) if (w == 0 || list[k] != list[w - 1]) list[w++] = list[k];
+                list.RemoveRange(w, list.Count - w);
+            }
+            if (_busy[r] is not { } arr) continue;
             for (int p = 1; p < _busyLength; p++)
             {
                 arr[p] += arr[p - 1];
@@ -618,7 +639,18 @@ public sealed class Allocator
 
     private bool Busy(int reg, int start, int end)
     {
-        int[] arr = _busy[reg];
+        if (_busyList is not null)
+        {
+            if (_busyList[reg] is not { } list) return false;
+            int lo = 0, hi = list.Count;
+            while (lo < hi)
+            {
+                int mid = (lo + hi) / 2;
+                if (list[mid] < start) lo = mid + 1; else hi = mid;
+            }
+            return lo < list.Count && list[lo] <= end;
+        }
+        if (_busy[reg] is not { } arr) return false;
         int before = start == 0 ? 0 : arr[start - 1];
         return arr[Math.Min(end, _busyLength - 1)] - before > 0;
     }
@@ -866,15 +898,7 @@ public sealed class Allocator
 
     /// <summary>--trace-regalloc NAME: every choice of what gives up its register, in functions whose name holds NAME.</summary>
     public static string? Trace;
-    /// <summary>--ra-experiment N: the allocator's research variants (REGALLOC-RESEARCH), bits; 0 is the allocator as it is.</summary>
-    public static int Experiment;
     private bool Tracing => Trace is { } t && _f.Name.Contains(t, StringComparison.Ordinal);
-
-    /// <summary>Experiment 1: outside a loop, the victim is the one whose accesses to come cost least, weighted (FutureCost).</summary>
-    private static bool Weighted => (Experiment & 1) != 0;
-
-    /// <summary>Experiment 4: a value read by the instruction only where its slot can serve may be evicted at it (FoldsAt).</summary>
-    private static bool FoldEvict => (Experiment & 4) != 0;
 
     /// <summary>Whether every occurrence of a value at an instruction is a read that may take its spill slot instead.</summary>
     private bool FoldsAt(int vreg, int at)
@@ -934,7 +958,7 @@ public sealed class Allocator
                 // only reads, in an operand that may be memory, gives way here
                 // as well as anywhere -- `mov t, [slot]` is the copy, not a
                 // reload more (Appel and George's CISC operands).
-                if (FoldEvict && use <= cur.Start && !a.Short && FoldsAt(a.VReg, at)) { use = NextUse(a.VReg, at + 1); foldedHere++; }
+                if (use <= cur.Start && !a.Short && FoldsAt(a.VReg, at)) { use = NextUse(a.VReg, at + 1); foldedHere++; }
                 if (use < next) next = use;
             }
             // Only one operand of an instruction may be memory: two values read
@@ -951,10 +975,9 @@ public sealed class Allocator
             }
             long cost = 0;
             if (loop >= 0) foreach (Interval a in group) cost += a.Short ? LapCostServed(a, at, loop) : LapCost(a.VReg, at, loop);
-            else if (Weighted) foreach (Interval a in group) cost += a.Short ? 2 : FutureCost(a.VReg, at);
             if (Tracing)
                 Console.Error.WriteLine($"regalloc {_f.Name} at {at} loop {loop} for v{cur.VReg}{(cur.Short ? "s" : "")}: {_t.RegName(r)} holds {string.Join(",", group.Select(a => "v" + a.VReg + (a.Short ? "s" : "")))} cost {cost} next {next}");
-            if (loop >= 0 || Weighted ? cost < victimCost || cost == victimCost && next > victimNext : next > victimNext)
+            if (loop >= 0 ? cost < victimCost || cost == victimCost && next > victimNext : next > victimNext)
             {
                 victims = group;
                 victimNext = next;
@@ -968,9 +991,8 @@ public sealed class Allocator
             // The current interval read again in its own run needs a register
             // there at once: given up, it would only take one back.
             bool curSoon = curNext != int.MaxValue && curNext / 4 < _lin.Count && _runHead[_blockOfInstr[curNext / 4]] == _runHead[_blockOfInstr[at]];
-            long curCost = loop >= 0 ? (curSoon ? long.MaxValue : LapCost(cur.VReg, at, loop))
-                : Weighted ? (curSoon ? long.MaxValue : FutureCost(cur.VReg, at)) : 0;
-            if (victims is null || (loop >= 0 || Weighted ? curCost < victimCost || curCost == victimCost && curNext > victimNext : curNext > victimNext))
+            long curCost = loop >= 0 ? (curSoon ? long.MaxValue : LapCost(cur.VReg, at, loop)) : 0;
+            if (victims is null || (loop >= 0 ? curCost < victimCost || curCost == victimCost && curNext > victimNext : curNext > victimNext))
             {
                 if (Tracing) Console.Error.WriteLine($"regalloc {_f.Name} at {at}: v{cur.VReg} itself given up (cost {curCost} next {curNext})");
                 int split = SplitPrefix(cur);
@@ -1303,6 +1325,13 @@ public sealed class Allocator
         {
             return false;
         }
+        // A WRITE INTO THE SLOT only where it writes all of it: x86-64's
+        // 32-bit or byte write leaves the top half as it was, and a reload
+        // is the whole eight bytes (AInstr.MayMemoryWrite).
+        if ((o.Role & Role.Def) != 0 && (i.MayMemoryWrite >> o.Operand & 1) == 0)
+        {
+            return false;
+        }
         int hits = 0;
         for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
         {
@@ -1394,15 +1423,16 @@ public sealed class Allocator
         }
     }
 
+    // Whether a register is live into block `s`: one of those some block reads
+    // before it writes (_globalOf), and in the block's live-in row.
+    private bool LiveInto(int s, int vreg) => (uint)vreg < (uint)_n && _globalOf[vreg] is >= 0 and var at && _liveIn.Get(s, at);
+
     /// <summary>
     /// Whether no edge leaves the code from `from` on for a block before it
     /// where the register is live on entry. Then every read before `from`
     /// is reached only by paths that stay before it, where the register it
     /// was given still holds it, and needs no reload from the slot.
     /// </summary>
-    // Whether a register is live into block `s`: one of those some block reads
-    // before it writes (_globalOf), and in the block's live-in row.
-    private bool LiveInto(int s, int vreg) => (uint)vreg < (uint)_n && _globalOf[vreg] is >= 0 and var at && _liveIn.Get(s, at);
 
     private bool NothingFlowsBack(int vreg, int from)
     {
@@ -1478,39 +1508,6 @@ public sealed class Allocator
         for (int l = 0; l < _loops.Count; l++)
             for (int b = 0; b < nb; b++)
                 if (_loops[l].Body[b] && _loopOf[b] < 0) _loopOf[b] = l;
-        if (!Weighted) return;
-        _weight = new long[nb];
-        for (int b = 0; b < nb; b++)
-        {
-            int depth = 0;
-            foreach ((_, bool[] body) in _loops) if (body[b]) depth++;
-            _weight[b] = 1L << (3 * Math.Min(depth, 6));
-        }
-    }
-
-    /// <summary>Each block's weight, 8 to the power of how many loops it is in.</summary>
-    private long[] _weight = Array.Empty<long>();
-
-    /// <summary>
-    /// WHAT GIVING UP A VALUE FROM `at` ON COSTS, weighted by how often each
-    /// of its accesses from there runs: a store for each write, a reload
-    /// for each straight run that reads it, 8 times over for each loop the
-    /// access is in. A constant remade costs no store and half a load.
-    /// </summary>
-    private long FutureCost(int vreg, int at)
-    {
-        bool remat = _remat[vreg] is not null;
-        long cost = 0;
-        int lastRun = -1;
-        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
-        {
-            Occurrence o = _occAll[occ];
-            if (o.Instr < at) continue;
-            int b = _blockOfInstr[o.Instr];
-            if ((o.Role & Role.Def) != 0 && !remat) cost += 2 * _weight[b];
-            if ((o.Role & Role.Use) != 0 && _runHead[b] != lastRun) { cost += (remat ? 1 : 2) * _weight[b]; lastRun = _runHead[b]; }
-        }
-        return cost;
     }
 
     /// <summary>
@@ -1914,7 +1911,6 @@ public sealed class Allocator
 
 }
 
-/// <summary>A fixed-size set of small integers.</summary>
 /// <summary>
 /// A set a row, every row the same width, in one array: the allocator's sets
 /// for each block. Kept a thread by kind (Kept), grown as a function needs
@@ -1955,6 +1951,7 @@ internal sealed class BitRows
     public bool RowEquals(int row, BitSet o) => Bits.AsSpan(row * Words, Words).SequenceEqual(o.Words);
 }
 
+/// <summary>A fixed-size set of small integers.</summary>
 internal sealed class BitSet : IEquatable<BitSet>
 {
     private readonly ulong[] _bits;
