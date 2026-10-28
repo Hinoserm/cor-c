@@ -2295,15 +2295,6 @@ static partial class Os
         return (int)Sock(LinuxCall.Shutdown, (SyscallWord)fd, (SyscallWord)how, 0, 0, 0, 0);
     }
 
-    // ---- the shapes os/lib/user.cor had ------------------------------------
-
-    /// The old library's exit took the enum; a utility says
-    /// Os.Exit(ExitCode.NoInput) and means 66.
-    public static void Exit(ExitCode code)
-    {
-        Platform.Exit((int)code);
-    }
-
     // ---- the command line -------------------------------------------------------
     //
     // At entry ESP pointed at argc, then argc pointers to NUL-terminated
@@ -2520,30 +2511,34 @@ static class WaitStatus
     }
 }
 
-enum ExitCode
+// A PROCESS'S EXIT CODE BY ITS MEANING, sysexits.h's numbers: ints, as C's
+// are, so `return ExitCode.Success;` from an int Main and
+// Os.Exit(ExitCode.Usage) are plain C# -- an enum's member would want a
+// cast at every one, which C# gives an enum no implicit conversion without.
+static class ExitCode
 {
-    Success = 0,
-    Failure = 1,
+    public const int Success = 0;
+    public const int Failure = 1;
 
-    Usage = 64,             // the command was used incorrectly
-    DataErr = 65,           // the input was wrong
-    NoInput = 66,           // an input file was missing or unreadable
-    NoUser = 67,            // no such user
-    NoHost = 68,            // no such host
-    Unavailable = 69,       // a service is not available
-    Software = 70,          // an internal error: the program's own fault
-    OsErr = 71,             // the operating system said no
-    OsFile = 72,            // a system file is missing or wrong
-    CantCreate = 73,        // an output file could not be made
-    IoErr = 74,             // an error while reading or writing
-    TempFail = 75,          // try again later
-    Protocol = 76,          // the other end did not follow the protocol
-    NoPerm = 77,            // not permitted, and not a file-permission problem
-    Config = 78,            // something is misconfigured
+    public const int Usage = 64;             // the command was used incorrectly
+    public const int DataErr = 65;           // the input was wrong
+    public const int NoInput = 66;           // an input file was missing or unreadable
+    public const int NoUser = 67;            // no such user
+    public const int NoHost = 68;            // no such host
+    public const int Unavailable = 69;       // a service is not available
+    public const int Software = 70;          // an internal error: the program's own fault
+    public const int OsErr = 71;             // the operating system said no
+    public const int OsFile = 72;            // a system file is missing or wrong
+    public const int CantCreate = 73;        // an output file could not be made
+    public const int IoErr = 74;             // an error while reading or writing
+    public const int TempFail = 75;          // try again later
+    public const int Protocol = 76;          // the other end did not follow the protocol
+    public const int NoPerm = 77;            // not permitted, and not a file-permission problem
+    public const int Config = 78;            // something is misconfigured
 
-    NotExecutable = 126,
-    NotFound = 127,
-    Signalled = 128,        // a BASE: add the signal, so an interrupt is 130
+    public const int NotExecutable = 126;
+    public const int NotFound = 127;
+    public const int Signalled = 128;        // a BASE: add the signal, so an interrupt is 130
 }
 
 /// What a forked child hands execve(2) and chdir(2), made before the fork (Os.PrepareExec).
