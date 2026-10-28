@@ -59,10 +59,13 @@
 //   - EXIT IS NOT A RETURN TO ANYTHING. There is nowhere to go, so the code
 //     goes out of QEMU's isa-debug-exit port when one is attached -- that
 //     machine exits with (code << 1) | 1 -- and then the processor is halted
-//     with interrupts off, forever. An image that installed ExitHook calls
-//     it first. A ring-1 kernel's ends the image through the kernel below
-//     and does not return; the kernel's own returns for anything but a
-//     module's unwind, and the machine then stops as above.
+//     with interrupts off, forever -- that processor only: the others run on,
+//     and with the boot processor go the 8259's interrupts. An image that
+//     installed ExitHook calls it first. A ring-1 kernel's ends the image
+//     through the kernel below and does not return; the kernel's own ends a
+//     program thread whose exception nothing caught and returns only for a
+//     kernel thread, an interrupt, or a thread already ending, and the
+//     processor then stops as above.
 
 /// The I/O ports this file drives, all of them fixed by forty years of PC
 /// hardware. A number here is a place on the machine, not a choice.
@@ -962,8 +965,12 @@ static class Platform
     /// An image that is not alone on the machine -- CORSAC's ring-1 kernels,
     /// where a port write or a HLT is a fault -- installs this, and exiting
     /// becomes a call to it, which does not return. CORSAC's kernel installs
-    /// one too, for an unwind that a module forced out began; for anything
-    /// else it returns, and the machine stops below as it always has.
+    /// one too: a program thread whose call threw what nothing caught is
+    /// ended there (by SIGSEGV, as a Linux oops ends one) and the hook does
+    /// not return; for a kernel thread's unwind, an interrupt's, or one in a
+    /// thread's own end it returns, and Exit halts below. That halt stops
+    /// only the processor running it: a kernel that wants the whole machine
+    /// stopped, or its interrupts kept alive, does that in its hook.
     public static nuint ExitHook;
 
     /// Ends the program. There is nothing to return to, so this stops.
