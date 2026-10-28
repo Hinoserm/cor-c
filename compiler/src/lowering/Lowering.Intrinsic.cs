@@ -914,8 +914,8 @@ public sealed partial class Lowering
             // ParsePackedBlock: the kind, the compiler's own block's,
             // Parser.ImplicitKind; the block's number in its method; its
             // variant's features, PackedOps' bits).
-            // Hosted code owns it already -- the operating system saves it at
-            // a switch -- and needs nothing: the MMX registers a packed
+            // Code that owns it already (OwnsFpuState) -- the operating system
+            // saves it at a switch -- needs nothing: the MMX registers a packed
             // operation used are emptied before the x87 code, call or return
             // after it (Selector.PackedDirty). Freestanding code borrows a
             // thread's: a frame slot of the block's own (112 bytes for the
@@ -931,7 +931,7 @@ public sealed partial class Lowering
                 int kind = call.Args[0] is LiteralExpr { Text: var k } ? int.Parse(k) : Corsac.Lang.Parser.ImplicitKind;
                 int number = call.Args[1] is LiteralExpr { Text: var serial } ? int.Parse(serial) : 0;
                 int features = call.Args[2] is LiteralExpr { Text: var told } ? int.Parse(told) : 0;
-                if (!Freestanding) return Void();
+                if (OwnsFpuState) return Void();
                 bool enters = name == "PackedEnter";
                 if (!KeepsState(kind)) return Void();
                 if (PackedVariantNeverRuns(number, features)) return Void();
@@ -997,10 +997,12 @@ public sealed partial class Lowering
                 Block ask = _f.NewBlock("packedask"), known = _f.NewBlock("packedknown");
                 _e.Branch(_e.Load(IrType.I32, at, 0), known, ask);
                 _e.SetBlock(ask);
-                // FREESTANDING, SSE ONLY WHERE --cpu HAS IT: the operating
-                // system that runs this code turns SSE's state on (CR4.OSFXSR)
-                // for the processors its build is for, and a variant with SSE
-                // picked by CPUID alone on a newer one would fault there.
+                // FREESTANDING AND WINDOWS, SSE ONLY WHERE --cpu HAS IT: the
+                // operating system that runs this code turns SSE's state on
+                // (CR4.OSFXSR) for the processors its build is for -- Windows
+                // 95 and NT 4 never do -- and a variant with SSE picked by
+                // CPUID alone on a newer one would fault there. Linux turns it
+                // on wherever the processor has it.
                 // Nor a banned feature (X86Cpu.Banned), and none after the
                 // floor: those variants are nothing here, and the floor -- the
                 // run's last word, which needs nothing the processor lacks --
@@ -1204,11 +1206,11 @@ public sealed partial class Lowering
 
     /// <summary>
     /// Whether a packed block's give-back does anything here (PackedLeave):
-    /// freestanding i386 code, whose save the backend settles. Hosted code
-    /// and long mode give nothing back, and their blocks are their bodies
-    /// alone.
+    /// bare-metal i386 code, whose save the backend settles. Code that owns
+    /// its state (OwnsFpuState) and long mode give nothing back, and their
+    /// blocks are their bodies alone.
     /// </summary>
-    private bool PackedStateHere => Freestanding && _t.WordSize == 4;
+    private bool PackedStateHere => !OwnsFpuState && _t.WordSize == 4;
 
     /// <summary>
     /// WHETHER A PACKED BLOCK OF `kind` KEEPS THE PROCESSOR'S STATE here:
@@ -1287,10 +1289,10 @@ public sealed partial class Lowering
     /// <summary>The packed blocks' variants never picked here, by their functions and numbers (PackedChoose).</summary>
     private readonly HashSet<(Function, int)> _packedDead = new();
 
-    /// <summary>Whether a packed block's variant, by its number and features, is never picked here (Sys.PackedChoose): one after the first --cpu covers, or one with SSE in freestanding i386 code whose --cpu has none.</summary>
+    /// <summary>Whether a packed block's variant, by its number and features, is never picked here (Sys.PackedChoose): one after the first --cpu covers, or one with SSE in freestanding or Windows i386 code whose --cpu has none.</summary>
     private bool PackedVariantNeverRuns(int number, int features) => _packedDead.Contains((_f, number)) || PackedFeaturesNeverRun(features);
 
-    /// <summary>Whether a variant's features are never picked here, whatever the processor: one a --disable-NAME bans, or one with SSE in freestanding i386 code whose --cpu has none.</summary>
+    /// <summary>Whether a variant's features are never picked here, whatever the processor: one a --disable-NAME bans, or one with SSE in freestanding or Windows i386 code whose --cpu has none.</summary>
     private bool PackedFeaturesNeverRun(int features)
         => (features & PackedBits(_t.X86Profile.Banned)) != 0 || Freestanding && _t.WordSize == 4 && !_t.X86Profile.Has(X86Feature.Sse) && (features & (PackedOps.Sse | PackedOps.Sse2)) != 0;
 
@@ -1429,9 +1431,10 @@ public sealed partial class Lowering
     private VReg RuntimeFallback(CallExpr call, MethodSymbol target)
     {
         MethodSymbol? rt = RuntimeMethod(target.Name, target.Params.Count, target.Params);
-        // THE MMX REGISTERS' FORM where the hosted runtime has one: it asks
-        // Processor itself, and takes the scalar routine for a short span.
-        if (!Freestanding && _t.WordSize == 4 && PackedForms.Contains(target.Name)
+        // THE MMX REGISTERS' FORM where a runtime that owns its FPU state has
+        // one: it asks Processor itself, and takes the scalar routine for a
+        // short span.
+        if (OwnsFpuState && _t.WordSize == 4 && PackedForms.Contains(target.Name)
             && RuntimeMethod("Packed" + target.Name, target.Params.Count, target.Params) is MethodSymbol packed)
             rt = packed;
         if (rt is null)

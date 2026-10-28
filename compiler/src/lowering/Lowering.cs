@@ -53,6 +53,14 @@ public sealed partial class Lowering
     public static bool Freestanding { get; set; }
 
     /// <summary>
+    /// THE THREAD OWNS ITS x87, MMX AND SSE STATE: an operating system saves
+    /// it at every switch -- Linux, and Windows, whose runtime is otherwise
+    /// the bare-metal one (Freestanding). Bare-metal code borrows the state of
+    /// whatever it interrupted, and keeps it only inside a packed block.
+    /// </summary>
+    public static bool OwnsFpuState => !Freestanding || Windows;
+
+    /// <summary>
     /// A freestanding program that keeps a GS of its own: an operating
     /// system's kernel on a machine with several processors, where "this
     /// thread's block" has to mean the one of the processor asking. The
@@ -241,12 +249,12 @@ public sealed partial class Lowering
                                Dictionary<string, string>? entries = null)
     {
         Lowering l = new(bound, file, library);
-        // THE STREAMING COPY AND FILL, in hosted i386 code: the backend calls
+        // THE STREAMING COPY AND FILL, in i386 code that owns its FPU state: the backend calls
         // them for a block of 256 KB and more (Select.SelectMemCopy), and no
         // IR does, so they are lowered and kept as the store sequences'
         // routines are (Module.RuntimeHelpers).
         List<MethodSymbol> streams = new();
-        if (!Freestanding && Target.Current.WordSize == 4)
+        if (OwnsFpuState && Target.Current.WordSize == 4)
             foreach (string name in new[] { "StreamCopy", "StreamFill" })
                 if (l.RuntimeMethod(name, 3) is MethodSymbol stream) { l.Require(stream); streams.Add(stream); }
         l.Run(unit);

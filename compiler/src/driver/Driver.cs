@@ -1054,10 +1054,11 @@ public static class Driver
         Parser.ProjectUsings = Values(args, "--using").ToList();
         // SyscallWord, the width of a system call's registers (--syscall-abi).
         Parser.SyscallWordType = syscallAbi == 64 ? "ulong" : "uint";
-        // EVERY BODY IN THE COMPILER'S OWN PACKED BLOCK, freestanding i386
+        // EVERY BODY IN THE COMPILER'S OWN PACKED BLOCK, bare-metal i386
         // (Parser.PackedEverywhere): the processor's state kept where float
-        // code and packed operations need it (Binder.PackedStateOf).
-        Parser.PackedEverywhere = freestanding && !longMode;
+        // code and packed operations need it (Binder.PackedStateOf). Not
+        // Windows', whose threads own theirs (Lowering.OwnsFpuState).
+        Parser.PackedEverywhere = !Corsac.Lang.Lower.Lowering.OwnsFpuState && !longMode;
         Corsac.Lang.Lower.Lowering.PackedReport = args.Contains("--packed-report");
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");
@@ -1414,18 +1415,20 @@ public static class Driver
 
         // FLOAT CODE ONLY INSIDE A PACKED BLOCK, bare metal: there the x87
         // state is the interrupted thread's, which only a block saves. On by
-        // default freestanding, --x87-outside-blocks takes it away and
-        // --x87-in-blocks-only says it again; hosted code owns its state, and
-        // a block there saves nothing to tell inside from outside by, so the
+        // default there, --x87-outside-blocks takes it away and
+        // --x87-in-blocks-only says it again; code under an operating system
+        // -- Linux, Windows -- owns its state (Lowering.OwnsFpuState), and a
+        // block there saves nothing to tell inside from outside by, so the
         // check is refused there by name.
-        if (!freestanding && (args.Contains("--x87-in-blocks-only") || args.Contains("--x87-outside-blocks")))
+        bool ownsFpu = Corsac.Lang.Lower.Lowering.OwnsFpuState;
+        if (ownsFpu && (args.Contains("--x87-in-blocks-only") || args.Contains("--x87-outside-blocks")))
             return Fail((args.Contains("--x87-in-blocks-only") ? "--x87-in-blocks-only" : "--x87-outside-blocks")
-                + " is for freestanding code: hosted code owns its x87 state, and its float code may be anywhere");
+                + " is for bare-metal code: code under an operating system owns its x87 state, and its float code may be anywhere");
         X86Backend x86Backend = new()
         {
-            AutomaticPacked = !freestanding,
+            AutomaticPacked = ownsFpu,
             OptimizeSize = args.Contains("--opt-size"),
-            X87InBlocksOnly = freestanding && !args.Contains("--x87-outside-blocks"),
+            X87InBlocksOnly = !ownsFpu && !args.Contains("--x87-outside-blocks"),
             // AN EXECUTABLE'S OBJECT IS NOT POSITION-INDEPENDENT, made apart
             // (--obj) or not: it is linked at an address of its own, so its
             // names are absolute and a library's are reached through its GOT
