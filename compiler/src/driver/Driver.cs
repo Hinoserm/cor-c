@@ -1060,6 +1060,19 @@ public static class Driver
         // code and packed operations need it (Binder.PackedStateOf). Not
         // Windows', whose threads own theirs (Lowering.OwnsFpuState).
         Parser.PackedEverywhere = !Corsac.Lang.Lower.Lowering.OwnsFpuState && !longMode;
+        // CALLS INTO ANOTHER IMAGE'S PACKED METHODS (Lowering.InsideElsewhere):
+        // the $inside copies the kernel's exports and the modules this one is
+        // built on (--link-shared) define, which a kept state's calls take.
+        HashSet<string> insideElsewhere = new(StringComparer.Ordinal);
+        if (Parser.PackedEverywhere)
+        {
+            if (kernel is not null) insideElsewhere.UnionWith(kernel.Names.Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
+            foreach (string under in sharedLibs)
+                insideElsewhere.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(under)).Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
+        }
+        Corsac.Lang.Lower.Lowering.InsideElsewhere = insideElsewhere;
+        Binder.KeepsStateElsewhere = insideElsewhere.Count == 0 ? null
+            : m => Corsac.Lang.Lower.Lowering.DefinedElsewhere(m) && insideElsewhere.Contains(Corsac.Lang.Lower.Lowering.Label(m) + Linker.InsideSuffix);
         Corsac.Lang.Lower.Lowering.PackedReport = args.Contains("--packed-report");
 
         Frontend.WarningsAreErrors = !args.Contains("-Wno-error");

@@ -1,0 +1,17 @@
+// A KERNEL'S PACKED ROUTINE a module calls in a loop, for
+// tests/integration/modules-packed.sh: its MMX code keeps the processor's
+// state, and its copy that runs inside a caller's state ($inside) is
+// exported beside it, for a module's kept state to call.
+
+namespace Kernel;
+
+public static class Pixels
+{
+    /// 0x10 added to each of `count` bytes at `p`, saturating, eight a turn.
+    public static void Brighten(nuint p, int count)
+    {
+        Packed64 by = Packed.FromBits(0x1010101010101010UL);
+        for (int i = 0; i < count; i += 8)
+            Packed.Store(p + (nuint)i, Packed.AddSaturateU8(Packed.Load(p + (nuint)i), by));
+    }
+}

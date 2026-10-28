@@ -83,7 +83,9 @@ public static partial class Linker
         // it as before, by the difference. What Windows does with a base
         // address and prelink did on Linux.
         dyn.Libraries.AddRange(libraries ?? needed ?? Array.Empty<string>());
-        return LinkDynamic(objects, dyn, null, loadAddress, longMode);
+        List<(string Name, ObjectFile Object)> inputs = objects.ToList();
+        InsideOrItself(inputs.Select(i => i.Object), ExportedBy(dyn.Libraries));
+        return LinkDynamic(inputs, dyn, null, loadAddress, longMode);
     }
 
     /// <summary>
@@ -112,7 +114,9 @@ public static partial class Linker
         // by hand is not a program anyone can use.
         dyn.RunPath = runPath ?? (runPaths.Count == 0 ? null : string.Join(':', runPaths));
         dyn.Libraries.AddRange(libraries ?? sharedLibs);
-        return LinkDynamic(objects, dyn, entrySymbol, loadAddress, longMode);
+        List<(string Name, ObjectFile Object)> inputs = objects.ToList();
+        InsideOrItself(inputs.Select(i => i.Object), ExportedBy(dyn.Libraries));
+        return LinkDynamic(inputs, dyn, entrySymbol, loadAddress, longMode);
     }
 
     /// <summary>

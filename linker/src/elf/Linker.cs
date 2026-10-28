@@ -124,6 +124,7 @@ public static partial class Linker
         {
             throw new LinkException(new[] { "nothing to link" });
         }
+        InsideOrItself(inputs.Select(i => i.Object));
 
         // A PROGRAM THAT CALLS INTO C IS A DYNAMIC ONE, whether or not it
         // links a library of ours: the loader has to map the C library and
@@ -239,6 +240,7 @@ public static partial class Linker
         {
             throw new LinkException(new[] { "nothing to link" });
         }
+        InsideOrItself(inputs.Select(i => i.Object));
 
         TargetContract.Validate(inputs.Select(i => (i.Name, i.Object)));
         RefuseWindowsObjects(inputs.Select(i => (i.Name, i.Object)));

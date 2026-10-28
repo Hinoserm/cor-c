@@ -1,0 +1,87 @@
+#!/bin/sh
+# PACKED CODE ACROSS IMAGES: a module whose loop calls the kernel's packed
+# routine keeps the processor's state once around the loop, and each call is
+# to the routine's copy that runs inside its caller's state ($inside), which
+# the kernel exports beside it -- not to the routine itself, which would save
+# and give back the state on every call (Lowering.InsideElsewhere,
+# Binder.KeepsStateElsewhere). Then a kernel linked again keeping only the
+# routine itself: the module's link calls that instead (Linker.InsideOrItself),
+# and runs the same.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+cd "$root"
+corc=${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}
+mkdir -p "$root/build"
+work=$(mktemp -d "$root/build/modules-packed.XXXXXX")
+here=tests/integration/modules
+cpu="--cpu=athlon64 --disable-3dnow"
+
+fail() { printf 'FAIL %s\n' "$1"; exit 1; }
+
+# The kernel, as modules.sh builds one, with the packed routine in it.
+a=$work/a
+mkdir -p "$a"
+runtime=$("$corc" library-sources --freestanding)
+# shellcheck disable=SC2086
+"$corc" index --assembly Kernel --ring 0 $here/Host.cor $here/Kernel.cor $here/Loader.cor $here/Pixels.cor $runtime -o "$a/kernel.idx" 2> "$a/index.log"
+: > "$a/units.tsv"
+for source in $here/Host.cor $here/Kernel.cor $here/Loader.cor $here/Pixels.cor $runtime; do
+    role=lib; case $source in */Kernel.cor) role=entry ;; esac
+    name=$(basename "$source" .cor)
+    printf '%s\t%s\t%s\t%s\n' "$(realpath "$source")" "$a/$name.o" "$a/$name.o.deps" "$role" >> "$a/units.tsv"
+done
+# shellcheck disable=SC2086
+"$corc" compile-project --units "$a/units.tsv" --nostdlib --obj --freestanding --ring 0 $cpu \
+    --decl-index "$a/kernel.idx" --assembly Kernel 2> "$a/units.log" || { cat "$a/units.log"; fail "kernel units"; }
+objects=$(cut -f2 "$a/units.tsv" | tr '\n' ' ')
+# shellcheck disable=SC2086
+"$corc" link $objects -o "$a/kernel" --exports "$a/kernel.exports" --decl-index "$a/kernel.idx" $cpu 2> "$a/link.log" \
+    || { cat "$a/link.log"; fail "kernel link"; }
+
+# THE KERNEL EXPORTS THE ROUTINE AND ITS COPY that runs inside.
+readelf --dyn-syms -W "$a/kernel.exports" | awk '$8 != "" { print $8 }' > "$work/exported"
+routine=$(grep -E '^m_Kernel\$Pixels_Brighten_' "$work/exported" | grep -v '\$inside$' | head -1)
+test -n "$routine" || fail "the kernel does not export Pixels.Brighten"
+grep -qxF "$routine\$inside" "$work/exported" || fail "the kernel does not export Pixels.Brighten's \$inside copy"
+
+# THE MODULE KEEPS THE STATE ROUND ITS LOOP, and calls the copy.
+# shellcheck disable=SC2086
+"$corc" compile --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 $cpu --packed-report \
+    $here/Blit.cor --obj -o "$work/blit.o" 2> "$work/blit.log" || { cat "$work/blit.log"; fail "module object"; }
+grep -qF "packed: 'Blitter.Bind(Int32 port)' keeps the processor's state (calls 'Pixels.Brighten' in a loop)" "$work/blit.log" \
+    || { cat "$work/blit.log"; fail "the module's loop does not keep the state for the kernel's packed routine"; }
+# shellcheck disable=SC2086
+"$corc" link "$work/blit.o" --kernel "$a/kernel.exports" $cpu -o "$work/blit.ko" 2> "$work/blit-link.log" \
+    || { cat "$work/blit-link.log"; fail "module link"; }
+readelf --dyn-syms -W "$work/blit.ko" | awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > "$work/imports"
+grep -qxF "$routine\$inside" "$work/imports" || { cat "$work/imports"; fail "the module does not call the routine's \$inside copy"; }
+if grep -qxF "$routine" "$work/imports"; then fail "the module calls the routine itself inside its kept state"; fi
+cp "$work/blit.ko" "$a/module.ko"
+(cd "$a" && ./kernel) > "$work/run.out" 2>&1 || { cat "$work/run.out"; fail "the kernel did not load the module"; }
+grep -qx 'blit 11732' "$work/run.out" && grep -qx 'bind 11732' "$work/run.out" || { cat "$work/run.out"; fail "the module's blit came out wrong"; }
+
+# A KERNEL WITHOUT THE COPY: linked again keeping the module's imports but
+# the copy, whose callers there are none of in the kernel. The module's
+# link takes the routine itself, which keeps the state of its own.
+mkdir -p "$work/pruned"
+# What the module's object names and what its link imported -- small
+# functions it carried from the open kernel name theirs -- but the copy.
+{ readelf -s -W "$work/blit.o" | awk '$7 == "UND" && $8 != "" { print $8 }'; cat "$work/imports"; echo "$routine"; } \
+    | grep -vxF "$routine\$inside" | sort -u > "$work/pruned/keep"
+# shellcheck disable=SC2086
+"$corc" link $objects -o "$work/pruned/kernel" --exports "$work/pruned/kernel.exports" --decl-index "$a/kernel.idx" --keep "$work/pruned/keep" $cpu \
+    2> "$work/pruned/link.log" || { cat "$work/pruned/link.log"; fail "the kernel did not link with --keep"; }
+if readelf --dyn-syms -W "$work/pruned/kernel.exports" | awk '$8 != "" { print $8 }' | grep -qxF "$routine\$inside"; then
+    fail "the pruned kernel kept the copy nothing of its own calls"
+fi
+# shellcheck disable=SC2086
+"$corc" link "$work/blit.o" --kernel "$work/pruned/kernel.exports" $cpu -o "$work/pruned/blit.ko" 2> "$work/pruned/blit-link.log" \
+    || { cat "$work/pruned/blit-link.log"; fail "the module did not link against the kernel without the copy"; }
+readelf --dyn-syms -W "$work/pruned/blit.ko" | awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > "$work/pruned/imports"
+grep -qxF "$routine" "$work/pruned/imports" || { cat "$work/pruned/imports"; fail "the module does not call the routine itself"; }
+if grep -qxF "$routine\$inside" "$work/pruned/imports"; then fail "the module still names the copy the kernel no longer has"; fi
+cp "$work/pruned/blit.ko" "$work/pruned/module.ko"
+(cd "$work/pruned" && ./kernel) > "$work/pruned/run.out" 2>&1 || { cat "$work/pruned/run.out"; fail "the pruned kernel did not load the module"; }
+cmp -s "$work/run.out" "$work/pruned/run.out" || { cat "$work/pruned/run.out"; fail "the module ran otherwise on the routine itself"; }
+
+echo "PASS modules-packed"

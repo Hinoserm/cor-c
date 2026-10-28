@@ -1157,6 +1157,16 @@ public sealed partial class Lowering
         => shape.Fields.All(f => f.Static || !(f.Type.IsError || f.Type.ParamName is not null || f.Type.IsPointer || f.Type.Function is not null
             || f.Type.Prim == Prim.Void && f.Type.Symbol is null && !f.Type.IsArray));
 
+    /// <summary>
+    /// Whether a method is defined by another image -- its type the kernel's
+    /// or a module's this one is built on, read from their index -- and not
+    /// here: not a copy made here (LocalCopy), nor an implementation this
+    /// image owns (Emits). Its body may be at hand all the same, as the index
+    /// keeps some.
+    /// </summary>
+    public static bool DefinedElsewhere(MethodSymbol m)
+        => m.Decl is { LocalCopy: false } d && !(d.OwnedImplementation ?? m.Owner.Decl?.Elsewhere != true);
+
     private static bool Emits(MethodSymbol m)
         // A TUPLE SHAPE'S METHODS HAVE NO DECLARATION: they are written here,
         // in EmitTupleMethod, and a vtable slot pointing at one is a symbol

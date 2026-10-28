@@ -8,20 +8,21 @@
 static class Host
 {
 #if TARGET_64BIT
-    const long Write = 1;
-    const long Exit = 60;
-    const long Mmap = 9;
+    const int Write = 1;
+    const int Exit = 60;
+    const int Mmap = 9;
 #else
-    const long Write = 4;
-    const long Exit = 1;
-    const long Mmap = 192;              // mmap2: the offset in pages
+    const int Write = 4;
+    const int Exit = 1;
+    const int Mmap = 192;              // mmap2: the offset in pages
 #endif
 
     /// The heap the bare-metal runtime bumps through, which a kernel would
     /// take from its memory map: here, anonymous pages.
-    public static void Start(long bytes)
+    public static void Start(nuint bytes)
     {
-        long memory = Sys.Syscall(Mmap, 0, bytes, 3, 0x22, -1, 0);    // PROT_READ|WRITE, MAP_PRIVATE|ANONYMOUS
+        // PROT_READ|WRITE, MAP_PRIVATE|ANONYMOUS, no file (-1).
+        nuint memory = (nuint)Sys.Syscall(Mmap, 0, (SyscallWord)bytes, 3, 0x22, unchecked((SyscallWord)(-1)), 0);
         Platform.SetHeap(memory, memory + bytes);
     }
 
@@ -32,11 +33,11 @@ static class Host
         byte[] bytes = new byte[text.Length + 1];
         for (int i = 0; i < text.Length; i++) bytes[i] = (byte)text[i];
         bytes[text.Length] = (byte)'\n';
-        Sys.Syscall(Write, 1, Sys.ArrayData(bytes), bytes.Length);
+        Sys.Syscall(Write, 1, (SyscallWord)Sys.ArrayData(bytes), (SyscallWord)bytes.Length);
     }
 
     public static void Done(int code)
     {
-        Sys.Syscall(Exit, code, 0, 0);
+        Sys.Syscall(Exit, (SyscallWord)code, 0, 0);
     }
 }

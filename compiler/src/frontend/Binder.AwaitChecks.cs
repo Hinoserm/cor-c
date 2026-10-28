@@ -1582,7 +1582,9 @@ public sealed partial class Binder
     /// operations, a native that uses the FPU (Sys.CallNativeFloat), or a
     /// call in a loop to one that needs it, so that the state is kept once
     /// around the loop and not on every call (the callee runs inside,
-    /// Lowering's $inside copy). Not an async body's, whose frame outlives
+    /// Lowering's $inside copy) -- another image's too, the kernel's or a
+    /// module's this one is built on, that exports such a copy
+    /// (KeepsStateElsewhere). Not an async body's, whose frame outlives
     /// a run; nor a lambda's, a function of its own. And what reaches a
     /// plain native (BindResult.PackedNatives), which runs on the thread's
     /// own state.
@@ -1711,7 +1713,7 @@ public sealed partial class Binder
             foreach ((MethodSymbol m, List<MethodSymbol> looped) in inLoops)
             {
                 if (state.ContainsKey(m) || handlers.Contains(m)) continue;
-                bool Hoists(MethodSymbol c) => state.ContainsKey(c) && !natives.Contains(c);
+                bool Hoists(MethodSymbol c) => state.ContainsKey(c) && !natives.Contains(c) || KeepsStateElsewhere?.Invoke(c) == true;
                 string? why = looped.FirstOrDefault(Hoists) is { } inLoop ? $"calls '{inLoop.Owner.Name}.{inLoop.Name}' in a loop"
                     : twice[m].FirstOrDefault(Hoists) is { } again ? $"calls '{again.Owner.Name}.{again.Name}' more than once"
                     : always[m].FirstOrDefault(Hoists) is { } sure ? $"calls '{sure.Owner.Name}.{sure.Name}' on every run"

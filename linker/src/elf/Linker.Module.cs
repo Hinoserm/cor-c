@@ -124,10 +124,6 @@ public static partial class Linker
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => ConsumedContract(section.Name) || section.Name == UsesNotes.SectionName || section.Name == X87Notes.SectionName);
 
-        // WHAT IT NEEDS OF ITS DEPENDENCIES: the ones that define a name it
-        // does not, as a program's DT_NEEDED is worked out (Driver.Needed).
-        HashSet<string> defined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
-        HashSet<string> undefined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
         Dictionary<string, HashSet<string>> theirs = new(StringComparer.Ordinal);
         foreach (string dependency in dependencies ?? Array.Empty<string>())
         {
@@ -136,6 +132,14 @@ public static partial class Linker
                 throw new LinkException(new[] { dependency + ": not a module of this kernel (its build stamp is not " + KernelExports.Text(kernel.Stamp) + ")" });
             theirs[dependency] = new HashSet<string>(ElfReader.ExportsOf(bytes), StringComparer.Ordinal);
         }
+        // A CALL TO THE KERNEL'S OR A DEPENDENCY'S $inside COPY that neither
+        // exports now is to the method itself (InsideOrItself).
+        InsideOrItself(inputs.Select(input => input.Object), name => kernel.Names.Contains(name) || theirs.Values.Any(exports => exports.Contains(name)));
+
+        // WHAT IT NEEDS OF ITS DEPENDENCIES: the ones that define a name it
+        // does not, as a program's DT_NEEDED is worked out (Driver.Needed).
+        HashSet<string> defined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
+        HashSet<string> undefined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
         List<string> needed = theirs.Where(pair => pair.Value.Overlaps(undefined)).Select(pair => pair.Key).ToList();
 
         // THE MODULE'S OWN NAME AND RING FIRST, then what its source said,

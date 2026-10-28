@@ -1278,7 +1278,23 @@ public sealed partial class Lowering
         => PackedStateHere && _b.PackedState.ContainsKey(m) && _b.PackedCopyable.Contains(m) && m.Decl?.Body is not null && !m.Async && !TakesContext(Canonical(m));
 
     /// <summary>A direct call's label: the callee's $inside copy where the call is made inside a kept state.</summary>
-    private string InsideLabel(MethodSymbol m, string label) => (_insideCopy || _stateKept > 0) && CopiesInside(m) ? label + "$inside" : label;
+    private string InsideLabel(MethodSymbol m, string label)
+        => (_insideCopy || _stateKept > 0) && (CopiesInside(m) || InsideElsewhereOf(m, label)) ? label + "$inside" : label;
+
+    /// <summary>
+    /// THE $inside COPIES OF ANOTHER IMAGE, by their labels: the ones the
+    /// kernel's exports (--kernel) and the modules this one is built on
+    /// (--link-shared) define (Driver). A call into one of them inside a
+    /// kept state is to its copy, as a call to a method of this unit's own
+    /// is (CopiesInside): `nt`'s batch calling the GUI's Gfx3d keeps the
+    /// state once, not once a call. Should a later link of theirs drop the
+    /// copy, the module's link calls the method itself (Linker.InsideOrItself).
+    /// </summary>
+    public static HashSet<string> InsideElsewhere { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>Whether a method is another image's with a copy that runs inside (InsideElsewhere).</summary>
+    private bool InsideElsewhereOf(MethodSymbol m, string label)
+        => PackedStateHere && InsideElsewhere.Count > 0 && DefinedElsewhere(m) && InsideElsewhere.Contains(label + "$inside");
 
     /// <summary>--packed-report: every method that keeps the processor's state, said as it is lowered.</summary>
     public static bool PackedReport { get; set; }
