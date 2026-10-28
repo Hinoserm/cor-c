@@ -17956,6 +17956,58 @@ public sealed partial class Binder
                     return made;
                 }
 
+                // AN ENUM CAST TO A DECIMAL is one from its underlying type
+                // (C# 10.3.3), the other way round: `(decimal)level` is
+                // `(decimal)(short)level`. With no implicit conversion from an
+                // enum to its number (StandardConvertible), decimal's
+                // operators took none of it, and the enum's word went on as a
+                // reference.
+                // A nullable enum the same, through its number's nullable
+                // (`(decimal)(short?)level`), and to a decimal? as to a
+                // decimal (IsDecimalType answers for decimal itself).
+                if (!_r.Rewrites.ContainsKey(cast) && operand.Underlying is { IsEnumValue: true, Symbol: { } fromEnum }
+                    && IsDecimalType(wanted.Underlying))
+                {
+                    CastExpr asNumber = new()
+                    {
+                        Type = new TypeRef { Name = new Type { Prim = fromEnum.EnumUnderlying }.ToString(), Nullable = operand.IsNullableValue, Line = cast.Line, Col = cast.Col, File = cast.File },
+                        Operand = cast.Operand, Line = cast.Line, Col = cast.Col, File = cast.File,
+                    };
+                    CastExpr toDecimal = new() { Type = cast.Type, Operand = asNumber, Line = cast.Line, Col = cast.Col, File = cast.File };
+                    _r.Rewrites[cast] = toDecimal;
+                    return CheckExpr(toDecimal);
+                }
+
+                // A CAST FROM A NULLABLE THROUGH AN OPERATOR ON ITS VALUE,
+                // LIFTED (C# 10.6.2): `(decimal?)n` of a short? n is
+                // decimal's operator from short on n's value, and empty where
+                // n is; `(decimal)n` the operator on n.Value, which throws
+                // where n is empty. The operand is held once.
+                if (!_r.Rewrites.ContainsKey(cast) && operand.IsNullableValue && !wanted.IsError
+                    && !StandardConvertible(operand, wanted) && !StandardConvertible(wanted, operand)
+                    && (wanted.IsNullableValue ? wanted.Underlying : wanted) is { } plain && ValueOperand(plain)
+                    && UserConversion(operand.Underlying, plain, explicitToo: true) is { } liftOp)
+                {
+                    SubjectExpr held = new() { Line = cast.Line, Col = cast.Col };
+                    CallExpr onValue = new()
+                    {
+                        Target = new MemberExpr { Target = Qualified(liftOp.Owner, cast), Name = liftOp.Name, Line = cast.Line, Col = cast.Col, File = cast.File },
+                        Line = cast.Line, Col = cast.Col, File = cast.File,
+                    };
+                    onValue.Args.Add(new MemberExpr { Target = held, Name = "Value", Line = cast.Line, Col = cast.Col });
+                    Expr test = !wanted.IsNullableValue ? onValue : new ConditionalExpr
+                    {
+                        Cond = new MemberExpr { Target = new SubjectExpr { Line = cast.Line, Col = cast.Col }, Name = "HasValue", Line = cast.Line, Col = cast.Col },
+                        Then = new CastExpr { Type = cast.Type, Operand = onValue, Line = cast.Line, Col = cast.Col, File = cast.File },
+                        Else = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = cast.Line, Col = cast.Col },
+                        Line = cast.Line, Col = cast.Col,
+                    };
+                    PatternExpr lifted = new() { Subject = cast.Operand, Test = test, Line = cast.Line, Col = cast.Col };
+                    _r.Rewrites[cast] = lifted;
+                    CheckExpr(lifted);
+                    return wanted;
+                }
+
                 // `(string?)attribute` CALLS THE OPERATOR the type declares,
                 // implicit or explicit, where no standard conversion either
                 // way does the job (a downcast is a standard one).
@@ -17968,10 +18020,21 @@ public sealed partial class Binder
                         Line = cast.Line, Col = cast.Col, File = cast.File,
                     };
                     call.Args.Add(cast.Operand);
-                    _r.Rewrites[cast] = call;
                     CheckExpr(call);
                     Type produced = Converting(call, castOp);
-                    return wanted.Nullable && !produced.Nullable ? wanted : produced;
+                    // TO A NULLABLE, THE OPERATOR'S ANSWER WRAPPED (C# 10.6.2:
+                    // the user-defined conversion, then S -> S?): `(decimal?)300`
+                    // is `(decimal?)decimal.op_Implicit(300)`. The call alone,
+                    // taken for the nullable, read the struct's own words as
+                    // one -- null, or a value from its padding.
+                    if (wanted.Nullable && !produced.Nullable)
+                    {
+                        CastExpr wrapped = new() { Type = cast.Type, Operand = call, Line = cast.Line, Col = cast.Col, File = cast.File };
+                        _r.Rewrites[cast] = wrapped;
+                        return CheckExpr(wrapped);
+                    }
+                    _r.Rewrites[cast] = call;
+                    return produced;
                 }
 
                 // A TUPLE CAST TO ANOTHER SHAPE IS ITEM BY ITEM (C# 10.3.6):

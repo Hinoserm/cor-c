@@ -1,0 +1,49 @@
+// test: an enum casts to decimal through its underlying type, and a cast to or from a nullable goes through a user-defined conversion lifted
+// expect-exit: 0
+// expect-output:
+// 300 300 2 2 null
+// 7 null 7 Big7 null Big7
+// 9 1
+// empty throws
+// 300 Big4 300 2
+//
+// C# 10.3.3: an enum's explicit conversion to decimal is its underlying
+// type's, `(decimal)level` is `(decimal)(short)level` -- with no implicit
+// conversion from an enum to a number, decimal's operators took none of it,
+// and the enum's word went on as a reference (NullReferenceException).
+// C# 10.6.2: a user-defined conversion to T? is the operator's T wrapped
+// (`(decimal?)300` came out null, `(Big?)s` a value from the struct's
+// padding), and one from S? is lifted: the operator on the value, empty
+// where it is empty to a T?, InvalidOperationException to a T. The operand
+// is evaluated once.
+
+using System;
+
+enum Level : short { Low = 2, High = 300 }
+
+struct Big
+{
+    public int V;
+    public static implicit operator Big(short x) => new Big { V = x };
+    public override string ToString() => "Big" + V;
+}
+
+class Program
+{
+    static string S(object? o) => o == null ? "null" : o.ToString()!;
+    static int calls;
+    static short? Next() { calls++; return 9; }
+
+    static int Main()
+    {
+        Level? some = Level.Low; Level? none = null; Level lv = Level.High;
+        short? sn = 7; short? snull = null;
+        Console.WriteLine(S((decimal)lv) + " " + S((decimal?)lv) + " " + S((decimal)some) + " " + S((decimal?)some) + " " + S((decimal?)none));
+        Console.WriteLine(S((decimal?)sn) + " " + S((decimal?)snull) + " " + S((decimal)sn) + " " + S((Big?)sn) + " " + S((Big?)snull) + " " + S((Big)sn));
+        Console.WriteLine(S((decimal?)Next()) + " " + calls);
+        try { decimal bad = (decimal)none; Console.WriteLine("no throw " + bad); }
+        catch (InvalidOperationException) { Console.WriteLine("empty throws"); }
+        Console.WriteLine(S((decimal?)300) + " " + S((Big?)(short)4) + " " + S((double?)lv) + " " + S((decimal)Level.Low));
+        return 0;
+    }
+}
