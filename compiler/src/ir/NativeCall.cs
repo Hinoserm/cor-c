@@ -9,7 +9,10 @@ namespace Corsac.Lang.Ir;
 /// pass had to be taught. So it is an ordinary call whose callee says so:
 ///
 ///   - a direct call to `@native:NAME` calls the C symbol NAME;
-///   - an indirect call whose Callee is `@native` calls a C function pointer.
+///   - an indirect call whose Callee is `@native` calls a C function pointer,
+///     and one whose Callee is `@native.fpu` one that uses the x87, MMX or
+///     SSE (Sys.CallNativeFloat), in a state FXSAVE keeps where the
+///     processor has SSE (Selector.SettlePackedSaves).
 ///
 /// No mangled name begins with '@', and a pass that looks callees up by
 /// name finds none by this one and treats the call as unknown -- which it
@@ -21,6 +24,7 @@ public static class NativeCall
 {
     public const string Prefix = "@native:";
     public const string Indirect = "@native";
+    public const string IndirectUsingFpu = "@native.fpu";
 
     /// <summary>The callee name a direct call to C symbol <paramref name="symbol"/> carries.</summary>
     public static string Of(string symbol) => Prefix + symbol;
@@ -28,7 +32,7 @@ public static class NativeCall
     /// <summary>Whether this call enters C.</summary>
     public static bool Is(Instr i)
         => (i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(Prefix, StringComparison.Ordinal))
-        || (i.Op == Opcode.CallIndirect && i.Callee == Indirect);
+        || (i.Op == Opcode.CallIndirect && i.Callee is Indirect or IndirectUsingFpu);
 
     /// <summary>The symbol a callee name stands for: the C name for a native call, the name itself otherwise.</summary>
     public static string Symbol(string callee)

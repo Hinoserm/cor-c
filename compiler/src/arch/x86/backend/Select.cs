@@ -779,10 +779,15 @@ internal sealed partial class Selector
                     {
                         if (c == MachineIntrinsics.PackedRestore(save.Kind, save.Number, save.Features)) { closed = true; continue; }
                         if (c.EndsWith("$inside", StringComparison.Ordinal)) inside = true;
-                        if (c.StartsWith(MachineIntrinsics.PackedOpPrefix + "x", StringComparison.Ordinal)
-                            || c.StartsWith(MachineIntrinsics.PackedOpPrefix + "f2.", StringComparison.Ordinal)) xmm = true;
-                        else if (c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
-                            || c.StartsWith(MachineIntrinsics.PackedSavePrefix, StringComparison.Ordinal)) x87 = true;
+                    }
+                    // A native that uses the FPU (Sys.CallNativeFloat) may use SSE.
+                    if (i.Op == Opcode.CallIndirect && i.Callee == NativeCall.IndirectUsingFpu) xmm = true;
+                    if (i.Op == Opcode.Call && i.Callee is { } named)
+                    {
+                        if (named.StartsWith(MachineIntrinsics.PackedOpPrefix + "x", StringComparison.Ordinal)
+                            || named.StartsWith(MachineIntrinsics.PackedOpPrefix + "f2.", StringComparison.Ordinal)) xmm = true;
+                        else if (named.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
+                            || named.StartsWith(MachineIntrinsics.PackedSavePrefix, StringComparison.Ordinal)) x87 = true;
                     }
                     if (SettleWantsX87(i)) x87 = true;
                     if (LandingOf(i) is { } pad && seen.Add(pad)) work.Push((pad, 0));

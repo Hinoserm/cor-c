@@ -1088,7 +1088,7 @@ public sealed partial class Lowering
                 // the state kept for it (Binder.PackedStateOf).
                 VReg? answer = name == "CallNative"
                     ? OnOwnState(() => _e.CallIndirect(R(fn), word, args, NativeCall.Indirect))
-                    : _e.CallIndirect(R(fn), word, args, NativeCall.Indirect);
+                    : _e.CallIndirect(R(fn), word, args, NativeCall.IndirectUsingFpu);
                 return Fit(answer!, returns);
             }
             case "AddressOf":
