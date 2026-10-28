@@ -77,6 +77,25 @@ public sealed class KernelExports
     /// </summary>
     public Lto.IrArchive? Bodies { get; }
 
+    /// <summary>
+    /// The kernel units' code-generation contract, read from Cpu: their
+    /// --cpu, which a module's units must not exceed and whose SSE a
+    /// module's save must cover to call the kernel's $inside copies. Null
+    /// where the exports carry none.
+    /// </summary>
+    public X86CodeGenerationContract? Contract
+    {
+        get
+        {
+            if (Cpu is null) return null;
+            ObjectFile carrier = new();
+            Section cpu = new(X86CodeGenerationContract.SectionName, SectionKind.Note);
+            cpu.Bytes.AddRange(Cpu);
+            carrier.Sections.Add(cpu);
+            return X86CodeGenerationContract.Read(carrier);
+        }
+    }
+
     private KernelExports(string path, string name, byte[] stamp, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names, Lto.IrArchive? bodies)
     {
         Path = path; Name = name; Stamp = stamp; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names; Bodies = bodies;

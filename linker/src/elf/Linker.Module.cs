@@ -78,14 +78,7 @@ public static partial class Linker
                     + kernel.Name + " does " + (TargetContract.MadeWithStoreSequences(theirs) ? "through" : "without") + " (compile it as the kernel was: --store-sequences or not)");
         }
         if (errors.Count != 0) throw new LinkException(errors);
-        if (kernel.Cpu is not null)
-        {
-            ObjectFile carrier = new();
-            Section cpu = new(X86CodeGenerationContract.SectionName, SectionKind.Note);
-            cpu.Bytes.AddRange(kernel.Cpu);
-            carrier.Sections.Add(cpu);
-            if (X86CodeGenerationContract.Read(carrier) is { } target) X86CodeGenerationContract.ValidateTarget(inputs, target);
-        }
+        if (kernel.Contract is { } target) X86CodeGenerationContract.ValidateTarget(inputs, target);
     }
 
     /// <summary>

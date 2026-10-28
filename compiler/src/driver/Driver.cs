@@ -1066,14 +1066,18 @@ public static class Driver
         // ONLY WHERE THIS UNIT'S SAVE COVERS THEIR COPY: a copy may use the
         // XMM registers where its image's --cpu has SSE, and a kept state
         // here is saved by FXSAVE for a call to one only where this --cpu has
-        // it (Selector.SettlePackedSaves). So the kernel's copies where either
-        // has SSE but not the kernel's alone (its exports carry its --cpu); a
-        // module's, whose image says nothing of its --cpu, where this has SSE.
+        // it (Selector.SettlePackedSaves). So the kernel's copies where this
+        // --cpu has SSE, or the kernel's has none (its exports carry its
+        // --cpu, KernelExports.Contract); a module's, whose image says nothing
+        // of its --cpu, only where this has SSE.
         HashSet<string> insideElsewhere = new(StringComparer.Ordinal);
         if (Parser.PackedEverywhere)
         {
             bool covers = Target.Current.X86Profile.Has(X86Feature.Sse);
-            if (kernel is not null && (covers || !KernelHasSse(kernel)))
+            bool kernelSse;
+            try { kernelSse = kernel?.Contract is not { } theirs || theirs.Fpu == "sse2" || (theirs.Features & X86Feature.Sse) != 0; }
+            catch (ElfFormatException e) { return Fail(e.Message); }
+            if (kernel is not null && (covers || !kernelSse))
                 insideElsewhere.UnionWith(kernel.Names.Where(n => n.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)));
             if (covers)
                 foreach (string under in sharedLibs)
@@ -1880,17 +1884,6 @@ public static class Driver
     /// The order they were given in is kept, which for the build's own
     /// directory listing is the bottom of the stack first.
     /// </summary>
-    /// <summary>Whether the kernel's units were compiled for a --cpu with SSE, as its exports say (KernelExports.Cpu); a kernel that says nothing is taken to.</summary>
-    private static bool KernelHasSse(KernelExports kernel)
-    {
-        if (kernel.Cpu is null) return true;
-        ObjectFile carrier = new();
-        Section cpu = new(X86CodeGenerationContract.SectionName, SectionKind.Note);
-        cpu.Bytes.AddRange(kernel.Cpu);
-        carrier.Sections.Add(cpu);
-        return X86CodeGenerationContract.Read(carrier) is not { } contract || contract.Fpu == "sse2" || (contract.Features & X86Feature.Sse) != 0;
-    }
-
     private static List<string> Needed(ObjectFile obj, List<string> offered, Dictionary<string, HashSet<string>> exports)
     {
         if (offered.Count == 0)
