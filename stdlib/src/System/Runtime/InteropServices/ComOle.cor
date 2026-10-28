@@ -25,7 +25,7 @@
 //
 // THE STRUCTURES are pointers here: the compiler does not marshal a
 // structure as a COM parameter (ComDeclarations), so a FORMATETC* or
-// STGMEDIUM* is an nuint in a member's signature, read and written with
+// STGMEDIUM* is a nuint in a member's signature, read and written with
 // OleMemory, and a POINTL by value is a long (x the low half, y the high),
 // which is how i386 passes it. On the wire they are as ole32's stubs have
 // them:
@@ -48,7 +48,7 @@
 //   InterfaceData  a unique pointer to ulCntData and a varying array of at
 //              most 1024 bytes: the offset 0, the count, the OBJREF.
 //
-// AN HGLOBAL here is OleGlobal's: memory AllocHGlobal gave with its size
+// AN HGLOBAL here is OleGlobal's: memory MarshalHeap.Alloc gave with its size
 // kept in front, so its bytes can be put on the wire as GlobalSize's.
 
 using System;
@@ -166,7 +166,7 @@ namespace System.Runtime.InteropServices
     }
 
     /// <summary>
-    /// An HGLOBAL in this process: memory AllocHGlobal gave, the size in the
+    /// An HGLOBAL in this process: memory MarshalHeap.Alloc gave, the size in the
     /// two words before the handle (GlobalSize's answer, which the wire
     /// needs), the bytes at the handle (GlobalLock's).
     /// </summary>

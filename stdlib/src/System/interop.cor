@@ -718,7 +718,8 @@ static class MarshalHeap
             // No C library to ask: pages, with the size kept in front so
             // Free can give them back.
             nuint mapped = (bytes + (nuint)(2 * WordSize.Bytes) + 4095) & ~(nuint)4095;
-            nuint pages = Platform.Map(mapped);
+            // A request so big the rounding wrapped is none to be had.
+            nuint pages = mapped < bytes ? 0 : Platform.Map(mapped);
             if (pages != 0)
             {
                 Sys.WriteAddress(pages, mapped);

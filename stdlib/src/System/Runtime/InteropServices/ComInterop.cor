@@ -744,9 +744,9 @@ namespace System.Runtime.InteropServices
             return o;
         }
 
-        public static void WriteInterface(nuint at, object? o, string iid) { Sys.WriteAddress(at, (nuint)(InterfaceFor(o, iid))); }
-        public static void WriteUnknown(nuint at, object? o) { Sys.WriteAddress(at, (nuint)(InterfaceFor(o, IidIUnknown))); }
-        public static void WriteDispatch(nuint at, object? o) { Sys.WriteAddress(at, (nuint)(InterfaceFor(o, IidIDispatch))); }
+        public static void WriteInterface(nuint at, object? o, string iid) { Sys.WriteAddress(at, InterfaceFor(o, iid)); }
+        public static void WriteUnknown(nuint at, object? o) { Sys.WriteAddress(at, InterfaceFor(o, IidIUnknown)); }
+        public static void WriteDispatch(nuint at, object? o) { Sys.WriteAddress(at, InterfaceFor(o, IidIDispatch)); }
 
         public static void ReplaceInterface(nuint at, object? o, string iid)
         {
@@ -895,7 +895,7 @@ namespace System.Runtime.InteropServices
             return s;
         }
 
-        public static void WriteBstr(nuint at, string? s) { Sys.WriteAddress(at, (nuint)(AllocBstr(s))); }
+        public static void WriteBstr(nuint at, string? s) { Sys.WriteAddress(at, AllocBstr(s)); }
 
         public static void ReplaceBstr(nuint at, string? s)
         {
@@ -935,7 +935,7 @@ namespace System.Runtime.InteropServices
         public static string? ArgLpStr(nuint p) { return MarshalHeap.FromUtf8(p); }
         public static string? ReadLpStr(nuint at) { return ArgLpStr(Sys.ReadAddress(at)); }
         public static string? TakeLpStr(nuint at) { nuint p = Sys.ReadAddress(at); Sys.WriteAddress(at, 0); string? s = ArgLpStr(p); MarshalHeap.Free(p); return s; }
-        public static void WriteLpStr(nuint at, string? s) { Sys.WriteAddress(at, (nuint)(s == null ? 0 : Marshal.StringToHGlobalUTF8(s))); }
+        public static void WriteLpStr(nuint at, string? s) { Sys.WriteAddress(at, MarshalHeap.Utf8(s)); }
         public static void ReplaceLpStr(nuint at, string? s) { MarshalHeap.Free(Sys.ReadAddress(at)); WriteLpStr(at, s); }
 
         // ---- VARIANT ----------------------------------------------------------------------
@@ -1003,7 +1003,7 @@ namespace System.Runtime.InteropServices
             if (o == null) vt = VtEmpty;
             else if (o is DBNull) vt = VtNull;
             else if (o is int i) { vt = VtI4; Sys.Write32(data, (uint)i); }
-            else if (o is string s) { vt = VtBstr; Sys.WriteAddress(data, (nuint)(AllocBstr(s))); }
+            else if (o is string s) { vt = VtBstr; Sys.WriteAddress(data, AllocBstr(s)); }
             else if (o is bool b) { vt = VtBool; Sys.Write16(data, (ushort)(b ? 0xFFFF : 0)); }
             else if (o is double dbl) { vt = VtR8; WriteR8(data, dbl); }
             else if (o is float f) { vt = VtR4; WriteR4(data, f); }
@@ -1017,16 +1017,16 @@ namespace System.Runtime.InteropServices
             else if (o is char ch) { vt = VtUi2; Sys.Write16(data, ch); }
             else if (o is DateTime date) { vt = VtDate; WriteR8(data, ToOADate(date)); }
             else if (o is ErrorWrapper ew) { vt = VtError; Sys.Write32(data, (uint)ew.ErrorCode); }
-            else if (o is BStrWrapper bw) { vt = VtBstr; Sys.WriteAddress(data, (nuint)(AllocBstr(bw.WrappedObject))); }
-            else if (o is UnknownWrapper uw) { vt = VtUnknown; Sys.WriteAddress(data, (nuint)(InterfaceFor(uw.WrappedObject, IidIUnknown))); }
-            else if (o is DispatchWrapper dw) { vt = VtDispatch; Sys.WriteAddress(data, (nuint)(InterfaceFor(dw.WrappedObject, IidIDispatch))); }
-            else if (o.GetType().IsArray) { vt = VtArray | ArrayVt(o); Sys.WriteAddress(data, (nuint)(SafeArrayFor(o))); }
+            else if (o is BStrWrapper bw) { vt = VtBstr; Sys.WriteAddress(data, AllocBstr(bw.WrappedObject)); }
+            else if (o is UnknownWrapper uw) { vt = VtUnknown; Sys.WriteAddress(data, InterfaceFor(uw.WrappedObject, IidIUnknown)); }
+            else if (o is DispatchWrapper dw) { vt = VtDispatch; Sys.WriteAddress(data, InterfaceFor(dw.WrappedObject, IidIDispatch)); }
+            else if (o.GetType().IsArray) { vt = VtArray | ArrayVt(o); Sys.WriteAddress(data, SafeArrayFor(o)); }
             else if (o.GetType().IsEnum) { vt = VtI4; Sys.Write32(data, (uint)((int)Long(o))); }
             else
             {
                 nuint d = InterfaceFor(o, IidIDispatch);
                 if (d != 0) { vt = VtDispatch; Sys.WriteAddress(data, (nuint)d); }
-                else { vt = VtUnknown; Sys.WriteAddress(data, (nuint)(InterfaceFor(o, IidIUnknown))); }
+                else { vt = VtUnknown; Sys.WriteAddress(data, InterfaceFor(o, IidIUnknown)); }
             }
             Sys.Write16(v, (ushort)vt);
         }
@@ -1279,9 +1279,9 @@ namespace System.Runtime.InteropServices
                 case VtI8: case VtUi8: WriteI8(at, Long(o)); return;
                 case VtR8: WriteR8(at, Double(o)); return;
                 case VtDate: WriteR8(at, o is DateTime d ? ToOADate(d) : Double(o)); return;
-                case VtBstr: Sys.WriteAddress(at, (nuint)(AllocBstr(o == null ? null : o.ToString()))); return;
-                case VtUnknown: Sys.WriteAddress(at, (nuint)(InterfaceFor(o, IidIUnknown))); return;
-                case VtDispatch: Sys.WriteAddress(at, (nuint)(InterfaceFor(o, IidIDispatch))); return;
+                case VtBstr: Sys.WriteAddress(at, AllocBstr(o == null ? null : o.ToString())); return;
+                case VtUnknown: Sys.WriteAddress(at, InterfaceFor(o, IidIUnknown)); return;
+                case VtDispatch: Sys.WriteAddress(at, InterfaceFor(o, IidIDispatch)); return;
                 case VtVariant: WriteVariant(at, o); return;
             }
             throw new NotSupportedException("a SAFEARRAY of type " + vt);
@@ -1329,7 +1329,7 @@ namespace System.Runtime.InteropServices
             return a;
         }
 
-        public static void WriteSafeArray(nuint at, object? a) { Sys.WriteAddress(at, (nuint)(SafeArrayFor(a))); }
+        public static void WriteSafeArray(nuint at, object? a) { Sys.WriteAddress(at, SafeArrayFor(a)); }
         public static void ReplaceSafeArray(nuint at, object? a) { SafeArrayDestroy(Sys.ReadAddress(at)); WriteSafeArray(at, a); }
 
         // ---- HRESULTs ---------------------------------------------------------------------
@@ -1500,7 +1500,7 @@ namespace System.Runtime.InteropServices
             return v;
         }
 
-        public static void SetSlot(nuint vtable, int slot, nuint fn) { Sys.WriteAddress(vtable + (nuint)(slot * WordSize.Bytes), (nuint)fn); }
+        public static void SetSlot(nuint vtable, int slot, nuint fn) { Sys.WriteAddress(vtable + (nuint)(slot * WordSize.Bytes), fn); }
 
         internal static nuint UnknownVtable { get { if (_unknownVtable == 0) _unknownVtable = NewVtable(3, false); return _unknownVtable; } }
         internal static nuint DispatchVtable { get { if (_dispatchVtable == 0) _dispatchVtable = NewVtable(7, true); return _dispatchVtable; } }
@@ -1794,12 +1794,12 @@ namespace System.Runtime.InteropServices
                 for (int i = 0; i < 16; i++) Sys.Write8(block + (nuint)i, 0);              // IID_NULL
                 nuint names = block + 16;
                 nuint id = names + WordSize.Bytes;
-                Sys.WriteAddress(names, (nuint)text);
-                Sys.Write32((nuint)id, 0xFFFFFFFF);
+                Sys.WriteAddress(names, text);
+                Sys.Write32(id, 0xFFFFFFFF);
                 // GetIDsOfNames(REFIID, LPOLESTR*, UINT cNames, LCID, DISPID*).
                 int hr = ((delegate* unmanaged[Stdcall]<nuint, nuint, nuint, uint, uint, nuint, int>)Entry(dispatch, 5))(dispatch, block, names, 1, UserLocale, id);
                 ComMarshal.Check(hr);
-                return (int)Sys.Read32((nuint)id);
+                return (int)Sys.Read32(id);
             }
             finally
             {
@@ -1829,7 +1829,7 @@ namespace System.Runtime.InteropServices
                         ComMarshal.WriteVariant(keep, args[i]);
                         ComMarshal.VariantInit(at);
                         Sys.Write16(at, ComMarshal.VtByRef | ComMarshal.VtVariant);
-                        Sys.WriteAddress(at + (nuint)ComMarshal.VariantData, (nuint)keep);
+                        Sys.WriteAddress(at + (nuint)ComMarshal.VariantData, keep);
                     }
                     else ComMarshal.WriteVariant(at, args[i]);
                 }
@@ -1840,7 +1840,7 @@ namespace System.Runtime.InteropServices
                 nuint excep = result + (nuint)vb;
                 nuint argErr = excep + 64;
                 for (int i = 0; i < blockBytes; i++) Sys.Write8(block + (nuint)i, 0);
-                Sys.Write32((nuint)named, unchecked((uint)DispidPropertyPut));
+                Sys.Write32(named, unchecked((uint)DispidPropertyPut));
                 Sys.WriteAddress(parameters, (nuint)(n == 0 ? 0 : variants));
                 Sys.WriteAddress(parameters + (nuint)w, (nuint)(put ? named : 0));
                 Sys.Write32(parameters + (nuint)(2 * w), (uint)n);
@@ -1882,8 +1882,8 @@ namespace System.Runtime.InteropServices
             for (int k = 0; k < 3; k++)
             {
                 nuint field = at + (nuint)(w == 8 ? 8 + k * 8 : 4 + k * 4);
-                ComMarshal.FreeBstr(Sys.ReadAddress((nuint)field));
-                Sys.WriteAddress((nuint)field, 0);
+                ComMarshal.FreeBstr(Sys.ReadAddress(field));
+                Sys.WriteAddress(field, 0);
             }
         }
 
