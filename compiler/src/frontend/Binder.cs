@@ -8857,10 +8857,12 @@ public sealed partial class Binder
         // target itself. `(UInt128)(-1)` is UInt128's operator from int, not
         // the one from uint that the int also reaches by a cast; `(long)node`
         // is JsonNode's operator to long, not the one to int that widens.
-        // To a T? the operator to T is as exact. Failing one exactly, the
-        // most encompassing result: the one every other converts to, so
-        // `(int?)300m` is decimal's operator to int, not its first, to byte,
-        // and `(double?)node` the one to double, not to int.
+        // To a T? the operator to T is as exact: `(int?)300m` is decimal's
+        // operator to int, not its first, to byte, and `(double?)node` the
+        // one to double, not to int. Failing one exactly, the most
+        // encompassing result, the one every other converts to: `(long)x`
+        // through operators to byte and to int is the one to int. (Two
+        // results neither converts to, C#'s ambiguity, take the first.)
         List<MethodSymbol> fromExactly = candidates.Where(m => MethodSignatures.SameType(m.Params[0].Type, from)).ToList();
         if (fromExactly.Count > 0) candidates = fromExactly;
         Type toPlain = to.IsNullableValue ? to.Underlying : to;
@@ -8902,14 +8904,11 @@ public sealed partial class Binder
         call.Args.Add(argument);
         _r.Rewrites[value] = call;
         _r.UserConversions.Add(call);
-        // A CONVERSION'S CALL CONVERTED AGAIN keeps the operator chosen for
-        // it: checked as this call's argument, its overloads -- which differ
-        // only in what they make -- would give it the first of them.
-        MethodSymbol? chosen = value is CallExpr inner && _r.Calls.TryGetValue(inner, out MethodSymbol? had2)
-                               && had2.Name is "op_Implicit" or "op_Explicit" or "op_CheckedExplicit" ? had2 : null;
+        // A conversion's call converted again keeps the operator chosen for
+        // it, checked as this call's argument (Converting, CheckExpr).
+        Converting(call, op);
         CheckExpr(call);
-        if (chosen is not null) Converting((CallExpr)value, chosen);
-        return Converting(call, op);
+        return op.Returns;
     }
 
     /// <summary>
@@ -8920,19 +8919,13 @@ public sealed partial class Binder
     /// </summary>
     private Type Converting(CallExpr call, MethodSymbol op)
     {
-        _r.Calls[call] = op;
+        // Pinned (CallTargets.Pin): checked again -- as the operand of a cast
+        // built around it -- the call keeps it (CheckExpr), so what is built
+        // around it is bound against what the chosen operator makes.
+        _r.Calls.Pin(call, op);
         _r.ExprType[call] = op.Returns;
-        _pinnedConversions[call] = op;
         return op.Returns;
     }
-
-    /// <summary>
-    /// The conversions' calls Converting bound, each to its operator: checked
-    /// again -- as the operand of a cast built around it -- a call keeps it
-    /// (CheckExpr), so what is built around it is bound against the type the
-    /// chosen operator makes, not the first overload's.
-    /// </summary>
-    private readonly Dictionary<CallExpr, MethodSymbol> _pinnedConversions = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// Whether `from` reaches `to` only by the machine word's rule
@@ -15604,7 +15597,7 @@ public sealed partial class Binder
     private Type CheckExpr(Expr e)
     {
         Type t = CheckExprCore(e);
-        if (e is CallExpr pinnedCall && _pinnedConversions.TryGetValue(pinnedCall, out MethodSymbol? pinnedOp))
+        if (e is CallExpr pinnedCall && _r.Calls.Pinned(pinnedCall) is { } pinnedOp)
         {
             _r.Calls[pinnedCall] = pinnedOp;
             t = pinnedOp.Returns;
@@ -17969,13 +17962,12 @@ public sealed partial class Binder
                         Line = cast.Line, Col = cast.Col, File = cast.File,
                     };
                     number.Args.Add(cast.Operand);
+                    // The operator chosen, not the first its overloading finds
+                    // (Converting): pinned before the cast is built around it.
+                    Converting(number, toNumber);
                     CastExpr toEnum = new() { Type = cast.Type, Operand = number, Line = cast.Line, Col = cast.Col, File = cast.File };
                     _r.Rewrites[cast] = toEnum;
-                    Type made = CheckExpr(toEnum);
-                    // The operator chosen, not the first its overloading finds:
-                    // they differ only in what they make.
-                    Converting(number, toNumber);
-                    return made;
+                    return CheckExpr(toEnum);
                 }
 
                 // A DECIMAL? TO AN ENUM, OR A DECIMAL TO AN ENUM?, the same:
@@ -18024,9 +18016,10 @@ public sealed partial class Binder
                 // n is; `(decimal)n` the operator on n.Value, which throws
                 // where n is empty. The operand is held once.
                 // Lifted to a T? only over value types on both sides (C#
-                // 10.6.2, as UserUnary lifts); to a T, a reference one too,
-                // the operator on the value. Never where the type declares an
-                // operator on the nullable itself, which takes it whole.
+                // 10.6.2, as UserUnary lifts); to a reference, null where n
+                // is empty, as .NET's `(string)n` is. Never where the type
+                // declares an operator on the nullable itself, which takes it
+                // whole.
                 if (!_r.Rewrites.ContainsKey(cast) && operand.IsNullableValue && !wanted.IsError
                     && !StandardConvertible(operand, wanted) && !StandardConvertible(wanted, operand)
                     && (wanted.IsNullableValue ? wanted.Underlying : wanted) is { } plain
@@ -18046,7 +18039,9 @@ public sealed partial class Binder
                     // and its result cast to what was asked: an operator to
                     // int for `(long)n` makes an int, widened here.
                     Converting(onValue, liftOp);
-                    Expr test = !wanted.IsNullableValue ? new CastExpr { Type = cast.Type, Operand = onValue, Line = cast.Line, Col = cast.Col, File = cast.File } : new ConditionalExpr
+                    // To a value type the operator on n.Value, which throws
+                    // where n is empty; to a T? or a reference, empty there.
+                    Expr test = !wanted.IsNullableValue && ValueOperand(wanted) ? new CastExpr { Type = cast.Type, Operand = onValue, Line = cast.Line, Col = cast.Col, File = cast.File } : new ConditionalExpr
                     {
                         Cond = new MemberExpr { Target = new SubjectExpr { Line = cast.Line, Col = cast.Col }, Name = "HasValue", Line = cast.Line, Col = cast.Col },
                         Then = new CastExpr { Type = cast.Type, Operand = onValue, Line = cast.Line, Col = cast.Col, File = cast.File },

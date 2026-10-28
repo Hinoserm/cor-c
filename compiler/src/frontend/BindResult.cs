@@ -1241,6 +1241,21 @@ public sealed class CallTargets
 
     public bool ContainsKey(CallExpr c) => c.BoundCallBy == _binding.Current && c.BoundCall is not null;
 
+    /// <summary>
+    /// A conversion's call bound to `op` for good (Binder.Converting): checked
+    /// again, it keeps it (Pinned). Overload resolution sees only the
+    /// argument, and a type's conversions can differ in nothing else.
+    /// </summary>
+    public void Pin(CallExpr c, MethodSymbol op)
+    {
+        this[c] = op;
+        c.PinnedCall = op;
+        c.PinnedCallBy = _binding.Current;
+    }
+
+    /// <summary>The operator this binding pinned a call to (Pin), or null.</summary>
+    public MethodSymbol? Pinned(CallExpr c) => c.PinnedCallBy == _binding.Current ? c.PinnedCall : null;
+
     public bool Remove(CallExpr c)
     {
         if (!ContainsKey(c)) return false;

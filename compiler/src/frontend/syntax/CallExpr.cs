@@ -164,4 +164,9 @@ public sealed class CallExpr : Expr
     // binding bound it (NodeBinding): read back only by that binding.
     internal MethodSymbol? BoundCall;
     internal int BoundCallBy;
+
+    // A conversion's call pinned to the operator chosen for it
+    // (CallTargets.Pin), and by which binding: kept when it is checked again.
+    internal MethodSymbol? PinnedCall;
+    internal int PinnedCallBy;
 }
