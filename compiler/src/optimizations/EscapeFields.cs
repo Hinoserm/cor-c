@@ -108,7 +108,9 @@ public sealed partial class Escape
         callee is Corsac.Lang.X86.MachineIntrinsics.KeepAlive
             or Corsac.Lang.X86.MachineIntrinsics.PackedFindChar4 or Corsac.Lang.X86.MachineIntrinsics.PackedFindChar8
             or Corsac.Lang.X86.MachineIntrinsics.PackedEqual8
-            or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetch or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetchLine;
+            or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetch or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetchLine
+        // And a packed block's prefetch (Packed.Prefetch), the same.
+        || callee is not null && callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedPrefetchPrefix, StringComparison.Ordinal);
 
     /// <summary>
     /// The notes the barrier is built from, which are never inlined. Whether

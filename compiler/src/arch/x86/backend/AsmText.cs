@@ -130,7 +130,9 @@ internal static class AsmText
             case MOp.MmxZero:
                 yield return "pxor mm0, mm0"; yield break;
             case MOp.MmxLoadD:
-                yield return "movd mm0, " + Op(i.Operands[0], 4, true); yield break;
+                yield return $"movd {Mm(i, 1)}, " + Op(i.Operands[0], 4, true); yield break;
+            case MOp.MmxStoreD:
+                yield return "movd " + Op(i.Operands[0], 4, true) + $", {Mm(i, 1)}"; yield break;
             case MOp.MmxDuplicateLowWords:
                 yield return "punpcklwd mm0, mm0"; yield break;
             case MOp.MmxWidenUnsignedWords:
@@ -257,6 +259,12 @@ internal static class AsmText
                 yield break;
             case MOp.PrefetchLine:
                 yield return $"prefetch {Op(i.Operands[0], 1, false)}";
+                yield break;
+            case MOp.PrefetchWrite:
+                yield return $"prefetchw {Op(i.Operands[0], 1, false)}";
+                yield break;
+            case MOp.XmmStoreNt:
+                yield return $"movntdq {Op(i.Operands[0], 16, false)}, {Xmm(i, 1)}";
                 yield break;
             case MOp.MmxFindW4:
                 yield return $"movq mm0, {Op(i.Operands[1], 8, false)}";

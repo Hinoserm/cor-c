@@ -1567,9 +1567,10 @@ public sealed partial class Binder
         }
     }
 
-    /// <summary>Whether a call is one of the prelude's packed operations (Packed.NAME).</summary>
+    /// <summary>Whether a call is one of the prelude's packed operations (Packed.NAME) that touch the x87's, MMX's or SSE's registers: not Features, a constant, nor Prefetch, PrefetchWrite or Fence, which touch none.</summary>
     private bool PackedOperation(CallExpr call)
-        => _r.Calls.TryGetValue(call, out MethodSymbol? m) && m.Owner.Name == Prelude.PackedType && m.Decl?.File == "<prelude>" && m.Name != "Features";
+        => _r.Calls.TryGetValue(call, out MethodSymbol? m) && m.Owner.Name == Prelude.PackedType && m.Decl?.File == "<prelude>"
+            && m.Name is not ("Features" or "Prefetch" or "PrefetchWrite" or "Fence");
 
     /// <summary>Whether an expression is a float's or a double's: the x87's, freestanding.</summary>
     private bool FloatTyped(Expr e) => _r.TypeOf(e) is { Nullable: false, Prim: Prim.F32 or Prim.F64 };

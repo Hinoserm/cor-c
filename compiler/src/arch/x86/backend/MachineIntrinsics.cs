@@ -137,6 +137,18 @@ internal static class MachineIntrinsics
     public static string PackedExtract(int at) => PackedOpPrefix + "extract." + at;
     public static string PackedInsert(int at) => PackedOpPrefix + "insert." + at;
     public const string PackedStoreNonTemporal = PackedOpPrefix + "storent";
+    /// <summary>MOVNTDQ, SSE2's: sixteen bytes stored around the caches, the address at sixteen (Packed.StoreNonTemporal checks it first).</summary>
+    public const string PackedWideStoreNonTemporal = PackedOpPrefix + "xstorent";
+    /// <summary>MOVD to and from an MMX register: four bytes, the high four zero in (Packed.Load32, Store32).</summary>
+    public const string PackedLoad32 = PackedOpPrefix + "ld32", PackedStore32 = PackedOpPrefix + "st32";
+    /// <summary>
+    /// A cache line asked for ahead (Packed.Prefetch, PrefetchWrite):
+    /// "nta" PREFETCHNTA (the MMX extensions'), "line" 3DNow!'s PREFETCH,
+    /// "write" its PREFETCHW. No register is touched, so no state is kept
+    /// for one, nor any packed register given up around it.
+    /// </summary>
+    public const string PackedPrefetchPrefix = PackedOpPrefix + "prefetch.";
+    public static string PackedPrefetch(string kind) => PackedPrefetchPrefix + kind;
     /// <summary>Eight bytes moved through mm0 (Packed.Load, Packed.Store in a variant with MMX): one movq each way, not two 32-bit moves.</summary>
     public const string PackedMove = PackedOpPrefix + "mov";
     /// <summary>An SSE2 integer operation on sixteen bytes: its prefix and opcode (66 0F xx).</summary>

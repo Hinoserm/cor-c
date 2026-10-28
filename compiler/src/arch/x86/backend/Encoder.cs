@@ -683,9 +683,11 @@ internal sealed class Encoder
                 B(0x0f, i.Op == MOp.MmxLoad ? (byte)0x6f : (byte)0x7f); ModRM(Packed(i, 1), i.Operands[0]);
                 break;
             case MOp.MmxLoadD:
-                if (i.Operands.Count != 1 || i.Operands[0] is not MMem)
+            case MOp.MmxStoreD:
+                // movd mmN, m32 / movd m32, mmN: mm0 unless a register is named.
+                if (i.Operands.Count is < 1 or > 2 || i.Operands[0] is not MMem)
                     throw new InvalidOperationException("MOVD requires memory");
-                B(0x0f, 0x6e); ModRM(0, i.Operands[0]); break;
+                B(0x0f, i.Op == MOp.MmxLoadD ? (byte)0x6e : (byte)0x7e); ModRM(Packed(i, 1), i.Operands[0]); break;
             case MOp.MmxDuplicateLowWords:
                 B(0x0f, 0x61, 0xc0); break;
             case MOp.MmxWidenUnsignedWords:
@@ -915,8 +917,14 @@ internal sealed class Encoder
                 ModRM(0, i.Operands[0]);
                 break;
             case MOp.PrefetchLine:
+            case MOp.PrefetchWrite:
+                // 0F 0D /0 prefetch, /1 prefetchw.
                 B(0x0F, 0x0D);
-                ModRM(0, i.Operands[0]);
+                ModRM(i.Op == MOp.PrefetchWrite ? 1 : 0, i.Operands[0]);
+                break;
+            case MOp.XmmStoreNt:
+                B(0x66, 0x0F, 0xE7);
+                ModRM(Packed(i, 1), i.Operands[0]);
                 break;
             case MOp.Sfence:
                 B(0x0F, 0xAE, 0xF8);

@@ -140,8 +140,12 @@ public enum MOp : byte
     Cmpxchg8b,
     /// <summary>movntq m64, mm0: MM0 stored around the caches (the MMX extensions: Sys.StreamCopy64).</summary>
     MmxStoreNt,
-    /// <summary>prefetchnta m8 (the MMX extensions) and 3DNow!'s prefetch m8: a cache line asked for ahead.</summary>
-    PrefetchNta, PrefetchLine,
+    /// <summary>prefetchnta m8 (the MMX extensions), 3DNow!'s prefetch m8 and prefetchw m8: a cache line asked for ahead, the last to be written.</summary>
+    PrefetchNta, PrefetchLine, PrefetchWrite,
+    /// <summary>movd m32, mmN: the register's low four bytes stored (the register an MImm, mm0 where none).</summary>
+    MmxStoreD,
+    /// <summary>movntdq m128, xmmN: sixteen bytes stored around the caches; the address must be at sixteen. SSE2's.</summary>
+    XmmStoreNt,
     /// <summary>sfence: the streaming stores before it seen before any store after.</summary>
     Sfence,
     /// <summary>

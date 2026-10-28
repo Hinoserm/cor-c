@@ -1086,8 +1086,15 @@ public static class Prelude
         // four, through 3DNow! where there is no SSE only for AddF32, SubF32,
         // MulF32 and the compares, whose answers there are IEEE's for
         // ordinary values only (no denormal result, no infinity, no NaN:
-        // PackedOps.Float). The counts, orders and places are integer
-        // literals, which the instruction holds in its own bytes.
+        // PackedOps.Float). The orders and places are integer literals,
+        // which the instruction holds in its own bytes; so is a byte shift's
+        // count. Any other shift's count may be any int, taken unsigned: a
+        // literal goes in the instruction's bytes, anything else in a
+        // register (PSRLW mm, mm and the rest), and a count at or past the
+        // lane's width empties it, or fills it with its sign. Load32 and
+        // Store32 move four bytes (MOVD), the high four zero in; Prefetch and
+        // PrefetchWrite ask for a cache line ahead (PREFETCHNTA, 3DNow!'s
+        // PREFETCH and PREFETCHW) and are nothing where there is none.
         static class Packed {
             public static int Features() { return 0; }
             public static Packed64 FromBits(ulong bits) { return new Packed64(); }
@@ -1099,6 +1106,10 @@ public static class Prelude
             public static void StoreNonTemporal(nuint address, Packed64 value) { }
             public static void StoreNonTemporal(nuint address, Packed128 value) { }
             public static void Fence() { }
+            public static Packed64 Load32(nuint address) { return new Packed64(); }
+            public static void Store32(nuint address, Packed64 value) { }
+            public static void Prefetch(nuint address) { }
+            public static void PrefetchWrite(nuint address) { }
             public static Packed64 Add8(Packed64 a, Packed64 b) { return a; }
             public static Packed64 Add16(Packed64 a, Packed64 b) { return a; }
             public static Packed64 Add32(Packed64 a, Packed64 b) { return a; }

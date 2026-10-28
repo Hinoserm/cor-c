@@ -46,7 +46,9 @@ internal static class Isa
         // MMX and the MMX extensions both, so they count as the packed state.
         MOp.MmxStoreNt or MOp.MmxFindW8 => X86Feature.Mmx | X86Feature.MmxExtensions,
         MOp.PrefetchNta or MOp.Sfence => X86Feature.MmxExtensions,
-        MOp.PrefetchLine => X86Feature.ThreeDNow,
+        MOp.PrefetchLine or MOp.PrefetchWrite => X86Feature.ThreeDNow,
+        MOp.MmxStoreD => X86Feature.Mmx,
+        MOp.XmmStoreNt => X86Feature.Sse | X86Feature.Sse2,
         MOp.MmxFindW4 or MOp.MmxEqual8 => X86Feature.Mmx,
         // FUCOMIP: the x87 half of what CPUID calls CMOV.
         MOp.Fucomipp => X86Feature.FloatCmov,
@@ -88,9 +90,10 @@ internal static class Isa
     /// state is the x87's: code may touch it only where the hosted ABI owns
     /// that state for it (X86Backend.AutomaticPacked), or inside a packed
     /// block that saved it (MInstr.OwnsState). Read off the table, so
-    /// a new packed instruction is counted the moment it has its row.
+    /// a new packed instruction is counted the moment it has its row -- but
+    /// 3DNow!'s prefetches, which touch no register.
     /// </summary>
-    public static bool UsesPackedState(MOp op) => (Requires(op) & PackedState) != 0;
+    public static bool UsesPackedState(MOp op) => (Requires(op) & PackedState) != 0 && op is not (MOp.PrefetchLine or MOp.PrefetchWrite);
 
     /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code the hosted ABI selected (X86Backend.AutomaticPacked), or code inside a state FXSAVE keeps (MInstr.OwnsState 2), may use.</summary>
     public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0;

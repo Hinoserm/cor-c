@@ -225,6 +225,29 @@ internal sealed partial class Selector
             case "fence":
                 P(MOp.Sfence);
                 return;
+            // A CACHE LINE ASKED FOR AHEAD: no register touched, nothing
+            // given up (MachineIntrinsics.PackedPrefetch).
+            case "prefetch":
+                P(part[1] switch { "nta" => MOp.PrefetchNta, "write" => MOp.PrefetchWrite, _ => MOp.PrefetchLine }, PackedAt(Address(0)));
+                return;
+            // MOVD: four bytes into a register of their own, the high four
+            // zero -- a register holding any of them newer than memory
+            // written back first -- and the result kept as its buffer's.
+            case "ld32":
+            {
+                PackedLetGo(PackedPlaceOf(Address(1)), 4, replaced: false);
+                int made = PackedFree(false, -1, -1);
+                P(MOp.MmxLoadD, PackedAt(Address(1)), N(made));
+                PackedOut(false, Address(0), 8, made, copy: false);
+                break;
+            }
+            case "st32":
+            {
+                int value = PackedIn(false, Address(1), 8);
+                PackedStoredTo(Address(0), 4);
+                P(MOp.MmxStoreD, PackedAt(Address(0)), N(value));
+                break;
+            }
             // THE XMM REGISTERS' (SSE, SSE2). They are not the x87's, and
             // leave the MMX registers as they were.
             case "x":
@@ -250,6 +273,13 @@ internal sealed partial class Selector
                 int made = PackedFree(true, pinned, -1);
                 P(MOp.XmmOpRR, Imm(Convert.ToByte(part[1], 16)), Imm(0x70), N(made), a, Imm(int.Parse(part[2])));
                 PackedOut(true, Address(0), 16, made, copy: false);
+                return;
+            }
+            case "xstorent":
+            {
+                int value = PackedIn(true, Address(1), 16);
+                PackedStoredTo(Address(0), 16);
+                P(MOp.XmmStoreNt, PackedAt(Address(0)), N(value));
                 return;
             }
             case "xextract":
@@ -725,6 +755,7 @@ internal sealed partial class Selector
     /// <summary>Whether an IR instruction is a packed operation that leaves lanes in the MMX registers: MMX's and 3DNow!'s, not the XMM registers' nor SFENCE.</summary>
     private static bool PackedOpCall(Instr i)
         => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal) && c != MachineIntrinsics.PackedFence
+            && !c.StartsWith(MachineIntrinsics.PackedPrefetchPrefix, StringComparison.Ordinal)
             && !c.StartsWith(MachineIntrinsics.PackedOpPrefix + "x", StringComparison.Ordinal) && !c.StartsWith(MachineIntrinsics.PackedOpPrefix + "f2.", StringComparison.Ordinal);
 
     /// <summary>
@@ -784,7 +815,8 @@ internal sealed partial class Selector
                     if (i.Op == Opcode.CallIndirect && i.Callee == NativeCall.IndirectUsingFpu) xmm = true;
                     if (i.Op == Opcode.Call && i.Callee is { } named)
                     {
-                        if (named.StartsWith(MachineIntrinsics.PackedOpPrefix + "x", StringComparison.Ordinal)
+                        if (named.StartsWith(MachineIntrinsics.PackedPrefetchPrefix, StringComparison.Ordinal) || named == MachineIntrinsics.PackedFence) { }
+                        else if (named.StartsWith(MachineIntrinsics.PackedOpPrefix + "x", StringComparison.Ordinal)
                             || named.StartsWith(MachineIntrinsics.PackedOpPrefix + "f2.", StringComparison.Ordinal)) xmm = true;
                         else if (named.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
                             || named.StartsWith(MachineIntrinsics.PackedSavePrefix, StringComparison.Ordinal)) x87 = true;

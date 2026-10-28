@@ -176,6 +176,35 @@ public sealed partial class Lowering
         }
     }
 
+    /// <summary>
+    /// The same by a count only the run knows (`count`, an I32 taken
+    /// unsigned), as PSRLW mm, mm and the rest do it: a count at or past the
+    /// lane's width empties a logical shift's lane and fills an arithmetic
+    /// one's with its sign. The shift itself by the count within the width,
+    /// the lane then chosen, no branch.
+    /// </summary>
+    private void LanesShiftBy(byte group, byte sub, VReg count, VReg made, VReg a, int bytes)
+    {
+        int bits = group == 0x71 ? 16 : group == 0x72 ? 32 : 64;
+        VReg past = LaneCompare(Opcode.GeU, count, LaneConst(bits));
+        VReg within = _e.Binary(Opcode.And, count, bits - 1);
+        // An arithmetic shift past the width is one by width - 1: the sign everywhere.
+        VReg arithmetic = LaneChoose(past, LaneConst(bits - 1), within);
+        // A 64-bit lane emptied by a mask of its own width.
+        VReg keep64 = bits == 64 ? _e.Unary(Opcode.Not, R(_e.Unary(Opcode.Neg, R(_e.Unary(Opcode.ZExt32, R(past), IrType.I64)), IrType.I64)), IrType.I64) : past;
+        for (int k = 0; k < bytes * 8 / bits; k++)
+        {
+            VReg v;
+            if (sub == 4) v = _e.Binary(Opcode.ShrS, LaneAt(a, bits, k, true), arithmetic);
+            else
+            {
+                v = _e.Binary(sub == 6 ? Opcode.Shl : Opcode.ShrU, LaneAt(a, bits, k, false), within);
+                v = bits == 64 ? _e.Binary(Opcode.And, v, keep64) : LaneChoose(past, LaneConst(0), v);
+            }
+            LanePut(made, bits, k, v);
+        }
+    }
+
     /// <summary>PSLLDQ (`sub` 7) and PSRLDQ (3): sixteen bytes moved by `count`, zeros in.</summary>
     private void LanesByteShift(byte sub, int count, VReg made, VReg a)
     {

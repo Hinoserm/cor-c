@@ -54,6 +54,14 @@ public static class PackedOps
         ["SumAbsoluteDifferences8"] = (0xF6, true, false),
     };
 
+    /// <summary>A shift by a count in a register (PSRLW mm, mm/m64 and the rest): its opcode (0F xx, 66 0F xx), by the constant form's group and /digit. Not the byte shifts, which have none.</summary>
+    public static readonly Dictionary<(byte Group, byte Sub), byte> ShiftByRegister = new()
+    {
+        [(0x71, 2)] = 0xD1, [(0x72, 2)] = 0xD2, [(0x73, 2)] = 0xD3,
+        [(0x71, 4)] = 0xE1, [(0x72, 4)] = 0xE2,
+        [(0x71, 6)] = 0xF1, [(0x72, 6)] = 0xF2, [(0x73, 6)] = 0xF3,
+    };
+
     /// <summary>A shift by a constant count: the group (0F 71, 72, 73) and its /digit. The byte shifts are SSE2's alone (66 0F 73 /7, /3).</summary>
     public static readonly Dictionary<string, (byte Group, byte Sub)> Shift = new(StringComparer.Ordinal)
     {
@@ -107,7 +115,12 @@ public static class PackedOps
             "Shuffle32" or "ShuffleLow16" or "ShuffleHigh16" => Sse2,
             "ShuffleF32" or "UnpackLowF32" or "UnpackHighF32" => Sse,
             "IntToFloat32" or "FloatToInt32" => Mmx | ThreeDNow | Sse2,
-            "StoreNonTemporal" or "Fence" => Mmx | MmxExtensions,
+            // MOVNTQ; MOVNTDQ, SSE2's, for sixteen bytes at sixteen.
+            "StoreNonTemporal" => Mmx | MmxExtensions | Sse2,
+            "Fence" => Mmx | MmxExtensions,
+            "Load32" or "Store32" => Mmx,
+            // PREFETCHNTA (the MMX extensions'), 3DNow!'s PREFETCH and PREFETCHW.
+            "Prefetch" or "PrefetchWrite" => MmxExtensions | ThreeDNow,
             _ => 0,
         };
     }

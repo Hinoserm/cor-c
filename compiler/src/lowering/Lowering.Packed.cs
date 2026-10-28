@@ -21,10 +21,10 @@ namespace Corsac.Lang.Lower;
 ///   else 3DNow! (0F 0F /r xx) where it has the operation exactly; else the
 ///   x87's, one float at a time.
 ///
-/// Every machine form loads its operands from memory, computes in mm0 or
-/// xmm0, and stores the result into the call's result buffer (Selector.
-/// SelectPackedOp); an operand the operation before left in mm0 is taken
-/// from there, and nothing else is kept in a packed register between two.
+/// Every machine form names its operands and its result by their buffers'
+/// addresses; the selector keeps them in the MMX and XMM registers from one
+/// operation to the next, and writes a buffer back only where it must
+/// (Selector.SelectPackedOp).
 /// </summary>
 public sealed partial class Lowering
 {
@@ -164,6 +164,22 @@ public sealed partial class Lowering
                     _e.Emit(Opcode.MemCopy, null, R(at), R(value), Imm(bytes, IrTypes.Word));
                     return Void();
                 }
+                // MOVNTDQ, SSE2's, where the address is at sixteen: it faults
+                // on any other, which only the run knows. Two MOVNTQ there.
+                if (wide && sse2)
+                {
+                    Corsac.Lang.Ir.Block aligned = _f.NewBlock("ntaligned"), apart = _f.NewBlock("ntapart"), done = _f.NewBlock("ntdone");
+                    _e.Branch(_e.Binary(Opcode.And, at, 15), apart, aligned);
+                    _e.SetBlock(aligned);
+                    _e.Call(MachineIntrinsics.PackedWideStoreNonTemporal, IrType.Void, R(at), R(value));
+                    _e.Jump(done);
+                    _e.SetBlock(apart);
+                    _e.Call(MachineIntrinsics.PackedStoreNonTemporal, IrType.Void, R(at), R(value));
+                    _e.Call(MachineIntrinsics.PackedStoreNonTemporal, IrType.Void, R(Plus(at, 8)), R(Plus(value, 8)));
+                    _e.Jump(done);
+                    _e.SetBlock(done);
+                    return Void();
+                }
                 _e.Call(MachineIntrinsics.PackedStoreNonTemporal, IrType.Void, R(at), R(value));
                 if (wide) _e.Call(MachineIntrinsics.PackedStoreNonTemporal, IrType.Void, R(Plus(at, 8)), R(Plus(value, 8)));
                 return Void();
@@ -171,6 +187,39 @@ public sealed partial class Lowering
             case "Fence":
                 if (ext) _e.Call(MachineIntrinsics.PackedFence, IrType.Void);
                 return Void();
+            // A CACHE LINE ASKED FOR AHEAD: PREFETCHNTA where the MMX
+            // extensions are, 3DNow!'s PREFETCH (PREFETCHW to be written,
+            // before PREFETCHNTA) where it is; nothing on anything else.
+            case "Prefetch":
+            case "PrefetchWrite":
+            {
+                VReg at = ToWord(Arg(call, target, 0));
+                bool three = (has & PackedOps.ThreeDNow) != 0, nta = (has & PackedOps.MmxExtensions) != 0;
+                string? kind = name == "PrefetchWrite" && three ? "write" : nta ? "nta" : three ? "line" : null;
+                if (kind is not null) _e.Call(MachineIntrinsics.PackedPrefetch(kind), IrType.Void, R(at));
+                return Void();
+            }
+            // FOUR BYTES (MOVD): a row's tail. Plain 32-bit moves without MMX.
+            case "Load32":
+            {
+                VReg made = ResultBuffer(call, returns);
+                VReg from = ToWord(Arg(call, target, 0));
+                if (mmx)
+                {
+                    _e.Call(MachineIntrinsics.PackedLoad32, IrType.Void, R(made), R(from));
+                    return made;
+                }
+                _e.Store(RegOperand.Of(made), RegOperand.Of(_e.Load(IrType.I32, from, 0, 4, signed: false)), 0, 4);
+                _e.Store(RegOperand.Of(made), new ImmOperand(0, IrType.I32), 4, 4);
+                return made;
+            }
+            case "Store32":
+            {
+                VReg into = ToWord(Arg(call, target, 0)), value = PackedArg(call, target, 1);
+                if (mmx) _e.Call(MachineIntrinsics.PackedStore32, IrType.Void, R(into), R(value));
+                else _e.Store(RegOperand.Of(into), RegOperand.Of(_e.Load(IrType.I32, value, 0, 4, signed: false)), 0, 4);
+                return Void();
+            }
         }
 
         if (PackedOps.Binary.TryGetValue(name, out var binary))
@@ -195,10 +244,35 @@ public sealed partial class Lowering
 
         if (PackedOps.Shift.TryGetValue(name, out var shift))
         {
+            bool bytewise = shift.Sub is 7 or 3 && shift.Group == 0x73;
+            // A COUNT ONLY THE RUN KNOWS: in a register's low 64 bits, the
+            // instruction's other operand (PSRLW mm, m64 and the rest, 0F xx;
+            // SSE2's 66 0F xx), zero-extended, so a count at or past the
+            // lane's width empties it, or fills it with its sign; the lanes
+            // so where the variant has neither. Not a byte shift, which has
+            // no such form.
+            if (!bytewise && LiteralInteger(call.Args[1]) is null)
+            {
+                VReg source = PackedArg(call, target, 0);
+                VReg by = ToI32(Arg(call, target, 1));
+                VReg result = ResultBuffer(call, returns);
+                byte op = PackedOps.ShiftByRegister[(shift.Group, shift.Sub)];
+                if (wide && sse2 || mmx)
+                {
+                    VReg counts = _e.SlotAddress(_f.NewSlot(bytes, 8, "count"));
+                    _e.Store(RegOperand.Of(counts), RegOperand.Of(_e.Unary(Opcode.ZExt32, R(by), IrType.I64)), 0, 8);
+                    if (wide) _e.Store(RegOperand.Of(counts), new ImmOperand(0, IrType.I64), 8, 8);
+                    if (wide && sse2) _e.Call(MachineIntrinsics.PackedWide(0x66, op), IrType.Void, R(result), R(source), R(counts));
+                    else
+                        for (int half = 0; half < bytes; half += 8)
+                            _e.Call(MachineIntrinsics.PackedOp(op), IrType.Void, R(Plus(result, half)), R(Plus(source, half)), R(counts));
+                }
+                else LanesShiftBy(shift.Group, shift.Sub, by, result, source, bytes);
+                return result;
+            }
             if (PackedConstant(call, target, 1, 0, 255) is not int count) return Void();
             VReg a = PackedArg(call, target, 0);
             VReg made = ResultBuffer(call, returns);
-            bool bytewise = shift.Sub is 7 or 3 && shift.Group == 0x73;
             if (wide && sse2)
                 _e.Call(MachineIntrinsics.PackedWideShift(shift.Group, shift.Sub, count), IrType.Void, R(made), R(a));
             else if (bytewise)
