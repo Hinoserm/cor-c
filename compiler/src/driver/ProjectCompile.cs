@@ -154,8 +154,9 @@ public static class ProjectCompile
             {
                 string stampPath = unit.Receipt + ".stamp";
                 // An object with no stamp is not a first build: it was made
-                // from a text that changed while it compiled (OneUnit takes
-                // the stamp away), or its stamp could not be written.
+                // from a text that changed while it compiled, or its compile
+                // failed or was killed (OneUnit takes the stamp away before
+                // compiling), or its stamp could not be written.
                 if (!File.Exists(stampPath)) return File.Exists(unit.Object) ? "no stamp" : "first build";
                 if (!File.Exists(unit.Object)) return "no object";
                 string[] stamp = File.ReadAllText(stampPath).Split(' ');
@@ -164,7 +165,7 @@ public static class ProjectCompile
                 if (stamp[1] != OptionsOf(unit)) return "options or compiler changed";
                 return UnitDependencies.Stale(unit.Receipt, sessionIndex);
             }
-            catch (IOException failure) { return failure.Message; }
+            catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { return failure.Message; }
         }
 
         // CALLS BETWEEN UNITS INSIDE A KEPT STATE (InsideRounds): the
@@ -258,7 +259,12 @@ public static class ProjectCompile
             // stamp until the object is whole: a round compiles a unit whose
             // source and stamp agree, and killed while its object was written
             // it would be taken as current (Stale), half an object and all.
-            try { File.Delete(unit.Receipt + ".inside"); File.Delete(unit.Receipt + ".stamp"); }
+            try { File.Delete(unit.Receipt + ".stamp"); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                lock (gate) Console.Error.WriteLine("corc: compiling " + unit.Source + ": its stamp cannot be taken away (" + e.Message + "); killed now, the next build would keep a half-made object");
+            }
+            try { File.Delete(unit.Receipt + ".inside"); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             long before = GC.GetTotalAllocatedBytes();
             // A UNIT BEGUN IS SAID AT ONCE: only its end was, and a unit that
@@ -311,14 +317,14 @@ public static class ProjectCompile
                     // Changed while it compiled: its object is of the text
                     // before, so no stamp says it is current, and the build
                     // stops here rather than link it.
-                    try { File.Delete(unit.Receipt + ".stamp"); } catch (IOException) { }
+                    try { File.Delete(unit.Receipt + ".stamp"); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
                     lock (gate) Console.Error.WriteLine("corc: compiling " + unit.Source + ": the source changed while it was compiled; build again");
                     code = 1;
                 }
                 else
                 {
                     try { File.WriteAllText(unit.Receipt + ".stamp", StampOf(unit, compiled)); }
-                    catch (IOException) { }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
                     lock (gate) compiledNow.Add(unit);
                 }
             }

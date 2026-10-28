@@ -16,8 +16,8 @@ public static class Pixels
     }
 
     /// 0x10 taken from each of `count` bytes at `p`, saturating at nought:
-    /// what the kernel's own Shade calls, so the module's copy of Brighten
-    /// is the only one the pruned kernel may drop.
+    /// what the kernel's own Shade calls, so Brighten's copy is called by
+    /// the module alone, and the pruned kernel may drop it.
     public static void Darken(nuint p, int count)
     {
         Packed64 by = Packed.FromBits(0x1010101010101010UL);
