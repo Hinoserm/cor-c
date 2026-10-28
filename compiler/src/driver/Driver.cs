@@ -109,13 +109,13 @@ public static class Driver
         int regallocAt = taken.IndexOf("--trace-regalloc");
         if (regallocAt >= 0 && regallocAt + 1 < taken.Count)
         {
-            Corsac.Lang.X86.Allocator.Trace = taken[regallocAt + 1];
+            Corsac.Lang.RegAlloc.Allocator.Trace = taken[regallocAt + 1];
             taken.RemoveRange(regallocAt, 2);
         }
         int experimentAt = taken.IndexOf("--ra-experiment");
         if (experimentAt >= 0 && experimentAt + 1 < taken.Count)
         {
-            Corsac.Lang.X86.Allocator.Experiment = int.Parse(taken[experimentAt + 1]);
+            Corsac.Lang.RegAlloc.Allocator.Experiment = int.Parse(taken[experimentAt + 1]);
             taken.RemoveRange(experimentAt, 2);
         }
         int lifetimesAt = taken.IndexOf("--trace-lifetimes");
@@ -313,8 +313,8 @@ public static class Driver
               --no-opt           skip the optimiser
               --opt-size         use experimental size-oriented inlining budgets
               --count-spills     count the register allocator's spill-slot reads and
-                                 writes as the program runs, said at its end (an i386
-                                 Linux program, compiled whole: not a shared object,
+                                 writes as the program runs, said at its end (a Linux
+                                 program, i386 or x86-64, compiled whole: not a shared object,
                                  nor units the link makes again; one thread's counts)
               --count-spills-map <file> --count-spills, and each counted block's runs said
                                  too, the blocks listed in <file>: number, function,
@@ -1023,20 +1023,21 @@ public static class Driver
             sharedLibs.AddRange(found.Where(f => !sharedLibs.Contains(f)));
         }
 
-        // --count-spills counts into the runtime's counters, named by
-        // absolute address from the i386 backend after every pass that could
-        // reach them through a GOT, and Linux's exit says them: a compile it
-        // cannot count, or whose counts nothing would say, is refused by name
-        // rather than built without them.
+        // --count-spills counts into the runtime's counters, named directly --
+        // absolutely on i386, RIP-relatively on x86-64 -- not through a GOT,
+        // and Linux's exit says them: a compile it cannot count, or whose
+        // counts nothing would say, is refused by name rather than built
+        // without them.
         bool countSpills = args.Contains("--count-spills") || Value(args, "--count-spills-map") is not null;
         if (countSpills)
         {
-            string? why = longMode ? "x86-64 code"
-                : windows || freestanding ? "Windows or bare-metal code, whose exit says nothing of them"
+            string? why = windows || freestanding ? "Windows or bare-metal code, whose exit says nothing of them"
                 : shared || args.Contains("--pic") ? "a shared object or position-independent code (--shared, --pic, --kernel)"
                 : library || sharedLibs.Count > 0 ? "a library, or a program over shared ones (--lib, --dynamic, --link-shared): the runtime and its counters must be compiled in"
                 : null;
-            if (why is not null) return Fail("--count-spills counts in an i386 Linux program compiled whole, not in " + why);
+            if (why is not null) return Fail("--count-spills counts in a Linux program compiled whole, not in " + why);
+            if (Value(args, "--count-spills-map") is not null && args.Contains("--asm"))
+                return Fail("--count-spills-map lists the blocks of an object it makes, not of an assembly listing (--asm)");
         }
 
         // The default library set, so `corc compile hello.cor` is a complete
@@ -1532,6 +1533,8 @@ public static class Driver
             Workers = workers,
             EmitLinkSummary = x86Backend.EmitLinkSummary,
             SafepointPolls = x86Backend.SafepointPolls,
+            CountSpills = countSpills,
+            SpillMap = Value(args, "--count-spills-map"),
         };
         foreach (string symbol in imported)
         {

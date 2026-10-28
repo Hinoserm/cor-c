@@ -283,6 +283,8 @@ public enum MOp : byte
     Cpuid,              // EAX, ECX in; EAX, EBX, ECX, EDX out
     Rdtsc,              // EDX:EAX
     ReadFlags,          // r64 <- RFLAGS: pushfq; pop r64
+    /// <summary>pushfq and popfq: the flags kept across what a measure inserts (SpillCount).</summary>
+    Pushf, Popf,
     Bsf, Bsr,           // r, r/m: the lowest or highest set bit's index; never of zero (Sys.BitScanForward)
     ReadCs,             // r32 <- CS, zero-extended: mov r32, cs
     Swapgs,

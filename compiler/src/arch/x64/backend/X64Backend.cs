@@ -59,6 +59,12 @@ public sealed class X64Backend : IBackend
     /// </summary>
     public HashSet<string> Imported { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>--count-spills: each block counts its spill slots' reads and writes as it runs (SpillCount).</summary>
+    public bool CountSpills { get; set; }
+
+    /// <summary>--count-spills-map: where each counted block is listed (SpillCounter), or null.</summary>
+    public string? SpillMap { get; set; }
+
     /// <summary>Functions compiled at once, each on its own thread; encoding stays serial.</summary>
     public int Workers { get; set; } = 1;
 
@@ -137,6 +143,7 @@ public sealed class X64Backend : IBackend
         // A bounded window, as the i386 backend keeps: workers select and
         // allocate disjoint functions; encoding and layout stay serial, so
         // the object is the same whatever the worker count.
+        Corsac.Lang.RegAlloc.SpillCounter? spills = CountSpills ? new(SpillMap) : null;
         int workers = Workers;
         int window = FunctionLoader is null ? workers * 4 : workers;
         MFunction?[] compiled = new MFunction?[window];
@@ -204,6 +211,9 @@ public sealed class X64Backend : IBackend
             {
                 continue;
             }
+            // Here, in the order the functions are laid down, not on the
+            // workers: the blocks' numbers are the same from run to run.
+            if (spills is not null) SpillCount.Run(m, spills);
             Function f = m.Source;
             int gap = (FunctionAlign - text.Bytes.Count % FunctionAlign) % FunctionAlign;
             Encoder.Nops(text.Bytes, gap);
@@ -278,6 +288,8 @@ public sealed class X64Backend : IBackend
             rodata.Relocs.Add(new Relocation(at + fixup, baseSymbol, 0, RelocKind.Rel32));
         }
 
+        spills?.Table(module, pointerBytes: 8, errors);
+
         foreach (DataItem d in module.Data)
         {
             bool loaderWrites = d.Relocs.Count > 0
@@ -345,6 +357,7 @@ public sealed class X64Backend : IBackend
             {
                 continue;
             }
+            if (CountSpills) SpillCount.Run(m, new Corsac.Lang.RegAlloc.SpillCounter(null));
             sb.Append(f.Name).Append(":\n");
             foreach (MBlock b in m.Blocks)
             {

@@ -615,6 +615,8 @@ internal sealed class Encoder
                 break;
             }
             case MOp.Swapgs: Byte(0x0F); Byte(0x01); Byte(0xF8); break;
+            case MOp.Pushf: Byte(0x9C); break;
+            case MOp.Popf: Byte(0x9D); break;
             case MOp.SoftInt: Byte(0xCD); Byte((int)((MImm)i.Operands[0]).Value); break;
             case MOp.Prologue:
                 Prologue();
