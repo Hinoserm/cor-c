@@ -346,8 +346,8 @@ public static class Driver
                                  each [UnmanagedCallersOnly(EntryPoint = "Name")]
                                  method, which it exports by that name; its
                                  [DllImport]s go through the import directory.
-                                 With --freestanding until the Windows platform
-                                 layer is in; --base is 0x10000000 unless given
+                                 Its runtime is the bare-metal one over
+                                 kernel32; --base is 0x10000000 unless given
               --store-sequences  every reference store one sequence no thread is
                                  stopped inside, as a kernel's images are built
               --base <addr>      load or link address, hexadecimal (0x10000)
@@ -380,13 +380,13 @@ public static class Driver
               --enable-<name>    the same seven extensions granted beyond the
                                  CPU's own: a promise the processor has them;
                                  a disable wins over an enable
-              --packed-report    freestanding: every method that keeps the
+              --packed-report    bare metal: every method that keeps the
                                  processor's x87, MMX and SSE state, and why
                                  (its float code, its packed operations, or
                                  a call in a loop to one that keeps it): the
                                  compiler's own saves, each said once
               --x87-in-blocks-only
-                                 freestanding (the default there): the
+                                 bare metal (the default there): the
                                  program's own float code only where the
                                  processor's state is kept -- which the
                                  compiler does around each method that
@@ -394,9 +394,10 @@ public static class Driver
                                  they call -- never in a lambda or an async
                                  body. Judged where every caller is known:
                                  the compile of a program, else the link.
-                                 Refused for hosted code
+                                 Refused under an operating system (Linux,
+                                 Windows), whose threads own their state
               --x87-outside-blocks
-                                 freestanding: this unit's own float code
+                                 bare metal: this unit's own float code
                                  allowed outside packed blocks (wins over
                                  the above). A call it makes outside a block
                                  is judged as any caller's: a function whose

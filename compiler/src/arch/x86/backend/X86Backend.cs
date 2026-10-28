@@ -53,7 +53,7 @@ public sealed class X86Backend : IBackend
     /// selects it (the allocation put in place, AllocatorFastPaths.AtCodegen).
     /// </summary>
     public Action<Function>? Prepare { get; set; }
-    /// <summary>Hosted ABI owns x87/MMX state; freestanding kernel code must not borrow it implicitly.</summary>
+    /// <summary>The thread owns its x87/MMX state (Lowering.OwnsFpuState: Linux, Windows); bare-metal code must not borrow it implicitly.</summary>
     public bool AutomaticPacked { get; set; } = true;
     public Func<int, Function>? FunctionLoader { get; set; }
     public Func<int, long>? FunctionLoadBytes { get; set; }
@@ -156,8 +156,8 @@ public sealed class X86Backend : IBackend
     public bool OptimizeSize { get; set; }
 
     /// <summary>
-    /// On by default freestanding (Driver: --x87-outside-blocks takes it
-    /// away, --x87-in-blocks-only says it again): freestanding code of the
+    /// On by default on bare metal (Driver: --x87-outside-blocks takes it
+    /// away, --x87-in-blocks-only says it again): bare-metal code of the
     /// program's own -- not the system library's (Function.SystemCode),
     /// whose float routines run where their callers keep the state, nor the
     /// compiler's own helpers -- may use the x87 only where the state is
@@ -173,7 +173,7 @@ public sealed class X86Backend : IBackend
 
     /// <summary>
     /// Whether the object carries those facts (Lto.X87Notes): every
-    /// freestanding unit's, but not a unit the link makes again from its IR
+    /// bare-metal unit's, but not a unit the link makes again from its IR
     /// (UnitBackend), which judged the units' own facts before.
     /// </summary>
     public bool KeepsX87Facts { get; set; } = true;

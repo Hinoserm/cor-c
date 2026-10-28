@@ -12,7 +12,7 @@ public sealed partial class BindResult
     /// </summary>
     public byte[]? InterruptFacts { get; set; }
 
-    /// <summary>The methods a freestanding program keeps the processor's state in, and why (Binder.PackedStateOf; Lowering's implicit blocks).</summary>
+    /// <summary>The methods a bare-metal program keeps the processor's state in, and why (Binder.PackedStateOf; Lowering's implicit blocks).</summary>
     public Dictionary<MethodSymbol, string> PackedState { get; set; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>The methods whose bodies lowering may make a second function of (Lowering's $inside copy): no lambda, no local function, no constructor or type initialiser.</summary>

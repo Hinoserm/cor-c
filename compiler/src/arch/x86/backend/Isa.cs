@@ -87,15 +87,15 @@ internal static class Isa
 
     /// <summary>
     /// Whether <paramref name="op"/> reads or writes the MMX registers, whose
-    /// state is the x87's: code may touch it only where the hosted ABI owns
-    /// that state for it (X86Backend.AutomaticPacked), or inside a packed
+    /// state is the x87's: code may touch it only where its thread owns that
+    /// state (X86Backend.AutomaticPacked: Linux, Windows), or inside a packed
     /// block that saved it (MInstr.OwnsState). Read off the table, so
     /// a new packed instruction is counted the moment it has its row -- but
     /// 3DNow!'s prefetches, which touch no register.
     /// </summary>
     public static bool UsesPackedState(MOp op) => (Requires(op) & PackedState) != 0 && op is not (MOp.PrefetchLine or MOp.PrefetchWrite);
 
-    /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code the hosted ABI selected (X86Backend.AutomaticPacked), or code inside a state FXSAVE keeps (MInstr.OwnsState 2), may use.</summary>
+    /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code whose thread owns its state (X86Backend.AutomaticPacked: Linux, Windows), or code inside a state FXSAVE keeps (MInstr.OwnsState 2), may use.</summary>
     public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0;
 
     /// <summary>The features in <paramref name="features"/>, by the names a programmer knows them by.</summary>

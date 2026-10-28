@@ -1007,7 +1007,7 @@ public sealed partial class Lowering
                 // floor: those variants are nothing here, and the floor -- the
                 // run's last word, which needs nothing the processor lacks --
                 // is where it falls back.
-                int allowed = (Freestanding && !_t.X86Profile.Has(X86Feature.Sse) ? ~(PackedOps.Sse | PackedOps.Sse2) : ~0) & ~PackedBits(_t.X86Profile.Banned);
+                int allowed = ((Freestanding || Windows) && !_t.X86Profile.Has(X86Feature.Sse) ? ~(PackedOps.Sse | PackedOps.Sse2) : ~0) & ~PackedBits(_t.X86Profile.Banned);
                 VReg answer = _e.Call(CallLabel(asked), IrType.I32, R(AsParam(_e.Const((long)masks, IrType.I64), asked.Params[0].Type)),
                     R(_e.Const(capped ? count : floor + 1, IrType.I32)), R(_e.Const(allowed, IrType.I32)))!;
                 _e.Store(RegOperand.Of(at), RegOperand.Of(_e.Binary(Opcode.Add, answer, 1)), 0, 4);
@@ -1214,7 +1214,7 @@ public sealed partial class Lowering
 
     /// <summary>
     /// WHETHER A PACKED BLOCK OF `kind` KEEPS THE PROCESSOR'S STATE here:
-    /// freestanding i386 code, and for the compiler's own block around a
+    /// bare-metal i386 code (PackedStateHere), and for the compiler's own block around a
     /// body (Parser.ImplicitKind) a method that needs it (Binder's
     /// PackedState) lowered as itself -- its $inside copy runs inside its
     /// caller's state, and keeps none.
@@ -1294,7 +1294,7 @@ public sealed partial class Lowering
 
     /// <summary>Whether a variant's features are never picked here, whatever the processor: one a --disable-NAME bans, or one with SSE in freestanding or Windows i386 code whose --cpu has none.</summary>
     private bool PackedFeaturesNeverRun(int features)
-        => (features & PackedBits(_t.X86Profile.Banned)) != 0 || Freestanding && _t.WordSize == 4 && !_t.X86Profile.Has(X86Feature.Sse) && (features & (PackedOps.Sse | PackedOps.Sse2)) != 0;
+        => (features & PackedBits(_t.X86Profile.Banned)) != 0 || (Freestanding || Windows) && _t.WordSize == 4 && !_t.X86Profile.Has(X86Feature.Sse) && (features & (PackedOps.Sse | PackedOps.Sse2)) != 0;
 
     /// <summary>
     /// PROCESSOR.HAS OF CONSTANT FEATURES, AT THE COMPILE (Runtime's

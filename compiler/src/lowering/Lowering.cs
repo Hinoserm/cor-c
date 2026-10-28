@@ -53,10 +53,14 @@ public sealed partial class Lowering
     public static bool Freestanding { get; set; }
 
     /// <summary>
-    /// THE THREAD OWNS ITS x87, MMX AND SSE STATE: an operating system saves
-    /// it at every switch -- Linux, and Windows, whose runtime is otherwise
-    /// the bare-metal one (Freestanding). Bare-metal code borrows the state of
-    /// whatever it interrupted, and keeps it only inside a packed block.
+    /// THE THREAD OWNS ITS x87 AND MMX STATE: an operating system saves it at
+    /// every switch -- Linux, and Windows, whose runtime is otherwise the
+    /// bare-metal one (Freestanding). Bare-metal code borrows the state of
+    /// whatever it interrupted, and keeps it only inside a packed block. SSE's
+    /// is owned too, where the system turns it on (CR4.OSFXSR): Linux
+    /// wherever the processor has it; Windows -- not 95, not NT 4 -- where a
+    /// --cpu with SSE says so, the one place SSE is chosen for a Windows
+    /// image (the SSE variants' gate, PackedFeaturesNeverRun).
     /// </summary>
     public static bool OwnsFpuState => !Freestanding || Windows;
 
@@ -249,10 +253,10 @@ public sealed partial class Lowering
                                Dictionary<string, string>? entries = null)
     {
         Lowering l = new(bound, file, library);
-        // THE STREAMING COPY AND FILL, in i386 code that owns its FPU state: the backend calls
-        // them for a block of 256 KB and more (Select.SelectMemCopy), and no
-        // IR does, so they are lowered and kept as the store sequences'
-        // routines are (Module.RuntimeHelpers).
+        // THE STREAMING COPY AND FILL, in i386 code that owns its FPU state
+        // (OwnsFpuState): the backend calls them for a block of 256 KB and
+        // more (Select.SelectMemCopy), and no IR does, so they are lowered
+        // and kept as the store sequences' routines are (Module.RuntimeHelpers).
         List<MethodSymbol> streams = new();
         if (OwnsFpuState && Target.Current.WordSize == 4)
             foreach (string name in new[] { "StreamCopy", "StreamFill" })

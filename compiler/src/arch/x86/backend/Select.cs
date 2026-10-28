@@ -43,7 +43,7 @@ internal sealed partial class Selector
     private Block _sourceBlock = null!;
     private int _splits;
     private readonly bool _automaticPacked;
-    /// <summary>Whether SSE may be selected anywhere in the function (MFunction.SseState): hosted code.</summary>
+    /// <summary>Whether SSE may be selected anywhere in the function (MFunction.SseState): code whose thread owns its state (Lowering.OwnsFpuState), where --cpu has it.</summary>
     private readonly bool _packedSse;
 
     /// <summary>
@@ -65,10 +65,10 @@ internal sealed partial class Selector
     /// </summary>
     private readonly int _packedBase;
 
-    /// <summary>Whether a packed group may be selected here: hosted code, or inside a packed block.</summary>
+    /// <summary>Whether a packed group may be selected here: code whose thread owns its state (Lowering.OwnsFpuState), or inside a packed block.</summary>
     private bool PackedHere => _automaticPacked || _packedNow != 0;
 
-    /// <summary>Whether SSE may be selected here: hosted code, or inside a state FXSAVE kept.</summary>
+    /// <summary>Whether SSE may be selected here: code whose thread owns its state, or inside a state FXSAVE kept.</summary>
     private bool SseHere => _packedSse || _packedNow == 2;
 
     private static readonly MReg Eax = MReg.Of(Gpr.Eax);
@@ -2849,9 +2849,11 @@ internal sealed partial class Selector
         // cvttss2si and cvttsd2si answer exactly what .NET does, and need no
         // FNSTCW/FLDCW round trip: FLDCW is an expensive instruction on the P6
         // and the K7. They read the float's home, so no XMM register is taken
-        // or kept live. Only hosted code: the operating system enables SSE
-        // (CR4.OSFXSR) and owns its state, as it owns the x87 and MMX state
-        // AutomaticPacked borrows. 32-bit SSE has no 64-bit integer result, so
+        // or kept live. Only code whose thread owns its state
+        // (Lowering.OwnsFpuState), and only where --cpu has SSE: the
+        // operating system enables it (CR4.OSFXSR) and keeps it, as it keeps
+        // the x87 and MMX state AutomaticPacked borrows -- Linux wherever the
+        // processor has it, Windows where that --cpu says it does. 32-bit SSE has no 64-bit integer result, so
         // Int64, and the UInt32 that needs the 64-bit store, stay on the x87.
         bool single = FWidth(i.Operands[0].Type) == 4;
         if (!unsignedHighHalf && i.Op == Opcode.FToI && d.Type == IrType.I32 && SseHere

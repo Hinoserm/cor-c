@@ -5269,7 +5269,7 @@ public sealed class Parser
 
     /// <summary>
     /// THE COMPILER'S OWN PACKED BLOCK AROUND A BODY (ImplicitKind): every
-    /// body of a freestanding i386 program (PackedEverywhere), whose float
+    /// body of a bare-metal i386 program (PackedEverywhere), whose float
     /// code and packed operations run on the interrupted thread's x87, MMX
     /// and SSE state unless it is kept -- lowering keeps it where the body
     /// needs it (Binder's PackedState), and the block is the body alone

@@ -152,7 +152,8 @@ static class WinSeat
     /// is 0xFFFFFFFF80000002).
     static readonly nuint LocalMachine = unchecked((nuint)(long)(int)0x80000002);
 
-    /// HWND_TOPMOST and HWND_NOTOPMOST: (HWND)-1 and (HWND)-2, words.
+    /// HWND_TOPMOST and HWND_NOTOPMOST: (HWND)-1 and (HWND)-2, sign-extended
+    /// to a word as LocalMachine is.
     static readonly nuint Topmost = unchecked((nuint)(long)-1), NotTopmost = unchecked((nuint)(long)-2);
 
     /// MAKEINTRESOURCE: a resource's number in place of its name, the WORD
