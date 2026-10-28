@@ -21,8 +21,9 @@ namespace Corsac.Asm;
 /// processor or a loader may enter by itself (Fact.Entered): nothing named
 /// calling it, it runs outside. Not the instructions that only keep the
 /// x87's state -- its save and restore, its control and status words read
-/// -- which a context switch is made of; nor float code written as bytes
-/// (.db), which no mnemonic says.
+/// -- which a context switch is made of, nor those that set a thread's
+/// state up or load it (FNINIT, FLDCW, FLDENV, FNCLEX, LDMXCSR, STMXCSR);
+/// nor float code written as bytes (.db), which no mnemonic says.
 /// </summary>
 public sealed partial class X86Assembler
 {
@@ -40,6 +41,9 @@ public sealed partial class X86Assembler
     private static readonly HashSet<string> FpuStateOnly = new(StringComparer.Ordinal)
     {
         "fxsave", "fxrstor", "fnsave", "fsave", "frstor", "fnstenv", "fstenv", "fnstsw", "fstsw", "fnstcw", "fstcw", "fwait", "wait",
+        // And what sets a thread's state up or loads it: its start (FNINIT,
+        // MXCSR's first value) and a switch's other half.
+        "fninit", "finit", "fldcw", "fldenv", "fnclex", "fclex", "ldmxcsr", "stmxcsr",
     };
 
     private static readonly string[] PackedRegisters = ["mm0", "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm7"];
@@ -57,7 +61,7 @@ public sealed partial class X86Assembler
         string lower = rest.ToLowerInvariant();
         string[] words = Words(lower).ToArray();
         bool floats = mn.StartsWith('f') && !FpuStateOnly.Contains(mn)
-            || mn is "emms" or "femms" or "ldmxcsr" || MmxOpcodes.ContainsKey(mn) || ThreeDNowOpcodes.ContainsKey(mn)
+            || mn is "emms" or "femms" || MmxOpcodes.ContainsKey(mn) || ThreeDNowOpcodes.ContainsKey(mn)
             || words.Any(w => w.StartsWith("xmm", StringComparison.Ordinal) || PackedRegisters.Contains(w));
         // A prefix's instruction is what ends a flow or not: `rep ret`.
         string flow = mn is "rep" or "repe" or "repz" or "repne" or "repnz" or "lock" && words.Length > 0 ? words[0] : mn;
