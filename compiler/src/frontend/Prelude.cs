@@ -802,8 +802,10 @@ public static class Prelude
             // nothing in a separately assembled object shows the compiler:
             // freestanding, its caller keeps the state around it (Binder.
             // PackedStateOf). A plain CallNative runs on the thread's own
-            // state -- given back around it where its caller keeps one -- as
-            // a BIOS thunk, a CPU's bring-up or a return to user code must.
+            // state -- given back around it where its caller keeps one, and
+            // around a direct call of a method of this unit that reaches one
+            // -- as a BIOS thunk, a CPU's bring-up or a return to user code
+            // must.
             public static nuint CallNativeFloat(nuint fn) { return 0; }
             public static nuint CallNativeFloat(nuint fn, nuint a) { return 0; }
             public static nuint CallNativeFloat(nuint fn, nuint a, nuint b) { return 0; }

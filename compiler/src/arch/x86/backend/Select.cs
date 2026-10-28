@@ -899,7 +899,7 @@ internal sealed partial class Selector
         Dictionary<Block, int>? regions = PackedRegions(f);
         int floatLine = -1;
         List<Corsac.Lang.Lto.X87Notes.Call> calls = new();
-        // A CALL THROUGH A FIELD'S LOAD (Sys.CallNative of a native whose
+        // A CALL THROUGH A FIELD'S LOAD (Sys.CallNative or CallNativeFloat of a native whose
         // address the kernel's start left in a static): a call to the
         // routine in it (X87Notes.InField). The load's value used any other
         // way takes that routine anywhere: its address is taken -- but its

@@ -1598,13 +1598,26 @@ public sealed partial class Binder
         foreach ((MethodSymbol m, MethodDecl d) in _boundBodies)
         {
             if (d.Body is null) continue;
-            callees[m] = DirectCalls(d.Body, m.Owner).Select(c => c.Callee).ToList();
+            // WHAT IT CALLS AND WHETHER IT CALLS A PLAIN NATIVE, async and
+            // iterator bodies too (their code up to a first suspension runs
+            // in their caller's): its calls, and the constructors its `new`s
+            // run, which lower to direct calls as its calls do.
+            List<MethodSymbol> calls = DirectCalls(d.Body, m.Owner).Select(c => c.Callee).ToList();
+            foreach (Node n in SafetyNodes(d.Body))
+            {
+                if (n is NewExpr made && _r.NewConstructors.TryGetValue(made, out MethodSymbol? ctor)) calls.Add(ctor);
+                else if (n is CallExpr plain && _r.Calls.TryGetValue(plain, out MethodSymbol? sys) && sys.Name == "CallNative"
+                         && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>") natives.Add(m);
+            }
+            callees[m] = calls;
             if (m.Async || d.Body.Iterator) continue;
             if (IsInterruptHandler(m)) handlers.Add(m);
             // WHAT EVERY RUN OF IT CALLS: the calls of its own statements, not
             // behind a condition -- the body's, or the compiler's own block's
             // inside it (Parser.ImplicitKind): keeping the state here instead
-            // costs no run that would not have kept it.
+            // costs no run that would not have kept it -- but a run that
+            // leaves by a guard's early return (Along), which pays the save
+            // for the work after it that it does not do.
             // Not a call behind ?:, &&, || or ??, or in a switch's arm, which
             // only some runs make (ConditionalSites).
             HashSet<Node> maybe = ConditionalSites(d.Body);
@@ -1646,11 +1659,8 @@ public sealed partial class Binder
                 // caller keeps the state. A plain one (Sys.CallNative) runs
                 // on the thread's own: a BIOS thunk, a CPU's bring-up, a
                 // return to user code (PackedNatives).
-                if (n is CallExpr native && _r.Calls.TryGetValue(native, out MethodSymbol? sys) && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>")
-                {
-                    if (sys.Name == "CallNative") natives.Add(m);
-                    else if (own is null && sys.Name == "CallNativeFloat") own = "a call of a native that uses the FPU (Sys.CallNativeFloat)";
-                }
+                if (own is null && n is CallExpr native && _r.Calls.TryGetValue(native, out MethodSymbol? sys) && sys.Name == "CallNativeFloat"
+                    && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>") own = "a call of a native that uses the FPU (Sys.CallNativeFloat)";
                 if (own is null && n is CallExpr call && PackedOperation(call)) own = "packed operations";
                 else if (own is null && n is Expr e && FloatTyped(e)) own = "float code";
                 if (n is WhileStmt or DoStmt or ForStmt or ForeachStmt)
@@ -1660,9 +1670,12 @@ public sealed partial class Binder
             if (copyable) _r.PackedCopyable.Add(m);
             inLoops[m] = looped;
         }
-        // WHAT REACHES A PLAIN NATIVE through the calls it makes directly:
-        // given back around in a kept state, never copied to run inside one
-        // ($inside), and no reason to keep one around its calls.
+        // WHAT REACHES A PLAIN NATIVE through the calls it makes directly and
+        // the constructors it runs: given back around in a kept state, never
+        // copied to run inside one ($inside), and no reason to keep one
+        // around its calls. Not through a call by a table or a delegate --
+        // a virtual's, an interface's, a lambda's -- nor into another unit,
+        // which nothing here sees: those run in the state their caller keeps.
         for (bool more = true; more;)
         {
             more = false;

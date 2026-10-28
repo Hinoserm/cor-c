@@ -30,7 +30,8 @@ public static class X87Notes
     /// The routine whose address `field` holds, as a call through a load of
     /// it names it (Selector.X87Fact) and as an assembled object that stores
     /// one there says what it is (X86Assembler.FloatFacts): a kernel's
-    /// natives, called through Sys.CallNative.
+    /// natives, called through Sys.CallNative -- on the thread's own state
+    /// -- or Sys.CallNativeFloat, in the state its caller keeps.
     /// </summary>
     public static string InField(string field) => "*" + field;
 

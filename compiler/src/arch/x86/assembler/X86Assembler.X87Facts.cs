@@ -14,7 +14,7 @@ namespace Corsac.Asm;
 /// routine whose last instruction does not end its flow falls into the
 /// next, a call too. A routine's address stored whole into a symbol (`mov
 /// dword [S], L`, how a kernel's start leaves its natives' addresses for
-/// Sys.CallNative) is the routine "in S": a compiled call through a load of
+/// Sys.CallNative and Sys.CallNativeFloat) is the routine "in S": a compiled call through a load of
 /// S calls it (X87Notes.InField), and S named any other way -- `call [S]`,
 /// its address taken -- takes the routine in it anywhere. Any other name an
 /// absolute field refers to has its address taken. Every routine is one a

@@ -6,9 +6,9 @@
 //
 // As 39, but the call is made from a lambda, a delegate that may run from
 // anywhere: the compiler keeps the state around methods that call such a
-// native, not around a lambda's body, and float_one's x87 code would run on
-// the interrupted thread's state; the
-// error names the way there through Program.Native.
+// native, not around a lambda's body, and float_one's x87 code would run
+// on the interrupted thread's state; the error names the way there through
+// Program.Native.
 
 static class Program
 {

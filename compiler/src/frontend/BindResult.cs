@@ -20,9 +20,11 @@ public sealed partial class BindResult
 
     /// <summary>
     /// The methods that call a plain native (Sys.CallNative), themselves or
-    /// through the methods they call directly (Binder.PackedStateOf): a
-    /// kept state is given back around a call of one (Lowering), which
-    /// runs on the thread's own -- a BIOS thunk, a return to user code.
+    /// through the methods they call directly and the constructors they run,
+    /// in this unit (Binder.PackedStateOf): a kept state is given back
+    /// around a call of one (Lowering), which runs on the thread's own -- a
+    /// BIOS thunk, a return to user code. A call by a table or a delegate,
+    /// or into another unit, is not followed.
     /// </summary>
     public HashSet<MethodSymbol> PackedNatives { get; } = new(ReferenceEqualityComparer.Instance);
 

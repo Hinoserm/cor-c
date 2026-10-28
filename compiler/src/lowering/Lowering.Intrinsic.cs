@@ -1214,7 +1214,11 @@ public sealed partial class Lowering
     /// bring-up before its SSE is on, a return to user code, which must
     /// find, and leave, the state as the thread has it. A $inside copy is
     /// never made of code that reaches one, so nothing here runs inside a
-    /// caller's state this code cannot give back.
+    /// caller's state this code cannot give back. Taken again, each area
+    /// holds the thread's state as the call left it: an outer block's
+    /// registers are not kept across, as no call keeps them. A native that
+    /// throws to a catch inside the block lands there on the given-back
+    /// state; the block's own give-back at its end restores the thread's.
     /// </summary>
     private T OnOwnState<T>(Func<T> call)
     {
