@@ -13361,8 +13361,9 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
             if (old != null && value > old.Length && !lent && Runtime.GrowInPlace(Sys.ObjectAddress(old), value)) { return; }
 
             T[] bigger = new T[value];
-            if (count != 0) { Span<T>.Move(old, 0, bigger, 0, count); }
+            // Stored first, then filled (Grow).
             items = bigger;
+            if (count != 0) { Span<T>.Move(old, 0, bigger, 0, count); }
             Outgrown(old);
         }
     }
@@ -13603,8 +13604,14 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
         if (items != null && !lent && Runtime.GrowInPlace(Sys.ObjectAddress(items), size)) { return; }
         T[] bigger = new T[size];
         T[] old = items;
-        if (count != 0) { Span<T>.Move(old, 0, bigger, 0, count); }
+        // STORED FIRST, THEN FILLED: between the read of the field and the
+        // store that replaces it nothing may call out, or the free of what
+        // was read is no self-replacing one (Escape's SelfFrees) and the
+        // field is owned by no list -- the move's call, a block of bytes
+        // where the elements hold no reference, was one. The old array is
+        // still read until its free, after the move.
         items = bigger;
+        if (count != 0) { Span<T>.Move(old, 0, bigger, 0, count); }
         Outgrown(old);
     }
 
