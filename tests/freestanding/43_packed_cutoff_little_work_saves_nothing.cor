@@ -5,6 +5,7 @@
 // small FFDFBA95704B26FF 000000000000FA6C
 // large FFDFBA95704B26FF 00000000000118E3
 // expect-asm-x86: Brighten: paddusb fnstenv
+// expect-asm-count-x86: Brighten: fnstenv 1
 //
 // Brighten's loop runs `count` bytes, eight a turn. Saving the thread's
 // state for its MMX version costs more than a few turns win, so the

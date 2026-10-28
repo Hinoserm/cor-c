@@ -720,7 +720,7 @@ internal sealed partial class Selector
     private static bool WantsX87(Instr i)
     {
         if (i.Op is Opcode.CallIndirect or Opcode.Syscall or Opcode.Ret or Opcode.Unwind or Opcode.Trap) return true;
-        if (i.Op == Opcode.Call) return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal);
+        if (i.Op == Opcode.Call) return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception";
         if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
         foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
         return false;
@@ -735,8 +735,12 @@ internal sealed partial class Selector
     private static bool SettleWantsX87(Instr i)
     {
         if (i.Op is Opcode.CallIndirect or Opcode.Syscall) return true;
+        // A landing pad's `__exception` is no call: the object thrown, which
+        // the landing left in a register. Counted as one, every block with a
+        // finally -- the compiler's own around a body -- kept the x87's
+        // save, even a variant without the packed registers.
         if (i.Op == Opcode.Call)
-            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal);
+            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception";
         if (i.Op is Opcode.Ret or Opcode.Unwind or Opcode.Trap) return false;
         if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
         foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
