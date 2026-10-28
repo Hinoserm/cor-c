@@ -154,8 +154,9 @@ public sealed partial class Lowering
         switch (name)
         {
             // MOVNTQ and SFENCE, the MMX extensions': a plain store and
-            // nothing where the block has none. A Packed128's is two MOVNTQ,
-            // which want no alignment, as MOVNTDQ would.
+            // nothing where the block has none. A Packed128's is MOVNTDQ
+            // where the variant or --cpu has SSE2 and the address is at
+            // sixteen, two MOVNTQ, which want no alignment, otherwise.
             case "StoreNonTemporal":
             {
                 VReg at = ToWord(PackedArg(call, target, 0)), value = PackedArg(call, target, 1, direct: ext && !wide);
@@ -166,7 +167,10 @@ public sealed partial class Lowering
                 }
                 // MOVNTDQ, SSE2's, where the address is at sixteen: it faults
                 // on any other, which only the run knows. Two MOVNTQ there.
-                if (wide && sse2)
+                // The test is a branch, at which the packed registers are
+                // written back: a value made just before is stored and
+                // loaded again, two moves more for sixteen bytes streamed.
+                if (wide && (sse2 || _t.X86Profile.Has(X86Feature.Sse2)))
                 {
                     Corsac.Lang.Ir.Block aligned = _f.NewBlock("ntaligned"), apart = _f.NewBlock("ntapart"), done = _f.NewBlock("ntdone");
                     _e.Branch(_e.Binary(Opcode.And, at, 15), apart, aligned);
@@ -189,12 +193,16 @@ public sealed partial class Lowering
                 return Void();
             // A CACHE LINE ASKED FOR AHEAD: PREFETCHNTA where the MMX
             // extensions are, 3DNow!'s PREFETCH (PREFETCHW to be written,
-            // before PREFETCHNTA) where it is; nothing on anything else.
+            // before PREFETCHNTA, or PREFETCHNTA on a processor without it)
+            // where it is; nothing on anything else. By what the variant has
+            // or --cpu promises: the names tell no variants apart
+            // (PackedOps.FeaturesOf).
             case "Prefetch":
             case "PrefetchWrite":
             {
                 VReg at = ToWord(Arg(call, target, 0));
-                bool three = (has & PackedOps.ThreeDNow) != 0, nta = (has & PackedOps.MmxExtensions) != 0;
+                bool three = (has & PackedOps.ThreeDNow) != 0 || _t.WordSize == 4 && _t.X86Profile.Has(X86Feature.ThreeDNow);
+                bool nta = (has & PackedOps.MmxExtensions) != 0 || _t.WordSize == 4 && _t.X86Profile.Has(X86Feature.MmxExtensions);
                 string? kind = name == "PrefetchWrite" && three ? "write" : nta ? "nta" : three ? "line" : null;
                 if (kind is not null) _e.Call(MachineIntrinsics.PackedPrefetch(kind), IrType.Void, R(at));
                 return Void();
@@ -251,7 +259,7 @@ public sealed partial class Lowering
             // lane's width empties it, or fills it with its sign; the lanes
             // so where the variant has neither. Not a byte shift, which has
             // no such form.
-            if (!bytewise && LiteralInteger(call.Args[1]) is null)
+            if (!bytewise && IntegerConstantOf(call.Args[1]) is not (>= 0 and <= 255))
             {
                 VReg source = PackedArg(call, target, 0);
                 VReg by = ToI32(Arg(call, target, 1));
@@ -259,9 +267,10 @@ public sealed partial class Lowering
                 byte op = PackedOps.ShiftByRegister[(shift.Group, shift.Sub)];
                 if (wide && sse2 || mmx)
                 {
-                    VReg counts = _e.SlotAddress(_f.NewSlot(bytes, 8, "count"));
+                    // MOVUPS reads sixteen for SSE2's: the high eight zero.
+                    VReg counts = _e.SlotAddress(_f.NewSlot(wide && sse2 ? 16 : 8, 8, "count"));
                     _e.Store(RegOperand.Of(counts), RegOperand.Of(_e.Unary(Opcode.ZExt32, R(by), IrType.I64)), 0, 8);
-                    if (wide) _e.Store(RegOperand.Of(counts), new ImmOperand(0, IrType.I64), 8, 8);
+                    if (wide && sse2) _e.Store(RegOperand.Of(counts), new ImmOperand(0, IrType.I64), 8, 8);
                     if (wide && sse2) _e.Call(MachineIntrinsics.PackedWide(0x66, op), IrType.Void, R(result), R(source), R(counts));
                     else
                         for (int half = 0; half < bytes; half += 8)
@@ -270,7 +279,10 @@ public sealed partial class Lowering
                 else LanesShiftBy(shift.Group, shift.Sub, by, result, source, bytes);
                 return result;
             }
-            if (PackedConstant(call, target, 1, 0, 255) is not int count) return Void();
+            int count;
+            if (IntegerConstantOf(call.Args[1]) is long known and >= 0 and <= 255) count = (int)known;
+            else if (PackedConstant(call, target, 1, 0, 255) is int literal) count = literal;
+            else return Void();
             VReg a = PackedArg(call, target, 0);
             VReg made = ResultBuffer(call, returns);
             if (wide && sse2)

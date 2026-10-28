@@ -959,6 +959,9 @@ public sealed partial class Lowering
                 int block = LiteralInteger(call.Args[0]) is long b ? (int)b : 0;
                 ulong masks = LiteralInteger(call.Args[1]) is long m ? (ulong)m : 0;
                 int count = LiteralInteger(call.Args[2]) is long c ? (int)c : 1;
+                // A CUTOFF'S (Parser.PackedCutoff): the last variant kept for
+                // little work, outside the floor's choice.
+                bool keepLast = call.Args.Count > 3 && LiteralInteger(call.Args[3]) is 1;
                 if (_t.WordSize != 4)
                 {
                     for (int v = 0; v < count - 1; v++) _packedDead.Add((_f, block - count + v));
@@ -980,6 +983,7 @@ public sealed partial class Lowering
                 for (int v = 0; v < count; v++)
                 {
                     int mask = (int)(masks >> (8 * v) & 0xFF);
+                    if (keepLast && v == count - 1 && v > floor) continue;
                     if (!capped && v > floor || PackedFeaturesNeverRun(mask)) _packedDead.Add((_f, block - count + v));
                     else { live = v; alive++; }
                 }
@@ -1008,6 +1012,24 @@ public sealed partial class Lowering
                 _e.Jump(known);
                 _e.SetBlock(known);
                 return Fit(_e.Binary(Opcode.Sub, _e.Load(IrType.I32, at, 0), 1), returns);
+            }
+            // LITTLE WORK FOR A PACKED METHOD (Parser.PackedCutoff): fewer
+            // turns than the save and give-back of the thread's state cost --
+            // FNSTENV and FLDENV near a hundred cycles, FXSAVE and FXRSTOR
+            // more -- against what a packed turn wins over its lanes, a few
+            // to tens each: eight turns, sixteen where the save is FXSAVE's.
+            // Only where the method keeps the state for its own packed
+            // operations: in its $inside copy, or one keeping it for float
+            // code or its callees', the plain version saves nothing more.
+            case "PackedSmall":
+            {
+                bool guarded = PackedStateHere && !_insideCopy && _method is not null
+                    && _b.PackedState.TryGetValue(_method, out string? why) && why == "packed operations";
+                if (!guarded) return Fit(_e.Const(0, IrType.I32), returns);
+                VReg work = ToI64(Arg(call, target, 0));
+                long step = LiteralInteger(call.Args[1]) is long given && given > 0 ? given : 1;
+                int turns = _t.X86Profile.Has(X86Feature.Sse) ? 16 : 8;
+                return Fit(_e.Binary(Opcode.LtS, R(work), R(_e.Const(step * turns, IrType.I64)), IrType.I32), returns);
             }
             case "ReadFlags":
                 return Fit(_e.Call(MachineIntrinsics.ReadFlags, IrTypes.Word)!, returns);

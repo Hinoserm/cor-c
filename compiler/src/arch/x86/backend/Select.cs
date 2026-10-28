@@ -635,7 +635,7 @@ internal sealed partial class Selector
         PackedHold(xmm, r, address, place, bytes, dirty: true);
     }
 
-    /// <summary>A store of the operation's own (MOVNTQ) to `address`: the registers holding its bytes let go, or, not a buffer's, every one memory may hold.</summary>
+    /// <summary>A store of the operation's own (MOVNTQ, MOVNTDQ, MOVD) to `address`: the registers holding its bytes let go, or, not a buffer's, every one memory may hold.</summary>
     private void PackedStoredTo(Operand address, int bytes)
     {
         PackedPlace place = PackedPlaceOf(address);
@@ -752,7 +752,7 @@ internal sealed partial class Selector
         => WantsX87(i) || i.Op == Opcode.Call && i.Callee is MachineIntrinsics.PackedEnd or MachineIntrinsics.PackedEndFast or MachineIntrinsics.StreamEnd
             or MachineIntrinsics.PackedSaveX87 or MachineIntrinsics.PackedRestoreX87 or MachineIntrinsics.PackedSaveFxsr or MachineIntrinsics.PackedRestoreFxsr;
 
-    /// <summary>Whether an IR instruction is a packed operation that leaves lanes in the MMX registers: MMX's and 3DNow!'s, not the XMM registers' nor SFENCE.</summary>
+    /// <summary>Whether an IR instruction is a packed operation that leaves lanes in the MMX registers: MMX's and 3DNow!'s, not the XMM registers', SFENCE or a prefetch.</summary>
     private static bool PackedOpCall(Instr i)
         => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal) && c != MachineIntrinsics.PackedFence
             && !c.StartsWith(MachineIntrinsics.PackedPrefetchPrefix, StringComparison.Ordinal)

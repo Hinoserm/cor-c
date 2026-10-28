@@ -115,12 +115,13 @@ public static class PackedOps
             "Shuffle32" or "ShuffleLow16" or "ShuffleHigh16" => Sse2,
             "ShuffleF32" or "UnpackLowF32" or "UnpackHighF32" => Sse,
             "IntToFloat32" or "FloatToInt32" => Mmx | ThreeDNow | Sse2,
-            // MOVNTQ; MOVNTDQ, SSE2's, for sixteen bytes at sixteen.
-            "StoreNonTemporal" => Mmx | MmxExtensions | Sse2,
-            "Fence" => Mmx | MmxExtensions,
+            // MOVNTQ; a Packed128's MOVNTDQ where the variant or --cpu has
+            // SSE2, which no name tells apart from a Packed64's (Lowering).
+            "StoreNonTemporal" or "Fence" => Mmx | MmxExtensions,
             "Load32" or "Store32" => Mmx,
-            // PREFETCHNTA (the MMX extensions'), 3DNow!'s PREFETCH and PREFETCHW.
-            "Prefetch" or "PrefetchWrite" => MmxExtensions | ThreeDNow,
+            // Prefetch and PrefetchWrite tell no variants apart: a block's
+            // copy for each of their instructions would be the whole body
+            // again for one hint. They take what the variant has, or --cpu.
             _ => 0,
         };
     }

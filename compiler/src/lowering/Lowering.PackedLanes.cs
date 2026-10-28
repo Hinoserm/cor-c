@@ -191,7 +191,7 @@ public sealed partial class Lowering
         // An arithmetic shift past the width is one by width - 1: the sign everywhere.
         VReg arithmetic = LaneChoose(past, LaneConst(bits - 1), within);
         // A 64-bit lane emptied by a mask of its own width.
-        VReg keep64 = bits == 64 ? _e.Unary(Opcode.Not, R(_e.Unary(Opcode.Neg, R(_e.Unary(Opcode.ZExt32, R(past), IrType.I64)), IrType.I64)), IrType.I64) : past;
+        VReg keep64 = bits == 64 ? _e.Binary(Opcode.Sub, _e.Unary(Opcode.ZExt32, R(past), IrType.I64), 1) : past;
         for (int k = 0; k < bytes * 8 / bits; k++)
         {
             VReg v;

@@ -3887,7 +3887,11 @@ public sealed class Parser
             _returns = m.Returns;
             int open = _i;
             bodyAt = Cur.Pos;
-            body = ReadBodyBlock(m.Returns, m.Line, m.Col, m.Mods.HasFlag(Mods.Async), out AsyncIteratorBody? asyncIterator);
+            HashSet<string>? savedParams = _bodyParams;
+            _bodyParams = m.Params.Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+            AsyncIteratorBody? asyncIterator;
+            try { body = ReadBodyBlock(m.Returns, m.Line, m.Col, m.Mods.HasFlag(Mods.Async), out asyncIterator); }
+            finally { _bodyParams = savedParams; }
             neverReturns = NeverReturnsByText(open, _i - 1);
             _returns = savedReturns;
             if (asyncIterator is not null)
@@ -5463,14 +5467,22 @@ public sealed class Parser
         _packedSerial += masks.Count + 1;
         int end = -1;
         Stmt[] variants = new Stmt[masks.Count];
+        Stmt? firstRead = null;
         for (int v = 0; v < masks.Count; v++)
         {
             Stmt read = ReadBody(masks[v]);
+            firstRead ??= read;
             if (end >= 0 && _i != end) throw new CompileError(_file, line, col, "a packed block's body read again ended elsewhere");
             end = _i;
             variants[v] = Variant(read, masks[v], numbered + v);
         }
         if (variants.Length == 1) return variants[0];
+        // LITTLE WORK, THE VERSION WITHOUT THE PACKED REGISTERS (PackedCutoff):
+        // where the compiler keeps the thread's state, freestanding, the
+        // last variant -- no feature, so none to save -- for a run whose loop
+        // is too short to win back the save, kept for this whatever --cpu's
+        // floor would drop (Sys.PackedChoose's fourth argument).
+        Expr? small = kind == ImplicitKind && PackedEverywhere && masks[^1] == 0 && firstRead is not null ? PackedCutoff(firstRead, line, col) : null;
         // THE VARIANT THAT RUNS, chosen once: the first whose features the
         // processor has, asked the first time the block is reached and kept
         // in a word of its own (Sys.PackedChoose); every time after, a load
@@ -5482,20 +5494,23 @@ public sealed class Parser
         int chooser = numbered + masks.Count;
         string pick = "$packedpick$" + chooser;
         Block built = new() { Line = line, Col = col };
+        CallExpr asked = new()
+        {
+            Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedChoose", Line = line, Col = col },
+            Args =
+            {
+                new LiteralExpr { Kind = Lit.Int, Text = chooser.ToString(), IntValue = chooser, Line = line, Col = col },
+                new LiteralExpr { Kind = Lit.Int, Text = "0x" + packed.ToString("X") + "UL", IntValue = (long)packed, Line = line, Col = col },
+                new LiteralExpr { Kind = Lit.Int, Text = masks.Count.ToString(), IntValue = masks.Count, Line = line, Col = col },
+            },
+            Line = line, Col = col,
+        };
+        if (small is not null) asked.Args.Add(IntLiteral(1, line, col));
         built.WritableStatements.Add(new LocalDecl
         {
             Type = null, Name = pick,
-            Init = new CallExpr
-            {
-                Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedChoose", Line = line, Col = col },
-                Args =
-                {
-                    new LiteralExpr { Kind = Lit.Int, Text = chooser.ToString(), IntValue = chooser, Line = line, Col = col },
-                    new LiteralExpr { Kind = Lit.Int, Text = "0x" + packed.ToString("X") + "UL", IntValue = (long)packed, Line = line, Col = col },
-                    new LiteralExpr { Kind = Lit.Int, Text = masks.Count.ToString(), IntValue = masks.Count, Line = line, Col = col },
-                },
-                Line = line, Col = col,
-            },
+            Init = small is null ? asked
+                : new ConditionalExpr { Cond = small, Then = IntLiteral(masks.Count - 1, line, col), Else = asked, Line = line, Col = col },
             Line = line, Col = col,
         });
         Stmt chosen = variants[^1];
@@ -5528,6 +5543,68 @@ public sealed class Parser
         }
 
         Stmt Variant(Stmt read, int mask, int number) => PackedVariant(read, kind, mask, number, line, col);
+    }
+
+    private static LiteralExpr IntLiteral(long v, int line, int col) => new() { Kind = Lit.Int, Text = v.ToString(), IntValue = v, Line = line, Col = col };
+
+    /// <summary>The method whose body is being read: its parameters' names, for a cutoff's guard (PackedCutoff); null in any other body.</summary>
+    private HashSet<string>? _bodyParams;
+
+    /// <summary>
+    /// A PACKED METHOD'S CUTOFF: the guard that sends a run with little work
+    /// to the method's version without the packed registers -- its lanes one
+    /// at a time, which keep no state -- where saving the thread's state
+    /// (FNSTENV, FXSAVE: tens to a hundred and more cycles) would cost more
+    /// than the packed loop wins (Sys.PackedSmall, by --cpu). Read off the
+    /// body's first loop at its own level: `for (int i = S; i < E; i += C)`
+    /// (or i++, or <=), or `while (E >= K)` (or >); E the method's
+    /// parameters, integer literals and + - * << >> of them -- nothing that
+    /// can throw or run code at the method's entry, where the guard is
+    /// evaluated. Null where there is none. The guard only chooses a
+    /// version, every one of which computes the same: a parameter set again
+    /// before the loop misjudges the work, never the answer.
+    /// </summary>
+    private Expr? PackedCutoff(Stmt read, int line, int col)
+    {
+        if (_bodyParams is null) return null;
+        static IEnumerable<Stmt> Level(Stmt s) => s is Block b ? b.Statements.SelectMany(Level) : new[] { s };
+        static long? Int(Expr? e) => e is LiteralExpr { Kind: Lit.Int } l ? l.IntValue : null;
+        Expr? Bound(Expr e) => e switch
+        {
+            LiteralExpr { Kind: Lit.Int } l => IntLiteral(l.IntValue, line, col),
+            NameExpr { TypeArgs.Count: 0 } n when _bodyParams.Contains(n.Name) => new NameExpr { Name = n.Name, Line = line, Col = col },
+            BinaryExpr { Op: BinOp.Add or BinOp.Sub or BinOp.Mul or BinOp.Shl or BinOp.Shr } b
+                when Bound(b.Left) is { } left && Bound(b.Right) is { } right
+                => new BinaryExpr { Op = b.Op, Left = left, Right = right, Line = line, Col = col },
+            _ => null,
+        };
+        foreach (Stmt s in Level(read))
+        {
+            Expr? work = null;
+            long step = 0;
+            if (s is ForStmt { Init: LocalDecl { Name: var i, Init: var first }, Cond: BinaryExpr { Op: BinOp.Lt or BinOp.Le, Left: NameExpr { Name: var tested } } test } f
+                && tested == i && Int(first) is long start && Bound(test.Right) is { } bound)
+            {
+                step = f.Step is [UnaryExpr { Op: UnOp.PostInc or UnOp.PreInc, Operand: NameExpr { Name: var bumped } }] && bumped == i ? 1
+                     : f.Step is [AssignExpr { Op: BinOp.Add, Target: NameExpr { Name: var added }, Value: var by }] && added == i && Int(by) is long k ? k : 0;
+                long less = start - (test.Op == BinOp.Le ? 1 : 0);
+                work = less == 0 ? bound : new BinaryExpr { Op = BinOp.Sub, Left = bound, Right = IntLiteral(less, line, col), Line = line, Col = col };
+            }
+            else if (s is WhileStmt { Cond: BinaryExpr { Op: BinOp.Ge or BinOp.Gt } test2 } && Int(test2.Right) is long least && Bound(test2.Left) is { } left)
+            {
+                step = least + (test2.Op == BinOp.Gt ? 1 : 0);
+                work = left;
+            }
+            else if (s is not (ForStmt or WhileStmt or DoStmt or ForeachStmt)) continue;
+            if (work is null || step <= 0) return null;
+            return new CallExpr
+            {
+                Target = new MemberExpr { Target = new NameExpr { Name = "Sys", Line = line, Col = col }, Name = "PackedSmall", Line = line, Col = col },
+                Args = { work, IntLiteral(step, line, col) },
+                Line = line, Col = col,
+            };
+        }
+        return null;
     }
 
     /// <summary>One variant of a packed block: its state taken (Sys.PackedEnter), its body, the state given back on every way out (a finally's Sys.PackedLeave).</summary>
@@ -7742,7 +7819,13 @@ public sealed class Parser
             // method's -- an async iterator too, which is no async function
             // itself but the kickoff of its machine (AsyncIteratorKickoff).
             Token open = Cur;
-            Block read = ReadBodyBlock(returns, at.Line, at.Col, isAsync, out AsyncIteratorBody? asyncIterator);
+            // A local function's own body judges no cutoff (PackedCutoff).
+            HashSet<string>? outerParams = _bodyParams;
+            _bodyParams = null;
+            Block read;
+            AsyncIteratorBody? asyncIterator;
+            try { read = ReadBodyBlock(returns, at.Line, at.Col, isAsync, out asyncIterator); }
+            finally { _bodyParams = outerParams; }
             if (asyncIterator is not null)
             {
                 read = AsyncIteratorKickoff(asyncIterator, made.Params, read, open);

@@ -1,0 +1,50 @@
+// test: a packed method whose loop runs over a parameter keeps its plain version for little work, which saves nothing, and its MMX version for more
+// targets: x86
+// flags-x86: --cpu=athlon64 --disable-3dnow
+// expect-output:
+// small FFDFBA95704B26FF 000000000000FA6C
+// large FFDFBA95704B26FF 00000000000118E3
+// expect-asm-x86: Brighten: paddusb fnstenv
+//
+// Brighten's loop runs `count` bytes, eight a turn. Saving the thread's
+// state for its MMX version costs more than a few turns win, so the
+// compiler guards its choice of version (Parser.PackedCutoff,
+// Sys.PackedSmall): fewer than sixteen turns on this SSE --cpu run the
+// version without the packed registers -- its lanes one at a time -- which
+// keeps no state, even though the K8 floor would otherwise leave only the
+// MMX one. Both give the same bytes: 0x10 added to each, saturating, over
+// the bytes asked for; a sum of the rest past the first eight shows which.
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Brighten(nuint p, int count)
+    {
+        Packed64 by = Packed.FromBits(0x1010101010101010UL);
+        for (int i = 0; i < count; i += 8)
+            Packed.Store(p + (nuint)i, Packed.AddSaturateU8(Packed.Load(p + (nuint)i), by));
+    }
+
+    static string Run(int count)
+    {
+        byte[] bytes = new byte[512];
+        for (int i = 0; i < 512; i++) bytes[i] = (byte)(i * 37 + 0xF1);
+        Brighten(Sys.ArrayData(bytes), count);
+        ulong first = 0;
+        for (int i = 7; i >= 0; i--) first = (first << 8) | bytes[i];
+        ulong rest = 0;
+        for (int i = 8; i < 512; i++) rest += bytes[i];
+        return first.ToString("X16") + " " + rest.ToString("X16");
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Host.Line("small " + Run(8));
+        Host.Line("large " + Run(512));
+        Host.Done(0);
+        return 0;
+    }
+}

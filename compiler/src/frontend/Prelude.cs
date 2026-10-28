@@ -534,6 +534,15 @@ public static class Prelude
             public static void PackedEnter(int kind, int block, int features) { }
             public static void PackedLeave(int kind, int block, int features) { }
             public static int PackedChoose(int block, ulong features, int count) { return 0; }
+            // The same, the last variant -- no feature -- kept whatever --cpu's
+            // floor drops (`keepLast` 1): what a cutoff chooses for little
+            // work (Parser.PackedCutoff, PackedSmall).
+            public static int PackedChoose(int block, ulong features, int count, int keepLast) { return 0; }
+            // Whether `work` -- what a packed method's loop runs over, `step`
+            // a turn -- is too little to win back the save of the thread's
+            // state (Parser.PackedCutoff): a constant false where nothing is
+            // saved for the method's own packed operations.
+            public static bool PackedSmall(long work, int step) { return false; }
             // `count` bytes from `src` to `dst`, overlapping or not (memmove)
             // where `oneBlock` -- both in one array -- and forward where not:
             // for bytes that hold no reference (Span.Move's elements).
@@ -1089,9 +1098,9 @@ public static class Prelude
         // PackedOps.Float). The orders and places are integer literals,
         // which the instruction holds in its own bytes; so is a byte shift's
         // count. Any other shift's count may be any int, taken unsigned: a
-        // literal goes in the instruction's bytes, anything else in a
-        // register (PSRLW mm, mm and the rest), and a count at or past the
-        // lane's width empties it, or fills it with its sign. Load32 and
+        // constant from 0 to 255 goes in the instruction's bytes, anything
+        // else in a register (PSRLW mm, mm and the rest), and a count at or
+        // past the lane's width empties it, or fills it with its sign. Load32 and
         // Store32 move four bytes (MOVD), the high four zero in; Prefetch and
         // PrefetchWrite ask for a cache line ahead (PREFETCHNTA, 3DNow!'s
         // PREFETCH and PREFETCHW) and are nothing where there is none.

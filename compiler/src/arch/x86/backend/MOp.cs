@@ -138,7 +138,7 @@ public enum MOp : byte
     Bsf, Bsr,
     /// <summary>lock cmpxchg8b m64: EDX:EAX expected, ECX:EBX stored; EDX:EAX what was there (Sys.Cas64).</summary>
     Cmpxchg8b,
-    /// <summary>movntq m64, mm0: MM0 stored around the caches (the MMX extensions: Sys.StreamCopy64).</summary>
+    /// <summary>movntq m64, mmN: the register (an MImm, mm0 where none) stored around the caches (the MMX extensions: Sys.StreamCopy64, Packed.StoreNonTemporal).</summary>
     MmxStoreNt,
     /// <summary>prefetchnta m8 (the MMX extensions), 3DNow!'s prefetch m8 and prefetchw m8: a cache line asked for ahead, the last to be written.</summary>
     PrefetchNta, PrefetchLine, PrefetchWrite,

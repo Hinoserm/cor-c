@@ -6,7 +6,7 @@
 // wide 0004000400040004 0008000800080008
 //
 // A Store of a Packed128 is sixteen bytes, and its StoreNonTemporal two
-// MOVNTQ (Lowering.PackedIntrinsic); the width comes from the value, not
+// MOVNTQ, or MOVNTDQ at sixteen with SSE2 (Lowering.PackedIntrinsic); the width comes from the value, not
 // from the address before it. And a Packed128's operations inside an MMX
 // block are SSE2's where the variant has it: SSE2 is SSE's registers, so a
 // variant with it has SSE too (PackedOps.FeaturesOf).
