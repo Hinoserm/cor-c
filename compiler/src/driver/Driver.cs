@@ -1715,24 +1715,25 @@ public static class Driver
         Dictionary<string, byte[]>? factsRead = null;
         if (!args.Contains("--obj") && (kernel is not null || shared))
         {
-            List<string> handlerErrors = Corsac.Lang.Lto.InterruptNotes.Check(new[] { obj }, Corsac.Lang.Lto.Preinit.Peek(new[] { obj }, longMode: false)?.FrozenSteps);
+            // Against the kernel's facts and the modules' it links with, as a
+            // separate module link checks them (ObjectLinkCommand).
+            List<Corsac.Lang.Lto.InterruptNotes.Fact> kernelInterrupts = kernelPath is not null ? Corsac.Lang.Lto.InterruptNotes.ReadBeside(kernelPath) : new();
+            List<Corsac.Lang.Lto.InterruptNotes.Fact> interruptsImported = new(kernelInterrupts);
+            foreach (string lib in sharedLibs) interruptsImported.AddRange(Corsac.Lang.Lto.InterruptNotes.ReadBeside(lib));
+            List<string> handlerErrors = Corsac.Lang.Lto.InterruptNotes.Check(new[] { obj }, Corsac.Lang.Lto.Preinit.Peek(new[] { obj }, longMode: false)?.FrozenSteps, interruptsImported);
             if (handlerErrors.Count > 0) throw new LinkException(handlerErrors);
             // And where its float code runs (X87Notes), against the kernel's and
             // the modules' it links with, as their links saw them; its own
             // facts beside it, for what links against it.
             bool judges = Corsac.Lang.Lto.X87Notes.Judges(new[] { obj });
             List<Corsac.Lang.Lto.X87Notes.Fact> beside = new();
-            if (kernelPath is not null) beside.AddRange(Corsac.Lang.Lto.X87Notes.ReadBeside(kernelPath, judges));
+            List<Corsac.Lang.Lto.X87Notes.Fact> kernelFloats = kernelPath is not null ? Corsac.Lang.Lto.X87Notes.ReadBeside(kernelPath, judges) : new();
+            beside.AddRange(kernelFloats);
             foreach (string lib in sharedLibs) beside.AddRange(Corsac.Lang.Lto.X87Notes.ReadBeside(lib, judges));
             List<string> moduleFloats = Corsac.Lang.Lto.X87Notes.Check(new[] { obj }, beside);
             if (moduleFloats.Count > 0) throw new LinkException(moduleFloats);
             // What of the kernel's facts a module's checks read, for its table.
-            if (kernel is not null && kernelPath is not null)
-            {
-                List<Corsac.Lang.Lto.InterruptNotes.Fact> kernelInterrupts = Corsac.Lang.Lto.InterruptNotes.ReadBeside(kernelPath);
-                factsRead = KernelExports.FactsRead(kernel, new[] { obj }, kernelInterrupts, kernelInterrupts,
-                    Corsac.Lang.Lto.X87Notes.ReadBeside(kernelPath, judges), judges);
-            }
+            if (kernel is not null) factsRead = KernelExports.FactsRead(kernel, new[] { obj }, kernelInterrupts, interruptsImported, kernelFloats, judges);
             Corsac.Lang.Lto.X87Notes.WriteBeside(output, new[] { obj });
             Corsac.Lang.Lto.X87Notes.Strip(new[] { obj });
             Corsac.Lang.Lto.UsesNotes.Strip(new[] { obj });

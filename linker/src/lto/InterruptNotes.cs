@@ -153,20 +153,18 @@ public static class InterruptNotes
         return all;
     }
 
-    /// <summary>
-    /// What a fact says to another image's link (Check): whether it is a
-    /// handler, what it allocates, calls and takes -- not where it was
-    /// written. A module's link is held to it by name ("Q:", KernelExports.
-    /// WithFacts), and a kernel edit that only moves lines moves nothing.
-    /// </summary>
-    // A report's words without the places in it: "at File.cor:12".
-    private static string Placeless(string what) => System.Text.RegularExpressions.Regex.Replace(what, @" at [^ ]+:\d+", "");
+    // A report's words without the place at their end: " at File.cor:12"
+    // (Binder.AwaitChecks), cut at its last " at ", whatever the path holds.
+    private static string Placeless(string what) => what.LastIndexOf(" at ", StringComparison.Ordinal) is int at and >= 0 ? what[..at] : what;
 
     /// <summary>
     /// Every fact Check may read for these objects: none where it reads none
     /// (no handler, no root), else every one reachable from the handlers --
     /// imported ones too -- and the roots, as the checks walk them. What a
     /// module's link is held to of the kernel's (KernelExports.FactsRead).
+    /// MORE THAN CHECK READS, never less: it walks past --irq-stop and into
+    /// what Preinit never runs, which Check does not, so a kernel edit there
+    /// may refuse a module the checks would still have passed.
     /// </summary>
     public static HashSet<string> Walked(IEnumerable<ObjectFile> objects, IReadOnlyList<Fact>? imported = null)
     {
@@ -192,6 +190,12 @@ public static class InterruptNotes
         return walked;
     }
 
+    /// <summary>
+    /// What a fact says to another image's link (Check): whether it is a
+    /// handler, what it allocates, calls and takes -- not where it was
+    /// written. A module's link is held to it by name ("Q:", KernelExports.
+    /// WithFacts), and a kernel edit that only moves lines moves nothing.
+    /// </summary>
     public static byte[] Said(Fact f)
     {
         using MemoryStream stream = new();

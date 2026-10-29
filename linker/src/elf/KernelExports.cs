@@ -429,6 +429,7 @@ public sealed class KernelExports
     {
         Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
         foreach (Lto.InterruptNotes.Fact fact in interrupts) entries["Q:" + fact.Name] = Lto.InterruptNotes.Said(fact);
+        entries[Handlers] = HandlersSaid(interrupts);
         foreach (Lto.X87Notes.Fact fact in floats) entries["Y:" + fact.Name] = Lto.X87Notes.Said(fact);
         return DeclarationReads.Write(entries);
     }
@@ -439,6 +440,23 @@ public sealed class KernelExports
     /// function it calls that has none. Held to them, an unrelinked module
     /// is refused where a kernel change would have failed its checks.
     /// </summary>
+    /// <summary>The key of the kernel's interrupt handlers, all of them by name (HandlersSaid).</summary>
+    public const string Handlers = "Q:";
+
+    /// <summary>
+    /// The kernel's handlers, by name, as one answer: a module whose checks
+    /// walk from them is held to the set, so a handler the kernel gains --
+    /// which may reach the module's code through a slot -- refuses it.
+    /// </summary>
+    public static byte[] HandlersSaid(IEnumerable<Lto.InterruptNotes.Fact> interrupts)
+    {
+        using MemoryStream stream = new();
+        using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
+            foreach (string name in interrupts.Where(fact => fact.Handler).Select(fact => fact.Name).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+                writer.Write(name);
+        return System.Security.Cryptography.SHA256.HashData(stream.ToArray())[..DeclarationReads.HashBytes];
+    }
+
     public static Dictionary<string, byte[]> FactsRead(KernelExports kernel, IEnumerable<ObjectFile> own,
         IReadOnlyList<Lto.InterruptNotes.Fact> kernelInterrupts, IReadOnlyList<Lto.InterruptNotes.Fact> imported,
         IReadOnlyList<Lto.X87Notes.Fact> kernelFloats, bool judges)
@@ -447,21 +465,40 @@ public sealed class KernelExports
         List<ObjectFile> units = own.ToList();
         // THE INTERRUPT CHECKS' WALK (InterruptNotes.Walked), from every
         // handler -- the kernel's too, whose slots reach the module's code --
-        // and every root; of it, what the kernel's facts say, by name. A
-        // kernel name walked to with no fact, nothing: one given a fact later
-        // is walked into then. A shared library's facts are walked through
-        // and held to by its own table, not the kernel's.
+        // and every root; of it, what the kernel's facts say, by name, and
+        // the kernel's set of handlers ("Q:"). A kernel name walked to with
+        // no fact, nothing: one given a fact later refuses the module. Not
+        // held: a kernel method the walk did not reach that a kernel edit
+        // makes reachable only through a root a module names (--irq-roots,
+        // --wait-free-roots: the kernel's link roots, not a module's). A
+        // shared library's facts are walked through, not keyed: the
+        // kernel's table has none of them (Differences would say "no longer
+        // in the kernel"), and a library relinked is a dependency's change,
+        // which relinks its dependents.
         Dictionary<string, Lto.InterruptNotes.Fact> q = new(StringComparer.Ordinal);
         foreach (Lto.InterruptNotes.Fact fact in kernelInterrupts) q.TryAdd(fact.Name, fact);
-        foreach (string name in Lto.InterruptNotes.Walked(units, imported))
+        HashSet<string> walked = Lto.InterruptNotes.Walked(units, imported);
+        foreach (string name in walked)
         {
             if (q.TryGetValue(name, out Lto.InterruptNotes.Fact? fact)) read["Q:" + name] = Lto.InterruptNotes.Said(fact);
             else if (kernel.Names.Contains(name)) read["Q:" + name] = DeclarationReads.Empty;
         }
-        // THE FLOAT CHECK'S, where it judges at all: every float fact of the
-        // kernel's -- only the methods that reach float code are written
-        // beside it, and a call from anywhere may meet one.
-        if (judges) foreach (Lto.X87Notes.Fact fact in kernelFloats) read["Y:" + fact.Name] = Lto.X87Notes.Said(fact);
+        if (walked.Count > 0) read[Handlers] = HandlersSaid(kernelInterrupts);
+        // THE FLOAT CHECK'S: every float fact of the kernel's -- only the
+        // methods that reach float code are written beside it, and a call
+        // from anywhere may meet one -- and, for every kernel name the
+        // module's units call or take, none, where it has none: one that
+        // floats later refuses the module. Whether or not the units carry
+        // facts of their own (judges): one with none is judged by every name
+        // it takes (X87Notes.Check's unknown).
+        if (judges || kernelFloats.Count > 0)
+        {
+            Dictionary<string, Lto.X87Notes.Fact> y = new(StringComparer.Ordinal);
+            foreach (Lto.X87Notes.Fact fact in kernelFloats) { y.TryAdd(fact.Name, fact); read["Y:" + fact.Name] = Lto.X87Notes.Said(fact); }
+            foreach (ObjectFile unit in units)
+                foreach (Symbol symbol in unit.Symbols)
+                    if (!symbol.IsDefined && kernel.Names.Contains(symbol.Name) && !y.ContainsKey(symbol.Name)) read["Y:" + symbol.Name] = DeclarationReads.Empty;
+        }
         return read;
     }
 
