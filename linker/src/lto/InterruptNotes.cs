@@ -144,12 +144,31 @@ public static class InterruptNotes
     /// reads them too (ReadBeside). With no facts, one left from before is
     /// taken away.
     /// </summary>
-    public static void WriteBeside(string path, IEnumerable<ObjectFile> objects)
+    public static List<Fact> WriteBeside(string path, IEnumerable<ObjectFile> objects)
     {
         string beside = path + ".irq";
         List<Fact> all = Gather(objects);
-        if (all.Count == 0) { if (File.Exists(beside)) File.Delete(beside); return; }
+        if (all.Count == 0) { if (File.Exists(beside)) File.Delete(beside); return all; }
         File.WriteAllBytes(beside, Encode(all));
+        return all;
+    }
+
+    /// <summary>
+    /// What a fact says to another image's link (Check): whether it is a
+    /// handler, what it allocates, calls and takes -- not where it was
+    /// written. A module's link is held to it by name ("Q:", KernelExports.
+    /// WithFacts), and a kernel edit that only moves lines moves nothing.
+    /// </summary>
+    public static byte[] Said(Fact f)
+    {
+        using MemoryStream stream = new();
+        using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(f.Name); writer.Write(f.Handler); writer.Write(f.Allocates ?? "");
+            writer.Write(f.Calls.Length); foreach (string call in f.Calls.Order(StringComparer.Ordinal)) writer.Write(call);
+            writer.Write(f.Takes.Length); foreach (string take in f.Takes.Order(StringComparer.Ordinal)) writer.Write(take);
+        }
+        return System.Security.Cryptography.SHA256.HashData(stream.ToArray())[..16];
     }
 
     /// <summary>The facts an image's link wrote beside it (WriteBeside), or none.</summary>

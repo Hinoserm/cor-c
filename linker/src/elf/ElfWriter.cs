@@ -49,15 +49,30 @@ public static class ElfWriter
     public static void WriteObjectFile(ObjectFile obj, string path)
     {
         ArgumentNullException.ThrowIfNull(obj);
-        if (TargetContract.IsLongMode(obj))
+        // WRITTEN BESIDE IT AND PUT IN ITS PLACE: an object a link still reads
+        // -- its sections left in the file, read through the handle it was
+        // parsed by (Section.Backing) -- keeps the file it read, and never
+        // sees the new one's bytes at the old one's offsets.
+        string writing = path + ".writing." + Environment.ProcessId + "." + Interlocked.Increment(ref _writes);
+        try
         {
-            File.WriteAllBytes(path, Elf64Object.Write(obj));
-            return;
+            if (TargetContract.IsLongMode(obj)) File.WriteAllBytes(writing, Elf64Object.Write(obj));
+            else
+            {
+                ElfBuffer built = Build(obj, Path.GetFullPath(path));
+                using FileStream output = new(writing, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536);
+                built.WriteTo(output);
+            }
+            File.Move(writing, path, overwrite: true);
         }
-        ElfBuffer built = Build(obj, Path.GetFullPath(path));
-        using FileStream output = new(path, FileMode.Create, FileAccess.Write, FileShare.None, 65536);
-        built.WriteTo(output);
+        catch
+        {
+            if (File.Exists(writing)) File.Delete(writing);
+            throw;
+        }
     }
+
+    private static long _writes;
 
     /// <summary>`writingTo`: the file the object is about to be written over, whose own sections are copied in, not spliced.</summary>
     private static ElfBuffer Build(ObjectFile obj, string? writingTo = null)

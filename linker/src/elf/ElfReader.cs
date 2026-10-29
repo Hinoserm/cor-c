@@ -182,6 +182,8 @@ public static class ElfReader
     [ThreadStatic] internal static string? BackingPath;
     /// <summary>And the handle it reads through, which the sections it leaves there keep (Section.Backing).</summary>
     [ThreadStatic] internal static Microsoft.Win32.SafeHandles.SafeFileHandle? BackingHandle;
+    /// <summary>Whether a section took BackingHandle, which then stays open with it.</summary>
+    [ThreadStatic] internal static bool BackingTaken;
 
     /// <summary>A read for what a unit backend needs of its input (ReadObjectMetadata): no code, no data, no relocations of either.</summary>
     [ThreadStatic] private static bool MetadataOnly;
@@ -247,9 +249,13 @@ public static class ElfReader
         // KEPT OPEN BY WHAT IS LEFT IN THE FILE: its sections read through
         // this handle (Section.Backing), the bytes their offsets came from,
         // and it closes when they are gone. Closed here when nothing is left.
-        Microsoft.Win32.SafeHandles.SafeFileHandle handle = File.OpenHandle(full, FileMode.Open, FileAccess.Read, FileShare.Read);
+        // FileShare.Delete: a new object is put in its place by a rename
+        // (ElfWriter.WriteObjectFile), which an open handle must not refuse.
+        Microsoft.Win32.SafeHandles.SafeFileHandle handle = File.OpenHandle(full, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         BackingPath = leaveInFile ? full : null;
         BackingHandle = leaveInFile ? handle : null;
+        BackingTaken = false;
+        bool read = false;
         try
         {
             FileSource source = new(handle, RandomAccess.GetLength(handle));
@@ -268,16 +274,22 @@ public static class ElfReader
                         if (got <= 0) throw new ElfFormatException("the object ended while it was read");
                         done += got;
                     }
-                    return WithSource(ReadObject(whole), leaveInFile ? full : null);
+                    ObjectFile whole64 = WithSource(ReadObject(whole), leaveInFile ? full : null);
+                    read = true;
+                    return whole64;
                 }
             }
-            return WithSource(ReadObject32(source), leaveInFile ? full : null);
+            ObjectFile obj = WithSource(ReadObject32(source), leaveInFile ? full : null);
+            read = true;
+            return obj;
         }
         finally
         {
+            // Closed now unless a section left in the file took it.
+            if (!read || !BackingTaken) handle.Dispose();
             BackingPath = null;
             BackingHandle = null;
-            if (!leaveInFile) handle.Dispose();
+            BackingTaken = false;
         }
     }
 

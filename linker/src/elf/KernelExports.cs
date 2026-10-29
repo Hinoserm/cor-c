@@ -158,14 +158,6 @@ public sealed class KernelExports
         return holder.Sections[0].Bytes.ToArray();
     }
 
-    /// <summary>Every small body as the units made it, kept or not (the declaration table's "@" keys).</summary>
-    public static byte[] AllBodiesNote(List<Lto.IrArchiveRecord> bodies)
-    {
-        ObjectFile holder = new();
-        Lto.IrArchive.Attach(holder, bodies);
-        return holder.Sections[0].Bytes.ToArray();
-    }
-
     /// <summary>One global of a linked image: what a .dynsym entry of it says.</summary>
     public readonly record struct Export(string Name, ulong Value, ulong Size, byte Type);
 
@@ -405,11 +397,11 @@ public sealed class KernelExports
     /// by name as it does declarations, and one whose copy is of a body the
     /// kernel has changed since is refused (DeclarationReads).
     /// </summary>
-    public static byte[] WithBodies(byte[] decls, Lto.IrArchive bodies)
+    public static byte[] WithBodies(byte[] decls, IEnumerable<Lto.IrArchiveRecord> bodies)
     {
         Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
-        foreach ((string key, Lto.IrArchiveEntry entry) in bodies.Entries)
-            if (key.StartsWith("F:", StringComparison.Ordinal)) entries["@" + key[2..]] = BodyHash(entry);
+        foreach (Lto.IrArchiveRecord record in bodies)
+            if (record.Key.StartsWith("F:", StringComparison.Ordinal)) entries["@" + record.Key[2..]] = record.BodyHash()[..DeclarationReads.HashBytes];
         return DeclarationReads.Write(entries);
     }
 
@@ -425,6 +417,57 @@ public sealed class KernelExports
         Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
         foreach (Export export in globals) entries[ExportName(export.Name)] = ExportHash(export.Name);
         return DeclarationReads.Write(entries);
+    }
+
+    /// <summary>
+    /// AND THE FACTS ITS LINK WROTE BESIDE IT, "Q:" an interrupt fact's and
+    /// "Y:" a float fact's name (InterruptNotes.Said, X87Notes.Said): a
+    /// module's link judges its handlers and its float code through the
+    /// kernel's, and its table holds it to the ones it walked.
+    /// </summary>
+    public static byte[] WithFacts(byte[] decls, IEnumerable<Lto.InterruptNotes.Fact> interrupts, IEnumerable<Lto.X87Notes.Fact> floats)
+    {
+        Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
+        foreach (Lto.InterruptNotes.Fact fact in interrupts) entries["Q:" + fact.Name] = Lto.InterruptNotes.Said(fact);
+        foreach (Lto.X87Notes.Fact fact in floats) entries["Y:" + fact.Name] = Lto.X87Notes.Said(fact);
+        return DeclarationReads.Write(entries);
+    }
+
+    /// <summary>
+    /// The kernel's facts a module's link walks from its own (Check): each by
+    /// name, "Q:" and "Y:", with what it says -- nothing, for a kernel
+    /// function it calls that has none. Held to them, an unrelinked module
+    /// is refused where a kernel change would have failed its checks.
+    /// </summary>
+    public static Dictionary<string, byte[]> FactsRead(KernelExports kernel, IEnumerable<ObjectFile> own,
+        IReadOnlyList<Lto.InterruptNotes.Fact> interrupts, IReadOnlyList<Lto.X87Notes.Fact> floats)
+    {
+        Dictionary<string, byte[]> read = new(StringComparer.Ordinal);
+        List<ObjectFile> units = own.ToList();
+        Dictionary<string, Lto.InterruptNotes.Fact> q = new(StringComparer.Ordinal);
+        foreach (Lto.InterruptNotes.Fact fact in interrupts) q.TryAdd(fact.Name, fact);
+        Stack<string> work = new();
+        foreach (Lto.InterruptNotes.Fact fact in Lto.InterruptNotes.Gather(units)) foreach (string call in fact.Calls) work.Push(call);
+        while (work.Count > 0)
+        {
+            string name = work.Pop();
+            if (read.ContainsKey("Q:" + name) || !kernel.Names.Contains(name) && !q.ContainsKey(name)) continue;
+            if (q.TryGetValue(name, out Lto.InterruptNotes.Fact? fact)) { read["Q:" + name] = Lto.InterruptNotes.Said(fact); foreach (string call in fact.Calls) work.Push(call); }
+            else read["Q:" + name] = DeclarationReads.Empty;
+        }
+        Dictionary<string, Lto.X87Notes.Fact> y = new(StringComparer.Ordinal);
+        foreach (Lto.X87Notes.Fact fact in floats) y.TryAdd(fact.Name, fact);
+        foreach (ObjectFile unit in units)
+            if (Lto.X87Notes.Read(unit) is { } facts)
+                foreach (Lto.X87Notes.Fact fact in facts) foreach (Lto.X87Notes.Call call in fact.Calls) work.Push(call.Callee);
+        while (work.Count > 0)
+        {
+            string name = work.Pop();
+            if (read.ContainsKey("Y:" + name) || !kernel.Names.Contains(name) && !y.ContainsKey(name)) continue;
+            if (y.TryGetValue(name, out Lto.X87Notes.Fact? fact)) { read["Y:" + name] = Lto.X87Notes.Said(fact); foreach (Lto.X87Notes.Call call in fact.Calls) work.Push(call.Callee); }
+            else read["Y:" + name] = DeclarationReads.Empty;
+        }
+        return read;
     }
 
     /// <summary>An exported name in the tables: "E:" and the name.</summary>

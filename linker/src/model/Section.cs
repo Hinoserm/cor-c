@@ -44,9 +44,15 @@ public sealed class Section
         // lock while another thread asks Size or ReadAt, and a tuple of three
         // fields could be read half cleared.
         get => _backing is { } b ? (b.Path, b.Offset, b.Length) : null;
-        set => Volatile.Write(ref _backing, value is { } v
-            ? new Backing(v.Path, v.Offset, v.Length, v.Path == Corsac.Lang.Elf.ElfReader.BackingPath ? Corsac.Lang.Elf.ElfReader.BackingHandle : null)
-            : null);
+        set => Volatile.Write(ref _backing, value is { } v ? new Backing(v.Path, v.Offset, v.Length, Parsing(v.Path)) : null);
+    }
+
+    // The handle of the object being read, when this section is in it: taken.
+    private static Microsoft.Win32.SafeHandles.SafeFileHandle? Parsing(string path)
+    {
+        if (path != Corsac.Lang.Elf.ElfReader.BackingPath || Corsac.Lang.Elf.ElfReader.BackingHandle is not { } handle) return null;
+        Corsac.Lang.Elf.ElfReader.BackingTaken = true;
+        return handle;
     }
 
     /// <summary>
@@ -63,7 +69,13 @@ public sealed class Section
         public int Length { get; } = length;
         // Opened by name only for a section given a place in a file by hand.
         public Microsoft.Win32.SafeHandles.SafeFileHandle Handle
-            => handle ?? LazyInitializer.EnsureInitialized(ref handle, () => File.OpenHandle(Path, FileMode.Open, FileAccess.Read, FileShare.Read))!;
+        {
+            get
+            {
+                if (handle is { } open) return open;
+                lock (this) return handle ??= File.OpenHandle(Path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            }
+        }
     }
     private Backing? _backing;
 

@@ -137,5 +137,7 @@ public static class DeclarationReads
     }
 
     /// <summary>A key as a log says it: past the assembly's identity, its parts joined by dots.</summary>
-    public static string Named(string key) => key[(key.IndexOf('\n') + 1)..].Replace('\n', '.') is { Length: > 0 } name ? name : key.TrimEnd('\n');
+    public static string Named(string key) => key.StartsWith("E:", StringComparison.Ordinal) ? "the kernel's export " + key[2..]
+        : key.StartsWith('@') ? "the kernel's small body " + key[1..]
+        : key[(key.IndexOf('\n') + 1)..].Replace('\n', '.') is { Length: > 0 } name ? name : key.TrimEnd('\n');
 }

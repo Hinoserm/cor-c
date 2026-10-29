@@ -228,13 +228,18 @@ public static class ObjectLinkCommand
         foreach (string library in sharedLibraries) floatsImported.AddRange(X87Notes.ReadBeside(library, judges));
         List<string> floatErrors = X87Notes.Check(inputs.Select(input => input.Item2), floatsImported, new[] { entry });
         if (floatErrors.Count > 0) throw new LinkException(floatErrors);
+        // What of the kernel's facts the checks walked, for the module's table.
+        Dictionary<string, byte[]>? factsRead = kernel is null ? null
+            : KernelExports.FactsRead(kernel, inputs.Select(input => input.Item2), imported, floatsImported);
         // AN IMAGE OTHERS LINK AGAINST says what its units call and take
         // beside it, for their links' checks: a kernel's beside its exports,
         // a module's beside itself.
-        if (exportsPath is not null) InterruptNotes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
+        List<InterruptNotes.Fact>? kernelInterrupts = null;
+        if (exportsPath is not null) kernelInterrupts = InterruptNotes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
         else if (kernel is not null) InterruptNotes.WriteBeside(destination, inputs.Select(input => input.Item2));
         // And a shared object's: what links against it calls into it too.
-        if (exportsPath is not null) X87Notes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
+        List<X87Notes.Fact>? kernelFloats = null;
+        if (exportsPath is not null) kernelFloats = X87Notes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
         else if (kernel is not null || shared) X87Notes.WriteBeside(destination, inputs.Select(input => input.Item2));
         byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
         // And what the index says under each key, for modules held to it by name (DeclarationReads).
@@ -311,7 +316,7 @@ public static class ObjectLinkCommand
         }
         else if (kernel is not null)
         {
-            image = Linker.LinkModule(inputs, output, kernel, sharedLibraries.Distinct(StringComparer.Ordinal).ToList(), relocatedText);
+            image = Linker.LinkModule(inputs, output, kernel, sharedLibraries.Distinct(StringComparer.Ordinal).ToList(), relocatedText, factsRead);
         }
         else if (shared || sharedLibraries.Count > 0)
         {
@@ -347,9 +352,9 @@ public static class ObjectLinkCommand
             // the kernel's own, and the kernel's open link and its pruned one
             // must answer a module alike (the build checks it against the
             // one, the loader against the other).
-            if (decls is not null && smallBodies is { Count: > 0 } && KernelExports.BodiesOf(KernelExports.AllBodiesNote(smallBodies)) is { } archive)
-                decls = KernelExports.WithBodies(decls, archive);
+            if (decls is not null && smallBodies is { Count: > 0 }) decls = KernelExports.WithBodies(decls, smallBodies);
             if (decls is not null) decls = KernelExports.WithExports(decls, globals);
+            if (decls is not null) decls = KernelExports.WithFacts(decls, kernelInterrupts ?? new(), kernelFloats ?? new());
             KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode, bodies, decls);
             Console.Error.WriteLine($"{exportsPath}: {globals.Count} kernel exports, build stamp {KernelExports.Text(stamp!)}"
                 + (bodies is null ? "" : ", small functions' IR " + (bodies.Length >> 10) + " KiB"));

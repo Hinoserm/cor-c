@@ -95,7 +95,7 @@ public static partial class Linker
     /// (os/gui/guimodules.cor). Ring 0's loader does not yet.
     /// </param>
     public static byte[] LinkModule(IEnumerable<(string Name, ObjectFile Object)> objects, string fileName, KernelExports kernel, IReadOnlyList<string>? dependencies = null,
-        bool relocatedText = false)
+        bool relocatedText = false, IReadOnlyDictionary<string, byte[]>? factsRead = null)
     {
         List<(string Name, ObjectFile Object)> inputs = objects.ToList();
         AgreeWithKernel(inputs, kernel);
@@ -191,6 +191,8 @@ public static partial class Linker
         HashSet<string> defined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
         HashSet<string> undefined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
         List<string> needed = theirs.Where(pair => pair.Value.Overlaps(undefined)).Select(pair => pair.Key).ToList();
+        // AND THE KERNEL'S FACTS ITS CHECKS WALKED (KernelExports.FactsRead).
+        if (anyReads && factsRead is not null) foreach ((string key, byte[] hash) in factsRead) read[key] = hash;
         // AND EVERY NAME IT TAKES FROM THE KERNEL, which must stay exported.
         if (anyReads)
             foreach (string import in undefined)

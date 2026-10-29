@@ -153,10 +153,10 @@ public static class X87Notes
     /// so that a missing file says the image's calls were never written down
     /// (ReadBeside).
     /// </summary>
-    public static void WriteBeside(string path, IEnumerable<ObjectFile> objects)
+    public static List<Fact> WriteBeside(string path, IEnumerable<ObjectFile> objects)
     {
         List<ObjectFile> units = objects.ToList();
-        if (!Judges(units)) { if (File.Exists(path + ".x87")) File.Delete(path + ".x87"); return; }
+        if (!Judges(units)) { if (File.Exists(path + ".x87")) File.Delete(path + ".x87"); return new List<Fact>(); }
         Dictionary<string, Fact> all = Joined(units.Select(Read).Where(read => read is not null).SelectMany(read => read!));
         Dictionary<string, List<string>> outsideCallers = new(StringComparer.Ordinal);
         foreach (Fact f in all.Values)
@@ -179,6 +179,25 @@ public static class X87Notes
         List<Fact> kept = all.Values.Where(f => reach.Contains(f.Name))
             .Select(f => f with { Calls = f.Calls.Where(c => reach.Contains(c.Callee)).ToArray(), Entered = f.Entered && !called.Contains(f.Name) }).ToList();
         File.WriteAllBytes(path + ".x87", Encode(kept));
+        return kept;
+    }
+
+    /// <summary>
+    /// What a fact says to another image's link (Check), not where it was
+    /// written: whether it floats, escapes or is entered by itself, and
+    /// what it calls, inside a block or not ("Y:", KernelExports.WithFacts).
+    /// </summary>
+    public static byte[] Said(Fact f)
+    {
+        using MemoryStream stream = new();
+        using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(f.Name); writer.Write(f.Floats); writer.Write(f.Escapes); writer.Write(f.Entered);
+            Call[] calls = f.Calls.OrderBy(c => c.Callee, StringComparer.Ordinal).ThenBy(c => c.Inside).ToArray();
+            writer.Write(calls.Length);
+            foreach (Call call in calls) { writer.Write(call.Callee); writer.Write(call.Inside); }
+        }
+        return System.Security.Cryptography.SHA256.HashData(stream.ToArray())[..16];
     }
 
     /// <summary>
