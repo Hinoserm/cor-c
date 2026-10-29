@@ -1160,8 +1160,9 @@ public sealed class Allocator
     /// up to a call, a string move's fixed ESI/EDI/ECX, a divide's EDX --
     /// and spill it only from there. Its reads before the split keep the
     /// register; every write still stores (a split value's store is never
-    /// sunk), so the slot is current wherever the frame takes over. Returns the register, or -1 if no register
-    /// covers even the interval's first instruction that touches it.
+    /// sunk), so the slot is current wherever the frame takes over. Returns
+    /// the register, or -1 if no register covers even the interval's first
+    /// instruction that touches it.
     /// </summary>
     private int SplitPrefix(Interval cur)
     {
