@@ -228,7 +228,45 @@ internal sealed class X64Target : ITarget
             JumpsAnywhere = i.Op == MOp.JmpInd,
             HomeSlot = _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null,
             Line = i.Line,
+            Effects = Effects(i),
         };
+    }
+
+    /// <summary>
+    /// What an instruction does besides its registers, for the scheduler
+    /// (Effect): the flags and memory of the plain integer and SSE
+    /// instructions it may move; anything else -- a call, a branch, a push, a
+    /// divide (it may fault on its own), a locked or segment-relative access,
+    /// a fence -- a barrier. ADC/SBB and a shift by CL (a count of 0 changes
+    /// nothing) read the flags they leave partly or wholly as they were.
+    /// </summary>
+    private static Effect Effects(MInstr i)
+    {
+        if (i.Lock) return Effect.Barrier;
+        bool countImm = i.Operands.Count >= 2 && i.Operands[^1] is MImm { Value: >= 1 };
+        Effect e = i.Op switch
+        {
+            MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Not or MOp.Bswap or MOp.Cwd
+                or MOp.MovF or MOp.MovGx or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.XorF
+                or MOp.CvtIntToF or MOp.CvtFToInt or MOp.CvtFToF => Effect.None,
+            MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg
+                or MOp.Imul or MOp.Imul3 or MOp.MulWide or MOp.ImulWide or MOp.UcomiF => Effect.WritesFlags,
+            MOp.Adc or MOp.Sbb => Effect.ReadsFlags | Effect.WritesFlags,
+            MOp.Shl or MOp.Shr or MOp.Sar or MOp.Rol or MOp.Ror
+                => countImm ? Effect.WritesFlags : Effect.ReadsFlags | Effect.WritesFlags,
+            MOp.Setcc or MOp.Cmovcc => Effect.ReadsFlags,
+            _ => Effect.Barrier,
+        };
+        if (e == Effect.Barrier) return e;
+        for (int k = 0; k < i.Operands.Count; k++)
+        {
+            if (i.Operands[k] is not MMem m || i.Op == MOp.Lea) continue;
+            if (m.Segment != 0) return Effect.Barrier;
+            Roles.Role role = Roles.Of(i, k);
+            if ((role & Roles.Role.Use) != 0) e |= Effect.ReadsMemory;
+            if ((role & Roles.Role.Def) != 0) e |= Effect.WritesMemory;
+        }
+        return e;
     }
 
     private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);

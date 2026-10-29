@@ -100,6 +100,9 @@ internal static class AsmText
                 else yield return "leave";
                 yield return m.Source.CalleePops > 0 ? "ret " + m.Source.CalleePops : "ret";
                 yield break;
+            case MOp.CompilerFence:
+                yield return "; compiler fence (nothing encoded)";
+                yield break;
             case MOp.Jcc:
                 yield return $"j{i.Cond.Mnemonic()} {Op(i.Operands[0], 4, false)}";
                 yield break;

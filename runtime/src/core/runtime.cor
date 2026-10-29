@@ -4308,10 +4308,11 @@ static partial class Runtime
     /// `mov ebp, esp` written 8B EC (x86-64: push rbp, 48 8B EC), then `sub
     /// esp, n` (83 EC n or 81 EC n32, REX.W on x86-64) if it has a frame,
     /// then its pushes. For a fault or an interrupt in one: the chain from
-    /// there runs on as from any frame. Not in its epilogue's last two
-    /// instructions (`add esp, n` done, `pop ebp` not), where the answer is n
-    /// bytes high: no fault is there, and an interrupt's walk (the kernel's
-    /// sampler) checks what it reads. Allocates nothing.
+    /// there runs on as from any frame. Not in its epilogue: on i386 from
+    /// its first pop to its `ret` (x86-64: from `add rsp, n`, its saves being
+    /// moves), the answer is high by what is already popped -- no fault is
+    /// there, and an interrupt's walk (the kernel's sampler) checks what it
+    /// reads. Allocates nothing.
     public static nuint FrameAt(nuint pc, nuint sp, nuint bp) {
         nuint name, file, pool, offset;
         long line;

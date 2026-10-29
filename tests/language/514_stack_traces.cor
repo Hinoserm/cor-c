@@ -17,7 +17,7 @@
 //
 // Two things make it possible. Every prologue is `push ebp; mov ebp, esp`, so
 // the saved frame pointers are a list of callers with each return address
-// beside them; and the code generator writes a table saying what each stretch
+// beside them (a leaf, which calls nothing, may give EBP a value after); and the code generator writes a table saying what each stretch
 // of the image is -- name, source file, and which line each byte belongs to.
 // Walking one and looking addresses up in the other is the whole of it.
 //

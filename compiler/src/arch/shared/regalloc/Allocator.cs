@@ -223,6 +223,7 @@ public sealed class Allocator
     /// <summary>Allocates the function's registers, and has its target rebuild it from what was decided.</summary>
     public static void Run(AFunction m)
     {
+        Schedule.Run(m);
         CopyFold.Run(m);
         LoopSplit? split = LoopSplit.Run(m);
         Allocator a = new(m) { _split = split };

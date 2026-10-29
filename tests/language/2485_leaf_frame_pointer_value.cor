@@ -2,7 +2,7 @@
 // expect-output:
 // 256 706
 // caught 1
-// 15 x
+// 17 x
 // caught put
 // after 0256
 //
@@ -38,9 +38,13 @@ static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Put(Box b, object o, int x, int y, int z)
     {
+        // As many values live across the store as Mix keeps: were the stub
+        // no call, EBP would be given one, and the fault in the stub would
+        // find no frame.
         int s = x * 3 + y, t = y ^ z, u = z - x, v = s * t + u;
+        int p = s * u - t, q = t * v + s, r = u * v - p;
         b.Ref = o;
-        return s + t + u + v;
+        return s + t + u + v + p - q + r;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

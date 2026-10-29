@@ -57,10 +57,14 @@ arithmetic natively gets helper calls, as the 486 does.
 
 ## The machine model (x86)
 
-**Registers.** EAX, ECX, EDX, EBX, ESI and EDI are allocatable. EBP is the
-frame pointer, always. ESP is the stack pointer. Every method has a frame
-with EBP, even a leaf: a 486 does not gain enough from omitting it to be
-worth losing gdb backtraces and a simple unwinder.
+**Registers.** EAX, ECX, EDX, EBX, ESI and EDI are allocatable. ESP is the
+stack pointer. EBP is the frame pointer in every function that calls; a
+leaf (no call, a store sequence's stub included; no push, pop or landing
+pad) may allocate it as a seventh register, its frame then addressed off
+ESP (FramePointerFree). Its prologue is still `push ebp; mov ebp, esp`, the
+move written 8B EC, so a fault in it finds its frame from the prologue's
+shape (Runtime.FrameAt) and the chain of callers above it is whole: a leaf
+is never anyone's caller.
 
 **Calling convention: cdecl,** exactly as GCC uses it on i386 System V.
 
@@ -1297,7 +1301,8 @@ faulted in.
 
 Two things make it work. Every prologue is `push ebp; mov ebp, esp`, so
 the saved frame pointers are a linked list of callers with each return
-address beside them. And the code generator writes a table saying what
+address beside them (a leaf that gives EBP a value after calls nothing, so
+it is never a link; Runtime.FrameAt finds its frame when it faults). And the code generator writes a table saying what
 each stretch of the image is, under the symbol `__corsac_frames` in
 `.rodata` -- mapped where the program can read it, needing no section a
 linker script has to learn about, and carried by a flat freestanding

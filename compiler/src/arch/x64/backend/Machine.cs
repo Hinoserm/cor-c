@@ -8,8 +8,8 @@ using Block = Corsac.Lang.Ir.Block;
 /// <summary>
 /// The sixteen general registers, numbered as the hardware numbers them: the
 /// low three bits go in a ModRM or SIB field and the fourth in a REX prefix.
-/// RSP is the stack pointer and RBP the frame pointer in every function, and
-/// neither is ever allocated.
+/// RSP is the stack pointer, never allocated; RBP the frame pointer in every
+/// function that calls, allocated only in a leaf (X64Target, FramePointerFree).
 /// </summary>
 public enum Gpr : byte
 {
@@ -272,6 +272,12 @@ public enum MOp : byte
 
     // ---- odds and ends -------------------------------------------------------------
     Int3, Ud2, Nop, Pause,
+    /// <summary>
+    /// Opcode.CompilerFence: no instruction (TSO orders loads and stores as
+    /// the fence asks), but a barrier to every pass after selection that moves
+    /// memory accesses -- the scheduler's (Effect.Barrier) among them.
+    /// </summary>
+    CompilerFence,
     /// <summary>The system call instruction. Number in RAX, arguments RDI RSI RDX R10 R8 R9.</summary>
     Syscall,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>

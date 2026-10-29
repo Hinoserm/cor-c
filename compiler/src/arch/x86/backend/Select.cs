@@ -1669,8 +1669,9 @@ internal sealed partial class Selector
                 break;
             case Opcode.CompilerFence:
                 // TSO: loads are not passed by later loads or stores, nor
-                // stores by earlier ones. Nothing to emit; the optimiser has
-                // already kept everything on its side.
+                // stores by earlier ones. Nothing is encoded; the mark keeps
+                // the passes after this one from moving accesses across it.
+                Emit(MOp.CompilerFence);
                 break;
             case Opcode.Call:
             case Opcode.CallIndirect:

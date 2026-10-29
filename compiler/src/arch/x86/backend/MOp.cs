@@ -55,6 +55,12 @@ public enum MOp : byte
     Cvttss2si, Cvttsd2si,
     // odds and ends
     Int, Int3, Nop, Pause,
+    /// <summary>
+    /// Opcode.CompilerFence: no instruction (TSO orders loads and stores as
+    /// the fence asks), but a barrier to every pass after selection that moves
+    /// memory accesses -- the scheduler's (Effect.Barrier) among them.
+    /// </summary>
+    CompilerFence,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>
     Prologue, Epilogue,
     /// <summary>Linux only: the system-call trap. Isolated so a bare-metal variant swaps it.</summary>

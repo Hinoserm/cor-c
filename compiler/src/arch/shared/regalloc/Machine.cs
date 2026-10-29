@@ -117,8 +117,29 @@ public sealed class AInstr
     /// <summary>Whether control never falls out of it to the next block.</summary>
     public bool Unconditional { get; init; }
     public int Line { get; init; }
+    /// <summary>What it does besides its registers (Effect), as the scheduler keeps it in order.</summary>
+    public Effect Effects { get; init; } = Effect.Barrier;
     /// <summary>What the allocator made it as, where Tag is null.</summary>
     public Made Made { get; init; }
+}
+
+/// <summary>
+/// WHAT AN INSTRUCTION DOES BESIDES ITS REGISTERS, as the scheduler must keep
+/// it ordered (Schedule): the condition flags read or written, memory read or
+/// written, or anything else -- a call, a branch, a system call, a device
+/// register, a locked operation, an instruction that may fault on its own
+/// (a divide), state no operand names -- a barrier nothing moves across.
+/// What a target does not say is a barrier.
+/// </summary>
+[Flags]
+public enum Effect : byte
+{
+    None = 0,
+    ReadsFlags = 1,
+    WritesFlags = 2,
+    ReadsMemory = 4,
+    WritesMemory = 8,
+    Barrier = 16,
 }
 
 /// <summary>What the allocator made: a copy of operand 1 into operand 0, or a jump to Targets[0].</summary>

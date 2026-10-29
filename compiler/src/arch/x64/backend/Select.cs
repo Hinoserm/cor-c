@@ -531,6 +531,8 @@ internal sealed class Selector
                 Emit(MOp.Mfence);
                 break;
             case Opcode.CompilerFence:
+                // Nothing encoded (TSO); a mark the passes after this one keep.
+                Emit(MOp.CompilerFence);
                 break;
             case Opcode.Call:
             case Opcode.CallIndirect:
