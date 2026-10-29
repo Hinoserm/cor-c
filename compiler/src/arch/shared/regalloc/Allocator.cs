@@ -939,7 +939,7 @@ public sealed class Allocator
         // one arm, and a value written three times a lap -- each write then a
         // store -- before one written once.
         int loop = at < _lin.Count ? _loopOf[_blockOfInstr[at]] : -1;
-        long victimCost = long.MaxValue;
+        long victimCost = long.MaxValue, victimKey = long.MinValue;
         // A register is had by evicting everything placed in it that is
         // live where the current interval is; the others sit in its holes.
         foreach (int r in PreferenceFor(cur.VReg))
@@ -955,6 +955,7 @@ public sealed class Allocator
             List<Interval> group = new();
             bool unservedShort = false;
             int next = int.MaxValue, foldedHere = 0;
+            bool dirty = false;
             foreach (Interval a in _active)
             {
                 if (a.Reg != r || !Overlaps(a, cur)) continue;
@@ -967,6 +968,7 @@ public sealed class Allocator
                 // reload more (Appel and George's CISC operands).
                 if (use <= cur.Start && !a.Short && FoldsAt(a.VReg, at)) { use = NextUse(a.VReg, at + 1); foldedHere++; }
                 if (use < next) next = use;
+                dirty |= !a.Short && _remat[a.VReg] is null && HomeOf(a.VReg) == 0 && _spilledFrom[a.VReg] == int.MaxValue;
             }
             // Only one operand of an instruction may be memory: two values read
             // here from their slots would leave the second wanting a register.
@@ -984,11 +986,18 @@ public sealed class Allocator
             if (loop >= 0) foreach (Interval a in group) cost += a.Short ? LapCostServed(a, at, loop) : LapCost(a.VReg, at, loop);
             if (Tracing)
                 Console.Error.WriteLine($"regalloc {_f.Name} at {at} loop {loop} for v{cur.VReg}{(cur.Short ? "s" : "")}: {_t.RegName(r)} holds {string.Join(",", group.Select(a => "v" + a.VReg + (a.Short ? "s" : "")))} cost {cost} next {next}");
-            if (loop >= 0 ? cost < victimCost || cost == victimCost && next > victimNext : next > victimNext)
+            // CLEAN FIRST outside a loop (Farach-Colton and Liberatore): what is
+            // current in memory already -- a reload's register, a constant, a
+            // home, a value spilled before -- costs its reloads alone; a dirty
+            // one a store at its every definition besides. Its distance counts
+            // twice against a dirty one's.
+            long key = next == int.MaxValue ? long.MaxValue : dirty ? next - (long)at * 4 : 2 * (next - (long)at * 4);
+            if (loop >= 0 ? cost < victimCost || cost == victimCost && next > victimNext : key > victimKey)
             {
                 victims = group;
                 victimNext = next;
                 victimCost = cost;
+                victimKey = key;
             }
         }
 
