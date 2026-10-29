@@ -4251,6 +4251,7 @@ public sealed class Monomorphiser
                 return new AssignExpr
                 {
                     Op = a2.Op, Target = Rewrite(a2.Target, map), Value = Rewrite(a2.Value, map),
+                    Coalescing = a2.Coalescing,
                     Line = a2.Line, Col = a2.Col,
                 };
 

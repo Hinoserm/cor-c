@@ -895,6 +895,7 @@ public static class Gir
                     U8((byte)E.Assign);
                     Bool(a2.Op.HasValue);
                     U8(a2.Op.HasValue ? (byte)a2.Op.Value : (byte)0);
+                    Bool(a2.Coalescing);
                     Expr(a2.Target);
                     Expr(a2.Value);
                     break;
@@ -1847,9 +1848,10 @@ public static class Gir
                 {
                     bool compound = Bool();
                     BinOp op = (BinOp)U8();
+                    bool coalescing = Bool();
                     Expr target = Need();
 
-                    return new AssignExpr { Op = compound ? op : null, Target = target, Value = Need() };
+                    return new AssignExpr { Op = compound ? op : null, Target = target, Value = Need(), Coalescing = coalescing };
                 }
 
                 case E.Conditional:

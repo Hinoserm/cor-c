@@ -4470,6 +4470,9 @@ public sealed partial class Lowering
     private VReg EmitCoalescingAssign(AssignExpr a, BinaryExpr coalesce)
     {
         Type held = _b.TypeOf(coalesce.Left);
+        // A copy over a value type (an unconstrained T made int) is never
+        // empty: x as it is, nothing stored (NeverEmpty).
+        if (NeverEmpty(held)) return Eval(coalesce.Left);
         VReg dest = _f.NewReg(IrTypes.Of(held), "qa");
         Block got = _f.NewBlock("qagot"), miss = _f.NewBlock("qamiss"), end = _f.NewBlock("qaend");
 
@@ -4902,8 +4905,10 @@ public sealed partial class Lowering
             if (value is DefaultExpr && TupleShapeOf(storedAs) is not null) return EvalAs(value, storedAs);
             // Already made what it is stored as -- a number the checker marked
             // to go into a Nullable -- it is not converted a second time.
+            // From what a declared conversion made of it, where one did
+            // (Evaluated): `f ??= money` into a long? field is a long by then.
             VReg made = Eval(value);
-            return _b.Boxes.Contains(value) ? made : Convert(value, made, _b.TypeOf(value), storedAs);
+            return _b.Boxes.Contains(value) ? made : Convert(value, made, Evaluated(value), storedAs);
         }
         return EvalAs(value, storedAs);
     }
@@ -5218,6 +5223,11 @@ public sealed partial class Lowering
     /// <summary>`a ?? b` for references and for nullable cells.</summary>
     private VReg Coalesce(BinaryExpr b, Type left, Type right, Type result)
     {
+        // A VALUE TYPE IS NEVER NULL: `x ?? y` over an unconstrained T, the
+        // copy over int, is x -- its zero no null to test for -- and y is
+        // not evaluated, as C# has it.
+        if (NeverEmpty(left)) return Convert(b, Eval(b.Left), left, result);
+
         VReg dest = _f.NewReg(IrTypes.Of(result), "nc");
         Block got = _f.NewBlock("ncgot");
         Block miss = _f.NewBlock("ncmiss");
@@ -5257,7 +5267,10 @@ public sealed partial class Lowering
         return dest;
     }
 
-    /// <summary>Two nullable cells are equal when both are empty or both hold the same value.</summary>
+    /// <summary>A value of a non-nullable value type, in a copy over one: nothing `??` can find empty.</summary>
+    private static bool NeverEmpty(Type t)
+        => !t.IsNullableValue && !t.IsReference && !t.IsPointer && !t.IsError && t.ParamName is null && t.Function is null
+        && t.Prim is not (Prim.Any or Prim.NullLiteral) && (t.Symbol is null ? t.Prim != Prim.Void : t.Symbol.Kind is TypeKind.Struct or TypeKind.Enum);
     private VReg NullableEquality(BinaryExpr b, Type left, Type right)
     {
         Type inner = (left.IsNullableValue ? left : right).Underlying;

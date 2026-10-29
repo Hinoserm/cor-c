@@ -1259,14 +1259,9 @@ public sealed partial class Binder
         return false;
     }
 
-    /// <summary>
-    /// Whether an assignment is the parser's `x = x ?? y` for `x ??= y`. The
-    /// two x's are one node as parsed and two once a body is rewritten, at
-    /// one place still; a written `x = x ?? y` has its two at two.
-    /// </summary>
+    /// <summary>Whether an assignment is the parser's `x = x ?? y` for `x ??= y` (AssignExpr.Coalescing).</summary>
     internal static bool ParsedCoalescing(AssignExpr a)
-        => a.Op is null && a.Value is BinaryExpr { Op: BinOp.Coalesce } coalesce
-        && coalesce.Left.GetType() == a.Target.GetType() && coalesce.Left.Line == a.Target.Line && coalesce.Left.Col == a.Target.Col;
+        => a.Coalescing && a.Op is null && a.Value is BinaryExpr { Op: BinOp.Coalesce };
 
     /// <summary>
     /// Whether `x ??= y` over a nullable value, its `y` a plain value, is

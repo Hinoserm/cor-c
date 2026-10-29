@@ -9244,15 +9244,16 @@ public sealed class Parser
             };
         }
 
-        // `x ??= v` IS `x = x ?? v`, and it is written out as that rather than
-        // carried to the binder as a compound operation. Coalesce is not an
-        // arithmetic operator -- it short-circuits -- so a compound assignment
-        // that evaluated both sides would not mean what was written, while the
-        // spelled-out form gets the short-circuit from the ordinary rules.
+        // `x ??= v` IS HELD AS `x = x ?? v`, MARKED SO (AssignExpr.Coalescing),
+        // rather than carried to the binder as a compound operation: the
+        // binder types the pair as C# types the operator (Binder.
+        // CoalescingValue), and the lowering tests x and evaluates and stores
+        // v only where x is empty -- no setter called, no field written, where
+        // x has a value (C# 12.22; Lowering's EmitCoalescingAssign).
         //
-        // THE TARGET IS READ TWICE by that rewrite, so a target that DOES
-        // something is refused rather than quietly done twice. It is the same
-        // restriction, for the same reason, that a pattern subject has.
+        // WHAT THE TARGET IS READ THROUGH IS EVALUATED ONCE: a target the
+        // pair can read twice as it is (Rereadable), or its object and index
+        // put somewhere first (SubjectExpr, below); anything else refused.
         if (At(Tok.QuestionQuestionEq))
         {
             _i++;
@@ -9262,6 +9263,7 @@ public sealed class Parser
             {
                 Target = target,
                 Value = new BinaryExpr { Op = BinOp.Coalesce, Left = target, Right = right, Line = at.Line, Col = at.Col },
+                Coalescing = true,
                 Line = at.Line, Col = at.Col,
             };
             if (Rereadable(left)) return Coalescing(left);
