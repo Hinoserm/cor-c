@@ -135,8 +135,11 @@ public static class Schedule
 
         // The registers whose pressure is counted: the first class's values.
         // A value read before it is written here (a read-modify-write
-        // included) is live from the stretch's start; one mentioned after the
-        // stretch, or in another block, to its end.
+        // included) is live from the stretch's start -- in any order the
+        // dependences allow, as each later definition depends on every read
+        // before it and on the definition before it (the register edges
+        // below); one mentioned after the stretch, or in another block, to its
+        // end.
         HashSet<int> liveIn = new(), outlives = new(), seen = new();
         for (int x = 0; x < n; x++)
         {

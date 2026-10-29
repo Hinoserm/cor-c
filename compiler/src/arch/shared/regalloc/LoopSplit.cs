@@ -117,7 +117,7 @@ public sealed class LoopSplit
     /// <summary>`b` laid out just before `at` (never before the entry: no loop is headed by it).</summary>
     private void InsertBefore(ABlock at, ABlock b)
     {
-        ABlock? p = _prev[at];
+        ABlock? p = _prev[at] ?? throw new InvalidOperationException($"{_f.Name}: a block put before the entry ({at.Name})");
         _prev[b] = p;
         _next[b] = at;
         _prev[at] = b;
