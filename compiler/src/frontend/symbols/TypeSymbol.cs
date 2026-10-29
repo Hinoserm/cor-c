@@ -285,8 +285,16 @@ public sealed class TypeSymbol
             return true;
         }
         ProbesAnswered++;
+        (ProbedNames ??= new(StringComparer.Ordinal)).Add(name);
         return false;
     }
+
+    /// <summary>
+    /// The names a lookup was told by its members' names alone that it has
+    /// no member of (MayHave), or null: the unit depends on their staying
+    /// absent, though it never declared the members (Dependence.Header).
+    /// </summary>
+    public HashSet<string>? ProbedNames { get; private set; }
 
     /// <summary>
     /// MayHave(prefix + name + suffix) -- an accessor, a backing field --

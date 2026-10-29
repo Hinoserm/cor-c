@@ -17,6 +17,17 @@ public sealed class IndexedDeclarations : IDisposable
     /// declarations are all new, so only the pass the unit kept counts.
     /// </summary>
     private readonly List<(string Key, TypeDecl Template)> withBodies = new();
+    /// <summary>
+    /// Each declaration the pass under way read for its signatures alone, by
+    /// its key (AddHeaders): the receipt asks, once the unit is lowered,
+    /// which of them it named and never asked the members of (MembersUnread).
+    /// </summary>
+    private readonly List<(string Key, TypeDecl Root)> readForSignatures = new();
+    /// <summary>
+    /// The keys of those whose members the unit never asked for, each with
+    /// the names it was told they have none of (Dependence.Header).
+    /// </summary>
+    private readonly Dictionary<string, IReadOnlyCollection<string>> membersUnread = new(StringComparer.Ordinal);
     /// <summary>The keys of the templates the kept pass copied a body of (PassKept, WriteDependencies).</summary>
     private readonly HashSet<string> bodiesUsed = new(StringComparer.Ordinal);
     // WHAT THIS UNIT ASKED THE INDEX, by kind and name: spelled out as the
@@ -543,6 +554,7 @@ public sealed class IndexedDeclarations : IDisposable
     public void AddHeaders(CompilationUnit unit)
     {
         withBodies.Clear();
+        readForSignatures.Clear();
         // Language operations name these helpers implicitly, without a source
         // type reference to trigger ordinary declaration discovery. Load only
         // their headers, not the implementation bodies or entire library files.
@@ -777,6 +789,7 @@ public sealed class IndexedDeclarations : IDisposable
                     root.IndexedTemplate = root;
                     withBodies.Add((key, root));
                 }
+                else readForSignatures.Add((key, root));
                 // Nested declarations have separate index records. Import the
                 // requested declaration only, retaining its own lexical scope.
                 root.Namespace = source.Namespace;
@@ -1047,7 +1060,21 @@ public sealed class IndexedDeclarations : IDisposable
     {
         string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
         UnitDependencies.Write(path, catalog, loaded, implementations, bodiesUsed,
-            queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name), taken, kept);
+            queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name), taken, kept, membersUnread);
+    }
+
+    /// <summary>
+    /// The declarations read for their signatures whose members the unit,
+    /// bound and lowered, never asked for: `unread` gives, for each type the
+    /// binder made of one and never declared, the names it was told it has
+    /// none of, and null for the rest. Asked once, when the front end is let go.
+    /// </summary>
+    public void MembersUnread(Func<TypeDecl, IReadOnlyCollection<string>?> unread)
+    {
+        membersUnread.Clear();
+        foreach ((string key, TypeDecl root) in readForSignatures)
+            if (unread(root) is { } probed) membersUnread[key] = probed;
+        readForSignatures.Clear();
     }
 
     /// <summary>

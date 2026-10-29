@@ -745,6 +745,19 @@ public static class Driver
         // after code generation, and they were a unit's largest structure
         // alive through its largest phase. What those two need is taken now.
         List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library);
+        // AND WHICH TYPES IT NAMED AND NEVER ASKED THE MEMBERS OF, now that
+        // nothing more will (Dependence.Header).
+        if (declarations is not null)
+        {
+            // By key: the binder's declaration is a copy of the one read.
+            Dictionary<string, IReadOnlyCollection<string>?> unread = new(StringComparer.Ordinal);
+            foreach (TypeSymbol type in front.Value.bound.Types.Values)
+                if (type.Decl is not null)
+                    unread[type.Key] = !type.MembersPending ? null
+                        : unread.TryGetValue(type.Key, out var seen) && seen is null ? null
+                        : (IReadOnlyCollection<string>?)type.ProbedNames ?? Array.Empty<string>();
+            declarations.MembersUnread(decl => unread.GetValueOrDefault(Binder.TypeKey(decl)));
+        }
         List<RegistrySchema> schemas = new(front.Value.unit.RegistrySchemas);
         return new UnitFront(module, entries, definitionSemantics, layouts, schemas, moduleInfo);
     }

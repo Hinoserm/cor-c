@@ -22,6 +22,16 @@ public enum Dependence : byte
     /// still read for what they name (SourceDeclaration.TemplateHash).
     /// </summary>
     Template = 2,
+
+    /// <summary>
+    /// Its header alone: the unit named the type -- a parameter's, a field's,
+    /// a cast's -- and never asked for one of its members, which the binder
+    /// left undeclared to the end (TypeSymbol.MembersPending). A method more
+    /// or less, or another signature, says nothing to it; its interface
+    /// slots are the plan's (InterfaceFamilies.PlanSaid), its layout another
+    /// key's. Recorded in the declaration's place, alone.
+    /// </summary>
+    Header = 3,
 }
 
 /// <summary>Consumed declaration families, not a project-wide declaration graph.</summary>
@@ -42,7 +52,11 @@ public static class UnitDependencies
         foreach (SourceDeclaration record in records.OrderBy(record => record.Path, StringComparer.Ordinal).ThenBy(record => record.From))
         {
             writer.Write(record.Path);
-            writer.Write(part switch { Dependence.Source => record.SourceHash, Dependence.Template => record.TemplateHash, _ => record.DeclarationHash });
+            writer.Write(part switch
+            {
+                Dependence.Source => record.SourceHash, Dependence.Template => record.TemplateHash,
+                Dependence.Header => record.HeaderHash, _ => record.DeclarationHash,
+            });
         }
         return SHA256.HashData(buffer.ToArray());
     }
@@ -62,7 +76,8 @@ public static class UnitDependencies
     /// a type with two descriptors.
     /// </summary>
     public static void Write(string path, DeclarationCatalog catalog, IEnumerable<string> keys, IReadOnlySet<string> templates,
-        IReadOnlySet<string> copied, IEnumerable<string> queries, IEnumerable<string>? taken = null, IEnumerable<string>? kept = null)
+        IReadOnlySet<string> copied, IEnumerable<string> queries, IEnumerable<string>? taken = null, IEnumerable<string>? kept = null,
+        IReadOnlyDictionary<string, IReadOnlyCollection<string>>? named = null)
     {
         using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.None);
         using BinaryWriter writer = new(stream, Encoding.UTF8);
@@ -72,12 +87,21 @@ public static class UnitDependencies
         {
             using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing dependency " + key);
             Dependence dependence = copied.Contains(key) ? Dependence.Source
-                : templates.Contains(key) ? Dependence.Template : Dependence.Declaration;
+                : templates.Contains(key) ? Dependence.Template
+                : named?.ContainsKey(key) == true ? Dependence.Header : Dependence.Declaration;
             byte[] encoded = Encoding.UTF8.GetBytes(key);
             if (encoded.Length > 4096) throw new InvalidDataException("Dependency key exceeds format limit");
             writer.Write(encoded.Length); writer.Write(encoded); writer.Write((byte)dependence);
-            writer.Write(Fingerprint(lease.Records, Dependence.Declaration));
-            if (dependence != Dependence.Declaration) writer.Write(Fingerprint(lease.Records, dependence));
+            writer.Write(Fingerprint(lease.Records, dependence == Dependence.Header ? Dependence.Header : Dependence.Declaration));
+            if (dependence is Dependence.Source or Dependence.Template) writer.Write(Fingerprint(lease.Records, dependence));
+            // And the names it was told the type has no member of, which it
+            // reads as long as they stay so.
+            if (dependence == Dependence.Header)
+            {
+                string[] probed = named![key].Order(StringComparer.Ordinal).ToArray();
+                writer.Write(probed.Length);
+                foreach (string name in probed) writer.Write(name);
+            }
         }
         string[] lookups = queries.Order(StringComparer.Ordinal).ToArray();
         writer.Write(lookups.Length);
@@ -133,10 +157,24 @@ public static class UnitDependencies
                 string key = Encoding.UTF8.GetString(reader.ReadBytes(length));
                 Dependence dependence = (Dependence)reader.ReadByte(); if (!Enum.IsDefined(dependence)) return unreadable;
                 byte[] declaration = reader.ReadBytes(32);
-                byte[]? more = dependence != Dependence.Declaration ? reader.ReadBytes(32) : null;
+                byte[]? more = dependence is Dependence.Source or Dependence.Template ? reader.ReadBytes(32) : null;
                 if (declaration.Length != 32 || more is { Length: not 32 }) return unreadable;
                 using DeclarationLease? lease = catalog.AcquireKey(key);
                 if (lease is null) return Named(key) + " is no longer declared";
+                if (dependence == Dependence.Header)
+                {
+                    int probed = reader.ReadInt32();
+                    if (probed < 0 || probed > 100000) return unreadable;
+                    string? appeared = null;
+                    for (int k = 0; k < probed; k++)
+                    {
+                        string name = reader.ReadString();
+                        if (appeared is null && lease.Records.Any(record => record.MemberNames.Contains(name))) appeared = name;
+                    }
+                    if (!declaration.SequenceEqual(Fingerprint(lease.Records, Dependence.Header))) return "header of " + Named(key) + " changed";
+                    if (appeared is not null) return Named(key) + " now has a member named " + appeared;
+                    continue;
+                }
                 if (!declaration.SequenceEqual(Fingerprint(lease.Records, Dependence.Declaration))) return "declaration of " + Named(key) + " changed";
                 if (more is not null && !more.SequenceEqual(Fingerprint(lease.Records, dependence)))
                     return dependence == Dependence.Source ? TextChanged(key, lease.Records) : "what " + Named(key) + "'s template bodies name changed";

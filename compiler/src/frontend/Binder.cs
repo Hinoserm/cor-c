@@ -1722,11 +1722,16 @@ public sealed partial class Binder
     /// longer be loaded; declared here, it is asked of the index like any
     /// other, and the pass goes round for it. And so for one from elsewhere
     /// whose members were here and whose symbols waited (DeclaredLater),
-    /// but a template, which no layout describes.
+    /// but a template, which no layout describes. NOR AN INTERFACE: named
+    /// and never called through, nothing after binding asks its members --
+    /// its slots are the index's plan, and a layout describes none of a type
+    /// whose members wait (ManagedLayouts) -- and the unit reads its header
+    /// alone (Dependence.Header): a method added to it rebuilds the units
+    /// that call through it or implement it, not every one that names it.
     /// </summary>
     private void DeclareUsed()
     {
-        foreach (TypeSymbol t in _r.Types.Values.Where(t => t.MembersPending && t.Used && t.Decl is { } d
+        foreach (TypeSymbol t in _r.Types.Values.Where(t => t.MembersPending && t.Used && t.Kind != TypeKind.Interface && t.Decl is { } d
                                                              && (d.SignatureTypes is not null || _declaredLater.Contains(d) && !IsTemplate(t))).ToList())
         {
             t.EnsureMembers();
@@ -3338,6 +3343,16 @@ public sealed partial class Binder
         {
             if (!declaredCount.TryGetValue(family, out int count))
             {
+                // COUNTED BY THE INDEX where it lists the family: the plan
+                // every unit numbers by (InterfaceFamilies), and the members
+                // still wait -- a unit that only names the interface never
+                // declares them (Dependence.Header), and one that asks has
+                // them numbered as they come (InterfaceSlotsLater).
+                if (_indexedInterfaces is not null && _indexedInterfaces.TryGetValue(family, out int indexed))
+                {
+                    if (into.TryGetValue(family, out int was)) into[family] = Math.Max(was, indexed);
+                    continue;
+                }
                 // Declared before the slots are numbered, it is numbered as
                 // every declared copy is (Assign).
                 count = SlotMethods(copy);
@@ -4916,7 +4931,8 @@ public sealed partial class Binder
     {
         if (!d.Elsewhere || d.External || d.MembersPending || d.SignatureTypes is not null
             || d.Specialised || d.Canon is not null || d.LocalOnly || d.File == "<prelude>"
-            || d.Kind is not (TypeKind.Class or TypeKind.Struct) || d.IsDelegate || d.Mods.HasFlag(Mods.Partial))
+            || d.Kind is not (TypeKind.Class or TypeKind.Struct) && !(d.Kind == TypeKind.Interface && d.TypeParams.Count == 0)
+            || d.IsDelegate || d.Mods.HasFlag(Mods.Partial))
         {
             return false;
         }

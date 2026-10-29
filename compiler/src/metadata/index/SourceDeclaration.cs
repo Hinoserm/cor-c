@@ -20,8 +20,21 @@ public sealed class SourceDeclaration
     /// of them (UnitDependencies, Dependence.Template).
     /// </summary>
     public required byte[] TemplateHash { get; init; }
+    /// <summary>
+    /// Its header alone -- attributes, modifiers, kind, name, type
+    /// parameters, bases and constraints -- with its file's usings: what a
+    /// unit that named the type and never asked for its members depends on
+    /// of it (UnitDependencies, Dependence.Header).
+    /// </summary>
+    public required byte[] HeaderHash { get; init; }
     public required FileScope Scope { get; init; }
     public IReadOnlyList<string> ConditionalSymbols { get; init; } = Array.Empty<string>();
+    /// <summary>
+    /// The names its members are looked up by (Monomorphiser.MemberNames),
+    /// sorted: what a unit that never declared them was told it has none of
+    /// (TypeSymbol.ProbedNames) is checked against these (Dependence.Header).
+    /// </summary>
+    public IReadOnlyList<string> MemberNames { get; init; } = Array.Empty<string>();
     public int From { get; init; }
     public int To { get; init; }
     public int Line { get; init; }
@@ -65,14 +78,17 @@ public sealed class SourceDeclaration
         writer.Write(0x43454443u); writer.Write(0u); // CDEC
         String(Path); String(Text); String(Namespace); String(Outer);
         writer.Write(From); writer.Write(To); writer.Write(Line); writer.Write(Column);
-        if (SourceHash.Length != 32 || DeclarationHash.Length != 32 || TemplateHash.Length != 32) throw new InvalidDataException("Invalid declaration fingerprint");
-        writer.Write(SourceHash); writer.Write(DeclarationHash); writer.Write(TemplateHash);
+        if (SourceHash.Length != 32 || DeclarationHash.Length != 32 || TemplateHash.Length != 32 || HeaderHash.Length != 32)
+            throw new InvalidDataException("Invalid declaration fingerprint");
+        writer.Write(SourceHash); writer.Write(DeclarationHash); writer.Write(TemplateHash); writer.Write(HeaderHash);
         writer.Write(Scope.Imports.Count);
         foreach (var import in Scope.Imports) { String(import.In); String(import.Namespace); }
         writer.Write(Scope.Aliases.Count);
         foreach (var alias in Scope.Aliases) { String(alias.In); String(alias.Alias); String(alias.Target); }
         writer.Write(ConditionalSymbols.Count);
         foreach (string symbol in ConditionalSymbols) String(symbol);
+        writer.Write(MemberNames.Count);
+        foreach (string name in MemberNames) String(name);
         return new DeclarationRecord(Key, stream.ToArray());
     }
 
@@ -99,7 +115,7 @@ public sealed class SourceDeclaration
             int from = reader.ReadInt32(), to = reader.ReadInt32(), line = reader.ReadInt32(), column = reader.ReadInt32();
             if (from < 0 || to < from || line < 1 || column < 1) throw new InvalidDataException("Invalid source declaration location");
             byte[] sourceHash = DeclarationIndex.ReadBytes(reader, 32), declarationHash = DeclarationIndex.ReadBytes(reader, 32),
-                templateHash = DeclarationIndex.ReadBytes(reader, 32);
+                templateHash = DeclarationIndex.ReadBytes(reader, 32), headerHash = DeclarationIndex.ReadBytes(reader, 32);
             FileScope scope = new();
             int count = Count();
             for (int i = 0; i < count; i++) scope.Imports.Add((Shared(), Shared()));
@@ -108,10 +124,13 @@ public sealed class SourceDeclaration
             count = Count();
             List<string> symbols = new(count);
             for (int i = 0; i < count; i++) symbols.Add(Shared());
+            count = Count();
+            string[] members = new string[count];
+            for (int i = 0; i < count; i++) members[i] = Shared();
             if (stream.Position != stream.Length) throw new InvalidDataException("Trailing source declaration data");
             return new SourceDeclaration { Key = record.Key, Path = path, Text = text, Namespace = ns, Outer = outer,
                 From = from, To = to, Line = line, Column = column, Scope = scope,
-                SourceHash = sourceHash, DeclarationHash = declarationHash, TemplateHash = templateHash, ConditionalSymbols = symbols.AsReadOnly() };
+                SourceHash = sourceHash, DeclarationHash = declarationHash, TemplateHash = templateHash, HeaderHash = headerHash, ConditionalSymbols = symbols.AsReadOnly(), MemberNames = members };
         }
         catch (EndOfStreamException error) { throw new InvalidDataException("Truncated source declaration", error); }
     }

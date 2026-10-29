@@ -104,7 +104,11 @@ public static class ManagedLayouts
         {
             foreach (TypeSymbol type in bound.Types.Values.Distinct()
                 .Where(type => described.Contains(type))
-                .Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 }))
+                .Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 })
+                // NOR ONE WHOSE MEMBERS IT NEVER ASKED FOR: named and no more,
+                // it has nothing to disagree about, and is no reader of them
+                // (Dependence.Header). Described, they would be declared here.
+                .Where(type => !type.MembersPending))
             {
                 using MemoryStream stream = new();
                 using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);

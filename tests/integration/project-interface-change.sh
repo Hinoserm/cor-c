@@ -2,7 +2,9 @@
 # A METHOD MORE OR LESS IN ONE INTERFACE: the units that read the interface
 # are rebuilt, and no other -- each project family is numbered in a block of
 # its own (InterfaceFamilies.Block) and the project's classes below them all
-# (Binder's numbering), so no other family's slots, and no class's, move.
+# (Binder's numbering), so no other family's slots, and no class's, move. A
+# unit that only names it, as a parameter's type, reads its header alone
+# (Dependence.Header); one that calls through it is rebuilt.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
@@ -29,7 +31,9 @@ namespace ProjectFixture;
 public class B : Base, IBeta { public int Get() => 40; public override int V() => 2; }
 public static class Program
 {
-    public static int Main() { IBeta b = new B(); Base c = new B(); return b.Get() + c.V(); }
+    // Named and never called through: its header is all this reads of it.
+    public static int Count(IAlpha? a) => a is null ? 0 : 1;
+    public static int Main() { IBeta b = new B(); Base c = new B(); return b.Get() + c.V() + Count(null); }
 }
 CS
 corc="${CORC_DLL:-$root/compiler/bin/managed/Release/net10.0/corc.dll}"
@@ -47,4 +51,9 @@ step method-removed 2/3 42
 sed -i 's/ int Two(); }/ int Two(); int Four(); int Five(); }/' "$work/Faces.cs"
 sed -i 's/ public int Two() => 2;/ public int Two() => 2; public int Four() => 4; public int Five() => 5;/' "$work/UseA.cs"
 step methods-added 2/3 42
+sed -i 's/ a is null ? 0 : 1;/ a is null ? 0 : a.One();/' "$work/Program.cs"
+step program-calls-through 1/3 42
+sed -i 's/ int Four(); int Five(); }/ int Four(); }/' "$work/Faces.cs"
+sed -i 's/ public int Five() => 5;//' "$work/UseA.cs"
+step method-removed-again 3/3 42
 echo "PASS an interface's methods rebuild only its readers: $work"

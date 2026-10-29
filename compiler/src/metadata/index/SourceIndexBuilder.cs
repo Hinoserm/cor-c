@@ -42,6 +42,33 @@ public static class SourceIndexBuilder
     /// <summary>The key of a source file's record: the hash of the text the index was made from.</summary>
     public static string SourceKey(string path) => "F:" + System.IO.Path.GetFullPath(path);
 
+    /// <summary>
+    /// A type's header hashed (SourceDeclaration.HeaderHash): its tokens up
+    /// to the brace its members start at -- or the `;` that ends a record
+    /// with none -- outside any parentheses or brackets, and the usings its
+    /// names resolve by. No position, so a line moved above it moves nothing.
+    /// </summary>
+    private static byte[] HeaderHash(List<Token> tokens, TypeDecl type, FileScope scope)
+    {
+        using MemoryStream stream = new();
+        using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
+        {
+            int depth = 0;
+            foreach (Token token in tokens)
+            {
+                if (token.Pos < type.SourceFrom || token.Kind == Tok.End) continue;
+                if (token.Pos >= type.SourceTo) break;
+                if (depth == 0 && token.Kind is Tok.LBrace or Tok.Semi) break;
+                if (token.Kind is Tok.LParen or Tok.LBracket) depth++;
+                else if (token.Kind is Tok.RParen or Tok.RBracket) depth--;
+                writer.Write((byte)token.Kind); writer.Write(token.Text);
+            }
+            foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
+            foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
+        }
+        return SHA256.HashData(stream.ToArray());
+    }
+
     /// <summary>How a member counts toward its type's DeclarationHash.</summary>
     private enum PrivateMember : byte { Shown, Left, Field, Constructor, Initialised }
 
@@ -340,6 +367,8 @@ public static class SourceIndexBuilder
                         From = type.SourceFrom, To = type.SourceTo, Line = type.Line, Column = type.Col,
                         SourceHash = hash, DeclarationHash = SHA256.HashData(canonical.ToArray()),
                         TemplateHash = SHA256.HashData(shape.ToArray()),
+                        HeaderHash = HeaderHash(tokens, type, scope),
+                        MemberNames = Monomorphiser.MemberNames(type.Members).Order(StringComparer.Ordinal).ToArray(),
                         ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                     }.Encode();
                     yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
