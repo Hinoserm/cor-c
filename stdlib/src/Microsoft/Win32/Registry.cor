@@ -557,21 +557,35 @@ static class NtStore
     }
 
     /// The index-th subkey's name, or null past the last.
-    public static string? SubKey(int hive, string path, int index)
-    {
-        byte[] block = new byte[Bytes];
-        byte[] name = new byte[NameRoom];
-        if (Ask(EnumerateKey, hive, path, name, 0, new byte[0], index, block) < 0) return null;
-        return FromUtf16(name, (int)Word(block, OutNameBytesAt));
-    }
+    public static string? SubKey(int hive, string path, int index) { return Listed(EnumerateKey, hive, path, index); }
 
     /// The index-th value's name, or null past the last.
-    public static string? ValueName(int hive, string path, int index)
+    public static string? ValueName(int hive, string path, int index) { return Listed(EnumerateValue, hive, path, index); }
+
+    /// ENODATA: past the last of a listing.
+    const long NoData = -61;
+
+    /// The index-th name of a listing: asked with room for a key's longest
+    /// (255 characters), and again with room for all of it when the name
+    /// was longer (a value's may be 16383). Null past the last; anything
+    /// else refused is thrown, as .NET throws it, not taken for the end.
+    static string? Listed(int op, int hive, string path, int index)
     {
         byte[] block = new byte[Bytes];
-        byte[] name = new byte[NameRoom];
-        if (Ask(EnumerateValue, hive, path, name, 0, new byte[0], index, block) < 0) return null;
-        return FromUtf16(name, (int)Word(block, OutNameBytesAt));
+        byte[] name = new byte[512];
+        long answer = Ask(op, hive, path, name, 0, new byte[0], index, block);
+        if (answer == NoData) return null;
+        if (answer < 0) throw new IOException("the registry key could not be listed (" + (-answer) + ")");
+        long bytes = Word(block, OutNameBytesAt);
+        if (bytes > name.Length)
+        {
+            name = new byte[(int)Math.Min(bytes, NameRoom)];
+            answer = Ask(op, hive, path, name, 0, new byte[0], index, block);
+            if (answer == NoData) return null;
+            if (answer < 0) throw new IOException("the registry key could not be listed (" + (-answer) + ")");
+            bytes = Word(block, OutNameBytesAt);
+        }
+        return FromUtf16(name, (int)Math.Min(bytes, name.Length));
     }
 
     /// A value's REG_* type and its bytes; false when it is not there. Asked
