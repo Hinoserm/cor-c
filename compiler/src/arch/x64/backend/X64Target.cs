@@ -225,6 +225,8 @@ internal sealed class X64Target : ITarget
             {
                 // Asked first: a dropped instruction is not built at all.
                 MInstr? n = p.Dropped(index) ? null : Build(ai, index, p, blocks);
+                foreach ((int reg, int slot) in p.StoresBefore(index))
+                    outList.Add(new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, Slot(slot), new MReg(reg)) { Width = 8, Line = ai.Line });
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
                 {
                     outList.Add(constant is MMem address

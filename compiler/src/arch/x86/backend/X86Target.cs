@@ -215,6 +215,8 @@ internal sealed class X86Target : ITarget
                     foreach (int r in live.Registers) map.Registers |= 1u << r;
                     _m.Safepoints[n] = map;
                 }
+                foreach ((int reg, int slot) in p.StoresBefore(index))
+                    outList.Add(new MInstr(MOp.Mov, Slot(slot), MReg.Of(reg)) { Line = ai.Line });
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
                     outList.Add(constant is MMem address
                         ? new MInstr(MOp.Lea, MReg.Of(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = ai.Line }

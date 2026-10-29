@@ -229,6 +229,7 @@ public sealed class Allocator
         a.ComputeLiveness();
         a.Scan();
         a.HeldBeforeSpill();
+        a.SinkStores();
         a.Rewrite();
         // What the kept tables point at goes with the function.
         Array.Clear(a._remat, 0, a._n);
@@ -1814,6 +1815,121 @@ public sealed class Allocator
         return _shortReg.TryGetValue((vreg, instr), out int r) ? r : -1;
     }
 
+    // ---- where a spilled value's store goes -------------------------------------
+
+    /// <summary>The values whose one store is sunk to their spill point, and those stores by instruction (SinkStores).</summary>
+    private readonly HashSet<int> _sunk = new();
+    private readonly Dictionary<int, List<int>> _sunkAt = new();
+
+    /// <summary>
+    /// A SPILLED VALUE STORED WHERE IT LEAVES ITS REGISTER, not where it is
+    /// made (Go's spill placement, Wimmer and Mossenbock's split positions):
+    /// a value of one definition that keeps its register up to its spill
+    /// point P (_keepBefore: nothing after P flows back to before it), where
+    /// P's block dominates every read of the slot after P -- every path to
+    /// one passes P, the register still holding the value there -- is stored
+    /// once just before P, not after its definition. List<T>.Add stored its
+    /// array and count on every call for the call that grows it, on a path
+    /// rarely taken. Only where P is in no loop (below); not a split value's
+    /// (a copy between its pieces trusts every write to have stored), a
+    /// home's or a constant's.
+    /// </summary>
+    private void SinkStores()
+    {
+        int[]? idom = null;
+        List<int>[]? preds = null;
+        for (int v = _fv; v < _n; v++)
+        {
+            int p = _spilledFrom[v];
+            if (p == int.MaxValue || p >= _lin.Count || !_keepBefore.Contains(v) || _assigned[v] < 0 || _slot[v] == 0
+                || _remat[v] is not null || HomeOf(v) != 0 || _split is not null && (_split.Root.ContainsKey(v) || _split.Pieces.ContainsKey(v)))
+            {
+                continue;
+            }
+            int def = -1, defs = 0;
+            for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
+                if ((_occAll[occ].Role & Role.Def) != 0) { defs++; def = _occAll[occ].Instr; }
+            if (defs != 1 || def >= p) continue;
+            // LIVE JUST BEFORE P, so its register holds it there: a value can be
+            // given up at a point in one of its holes, where the register it had
+            // is another's, the eviction made for a range of it further on.
+            if (!LiveAt(v, p * 4 - 1)) continue;
+            // OUTSIDE EVERY LOOP: there no path repeats a block, so every path
+            // from the definition (which dominates P, the value live there) to a
+            // read P dominates passes P after it. In a loop, a path could pass P
+            // one lap and make the value again the next, reaching a read that
+            // finds the slot a lap old.
+            int pb = _blockOfInstr[p];
+            if (_loopOf[pb] >= 0) continue;
+            idom ??= BlockDominators.Of(_blockCount, b => Successors(b));
+            bool dominated = true;
+            for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd && dominated; occ++)
+            {
+                if (_occAll[occ].Instr < p) continue;
+                int b = _blockOfInstr[_occAll[occ].Instr];
+                while (b >= 0 && b != pb && idom[b] != b) b = idom[b];
+                dominated = b == pb;
+            }
+            if (!dominated) continue;
+            // EVERY PATH FROM THE DEFINITION TO P STAYS IN THE LAYOUT BETWEEN
+            // THEM, where the scan kept the register the value's: a block laid
+            // out after P, which a path can pass on its way to P, has the value
+            // in its slot already and its register another's, so a store at P
+            // would save that other value.
+            preds ??= Predecessors();
+            if (!BetweenOnly(preds, _blockOfInstr[def], pb)) continue;
+            _sunk.Add(v);
+            if (!_sunkAt.TryGetValue(p, out List<int>? at)) _sunkAt[p] = at = new();
+            at.Add(v);
+        }
+    }
+
+    /// <summary>Each block's predecessors.</summary>
+    private List<int>[] Predecessors()
+    {
+        List<int>[] preds = new List<int>[_blockCount];
+        for (int b = 0; b < _blockCount; b++) preds[b] = new();
+        for (int b = 0; b < _blockCount; b++)
+            foreach (int s in Successors(b)) preds[s].Add(b);
+        return preds;
+    }
+
+    /// <summary>
+    /// Whether every block that reaches `to` without passing `from` (the
+    /// blocks on the paths from one to the other) is laid out between them.
+    /// </summary>
+    private bool BetweenOnly(List<int>[] preds, int from, int to)
+    {
+        HashSet<int> seen = new() { to };
+        Stack<int> work = new();
+        work.Push(to);
+        while (work.Count > 0)
+        {
+            int b = work.Pop();
+            if (b == from) continue;
+            foreach (int q in preds[b])
+            {
+                if (!seen.Add(q)) continue;
+                if (q < from || q > to) return false;
+                work.Push(q);
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Whether a value is live at a position (its ranges as liveness made them).</summary>
+    private bool LiveAt(int v, int pos)
+    {
+        if (pos < _start[v] || pos > _end[v]) return false;
+        if (_ranges[v] is not { } ranges) return true;
+        return Touches(ranges, pos, pos);
+    }
+
+    private IEnumerable<int> Successors(int b)
+    {
+        for (int e = _succStart[b]; e < _succStart[b + 1]; e++) yield return _succAll[e];
+    }
+
     // ---- what was decided, for the target to rebuild from ------------------------------
 
     /// <summary>The target rebuilds the function, asking the decisions instruction by instruction (IPlacement).</summary>
@@ -1847,6 +1963,15 @@ public sealed class Allocator
 
         public (Place Place, int Reg, int Slot, object? Constant) Of(int index, int k) { Decide(index); return _places[k]; }
         public IReadOnlyList<(int Reg, int Slot, object? Constant)> Before(int index) { Decide(index); return _before; }
+        public IReadOnlyList<(int Reg, int Slot)> StoresBefore(int index)
+        {
+            Allocator a = _a;
+            _storesBefore.Clear();
+            if (a._sunkAt.TryGetValue(index, out List<int>? values))
+                foreach (int v in values) _storesBefore.Add((a._assigned[v], a._slot[v]));
+            return _storesBefore;
+        }
+        private readonly List<(int Reg, int Slot)> _storesBefore = new();
         public IReadOnlyList<(int Reg, int Slot)> After(int index) { Decide(index); return _after; }
         public bool Dropped(int index) { Decide(index); return _dropped; }
 
@@ -1984,7 +2109,7 @@ public sealed class Allocator
                 {
                     if ((role & Role.Use) != 0 && !held) _before.Add((reg, a._slot[v], null));
                     // A home's one load writes nothing back: the slot holds it.
-                    if ((role & Role.Def) != 0 && v != _noStore && !(i.HomeSlot is not null && a.HomeOf(v) != 0))
+                    if ((role & Role.Def) != 0 && v != _noStore && !(i.HomeSlot is not null && a.HomeOf(v) != 0) && !a._sunk.Contains(v))
                         _after.Add((reg, a._slot[v]));
                 }
             }
