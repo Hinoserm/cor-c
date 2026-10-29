@@ -67,10 +67,11 @@ public sealed partial class Binder
     /// <summary>Slots kept above the library's interface region for the library's class virtuals; see the numbering.</summary>
     private const int LibraryClassReserve = 128;
 
-    /// <summary>Where a project class's own virtuals start: the end of the library's interface region, the same in every unit.</summary>
-    private int _projectClassSlots;
-
-    /// <summary>Slots kept above the library's class virtuals for the project's, below the project's interfaces.</summary>
+    /// <summary>
+    /// Slots kept above the library's class virtuals, below the project's
+    /// interfaces: a project class's chain -- with the library class it
+    /// derives from, if any -- has the two reserves between them.
+    /// </summary>
     private const int ProjectClassReserve = 128;
 
     /// <summary>Where the project's interfaces start, above every class's virtuals (see the numbering).</summary>
@@ -3264,7 +3265,8 @@ public sealed partial class Binder
         // this unit alone; merely existing, it opened the project region, so
         // every class of the project numbered its own virtuals 129 higher in
         // the units that had one than in the units that did not. They are
-        // numbered last, above the project's classes, where nothing shared is.
+        // numbered last, above every shared family and form, where nothing
+        // shared is.
         // WHERE IT WAS DECLARED DECIDES THE TIER, index or no index -- the
         // same question AssignSlots asks of a class. Without an index every
         // interface used to count as library, so a unit compiled from its
@@ -3434,7 +3436,6 @@ public sealed partial class Binder
         // a method moved every class's virtuals, in every unit; and a class
         // that implements none of the project's interfaces has no entries
         // for them in its table.
-        _projectClassSlots = _librarySlots;
         _projectInterfaceSlots = _librarySlots + LibraryClassReserve + ProjectClassReserve;
         _interfaceSlots = _projectInterfaceSlots;
         if (local.Count > 0 || conflicted.ContainsValue(false))
@@ -5901,7 +5902,12 @@ public sealed partial class Binder
             foreach (var ((template, arity), count) in families.Concat(local))
                 if (InterfaceForms.Family(template, arity) == family) methods = Math.Max(methods, count);
             int[] block = new int[methods];
+            int first = _interfaceSlots;
             for (int i = 0; i < methods; i++) block[i] = _interfaceSlots++;
+            // A project's form block is a family's block (InterfaceFamilies.
+            // Block), as its family is: one more method in it leaves every
+            // form and tier after it where it was.
+            if (!library && methods > 0) _interfaceSlots = first + Metadata.InterfaceFamilies.Block(methods);
             _formSlots[form] = block;
             for (int i = 0; i < methods; i++) _r.InterfaceFormSlots[(form, i)] = block[i];
             if (DumpSlots) Console.Error.WriteLine("form " + form + " slots " + string.Join(",", block) + " library=" + library);
@@ -5953,10 +5959,11 @@ public sealed partial class Binder
         // Message a slot of its own, and the library's link refused the two
         // layouts.
         if (sym.Base is TypeSymbol basis) AssignSlots(basis);
-        // A class's own virtual methods are numbered above the interface
-        // region -- the LIBRARY's region for a library class, so that it gets
-        // the numbers its own build gave it whatever this compilation adds.
-        int slot = IsLibraryType(sym) ? _librarySlots : _projectClassSlots;
+        // A class's own virtual methods are numbered above the library's
+        // interface region, a library class's and a project class's alike:
+        // the project's interfaces are above both (the numbering), so a
+        // project's interfaces gaining or losing a method moves no class's.
+        int slot = _librarySlots;
 
         for (TypeSymbol? t = sym.Base; t != null; t = t.Base)
         {
@@ -6154,8 +6161,14 @@ public sealed partial class Binder
             // Past its reserve, a class's virtual would share a slot with an
             // interface's, and a call through one would reach the other.
             if (_interfacesNumbered && slot > (IsLibraryType(sym) ? _librarySlots + LibraryClassReserve : _projectInterfaceSlots))
-                throw new InvalidOperationException(sym.Key + ": more virtual methods in its chain of classes than the "
-                    + (IsLibraryType(sym) ? "library's" : "project's") + " reserve of slots (Binder.LibraryClassReserve, ProjectClassReserve)");
+            {
+                string message = $"'{sym.Name}' has {slot - _librarySlots} virtual methods in its chain of classes, more than the "
+                    + (IsLibraryType(sym) ? $"{LibraryClassReserve} the library's" : $"{LibraryClassReserve + ProjectClassReserve} a project's")
+                    + " classes are given (Binder.LibraryClassReserve, ProjectClassReserve)";
+                if (sym.Decl is null) throw new InvalidOperationException(message);
+                Error(sym.Decl, message);
+                return;
+            }
         }
     }
 
