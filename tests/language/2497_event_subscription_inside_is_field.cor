@@ -1,7 +1,9 @@
 // test: event subscription inside its type is the field's compound assignment
-// expect-exit: 23
+// expect-exit: 123
 // Inside Button, `Clicked += null` is the field-like event's field assigned
-// and its value the delegate; outside, += and -= subscribe and unsubscribe.
+// and its value the delegate; outside, += and -= subscribe and unsubscribe,
+// and are void: a lambda whose body is one is an Action, and `?.` over a
+// null button does nothing.
 using System;
 
 class Button
@@ -21,6 +23,10 @@ static class Program
         Action<int> h = v => total += 100;
         b.Clicked += h;
         b.Clicked -= h;
+        Action subscribe = () => b.Clicked += v => total += 100;
+        subscribe();
+        Button? none = null;
+        none?.Clicked += h;
         int inside = b.Fire(2);
         return total + inside;
     }

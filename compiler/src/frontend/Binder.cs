@@ -6160,14 +6160,16 @@ public sealed partial class Binder
             m.VtableSlot = overridden is { VtableSlot: >= 0 } ? overridden.VtableSlot : slot++;
             // Past its reserve, a class's virtual would share a slot with an
             // interface's, and a call through one would reach the other.
-            if (_interfacesNumbered && slot > (IsLibraryType(sym) ? _librarySlots + LibraryClassReserve : _projectInterfaceSlots))
+            // Reported where the chain first crosses it, once; numbering goes
+            // on, so the class is whole for whatever reads it next.
+            if (_interfacesNumbered && slot == (IsLibraryType(sym) ? _librarySlots + LibraryClassReserve : _projectInterfaceSlots) + 1
+                && m.VtableSlot == slot - 1)
             {
                 string message = $"'{sym.Name}' has {slot - _librarySlots} virtual methods in its chain of classes, more than the "
                     + (IsLibraryType(sym) ? $"{LibraryClassReserve} the library's" : $"{LibraryClassReserve + ProjectClassReserve} a project's")
                     + " classes are given (Binder.LibraryClassReserve, ProjectClassReserve)";
                 if (sym.Decl is null) throw new InvalidOperationException(message);
                 Error(sym.Decl, message);
-                return;
             }
         }
     }
@@ -11126,6 +11128,14 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>Inside the type that declares a field-like event, its nested types included: where it is the field it looks like.</summary>
+    private bool WithinEventOwner(FieldSymbol field)
+    {
+        string owner = field.Owner.Key;
+        string? here = _thisType?.Key;
+        return here is not null && (here == owner || here.StartsWith(owner + ".", StringComparison.Ordinal));
+    }
+
     /// <summary>
     /// A FIELD-LIKE EVENT USED FROM OUTSIDE THE TYPE THAT DECLARES IT, which
     /// C# allows only on the left of += and -= (CS0070): outside, an event
@@ -11136,14 +11146,6 @@ public sealed partial class Binder
     /// A derived type is outside, as in C#: it raises a base's event through
     /// a method the base gives it.
     /// </summary>
-    /// <summary>Inside the type that declares a field-like event, its nested types included: where it is the field it looks like.</summary>
-    private bool WithinEventOwner(FieldSymbol field)
-    {
-        string owner = field.Owner.Key;
-        string? here = _thisType?.Key;
-        return here is not null && (here == owner || here.StartsWith(owner + ".", StringComparison.Ordinal));
-    }
-
     private void EventFromOutside(Expr e, FieldSymbol field)
     {
         if (_eventOperands.Contains(e))
