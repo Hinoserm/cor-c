@@ -38,7 +38,7 @@ namespace System.Drawing;
 /// <summary>One glyph's outline: points, which of them are on the curve,
 /// and where each contour ends. Coordinates are whatever the holder says
 /// they are -- font units out of the file, 26.6 pixels once scaled.</summary>
-public class TrueTypeOutline
+class TrueTypeOutline
 {
     public int PointCount;
     public int ContourCount;
@@ -496,7 +496,7 @@ public class TrueTypeFace : FontFace
     /// for an empty glyph (a space) and for a composite, which the caller
     /// assembles with ComponentCount and Component.
     /// </summary>
-    public bool LoadSimple(int glyph, TrueTypeOutline into)
+    internal bool LoadSimple(int glyph, TrueTypeOutline into)
     {
         into.AdvanceWidth = AdvanceWidth(glyph);
         into.LeftSideBearing = LeftSideBearing(glyph);
@@ -2983,7 +2983,7 @@ class TrueTypeRaster
     /// out as a faint grey line rather than needing to be rescued from
     /// vanishing altogether, which is the entire point of supersampling.
     /// </summary>
-    public GlyphCoverage RenderAA(TrueTypeZone zone, int realPoints, int advance)
+    internal GlyphCoverage RenderAA(TrueTypeZone zone, int realPoints, int advance)
     {
         const int Scale = 4;
 
@@ -3283,7 +3283,7 @@ public class TrueTypeSize : SizedFace
     }
 
     /// The antialiased bitmap for a glyph, cached the same way Glyph is.
-    public override GlyphCoverage? GlyphAA(int glyph)
+    internal override GlyphCoverage? GlyphAA(int glyph)
     {
         if (glyph < 0 || glyph >= _face.GlyphCount) { return null; }
 

@@ -79,7 +79,7 @@ public abstract class SizedFace
 
     /// The glyph antialiased, or null where the face has no such thing (a
     /// bitmap face): the caller draws the one-bit glyph instead.
-    public virtual GlyphCoverage? GlyphAA(int glyph) { return null; }
+    internal virtual GlyphCoverage? GlyphAA(int glyph) { return null; }
 }
 
 /// <summary>
@@ -118,7 +118,7 @@ public class GlyphBitmap
 /// draws crisp text from, this is what a screen with the colours to blend
 /// a fractional coverage against a background draws from.
 /// </summary>
-public class GlyphCoverage
+class GlyphCoverage
 {
     public int Width;
     public int Height;

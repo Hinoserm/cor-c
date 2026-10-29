@@ -3870,7 +3870,7 @@ public readonly struct CancellationTokenRegistration : IDisposable, IAsyncDispos
 // ---- the scheduler -----------------------------------------------------------
 
 /// One pending timer: a deadline on the monotonic clock and what to post.
-public class TimerEntry
+class TimerEntry
 {
     public long Deadline;
     public long Sequence;
@@ -4580,14 +4580,14 @@ public static partial class Scheduler
     // ---- timers ---------------------------------------------------------------
 
     /// Posts `callback` after `milliseconds` (from now).
-    public static TimerEntry AddTimer(int milliseconds, Action callback)
+    internal static TimerEntry AddTimer(int milliseconds, Action callback)
     {
         long deadline = Clock.Now() + (long)milliseconds * 1000000;
         return AddTimerAt(deadline, callback);
     }
 
     /// Posts `callback` once CLOCK_MONOTONIC reaches `deadline` (nanoseconds).
-    public static TimerEntry AddTimerAt(long deadline, Action callback)
+    internal static TimerEntry AddTimerAt(long deadline, Action callback)
     {
         Gate();
         AtomicCell gate = Gate();
@@ -5585,7 +5585,7 @@ public static partial class ThreadPool
 // enter holds it, and the other runs with none of its own and keeps none.
 
 /// What a run in a context displaced, put back as it ends (AsyncContext).
-public struct AsyncContextSaved
+struct AsyncContextSaved
 {
     public CultureInfo? Culture;
     public CultureInfo? UICulture;
@@ -5693,7 +5693,7 @@ public sealed class AsyncContext
     /// `context` made current on this thread block: the platform's word, the
     /// statics table (if no other run of the flow holds it) and, for an
     /// outermost run, the block's task arena swapped in.
-    public static AsyncContextSaved Enter(AsyncContext context)
+    internal static AsyncContextSaved Enter(AsyncContext context)
     {
         AsyncContextSaved saved = default(AsyncContextSaved);
         nuint block = Sys.ThreadBlock();
@@ -5746,7 +5746,7 @@ public sealed class AsyncContext
     /// The run in `context` over: the statics table it made or grew kept in
     /// the context (when it held it), the task arena cleared and taken out,
     /// and the block's own words put back.
-    public static void Leave(AsyncContext context, AsyncContextSaved saved)
+    internal static void Leave(AsyncContext context, AsyncContextSaved saved)
     {
         nuint block = Sys.ThreadBlock();
         if (Platform.ContextHook == 0)

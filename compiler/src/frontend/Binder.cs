@@ -1255,8 +1255,21 @@ public sealed partial class Binder
         // A NESTED TYPE, as C# has it: hidden where it is not public (or
         // protected, which a program's subclass reaches) or the type it is
         // in is hidden.
-        return (d.Mods & (Mods.Public | Mods.Protected)) == 0
-            || _r.Types.TryGetValue(d.Outer, out TypeSymbol? outer) && HiddenFromProgram(outer);
+        return (d.Mods & (Mods.Public | Mods.Protected)) == 0 || OuterOf(d) is { } outer && HiddenFromProgram(outer);
+    }
+
+    /// <summary>
+    /// The type a nested one is declared in. Its Outer has no arity, and a
+    /// generic outer is keyed with one (TypeKey: `ns.Gate`1`), so the plain
+    /// path is tried and then the path with each arity in turn.
+    /// </summary>
+    private TypeSymbol? OuterOf(TypeDecl d)
+    {
+        if (d.Outer is null) return null;
+        if (_r.Types.TryGetValue(d.Outer, out TypeSymbol? outer)) return outer;
+        for (int arity = 1; arity <= 16; arity++)
+            if (_r.Types.TryGetValue(Arity(d.Outer, arity), out outer)) return outer;
+        return null;
     }
 
     /// <summary>
@@ -4498,8 +4511,13 @@ public sealed partial class Binder
     {
         if (d.Specialised || d.Elsewhere || d.SignatureOnly || !ClassLibrarySide(d)
             || (d.Mods & Mods.Public) == 0 || !(d.Outer is null || d.Outer == d.Namespace)) return;
-        bool everyPublic = d.Kind == TypeKind.Interface;
-        bool Shown(MemberDecl m) => everyPublic || (m.Mods & (Mods.Public | Mods.Protected)) != 0;
+        // Public or protected, and not `private protected`, whose domain is the
+        // library's own; an interface's member is public unless it says not.
+        bool Shown(MemberDecl m)
+            => d.Kind == TypeKind.Interface
+                ? (m.Mods & (Mods.Private | Mods.Internal | Mods.Protected)) == 0
+                : (m.Mods & (Mods.Public | Mods.Protected)) != 0 && (m.Mods & Mods.Private) == 0;
+        HashSet<MethodSymbol> accessorsChecked = new(ReferenceEqualityComparer.Instance);
 
         if (sym.Base is { } baseType && LibraryInternal(baseType))
             Error(d, $"CS0060: Inconsistent accessibility: base class '{baseType.Key}' is less accessible than class '{sym.Key}'");
@@ -4518,13 +4536,20 @@ public sealed partial class Binder
                 case FieldDecl field when sym.Fields.FirstOrDefault(f => f.Name == field.Name) is { } f && Exposed(f.Type) is { } shown:
                     Error(field, $"CS0052: Inconsistent accessibility: field type '{shown.Key}' is less accessible than field '{sym.Key}.{field.Name}'");
                     break;
-                case PropertyDecl property when sym.Methods.FirstOrDefault(m => m.Name == "get_" + property.Name || m.Name == "set_" + property.Name) is { } accessor:
-                {
-                    Type type = accessor.Name.StartsWith("get_", StringComparison.Ordinal) ? accessor.Returns : accessor.Params[^1].Type;
-                    if (Exposed(type) is { } shown)
-                        Error(property, $"CS0053: Inconsistent accessibility: property type '{shown.Key}' is less accessible than property '{sym.Key}.{property.Name}'");
+                // EVERY ACCESSOR OF THE NAME, each once: an indexer is Item
+                // however many there are, and the first alone checked one.
+                case PropertyDecl property:
+                    foreach (MethodSymbol accessor in sym.Methods)
+                    {
+                        if (accessor.Name != "get_" + property.Name && accessor.Name != "set_" + property.Name || !accessorsChecked.Add(accessor)) continue;
+                        Type type = accessor.Name.StartsWith("get_", StringComparison.Ordinal) ? accessor.Returns : accessor.Params[^1].Type;
+                        if (Exposed(type) is { } shown)
+                            Error(property, $"CS0053: Inconsistent accessibility: property type '{shown.Key}' is less accessible than property '{sym.Key}.{property.Name}'");
+                        foreach (ParamSymbol index in accessor.Params.Take(accessor.Name.StartsWith("set_", StringComparison.Ordinal) ? accessor.Params.Count - 1 : accessor.Params.Count))
+                            if (Exposed(index.Type) is { } indexed)
+                                Error(property, $"CS0055: Inconsistent accessibility: parameter type '{indexed.Key}' is less accessible than indexer '{sym.Key}.{property.Name}'");
+                    }
                     break;
-                }
                 // Not a copy the compiler made of a generic method over some
                 // argument (its name spelt with `$`): C# judges the method as
                 // declared, not each instantiation of it.
@@ -4541,10 +4566,21 @@ public sealed partial class Binder
             }
         }
 
-        // The library's own internal type, top-level, not a specialisation.
+        // The library's own internal type: top-level and not public, nested and
+        // neither public nor protected or inside one that is internal; a
+        // specialisation by its template (`Box<int>` is Box's).
         bool LibraryInternal(TypeSymbol t)
-            => t.Decl is { Specialised: false } td && (td.Outer is null || td.Outer == td.Namespace)
-            && (td.Mods & Mods.Public) == 0 && ClassLibrarySide(td);
+        {
+            if (t.Decl is not { } td) return false;
+            if (td.Specialised)
+                return td.Template is string template && FindTemplateSymbol(template, td.TemplateArgs.Count) is { } made && LibraryInternal(made);
+            if (!ClassLibrarySide(td)) return false;
+            if (td.Outer is null || td.Outer == td.Namespace) return (td.Mods & Mods.Public) == 0;
+            return (td.Mods & (Mods.Public | Mods.Protected)) == 0 || OuterOf(td) is { } outer && LibraryInternal(outer);
+        }
+
+        TypeSymbol? FindTemplateSymbol(string template, int arity)
+            => _r.Types.TryGetValue(Arity(template, arity), out TypeSymbol? found) ? found : null;
 
         // The first internal type a type shows: itself, its elements, its arguments.
         TypeSymbol? Exposed(Type t)
@@ -9755,6 +9791,10 @@ public sealed partial class Binder
             foreach (TypeSymbol holder in _r.Types.Values)
             {
                 if (!namespaces.Contains(holder.Decl?.Namespace ?? "")) continue;
+                // Not one whose members were never asked for: it holds no
+                // extension method to find (Monomorphiser.MembersLater), and
+                // looking would declare every one of them.
+                if (holder.MembersPending) continue;
                 // Not the extensions of a class the program cannot see: C#
                 // finds none in another assembly's internal classes. Save
                 // the library's own `__` classes (__ArrayExtensions), which
@@ -9762,10 +9802,6 @@ public sealed partial class Binder
                 // Clone, Contains, CopyTo: public in .NET, reached here by
                 // these, and still no name a program can write.
                 if (HiddenFromProgram(holder) && !holder.Name.StartsWith("__", StringComparison.Ordinal)) continue;
-                // Not one whose members were never asked for: it holds no
-                // extension method to find (Monomorphiser.MembersLater), and
-                // looking would declare every one of them.
-                if (holder.MembersPending) continue;
                 foreach (MethodSymbol m in holder.Methods)
                 {
                     if (m.Name != name) continue;
