@@ -4473,10 +4473,18 @@ public sealed partial class Lowering
         // A copy over a value type (an unconstrained T made int) is never
         // empty: x as it is, nothing stored (NeverEmpty).
         if (NeverEmpty(held)) return Eval(coalesce.Left);
+
+        // A PLACE IS WORKED OUT ONCE, read and stored through: an element,
+        // a ref-returning call's referent, a field of what a call answered,
+        // each reached once, as C# reaches it. A property's or an indexer's
+        // is its getter, then its setter where empty.
+        bool accessor = _b.PropertySetters.ContainsKey(a.Target) || a.Target is IndexExpr ix && _b.IndexSetters.ContainsKey(ix);
+        Place? place = accessor ? null : PlaceOf(a.Target);
+
         VReg dest = _f.NewReg(IrTypes.Of(held), "qa");
         Block got = _f.NewBlock("qagot"), miss = _f.NewBlock("qamiss"), end = _f.NewBlock("qaend");
 
-        VReg had = Eval(coalesce.Left);
+        VReg had = place is not null ? LoadPlace(place) : Eval(coalesce.Left);
         _e.Branch(held.IsNullableValue ? HasValue(had) : had, got, miss);
 
         _e.SetBlock(got);
@@ -4484,8 +4492,18 @@ public sealed partial class Lowering
         _e.Jump(end);
 
         _e.SetBlock(miss);
-        AssignExpr store = new() { Target = a.Target, Value = coalesce.Right, Line = a.Line, Col = a.Col };
-        _e.CopyTo(dest, R(EmitAssign(store)));
+        if (place is not null)
+        {
+            Type targetType = _b.TypeOf(a.Target);
+            VReg value = InlineValue(place, coalesce.Right, targetType.IsError ? place.Type : targetType);
+            StorePlace(place, value);
+            _e.CopyTo(dest, R(value));
+        }
+        else
+        {
+            AssignExpr store = new() { Target = a.Target, Value = coalesce.Right, Line = a.Line, Col = a.Col };
+            _e.CopyTo(dest, R(EmitAssign(store)));
+        }
         _e.Jump(end);
 
         _e.SetBlock(end);
@@ -5271,6 +5289,8 @@ public sealed partial class Lowering
     private static bool NeverEmpty(Type t)
         => !t.IsNullableValue && !t.IsReference && !t.IsPointer && !t.IsError && t.ParamName is null && t.Function is null
         && t.Prim is not (Prim.Any or Prim.NullLiteral) && (t.Symbol is null ? t.Prim != Prim.Void : t.Symbol.Kind is TypeKind.Struct or TypeKind.Enum);
+
+    /// <summary>Two nullable cells are equal when both are empty or both hold the same value.</summary>
     private VReg NullableEquality(BinaryExpr b, Type left, Type right)
     {
         Type inner = (left.IsNullableValue ? left : right).Underlying;

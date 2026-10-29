@@ -9158,7 +9158,7 @@ public sealed class Parser
                 Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = at.Line, Col = at.Col },
                 Line = at.Line, Col = at.Col,
             },
-            Then = Statement(new AssignExpr { Target = rest, Op = assign.Op, Value = assign.Value, Line = assign.Line, Col = assign.Col }, at),
+            Then = Statement(assign.Retargeted(rest), at),
             Line = at.Line, Col = at.Col,
         });
         return block;
@@ -10173,8 +10173,14 @@ public sealed class Parser
         CallExpr or AssignExpr or NewExpr or AwaitExpr or ThrowExpr or SequenceExpr { Assignment: true } => true,
         UnaryExpr { Op: UnOp.PreInc or UnOp.PreDec or UnOp.PostInc or UnOp.PostDec } => true,
         SuppressExpr { Operand: var inner } => StatementExpressionSyntax(inner),
+        // `Get(a)[i] ??= v`, its receiver and index held first (SubjectExpr):
+        // the assignment it is.
+        PatternExpr { Test: var held } => HeldCoalescing(held),
         _ => false,
     };
+
+    private static bool HeldCoalescing(Expr e)
+        => e is AssignExpr { Coalescing: true } || e is PatternExpr { Test: var inner } && HeldCoalescing(inner);
 
     /// <summary>Whether `[a, b]` follows: a rectangular array's lengths -- a comma at the top level of the brackets.</summary>
     private bool SizedRectangularAhead()

@@ -2519,12 +2519,16 @@ public sealed partial class Binder
         }
 
         // Inside both patterns: the index or range is the inner subject (0)
-        // and the target the outer one (1).
+        // and the target the outer one (1). THE INDEX IS READ INSIDE THE
+        // FIRST: a subject it names (SubjectExpr, the parser's holding of
+        // `Get(a)[^1] ??= v`) is one further out there -- read as it was,
+        // `^1`'s Outer 0 was the array, and GetOffset asked of it.
+        Expr index = ix.Args[0] is SubjectExpr named ? new SubjectExpr { Outer = named.Outer + 1, Line = named.Line, Col = named.Col } : ix.Args[0];
         if (!range)
         {
             IndexExpr at = new() { Target = Held(1), Line = line, Col = col };
             at.Args.Add(Invoke(Held(0), "GetOffset", Length(Held(1))));
-            return Once(ix.Target, Once(ix.Args[0], use is null ? at : use(at)));
+            return Once(ix.Target, Once(index, use is null ? at : use(at)));
         }
 
         Expr Start() => Invoke(Member(Held(0), "Start"), "GetOffset", Length(Held(1)));
@@ -2534,7 +2538,7 @@ public sealed partial class Binder
             Line = line, Col = col,
         };
         string slicer = indexed.Prim == Prim.String ? "Substring" : "Slice";
-        return Once(ix.Target, Once(ix.Args[0], Invoke(Held(1), slicer, Start(), size)));
+        return Once(ix.Target, Once(index, Invoke(Held(1), slicer, Start(), size)));
     }
 
     /// <summary>
@@ -17181,11 +17185,7 @@ public sealed partial class Binder
                                          && backAt.Args[0] is FromEndExpr backEnd && !ReadTwiceForNothing(backAt.Target)
                                          && !TakesIndex(backAt.Target):
             {
-                PatternExpr once = FromEndOnce(backAt.Target, backEnd, element => new AssignExpr
-                {
-                    Target = element, Op = fromEnd.Op, Value = fromEnd.Value,
-                    Line = fromEnd.Line, Col = fromEnd.Col,
-                });
+                PatternExpr once = FromEndOnce(backAt.Target, backEnd, fromEnd.Retargeted);
                 _r.Rewrites[fromEnd] = once;
                 return CheckExpr(once);
             }
@@ -17201,17 +17201,14 @@ public sealed partial class Binder
                                          && !(indexedAt.Symbol is { } ownerAt && Reachable(ownerAt, "set_Item").Any(s => s.Params.Count == 2
                                               && MethodSignatures.SameType(s.Params[0].Type.AsNonNullable(), heldAt))):
             {
-                Expr made = ThroughIndexValue(valuedAt, indexedAt, range: false, element => new AssignExpr
-                {
-                    Target = element, Op = byIndex.Op, Value = byIndex.Value, Line = byIndex.Line, Col = byIndex.Col,
-                });
+                Expr made = ThroughIndexValue(valuedAt, indexedAt, range: false, byIndex.Retargeted);
                 _r.Rewrites[byIndex] = made;
                 return CheckExpr(made);
             }
 
             case AssignExpr a when (a.Target is IndexExpr refTarget ? RefIndexerCall(refTarget) : a.Target is MemberExpr refMember ? RefMemberCall(refMember) : null) is CallExpr refStore:
             {
-                AssignExpr through = new() { Op = a.Op, Target = refStore, Value = a.Value, Line = a.Line, Col = a.Col };
+                AssignExpr through = a.Retargeted(refStore);
                 _r.Rewrites[a] = through;
                 return CheckExpr(through);
             }
