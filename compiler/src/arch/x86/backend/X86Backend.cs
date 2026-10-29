@@ -962,6 +962,7 @@ public sealed class X86Backend : IBackend
             LoopRotate.Run(m);
             Peephole.Run(m);
             FrameCompact.Run(m);
+            FramePointerFree.Run(m);
         }
         catch (InvalidOperationException e)
         {

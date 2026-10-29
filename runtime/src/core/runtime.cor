@@ -4299,6 +4299,53 @@ static partial class Runtime
     /// What StepFrame answers for a frame not to read.
     public const nuint NoFrame = ~(nuint)0;
 
+    /// THE FRAME OF A FUNCTION STOPPED AT `pc`, its stack pointer `sp` and
+    /// frame pointer register `bp` as they were there: `bp` itself, but in a
+    /// function that gives the frame pointer a value (a leaf: the compiler's
+    /// FramePointerFree), where the frame is at `sp` plus the frame's size and
+    /// the saved registers' pushes. Such a function starts `push ebp` and
+    /// `mov ebp, esp` written 8B EC (x86-64: push rbp, 48 8B EC), then `sub
+    /// esp, n` (83 EC n or 81 EC n32, REX.W on x86-64) if it has a frame,
+    /// then its pushes. For a fault or an interrupt in one: the chain from
+    /// there runs on as from any frame. Allocates nothing.
+    public static nuint FrameAt(nuint pc, nuint sp, nuint bp) {
+        nuint name, file, pool, offset;
+        long line;
+        if (!Lookup(pc, out name, out file, out pool, out line, out offset, false)) { return bp; }
+        nuint at = pc - offset;
+        if (Sys.Read8(at) != 0x55) { return bp; }
+        at = at + 1;
+#if TARGET_64BIT
+        if (Sys.Read8(at) != 0x48) { return bp; }
+        at = at + 1;
+#endif
+        if (Sys.Read8(at) != 0x8B || Sys.Read8(at + 1) != 0xEC) { return bp; }
+        at = at + 2;
+        nuint size = 0;
+#if TARGET_64BIT
+        if (Sys.Read8(at) == 0x48) {
+            if (Sys.Read8(at + 1) == 0x83 && Sys.Read8(at + 2) == 0xEC) { size = Sys.Read8(at + 3); at = at + 4; }
+            else if (Sys.Read8(at + 1) == 0x81 && Sys.Read8(at + 2) == 0xEC) { size = Sys.Read32(at + 3); at = at + 7; }
+        }
+#else
+        if (Sys.Read8(at) == 0x83 && Sys.Read8(at + 1) == 0xEC) { size = Sys.Read8(at + 2); at = at + 3; }
+        else if (Sys.Read8(at) == 0x81 && Sys.Read8(at + 1) == 0xEC) { size = Sys.Read32(at + 2); at = at + 6; }
+#endif
+        nuint pushes = 0;
+        while (true) {
+            int b = Sys.Read8(at);
+#if TARGET_64BIT
+            if (b == 0x41 && Sys.Read8(at + 1) >= 0x50 && Sys.Read8(at + 1) <= 0x57) { pushes = pushes + 1; at = at + 2; continue; }
+#endif
+            if (b >= 0x50 && b <= 0x57) { pushes = pushes + 1; at = at + 1; continue; }
+            break;
+        }
+        // Stopped inside the prologue, its pushes not all made: the register
+        // is still the frame, and given no value yet.
+        if (pc < at) { return bp; }
+        return sp + size + pushes * WordSize.Bytes;
+    }
+
     /// The caller's frame of `frame`, 0 at the chain's end, or NoFrame when this
     /// frame is not one to read: none, no return address, or a link that does
     /// not run towards the top of the stack -- a frame somebody built by hand,

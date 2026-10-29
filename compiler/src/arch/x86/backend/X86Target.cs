@@ -39,9 +39,64 @@ internal sealed class X86Target : ITarget
     private readonly MFunction _m;
     private readonly List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> _regs = new();
 
-    public X86Target(MFunction m) => _m = m;
+    public X86Target(MFunction m)
+    {
+        _m = m;
+        _leaf = Leaf(m);
+    }
 
-    public RegisterFile Registers => File;
+    /// <summary>
+    /// A LEAF'S REGISTERS: EBP besides, callee-saved (the prologue still
+    /// pushes it), where nothing needs the frame pointer -- no call (a
+    /// callee's prologue pushes EBP as the link to this frame; the collector
+    /// and every unwinder walk that chain), no landing pad, nothing that names
+    /// EBP but as the frame's base (Sys.FramePointer, a six-argument system
+    /// call) and nothing that moves ESP after the prologue, off which the frame
+    /// is addressed instead (FramePointerFree). A fault in such a function
+    /// finds its frame by the prologue's mark (Encoder.EncodePrologue).
+    /// </summary>
+    private static readonly RegisterFile LeafFile = new()
+    {
+        PhysCount = 8,
+        FirstVirtual = 8,
+        Untracked = new[] { (int)Gpr.Esp },
+        Classes = new[]
+        {
+            new RegClass
+            {
+                Name = "gpr",
+                Preference = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi, (int)Gpr.Ebp },
+                CalleeSaved = new[] { (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi, (int)Gpr.Ebp },
+                ByteCapable = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx },
+            },
+        },
+    };
+
+    private readonly bool _leaf;
+
+    /// <summary>Whether the function may run without a frame pointer (LeafFile).</summary>
+    private static bool Leaf(MFunction m)
+    {
+        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
+        foreach (MBlock b in m.Blocks)
+        {
+            if (b.Source?.IsLandingPad == true) return false;
+            foreach (MInstr i in b.Instrs)
+            {
+                if (i.Op is MOp.Call or MOp.CallInd or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd) return false;
+                foreach (MOperand o in i.Operands)
+                    if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
+                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
+                {
+                    if (r.Id == (int)Gpr.Ebp && !inMem) return false;
+                    if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    public RegisterFile Registers => _leaf ? LeafFile : File;
     public int ClassOf(int reg) => 0;
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
     public int NewSlot(int vreg) => _m.Frame.Spill();
@@ -72,7 +127,7 @@ internal sealed class X86Target : ITarget
     /// <summary>The function in the allocator's form.</summary>
     public AFunction Lower()
     {
-        AFunction f = new() { Name = _m.Source.Name, Registers = File, Target = this, NextVReg = _m.NextVReg };
+        AFunction f = new() { Name = _m.Source.Name, Registers = Registers, Target = this, NextVReg = _m.NextVReg };
         Dictionary<MBlock, ABlock> blocks = new(ReferenceEqualityComparer.Instance);
         foreach (MBlock b in _m.Blocks)
             blocks[b] = new ABlock { Name = b.Name, Tag = b, LandingPad = b.Source?.IsLandingPad == true };
@@ -97,6 +152,9 @@ internal sealed class X86Target : ITarget
     private AInstr LowerInstr(MInstr i, Dictionary<MBlock, ABlock> blocks)
     {
         List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = Allocator.RegsOf(i, _regs);
+        // In a leaf the frame's base is no use of the register EBP holds:
+        // FramePointerFree makes it ESP (Leaf: EBP is named nowhere else).
+        if (_leaf) regs.RemoveAll(r => r.Reg.Id == (int)Gpr.Ebp);
         Named[] named = new Named[regs.Count];
         for (int k = 0; k < regs.Count; k++)
             named[k] = new Named(regs[k].Reg.Id, (Role)(byte)regs[k].Role, regs[k].Operand, regs[k].InMem);
@@ -217,15 +275,15 @@ internal sealed class X86Target : ITarget
                 }
                 foreach ((int reg, int slot, bool load) in p.MovesBefore(index))
                     outList.Add(load
-                        ? new MInstr(MOp.Mov, MReg.Of(reg), Slot(slot)) { Line = ai.Line }
-                        : new MInstr(MOp.Mov, Slot(slot), MReg.Of(reg)) { Line = ai.Line });
+                        ? new MInstr(MOp.Mov, Out(reg), Slot(slot)) { Line = ai.Line }
+                        : new MInstr(MOp.Mov, Slot(slot), Out(reg)) { Line = ai.Line });
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
                     outList.Add(constant is MMem address
-                        ? new MInstr(MOp.Lea, MReg.Of(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = ai.Line }
-                        : new MInstr(MOp.Mov, MReg.Of(reg), constant is MImm imm ? imm : Slot(slot)) { Line = ai.Line });
+                        ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = ai.Line }
+                        : new MInstr(MOp.Mov, Out(reg), constant is MImm imm ? imm : Slot(slot)) { Line = ai.Line });
                 if (n is not null) outList.Add(n);
                 foreach ((int reg, int slot) in p.After(index))
-                    outList.Add(new MInstr(MOp.Mov, Slot(slot), MReg.Of(reg)) { Line = ai.Line });
+                    outList.Add(new MInstr(MOp.Mov, Slot(slot), Out(reg)) { Line = ai.Line });
                 index++;
             }
             b.Instrs.Clear();
@@ -242,6 +300,8 @@ internal sealed class X86Target : ITarget
         bool catches = f.Blocks.Any(b => b.LandingPad);
         foreach (int g in File.Classes[0].CalleeSaved)
             if (catches || p.Touched.Contains(g)) _m.SavedRegs.Add((Gpr)g);
+        // EBP given a value: saved by the prologue's own push, not among these.
+        _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Ebp);
     }
 
     /// <summary>
@@ -256,10 +316,13 @@ internal sealed class X86Target : ITarget
         {
             Place.Slot => Slot(at.Slot),
             Place.Constant => (MImm)at.Constant!,
-            _ => original.IsPhys ? original : MReg.Of(at.Reg),
+            _ => original.IsPhys ? original : Out(at.Reg),
         };
 
-    private static MInstr Build(AInstr ai, int index, IPlacement p, Dictionary<ABlock, MBlock> blocks)
+    /// <summary>A register the allocator placed a value in: EBP as the value it holds (MReg.EbpData), no frame's base.</summary>
+    private static MReg Out(int reg) => reg == (int)Gpr.Ebp ? MReg.EbpData : MReg.Of(reg);
+
+    private MInstr Build(AInstr ai, int index, IPlacement p, Dictionary<ABlock, MBlock> blocks)
     {
         if (ai.Tag is not MInstr i)
         {
@@ -287,7 +350,8 @@ internal sealed class X86Target : ITarget
                     // an absolute address, which a shared object can only
                     // honour with a text relocation -- and not needing one is
                     // the whole point of position-independent code.
-                    MReg? baseReg = m.Base is null ? null : (MReg)PlaceOf(p.Of(index, k++), m.Base);
+                    // A leaf's frame base is named nowhere (LowerInstr): as it is.
+                    MReg? baseReg = m.Base is null ? null : _leaf && m.Base.Id == (int)Gpr.Ebp ? m.Base : (MReg)PlaceOf(p.Of(index, k++), m.Base);
                     MReg? indexReg = m.Index is null ? null : (MReg)PlaceOf(p.Of(index, k++), m.Index);
                     n.Operands.Add(new MMem(baseReg, m.Disp)
                     {

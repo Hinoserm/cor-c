@@ -840,8 +840,12 @@ static class Platform
                 // gregs from 40: RDI 8th, RSI 9th, RBP 10th, RSP 15th, RIP 16th.
                 // Past the red zone, aligned as a call leaves it.
                 // Each greg_t is 8 bytes here.
+                // A leaf that gave RBP a value has its frame found by its
+                // prologue (Runtime.FrameAt), and RBP made that frame again,
+                // so NullFault's prologue links to it as a call from there would.
                 nuint faultPc = Sys.ReadAddress(uc + 168);
-                nuint faultFrame = Sys.ReadAddress(uc + 120);
+                nuint faultFrame = Runtime.FrameAt(faultPc, Sys.ReadAddress(uc + 160), Sys.ReadAddress(uc + 120));
+                Sys.WriteAddress(uc + 120, faultFrame);
                 nuint sp = ((Sys.ReadAddress(uc + 160) - 128) & ~(nuint)15) - 8;
                 Sys.WriteAddress(sp, faultPc);
                 Sys.WriteAddress(uc + 104, faultFrame);
@@ -854,8 +858,12 @@ static class Platform
                 // as a call leaves it: the return address at 12 past a
                 // multiple of 16.
                 // Each greg_t is 4 bytes here.
+                // A leaf that gave EBP a value has its frame found by its
+                // prologue (Runtime.FrameAt), and EBP made that frame again,
+                // so NullFault's prologue links to it as a call from there would.
                 nuint faultPc = Sys.ReadAddress(uc + 76);
-                nuint faultFrame = Sys.ReadAddress(uc + 44);
+                nuint faultFrame = Runtime.FrameAt(faultPc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
+                Sys.WriteAddress(uc + 44, faultFrame);
                 nuint sp = ((Sys.ReadAddress(uc + 48) - 64) & ~(nuint)15) - 20;
                 Sys.WriteAddress(sp, faultPc);
                 Sys.WriteAddress(sp + 4, faultFrame);
@@ -874,7 +882,7 @@ static class Platform
             // 10th and RIP the 16th.
             nuint address = Sys.ReadAddress(si + 16);
             nuint pc = Sys.ReadAddress(uc + 168);
-            nuint frame = Sys.ReadAddress(uc + 120);
+            nuint frame = Runtime.FrameAt(pc, Sys.ReadAddress(uc + 160), Sys.ReadAddress(uc + 120));
             nuint registers = uc + 40;
             int count = 16;
 #else
@@ -882,7 +890,7 @@ static class Platform
             // seventh and EIP the fifteenth.
             nuint address = Sys.ReadAddress(si + 12);
             nuint pc = Sys.ReadAddress(uc + 76);
-            nuint frame = Sys.ReadAddress(uc + 44);
+            nuint frame = Runtime.FrameAt(pc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
             // EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX.
             nuint registers = uc + 36;
             int count = 8;

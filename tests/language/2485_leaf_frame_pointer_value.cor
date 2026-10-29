@@ -1,0 +1,62 @@
+// test: a leaf with more values live than six registers hold gives EBP one (no frame pointer); its arithmetic is right, a null dereference in it is a NullReferenceException caught by its caller's caller, and the frames above it are intact
+// expect-output:
+// 256 706
+// caught 1
+// after 0256
+//
+// Mix makes no call and keeps more values live than i386's six registers
+// hold, so the allocator gives it EBP for one (X86Target's leaf file) and
+// addresses its frame off ESP. A null Box faults inside it: the fault
+// handler finds its frame from its prologue (Runtime.FrameAt), and the
+// exception unwinds to Catch through Middle as from any other function.
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Box
+{
+    public int A, B, C;
+}
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Mix(Box b, int x, int y, int z, int w)
+    {
+        int s = x * 3 + y, t = y ^ z, u = z - x, v = w * 5 - y;
+        int p = s * t + u, q = t * u - v, r = u * v + s;
+        int m = p ^ q, n = q - r, o = r + p;
+        int field = b.A + b.B * 2 - b.C;
+        return s + t + u + v + p - q + r + m + n - o + field;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Middle(Box b, int k)
+    {
+        int got = Mix(b, k, k + 1, k + 2, k + 3);
+        return got + k;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Catch(Box b, int k)
+    {
+        try
+        {
+            return Middle(b, k);
+        }
+        catch (NullReferenceException)
+        {
+            Console.WriteLine("caught " + k);
+            return -1;
+        }
+    }
+
+    static int Main()
+    {
+        Box box = new Box { A = 7, B = 11, C = 3 };
+        Console.WriteLine(Mix(box, 3, 5, 9, 2) + " " + Mix(box, -4, 13, 6, -8));
+        Catch(null!, 1);
+        Console.WriteLine("after " + Catch(box, 0) * 0 + Mix(box, 3, 5, 9, 2));
+        return 0;
+    }
+}

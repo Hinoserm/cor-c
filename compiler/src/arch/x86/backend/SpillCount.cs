@@ -28,7 +28,10 @@ internal static class SpillCount
                 count.Add(new MInstr(MOp.Adc, MMem.Abs(SpillCounter.BlocksSymbol, at + 4), new MImm(0)));
             }
             count.Add(new MInstr(MOp.Popfd));
-            m.Blocks[b].Instrs.InsertRange(0, count);
+            // After the prologue: a function starts with it, where a fault
+            // reads its frame's shape (Runtime.FrameAt).
+            List<MInstr> instrs = m.Blocks[b].Instrs;
+            instrs.InsertRange(instrs.Count > 0 && instrs[0].Op == MOp.Prologue ? 1 : 0, count);
         });
     }
 

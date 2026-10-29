@@ -24,6 +24,16 @@ public sealed class MReg : MOperand
     // has made one of these, two million a large unit, for the collector.
     private static readonly MReg[] Physical = { new(0), new(1), new(2), new(3), new(4), new(5), new(6), new(7) };
 
+    /// <summary>
+    /// EBP HOLDING A VALUE, in a function without a frame pointer
+    /// (MFunction.FramePointerFree), from allocation until FramePointerFree.Run
+    /// makes it EBP: every pass between takes an operand based on EBP for the
+    /// frame, and an id no machine register has for one it knows nothing of.
+    /// No virtual register is left by then.
+    /// </summary>
+    public const int EbpDataId = 8;
+    public static readonly MReg EbpData = new(EbpDataId);
+
     public static MReg Of(Gpr r) => (uint)r < 8u ? Physical[(int)r] : new((int)r);
 
     /// <summary>Register `id`: a machine register's shared operand, a virtual one's made.</summary>

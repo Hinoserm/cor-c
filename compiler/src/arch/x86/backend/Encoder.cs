@@ -1246,7 +1246,11 @@ internal sealed class Encoder
     private void EncodePrologue()
     {
         B(0x55);        // push ebp
-        B(0x89, 0xE5);  // mov ebp, esp
+        // mov ebp, esp: 89 E5, or 8B EC in a function that gives EBP a value
+        // after (FramePointerFree) -- the mark a fault reads (Runtime.FrameAt)
+        // to find the frame at ESP plus the frame's size and the pushes below.
+        if (_m.FramePointerFree) B(0x8B, 0xEC);
+        else B(0x89, 0xE5);
         int n = _m.Frame.Size;
         if (n > 0)
         {
@@ -1272,11 +1276,22 @@ internal sealed class Encoder
         {
             _out.Add((byte)(0x58 + (int)_m.SavedRegs[k]));
         }
-        // LEAVE EVEN ON A PENTIUM: `mov esp, ebp ; pop ebp` would pair with
-        // nothing either -- the pop uses ESP the move has just written, an
-        // address generation interlock (Agner Fog, example 4.8: `mov esp, ebp
-        // / ret`) -- three clocks for LEAVE's three and a byte more.
-        B(0xC9);
+        if (_m.FramePointerFree)
+        {
+            // EBP holds a value, not the frame: ESP past the frame, then EBP back.
+            int n = _m.Frame.Size;
+            if (n is > 0 and <= 127) B(0x83, 0xC4, (byte)n);  // add esp, n
+            else if (n > 127) { B(0x81, 0xC4); D32(n); }
+            B(0x5D);  // pop ebp
+        }
+        else
+        {
+            // LEAVE EVEN ON A PENTIUM: `mov esp, ebp ; pop ebp` would pair with
+            // nothing either -- the pop uses ESP the move has just written, an
+            // address generation interlock (Agner Fog, example 4.8: `mov esp, ebp
+            // / ret`) -- three clocks for LEAVE's three and a byte more.
+            B(0xC9);
+        }
         int pops = _m.Source.CalleePops;
         if (pops > 0)
         {

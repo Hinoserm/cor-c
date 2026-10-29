@@ -56,6 +56,8 @@ internal static class AsmText
         {
             case MReg r when r.IsPhys:
                 return RegName(r.Id, width);
+            case MReg { Id: MReg.EbpDataId }:
+                return "ebp";
             case MReg r:
                 return $"v{r.Id}";
             case MMem m:
@@ -75,7 +77,7 @@ internal static class AsmText
         {
             case MOp.Prologue:
                 yield return "push ebp";
-                yield return "mov ebp, esp";
+                yield return m.FramePointerFree ? "mov ebp, esp ; 8B EC: no frame pointer after" : "mov ebp, esp";
                 if (m.Frame.Size > 0)
                 {
                     yield return $"sub esp, {m.Frame.Size}";
@@ -90,7 +92,12 @@ internal static class AsmText
                 {
                     yield return $"pop {RegName((int)m.SavedRegs[k], 4)}";
                 }
-                yield return "leave";
+                if (m.FramePointerFree)
+                {
+                    if (m.Frame.Size > 0) yield return $"add esp, {m.Frame.Size}";
+                    yield return "pop ebp";
+                }
+                else yield return "leave";
                 yield return m.Source.CalleePops > 0 ? "ret " + m.Source.CalleePops : "ret";
                 yield break;
             case MOp.Jcc:

@@ -55,6 +55,14 @@ public sealed class MFunction
     /// <summary>Callee-saved registers the allocator handed out; the prologue saves exactly these.</summary>
     public List<Gpr> SavedRegs { get; } = new();
 
+    /// <summary>
+    /// EBP HOLDS A VALUE IN THIS FUNCTION (X86Target, for a leaf): its frame
+    /// is addressed off ESP, which nothing moves between its prologue and its
+    /// epilogue (FramePointerFree), and the prologue's `mov ebp, esp` is
+    /// written 8B EC, the mark a fault reads to find the frame (Encoder).
+    /// </summary>
+    public bool FramePointerFree { get; set; }
+
     public MFunction(Function source)
     {
         Source = source;

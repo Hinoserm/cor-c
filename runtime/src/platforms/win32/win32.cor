@@ -234,7 +234,7 @@ static class Win32
     /// in the collector -- is searched on for whoever else handles it.
     /// EXCEPTION_RECORD: ExceptionCode at 0, ExceptionFlags 4,
     /// NumberParameters 16, the address 24. CONTEXT: Edx 0xA8, Eax 0xB0,
-    /// Ebp 0xB4, Eip 0xB8.
+    /// Ebp 0xB4, Eip 0xB8, Esp 0xC4.
     public static int Fault(nuint rec, nuint registration, nuint ctx, nuint dispatcher)
     {
         if ((Sys.Read32(rec + 4) & Unwinding) != 0) return ContinueSearch;
@@ -249,9 +249,14 @@ static class Win32
         if (address == NoAddress) address = FaultAddress(ctx, pc);
         if (address == NoAddress || !Runtime.NullFaultCatchable(address)) return ContinueSearch;
 
-        // CONTEXT's registers are DWORDs: Eax, Edx (from Ebp), Eip.
+        // CONTEXT's registers are DWORDs: Eax, Edx (the frame), Eip. A leaf
+        // that gave EBP a value has its frame found by its prologue
+        // (Runtime.FrameAt), and EBP made that frame again, so NullFault's
+        // prologue links to it as a call from there would.
+        nuint frame = Runtime.FrameAt(pc, Sys.Read32(ctx + 0xC4), Sys.Read32(ctx + 0xB4));
+        Sys.Write32(ctx + 0xB4, Sys.Low32(frame));
         Sys.Write32(ctx + 0xB0, Sys.Low32(pc));
-        Sys.Write32(ctx + 0xA8, Sys.Read32(ctx + 0xB4));
+        Sys.Write32(ctx + 0xA8, Sys.Low32(frame));
         Sys.Write32(ctx + 0xB8, Sys.Low32(_nullStub));
         return ContinueExecution;
     }
