@@ -158,6 +158,14 @@ public sealed class KernelExports
         return holder.Sections[0].Bytes.ToArray();
     }
 
+    /// <summary>Every small body as the units made it, kept or not (the declaration table's "@" keys).</summary>
+    public static byte[] AllBodiesNote(List<Lto.IrArchiveRecord> bodies)
+    {
+        ObjectFile holder = new();
+        Lto.IrArchive.Attach(holder, bodies);
+        return holder.Sections[0].Bytes.ToArray();
+    }
+
     /// <summary>One global of a linked image: what a .dynsym entry of it says.</summary>
     public readonly record struct Export(string Name, ulong Value, ulong Size, byte Type);
 
@@ -403,6 +411,34 @@ public sealed class KernelExports
         foreach ((string key, Lto.IrArchiveEntry entry) in bodies.Entries)
             if (key.StartsWith("F:", StringComparison.Ordinal)) entries["@" + key[2..]] = BodyHash(entry);
         return DeclarationReads.Write(entries);
+    }
+
+    /// <summary>
+    /// THE NAMES THE KERNEL EXPORTS IN ITS TABLE TOO, "E:" and the name each:
+    /// a module's link binds its imports, and turns a call to a $inside copy
+    /// the kernel no longer exports into one to the method (InsideOrItself),
+    /// by the names it finds, and its table holds it to them (LinkModule).
+    /// Not their addresses: the kernel's binder finds those by name.
+    /// </summary>
+    public static byte[] WithExports(byte[] decls, IEnumerable<Export> globals)
+    {
+        Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
+        foreach (Export export in globals) entries[ExportName(export.Name)] = ExportHash(export.Name);
+        return DeclarationReads.Write(entries);
+    }
+
+    /// <summary>An exported name in the tables: "E:" and the name.</summary>
+    public static string ExportName(string symbol) => "E:" + symbol;
+
+    /// <summary>An exported name's answer: the hash of the name, its first 16 bytes.</summary>
+    public static byte[] ExportHash(string symbol)
+        => System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(symbol))[..DeclarationReads.HashBytes];
+
+    /// <summary>A linked module's table of what it read of the kernel (its .corsac.reads), or null.</summary>
+    public static byte[]? ReadsOf(byte[] image, string what)
+    {
+        SectionView? reads = Sections(image, what).Find(s => s.Name == DeclarationReads.ReadsSection);
+        return reads is null ? null : image.AsSpan((int)reads.Offset, (int)reads.Size).ToArray();
     }
 
     /// <summary>A small body's name in the tables: "@" and its symbol.</summary>

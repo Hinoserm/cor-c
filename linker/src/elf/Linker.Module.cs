@@ -167,7 +167,18 @@ public static partial class Linker
         foreach (string dependency in dependencies ?? Array.Empty<string>())
         {
             byte[] bytes = File.ReadAllBytes(dependency);
-            if (KernelExports.StampOf(bytes, dependency) is not { } stamp || !stamp.AsSpan().SequenceEqual(kernel.Stamp))
+            // HELD TO WHAT IT READ OF THE KERNEL, as a unit is: a module the
+            // build kept from before, its kernel changed only where it never
+            // looked, is still this kernel's. One with no such table, to the
+            // kernel's whole stamp.
+            if (KernelExports.ReadsOf(bytes, dependency) is { } reads && kernel.Decls is not null)
+            {
+                List<string> differences = DeclarationReads.Differences(DeclarationReads.Read(reads, dependency), kernel.Decls);
+                if (differences.Count > 0)
+                    throw new LinkException(new[] { dependency + ": not a module of this kernel -- " + string.Join("; ", differences.Take(5))
+                        + (differences.Count > 5 ? $"; and {differences.Count - 5} more" : "") });
+            }
+            else if (KernelExports.StampOf(bytes, dependency) is not { } stamp || !stamp.AsSpan().SequenceEqual(kernel.Stamp))
                 throw new LinkException(new[] { dependency + ": not a module of this kernel (its build stamp is not " + KernelExports.Text(kernel.Stamp) + ")" });
             theirs[dependency] = new HashSet<string>(ElfReader.ExportsOf(bytes), StringComparer.Ordinal);
         }
@@ -180,6 +191,10 @@ public static partial class Linker
         HashSet<string> defined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
         HashSet<string> undefined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
         List<string> needed = theirs.Where(pair => pair.Value.Overlaps(undefined)).Select(pair => pair.Key).ToList();
+        // AND EVERY NAME IT TAKES FROM THE KERNEL, which must stay exported.
+        if (anyReads)
+            foreach (string import in undefined)
+                if (kernel.Names.Contains(import)) read[KernelExports.ExportName(import)] = KernelExports.ExportHash(import);
 
         // THE MODULE'S OWN NAME AND RING FIRST, then what its source said,
         // then a dependency the link found that the source did not name.

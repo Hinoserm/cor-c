@@ -342,7 +342,14 @@ public static class ObjectLinkCommand
         {
             List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
             byte[]? bodies = smallBodies is null ? null : KernelExports.BodiesNote(smallBodies, globals);
-            if (decls is not null && bodies is not null && KernelExports.BodiesOf(bodies) is { } archive) decls = KernelExports.WithBodies(decls, archive);
+            // EVERY SMALL BODY IN THE TABLE, as the units made it, not only
+            // those this link kept: a module that copied one needs nothing of
+            // the kernel's own, and the kernel's open link and its pruned one
+            // must answer a module alike (the build checks it against the
+            // one, the loader against the other).
+            if (decls is not null && smallBodies is { Count: > 0 } && KernelExports.BodiesOf(KernelExports.AllBodiesNote(smallBodies)) is { } archive)
+                decls = KernelExports.WithBodies(decls, archive);
+            if (decls is not null) decls = KernelExports.WithExports(decls, globals);
             KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode, bodies, decls);
             Console.Error.WriteLine($"{exportsPath}: {globals.Count} kernel exports, build stamp {KernelExports.Text(stamp!)}"
                 + (bodies is null ? "" : ", small functions' IR " + (bodies.Length >> 10) + " KiB"));
