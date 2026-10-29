@@ -1419,7 +1419,8 @@ public sealed class Allocator
             }
             // Before the spill point a register that keeps its value there
             // must see every write: none may go to the slot alone (the store
-            // follows the write, or is sunk to the spill point: SinkStores).
+            // follows the write, or is moved to where the value leaves the
+            // register: SinkStores).
             bool kept = o.Instr < from && _keepBefore.Contains(vreg);
             if (!kept && (remat ? CanFoldImm(vreg, o) : CanFold(vreg, o)))
             {
@@ -1535,8 +1536,8 @@ public sealed class Allocator
     /// WHAT GIVING UP A VALUE AT `at` COSTS EACH LAP of `loop`, in frame
     /// accesses: a store for every write of it anywhere in the loop -- a
     /// spilled value's every write stores, those before the spill point too,
-    /// so its slot is current wherever it is read (a store SinkStores moves
-    /// is outside every loop) -- a reload for each
+    /// so its slot is current wherever it is read (SinkStores moves a store
+    /// only where that costs less) -- a reload for each
     /// straight run that reads it from here on (a reload's register carries
     /// through a run), and one where the back edge comes in when the value
     /// is carried round and read before here (HeldBeforeSpill). A constant
@@ -1822,9 +1823,11 @@ public sealed class Allocator
 
     // ---- where a spilled value's store goes -------------------------------------
 
-    /// <summary>The values whose one store is sunk to their spill point, and those stores by instruction (SinkStores).</summary>
+    /// <summary>The values whose store is moved to where they leave their register, and those stores by instruction (SinkStores).</summary>
     private readonly HashSet<int> _sunk = new();
     private readonly Dictionary<int, List<int>> _sunkAt = new();
+    /// <summary>The loads, by instruction, of values that control comes back to before their spill point (SinkStores).</summary>
+    private readonly Dictionary<int, List<int>> _reloadAt = new();
 
     /// <summary>
     /// A SPILLED VALUE STORED WHERE IT LEAVES ITS REGISTER, not where it is
@@ -1838,9 +1841,19 @@ public sealed class Allocator
     /// the window flows back into it where the value is live (_keepBefore's
     /// NothingFlowsBack), so a path leaves at most once for each time it
     /// passes the definition: never more stores than one after the
-    /// definition, and none on a path that never reads the slot.
+    /// definition.
     /// List<T>.Add stored its array on every call for the type check of an
     /// element its array does not take, on a path rarely taken.
+    ///
+    /// A SECOND CHANCE where control comes back into the window from after
+    /// P (Wimmer and Mossenbock's split child, resolved on the edges): such a
+    /// value was reloaded before each read the way back reaches, and stored
+    /// after its definition for them. Loaded on each way back instead, it is
+    /// in its register wherever it is live in the window, kept as above, its
+    /// reads there folded into the slot read the register again -- where the
+    /// loads and the stores, weighed by loop depth, cost less than the
+    /// reloads and the store they replace (a way out and back again may
+    /// store twice).
     ///
     /// An edge's store goes at the start of the block it enters where every
     /// way in is from the window (once for all of them), else before the
@@ -1853,36 +1866,203 @@ public sealed class Allocator
     /// </summary>
     private void SinkStores()
     {
-        List<int> places = new();
+        List<int> places = new(), loads = new();
         _landingPads.Clear();
+        _addressTaken.Clear();
+        if (_branchesAt.Length < _blockCount + 1) _branchesAt = new int[_blockCount + 1];
+        if (_anywhereBefore.Length < _blockCount + 1) _anywhereBefore = new int[_blockCount + 1];
+        _anywhereBefore[0] = 0;
         for (int b = 0; b < _blockCount; b++)
-            if (_f.Blocks[b].LandingPad) _landingPads.Add(b);
+        {
+            ABlock block = _f.Blocks[b];
+            if (block.LandingPad) _landingPads.Add(b);
+            if (block.AddressTaken) _addressTaken.Add(b);
+            _anywhereBefore[b + 1] = _anywhereBefore[b] + (block.Instrs.Exists(i => i.JumpsAnywhere) ? 1 : 0);
+            // Where a move on the block's way out goes: before the branches
+            // that end it, where no branch comes earlier (an earlier one leaves
+            // before the move) and it does not fall through with none.
+            int first = _blockFirst[b], at = first + block.Instrs.Count;
+            while (at > first && (_lin[at - 1].Targets is not null || _lin[at - 1].Unconditional)) at--;
+            bool ends = at < first + block.Instrs.Count;
+            for (int k = first; k < at && ends; k++) if (_lin[k].Targets is not null) ends = false;
+            _branchesAt[b] = ends ? at : -1;
+        }
+        double[]? weight = null;
         for (int v = _fv; v < _n; v++)
         {
             int p = _spilledFrom[v];
-            if (p == int.MaxValue || p >= _lin.Count || !_keepBefore.Contains(v) || _assigned[v] < 0 || _slot[v] == 0
+            if (p == int.MaxValue || p >= _lin.Count || _assigned[v] < 0 || _slot[v] == 0
                 || _remat[v] is not null || HomeOf(v) != 0 || _split is not null && (_split.Root.ContainsKey(v) || _split.Pieces.ContainsKey(v)))
             {
                 continue;
             }
-            int def = -1, defs = 0;
+            int def = -1, defs = 0, defOperand = -1;
             for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
-                if ((_occAll[occ].Role & Role.Def) != 0) { defs++; def = _occAll[occ].Instr; }
+                if ((_occAll[occ].Role & Role.Def) != 0) { defs++; def = _occAll[occ].Instr; defOperand = _occAll[occ].Operand; }
             if (defs != 1 || def >= p) continue;
-            if (ExitStores(v, def, p, places))
+            bool kept = _keepBefore.Contains(v);
+            loads.Clear();
+            if (!kept)
             {
-                _sunk.Add(v);
-                foreach (int at in places)
+                // The definition first in the layout and into the register,
+                // every way back with a place for its load, and the moves
+                // cheaper than the reloads and the store.
+                if (_occAll[_occFirst[v]].Instr != def || _folded.Contains((def, defOperand))
+                    || !ReentryLoads(v, def, p, loads) || !ExitStores(v, def, p, places))
                 {
-                    if (!_sunkAt.TryGetValue(at, out List<int>? list)) _sunkAt[at] = list = new();
+                    continue;
+                }
+                weight ??= BlockWeights();
+                double moves = 0, reloads = weight[_blockOfInstr[def]];
+                foreach (int at in places) moves += weight[_blockOfInstr[at]];
+                foreach (int at in loads) moves += weight[_blockOfInstr[at]];
+                int lastRead = -1;
+                for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
+                {
+                    Occurrence o = _occAll[occ];
+                    if (o.Instr >= p) break;
+                    if ((o.Role & Role.Use) == 0 || o.Instr == lastRead || _noReload.Contains((v, o.Instr))) continue;
+                    lastRead = o.Instr;
+                    reloads += weight[_blockOfInstr[o.Instr]];
+                }
+                if (moves >= reloads) continue;
+                // Kept from here on: its reads in the window are the register's.
+                _keepBefore.Add(v);
+                for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
+                    if (_occAll[occ].Instr < p) _folded.Remove((_occAll[occ].Instr, _occAll[occ].Operand));
+                foreach (int at in loads)
+                {
+                    if (!_reloadAt.TryGetValue(at, out List<int>? list)) _reloadAt[at] = list = new();
                     list.Add(v);
                 }
+            }
+            else if (!ExitStores(v, def, p, places))
+            {
+                continue;
+            }
+            _sunk.Add(v);
+            foreach (int at in places)
+            {
+                if (!_sunkAt.TryGetValue(at, out List<int>? list)) _sunkAt[at] = list = new();
+                list.Add(v);
             }
         }
     }
 
-    /// <summary>The blocks entered by no edge, from anywhere in their try.</summary>
-    private readonly List<int> _landingPads = new();
+    /// <summary>
+    /// Where a value spilled from `p` is loaded back into its register on
+    /// each way into the window (from its definition `def` to `p`) from after
+    /// it, into `loads` as the instructions the loads go before: at the
+    /// start of a block of the window entered only from outside it, else
+    /// before the branches of a block outside with one way out. False where
+    /// some way in has no place of its own, or comes from before the
+    /// definition, a landing pad or a computed jump. The register is free
+    /// there: every other value live across the edge is live into the
+    /// window's block, where the register is this one's.
+    /// </summary>
+    private bool ReentryLoads(int v, int def, int p, List<int> loads)
+    {
+        loads.Clear();
+        int defb = _blockOfInstr[def], pb = _blockOfInstr[p];
+        bool pInside = p > _blockFirst[pb];
+        // The window's blocks the value is live into, and their ways in from
+        // outside it: from P's block (after P) on, or before the definition.
+        for (int s = defb; s <= pb; s++)
+        {
+            if (s == pb && !pInside || !LiveInto(s, v)) continue;
+            for (int e = _predStart[s]; e < _predStart[s + 1]; e++)
+            {
+                int q = _predAll[e];
+                if (q >= defb && q < pb) continue;  // from within the window
+                if (q < defb || s == defb) return false;  // in before the definition
+                if (_anywhereBefore[q + 1] != _anywhereBefore[q]) return false;
+                if (_f.Blocks[s].Instrs.Count > 0 && EnteredFromOutsideOnly(s, pb))
+                {
+                    if (!loads.Contains(_blockFirst[s])) loads.Add(_blockFirst[s]);
+                    continue;
+                }
+                if (OneWayOut(q) && _branchesAt[q] >= 0)
+                {
+                    if (!loads.Contains(_branchesAt[q])) loads.Add(_branchesAt[q]);
+                    continue;
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Whether every way into block `s` is an edge from a block from `pb` on: no landing pad, no taken address.</summary>
+    private bool EnteredFromOutsideOnly(int s, int pb)
+    {
+        if (_f.Blocks[s].LandingPad || _f.Blocks[s].AddressTaken) return false;
+        for (int e = _predStart[s]; e < _predStart[s + 1]; e++)
+            if (_predAll[e] < pb) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// HOW OFTEN EACH BLOCK RUNS, estimated with no profile: the entry once,
+    /// a block's runs shared evenly among its ways out, the back edges left
+    /// out, and every loop around a block multiplying it by eight (Wu and
+    /// Larus's even branches, Wimmer and Mossenbock's loop depth). A block
+    /// no edge reaches -- a landing pad, what only it reaches -- runs as often
+    /// as the entry, for want of better.
+    /// </summary>
+    private double[] BlockWeights()
+    {
+        int nb = _blockCount;
+        double[] freq = new double[nb];
+        int[] pending = new int[nb];
+        bool Back(int from, int to)
+        {
+            foreach ((int head, bool[] body) in _loops) if (head == to && body[from]) return true;
+            return false;
+        }
+        for (int b = 0; b < nb; b++)
+            for (int e = _succStart[b]; e < _succStart[b + 1]; e++)
+                if (!Back(b, _succAll[e])) pending[_succAll[e]]++;
+        Stack<int> ready = new();
+        bool[] done = new bool[nb];
+        if (nb > 0) { freq[0] = 1; if (pending[0] == 0) ready.Push(0); }
+        while (true)
+        {
+            while (ready.Count > 0)
+            {
+                int b = ready.Pop();
+                done[b] = true;
+                int outs = _succStart[b + 1] - _succStart[b];
+                for (int e = _succStart[b]; e < _succStart[b + 1]; e++)
+                {
+                    int t = _succAll[e];
+                    if (Back(b, t)) continue;
+                    freq[t] += freq[b] / outs;
+                    if (--pending[t] == 0) ready.Push(t);
+                }
+            }
+            // What no finished block reaches: a landing pad and its code, or
+            // a cycle the loops did not find -- started as the entry is.
+            int next = -1;
+            for (int b = 0; b < nb && next < 0; b++) if (!done[b] && pending[b] == 0) next = b;
+            for (int b = 0; b < nb && next < 0; b++) if (!done[b]) next = b;
+            if (next < 0) break;
+            freq[next] = Math.Max(freq[next], 1);
+            pending[next] = 0;
+            ready.Push(next);
+        }
+        for (int b = 0; b < nb; b++)
+            foreach ((int head, bool[] body) in _loops) if (body[b]) freq[b] *= 8;
+        return freq;
+    }
+
+    /// <summary>The blocks entered by no edge, from anywhere in their try; those a computed jump may enter.</summary>
+    private readonly List<int> _landingPads = new(), _addressTaken = new();
+    /// <summary>
+    /// By block: where a move on its one way out goes (before the branches
+    /// ending it), or -1; and how many blocks before it hold a computed
+    /// jump.
+    /// </summary>
+    private int[] _branchesAt = Array.Empty<int>(), _anywhereBefore = Array.Empty<int>();
 
     /// <summary>
     /// Where a value kept in its register from its definition `def` up to
@@ -1901,10 +2081,13 @@ public sealed class Allocator
         if (pInside && LiveAt(v, p * 4 - 1)) places.Add(p);
         foreach (int lp in _landingPads)
             if (LiveInto(lp, v)) return false;
+        // A computed jump out of the window, or into it where the value is
+        // live, goes by no edge.
+        if (_anywhereBefore[pb] - _anywhereBefore[defb] != 0) return false;
+        foreach (int t in _addressTaken)
+            if (t > defb && t <= pb && LiveInto(t, v)) return false;
         for (int b = defb; b < pb; b++)
         {
-            int first = _blockFirst[b], last = first + _f.Blocks[b].Instrs.Count - 1;
-            if (_f.Blocks[b].Instrs.Exists(i => i.JumpsAnywhere)) return false;
             for (int e = _succStart[b]; e < _succStart[b + 1]; e++)
             {
                 int s = _succAll[e];
@@ -1916,12 +2099,9 @@ public sealed class Allocator
                     if (!places.Contains(_blockFirst[s])) places.Add(_blockFirst[s]);
                     continue;
                 }
-                if (OneWayOut(b) && last >= first)
+                if (OneWayOut(b) && _branchesAt[b] >= 0)
                 {
-                    int at = last;
-                    while (at > first && (_lin[at - 1].Targets is not null || _lin[at - 1].Unconditional)) at--;
-                    if (_lin[at].Targets is null && !_lin[at].Unconditional) return false;  // falls through with no branch to go before
-                    if (!places.Contains(at)) places.Add(at);
+                    if (!places.Contains(_branchesAt[b])) places.Add(_branchesAt[b]);
                     continue;
                 }
                 return false;
@@ -1933,7 +2113,7 @@ public sealed class Allocator
     /// <summary>Whether every way into block `s` is an edge from a block of the window (`defb` up to, not including, `pb`): no landing pad, no taken address.</summary>
     private bool EnteredFromWindowOnly(int s, int defb, int pb)
     {
-        if (_f.Blocks[s].LandingPad || _f.Blocks[s].AddressTaken || s == 0) return false;
+        if (_f.Blocks[s].LandingPad || _f.Blocks[s].AddressTaken) return false;
         for (int e = _predStart[s]; e < _predStart[s + 1]; e++)
             if (_predAll[e] < defb || _predAll[e] >= pb) return false;
         return true;
@@ -1971,7 +2151,8 @@ public sealed class Allocator
     /// time, the one asked about. Each register an instruction names has its
     /// place; a spilled value's reads load it first and its writes store it
     /// after (once an instruction, whatever it does with it), unless a register
-    /// still holds it or the store is sunk to its spill point (StoresBefore);
+    /// still holds it or the store is moved to where the value leaves the
+    /// register (MovesBefore);
     /// a constant's is remade.
     /// </summary>
     private sealed class Decisions : IPlacement
@@ -1994,15 +2175,19 @@ public sealed class Allocator
 
         public (Place Place, int Reg, int Slot, object? Constant) Of(int index, int k) { Decide(index); return _places[k]; }
         public IReadOnlyList<(int Reg, int Slot, object? Constant)> Before(int index) { Decide(index); return _before; }
-        public IReadOnlyList<(int Reg, int Slot)> StoresBefore(int index)
+        public IReadOnlyList<(int Reg, int Slot, bool Load)> MovesBefore(int index)
         {
             Allocator a = _a;
-            _storesBefore.Clear();
-            if (a._sunkAt.TryGetValue(index, out List<int>? values))
-                foreach (int v in values) _storesBefore.Add((a._assigned[v], a._slot[v]));
-            return _storesBefore;
+            _movesBefore.Clear();
+            // The stores first: a register another value leaves at the point
+            // may be the one a value coming back is loaded into.
+            if (a._sunkAt.TryGetValue(index, out List<int>? stored))
+                foreach (int v in stored) _movesBefore.Add((a._assigned[v], a._slot[v], false));
+            if (a._reloadAt.TryGetValue(index, out List<int>? loaded))
+                foreach (int v in loaded) _movesBefore.Add((a._assigned[v], a._slot[v], true));
+            return _movesBefore;
         }
-        private readonly List<(int Reg, int Slot)> _storesBefore = new();
+        private readonly List<(int Reg, int Slot, bool Load)> _movesBefore = new();
         public IReadOnlyList<(int Reg, int Slot)> After(int index) { Decide(index); return _after; }
         public bool Dropped(int index) { Decide(index); return _dropped; }
 

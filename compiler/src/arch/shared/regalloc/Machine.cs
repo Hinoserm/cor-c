@@ -217,8 +217,13 @@ public interface IPlacement
     (Place Place, int Reg, int Slot, object? Constant) Of(int index, int k);
     /// <summary>What goes before the instruction: a register loaded from a slot, or set to a constant.</summary>
     IReadOnlyList<(int Reg, int Slot, object? Constant)> Before(int index);
-    /// <summary>What goes before the instruction ahead of those: a register stored to a slot, the value leaving it there (a store sunk to where its value is spilled).</summary>
-    IReadOnlyList<(int Reg, int Slot)> StoresBefore(int index);
+    /// <summary>
+    /// What goes before the instruction ahead of those: a register stored to
+    /// a slot as its value leaves the register for good (a store sunk to
+    /// where the value is spilled), then one loaded from its slot as control
+    /// comes back to where the register holds the value (Load).
+    /// </summary>
+    IReadOnlyList<(int Reg, int Slot, bool Load)> MovesBefore(int index);
     /// <summary>What goes after it: a register stored to its slot.</summary>
     IReadOnlyList<(int Reg, int Slot)> After(int index);
     /// <summary>Whether the instruction goes altogether: a spilled constant's definition, a copy whose value is already where it is copied to.</summary>
