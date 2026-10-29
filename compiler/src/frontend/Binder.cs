@@ -1124,6 +1124,14 @@ public sealed partial class Binder
 
         sym = null;
 
+        // A CLASS LIBRARY'S TYPE NOT DECLARED PUBLIC STEPS ASIDE for any
+        // other the program's usings bring in under its name: C# shows
+        // another assembly none of its internal types, and System.Threading's
+        // `Named` made Corsac.Lang.RegAlloc's ambiguous, so no type at all.
+        // Only aside, never hidden: the library does not mark its public
+        // types (`partial class Thread`), and alone it is the type meant.
+        TypeSymbol? aside = null;
+        bool asideTwice = false;
         foreach ((string In, string Namespace) import in file.Imports)
         {
             // By its parts (TypeCandidateIn): a name and each namespace the
@@ -1133,12 +1141,11 @@ public sealed partial class Binder
             {
                 continue;
             }
-            // NOR THE CLASS LIBRARY'S INTERNAL TYPES, from a program's code:
-            // C# shows another assembly none of them, and System.Threading's
-            // `Named` made Corsac.Lang.RegAlloc's ambiguous, so no type at all.
             if (found?.Decl is { } decl && (decl.Outer is null || decl.Outer == decl.Namespace)
                 && (decl.Mods & Mods.Public) == 0 && ClassLibrarySide(decl) && BindingProgramCode())
             {
+                if (aside is not null && !ReferenceEquals(aside, found)) asideTwice = true;
+                aside = found;
                 continue;
             }
 
@@ -1150,6 +1157,7 @@ public sealed partial class Binder
             sym = found;
         }
 
+        if (sym == null && !asideTwice) sym = aside;
         return sym != null;
     }
 

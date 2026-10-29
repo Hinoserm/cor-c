@@ -149,8 +149,9 @@ public sealed partial class Binder
         // `object?` too, which is no class symbol (ReferenceMarked): kept, a
         // List<(int, object?)> looked up List$ValueTuple_int_object?!, a copy
         // the Monomorphiser never makes, and its members were the template's.
-        bool reference = spelt.Nullable && (spelt.ArrayRank > 0 || spelt.PointerDepth == 0 && ReferenceMarked(type));
-        bool element = spelt.ElementNullable && ReferenceMarked(bare);
+        // Not a type parameter's `T?`, which may be Nullable<T> once T is known.
+        bool reference = spelt.Nullable && (spelt.ArrayRank > 0 || spelt.PointerDepth == 0 && type.ParamName is null && ReferenceMarked(type));
+        bool element = spelt.ElementNullable && bare.ParamName is null && ReferenceMarked(bare);
         List<TypeRef> args = spelt.Args;
         if (spelt.Name == TypeRef.Tuple && bare.Symbol is TypeSymbol tuple)
         {

@@ -123,8 +123,8 @@ public sealed class Monomorphiser
 
     /// <summary>
     /// The class library's top-level types not declared public, by path: what
-    /// C# never shows another assembly, so a program's using directives bring
-    /// in none of them (Named). System.Threading's internal `Named`, beside
+    /// C# never shows another assembly, so through a program's using
+    /// directives each steps aside for any other type of its name (Named). System.Threading's internal `Named`, beside
     /// Corsac.Lang.RegAlloc's under the implicit `using System.Threading`,
     /// made the program's name ambiguous, and so no type at all.
     /// </summary>
@@ -656,13 +656,21 @@ public sealed class Monomorphiser
             }
         }
 
-        string? found = null;
+        string? found = null, aside = null;
+        bool asideTwice = false;
 
         foreach ((string In, string Namespace) import in _usings.Imports)
         {
-            if (import.In != at || !HasPath(import.Namespace, name)
-                || !_libraryCode && _libraryInternal.Contains(import.Namespace + "." + name))
+            if (import.In != at || !HasPath(import.Namespace, name))
             {
+                continue;
+            }
+            // A class library's type not declared public steps aside for any
+            // other of the name (Binder.ImportedNow), alone the one meant.
+            if (!_libraryCode && _libraryInternal.Contains(import.Namespace + "." + name))
+            {
+                asideTwice |= aside is not null;
+                aside = import.Namespace + "." + name;
                 continue;
             }
 
@@ -673,7 +681,7 @@ public sealed class Monomorphiser
             found = import.Namespace + "." + name;
         }
 
-        return found;
+        return found ?? (asideTwice ? null : aside);
     }
 
     private bool IsWord(TypeRef r)

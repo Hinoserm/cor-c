@@ -4145,14 +4145,7 @@ public sealed partial class Lowering
             {
                 StorePlace(place, value);
             }
-            // `x ??= y` over a nullable value answers the value, not the cell
-            // (Binder.CoalescingValue): the cell stored, never empty here, and
-            // what it holds handed on.
-            if (Binder.CoalescingValue(a, storedAs, _b.TypeOf))
-            {
-                return Convert(a, value, storedAs, storedAs.Underlying);
-            }
-            return value;
+            return Answered(a, value, storedAs);
         }
 
         // Compound: read, combine, write back, through the one place.
@@ -4459,8 +4452,17 @@ public sealed partial class Lowering
         args.Add(R(value));
         HintStruct(setter, _b.TypeOf(index.Target));
         CallMethod(setter, receiver, args, index.Target is BaseExpr);
-        return value;
+        return Answered(a, value, vp.Type);
     }
+
+    /// <summary>
+    /// What an assignment is worth, `value` the stored: `x ??= y` over a
+    /// nullable value (Binder.CoalescingValue) answers what the cell holds,
+    /// read without a test -- it was stored with one, and a statement's
+    /// answer, unread, is dropped with the read.
+    /// </summary>
+    private VReg Answered(AssignExpr a, VReg value, Type storedAs)
+        => Binder.CoalescingValue(a, storedAs, _b.TypeOf) ? NullableRead(value, storedAs) : value;
 
     private VReg EmitPropertyAssignment(AssignExpr a, MethodSymbol setter)
     {
@@ -4495,7 +4497,7 @@ public sealed partial class Lowering
             args.Add(R(receiver));
         args.Add(R(value));
         CallMethod(setter, receiver, args, a.Target is MemberExpr { Target: BaseExpr });
-        return value;
+        return Answered(a, value, vp.Type);
     }
 
     // ---- unary ---------------------------------------------------------------------------
