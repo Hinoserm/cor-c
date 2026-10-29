@@ -161,7 +161,7 @@ public sealed class OwnedFieldHints
             index.Add(name, index.Count);
         }
         void Names(IEnumerable<string> set, int count) { writer.Write(count); foreach (string name in set) writer.Write(index[name]); }
-        void Pairs(SortedSet<(string Callee, int Argument)> set) { writer.Write(set.Count); foreach ((string c, int a) in set) { writer.Write(index[c]); writer.Write(a); } }
+        void Pairs(IReadOnlyCollection<(string Callee, int Argument)> set) { writer.Write(set.Count); foreach ((string c, int a) in set) { writer.Write(index[c]); writer.Write(a); } }
         void Needs(LifetimeCondition c)
         {
             if (c.Count > LifetimeCondition.Limit) throw new ElfFormatException("Owned-field condition exceeds its bound");
@@ -261,16 +261,18 @@ public sealed class OwnedFieldHints
             for (int i = 0; i < result.Length; i++) result[i] = Name();
             return result;
         }
-        void NameSet(SortedSet<string> into) { foreach (string name in NameArray()) if (!into.Add(name)) throw new ElfFormatException("Duplicate owned-field hint name"); }
-        void Pairs(SortedSet<(string, int)> into)
+        void NameSet(SortedSet<string> into) => NamesInto(into.Add);
+        void NamesInto(Func<string, bool> add) { foreach (string name in NameArray()) if (!add(name)) throw new ElfFormatException("Duplicate owned-field hint name"); }
+        void Pairs(SortedSet<(string, int)> into) => PairsInto(into.Add);
+        void PairsInto(Func<(string, int), bool> add)
         {
             for (int i = Count(8); i > 0; i--)
-                if (!into.Add((Name(), reader.ReadInt32()))) throw new ElfFormatException("Duplicate owned-field hint pair");
+                if (!add((Name(), reader.ReadInt32()))) throw new ElfFormatException("Duplicate owned-field hint pair");
         }
         LifetimeCondition Needs()
         {
             LifetimeCondition c = new();
-            Pairs(c.Stays); NameSet(c.Fresh); Pairs(c.Fields);
+            PairsInto(c.Stays.Add); NamesInto(c.Fresh.Add); PairsInto(c.Fields.Add);
             if (c.Count > LifetimeCondition.Limit) throw new ElfFormatException("Owned-field condition exceeds its bound");
             return c;
         }

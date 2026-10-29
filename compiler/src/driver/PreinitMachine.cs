@@ -66,6 +66,13 @@ public sealed class PreinitMachine : Preinit.IMachine
         finally { Corsac.Lang.Target.Current = was; }
     }
 
+    public void Release()
+    {
+        _indexed = null;
+        _bodies.Clear(); _bodies.TrimExcess();
+        _functions.Clear(); _functions.TrimExcess();
+    }
+
     /// <summary>Where each routine's IR is, over the world's inputs, once a world.</summary>
     private void Index(PreinitWorld world)
     {

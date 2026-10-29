@@ -410,7 +410,7 @@ public sealed class KernelExports
 
     /// <summary>A small body's hash in the tables: the archive's own, its first 16 bytes.</summary>
     public static byte[] BodyHash(Lto.IrArchiveEntry entry)
-        => (entry.Hash.Length >= DeclarationReads.HashBytes ? entry.Hash : System.Security.Cryptography.SHA256.HashData(entry.Hash))[..DeclarationReads.HashBytes];
+        => entry.Hash.ToArray()[..DeclarationReads.HashBytes];
 
     /// <summary>The small bodies a bodies note holds (BodiesNote), or null.</summary>
     public static Lto.IrArchive? BodiesOf(byte[] note)

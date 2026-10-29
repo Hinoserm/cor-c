@@ -109,6 +109,14 @@ public static class Preinit
     public interface IMachine
     {
         void Run(PreinitWorld world, string routine);
+
+        /// <summary>
+        /// The routines' IR it has indexed and read let go, once a solve is
+        /// done: the machine lives for the process (Program), and held, it
+        /// kept every unit's directory and each routine it ran -- through the
+        /// whole link, which never asks for them again.
+        /// </summary>
+        void Release();
     }
 
     /// <summary>The machine the link runs initialisers with; none, and only stage 1 is done.</summary>
@@ -336,7 +344,8 @@ public static class Preinit
     private static Solution? Solve(List<ObjectFile> inputs, List<Notes> notes, bool longMode)
     {
         if (notes.Count == 0 || notes.All(n => n.Candidates.Count == 0 && n.Types.Count == 0)) return null;
-        return new Solver(notes, longMode, inputs).Run();
+        try { return new Solver(notes, longMode, inputs).Run(); }
+        finally { Machine?.Release(); }
     }
 
     /// <summary>What a link's notes name: the same for the units as compiled and as made again.</summary>

@@ -17,9 +17,9 @@ public sealed class LifetimeCondition : IEquatable<LifetimeCondition>
     /// <summary>A condition is never allowed to grow past this: it becomes "never" instead.</summary>
     public const int Limit = 32;
 
-    public SortedSet<(string Callee, int Argument)> Stays { get; } = new(StaysOrder.Instance);
-    public SortedSet<string> Fresh { get; } = new(StringComparer.Ordinal);
-    public SortedSet<(string Callee, int Argument)> Fields { get; } = new(StaysOrder.Instance);
+    public SmallSortedSet<(string Callee, int Argument)> Stays { get; } = new(StaysOrder.Instance);
+    public SmallSortedSet<string> Fresh { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<(string Callee, int Argument)> Fields { get; } = new(StaysOrder.Instance);
 
     /// <summary>
     /// NEEDS THAT HOLD ONE WAY OR THE OTHER: the callee keeps the argument
@@ -116,11 +116,11 @@ public sealed class LifetimeFields
     public const int Limit = 64;
 
     public bool Opaque { get; set; }
-    public SortedSet<long> Dirty { get; } = new();
-    public SortedSet<long> Fresh { get; } = new();
+    public SmallSortedSet<long> Dirty { get; } = new();
+    public SmallSortedSet<long> Fresh { get; } = new();
     /// <summary>Stores: the offset holds a fresh object if the condition holds. Otherwise (a load): the offset stays clean if it holds.</summary>
     public List<(long Offset, LifetimeCondition Condition, bool Stores)> Conditional { get; } = new();
-    public SortedSet<(string Callee, int Argument)> Merges { get; } = new(MergeOrder.Instance);
+    public SmallSortedSet<(string Callee, int Argument)> Merges { get; } = new(MergeOrder.Instance);
 
     public bool Bounded => Dirty.Count + Fresh.Count + Conditional.Count + Merges.Count <= Limit;
 

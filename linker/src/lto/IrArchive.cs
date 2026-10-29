@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using Corsac.Lang.Elf;
@@ -30,7 +31,7 @@ public sealed class IrArchive
         if (entry.Offset > total - entry.Length) throw new ElfFormatException("IR archive changed after validation");
         byte[] body = readAt(entry.Offset, entry.Length);
         if (body.Length != entry.Length) throw new ElfFormatException("IR archive changed after validation");
-        if (!FastHash.Of(body).SequenceEqual(entry.Hash)) throw new ElfFormatException("IR payload integrity mismatch: " + key);
+        if (!entry.Hash.Matches(FastHash.Of(body))) throw new ElfFormatException("IR payload integrity mismatch: " + key);
         return body;
     }
 
@@ -107,12 +108,26 @@ public sealed class IrArchive
         obj.Sections.Add(section);
     }
 
+    /// <summary>
+    /// ONE DIRECTORY A SECTION, whoever asks: the link's optimiser, the
+    /// preinit machine, the module linker and the backends each read every
+    /// unit's archive, and each read made the whole directory again -- two
+    /// copies of the compiler's 880 thousand records held through its link,
+    /// some 200 MB. Kept as long as the section is, so a section replaced
+    /// (a unit made again) or removed is read anew or let go.
+    /// </summary>
+    private static readonly ConditionalWeakTable<Section, IrArchive> ReadOf = new();
+
     public static IrArchive? Read(ObjectFile obj)
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
         if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid IR archive count/size");
-        Section section = sections[0];
+        return ReadOf.GetValue(sections[0], section => ReadSection(obj, section));
+    }
+
+    private static IrArchive ReadSection(ObjectFile obj, Section section)
+    {
         int size = section.Size;
         // A FILE OPENED ONCE, read by position: a link reads thousands of
         // records, and opening the object again for each was a syscall pair
@@ -175,8 +190,10 @@ public sealed class IrArchive
                 if (references.SequenceEqual(calls)) references = calls;
                 long decodeBytes = reader.ReadInt64();
                 if (decodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
-                int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hash = reader.ReadBytes(32);
-                if (offset != next - bodyStart || length < 0 || length > bytesCount - next || hash.Length != 32
+                int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hashBytes = reader.ReadBytes(32);
+                if (hashBytes.Length != 32) throw new ElfFormatException("Truncated IR body hash");
+                BodyHash hash = BodyHash.Of(hashBytes);
+                if (offset != next - bodyStart || length < 0 || length > bytesCount - next
                     || stream.Position > bodyStart || !entries.TryAdd(key, new(key, flags != 0, instructions, calls, next, length, hash, references, decodeBytes)))
                     throw new ElfFormatException("Invalid IR body directory");
                 next += length;
