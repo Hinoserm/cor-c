@@ -518,7 +518,11 @@ public sealed partial class Binder
     private bool LibraryGlobal(string name, out TypeSymbol? sym)
     {
         string bare = name[(name.LastIndexOf('.') + 1)..];
-        sym = _r.Types.TryGetValue(bare, out TypeSymbol? global) && global.Decl is { Outer: null } d
+        // ASKED OF THE INDEX TOO (TypeCandidate), not only the table: a unit
+        // of a project has the class library's declarations as it asks for
+        // them, and `__library.CollectionExpressionBuilder` named one no
+        // other line of the unit had asked for.
+        sym = TypeCandidate(bare, out TypeSymbol? global) && global?.Decl is { Outer: null } d
               && (d.Namespace.Length == 0 || d.Namespace == LibraryHome) ? global : null;
         // BY ITS OWN NAMESPACE, in a program: `System.Collections.Generic.
         // List<int>` is the library's List and `System.List<int>` names
@@ -9752,8 +9756,12 @@ public sealed partial class Binder
             {
                 if (!namespaces.Contains(holder.Decl?.Namespace ?? "")) continue;
                 // Not the extensions of a class the program cannot see: C#
-                // finds none in another assembly's internal classes.
-                if (HiddenFromProgram(holder)) continue;
+                // finds none in another assembly's internal classes. Save
+                // the library's own `__` classes (__ArrayExtensions), which
+                // give .NET's types the members .NET has on them -- an array's
+                // Clone, Contains, CopyTo: public in .NET, reached here by
+                // these, and still no name a program can write.
+                if (HiddenFromProgram(holder) && !holder.Name.StartsWith("__", StringComparison.Ordinal)) continue;
                 // Not one whose members were never asked for: it holds no
                 // extension method to find (Monomorphiser.MembersLater), and
                 // looking would declare every one of them.
