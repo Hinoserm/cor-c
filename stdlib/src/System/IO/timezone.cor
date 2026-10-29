@@ -649,7 +649,7 @@ public sealed class TimeZoneInfo : IEquatable<TimeZoneInfo>
 
 /// One period of daylight-saving rules, as .NET's TimeZoneInfo describes
 /// them.
-sealed class AdjustmentRule
+public sealed class AdjustmentRule
 {
     public DateTime DateStart { get; private set; }
     public DateTime DateEnd { get; private set; }
@@ -673,7 +673,7 @@ sealed class AdjustmentRule
 
 /// When daylight time starts or ends, as .NET says it: a fixed date, or the
 /// nth given weekday of a month (week 5 is the last).
-struct TransitionTime
+public struct TransitionTime
 {
     public DateTime TimeOfDay { get; private set; }
     public int Month { get; private set; }

@@ -38,7 +38,7 @@ namespace System.Drawing;
 /// <summary>One glyph's outline: points, which of them are on the curve,
 /// and where each contour ends. Coordinates are whatever the holder says
 /// they are -- font units out of the file, 26.6 pixels once scaled.</summary>
-internal class TrueTypeOutline
+public class TrueTypeOutline
 {
     public int PointCount;
     public int ContourCount;

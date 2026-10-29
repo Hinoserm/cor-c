@@ -4446,7 +4446,11 @@ public sealed partial class Binder
         try
         {
             if (bases) DeclareBases(d, sym);
-            if (members) DeclareMembersIn(d, sym);
+            if (members)
+            {
+                DeclareMembersIn(d, sym);
+                CheckExposedAccessibility(d, sym);
+            }
             else DeclareArguments(d, sym);
         }
         catch (Metadata.DeclarationDemand demand)
@@ -4458,6 +4462,81 @@ public sealed partial class Binder
         finally
         {
             _scope = wasScope;
+        }
+    }
+
+    /// <summary>
+    /// C#'S INCONSISTENT ACCESSIBILITY (CS0050-CS0061), for the class
+    /// library's public types: a public or protected member may not show a
+    /// type the library keeps internal -- its return, a parameter's, a
+    /// field's or a property's type, or the type's base or an interface. A
+    /// program reaches the member and cannot name what it hands back; C#
+    /// refuses the library. `Os.Exit(ExitCode)` and `Os.Console`'s IConsole
+    /// were two, and a kernel naming them broke when the types were hidden.
+    /// Only where this unit compiles the type's code: a program reading the
+    /// library's declarations is not told of the library's faults.
+    /// </summary>
+    private void CheckExposedAccessibility(TypeDecl d, TypeSymbol sym)
+    {
+        if (d.Specialised || d.Elsewhere || d.SignatureOnly || !ClassLibrarySide(d)
+            || (d.Mods & Mods.Public) == 0 || !(d.Outer is null || d.Outer == d.Namespace)) return;
+        bool everyPublic = d.Kind == TypeKind.Interface;
+        bool Shown(MemberDecl m) => everyPublic || (m.Mods & (Mods.Public | Mods.Protected)) != 0;
+
+        if (sym.Base is { } baseType && LibraryInternal(baseType))
+            Error(d, $"CS0060: Inconsistent accessibility: base class '{baseType.Key}' is less accessible than class '{sym.Key}'");
+        // An interface's base interfaces, as C# has it: a class may implement
+        // an internal interface, which only its own assembly sees it by.
+        if (d.Kind == TypeKind.Interface)
+        foreach (TypeSymbol face in sym.Interfaces)
+            if (LibraryInternal(face))
+                Error(d, $"CS0061: Inconsistent accessibility: base interface '{face.Key}' is less accessible than interface '{sym.Key}'");
+
+        foreach (MemberDecl member in d.Members)
+        {
+            if (!Shown(member)) continue;
+            switch (member)
+            {
+                case FieldDecl field when sym.Fields.FirstOrDefault(f => f.Name == field.Name) is { } f && Exposed(f.Type) is { } shown:
+                    Error(field, $"CS0052: Inconsistent accessibility: field type '{shown.Key}' is less accessible than field '{sym.Key}.{field.Name}'");
+                    break;
+                case PropertyDecl property when sym.Methods.FirstOrDefault(m => m.Name == "get_" + property.Name || m.Name == "set_" + property.Name) is { } accessor:
+                {
+                    Type type = accessor.Name.StartsWith("get_", StringComparison.Ordinal) ? accessor.Returns : accessor.Params[^1].Type;
+                    if (Exposed(type) is { } shown)
+                        Error(property, $"CS0053: Inconsistent accessibility: property type '{shown.Key}' is less accessible than property '{sym.Key}.{property.Name}'");
+                    break;
+                }
+                // Not a copy the compiler made of a generic method over some
+                // argument (its name spelt with `$`): C# judges the method as
+                // declared, not each instantiation of it.
+                case MethodDecl method when method.ExplicitInterface is null && !method.LocalCopy && method.Name.IndexOf('$') < 0
+                    && sym.Methods.FirstOrDefault(m => ReferenceEquals(m.Decl, method)) is { } m:
+                {
+                    if (Exposed(m.Returns) is { } returned)
+                        Error(method, $"CS0050: Inconsistent accessibility: return type '{returned.Key}' is less accessible than method '{sym.Key}.{method.Name}'");
+                    foreach (ParamSymbol p in m.Params)
+                        if (Exposed(p.Type) is { } taken)
+                            Error(method, $"CS0051: Inconsistent accessibility: parameter type '{taken.Key}' is less accessible than method '{sym.Key}.{method.Name}'");
+                    break;
+                }
+            }
+        }
+
+        // The library's own internal type, top-level, not a specialisation.
+        bool LibraryInternal(TypeSymbol t)
+            => t.Decl is { Specialised: false } td && (td.Outer is null || td.Outer == td.Namespace)
+            && (td.Mods & Mods.Public) == 0 && ClassLibrarySide(td);
+
+        // The first internal type a type shows: itself, its elements, its arguments.
+        TypeSymbol? Exposed(Type t)
+        {
+            if (t.Symbol is { } named && LibraryInternal(named)) return named;
+            if (t.Element is { } element && Exposed(element) is { } inElement) return inElement;
+            if (t.Pointee is { } pointee && Exposed(pointee) is { } inPointee) return inPointee;
+            foreach (Type a in t.Args) if (Exposed(a) is { } inArg) return inArg;
+            if (t.Symbol?.TemplateArgTypes is { Count: > 0 } made) foreach (Type a in made) if (Exposed(a) is { } inMade) return inMade;
+            return null;
         }
     }
 

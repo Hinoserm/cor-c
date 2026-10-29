@@ -28,7 +28,7 @@ using System;
 namespace System.Drawing;
 
 /// <summary>A typeface as its file describes it.</summary>
-internal abstract class FontFace
+public abstract class FontFace
 {
     /// The family's name, as the file gives it.
     public abstract string FamilyName { get; }
@@ -118,7 +118,7 @@ public class GlyphBitmap
 /// draws crisp text from, this is what a screen with the colours to blend
 /// a fractional coverage against a background draws from.
 /// </summary>
-internal class GlyphCoverage
+public class GlyphCoverage
 {
     public int Width;
     public int Height;

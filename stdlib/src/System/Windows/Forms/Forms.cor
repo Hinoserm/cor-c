@@ -5847,7 +5847,7 @@ public enum Shortcut
 /// A tree of menu items the seat runs (one per MainMenu, ContextMenu or
 /// ContextMenuStrip): numbered, written as the seat takes it, and told what
 /// the seat did with it.
-internal abstract class MenuSource
+public abstract class MenuSource
 {
     internal int RootId;
     internal bool Sent;                    // the seat has it: a change is sent again at once

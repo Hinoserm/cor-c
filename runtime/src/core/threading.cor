@@ -3870,7 +3870,7 @@ public readonly struct CancellationTokenRegistration : IDisposable, IAsyncDispos
 // ---- the scheduler -----------------------------------------------------------
 
 /// One pending timer: a deadline on the monotonic clock and what to post.
-class TimerEntry
+public class TimerEntry
 {
     public long Deadline;
     public long Sequence;
@@ -5585,7 +5585,7 @@ public static partial class ThreadPool
 // enter holds it, and the other runs with none of its own and keeps none.
 
 /// What a run in a context displaced, put back as it ends (AsyncContext).
-struct AsyncContextSaved
+public struct AsyncContextSaved
 {
     public CultureInfo? Culture;
     public CultureInfo? UICulture;
@@ -7192,7 +7192,7 @@ namespace System.Threading
 
         /// Takes a waiter that gave up out of the queue, saying whether it was
         /// still there (and so had not been granted a permit).
-        public bool Withdraw(SemaphoreWaiter waiter)
+        internal bool Withdraw(SemaphoreWaiter waiter)
         {
             nuint gate = Atom.At(this, Atom.SecondWord);
             Atom.Enter(gate);
