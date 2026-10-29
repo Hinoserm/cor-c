@@ -48,6 +48,18 @@ before 0b3a85a5; 1.65 GB in all):
 | SortedSet<(string, int)> + nodes                |  67 |
 | Symbol objects and their dictionaries           |  95 |
 
+After 4dc36797 and 14eda0f5 (code and data left in their files until laid
+out, step 1 below), the same relink, byte-identical:
+
+| phase                          | live (MB) | before |
+|--------------------------------|----------:|-------:|
+| read objects                   |       238 |    413 |
+| archives and hints             |      1009 |   1184 |
+| catches and owned fields       |      1488 |   1663 |
+| units regenerated              |      1927 |   2102 |
+| heap decision                  |      1930 |   2105 |
+| layout and write               |       573 |    748 |
+
 ## The plan
 
 The link holds the whole program -- every section's bytes, every symbol by
@@ -56,11 +68,12 @@ phase to the last. A link that fits 256 MB holds what the phase at hand
 needs and reads the rest from the objects as it goes. In order of size:
 
 1. **Section contents stay in their files** until layout and write, as the
-   IR archives and notes already do (Section.FileBacked, ElfReader.
-   LeftInFile). About 30 linker files read Section.Bytes (Preinit,
-   DuplicateCutter, DescriptorPacker, KernelExports, the PE and ELF
-   writers); each reads through Section.Content, a window of the file, or
-   is moved to the write. Some 340 MB on the compiler's link.
+   IR archives and notes do (Section.FileBacked, ElfReader.LeftInFile).
+   DONE for the compiler's own link (175 MB): Section.Bytes brings a section
+   in on first use, so a reader that needs all of it still works, and the
+   readers before layout read where it is (Section.Read, ReadAt, Length).
+   Any new early reader of Bytes undoes it for its sections: look with a
+   stack trace in Section.Load, as was done to find these.
 2. **Names once, ids everywhere.** A symbol's name is held once, in one
    pool, and relocations, symbols, archive call lists and the analyses'
    tables refer to it by an integer. The strings (222 MB), string arrays
