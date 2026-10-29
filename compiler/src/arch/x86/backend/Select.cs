@@ -4023,14 +4023,15 @@ internal sealed partial class Selector
             Error("syscall with more than six arguments");
             return;
         }
-        // THE SIXTH ARGUMENT FIRST, onto the stack, while every register is
-        // free: once the number and five arguments hold the other six, a
-        // seventh is there only where nothing else is live, and the value
-        // read into one from the frame had none -- "no register" for any
-        // six-argument call not inlined into its caller. EBP, saved above
-        // it, takes it from there for the trap.
+        // A SIXTH ARGUMENT NOT A CONSTANT FIRST, onto the stack, while every
+        // register is free: once the number and five arguments hold the
+        // other six, a seventh is there only where nothing else is live, and
+        // the value read into one from the frame had none -- "no register"
+        // for any six-argument call not inlined into its caller. EBP, saved
+        // above it, takes it from there for the trap. A constant goes into
+        // EBP itself once EBP is saved.
         bool sixth = args == 6;
-        // A constant needs no register, and no round trip through the stack.
+        // Within a word, signed or not: unsigned literals are taken as they are.
         MImm? constant = sixth && i.Operands[6] is ImmOperand { Value: >= int.MinValue and <= uint.MaxValue } known ? new MImm(unchecked((int)known.Value)) : null;
         if (sixth && constant is null) Emit(MOp.Push, RM(i.Operands[6]));
         Mov(Eax, RM(i.Operands[0]));

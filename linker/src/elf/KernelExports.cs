@@ -422,7 +422,7 @@ public sealed class KernelExports
     /// <summary>
     /// AND THE FACTS ITS LINK WROTE BESIDE IT, "Q:" an interrupt fact's and
     /// "Y:" a float fact's name (InterruptNotes.Said, X87Notes.Said), and
-    /// "Q:" alone its set of handlers (HandlersSaid): a
+    /// "Q:" alone its set of handlers (HandlersSaid). A
     /// module's link judges its handlers and its float code through the
     /// kernel's, and its table holds it to the ones it walked.
     /// </summary>
@@ -485,15 +485,15 @@ public sealed class KernelExports
             else if (kernel.Names.Contains(name)) read["Q:" + name] = DeclarationReads.Empty;
         }
         if (walked.Count > 0) read[Handlers] = HandlersSaid(kernelInterrupts);
-        // THE FLOAT CHECK'S: every float fact of the kernel's -- only the
-        // methods that reach float code are written beside it, and a call
-        // from anywhere may meet one -- and, for every kernel name the
-        // module's units call or take, none, where it has none: one that
-        // floats later refuses the module. Whether or not the units carry
-        // facts of their own (judges): one with none is judged by every name
-        // it takes (X87Notes.Check's unknown).
-        // Units with no facts of their own are judged only by the names they
-        // take: those, and the kernel's float facts those reach.
+        // THE FLOAT CHECK'S. Where the units carry facts (judges), every
+        // float fact of the kernel's, as the check reads them all -- only the
+        // methods that reach float code are written beside it. Where they
+        // carry none, the check judges them by the names they take: those,
+        // and the kernel's facts their calls reach. Either way a kernel name
+        // they take or reach with no fact is held to having none, so one
+        // that floats later refuses the module. The kernel's own entered and
+        // escaping facts, which the check also starts from, are judged by the
+        // kernel's own link.
         if (judges || kernelFloats.Count > 0)
         {
             Dictionary<string, Lto.X87Notes.Fact> y = new(StringComparer.Ordinal);

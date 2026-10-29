@@ -5,11 +5,14 @@
 // mapped
 // woke 0
 // refused -22
+// constant woke 0
+// constant refused -22
 //
 // The sixth argument goes to EBP for the trap; read from a parameter, it
 // had no register while the other six held the number and five arguments.
 // futex(FUTEX_WAKE_BITSET) reads the sixth as its bit set: zero is refused
-// (EINVAL), any other wakes nobody (0), so a lost or wrong sixth argument shows.
+// (EINVAL), any other wakes nobody (0), so a lost or zeroed sixth argument
+// shows -- read from a parameter, and written as a constant (straight into EBP).
 using System.Runtime.CompilerServices;
 
 static class Program
@@ -31,6 +34,14 @@ static class Program
         // futex(at, FUTEX_WAKE_BITSET, 1, 0, 0, bits)
         System.Console.WriteLine("woke " + Call(240, (SyscallWord)at, 10, 1, 0, 0, _bits));
         System.Console.WriteLine("refused " + Call(240, (SyscallWord)at, 10, 1, 0, 0, 0));
+        Constant((SyscallWord)at);
         return 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Constant(SyscallWord at)
+    {
+        System.Console.WriteLine("constant woke " + (int)Sys.Syscall(240, at, 10, 1, 0, 0, 0xFFFFFFFF));
+        System.Console.WriteLine("constant refused " + (int)Sys.Syscall(240, at, 10, 1, 0, 0, 0));
     }
 }
