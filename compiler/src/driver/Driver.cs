@@ -750,12 +750,19 @@ public static class Driver
         if (declarations is not null)
         {
             // By key: the binder's declaration is a copy of the one read.
-            Dictionary<string, IReadOnlyCollection<string>?> unread = new(StringComparer.Ordinal);
+            // Read by one symbol of a key, it is read; the names probed of
+            // each that was not, all of them.
+            Dictionary<string, HashSet<string>?> unread = new(StringComparer.Ordinal);
             foreach (TypeSymbol type in front.Value.bound.Types.Values)
-                if (type.Decl is not null)
-                    unread[type.Key] = !type.MembersPending ? null
-                        : unread.TryGetValue(type.Key, out var seen) && seen is null ? null
-                        : (IReadOnlyCollection<string>?)type.ProbedNames ?? Array.Empty<string>();
+            {
+                if (type.Decl is null) continue;
+                bool had = unread.TryGetValue(type.Key, out HashSet<string>? names);
+                if (!type.MembersPending) { unread[type.Key] = null; continue; }
+                if (had && names is null) continue;
+                names ??= new(StringComparer.Ordinal);
+                if (type.ProbedNames is { } probed) names.UnionWith(probed);
+                unread[type.Key] = names;
+            }
             declarations.MembersUnread(decl => unread.GetValueOrDefault(Binder.TypeKey(decl)));
         }
         List<RegistrySchema> schemas = new(front.Value.unit.RegistrySchemas);

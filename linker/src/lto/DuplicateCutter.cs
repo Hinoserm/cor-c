@@ -45,7 +45,7 @@ internal static class DuplicateCutter
             Section? section = loser.Section;
             if (section is null || section.Kind == SectionKind.Uninitialised || loser.Size <= 0) { kept.Add(loser); continue; }
             long start = loser.Offset;
-            long end = section.Bytes.Count;
+            long end = section.Length;
             bool alias = false;
             if (!placed.TryGetValue(section, out var sorted)) placed.Add(section, sorted = Placed(obj, section));
             int at = Array.BinarySearch(sorted.Offsets, start);

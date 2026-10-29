@@ -1025,7 +1025,15 @@ public sealed class IndexedDeclarations : IDisposable
     public byte[] KernelReads()
     {
         string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
-        return catalog.KernelReads(loaded, queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
+        // A type whose members the unit never asked for, by its header and
+        // the names it was told it has none of, as its receipt keeps it
+        // (DeclarationFingerprint.Of, "H:" and "M:"): the link holds the
+        // module to what it read of the kernel, and no more.
+        // A name told absent is asked as a lookup, whose answer is kept
+        // when it is nothing as well.
+        IEnumerable<string> read = loaded.Select(key => membersUnread.ContainsKey(key) ? DeclarationFingerprint.HeaderKey(key) : key);
+        IEnumerable<string> absent = membersUnread.SelectMany(unread => unread.Value.Select(name => DeclarationFingerprint.MemberKey(unread.Key, name)));
+        return catalog.KernelReads(read, queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name).Concat(absent));
     }
 
     /// <summary>

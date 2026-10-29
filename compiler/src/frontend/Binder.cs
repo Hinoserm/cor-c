@@ -4922,8 +4922,8 @@ public sealed partial class Binder
     /// nothing a unit says. NOT EXTERNAL: another image's statics are laid
     /// out in the order its types are (LayOut). NOT A SPECIALISATION, whose
     /// bodies are this unit's. Then the same as an imported declaration's
-    /// members read again later (IndexedDeclarations.ReadLater): A CLASS OR
-    /// A STRUCT, NOT PARTIAL, NO EXTENSION METHOD and NO CONSTANT BUT A
+    /// members read again later (IndexedDeclarations.ReadLater): A CLASS, A
+    /// STRUCT OR AN INTERFACE THAT IS NO TEMPLATE, NOT PARTIAL, NO EXTENSION METHOD and NO CONSTANT BUT A
     /// PLAIN ONE; and NO GENERIC METHOD, whose signatures are read with its
     /// own parameters in scope.
     /// </summary>

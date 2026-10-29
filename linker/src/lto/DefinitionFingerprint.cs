@@ -79,7 +79,8 @@ public static class DefinitionFingerprint
             writer.Write((byte)1); writer.Write((int)section.Kind); writer.Write(symbol.Size); writer.Write(symbol.IsFunction);
             if (section.Kind != SectionKind.Uninitialised)
             {
-                byte[] bytes = section.Bytes.Slice(checked((int)symbol.Offset), checked((int)symbol.Size));
+                // Where it is: a section left in its file stays there (Section.Read).
+                byte[] bytes = section.Read(symbol.Offset, checked((int)symbol.Size));
                 SortedRelocations.Range relocations = index.Within(section, symbol.Offset, symbol.Offset + symbol.Size);
                 foreach (Relocation relocation in relocations)
                 {

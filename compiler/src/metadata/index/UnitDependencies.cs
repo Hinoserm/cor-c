@@ -169,7 +169,7 @@ public static class UnitDependencies
                     for (int k = 0; k < probed; k++)
                     {
                         string name = reader.ReadString();
-                        if (appeared is null && lease.Records.Any(record => record.MemberNames.Contains(name))) appeared = name;
+                        if (appeared is null && lease.Records.Any(record => Holds(record.MemberNames, name))) appeared = name;
                     }
                     if (!declaration.SequenceEqual(Fingerprint(lease.Records, Dependence.Header))) return "header of " + Named(key) + " changed";
                     if (appeared is not null) return Named(key) + " now has a member named " + appeared;
@@ -226,6 +226,19 @@ public static class UnitDependencies
     /// does not say which of them moved; one file is named as the one that
     /// changed, several as the ones one of which did.
     /// </summary>
+    /// <summary>Whether a sorted list of member names (SourceDeclaration.MemberNames) holds one.</summary>
+    private static bool Holds(IReadOnlyList<string> sorted, string name)
+    {
+        int low = 0, high = sorted.Count - 1;
+        while (low <= high)
+        {
+            int mid = (low + high) / 2, order = string.CompareOrdinal(sorted[mid], name);
+            if (order == 0) return true;
+            if (order < 0) low = mid + 1; else high = mid - 1;
+        }
+        return false;
+    }
+
     private static string TextChanged(string key, IReadOnlyList<SourceDeclaration> records)
     {
         string[] files = records.Select(record => Path.GetFileName(record.Path)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();

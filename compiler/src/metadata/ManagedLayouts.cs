@@ -100,15 +100,17 @@ public static class ManagedLayouts
             foreach (TypeSymbol type in described)
                 if (type.Key == DumpLayout) Console.Error.WriteLine("layout " + type.Key + " described as " + why.GetValueOrDefault(type));
 
+        // NOR AN INTERFACE WHOSE MEMBERS IT NEVER ASKED FOR: named and no
+        // more, it has nothing to disagree about, and is no reader of them
+        // (Dependence.Header). Described, they would be declared here. Chosen
+        // before any record is made, as describing one type declares others.
+        List<TypeSymbol> toDescribe = bound.Types.Values.Distinct()
+            .Where(type => described.Contains(type))
+            .Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 })
+            .Where(type => !(type.Kind == TypeKind.Interface && type.MembersPending)).ToList();
         IEnumerable<ManagedTypeLayout> Records()
         {
-            foreach (TypeSymbol type in bound.Types.Values.Distinct()
-                .Where(type => described.Contains(type))
-                .Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 })
-                // NOR ONE WHOSE MEMBERS IT NEVER ASKED FOR: named and no more,
-                // it has nothing to disagree about, and is no reader of them
-                // (Dependence.Header). Described, they would be declared here.
-                .Where(type => !type.MembersPending))
+            foreach (TypeSymbol type in toDescribe)
             {
                 using MemoryStream stream = new();
                 using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);

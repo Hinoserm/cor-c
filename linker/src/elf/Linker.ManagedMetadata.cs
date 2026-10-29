@@ -32,8 +32,8 @@ public static partial class Linker
             void Table(Symbol? symbol, int member, string suffix, int minimum)
             {
                 if (symbol is null) return;
-                if (symbol.Offset < 0 || symbol.Size < minimum || symbol.Offset > symbol.Section!.Bytes.Count
-                    || symbol.Size > symbol.Section.Bytes.Count - symbol.Offset)
+                if (symbol.Offset < 0 || symbol.Size < minimum || symbol.Offset > symbol.Section!.Length
+                    || symbol.Size > symbol.Section.Length - symbol.Offset)
                 { errors.Add(unit.Input.Name + ": invalid managed table " + symbol.Name); return; }
                 string alias = "__corsac_unit_" + i + "_" + suffix;
                 if (inputs.Any(input => input.Object.Symbols.Any(existing => existing.Name == alias)))

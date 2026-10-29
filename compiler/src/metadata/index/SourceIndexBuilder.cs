@@ -54,9 +54,13 @@ public static class SourceIndexBuilder
         using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
         {
             int depth = 0;
-            foreach (Token token in tokens)
+            // From its first token, found by position: the tokens are in order.
+            int first = 0, last = tokens.Count;
+            while (first < last) { int mid = (first + last) / 2; if (tokens[mid].Pos < type.SourceFrom) first = mid + 1; else last = mid; }
+            for (int at = first; at < tokens.Count; at++)
             {
-                if (token.Pos < type.SourceFrom || token.Kind == Tok.End) continue;
+                Token token = tokens[at];
+                if (token.Kind == Tok.End) continue;
                 if (token.Pos >= type.SourceTo) break;
                 if (depth == 0 && token.Kind is Tok.LBrace or Tok.Semi) break;
                 if (token.Kind is Tok.LParen or Tok.LBracket) depth++;

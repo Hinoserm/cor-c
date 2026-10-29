@@ -353,7 +353,8 @@ internal static class Elf64Object
             {
                 // A unit's IR stays in its file when the file is known: a link
                 // reads it a record at a time (IrArchive). So do the notes a
-                // link reads and drops (ElfReader.LeftInFile).
+                // link reads and drops, and its code and data until they are
+                // laid out (ElfReader.LeftInFile).
                 if (ElfReader.BackingPath is string backing && ElfReader.LeftInFile(names[i], kind))
                 {
                     Content(f, h, $"section '{names[i]}'");

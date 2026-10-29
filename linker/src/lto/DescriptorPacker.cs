@@ -83,7 +83,7 @@ public static class DescriptorPacker
         {
             Symbol d = here[i];
             long start = d.Offset, end = d.Offset + d.Size;
-            if (d.Size <= HeaderWords * w || d.Size % w != 0 || start % w != 0 || end > s.Bytes.Count) continue;
+            if (d.Size <= HeaderWords * w || d.Size % w != 0 || start % w != 0 || end > s.Length) continue;
             // Nothing else inside it but aliases at its start.
             List<Symbol> aliases = new();
             bool alone = true;

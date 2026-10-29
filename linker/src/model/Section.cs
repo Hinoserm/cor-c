@@ -15,7 +15,7 @@ public sealed class Section
     {
         get
         {
-            if (FileBacked is not null) Load();
+            if (_backing is not null) Load();
             return _bytes;
         }
     }
@@ -38,7 +38,25 @@ public sealed class Section
     /// (ElfReader.ReadObjectFile, LeftInFile). Content, OpenRead and ReadAt
     /// read it where it is; Bytes brings it in.
     /// </summary>
-    public (string Path, long Offset, int Length)? FileBacked { get; set; }
+    public (string Path, long Offset, int Length)? FileBacked
+    {
+        // ONE REFERENCE, read and written whole: Load clears it under its
+        // lock while another thread asks Size or ReadAt, and a tuple of three
+        // fields could be read half cleared.
+        get => _backing is { } b ? (b.Path, b.Offset, b.Length) : null;
+        set => Volatile.Write(ref _backing, value is { } v ? new Backing(v.Path, v.Offset, v.Length) : null);
+    }
+    private sealed record Backing(string Path, long Offset, int Length);
+    private Backing? _backing;
+
+    /// <summary>
+    /// One read handle a file, kept for the process: a section left in its
+    /// file is read a word at a time (ReadAt), and opening the file for each
+    /// made an open and a close of every read.
+    /// </summary>
+    internal static Microsoft.Win32.SafeHandles.SafeFileHandle Handle(string path)
+        => Handles.GetOrAdd(path, key => File.OpenHandle(key, FileMode.Open, FileAccess.Read, FileShare.Read));
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Microsoft.Win32.SafeHandles.SafeFileHandle> Handles = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The IR archive's directory read from this section, once (IrArchive.Read):
@@ -49,7 +67,10 @@ public sealed class Section
     /// </summary>
     internal object? ArchiveRead;
 
-    public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : FileBacked?.Length ?? HandedOver ?? _bytes.Count;
+    /// <summary>Bytes.Count, without bringing a section left in its file in.</summary>
+    public int Length => _backing?.Length ?? _bytes.Count;
+
+    public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : _backing?.Length ?? HandedOver ?? _bytes.Count;
 
     /// <summary>
     /// How many bytes this section had when a link took them (HandOver): the
@@ -106,11 +127,10 @@ public sealed class Section
     public bool ReadAt(long at, Span<byte> into)
     {
         if (HandedOver is not null || at < 0) return false;
-        if (FileBacked is (string path, long offset, int length))
+        if (_backing is { } backing)
         {
-            if (at + into.Length > length) return false;
-            using Microsoft.Win32.SafeHandles.SafeFileHandle file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            return RandomAccess.Read(file, into, offset + at) == into.Length;
+            if (at + into.Length > backing.Length) return false;
+            return RandomAccess.Read(Handle(backing.Path), into, backing.Offset + at) == into.Length;
         }
         lock (_bytes)
         {
@@ -118,6 +138,17 @@ public sealed class Section
             for (int k = 0; k < into.Length; k++) into[k] = _bytes[(int)at + k];
         }
         return true;
+    }
+
+    /// <summary>
+    /// `length` bytes at `at`, as a new array, from the chunks or the file,
+    /// without bringing a section left in its file in (ReadAt).
+    /// </summary>
+    public byte[] Read(long at, int length)
+    {
+        byte[] bytes = new byte[length];
+        if (!ReadAt(at, bytes)) throw new InvalidOperationException($"section '{Name}' has no {length} bytes at 0x{at:x}");
+        return bytes;
     }
 
     /// <summary>The section's content, read from its file if it was left there.</summary>

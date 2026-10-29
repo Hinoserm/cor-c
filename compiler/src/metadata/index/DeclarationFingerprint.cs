@@ -21,9 +21,24 @@ public static class DeclarationFingerprint
     /// <summary>Whether a lookup's key is an interface plan's, answered by every record under it.</summary>
     public static bool IsPlan(string key) => (key.StartsWith("I:", StringComparison.Ordinal) || key.StartsWith("X:", StringComparison.Ordinal)) && key.EndsWith('\n');
 
+    /// <summary>
+    /// A type's header as a key of the tables ("H:", then its "T:" key's
+    /// rest): what a unit that never declared its members read of it
+    /// (UnitDependencies, Dependence.Header).
+    /// </summary>
+    public static string HeaderKey(string typeKey) => "H:" + typeKey[2..];
+
+    /// <summary>
+    /// One member name of a type ("M:", its "T:" key's rest, a line, the
+    /// name): said where the type has a member of that name, nothing where
+    /// not -- what a unit told it had none holds the kernel to.
+    /// </summary>
+    public static string MemberKey(string typeKey, string name) => "M:" + typeKey[2..] + "\n" + name;
+
     /// <summary>What <paramref name="index"/> says under <paramref name="key"/>: <see cref="DeclarationReads.Empty"/> where nothing.</summary>
     public static byte[] Of(DeclarationIndex index, string key)
     {
+        if (key.StartsWith("H:", StringComparison.Ordinal) || key.StartsWith("M:", StringComparison.Ordinal)) return OfType(index, key);
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         bool plan = IsPlan(key);
         // The families by the slots they take (InterfaceFamilies.PlanSaid):
@@ -36,6 +51,25 @@ public static class DeclarationFingerprint
             Append(hash, Said(record));
         }
         return hash.GetHashAndReset()[..DeclarationReads.HashBytes];
+    }
+
+    /// <summary>A header key's answer, or a member name key's (HeaderKey, MemberKey).</summary>
+    private static byte[] OfType(DeclarationIndex index, string key)
+    {
+        bool member = key[0] == 'M';
+        int line = key.LastIndexOf('\n');
+        string typeKey = "T:" + (member ? key[2..line] : key[2..]);
+        string name = member ? key[(line + 1)..] : "";
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        bool said = false;
+        foreach (DeclarationRecord record in index.Find(typeKey))
+        {
+            SourceDeclaration declared = SourceDeclaration.Decode(record);
+            if (member && !declared.MemberNames.Contains(name)) continue;
+            Append(hash, member ? Encoding.UTF8.GetBytes(name) : declared.HeaderHash);
+            said = true;
+        }
+        return said ? hash.GetHashAndReset()[..DeclarationReads.HashBytes] : DeclarationReads.Empty;
     }
 
     /// <summary>A record as the stamp hashes it: a type's declaration hash, anything else's payload.</summary>
@@ -62,6 +96,12 @@ public static class DeclarationFingerprint
         foreach (DeclarationRecord record in index.WithPrefix(""))
         {
             keys.Add(record.Key);
+            // And each type by its header, and by every member name it has.
+            if (record.Key.StartsWith("T:", StringComparison.Ordinal))
+            {
+                keys.Add(HeaderKey(record.Key));
+                foreach (string name in SourceDeclaration.Decode(record).MemberNames) keys.Add(MemberKey(record.Key, name));
+            }
             if (record.Key.StartsWith("I:", StringComparison.Ordinal) || record.Key.StartsWith("X:", StringComparison.Ordinal))
             {
                 int line = record.Key.IndexOf('\n');

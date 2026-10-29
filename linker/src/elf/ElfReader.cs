@@ -212,7 +212,10 @@ public static class ElfReader
     /// contract, the interrupt checks' facts. Held in memory, the compiler's
     /// own link kept 170 MB of notes, half of what its objects took, from
     /// the first phase to the last -- and 512 MB more of interrupt facts,
-    /// for a program with no interrupt handler.
+    /// for a program with no interrupt handler. AND THE CODE AND DATA, which
+    /// a link reads in a few places before it lays them out (Section.Bytes
+    /// brings one in, Section.ReadAt reads a word where it is): held from the
+    /// first phase, they were 175 MB of the compiler's own link.
     /// </summary>
     internal static bool LeftInFile(string name, SectionKind kind)
         => kind is SectionKind.Code or SectionKind.ReadOnlyData or SectionKind.Data || name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName or Corsac.Lang.Lto.HeapRecords.SectionName
@@ -244,9 +247,15 @@ public static class ElfReader
         if (source.Length >= Elf.HeaderSize)
         {
             ReadOnlySpan<byte> ident = source.Read(0, 6, "ELF header");
-            // x86-64 objects are read whole, as they always were (Elf64Object).
+            // x86-64 objects are read whole (Elf64Object), and what a link
+            // leaves in the file is left there all the same: the array goes
+            // when the read is done.
             if (ident[..4].SequenceEqual(Elf.Magic) && ident[4] == Elf.Class64 && ident[5] == Elf.Data2Lsb)
-                return WithSource(ReadObject(File.ReadAllBytes(full)), leaveInFile ? full : null);
+            {
+                BackingPath = leaveInFile ? full : null;
+                try { return WithSource(ReadObject(File.ReadAllBytes(full)), leaveInFile ? full : null); }
+                finally { BackingPath = null; }
+            }
         }
         BackingPath = leaveInFile ? full : null;
         try { return WithSource(ReadObject32(source), leaveInFile ? full : null); }
@@ -431,17 +440,18 @@ public static class ElfReader
             {
                 // A unit's IR stays in its file when the file is known: a link
                 // reads it a record at a time (IrArchive). So do the notes a
-                // link reads and drops (LeftInFile).
-                if (ElfReader.BackingPath is string backing && LeftInFile(names[i], kind.Value))
-                {
-                    src.Check(h.Offset, h.Size, $"section '{names[i]}'");
-                    s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));
-                }
-                else if (MetadataOnly && kind.Value != SectionKind.Note)
+                // link reads and drops, and its code and data until they are
+                // laid out (LeftInFile). A read for metadata keeps no bytes.
+                if (MetadataOnly && kind.Value != SectionKind.Note)
                 {
                     // Its size and no bytes, for the symbols in it.
                     src.Check(h.Offset, h.Size, $"section '{names[i]}'");
                     s.SizeOnly(checked((int)h.Size));
+                }
+                else if (ElfReader.BackingPath is string backing && LeftInFile(names[i], kind.Value))
+                {
+                    src.Check(h.Offset, h.Size, $"section '{names[i]}'");
+                    s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));
                 }
                 else src.ReadInto(s.Bytes, h.Offset, h.Size, $"section '{names[i]}'");
             }
@@ -604,8 +614,22 @@ public static class ElfReader
             // here for the table and let go, so the section stays where it is
             // until the image is laid out (LeftInFile). Loaded for its addends,
             // every unit's code and data came into memory as it was read.
-            byte[]? content = target.FileBacked is not null ? target.Content() : null;
+            // A window of it at a time, not one array the size of its code:
+            // relocations come in order of offset, near enough.
+            byte[]? window = target.FileBacked is not null ? new byte[64 * 1024] : null;
+            long windowAt = -1;
+            int windowLength = 0;
             int targetSize = target.Size;
+            byte At(long offset)
+            {
+                if (offset < windowAt || offset >= windowAt + windowLength)
+                {
+                    windowAt = Math.Max(0, offset - 16);
+                    windowLength = (int)Math.Min(window!.Length, targetSize - windowAt);
+                    if (!target.ReadAt(windowAt, window.AsSpan(0, windowLength))) throw new ElfFormatException($"section '{target.Name}' ended early in its file");
+                }
+                return window![offset - windowAt];
+            }
             for (int j = 0; j < count; j++)
             {
                 if (j / perPiece != pieceAt)
@@ -655,7 +679,7 @@ public static class ElfReader
                     }
                 }
                 // REL: the addend is whatever sits in the word.
-                int addend = content is not null ? BinaryPrimitives.ReadInt32LittleEndian(content.AsSpan((int)offset)) : target.Bytes.ReadInt32((int)offset);
+                int addend = window is not null ? At(offset) | At(offset + 1) << 8 | At(offset + 2) << 16 | At(offset + 3) << 24 : target.Bytes.ReadInt32((int)offset);
                 // R_386_GOT32X IS GotAddr ONLY WITH NO BASE REGISTER: a ModRM
                 // of mod 00, rm 101 before the word (an absolute disp32).
                 // With a base -- `call *foo@GOT(%ebx)`, what an assembler
@@ -665,7 +689,7 @@ public static class ElfReader
                 // is taken for a ModRM; a SIB with no base and scale 1 passes
                 // too and is base-less as well, but one scaled is read as a
                 // base: no assembler writes GOT32X so.
-                if (kind == RelocKind.GotAddr && (offset == 0 || ((content is not null ? content[offset - 1] : target.Bytes[(int)offset - 1]) & 0xC7) != 0x05))
+                if (kind == RelocKind.GotAddr && (offset == 0 || ((window is not null ? At(offset - 1) : target.Bytes[(int)offset - 1]) & 0xC7) != 0x05))
                 {
                     kind = RelocKind.Got32;
                 }

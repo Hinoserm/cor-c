@@ -39,7 +39,7 @@ public static class LinkTimeOptimizer
                 if (matches.Length != 1 || !matches[0].IsFunction || matches[0].Section!.Kind != SectionKind.Code)
                     throw new ElfFormatException(input.Name + ": invalid LTO function definition " + returned.Symbol);
                 Symbol symbol = matches[0];
-                int length = symbol.Section!.Bytes.Count;
+                int length = symbol.Section!.Length;
                 if (symbol.Offset < 0 || symbol.Size <= 0 || symbol.Offset > length
                     || symbol.Size > length - symbol.Offset
                     || !OptimizationSummary.HashCode(symbol.Section, (int)symbol.Offset, (int)symbol.Size).SequenceEqual(returned.CodeHash))
