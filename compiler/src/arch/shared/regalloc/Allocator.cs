@@ -32,7 +32,8 @@ namespace Corsac.Lang.RegAlloc;
 /// other. Where the instruction accepts a memory operand the slot is used
 /// in place and no register is needed at all. Three things keep that from
 /// costing a load per read: reads before the spill point keep the register
-/// when nothing after it flows back to them; an interval about to be
+/// when nothing after it flows back to them, or when it is loaded again on
+/// each way back (SinkStores' second chance); an interval about to be
 /// spilled keeps a register up to its first conflict in its first block;
 /// and a reload's register carries the value on to the following reads in
 /// the same straight run of blocks while it stays free.
@@ -137,7 +138,7 @@ public sealed class Allocator
     /// <summary>
     /// Spilled registers whose reads before the spill point still find the
     /// value in the register they had: nothing from the spill point on can
-    /// flow back to them.
+    /// flow back to them (Spill), or every way back loads it (SinkStores).
     /// </summary>
     private readonly HashSet<int> _keepBefore = new();
     private int[] _blockFirst = Array.Empty<int>();
@@ -1867,6 +1868,28 @@ public sealed class Allocator
     private void SinkStores()
     {
         List<int> places = new(), loads = new();
+        bool tabled = false;
+        double[]? weight = null;
+        for (int v = _fv; v < _n; v++)
+        {
+            int p = _spilledFrom[v];
+            if (p == int.MaxValue || p >= _lin.Count || _assigned[v] < 0 || _slot[v] == 0
+                || _remat[v] is not null || HomeOf(v) != 0 || _split is not null && (_split.Root.ContainsKey(v) || _split.Pieces.ContainsKey(v)))
+            {
+                continue;
+            }
+            if (!tabled)
+            {
+                Table();
+                tabled = true;
+            }
+            SinkOne(v, p, places, loads, ref weight);
+        }
+    }
+
+    /// <summary>The function's blocks as SinkStores asks of them, tabled once (see the fields).</summary>
+    private void Table()
+    {
         _landingPads.Clear();
         _addressTaken.Clear();
         if (_branchesAt.Length < _blockCount + 1) _branchesAt = new int[_blockCount + 1];
@@ -1880,72 +1903,70 @@ public sealed class Allocator
             _anywhereBefore[b + 1] = _anywhereBefore[b] + (block.Instrs.Exists(i => i.JumpsAnywhere) ? 1 : 0);
             // Where a move on the block's way out goes: before the branches
             // that end it, where no branch comes earlier (an earlier one leaves
-            // before the move) and it does not fall through with none.
+            // before the move), it does not fall through with none, and those
+            // branches read no register -- a switch's table jump reads its index,
+            // which a load there could overwrite.
             int first = _blockFirst[b], at = first + block.Instrs.Count;
             while (at > first && (_lin[at - 1].Targets is not null || _lin[at - 1].Unconditional)) at--;
             bool ends = at < first + block.Instrs.Count;
             for (int k = first; k < at && ends; k++) if (_lin[k].Targets is not null) ends = false;
+            for (int k = at; k < first + block.Instrs.Count && ends; k++) if (_lin[k].Regs.Length > 0) ends = false;
             _branchesAt[b] = ends ? at : -1;
         }
-        double[]? weight = null;
-        for (int v = _fv; v < _n; v++)
+    }
+
+    /// <summary>One spilled value's stores (and, given a second chance, loads) placed, if they can be.</summary>
+    private void SinkOne(int v, int p, List<int> places, List<int> loads, ref double[]? weight)
+    {
+        int def = -1, defs = 0, defOperand = -1;
+        for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
+            if ((_occAll[occ].Role & Role.Def) != 0) { defs++; def = _occAll[occ].Instr; defOperand = _occAll[occ].Operand; }
+        if (defs != 1 || def >= p) return;
+        bool kept = _keepBefore.Contains(v);
+        loads.Clear();
+        if (!kept)
         {
-            int p = _spilledFrom[v];
-            if (p == int.MaxValue || p >= _lin.Count || _assigned[v] < 0 || _slot[v] == 0
-                || _remat[v] is not null || HomeOf(v) != 0 || _split is not null && (_split.Root.ContainsKey(v) || _split.Pieces.ContainsKey(v)))
+            // The definition first in the layout and into the register,
+            // every way back with a place for its load, and the moves
+            // cheaper than the reloads and the store.
+            if (_occAll[_occFirst[v]].Instr != def || _folded.Contains((def, defOperand))
+                || !ReentryLoads(v, def, p, loads) || !ExitStores(v, def, p, places))
             {
-                continue;
+                return;
             }
-            int def = -1, defs = 0, defOperand = -1;
+            weight ??= BlockWeights();
+            double moves = 0, reloads = weight[_blockOfInstr[def]];
+            foreach (int at in places) moves += weight[_blockOfInstr[at]];
+            foreach (int at in loads) moves += weight[_blockOfInstr[at]];
+            int lastRead = -1;
             for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
-                if ((_occAll[occ].Role & Role.Def) != 0) { defs++; def = _occAll[occ].Instr; defOperand = _occAll[occ].Operand; }
-            if (defs != 1 || def >= p) continue;
-            bool kept = _keepBefore.Contains(v);
-            loads.Clear();
-            if (!kept)
             {
-                // The definition first in the layout and into the register,
-                // every way back with a place for its load, and the moves
-                // cheaper than the reloads and the store.
-                if (_occAll[_occFirst[v]].Instr != def || _folded.Contains((def, defOperand))
-                    || !ReentryLoads(v, def, p, loads) || !ExitStores(v, def, p, places))
-                {
-                    continue;
-                }
-                weight ??= BlockWeights();
-                double moves = 0, reloads = weight[_blockOfInstr[def]];
-                foreach (int at in places) moves += weight[_blockOfInstr[at]];
-                foreach (int at in loads) moves += weight[_blockOfInstr[at]];
-                int lastRead = -1;
-                for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
-                {
-                    Occurrence o = _occAll[occ];
-                    if (o.Instr >= p) break;
-                    if ((o.Role & Role.Use) == 0 || o.Instr == lastRead || _noReload.Contains((v, o.Instr))) continue;
-                    lastRead = o.Instr;
-                    reloads += weight[_blockOfInstr[o.Instr]];
-                }
-                if (moves >= reloads) continue;
-                // Kept from here on: its reads in the window are the register's.
-                _keepBefore.Add(v);
-                for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
-                    if (_occAll[occ].Instr < p) _folded.Remove((_occAll[occ].Instr, _occAll[occ].Operand));
-                foreach (int at in loads)
-                {
-                    if (!_reloadAt.TryGetValue(at, out List<int>? list)) _reloadAt[at] = list = new();
-                    list.Add(v);
-                }
+                Occurrence o = _occAll[occ];
+                if (o.Instr >= p) break;
+                if ((o.Role & Role.Use) == 0 || o.Instr == lastRead || _noReload.Contains((v, o.Instr))) continue;
+                lastRead = o.Instr;
+                reloads += weight[_blockOfInstr[o.Instr]];
             }
-            else if (!ExitStores(v, def, p, places))
+            if (moves >= reloads) return;
+            // Kept from here on: its reads in the window are the register's.
+            _keepBefore.Add(v);
+            for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
+                if (_occAll[occ].Instr < p) _folded.Remove((_occAll[occ].Instr, _occAll[occ].Operand));
+            foreach (int at in loads)
             {
-                continue;
-            }
-            _sunk.Add(v);
-            foreach (int at in places)
-            {
-                if (!_sunkAt.TryGetValue(at, out List<int>? list)) _sunkAt[at] = list = new();
+                if (!_reloadAt.TryGetValue(at, out List<int>? list)) _reloadAt[at] = list = new();
                 list.Add(v);
             }
+        }
+        else if (!ExitStores(v, def, p, places))
+        {
+            return;
+        }
+        _sunk.Add(v);
+        foreach (int at in places)
+        {
+            if (!_sunkAt.TryGetValue(at, out List<int>? list)) _sunkAt[at] = list = new();
+            list.Add(v);
         }
     }
 
@@ -2079,6 +2100,10 @@ public sealed class Allocator
         // (a point in one of its holes needs no store).
         bool pInside = p > _blockFirst[pb];
         if (pInside && LiveAt(v, p * 4 - 1)) places.Add(p);
+        // A branch in P's block before P leaves the window with no store on
+        // its way (a switch's range check ahead of its table).
+        for (int k = pInside ? _blockFirst[pb] : p; k < p; k++)
+            if (_lin[k].Targets is not null) return false;
         foreach (int lp in _landingPads)
             if (LiveInto(lp, v)) return false;
         // A computed jump out of the window, or into it where the value is
