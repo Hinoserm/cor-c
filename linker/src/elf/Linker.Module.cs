@@ -135,6 +135,29 @@ public static partial class Linker
             obj.Sections.RemoveAll(section => section.Name == KernelExports.StampSection || section.Name == DeclarationReads.ReadsSection);
         }
         if (others.Count != 0) throw new LinkException(others);
+        // AND THE KERNEL'S SMALL BODIES THIS LINK MAY COPY IN: every one a unit
+        // calls, and every one those call, by name and hash (KernelExports.
+        // WithBodies) -- a module relinked against a kernel whose body it
+        // copied has changed carries the new hash; one not relinked is refused.
+        if (anyReads && kernel.Bodies is { } small)
+        {
+            Queue<string> calls = new();
+            foreach ((string _, ObjectFile obj) in inputs)
+            {
+                foreach (Symbol symbol in obj.Symbols) if (!symbol.IsDefined) calls.Enqueue(symbol.Name);
+                if (Lto.IrArchive.Read(obj) is { } archive)
+                    foreach (Lto.IrArchiveEntry entry in archive.Entries.Values)
+                        foreach (string call in entry.Calls) calls.Enqueue(call);
+            }
+            HashSet<string> seen = new(StringComparer.Ordinal);
+            while (calls.Count > 0)
+            {
+                string call = calls.Dequeue();
+                if (!seen.Add(call) || !small.Entries.TryGetValue("F:" + call, out Lto.IrArchiveEntry? body)) continue;
+                read[KernelExports.BodyName(call)] = KernelExports.BodyHash(body);
+                foreach (string next in body.Calls) calls.Enqueue(next);
+            }
+        }
         List<string> said = ModuleInfo.Take(inputs, ModuleInfo.SectionName);
         // Consumed: what remains of them is the module's stamp and modinfo.
         foreach (var input in inputs)

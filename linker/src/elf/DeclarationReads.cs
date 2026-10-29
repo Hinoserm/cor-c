@@ -101,12 +101,17 @@ public static class DeclarationReads
         if (namesAt + namesSize != table.Length) throw new InvalidDataException(what + ": a declaration table of the wrong size");
         ReadOnlySpan<byte> names = table.Slice((int)namesAt, (int)namesSize);
         Dictionary<string, byte[]> entries = new((int)count, StringComparer.Ordinal);
+        ReadOnlySpan<byte> before = default;
         for (int i = 0; i < count; i++)
         {
             ReadOnlySpan<byte> row = table[(HeaderBytes + i * EntryBytes)..];
             uint offset = BinaryPrimitives.ReadUInt32LittleEndian(row), length = BinaryPrimitives.ReadUInt32LittleEndian(row[4..]);
             if ((long)offset + length > names.Length) throw new InvalidDataException(what + ": a declaration table's name past its end");
-            entries[Encoding.UTF8.GetString(names.Slice((int)offset, (int)length))] = row.Slice(8, HashBytes).ToArray();
+            ReadOnlySpan<byte> name = names.Slice((int)offset, (int)length);
+            // In order, each once: a binder looks names up by halves.
+            if (i > 0 && name.SequenceCompareTo(before) <= 0) throw new InvalidDataException(what + ": a declaration table out of order");
+            before = name;
+            entries[Encoding.UTF8.GetString(name)] = row.Slice(8, HashBytes).ToArray();
         }
         return entries;
     }

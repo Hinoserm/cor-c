@@ -19,6 +19,9 @@ namespace Corsac.Lang.Elf;
 ///           .corsac.stamp   the build stamp
 ///           .corsac.abi     the kernel units' native contract
 ///           .corsac.cpu     and the processor they were built for
+///           .corsac.ir      its small functions' bodies, for modules' links
+///           .corsac.decls   what its index says under each key, and its
+///                           small bodies' hashes (DeclarationReads)
 ///
 /// Every symbol is SHN_ABS: its value is where the kernel already is, and a
 /// binder that maps this file to read its tables adds no bias to one. So the
@@ -388,11 +391,37 @@ public sealed class KernelExports
     }
 
     /// <summary>
-    /// What the kernel's link adds to stamp it: thirty-two bytes of .rodata
-    /// called <see cref="StampSymbol"/>, and the same in a .corsac.stamp note.
-    /// A module's link adds only the note: its Sys.BuildStamp() is the
-    /// kernel's, which is the one worth comparing with.
+    /// THE KERNEL'S SMALL BODIES IN ITS TABLE TOO, a name each ("@" and the
+    /// function's symbol, the body's hash): a module's link copies them into
+    /// the module (IrLinkOptimizer), so a module holds what it copied to them
+    /// by name as it does declarations, and one whose copy is of a body the
+    /// kernel has changed since is refused (DeclarationReads).
     /// </summary>
+    public static byte[] WithBodies(byte[] decls, Lto.IrArchive bodies)
+    {
+        Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
+        foreach ((string key, Lto.IrArchiveEntry entry) in bodies.Entries)
+            if (key.StartsWith("F:", StringComparison.Ordinal)) entries["@" + key[2..]] = BodyHash(entry);
+        return DeclarationReads.Write(entries);
+    }
+
+    /// <summary>A small body's name in the tables: "@" and its symbol.</summary>
+    public static string BodyName(string symbol) => "@" + symbol;
+
+    /// <summary>A small body's hash in the tables: the archive's own, its first 16 bytes.</summary>
+    public static byte[] BodyHash(Lto.IrArchiveEntry entry)
+        => (entry.Hash.Length >= DeclarationReads.HashBytes ? entry.Hash : System.Security.Cryptography.SHA256.HashData(entry.Hash))[..DeclarationReads.HashBytes];
+
+    /// <summary>The small bodies a bodies note holds (BodiesNote), or null.</summary>
+    public static Lto.IrArchive? BodiesOf(byte[] note)
+    {
+        ObjectFile holder = new() { NativeOmitted = true };
+        Section section = new(Lto.IrArchive.SectionName, SectionKind.Note);
+        section.Bytes.AddRange(note);
+        holder.Sections.Add(section);
+        return Lto.IrArchive.Read(holder);
+    }
+
     /// <summary>A module unit's, or a module's, table of what it read of the kernel (DeclarationReads), as a note.</summary>
     public static Section ReadsNote(byte[] table)
     {
@@ -401,6 +430,12 @@ public sealed class KernelExports
         return note;
     }
 
+    /// <summary>
+    /// What the kernel's link adds to stamp it: thirty-two bytes of .rodata
+    /// called <see cref="StampSymbol"/>, and the same in a .corsac.stamp note.
+    /// A module's link adds only the note: its Sys.BuildStamp() is the
+    /// kernel's, which is the one worth comparing with.
+    /// </summary>
     public static ObjectFile StampObject(byte[] stamp, bool loaded)
     {
         ObjectFile stamped = new();

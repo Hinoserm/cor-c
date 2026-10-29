@@ -136,7 +136,7 @@ public static class ProjectCompile
         // the lookups it asked, by name -- its receipt, against the module
         // index made on the kernel's (generic bodies it copied in by their
         // files' text: Dependence.Source) -- and on the exports it took
-        // rather than compiled (its .imports, below); the options keep only
+        // rather than compiled (in its receipt too); the options keep only
         // the kernel units' native contract, processor and mode, which every
         // unit's code is made to.
         StringBuilder references = new();
@@ -145,7 +145,13 @@ public static class ProjectCompile
             if (args[i] == "--ref") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
             else if (args[i] == "--kernel") references.Append('\t').Append(KernelIdentity(args[i + 1]));
         }
+        // What a module's units take from or compile beside (UnitDependencies.Stale):
+        // the kernel's exports and those of the modules it links against.
         KernelExports? kernelExports = Driver.Value(args, "--kernel") is string kernelPath ? KernelExports.Read(kernelPath) : null;
+        HashSet<string>? exported = kernelExports is null ? null : new(kernelExports.Names, StringComparer.Ordinal);
+        if (exported is not null)
+            foreach (string under in Driver.Values(args, "--link-shared"))
+                exported.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(under)));
         string optionsText = "0\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
         // HASHED ONCE, an entry unit's options and a library unit's: the text
         // names every library by path, time and length, and was encoded
@@ -178,14 +184,7 @@ public static class ProjectCompile
                 if (stamp.Length != 2) return "stamp unreadable";
                 if (stamp[0] != Hash(File.ReadAllBytes(unit.Source))) return "source changed";
                 if (stamp[1] != OptionsOf(unit)) return "options or compiler changed";
-                if (kernelExports is not null)
-                {
-                    string imports = unit.Receipt + ".imports";
-                    if (!File.Exists(imports)) return "no record of what it took from the kernel";
-                    foreach (string name in File.ReadLines(imports))
-                        if (name.Length > 0 && !kernelExports.Names.Contains(name)) return "took " + name + " from the kernel, which no longer exports it";
-                }
-                return UnitDependencies.Stale(unit.Receipt, sessionIndex);
+                return UnitDependencies.Stale(unit.Receipt, sessionIndex, exported);
             }
             catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { return failure.Message; }
         }
@@ -734,13 +733,6 @@ public static class ProjectCompile
     /// <summary>The variable a project build hands its compile processes the compiler's identity in.</summary>
 
     /// <summary>
-    /// A hash of the running compiler's own executable, once per process --
-    /// or once per BUILD: a child compile process started by a project build
-    /// is the same executable, and is handed the hash its parent made
-    /// (--compiler-identity). Hashing the 53 MB native compiler took a third of
-    /// a second, in every one of the processes a 32-bit build starts.
-    /// </summary>
-    /// <summary>
     /// What a module unit's options say of its kernel (the stamp's comment
     /// above): the kernel units' native contract, processor and mode -- not
     /// the exports' file, which every link of the kernel writes again.
@@ -752,6 +744,13 @@ public static class ProjectCompile
             + " " + (kernel.LongMode ? "64" : "32");
     }
 
+    /// <summary>
+    /// A hash of the running compiler's own executable, once per process --
+    /// or once per BUILD: a child compile process started by a project build
+    /// is the same executable, and is handed the hash its parent made
+    /// (--compiler-identity). Hashing the 53 MB native compiler took a third of
+    /// a second, in every one of the processes a 32-bit build starts.
+    /// </summary>
     internal static string CompilerIdentity()
     {
         if (_compilerIdentity is not null) return _compilerIdentity;

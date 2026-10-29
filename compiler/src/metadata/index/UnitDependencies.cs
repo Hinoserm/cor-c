@@ -53,10 +53,16 @@ public static class UnitDependencies
     /// after it its whole file's where the unit copied one of its bodies
     /// (copied), or its template bodies' shape where it imported it as a
     /// template and copied none (templates) -- and every lookup the unit
-    /// asked the index.
+    /// asked the index; and, for a kernel module's unit, the library
+    /// functions and statics it took from what the kernel (or a module under
+    /// it) exports rather than compiled (<paramref name="taken"/>), and those
+    /// it compiled, nothing exporting them (<paramref name="kept"/>) -- no
+    /// declaration says what is exported, and one taken that no longer is
+    /// leaves the unit calling nothing, one kept that now is leaves two of it,
+    /// a type with two descriptors.
     /// </summary>
     public static void Write(string path, DeclarationCatalog catalog, IEnumerable<string> keys, IReadOnlySet<string> templates,
-        IReadOnlySet<string> copied, IEnumerable<string> queries)
+        IReadOnlySet<string> copied, IEnumerable<string> queries, IEnumerable<string>? taken = null, IEnumerable<string>? kept = null)
     {
         using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.None);
         using BinaryWriter writer = new(stream, Encoding.UTF8);
@@ -81,6 +87,17 @@ public static class UnitDependencies
             if (encoded.Length > 4096) throw new InvalidDataException("Dependency lookup exceeds format limit");
             writer.Write(encoded.Length); writer.Write(encoded); writer.Write(catalog.QueryFingerprint(key));
         }
+        foreach (IEnumerable<string>? names in new[] { taken, kept })
+        {
+            string[] list = (names ?? Array.Empty<string>()).Distinct().Order(StringComparer.Ordinal).ToArray();
+            writer.Write(list.Length);
+            foreach (string name in list)
+            {
+                byte[] encoded = Encoding.UTF8.GetBytes(name);
+                if (encoded.Length > 4096) throw new InvalidDataException("Library name exceeds format limit");
+                writer.Write(encoded.Length); writer.Write(encoded);
+            }
+        }
     }
 
     public static bool IsCurrent(string path, string index) => Stale(path, index) is null;
@@ -92,7 +109,12 @@ public static class UnitDependencies
     /// (ProjectCompile): which declaration changed, whose file's text, or
     /// which lookup now answers differently.
     /// </summary>
-    public static string? Stale(string path, string index)
+    /// <param name="exports">
+    /// A kernel module's: the names its kernel and the modules under it
+    /// export now -- each the unit took has to be among them, and none it
+    /// kept (null for any other unit, whose lists are empty).
+    /// </param>
+    public static string? Stale(string path, string index, IReadOnlySet<string>? exports = null)
     {
         if (!File.Exists(path)) return "no receipt";
         const string unreadable = "receipt unreadable";
@@ -130,6 +152,20 @@ public static class UnitDependencies
                 {
                     string name = Named(key);
                     return "lookup " + key[0] + (name.Length == 0 ? "" : ":" + name) + " answers differently";
+                }
+            }
+            for (int list = 0; list < 2; list++)
+            {
+                count = reader.ReadInt32();
+                if (count < 0 || count > 1000000) return unreadable;
+                for (int i = 0; i < count; i++)
+                {
+                    int length = reader.ReadInt32();
+                    if (length < 1 || length > 4096 || length > stream.Length - stream.Position) return unreadable;
+                    string name = Encoding.UTF8.GetString(reader.ReadBytes(length));
+                    if (exports is null) continue;
+                    if (list == 0 && !exports.Contains(name)) return "took " + name + " from the kernel, which no longer exports it";
+                    if (list == 1 && exports.Contains(name)) return "compiled its own " + name + ", which the kernel now exports";
                 }
             }
             return stream.Position == stream.Length ? null : unreadable;

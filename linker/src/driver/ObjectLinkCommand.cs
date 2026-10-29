@@ -342,6 +342,7 @@ public static class ObjectLinkCommand
         {
             List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
             byte[]? bodies = smallBodies is null ? null : KernelExports.BodiesNote(smallBodies, globals);
+            if (decls is not null && bodies is not null && KernelExports.BodiesOf(bodies) is { } archive) decls = KernelExports.WithBodies(decls, archive);
             KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode, bodies, decls);
             Console.Error.WriteLine($"{exportsPath}: {globals.Count} kernel exports, build stamp {KernelExports.Text(stamp!)}"
                 + (bodies is null ? "" : ", small functions' IR " + (bodies.Length >> 10) + " KiB"));

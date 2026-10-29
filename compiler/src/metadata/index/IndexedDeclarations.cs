@@ -1005,6 +1005,17 @@ public sealed class IndexedDeclarations : IDisposable
     }
 
     /// <summary>
+    /// What this unit read of its kernel, by name (DeclarationReads): the
+    /// keys and lookups its receipt names, as the kernel's own index answers
+    /// them, for its object's .corsac.reads.
+    /// </summary>
+    public byte[] KernelReads()
+    {
+        string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
+        return catalog.KernelReads(loaded, queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
+    }
+
+    /// <summary>
     /// Writes the unit's receipt. A TEMPLATE'S WHOLE FILE IS A DEPENDENCE
     /// ONLY WHERE THE UNIT COPIED ONE OF ITS BODIES (TypeDecl.BodiesUsed).
     /// Every template's file was one, whether the unit used the template or
@@ -1030,22 +1041,13 @@ public sealed class IndexedDeclarations : IDisposable
     ///    file, not of the bodies alone, because the copies carry the file's
     ///    line positions into the unit's code.
     /// </summary>
-    /// <summary>
-    /// What this unit read of its kernel, by name (DeclarationReads): the
-    /// keys and lookups its receipt names, as the kernel's own index answers
-    /// them, for its object's .corsac.reads.
-    /// </summary>
-    public byte[] KernelReads()
-    {
-        string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
-        return catalog.KernelReads(loaded, queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
-    }
-
-    public void WriteDependencies(string path)
+    /// <param name="taken">A kernel module unit's library functions and statics taken from exports rather than compiled (UnitDependencies.Write).</param>
+    /// <param name="kept">Those it compiled, nothing exporting them.</param>
+    public void WriteDependencies(string path, IEnumerable<string>? taken = null, IEnumerable<string>? kept = null)
     {
         string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
         UnitDependencies.Write(path, catalog, loaded, implementations, bodiesUsed,
-            queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
+            queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name), taken, kept);
     }
 
     /// <summary>

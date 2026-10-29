@@ -520,7 +520,7 @@ public static class Driver
     }
 
     /// <summary>Every occurrence of a flag that takes a value, in order, in either spelling (Value).</summary>
-    private static List<string> Values(string[] args, string name)
+    internal static List<string> Values(string[] args, string name)
     {
         List<string> values = new();
         for (int i = 0; i < args.Length; i++)
@@ -1420,12 +1420,15 @@ public static class Driver
         // is compiled here as before.
         HashSet<string> imported = new(StringComparer.Ordinal);
         Dictionary<string, HashSet<string>> exports = new(StringComparer.Ordinal);
-        // WHAT THIS UNIT TOOK FROM THE KERNEL'S EXPORTS rather than compiled:
-        // a library function or static it would have defined, the kernel
-        // defining it already -- kept beside its receipt, so that a kernel that
-        // no longer exports one rebuilds the unit (ProjectCompile), which then
-        // compiles its own; the receipt, being of declarations, cannot see it.
-        List<string> takenFromKernel = new();
+        // WHAT THIS UNIT TOOK FROM THE EXPORTS rather than compiled -- a
+        // library function or static the kernel, or a module under it,
+        // defines already -- AND WHAT IT COMPILED, nothing exporting it: both
+        // in its receipt, so that a kernel that no longer exports one it took
+        // rebuilds the unit, which then compiles its own, and one that now
+        // exports one it kept rebuilds it to take the kernel's, one type
+        // having one descriptor (UnitDependencies.Stale). No declaration says
+        // what is exported.
+        List<string> takenFromKernel = new(), keptFromLibrary = new();
         if (sharedLibs.Count > 0 || kernel is not null)
         {
             // A module's first library is the kernel, which it never needs by
@@ -1452,10 +1455,15 @@ public static class Driver
             }
             if (kernel is not null)
             {
-                takenFromKernel.AddRange(module.Functions.Where(f => f.FromLibrary && f.Name != module.Entry && kernel.Names.Contains(f.Name)).Select(f => f.Name));
-                takenFromKernel.AddRange(module.Data.Where(d => d.FromLibrary && kernel.Names.Contains(d.Name)).Select(d => d.Name));
+                takenFromKernel.AddRange(module.Functions.Where(f => f.FromLibrary && f.Name != module.Entry && provided.Contains(f.Name)).Select(f => f.Name));
+                takenFromKernel.AddRange(module.Data.Where(d => d.FromLibrary && provided.Contains(d.Name)).Select(d => d.Name));
             }
             module.Provided(provided);
+            if (kernel is not null)
+            {
+                keptFromLibrary.AddRange(module.Functions.Where(f => f.FromLibrary && f.Name != module.Entry).Select(f => f.Name));
+                keptFromLibrary.AddRange(module.Data.Where(d => d.FromLibrary).Select(d => d.Name));
+            }
             // WHAT ONLY THE LIBRARY'S CODE CALLED goes with it. A library body
             // the optimiser worked on here -- a copy of one of its callees
             // specialised for a constant argument -- has a name the shared
@@ -1739,11 +1747,7 @@ public static class Driver
                 else IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);
             }
             ElfWriter.WriteObjectFile(obj, output);
-            if (Value(args, "--dependency-file") is string dependencyFile)
-            {
-                declarations!.WriteDependencies(dependencyFile);
-                if (kernel is not null) File.WriteAllLines(dependencyFile + ".imports", takenFromKernel.Distinct().Order(StringComparer.Ordinal));
-            }
+            if (Value(args, "--dependency-file") is string dependencyFile) declarations!.WriteDependencies(dependencyFile, takenFromKernel, keptFromLibrary);
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code");
             return 0;
         }
