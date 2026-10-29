@@ -1428,8 +1428,12 @@ array the caller may write to; `GetName`, `IsDefined`, `Parse` and
 
 ## What is not being done
 
-- Optimisation beyond the cheap passes listed. No inlining, no loop
-  optimisation, no scheduling. The design leaves room for them.
+- Optimisation beyond the passes in compiler/src/optimizations and the
+  backend's own (the inliner, the shared register allocator and its
+  pressure-aware scheduler among them). The design leaves room for more.
+- Spilling to vector registers (Spill2Reg): studied and not built, as it
+  loses or breaks even on every `--cpu` targeted today. docs/SPILL2REG.md
+  keeps the measurements and the design for a newer target.
 - x87 register-stack allocation.
 - Instructions beyond the selected `--cpu` profile (docs/X86-CPU-SUPPORT.md):
   the assembler refuses them, and the code generator's BSWAP, MMX and 3DNow!
