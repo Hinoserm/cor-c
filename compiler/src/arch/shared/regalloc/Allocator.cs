@@ -1729,9 +1729,9 @@ public sealed class Allocator
 
     /// <summary>
     /// A value's home (AInstr.HomeSlot), or its split root's for a piece that
-    /// only ever copies it -- one definition, the copy into its loop -- so a
-    /// home is never written: a piece the loop writes keeps a slot of its
-    /// own. 0 for none.
+    /// holds the root's one value (FindHomes), so a home is never written: a
+    /// piece the loop writes, or one copied from such a piece, keeps a slot of
+    /// its own. 0 for none.
     /// </summary>
     private int HomeOf(int vreg) => (uint)vreg < (uint)_homeOf.Length ? _homeOf[vreg] : 0;
 

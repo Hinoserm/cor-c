@@ -152,11 +152,13 @@ internal sealed class X86Target : ITarget
                     if (mem.Index?.Id == (int)Gpr.Ebp) return homes;
                     if (mem.Base?.Id != (int)Gpr.Ebp) continue;
                     if (i.Op == MOp.Lea || mem.Index is not null && mem.Disp >= 0) return homes;
-                    // Below the arguments (the saved frame pointer, the return address): only
-                    // what reaches past them, sixteen bytes at most, can touch one.
+                    // The saved frame pointer and the return address, between the locals
+                    // and the arguments: an access there, sixteen bytes at most, may reach
+                    // one. A local below the frame pointer reaches none without writing
+                    // over the return address first.
                     if (mem.Disp < 8 || mem.Symbol is not null || mem.Label is not null)
                     {
-                        if (mem.Disp > 8 - 16) touched.Add((mem.Disp, mem.Disp + 16));
+                        if (mem.Disp >= 0) touched.Add((mem.Disp, mem.Disp + 16));
                         continue;
                     }
                     if (i.Op == MOp.Mov && k == 1 && i.Width == 4 && !i.Lock && i.Operands[0] is MReg { IsPhys: false } && (mem.Disp & 3) == 0)

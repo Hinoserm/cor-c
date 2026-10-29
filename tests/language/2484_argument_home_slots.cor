@@ -5,9 +5,10 @@
 //
 // A value whose one definition loads an incoming argument's word lives
 // there when spilled (Allocator's home slots): no store, no slot of its
-// own. One reassigned in a loop has two definitions and gets none; a
-// struct passed by value is read word by word, and each word read more
-// than once is no home.
+// own. An argument used after its loop is copied back at the exit, a second
+// definition, and is no home; Dead's are (its loop reads e, h and n from
+// their words: seen in its code, which this test, of values only, cannot
+// see). A struct passed by value is read word by word.
 
 using System.Runtime.CompilerServices;
 
