@@ -1640,7 +1640,7 @@ public sealed class Allocator
     }
 
     private bool[] _held = new bool[64];
-    /// <summary>The work stack of HeldBeforeSpill and BetweenOnly, which run one after the other and clear it first.</summary>
+    /// <summary>The work stack of HeldBeforeSpill.</summary>
     private readonly Stack<int> _heldWork = new();
 
     /// Whether every way into block `b` leaves the value in its register.
@@ -1828,20 +1828,35 @@ public sealed class Allocator
 
     /// <summary>
     /// A SPILLED VALUE STORED WHERE IT LEAVES ITS REGISTER, not where it is
-    /// made (Go's spill placement, Wimmer and Mossenbock's split positions):
-    /// a value of one definition that keeps its register up to its spill
-    /// point P (_keepBefore: nothing after P flows back to before it), where
-    /// P's block dominates every read of the slot after P -- every path to
-    /// one passes P, the register still holding the value there -- is stored
-    /// once just before P, not after its definition. List<T>.Add stored its
-    /// array and count on every call for the call that grows it, on a path
-    /// rarely taken. Only where P is in no loop (below); not a split value's
-    /// (a copy between its pieces trusts every write to have stored), a
-    /// home's or a constant's.
+    /// made (Wimmer and Mossenbock's resolution on the edges, Go's spill
+    /// placement). A value of one definition kept in its register up to its
+    /// spill point P (_keepBefore) is in that register wherever it is live
+    /// in the code laid out from the definition to P -- the window -- and in
+    /// its slot after. So it is stored on the way out of the window alone:
+    /// just before P, where it is live there, and on each edge from a block
+    /// of the window to one outside it that it is live into. Nothing outside
+    /// the window flows back into it where the value is live (_keepBefore's
+    /// NothingFlowsBack), so a path leaves at most once for each time it
+    /// passes the definition: never more stores than one after the
+    /// definition, and none on a path that never reads the slot.
+    /// List<T>.Add stored its array on every call for the type check of an
+    /// element its array does not take, on a path rarely taken.
+    ///
+    /// An edge's store goes at the start of the block it enters where every
+    /// way in is from the window (once for all of them), else before the
+    /// branches ending the block it leaves where that is its only way out; a
+    /// value with an edge that is neither -- a critical edge -- is stored
+    /// after its definition, as is one live into a landing pad (entered by
+    /// no edge) or leaving the window by a computed jump. Not a split
+    /// value's (a copy between its pieces trusts every write to have stored),
+    /// a home's or a constant's.
     /// </summary>
     private void SinkStores()
     {
-        int[]? idom = null;
+        List<int> places = new();
+        _landingPads.Clear();
+        for (int b = 0; b < _blockCount; b++)
+            if (_f.Blocks[b].LandingPad) _landingPads.Add(b);
         for (int v = _fv; v < _n; v++)
         {
             int p = _spilledFrom[v];
@@ -1854,74 +1869,83 @@ public sealed class Allocator
             for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
                 if ((_occAll[occ].Role & Role.Def) != 0) { defs++; def = _occAll[occ].Instr; }
             if (defs != 1 || def >= p) continue;
-            // LIVE JUST BEFORE P, so its register holds it there: a value can be
-            // given up at a point in one of its holes, where the register it had
-            // is another's, the eviction made for a range of it further on.
-            if (!LiveAt(v, p * 4 - 1)) continue;
-            // OUTSIDE EVERY LOOP: there no path repeats a block, so every path
-            // from the definition (which dominates P, the value live there) to a
-            // read P dominates passes P after it. In a loop, a path could pass P
-            // one lap and make the value again the next, reaching a read that
-            // finds the slot a lap old.
-            int pb = _blockOfInstr[p];
-            if (_loopOf[pb] >= 0) continue;
-            idom ??= BlockDominators.Of(_blockCount, b => Successors(b));
-            // Reached from the entry by ordinary edges: a block only a landing
-            // pad reaches has no dominator here, and its loops are not found.
-            if (idom[pb] < 0) continue;
-            bool dominated = true;
-            for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd && dominated; occ++)
+            if (ExitStores(v, def, p, places))
             {
-                if (_occAll[occ].Instr < p) continue;
-                int b = _blockOfInstr[_occAll[occ].Instr];
-                while (b >= 0 && b != pb && idom[b] != b) b = idom[b];
-                dominated = b == pb;
+                _sunk.Add(v);
+                foreach (int at in places)
+                {
+                    if (!_sunkAt.TryGetValue(at, out List<int>? list)) _sunkAt[at] = list = new();
+                    list.Add(v);
+                }
             }
-            if (!dominated) continue;
-            // EVERY PATH FROM THE DEFINITION TO P STAYS IN THE LAYOUT BETWEEN
-            // THEM, where the scan kept the register the value's: a block laid
-            // out after P, which a path can pass on its way to P, has the value
-            // in its slot already and its register another's, so a store at P
-            // would save that other value.
-            if (!BetweenOnly(_blockOfInstr[def], pb)) continue;
-            _sunk.Add(v);
-            if (!_sunkAt.TryGetValue(p, out List<int>? at)) _sunkAt[p] = at = new();
-            at.Add(v);
         }
     }
 
+    /// <summary>The blocks entered by no edge, from anywhere in their try.</summary>
+    private readonly List<int> _landingPads = new();
+
     /// <summary>
-    /// Whether every block that reaches `to` without passing `from` (the
-    /// blocks on the paths from one to the other) is laid out between them.
+    /// Where a value kept in its register from its definition `def` up to
+    /// `p` is stored on the way out of that window (SinkStores), into
+    /// `places` as the instructions the stores go before; false where some
+    /// way out has no place of its own.
     /// </summary>
-    private bool BetweenOnly(int from, int to)
+    private bool ExitStores(int v, int def, int p, List<int> places)
     {
-        // Seen as stamped this walk: blocks between `from` and `to` only, by
-        // their offset from `from`; one table for every walk of the function.
-        if (_betweenSeen.Length < to - from + 1) _betweenSeen = new int[Math.Max(to - from + 1, 2 * _betweenSeen.Length)];
-        int stamp = ++_betweenStamp;
-        Stack<int> work = _heldWork;
-        work.Clear();
-        _betweenSeen[to - from] = stamp;
-        work.Push(to);
-        while (work.Count > 0)
+        places.Clear();
+        int defb = _blockOfInstr[def], pb = _blockOfInstr[p];
+        // P inside its block: the window runs on to it in that block, and the
+        // register holds the value just before it wherever it is live there
+        // (a point in one of its holes needs no store).
+        bool pInside = p > _blockFirst[pb];
+        if (pInside && LiveAt(v, p * 4 - 1)) places.Add(p);
+        foreach (int lp in _landingPads)
+            if (LiveInto(lp, v)) return false;
+        for (int b = defb; b < pb; b++)
         {
-            int b = work.Pop();
-            if (b == from) continue;
-            for (int e = _predStart[b]; e < _predStart[b + 1]; e++)
+            int first = _blockFirst[b], last = first + _f.Blocks[b].Instrs.Count - 1;
+            if (_f.Blocks[b].Instrs.Exists(i => i.JumpsAnywhere)) return false;
+            for (int e = _succStart[b]; e < _succStart[b + 1]; e++)
             {
-                int q = _predAll[e];
-                if (q < from || q > to) return false;
-                if (_betweenSeen[q - from] == stamp) continue;
-                _betweenSeen[q - from] = stamp;
-                work.Push(q);
+                int s = _succAll[e];
+                if (!LiveInto(s, v)) continue;
+                if (s > defb && (s < pb || s == pb && pInside)) continue;  // within the window
+                if (s <= defb) return false;  // round to the definition: a loop's, which NothingFlowsBack keeps out
+                if (_f.Blocks[s].Instrs.Count > 0 && EnteredFromWindowOnly(s, defb, pb))
+                {
+                    if (!places.Contains(_blockFirst[s])) places.Add(_blockFirst[s]);
+                    continue;
+                }
+                if (OneWayOut(b) && last >= first)
+                {
+                    int at = last;
+                    while (at > first && (_lin[at - 1].Targets is not null || _lin[at - 1].Unconditional)) at--;
+                    if (_lin[at].Targets is null && !_lin[at].Unconditional) return false;  // falls through with no branch to go before
+                    if (!places.Contains(at)) places.Add(at);
+                    continue;
+                }
+                return false;
             }
         }
         return true;
     }
 
-    private int[] _betweenSeen = Array.Empty<int>();
-    private int _betweenStamp;
+    /// <summary>Whether every way into block `s` is an edge from a block of the window (`defb` up to, not including, `pb`): no landing pad, no taken address.</summary>
+    private bool EnteredFromWindowOnly(int s, int defb, int pb)
+    {
+        if (_f.Blocks[s].LandingPad || _f.Blocks[s].AddressTaken || s == 0) return false;
+        for (int e = _predStart[s]; e < _predStart[s + 1]; e++)
+            if (_predAll[e] < defb || _predAll[e] >= pb) return false;
+        return true;
+    }
+
+    /// <summary>Whether every edge out of block `b` goes to one block.</summary>
+    private bool OneWayOut(int b)
+    {
+        for (int e = _succStart[b] + 1; e < _succStart[b + 1]; e++)
+            if (_succAll[e] != _succAll[_succStart[b]]) return false;
+        return true;
+    }
 
     /// <summary>Whether a value is live at a position (its ranges as liveness made them).</summary>
     private bool LiveAt(int v, int pos)
