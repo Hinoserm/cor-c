@@ -4405,11 +4405,17 @@ static partial class Runtime
 
         while (frame != 0 && taken < TraceDepth) {
             // [frame] is the caller's frame pointer, the word after it the
-            // return address: the chain every prologue here builds.
+            // return address: the chain every prologue here builds. A frame
+            // pointer that is a value -- a leaf's (Runtime.FrameAt), stopped
+            // between its epilogue's last two instructions, or code built
+            // without one -- is caught where it can be without reading it: not
+            // word-aligned, or a link that climbs a megabyte or more at once,
+            // as the kernel's sampler bounds its walk.
+            if ((frame & (nuint)(WordSize.Bytes - 1)) != 0) { break; }
             nuint next = Sys.ReadAddress(frame);
             nuint ret = Sys.ReadAddress(frame + WordSize.Bytes);
             if (ret == 0) { break; }
-            if (next != 0 && next <= frame) { break; }
+            if (next != 0 && (next <= frame || next - frame >= 0x100000)) { break; }
 
             nuint name;
             nuint file;

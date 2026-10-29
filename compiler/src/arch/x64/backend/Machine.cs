@@ -47,6 +47,15 @@ public sealed class MReg : MOperand
 
     public static MReg Of(Gpr r) => new((int)r);
 
+    /// <summary>
+    /// RBP HOLDING A VALUE, in a function without a frame pointer
+    /// (MFunction.FramePointerFree), from allocation until FramePointerFree.Run
+    /// makes it RBP: every pass between takes an operand based on RBP for the
+    /// frame. The first virtual number, which no register has by then.
+    /// </summary>
+    public const int RbpDataId = FirstVirtual;
+    public static MReg RbpData => new(RbpDataId);
+
     public static MReg Xmm(int n) => new(XmmBase + n, true);
 
     public override string ToString()
@@ -368,6 +377,14 @@ public sealed class MFunction
 
     /// <summary>Callee-saved registers the allocator handed out; the prologue saves exactly these.</summary>
     public List<Gpr> SavedRegs { get; } = new();
+
+    /// <summary>
+    /// RBP HOLDS A VALUE IN THIS FUNCTION (X64Target, for a leaf): its frame
+    /// is addressed off RSP, which nothing moves between its prologue and its
+    /// epilogue (FramePointerFree), and the prologue's `mov rbp, rsp` is
+    /// written 48 8B EC, the mark a fault reads to find the frame (Encoder).
+    /// </summary>
+    public bool FramePointerFree { get; set; }
 
     /// <summary>
     /// Every callee-saved register is saved, used or not. A function that

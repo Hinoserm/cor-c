@@ -47,10 +47,7 @@ internal sealed class Encoder
     public int Encode(MFunction m)
     {
         _m = m;
-        int saved = m.SavedRegs.Count * 8;
-        // RBP is sixteen-byte aligned after `push rbp`, so the frame below it
-        // is a multiple of sixteen and RSP is aligned at every call.
-        _frameBytes = (m.Frame.Size + saved + 15) & ~15;
+        _frameBytes = FrameBytes(m);
 
         _final = false;
         while (true)
@@ -832,13 +829,25 @@ internal sealed class Encoder
     // ---- the frame ---------------------------------------------------------------------
 
     /// <summary>
+    /// The frame the prologue makes below the saved RBP: the locals and the
+    /// saved registers. RBP is sixteen-byte aligned after `push rbp`, so the
+    /// frame below it is a multiple of sixteen and RSP is aligned at every
+    /// call.
+    /// </summary>
+    public static int FrameBytes(MFunction m) => (m.Frame.Size + m.SavedRegs.Count * 8 + 15) & ~15;
+
+    /// <summary>
     /// push rbp; mov rbp, rsp; sub rsp, frame; then each saved register into
-    /// its place at the bottom of the frame, below the locals.
+    /// its place at the bottom of the frame, below the locals. In a function
+    /// that gives RBP a value after (FramePointerFree) the move is written
+    /// 48 8B EC, the mark a fault reads (Runtime.FrameAt) to find the frame at
+    /// RSP plus the frame's size, and the saves are made off RSP.
     /// </summary>
     private void Prologue()
     {
         Byte(0x55);
-        Byte(0x48); Byte(0x89); Byte(0xE5);
+        if (_m.FramePointerFree) { Byte(0x48); Byte(0x8B); Byte(0xEC); }
+        else { Byte(0x48); Byte(0x89); Byte(0xE5); }
         if (_m.RealignsStack)
         {
             Byte(0x48); Byte(0x83); Byte(0xE4); Byte(0xF0);     // and rsp, -16
@@ -853,7 +862,9 @@ internal sealed class Encoder
         }
     }
 
-    private MMem SaveSlot(int k) => MMem.Frame(-_m.Frame.Size - 8 * (k + 1));
+    private MMem SaveSlot(int k) => _m.FramePointerFree
+        ? new MMem(MReg.Of(Gpr.Rsp), _frameBytes - _m.Frame.Size - 8 * (k + 1))
+        : MMem.Frame(-_m.Frame.Size - 8 * (k + 1));
 
     private void Epilogue()
     {
@@ -861,7 +872,13 @@ internal sealed class Encoder
         {
             Op(8, (int)_m.SavedRegs[k], SaveSlot(k), 0, 0x8B);
         }
-        Byte(0xC9);        // leave: mov rsp, rbp; pop rbp
+        if (_m.FramePointerFree)
+        {
+            // RBP holds a value, not the frame: RSP past the frame, then RBP back.
+            if (_frameBytes > 0) Alu(0, new MInstr(MOp.Add, MReg.Of(Gpr.Rsp), new MImm(_frameBytes)), 8);
+            Byte(0x5D);    // pop rbp
+        }
+        else Byte(0xC9);   // leave: mov rsp, rbp; pop rbp
         Byte(0xC3);
     }
 

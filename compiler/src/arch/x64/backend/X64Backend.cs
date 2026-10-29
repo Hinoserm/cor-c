@@ -423,6 +423,7 @@ public sealed class X64Backend : IBackend
             Layout.Run(m);
             LoopRotate.Run(m);
             Peephole.Run(m);
+            FramePointerFree.Run(m);
         }
         catch (InvalidOperationException e)
         {
