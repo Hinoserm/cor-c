@@ -159,14 +159,49 @@ public static class InterruptNotes
     /// written. A module's link is held to it by name ("Q:", KernelExports.
     /// WithFacts), and a kernel edit that only moves lines moves nothing.
     /// </summary>
+    // A report's words without the places in it: "at File.cor:12".
+    private static string Placeless(string what) => System.Text.RegularExpressions.Regex.Replace(what, @" at [^ ]+:\d+", "");
+
+    /// <summary>
+    /// Every fact Check may read for these objects: none where it reads none
+    /// (no handler, no root), else every one reachable from the handlers --
+    /// imported ones too -- and the roots, as the checks walk them. What a
+    /// module's link is held to of the kernel's (KernelExports.FactsRead).
+    /// </summary>
+    public static HashSet<string> Walked(IEnumerable<ObjectFile> objects, IReadOnlyList<Fact>? imported = null)
+    {
+        HashSet<string> walked = new(StringComparer.Ordinal);
+        List<ObjectFile> all = objects.ToList();
+        bool rooted = Corsac.Switches.IrqWaits is { Length: > 0 } && Corsac.Switches.WaitFreeRoots is { Length: > 0 }
+            || Corsac.Switches.IrqRoots is { Length: > 0 };
+        if (!rooted && all.All(obj => HandlerCount(obj) == 0)) return walked;
+        Dictionary<string, Fact> facts = new(StringComparer.Ordinal);
+        Stack<string> work = new();
+        foreach (ObjectFile obj in all)
+            if (Read(obj) is { } read)
+                foreach (Fact f in read) { Add(facts, f); if (f.Handler) work.Push(f.Name); }
+        if (imported is not null)
+            foreach (Fact f in imported) { bool fresh = !facts.ContainsKey(f.Name); Add(facts, f); if (fresh && f.Handler) work.Push(f.Name); }
+        string[] roots = Names(Corsac.Switches.IrqRoots ?? "").Concat(Names(Corsac.Switches.WaitFreeRoots ?? "")).ToArray();
+        if (roots.Length > 0) foreach (Fact f in facts.Values) if (Matches(roots, f.Display)) work.Push(f.Name);
+        while (work.Count > 0)
+        {
+            string name = work.Pop();
+            if (walked.Add(name) && facts.TryGetValue(name, out Fact? fact)) foreach (string call in fact.Calls) work.Push(call);
+        }
+        return walked;
+    }
+
     public static byte[] Said(Fact f)
     {
         using MemoryStream stream = new();
         using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
         {
-            writer.Write(f.Name); writer.Write(f.Handler); writer.Write(f.Allocates ?? "");
+            writer.Write(f.Name); writer.Write(f.Handler); writer.Write(Placeless(f.Allocates ?? ""));
             writer.Write(f.Calls.Length); foreach (string call in f.Calls.Order(StringComparer.Ordinal)) writer.Write(call);
-            writer.Write(f.Takes.Length); foreach (string take in f.Takes.Order(StringComparer.Ordinal)) writer.Write(take);
+            // A lock taken by its kind and what it is (Take), not where.
+            string[] takes = f.Takes.Select(take => take.LastIndexOf('|') is int bar and > 0 ? take[..bar] : take).Order(StringComparer.Ordinal).ToArray();
+            writer.Write(takes.Length); foreach (string take in takes) writer.Write(take);
         }
         return System.Security.Cryptography.SHA256.HashData(stream.ToArray())[..16];
     }

@@ -1712,6 +1712,7 @@ public static class Driver
         // (InterruptNotes), and the notes that check and the link read gone
         // from the image -- a --shared compile's 17 KB libData.so carried a
         // 14.7 KB .corsac.irq.
+        Dictionary<string, byte[]>? factsRead = null;
         if (!args.Contains("--obj") && (kernel is not null || shared))
         {
             List<string> handlerErrors = Corsac.Lang.Lto.InterruptNotes.Check(new[] { obj }, Corsac.Lang.Lto.Preinit.Peek(new[] { obj }, longMode: false)?.FrozenSteps);
@@ -1725,6 +1726,13 @@ public static class Driver
             foreach (string lib in sharedLibs) beside.AddRange(Corsac.Lang.Lto.X87Notes.ReadBeside(lib, judges));
             List<string> moduleFloats = Corsac.Lang.Lto.X87Notes.Check(new[] { obj }, beside);
             if (moduleFloats.Count > 0) throw new LinkException(moduleFloats);
+            // What of the kernel's facts a module's checks read, for its table.
+            if (kernel is not null && kernelPath is not null)
+            {
+                List<Corsac.Lang.Lto.InterruptNotes.Fact> kernelInterrupts = Corsac.Lang.Lto.InterruptNotes.ReadBeside(kernelPath);
+                factsRead = KernelExports.FactsRead(kernel, new[] { obj }, kernelInterrupts, kernelInterrupts,
+                    Corsac.Lang.Lto.X87Notes.ReadBeside(kernelPath, judges), judges);
+            }
             Corsac.Lang.Lto.X87Notes.WriteBeside(output, new[] { obj });
             Corsac.Lang.Lto.X87Notes.Strip(new[] { obj });
             Corsac.Lang.Lto.UsesNotes.Strip(new[] { obj });
@@ -1733,7 +1741,7 @@ public static class Driver
         }
         if (kernel is not null && !args.Contains("--obj"))
         {
-            byte[] ko = Linker.LinkModule(new[] { (name, obj) }, output, kernel, sharedLibs, relocatedText);
+            byte[] ko = Linker.LinkModule(new[] { (name, obj) }, output, kernel, sharedLibs, relocatedText, factsRead);
             File.WriteAllBytes(output, ko);
             Console.Error.WriteLine($"{output}: {obj.Section(".text").Size} bytes of code, {ko.Length} bytes module of {kernel.Name}");
             return 0;

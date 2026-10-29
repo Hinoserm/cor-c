@@ -440,33 +440,28 @@ public sealed class KernelExports
     /// is refused where a kernel change would have failed its checks.
     /// </summary>
     public static Dictionary<string, byte[]> FactsRead(KernelExports kernel, IEnumerable<ObjectFile> own,
-        IReadOnlyList<Lto.InterruptNotes.Fact> interrupts, IReadOnlyList<Lto.X87Notes.Fact> floats)
+        IReadOnlyList<Lto.InterruptNotes.Fact> kernelInterrupts, IReadOnlyList<Lto.InterruptNotes.Fact> imported,
+        IReadOnlyList<Lto.X87Notes.Fact> kernelFloats, bool judges)
     {
         Dictionary<string, byte[]> read = new(StringComparer.Ordinal);
         List<ObjectFile> units = own.ToList();
+        // THE INTERRUPT CHECKS' WALK (InterruptNotes.Walked), from every
+        // handler -- the kernel's too, whose slots reach the module's code --
+        // and every root; of it, what the kernel's facts say, by name. A
+        // kernel name walked to with no fact, nothing: one given a fact later
+        // is walked into then. A shared library's facts are walked through
+        // and held to by its own table, not the kernel's.
         Dictionary<string, Lto.InterruptNotes.Fact> q = new(StringComparer.Ordinal);
-        foreach (Lto.InterruptNotes.Fact fact in interrupts) q.TryAdd(fact.Name, fact);
-        Stack<string> work = new();
-        foreach (Lto.InterruptNotes.Fact fact in Lto.InterruptNotes.Gather(units)) foreach (string call in fact.Calls) work.Push(call);
-        while (work.Count > 0)
+        foreach (Lto.InterruptNotes.Fact fact in kernelInterrupts) q.TryAdd(fact.Name, fact);
+        foreach (string name in Lto.InterruptNotes.Walked(units, imported))
         {
-            string name = work.Pop();
-            if (read.ContainsKey("Q:" + name) || !kernel.Names.Contains(name) && !q.ContainsKey(name)) continue;
-            if (q.TryGetValue(name, out Lto.InterruptNotes.Fact? fact)) { read["Q:" + name] = Lto.InterruptNotes.Said(fact); foreach (string call in fact.Calls) work.Push(call); }
-            else read["Q:" + name] = DeclarationReads.Empty;
+            if (q.TryGetValue(name, out Lto.InterruptNotes.Fact? fact)) read["Q:" + name] = Lto.InterruptNotes.Said(fact);
+            else if (kernel.Names.Contains(name)) read["Q:" + name] = DeclarationReads.Empty;
         }
-        Dictionary<string, Lto.X87Notes.Fact> y = new(StringComparer.Ordinal);
-        foreach (Lto.X87Notes.Fact fact in floats) y.TryAdd(fact.Name, fact);
-        foreach (ObjectFile unit in units)
-            if (Lto.X87Notes.Read(unit) is { } facts)
-                foreach (Lto.X87Notes.Fact fact in facts) foreach (Lto.X87Notes.Call call in fact.Calls) work.Push(call.Callee);
-        while (work.Count > 0)
-        {
-            string name = work.Pop();
-            if (read.ContainsKey("Y:" + name) || !kernel.Names.Contains(name) && !y.ContainsKey(name)) continue;
-            if (y.TryGetValue(name, out Lto.X87Notes.Fact? fact)) { read["Y:" + name] = Lto.X87Notes.Said(fact); foreach (Lto.X87Notes.Call call in fact.Calls) work.Push(call.Callee); }
-            else read["Y:" + name] = DeclarationReads.Empty;
-        }
+        // THE FLOAT CHECK'S, where it judges at all: every float fact of the
+        // kernel's -- only the methods that reach float code are written
+        // beside it, and a call from anywhere may meet one.
+        if (judges) foreach (Lto.X87Notes.Fact fact in kernelFloats) read["Y:" + fact.Name] = Lto.X87Notes.Said(fact);
         return read;
     }
 

@@ -210,7 +210,8 @@ public static class ObjectLinkCommand
         // The facts beside the kernel and the modules linked with
         // (InterruptNotes.ReadBeside): the wait check walks into them.
         List<InterruptNotes.Fact> imported = new();
-        if (kernelPath is not null) imported.AddRange(InterruptNotes.ReadBeside(kernelPath));
+        List<InterruptNotes.Fact> kernelImported = kernelPath is not null ? InterruptNotes.ReadBeside(kernelPath) : new();
+        imported.AddRange(kernelImported);
         foreach (string library in sharedLibraries) imported.AddRange(InterruptNotes.ReadBeside(library));
         List<string> interruptErrors = InterruptNotes.Check(inputs.Select(input => input.Item2), Preinit.Peek(inputs.Select(input => input.Item2), longMode: false)?.FrozenSteps, imported);
         // REFUSED, every path listed (InterruptNotes.EveryAllocation): the
@@ -224,13 +225,14 @@ public static class ObjectLinkCommand
         // modules' linked with, as their links saw them, beside them.
         bool judges = X87Notes.Judges(inputs.Select(input => input.Item2));
         List<X87Notes.Fact> floatsImported = new();
-        if (kernelPath is not null) floatsImported.AddRange(X87Notes.ReadBeside(kernelPath, judges));
+        List<X87Notes.Fact> kernelFloatsImported = kernelPath is not null ? X87Notes.ReadBeside(kernelPath, judges) : new();
+        floatsImported.AddRange(kernelFloatsImported);
         foreach (string library in sharedLibraries) floatsImported.AddRange(X87Notes.ReadBeside(library, judges));
         List<string> floatErrors = X87Notes.Check(inputs.Select(input => input.Item2), floatsImported, new[] { entry });
         if (floatErrors.Count > 0) throw new LinkException(floatErrors);
         // What of the kernel's facts the checks walked, for the module's table.
         Dictionary<string, byte[]>? factsRead = kernel is null ? null
-            : KernelExports.FactsRead(kernel, inputs.Select(input => input.Item2), imported, floatsImported);
+            : KernelExports.FactsRead(kernel, inputs.Select(input => input.Item2), kernelImported, imported, kernelFloatsImported, judges);
         // AN IMAGE OTHERS LINK AGAINST says what its units call and take
         // beside it, for their links' checks: a kernel's beside its exports,
         // a module's beside itself.
