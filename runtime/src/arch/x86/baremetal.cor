@@ -70,7 +70,7 @@
 
 /// The I/O ports this file drives, all of them fixed by forty years of PC
 /// hardware. A number here is a place on the machine, not a choice.
-static class Port
+public static class Port
 {
     /// QEMU's isa-debug-exit device, when the machine was started with
     /// `-device isa-debug-exit,iobase=0xf4,iosize=4`. Writing a byte ends the
@@ -87,7 +87,7 @@ static class Port
 /// hardware: the program links the driver it wants (os/kernel/drivers/
 /// uart8250.cor, vga.cor) and points this at it before printing. Until
 /// then output is dropped, which is what a machine with no console does.
-interface IConsole
+public interface IConsole
 {
     void Write(nuint address, nuint count);
 }
@@ -1460,7 +1460,7 @@ public static class Clock
 /// has no meaning here and is not offered; a program that asks for a
 /// Thread on bare metal gets a compile error, which is the right answer
 /// until the kernel provides one.
-static class Native
+public static class Native
 {
     public static void Wait(nuint at, int expect)
     {

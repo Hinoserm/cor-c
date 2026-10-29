@@ -102,7 +102,7 @@ public static class Clock
 /// this in assembler, and so does this: eighty bytes written into an executable
 /// page, called through Sys.Call5, which after the call puts the child on its
 /// own stack with a zero frame pointer and jumps to a real function.
-static class Native
+public static class Native
 {
     const int Mmap = LinuxCall.Mmap;        // (addr, len, prot, flags, fd, offset)
     const int Clone = LinuxCall.Clone;

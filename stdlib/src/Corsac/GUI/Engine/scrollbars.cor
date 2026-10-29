@@ -32,7 +32,7 @@ sealed class ScrollBar
 /// CalcSBStuff's answer (SBCALC): a bar laid out along its axis -- top and
 /// bottom along it (x for a horizontal bar), left and right across -- in
 /// the coordinates of whatever it is drawn on.
-sealed class ScrollBarCalc
+public sealed class ScrollBarCalc
 {
     public int PosMin, PosMax, Page, Pos;
     public int PxTop, PxBottom, PxLeft, PxRight;
@@ -43,7 +43,7 @@ sealed class ScrollBarCalc
 /// SBTRACK (xxxSBTrackInit's, pti+0x98): the bar being tracked -- whose it
 /// is (Owner: a Win32kWindow, a seat window's bar) -- what the press was on,
 /// and the box or drag rectangle, along and across the bar.
-sealed class ScrollBarTrack
+public sealed class ScrollBarTrack
 {
     public object? Owner;
     public bool Vertical, Thumb, Hit;

@@ -23,7 +23,7 @@ namespace Corsac.GUI.Engine;
 /// win32k's EFLOAT: the value is Mant x 2^(Exp - 32), the mantissa's
 /// magnitude normalised to have bit 30 as its top bit. 1.0 is
 /// {0x40000000, 2}; 16.0 {0x40000000, 6}; zero is {0, 0}.
-struct EFloat
+public struct EFloat
 {
     public int Mant, Exp;
     public EFloat(int mant, int exp) { Mant = mant; Exp = exp; }
@@ -35,7 +35,7 @@ struct EFloat
 /// bit: the same truncations, the same half-up roundings, the same overflow
 /// behaviour (an operation whose exponent overflows stores nothing, as the
 /// `jo` past each one skips the store).
-static class EFloats
+public static class EFloats
 {
     /// An IEEE single's value in 16.16 fixed point, from its bits.
     public static long Fixed16(long bits)
@@ -304,7 +304,7 @@ static class EFloats
 }
 
 /// A MATRIX's flAccel.
-enum XformAccel : long
+public enum XformAccel : long
 {
     Scale = 0x1,
     Unity = 0x2,
@@ -320,7 +320,7 @@ enum XformAccel : long
 /// translation rounded (FIX or LONG as the format says), flAccel. DC_ATTR
 /// holds three (world to device +0x94, device to world +0xD0, world to page
 /// +0x10C) and the kernel its own copies beside them.
-class XformMatrix
+public class XformMatrix
 {
     public EFloat M11, M12, M21, M22, Dx, Dy;
     public int FxDx, FxDy;

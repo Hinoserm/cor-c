@@ -23,7 +23,7 @@ using System;
 namespace System.Drawing;
 
 /// <summary>One FNT resource: one face at the one size it was drawn at.</summary>
-internal sealed class BitmapFontFace : FontFace
+public sealed class BitmapFontFace : FontFace
 {
     public string Face = "";
     public int Version;
@@ -214,7 +214,7 @@ internal sealed class BitmapFontFace : FontFace
 /// bold then ORs each row with itself one pixel right, one column wider,
 /// and advances one pixel more.
 /// </summary>
-internal sealed class BitmapFontSize : SizedFace
+public sealed class BitmapFontSize : SizedFace
 {
     readonly BitmapFontFace _face;
     readonly GlyphBitmap?[] _cache;
@@ -301,7 +301,7 @@ internal sealed class BitmapFontSize : SizedFace
 
 /// <summary>Windows' code page 1252, as NT's c_1252.nls has it: the five
 /// bytes it leaves undefined map to themselves.</summary>
-internal static class CodePage1252
+public static class CodePage1252
 {
     static readonly int[] High = new int[]
     {

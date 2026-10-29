@@ -15,7 +15,7 @@
 //
 // NOTHING HERE ALLOCATES until Started: the heap is what Attach sets up.
 
-static class Win32
+public static class Win32
 {
     const int MemCommit = 0x1000;
     const int MemReserve = 0x2000;

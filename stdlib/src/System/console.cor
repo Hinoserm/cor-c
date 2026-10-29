@@ -745,7 +745,7 @@ public static class Console
 /// .NET's Console does exactly this inside ReadKey; a program that needs
 /// a raw terminal for longer (a remote shell relaying keystrokes) uses
 /// this directly, and it is the only class in this file that is ours.
-static class Terminal
+public static class Terminal
 {
     /// Puts `fd` into raw mode: no line assembly, no echo, no CR/NL
     /// translation, and -- when `signals` -- Control-C still a signal.
@@ -968,7 +968,7 @@ static class Terminal
 }
 
 
-enum ModemLines
+public enum ModemLines
 {
     DataTerminalReady = 0x002,
     RequestToSend = 0x004,
@@ -980,7 +980,7 @@ enum ModemLines
 
 /// A terminal's line-discipline settings, the termios flags a program
 /// changes exposed as properties over the kernel's structure.
-class TerminalSettings
+public class TerminalSettings
 {
     byte[] _t;
 

@@ -35,7 +35,7 @@ namespace Corsac.GUI;
 /// The seat's requests (an ioctl's number), as the GUI kernel names them
 /// (os/gui/seat.cor, SeatIoctl, which says what each one's argument is).
 /// The image build holds this copy to that one (CompileTasks.CheckEnumCopy).
-enum SeatIoctl : long
+public enum SeatIoctl : long
 {
     Width = 0x47550001,
     Height = 0x47550002,

@@ -20,7 +20,7 @@
 /// unpaired surrogate encodes as U+FFFD's three bytes, and each maximal
 /// ill-formed subsequence of bytes decodes as one U+FFFD (Unicode 15, 3.9,
 /// "U+FFFD Substitution of Maximal Subparts").
-static class Utf8Transcoder
+public static class Utf8Transcoder
 {
     /// The code point of the pair at s[i], or of the unit alone; -1 for an
     /// unpaired surrogate, which has none.

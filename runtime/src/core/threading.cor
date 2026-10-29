@@ -1852,7 +1852,7 @@ public class Task<T> : Task
 
 /// STAND-IN for Task.FromResult<T> and Task.Run<T> until the binder bug in
 /// the note at the top is fixed. `TaskOf<int>.FromResult(5)`.
-static class TaskOf<T>
+public static class TaskOf<T>
 {
     public static Task<T> FromResult(T result)
     {
@@ -2130,7 +2130,7 @@ class TaskStart
 /// A continuation that runs a delegate with no value (Task.ContinueWith):
 /// checked against its options and its token when its antecedent completes,
 /// then run, and `_next` given what came of it.
-class Continuation : Action
+public class Continuation : Action
 {
     Task _antecedent;
     Action _body;
@@ -2178,7 +2178,7 @@ class Continuation : Action
 }
 
 /// The same for a delegate that answers a value (ContinueWith<TResult>).
-class Continuation<TResult> : Action
+public class Continuation<TResult> : Action
 {
     Task _antecedent;
     Func<TResult> _body;
@@ -5442,7 +5442,7 @@ class MonitorWaiter
 
 /// Timeout arguments as .NET checks them: a TimeSpan in milliseconds, -1 for
 /// infinite, and anything else negative or past int.MaxValue refused.
-static class Timeouts
+public static class Timeouts
 {
     /// Monitor's, a wait handle's and Thread's: the range guards' own words,
     /// the timeout in whole milliseconds -- "timeout ('-2') must be greater
@@ -5597,7 +5597,7 @@ struct AsyncContextSaved
     public nuint RegionBase, RegionAt, RegionEnd, RegionOpen;
 }
 
-sealed class AsyncContext
+public sealed class AsyncContext
 {
     /// The platform's: what Platform.ContextHook captured (a kernel's process).
     public object? Owner;
@@ -5819,7 +5819,7 @@ sealed class AsyncContext
 // something else completes nothing. One processor's rules today: the free
 // list is thread context's alone, the ready list is pushed by handlers with
 // a compare-and-swap and taken whole by Drain with a swap.
-static class InterruptCompletions
+public static class InterruptCompletions
 {
     const int Slots = 256;
 

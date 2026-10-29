@@ -1242,6 +1242,23 @@ public sealed partial class Binder
         && (d.Mods & Mods.Public) == 0 && ClassLibrarySide(d) && BindingProgramCode();
 
     /// <summary>
+    /// C#'S CS0122 FOR A NAME THAT IS THE CLASS LIBRARY'S INTERNAL TYPE: there,
+    /// and inaccessible, which is what C# says of it -- not "could not be
+    /// found", which sent a kernel author looking for a type deleted. The
+    /// name as written, bare or qualified; the type by its whole key or, a
+    /// name no other type shares, by its last part.
+    /// </summary>
+    private string? Inaccessible(string name)
+    {
+        string bare = name.Contains('.') ? name[(name.LastIndexOf('.') + 1)..] : name;
+        TypeSymbol? hidden = null;
+        if (_r.Types.TryGetValue(name, out TypeSymbol? whole) && HiddenFromProgram(whole)) hidden = whole;
+        else if (_r.Types.TryGetValue(bare, out TypeSymbol? global) && HiddenFromProgram(global)) hidden = global;
+        else if (Sole(bare, out TypeSymbol? only) && HiddenFromProgram(only)) hidden = only;
+        return hidden is null ? null : $"CS0122: '{hidden.Key}' is inaccessible due to its protection level (internal to the class library)";
+    }
+
+    /// <summary>
     /// Whether namespace `space` is in scope where the name being bound was
     /// written, as C# has it: it encloses that place, or a using directive in
     /// force there imports it -- the file's own at its top or in an enclosing
@@ -1315,9 +1332,6 @@ public sealed partial class Binder
         }
         if (Sole(bare, out TypeSymbol? only) && only?.Decl is TypeDecl decl)
         {
-            // CS0122's case: it is there, and internal to the class library.
-            if (HiddenFromProgram(only))
-                return $" ({only.Key} is internal to the class library: CS0122, inaccessible due to its protection level)";
             string path = only.Key;
             return decl.Outer is null || decl.Outer == decl.Namespace
                 ? $" (it is {path}: add `using {decl.Namespace};`)"
@@ -4609,7 +4623,7 @@ public sealed partial class Binder
             // `List<T> : IReadOnlyList<T>` names IReadOnlyList`1 (FindBase).
             if (!FindBase(b, out TypeSymbol? based))
             {
-                Error(b, $"CS0246: The type or namespace name '{b.Name}' could not be found{WhereItIs(b.Args.Count > 0 ? Arity(b.Name, b.Args.Count) : b.Name)}");
+                Error(b, Inaccessible(b.Name) ?? $"CS0246: The type or namespace name '{b.Name}' could not be found{WhereItIs(b.Args.Count > 0 ? Arity(b.Name, b.Args.Count) : b.Name)}");
                 continue;
             }
 
@@ -6398,7 +6412,7 @@ public sealed partial class Binder
             }
         }
 
-        Error(r, $"CS0246: The type or namespace name '{r.Name}' could not be found{WhereItIs(r.Args.Count > 0 ? Arity(r.Name, r.Args.Count) : r.Name)}");
+        Error(r, Inaccessible(r.Name) ?? $"CS0246: The type or namespace name '{r.Name}' could not be found{WhereItIs(r.Args.Count > 0 ? Arity(r.Name, r.Args.Count) : r.Name)}");
         return Type.Error;
     }
 
@@ -21043,7 +21057,7 @@ public sealed partial class Binder
             return imported;
         }
 
-        Error(n, $"CS0103: The name '{AsWritten(n.Name)}' does not exist in the current context{WhereItIs(n.Name, orAsk: false)}");
+        Error(n, Inaccessible(n.Name) ?? $"CS0103: The name '{AsWritten(n.Name)}' does not exist in the current context{WhereItIs(n.Name, orAsk: false)}");
         return Type.Error;
     }
 

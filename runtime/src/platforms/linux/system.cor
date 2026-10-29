@@ -39,7 +39,7 @@
 /// many as it has to say and in whatever order it likes, and a program that
 /// assumes the one it asked for is the first one works until the day
 /// somebody turns on a second option.
-static class Cmsg
+public static class Cmsg
 {
     // struct cmsghdr: a size_t length, then two ints, padded to a word.
 #if SYSCALL64
@@ -2528,7 +2528,7 @@ public static class WaitStatus
     }
 }
 
-enum ExitCode
+public enum ExitCode
 {
     Success = 0,
     Failure = 1,
@@ -2555,7 +2555,7 @@ enum ExitCode
 }
 
 /// What a forked child hands execve(2) and chdir(2), made before the fork (Os.PrepareExec).
-sealed class ExecPlan
+public sealed class ExecPlan
 {
     public byte[] Path = null!;
     public byte[] Args = null!;

@@ -217,7 +217,7 @@ public abstract class FontCollection : IDisposable
 /// Font still draws with the stand-in (Font's fallback). Bold is the
 /// family's own bold design when the store has one.
 /// </summary>
-static class Installed
+public static class Installed
 {
     /// A face of the file, from its pages mapped read-only where the system
     /// maps files, so every program drawing Tahoma has the one copy the page

@@ -691,7 +691,7 @@ internal sealed class RSAImplementation : RSA
 }
 
 /// The two ECDSA signature formats, converted.
-internal static class Formats
+public static class Formats
 {
     public static void Check(DSASignatureFormat format)
     {

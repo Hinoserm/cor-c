@@ -291,7 +291,7 @@ public class IconFile
 /// greyscale, truecolour, palette and their alpha forms, one image, not
 /// interlaced. Sixteen-bit samples are taken down to eight; interlaced files
 /// are refused rather than half-read.
-static class Png
+public static class Png
 {
     static int U32(byte[] b, int at)
     {

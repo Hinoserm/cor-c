@@ -77,7 +77,7 @@ internal class TrueTypeOutline
 /// A font file's bytes: an array's, or a file's pages mapped read-only and
 /// shared (Platform.MapReadOnly). Read a byte at a time, bounds checked --
 /// a font is data, and data may point anywhere -- 0 past either end.
-sealed class FontBytes
+public sealed class FontBytes
 {
     readonly byte[]? _array;
     readonly nuint _at;
@@ -111,7 +111,7 @@ sealed class FontBytes
 /// as absent. A face that lies about itself draws nothing, which is the
 /// worst it should be able to do.
 /// </summary>
-internal class TrueTypeFace : FontFace
+public class TrueTypeFace : FontFace
 {
     // Mac OS Roman, bytes 0x80 to 0xFF, as Unicode (Apple's ROMAN.TXT).
     const string MacRoman =
@@ -730,7 +730,7 @@ internal class TrueTypeFace : FontFace
 /// where it is now. Instructions measure against the first and move the
 /// second, and the difference is the whole of what hinting does.
 /// </summary>
-class TrueTypeZone
+public class TrueTypeZone
 {
     public int PointCount;
     public int ContourCount;
@@ -3106,7 +3106,7 @@ class TrueTypeRaster
 /// on a machine of this period: a screen of text is a few hundred
 /// lookups and a few dozen rasterisations, not one per letter per frame.
 /// </summary>
-class TrueTypeSize : SizedFace
+public class TrueTypeSize : SizedFace
 {
     readonly TrueTypeFace _face;
     readonly TrueTypeHinter _hinter;

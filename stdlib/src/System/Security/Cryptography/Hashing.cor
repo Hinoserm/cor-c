@@ -245,7 +245,7 @@ public abstract class SHA256 : HashAlgorithm
 
 /// The one-shot span and stream forms every hash class has, over a fresh
 /// algorithm object.
-static class OneShot
+public static class OneShot
 {
     public static byte[] Hash(HashAlgorithm algorithm, ReadOnlySpan<byte> source)
     {

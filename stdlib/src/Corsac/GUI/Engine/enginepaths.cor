@@ -29,7 +29,7 @@ namespace Corsac.GUI.Engine;
 
 
 /// PATHDATA's and PATHRECORD's flags.
-enum PathRecordFlags
+public enum PathRecordFlags
 {
     BeginSubpath = 0x1,
     EndSubpath = 0x2,
@@ -41,7 +41,7 @@ enum PathRecordFlags
 /// PATH.flags (+0x34): the next point starts a figure at the start point,
 /// and that figure restarts the line style. A new path has both set and
 /// bit 1 (PATHMEMOBJ 0xA0034588: 3).
-enum PathState
+public enum PathState
 {
     NewFigure = 0x1,
     Owned = 0x2,
@@ -49,7 +49,7 @@ enum PathState
 }
 
 /// One PATHRECORD: its flags and its points, 28.4 device.
-sealed class PathRecord
+public sealed class PathRecord
 {
     public int Flags;
     public long[] X = new long[8], Y = new long[8];
@@ -75,7 +75,7 @@ sealed class PathRecord
 }
 
 /// A path (PATH, with its PATHOBJ's fl and cCurves).
-sealed class DevicePath
+public sealed class DevicePath
 {
     public readonly List<PathRecord> Records = new List<PathRecord>();
     /// ptfxSubPathStart: where the next figure starts.
@@ -275,7 +275,7 @@ sealed class DevicePath
 }
 
 /// A figure of a flattened path: 28.4 device points.
-sealed class PathFigure
+public sealed class PathFigure
 {
     public readonly List<long> X = new List<long>(), Y = new List<long>();
     public bool Closed;
@@ -507,7 +507,7 @@ sealed class BezierFlattener
 /// 0xA004E8D0) makes the pen a polygon of its own and its vertices are not
 /// these: the area stroked is the same, the points GetPath gives are not.
 /// A round join or end here is the circle's 16 compass points.
-static class Widener
+public static class Widener
 {
     // cos(k * 22.5 degrees) in 16.16, k 0..4.
     static readonly long[] _cos = new long[] { 65536, 60547, 46341, 25080, 0 };

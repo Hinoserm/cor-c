@@ -47,7 +47,7 @@ internal abstract class FontFace
 
 /// <summary>A face made ready at one size: its line metrics, in whole
 /// pixels, and each glyph drawn.</summary>
-internal abstract class SizedFace
+public abstract class SizedFace
 {
     public int Ascent;                       // pixels above the baseline
     public int Descent;                      // pixels below it, positive
@@ -87,7 +87,7 @@ internal abstract class SizedFace
 /// placed by its offsets from the pen: what a palette screen draws crisp
 /// text from, and all a bitmap face has.
 /// </summary>
-internal class GlyphBitmap
+public class GlyphBitmap
 {
     public int Width;
     public int Height;

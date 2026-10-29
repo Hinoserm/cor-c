@@ -30,7 +30,7 @@ namespace Corsac.GUI.Engine;
 
 
 /// A region's pixels, in the banded form.
-sealed class RegionShape
+public sealed class RegionShape
 {
     /// Left, top, right, bottom of each rectangle.
     public readonly int[] R;
@@ -356,7 +356,7 @@ sealed class RegionShape
 
 /// Rows of spans, top to bottom, into the banded form: a row the same as
 /// the one it sits on joins it.
-sealed class RegionBuilder
+public sealed class RegionBuilder
 {
     readonly List<int> _out = new List<int>();
     int _bandStart = -1, _bandBottom;

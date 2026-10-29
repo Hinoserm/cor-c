@@ -38,7 +38,7 @@ namespace Corsac.GUI;
 /// The theme as the GUI kernel's scroll bars ask it (Engine/scrollbars.cor):
 /// Windows' own colours (COLORREFs, as the kernel's Theme.Colour gives
 /// them), metrics and double-click time.
-static class Theme
+public static class Theme
 {
     [DllImport("user32")] static extern int GetSysColor(int index);
     [DllImport("user32")] static extern int GetSystemMetrics(int index);
@@ -52,7 +52,7 @@ static class Theme
 
 /// What the kernel's scroll bars draw on: rectangles and one-bit masks in a
 /// COLORREF (the GUI kernel's nonclient.cor has the same).
-interface NonClientTarget
+public interface NonClientTarget
 {
     void Fill(int x, int y, int width, int height, long colour);
     void Mask(int x, int y, int width, int height, byte[] bits, int stride, long colour, int clipX, int clipY, int clipWidth, int clipHeight);

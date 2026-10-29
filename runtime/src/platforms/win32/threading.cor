@@ -34,7 +34,7 @@ public static class Clock
     }
 }
 
-static class Native
+public static class Native
 {
     /// Linux's: where a thread's own mapping says its length. A Windows thread
     /// stands on the stack Windows gave it and has no mapping to give back.

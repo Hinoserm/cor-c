@@ -36,7 +36,7 @@ public class PosixSignalContext
     public bool Cancel;
 }
 
-interface PosixSignalHandler
+public interface PosixSignalHandler
 {
     void Invoke(PosixSignalContext context);
 }

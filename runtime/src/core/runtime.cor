@@ -217,7 +217,7 @@ static class SpillCounts
 /// asking at once get the same answer from the same processor, and the word
 /// is written whole, so no lock is needed. A 486 without CPUID (EFLAGS.ID
 /// fixed) has none of these.
-static class Processor
+public static class Processor
 {
     /// lock cmpxchg8b (CPUID 1, EDX bit 8, CX8): a long's compare-exchange, the Pentium's.
     public const int Cas64 = 1 << 0;

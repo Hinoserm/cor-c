@@ -1641,7 +1641,7 @@ static class InflateTable
 /// The RFC 1951 decompressor. Input arrives from a Stream through one buffer
 /// and leaves through a window that is a flat byte[]: a match is a memory
 /// copy inside it, and what the caller reads is a copy out of it.
-class Inflater
+public class Inflater
 {
     const int WindowSize = 32768;
     const int WindowLimit = 65536;              // 2 * WindowSize

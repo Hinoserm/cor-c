@@ -812,7 +812,7 @@ public class IPHostEntry
 }
 
 /// The record types RFC 1035 numbers, as far as this resolver reads them.
-enum DnsRecordType
+public enum DnsRecordType
 {
     A = 1,
     Ns = 2,
@@ -826,7 +826,7 @@ enum DnsRecordType
 }
 
 /// The header's RCODE: what the server made of the question.
-enum DnsResponseCode
+public enum DnsResponseCode
 {
     NoError = 0,
     FormatError = 1,
@@ -837,7 +837,7 @@ enum DnsResponseCode
 }
 
 /// One resource record.
-class DnsRecord
+public class DnsRecord
 {
     public string Name = "";
     public DnsRecordType Type;
@@ -856,7 +856,7 @@ class DnsRecord
 }
 
 /// A server's reply, taken apart.
-class DnsAnswer
+public class DnsAnswer
 {
     public int Id;
     public DnsResponseCode Code;
@@ -881,7 +881,7 @@ class DnsAnswer
 /// follows those pointers, and follows no more of them than the message has
 /// bytes, so a reply that points at itself ends the parse instead of the
 /// program.
-static class DnsMessage
+public static class DnsMessage
 {
     public const int HeaderBytes = 12;
 
@@ -1183,7 +1183,7 @@ static class DnsMessage
 /// to block on it (os/kernel/arch/x86/sysx86.cor, SysPoll): the process
 /// waits in the kernel until a descriptor is ready or the time is up, and
 /// nothing here spins or sleeps around it.
-static class SocketWait
+public static class SocketWait
 {
     public static bool Readable(Socket socket, long microSeconds)
     {
@@ -1306,7 +1306,7 @@ static class HostsFile
 ///
 /// resolv.conf(5) is the contract, and the defaults are its defaults: five
 /// seconds, two attempts, and the servers in the order they are written.
-class DnsResolver
+public class DnsResolver
 {
     public const string Path = "/etc/resolv.conf";
 

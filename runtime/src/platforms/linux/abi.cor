@@ -17,7 +17,7 @@
 /// and the name keeps pointing at what the code means. The calls whose
 /// ARGUMENTS differ as well (mmap's offset, statfs's size, wait4's rusage,
 /// ftruncate's length, set_thread_area) are shaped at their call sites.
-static class LinuxCall
+public static class LinuxCall
 {
     public const int Exit = 60;        // (status)
     public const int Read = 0;         // (fd, address, count) -> read, or -errno
@@ -142,7 +142,7 @@ static class LinuxCall
 /// The i386 system-call numbers this library uses, from asm/unistd_32.h:
 /// Linux's numbers and argument conventions, named LinuxCall so that a
 /// kernel compiled with this library keeps `Call` for its own.
-static class LinuxCall
+public static class LinuxCall
 {
     public const int Exit = 1;         // (status)
     public const int Read = 3;         // (fd, address, count) -> read, or -errno
@@ -846,7 +846,7 @@ public static class ClockId
 /// The kernel's `struct termios` as the TCGETS/TCSETS ioctls use it: four
 /// flag words, a line discipline byte, then nineteen special characters.
 /// (glibc's termios is a different, larger structure; this is the kernel's.)
-static class Termios
+public static class Termios
 {
     public const int Bytes = 36;
 

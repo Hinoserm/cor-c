@@ -3404,7 +3404,7 @@ public class DirectoryInfo : FileSystemInfo
 
 /// The rest of System.IO.File and System.IO.Directory: times, links,
 /// copies, moves, listings.
-static class FileSystem
+public static class FileSystem
 {
     /// The path an exception names, which is the full one as .NET's are: a
     /// program that opened "data.txt" is told which data.txt.
@@ -3842,7 +3842,7 @@ namespace System.IO
     /// Block devices: what .NET has no API for and a partition editor or a
     /// mkfs cannot do without. Size asks the device how big it is; a file's
     /// size is its length as usual.
-    static class BlockDevice
+    public static class BlockDevice
     {
         /// The device's size in bytes, or a regular file's length.
         public static long Size(FileStream device)

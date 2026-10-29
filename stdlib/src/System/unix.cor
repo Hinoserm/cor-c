@@ -40,7 +40,7 @@
 // file is still the only one that issues a system call.
 
 /// waitpid(2)'s options.
-static class WaitOptions
+public static class WaitOptions
 {
     public const int None = 0;
     public const int NoHang = 1;            // WNOHANG
@@ -49,7 +49,7 @@ static class WaitOptions
 
 /// mount(2)'s flags, as C# spells a set of them: the ones a person writes
 /// after -o and the kernel acts on itself.
-enum MountFlags
+public enum MountFlags
 {
     None = 0,
     ReadOnly = 1,               // MS_RDONLY
@@ -71,7 +71,7 @@ enum MountFlags
 }
 
 /// umount2(2)'s flags.
-enum UnmountFlags
+public enum UnmountFlags
 {
     None = 0,
     Force = 1,                  // MNT_FORCE: give up on a server that is gone
@@ -83,7 +83,7 @@ enum UnmountFlags
 /// mount(2) and umount2(2), which .NET has no API for at all: attaching a
 /// filing system to the tree is a thing a system has, not a thing a program
 /// portable between systems does.
-static class UnixMount
+public static class UnixMount
 {
     /// mount(2). `type` is the filing system's name -- "ext2", "minix" -- and
     /// `data` its own options, the ones after -o that the kernel passes

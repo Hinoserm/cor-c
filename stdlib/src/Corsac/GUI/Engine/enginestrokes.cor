@@ -23,7 +23,7 @@ namespace Corsac.GUI.Engine;
 
 /// What a pen strokes with: its colour (the target's), width in pixels,
 /// ends and joins (PS_ENDCAP_*, PS_JOIN_*), and a thin pen's dashes.
-class StrokeStyle
+public class StrokeStyle
 {
     public long Colour;                // -1: the null pen
     public int Width = 1;
@@ -36,7 +36,7 @@ class StrokeStyle
 
 /// Where a thin styled pen is in its pattern: carried from one segment
 /// to the next of a line, as GDI's style state is.
-sealed class StrokeDashes
+public sealed class StrokeDashes
 {
     public int[]? Pattern;
     public int Index, Left;
@@ -64,7 +64,7 @@ sealed class StrokeDashes
     }
 }
 
-static class Strokes
+public static class Strokes
 {
     /// PS_ENDCAP_* and PS_JOIN_*.
     public const int EndRound = 0, EndSquare = 0x100, EndFlat = 0x200;

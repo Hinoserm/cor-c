@@ -402,7 +402,7 @@ public static partial class Marshal
 /// after it is only what an errno with no sentence of its own says. The errno
 /// itself is kept in HResult, so a program that wants the system's words can
 /// still ask Marshal for them.
-static class Interop
+public static class Interop
 {
     public static Exception GetExceptionForIoErrno(int error, string? path)
     {
