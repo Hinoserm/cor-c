@@ -1,0 +1,32 @@
+// test: null_conditional_struct_held_out_of_line
+// expect-exit: 0
+// expect-output:
+// False False False 0 True 2 9
+// False False False 0 True 2 9
+// ran
+//
+// The empty answer of a `?.` read whose value is a nullable struct held out
+// of line (a struct holding an int?) is a whole empty Nullable, copied and
+// read like any: no zeroed cell whose value pointer is null. In a loop, each
+// time. And a delegate element called past `?[`, `hs?[0]()`, is skipped
+// while hs is null.
+using System;
+struct P { public int? X; public int Y; }
+class B { public P? Pv = new P { X = 2, Y = 3 }; public P? Make() => Pv; public P?[] Arr = { new P { Y = 9 } }; }
+class A { public B b = new(); }
+static class Q
+{
+    static int Main()
+    {
+        A? none = null; A full = new();
+        for (int i = 0; i < 2; i++)
+        {
+            P? v1 = none?.b.Pv; P? v2 = none?.b.Make(); P? v3 = none?.b.Arr[0];
+            P? w1 = full?.b.Pv; P? w3 = full?.b.Arr[0];
+            Console.WriteLine($"{v1.HasValue} {v2.HasValue} {v3.HasValue} {v1.GetValueOrDefault().Y} {(v1 ?? default).X is null} {w1!.Value.X} {w3!.Value.Y}");
+        }
+        Action[]? hs = null; Action act = () => hs?[0](); act(); hs = new Action[] { () => Console.WriteLine("ran") }; act();
+
+        return 0;
+    }
+}

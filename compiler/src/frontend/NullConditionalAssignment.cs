@@ -68,7 +68,14 @@ internal static class NullConditionalAssignment
             }
             case CallExpr call when Unlinked(call.Target, holder) is (Expr receiver, Expr inner):
             {
-                CallExpr kept = new() { Target = inner, Line = call.Line, Col = call.Col };
+                // Everything the call says of itself kept: its arguments' text
+                // ([CallerArgumentExpression], Spans and Source), a format
+                // hole's, its tuple names.
+                CallExpr kept = new()
+                {
+                    Target = inner, FormatHole = call.FormatHole, Line = call.Line, Col = call.Col,
+                    Spans = call.Spans, Source = call.Source, ResultTupleNames = call.ResultTupleNames,
+                };
                 kept.Args.AddRange(call.Args);
                 kept.WritableArgNames.AddRange(call.ArgNames);
                 return (receiver, kept);

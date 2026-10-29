@@ -1054,7 +1054,8 @@ public sealed partial class Lowering
                 // A NULL-CONDITIONAL'S EMPTY CELL (ConditionalExpr.Effect), as
                 // EmitConditionalMember's: a zeroed slot of the frame, not a
                 // block of the heap, where no suspension ends the frame.
-                if (c.Effect && made is null && result.IsNullableValue && _stateMachine is null && c.Then is LiteralExpr { Kind: Lit.Null })
+                if (c.Effect && made is null && result.IsNullableValue && _stateMachine is null && c.Then is LiteralExpr { Kind: Lit.Null }
+                    && EmptyIsZero(result))
                     _e.CopyTo(dest, R(EmptyCellInFrame(result)));
                 else
                     SetArmResult(dest, made, c.Then, result);
@@ -1707,7 +1708,15 @@ public sealed partial class Lowering
     // a value where the checker had made it a nullable.
     private static bool InConditionalChain(Expr e) => NullConditionalAssignment.Linked(e);
 
-    /// <summary>An empty Nullable of this type, a zeroed slot of the frame: read, never written through, and nothing the heap holds.</summary>
+    /// <summary>
+    /// An empty Nullable of this type, a zeroed slot of the frame: read, never
+    /// written through, and nothing the heap holds. Only where zero bytes ARE
+    /// an empty one (EmptyIsZero): a value held out of line has a block of its
+    /// own NullableEmpty makes, and a zeroed cell's null pointer there was
+    /// copied from address 0 (`P? v = a?.b.Pv` for a struct P holding an int?).
+    /// </summary>
+    private bool EmptyIsZero(Type result) => !HasStructFields(StructOf(result));
+
     private VReg EmptyCellInFrame(Type result)
     {
         TypeSymbol shape = StructOf(result);
@@ -1733,7 +1742,7 @@ public sealed partial class Lowering
         // null arm needs, and a heap one joined with an object's interior
         // was a block per `x?.Flag == false` that nothing could free. In an
         // iterator's or async body, whose frame a suspension ends, the heap.
-        if (result.IsNullableValue && _stateMachine is null)
+        if (result.IsNullableValue && _stateMachine is null && EmptyIsZero(result))
         {
             _e.CopyTo(dest, R(EmptyCellInFrame(result)));
         }
