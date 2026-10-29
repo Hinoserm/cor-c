@@ -13,4 +13,12 @@ public sealed class ConditionalExpr : Expr
     /// </summary>
     public required Expr Then { get; set; }
     public required Expr Else { get; set; }
+
+    /// <summary>
+    /// A null-conditional assignment's test (Binder, NullConditionalAssignment):
+    /// its assignment may be void -- `c?.E += h`, an event's add, a declared
+    /// compound operator's -- and then the whole is void, done only where the
+    /// receiver is not null, as `() => c?.E += h` for an Action is in C#.
+    /// </summary>
+    public bool Effect { get; init; }
 }

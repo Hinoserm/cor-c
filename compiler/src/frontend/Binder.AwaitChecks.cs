@@ -1818,6 +1818,8 @@ public sealed partial class Binder
                     case MemberExpr m: t = m.Target; break;
                     case IndexExpr i: t = i.Target; break;
                     case CallExpr c: t = c.Target; break;
+                    // A `!` ends nothing (NullConditionalAssignment.Linked).
+                    case SuppressExpr s: t = s.Operand; break;
                     default: return false;
                 }
             return false;

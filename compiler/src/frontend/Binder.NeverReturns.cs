@@ -222,6 +222,8 @@ public sealed partial class Binder
                 case MemberExpr member: at = member.Target; break;
                 case IndexExpr index: at = index.Target; break;
                 case CallExpr call: at = call.Target; break;
+                // A `!` ends nothing (NullConditionalAssignment.Linked).
+                case SuppressExpr suppressed: at = suppressed.Operand; break;
                 case AssignExpr assign: at = assign.Target; break;
                 default: return false;
             }

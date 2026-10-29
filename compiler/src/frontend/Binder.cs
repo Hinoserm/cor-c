@@ -17197,7 +17197,7 @@ public sealed partial class Binder
                 ConditionalExpr unlessNull = new()
                 {
                     Cond = new BinaryExpr { Op = BinOp.Eq, Left = new SubjectExpr { Line = linked.Line, Col = linked.Col }, Right = Null(), Line = linked.Line, Col = linked.Col },
-                    Then = Null(), Else = past,
+                    Then = Null(), Else = past, Effect = true,
                     Line = linked.Line, Col = linked.Col,
                 };
                 PatternExpr once = new() { Subject = receiver, Test = unlessNull, Line = linked.Line, Col = linked.Col };
@@ -17816,6 +17816,12 @@ public sealed partial class Binder
                 // no type yet (void): the call checks this again once its
                 // overload says (FunctionSource). Nothing is decided now -- a
                 // `null` arm against it must not put it in a nullable cell.
+                // A void assignment past a null-conditional test is done for its
+                // effect, and the whole is void (ConditionalExpr.Effect).
+                if (c2.Effect && a2.Prim == Prim.NullLiteral && b2.IsVoid)
+                {
+                    return Type.Void;
+                }
                 if (a2.IsError || b2.IsError || a2.IsVoid || b2.IsVoid)
                 {
                     return Type.Error;
@@ -19462,6 +19468,16 @@ public sealed partial class Binder
 
     private void RequireAssignable(Expr target, string what)
     {
+        // A `?.` CHAIN IS NO VARIABLE (C# 14): an assignment through one is
+        // its own form (NullConditionalAssignment), but `a?.b++`, `--a?[i]`
+        // and `ref a?.b` are refused, as Roslyn refuses them.
+        if (NullConditionalAssignment.Linked(target))
+        {
+            Error(target, what is "increment" or "decrement"
+                ? "CS1059: The operand of an increment or decrement operator must be a variable, property or indexer"
+                : "CS0131: The left-hand side of an assignment must be a variable, property or indexer");
+            return;
+        }
         NoteWritten(target);
         if (_r.PropertySetters.ContainsKey(target)
             || target is IndexExpr index && _r.IndexSetters.ContainsKey(index))
@@ -20110,8 +20126,8 @@ public sealed partial class Binder
         // not a symbol and is what the code after the test reads.
         if (cond is BinaryExpr { Op: BinOp.Eq or BinOp.Ne } test)
         {
-            Expr? side = test.Right is LiteralExpr { Kind: Lit.Null } ? test.Left
-                       : test.Left is LiteralExpr { Kind: Lit.Null } ? test.Right
+            Expr? side = test.Right is LiteralExpr { Kind: Lit.Null } ? Ungrouped(test.Left)
+                       : test.Left is LiteralExpr { Kind: Lit.Null } ? Ungrouped(test.Right)
                        : null;
 
             // A PATTERN'S SUBJECT, tested: what it stands for is proved -- a
@@ -20143,18 +20159,21 @@ public sealed partial class Binder
         // after the test reads `i.Dest.Type`. Each receiver of the chain.
         Expr? valued = cond switch
         {
-            PatternExpr tested when PatternExcludesNull(tested.Test, holds) => tested.Subject,
+            // Each through a group, which holds its chain whole (Ungrouped):
+            // `(o?.P) is string s` proves o as `o?.P is string s` does.
+            PatternExpr tested when PatternExcludesNull(tested.Test, holds) => Ungrouped(tested.Subject),
             // `t?.Decl is not { } d` false, `x?.Op is Call c` true: a type test
             // or `{ }` passes no null -- not `is var v`, which takes anything.
-            IsExpr { Type.Name: not TypeRef.Anything } typeTest when holds => typeTest.Operand,
+            IsExpr { Type.Name: not TypeRef.Anything } typeTest when holds => Ungrouped(typeTest.Operand),
             BinaryExpr { Op: BinOp.Eq or BinOp.Ne, PatternConstant: false } compared
                 when (compared.Op == BinOp.Eq) == holds && compared.Right is not LiteralExpr { Kind: Lit.Null }
                      && compared.Left is not LiteralExpr { Kind: Lit.Null } =>
-                HasConditionalMember(compared.Left) && NeverNull(compared.Right) ? compared.Left
-                : HasConditionalMember(compared.Right) && NeverNull(compared.Left) ? compared.Right : null,
+                HasConditionalMember(Ungrouped(compared.Left)) && NeverNull(compared.Right) ? Ungrouped(compared.Left)
+                : HasConditionalMember(Ungrouped(compared.Right)) && NeverNull(compared.Left) ? Ungrouped(compared.Right) : null,
             // `xs?.Count > 0`, true: C# lifts a comparison to false for null.
             BinaryExpr { Op: BinOp.Lt or BinOp.Le or BinOp.Gt or BinOp.Ge } ordered when holds =>
-                HasConditionalMember(ordered.Left) ? ordered.Left : HasConditionalMember(ordered.Right) ? ordered.Right : null,
+                HasConditionalMember(Ungrouped(ordered.Left)) ? Ungrouped(ordered.Left)
+                : HasConditionalMember(Ungrouped(ordered.Right)) ? Ungrouped(ordered.Right) : null,
             _ => null,
         };
         // And the value itself, where it is a reference read by a path:
@@ -20172,6 +20191,8 @@ public sealed partial class Binder
                 MemberExpr member => member.Target,
                 IndexExpr index => index.Target,
                 CallExpr { Target: MemberExpr callee } => callee,
+                // A `!` ends nothing (NullConditionalAssignment.Linked).
+                SuppressExpr suppressed => suppressed.Operand,
                 _ => null,
             };
             if (at is MemberExpr { NullConditional: true } or IndexExpr { NullConditional: true } && receiver is not null)
@@ -25668,6 +25689,15 @@ public sealed partial class Binder
     }
 
     private static bool HasConditionalMember(Expr expression) => NullConditionalAssignment.Linked(expression);
+
+    /// <summary>
+    /// A group's chain, which the parser holds whole (`(a?.b)`, a pattern
+    /// whose test is its subject) so that what follows the group cannot
+    /// reach into it: what a null test of the group proves is what one of
+    /// the chain proves.
+    /// </summary>
+    private static Expr Ungrouped(Expr e)
+        => e is PatternExpr { Test: SubjectExpr { Outer: 0 }, Subject: { } held } ? Ungrouped(held) : e;
 
     /// <summary>
     /// C#'s IMPLICIT CONSTANT EXPRESSION CONVERSION, applied to the two sides

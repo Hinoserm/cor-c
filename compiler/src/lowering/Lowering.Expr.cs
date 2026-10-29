@@ -1022,6 +1022,23 @@ public sealed partial class Lowering
             case ConditionalExpr c:
             {
                 Type result = _b.TypeOf(c);
+                // A VOID ONE (ConditionalExpr.Effect): each arm for its effect,
+                // and nothing to be worth -- `() => c?.E += h` for an Action.
+                if (result.IsVoid && c.Effect)
+                {
+                    VReg none = _f.NewReg(IrTypes.Word, "void");
+                    _e.CopyTo(none, Imm(0, IrTypes.Word));
+                    Block doIt = _f.NewBlock("qthen"), skip = _f.NewBlock("qelse"), done = _f.NewBlock("qend");
+                    BranchOn(c.Cond, doIt, skip);
+                    _e.SetBlock(doIt);
+                    EvalForEffect(c.Then);
+                    _e.Jump(done);
+                    _e.SetBlock(skip);
+                    EvalForEffect(c.Else);
+                    _e.Jump(done);
+                    _e.SetBlock(done);
+                    return none;
+                }
                 VReg dest = _f.NewReg(IrTypes.Of(result), "cond");
                 VReg? made = StructResultBlock(c, result);
                 if (made is not null)
@@ -1677,16 +1694,12 @@ public sealed partial class Lowering
     };
 
     /// <summary>`x?.Member`: the member when x is something, and null when it is not.</summary>
-    // THROUGH CALLS AND INDEXERS TOO, as the checker's HasConditionalMember
-    // walks it: `n?.Self().Label` is still in n's chain after the call, and
-    // read plainly it asked Label of the null the call came to.
-    private static bool InConditionalChain(Expr e) => e switch
-    {
-        MemberExpr member => member.NullConditional || InConditionalChain(member.Target),
-        CallExpr call => InConditionalChain(call.Target),
-        IndexExpr index => index.NullConditional || InConditionalChain(index.Target),
-        _ => false,
-    };
+    // THROUGH CALLS, INDEXERS AND `!` TOO, the checker's own rule
+    // (NullConditionalAssignment.Linked): `n?.Self().Label` is still in n's
+    // chain after the call, and `a?.B!.C` after the `!` -- read plainly, the
+    // first asked Label of the null the call came to, the second read C as
+    // a value where the checker had made it a nullable.
+    private static bool InConditionalChain(Expr e) => NullConditionalAssignment.Linked(e);
 
     private VReg EmitConditionalMember(MemberExpr m)
     {

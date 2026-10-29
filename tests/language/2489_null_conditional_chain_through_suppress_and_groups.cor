@@ -1,0 +1,34 @@
+// test: null_conditional_chain_through_suppress_and_groups
+// expect-exit: 0
+// expect-output:
+// null 5 null bs
+// hits=1
+// pp pp
+// 5
+//
+// A `!` in a `?.` chain ends nothing: `none?.b!.n` is null, read or
+// assigned. A void null-conditional assignment is done for its effect, as
+// `() => some?.E += h` for an Action is in C#, only where the receiver is
+// not null. A group ends the chain but proves what the chain does:
+// `(o?.P) is string got` and `(o?.b) != null` leave o not null.
+using System;
+class A { public B? b; public int n; public event Action? E; public void Fire() => E?.Invoke(); public string? P; }
+class B { public int n = 5; public string? s; }
+static class P
+{
+    static int Main()
+    {
+        A? none = null; A some = new() { b = new() { s = "bs" } };
+        int? r1 = none?.b!.n; int? r2 = some?.b!.n; string? r3 = none?.b!.s; string? r4 = some?.b!.s;
+        Console.WriteLine($"{(r1 is null ? "null" : "v")} {r2} {(r3 is null ? "null" : r3)} {r4}");
+        int hits = 0;
+        Action add = () => some?.E += () => hits++;
+        Action addNone = () => none?.E += () => hits += 100;
+        add(); addNone(); some.Fire();
+        Console.WriteLine($"hits={hits}");
+        A? o = some; some.P = "pp";
+        if ((o?.P) is string got) Console.WriteLine(o.P + " " + got);
+        if ((o?.b) != null) Console.WriteLine(o.b.n);
+        return 0;
+    }
+}

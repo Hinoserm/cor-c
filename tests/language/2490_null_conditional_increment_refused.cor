@@ -1,0 +1,16 @@
+// test: null-conditional increment refused
+// expect-compile-error: CS1059: The operand of an increment or decrement operator must be a variable, property or indexer
+// C# 14 allows assignment through `?.` and refuses `a?.n++`, `--a?.n` and
+// `ref a?.n`: a conditional access is no variable.
+
+class A { public int n; }
+
+static class Program
+{
+    static int Main()
+    {
+        A? a = null;
+        a?.n++;
+        return 0;
+    }
+}
