@@ -4023,25 +4023,30 @@ internal sealed partial class Selector
             Error("syscall with more than six arguments");
             return;
         }
+        // THE SIXTH ARGUMENT FIRST, onto the stack, while every register is
+        // free: once the number and five arguments hold the other six, a
+        // seventh is there only where nothing else is live, and the value
+        // read into one from the frame had none -- "no register" for any
+        // six-argument call not inlined into its caller. EBP, saved above
+        // it, takes it from there for the trap.
+        bool sixth = args == 6;
+        if (sixth) Emit(MOp.Push, RM(i.Operands[6]));
         Mov(Eax, RM(i.Operands[0]));
         for (int k = 0; k < Math.Min(args, 5); k++)
         {
             Mov(regs[k], RM(i.Operands[k + 1]));
         }
-        bool sixth = args == 6;
         if (sixth)
         {
-            // The argument is read before EBP changes: any spill reload the
-            // allocator adds lands ahead of this move, while EBP still holds the frame.
-            MReg a6 = R(i.Operands[6]);
             Emit(MOp.Push, Ebp);
-            Mov(Ebp, a6);
+            Mov(Ebp, new MMem(Esp, 4));
         }
         // The argument count rides along, so the trap reads only those registers (Roles.ImplicitUses).
         Emit(MOp.SyscallTrap, new MImm(i.Offset == 0 ? 0x80 : i.Offset), new MImm(args));
         if (sixth)
         {
             Emit(MOp.Pop, Ebp);
+            Emit(MOp.Lea, Esp, new MMem(Esp, 4));
         }
         Mov(Lo(i.Dest!), Eax);
     }

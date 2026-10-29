@@ -1,0 +1,31 @@
+// test: a six-argument system call, its arguments from the frame
+// expect-exit: 0
+// only-target: x86
+// expect-output:
+// mapped
+//
+// The sixth argument goes to EBP for the trap; read from a parameter, it
+// had no register while the other six held the number and five arguments.
+
+static class Program
+{
+    static long Call(int n, SyscallWord a = 0, SyscallWord b = 0, SyscallWord c = 0, SyscallWord d = 0, SyscallWord e = 0, SyscallWord f = 0)
+    {
+        return (long)Sys.Syscall(n, a, b, c, d, e, f);
+    }
+    static long Twice(int n, SyscallWord a, SyscallWord b, SyscallWord c, SyscallWord d, SyscallWord e, SyscallWord f)
+    {
+        long first = Call(n, a, b, c, d, e, f);
+        long second = Call(n, a, b, c, d, e, f);
+        return first ^ second;
+    }
+    static int Main()
+    {
+        // mmap2(0, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0): six arguments, the sixth zero.
+        long at = Call(192, 0, 4096, 3, 0x22, unchecked((SyscallWord)(-1)), 0);
+        if (at < 0 && at > -4096) return 1;
+        long both = Twice(192, 0, 4096, 3, 0x22, unchecked((SyscallWord)(-1)), 0);
+        System.Console.WriteLine(at != 0 && both != 0 ? "mapped" : "zero");
+        return 0;
+    }
+}
