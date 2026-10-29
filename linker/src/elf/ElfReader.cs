@@ -616,7 +616,7 @@ public static class ElfReader
             // every unit's code and data came into memory as it was read.
             // A window of it at a time, not one array the size of its code:
             // relocations come in order of offset, near enough.
-            byte[]? window = target.FileBacked is not null ? new byte[64 * 1024] : null;
+            byte[]? window = target.FileBacked is not null && count > 0 ? new byte[64 * 1024] : null;
             long windowAt = -1;
             int windowLength = 0;
             int targetSize = target.Size;

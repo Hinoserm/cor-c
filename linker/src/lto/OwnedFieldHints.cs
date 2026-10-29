@@ -278,14 +278,14 @@ public sealed class OwnedFieldHints
         }
         // Each function's site, and the unit's sums of them, which its own
         // bounds were kept on (OwnedFieldRecord.Needs and the rest).
-        void ReadSites(SortedDictionary<string, OwnedSite> into, LifetimeCondition needs, SortedSet<string> danger, SortedSet<string>? dangerFields,
-            SortedSet<string>? kinds, SortedSet<string>? assumes)
+        void ReadSites(SortedDictionary<string, OwnedSite> into, LifetimeCondition needs, SmallSortedSet<string> danger, SmallSortedSet<string>? dangerFields,
+            SmallSortedSet<string>? kinds, SmallSortedSet<string>? assumes)
         {
             for (int k = Count(24); k > 0; k--)
             {
                 string function = Name();
                 OwnedSite site = new();
-                site.Needs.Add(Needs()); NameSet(site.Danger); NameSet(site.DangerFields); NameSet(site.Kinds); NameSet(site.Assumes);
+                site.Needs.Add(Needs()); NamesInto(site.Danger.Add); NamesInto(site.DangerFields.Add); NamesInto(site.Kinds.Add); NamesInto(site.Assumes.Add);
                 if (!into.TryAdd(function, site)) throw new ElfFormatException("Duplicate owned-field site");
                 needs.Add(site.Needs); danger.UnionWith(site.Danger); dangerFields?.UnionWith(site.DangerFields);
                 kinds?.UnionWith(site.Kinds); assumes?.UnionWith(site.Assumes);
@@ -296,9 +296,9 @@ public sealed class OwnedFieldHints
         {
             string field = Name();
             OwnedFieldRecord record = new() { Offset = reader.ReadInt64(), Refused = reader.ReadBoolean(), Stored = reader.ReadBoolean(), SelfFreed = reader.ReadBoolean() };
-            NameSet(record.RefusedBy); ReadSites(record.Sites, record.Needs, record.Danger, null, record.Kinds, record.Assumes); Pairs(record.Sinks);
+            NamesInto(record.RefusedBy.Add); ReadSites(record.Sites, record.Needs, record.Danger, null, record.Kinds, record.Assumes); Pairs(record.Sinks);
             record.ElementsRefused = reader.ReadBoolean(); record.ElementArrays = reader.ReadBoolean();
-            record.ElementNeeds.Add(Needs()); NameSet(record.ElementDanger); NameSet(record.ElementDangerFields);
+            record.ElementNeeds.Add(Needs()); NamesInto(record.ElementDanger.Add); NamesInto(record.ElementDangerFields.Add);
             if (!hints.Fields.TryAdd(field, record)) throw new ElfFormatException("Duplicate owned-field record");
         }
         for (int i = Count(20); i > 0; i--)
@@ -311,7 +311,7 @@ public sealed class OwnedFieldHints
         {
             string callee = Name();
             OwnedCallRead read = new() { Refused = reader.ReadBoolean() };
-            NameSet(read.RefusedBy); ReadSites(read.Sites, read.Needs, read.Danger, read.DangerFields, null, null); NameSet(read.ReturnedBy);
+            NamesInto(read.RefusedBy.Add); ReadSites(read.Sites, read.Needs, read.Danger, read.DangerFields, null, null); NamesInto(read.ReturnedBy.Add);
             if (!hints.CallReads.TryAdd(callee, read)) throw new ElfFormatException("Duplicate owned-field call read");
         }
         for (int i = Count(8); i > 0; i--)
@@ -350,7 +350,7 @@ public sealed class OwnedFieldHints
         {
             OwnedElementRecord record = new(Name());
             record.Needs.Add(Needs());
-            NameSet(record.Accessors); NameSet(record.Fixed);
+            NamesInto(record.Accessors.Add); NamesInto(record.Fixed.Add);
             return record;
         }
         void Map(SortedDictionary<string, OwnedElementRecord> into)
@@ -388,7 +388,7 @@ public sealed class OwnedFieldRecord
     /// the program runs any of them. Every other store and read here is
     /// judged all the same, for when it runs none.
     /// </summary>
-    public SortedSet<string> RefusedBy { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> RefusedBy { get; } = new(StringComparer.Ordinal);
     /// <summary>Stored into here.</summary>
     public bool Stored { get; set; }
     /// <summary>
@@ -405,19 +405,19 @@ public sealed class OwnedFieldRecord
     /// <summary>Parameters it is stored from, which every caller must hand over.</summary>
     public SortedSet<(string Callee, int Argument)> Sinks { get; } = new(OwnedFieldHints.PairOrder.Instance);
     /// <summary>The calls a read of it is live across: none may replace it. The sum of its sites', as Needs is.</summary>
-    public SortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
     /// <summary>
     /// What the unit's stores put in it, by the stamp of the object each
     /// makes for it (`t_List$0024int+48`), or <see cref="UnknownKind"/> for
     /// anything else; null stores say nothing.
     /// </summary>
-    public SortedSet<string> Kinds { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Kinds { get; } = new(StringComparer.Ordinal);
     /// <summary>
     /// The one stamp the unit's reads were judged as holding (a virtual call
     /// on what is read reaching that type's method alone): owned only if
     /// every unit's stores put nothing else in it.
     /// </summary>
-    public SortedSet<string> Assumes { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Assumes { get; } = new(StringComparer.Ordinal);
 
     // ---- its arrays owning their elements (Escape.ArrayFieldElements) ----
 
@@ -428,9 +428,9 @@ public sealed class OwnedFieldRecord
     /// <summary>What the proof of its elements needs of other units' functions.</summary>
     public LifetimeCondition ElementNeeds { get; } = new();
     /// <summary>The calls an element is live across: none may store into the field.</summary>
-    public SortedSet<string> ElementDanger { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> ElementDanger { get; } = new(StringComparer.Ordinal);
     /// <summary>The fields stored into while an element is live: none may be owned.</summary>
-    public SortedSet<string> ElementDangerFields { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> ElementDangerFields { get; } = new(StringComparer.Ordinal);
 
     /// <summary>A store of something whose type the unit cannot name.</summary>
     public const string UnknownKind = "?";
@@ -455,10 +455,10 @@ public sealed class OwnedFieldRecord
 public sealed class OwnedSite
 {
     public LifetimeCondition Needs { get; } = new();
-    public SortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
-    public SortedSet<string> DangerFields { get; } = new(StringComparer.Ordinal);
-    public SortedSet<string> Kinds { get; } = new(StringComparer.Ordinal);
-    public SortedSet<string> Assumes { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> DangerFields { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Kinds { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Assumes { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -475,14 +475,14 @@ public sealed class OwnedCallRead
     /// <summary>Some read lets it go, or lives across a free: no field the callee hands back is owned.</summary>
     public bool Refused { get; set; }
     /// <summary>The functions whose read lets it go, or lives across a free: as Refused, if the program runs any of them.</summary>
-    public SortedSet<string> RefusedBy { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> RefusedBy { get; } = new(StringComparer.Ordinal);
     public LifetimeCondition Needs { get; } = new();
     /// <summary>The calls a read is live across.</summary>
-    public SortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
     /// <summary>The fields stored into while a read is live.</summary>
-    public SortedSet<string> DangerFields { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> DangerFields { get; } = new(StringComparer.Ordinal);
     /// <summary>The functions that hand it back again: they hand back whatever the callee does.</summary>
-    public SortedSet<string> ReturnedBy { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> ReturnedBy { get; } = new(StringComparer.Ordinal);
     /// <summary>Needs, Danger and DangerFields by the calling function (OwnedFieldRecord.Sites); those three are their sum.</summary>
     public SortedDictionary<string, OwnedSite> Sites { get; } = new(StringComparer.Ordinal);
     public OwnedSite Site(string function) => Sites.TryGetValue(function, out OwnedSite? site) ? site : Sites[function] = new OwnedSite();
@@ -502,8 +502,8 @@ public sealed class OwnedElementRecord
     /// proved too; and the fields the proof found go back where they came
     /// from, which no other unit may store into or read.
     /// </summary>
-    public SortedSet<string> Accessors { get; } = new(StringComparer.Ordinal);
-    public SortedSet<string> Fixed { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Accessors { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Fixed { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>An argument every call of one unit hands over, if what it names holds.</summary>

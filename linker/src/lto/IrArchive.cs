@@ -13,7 +13,6 @@ public sealed class IrArchive
     public const int MaximumBytes = 128 * 1024 * 1024;
     private static readonly UTF8Encoding Utf8 = new(false, true);
     /// <summary>Each object file an archive is read from, opened once for the process (a link).</summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Microsoft.Win32.SafeHandles.SafeFileHandle> Handles = new(StringComparer.Ordinal);
     // The archive's bytes, read where they are: a section in memory, or --
     // a unit a link reads (ElfReader.ReadObjectFile) -- the object's file,
     // so that no unit's IR is held whole, only the record being decoded.
@@ -161,7 +160,7 @@ public sealed class IrArchive
         Func<int, int, byte[]> readAt;
         if (section.FileBacked is (string path, long start, int _))
         {
-            Microsoft.Win32.SafeHandles.SafeFileHandle handle = Handles.GetOrAdd(path, key => File.OpenHandle(key, FileMode.Open, FileAccess.Read, FileShare.Read));
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle = Section.Handle(path);
             readAt = (at, length) =>
             {
                 byte[] read = new byte[length];

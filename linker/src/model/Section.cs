@@ -46,16 +46,27 @@ public sealed class Section
         get => _backing is { } b ? (b.Path, b.Offset, b.Length) : null;
         set => Volatile.Write(ref _backing, value is { } v ? new Backing(v.Path, v.Offset, v.Length) : null);
     }
-    private sealed record Backing(string Path, long Offset, int Length);
+    private sealed record Backing(string Path, long Offset, int Length)
+    {
+        /// <summary>The file as it was when first read from: its handle's key (Handle).</summary>
+        public string Version => _version ??= Path + "\0" + File.GetLastWriteTimeUtc(Path).Ticks + "\0" + new FileInfo(Path).Length;
+        private string? _version;
+    }
     private Backing? _backing;
 
     /// <summary>
     /// One read handle a file, kept for the process: a section left in its
     /// file is read a word at a time (ReadAt), and opening the file for each
-    /// made an open and a close of every read.
+    /// made an open and a close of every read. The IR archives' reads share
+    /// it (IrArchive). BY THE FILE'S VERSION, its time and size: a project
+    /// that writes an object again and links it again reads the new one, not
+    /// the file the handle still holds.
     /// </summary>
     internal static Microsoft.Win32.SafeHandles.SafeFileHandle Handle(string path)
-        => Handles.GetOrAdd(path, key => File.OpenHandle(key, FileMode.Open, FileAccess.Read, FileShare.Read));
+        => Handle(path, path + "\0" + File.GetLastWriteTimeUtc(path).Ticks + "\0" + new FileInfo(path).Length);
+
+    private static Microsoft.Win32.SafeHandles.SafeFileHandle Handle(string path, string version)
+        => Handles.GetOrAdd(version, _ => File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read));
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Microsoft.Win32.SafeHandles.SafeFileHandle> Handles = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -130,12 +141,19 @@ public sealed class Section
         if (_backing is { } backing)
         {
             if (at + into.Length > backing.Length) return false;
-            return RandomAccess.Read(Handle(backing.Path), into, backing.Offset + at) == into.Length;
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle = Handle(backing.Path, backing.Version);
+            for (int done = 0; done < into.Length;)
+            {
+                int got = RandomAccess.Read(handle, into[done..], backing.Offset + at + done);
+                if (got <= 0) return false;
+                done += got;
+            }
+            return true;
         }
         lock (_bytes)
         {
             if (at + into.Length > _bytes.Count) return false;
-            for (int k = 0; k < into.Length; k++) into[k] = _bytes[(int)at + k];
+            _bytes.CopyTo((int)at, into, into.Length);
         }
         return true;
     }

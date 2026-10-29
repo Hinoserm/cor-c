@@ -128,9 +128,10 @@ public static class DeclarationReads
         {
             byte[] theirs = kernel.TryGetValue(name, out byte[]? found) ? found : Empty;
             if (!hash.AsSpan().SequenceEqual(theirs))
-                differences.Add(Named(name) + (name.StartsWith("M:", StringComparison.Ordinal)
-                    ? (ReferenceEquals(theirs, Empty) ? " is no longer a member" : " is now a member, which it was told it had not")
-                    : ReferenceEquals(theirs, Empty) ? " is no longer in the kernel" : " is not what it was"));
+                differences.Add(name.StartsWith("M:", StringComparison.Ordinal)
+                    ? Named(name) + " is now a member, which the unit was compiled without"
+                    : (name.StartsWith("H:", StringComparison.Ordinal) ? "the header of " : "") + Named(name)
+                      + (ReferenceEquals(theirs, Empty) ? " is no longer in the kernel" : " is not what it was"));
         }
         return differences;
     }

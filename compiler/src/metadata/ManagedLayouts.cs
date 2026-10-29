@@ -104,6 +104,8 @@ public static class ManagedLayouts
         // more, it has nothing to disagree about, and is no reader of them
         // (Dependence.Header). Described, they would be declared here. Chosen
         // before any record is made, as describing one type declares others.
+        // A class or struct it named is declared at the end of binding
+        // (Binder.DeclareUsed), and described as before.
         List<TypeSymbol> toDescribe = bound.Types.Values.Distinct()
             .Where(type => described.Contains(type))
             .Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 })

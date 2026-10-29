@@ -60,16 +60,43 @@ public static class DeclarationFingerprint
         int line = key.LastIndexOf('\n');
         string typeKey = "T:" + (member ? key[2..line] : key[2..]);
         string name = member ? key[(line + 1)..] : "";
+        SourceDeclaration[] records = index.Find(typeKey).Select(SourceDeclaration.Decode).ToArray();
+        return member ? MemberHash(records, name) : HeaderHash(records);
+    }
+
+    private static byte[] HeaderHash(IEnumerable<SourceDeclaration> records)
+    {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         bool said = false;
-        foreach (DeclarationRecord record in index.Find(typeKey))
+        foreach (SourceDeclaration declared in records) { Append(hash, declared.HeaderHash); said = true; }
+        return said ? hash.GetHashAndReset()[..DeclarationReads.HashBytes] : DeclarationReads.Empty;
+    }
+
+    /// <summary>A member name's answer of a type's records: its name once for each record that has it, or nothing.</summary>
+    private static byte[] MemberHash(IEnumerable<SourceDeclaration> records, string name)
+    {
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        bool said = false;
+        foreach (SourceDeclaration declared in records)
         {
-            SourceDeclaration declared = SourceDeclaration.Decode(record);
-            if (member && !declared.MemberNames.Contains(name)) continue;
-            Append(hash, member ? Encoding.UTF8.GetBytes(name) : declared.HeaderHash);
+            if (!Holds(declared.MemberNames, name)) continue;
+            Append(hash, Encoding.UTF8.GetBytes(name));
             said = true;
         }
         return said ? hash.GetHashAndReset()[..DeclarationReads.HashBytes] : DeclarationReads.Empty;
+    }
+
+    /// <summary>Whether a sorted list of member names (SourceDeclaration.MemberNames) holds one.</summary>
+    internal static bool Holds(IReadOnlyList<string> sorted, string name)
+    {
+        int low = 0, high = sorted.Count - 1;
+        while (low <= high)
+        {
+            int mid = (low + high) / 2, order = string.CompareOrdinal(sorted[mid], name);
+            if (order == 0) return true;
+            if (order < 0) low = mid + 1; else high = mid - 1;
+        }
+        return false;
     }
 
     /// <summary>A record as the stamp hashes it: a type's declaration hash, anything else's payload.</summary>
@@ -93,14 +120,16 @@ public static class DeclarationFingerprint
     {
         using DeclarationIndex index = new(indexPath);
         HashSet<string> keys = new(StringComparer.Ordinal);
+        // Each type by its header and by every member name it has, made here
+        // from its records, decoded once for all of its names.
+        Dictionary<string, List<SourceDeclaration>> types = new(StringComparer.Ordinal);
         foreach (DeclarationRecord record in index.WithPrefix(""))
         {
             keys.Add(record.Key);
-            // And each type by its header, and by every member name it has.
             if (record.Key.StartsWith("T:", StringComparison.Ordinal))
             {
-                keys.Add(HeaderKey(record.Key));
-                foreach (string name in SourceDeclaration.Decode(record).MemberNames) keys.Add(MemberKey(record.Key, name));
+                if (!types.TryGetValue(record.Key, out List<SourceDeclaration>? parts)) types[record.Key] = parts = new();
+                parts.Add(SourceDeclaration.Decode(record));
             }
             if (record.Key.StartsWith("I:", StringComparison.Ordinal) || record.Key.StartsWith("X:", StringComparison.Ordinal))
             {
@@ -108,7 +137,16 @@ public static class DeclarationFingerprint
                 if (line >= 0) keys.Add(record.Key[..(line + 1)]);
             }
         }
-        return DeclarationReads.Write(keys.Select(key => new KeyValuePair<string, byte[]>(key, Of(index, key))));
+        IEnumerable<KeyValuePair<string, byte[]>> Typed()
+        {
+            foreach ((string key, List<SourceDeclaration> parts) in types)
+            {
+                yield return new(HeaderKey(key), HeaderHash(parts));
+                foreach (string name in parts.SelectMany(part => part.MemberNames).Distinct(StringComparer.Ordinal))
+                    yield return new(MemberKey(key, name), MemberHash(parts, name));
+            }
+        }
+        return DeclarationReads.Write(keys.Select(key => new KeyValuePair<string, byte[]>(key, Of(index, key))).Concat(Typed()));
     }
 
     /// <summary>
@@ -126,7 +164,11 @@ public static class DeclarationFingerprint
             byte[] hash = Of(kernel, key);
             if (!hash.AsSpan().SequenceEqual(DeclarationReads.Empty)) reads[key] = hash;
         }
-        foreach (string key in lookups) reads[key] = Of(kernel, key);
+        // A member name told absent of a type the kernel has not -- the
+        // module's own, or one under it -- can answer nothing else: not kept.
+        foreach (string key in lookups)
+            if (!key.StartsWith("M:", StringComparison.Ordinal) || kernel.Find("T:" + key[2..key.LastIndexOf('\n')]).Any())
+                reads[key] = Of(kernel, key);
         return DeclarationReads.Write(reads);
     }
 }

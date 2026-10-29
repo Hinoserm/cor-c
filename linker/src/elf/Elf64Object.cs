@@ -121,9 +121,9 @@ internal static class Elf64Object
             foreach (Relocation r in s.Relocs)
             {
                 int width = r.Kind == RelocKind.Abs64 ? 8 : 4;
-                if (r.Offset < 0 || r.Offset + width > s.Bytes.Count)
+                if (r.Offset < 0 || r.Offset + width > s.Length)
                 {
-                    throw new ElfFormatException($"relocation at 0x{r.Offset:x} is outside section '{s.Name}' ({s.Bytes.Count} bytes)");
+                    throw new ElfFormatException($"relocation at 0x{r.Offset:x} is outside section '{s.Name}' ({s.Length} bytes)");
                 }
                 if (!symbolIndex.TryGetValue(r.Symbol, out int sym) && !sectionIndex.TryGetValue(r.Symbol, out sym))
                 {
