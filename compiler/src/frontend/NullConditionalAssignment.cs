@@ -43,12 +43,23 @@ internal static class NullConditionalAssignment
             {
                 if (Unlinked(m.Target, holder) is (Expr receiver, Expr inner))
                 {
-                    MemberExpr kept = new() { Target = inner, Name = m.Name, NullConditional = m.NullConditional, Line = m.Line, Col = m.Col };
+                    // Everything the member says of itself kept: a pattern's
+                    // read past its own null test (Guarded), `Length` else
+                    // `Count` (Else), a type parameter's (ThroughTypeParameter).
+                    MemberExpr kept = new()
+                    {
+                        Target = inner, Name = m.Name, NullConditional = m.NullConditional, Guarded = m.Guarded,
+                        Else = m.Else, ThroughTypeParameter = m.ThroughTypeParameter, Line = m.Line, Col = m.Col,
+                    };
                     kept.WritableTypeArgs.AddRange(m.TypeArgs);
                     return (receiver, kept);
                 }
                 if (!m.NullConditional) return null;
-                MemberExpr through = new() { Target = holder(m), Name = m.Name, Line = m.Line, Col = m.Col };
+                MemberExpr through = new()
+                {
+                    Target = holder(m), Name = m.Name, Guarded = m.Guarded, Else = m.Else, ThroughTypeParameter = m.ThroughTypeParameter,
+                    Line = m.Line, Col = m.Col,
+                };
                 through.WritableTypeArgs.AddRange(m.TypeArgs);
                 return (m.Target, through);
             }
