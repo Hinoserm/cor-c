@@ -134,7 +134,8 @@ internal sealed class X86Target : ITarget
     /// read through, never written above the return address -- its contract
     /// (Prelude), held by every use in the runtime and the kernel, which walk
     /// the chain of saved frame pointers and return addresses -- and a home
-    /// is never written by the allocator either (Allocator.HomeOf). Any other access is taken as sixteen bytes
+    /// is never written by the allocator either (Allocator.HomeOf). Any other access at or above the
+    /// frame pointer (a local below it reaches no argument) is taken as sixteen bytes
     /// wide, whatever its Width says: a packed store writes eight with the
     /// default four (Peephole.ParameterHomes counts as much). The frame
     /// outside reads that word as one it is pushing, so no stack map need.
