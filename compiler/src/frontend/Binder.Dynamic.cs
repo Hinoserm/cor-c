@@ -283,8 +283,9 @@ public sealed partial class Binder
     private Type? LateAssignment(AssignExpr a, Type target)
     {
         // `d.X ??= v` AS THE RUNTIME BINDER HAS IT: X got, and set to v only
-        // where it was null -- `d.X ?? (d.X = v)`, the receiver a name or
-        // `this` the parser lets be read twice (Rereadable).
+        // where it was null -- `d.X ?? (d.X = v)`, the receiver one the
+        // parser lets be read twice: a name, `this`, a member of either, or
+        // what it held first (Rereadable, SubjectExpr).
         if (a.Coalescing && a.Value is BinaryExpr { Op: BinOp.Coalesce } coalesce
             && (a.Target is MemberExpr lateMember && _lateMembers.Contains(lateMember)
                 || a.Target is IndexExpr lateIndex && _lateIndexes.Contains(lateIndex)))

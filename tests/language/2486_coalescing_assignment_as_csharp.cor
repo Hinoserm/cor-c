@@ -1,0 +1,101 @@
+// test: coalescing_assignment_as_csharp
+// expect-exit: 0
+// expect-output:
+// 5 3 sets=2 calls=1 S=x 2000 1
+// y z x sets=1 idx=1 B=p bsets=1 F=f calls=3
+// y n b gets=6 idxs=1
+// 0 0 s g b a z ys=2
+// True False False
+//
+// `x ??= y` as C# has it (12.22): x read once through its place, y
+// evaluated and x stored only where x is empty -- no setter called, no field
+// written, where x has a value -- through a property, an indexer, an Index's
+// element, a[^k], a ref-returning member, past a `?.` (the whole statement
+// skipped on null, the index never evaluated), and over an unconstrained T
+// made int, whose zero is no null. Worth x's underlying value over a
+// nullable value: `int a = c.P ??= Three()`.
+using System;
+using System.Collections.Generic;
+
+class C
+{
+    public int? _p = 5;
+    public int sets;
+    public int? P { get => _p; set { sets++; _p = value; } }
+    string? _s;
+    public string? S { get => _s; set { sets++; _s = value; } }
+}
+
+class Box
+{
+    public int sets;
+    string? _b;
+    public string? B { get => _b; set { sets++; _b = value; } }
+}
+
+class Arr
+{
+    public int sets;
+    string?[] a = { "x", null, "y" };
+    public int Length => a.Length;
+    public string? this[int i] { get => a[i]; set { sets++; a[i] = value; } }
+}
+
+class R
+{
+    public int calls;
+    string? _f;
+    public ref string? F { get { calls++; return ref _f; } }
+}
+
+class N { public string? Name; public N? Next; public string?[] Arr = { null, "k" }; }
+
+static class P
+{
+    static int calls, idx, gets, idxs, ys;
+    static int Three() { calls++; return 3; }
+    static Arr Get(Arr a) { idx++; return a; }
+    static N? none;
+    static N some = new() { Next = new() };
+    static N? Find(bool have) { gets++; return have ? some : none; }
+    static int I() { idxs++; return 0; }
+    static T Y<T>(T v) { ys++; return v; }
+    static T F<T>(T x, T y) => x ?? Y(y);
+    static T G<T>(T x, T y) { x ??= Y(y); return x; }
+    static T H<T>(T a, T b) where T : class { T r = a; r = b ?? a; return r; }
+
+    static int Main()
+    {
+        C c = new();
+        int a = c.P ??= Three();
+        c.S ??= "x"; c.S ??= "y";
+        c._p = null; int b = c.P ??= Three();
+        DateTime? dt = null; DateTime now = dt ??= new DateTime(2000, 1, 2);
+        List<int>? l = null; (l ??= new()).Add(7);
+        Console.WriteLine($"{a} {b} sets={c.sets} calls={calls} S={c.S} {now.Year} {l.Count}");
+
+        Arr arr = new();
+        Index last = ^1;
+        arr[last] ??= "no";
+        arr[^2] ??= "z";
+        Get(arr)[^3] ??= "no";
+        Box? box = new(); box?.B ??= "p"; box?.B ??= "q";
+        R r = new(); r.F ??= "f"; r.F ??= "g";
+        Console.WriteLine($"{arr[2]} {arr[1]} {arr[0]} sets={arr.sets} idx={idx} B={box!.B} bsets={box.sets} F={r.F} calls={r.calls}");
+
+        Find(false)?.Name ??= "x";
+        Find(true)?.Name ??= "y";
+        Find(true)?.Name ??= "z";
+        Find(true)?.Next?.Name ??= "n";
+        Find(false)?.Arr[I()] ??= "a";
+        Find(true)?.Arr[I()] ??= "b";
+        Console.WriteLine($"{some.Name} {some.Next!.Name} {some.Arr[0]} gets={gets} idxs={idxs}");
+
+        List<string?> list = new() { null }; list[0] ??= "z";
+        Console.WriteLine($"{F(0, 5)} {G(0, 6)} {F<string?>(null, "s")} {G<string?>(null, "g")} {H("a", "b")} {H<string>("a", null!)} {list[0]} ys={ys}");
+
+        bool? q = null; bool x0 = q ?? true; bool? y0 = null; bool z0 = (y0 ??= false);
+        Console.WriteLine($"{x0} {z0} {y0}");
+        return 0;
+    }
+}

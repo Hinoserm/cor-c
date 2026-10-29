@@ -9158,11 +9158,60 @@ public sealed class Parser
                 Right = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = at.Line, Col = at.Col },
                 Line = at.Line, Col = at.Col,
             },
-            Then = Statement(assign.Retargeted(rest), at),
+            // A `??=` past the `?.` is built again on what is left, its
+            // receiver or index held as any `??=`'s is (CoalescingAssign).
+            Then = Statement(assign is { Coalescing: true, Value: BinaryExpr { Op: BinOp.Coalesce } held2 }
+                ? CoalescingAssign(rest, held2.Right, at) : assign.Retargeted(rest), at),
             Line = at.Line, Col = at.Col,
         });
         return block;
     }
+
+    /// <summary>
+    /// `left ??= right`, held as `left = left ?? right` and marked so
+    /// (AssignExpr.Coalescing). WHAT THE TARGET IS READ THROUGH IS EVALUATED
+    /// ONCE, as C# has it: `Use(n).Loads ??= new()` calls Use once, and the
+    /// field of what it answered is read and written. The object -- and an
+    /// element's index -- is put somewhere first (SubjectExpr), and the
+    /// target names it there. A target with a `?.` or `?[` is left whole for
+    /// Statement, which holds the receiver, tests it, and builds this again
+    /// on what is past the link; anywhere but a statement the binder refuses
+    /// it, as every null-conditional assignment there.
+    /// </summary>
+    private Expr CoalescingAssign(Expr left, Expr right, Token at)
+    {
+        AssignExpr Coalescing(Expr target) => new()
+        {
+            Target = target,
+            Value = new BinaryExpr { Op = BinOp.Coalesce, Left = target, Right = right, Line = at.Line, Col = at.Col },
+            Coalescing = true,
+            Line = at.Line, Col = at.Col,
+        };
+        if (Rereadable(left) || ConditionalLink(left)) return Coalescing(left);
+
+        if (left is MemberExpr { Target: { } owner } field)
+        {
+            MemberExpr through = new() { Target = new SubjectExpr { Line = at.Line, Col = at.Col }, Name = field.Name, Line = field.Line, Col = field.Col };
+            return new PatternExpr { Subject = owner, Test = Coalescing(through), Line = at.Line, Col = at.Col };
+        }
+        if (left is IndexExpr { Target: { } array, Args.Count: 1 } element)
+        {
+            IndexExpr through = new() { Target = new SubjectExpr { Outer = 1, Line = at.Line, Col = at.Col }, Line = element.Line, Col = element.Col };
+            through.Args.Add(new SubjectExpr { Line = at.Line, Col = at.Col });
+            PatternExpr index = new() { Subject = element.Args[0], Test = Coalescing(through), Line = at.Line, Col = at.Col };
+            return new PatternExpr { Subject = array, Test = index, Line = at.Line, Col = at.Col };
+        }
+        throw Error("the left of '??=' must be a name, a field or an element");
+    }
+
+    /// <summary>Whether a target has a `?.` or `?[` anywhere along it (Unlinked, without its names).</summary>
+    private static bool ConditionalLink(Expr target) => target switch
+    {
+        MemberExpr m => m.NullConditional || ConditionalLink(m.Target),
+        IndexExpr ix => ix.NullConditional || ConditionalLink(ix.Target),
+        CallExpr call => ConditionalLink(call.Target),
+        _ => false,
+    };
 
     /// <summary>
     /// The first `?.` or `?[` of an assignment's target, from the receiver
@@ -9257,35 +9306,7 @@ public sealed class Parser
         if (At(Tok.QuestionQuestionEq))
         {
             _i++;
-
-            Expr right = ParseAssign();
-            AssignExpr Coalescing(Expr target) => new()
-            {
-                Target = target,
-                Value = new BinaryExpr { Op = BinOp.Coalesce, Left = target, Right = right, Line = at.Line, Col = at.Col },
-                Coalescing = true,
-                Line = at.Line, Col = at.Col,
-            };
-            if (Rereadable(left)) return Coalescing(left);
-
-            // WHAT THE TARGET IS READ THROUGH IS EVALUATED ONCE, as C# has it:
-            // `Use(n).Loads ??= new()` calls Use once, and the field of what it
-            // answered is read and written. The object -- and an element's
-            // index -- is put somewhere first (SubjectExpr), and the target
-            // names it there.
-            if (left is MemberExpr { Target: { } owner } field)
-            {
-                MemberExpr through = new() { Target = new SubjectExpr { Line = at.Line, Col = at.Col }, Name = field.Name, Line = field.Line, Col = field.Col };
-                return new PatternExpr { Subject = owner, Test = Coalescing(through), Line = at.Line, Col = at.Col };
-            }
-            if (left is IndexExpr { Target: { } array, Args.Count: 1 } element)
-            {
-                IndexExpr through = new() { Target = new SubjectExpr { Outer = 1, Line = at.Line, Col = at.Col }, Line = element.Line, Col = element.Col };
-                through.Args.Add(new SubjectExpr { Line = at.Line, Col = at.Col });
-                PatternExpr index = new() { Subject = element.Args[0], Test = Coalescing(through), Line = at.Line, Col = at.Col };
-                return new PatternExpr { Subject = array, Test = index, Line = at.Line, Col = at.Col };
-            }
-            throw Error("the left of '??=' must be a name, a field or an element");
+            return CoalescingAssign(left, ParseAssign(), at);
         }
 
         // Two questions, not one: is this an assignment at all, and if so is it

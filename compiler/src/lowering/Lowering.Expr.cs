@@ -4463,9 +4463,12 @@ public sealed partial class Lowering
     /// <summary>
     /// `x ??= y` AS C# HAS IT (12.22): x read once, and only an empty x has
     /// y evaluated and stored -- a setter is not called, a field not
-    /// written, where x has a value. Parsed as `x = x ?? y`, which wrote x
-    /// back whatever it held. Worth what x holds after, its underlying value
-    /// where the binder says so (Binder.CoalescingValue).
+    /// written, where x has a value. Held as `x = x ?? y` and marked
+    /// (AssignExpr.Coalescing), which as an assignment wrote x back whatever
+    /// it held. A plain place is worked out once and read and stored
+    /// through; a property or an indexer is its getter, then its setter.
+    /// Worth what x holds after, its underlying value where the binder says
+    /// so (Binder.CoalescingValue).
     /// </summary>
     private VReg EmitCoalescingAssign(AssignExpr a, BinaryExpr coalesce)
     {
@@ -4480,6 +4483,9 @@ public sealed partial class Lowering
         // is its getter, then its setter where empty.
         bool accessor = _b.PropertySetters.ContainsKey(a.Target) || a.Target is IndexExpr ix && _b.IndexSetters.ContainsKey(ix);
         Place? place = accessor ? null : PlaceOf(a.Target);
+        // No place, and PlaceOf has said why: the value for what follows, as
+        // a plain assignment's (EmitAssign), not the error said again.
+        if (!accessor && place is null) return Eval(coalesce.Right);
 
         VReg dest = _f.NewReg(IrTypes.Of(held), "qa");
         Block got = _f.NewBlock("qagot"), miss = _f.NewBlock("qamiss"), end = _f.NewBlock("qaend");

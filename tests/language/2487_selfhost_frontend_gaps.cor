@@ -1,0 +1,43 @@
+// test: selfhost_frontend_gaps
+// expect-exit: 0
+// expect-output:
+// 2 1
+// 7 3
+// caught thread
+//
+// What the compiler's own sources needed, as C# has it: `object?` inside a
+// tuple type argument names the one specialisation `object` does; a tuple
+// literal with a null assigned into an element takes the element's type;
+// `stackalloc` of a tuple type; a collection expression is no argument for
+// a `char` (Split(char[], options)); and the class library's types under
+// their usings (Thread, FileNotFoundException).
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+
+enum Role : byte { A, B }
+
+static class P
+{
+    static int Main()
+    {
+        List<(int, int, object?)> b = new();
+        b.Add((1, 2, null));
+        b.Add((3, 4, "s"));
+        (int, int, object?)[] p = new (int, int, object?)[1];
+        p[0] = (1, 2, null);
+        Console.WriteLine($"{b.Count} {p.Length}");
+
+        Span<(int Reg, Role Role)> seen = stackalloc (int, Role)[3];
+        seen[1] = (7, Role.B);
+        string[] w = "a b,c".Split([' ', ','], StringSplitOptions.RemoveEmptyEntries);
+        Console.WriteLine($"{seen[1].Reg} {w.Length}");
+
+        try { throw new FileNotFoundException("x"); }
+        catch (FileNotFoundException) { Console.Write("caught "); }
+        Thread t = new(() => Console.WriteLine("thread"));
+        t.Start(); t.Join();
+        return 0;
+    }
+}
