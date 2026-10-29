@@ -154,7 +154,11 @@ public static class DeclarationFingerprint
     /// compile loaded, those the kernel's index (<paramref name="kernel"/>,
     /// the bottom of the index it was compiled against) declares -- the rest
     /// are the module's own -- and every lookup it asked, answered by the
-    /// kernel's index alone, nothing included.
+    /// kernel's index alone, nothing included; but a member name told absent
+    /// of a type the kernel does not declare (MemberKey), which is the
+    /// module's own type's. Should the kernel declare a type of that name
+    /// later, the unit's simple-name lookup of it ("S:", kept here) answers
+    /// otherwise, and the unit is refused for that.
     /// </summary>
     public static byte[] UnitReads(DeclarationIndex kernel, IEnumerable<string> loaded, IEnumerable<string> lookups)
     {
@@ -165,7 +169,7 @@ public static class DeclarationFingerprint
             if (!hash.AsSpan().SequenceEqual(DeclarationReads.Empty)) reads[key] = hash;
         }
         // A member name told absent of a type the kernel has not -- the
-        // module's own, or one under it -- can answer nothing else: not kept.
+        // module's own, or one under it -- is not kept (see above).
         foreach (string key in lookups)
             if (!key.StartsWith("M:", StringComparison.Ordinal) || kernel.Find("T:" + key[2..key.LastIndexOf('\n')]).Any())
                 reads[key] = Of(kernel, key);

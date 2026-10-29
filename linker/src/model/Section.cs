@@ -44,30 +44,34 @@ public sealed class Section
         // lock while another thread asks Size or ReadAt, and a tuple of three
         // fields could be read half cleared.
         get => _backing is { } b ? (b.Path, b.Offset, b.Length) : null;
-        set => Volatile.Write(ref _backing, value is { } v ? new Backing(v.Path, v.Offset, v.Length) : null);
+        set => Volatile.Write(ref _backing, value is { } v
+            ? new Backing(v.Path, v.Offset, v.Length, v.Path == Corsac.Lang.Elf.ElfReader.BackingPath ? Corsac.Lang.Elf.ElfReader.BackingHandle : null)
+            : null);
     }
-    private sealed record Backing(string Path, long Offset, int Length)
+
+    /// <summary>
+    /// Where a section left in its file is, and THE HANDLE IT IS READ BY:
+    /// the one the object was parsed through (ElfReader.BackingHandle),
+    /// shared by its sections and closed when they are gone. Its bytes are
+    /// the ones its offsets were read from, whatever is later written at the
+    /// path -- a file opened again by its name could be another object.
+    /// </summary>
+    private sealed class Backing(string path, long offset, int length, Microsoft.Win32.SafeHandles.SafeFileHandle? handle)
     {
-        /// <summary>The file as it was when first read from: its handle's key (Handle).</summary>
-        public string Version => _version ??= Path + "\0" + File.GetLastWriteTimeUtc(Path).Ticks + "\0" + new FileInfo(Path).Length;
-        private string? _version;
+        public string Path { get; } = path;
+        public long Offset { get; } = offset;
+        public int Length { get; } = length;
+        // Opened by name only for a section given a place in a file by hand.
+        public Microsoft.Win32.SafeHandles.SafeFileHandle Handle
+            => handle ?? LazyInitializer.EnsureInitialized(ref handle, () => File.OpenHandle(Path, FileMode.Open, FileAccess.Read, FileShare.Read))!;
     }
     private Backing? _backing;
 
-    /// <summary>
-    /// One read handle a file, kept for the process: a section left in its
-    /// file is read a word at a time (ReadAt), and opening the file for each
-    /// made an open and a close of every read. The IR archives' reads share
-    /// it (IrArchive). BY THE FILE'S VERSION, its time and size: a project
-    /// that writes an object again and links it again reads the new one, not
-    /// the file the handle still holds.
-    /// </summary>
-    internal static Microsoft.Win32.SafeHandles.SafeFileHandle Handle(string path)
-        => Handle(path, path + "\0" + File.GetLastWriteTimeUtc(path).Ticks + "\0" + new FileInfo(path).Length);
+    /// <summary>Left in the same file, at the same place, read by the same handle, as <paramref name="other"/>.</summary>
+    public void LeftInFileAs(Section other) => Volatile.Write(ref _backing, other._backing);
 
-    private static Microsoft.Win32.SafeHandles.SafeFileHandle Handle(string path, string version)
-        => Handles.GetOrAdd(version, _ => File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read));
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Microsoft.Win32.SafeHandles.SafeFileHandle> Handles = new(StringComparer.Ordinal);
+    /// <summary>The handle a section left in its file is read by (Backing); null when it is in memory.</summary>
+    internal Microsoft.Win32.SafeHandles.SafeFileHandle? FileHandle => _backing?.Handle;
 
     /// <summary>
     /// The IR archive's directory read from this section, once (IrArchive.Read):
@@ -113,7 +117,7 @@ public sealed class Section
     public Stream OpenRead()
     {
         if (HandedOver is not null) throw new InvalidOperationException("section '" + Name + "' was handed to a link");
-        if (FileBacked is (string path, long offset, int length)) return new Corsac.Lang.Elf.SectionReadStream(path, offset, length);
+        if (_backing is { } backing) return new Corsac.Lang.Elf.SectionReadStream(backing.Handle, backing.Offset, backing.Length);
         return new Corsac.Lang.Elf.SectionReadStream(_bytes);
     }
 
@@ -123,10 +127,9 @@ public sealed class Section
         // Once, whichever of the link's threads asks first.
         lock (_bytes)
         {
-            if (FileBacked is not (string path, long offset, int length)) return;
-            using Microsoft.Win32.SafeHandles.SafeFileHandle file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            _bytes.AddFromFile(file, offset, length);
-            FileBacked = null;
+            if (_backing is not { } backing) return;
+            _bytes.AddFromFile(backing.Handle, backing.Offset, backing.Length);
+            Volatile.Write(ref _backing, null);
         }
     }
 
@@ -141,7 +144,7 @@ public sealed class Section
         if (_backing is { } backing)
         {
             if (at + into.Length > backing.Length) return false;
-            Microsoft.Win32.SafeHandles.SafeFileHandle handle = Handle(backing.Path, backing.Version);
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle = backing.Handle;
             for (int done = 0; done < into.Length;)
             {
                 int got = RandomAccess.Read(handle, into[done..], backing.Offset + at + done);
@@ -173,11 +176,9 @@ public sealed class Section
     public byte[] Content()
     {
         if (HandedOver is not null) throw new InvalidOperationException("section '" + Name + "' was handed to a link");
-        if (FileBacked is not (string path, long offset, int length)) return _bytes.ToArray();
-        byte[] content = new byte[length];
-        using FileStream file = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        file.Position = offset;
-        file.ReadExactly(content);
+        if (_backing is not { } backing) return _bytes.ToArray();
+        byte[] content = new byte[backing.Length];
+        if (!ReadAt(0, content)) throw new IOException($"section '{Name}': its file ended before its {backing.Length} bytes");
         return content;
     }
 }

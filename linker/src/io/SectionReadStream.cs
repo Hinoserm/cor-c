@@ -15,6 +15,7 @@ public sealed class SectionReadStream : Stream
     private const int BufferBytes = 64 * 1024;
     private readonly ChunkedBytes? _bytes;
     private readonly SafeFileHandle? _file;
+    private readonly bool _ownsFile;
     private readonly long _start;
     private readonly int _length;
     private byte[]? _buffer;
@@ -29,6 +30,15 @@ public sealed class SectionReadStream : Stream
     public SectionReadStream(string path, long offset, int length)
     {
         _file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        _ownsFile = true;
+        _start = offset;
+        _length = length;
+    }
+
+    /// <summary>The `length` bytes at `offset` of a file through a handle the caller keeps open.</summary>
+    public SectionReadStream(SafeFileHandle file, long offset, int length)
+    {
+        _file = file;
         _start = offset;
         _length = length;
     }
@@ -113,7 +123,7 @@ public sealed class SectionReadStream : Stream
 
     protected override void Dispose(bool disposing)
     {
-        if (!_disposed && disposing) _file?.Dispose();
+        if (!_disposed && disposing && _ownsFile) _file?.Dispose();
         _disposed = true;
         base.Dispose(disposing);
     }

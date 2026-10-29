@@ -6,8 +6,9 @@ namespace Corsac.Lang.Lto;
 /// <summary>
 /// A SET KEPT IN ORDER IN ONE ARRAY, none until its first member: what a
 /// lifetime condition's and a field summary's needs are (LifetimeCondition,
-/// LifetimeFields), a few each and none at all for most -- bounded at 32 and
-/// 64 -- and held, the compiler's link, by the hundred thousand. As
+/// LifetimeFields), and an owned-field site's names (OwnedFieldHints), a few
+/// each and none at all for most -- bounded at 32, 64 and OwnedFieldHints.
+/// Limit -- and held, the compiler's link, by the hundred thousand. As
 /// SortedSets they were a set object and a tree a set, empty or not, and a
 /// node of 48 bytes a member: 1.5 million sets and 220 MB of the link's live
 /// heap. Inserting moves the members above it, which at these sizes is

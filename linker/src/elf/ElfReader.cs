@@ -180,6 +180,8 @@ public static class ElfReader
 
     /// <summary>The file ReadObjectFile is reading, on this thread: its IR sections are left there.</summary>
     [ThreadStatic] internal static string? BackingPath;
+    /// <summary>And the handle it reads through, which the sections it leaves there keep (Section.Backing).</summary>
+    [ThreadStatic] internal static Microsoft.Win32.SafeHandles.SafeFileHandle? BackingHandle;
 
     /// <summary>A read for what a unit backend needs of its input (ReadObjectMetadata): no code, no data, no relocations of either.</summary>
     [ThreadStatic] private static bool MetadataOnly;
@@ -242,24 +244,41 @@ public static class ElfReader
     public static ObjectFile ReadObjectFile(string path, bool leaveInFile)
     {
         string full = Path.GetFullPath(path);
-        using Microsoft.Win32.SafeHandles.SafeFileHandle handle = File.OpenHandle(full, FileMode.Open, FileAccess.Read, FileShare.Read);
-        FileSource source = new(handle, RandomAccess.GetLength(handle));
-        if (source.Length >= Elf.HeaderSize)
-        {
-            ReadOnlySpan<byte> ident = source.Read(0, 6, "ELF header");
-            // x86-64 objects are read whole (Elf64Object), and what a link
-            // leaves in the file is left there all the same: the array goes
-            // when the read is done.
-            if (ident[..4].SequenceEqual(Elf.Magic) && ident[4] == Elf.Class64 && ident[5] == Elf.Data2Lsb)
-            {
-                BackingPath = leaveInFile ? full : null;
-                try { return WithSource(ReadObject(File.ReadAllBytes(full)), leaveInFile ? full : null); }
-                finally { BackingPath = null; }
-            }
-        }
+        // KEPT OPEN BY WHAT IS LEFT IN THE FILE: its sections read through
+        // this handle (Section.Backing), the bytes their offsets came from,
+        // and it closes when they are gone. Closed here when nothing is left.
+        Microsoft.Win32.SafeHandles.SafeFileHandle handle = File.OpenHandle(full, FileMode.Open, FileAccess.Read, FileShare.Read);
         BackingPath = leaveInFile ? full : null;
-        try { return WithSource(ReadObject32(source), leaveInFile ? full : null); }
-        finally { BackingPath = null; }
+        BackingHandle = leaveInFile ? handle : null;
+        try
+        {
+            FileSource source = new(handle, RandomAccess.GetLength(handle));
+            if (source.Length >= Elf.HeaderSize)
+            {
+                ReadOnlySpan<byte> ident = source.Read(0, 6, "ELF header");
+                // x86-64 objects are read whole (Elf64Object), and what a link
+                // leaves in the file is left there all the same: the array goes
+                // when the read is done.
+                if (ident[..4].SequenceEqual(Elf.Magic) && ident[4] == Elf.Class64 && ident[5] == Elf.Data2Lsb)
+                {
+                    byte[] whole = new byte[source.Length];
+                    for (int done = 0; done < whole.Length;)
+                    {
+                        int got = RandomAccess.Read(handle, whole.AsSpan(done), done);
+                        if (got <= 0) throw new ElfFormatException("the object ended while it was read");
+                        done += got;
+                    }
+                    return WithSource(ReadObject(whole), leaveInFile ? full : null);
+                }
+            }
+            return WithSource(ReadObject32(source), leaveInFile ? full : null);
+        }
+        finally
+        {
+            BackingPath = null;
+            BackingHandle = null;
+            if (!leaveInFile) handle.Dispose();
+        }
     }
 
     private static ObjectFile WithSource(ObjectFile obj, string? path)

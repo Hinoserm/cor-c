@@ -160,7 +160,7 @@ public sealed class IrArchive
         Func<int, int, byte[]> readAt;
         if (section.FileBacked is (string path, long start, int _))
         {
-            Microsoft.Win32.SafeHandles.SafeFileHandle handle = Section.Handle(path);
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle = section.FileHandle!;
             readAt = (at, length) =>
             {
                 byte[] read = new byte[length];

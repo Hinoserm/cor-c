@@ -462,7 +462,7 @@ public sealed class UnitBackend : IUnitBackend
             Section copy = new(section.Name, section.Kind) { Align = section.Align };
             // A layout a link left in its file (ElfReader.LeftInFile) stays
             // there: the same bytes, read when they are asked for.
-            if (section.FileBacked is { } backed) copy.FileBacked = backed;
+            if (section.FileBacked is not null) copy.LeftInFileAs(section);
             else copy.Bytes.AddRange(section.Bytes);
             copy.Relocs.AddRange(section.Relocs); result.Sections.Add(copy);
         }
