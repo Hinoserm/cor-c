@@ -42,6 +42,33 @@ public static class SourceIndexBuilder
     /// <summary>The key of a source file's record: the hash of the text the index was made from.</summary>
     public static string SourceKey(string path) => "F:" + System.IO.Path.GetFullPath(path);
 
+    /// <summary>How a member counts toward its type's DeclarationHash.</summary>
+    private enum PrivateMember : byte { Shown, Left, Field, Constructor }
+
+    /// <summary>
+    /// A private member, by what another unit can see of it: none of a
+    /// static, or of a method; an instance field's place, modifiers and type;
+    /// that a constructor exists. A member with attributes, an explicit
+    /// interface's, an instance property (an auto-property is a field), a
+    /// static constructor (when statics are made) or a fixed buffer counts
+    /// as written.
+    /// </summary>
+    private static PrivateMember Hiding(MemberDecl member)
+    {
+        if ((member.Mods & (Mods.Public | Mods.Protected | Mods.Internal)) != 0
+            || member.ExplicitInterface is not null || member.Attributes.Count > 0) return PrivateMember.Shown;
+        bool shared = (member.Mods & (Mods.Static | Mods.Const)) != 0;
+        return member switch
+        {
+            FieldDecl { FixedSize: not null } => PrivateMember.Shown,
+            FieldDecl => shared ? PrivateMember.Left : PrivateMember.Field,
+            PropertyDecl => shared ? PrivateMember.Left : PrivateMember.Shown,
+            MethodDecl { IsCtor: true } => shared ? PrivateMember.Shown : PrivateMember.Constructor,
+            MethodDecl => PrivateMember.Left,
+            _ => PrivateMember.Shown,
+        };
+    }
+
     /// <summary>The key of an assembly's `global using` directives on one side, the library's or the program's.</summary>
     public static string GlobalUsingKey(string identity, bool library) => "U:" + identity + "\n" + (library ? "library" : "program");
 
@@ -162,6 +189,28 @@ public static class SourceIndexBuilder
                     // empty; a token its stand-in pushed right is moved over
                     // by one space, and stays on its line.
                     int line = type.Line, column = 1;
+                    // WHAT ANOTHER UNIT MAY READ, hashed apart from the text:
+                    // a private member is the type's own business, and adding
+                    // or editing one leaves current the units compiled against
+                    // the type (DeclarationHash). What still counts is what
+                    // lays the object out -- an instance field, by its place,
+                    // modifiers and type -- and whether it has a constructor
+                    // of its own. A type whose bodies another unit may copy
+                    // (a template: generic, or holding a generic method's),
+                    // a partial one, a record, an interface or an enum is
+                    // hashed whole.
+                    StringBuilder visible = new();
+                    bool filtered = type.Kind is TypeKind.Class or TypeKind.Struct && !type.IsRecord
+                        && (type.Mods & Mods.Partial) == 0 && type.TypeParams.Count == 0
+                        && type.PrimaryParameters is not { Count: > 0 } && !bodies.Any(b => b.Template);
+                    var nested = unit.Types.Where(other => other != type && other.SourceFrom >= type.SourceFrom && other.SourceTo <= type.SourceTo).ToArray();
+                    var members = filtered
+                        ? parser.MemberSpans.Where(m => m.From >= type.SourceFrom && m.To <= type.SourceTo
+                            && !nested.Any(n => m.From >= n.SourceFrom && m.To <= n.SourceTo)).OrderBy(m => m.From).ToArray()
+                        : Array.Empty<(int From, int To, MemberDecl Member)>();
+                    int memberIndex = 0;
+                    PrivateMember hiding = PrivateMember.Shown;
+                    bool markedCtor = false;
                     void Place(Token at)
                     {
                         if (at.Line > line) { declaration.Append('\n', at.Line - line); line = at.Line; column = 1; }
@@ -185,6 +234,11 @@ public static class SourceIndexBuilder
                         if (token.Pos < type.SourceFrom || token.Pos >= type.SourceTo || token.Kind == Tok.End) continue;
                         while (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].To)
                         { bodyIndex++; wroteBody = false; }
+                        while (memberIndex < members.Length && token.Pos >= members[memberIndex].To)
+                        { memberIndex++; markedCtor = false; }
+                        hiding = memberIndex < members.Length && token.Pos >= members[memberIndex].From
+                            ? Hiding(members[memberIndex].Member) : PrivateMember.Shown;
+                        if (hiding == PrivateMember.Constructor && !markedCtor) { visible.Append("ctor ; "); markedCtor = true; }
                         if (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].From)
                         {
                             // A BODY WHOSE TEXT SAYS IT NEVER RETURNS STAYS ONE
@@ -227,6 +281,8 @@ public static class SourceIndexBuilder
                                 }
                                 Place(token);
                                 Write(standIn, 0, standIn.Length);
+                                if (hiding == PrivateMember.Shown) visible.Append(standIn);
+                                else if (copies) visible.Append("MemberwiseClone ; ");
                             }
                             wroteBody = true;
                             if (bodies[bodyIndex].Template)
@@ -238,6 +294,9 @@ public static class SourceIndexBuilder
                         }
                         Place(token);
                         Write(text, token.Pos, ends[tokenIndex] - token.Pos);
+                        if (hiding == PrivateMember.Shown) visible.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                        else if (hiding == PrivateMember.Field && !parser.FieldInitialisers.Any(i => token.Pos >= i.From && token.Pos < i.To))
+                            visible.Append(parser.FieldNames.Contains(token.Pos) ? "_" : text.Substring(token.Pos, ends[tokenIndex] - token.Pos)).Append(' ');
                     }
                     shaped.Flush();
                     string syntax = declaration.ToString();
@@ -247,7 +306,7 @@ public static class SourceIndexBuilder
                     {
                         // Token spelling/kind, not line offsets or body text,
                         // determines declaration invalidation.
-                        foreach (Token token in Lexer.Tokenize(syntax, path))
+                        foreach (Token token in Lexer.Tokenize(visible.ToString(), path))
                         { writer.Write((byte)token.Kind); writer.Write(token.Text); }
                         foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
                         foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }

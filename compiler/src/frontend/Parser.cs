@@ -83,6 +83,20 @@ public sealed class Parser
     /// `{ throw null ; }` rather than `{}` (SourceIndexBuilder).
     /// </summary>
     public HashSet<int> NeverReturningBodies { get; } = new();
+
+    /// <summary>
+    /// Where each member of a type was written, start to the next token's
+    /// start, in declaration-only parsing: SourceIndexBuilder leaves a private
+    /// member out of the hash that says when a type's readers are stale.
+    /// </summary>
+    public List<(int From, int To, MemberDecl Member)> MemberSpans { get; } = new();
+    /// <summary>
+    /// And each field's name and initialiser, by where they were written:
+    /// a private instance field is hashed as its place in the object, its
+    /// modifiers and type, and not as what it is called or starts as.
+    /// </summary>
+    public HashSet<int> FieldNames { get; } = new();
+    public List<(int From, int To)> FieldInitialisers { get; } = new();
     private int _i;
     private string? _iteratorTarget;
     private TypeRef? _iteratorElement;
@@ -2003,6 +2017,7 @@ public sealed class Parser
                 int memberFrom = _i;
                 MemberDecl member = ParseMember(name);
                 ImplicitMember(member, memberFrom, _i);
+                if (_declarationsOnly) MemberSpans.Add((_t[memberFrom].Pos, Cur.Pos, member));
                 // All a field holds is its initialiser, and an auto-property's
                 // the same: what they name runs in the constructor.
                 if (primary && member is not FieldDecl && member is not PropertyDecl { Init: not null }) bodies.Add((memberFrom, _i));
@@ -3235,7 +3250,10 @@ public sealed class Parser
         }
 
         // field
+        if (_declarationsOnly) FieldNames.Add(_t[_i - 1].Pos);
+        int initFrom = Cur.Pos;
         Expr? init = Take(Tok.Assign) ? Initialiser(type) : null;
+        if (_declarationsOnly && init is not null) FieldInitialisers.Add((initFrom, Cur.Pos));
 
         // ONE TYPE, SEVERAL NAMES: `private const int A = 0, B = 1, C = 2;`,
         // which is how this compiler's own lowering writes the offsets into a
@@ -3247,7 +3265,10 @@ public sealed class Parser
         while (Take(Tok.Comma))
         {
             Token also = Expect(Tok.Ident, "another name in the declaration");
+            if (_declarationsOnly) FieldNames.Add(also.Pos);
+            int valueFrom = Cur.Pos;
             Expr? value = Take(Tok.Assign) ? Initialiser(type) : null;
+            if (_declarationsOnly && value is not null) FieldInitialisers.Add((valueFrom, Cur.Pos));
 
             FieldDecl more = new()
             {

@@ -120,9 +120,22 @@ public static class ManagedLayouts
                 writer.Write(type.Base?.Key ?? "");
                 foreach (TypeSymbol face in type.Interfaces.OrderBy(face => face.Key, StringComparer.Ordinal)) writer.Write(face.Key);
                 writer.Write("");
-                foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Name, StringComparer.Ordinal))
+                // A PRIVATE MEMBER IS THE TYPE'S OWN: another unit reads none
+                // of it, and is not rebuilt when one changes (SourceIndexBuilder.
+                // Hiding). An instance field is described by its place and its
+                // type, not its name; a private method or static, not at all --
+                // a unit compiled against the type before one was renamed or
+                // retyped still agrees with it about all it can reach.
+                HashSet<string> hidden = new(type.Decl?.Members
+                    .Where(member => member is FieldDecl { FixedSize: null } && (member.Mods & (Mods.Public | Mods.Protected | Mods.Internal)) == 0)
+                    .Select(member => member.Name) ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
+                static bool Private(MethodSymbol method) => method.VtableSlot < 0 && method.Decl is { ExplicitInterface: null } decl
+                    && (decl.Mods & (Mods.Public | Mods.Protected | Mods.Internal)) == 0;
+                foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Offset)
+                    .ThenBy(field => field.Type.LayoutText(), StringComparer.Ordinal)
+                    .ThenBy(field => hidden.Contains(field.Name) ? "" : field.Name, StringComparer.Ordinal))
                 {
-                    writer.Write(field.Name); TypeName(field.Type);
+                    writer.Write(hidden.Contains(field.Name) ? "" : field.Name); TypeName(field.Type);
                     writer.Write(field.Static); writer.Write(field.Static ? 0 : field.Offset);
                     writer.Write(field.Boxed); writer.Write(field.Volatile); writer.Write(field.Required); writer.Write(field.Inline);
                 }
@@ -162,13 +175,13 @@ public static class ManagedLayouts
                             + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
                 }
                 yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(stream.ToArray()));
-                foreach (FieldSymbol field in type.Fields.Where(field => field.Static))
+                foreach (FieldSymbol field in type.Fields.Where(field => field.Static && !hidden.Contains(field.Name)))
                 {
                     stream.SetLength(0); stream.Position = 0;
                     TypeName(field.Type); writer.Write(field.Volatile); writer.Write(field.Required);
                     yield return new ManagedTypeLayout("field:" + type.Key + "." + field.Name, SHA256.HashData(stream.ToArray()));
                 }
-                foreach (MethodSymbol method in type.Methods.Where(method => method.Decl?.LocalCopy != true && method.TypeParams.Count == 0))
+                foreach (MethodSymbol method in type.Methods.Where(method => method.Decl?.LocalCopy != true && method.TypeParams.Count == 0 && !Private(method)))
                 {
                     stream.SetLength(0); stream.Position = 0;
                     TypeName(method.Returns); writer.Write(method.Static); writer.Write(method.IsCtor);
