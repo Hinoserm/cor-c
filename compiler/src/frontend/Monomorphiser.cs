@@ -651,7 +651,8 @@ public sealed class Monomorphiser
 
         foreach ((string In, string Alias, string Target) alias in _usings.Aliases)
         {
-            if (alias.In == at && alias.Alias == name && _paths.Contains(alias.Target))
+            if (alias.In == at && alias.Alias == name && _paths.Contains(alias.Target)
+                && !(!_libraryCode && _libraryInternal.Contains(alias.Target)))
             {
                 return alias.Target;
             }

@@ -2138,6 +2138,7 @@ public sealed class Parser
             foreach (MemberDecl member in statics)
             {
                 member.File = _file;
+                member.Made = true;
             }
             Adopt(statics);
             declaration.Members.AddRange(statics);
@@ -2236,7 +2237,7 @@ public sealed class Parser
         string d = name + typeParams;
         System.Text.StringBuilder src = new();
         if (!string.IsNullOrEmpty(_namespace)) src.Append("namespace ").Append(_namespace).Append(";\n");
-        src.Append("public sealed class ").Append(m).Append(" : ").Append(d).Append(", System.IMulticastDelegate\n{\n");
+        src.Append("public sealed class ").Append(m).Append(" : ").Append(d).Append(", ").Append(Binder.LibrarySpelling).Append(".IMulticastDelegate\n{\n");
         src.Append("    public ").Append(d).Append("[] Items;\n");
         src.Append("    public ").Append(ctor).Append("(").Append(d).Append("[] items) { Items = items; }\n");
 

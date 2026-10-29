@@ -528,6 +528,12 @@ public sealed partial class Binder
         {
             sym = null;
         }
+        // NOT ONE THE PROGRAM CANNOT SEE, written `System.X` (a base, a type,
+        // `using static`): only the compiler's own spelling reaches those.
+        if (sym is not null && !name.StartsWith(LibrarySpelling + ".", StringComparison.Ordinal) && HiddenFromProgram(sym))
+        {
+            sym = null;
+        }
         return sym is not null;
     }
 
@@ -1118,8 +1124,9 @@ public sealed partial class Binder
     {
         foreach ((string In, string Alias, string Target) alias in file.Aliases)
         {
+            // An alias reaches no type the program cannot see (HiddenFromProgram).
             if (alias.In == at && alias.Alias == name
-                && TypeCandidate(alias.Target, out sym))
+                && TypeCandidate(alias.Target, out sym) && !HiddenFromProgram(sym))
             {
                 return true;
             }
@@ -1238,8 +1245,15 @@ public sealed partial class Binder
     /// (BindingProgramCode).
     /// </summary>
     private bool HiddenFromProgram(TypeSymbol? sym)
-        => sym?.Decl is { Specialised: false } d && (d.Outer is null || d.Outer == d.Namespace)
-        && (d.Mods & Mods.Public) == 0 && ClassLibrarySide(d) && BindingProgramCode();
+    {
+        if (sym?.Decl is not { Specialised: false } d || !ClassLibrarySide(d) || !BindingProgramCode()) return false;
+        if (d.Outer is null || d.Outer == d.Namespace) return (d.Mods & Mods.Public) == 0;
+        // A NESTED TYPE, as C# has it: hidden where it is not public (or
+        // protected, which a program's subclass reaches) or the type it is
+        // in is hidden.
+        return (d.Mods & (Mods.Public | Mods.Protected)) == 0
+            || _r.Types.TryGetValue(d.Outer, out TypeSymbol? outer) && HiddenFromProgram(outer);
+    }
 
     /// <summary>
     /// C#'S CS0122 FOR A NAME THAT IS THE CLASS LIBRARY'S INTERNAL TYPE: there,
@@ -6481,7 +6495,11 @@ public sealed partial class Binder
         {
             _quiet++;
 
-            Type named = ResolveCore(new TypeRef { Name = bare, Line = r.Line, Col = r.Col }, context);
+            // WRITTEN AS THE NAME WAS: made anew, the reference was the
+            // compiler's own, and the compiler's code sees the class library's
+            // internal types -- `System.Threading.HandleWait` reached one the
+            // program cannot (HiddenFromProgram).
+            Type named = ResolveCore(new TypeRef { Name = bare, Line = r.Line, Col = r.Col, Written = r.Written }, context);
 
             _quiet--;
 
@@ -9733,6 +9751,9 @@ public sealed partial class Binder
             foreach (TypeSymbol holder in _r.Types.Values)
             {
                 if (!namespaces.Contains(holder.Decl?.Namespace ?? "")) continue;
+                // Not the extensions of a class the program cannot see: C#
+                // finds none in another assembly's internal classes.
+                if (HiddenFromProgram(holder)) continue;
                 // Not one whose members were never asked for: it holds no
                 // extension method to find (Monomorphiser.MembersLater), and
                 // looking would declare every one of them.
@@ -14983,11 +15004,9 @@ public sealed partial class Binder
         {
             MemberExpr step = new()
             {
-                Target = new MemberExpr
-                {
-                    Target = new NameExpr { Name = "System", Global = true, Line = at.Line, Col = at.Col },
-                    Name = "CollectionExpressionBuilder", Line = at.Line, Col = at.Col,
-                },
+                // The class library's own, by the compiler's spelling (LibraryType):
+                // a program's code does not see it (HiddenFromProgram).
+                Target = new NameExpr { Name = LibraryType("CollectionExpressionBuilder"), Line = at.Line, Col = at.Col },
                 Name = method, Line = at.Line, Col = at.Col,
             };
             if (into is not null) step.WritableTypeArgs.Add(into);
@@ -21523,7 +21542,8 @@ public sealed partial class Binder
             // StringBuilder declared in the global namespace here. Never a
             // program's type in the library's code, which knows none of them.
             if (_r.Types.TryGetValue(m.Name, out TypeSymbol? qualified)
-                && !(BindingLibrary && qualified.Decl is { } declared && IsProgramSource(declared)))
+                && !(BindingLibrary && qualified.Decl is { } declared && IsProgramSource(declared))
+                && !HiddenFromProgram(qualified))
             {
                 _r.Resolved[m] = new TypeNameSym(qualified);
                 return Type.Plain(qualified, Prim.Void);
