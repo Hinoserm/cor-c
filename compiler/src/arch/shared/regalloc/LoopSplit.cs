@@ -203,8 +203,10 @@ public sealed class LoopSplit
                     if (r.Reg >= fv && (r.Role & Role.Def) != 0) lastDef[r.Reg] = b;
             }
         int g = globals.Count;
-        BitRows use = new() { Words = (g + 63) / 64 }, def = new() { Words = (g + 63) / 64 }, live = new() { Words = (g + 63) / 64 };
-        use.Bits = new ulong[nb * use.Words]; def.Bits = new ulong[nb * def.Words]; live.Bits = new ulong[nb * live.Words];
+        // The thread's kept rows, the allocator's own (BitRows.Kept): its
+        // liveness comes after the split and fills them afresh, so the split's
+        // three tables a round cost no memory of their own.
+        BitRows use = BitRows.Kept(0, nb, g), def = BitRows.Kept(1, nb, g), live = BitRows.Kept(2, nb, g);
         int[][] succ = new int[nb][];
         List<int>[] pred = new List<int>[nb];
         for (int b = 0; b < nb; b++) pred[b] = new();

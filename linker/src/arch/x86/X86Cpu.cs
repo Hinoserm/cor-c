@@ -151,7 +151,7 @@ public sealed class X86Cpu
         // FCMOVcc or FCOMI, which its x87 never had -- whatever CPUID's one
         // CMOV bit says, as a Pentium Pro's would.
         "6x86mx" => Model("pentium-mmx") | X86Feature.Cmov,
-        // AMD'S GEODE LX (LX 600 to LX 900, AMD 33234H): the Pentium Pro's set
+        // AMD'S GEODE LX (LX 600 to LX 900, AMD 33234E/H): the Pentium Pro's set
         // with the K6-2+'s MMX, 3DNow! and its extensions, and the MMX
         // extensions -- an Athlon's instructions with none of its SSE.
         // FCMOVcc, FCOMI and FUCOMI are its x87's (33234H Table 8-29), as

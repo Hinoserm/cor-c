@@ -5,8 +5,9 @@ and code is optimised for that processor; there is no separate tuning switch.
 Newer processors are served by run-time detection in the libraries. Model names cover
 386, 486, Pentium, Pentium MMX, Pentium Pro, Pentium II, Pentium III, Pentium 4,
 K6, K6-2, K6-III, K6-2+, K6-III+, Athlon, Athlon XP, Athlon 64 (32-bit code
-with an x87; `k8` is the long-mode target) and Cyrix's 6x86MX (CMOV without
-FCMOV/FCOMI). Aliases such as `k6-3+`, `k7` and
+with an x87; `k8` is the long-mode target), Cyrix's 6x86MX (CMOV without
+FCMOV/FCOMI) and AMD's Geode LX (`geode-lx`: the Athlon's instructions without
+SSE). Aliases such as `k6-3+`, `k7` and
 `athlon-4` are accepted. Both `--cpu=name` and `--cpu name` forms are accepted
 by the compiler and assembler.
 

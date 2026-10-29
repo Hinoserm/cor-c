@@ -155,8 +155,11 @@ internal sealed class X64Target : ITarget
     /// <summary>
     /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot): `mov v, [rbp+d]` of a
     /// stack-passed argument's eight bytes, the only thing in the function
-    /// that touches any byte of them, nothing taking an address off RBP.
-    /// x86-64's collector reads a stack as memory: no map to name it in.
+    /// that touches any byte of them, nothing taking an address off RBP --
+    /// no LEA of it, no indexed access above it (RBP as a value is read
+    /// through only: Sys.FramePointer's contract) -- and
+    /// any other access taken as sixteen bytes wide. x86-64's collector
+    /// reads a stack as memory: no map to name it in.
     /// </summary>
     private HashSet<MInstr> Homes()
     {
@@ -167,12 +170,14 @@ internal sealed class X64Target : ITarget
             foreach (MInstr i in b.Instrs)
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
-                    if (i.Operands[k] is not MMem { Base: { Id: (int)Gpr.Rbp } } mem) continue;
-                    if (i.Op == MOp.Lea) return homes;
-                    if (mem.Disp < 16 || mem.Index is not null || mem.Symbol is not null || mem.Label is not null) continue;
+                    if (i.Operands[k] is not MMem mem) continue;
+                    if (mem.Index?.Id == (int)Gpr.Rbp) return homes;
+                    if (mem.Base?.Id != (int)Gpr.Rbp) continue;
+                    if (i.Op == MOp.Lea || mem.Index is not null && mem.Disp >= 0) return homes;
+                    if (mem.Disp < 16 || mem.Symbol is not null || mem.Label is not null) continue;
                     if (i.Op == MOp.Mov && k == 1 && i.Width == 8 && !i.Lock && i.Operands[0] is MReg { IsPhys: false, IsFloat: false } && (mem.Disp & 7) == 0)
                         load[mem.Disp] = load.ContainsKey(mem.Disp) ? null : i;
-                    else touched.Add((mem.Disp, mem.Disp + Math.Max(i.Width, 1)));
+                    else touched.Add((mem.Disp, mem.Disp + 16));
                 }
         foreach ((int disp, MInstr? i) in load)
             if (i is not null && !touched.Any(t => t.From < disp + 8 && disp < t.To)) homes.Add(i);

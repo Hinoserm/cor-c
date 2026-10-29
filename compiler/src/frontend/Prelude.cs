@@ -986,6 +986,10 @@ public static class Prelude
             // led to it. The table the code generator writes is described in
             // Lang/X86/FrameTable.cs; FramePointer is this function's own ebp,
             // and the chain of saved ones behind it is the stack of callers.
+            // READ, NEVER WRITTEN THROUGH, above the return address: a function's
+            // argument words are where the register allocator keeps the values
+            // loaded from them (its home slots), which a write there would
+            // change under them.
             public static nuint FrameTable() { return 0; }
             public static nuint FrameDirectory() { return 0; }
             public static void Rethrow(object exception) { }

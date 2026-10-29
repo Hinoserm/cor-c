@@ -28,6 +28,7 @@ CMOV and no MMX. Each model is its predecessor plus what it added:
 | athlon-xp | x87 | + SSE |
 | athlon64 | x87 | + SSE2 |
 | 6x86mx | x87 | pentium-mmx + CMOV, without FCMOV/FCOMI |
+| geode-lx | x87 | k6-2+ + MMX extensions, CMOV, FCMOV/FCOMI/FUCOMI: an athlon's set without SSE |
 
 The MMX extensions are AMD's name for the integer half of SSE (PAVGB, PMINUB,
 PMAXSW, PSHUFW, PMOVMSKB, MOVNTQ, PREFETCHh, SFENCE), which the Athlon has
@@ -36,8 +37,10 @@ name `k8` belongs to the long-mode target, whose floating point is SSE2.
 
 The parser also accepts `i386`, `i486`, `586`, `i586`, `pentium_mmx`, `i686`,
 `pentium-ii`, `pentium-iii`, `k6-iii`, `k6-iii+`, `k7`, `athlon-tbird`,
-`athlon-4`, `athlon-mp`, and `m2`, `mii` and `cyrix-mii` for Cyrix's 6x86MX,
-whose CMOVcc comes without the x87's FCMOVcc and FCOMI. A parsed profile does not imply complete backend
+`athlon-4`, `athlon-mp`, `m2`, `mii` and `cyrix-mii` for Cyrix's 6x86MX,
+whose CMOVcc comes without the x87's FCMOVcc and FCOMI, and `geodelx` for
+AMD's Geode LX (AMD 33234: FCMOVcc and FCOMI in Table 8-29; no SSE registers,
+no PAE, no long NOP; CPUID family 5, model 10). A parsed profile does not imply complete backend
 support for that processor. The code generator selects FUCOMIP for float
 compares where the profile has FCMOV/FCOMI, CMOVcc for a small choice where
 it has CMOV (IfConvert), and CVTTSS2SI (SSE) or CVTTSD2SI (SSE2) for an

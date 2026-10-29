@@ -82,8 +82,9 @@ public sealed class AInstr
     /// A HOME: the frame slot a whole-register load into operand 0 reads --
     /// an incoming argument's -- where nothing else in the function reads,
     /// writes or takes the address of that slot. The value loaded lives
-    /// there when it is spilled: no store, the load itself gone (Wimmer and
-    /// Mossenbock's spill-store elimination for parameters). Null for none.
+    /// there when it is spilled: no store back and no slot of its own, the
+    /// load kept (its register may serve the reads after it) -- Wimmer and
+    /// Mossenbock's spill-store elimination for parameters. Null for none.
     /// </summary>
     public int? HomeSlot { get; init; }
     /// <summary>The constant a whole-width definition moves into operand 0 (a value remade where it is wanted), else null.</summary>

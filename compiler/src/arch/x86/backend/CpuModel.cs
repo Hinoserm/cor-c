@@ -41,12 +41,12 @@ internal static class CpuModel
     public static bool K8 => Name == "athlon64";
 
     /// <summary>
-    /// AMD's Geode LX (AMD 33234H): one instruction a clock, in order, down
-    /// an eight-stage pipe -- IMUL r32 four clocks (Table 8-27), SAL, LEA
-    /// and most of the ALU one, SAR two. MOVZX, CDQ and PUSH [mem] are kept:
-    /// one operation each to it, as GCC's Geode model has them. A constant
-    /// multiply takes a recipe of three at most (Select.MulByConstant's
-    /// default), under the four clocks IMUL would.
+    /// AMD's Geode LX (AMD 33234E/H): one instruction a clock, in order, down
+    /// an eight-stage pipe -- IMUL r32 four clocks and IMUL by an immediate
+    /// four to seven, SAL, LEA, MOVZX, CDQ and CMOVcc one, SAR two (Table
+    /// 8-26). A constant multiply takes a recipe of four at most
+    /// (Select.MulByConstant); MOVZX, CDQ and PUSH [mem] are kept, one clock
+    /// each to it (Peephole.ChooseForCpu replaces them for others only).
     /// </summary>
     public static bool GeodeLx => Name == "geode-lx";
 

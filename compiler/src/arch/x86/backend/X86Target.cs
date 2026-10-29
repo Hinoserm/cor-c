@@ -129,7 +129,14 @@ internal sealed class X86Target : ITarget
     /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot): `mov v, [ebp+d]` of an
     /// incoming argument's word, where it is the only thing in the function
     /// that touches any byte of that word, and nothing takes an address off
-    /// EBP -- through one, any argument could be read or written. The frame
+    /// EBP -- through one, any argument could be read or written: no LEA of
+    /// it, no indexed access above it. EBP as a value (Sys.FramePointer) is
+    /// read through, never written above the return address -- its contract
+    /// (Prelude), held by every use in the runtime and the kernel, which walk
+    /// the chain of saved frame pointers and return addresses -- and a home
+    /// is never written by the allocator either (Allocator.HomeOf). Any other access is taken as sixteen bytes
+    /// wide, whatever its Width says: a packed store writes eight with the
+    /// default four (Peephole.ParameterHomes counts as much). The frame
     /// outside reads that word as one it is pushing, so no stack map need.
     /// </summary>
     private HashSet<MInstr> Homes()
@@ -141,15 +148,17 @@ internal sealed class X86Target : ITarget
             foreach (MInstr i in b.Instrs)
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
-                    if (i.Operands[k] is not MMem { Base: { Id: (int)Gpr.Ebp } } mem) continue;
-                    if (i.Op == MOp.Lea) return homes;
-                    if (mem.Disp < 8 || mem.Index is not null || mem.Symbol is not null || mem.Label is not null) continue;
+                    if (i.Operands[k] is not MMem mem) continue;
+                    if (mem.Index?.Id == (int)Gpr.Ebp) return homes;
+                    if (mem.Base?.Id != (int)Gpr.Ebp) continue;
+                    if (i.Op == MOp.Lea || mem.Index is not null && mem.Disp >= 0) return homes;
+                    if (mem.Disp < 8 || mem.Symbol is not null || mem.Label is not null) continue;
                     if (i.Op == MOp.Mov && k == 1 && i.Width == 4 && !i.Lock && i.Operands[0] is MReg { IsPhys: false } && (mem.Disp & 3) == 0)
                     {
                         // A second load of the word makes it no home.
                         load[mem.Disp] = load.ContainsKey(mem.Disp) ? null : i;
                     }
-                    else touched.Add((mem.Disp, mem.Disp + Math.Max(i.Width, 1)));
+                    else touched.Add((mem.Disp, mem.Disp + 16));
                 }
         foreach ((int disp, MInstr? i) in load)
             if (i is not null && !touched.Any(t => t.From < disp + 4 && disp < t.To)) homes.Add(i);

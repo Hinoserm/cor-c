@@ -1526,7 +1526,8 @@ internal static class Peephole
     ///   dead -- MOVZX is three clocks there, unpaired, behind a 0Fh prefix
     ///   the P54C decodes for a clock more (Intel 242816, "Zero-Extension of
     ///   Short"). The K6 keeps MOVZX, which it decodes short and which makes no
-    ///   superset dependency (AMD 21924).
+    ///   superset dependency (AMD 21924), and so does the Geode LX, where it is
+    ///   one clock (AMD 33234, Table 8-26).
     /// - the 486 and the Pentium: `push [m]` is `mov r, [m] ; push r` with a
     ///   register dead there that the function may use (Usable) -- four
     ///   clocks against two on the 486, two unpaired against two pairable on

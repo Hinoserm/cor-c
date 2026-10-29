@@ -1693,8 +1693,8 @@ public sealed class Allocator
     private int TakeSlot(int vreg)
     {
         // A HOME IS THE SLOT, for the value loaded from it and for its pieces:
-        // never anyone else's after (it goes on no free list) -- nothing but
-        // its one load reads it.
+        // never anyone else's after (it goes on no free list) -- an argument's
+        // word, which nothing else in the function touches (AInstr.HomeSlot).
         int homed = HomeOf(vreg);
         if (homed != 0) return homed;
         // A split value's pieces share one slot, held over all of them (LoopSplit).
@@ -1726,12 +1726,22 @@ public sealed class Allocator
         return taken;
     }
 
-    /// <summary>A value's home (AInstr.HomeSlot), or its split root's: 0 for none.</summary>
+    /// <summary>
+    /// A value's home (AInstr.HomeSlot), or its split root's for a piece that
+    /// only ever copies it -- one definition, the copy into its loop -- so a
+    /// home is never written: a piece the loop writes keeps a slot of its
+    /// own. 0 for none.
+    /// </summary>
     private int HomeOf(int vreg)
     {
         if (_home.Length == 0) return 0;
         int root = _split?.RootOf(vreg) ?? vreg;
-        return (uint)root < (uint)_home.Length ? _home[root] : 0;
+        if ((uint)root >= (uint)_home.Length || _home[root] == 0) return 0;
+        if (root == vreg) return _home[root];
+        int defs = 0;
+        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
+            if ((_occAll[occ].Role & Role.Def) != 0 && ++defs > 1) return 0;
+        return _home[root];
     }
 
     private bool CanFoldImm(int vreg, Occurrence o)
@@ -1873,6 +1883,13 @@ public sealed class Allocator
                 if (a._folded.Contains((index, 0))) { _dropped = true; return; }
                 _noStore = i.CopyDst;
             }
+            // A piece copied from its homed root into the home: the home holds
+            // the root's one value already (it is that value's only definition).
+            else if (a._split is not null && a._split.Copies.Contains(i) && i.CopyDst >= a._fv && i.CopySrc >= a._fv
+                && i.CopySrc < a._home.Length && a._home[i.CopySrc] != 0 && a.HomeOf(i.CopyDst) == a._home[i.CopySrc])
+            {
+                _noStore = i.CopyDst;
+            }
             // The defining move of a spilled constant goes: see Spill. (A home's
             // load stays, even spilled from it: the register it loads may be
             // carried on to the reads after it, Reach. Only its store goes.)
@@ -1936,7 +1953,7 @@ public sealed class Allocator
                 {
                     if ((role & Role.Use) != 0 && !held) _before.Add((reg, a._slot[v], null));
                     // A home's one load writes nothing back: the slot holds it.
-                    if ((role & Role.Def) != 0 && v != _noStore && !(i.HomeSlot is not null && v < a._home.Length && a._home[v] != 0))
+                    if ((role & Role.Def) != 0 && v != _noStore && !(i.HomeSlot is not null && a.HomeOf(v) != 0))
                         _after.Add((reg, a._slot[v]));
                 }
             }

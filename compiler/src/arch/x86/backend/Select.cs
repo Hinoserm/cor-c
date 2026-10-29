@@ -1987,7 +1987,9 @@ internal sealed partial class Selector
     /// index 2 (AP-500), and each step waits on the last; the K7's IMUL is 4
     /// and the K8's 3, a scaled LEA 2 on both (Agner Fog's tables). So at most
     /// 5, 2, 3 or 5 instructions replace it on the Pentium, the K6, the
-    /// Pentium Pro and the 486 -- on a 486, 7 to 9 clocks at worst -- and 2 on
+    /// Pentium Pro and the 486 -- on a 486, 7 to 9 clocks at worst -- 4 on the
+    /// Geode LX, whose IMUL by an immediate is 4 to 7 clocks and every step of a
+    /// recipe (LEA, a left shift, ADD, SUB) one (AMD 33234, Table 8-26) -- and 2 on
     /// the K7, 1 on the K8.
     /// The forms: n * 2^k, with n one of 1; 3, 5, 9 (one LEA); their
     /// products two at a time (two); 1 + {2,4,8} * {3,5,9} (two: 7, 11, 13,
@@ -1999,7 +2001,7 @@ internal sealed partial class Selector
     /// </summary>
     private void MulByConstant(MReg dest, MReg src, int factor)
     {
-        int limit = CpuModel.K6 ? 2 : CpuModel.K8 ? 1 : CpuModel.K7 ? 2 : CpuModel.P5 ? 5 : CpuModel.Scalar ? 5 : 3;
+        int limit = CpuModel.K6 ? 2 : CpuModel.K8 ? 1 : CpuModel.K7 ? 2 : CpuModel.P5 ? 5 : CpuModel.Scalar ? 5 : CpuModel.GeodeLx ? 4 : 3;
         long c = Math.Abs((long)factor);
         bool negate = factor < 0;
         if (c == 0)
