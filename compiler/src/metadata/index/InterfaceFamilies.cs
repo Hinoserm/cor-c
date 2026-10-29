@@ -24,6 +24,41 @@ public static class InterfaceFamilies
         return new DeclarationRecord("I:" + key[2..], stream.ToArray());
     }
 
+    /// <summary>
+    /// The slots a project's family of this many methods is numbered in
+    /// (Binder's numbering): the next power of two, four at least, so that
+    /// most edits to one interface leave where every other starts.
+    /// </summary>
+    public static int Block(int methods) => methods <= 0 ? 0 : Math.Max(4, (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)methods));
+
+    /// <summary>
+    /// The interface plan as a unit reading it depends on it
+    /// (DeclarationFingerprint, DeclarationCatalog.QueryFingerprint): each
+    /// family by its name, arity and tier, and the slots it is numbered in
+    /// -- a library family's count, a project family's block -- as the
+    /// binder numbers them from Read's sums. The methods themselves, and
+    /// their order, are its interface's declaration, read by the units that
+    /// name it.
+    /// </summary>
+    public static byte[] PlanSaid(IEnumerable<DeclarationRecord> records)
+    {
+        SortedDictionary<(string Name, int Arity), (int Methods, bool Library)> families = new();
+        foreach (DeclarationRecord record in records)
+        {
+            (string name, int arity, int methods, bool library) = Parse(record);
+            (int had, bool wasLibrary) = families.GetValueOrDefault((name, arity));
+            families[(name, arity)] = (checked(had + methods), wasLibrary || library);
+        }
+        using MemoryStream stream = new();
+        using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);
+        foreach (var ((name, arity), (methods, library)) in families)
+        {
+            writer.Write(name); writer.Write(arity); writer.Write(library);
+            writer.Write(library ? methods : Block(methods));
+        }
+        return stream.ToArray();
+    }
+
     /// <summary>The families that are library ABI (see Record).</summary>
     public static IReadOnlySet<(string Name, int Arity)> ReadLibrary(DeclarationIndex index, string assembly)
     {

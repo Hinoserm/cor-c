@@ -347,7 +347,9 @@ public sealed class DeclarationCatalog : IDisposable
             // The interface plan: the families and the conflicted forms,
             // each read whole (InterfaceFamilies).
             bool interfacePlan = (key.StartsWith("I:", StringComparison.Ordinal) || key.StartsWith("X:", StringComparison.Ordinal)) && key.EndsWith('\n');
-            foreach (DeclarationRecord record in interfacePlan ? index.WithPrefix(key) : index.Find(key))
+            if (interfacePlan && key.StartsWith("I:", StringComparison.Ordinal))
+                writer.Write(InterfaceFamilies.PlanSaid(index.WithPrefix(key)));
+            else foreach (DeclarationRecord record in interfacePlan ? index.WithPrefix(key) : index.Find(key))
             {
                 if (interfacePlan) writer.Write(record.Key);
                 writer.Write(record.Payload.Length); writer.Write(record.Payload);

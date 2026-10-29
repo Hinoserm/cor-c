@@ -67,11 +67,14 @@ public sealed partial class Binder
     /// <summary>Slots kept above the library's interface region for the library's class virtuals; see the numbering.</summary>
     private const int LibraryClassReserve = 128;
 
-    /// <summary>Where a project class's own virtuals start: the end of the project's interface region, the same in every unit.</summary>
+    /// <summary>Where a project class's own virtuals start: the end of the library's interface region, the same in every unit.</summary>
     private int _projectClassSlots;
 
-    /// <summary>Slots kept above the project's interface region for its class virtuals, below this unit's own interfaces.</summary>
+    /// <summary>Slots kept above the library's class virtuals for the project's, below the project's interfaces.</summary>
     private const int ProjectClassReserve = 128;
+
+    /// <summary>Where the project's interfaces start, above every class's virtuals (see the numbering).</summary>
+    private int _projectInterfaceSlots = int.MaxValue;
 
     private TypeSymbol? _thisType;
 
@@ -3341,10 +3344,18 @@ public sealed partial class Binder
             if (into.TryGetValue(family, out int had)) into[family] = Math.Max(had, count);
         }
 
-        void Number(SortedDictionary<(string, int), int> table)
+        // A PROJECT'S FAMILY TAKES A BLOCK OF A POWER OF TWO (InterfaceFamilies.
+        // Block): a method added to or removed from one interface leaves where
+        // every other family starts, and so every unit that reads none of it,
+        // as it was -- unless the block has to grow or may shrink. Packed, any
+        // edit to one moved every family sorted after it, and each unit that
+        // called through one of those was rebuilt. The library's families stay
+        // packed: they are numbered in every class's table.
+        void Number(SortedDictionary<(string, int), int> table, bool blocks = false)
         {
             foreach (((string template, int arity) family, int methods) in table)
             {
+                int first = _interfaceSlots;
                 for (int i = 0; i < methods; i++)
                 {
                     if (!shared.ContainsKey((family.template, family.arity, i)))
@@ -3352,6 +3363,7 @@ public sealed partial class Binder
                         shared[(family.template, family.arity, i)] = _interfaceSlots++;
                     }
                 }
+                if (blocks && _interfaceSlots > first) _interfaceSlots = first + Metadata.InterfaceFamilies.Block(methods);
             }
         }
 
@@ -3410,27 +3422,31 @@ public sealed partial class Binder
         }
         _librarySlots = _interfaceSlots;
 
+        // THE PROJECT'S CLASSES BEFORE ITS INTERFACES. A project class's own
+        // virtuals start where the library's interfaces end, as a library
+        // class's do -- above its base's, for one derived from a library
+        // class -- and the project's interfaces a fixed distance above that:
+        // room for the library's classes and then the project's. A FIXED
+        // distance, not the highest slot of the classes this unit happens to
+        // have loaded, because every unit of a program must give the same
+        // interface the same number, and units load different classes. With
+        // the classes above the interfaces, an interface that gained or lost
+        // a method moved every class's virtuals, in every unit; and a class
+        // that implements none of the project's interfaces has no entries
+        // for them in its table.
+        _projectClassSlots = _librarySlots;
+        _projectInterfaceSlots = _librarySlots + LibraryClassReserve + ProjectClassReserve;
+        _interfaceSlots = _projectInterfaceSlots;
         if (local.Count > 0 || conflicted.ContainsValue(false))
         {
-            // The project's interfaces start a fixed distance above the
-            // library's interface region: room for the library's classes,
-            // whose virtuals are numbered from that region. A FIXED distance,
-            // not the highest slot of the library classes this unit happens
-            // to have loaded, because every unit of a program must give the
-            // same interface the same number, and units load different
-            // classes. The cost is empty entries in the tables of the
-            // project's own classes, per type and not per object.
-            _interfaceSlots = _librarySlots + LibraryClassReserve;
-            Number(local);
+            Number(local, blocks: true);
             FormBlocks(conflicted, library: false, families, local);
             if (moduleTier.Count == 0) Assign(false);
         }
-        _projectClassSlots = _interfaceSlots;
 
-        // THE MODULE'S TIER: a fixed distance above where the kernel's
-        // classes begin their virtuals, as the project's own interfaces sit
-        // above the library's classes. Every unit of the module numbers the
-        // same families here, the module's index listing them all.
+        // THE MODULE'S TIER: above the kernel's interfaces, as those are
+        // above every class. Every unit of the module numbers the same
+        // families here, the module's index listing them all.
         // A MODULE MADE ON ANOTHER (`index --on`) numbers the one under it
         // first, its families alone and in its order, as that module's own
         // compile numbered them, and its own families after: an interface of
@@ -3438,21 +3454,19 @@ public sealed partial class Binder
         // the GUI module gave it.
         if (moduleTier.Count > 0)
         {
-            _interfaceSlots = _projectClassSlots + ProjectClassReserve;
             foreach (var level in moduleTier.GroupBy(f => ModuleLevel(f.Key)).OrderBy(g => g.Key))
             {
                 SortedDictionary<(string, int), int> tier = new();
                 foreach (var family in level) tier[family.Key] = family.Value;
-                Number(tier);
+                Number(tier, blocks: true);
             }
             Assign(false);
         }
 
-        // Only closures the compiler made implement these, and they declare
-        // no virtuals of their own, so the reserve is room to spare.
+        // Only closures the compiler made implement these, above everything
+        // shared.
         if (unitLocal.Count > 0)
         {
-            _interfaceSlots = (moduleTier.Count > 0 ? _interfaceSlots : _projectClassSlots) + ProjectClassReserve;
             Number(unitLocal);
             Assign(false, unitOnly: true);
         }
@@ -6137,6 +6151,11 @@ public sealed partial class Binder
             overridden ??= sameArity.Count == 1 ? sameArity[0] : null;
 
             m.VtableSlot = overridden is { VtableSlot: >= 0 } ? overridden.VtableSlot : slot++;
+            // Past its reserve, a class's virtual would share a slot with an
+            // interface's, and a call through one would reach the other.
+            if (_interfacesNumbered && slot > (IsLibraryType(sym) ? _librarySlots + LibraryClassReserve : _projectInterfaceSlots))
+                throw new InvalidOperationException(sym.Key + ": more virtual methods in its chain of classes than the "
+                    + (IsLibraryType(sym) ? "library's" : "project's") + " reserve of slots (Binder.LibraryClassReserve, ProjectClassReserve)");
         }
     }
 

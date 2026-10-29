@@ -43,26 +43,44 @@ public static class SourceIndexBuilder
     public static string SourceKey(string path) => "F:" + System.IO.Path.GetFullPath(path);
 
     /// <summary>How a member counts toward its type's DeclarationHash.</summary>
-    private enum PrivateMember : byte { Shown, Left, Field, Constructor }
+    private enum PrivateMember : byte { Shown, Left, Field, Constructor, Initialised }
 
     /// <summary>
-    /// A private member, by what another unit can see of it: none of a
-    /// static, or of a method; an instance field's place, modifiers and type;
-    /// that a constructor exists. A member with attributes, an explicit
-    /// interface's, an instance property (an auto-property is a field), a
-    /// static constructor (when statics are made) or a fixed buffer counts
-    /// as written.
+    /// Whether a type's private members may be left out of what another
+    /// unit is said to read of it (Hiding; ManagedLayouts, the same types):
+    /// a class or struct whose bodies no other unit copies -- not generic,
+    /// with no generic method, no primary constructor, not partial, not a
+    /// record. Any other is hashed whole.
+    /// </summary>
+    public static bool HidesPrivate(TypeDecl type)
+        => type.Kind is TypeKind.Class or TypeKind.Struct && !type.IsRecord
+            && (type.Mods & Mods.Partial) == 0 && type.TypeParams.Count == 0
+            && type.PrimaryParameters is not { Count: > 0 }
+            && !type.Members.Any(member => member is MethodDecl { TypeParams.Count: > 0 });
+
+    /// <summary>
+    /// A private member, by what another unit reads of it:
+    /// - a method, or a static without an initialiser: nothing;
+    /// - an instance field: its place, modifiers and type;
+    /// - a constructor: that the type has one of its own;
+    /// - a static with an initialiser: that the type has some, which every
+    ///   unit touching the type reads as whether it must be made before use
+    ///   (Binder.StaticInitialisers, Lowering.TouchType).
+    /// A const counts as written -- a public constant, a default argument or
+    /// a buffer's length may be folded from it -- as does a member with
+    /// attributes, an explicit interface's, an instance property (an
+    /// auto-property is a field), a static constructor and a fixed buffer.
     /// </summary>
     private static PrivateMember Hiding(MemberDecl member)
     {
-        if ((member.Mods & (Mods.Public | Mods.Protected | Mods.Internal)) != 0
+        if ((member.Mods & (Mods.Public | Mods.Protected | Mods.Internal | Mods.Const)) != 0
             || member.ExplicitInterface is not null || member.Attributes.Count > 0) return PrivateMember.Shown;
-        bool shared = (member.Mods & (Mods.Static | Mods.Const)) != 0;
+        bool shared = (member.Mods & Mods.Static) != 0;
         return member switch
         {
             FieldDecl { FixedSize: not null } => PrivateMember.Shown,
-            FieldDecl => shared ? PrivateMember.Left : PrivateMember.Field,
-            PropertyDecl => shared ? PrivateMember.Left : PrivateMember.Shown,
+            FieldDecl field => !shared ? PrivateMember.Field : field.Init is null ? PrivateMember.Left : PrivateMember.Initialised,
+            PropertyDecl property => !shared ? PrivateMember.Shown : property.Init is null ? PrivateMember.Left : PrivateMember.Initialised,
             MethodDecl { IsCtor: true } => shared ? PrivateMember.Shown : PrivateMember.Constructor,
             MethodDecl => PrivateMember.Left,
             _ => PrivateMember.Shown,
@@ -190,19 +208,16 @@ public static class SourceIndexBuilder
                     // by one space, and stays on its line.
                     int line = type.Line, column = 1;
                     // WHAT ANOTHER UNIT MAY READ, hashed apart from the text:
-                    // a private member is the type's own business, and adding
-                    // or editing one leaves current the units compiled against
-                    // the type (DeclarationHash). What still counts is what
-                    // lays the object out -- an instance field, by its place,
-                    // modifiers and type -- and whether it has a constructor
-                    // of its own. A type whose bodies another unit may copy
-                    // (a template: generic, or holding a generic method's),
-                    // a partial one, a record, an interface or an enum is
-                    // hashed whole.
+                    // most of a private member is the type's own business,
+                    // and editing it leaves current the units compiled
+                    // against the type (DeclarationHash). What still counts is
+                    // what they read of it (Hiding): what lays the object out
+                    // -- an instance field, by its place, modifiers and type
+                    // -- whether it has a constructor of its own, and whether
+                    // it has statics to make. A type whose bodies another
+                    // unit may copy is hashed whole (HidesPrivate).
                     StringBuilder visible = new();
-                    bool filtered = type.Kind is TypeKind.Class or TypeKind.Struct && !type.IsRecord
-                        && (type.Mods & Mods.Partial) == 0 && type.TypeParams.Count == 0
-                        && type.PrimaryParameters is not { Count: > 0 } && !bodies.Any(b => b.Template);
+                    bool filtered = HidesPrivate(type) && !bodies.Any(b => b.Template);
                     var nested = unit.Types.Where(other => other != type && other.SourceFrom >= type.SourceFrom && other.SourceTo <= type.SourceTo).ToArray();
                     var members = filtered
                         ? parser.MemberSpans.Where(m => m.From >= type.SourceFrom && m.To <= type.SourceTo
@@ -210,7 +225,7 @@ public static class SourceIndexBuilder
                         : Array.Empty<(int From, int To, MemberDecl Member)>();
                     int memberIndex = 0;
                     PrivateMember hiding = PrivateMember.Shown;
-                    bool markedCtor = false;
+                    bool markedCtor = false, markedStatics = false;
                     void Place(Token at)
                     {
                         if (at.Line > line) { declaration.Append('\n', at.Line - line); line = at.Line; column = 1; }
@@ -239,6 +254,7 @@ public static class SourceIndexBuilder
                         hiding = memberIndex < members.Length && token.Pos >= members[memberIndex].From
                             ? Hiding(members[memberIndex].Member) : PrivateMember.Shown;
                         if (hiding == PrivateMember.Constructor && !markedCtor) { visible.Append("ctor ; "); markedCtor = true; }
+                        markedStatics |= hiding == PrivateMember.Initialised;
                         if (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].From)
                         {
                             // A BODY WHOSE TEXT SAYS IT NEVER RETURNS STAYS ONE
@@ -299,6 +315,8 @@ public static class SourceIndexBuilder
                             visible.Append(parser.FieldNames.Contains(token.Pos) ? "_" : text.Substring(token.Pos, ends[tokenIndex] - token.Pos)).Append(' ');
                     }
                     shaped.Flush();
+                    // Once, wherever they were written.
+                    if (markedStatics) visible.Append("static ;");
                     string syntax = declaration.ToString();
                     FileScope scope = type.Scope ?? new FileScope();
                     using MemoryStream canonical = new();

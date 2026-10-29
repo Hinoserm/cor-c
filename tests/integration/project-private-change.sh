@@ -2,8 +2,8 @@
 # A PRIVATE MEMBER CHANGED IN ONE UNIT: the units compiled against its type
 # stay current (SourceIndexBuilder.Hiding), and link with the new object
 # (ManagedLayouts: a private field by its place and type, a private method
-# not at all). A new instance field, a field's type, or a public member
-# rebuilds them.
+# not at all). A new instance field, a field's type, a const, the first
+# static with an initialiser, or a public member rebuilds them.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
@@ -49,6 +49,12 @@ sed -i 's/    private int _renamed = 41;/    private int _renamed = 41;\n    pri
 step field-added 2/2 43
 sed -i 's/private long _more;/private int _more;/' "$work/Answer.cs"
 step field-retyped 2/2 43
+sed -i 's/    public int Read/    private const int Limit = 1;\n    public int Read/' "$work/Answer.cs"
+step const-added 2/2 43
+sed -i 's/    public int Read/    private static int[] _table = new int[1];\n    public int Read/' "$work/Answer.cs"
+step static-initialised 2/2 43
+sed -i 's/    public int Read/    private static int _plain;\n    private static string _second = "x";\n    public int Read/' "$work/Answer.cs"
+step statics-added 1/2 43
 sed -i 's/    public int Read/    public int Pub() => 5;\n    public int Read/' "$work/Answer.cs"
 step public-method 2/2 43
 echo "PASS private members leave other units current: $work"

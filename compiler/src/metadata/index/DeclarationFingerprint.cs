@@ -26,7 +26,11 @@ public static class DeclarationFingerprint
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         bool plan = IsPlan(key);
-        foreach (DeclarationRecord record in plan ? index.WithPrefix(key) : index.Find(key))
+        // The families by the slots they take (InterfaceFamilies.PlanSaid):
+        // a method more or less in one interface moves no other's.
+        if (plan && key.StartsWith("I:", StringComparison.Ordinal))
+            Append(hash, InterfaceFamilies.PlanSaid(index.WithPrefix(key)));
+        else foreach (DeclarationRecord record in plan ? index.WithPrefix(key) : index.Find(key))
         {
             if (plan) Append(hash, Encoding.UTF8.GetBytes(record.Key));
             Append(hash, Said(record));

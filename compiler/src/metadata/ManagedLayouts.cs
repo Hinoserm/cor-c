@@ -120,16 +120,19 @@ public static class ManagedLayouts
                 writer.Write(type.Base?.Key ?? "");
                 foreach (TypeSymbol face in type.Interfaces.OrderBy(face => face.Key, StringComparer.Ordinal)) writer.Write(face.Key);
                 writer.Write("");
-                // A PRIVATE MEMBER IS THE TYPE'S OWN: another unit reads none
-                // of it, and is not rebuilt when one changes (SourceIndexBuilder.
-                // Hiding). An instance field is described by its place and its
-                // type, not its name; a private method or static, not at all --
-                // a unit compiled against the type before one was renamed or
-                // retyped still agrees with it about all it can reach.
-                HashSet<string> hidden = new(type.Decl?.Members
-                    .Where(member => member is FieldDecl { FixedSize: null } && (member.Mods & (Mods.Public | Mods.Protected | Mods.Internal)) == 0)
-                    .Select(member => member.Name) ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
-                static bool Private(MethodSymbol method) => method.VtableSlot < 0 && method.Decl is { ExplicitInterface: null } decl
+                // A PRIVATE MEMBER OF A TYPE NO OTHER UNIT COPIES BODIES OF
+                // (SourceIndexBuilder.HidesPrivate) is left out of what the
+                // type's readers are rebuilt for, and so of what they must
+                // agree on: an instance field is described by its place and
+                // its type, not its name; a private method or static, not at
+                // all -- a unit compiled against the type before one was
+                // renamed or retyped still agrees with it about all it can
+                // reach. A private const is not hidden: readers fold it.
+                bool hides = type.Decl is { } declared && Metadata.SourceIndexBuilder.HidesPrivate(declared);
+                HashSet<string> hidden = new(hides ? type.Decl!.Members
+                    .Where(member => member is FieldDecl { FixedSize: null } && (member.Mods & (Mods.Public | Mods.Protected | Mods.Internal | Mods.Const)) == 0)
+                    .Select(member => member.Name) : Enumerable.Empty<string>(), StringComparer.Ordinal);
+                bool Private(MethodSymbol method) => hides && method.VtableSlot < 0 && method.Decl is { ExplicitInterface: null } decl
                     && (decl.Mods & (Mods.Public | Mods.Protected | Mods.Internal)) == 0;
                 foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Offset)
                     .ThenBy(field => field.Type.LayoutText(), StringComparer.Ordinal)
