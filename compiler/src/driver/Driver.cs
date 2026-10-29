@@ -369,7 +369,7 @@ public static class Driver
               --cpu <name>       ISA profile: 486 (default), pentium, pentium-mmx,
                                  pentium-pro, pentium2, pentium3, pentium4, k6,
                                  k6-2, k6-3, k6-2+, k6-3+, athlon, athlon-xp,
-                                 athlon64, 6x86mx
+                                 athlon64, 6x86mx, geode-lx
               --disable-mmx      exclude MMX and what needs it: 3DNow!, the
                                  MMX extensions and SSE
               --disable-3dnow    exclude 3DNow! while retaining MMX

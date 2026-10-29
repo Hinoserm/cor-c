@@ -41,6 +41,16 @@ internal static class CpuModel
     public static bool K8 => Name == "athlon64";
 
     /// <summary>
+    /// AMD's Geode LX (AMD 33234H): one instruction a clock, in order, down
+    /// an eight-stage pipe -- IMUL r32 four clocks (Table 8-27), SAL, LEA
+    /// and most of the ALU one, SAR two. MOVZX, CDQ and PUSH [mem] are kept:
+    /// one operation each to it, as GCC's Geode model has them. A constant
+    /// multiply takes a recipe of three at most (Select.MulByConstant's
+    /// default), under the four clocks IMUL would.
+    /// </summary>
+    public static bool GeodeLx => Name == "geode-lx";
+
+    /// <summary>
     /// Either of them. What the K6's and the Pentium's rules replace -- MOVZX,
     /// PUSH [mem], CDQ -- each a DirectPath instruction of one clock or so
     /// there (AMD 22007's and 25112's tables), the Athlon keeps as it is.

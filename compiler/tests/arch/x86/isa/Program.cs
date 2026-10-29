@@ -35,7 +35,7 @@ public static class Program
                 ("pentium-ii", "pentium2"), ("pentium3", "pentium3"), ("pentium-iii", "pentium3"), ("pentium4", "pentium4"),
                 ("k6-iii", "k6-3"), ("k6-2+", "k6-2+"), ("k6-iii+", "k6-3+"), ("athlon", "athlon"), ("k7", "athlon"),
                 ("athlon-tbird", "athlon"), ("athlon-xp", "athlon-xp"), ("athlon-4", "athlon-xp"), ("athlon-mp", "athlon-xp"),
-                ("athlon64", "athlon64") })
+                ("athlon64", "athlon64"), ("geode-lx", "geode-lx"), ("geodelx", "geode-lx") })
             {
                 X86Cpu parsed = X86Cpu.Parse(["--cpu", alias]);
                 Check(parsed.Name == model && parsed.Features == X86Cpu.Model(model), alias + " is not " + model);
@@ -192,7 +192,8 @@ public static class Program
                 ("k6-2", "cmove eax, ecx"), ("k6-3+", "fcomi st(1)"), ("pentium-mmx", "fcmovb st(0), st(1)"), ("486", "cmovl eax, ebx"),
                 ("pentium2", "prefetchnta [ebx]"), ("pentium2", "sfence"), ("686", "prefetcht0 [ebx]"), ("k6-3+", "sfence"),
                 ("pentium2", "pswapd mm0, mm1"), ("pentium3", "femms"),
-                ("6x86mx", "fcmovb st(0), st(1)"), ("6x86mx", "fcomi st(1)"), ("6x86mx", "femms"), ("6x86mx", "sfence") })
+                ("6x86mx", "fcmovb st(0), st(1)"), ("6x86mx", "fcomi st(1)"), ("6x86mx", "femms"), ("6x86mx", "sfence"),
+                ("geode-lx", "addps xmm0, xmm1"), ("geode-lx", "movaps xmm0, xmm1") })
             {
                 bool rejected = false;
                 try { X86Assembler.Assemble(forbidden.Item2, "profile.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=" + forbidden.Item1])); }
@@ -216,7 +217,9 @@ public static class Program
             Check(X86Assembler.Assemble("cmove eax, ecx", "no-fpu.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=athlon", "--fpu=none"])).Bytes.Length == 3,
                 "no-FPU Athlon refused CMOV");
             foreach (var allowed in new[] { ("686", "fcmovu st(0), st(2)"), ("pentium2", "cmovg eax, ebx"), ("pentium2", "fucomi st(1)"),
-                ("pentium3", "prefetchnta [ebx]"), ("pentium3", "sfence"), ("6x86mx", "cmove eax, ecx"), ("6x86mx", "emms") })
+                ("pentium3", "prefetchnta [ebx]"), ("pentium3", "sfence"), ("6x86mx", "cmove eax, ecx"), ("6x86mx", "emms"),
+                ("geode-lx", "cmove eax, ecx"), ("geode-lx", "fcomi st(1)"), ("geode-lx", "fcmovb st(0), st(1)"), ("geode-lx", "femms"),
+                ("geode-lx", "pswapd mm0, mm1"), ("geode-lx", "prefetchnta [ebx]"), ("geode-lx", "sfence") })
                 Check(X86Assembler.Assemble(allowed.Item2, "profile.asm", bits: 32, cpu: X86Cpu.Parse(["--cpu=" + allowed.Item1])).Bytes.Length > 0,
                     allowed.Item1 + " refused " + allowed.Item2);
             // An object carries its profile, and the link refuses one whose

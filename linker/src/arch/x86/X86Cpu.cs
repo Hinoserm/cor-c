@@ -122,6 +122,7 @@ public sealed class X86Cpu
         "athlon-xp" or "athlon-4" or "athlon-mp" => "athlon-xp",
         "athlon64" => "athlon64",
         "6x86mx" or "m2" or "mii" or "cyrix-mii" => "6x86mx",
+        "geode-lx" or "geodelx" => "geode-lx",
         _ => throw new ArgumentException("Unknown x86 CPU: " + name),
     };
 
@@ -150,6 +151,14 @@ public sealed class X86Cpu
         // FCMOVcc or FCOMI, which its x87 never had -- whatever CPUID's one
         // CMOV bit says, as a Pentium Pro's would.
         "6x86mx" => Model("pentium-mmx") | X86Feature.Cmov,
+        // AMD'S GEODE LX (LX 600 to LX 900, AMD 33234H): the Pentium Pro's set
+        // with the K6-2+'s MMX, 3DNow! and its extensions, and the MMX
+        // extensions -- an Athlon's instructions with none of its SSE.
+        // FCMOVcc, FCOMI and FUCOMI are its x87's (33234H Table 8-29), as
+        // CPUID's CMOV bit says; Linux's flags there are cmov, mmx, mmxext,
+        // 3dnow and 3dnowext. It reports family 5, model 10, has no PAE, and
+        // no long NOP (0F 1F), which nothing here emits.
+        "geode-lx" => Model("k6-2+") | X86Feature.MmxExtensions | X86Feature.Cmov | X86Feature.FloatCmov,
         _ => null,
     };
 
