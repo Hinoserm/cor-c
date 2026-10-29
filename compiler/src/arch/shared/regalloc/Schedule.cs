@@ -46,14 +46,15 @@ public static class Schedule
                 foreach (Named n in i.Regs)
                     if (n.Reg >= rf.FirstVirtual)
                         home[n.Reg] = home.TryGetValue(n.Reg, out int was) && was != b ? -1 : b;
+        // WHAT IS LIVE OUT OF EACH BLOCK, for the values named in more than
+        // one block or in a loop's: a value carried round a back edge lives
+        // to the end of the stretch that makes it, though nothing after it in
+        // the block names it (division's lap: its 64-bit sum, taken for dead
+        // at its definition, lost a register to an order that looked better).
         bool[] cyclic = Cyclic(f);
+        BitSet[] liveOut = LiveOut(f, home, cyclic, out Dictionary<int, int> index);
         for (int b = 0; b < f.Blocks.Count; b++)
         {
-            // NOT IN A LOOP: there values carried round the back edge, which
-            // the stretch's own count does not see, are what the registers go
-            // to; an order that needs fewer of the stretch's own took one from
-            // them (division's lap: three loads and a store more).
-            if (cyclic[b]) continue;
             List<AInstr> instrs = f.Blocks[b].Instrs;
             // Each register's last mention in the block, for what outlives a stretch.
             Dictionary<int, int> lastIn = new();
@@ -64,10 +65,73 @@ public static class Schedule
             for (int at = 0; at <= instrs.Count; at++)
             {
                 if (at < instrs.Count && (instrs[at].Effects & Effect.Barrier) == 0) continue;
-                if (at - start >= 3 && at - start <= Longest) Stretch(f, instrs, start, at, b, home, lastIn, k);
+                if (at - start >= 3 && at - start <= Longest) Stretch(f, instrs, start, at, liveOut[b], index, lastIn, k);
                 start = at + 1;
             }
         }
+    }
+
+    /// <summary>
+    /// Each block's live-out set (by `index`) of the first class's values
+    /// named in more than one block or in a block on a cycle -- the others
+    /// live and die in their one block, which its own instructions say --
+    /// by the usual backward dataflow to a fixed point.
+    /// </summary>
+    private static BitSet[] LiveOut(AFunction f, Dictionary<int, int> home, bool[] cyclic, out Dictionary<int, int> index)
+    {
+        int nb = f.Blocks.Count;
+        RegisterFile rf = f.Registers;
+        index = new();
+        for (int b = 0; b < nb; b++)
+            foreach (AInstr i in f.Blocks[b].Instrs)
+                foreach (Named r in i.Regs)
+                    if (r.Reg >= rf.FirstVirtual && f.Target.ClassOf(r.Reg) == 0 && !index.ContainsKey(r.Reg)
+                        && (home[r.Reg] < 0 || cyclic[b]))
+                        index[r.Reg] = index.Count;
+        int width = Math.Max(index.Count, 1);
+        BitSet[] use = new BitSet[nb], def = new BitSet[nb], liveIn = new BitSet[nb], liveOut = new BitSet[nb];
+        for (int b = 0; b < nb; b++)
+        {
+            use[b] = new(width); def[b] = new(width); liveIn[b] = new(width); liveOut[b] = new(width);
+            foreach (AInstr i in f.Blocks[b].Instrs)
+            {
+                foreach (Named r in i.Regs)
+                    if ((r.Role & Role.Use) != 0 && index.TryGetValue(r.Reg, out int at) && !def[b].Get(at)) use[b].Set(at);
+                foreach (Named r in i.Regs)
+                    if ((r.Role & Role.Def) != 0 && index.TryGetValue(r.Reg, out int at)) def[b].Set(at);
+            }
+        }
+        if (index.Count == 0) return liveOut;
+        List<ABlock> into = new();
+        Dictionary<ABlock, int> blockAt = new(ReferenceEqualityComparer.Instance);
+        for (int b = 0; b < nb; b++) blockAt[f.Blocks[b]] = b;
+        int[][] succ = new int[nb][];
+        for (int b = 0; b < nb; b++)
+        {
+            f.SuccessorsInto(b, into);
+            succ[b] = into.Select(x => blockAt[x]).ToArray();
+        }
+        BitSet next = new(width);
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            for (int b = nb - 1; b >= 0; b--)
+            {
+                liveOut[b].Clear();
+                foreach (int s2 in succ[b]) liveOut[b].Or(liveIn[s2]);
+                next.Clear();
+                next.Or(liveOut[b]);
+                next.AndNot(def[b]);
+                next.Or(use[b]);
+                if (!next.Equals(liveIn[b]))
+                {
+                    liveIn[b].Clear();
+                    liveIn[b].Or(next);
+                    changed = true;
+                }
+            }
+        }
+        return liveOut;
     }
 
     /// <summary>Which blocks lie on a cycle of the flow graph (Tarjan's strongly connected components, iteratively).</summary>
@@ -127,7 +191,7 @@ public static class Schedule
     }
 
     /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
-    private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, int block, Dictionary<int, int> home, Dictionary<int, int> lastIn, int k)
+    private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, BitSet liveOut, Dictionary<int, int> index, Dictionary<int, int> lastIn, int k)
     {
         int n = to - from;
         RegisterFile rf = f.Registers;
@@ -138,8 +202,8 @@ public static class Schedule
         // included) is live from the stretch's start -- in any order the
         // dependences allow, as each later definition depends on every read
         // before it and on the definition before it (the register edges
-        // below); one mentioned after the stretch, or in another block, to its
-        // end.
+        // below); one mentioned after the stretch, or live out of the block,
+        // to its end.
         HashSet<int> liveIn = new(), outlives = new(), seen = new();
         for (int x = 0; x < n; x++)
         {
@@ -148,7 +212,7 @@ public static class Schedule
             {
                 if (r.Reg < rf.FirstVirtual || t.ClassOf(r.Reg) != 0) continue;
                 if ((r.Role & Role.Use) != 0 && !seen.Contains(r.Reg)) liveIn.Add(r.Reg);
-                if (!home.TryGetValue(r.Reg, out int h) || h != block || lastIn[r.Reg] >= to) outlives.Add(r.Reg);
+                if (lastIn[r.Reg] >= to || index.TryGetValue(r.Reg, out int at) && liveOut.Get(at)) outlives.Add(r.Reg);
             }
             foreach (Named r in named) if (r.Reg >= rf.FirstVirtual) seen.Add(r.Reg);
         }
