@@ -99,17 +99,40 @@ public static partial class Linker
     {
         List<(string Name, ObjectFile Object)> inputs = objects.ToList();
         AgreeWithKernel(inputs, kernel);
-        // EACH UNIT WAS COMPILED AGAINST THIS KERNEL: the compile stamped it
-        // with the index it read (Driver.Compile), and an object built for
-        // another kernel is refused here rather than stamped as this one's.
+        // EACH UNIT AGREES WITH THIS KERNEL IN WHAT IT READ OF IT, by name
+        // (DeclarationReads): every key its compile read, and every lookup it
+        // asked, is what the kernel's index says now -- a unit kept from a
+        // build before is right for a kernel changed only where it never
+        // looked, and one that read something since changed is refused here
+        // rather than linked. A unit stamped with a whole index (an older
+        // compile's) is held to the kernel's whole stamp, as it was.
         List<string> others = new();
+        Dictionary<string, byte[]> read = new(StringComparer.Ordinal);
+        bool anyReads = false;
         foreach ((string what, ObjectFile obj) in inputs)
         {
             foreach (Section section in obj.Sections.Where(section => section.Name == KernelExports.StampSection))
                 if (!section.Content().AsSpan().SequenceEqual(kernel.Stamp))
                     others.Add(what + ": compiled against the declarations of another kernel (build stamp "
                         + KernelExports.Text(section.Content()) + ", " + kernel.Name + "'s " + KernelExports.Text(kernel.Stamp) + ")");
-            obj.Sections.RemoveAll(section => section.Name == KernelExports.StampSection);
+            foreach (Section section in obj.Sections.Where(section => section.Name == DeclarationReads.ReadsSection))
+            {
+                anyReads = true;
+                Dictionary<string, byte[]> unit;
+                try { unit = DeclarationReads.Read(section.Content(), what); }
+                catch (InvalidDataException error) { others.Add(error.Message); continue; }
+                if (kernel.Decls is null)
+                {
+                    others.Add(what + ": compiled against " + kernel.Name + " by name, whose exports carry no declaration table: link the kernel again with this compiler");
+                    continue;
+                }
+                List<string> differences = DeclarationReads.Differences(unit, kernel.Decls);
+                if (differences.Count > 0)
+                    others.Add(what + ": compiled against declarations " + kernel.Name + " has since changed -- "
+                        + string.Join("; ", differences.Take(5)) + (differences.Count > 5 ? $"; and {differences.Count - 5} more" : ""));
+                foreach ((string key, byte[] hash) in unit) read[key] = hash;
+            }
+            obj.Sections.RemoveAll(section => section.Name == KernelExports.StampSection || section.Name == DeclarationReads.ReadsSection);
         }
         if (others.Count != 0) throw new LinkException(others);
         List<string> said = ModuleInfo.Take(inputs, ModuleInfo.SectionName);
@@ -149,7 +172,12 @@ public static partial class Linker
             string depends = "depends=" + ModuleInfo.NameOf(SoName(dependency));
             if (!entries.Contains(depends)) entries.Add(depends);
         }
+        // THE MODULE SAYS WHAT IT READ OF THE KERNEL, its units' merged, for
+        // the kernel's binder to hold it to by name (os/kernel/arch/x86/
+        // modules.cor); and the whole stamp still, for a binder that checks
+        // only that.
         ObjectFile own = KernelExports.StampObject(kernel.Stamp, loaded: false);
+        if (anyReads) own.Sections.Add(KernelExports.ReadsNote(DeclarationReads.Write(read)));
         own.Sections.Add(ModuleInfo.Note(ModuleInfo.SectionName, entries));
 
         Dyn dyn = new() { Shared = true, Soname = Path.GetFileName(fileName), DirectCalls = relocatedText, PageRelocations = true };

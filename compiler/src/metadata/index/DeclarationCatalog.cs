@@ -321,6 +321,22 @@ public sealed class DeclarationCatalog : IDisposable
 
     private const int MostRemembered = 1 << 16;
 
+    /// <summary>
+    /// A module unit's table of what it read of its kernel
+    /// (DeclarationFingerprint.UnitReads): answered by the index at the bottom
+    /// of this one's, which is the kernel's.
+    /// </summary>
+    public byte[] KernelReads(IEnumerable<string> loaded, IEnumerable<string> lookups)
+    {
+        lock (gate)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(DeclarationCatalog));
+            DeclarationIndex kernel = index;
+            while (kernel.Under is { } under) kernel = under;
+            return DeclarationFingerprint.UnitReads(kernel, loaded, lookups);
+        }
+    }
+
     public byte[] QueryFingerprint(string key)
     {
         lock (gate)

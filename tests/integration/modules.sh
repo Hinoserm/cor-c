@@ -5,7 +5,9 @@
 # the module the way its binder binds a library -- built in rings, stamped,
 # with its aliases in .corsac.modinfo; and a module of several files, a unit
 # a file against its own index made on the kernel's. Then a kernel whose
-# declarations differ, whose stamp the modules do not carry, refusing them.
+# declarations differ where the modules read them, refusing them -- its
+# loader by the whole stamp, the link by name -- and one whose declarations
+# differ only where no module looks, whose link keeps them.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
@@ -197,7 +199,7 @@ done
     --module-index "$m/module.idx" --assembly Kernel --ring 0 2> "$m/units.log" || { cat "$m/units.log"; fail "the module's units"; }
 for name in MixerAudio MixerDriver MixerEntry; do
     test -s "$m/$name.o" || fail "no unit $name"
-    test "$(stamp "$m/$name.o")" = "$(stamp "$a/kernel")" || fail "unit $name does not carry the kernel's stamp"
+    readelf -S -W "$m/$name.o" | grep -q '\.corsac\.reads' || fail "unit $name does not say what it read of the kernel"
 done
 # Each type defined by its own unit alone; the others name it.
 readelf -s -W "$m/MixerAudio.o" | awk '$8 == "t_Sound$002eChannel" && $7 != "UND" { found = 1 } END { exit !found }' \
@@ -275,7 +277,7 @@ mkdir -p "$c"
 printf '%s\t%s\t%s\tentry\n' "$(realpath $here/Chorus.cor)" "$c/Chorus.o" "$c/Chorus.o.deps" > "$c/units.tsv"
 "$corc" compile-project --units "$c/units.tsv" --obj --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" \
     --module-index "$c/chorus.idx" --assembly Kernel --ring 0 2> "$c/units.log" || { cat "$c/units.log"; fail "a module's units on a module"; }
-test "$(stamp "$c/Chorus.o")" = "$(stamp "$a/kernel")" || fail "the module on a module does not carry the kernel's stamp"
+readelf -S -W "$c/Chorus.o" | grep -q '\.corsac\.reads' || fail "the module on a module does not say what it read of the kernel"
 "$corc" link "$c/Chorus.o" --kernel "$a/kernel.exports" --link-shared "$m/mixer.ko" -o "$c/chorus.ko" 2> "$c/link.log" \
     || { cat "$c/link.log"; fail "a module linked against a module"; }
 ko=$c/chorus.ko
@@ -341,7 +343,7 @@ status=0
 test "$status" = 3 && grep -qx 'refused: built for another kernel' "$work/refused.out" \
     || { cat "$work/refused.out"; fail "a module of another kernel was loaded"; }
 if "$corc" link "$work/sb16.o" --kernel "$b/kernel.exports" -o "$work/wrong.ko" 2> "$work/wrong-link.log"; then fail "a module of another kernel linked"; fi
-grep -q 'compiled against the declarations of another kernel' "$work/wrong-link.log" || { cat "$work/wrong-link.log"; fail "the wrong link said otherwise"; }
+grep -q 'compiled against declarations kernel has since changed.*Driver' "$work/wrong-link.log" || { cat "$work/wrong-link.log"; fail "the wrong link said otherwise"; }
 if "$corc" compile --kernel "$b/kernel.exports" --decl-index "$a/kernel.idx" --assembly Kernel $here/Sb16.cor -o "$work/wrong.ko" 2> "$work/wrong-compile.log"; then
     fail "a module compiled against another kernel's index"
 fi
@@ -352,7 +354,7 @@ test ! -e "$work/wrong.ko"
 # refused by kernel b's link, its index made on a's refused beside b's
 # index, and a compile against b's exports with a's index refused as before.
 if "$corc" link $objects --kernel "$b/kernel.exports" -o "$m/wrong.ko" 2> "$m/wrong-link.log"; then fail "a several-file module of another kernel linked"; fi
-grep -q 'compiled against the declarations of another kernel' "$m/wrong-link.log" || { cat "$m/wrong-link.log"; fail "the several-file wrong link said otherwise"; }
+grep -q 'compiled against declarations kernel has since changed' "$m/wrong-link.log" || { cat "$m/wrong-link.log"; fail "the several-file wrong link said otherwise"; }
 mkdir -p "$m/wrong"
 sed "s|$m/|$m/wrong/|g" "$m/units.tsv" > "$m/wrong/units.tsv"
 if "$corc" compile-project --units "$m/wrong/units.tsv" --obj --kernel "$b/kernel.exports" --decl-index "$b/kernel.idx" \
@@ -365,5 +367,19 @@ if "$corc" compile-project --units "$m/wrong/units.tsv" --obj --kernel "$b/kerne
     fail "a module's units compiled against another kernel's index"
 fi
 grep -q 'is not the index kernel was compiled against' "$m/wrong/units-a.log" || { cat "$m/wrong/units-a.log"; fail "the wrong kernel index said otherwise"; }
+
+# A KERNEL CHANGED ONLY WHERE NO MODULE LOOKS -- a method more in Unused,
+# which nothing calls -- has another stamp, and the same module's object,
+# built for the first, links against it by name (what it read is what the
+# kernel says still); its exports carry the table it was held to.
+mkdir -p "$work/c"
+sed 's/^    public static string Never() { return "never " + Log.Lines; }$/&\n    public static int Also() { return 1; }/' $here/Kernel.cor > "$work/c/Kernel.cor"
+grep -q 'public static int Also()' "$work/c/Kernel.cor" || fail "kernel c is not different"
+kernel "$work/c" $here/Host.cor "$work/c/Kernel.cor" $here/Loader.cor
+test "$(stamp "$work/c/kernel")" != "$(stamp "$a/kernel")" || fail "two kernels with different declarations share a stamp"
+readelf -S -W "$work/c/kernel.exports" | grep -q '\.corsac\.decls' || fail "kernel c's exports carry no declaration table"
+"$corc" link "$work/sb16.o" --kernel "$work/c/kernel.exports" -o "$work/c/sb16.ko" 2> "$work/c/sb16-link.log" \
+    || { cat "$work/c/sb16-link.log"; fail "a module was refused by a kernel changed only where it never looks"; }
+readelf -S -W "$work/c/sb16.ko" | grep -q '\.corsac\.reads' || fail "the module does not say what it read of the kernel"
 
 printf 'PASS kernel modules: %s\n' "$work"

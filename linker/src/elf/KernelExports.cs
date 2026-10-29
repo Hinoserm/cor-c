@@ -76,6 +76,12 @@ public sealed class KernelExports
     /// none.
     /// </summary>
     public Lto.IrArchive? Bodies { get; }
+    /// <summary>
+    /// What the kernel's declaration index says under each key
+    /// (DeclarationReads.KernelSection), for a module's units to be held to
+    /// by name; null where the exports were written without it.
+    /// </summary>
+    public IReadOnlyDictionary<string, byte[]>? Decls { get; }
 
     /// <summary>
     /// The kernel units' code-generation contract, read from Cpu: their
@@ -96,9 +102,10 @@ public sealed class KernelExports
         }
     }
 
-    private KernelExports(string path, string name, byte[] stamp, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names, Lto.IrArchive? bodies)
+    private KernelExports(string path, string name, byte[] stamp, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names, Lto.IrArchive? bodies,
+        IReadOnlyDictionary<string, byte[]>? decls)
     {
-        Path = path; Name = name; Stamp = stamp; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names; Bodies = bodies;
+        Path = path; Name = name; Stamp = stamp; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names; Bodies = bodies; Decls = decls;
     }
 
     // ---- the kernel's small functions -------------------------------------------
@@ -182,8 +189,14 @@ public sealed class KernelExports
             holder.Sections.Add(section);
             bodies = Lto.IrArchive.Read(holder);
         }
+        IReadOnlyDictionary<string, byte[]>? decls = null;
+        if (Copy(DeclarationReads.KernelSection) is { } table)
+        {
+            try { decls = DeclarationReads.Read(table, path); }
+            catch (InvalidDataException error) { throw new ElfFormatException(error.Message); }
+        }
         return new KernelExports(path, name, Copy(StampSection)!, Copy(TargetContract.SectionName), Copy(X86CodeGenerationContract.SectionName),
-            bytes[4] == Elf.Class64, names, bodies);
+            bytes[4] == Elf.Class64, names, bodies, decls);
     }
 
     /// <summary>The stamp in a linked image's .corsac.stamp, or null where it has none: a kernel's, a module's, or these exports'.</summary>
@@ -253,7 +266,8 @@ public sealed class KernelExports
     /// hash over them, a .dynamic naming the tables and the kernel
     /// (DT_SONAME), and the stamp and the contracts as notes.
     /// </summary>
-    public static void Write(string path, string kernelName, IReadOnlyList<Export> symbols, byte[] stamp, byte[]? abi, byte[]? cpu, bool wide, byte[]? bodies = null)
+    public static void Write(string path, string kernelName, IReadOnlyList<Export> symbols, byte[] stamp, byte[]? abi, byte[]? cpu, bool wide, byte[]? bodies = null,
+        byte[]? decls = null)
     {
         if (stamp.Length != StampBytes) throw new ArgumentException("a build stamp is " + StampBytes + " bytes");
         int header = wide ? Elf.Header64Size : Elf.HeaderSize;
@@ -295,6 +309,7 @@ public sealed class KernelExports
         if (abi is not null) notes.Add((TargetContract.SectionName, abi));
         if (cpu is not null) notes.Add((X86CodeGenerationContract.SectionName, cpu));
         if (bodies is not null) notes.Add((Lto.IrArchive.SectionName, bodies));
+        if (decls is not null) notes.Add((DeclarationReads.KernelSection, decls));
         long[] noteAt = new long[notes.Count];
         long at = loadEnd;
         for (int i = 0; i < notes.Count; i++) { at = Align(at, 4); noteAt[i] = at; at += notes[i].Bytes.Length; }
@@ -378,6 +393,14 @@ public sealed class KernelExports
     /// A module's link adds only the note: its Sys.BuildStamp() is the
     /// kernel's, which is the one worth comparing with.
     /// </summary>
+    /// <summary>A module unit's, or a module's, table of what it read of the kernel (DeclarationReads), as a note.</summary>
+    public static Section ReadsNote(byte[] table)
+    {
+        Section note = new(DeclarationReads.ReadsSection, SectionKind.Note) { Align = 4 };
+        note.Bytes.AddRange(table);
+        return note;
+    }
+
     public static ObjectFile StampObject(byte[] stamp, bool loaded)
     {
         ObjectFile stamped = new();

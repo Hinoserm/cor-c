@@ -1030,6 +1030,17 @@ public sealed class IndexedDeclarations : IDisposable
     ///    file, not of the bodies alone, because the copies carry the file's
     ///    line positions into the unit's code.
     /// </summary>
+    /// <summary>
+    /// What this unit read of its kernel, by name (DeclarationReads): the
+    /// keys and lookups its receipt names, as the kernel's own index answers
+    /// them, for its object's .corsac.reads.
+    /// </summary>
+    public byte[] KernelReads()
+    {
+        string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
+        return catalog.KernelReads(loaded, queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name));
+    }
+
     public void WriteDependencies(string path)
     {
         string identity = SourceIndexBuilder.AssemblyIdentity(assembly);

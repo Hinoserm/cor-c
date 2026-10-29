@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 #nullable enable
 using Corsac.Lang.Metadata;
+using Corsac.Lang.Elf;
 using Corsac.Lang.Lto;
 
 namespace Corsac;
@@ -125,12 +126,26 @@ public static class ProjectCompile
         // library is a changed unit whatever its own source says: stamped by
         // the libraries' names alone, a unit kept its copy of an old
         // ReadOnlyCollection<T> and the link met two different ones.
+        //
+        // AND A MODULE'S KERNEL, BY WHAT A UNIT SEES OF IT, not by which write
+        // of its exports it is: the kernel is linked again on every edit, its
+        // exports with it, and a stamp of the file rebuilt every module unit
+        // -- a one-file change to one of the kernel's drivers, 3 of its 240
+        // units, rebuilt all 131 NT module units, the GUI's and every
+        // driver's. A unit stands on the kernel's declarations it read and
+        // the lookups it asked, by name -- its receipt, against the module
+        // index made on the kernel's (generic bodies it copied in by their
+        // files' text: Dependence.Source) -- and on the exports it took
+        // rather than compiled (its .imports, below); the options keep only
+        // the kernel units' native contract, processor and mode, which every
+        // unit's code is made to.
         StringBuilder references = new();
         for (int i = 0; i + 1 < args.Length; i++)
         {
-            // And a module's kernel: a unit is compiled against what it exports.
-            if (args[i] is "--ref" or "--kernel") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
+            if (args[i] == "--ref") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
+            else if (args[i] == "--kernel") references.Append('\t').Append(KernelIdentity(args[i + 1]));
         }
+        KernelExports? kernelExports = Driver.Value(args, "--kernel") is string kernelPath ? KernelExports.Read(kernelPath) : null;
         string optionsText = "0\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
         // HASHED ONCE, an entry unit's options and a library unit's: the text
         // names every library by path, time and length, and was encoded
@@ -163,6 +178,13 @@ public static class ProjectCompile
                 if (stamp.Length != 2) return "stamp unreadable";
                 if (stamp[0] != Hash(File.ReadAllBytes(unit.Source))) return "source changed";
                 if (stamp[1] != OptionsOf(unit)) return "options or compiler changed";
+                if (kernelExports is not null)
+                {
+                    string imports = unit.Receipt + ".imports";
+                    if (!File.Exists(imports)) return "no record of what it took from the kernel";
+                    foreach (string name in File.ReadLines(imports))
+                        if (name.Length > 0 && !kernelExports.Names.Contains(name)) return "took " + name + " from the kernel, which no longer exports it";
+                }
                 return UnitDependencies.Stale(unit.Receipt, sessionIndex);
             }
             catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { return failure.Message; }
@@ -718,6 +740,18 @@ public static class ProjectCompile
     /// (--compiler-identity). Hashing the 53 MB native compiler took a third of
     /// a second, in every one of the processes a 32-bit build starts.
     /// </summary>
+    /// <summary>
+    /// What a module unit's options say of its kernel (the stamp's comment
+    /// above): the kernel units' native contract, processor and mode -- not
+    /// the exports' file, which every link of the kernel writes again.
+    /// </summary>
+    private static string KernelIdentity(string path)
+    {
+        KernelExports kernel = KernelExports.Read(path);
+        return "kernel " + Convert.ToHexString(kernel.Abi ?? Array.Empty<byte>()) + " " + Convert.ToHexString(kernel.Cpu ?? Array.Empty<byte>())
+            + " " + (kernel.LongMode ? "64" : "32");
+    }
+
     internal static string CompilerIdentity()
     {
         if (_compilerIdentity is not null) return _compilerIdentity;

@@ -14,7 +14,12 @@ public static class ObjectLinkCommand
     /// --exports: the index is the compiler's format, and this is how the
     /// compiler's own `corc link` hands the linker the means to read one.
     /// </param>
-    public static int Run(string[] args, IUnitBackend? backend = null, Func<string, byte[]>? declarationStamp = null)
+    /// <param name="declarationTable">
+    /// What a declaration index says under each key (DeclarationReads), for
+    /// --exports, by the same means: the table a kernel's modules are held to
+    /// by name.
+    /// </param>
+    public static int Run(string[] args, IUnitBackend? backend = null, Func<string, byte[]>? declarationStamp = null, Func<string, byte[]>? declarationTable = null)
     {
         string? output = null;
         string entry = "_start";
@@ -232,6 +237,8 @@ public static class ObjectLinkCommand
         if (exportsPath is not null) X87Notes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
         else if (kernel is not null || shared) X87Notes.WriteBeside(destination, inputs.Select(input => input.Item2));
         byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
+        // And what the index says under each key, for modules held to it by name (DeclarationReads).
+        byte[]? decls = exportsPath is null ? null : declarationTable?.Invoke(stampIndex!);
         // The kernel's small functions for its modules, read before this link's
         // own optimiser takes the units' IR out (KernelExports.SmallBodies).
         List<IrArchiveRecord>? smallBodies = exportsPath is not null && lto ? KernelExports.SmallBodies(inputs) : null;
@@ -335,7 +342,7 @@ public static class ObjectLinkCommand
         {
             List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
             byte[]? bodies = smallBodies is null ? null : KernelExports.BodiesNote(smallBodies, globals);
-            KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode, bodies);
+            KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode, bodies, decls);
             Console.Error.WriteLine($"{exportsPath}: {globals.Count} kernel exports, build stamp {KernelExports.Text(stamp!)}"
                 + (bodies is null ? "" : ", small functions' IR " + (bodies.Length >> 10) + " KiB"));
         }
