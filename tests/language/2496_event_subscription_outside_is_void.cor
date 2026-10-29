@@ -1,0 +1,17 @@
+// test: event subscription from outside its type is void
+// expect-compile-error: CS0815: Cannot assign void to an implicitly-typed variable
+// `b.Clicked += h` outside Button is add_Clicked(h), as C# compiles it: void,
+// not the delegate the field holds afterwards.
+using System;
+
+class Button { public event Action? Clicked; }
+
+static class Program
+{
+    static int Main()
+    {
+        Button b = new();
+        var x = (b.Clicked += () => { });
+        return 0;
+    }
+}

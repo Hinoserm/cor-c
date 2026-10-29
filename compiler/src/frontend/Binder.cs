@@ -11123,15 +11123,21 @@ public sealed partial class Binder
     /// A derived type is outside, as in C#: it raises a base's event through
     /// a method the base gives it.
     /// </summary>
+    /// <summary>Inside the type that declares a field-like event, its nested types included: where it is the field it looks like.</summary>
+    private bool WithinEventOwner(FieldSymbol field)
+    {
+        string owner = field.Owner.Key;
+        string? here = _thisType?.Key;
+        return here is not null && (here == owner || here.StartsWith(owner + ".", StringComparison.Ordinal));
+    }
+
     private void EventFromOutside(Expr e, FieldSymbol field)
     {
         if (_eventOperands.Contains(e))
         {
             return;
         }
-        string owner = field.Owner.Key;
-        string? here = _thisType?.Key;
-        if (here is not null && (here == owner || here.StartsWith(owner + ".", StringComparison.Ordinal)))
+        if (WithinEventOwner(field))
         {
             return;
         }
@@ -15920,6 +15926,17 @@ public sealed partial class Binder
         if (e is BinaryExpr or UnaryExpr { Op: UnOp.Neg } && t.IsInteger && t.Symbol is null && !t.IsNullableValue && _uncheckedDepth == 0)
         {
             ConstantOverflow(e, t);
+        }
+        // A FIELD-LIKE EVENT SUBSCRIBED TO FROM OUTSIDE ITS TYPE is its add or
+        // remove accessor called, as C# compiles it: `b.Clicked += h` is
+        // void there, not the delegate the field holds afterwards, which
+        // only the declaring type may read (EventFromOutside).
+        if (e is AssignExpr { Op: BinOp.Add or BinOp.Sub } subscribed && !t.IsError
+            && _r.Resolved.TryGetValue(subscribed.Target, out Sym? subscribedTo)
+            && (subscribedTo switch { FieldSym f => f.Field, CapturedFieldSym f => f.Field, _ => null }) is { IsEvent: true } eventField
+            && !WithinEventOwner(eventField))
+        {
+            t = Type.Void;
         }
         _r.ExprType[e] = t;
         if (_inBodies) ForceBody(t);

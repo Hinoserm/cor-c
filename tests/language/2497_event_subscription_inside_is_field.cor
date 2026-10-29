@@ -1,0 +1,27 @@
+// test: event subscription inside its type is the field's compound assignment
+// expect-exit: 23
+// Inside Button, `Clicked += null` is the field-like event's field assigned
+// and its value the delegate; outside, += and -= subscribe and unsubscribe.
+using System;
+
+class Button
+{
+    public event Action<int>? Clicked;
+    public int Fire(int v) { Clicked?.Invoke(v); var copy = (Clicked += null); return copy is null ? 0 : 1; }
+}
+
+static class Program
+{
+    static int total;
+    static int Main()
+    {
+        Button b = new();
+        b.Clicked += v => total += v;
+        b.Clicked += v => total += v * 10;
+        Action<int> h = v => total += 100;
+        b.Clicked += h;
+        b.Clicked -= h;
+        int inside = b.Fire(2);
+        return total + inside;
+    }
+}
