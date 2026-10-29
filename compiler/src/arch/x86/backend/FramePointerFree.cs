@@ -25,7 +25,8 @@ internal static class FramePointerFree
         {
             foreach (MInstr i in b.Instrs)
             {
-                if (i.Op is MOp.Call or MOp.CallInd or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd)
+                if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd)
                     throw new InvalidOperationException($"{m.Source.Name}: {i.Op} in a function without a frame pointer");
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0)
@@ -44,9 +45,14 @@ internal static class FramePointerFree
                                 Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, IsSpill = mem.IsSpill, Device = mem.Device,
                             };
                             break;
+                        // A new operand, not this one changed: one shared by two
+                        // instructions, met again, would be taken for the frame.
                         case MMem mem when mem.Base?.Id == MReg.EbpDataId || mem.Index?.Id == MReg.EbpDataId:
-                            if (mem.Base?.Id == MReg.EbpDataId) mem.Base = MReg.Of(Gpr.Ebp);
-                            if (mem.Index?.Id == MReg.EbpDataId) mem.Index = MReg.Of(Gpr.Ebp);
+                            i.Operands[o] = new MMem(mem.Base?.Id == MReg.EbpDataId ? MReg.Of(Gpr.Ebp) : mem.Base, mem.Disp)
+                            {
+                                Index = mem.Index?.Id == MReg.EbpDataId ? MReg.Of(Gpr.Ebp) : mem.Index, Scale = mem.Scale,
+                                Symbol = mem.Symbol, Reloc = mem.Reloc, Label = mem.Label, IsSpill = mem.IsSpill, Device = mem.Device,
+                            };
                             break;
                     }
                 }

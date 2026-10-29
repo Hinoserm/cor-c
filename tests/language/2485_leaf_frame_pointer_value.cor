@@ -2,6 +2,8 @@
 // expect-output:
 // 256 706
 // caught 1
+// 15 x
+// caught put
 // after 0256
 //
 // Mix makes no call and keeps more values live than i386's six registers
@@ -16,6 +18,7 @@ using System.Runtime.CompilerServices;
 class Box
 {
     public int A, B, C;
+    public object? Ref;
 }
 
 static class Program
@@ -28,6 +31,16 @@ static class Program
         int m = p ^ q, n = q - r, o = r + p;
         int field = b.A + b.B * 2 - b.C;
         return s + t + u + v + p - q + r + m + n - o + field;
+    }
+
+    // A reference stored: through the store sequence's stub, a call, so no
+    // leaf -- and a null Box faults in the stub, which must find this frame.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Put(Box b, object o, int x, int y, int z)
+    {
+        int s = x * 3 + y, t = y ^ z, u = z - x, v = s * t + u;
+        b.Ref = o;
+        return s + t + u + v;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -56,6 +69,15 @@ static class Program
         Box box = new Box { A = 7, B = 11, C = 3 };
         Console.WriteLine(Mix(box, 3, 5, 9, 2) + " " + Mix(box, -4, 13, 6, -8));
         Catch(null!, 1);
+        try
+        {
+            Console.WriteLine(Put(box, "x", 1, 2, 3) + " " + (box.Ref as string));
+            Put(null!, "y", 1, 2, 3);
+        }
+        catch (NullReferenceException)
+        {
+            Console.WriteLine("caught put");
+        }
         Console.WriteLine("after " + Catch(box, 0) * 0 + Mix(box, 3, 5, 9, 2));
         return 0;
     }

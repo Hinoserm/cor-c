@@ -279,7 +279,8 @@ internal sealed class Encoder
         }
     }
 
-    private static int Reg(MOperand o) => ((MReg)o).Id;
+    private static int Reg(MOperand o) => ((MReg)o).Id is var id && id < 8 ? id
+        : throw new InvalidOperationException($"register v{id} left unallocated (EBP's value is made EBP by FramePointerFree)");
 
     /// <summary>
     /// ModRM, SIB and displacement for a register field and an r/m operand.
@@ -300,6 +301,8 @@ internal sealed class Encoder
     private void ModRM(int reg, MOperand rm)
     {
         reg &= 7;
+        if (rm is MReg { Id: >= 8 } or MMem { Base.Id: >= 8 } or MMem { Index.Id: >= 8 })
+            throw new InvalidOperationException("a register left unallocated (EBP's value is made EBP by FramePointerFree)");
         if (rm is MReg r)
         {
             _out.Add((byte)(0xC0 | (reg << 3) | (r.Id & 7)));

@@ -47,9 +47,10 @@ internal sealed class X86Target : ITarget
 
     /// <summary>
     /// A LEAF'S REGISTERS: EBP besides, callee-saved (the prologue still
-    /// pushes it), where nothing needs the frame pointer -- no call (a
-    /// callee's prologue pushes EBP as the link to this frame; the collector
-    /// and every unwinder walk that chain), no landing pad, nothing that names
+    /// pushes it), where nothing needs the frame pointer -- no call, a store
+    /// sequence's stub's included (a callee's prologue pushes EBP as the link
+    /// to this frame; the collector and every unwinder walk that chain), no
+    /// landing pad, nothing that names
     /// EBP but as the frame's base (Sys.FramePointer, a six-argument system
     /// call) and nothing that moves ESP after the prologue, off which the frame
     /// is addressed instead (FramePointerFree). A fault in such a function
@@ -83,7 +84,10 @@ internal sealed class X86Target : ITarget
             if (b.Source?.IsLandingPad == true) return false;
             foreach (MInstr i in b.Instrs)
             {
-                if (i.Op is MOp.Call or MOp.CallInd or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd) return false;
+                // The store sequences' stubs are calls too (CallKeep*): frameless,
+                // so the barrier they call links to this function's EBP.
+                if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))

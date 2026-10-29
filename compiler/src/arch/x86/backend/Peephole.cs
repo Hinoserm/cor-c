@@ -1098,9 +1098,12 @@ internal static class Peephole
             // Writes first, then reads: a register both read and written
             // here (an indirect call through EAX, which the call then
             // clobbers) is live before this instruction.
+            // A machine register only: EBP holding a value (MReg.EbpData) is
+            // in no liveness here, a jump's target's needs included, so a
+            // write of it is never taken for dead.
             foreach ((MReg r, bool isDef) in Regs(i))
             {
-                if (isDef)
+                if (isDef && r.Id < 8)
                 {
                     dead.Add(r.Id);
                 }

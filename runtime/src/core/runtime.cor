@@ -3951,7 +3951,8 @@ static partial class Runtime
     //
     // Two things make it possible. Every function's prologue is `push ebp; mov
     // ebp, esp`, so the saved frame pointers are a linked list of callers with
-    // each return address beside them; and the code generator writes a table
+    // each return address beside them (a leaf may give EBP a value after, but
+    // calls nothing, so no link is its: FrameAt finds a stopped one's frame); and the code generator writes a table
     // saying what each stretch of the image is -- see Lang/X86/FrameTable.cs
     // for its shape. Walking the one and looking each address up in the other
     // is the whole of it.
@@ -4307,7 +4308,10 @@ static partial class Runtime
     /// `mov ebp, esp` written 8B EC (x86-64: push rbp, 48 8B EC), then `sub
     /// esp, n` (83 EC n or 81 EC n32, REX.W on x86-64) if it has a frame,
     /// then its pushes. For a fault or an interrupt in one: the chain from
-    /// there runs on as from any frame. Allocates nothing.
+    /// there runs on as from any frame. Not in its epilogue's last two
+    /// instructions (`add esp, n` done, `pop ebp` not), where the answer is n
+    /// bytes high: no fault is there, and an interrupt's walk (the kernel's
+    /// sampler) checks what it reads. Allocates nothing.
     public static nuint FrameAt(nuint pc, nuint sp, nuint bp) {
         nuint name, file, pool, offset;
         long line;
@@ -4346,6 +4350,17 @@ static partial class Runtime
         return sp + size + pushes * WordSize.Bytes;
     }
 
+    /// WHETHER `frame` LOOKS LIKE A FRAME, and `next` (0: not asked) like the
+    /// link from it to its caller's: word-aligned, and climbing towards the
+    /// top of the stack by less than a megabyte -- the kernel sampler's
+    /// bound, past which a link is taken for a value, not a frame. A frame
+    /// of a megabyte's locals or more ends a walk there.
+    static bool FrameLink(nuint frame, nuint next) {
+        if ((frame & (nuint)(WordSize.Bytes - 1)) != 0) { return false; }
+        if (next == 0) { return true; }
+        return next > frame && next - frame < 0x100000;
+    }
+
     /// The caller's frame of `frame`, 0 at the chain's end, or NoFrame when this
     /// frame is not one to read: none, no return address, or a link that does
     /// not run towards the top of the stack -- a frame somebody built by hand,
@@ -4353,10 +4368,10 @@ static partial class Runtime
     /// [frame] is the caller's frame pointer, the word after it the return
     /// address: the chain every prologue here builds.
     public static nuint StepFrame(nuint frame) {
-        if (frame == 0) { return NoFrame; }
+        if (frame == 0 || !FrameLink(frame, 0)) { return NoFrame; }
         nuint next = Sys.ReadAddress(frame);
         if (Sys.ReadAddress(frame + WordSize.Bytes) == 0) { return NoFrame; }
-        if (next != 0 && next <= frame) { return NoFrame; }
+        if (next != 0 && !FrameLink(frame, next)) { return NoFrame; }
         // NOR PAST THE TOP OF THIS THREAD'S STACK: a frame in it whose link
         // leaves it is C's, built without a frame pointer, its EBP any value
         // at all. Read on, Windows 98's chain went into memory that was not
@@ -4406,16 +4421,14 @@ static partial class Runtime
         while (frame != 0 && taken < TraceDepth) {
             // [frame] is the caller's frame pointer, the word after it the
             // return address: the chain every prologue here builds. A frame
-            // pointer that is a value -- a leaf's (Runtime.FrameAt), stopped
-            // between its epilogue's last two instructions, or code built
-            // without one -- is caught where it can be without reading it: not
-            // word-aligned, or a link that climbs a megabyte or more at once,
-            // as the kernel's sampler bounds its walk.
-            if ((frame & (nuint)(WordSize.Bytes - 1)) != 0) { break; }
+            // pointer that is a value -- from code built without one, or a
+            // leaf's (FrameAt) caught by an interrupt in its epilogue -- is
+            // stopped at where it can be without reading it (FrameLink).
+            if (!FrameLink(frame, 0)) { break; }
             nuint next = Sys.ReadAddress(frame);
             nuint ret = Sys.ReadAddress(frame + WordSize.Bytes);
             if (ret == 0) { break; }
-            if (next != 0 && (next <= frame || next - frame >= 0x100000)) { break; }
+            if (next != 0 && !FrameLink(frame, next)) { break; }
 
             nuint name;
             nuint file;

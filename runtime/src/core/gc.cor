@@ -4427,7 +4427,8 @@ static class Gc
     // beside it, went to the heap.
     //
     // Every prologue is `push ebp; mov ebp, esp`, so the frame pointers are a
-    // chain of callers, each higher on the stack than the one it called (the
+    // chain of callers (a leaf, which may give EBP a value after, calls
+    // nothing and so is never on it from here), each higher on the stack than the one it called (the
     // stack grows down). The walk up it from this frame must meet the
     // opener's frame exactly: that proves the opener is a live call on this
     // stack, above everything between, and the stack between this frame's
@@ -16844,7 +16845,8 @@ static class GcRoots
     ///     ECX, EDX, ESI and EDI), so its prologue pushes them, and only THEN
     ///     calls back into Gc.CollectInner. Those pushes are above
     ///     CollectInner's ESP and inside the range ScanAll scans.
-    ///   - EBP is the frame pointer, pushed by every prologue.
+    ///   - EBP is the frame pointer, pushed by every prologue (only a leaf,
+    ///     which calls nothing, gives it a value after).
     ///
     /// This is a property of the backend's prologue that a test checks by
     /// reading the assembly; it is not something the language can state.

@@ -102,7 +102,10 @@ internal sealed class X64Target : ITarget
             if (b.Source?.IsLandingPad == true) return false;
             foreach (MInstr i in b.Instrs)
             {
-                if (i.Op is MOp.Call or MOp.CallInd or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf) return false;
+                // The store sequences' stubs are calls too (CallKeep*): frameless,
+                // so the barrier they call links to this function's RBP.
+                if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas
+                    or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Rbp } }) return false;
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i))

@@ -4,7 +4,8 @@ using Corsac.Lang.Ir;
 namespace Corsac.Lang.X86;
 
 /// <summary>
-/// The stack frame of one function, as offsets from EBP.
+/// The stack frame of one function, as offsets from EBP (off ESP in a leaf
+/// that gives EBP a value: FramePointerFree).
 ///
 /// Layout, from high addresses down:
 ///
