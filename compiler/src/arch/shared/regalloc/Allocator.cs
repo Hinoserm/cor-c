@@ -1416,7 +1416,8 @@ public sealed class Allocator
                 continue;
             }
             // Before the spill point a register that keeps its value there
-            // must see every write: none may go to the slot alone.
+            // must see every write: none may go to the slot alone (the store
+            // follows the write, or is sunk to the spill point: SinkStores).
             bool kept = o.Instr < from && _keepBefore.Contains(vreg);
             if (!kept && (remat ? CanFoldImm(vreg, o) : CanFold(vreg, o)))
             {
@@ -1532,7 +1533,8 @@ public sealed class Allocator
     /// WHAT GIVING UP A VALUE AT `at` COSTS EACH LAP of `loop`, in frame
     /// accesses: a store for every write of it anywhere in the loop -- a
     /// spilled value's every write stores, those before the spill point too,
-    /// so its slot is current wherever it is read -- a reload for each
+    /// so its slot is current wherever it is read (a store SinkStores moves
+    /// is outside every loop) -- a reload for each
     /// straight run that reads it from here on (a reload's register carries
     /// through a run), and one where the back edge comes in when the value
     /// is carried round and read before here (HeldBeforeSpill). A constant
@@ -1837,7 +1839,6 @@ public sealed class Allocator
     private void SinkStores()
     {
         int[]? idom = null;
-        List<int>[]? preds = null;
         for (int v = _fv; v < _n; v++)
         {
             int p = _spilledFrom[v];
@@ -1862,6 +1863,9 @@ public sealed class Allocator
             int pb = _blockOfInstr[p];
             if (_loopOf[pb] >= 0) continue;
             idom ??= BlockDominators.Of(_blockCount, b => Successors(b));
+            // Reached from the entry by ordinary edges: a block only a landing
+            // pad reaches has no dominator here, and its loops are not found.
+            if (idom[pb] < 0) continue;
             bool dominated = true;
             for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd && dominated; occ++)
             {
@@ -1876,46 +1880,45 @@ public sealed class Allocator
             // out after P, which a path can pass on its way to P, has the value
             // in its slot already and its register another's, so a store at P
             // would save that other value.
-            preds ??= Predecessors();
-            if (!BetweenOnly(preds, _blockOfInstr[def], pb)) continue;
+            if (!BetweenOnly(_blockOfInstr[def], pb)) continue;
             _sunk.Add(v);
             if (!_sunkAt.TryGetValue(p, out List<int>? at)) _sunkAt[p] = at = new();
             at.Add(v);
         }
     }
 
-    /// <summary>Each block's predecessors.</summary>
-    private List<int>[] Predecessors()
-    {
-        List<int>[] preds = new List<int>[_blockCount];
-        for (int b = 0; b < _blockCount; b++) preds[b] = new();
-        for (int b = 0; b < _blockCount; b++)
-            foreach (int s in Successors(b)) preds[s].Add(b);
-        return preds;
-    }
-
     /// <summary>
     /// Whether every block that reaches `to` without passing `from` (the
     /// blocks on the paths from one to the other) is laid out between them.
     /// </summary>
-    private bool BetweenOnly(List<int>[] preds, int from, int to)
+    private bool BetweenOnly(int from, int to)
     {
-        HashSet<int> seen = new() { to };
-        Stack<int> work = new();
+        // Seen as stamped this walk: blocks between `from` and `to` only, by
+        // their offset from `from`; one table for every walk of the function.
+        if (_betweenSeen.Length < to - from + 1) _betweenSeen = new int[Math.Max(to - from + 1, 2 * _betweenSeen.Length)];
+        int stamp = ++_betweenStamp;
+        Stack<int> work = _heldWork;
+        work.Clear();
+        _betweenSeen[to - from] = stamp;
         work.Push(to);
         while (work.Count > 0)
         {
             int b = work.Pop();
             if (b == from) continue;
-            foreach (int q in preds[b])
+            for (int e = _predStart[b]; e < _predStart[b + 1]; e++)
             {
-                if (!seen.Add(q)) continue;
+                int q = _predAll[e];
                 if (q < from || q > to) return false;
+                if (_betweenSeen[q - from] == stamp) continue;
+                _betweenSeen[q - from] = stamp;
                 work.Push(q);
             }
         }
         return true;
     }
+
+    private int[] _betweenSeen = Array.Empty<int>();
+    private int _betweenStamp;
 
     /// <summary>Whether a value is live at a position (its ranges as liveness made them).</summary>
     private bool LiveAt(int v, int pos)
@@ -1985,7 +1988,9 @@ public sealed class Allocator
         /// register besides when that register survives the call: a value
         /// spilled at its definition but counted as still in its register
         /// until a later point was in neither list once, and a tuple kept in
-        /// the frame across three calls was swept from under it.
+        /// the frame across three calls was swept from under it. A value whose
+        /// store is sunk (SinkStores) has its register alone before its spill
+        /// point: the slot is not written yet, and holds another's stale word.
         /// </summary>
         public (List<int> Slots, List<int> Registers)? LiveAcross(int index)
         {
@@ -1997,10 +2002,13 @@ public sealed class Allocator
                 if (v < a._fv || a._remat[v] is not null) continue;
                 // A home is an incoming argument's word, which the frame
                 // outside reads as what it is pushing: no map names it.
-                if (a._slot[v] != 0 && a.HomeOf(v) == 0) slots.Add(a._slot[v]);
-                if (a._spilledFrom[v] > index && a._assigned[v] >= 0
-                    && Array.IndexOf(a._rf.Classes[a._t.ClassOf(v)].CalleeSaved, a._assigned[v]) >= 0)
-                    registers.Add(a._assigned[v]);
+                bool inRegister = a._spilledFrom[v] > index && a._assigned[v] >= 0
+                    && Array.IndexOf(a._rf.Classes[a._t.ClassOf(v)].CalleeSaved, a._assigned[v]) >= 0;
+                // A sunk store's slot is not written before its spill point:
+                // there the register is the value, and the slot another's old word.
+                bool unwritten = inRegister && a._sunk.Contains(v);
+                if (a._slot[v] != 0 && a.HomeOf(v) == 0 && !unwritten) slots.Add(a._slot[v]);
+                if (inRegister) registers.Add(a._assigned[v]);
             }
             slots.Sort();
             return (slots, registers);
@@ -2028,7 +2036,7 @@ public sealed class Allocator
 
             // A COPY BETWEEN PIECES OF ONE SPLIT VALUE, both spilled: they share
             // the slot, which holds the source's value already -- every write of
-            // a spilled value stores. Into the slot alone, no work at all; into
+            // a spilled value stores (no split value's store is sunk). Into the slot alone, no work at all; into
             // a register, a load and no store back.
             if (a._split is not null && a._split.Copies.Contains(i) && i.CopyDst >= a._fv && i.CopySrc >= a._fv
                 && a._spilledFrom[i.CopyDst] != int.MaxValue && a._spilledFrom[i.CopySrc] != int.MaxValue
