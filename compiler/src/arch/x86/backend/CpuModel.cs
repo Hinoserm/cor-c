@@ -45,8 +45,9 @@ internal static class CpuModel
     /// an eight-stage pipe -- IMUL r32 four clocks and IMUL by an immediate
     /// four to seven, SAL, LEA, MOVZX, CDQ and CMOVcc one, SAR two (Table
     /// 8-26). A constant multiply takes a recipe of four at most
-    /// (Select.MulByConstant); MOVZX, CDQ and PUSH [mem] are kept, one clock
-    /// each to it (Peephole.ChooseForCpu replaces them for others only).
+    /// (Select.MulByConstant) -- no slower than IMUL's best four, faster than
+    /// its seven; MOVZX and CDQ (one clock) and PUSH [mem] (one or two) are
+    /// kept (Peephole.ChooseForCpu replaces them for others only).
     /// </summary>
     public static bool GeodeLx => Name == "geode-lx";
 

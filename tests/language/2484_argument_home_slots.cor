@@ -1,12 +1,15 @@
-// test: arguments spilled where they arrived: more of them live in a loop than there are registers, so they are read back from their incoming words (home slots), and an argument reassigned or a struct's words read twice keep slots of their own
+// test: arguments spilled where they arrived: more of them live in a loop than there are registers, so they are read back from their incoming words (home slots); an argument reassigned, used after its loop, or a struct's words read twice keep slots of their own; a piece of an outer loop's argument in an inner loop
 // expect-output:
 // 2061598 147622 225194
+// 2061500 23906858480
 //
 // A value whose one definition loads an incoming argument's word lives
 // there when spilled (Allocator's home slots): no store, no slot of its
 // own. One reassigned in a loop has two definitions and gets none; a
 // struct passed by value is read word by word, and each word read more
 // than once is no home.
+
+using System.Runtime.CompilerServices;
 
 struct Pair
 {
@@ -16,6 +19,7 @@ struct Pair
 
 static class Program
 {
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static long Mix(int a, int b, int c, int d, int e, int f, int g, int h, int n)
     {
         long s = 0;
@@ -24,12 +28,14 @@ static class Program
         return s + a + b + c + d + e + f + g + h;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static int Again(int x, int n)
     {
         for (int i = 0; i < n; i++) x = x * 3 + 1;
         return x;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static long Words(Pair p, int n, Pair q)
     {
         long s = 0;
@@ -37,9 +43,34 @@ static class Program
         return s + p.Low + q.High;
     }
 
+    // HOMES PROPER: arguments dead after their loop (no copy back makes a
+    // second definition), more of them live through the lap than there are
+    // registers; and one reassigned in the outer loop, read in the inner.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Dead(int a, int b, int c, int d, int e, int f, int g, int h, int n)
+    {
+        long s = 0;
+        for (int i = 0; i < n; i++)
+            s += (long)a * i + b - c + d * 2 + (e ^ i) + f * 3 - g + (h & i);
+        return s;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Nested(int x, int y, int z, int w, int n)
+    {
+        long s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = 0; j < n; j++) s += x * j + (y ^ j) - (z & j) + w;
+            x = x * 5 + 1;
+        }
+        return s;
+    }
+
     static int Main()
     {
         System.Console.WriteLine(Mix(3, 5, 7, 11, 13, 17, 19, 23, 1000) + " " + Again(2, 10) + " " + Words(new Pair(4, 9), 300, new Pair(6, 8)));
+        System.Console.WriteLine(Dead(3, 5, 7, 11, 13, 17, 19, 23, 1000) + " " + Nested(2, 9, 6, 4, 40));
         return 0;
     }
 }

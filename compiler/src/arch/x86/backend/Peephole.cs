@@ -207,6 +207,9 @@ internal static class Peephole
                 {
                     // EBP AS A VALUE -- copied, added to -- reaches the frame
                     // by arithmetic no operand shows: nothing is moved then.
+                    // (The allocator's homes, X86Target.Homes, rely instead on
+                    // Sys.FramePointer's contract -- read through, never written
+                    // above the return address -- since they only ever read.)
                     if (i.Operands[k] is MReg { IsPhys: true, Phys: Gpr.Ebp }) return;
                     if (i.Operands[k] is not MMem mem || mem.Base is not { IsPhys: true, Phys: Gpr.Ebp }) continue;
                     bool writes = (Roles.Of(i.Op, k) & Roles.Role.Def) != 0 || !Understood(i);

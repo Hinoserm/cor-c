@@ -225,6 +225,7 @@ public sealed class Allocator
         LoopSplit? split = LoopSplit.Run(m);
         Allocator a = new(m) { _split = split };
         a.CollectOccurrences();
+        a.FindHomes();
         a.ComputeLiveness();
         a.Scan();
         a.HeldBeforeSpill();
@@ -1732,16 +1733,42 @@ public sealed class Allocator
     /// home is never written: a piece the loop writes keeps a slot of its
     /// own. 0 for none.
     /// </summary>
-    private int HomeOf(int vreg)
+    private int HomeOf(int vreg) => (uint)vreg < (uint)_homeOf.Length ? _homeOf[vreg] : 0;
+
+    /// <summary>Each value's home, worked out once (HomeOf): 0 for none.</summary>
+    private int[] _homeOf = Array.Empty<int>();
+
+    /// <summary>
+    /// THE HOMES, once: a root's own (its one definition its home's load), and
+    /// each piece's that holds the root's one value -- one definition, a copy
+    /// from the root or from a piece that holds it -- to a fixed point, an
+    /// inner loop's piece after the outer's. A piece copied from anything
+    /// else (a piece the loop writes) holds another value and is no home's.
+    /// </summary>
+    private void FindHomes()
     {
-        if (_home.Length == 0) return 0;
-        int root = _split?.RootOf(vreg) ?? vreg;
-        if ((uint)root >= (uint)_home.Length || _home[root] == 0) return 0;
-        if (root == vreg) return _home[root];
-        int defs = 0;
-        for (int occ = _occFirst[vreg], occEnd = _occFirst[vreg + 1]; occ < occEnd; occ++)
-            if ((_occAll[occ].Role & Role.Def) != 0 && ++defs > 1) return 0;
-        return _home[root];
+        if (_home.Length == 0) return;
+        _homeOf = new int[_n];
+        for (int v = _fv; v < _n && v < _home.Length; v++) _homeOf[v] = _home[v];
+        if (_split is null) return;
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            foreach ((int piece, int root) in _split.Root)
+            {
+                if (piece >= _n || _homeOf[piece] != 0 || root >= _home.Length || _home[root] == 0) continue;
+                int def = -1, defs = 0;
+                for (int occ = _occFirst[piece], occEnd = _occFirst[piece + 1]; occ < occEnd; occ++)
+                    if ((_occAll[occ].Role & Role.Def) != 0) { defs++; def = _occAll[occ].Instr; }
+                if (defs != 1 || !_lin[def].IsCopy || _lin[def].CopyDst != piece) continue;
+                int src = _lin[def].CopySrc;
+                if (src < _n && _homeOf[src] == _home[root])
+                {
+                    _homeOf[piece] = _home[root];
+                    changed = true;
+                }
+            }
+        }
     }
 
     private bool CanFoldImm(int vreg, Occurrence o)
@@ -1883,11 +1910,13 @@ public sealed class Allocator
                 if (a._folded.Contains((index, 0))) { _dropped = true; return; }
                 _noStore = i.CopyDst;
             }
-            // A piece copied from its homed root into the home: the home holds
-            // the root's one value already (it is that value's only definition).
+            // A piece copied into the home from its root, or from a piece that
+            // holds the root's value: the home holds that one value already. Into
+            // the slot alone, no work at all; into a register, no store back.
             else if (a._split is not null && a._split.Copies.Contains(i) && i.CopyDst >= a._fv && i.CopySrc >= a._fv
-                && i.CopySrc < a._home.Length && a._home[i.CopySrc] != 0 && a.HomeOf(i.CopyDst) == a._home[i.CopySrc])
+                && a.HomeOf(i.CopyDst) != 0 && a.HomeOf(i.CopySrc) == a.HomeOf(i.CopyDst))
             {
+                if (a._folded.Contains((index, 0))) { _dropped = true; return; }
                 _noStore = i.CopyDst;
             }
             // The defining move of a spilled constant goes: see Spill. (A home's

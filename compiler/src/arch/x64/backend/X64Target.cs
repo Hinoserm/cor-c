@@ -174,7 +174,13 @@ internal sealed class X64Target : ITarget
                     if (mem.Index?.Id == (int)Gpr.Rbp) return homes;
                     if (mem.Base?.Id != (int)Gpr.Rbp) continue;
                     if (i.Op == MOp.Lea || mem.Index is not null && mem.Disp >= 0) return homes;
-                    if (mem.Disp < 16 || mem.Symbol is not null || mem.Label is not null) continue;
+                    // Below the arguments (the saved frame pointer, the return address): only
+                    // what reaches past them, sixteen bytes at most, can touch one.
+                    if (mem.Disp < 16 || mem.Symbol is not null || mem.Label is not null)
+                    {
+                        if (mem.Disp > 16 - 16) touched.Add((mem.Disp, mem.Disp + 16));
+                        continue;
+                    }
                     if (i.Op == MOp.Mov && k == 1 && i.Width == 8 && !i.Lock && i.Operands[0] is MReg { IsPhys: false, IsFloat: false } && (mem.Disp & 7) == 0)
                         load[mem.Disp] = load.ContainsKey(mem.Disp) ? null : i;
                     else touched.Add((mem.Disp, mem.Disp + 16));
