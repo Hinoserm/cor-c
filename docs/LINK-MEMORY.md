@@ -1,0 +1,93 @@
+# The link's memory, toward a 256 MB self-host
+
+The compiler is meant to build itself on a 256 MB machine: a P55C-class
+board, the real development environment. Compiling units one at a time
+nearly fits already (the largest hold about 200-230 MB under a 256 MB
+cgroup). The link does not, by a factor of five to ten, and it is now what
+fails the 32-bit stage 1>2>3 build: the native link of the compiler peaks
+at 3.5-3.9 GB against a 32-bit process's heap ceiling of about 3.7 GB, and
+ran out of memory in stage 3 on 2026-10-29.
+
+This note is what the link holds, measured, and the plan to make it hold
+little enough.
+
+## Measured (the compiler's own link, 2026-10-29)
+
+Live heap after each phase, the .NET-hosted linker, after 0b3a85a5 and
+8e26b8ed (one archive directory a unit, preinit lets go, lifetime sets in
+one array, body hashes inline):
+
+| phase                          | live (MB) | before 0b3a85a5 |
+|--------------------------------|----------:|----------------:|
+| read objects                   |       413 |             413 |
+| archives and hints             |      1184 |            1464 |
+| reachability                   |      1247 |            1527 |
+| virtual targets, lifetime solve |     1386 |            1680 |
+| catches and owned fields       |      1662 |            1956 |
+| regions (start, full GC)       |      2026 |               - |
+| units regenerated              |      2100 |            2394 |
+| heap decision                  |      2103 |            2398 |
+| layout and write               |       748 |             992 |
+
+Under a 2.5 GB hard limit the .NET link runs out of memory as the regions
+begin (VirtualTargets.HoldersOf, an ordinary allocation that tips it over),
+with or without a cap on the region graphs' edges: the region engine's
+graphs are not the problem. The base is.
+
+What is live after archives and hints (dotnet-dump, `dumpheap -stat -live`,
+before 0b3a85a5; 1.65 GB in all):
+
+| what                                            | MB  |
+|-------------------------------------------------|----:|
+| byte[] (section contents, then archive hashes)  | 343 |
+| strings (symbol and record names)               | 222 |
+| relocations                                     | 148 |
+| archive directories (two copies then)           | 190 |
+| string[] (archive call and reference lists)     | 123 |
+| SortedSet<string> + nodes (lifetime, hints)     | 150 |
+| SortedSet<(string, int)> + nodes                |  67 |
+| Symbol objects and their dictionaries           |  95 |
+
+## The plan
+
+The link holds the whole program -- every section's bytes, every symbol by
+name, every relocation, every unit's analysis summaries -- from the first
+phase to the last. A link that fits 256 MB holds what the phase at hand
+needs and reads the rest from the objects as it goes. In order of size:
+
+1. **Section contents stay in their files** until layout and write, as the
+   IR archives and notes already do (Section.FileBacked, ElfReader.
+   LeftInFile). About 30 linker files read Section.Bytes (Preinit,
+   DuplicateCutter, DescriptorPacker, KernelExports, the PE and ELF
+   writers); each reads through Section.Content, a window of the file, or
+   is moved to the write. Some 340 MB on the compiler's link.
+2. **Names once, ids everywhere.** A symbol's name is held once, in one
+   pool, and relocations, symbols, archive call lists and the analyses'
+   tables refer to it by an integer. The strings (222 MB), string arrays
+   (123 MB) and symbol dictionaries (95 MB) shrink to the names once and
+   arrays of ints.
+3. **Relocations as compact records**, read a section at a time where they
+   are applied, not held as objects naming their symbols by string (148 MB).
+4. **The whole-program analyses keep summaries by id**: lifetimes, owned
+   fields, virtual targets, regions and the heap decision, each a table of
+   ints a function, released when its phase is done. The region engine's
+   setup alone adds 360 MB before any graph is solved.
+5. **Units are made again one at a time** in a fixed budget, each written
+   and let go before the next (the backends hold 4 at once today).
+
+Each step is measured the same way: the same relink of the compiler
+(`--link-only --timings` on a stage's objects), its live heap per phase,
+and its output byte-identical to the stage's binary. Then the native
+32-bit link's peak, and at the end the link under a 256 MB cgroup.
+
+## Tools
+
+- A stage's objects to relink: any `sc3m` run's `sourceN/compiler/obj`.
+- `--timings`: live heap and RSS after each link phase.
+- `--region-report "+memsteps,+memtop=N"`: the region engine's heap after
+  each step, and the N component solves that grew it most.
+- `dotnet-dump collect --type Heap` and `dotnet-dump analyze -c "dumpheap
+  -stat -live"`: what is live, by type, in the .NET-hosted linker.
+- The .NET-hosted compiler's 768 MB GCHeapHardLimit (corc.csproj) is a
+  unit-compile cap. The link has never fitted it; that is this work, not a
+  limit to raise.
