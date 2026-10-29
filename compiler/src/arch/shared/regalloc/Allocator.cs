@@ -119,6 +119,8 @@ public sealed class Allocator
     private readonly HashSet<(int Instr, int Operand)> _folded = new();
     /// <summary>Registers whose one definition is a constant: spilled, they are re-made rather than stored.</summary>
     private readonly object?[] _remat;
+    /// <summary>Values whose one definition loads them from a home (AInstr.HomeSlot): the home, else 0.</summary>
+    private int[] _home = Array.Empty<int>();
     /// <summary>Spill slots whose owners' intervals have ended, with the position each is free from.</summary>
     private readonly List<(int Slot, int FreeFrom)> _freeSlots = new();
     /// <summary>Virtual registers live across each call, by instruction index: the raw material of a stack map.</summary>
@@ -321,6 +323,11 @@ public sealed class Allocator
                 && _lin[d.Instr].Constant is { } imm)
             {
                 _remat[v] = imm;
+            }
+            else if (defs == 1 && def is { Role: Role.Def, InMem: false, Operand: 0 } h && _lin[h.Instr].HomeSlot is { } home)
+            {
+                if (_home.Length < _n) _home = new int[_n];
+                _home[v] = home;
             }
         }
     }
@@ -1676,6 +1683,11 @@ public sealed class Allocator
     /// </summary>
     private int TakeSlot(int vreg)
     {
+        // A HOME IS THE SLOT, for the value loaded from it and for its pieces:
+        // never anyone else's after (it goes on no free list) -- nothing but
+        // its one load reads it.
+        int homed = HomeOf(vreg);
+        if (homed != 0) return homed;
         // A split value's pieces share one slot, held over all of them (LoopSplit).
         int start = _start[vreg], end = _end[vreg], root = -1;
         if (_split is not null && _split.Pieces.TryGetValue(_split.RootOf(vreg), out List<int>? pieces))
@@ -1703,6 +1715,14 @@ public sealed class Allocator
         _freeSlots.Add((taken, end));
         if (root >= 0) _rootSlot[root] = taken;
         return taken;
+    }
+
+    /// <summary>A value's home (AInstr.HomeSlot), or its split root's: 0 for none.</summary>
+    private int HomeOf(int vreg)
+    {
+        if (_home.Length == 0) return 0;
+        int root = _split?.RootOf(vreg) ?? vreg;
+        return (uint)root < (uint)_home.Length ? _home[root] : 0;
     }
 
     private bool CanFoldImm(int vreg, Occurrence o)
@@ -1802,7 +1822,9 @@ public sealed class Allocator
             foreach (int v in live)
             {
                 if (v < a._fv || a._remat[v] is not null) continue;
-                if (a._slot[v] != 0) slots.Add(a._slot[v]);
+                // A home is an incoming argument's word, which the frame
+                // outside reads as what it is pushing: no map names it.
+                if (a._slot[v] != 0 && a.HomeOf(v) == 0) slots.Add(a._slot[v]);
                 if (a._spilledFrom[v] > index && a._assigned[v] >= 0
                     && Array.IndexOf(a._rf.Classes[a._t.ClassOf(v)].CalleeSaved, a._assigned[v]) >= 0)
                     registers.Add(a._assigned[v]);
@@ -1842,9 +1864,11 @@ public sealed class Allocator
                 if (a._folded.Contains((index, 0))) { _dropped = true; return; }
                 _noStore = i.CopyDst;
             }
-            // The defining move of a spilled constant goes: see Spill.
-            if (i.Constant is not null && regs.Length > 0 && regs[0] is { Operand: 0, InMem: false } d && d.Reg >= a._fv
-                && a._remat[d.Reg] is not null && a._spilledFrom[d.Reg] != int.MaxValue)
+            // The defining move of a spilled constant goes: see Spill. (A home's
+            // load stays, even spilled from it: the register it loads may be
+            // carried on to the reads after it, Reach. Only its store goes.)
+            if (regs.Length > 0 && regs[0] is { Operand: 0, InMem: false } d && d.Reg >= a._fv
+                && i.Constant is not null && a._remat[d.Reg] is not null && a._spilledFrom[d.Reg] != int.MaxValue)
             {
                 _dropped = true;
                 return;
@@ -1902,7 +1926,9 @@ public sealed class Allocator
                 else
                 {
                     if ((role & Role.Use) != 0 && !held) _before.Add((reg, a._slot[v], null));
-                    if ((role & Role.Def) != 0 && v != _noStore) _after.Add((reg, a._slot[v]));
+                    // A home's one load writes nothing back: the slot holds it.
+                    if ((role & Role.Def) != 0 && v != _noStore && !(i.HomeSlot is not null && v < a._home.Length && a._home[v] != 0))
+                        _after.Add((reg, a._slot[v]));
                 }
             }
             return reg;

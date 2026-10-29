@@ -74,6 +74,7 @@ internal sealed class X64Target : ITarget
         Dictionary<MBlock, ABlock> blocks = new(ReferenceEqualityComparer.Instance);
         foreach (MBlock b in _m.Blocks)
             blocks[b] = new ABlock { Name = b.Name, Tag = b, LandingPad = b.Source?.IsLandingPad == true };
+        _homes = Homes();
         foreach (MBlock b in _m.Blocks)
         {
             ABlock ab = blocks[b];
@@ -144,8 +145,38 @@ internal sealed class X64Target : ITarget
             Targets = targets,
             Unconditional = i.Op is MOp.Jmp or MOp.Ret or MOp.JmpTable or MOp.JmpInd or MOp.Epilogue or MOp.Ud2,
             JumpsAnywhere = i.Op == MOp.JmpInd,
+            HomeSlot = _homes.Contains(i) ? ((MMem)i.Operands[1]).Disp : null,
             Line = i.Line,
         };
+    }
+
+    private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot): `mov v, [rbp+d]` of a
+    /// stack-passed argument's eight bytes, the only thing in the function
+    /// that touches any byte of them, nothing taking an address off RBP.
+    /// x86-64's collector reads a stack as memory: no map to name it in.
+    /// </summary>
+    private HashSet<MInstr> Homes()
+    {
+        HashSet<MInstr> homes = new(ReferenceEqualityComparer.Instance);
+        Dictionary<int, MInstr?> load = new();
+        List<(int From, int To)> touched = new();
+        foreach (MBlock b in _m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not MMem { Base: { Id: (int)Gpr.Rbp } } mem) continue;
+                    if (i.Op == MOp.Lea) return homes;
+                    if (mem.Disp < 16 || mem.Index is not null || mem.Symbol is not null || mem.Label is not null) continue;
+                    if (i.Op == MOp.Mov && k == 1 && i.Width == 8 && !i.Lock && i.Operands[0] is MReg { IsPhys: false, IsFloat: false } && (mem.Disp & 7) == 0)
+                        load[mem.Disp] = load.ContainsKey(mem.Disp) ? null : i;
+                    else touched.Add((mem.Disp, mem.Disp + Math.Max(i.Width, 1)));
+                }
+        foreach ((int disp, MInstr? i) in load)
+            if (i is not null && !touched.Any(t => t.From < disp + 8 && disp < t.To)) homes.Add(i);
+        return homes;
     }
 
     /// <summary>
@@ -177,11 +208,11 @@ internal sealed class X64Target : ITarget
                 {
                     outList.Add(constant is MImm imm
                         ? new MInstr(MOp.Mov, new MReg(reg), imm) { Width = 8, Line = ai.Line }
-                        : new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, new MReg(reg), MMem.Spill(slot)) { Width = 8, Line = ai.Line });
+                        : new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, new MReg(reg), Slot(slot)) { Width = 8, Line = ai.Line });
                 }
                 if (n is not null) outList.Add(n);
                 foreach ((int reg, int slot) in p.After(index))
-                    outList.Add(new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, MMem.Spill(slot), new MReg(reg)) { Width = 8, Line = ai.Line });
+                    outList.Add(new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, Slot(slot), new MReg(reg)) { Width = 8, Line = ai.Line });
                 index++;
             }
             b.Instrs.Clear();
@@ -195,10 +226,17 @@ internal sealed class X64Target : ITarget
             if (_m.SavesEverything || p.Touched.Contains((int)g)) _m.SavedRegs.Add(g);
     }
 
+    /// <summary>
+    /// A value's slot as an operand: the allocator's own below the frame
+    /// pointer, or a home above it -- an argument's word, read as the
+    /// argument load it is, not counted as a spill slot's traffic.
+    /// </summary>
+    private static MMem Slot(int offset) => offset > 0 ? MMem.Frame(offset) : MMem.Spill(offset);
+
     private static MOperand PlaceOf((Place Place, int Reg, int Slot, object? Constant) at, MReg original)
         => at.Place switch
         {
-            Place.Slot => MMem.Spill(at.Slot),
+            Place.Slot => Slot(at.Slot),
             Place.Constant => (MImm)at.Constant!,
             _ => original.IsPhys ? original : new MReg(at.Reg),
         };

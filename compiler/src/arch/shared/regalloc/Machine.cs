@@ -78,6 +78,14 @@ public sealed class AInstr
     public bool WholeCopy { get; init; }
     /// <summary>A jump to a computed address: it leaves for blocks no edge names.</summary>
     public bool JumpsAnywhere { get; init; }
+    /// <summary>
+    /// A HOME: the frame slot a whole-register load into operand 0 reads --
+    /// an incoming argument's -- where nothing else in the function reads,
+    /// writes or takes the address of that slot. The value loaded lives
+    /// there when it is spilled: no store, the load itself gone (Wimmer and
+    /// Mossenbock's spill-store elimination for parameters). Null for none.
+    /// </summary>
+    public int? HomeSlot { get; init; }
     /// <summary>The constant a whole-width definition moves into operand 0 (a value remade where it is wanted), else null.</summary>
     public object? Constant { get; init; }
     /// <summary>How many operands it has (the positions the masks below are over).</summary>
