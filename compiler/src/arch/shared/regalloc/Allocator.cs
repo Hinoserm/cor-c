@@ -25,7 +25,8 @@ namespace Corsac.Lang.RegAlloc;
 ///
 /// Spilling: when no register is free the interval with the furthest next
 /// use gives way -- which may be the one being allocated. A spilled
-/// register lives in a frame slot: every write stores to it, every read
+/// register lives in a frame slot: every write stores to it (or, its one
+/// store sunk, where it leaves its register: SinkStores), every read
 /// reloads from it, and each such read or write is a short interval of its
 /// own covering just that instruction, which the scan allocates like any
 /// other. Where the instruction accepts a memory operand the slot is used
@@ -1158,8 +1159,8 @@ public sealed class Allocator
     /// be spilled: give it one for as long as some register stays free --
     /// up to a call, a string move's fixed ESI/EDI/ECX, a divide's EDX --
     /// and spill it only from there. Its reads before the split keep the
-    /// register; every write still stores, so the slot is current wherever
-    /// the frame takes over. Returns the register, or -1 if no register
+    /// register; every write still stores (a split value's store is never
+    /// sunk), so the slot is current wherever the frame takes over. Returns the register, or -1 if no register
     /// covers even the interval's first instruction that touches it.
     /// </summary>
     private int SplitPrefix(Interval cur)
@@ -1638,6 +1639,7 @@ public sealed class Allocator
     }
 
     private bool[] _held = new bool[64];
+    /// <summary>The work stack of HeldBeforeSpill and BetweenOnly, which run one after the other and clear it first.</summary>
     private readonly Stack<int> _heldWork = new();
 
     /// Whether every way into block `b` leaves the value in its register.
@@ -1944,7 +1946,8 @@ public sealed class Allocator
     /// time, the one asked about. Each register an instruction names has its
     /// place; a spilled value's reads load it first and its writes store it
     /// after (once an instruction, whatever it does with it), unless a register
-    /// still holds it; a constant's is remade.
+    /// still holds it or the store is sunk to its spill point (StoresBefore);
+    /// a constant's is remade.
     /// </summary>
     private sealed class Decisions : IPlacement
     {
@@ -2005,8 +2008,12 @@ public sealed class Allocator
                 bool inRegister = a._spilledFrom[v] > index && a._assigned[v] >= 0
                     && Array.IndexOf(a._rf.Classes[a._t.ClassOf(v)].CalleeSaved, a._assigned[v]) >= 0;
                 // A sunk store's slot is not written before its spill point:
-                // there the register is the value, and the slot another's old word.
-                bool unwritten = inRegister && a._sunk.Contains(v);
+                // there the register is the value, and the slot another's old
+                // word. A call clobbers every caller-saved register, so the scan
+                // spilled a value it found in one at the call or before.
+                bool unwritten = index < a._spilledFrom[v] && a._sunk.Contains(v);
+                if (unwritten && !inRegister)
+                    throw new InvalidOperationException($"{a._f.Name}: v{v}, its store sunk, is live across the call at {index} in caller-saved register {a._assigned[v]}");
                 if (a._slot[v] != 0 && a.HomeOf(v) == 0 && !unwritten) slots.Add(a._slot[v]);
                 if (inRegister) registers.Add(a._assigned[v]);
             }
@@ -2036,8 +2043,9 @@ public sealed class Allocator
 
             // A COPY BETWEEN PIECES OF ONE SPLIT VALUE, both spilled: they share
             // the slot, which holds the source's value already -- every write of
-            // a spilled value stores (no split value's store is sunk). Into the slot alone, no work at all; into
-            // a register, a load and no store back.
+            // a spilled value stores, and no split value's store is sunk. Into
+            // the slot alone, no work at all; into a register, a load and no
+            // store back.
             if (a._split is not null && a._split.Copies.Contains(i) && i.CopyDst >= a._fv && i.CopySrc >= a._fv
                 && a._spilledFrom[i.CopyDst] != int.MaxValue && a._spilledFrom[i.CopySrc] != int.MaxValue
                 && a._slot[i.CopyDst] == a._slot[i.CopySrc] && a._slot[i.CopyDst] != 0)
