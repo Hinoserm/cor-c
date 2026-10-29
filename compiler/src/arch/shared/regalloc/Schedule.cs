@@ -37,22 +37,28 @@ public static class Schedule
     {
         RegisterFile rf = f.Registers;
         int k = rf.Classes[0].Preference.Length;
-        // Which blocks each register is named in: a register named in one
-        // block alone lives there only (its reads after a definition there);
-        // any other is taken for live across the block's stretches.
+        // Which block each register is named in (-1: more than one), and the
+        // registers a landing pad names -- entered by no edge, so no flow says
+        // they outlive the stretches of its try: they are taken to.
         Dictionary<int, int> home = new();
+        HashSet<int> padRead = new();
         for (int b = 0; b < f.Blocks.Count; b++)
             foreach (AInstr i in f.Blocks[b].Instrs)
                 foreach (Named n in i.Regs)
                     if (n.Reg >= rf.FirstVirtual)
+                    {
                         home[n.Reg] = home.TryGetValue(n.Reg, out int was) && was != b ? -1 : b;
+                        if (f.Blocks[b].LandingPad) padRead.Add(n.Reg);
+                    }
         // WHAT IS LIVE OUT OF EACH BLOCK, for the values named in more than
         // one block or in a loop's: a value carried round a back edge lives
         // to the end of the stretch that makes it, though nothing after it in
-        // the block names it (division's lap: its 64-bit sum, taken for dead
-        // at its definition, lost a register to an order that looked better).
-        bool[] cyclic = Cyclic(f);
-        BitSet[] liveOut = LiveOut(f, home, cyclic, out Dictionary<int, int> index);
+        // the block names it (division's lap: three loads and a store more
+        // when its 64-bit sum was taken for dead at its definition). Worked
+        // out once a stretch names more values than there are registers, as
+        // any it reorders must.
+        BitSet[]? liveOut = null;
+        Dictionary<int, int>? index = null;
         for (int b = 0; b < f.Blocks.Count; b++)
         {
             List<AInstr> instrs = f.Blocks[b].Instrs;
@@ -65,7 +71,11 @@ public static class Schedule
             for (int at = 0; at <= instrs.Count; at++)
             {
                 if (at < instrs.Count && (instrs[at].Effects & Effect.Barrier) == 0) continue;
-                if (at - start >= 3 && at - start <= Longest) Stretch(f, instrs, start, at, liveOut[b], index, lastIn, k);
+                if (at - start >= 3 && at - start <= Longest && Names(f, instrs, start, at) > k)
+                {
+                    if (liveOut is null) liveOut = LiveOut(f, home, Cyclic(f), out index);
+                    Stretch(f, instrs, start, at, liveOut[b], index!, padRead, lastIn, k);
+                }
                 start = at + 1;
             }
         }
@@ -106,30 +116,34 @@ public static class Schedule
         Dictionary<ABlock, int> blockAt = new(ReferenceEqualityComparer.Instance);
         for (int b = 0; b < nb; b++) blockAt[f.Blocks[b]] = b;
         int[][] succ = new int[nb][];
+        List<int>[] pred = new List<int>[nb];
+        for (int b = 0; b < nb; b++) pred[b] = new();
         for (int b = 0; b < nb; b++)
         {
             f.SuccessorsInto(b, into);
-            succ[b] = into.Select(x => blockAt[x]).ToArray();
+            succ[b] = new int[into.Count];
+            for (int e = 0; e < into.Count; e++) { succ[b][e] = blockAt[into[e]]; pred[succ[b][e]].Add(b); }
         }
+        // A worklist, not sweeps: a chain of blocks each jumping to one laid
+        // out before it moves liveness one block a sweep (the allocator's
+        // ComputeLiveness found 1077 sweeps on a 14,000-block Main).
         BitSet next = new(width);
-        for (bool changed = true; changed;)
+        Stack<int> work = new();
+        bool[] queued = new bool[nb];
+        for (int b = 0; b < nb; b++) { work.Push(b); queued[b] = true; }
+        while (work.Count > 0)
         {
-            changed = false;
-            for (int b = nb - 1; b >= 0; b--)
-            {
-                liveOut[b].Clear();
-                foreach (int s2 in succ[b]) liveOut[b].Or(liveIn[s2]);
-                next.Clear();
-                next.Or(liveOut[b]);
-                next.AndNot(def[b]);
-                next.Or(use[b]);
-                if (!next.Equals(liveIn[b]))
-                {
-                    liveIn[b].Clear();
-                    liveIn[b].Or(next);
-                    changed = true;
-                }
-            }
+            int b = work.Pop();
+            queued[b] = false;
+            liveOut[b].Clear();
+            foreach (int s2 in succ[b]) liveOut[b].Or(liveIn[s2]);
+            next.Clear();
+            next.Or(liveOut[b]);
+            next.AndNot(def[b]);
+            next.Or(use[b]);
+            if (next.Equals(liveIn[b])) continue;
+            liveIn[b].CopyFrom(next);
+            foreach (int p2 in pred[b]) if (!queued[p2]) { queued[p2] = true; work.Push(p2); }
         }
         return liveOut;
     }
@@ -191,7 +205,17 @@ public static class Schedule
     }
 
     /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
-    private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, BitSet liveOut, Dictionary<int, int> index, Dictionary<int, int> lastIn, int k)
+    /// <summary>How many of the first class's values the stretch [from, to) names: its peak counts no more.</summary>
+    private static int Names(AFunction f, List<AInstr> instrs, int from, int to)
+    {
+        HashSet<int> named = new();
+        for (int x = from; x < to; x++)
+            foreach (Named r in instrs[x].Regs)
+                if (r.Reg >= f.Registers.FirstVirtual && f.Target.ClassOf(r.Reg) == 0) named.Add(r.Reg);
+        return named.Count;
+    }
+
+    private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, BitSet liveOut, Dictionary<int, int> index, HashSet<int> padRead, Dictionary<int, int> lastIn, int k)
     {
         int n = to - from;
         RegisterFile rf = f.Registers;
@@ -212,7 +236,7 @@ public static class Schedule
             {
                 if (r.Reg < rf.FirstVirtual || t.ClassOf(r.Reg) != 0) continue;
                 if ((r.Role & Role.Use) != 0 && !seen.Contains(r.Reg)) liveIn.Add(r.Reg);
-                if (lastIn[r.Reg] >= to || index.TryGetValue(r.Reg, out int at) && liveOut.Get(at)) outlives.Add(r.Reg);
+                if (lastIn[r.Reg] >= to || index.TryGetValue(r.Reg, out int at) && liveOut.Get(at) || padRead.Contains(r.Reg)) outlives.Add(r.Reg);
             }
             foreach (Named r in named) if (r.Reg >= rf.FirstVirtual) seen.Add(r.Reg);
         }
