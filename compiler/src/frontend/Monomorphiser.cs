@@ -669,8 +669,9 @@ public sealed class Monomorphiser
             // other of the name (Binder.ImportedNow), alone the one meant.
             if (!_libraryCode && _libraryInternal.Contains(import.Namespace + "." + name))
             {
-                asideTwice |= aside is not null;
-                aside = import.Namespace + "." + name;
+                string path = import.Namespace + "." + name;
+                asideTwice |= aside is not null && aside != path;
+                aside = path;
                 continue;
             }
 

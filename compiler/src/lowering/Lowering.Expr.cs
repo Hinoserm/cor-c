@@ -4103,6 +4103,11 @@ public sealed partial class Lowering
             return Eval(a.Value);
         }
 
+        if (a.Value is BinaryExpr { Op: BinOp.Coalesce } coalesce && Binder.ParsedCoalescing(a))
+        {
+            return EmitCoalescingAssign(a, coalesce);
+        }
+
         Type targetType = _b.TypeOf(a.Target);
 
         // `r = ref other;` points the ref local at another variable: its
@@ -4145,7 +4150,7 @@ public sealed partial class Lowering
             {
                 StorePlace(place, value);
             }
-            return Answered(a, value, storedAs);
+            return value;
         }
 
         // Compound: read, combine, write back, through the one place.
@@ -4452,17 +4457,37 @@ public sealed partial class Lowering
         args.Add(R(value));
         HintStruct(setter, _b.TypeOf(index.Target));
         CallMethod(setter, receiver, args, index.Target is BaseExpr);
-        return Answered(a, value, vp.Type);
+        return value;
     }
 
     /// <summary>
-    /// What an assignment is worth, `value` the stored: `x ??= y` over a
-    /// nullable value (Binder.CoalescingValue) answers what the cell holds,
-    /// read without a test -- it was stored with one, and a statement's
-    /// answer, unread, is dropped with the read.
+    /// `x ??= y` AS C# HAS IT (12.22): x read once, and only an empty x has
+    /// y evaluated and stored -- a setter is not called, a field not
+    /// written, where x has a value. Parsed as `x = x ?? y`, which wrote x
+    /// back whatever it held. Worth what x holds after, its underlying value
+    /// where the binder says so (Binder.CoalescingValue).
     /// </summary>
-    private VReg Answered(AssignExpr a, VReg value, Type storedAs)
-        => Binder.CoalescingValue(a, storedAs, _b.TypeOf) ? NullableRead(value, storedAs) : value;
+    private VReg EmitCoalescingAssign(AssignExpr a, BinaryExpr coalesce)
+    {
+        Type held = _b.TypeOf(coalesce.Left);
+        VReg dest = _f.NewReg(IrTypes.Of(held), "qa");
+        Block got = _f.NewBlock("qagot"), miss = _f.NewBlock("qamiss"), end = _f.NewBlock("qaend");
+
+        VReg had = Eval(coalesce.Left);
+        _e.Branch(held.IsNullableValue ? HasValue(had) : had, got, miss);
+
+        _e.SetBlock(got);
+        _e.CopyTo(dest, R(had));
+        _e.Jump(end);
+
+        _e.SetBlock(miss);
+        AssignExpr store = new() { Target = a.Target, Value = coalesce.Right, Line = a.Line, Col = a.Col };
+        _e.CopyTo(dest, R(EmitAssign(store)));
+        _e.Jump(end);
+
+        _e.SetBlock(end);
+        return Binder.CoalescingValue(a, held, _b.TypeOf) ? NullableRead(dest, held) : dest;
+    }
 
     private VReg EmitPropertyAssignment(AssignExpr a, MethodSymbol setter)
     {
@@ -4497,7 +4522,7 @@ public sealed partial class Lowering
             args.Add(R(receiver));
         args.Add(R(value));
         CallMethod(setter, receiver, args, a.Target is MemberExpr { Target: BaseExpr });
-        return Answered(a, value, vp.Type);
+        return value;
     }
 
     // ---- unary ---------------------------------------------------------------------------

@@ -1260,15 +1260,21 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// Whether an assignment is the parser's `x = x ?? y` for `x ??= y` over a
-    /// nullable value, its `y` a plain value: worth x's underlying type. The
+    /// Whether an assignment is the parser's `x = x ?? y` for `x ??= y`. The
     /// two x's are one node as parsed and two once a body is rewritten, at
-    /// one place still; a written `x = x ?? y`, its two at two, is worth x's
-    /// own type, as C# has it.
+    /// one place still; a written `x = x ?? y` has its two at two.
+    /// </summary>
+    internal static bool ParsedCoalescing(AssignExpr a)
+        => a.Op is null && a.Value is BinaryExpr { Op: BinOp.Coalesce } coalesce
+        && coalesce.Left.GetType() == a.Target.GetType() && coalesce.Left.Line == a.Target.Line && coalesce.Left.Col == a.Target.Col;
+
+    /// <summary>
+    /// Whether `x ??= y` over a nullable value, its `y` a plain value, is
+    /// worth x's underlying type (C# 12.22); a written `x = x ?? y` is worth
+    /// x's own type, as C# has it.
     /// </summary>
     internal static bool CoalescingValue(AssignExpr a, Type target, Func<Expr, Type> typeOf)
-        => a.Op is null && a.Value is BinaryExpr { Op: BinOp.Coalesce } coalesce
-        && coalesce.Left.GetType() == a.Target.GetType() && coalesce.Left.Line == a.Target.Line && coalesce.Left.Col == a.Target.Col
+        => ParsedCoalescing(a) && a.Value is BinaryExpr coalesce
         && target.IsNullableValue && typeOf(coalesce.Right) is { IsNullableValue: false, IsError: false } right
         && right.Prim != Prim.NullLiteral && right.Prim != Prim.Any && !right.IsReference;
 
