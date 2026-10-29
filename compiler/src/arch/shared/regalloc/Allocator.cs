@@ -1893,6 +1893,7 @@ public sealed class Allocator
         _landingPads.Clear();
         _addressTaken.Clear();
         if (_branchesAt.Length < _blockCount + 1) _branchesAt = new int[_blockCount + 1];
+        if (_loadsAt.Length < _blockCount + 1) _loadsAt = new int[_blockCount + 1];
         if (_anywhereBefore.Length < _blockCount + 1) _anywhereBefore = new int[_blockCount + 1];
         _anywhereBefore[0] = 0;
         for (int b = 0; b < _blockCount; b++)
@@ -1903,15 +1904,17 @@ public sealed class Allocator
             _anywhereBefore[b + 1] = _anywhereBefore[b] + (block.Instrs.Exists(i => i.JumpsAnywhere) ? 1 : 0);
             // Where a move on the block's way out goes: before the branches
             // that end it, where no branch comes earlier (an earlier one leaves
-            // before the move), it does not fall through with none, and those
-            // branches read no register -- a switch's table jump reads its index,
-            // which a load there could overwrite.
+            // before the move) and it does not fall through with none. A load
+            // also needs those branches to read no register -- a switch's table
+            // jump reads its index, which the load could overwrite; a store
+            // only reads its own.
             int first = _blockFirst[b], at = first + block.Instrs.Count;
             while (at > first && (_lin[at - 1].Targets is not null || _lin[at - 1].Unconditional)) at--;
             bool ends = at < first + block.Instrs.Count;
             for (int k = first; k < at && ends; k++) if (_lin[k].Targets is not null) ends = false;
-            for (int k = at; k < first + block.Instrs.Count && ends; k++) if (_lin[k].Regs.Length > 0) ends = false;
             _branchesAt[b] = ends ? at : -1;
+            for (int k = at; k < first + block.Instrs.Count && ends; k++) if (_lin[k].Regs.Length > 0) ends = false;
+            _loadsAt[b] = ends ? at : -1;
         }
     }
 
@@ -2002,9 +2005,9 @@ public sealed class Allocator
                     if (!loads.Contains(_blockFirst[s])) loads.Add(_blockFirst[s]);
                     continue;
                 }
-                if (OneWayOut(q) && _branchesAt[q] >= 0)
+                if (OneWayOut(q) && _loadsAt[q] >= 0)
                 {
-                    if (!loads.Contains(_branchesAt[q])) loads.Add(_branchesAt[q]);
+                    if (!loads.Contains(_loadsAt[q])) loads.Add(_loadsAt[q]);
                     continue;
                 }
                 return false;
@@ -2079,11 +2082,12 @@ public sealed class Allocator
     /// <summary>The blocks entered by no edge, from anywhere in their try; those a computed jump may enter.</summary>
     private readonly List<int> _landingPads = new(), _addressTaken = new();
     /// <summary>
-    /// By block: where a move on its one way out goes (before the branches
-    /// ending it), or -1; and how many blocks before it hold a computed
-    /// jump.
+    /// By block: where a store on its one way out goes (before the branches
+    /// ending it, where no branch comes earlier), or -1; where a load does
+    /// (there too, where those branches read no register), or -1; and how
+    /// many blocks before it hold a computed jump.
     /// </summary>
-    private int[] _branchesAt = Array.Empty<int>(), _anywhereBefore = Array.Empty<int>();
+    private int[] _branchesAt = Array.Empty<int>(), _loadsAt = Array.Empty<int>(), _anywhereBefore = Array.Empty<int>();
 
     /// <summary>
     /// Where a value kept in its register from its definition `def` up to
@@ -2102,7 +2106,7 @@ public sealed class Allocator
         if (pInside && LiveAt(v, p * 4 - 1)) places.Add(p);
         // A branch in P's block before P leaves the window with no store on
         // its way (a switch's range check ahead of its table).
-        for (int k = pInside ? _blockFirst[pb] : p; k < p; k++)
+        for (int k = pInside ? Math.Max(_blockFirst[pb], def + 1) : p; k < p; k++)
             if (_lin[k].Targets is not null) return false;
         foreach (int lp in _landingPads)
             if (LiveInto(lp, v)) return false;
