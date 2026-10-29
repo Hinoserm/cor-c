@@ -1778,7 +1778,9 @@ public sealed class Allocator
         {
             return false;
         }
-        // Where only a narrower immediate fits, a plain number is fine; a symbol's address is not (ITarget.PlainConstant).
+        // An address remade by an LEA is no immediate; where only a narrower
+        // immediate fits, a plain number is fine, a symbol's address not (ITarget.PlainConstant).
+        if (!_t.Immediate(_remat[vreg]!)) return false;
         return (i.MayImmediateWide >> o.Operand & 1) != 0 || _t.PlainConstant(_remat[vreg]!);
     }
 

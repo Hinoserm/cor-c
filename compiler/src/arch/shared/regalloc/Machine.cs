@@ -87,7 +87,15 @@ public sealed class AInstr
     /// Mossenbock's spill-store elimination for parameters. Null for none.
     /// </summary>
     public int? HomeSlot { get; init; }
-    /// <summary>The constant a whole-width definition moves into operand 0 (a value remade where it is wanted), else null.</summary>
+    /// <summary>
+    /// WHAT A VALUE IS REMADE FROM where it is wanted, instead of a spill and
+    /// its reloads, for a whole-width definition of operand 0 from nothing the
+    /// allocator places: an immediate, or an address off the frame pointer or
+    /// a symbol (Briggs, Cooper and Torczon's never-killed values; Go's and
+    /// LLVM's trivially rematerialisable LEA). Only an immediate is folded
+    /// into an operand (ITarget.Immediate); the target remakes either in a
+    /// register (IPlacement.Before). Null for none.
+    /// </summary>
     public object? Constant { get; init; }
     /// <summary>How many operands it has (the positions the masks below are over).</summary>
     public int OperandCount { get; init; }
@@ -188,6 +196,8 @@ public interface ITarget
     string RegName(int reg);
     /// <summary>Whether a constant (AInstr.Constant) is a plain number, which fits an operand narrower than a whole register.</summary>
     bool PlainConstant(object constant);
+    /// <summary>Whether a constant (AInstr.Constant) may be an instruction's immediate at all (not an address an LEA remakes).</summary>
+    bool Immediate(object constant);
 }
 
 /// <summary>Where the allocator put something an instruction names.</summary>

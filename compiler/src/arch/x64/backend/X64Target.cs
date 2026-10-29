@@ -62,7 +62,8 @@ internal sealed class X64Target : ITarget
     public int NewVRegLike(int like) => _m.FloatRegs.Contains(like) ? _m.NewFloat().Id : _m.NewReg().Id;
     public string RegName(int reg) => new MReg(reg).ToString();
     /// <summary>A constant any operand carries: one that fits 32 bits signed (an instruction's immediate, sign-extended).</summary>
-    public bool PlainConstant(object constant) => ((MImm)constant).FitsInt32;
+    public bool PlainConstant(object constant) => constant is MImm { FitsInt32: true };
+    public bool Immediate(object constant) => constant is MImm;
 
     public string Text(AInstr i) => i.Tag is MInstr m ? $"{m.Op} {string.Join(", ", m.Operands)}"
         : i.Made == Made.Copy ? $"copy v{i.CopyDst}, v{i.CopySrc}" : $"jmp {i.Targets![0].Name}";
@@ -123,6 +124,13 @@ internal sealed class X64Target : ITarget
         // The width is part of the value: a 4-byte move of -1 is 0xFFFFFFFF.
         if (i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg { IsFloat: false } && i.Operands[1] is MImm { IsPlain: true } imm)
             constant = i.Width == 4 ? new MImm((uint)imm.Value) : imm;
+        // An address an LEA makes from nothing the allocator places -- off RBP,
+        // which holds still, or a symbol RIP-relative -- remade where wanted;
+        // not off RSP, which every push moves, nor through the GOT.
+        else if (i.Op == MOp.Lea && i.Width == 8 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsPhys: false, IsFloat: false }
+            && i.Operands[1] is MMem { Index: null, Label: null, IsSpill: false, Got: false, Segment: 0 } m
+            && (m.Base is null ? m.Symbol is not null : m.Base.Id == (int)Gpr.Rbp && m.Symbol is null))
+            constant = m;
         List<ABlock>? targets = null;
         if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel label) targets = new() { blocks[label.Target] };
         else if (i.Op == MOp.JmpTable) targets = i.Table!.Select(t => blocks[t]).ToList();
@@ -219,7 +227,9 @@ internal sealed class X64Target : ITarget
                 MInstr? n = p.Dropped(index) ? null : Build(ai, index, p, blocks);
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
                 {
-                    outList.Add(constant is MImm imm
+                    outList.Add(constant is MMem address
+                        ? new MInstr(MOp.Lea, new MReg(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol }) { Width = 8, Line = ai.Line }
+                        : constant is MImm imm
                         ? new MInstr(MOp.Mov, new MReg(reg), imm) { Width = 8, Line = ai.Line }
                         : new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, new MReg(reg), Slot(slot)) { Width = 8, Line = ai.Line });
                 }

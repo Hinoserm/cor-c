@@ -1,4 +1,5 @@
 #nullable enable
+using Corsac.Lang.Ir;
 using Corsac.Lang.RegAlloc;
 
 namespace Corsac.Lang.X86;
@@ -45,7 +46,17 @@ internal sealed class X86Target : ITarget
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
     public int NewSlot(int vreg) => _m.Frame.Spill();
     public string RegName(int reg) => ((Gpr)reg).ToString();
-    public bool PlainConstant(object constant) => ((MImm)constant).IsPlain;
+    public bool PlainConstant(object constant) => constant is MImm { IsPlain: true };
+    public bool Immediate(object constant) => constant is MImm;
+
+    /// <summary>
+    /// An address an LEA makes from nothing the allocator places -- off EBP,
+    /// which holds still through the function, or a symbol -- remade where it
+    /// is wanted (AInstr.Constant); not off ESP, which every push moves.
+    /// </summary>
+    private static MMem? Address(MInstr i) => i.Op == MOp.Lea && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsPhys: false }
+        && i.Operands[1] is MMem { Index: null } m && (m.Base is null ? m.Symbol is not null && m.Reloc == RelocKind.Abs32 : m.Base.Id == (int)Gpr.Ebp && m.Symbol is null)
+        && m.Label is null && !m.IsSpill ? m : null;
 
     public int NewVRegLike(int like)
     {
@@ -108,7 +119,7 @@ internal sealed class X86Target : ITarget
             IsCopy = copy,
             WholeCopy = copy && i.Width == 4 && !i.Lock,
             DropsSelf = copy,
-            Constant = i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm : null,
+            Constant = i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm : Address(i),
             OperandCount = i.Operands.Count,
             MayMemory = mayMemory,
             MayMemoryWrite = mayMemory,
@@ -205,7 +216,9 @@ internal sealed class X86Target : ITarget
                     _m.Safepoints[n] = map;
                 }
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
-                    outList.Add(new MInstr(MOp.Mov, MReg.Of(reg), constant is MImm imm ? imm : Slot(slot)) { Line = ai.Line });
+                    outList.Add(constant is MMem address
+                        ? new MInstr(MOp.Lea, MReg.Of(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = ai.Line }
+                        : new MInstr(MOp.Mov, MReg.Of(reg), constant is MImm imm ? imm : Slot(slot)) { Line = ai.Line });
                 if (n is not null) outList.Add(n);
                 foreach ((int reg, int slot) in p.After(index))
                     outList.Add(new MInstr(MOp.Mov, Slot(slot), MReg.Of(reg)) { Line = ai.Line });
