@@ -1,0 +1,17 @@
+// test: null-conditional ref argument refused
+// expect-compile-error: CS1510: A ref or out value must be an assignable variable
+// A conditional access is no variable (C# 14): `ref a?.n` is refused.
+
+class A { public int n; }
+
+static class Program
+{
+    static void F(ref int x) { x++; }
+
+    static int Main()
+    {
+        A? a = new();
+        F(ref a?.n);
+        return 0;
+    }
+}

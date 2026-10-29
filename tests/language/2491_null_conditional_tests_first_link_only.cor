@@ -1,0 +1,39 @@
+// test: null_conditional_tests_first_link_only
+// expect-exit: 0
+// expect-output:
+// null NRE 5
+// null NRE 9
+// null NRE 7
+// null NRE 5
+// none
+// 5 1x 5
+//
+// A read past a `?.` further back than itself -- `a?.B.N`, `a?.B.M()`,
+// `a?.B[i]`, `a?.B!.M()` -- tests a alone, as C# does: null where a is
+// null, and the rest read as written where it is not, so a null B throws.
+// A group's chain and a `!` in it prove its receiver as the chain does.
+using System;
+class A { public B? b; }
+class B { public int n = 5; public int[] arr = { 7 }; public int M() => 9; public string? s; }
+static class P
+{
+    static string Try(Func<object?> f) { try { object? v = f(); return v is null ? "null" : v.ToString()!; } catch (NullReferenceException) { return "NRE"; } }
+    static A? Maybe(bool have) => have ? new A() : null;
+    static void Narrow(A? o)
+    {
+        if ((o?.b) != null) Console.Write(o.b.n + " ");
+        if (o?.b!.s is string t) Console.Write(t.Length + t + " ");
+        if ((o?.b) == null) { Console.WriteLine("none"); return; }
+        Console.WriteLine(o.b.n);
+    }
+    static int Main()
+    {
+        A? none = null; A nob = new(); A full = new() { b = new() };
+        Console.WriteLine($"{Try(() => none?.b.n)} {Try(() => nob?.b.n)} {Try(() => full?.b.n)}");
+        Console.WriteLine($"{Try(() => none?.b.M())} {Try(() => nob?.b.M())} {Try(() => full?.b.M())}");
+        Console.WriteLine($"{Try(() => none?.b.arr[0])} {Try(() => nob?.b.arr[0])} {Try(() => full?.b.arr[0])}");
+        Console.WriteLine($"{Try(() => none?.b!.M())} {Try(() => nob?.b!.M())} {Try(() => full?.b!.n)}");
+        Narrow(Maybe(false)); full.b!.s = "x"; Narrow(full);
+        return 0;
+    }
+}

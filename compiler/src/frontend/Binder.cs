@@ -7166,6 +7166,12 @@ public sealed partial class Binder
                             Error(d, "'var' cannot infer a type from null; write the type explicitly");
                             type = Type.Error;
                         }
+                        // A VOID VALUE IS NONE: `var x = c?.E += h;`, a void call's.
+                        else if (type.IsVoid && type.Function is null)
+                        {
+                            Error(d, "CS0815: Cannot assign void to an implicitly-typed variable");
+                            type = Type.Error;
+                        }
                     }
                 }
                 else
@@ -16481,6 +16487,15 @@ public sealed partial class Binder
             // indexed is, and the element otherwise -- the target evaluated
             // once, as the call in a chain is (CheckCall). A value-typed
             // element comes out as its T?, as C# lifts it.
+            // A `?.` further back than this element -- `a?.B[i]` -- tests a
+            // alone (ThroughFirstLink); a `?[` of its own, below.
+            case IndexExpr deeper when !deeper.NullConditional && HasConditionalMember(deeper.Target)
+                                      && ThroughFirstLink(deeper) is Expr firstLink:
+            {
+                _r.Rewrites[deeper] = firstLink;
+                return CheckExpr(firstLink);
+            }
+
             case IndexExpr ix when ix.NullConditional || HasConditionalMember(ix.Target):
             {
                 SubjectExpr forTest = new() { Line = ix.Line, Col = ix.Col };
@@ -19473,9 +19488,12 @@ public sealed partial class Binder
         // and `ref a?.b` are refused, as Roslyn refuses them.
         if (NullConditionalAssignment.Linked(target))
         {
-            Error(target, what is "increment" or "decrement"
-                ? "CS1059: The operand of an increment or decrement operator must be a variable, property or indexer"
-                : "CS0131: The left-hand side of an assignment must be a variable, property or indexer");
+            Error(target, what switch
+            {
+                "increment" or "decrement" => "CS1059: The operand of an increment or decrement operator must be a variable, property or indexer",
+                "take the address of" => "CS0211: Cannot take the address of the given expression",
+                _ => "CS0131: The left-hand side of an assignment must be a variable, property or indexer",
+            });
             return;
         }
         NoteWritten(target);
@@ -19518,6 +19536,12 @@ public sealed partial class Binder
     /// </summary>
     private void RequireReferenceVariable(Expr target)
     {
+        // `ref a?.n`, `out a?[i]`: a conditional access is no variable (C# 14).
+        if (NullConditionalAssignment.Linked(target))
+        {
+            Error(target, "CS1510: A ref or out value must be an assignable variable");
+            return;
+        }
         NoteWritten(target);
         bool ok = target switch
         {
@@ -19876,6 +19900,9 @@ public sealed partial class Binder
             MemberExpr m => ConditionalRoot(m.Target),
             CallExpr c => ConditionalRoot(c.Target),
             IndexExpr i => ConditionalRoot(i.Target),
+            // A `!` ends nothing, and a group's chain proves what it does.
+            SuppressExpr s => ConditionalRoot(s.Operand),
+            PatternExpr { Test: SubjectExpr { Outer: 0 } } => ConditionalRoot(Ungrouped(e)),
             _ => null,
         };
 
@@ -19896,6 +19923,7 @@ public sealed partial class Binder
                 {
                     return false;
                 }
+                side = Ungrouped(side);
 
                 // AN ASSIGNMENT TESTED PROVES WHAT IT WROTE. `while ((r =
                 // Next()) != null) r.Kind` is the loop C# writes to drain
@@ -21175,6 +21203,12 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckMember(MemberExpr m)
     {
+        // A `?.` further back than this member (ThroughFirstLink).
+        if (!m.NullConditional && HasConditionalMember(m.Target) && ThroughFirstLink(m) is Expr firstLink)
+        {
+            _r.Rewrites[m] = firstLink;
+            return CheckExpr(firstLink);
+        }
         if (m.Target is not NameExpr ambiguous || ambiguous.TypeArgs.Count > 0
             || !FindType(ambiguous.Name, out TypeSymbol? alsoAType) || alsoAType is null
             || !HasStaticMember(alsoAType, m.Name))
@@ -22896,6 +22930,14 @@ public sealed partial class Binder
         // had this behaviour; invocation did not, so `x?.Items.FirstOrDefault()`
         // still tried to pass a nullable receiver to the extension method.
         // Lower it into the evaluate-once PatternExpr used by complex patterns.
+        // A `?.` FURTHER BACK THAN THE CALL'S OWN RECEIVER -- `a?.B.M()` --
+        // tests a alone (ThroughFirstLink); the one on it, below.
+        if (c.Target is MemberExpr { NullConditional: false } deeperTarget && HasConditionalMember(deeperTarget.Target)
+            && ThroughFirstLink(c) is Expr firstLink)
+        {
+            _r.Rewrites[c] = firstLink;
+            return CheckExpr(firstLink);
+        }
         if (c.Target is MemberExpr conditionalTarget
             && (conditionalTarget.NullConditional || HasConditionalMember(conditionalTarget.Target)))
         {
@@ -25698,6 +25740,32 @@ public sealed partial class Binder
     /// </summary>
     private static Expr Ungrouped(Expr e)
         => e is PatternExpr { Test: SubjectExpr { Outer: 0 }, Subject: { } held } ? Ungrouped(held) : e;
+
+    /// <summary>
+    /// A READ PAST A `?.` FURTHER BACK THAN ITSELF -- `a?.B.C`, `a?.B.M()`,
+    /// `a?.B[i]`, `a?.B!.C` -- as C# has it: a tested once, null where it is
+    /// null, and the rest read as written where it is not: a null B there
+    /// throws. The receiver of the FIRST link held (`a` -> `$s`), the chain
+    /// after it read through `$s!` (NullConditionalAssignment.Unlinked).
+    /// Tested as the prefix `a?.B` instead, a null B answered null where C#
+    /// throws. Null when the expression has no `?.` along it.
+    /// </summary>
+    private static Expr? ThroughFirstLink(Expr read)
+    {
+        if (NullConditionalAssignment.Unlinked(read, link => new SuppressExpr
+            {
+                Operand = new SubjectExpr { Line = link.Line, Col = link.Col }, OpensCell = true, Line = link.Line, Col = link.Col,
+            }) is not (Expr receiver, Expr rest))
+            return null;
+        LiteralExpr Null() => new() { Kind = Lit.Null, Text = "null", Line = read.Line, Col = read.Col };
+        ConditionalExpr choose = new()
+        {
+            Cond = new BinaryExpr { Op = BinOp.Eq, Left = new SubjectExpr { Line = read.Line, Col = read.Col }, Right = Null(), Line = read.Line, Col = read.Col },
+            Then = Null(), Else = rest,
+            Line = read.Line, Col = read.Col,
+        };
+        return new PatternExpr { Subject = receiver, Test = choose, Line = read.Line, Col = read.Col };
+    }
 
     /// <summary>
     /// C#'s IMPLICIT CONSTANT EXPRESSION CONVERSION, applied to the two sides
