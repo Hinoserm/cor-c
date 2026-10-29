@@ -146,8 +146,11 @@ public sealed partial class Binder
     {
         Type bare = type;
         while (bare.IsArray && bare.Element is Type of) bare = of;
-        bool reference = spelt.Nullable && (spelt.ArrayRank > 0 || spelt.PointerDepth == 0 && type.IsReference);
-        bool element = spelt.ElementNullable && bare.IsReference;
+        // `object?` too, which is no class symbol (ReferenceMarked): kept, a
+        // List<(int, object?)> looked up List$ValueTuple_int_object?!, a copy
+        // the Monomorphiser never makes, and its members were the template's.
+        bool reference = spelt.Nullable && (spelt.ArrayRank > 0 || spelt.PointerDepth == 0 && ReferenceMarked(type));
+        bool element = spelt.ElementNullable && ReferenceMarked(bare);
         List<TypeRef> args = spelt.Args;
         if (spelt.Name == TypeRef.Tuple && bare.Symbol is TypeSymbol tuple)
         {
@@ -184,7 +187,7 @@ public sealed partial class Binder
     {
         // `object?` too, which is no class symbol: a Func<object?, string?,
         // int> matched no Invoke, and its string? argument lost its `?`.
-        if (a.Nullable != b.Nullable && !(Marked(a) && Marked(b))) return false;
+        if (a.Nullable != b.Nullable && !(ReferenceMarked(a) && ReferenceMarked(b))) return false;
         if (a.Prim != b.Prim || !ReferenceEquals(a.Symbol, b.Symbol) || a.ArrayRank != b.ArrayRank
             || a.PointerDepth != b.PointerDepth || a.ParamName != b.ParamName) return false;
         if ((a.Element is null) != (b.Element is null)) return false;
@@ -193,9 +196,10 @@ public sealed partial class Binder
         for (int i = 0; i < a.Args.Count; i++)
             if (!SameButReferenceMarks(a.Args[i], b.Args[i])) return false;
         return true;
-
-        static bool Marked(Type t) => t.IsReference || t.Prim == Prim.Any && t.Symbol is null && !t.IsNullableValue;
     }
+
+    /// <summary>Whether a `?` on this type is a reference's mark, not Nullable&lt;T&gt;: a class, an array, or `object`.</summary>
+    private static bool ReferenceMarked(Type t) => t.IsReference || t.Prim == Prim.Any && t.Symbol is null && !t.IsNullableValue;
 
     /// <summary>
     /// WHETHER A USE SAYS MORE THAN ITS SPECIALISATION: tuple element names,

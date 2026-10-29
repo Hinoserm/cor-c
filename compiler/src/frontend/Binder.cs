@@ -1133,6 +1133,14 @@ public sealed partial class Binder
             {
                 continue;
             }
+            // NOR THE CLASS LIBRARY'S INTERNAL TYPES, from a program's code:
+            // C# shows another assembly none of them, and System.Threading's
+            // `Named` made Corsac.Lang.RegAlloc's ambiguous, so no type at all.
+            if (found?.Decl is { } decl && (decl.Outer is null || decl.Outer == decl.Namespace)
+                && (decl.Mods & Mods.Public) == 0 && ClassLibrarySide(decl) && BindingProgramCode())
+            {
+                continue;
+            }
 
             if (sym != null && !ReferenceEquals(sym, found))
             {
@@ -1242,6 +1250,29 @@ public sealed partial class Binder
         }
         return false;
     }
+
+    /// <summary>
+    /// Whether an assignment is the parser's `x = x ?? y` for `x ??= y` over a
+    /// nullable value, its `y` a plain value: worth x's underlying type. The
+    /// two x's are one node as parsed and two once a body is rewritten, at
+    /// one place still; a written `x = x ?? y`, its two at two, is worth x's
+    /// own type, as C# has it.
+    /// </summary>
+    internal static bool CoalescingValue(AssignExpr a, Type target, Func<Expr, Type> typeOf)
+        => a.Op is null && a.Value is BinaryExpr { Op: BinOp.Coalesce } coalesce
+        && coalesce.Left.GetType() == a.Target.GetType() && coalesce.Left.Line == a.Target.Line && coalesce.Left.Col == a.Target.Col
+        && target.IsNullableValue && typeOf(coalesce.Right) is { IsNullableValue: false, IsError: false } right
+        && right.Prim != Prim.NullLiteral && right.Prim != Prim.Any && !right.IsReference;
+
+    /// <summary>
+    /// A collection expression for a type no collection is: a `char`, a
+    /// number, a string, `object`. No overload taking one is a candidate --
+    /// `text.Split([' ', ','], options)` is Split(char[], …), never
+    /// Split(char, …) refused for its argument.
+    /// </summary>
+    private static bool CollectionIntoNothing(Expr written, Type want)
+        => written is NewExpr { Collection: true, Type.Name.Length: 0 } && !want.IsArray && !want.IsPointer
+        && want.Symbol is null && want.ParamName is null && !want.IsError;
 
     /// <summary>Whether namespace `outer` is `inner` or one it is written inside.</summary>
     private static bool Encloses(string outer, string inner)
@@ -12445,7 +12476,9 @@ public sealed partial class Binder
             // AN EXISTING PLACE IS WRITTEN THROUGH A HIDDEN NAME and copied
             // into afterwards: `out` declares, and a deconstructing assignment
             // does not.
-            string name = one.Name == "_" ? $"$discard${taken.Count}" : one.Name;
+            // A discard by where it is written: two in one list (`(int r, _, _)`)
+            // were one name declared twice.
+            string name = one.Name == "_" ? $"$discard${one.Line}${one.Col}" : one.Name;
 
             call.Args.Add(new RefArgExpr
             {
@@ -17309,8 +17342,10 @@ public sealed partial class Binder
                 // `default`, `!` or not, is the element's zero only once the
                 // element is known -- `items[i] = default` of a struct was
                 // typed as nothing, lowered as a null word, and its store
-                // copied the struct's bytes from address 0. Anything else is
-                // checked in the order the language reads it.
+                // copied the struct's bytes from address 0. And a tuple whose
+                // element has no type of its own -- `places[k] = (r, 0, null)`
+                // -- takes it from the element it is stored in. Anything else
+                // is checked in the order the language reads it.
                 //
                 // Checked here ONCE: `target` below reuses this result rather
                 // than checking the same target expression again, which would
@@ -17318,7 +17353,7 @@ public sealed partial class Binder
                 // reports (a typoed member name would then be reported twice).
                 bool targetPrechecked = assignmentWanted is null && a.Target is not NameExpr
                     && (a.Value is SuppressExpr { Operand: var sureValue } ? sureValue : a.Value)
-                        is LambdaExpr or NewExpr or ConditionalExpr or SwitchExpr or DefaultExpr { Type.Name.Length: 0 };
+                        is LambdaExpr or NewExpr or ConditionalExpr or SwitchExpr or DefaultExpr { Type.Name.Length: 0 } or TupleExpr;
                 if (targetPrechecked)
                 {
                     assignmentWanted = CheckExpr(a.Target);
@@ -17663,6 +17698,13 @@ public sealed partial class Binder
                     && !value.Nullable && value.Prim != Prim.NullLiteral && !value.IsError)
                 {
                     return target.AsNonNullable();
+                }
+                // AND `x ??= y` OVER A NULLABLE VALUE is worth what `x ?? y`
+                // is (C# 12.22): `bool? _c; bool C => _c ??= Probe();` is a
+                // bool, the cell stored and the value answered (EmitAssign).
+                if (CoalescingValue(a, target, _r.TypeOf))
+                {
+                    return target.Underlying;
                 }
 
                 return target;
@@ -23478,6 +23520,7 @@ public sealed partial class Binder
             // A DYNAMIC ARGUMENT converts to anything (C# 10.2.10), at run time.
             if (had.Dynamic && !want.IsPointer) return true;
             if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
+            if (CollectionIntoNothing(written, want)) return false;
             // `null!` IS STILL THE NULL LITERAL to what it can be passed as:
             // the `!` silences the warning, not the conversion, so
             // `"abc".IndexOf(null!, 0, 0)` is IndexOf(string, int, int) and
@@ -24185,6 +24228,7 @@ public sealed partial class Binder
                 if (i < c.Args.Count && Deferred(c.Args[i]) && byArity.Count > 1 && !this.Fits(args[i], want, c.Args[i])) return false;
 
                 if (c.Args[i] is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (c.Args[i] is NewExpr { Collection: true } && want.IsArray))) continue;
+                if (CollectionIntoNothing(c.Args[i], want)) return false;
 
                 // A BY-REFERENCE ARGUMENT FITS ONLY ITS OWN TYPE. C# counts an
                 // overload applicable only when every ref and out argument's

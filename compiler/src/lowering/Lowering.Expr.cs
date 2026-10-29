@@ -4145,6 +4145,13 @@ public sealed partial class Lowering
             {
                 StorePlace(place, value);
             }
+            // `x ??= y` over a nullable value answers the value, not the cell
+            // (Binder.CoalescingValue): the cell stored, never empty here, and
+            // what it holds handed on.
+            if (Binder.CoalescingValue(a, storedAs, _b.TypeOf))
+            {
+                return Convert(a, value, storedAs, storedAs.Underlying);
+            }
             return value;
         }
 

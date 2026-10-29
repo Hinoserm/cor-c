@@ -11095,11 +11095,12 @@ public sealed class Parser
             // what it costs is that the block outlives the call and is collected
             // instead of being popped. This machine's stack is not something a
             // program may hand out pieces of.
-            case Tok.Ident when at.Text == "stackalloc" && _t[_i + 1].Kind is Tok.Ident or Tok.LBracket:
+            case Tok.Ident when at.Text == "stackalloc" && _t[_i + 1].Kind is Tok.Ident or Tok.LBracket or Tok.LParen:
             {
                 _i++;
                 // The array creation `new` reads, after this keyword instead:
-                // `stackalloc T[n]`, `stackalloc T[] { ... }`, `stackalloc[] { ... }`.
+                // `stackalloc T[n]`, `stackalloc T[] { ... }`, `stackalloc[] { ... }`,
+                // `stackalloc (int, Role)[n]` of tuples.
                 if (ParseNew(at) is not NewExpr made || made.ArraySize is null && made.Elements is null)
                     throw Error("an array after 'stackalloc'");
                 // A pointer or an array as what it is made for says

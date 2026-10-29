@@ -121,6 +121,15 @@ public sealed class Monomorphiser
         if (dot > 0) _pathParts.Add((path[..dot], path[(dot + 1)..]));
     }
 
+    /// <summary>
+    /// The class library's top-level types not declared public, by path: what
+    /// C# never shows another assembly, so a program's using directives bring
+    /// in none of them (Named). System.Threading's internal `Named`, beside
+    /// Corsac.Lang.RegAlloc's under the implicit `using System.Threading`,
+    /// made the program's name ambiguous, and so no type at all.
+    /// </summary>
+    private readonly HashSet<string> _libraryInternal = new(StringComparer.Ordinal);
+
     /// <summary>Whether `scope + "." + name` is a type path, without making that string for a simple name.</summary>
     private bool HasPath(string scope, string name)
         => name.IndexOf('.') < 0 && scope.Length > 0 ? _pathParts.Contains((scope, name)) : _paths.Contains(scope + "." + name);
@@ -256,6 +265,12 @@ public sealed class Monomorphiser
 
         made.WritableTypeParams.Clear();
         made.Name = name;
+        // ITS OWN FILE'S USING DIRECTIVES, as RewriteDecl gives each member:
+        // a copy with none was read in its type's first file, and a generic
+        // method in another part of a partial class -- Lowering's OnOwnState,
+        // its file's `using Corsac.Lang.X86` -- could not name what it calls.
+        made.Scope = template.Scope;
+        made.Namespace = template.Namespace;
         // ONE LIST FOR EVERY ROUND'S COPY OF IT, empty or not: the binder adds
         // what the copy's own calls need (Binder.NoteCopyNeeds).
         made.CopyNeeds = m._needs;
@@ -645,7 +660,8 @@ public sealed class Monomorphiser
 
         foreach ((string In, string Namespace) import in _usings.Imports)
         {
-            if (import.In != at || !HasPath(import.Namespace, name))
+            if (import.In != at || !HasPath(import.Namespace, name)
+                || !_libraryCode && _libraryInternal.Contains(import.Namespace + "." + name))
             {
                 continue;
             }
@@ -771,6 +787,8 @@ public sealed class Monomorphiser
             string path = t.Outer is null ? t.Name : Interned.Name(t.Outer + "." + t.Name);
 
             AddPath(path);
+            if ((t.Outer is null || t.Outer == t.Namespace) && (t.Mods & Mods.Public) == 0 && Binder.ClassLibrarySide(t))
+                _libraryInternal.Add(path);
 
             if (t.Outer is not null)
             {
