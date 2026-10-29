@@ -15,10 +15,12 @@ public sealed class ConditionalExpr : Expr
     public required Expr Else { get; set; }
 
     /// <summary>
-    /// A null-conditional assignment's test (Binder, NullConditionalAssignment):
-    /// its assignment may be void -- `c?.E += h`, an event's add, a declared
-    /// compound operator's -- and then the whole is void, done only where the
-    /// receiver is not null, as `() => c?.E += h` for an Action is in C#.
+    /// A null-conditional's test, the binder's (`x?.M()`, `a?.B.C`,
+    /// `x?[i]`, `c?.E += h`): its null arm is `null`, and its other may be
+    /// void -- a void method's call, an event's add -- and then the whole is
+    /// void, done only where the receiver is not null, as C# types
+    /// `a?.M()` for a void M. A nullable value's empty cell the null arm
+    /// makes is a zeroed slot of the frame (Lowering's ConditionalExpr).
     /// </summary>
     public bool Effect { get; init; }
 }

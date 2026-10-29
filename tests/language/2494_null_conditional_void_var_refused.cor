@@ -1,0 +1,16 @@
+// test: var of a void null-conditional call refused
+// expect-compile-error: CS0815: Cannot assign void to an implicitly-typed variable
+// `a?.B.V()` for a void V is void, as C# types it: no variable can hold it.
+
+class A { public B b = new(); }
+class B { public void V() { } }
+
+static class Program
+{
+    static int Main()
+    {
+        A? a = new();
+        var x = a?.b.V();
+        return 0;
+    }
+}

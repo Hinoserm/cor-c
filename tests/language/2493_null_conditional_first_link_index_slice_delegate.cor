@@ -1,0 +1,30 @@
+// test: null_conditional_first_link_index_slice_delegate
+// expect-exit: 0
+// expect-output:
+// null NRE 9
+// null NRE 8,9
+// null NRE 4
+// False True
+//
+// A `?.` further back than an element, a from-end element, a slice or a
+// delegate's call tests that link's receiver alone, as C# does: `a?.B.Arr[^1]`,
+// `a?.B.Arr[1..]` and `a?.B.Hs[0]()` are null where a is null and throw where
+// B is; a void call past a `?.` is done for its effect.
+using System;
+class A { public B? b; }
+class B { public int[] arr = { 7, 8, 9 }; public Func<int>[] Hs = { () => 4 }; public void V() { } public int? Flag = 3; }
+static class P
+{
+    static string Try(Func<object?> f) { try { object? v = f(); return v is null ? "null" : v is int[] r ? string.Join(",", r) : v.ToString()!; } catch (NullReferenceException) { return "NRE"; } }
+    static int Main()
+    {
+        A? none = null; A nob = new(); A full = new() { b = new() };
+        Console.WriteLine($"{Try(() => none?.b.arr[^1])} {Try(() => nob?.b.arr[^1])} {Try(() => full?.b.arr[^1])}");
+        Console.WriteLine($"{Try(() => none?.b.arr[1..])} {Try(() => nob?.b.arr[1..])} {Try(() => full?.b.arr[1..])}");
+        Console.WriteLine($"{Try(() => none?.b.Hs[0]())} {Try(() => nob?.b.Hs[0]())} {Try(() => full?.b.Hs[0]())}");
+        none?.b.V(); full?.b.V();
+        bool f1 = none?.b.Flag == 3, f2 = full?.b.Flag == 3;
+        Console.WriteLine($"{f1} {f2}");
+        return 0;
+    }
+}

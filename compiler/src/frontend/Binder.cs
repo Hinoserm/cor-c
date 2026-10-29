@@ -16298,6 +16298,17 @@ public sealed partial class Binder
                 ProveNotNullArguments(c);
                 return called;
 
+            // A `?.` FURTHER BACK THAN THIS ELEMENT -- `a?.B[i]`, `a?.B[^1]`,
+            // `a?.Arr[1..]` -- tests a alone (ThroughFirstLink), ahead of
+            // every other reading of an element: the rest is then an ordinary
+            // index, from-end index or slice of `$s!.B`, and a null B throws.
+            case IndexExpr deeper when !deeper.NullConditional && HasConditionalMember(deeper.Target)
+                                      && ThroughFirstLink(deeper) is Expr firstLink:
+            {
+                _r.Rewrites[deeper] = firstLink;
+                return CheckExpr(firstLink);
+            }
+
             // A SLICE OF A STRING: `s[1..4]`, `s[2..]`, `s[..3]`.
             //
             // C# calls it a range and gives string an indexer that takes one;
@@ -16483,19 +16494,10 @@ public sealed partial class Binder
                 return CheckExpr(cut);
             }
 
-            // AN INDEX IN A `?.` CHAIN, or written `a?[i]`: null when what is
-            // indexed is, and the element otherwise -- the target evaluated
-            // once, as the call in a chain is (CheckCall). A value-typed
-            // element comes out as its T?, as C# lifts it.
-            // A `?.` further back than this element -- `a?.B[i]` -- tests a
-            // alone (ThroughFirstLink); a `?[` of its own, below.
-            case IndexExpr deeper when !deeper.NullConditional && HasConditionalMember(deeper.Target)
-                                      && ThroughFirstLink(deeper) is Expr firstLink:
-            {
-                _r.Rewrites[deeper] = firstLink;
-                return CheckExpr(firstLink);
-            }
-
+            // AN INDEX WRITTEN `a?[i]`: null when what is indexed is, and the
+            // element otherwise -- the target evaluated once, as the call in a
+            // chain is (CheckCall). A value-typed element comes out as its T?,
+            // as C# lifts it. (A `?.` further back is ThroughFirstLink's, above.)
             case IndexExpr ix when ix.NullConditional || HasConditionalMember(ix.Target):
             {
                 SubjectExpr forTest = new() { Line = ix.Line, Col = ix.Col };
@@ -16514,7 +16516,7 @@ public sealed partial class Binder
                         Line = ix.Line, Col = ix.Col,
                     },
                     Then = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = ix.Line, Col = ix.Col },
-                    Else = safe, Line = ix.Line, Col = ix.Col,
+                    Else = safe, Effect = true, Line = ix.Line, Col = ix.Col,
                 };
                 PatternExpr once = new() { Subject = ix.Target, Test = choose, Line = ix.Line, Col = ix.Col };
 
@@ -22925,19 +22927,22 @@ public sealed partial class Binder
             return cloned;
         }
 
-        // A NULL-CONDITIONAL CALL evaluates its receiver once, calls only when
-        // that value exists, and otherwise produces null. Member access already
-        // had this behaviour; invocation did not, so `x?.Items.FirstOrDefault()`
-        // still tried to pass a nullable receiver to the extension method.
-        // Lower it into the evaluate-once PatternExpr used by complex patterns.
-        // A `?.` FURTHER BACK THAN THE CALL'S OWN RECEIVER -- `a?.B.M()` --
-        // tests a alone (ThroughFirstLink); the one on it, below.
-        if (c.Target is MemberExpr { NullConditional: false } deeperTarget && HasConditionalMember(deeperTarget.Target)
+        // A `?.` FURTHER BACK THAN THE CALL'S OWN RECEIVER -- `a?.B.M()`, and
+        // a delegate reached through one, `a?.B.Hs[0]()`, `a?[0]()` -- tests
+        // a alone (ThroughFirstLink); a `?.` on the called member, below.
+        if (c.Target is not MemberExpr { NullConditional: true } && HasConditionalMember(c.Target)
             && ThroughFirstLink(c) is Expr firstLink)
         {
             _r.Rewrites[c] = firstLink;
             return CheckExpr(firstLink);
         }
+
+        // A NULL-CONDITIONAL CALL evaluates its receiver once, calls only when
+        // that value exists, and otherwise produces null. Member access already
+        // had this behaviour; invocation did not, so `x?.Items.FirstOrDefault()`
+        // still tried to pass a nullable receiver to the extension method.
+        // Lower it into the evaluate-once PatternExpr used by complex patterns.
+        // A void method's call is void, done for its effect (ConditionalExpr.Effect).
         if (c.Target is MemberExpr conditionalTarget
             && (conditionalTarget.NullConditional || HasConditionalMember(conditionalTarget.Target)))
         {
@@ -22982,6 +22987,7 @@ public sealed partial class Binder
                 },
                 Then = new LiteralExpr { Kind = Lit.Null, Text = "null", Line = c.Line, Col = c.Col },
                 Else = safeCall,
+                Effect = true,
                 Line = c.Line,
                 Col = c.Col,
             };
@@ -25761,7 +25767,7 @@ public sealed partial class Binder
         ConditionalExpr choose = new()
         {
             Cond = new BinaryExpr { Op = BinOp.Eq, Left = new SubjectExpr { Line = read.Line, Col = read.Col }, Right = Null(), Line = read.Line, Col = read.Col },
-            Then = Null(), Else = rest,
+            Then = Null(), Else = rest, Effect = true,
             Line = read.Line, Col = read.Col,
         };
         return new PatternExpr { Subject = receiver, Test = choose, Line = read.Line, Col = read.Col };

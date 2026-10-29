@@ -1051,7 +1051,13 @@ public sealed partial class Lowering
                 Block end = _f.NewBlock("qend");
                 BranchOn(c.Cond, then, els);
                 _e.SetBlock(then);
-                SetArmResult(dest, made, c.Then, result);
+                // A NULL-CONDITIONAL'S EMPTY CELL (ConditionalExpr.Effect), as
+                // EmitConditionalMember's: a zeroed slot of the frame, not a
+                // block of the heap, where no suspension ends the frame.
+                if (c.Effect && made is null && result.IsNullableValue && _stateMachine is null && c.Then is LiteralExpr { Kind: Lit.Null })
+                    _e.CopyTo(dest, R(EmptyCellInFrame(result)));
+                else
+                    SetArmResult(dest, made, c.Then, result);
                 _e.Jump(end);
                 _e.SetBlock(els);
                 SetArmResult(dest, made, c.Else, result);
@@ -1701,6 +1707,17 @@ public sealed partial class Lowering
     // a value where the checker had made it a nullable.
     private static bool InConditionalChain(Expr e) => NullConditionalAssignment.Linked(e);
 
+    /// <summary>An empty Nullable of this type, a zeroed slot of the frame: read, never written through, and nothing the heap holds.</summary>
+    private VReg EmptyCellInFrame(Type result)
+    {
+        TypeSymbol shape = StructOf(result);
+        int size = Math.Max(4, shape.InstanceSize);
+        FrameSlot slot = _f.NewSlot((size + 7) & ~7, Math.Min(_t.Align64, Math.Max(4, shape.InlineAlign)), "noval");
+        VReg cell = RegOf(new SlotOperand(slot));
+        _e.Emit(Opcode.MemSet, null, R(cell), new ImmOperand(0, IrType.I32), new ImmOperand(size, IrTypes.Word));
+        return cell;
+    }
+
     private VReg EmitConditionalMember(MemberExpr m)
     {
         Type result = _b.TypeOf(m);
@@ -1718,12 +1735,7 @@ public sealed partial class Lowering
         // iterator's or async body, whose frame a suspension ends, the heap.
         if (result.IsNullableValue && _stateMachine is null)
         {
-            TypeSymbol shape = StructOf(result);
-            int size = Math.Max(4, shape.InstanceSize);
-            FrameSlot slot = _f.NewSlot((size + 7) & ~7, Math.Min(_t.Align64, Math.Max(4, shape.InlineAlign)), "noval");
-            VReg cell = RegOf(new SlotOperand(slot));
-            _e.Emit(Opcode.MemSet, null, R(cell), new ImmOperand(0, IrType.I32), new ImmOperand(size, IrTypes.Word));
-            _e.CopyTo(dest, R(cell));
+            _e.CopyTo(dest, R(EmptyCellInFrame(result)));
         }
         else
         {
