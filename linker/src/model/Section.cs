@@ -26,6 +26,15 @@ public sealed class Section
     /// </summary>
     public (string Path, long Offset, int Length)? FileBacked { get; set; }
 
+    /// <summary>
+    /// The IR archive's directory read from this section, once (IrArchive.Read):
+    /// held by the section itself, so it goes when the section does. Not a
+    /// table beside it -- the class library's ConditionalWeakTable holds its
+    /// keys strongly, and every archive a link read stayed for the process.
+    /// An object here so that the model knows nothing of the link's types.
+    /// </summary>
+    internal object? ArchiveRead;
+
     public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : FileBacked?.Length ?? HandedOver ?? Bytes.Count;
 
     /// <summary>

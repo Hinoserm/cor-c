@@ -18,6 +18,8 @@ public sealed class SmallSortedSet<T> : IReadOnlyCollection<T>
     private readonly IComparer<T> _order;
     private T[]? _items;
     private int _count;
+    // Changed under a walk, the walk throws, as a SortedSet's does.
+    private int _version;
 
     public SmallSortedSet(IComparer<T>? order = null) => _order = order ?? Comparer<T>.Default;
 
@@ -38,6 +40,7 @@ public sealed class SmallSortedSet<T> : IReadOnlyCollection<T>
         if (at < _count) Array.Copy(_items, at, _items, at + 1, _count - at);
         _items[at] = value;
         _count++;
+        _version++;
         return true;
     }
 
@@ -48,6 +51,7 @@ public sealed class SmallSortedSet<T> : IReadOnlyCollection<T>
         _count--;
         if (at < _count) Array.Copy(_items!, at + 1, _items!, at, _count - at);
         _items![_count] = default!;
+        _version++;
         return true;
     }
 
@@ -55,6 +59,7 @@ public sealed class SmallSortedSet<T> : IReadOnlyCollection<T>
     {
         _items = null;
         _count = 0;
+        _version++;
     }
 
     public void UnionWith(IEnumerable<T> other)
@@ -70,6 +75,7 @@ public sealed class SmallSortedSet<T> : IReadOnlyCollection<T>
         foreach (T value in other) if (Contains(value)) keep.Add(value);
         _items = keep._items;
         _count = keep._count;
+        _version++;
     }
 
     public bool SetEquals(IEnumerable<T> other)
@@ -100,13 +106,18 @@ public sealed class SmallSortedSet<T> : IReadOnlyCollection<T>
     public struct Enumerator : IEnumerator<T>
     {
         private readonly SmallSortedSet<T> _set;
+        private readonly int _version;
         private int _at;
 
-        internal Enumerator(SmallSortedSet<T> set) { _set = set; _at = -1; }
+        internal Enumerator(SmallSortedSet<T> set) { _set = set; _version = set._version; _at = -1; }
 
         public readonly T Current => _set._items![_at];
         readonly object? IEnumerator.Current => Current;
-        public bool MoveNext() => ++_at < _set._count;
+        public bool MoveNext()
+        {
+            if (_version != _set._version) throw new InvalidOperationException("the set was changed while it was walked");
+            return ++_at < _set._count;
+        }
         public void Reset() => _at = -1;
         public readonly void Dispose() { }
     }

@@ -1,5 +1,4 @@
 using System.Buffers.Binary;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using Corsac.Lang.Elf;
@@ -113,17 +112,43 @@ public sealed class IrArchive
     /// preinit machine, the module linker and the backends each read every
     /// unit's archive, and each read made the whole directory again -- two
     /// copies of the compiler's 880 thousand records held through its link,
-    /// some 200 MB. Kept as long as the section is, so a section replaced
-    /// (a unit made again) or removed is read anew or let go.
+    /// some 200 MB. Held by the section (Section.ArchiveRead), so a section
+    /// replaced (a unit made again) or removed is read anew or let go;
+    /// published once, the first reader's, where two threads read at once.
+    /// THE NATIVE CODE IS CHECKED AGAIN for an object the directory was not
+    /// checked against, or one whose sections or symbols changed since: what
+    /// each read used to check (NativeHash), without the whole directory.
     /// </summary>
-    private static readonly ConditionalWeakTable<Section, IrArchive> ReadOf = new();
-
     public static IrArchive? Read(ObjectFile obj)
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
         if (sections.Length != 1 || sections[0].Size > MaximumBytes) throw new ElfFormatException("Invalid IR archive count/size");
-        return ReadOf.GetValue(sections[0], section => ReadSection(obj, section));
+        Section section = sections[0];
+        if (section.ArchiveRead is IrArchive held)
+        {
+            held.CheckedAgainst(obj);
+            return held;
+        }
+        IrArchive made = ReadSection(obj, section);
+        return Interlocked.CompareExchange(ref section.ArchiveRead, made, null) as IrArchive ?? made;
+    }
+
+    // What the directory's native hash was last checked against: the object,
+    // and its sections' and symbols' counts then.
+    private ObjectFile? _checkedObject;
+    private int _checkedSections, _checkedSymbols;
+    private byte[]? _native;
+
+    private void CheckedAgainst(ObjectFile obj)
+    {
+        lock (this)
+        {
+            if (ReferenceEquals(obj, _checkedObject) && obj.Sections.Count == _checkedSections && obj.Symbols.Count == _checkedSymbols) return;
+            if (!obj.NativeOmitted && _native is not null && !NativeHash(obj).SequenceEqual(_native))
+                throw new ElfFormatException("IR archive header/native integrity mismatch");
+            (_checkedObject, _checkedSections, _checkedSymbols) = (obj, obj.Sections.Count, obj.Symbols.Count);
+        }
     }
 
     private static IrArchive ReadSection(ObjectFile obj, Section section)
@@ -199,7 +224,9 @@ public sealed class IrArchive
                 next += length;
             }
             if (stream.Position != bodyStart || next != bytesCount) throw new ElfFormatException("Unclaimed IR directory/payload bytes");
-            return new(readAt, size, entries);
+            IrArchive read = new(readAt, size, entries) { _native = native };
+            read._checkedObject = obj; read._checkedSections = obj.Sections.Count; read._checkedSymbols = obj.Symbols.Count;
+            return read;
         }
         catch (EndOfStreamException) { throw new ElfFormatException("Truncated IR archive"); }
         catch (DecoderFallbackException) { throw new ElfFormatException("Invalid IR UTF-8"); }
