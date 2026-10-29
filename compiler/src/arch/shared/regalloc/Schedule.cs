@@ -134,20 +134,22 @@ public static class Schedule
         ITarget t = f.Target;
 
         // The registers whose pressure is counted: the first class's values.
-        // Each value's last read in the stretch and its definition there; a
-        // value mentioned after the stretch, or in another block, lives to its
-        // end -- one defined before it, from its start.
-        Dictionary<int, int> lastUse = new();
-        HashSet<int> defined = new(), outlives = new();
+        // A value read before it is written here (a read-modify-write
+        // included) is live from the stretch's start; one mentioned after the
+        // stretch, or in another block, to its end.
+        HashSet<int> liveIn = new(), outlives = new(), seen = new();
         for (int x = 0; x < n; x++)
-            foreach (Named r in instrs[from + x].Regs)
+        {
+            Named[] named = instrs[from + x].Regs;
+            foreach (Named r in named)
             {
                 if (r.Reg < rf.FirstVirtual || t.ClassOf(r.Reg) != 0) continue;
-                if ((r.Role & Role.Use) != 0) lastUse[r.Reg] = x;
-                if ((r.Role & Role.Def) != 0) defined.Add(r.Reg);
+                if ((r.Role & Role.Use) != 0 && !seen.Contains(r.Reg)) liveIn.Add(r.Reg);
                 if (!home.TryGetValue(r.Reg, out int h) || h != block || lastIn[r.Reg] >= to) outlives.Add(r.Reg);
             }
-        int before = Peak(instrs, from, Enumerable.Range(0, n).ToArray(), lastUse, defined, outlives, rf, t);
+            foreach (Named r in named) if (r.Reg >= rf.FirstVirtual) seen.Add(r.Reg);
+        }
+        int before = Peak(instrs, from, Enumerable.Range(0, n).ToArray(), liveIn, outlives, rf, t);
         // Only a stretch whose own values outnumber the registers somewhere:
         // below that, the selector's order costs no spill (Goodman and Hsu).
         if (before <= k) return;
@@ -252,7 +254,6 @@ public static class Schedule
             }
         }
 
-
         // Bottom-up: a node is ready once everything after it is placed.
         int[] after = new int[n];
         for (int x = 0; x < n; x++) after[x] = succ[x].Count;
@@ -281,7 +282,7 @@ public static class Schedule
                 if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0 && (r.Role & Role.Use) != 0) liveNow.Add(r.Reg);
             foreach (int p in pred[best]) if (--after[p] == 0) ready.Add(p);
         }
-        int now = Peak(instrs, from, order, lastUse, defined, outlives, rf, t);
+        int now = Peak(instrs, from, order, liveIn, outlives, rf, t);
         if (now >= before) return;
         AInstr[] copy = new AInstr[n];
         for (int x = 0; x < n; x++) copy[x] = instrs[from + order[x]];
@@ -315,17 +316,17 @@ public static class Schedule
     /// <summary>
     /// The most of the first class's values live at once over the stretch in
     /// `order`: each from its definition (or the stretch's start, read before
-    /// any) to its last read (or the stretch's end, where it outlives it).
+    /// it is written: `liveIn`, the same in any order the dependences allow)
+    /// to its last mention (or the stretch's end, where it outlives it).
     /// </summary>
-    private static int Peak(List<AInstr> instrs, int from, int[] order, Dictionary<int, int> lastUse, HashSet<int> defined, HashSet<int> outlives, RegisterFile rf, ITarget t)
+    private static int Peak(List<AInstr> instrs, int from, int[] order, HashSet<int> liveIn, HashSet<int> outlives, RegisterFile rf, ITarget t)
     {
         // Each value's last mention: a read, or a definition nothing reads.
         Dictionary<int, int> last = new();
         for (int s = 0; s < order.Length; s++)
             foreach (Named r in instrs[from + order[s]].Regs)
                 if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0) last[r.Reg] = s;
-        HashSet<int> live = new(outlives.Where(v => !defined.Contains(v)));
-        foreach (int v in lastUse.Keys) if (!defined.Contains(v)) live.Add(v);
+        HashSet<int> live = new(liveIn);
         int peak = live.Count;
         for (int s = 0; s < order.Length; s++)
         {

@@ -74,13 +74,75 @@ public sealed class LoopSplit
             if (ring.Count == 0) break;
             Liveness live = s.LiveIn();
             s.JumpsInto(live);
+            s.Link();
             foreach (HashSet<ABlock> body in ring)
             {
                 done.Add(s._heads[body]);
                 s.Split(body, live);
             }
+            s.Unlink();
         }
         return s.Copies.Count == 0 ? null : s;
+    }
+
+    // ---- the layout during a round: linked, so each split's blocks go in at
+    // once, and the list made again once the round is done -------------------
+
+    /// <summary>Each block's neighbours in the layout, while a round splits (Link to Unlink).</summary>
+    private readonly Dictionary<ABlock, ABlock?> _next = new(ReferenceEqualityComparer.Instance), _prev = new(ReferenceEqualityComparer.Instance);
+    private ABlock? _lastBlock;
+
+    private void Link()
+    {
+        _next.Clear();
+        _prev.Clear();
+        ABlock? before = null;
+        foreach (ABlock b in _f.Blocks)
+        {
+            _prev[b] = before;
+            if (before is not null) _next[before] = b;
+            before = b;
+        }
+        if (before is not null) _next[before] = null;
+        _lastBlock = before;
+    }
+
+    private void Unlink()
+    {
+        ABlock? first = _f.Blocks.Count > 0 ? _f.Blocks[0] : null;
+        _f.Blocks.Clear();
+        for (ABlock? b = first; b is not null; b = _next[b]) _f.Blocks.Add(b);
+    }
+
+    /// <summary>`b` laid out just before `at` (never before the entry: no loop is headed by it).</summary>
+    private void InsertBefore(ABlock at, ABlock b)
+    {
+        ABlock? p = _prev[at];
+        _prev[b] = p;
+        _next[b] = at;
+        _prev[at] = b;
+        if (p is not null) _next[p] = b;
+    }
+
+    /// <summary>`b` laid out just after `at`, or last.</summary>
+    private void InsertAfter(ABlock? at, ABlock b)
+    {
+        at ??= _lastBlock!;
+        ABlock? n = _next[at];
+        _next[at] = b;
+        _prev[b] = at;
+        _next[b] = n;
+        if (n is not null) _prev[n] = b;
+        else _lastBlock = b;
+    }
+
+    /// <summary>A block's successors in the linked layout: its jumps' targets, then the next block where it falls through.</summary>
+    private void SuccessorsLinked(ABlock b, List<ABlock> into)
+    {
+        into.Clear();
+        foreach (AInstr i in b.Instrs)
+            if (i.Targets is { } targets) into.AddRange(targets);
+        if (!b.EndsUnconditionally && _next[b] is { } n) into.Add(n);
     }
 
     private Dictionary<ABlock, int> Index()
@@ -295,10 +357,9 @@ public sealed class LoopSplit
         // The ways out, found before anything moves: each edge from the loop
         // to a block outside it where some value split here is live.
         List<(ABlock From, ABlock To, List<int> Live)> exits = new();
-        Dictionary<ABlock, int> index = Index();
         foreach (ABlock b in body)
         {
-            _f.SuccessorsInto(index[b], _succ);
+            SuccessorsLinked(b, _succ);
             foreach (ABlock t in _succ.Distinct(ReferenceEqualityComparer.Instance).Cast<ABlock>())
             {
                 if (body.Contains(t)) continue;
@@ -309,8 +370,7 @@ public sealed class LoopSplit
 
         // Every way in from outside goes through the preheader, which falls
         // into the head; a loop block that fell into the head jumps to it.
-        int at = _f.Blocks.IndexOf(head);
-        ABlock? before = at > 0 ? _f.Blocks[at - 1] : null;
+        ABlock? before = _prev[head];
         if (before is not null && body.Contains(before) && !before.EndsUnconditionally)
             before.Instrs.Add(MakeJump(head, before.Instrs.Count > 0 ? before.Instrs[^1].Line : line));
         if (live.JumpsFrom.TryGetValue(head, out HashSet<ABlock>? into))
@@ -320,7 +380,7 @@ public sealed class LoopSplit
                     Retarget(b, head, pre);
                     live.Jumps(b, pre);
                 }
-        _f.Blocks.Insert(at, pre);
+        InsertBefore(head, pre);
         live.StandsFor[pre] = head;
 
         // The loop reads and writes its own pieces.
@@ -344,11 +404,9 @@ public sealed class LoopSplit
             }
             exit.Instrs.Add(MakeJump(to, exitLine));
             live.Jumps(exit, to);
-            int fromAt = _f.Blocks.IndexOf(from);
-            bool fallsInto = !from.EndsUnconditionally && fromAt + 1 < _f.Blocks.Count && ReferenceEquals(_f.Blocks[fromAt + 1], to);
+            bool fallsInto = !from.EndsUnconditionally && ReferenceEquals(_next[from], to);
             Retarget(from, to, exit);
-            if (fallsInto) _f.Blocks.Insert(fromAt + 1, exit);
-            else _f.Blocks.Add(exit);
+            InsertAfter(fallsInto ? from : null, exit);
         }
         return true;
     }
