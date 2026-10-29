@@ -421,7 +421,8 @@ public sealed class KernelExports
 
     /// <summary>
     /// AND THE FACTS ITS LINK WROTE BESIDE IT, "Q:" an interrupt fact's and
-    /// "Y:" a float fact's name (InterruptNotes.Said, X87Notes.Said): a
+    /// "Y:" a float fact's name (InterruptNotes.Said, X87Notes.Said), and
+    /// "Q:" alone its set of handlers (HandlersSaid): a
     /// module's link judges its handlers and its float code through the
     /// kernel's, and its table holds it to the ones it walked.
     /// </summary>
@@ -434,12 +435,6 @@ public sealed class KernelExports
         return DeclarationReads.Write(entries);
     }
 
-    /// <summary>
-    /// The kernel's facts a module's link walks from its own (Check): each by
-    /// name, "Q:" and "Y:", with what it says -- nothing, for a kernel
-    /// function it calls that has none. Held to them, an unrelinked module
-    /// is refused where a kernel change would have failed its checks.
-    /// </summary>
     /// <summary>The key of the kernel's interrupt handlers, all of them by name (HandlersSaid).</summary>
     public const string Handlers = "Q:";
 
@@ -457,6 +452,12 @@ public sealed class KernelExports
         return System.Security.Cryptography.SHA256.HashData(stream.ToArray())[..DeclarationReads.HashBytes];
     }
 
+    /// <summary>
+    /// The kernel's facts a module's link walks from its own (Check): each by
+    /// name, "Q:" and "Y:", with what it says -- nothing, for a kernel
+    /// function it calls that has none. Held to them, an unrelinked module
+    /// is refused where a kernel change would have failed its checks.
+    /// </summary>
     public static Dictionary<string, byte[]> FactsRead(KernelExports kernel, IEnumerable<ObjectFile> own,
         IReadOnlyList<Lto.InterruptNotes.Fact> kernelInterrupts, IReadOnlyList<Lto.InterruptNotes.Fact> imported,
         IReadOnlyList<Lto.X87Notes.Fact> kernelFloats, bool judges)
@@ -491,13 +492,30 @@ public sealed class KernelExports
         // floats later refuses the module. Whether or not the units carry
         // facts of their own (judges): one with none is judged by every name
         // it takes (X87Notes.Check's unknown).
+        // Units with no facts of their own are judged only by the names they
+        // take: those, and the kernel's float facts those reach.
         if (judges || kernelFloats.Count > 0)
         {
             Dictionary<string, Lto.X87Notes.Fact> y = new(StringComparer.Ordinal);
-            foreach (Lto.X87Notes.Fact fact in kernelFloats) { y.TryAdd(fact.Name, fact); read["Y:" + fact.Name] = Lto.X87Notes.Said(fact); }
+            foreach (Lto.X87Notes.Fact fact in kernelFloats) y.TryAdd(fact.Name, fact);
+            if (judges) foreach (Lto.X87Notes.Fact fact in y.Values) read["Y:" + fact.Name] = Lto.X87Notes.Said(fact);
+            Stack<string> work = new();
             foreach (ObjectFile unit in units)
                 foreach (Symbol symbol in unit.Symbols)
-                    if (!symbol.IsDefined && kernel.Names.Contains(symbol.Name) && !y.ContainsKey(symbol.Name)) read["Y:" + symbol.Name] = DeclarationReads.Empty;
+                    if (!symbol.IsDefined && kernel.Names.Contains(symbol.Name)) work.Push(symbol.Name);
+            HashSet<string> seen = new(StringComparer.Ordinal);
+            while (work.Count > 0)
+            {
+                string name = work.Pop();
+                if (!seen.Add(name)) continue;
+                if (!y.TryGetValue(name, out Lto.X87Notes.Fact? fact))
+                {
+                    if (kernel.Names.Contains(name)) read.TryAdd("Y:" + name, DeclarationReads.Empty);
+                    continue;
+                }
+                read["Y:" + name] = Lto.X87Notes.Said(fact);
+                foreach (Lto.X87Notes.Call call in fact.Calls) work.Push(call.Callee);
+            }
         }
         return read;
     }

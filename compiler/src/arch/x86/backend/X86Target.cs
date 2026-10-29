@@ -113,9 +113,10 @@ internal sealed class X86Target : ITarget
     /// which holds still through the function, or a symbol -- remade where it
     /// is wanted (AInstr.Constant); not off ESP, which every push moves. EBP
     /// is not the frame only in a six-argument system call's window (Select:
-    /// `push ebp; mov ebp, a6; int 0x80; pop ebp`), where nothing is remade:
-    /// the trap names no value the allocator places, and the sixth argument's
-    /// own remaking lands ahead of the move into EBP; and in a leaf giving EBP
+    /// `push a6; ...; push ebp; mov ebp, [esp+4]; int 0x80; pop ebp; lea esp,
+    /// [esp+4]`, or with a constant `push ebp; mov ebp, imm`), where nothing
+    /// is remade: the window names no value the allocator places, and the
+    /// sixth argument's own remaking lands ahead of its push; and in a leaf giving EBP
     /// a value, where the frame address it makes becomes ESP's
     /// (FramePointerFree).
     /// </summary>

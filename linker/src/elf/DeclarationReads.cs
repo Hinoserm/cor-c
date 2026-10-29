@@ -131,7 +131,7 @@ public static class DeclarationReads
                 differences.Add(name.StartsWith("M:", StringComparison.Ordinal)
                     ? Named(name) + (ReferenceEquals(theirs, Empty) ? " is no longer a member" : " is now a member, which the unit was compiled without")
                     : (name.StartsWith("H:", StringComparison.Ordinal) ? "the header of " : "") + Named(name)
-                      + (ReferenceEquals(theirs, Empty) ? " is no longer in the kernel" : " is not what it was"));
+                      + (ReferenceEquals(theirs, Empty) && name != "Q:" ? " is no longer in the kernel" : " is not what it was"));
         }
         return differences;
     }

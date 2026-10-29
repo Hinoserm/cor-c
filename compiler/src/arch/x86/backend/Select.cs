@@ -4030,7 +4030,9 @@ internal sealed partial class Selector
         // six-argument call not inlined into its caller. EBP, saved above
         // it, takes it from there for the trap.
         bool sixth = args == 6;
-        if (sixth) Emit(MOp.Push, RM(i.Operands[6]));
+        // A constant needs no register, and no round trip through the stack.
+        MImm? constant = sixth && i.Operands[6] is ImmOperand { Value: >= int.MinValue and <= uint.MaxValue } known ? new MImm(unchecked((int)known.Value)) : null;
+        if (sixth && constant is null) Emit(MOp.Push, RM(i.Operands[6]));
         Mov(Eax, RM(i.Operands[0]));
         for (int k = 0; k < Math.Min(args, 5); k++)
         {
@@ -4039,14 +4041,15 @@ internal sealed partial class Selector
         if (sixth)
         {
             Emit(MOp.Push, Ebp);
-            Mov(Ebp, new MMem(Esp, 4));
+            if (constant is not null) Mov(Ebp, constant);
+            else Mov(Ebp, new MMem(Esp, 4));
         }
         // The argument count rides along, so the trap reads only those registers (Roles.ImplicitUses).
         Emit(MOp.SyscallTrap, new MImm(i.Offset == 0 ? 0x80 : i.Offset), new MImm(args));
         if (sixth)
         {
             Emit(MOp.Pop, Ebp);
-            Emit(MOp.Lea, Esp, new MMem(Esp, 4));
+            if (constant is null) Emit(MOp.Lea, Esp, new MMem(Esp, 4));
         }
         Mov(Lo(i.Dest!), Eax);
     }
