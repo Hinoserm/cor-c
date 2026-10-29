@@ -137,14 +137,28 @@ internal sealed class ElfBuffer
                     pos += length;
                     continue;
                 }
+                // From its file, with what was patched over it: an object's
+                // REL addends, laid over a section that never came in.
                 using Stream from = source.OpenRead();
                 piece ??= new byte[ChunkBytes];
-                for (int left = length; left > 0;)
+                for (int done = 0; done < length;)
                 {
-                    int got = from.Read(piece, 0, Math.Min(piece.Length, left));
-                    if (got <= 0) throw new IOException($"section {source.Name}: its file ended {left} bytes short");
+                    int got = from.Read(piece, 0, Math.Min(piece.Length, length - done));
+                    if (got <= 0) throw new IOException($"section {source.Name}: its file ended {length - done} bytes short");
+                    int first = patch;
+                    while (patch < patchCount && _patches![patch].At < pos + done + got) patch++;
+                    for (int k = first; k < patch; k++)
+                    {
+                        (int at, int _, uint value) = _patches![k];
+                        for (int byteAt = 0; byteAt < 4; byteAt++)
+                        {
+                            int into = at + byteAt - (pos + done);
+                            if (into >= 0 && into < got) piece[into] = (byte)(value >> (8 * byteAt));
+                        }
+                    }
+                    if (patch > first && _patches![patch - 1].At + 4 > pos + done + got) patch--;
                     sink(piece, 0, got);
-                    left -= got;
+                    done += got;
                 }
                 pos += length;
                 continue;
@@ -232,10 +246,11 @@ internal sealed class ElfBuffer
         if (offset < 0 || offset + 4 > _length) throw new ArgumentOutOfRangeException(nameof(offset));
         if (_splices is not null && SplicedAt(offset) is int k and >= 0)
         {
-            // All four bytes shared, though they may run on into the next
-            // segment of the section.
+            // All four bytes spliced -- shared, or read from a file as they
+            // are written -- though they may run on into the next splice of
+            // the section.
             for (int byteAt = 0; byteAt < 4; byteAt++)
-                if (SplicedAt(offset + byteAt) is not (int j and >= 0) || _splices[j].Source is not null)
+                if (SplicedAt(offset + byteAt) is not (int j and >= 0))
                     throw new InvalidOperationException($"layout error: 0x{offset:x} is in a spliced section");
             _patches ??= new();
             if (_patches.Count > 0 && _patches[^1].At >= offset) _patchesSorted = false;

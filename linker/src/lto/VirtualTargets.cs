@@ -816,9 +816,10 @@ public static class VirtualTargets
         // A word of a section's bytes, as the target stores it; null when not here.
         private long? Word(Section section, long at)
         {
-            if (section.FileBacked is not null || section.HandedOver is not null || at < 0 || at + _word > section.Bytes.Count) return null;
+            Span<byte> bytes = stackalloc byte[8];
+            if (!section.ReadAt(at, bytes[.._word])) return null;
             long value = 0;
-            for (int k = _word - 1; k >= 0; k--) value = value << 8 | section.Bytes[(int)at + k];
+            for (int k = _word - 1; k >= 0; k--) value = value << 8 | bytes[k];
             return value;
         }
 

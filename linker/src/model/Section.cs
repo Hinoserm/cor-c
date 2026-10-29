@@ -6,7 +6,20 @@ public sealed class Section
 {
     public string Name { get; }
     public SectionKind Kind { get; }
-    public ChunkedBytes Bytes { get; } = new();
+    /// <summary>
+    /// The content, brought in from its file on first use if it was left
+    /// there (FileBacked, Load): whatever reads it reads all of it, and a
+    /// reader that knew nothing of files never saw a section empty.
+    /// </summary>
+    public ChunkedBytes Bytes
+    {
+        get
+        {
+            if (FileBacked is not null) Load();
+            return _bytes;
+        }
+    }
+    private readonly ChunkedBytes _bytes = new();
     public int Align { get; set; } = 4;
     /// <summary>For an uninitialised section: how many zero bytes it stands for.</summary>
     public int ZeroBytes { get; set; }
@@ -20,9 +33,10 @@ public sealed class Section
 
     /// <summary>
     /// CONTENT LEFT IN THE FILE IT WAS READ FROM: a unit's IR archive, which
-    /// a link reads a record at a time and never holds whole, and the notes
-    /// it reads and drops (ElfReader.ReadObjectFile, LeftInFile). Bytes is
-    /// empty while this is set; Content reads it.
+    /// a link reads a record at a time and never holds whole, the notes it
+    /// reads and drops, and the code and data it lays out only at the end
+    /// (ElfReader.ReadObjectFile, LeftInFile). Content, OpenRead and ReadAt
+    /// read it where it is; Bytes brings it in.
     /// </summary>
     public (string Path, long Offset, int Length)? FileBacked { get; set; }
 
@@ -35,7 +49,7 @@ public sealed class Section
     /// </summary>
     internal object? ArchiveRead;
 
-    public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : FileBacked?.Length ?? HandedOver ?? Bytes.Count;
+    public int Size => Kind == SectionKind.Uninitialised ? ZeroBytes : FileBacked?.Length ?? HandedOver ?? _bytes.Count;
 
     /// <summary>
     /// How many bytes this section had when a link took them (HandOver): the
@@ -54,8 +68,9 @@ public sealed class Section
     /// </summary>
     public ChunkedBytes HandOver()
     {
-        HandedOver = Bytes.Count;
-        return Bytes.TakeAll();
+        ChunkedBytes bytes = Bytes;
+        HandedOver = bytes.Count;
+        return bytes.TakeAll();
     }
 
     /// <summary>
@@ -67,23 +82,49 @@ public sealed class Section
     {
         if (HandedOver is not null) throw new InvalidOperationException("section '" + Name + "' was handed to a link");
         if (FileBacked is (string path, long offset, int length)) return new Corsac.Lang.Elf.SectionReadStream(path, offset, length);
-        return new Corsac.Lang.Elf.SectionReadStream(Bytes);
+        return new Corsac.Lang.Elf.SectionReadStream(_bytes);
     }
 
     /// <summary>Content left in its file brought into the chunks, a chunk at a time, and the file let go of.</summary>
     public void Load()
     {
-        if (FileBacked is not (string path, long offset, int length)) return;
-        using Microsoft.Win32.SafeHandles.SafeFileHandle file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        Bytes.AddFromFile(file, offset, length);
-        FileBacked = null;
+        // Once, whichever of the link's threads asks first.
+        lock (_bytes)
+        {
+            if (FileBacked is not (string path, long offset, int length)) return;
+            using Microsoft.Win32.SafeHandles.SafeFileHandle file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            _bytes.AddFromFile(file, offset, length);
+            FileBacked = null;
+        }
+    }
+
+    /// <summary>
+    /// Bytes at `at` into `into`, from the chunks or the file, without
+    /// bringing a section left in its file in: false where the section has
+    /// no such bytes (handed over, or too short).
+    /// </summary>
+    public bool ReadAt(long at, Span<byte> into)
+    {
+        if (HandedOver is not null || at < 0) return false;
+        if (FileBacked is (string path, long offset, int length))
+        {
+            if (at + into.Length > length) return false;
+            using Microsoft.Win32.SafeHandles.SafeFileHandle file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return RandomAccess.Read(file, into, offset + at) == into.Length;
+        }
+        lock (_bytes)
+        {
+            if (at + into.Length > _bytes.Count) return false;
+            for (int k = 0; k < into.Length; k++) into[k] = _bytes[(int)at + k];
+        }
+        return true;
     }
 
     /// <summary>The section's content, read from its file if it was left there.</summary>
     public byte[] Content()
     {
         if (HandedOver is not null) throw new InvalidOperationException("section '" + Name + "' was handed to a link");
-        if (FileBacked is not (string path, long offset, int length)) return Bytes.ToArray();
+        if (FileBacked is not (string path, long offset, int length)) return _bytes.ToArray();
         byte[] content = new byte[length];
         using FileStream file = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         file.Position = offset;

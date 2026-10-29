@@ -214,8 +214,8 @@ public static class ElfReader
     /// the first phase to the last -- and 512 MB more of interrupt facts,
     /// for a program with no interrupt handler.
     /// </summary>
-    internal static bool LeftInFile(string name)
-        => name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName or Corsac.Lang.Lto.HeapRecords.SectionName
+    internal static bool LeftInFile(string name, SectionKind kind)
+        => kind is SectionKind.Code or SectionKind.ReadOnlyData or SectionKind.Data || name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName or Corsac.Lang.Lto.HeapRecords.SectionName
             or Corsac.Lang.Lto.RegionHints.SectionName or ManagedLayoutContract.SectionName
             or Corsac.Lang.Lto.CoalescingContract.SectionName or Corsac.Lang.Lto.InterruptNotes.SectionName or Corsac.Lang.Lto.X87Notes.SectionName;
 
@@ -432,7 +432,7 @@ public static class ElfReader
                 // A unit's IR stays in its file when the file is known: a link
                 // reads it a record at a time (IrArchive). So do the notes a
                 // link reads and drops (LeftInFile).
-                if (ElfReader.BackingPath is string backing && LeftInFile(names[i]))
+                if (ElfReader.BackingPath is string backing && LeftInFile(names[i], kind.Value))
                 {
                     src.Check(h.Offset, h.Size, $"section '{names[i]}'");
                     s.FileBacked = (backing, (long)h.Offset, checked((int)h.Size));
@@ -600,6 +600,12 @@ public static class ElfReader
             // Sized once from the table: a link reads every object's relocations
             // and keeps them, and grown by doubling they kept up to twice their size.
             target.Relocs.EnsureCapacity(target.Relocs.Count + count);
+            // THE WORDS THE ADDENDS SIT IN, of a section left in its file: read
+            // here for the table and let go, so the section stays where it is
+            // until the image is laid out (LeftInFile). Loaded for its addends,
+            // every unit's code and data came into memory as it was read.
+            byte[]? content = target.FileBacked is not null ? target.Content() : null;
+            int targetSize = target.Size;
             for (int j = 0; j < count; j++)
             {
                 if (j / perPiece != pieceAt)
@@ -618,9 +624,9 @@ public static class ElfReader
                 {
                     throw new ElfFormatException($"unsupported relocation type {rtype} in '{target.Name}' at 0x{offset:x}");
                 }
-                if (offset + 4 > (uint)target.Bytes.Count)
+                if (offset + 4 > (uint)targetSize)
                 {
-                    throw new ElfFormatException($"relocation at 0x{offset:x} is outside '{target.Name}' ({target.Bytes.Count} bytes)");
+                    throw new ElfFormatException($"relocation at 0x{offset:x} is outside '{target.Name}' ({targetSize} bytes)");
                 }
                 string symbol;
                 if (symIdx == 0)
@@ -648,10 +654,8 @@ public static class ElfReader
                         throw new ElfFormatException($"relocation in '{target.Name}' at 0x{offset:x} is against an unnamed symbol");
                     }
                 }
-                // REL: the addend is whatever sits in the word -- of a section
-                // left in its file too, which then comes into memory.
-                target.Load();
-                int addend = target.Bytes.ReadInt32((int)offset);
+                // REL: the addend is whatever sits in the word.
+                int addend = content is not null ? BinaryPrimitives.ReadInt32LittleEndian(content.AsSpan((int)offset)) : target.Bytes.ReadInt32((int)offset);
                 // R_386_GOT32X IS GotAddr ONLY WITH NO BASE REGISTER: a ModRM
                 // of mod 00, rm 101 before the word (an absolute disp32).
                 // With a base -- `call *foo@GOT(%ebx)`, what an assembler
@@ -661,7 +665,7 @@ public static class ElfReader
                 // is taken for a ModRM; a SIB with no base and scale 1 passes
                 // too and is base-less as well, but one scaled is read as a
                 // base: no assembler writes GOT32X so.
-                if (kind == RelocKind.GotAddr && (offset == 0 || (target.Bytes[(int)offset - 1] & 0xC7) != 0x05))
+                if (kind == RelocKind.GotAddr && (offset == 0 || ((content is not null ? content[offset - 1] : target.Bytes[(int)offset - 1]) & 0xC7) != 0x05))
                 {
                     kind = RelocKind.Got32;
                 }
