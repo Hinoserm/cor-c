@@ -1,0 +1,36 @@
+// test: null_conditional_assignment_expression
+// expect-exit: 0
+// expect-output:
+// null 8 q null 9 null n=8 last=9 rhs=2 NRE null q
+//
+// C# 14's null-conditional assignment as an expression: `P?.A = B` is
+// `(P is null) ? (T?)null : (P.A = B)`, P evaluated once and B only where P
+// is not null -- through `?[`, `^1` and a `!` in the chain, which ends
+// nothing -- and `P?.A ??= B` is `P.A ??= B` past the same test. A group
+// ends a chain: `(none?.b)!.n` reads n through a null, as C# does.
+using System;
+class A { public B? b; public int n; public string? s; public int[] arr = { 1, 2, 3 }; }
+class B { public int n = 5; public string? s; }
+static class P
+{
+    static int rhs;
+    static int R(int v) { rhs++; return v; }
+    static int Main()
+    {
+        A? none = null; A some = new() { b = new() };
+        int? x1 = none?.n = R(7);
+        int? x2 = some?.n = R(8);
+        string? x3 = some?.b!.s ??= "q";
+        string? x4 = none?.b!.s ??= "r";
+        int? x5 = some?.arr[^1] = R(9);
+        int? x6 = none?.arr[^1] = R(10);
+        Console.Write($"{(x1 is null ? "null" : "v")} {x2} {x3} {(x4 is null ? "null" : x4)} {x5} {(x6 is null ? "null" : "v")} n={some.n} last={some.arr[2]} rhs={rhs} ");
+        try { int k = (none?.b)!.n; Console.Write("no throw " + k + " "); }
+        catch (NullReferenceException) { Console.Write("NRE "); }
+        int? m = none?.b.n; Console.Write(m is null ? "null " : "value ");
+        none?.b!.s ??= "z";
+        some?.b!.s ??= "zz";
+        Console.WriteLine(some.b!.s);
+        return 0;
+    }
+}

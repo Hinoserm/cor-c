@@ -7287,7 +7287,7 @@ public sealed class Parser
     /// ONE COPY, DELIBERATELY. This predicate existed twice, here and in the
     /// `is` path, and they had already drifted apart once this session.
     /// </summary>
-    private static bool Rereadable(Expr subject)
+    internal static bool Rereadable(Expr subject)
     {
         // An element only when its index is as simple as its array: `a[i++]`
         // read twice moved i twice.
@@ -9146,7 +9146,10 @@ public sealed class Parser
     private Stmt Statement(Expr e, Token at)
     {
         if (e is SequenceExpr { Assignment: true } deconstructing) return deconstructing.Effect;
-        if (e is not AssignExpr assign || Unlinked(assign.Target, out string held) is not (Expr receiver, Expr rest))
+        string held = "";
+        if (e is not AssignExpr assign
+            || NullConditionalAssignment.Unlinked(assign.Target, link => new NameExpr { Name = held = $"$cond${_hidden++}", Line = link.Line, Col = link.Col })
+               is not (Expr receiver, Expr rest))
             return new ExprStmt { Expr = e, Line = at.Line, Col = at.Col };
         Block block = new() { Line = at.Line, Col = at.Col };
         block.WritableStatements.Add(new LocalDecl { Name = held, Init = receiver, Line = at.Line, Col = at.Col });
@@ -9159,109 +9162,12 @@ public sealed class Parser
                 Line = at.Line, Col = at.Col,
             },
             // A `??=` past the `?.` is built again on what is left, its
-            // receiver or index held as any `??=`'s is (CoalescingAssign).
-            Then = Statement(assign is { Coalescing: true, Value: BinaryExpr { Op: BinOp.Coalesce } held2 }
-                ? CoalescingAssign(rest, held2.Right, at) : assign.Retargeted(rest), at),
+            // receiver or index held as any `??=`'s is (NullConditionalAssignment).
+            Then = Statement(assign is { Coalescing: true, Value: BinaryExpr { Op: BinOp.Coalesce } coalesce }
+                ? NullConditionalAssignment.Coalescing(rest, coalesce.Right, _file, at.Line, at.Col) : assign.Retargeted(rest), at),
             Line = at.Line, Col = at.Col,
         });
         return block;
-    }
-
-    /// <summary>
-    /// `left ??= right`, held as `left = left ?? right` and marked so
-    /// (AssignExpr.Coalescing). WHAT THE TARGET IS READ THROUGH IS EVALUATED
-    /// ONCE, as C# has it: `Use(n).Loads ??= new()` calls Use once, and the
-    /// field of what it answered is read and written. The object -- and an
-    /// element's index -- is put somewhere first (SubjectExpr), and the
-    /// target names it there. A target with a `?.` or `?[` is left whole for
-    /// Statement, which holds the receiver, tests it, and builds this again
-    /// on what is past the link; anywhere but a statement the binder refuses
-    /// it, as every null-conditional assignment there.
-    /// </summary>
-    private Expr CoalescingAssign(Expr left, Expr right, Token at)
-    {
-        AssignExpr Coalescing(Expr target) => new()
-        {
-            Target = target,
-            Value = new BinaryExpr { Op = BinOp.Coalesce, Left = target, Right = right, Line = at.Line, Col = at.Col },
-            Coalescing = true,
-            Line = at.Line, Col = at.Col,
-        };
-        if (Rereadable(left) || ConditionalLink(left)) return Coalescing(left);
-
-        if (left is MemberExpr { Target: { } owner } field)
-        {
-            MemberExpr through = new() { Target = new SubjectExpr { Line = at.Line, Col = at.Col }, Name = field.Name, Line = field.Line, Col = field.Col };
-            return new PatternExpr { Subject = owner, Test = Coalescing(through), Line = at.Line, Col = at.Col };
-        }
-        if (left is IndexExpr { Target: { } array, Args.Count: 1 } element)
-        {
-            IndexExpr through = new() { Target = new SubjectExpr { Outer = 1, Line = at.Line, Col = at.Col }, Line = element.Line, Col = element.Col };
-            through.Args.Add(new SubjectExpr { Line = at.Line, Col = at.Col });
-            PatternExpr index = new() { Subject = element.Args[0], Test = Coalescing(through), Line = at.Line, Col = at.Col };
-            return new PatternExpr { Subject = array, Test = index, Line = at.Line, Col = at.Col };
-        }
-        throw Error("the left of '??=' must be a name, a field or an element");
-    }
-
-    /// <summary>Whether a target has a `?.` or `?[` anywhere along it (Unlinked, without its names).</summary>
-    private static bool ConditionalLink(Expr target) => target switch
-    {
-        MemberExpr m => m.NullConditional || ConditionalLink(m.Target),
-        IndexExpr ix => ix.NullConditional || ConditionalLink(ix.Target),
-        CallExpr call => ConditionalLink(call.Target),
-        _ => false,
-    };
-
-    /// <summary>
-    /// The first `?.` or `?[` of an assignment's target, from the receiver
-    /// out: what it is applied to, and the target with that link read
-    /// through `held` instead. Null when the target has none.
-    /// </summary>
-    private (Expr Receiver, Expr Through)? Unlinked(Expr target, out string held)
-    {
-        held = "";
-        switch (target)
-        {
-            case MemberExpr m:
-            {
-                if (Unlinked(m.Target, out held) is (Expr receiver, Expr inner))
-                {
-                    MemberExpr kept = new() { Target = inner, Name = m.Name, NullConditional = m.NullConditional, Line = m.Line, Col = m.Col };
-                    kept.WritableTypeArgs.AddRange(m.TypeArgs);
-                    return (receiver, kept);
-                }
-                if (!m.NullConditional) return null;
-                held = $"$cond${_hidden++}";
-                MemberExpr through = new() { Target = new NameExpr { Name = held, Line = m.Line, Col = m.Col }, Name = m.Name, Line = m.Line, Col = m.Col };
-                through.WritableTypeArgs.AddRange(m.TypeArgs);
-                return (m.Target, through);
-            }
-            case IndexExpr ix:
-            {
-                Expr? receiver = null, inner = null;
-                if (Unlinked(ix.Target, out held) is (Expr r, Expr i)) { receiver = r; inner = i; }
-                else if (ix.NullConditional)
-                {
-                    held = $"$cond${_hidden++}";
-                    receiver = ix.Target;
-                    inner = new NameExpr { Name = held, Line = ix.Line, Col = ix.Col };
-                }
-                if (receiver is null) return null;
-                IndexExpr kept = new() { Target = inner!, NullConditional = receiver == ix.Target ? false : ix.NullConditional, Line = ix.Line, Col = ix.Col };
-                kept.Args.AddRange(ix.Args);
-                return (receiver, kept);
-            }
-            case CallExpr call when Unlinked(call.Target, out held) is (Expr receiver, Expr inner):
-            {
-                CallExpr kept = new() { Target = inner, Line = call.Line, Col = call.Col };
-                kept.Args.AddRange(call.Args);
-                kept.WritableArgNames.AddRange(call.ArgNames);
-                return (receiver, kept);
-            }
-            default:
-                return null;
-        }
     }
 
     // ---- expressions ------------------------------------------------------
@@ -9302,11 +9208,13 @@ public sealed class Parser
         //
         // WHAT THE TARGET IS READ THROUGH IS EVALUATED ONCE: a target the
         // pair can read twice as it is (Rereadable), or its object and index
-        // put somewhere first (SubjectExpr, below); anything else refused.
+        // put somewhere first (NullConditionalAssignment.Coalescing); a
+        // target with a `?.` left whole, to be cut at its link (Statement,
+        // and the binder for an expression); anything else refused.
         if (At(Tok.QuestionQuestionEq))
         {
             _i++;
-            return CoalescingAssign(left, ParseAssign(), at);
+            return NullConditionalAssignment.Coalescing(left, ParseAssign(), _file, at.Line, at.Col);
         }
 
         // Two questions, not one: is this an assignment at all, and if so is it
@@ -11233,6 +11141,12 @@ public sealed class Parser
                 }
 
                 Expect(Tok.RParen, "')' to close the group");
+                // A GROUP ENDS A `?.` CHAIN, as C# has it: `(a?.b).n` is
+                // b's n, read through a null where a is null -- not a?.b.n,
+                // which is null there. Held whole (a pattern's subject), it
+                // is one value the chain's links after it cannot reach into.
+                if (NullConditionalAssignment.Linked(inner))
+                    return new PatternExpr { Subject = inner, Test = new SubjectExpr { Line = at.Line, Col = at.Col }, Line = at.Line, Col = at.Col };
                 return inner;
             }
 

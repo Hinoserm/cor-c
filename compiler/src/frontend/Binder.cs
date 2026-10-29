@@ -17177,6 +17177,34 @@ public sealed partial class Binder
             case BinaryExpr b:
                 return CheckBinary(b);
 
+            // C# 14'S NULL-CONDITIONAL ASSIGNMENT AS AN EXPRESSION -- a
+            // statement's the parser wrote as its `if` (Parser.Statement):
+            // `P?.A = B` is `(P is null) ? (T?)null : (P.A = B)`, P evaluated
+            // once and B only where it is not null; `P?.A ??= B` the same
+            // with `P.A ??= B` past the test. Ahead of every other rewrite of
+            // an assignment, which would read through the `?.` as a `.`.
+            // The receiver read past the test as `subject!`, which it is
+            // there: held in a pattern, the subject has no flow state for
+            // the test to narrow, and C# warns of nothing here.
+            case AssignExpr linked when NullConditionalAssignment.Unlinked(linked.Target,
+                                            link => new SuppressExpr { Operand = new SubjectExpr { Line = link.Line, Col = link.Col }, Line = link.Line, Col = link.Col })
+                                        is (Expr receiver, Expr rest):
+            {
+                Expr past = linked is { Coalescing: true, Value: BinaryExpr { Op: BinOp.Coalesce } coalesce }
+                    ? NullConditionalAssignment.Coalescing(rest, coalesce.Right, _file, linked.Line, linked.Col)
+                    : linked.Retargeted(rest);
+                LiteralExpr Null() => new() { Kind = Lit.Null, Text = "null", Line = linked.Line, Col = linked.Col };
+                ConditionalExpr unlessNull = new()
+                {
+                    Cond = new BinaryExpr { Op = BinOp.Eq, Left = new SubjectExpr { Line = linked.Line, Col = linked.Col }, Right = Null(), Line = linked.Line, Col = linked.Col },
+                    Then = Null(), Else = past,
+                    Line = linked.Line, Col = linked.Col,
+                };
+                PatternExpr once = new() { Subject = receiver, Test = unlessNull, Line = linked.Line, Col = linked.Col };
+                _r.Rewrites[linked] = once;
+                return CheckExpr(once);
+            }
+
             // `Make()[^1] = v` and `Make()[^1] += v`: the target once, as for a
             // read of it (FromEndOnce), with the assignment made to the
             // element of what was held -- target, then index, then value,
@@ -17215,15 +17243,6 @@ public sealed partial class Binder
 
             case AssignExpr a:
             {
-                // A NULL-CONDITIONAL ASSIGNMENT anywhere but a statement (the
-                // parser writes one of those as the `if` it is): refused, as
-                // its value is no assignment's, rather than made one that
-                // reaches through the null.
-                if (HasConditionalMember(a.Target))
-                {
-                    Error(a, "a null-conditional assignment ('?.' before '=') is only supported as a statement here");
-                    return Type.Error;
-                }
 
                 // AN EXTENSION PROPERTY WRITTEN (C# 14): `s.Label = v` is
                 // set_Label(s, v) where s's type has no member Label.
@@ -25648,13 +25667,7 @@ public sealed partial class Binder
         return call;
     }
 
-    private static bool HasConditionalMember(Expr expression) => expression switch
-    {
-        MemberExpr member => member.NullConditional || HasConditionalMember(member.Target),
-        CallExpr call => HasConditionalMember(call.Target),
-        IndexExpr index => index.NullConditional || HasConditionalMember(index.Target),
-        _ => false,
-    };
+    private static bool HasConditionalMember(Expr expression) => NullConditionalAssignment.Linked(expression);
 
     /// <summary>
     /// C#'s IMPLICIT CONSTANT EXPRESSION CONVERSION, applied to the two sides
