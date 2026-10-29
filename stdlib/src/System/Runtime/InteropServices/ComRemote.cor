@@ -1915,7 +1915,7 @@ static class SystemType
 }
 
 /// .NET's Marshal, its running-object member.
-static partial class Marshal
+public static partial class Marshal
 {
     public static object GetActiveObject(string progID) { return System.Runtime.InteropServices.RunningObjects.GetActiveObject(progID); }
 }

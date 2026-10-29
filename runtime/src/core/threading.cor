@@ -67,7 +67,7 @@ using System.Threading.Tasks;
 /// never stored, so a future moving collector that updates references keeps
 /// this correct as long as it does not move an object in the middle of one
 /// instruction.
-static class Atom
+public static class Atom
 {
     public const int FirstWord = 2 * WordSize.Bytes;
     public const int SecondWord = 2 * WordSize.Bytes + 4;
@@ -157,7 +157,7 @@ static class Atom
 /// A word that can be changed atomically, and a lock beside it. Used where a
 /// static would otherwise need an address (a static field has none the
 /// language can take).
-class AtomicCell
+public class AtomicCell
 {
     // LAYOUT: Value at Atom.FirstWord, Lock at Atom.SecondWord. Keep first.
     public int Value;
@@ -193,7 +193,7 @@ class AtomicCell
 
 // ---- Task --------------------------------------------------------------------
 
-enum TaskStatus
+public enum TaskStatus
 {
     Created,
     WaitingForActivation,
@@ -220,7 +220,7 @@ enum TaskStatus
 /// the state becomes final and the continuation list is taken. A registration
 /// holds the same lock, so it either sees a final state (and posts at once) or
 /// is in the list the completer takes. Nothing is lost and nothing runs twice.
-class Task
+public class Task
 {
     // LAYOUT: these two must stay the first instance fields (see Atom).
     int _state;
@@ -1632,7 +1632,7 @@ class Task
 }
 
 /// A task that completes with a value.
-class Task<T> : Task
+public class Task<T> : Task
 {
     public override void CopyOutcomeFrom(Task from)
     {
@@ -1942,7 +1942,7 @@ static class TaskErrors
 // all. GetAwaiter answers a value, IsCompleted says yes, GetResult reads the
 // outcome; only a real suspension keeps the awaiter, in the state machine
 // (a field of it, not an object of its own).
-struct TaskAwaiter
+public struct TaskAwaiter
 {
     Task _task;
 
@@ -1976,7 +1976,7 @@ struct TaskAwaiter
     }
 }
 
-struct TaskAwaiter<T>
+public struct TaskAwaiter<T>
 {
     Task<T> _task;
 
@@ -2010,7 +2010,7 @@ struct TaskAwaiter<T>
 
 /// `task.ConfigureAwait(false)`. There is no synchronisation context to
 /// leave, so this awaits exactly as the task itself does.
-struct ConfiguredTaskAwaitable
+public struct ConfiguredTaskAwaitable
 {
     Task _task;
 
@@ -2025,7 +2025,7 @@ struct ConfiguredTaskAwaitable
     }
 }
 
-struct ConfiguredTaskAwaitable<T>
+public struct ConfiguredTaskAwaitable<T>
 {
     Task<T> _task;
 
@@ -2043,7 +2043,7 @@ struct ConfiguredTaskAwaitable<T>
 /// What Task.Yield() returns. .NET nests the awaiter as
 /// YieldAwaitable.YieldAwaiter; nested types are hoisted here, so it is
 /// YieldAwaiter.
-struct YieldAwaitable
+public struct YieldAwaitable
 {
     public YieldAwaiter GetAwaiter()
     {
@@ -2051,7 +2051,7 @@ struct YieldAwaitable
     }
 }
 
-struct YieldAwaiter
+public struct YieldAwaiter
 {
     /// Never complete, so an await always suspends and requeues.
     public bool IsCompleted => false;
@@ -2985,7 +2985,7 @@ static class TaskCompletionOptions
     }
 }
 
-class TaskCompletionSource<T>
+public class TaskCompletionSource<T>
 {
     Task<T> _task;
 
@@ -3168,7 +3168,7 @@ class WaitAsyncCanceled : Action
 }
 
 /// The non-generic TaskCompletionSource of .NET 5.
-class TaskCompletionSource
+public class TaskCompletionSource
 {
     Task _task;
 
@@ -3269,7 +3269,7 @@ class TaskCompletionSource
 // ---- cancellation ------------------------------------------------------------
 
 /// The operation was canceled. C#'s, with the token that canceled it.
-class OperationCanceledException : SystemException
+public class OperationCanceledException : SystemException
 {
     internal override int Code => unchecked((int)0x8013153B);
     CancellationToken _token;
@@ -3301,7 +3301,7 @@ class OperationCanceledException : SystemException
 }
 
 /// A task was canceled.
-class TaskCanceledException : OperationCanceledException
+public class TaskCanceledException : OperationCanceledException
 {
     Task? _task;
 
@@ -3328,7 +3328,7 @@ class TaskCanceledException : OperationCanceledException
 }
 
 /// Timeout.Infinite, which Task.Delay accepts.
-static class Timeout
+public static class Timeout
 {
     public const int Infinite = -1;
 }
@@ -3339,7 +3339,7 @@ static class Timeout
 /// as .NET does; what they throw is thrown after all have run, as one
 /// AggregateException in the order they threw -- or, for Cancel(true), the
 /// first exception at once, the callbacks after it left unrun.
-class CancellationTokenSource : IDisposable
+public class CancellationTokenSource : IDisposable
 {
     // LAYOUT: these two must stay the first instance fields (see Atom).
     int _canceled;
@@ -3738,7 +3738,7 @@ class CancelAction : Action
 
 /// A way to observe one CancellationTokenSource. A struct, as in .NET, so
 /// `default` and CancellationToken.None are a token nothing can cancel.
-struct CancellationToken
+public struct CancellationToken
 {
     CancellationTokenSource? _source;
 
@@ -3813,7 +3813,7 @@ struct CancellationToken
 /// out before it did, or, where another thread is running it now, once it
 /// has returned -- not when this thread is the one running it, which would
 /// wait for itself.
-readonly struct CancellationTokenRegistration : IDisposable, IAsyncDisposable, IEquatable<CancellationTokenRegistration>
+public readonly struct CancellationTokenRegistration : IDisposable, IAsyncDisposable, IEquatable<CancellationTokenRegistration>
 {
     readonly CancellationTokenSource? _source;
     readonly Action? _callback;
@@ -3938,7 +3938,7 @@ class PoolWorker : Action
 /// An exception escaping a posted item is unhandled, as it is on a .NET
 /// thread-pool thread: the compiler's continuations catch everything
 /// themselves, so only user work items can do this.
-static partial class Scheduler
+public static partial class Scheduler
 {
     // Made on first use, not at start-up: a static initialiser runs before
     // Main, and on bare metal Main is what says where the heap is.
@@ -4835,7 +4835,7 @@ static partial class Scheduler
 // WaitFor): a futex under Linux, a look at the word between halts or yields
 // on bare metal, where whoever pulses is another processor or a ring-1
 // thread.
-static class Monitor
+public static class Monitor
 {
     const nuint Held = 2;           // the owner written when there is no identity
     const nuint Asleep = 1;         // bit 0: someone may be waiting on the word
@@ -5469,7 +5469,7 @@ static class Timeouts
 
 /// .NET's ThreadPool, as a facade over the scheduler. Work queued here runs
 /// on the event loop, and on pool threads when there are some.
-static partial class ThreadPool
+public static partial class ThreadPool
 {
     public static bool QueueUserWorkItem(Action callBack)
     {
@@ -6145,7 +6145,7 @@ namespace System.Threading.Tasks
 {
     /// How a task is to be made and run, as .NET's flags.
     [Flags]
-    enum TaskCreationOptions
+    public enum TaskCreationOptions
     {
         None = 0,
         PreferFairness = 1,
@@ -6160,7 +6160,7 @@ namespace System.Threading.Tasks
     /// the creation ones, and those that leave it canceled for an
     /// antecedent that ended one way or another.
     [Flags]
-    enum TaskContinuationOptions
+    public enum TaskContinuationOptions
     {
         None = 0,
         PreferFairness = 1,
@@ -6186,7 +6186,7 @@ namespace System.Threading.Tasks
     /// it is (TaskExtensions.Unwrap takes the inner one). There is one
     /// scheduler, so the options are kept and reported, and LongRunning
     /// runs where everything else does.
-    class TaskFactory
+    public class TaskFactory
     {
         readonly CancellationToken _token;
         readonly TaskCreationOptions _creation;
@@ -6308,7 +6308,7 @@ namespace System.Threading.Tasks
     }
 
     /// Task<TResult>.Factory: the same for one result type.
-    class TaskFactory<TResult>
+    public class TaskFactory<TResult>
     {
         readonly CancellationToken _token;
         readonly TaskCreationOptions _creation;
@@ -6367,7 +6367,7 @@ namespace System.Threading.Tasks
     /// completes as the inner task does once the outer one has handed it over
     /// -- faulted or canceled as the outer one was when it was, and canceled
     /// when what it handed over is null.
-    static class TaskExtensions
+    public static class TaskExtensions
     {
         public static Task Unwrap(this Task<Task> task)
         {
@@ -6443,7 +6443,7 @@ namespace System.Threading.Tasks
         }
     }
 
-    readonly struct ValueTask
+    public readonly struct ValueTask
     {
         readonly Task? _task;
 
@@ -6473,7 +6473,7 @@ namespace System.Threading.Tasks
     }
 
     /// A result that is either here already or the Task that will make it.
-    readonly struct ValueTask<TResult>
+    public readonly struct ValueTask<TResult>
     {
         readonly Task<TResult>? _task;
         readonly TResult _result;
@@ -6513,7 +6513,7 @@ namespace System.Threading.Tasks
 
 namespace System.Runtime.CompilerServices
 {
-    readonly struct ValueTaskAwaiter
+    public readonly struct ValueTaskAwaiter
     {
         // Null for a ValueTask that completed without a task: done, and
         // nothing to rethrow.
@@ -6558,7 +6558,7 @@ namespace System.Runtime.CompilerServices
         }
     }
 
-    readonly struct ValueTaskAwaiter<TResult>
+    public readonly struct ValueTaskAwaiter<TResult>
     {
         // The task, or null with the result here already: a completed
         // ValueTask<T> is awaited with no Task made for it.
@@ -6601,7 +6601,7 @@ namespace System.Runtime.CompilerServices
     /// `valueTask.ConfigureAwait(false)`. There is no synchronisation context
     /// to leave, so this awaits exactly as the ValueTask itself does, as
     /// ConfiguredTaskAwaitable does a task.
-    readonly struct ConfiguredValueTaskAwaitable
+    public readonly struct ConfiguredValueTaskAwaitable
     {
         readonly System.Threading.Tasks.ValueTask _value;
 
@@ -6640,7 +6640,7 @@ namespace System.Runtime.CompilerServices
         }
     }
 
-    readonly struct ConfiguredValueTaskAwaitable<TResult>
+    public readonly struct ConfiguredValueTaskAwaitable<TResult>
     {
         readonly System.Threading.Tasks.ValueTask<TResult> _value;
 
@@ -6680,7 +6680,7 @@ namespace System.Runtime.CompilerServices
 namespace System
 {
     /// What `await using` gives a resource back through.
-    interface IAsyncDisposable
+    public interface IAsyncDisposable
     {
         System.Threading.Tasks.ValueTask DisposeAsync();
     }
@@ -6695,7 +6695,7 @@ namespace System
     /// occurred.", followed by each inner exception's message in brackets;
     /// ToString is Exception's, the first inner exception after " ---> ", and
     /// every other one after it as "(Inner Exception #i)".
-    class AggregateException : Exception
+    public class AggregateException : Exception
     {
         const string Default = "One or more errors occurred.";
 
@@ -6938,7 +6938,7 @@ namespace System.Threading
     /// Waiters are served in the order they came. Every waiter, synchronous
     /// or not, is a task in the queue; a synchronous Wait runs the scheduler
     /// until its task is done, as Task.Wait does.
-    class SemaphoreSlim : IDisposable
+    public class SemaphoreSlim : IDisposable
     {
         // LAYOUT: these two must stay the first instance fields (see Atom),
         // and ints, with the 32-bit atomics.
@@ -7292,7 +7292,7 @@ namespace System.Threading
     }
 
     /// Release gave back more permits than the semaphore holds.
-    class SemaphoreFullException : SystemException
+    public class SemaphoreFullException : SystemException
     {
         const string Full = "Adding the specified count to the semaphore would cause it to exceed its maximum count.";
         public SemaphoreFullException() : base(Full) { }

@@ -5,7 +5,7 @@
 
 using System.IO;
 
-static class RandomNumberGenerator
+public static class RandomNumberGenerator
 {
     public static void Fill(byte[] data)
     {

@@ -7,7 +7,7 @@ using System.Threading;
 
 namespace System.Diagnostics;
 
-class ProcessStartInfo
+public class ProcessStartInfo
 {
     public string FileName = "";
     public List<string> ArgumentList = new List<string>();
@@ -79,7 +79,7 @@ class ProcessStartInfo
     }
 }
 
-class Process : IDisposable
+public class Process : IDisposable
 {
     int _pid;
     int _exitCode;

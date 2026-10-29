@@ -22,7 +22,7 @@ using System.Collections.ObjectModel;
 // storage order; a caller who writes `foreach` over a stack expects to see
 // what Pop would hand back, in that sequence.
 
-class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
+public class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -192,7 +192,7 @@ class Stack<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 // throws InvalidOperationException when that node came from another list.
 // Without the back-pointer the operation would quietly corrupt both lists.
 
-class LinkedListNode<T> {
+public class LinkedListNode<T> {
     internal LinkedList<T>? owner;
     internal LinkedListNode<T>? next;
     internal LinkedListNode<T>? prev;
@@ -215,7 +215,7 @@ class LinkedListNode<T> {
     public LinkedListNode<T>? Previous => prev;
 }
 
-class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
+public class LinkedList<T> : ICollection<T>, IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -607,7 +607,7 @@ class SortedPairsEnumerator<K, V> : IEnumerator<KeyValuePair<K, V>> {
 /// .NET's array-backed ordered map: a lookup is a binary search, and the
 /// position of a key is part of the API -- IndexOfKey, GetKeyAtIndex,
 /// RemoveAt. That is the whole difference from SortedDictionary.
-class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+public class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -924,7 +924,7 @@ class SortedList<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerab
 /// The ordered map without the positions: a Dictionary whose enumeration is in
 /// key order. In .NET it is a tree and inserting is logarithmic; here it is the
 /// same store as SortedList, so the ANSWERS match and the insert cost does not.
-class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+public class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -1239,7 +1239,7 @@ class SortedDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEn
 // hand back the same sequence here and there, and UnorderedItems walks the
 // same array order.
 
-class PriorityQueue<TElement, TPriority> {
+public class PriorityQueue<TElement, TPriority> {
     private const int Arity = 4;
 
     private TElement[] elements;
@@ -1613,7 +1613,7 @@ class PriorityQueue<TElement, TPriority> {
 // IDictionary, IDictionaryEnumerator and DictionaryEntry are Core.cor's
 // too: an exception's Data is one.
 
-interface IComparer {
+public interface IComparer {
     int Compare(object? x, object? y);
 }
 
@@ -1653,7 +1653,7 @@ sealed class ObjectCollection : ICollection {
     public void CopyTo(Array array, int index) { ObjectCopy.Into(_items, array, index); }
 }
 
-class ArrayList : IList {
+public class ArrayList : IList {
     private List<object?> _items;
 
     public ArrayList() { _items = new List<object?>(); }
@@ -1705,7 +1705,7 @@ class ArrayList : IList {
     public virtual IEnumerator GetEnumerator() { return new ObjectWalk(_items); }
 }
 
-class Hashtable : IDictionary {
+public class Hashtable : IDictionary {
     private readonly Dictionary<object, object?> _map;
     private readonly List<object> _order = new List<object>();
 
@@ -1797,7 +1797,7 @@ class Hashtable : IDictionary {
     }
 }
 
-class Stack : ICollection {
+public class Stack : ICollection {
     private readonly List<object?> _items = new List<object?>();
 
     public Stack() { }
@@ -1839,7 +1839,7 @@ class Stack : ICollection {
     public virtual IEnumerator GetEnumerator() { List<object?> top = new List<object?>(_items); top.Reverse(); return new ObjectWalk(top); }
 }
 
-class Queue : ICollection {
+public class Queue : ICollection {
     private readonly List<object?> _items = new List<object?>();
 
     public Queue() { }
@@ -1883,7 +1883,7 @@ class Queue : ICollection {
 // the same job at eight times the storage, which is exactly the trade the type
 // exists to make -- a sieve or a free-space map is millions of bits.
 
-class BitArray {
+public class BitArray {
     private int[] words;
     private int length;
 
@@ -2000,7 +2000,7 @@ class BitArray {
 // interface with no way to change it. What they promise is that the CALLER
 // cannot add or remove -- the owner still can, and the view shows it.
 
-class ReadOnlyDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
+public class ReadOnlyDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -2054,7 +2054,7 @@ class ReadOnlyDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, I
 // System.Collections.Specialized's list of strings, what Clipboard's file
 // drop lists are: nulls allowed, duplicates kept, order as added.
 
-class StringCollection : IEnumerable<string> {
+public class StringCollection : IEnumerable<string> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -2100,7 +2100,7 @@ namespace System.Threading.Tasks
     /// among the processors, a task for each share, the call returning when all
     /// are done -- an iteration's exception thrown as an AggregateException of
     /// every one, as Task.WaitAll throws them.
-    static class Parallel
+    public static class Parallel
     {
         public static ParallelLoopResult For(int fromInclusive, int toExclusive, Action<int> body)
         {
@@ -2189,7 +2189,7 @@ namespace System.Threading.Tasks
     }
 
     /// What a Parallel loop answers: that it ran to the end.
-    struct ParallelLoopResult
+    public struct ParallelLoopResult
     {
         public ParallelLoopResult(bool completed) { IsCompleted = completed; }
         public bool IsCompleted { get; }
@@ -2327,7 +2327,7 @@ sealed class __Rectangular3<T> : IEnumerable<T> {
 namespace System.Collections.Concurrent
 {
     /// A collection one thread can add to while another takes from it.
-    interface IProducerConsumerCollection<T> : IEnumerable<T>, IReadOnlyCollection<T>
+    public interface IProducerConsumerCollection<T> : IEnumerable<T>, IReadOnlyCollection<T>
     {
         bool TryAdd(T item);
         bool TryTake(out T item);
@@ -2340,7 +2340,7 @@ namespace System.Collections.Concurrent
     /// and it is read in that order too, newest first, as .NET's one thread's
     /// list is: a bag of 0..5 enumerates 5,4,3,2,1,0, and one made from a
     /// list holds it backwards.
-    class ConcurrentBag<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
+    public class ConcurrentBag<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
     {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -2434,7 +2434,7 @@ namespace System.Collections.Concurrent
     }
 
     /// First in, first out, for many threads.
-    class ConcurrentQueue<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
+    public class ConcurrentQueue<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
     {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -2528,7 +2528,7 @@ namespace System.Collections.Concurrent
     }
 
     /// Last in, first out, for many threads.
-    class ConcurrentStack<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
+    public class ConcurrentStack<T> : IProducerConsumerCollection<T>, IReadOnlyCollection<T>, IEnumerable<T>
     {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -2675,7 +2675,7 @@ namespace System.Collections.Concurrent
     /// Get-or-Add and Add-or-Update forms are what make read-then-write safe.
     /// A value factory runs outside the lock, as .NET's does -- so it may run
     /// more than once for a key when threads race, and only one result is kept.
-    class ConcurrentDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>
+    public class ConcurrentDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>
     {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }

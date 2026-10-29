@@ -29,7 +29,7 @@ using System.Runtime.InteropServices;
 /// System.ComponentModel's Win32Exception: a Windows error by its number --
 /// on Unix an errno, in strerror's words. Here beside Marshal, whose words they
 /// are, and so where Marshal is: a hosted program's.
-class Win32Exception : ExternalException
+public class Win32Exception : ExternalException
 {
     private int _native;
     // THE SYSTEM'S WORDS FOR THE ERROR, as .NET's on Unix: strerror, and
@@ -42,7 +42,7 @@ class Win32Exception : ExternalException
     public int NativeErrorCode => _native;
 }
 
-static partial class Marshal
+public static partial class Marshal
 {
     /// How many bytes a value of T takes laid out for native code: its
     /// layout here, which is the C one (StructLayout as written).
@@ -510,7 +510,7 @@ static class Interop
 /// through it writes the list, and adding to the list afterwards may leave the
 /// span pointing at the array the list has abandoned. That is .NET's contract
 /// and it is what makes patching bytes already appended cheap.
-static class CollectionsMarshal
+public static class CollectionsMarshal
 {
     public static Span<T> AsSpan<T>(List<T>? list)
     {

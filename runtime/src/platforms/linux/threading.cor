@@ -7,7 +7,7 @@
 ///
 /// (These belong to runtime/src/platforms/linux/system.cor in spirit -- they are the only Linux
 /// facts in this file -- and move there when a second target needs its own.)
-static class Clock
+public static class Clock
 {
     const int ClockGettime = LinuxCall.ClockGetTime;      // (clockid, struct timespec *)
     const int ClockNanosleep = LinuxCall.ClockNanosleep;  // (clockid, flags, request, remain)
@@ -388,7 +388,7 @@ static class Native
 
 namespace System.Threading
 {
-partial class Thread
+public partial class Thread
 {
     // A THREAD C CAN RUN IN. When the C library is loaded -- a program with
     // a [DllImport], or one linked against a library that has one -- a new

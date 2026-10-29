@@ -16,7 +16,7 @@ using System.Threading;
 /// invent: a program written against System.ConsoleKey elsewhere must mean
 /// the same thing here, and half an enum is a trap for whoever reaches for
 /// the member that is missing.
-enum ConsoleKey
+public enum ConsoleKey
 {
     None = 0,
     Backspace = 8,
@@ -165,7 +165,7 @@ enum ConsoleKey
     OemClear = 254
 }
 
-enum ConsoleModifiers
+public enum ConsoleModifiers
 {
     None = 0,
     Alt = 1,
@@ -173,7 +173,7 @@ enum ConsoleModifiers
     Control = 4
 }
 
-class ConsoleKeyInfo
+public class ConsoleKeyInfo
 {
     public char KeyChar;
     public ConsoleKey Key;
@@ -190,7 +190,7 @@ class ConsoleKeyInfo
 }
 
 /// Which key combination interrupted the process.
-enum ConsoleSpecialKey
+public enum ConsoleSpecialKey
 {
     ControlC = 0,
     ControlBreak = 1,
@@ -198,7 +198,7 @@ enum ConsoleSpecialKey
 
 /// What a CancelKeyPress handler is told, and how it says the process is to
 /// go on: Cancel set keeps it running.
-class ConsoleCancelEventArgs
+public class ConsoleCancelEventArgs
 {
     readonly ConsoleSpecialKey _key;
 
@@ -212,19 +212,19 @@ class ConsoleCancelEventArgs
     public ConsoleSpecialKey SpecialKey => _key;
 }
 
-interface ConsoleCancelEventHandler
+public interface ConsoleCancelEventHandler
 {
     void Invoke(object? sender, ConsoleCancelEventArgs e);
 }
 
 /// The sixteen console colours, numbered as .NET numbers them.
-enum ConsoleColor
+public enum ConsoleColor
 {
     Black = 0, DarkBlue = 1, DarkGreen = 2, DarkCyan = 3, DarkRed = 4, DarkMagenta = 5, DarkYellow = 6, Gray = 7,
     DarkGray = 8, Blue = 9, Green = 10, Cyan = 11, Red = 12, Magenta = 13, Yellow = 14, White = 15,
 }
 
-static class Console
+public static class Console
 {
     static TextWriter? _out;
     static TextWriter? _error;

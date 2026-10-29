@@ -99,6 +99,15 @@ public abstract class MemberDecl : Node
     /// </summary>
     public bool Fresh { get; set; }
 
+    /// <summary>
+    /// Written by the compiler, not the program: a record's equality and
+    /// hash, a delegate's multicast class -- source text it made and parsed
+    /// (Parser, `_written` false). Its body is bound as the compiler's code
+    /// (Binder.BindingProgramCode): it names the class library's own types
+    /// (Sys, __Delegates), which C# hides from the program's code.
+    /// </summary>
+    public bool Made { get; set; }
+
     internal bool Expanded { get; set; }
     /// <summary>Indexed unit ownership; null retains the enclosing type's legacy ownership.</summary>
     public bool? OwnedImplementation { get; set; }

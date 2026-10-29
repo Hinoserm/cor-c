@@ -680,7 +680,10 @@ public sealed partial class Binder
         {
             for (string? at = pass == 0 ? fromType : fromNamespace; at is not null; at = Enclosing(at))
             {
-                if (TypeCandidateIn(at, name, out sym))
+                // NOT A CLASS LIBRARY TYPE THE PROGRAM CANNOT SEE (HiddenFromProgram):
+                // a program written in Corsac.Lang walks out through Corsac,
+                // and the library's internal Corsac types are not there to it.
+                if (TypeCandidateIn(at, name, out sym) && !HiddenFromProgram(sym))
                 {
                     return true;
                 }
@@ -1124,28 +1127,14 @@ public sealed partial class Binder
 
         sym = null;
 
-        // A CLASS LIBRARY'S TYPE NOT DECLARED PUBLIC STEPS ASIDE for any
-        // other the program's usings bring in under its name: C# shows
-        // another assembly none of its internal types, and System.Threading's
-        // `Named` made Corsac.Lang.RegAlloc's ambiguous, so no type at all.
-        // Only aside, never hidden: the library does not mark its public
-        // types (`partial class Thread`), and alone it is the type meant.
-        TypeSymbol? aside = null;
-        bool asideTwice = false;
         foreach ((string In, string Namespace) import in file.Imports)
         {
             // By its parts (TypeCandidateIn): a name and each namespace the
             // file imports, asked from every mention, spelt to be told no.
+            // Not one the program cannot see (HiddenFromProgram).
             if (import.In != at
-                || !TypeCandidateIn(import.Namespace, name, out TypeSymbol? found))
+                || !TypeCandidateIn(import.Namespace, name, out TypeSymbol? found) || HiddenFromProgram(found))
             {
-                continue;
-            }
-            if (found?.Decl is { } decl && (decl.Outer is null || decl.Outer == decl.Namespace)
-                && (decl.Mods & Mods.Public) == 0 && ClassLibrarySide(decl) && BindingProgramCode())
-            {
-                if (aside is not null && !ReferenceEquals(aside, found)) asideTwice = true;
-                aside = found;
                 continue;
             }
 
@@ -1157,7 +1146,6 @@ public sealed partial class Binder
             sym = found;
         }
 
-        if (sym == null && !asideTwice) sym = aside;
         return sym != null;
     }
 
@@ -1215,7 +1203,7 @@ public sealed partial class Binder
     {
         if (_made > 0) return false;
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
-        if (written is null || written.File == "<prelude>" || _member is { LocalCopy: true }) return false;
+        if (written is null || written.File == "<prelude>" || _member is { LocalCopy: true } or { Made: true }) return false;
         return !ClassLibrarySide(written);
     }
 
@@ -1231,6 +1219,7 @@ public sealed partial class Binder
     /// </summary>
     private bool LibraryGlobalVisible(TypeSymbol sym)
     {
+        if (HiddenFromProgram(sym)) return false;
         if (sym.Decl is not { Outer: null } d || d.Namespace.Length != 0 || !ClassLibrarySide(d)) return true;
         // A COPY OF A TEMPLATE, by the template's: `List<int>` is List$int by
         // the time it is bound, and is System.Collections.Generic's as List is.
@@ -1238,6 +1227,19 @@ public sealed partial class Binder
         if (LibraryNamespaces.Of(key) is not string space || !BindingProgramCode()) return true;
         return NamespaceInScope(space);
     }
+
+    /// <summary>
+    /// A CLASS LIBRARY TYPE THE PROGRAM CANNOT SEE: one written at the top of
+    /// a namespace (or none) without `public`, which C# makes internal to the
+    /// library's assembly -- invisible to a program's code by any name,
+    /// written alone or qualified, through a using or the namespaces around
+    /// it, whether or not anything else has its name. The library's own code,
+    /// a specialisation of its templates and code the compiler wrote see it
+    /// (BindingProgramCode).
+    /// </summary>
+    private bool HiddenFromProgram(TypeSymbol? sym)
+        => sym?.Decl is { Specialised: false } d && (d.Outer is null || d.Outer == d.Namespace)
+        && (d.Mods & Mods.Public) == 0 && ClassLibrarySide(d) && BindingProgramCode();
 
     /// <summary>
     /// Whether namespace `space` is in scope where the name being bound was
@@ -1313,6 +1315,9 @@ public sealed partial class Binder
         }
         if (Sole(bare, out TypeSymbol? only) && only?.Decl is TypeDecl decl)
         {
+            // CS0122's case: it is there, and internal to the class library.
+            if (HiddenFromProgram(only))
+                return $" ({only.Key} is internal to the class library: CS0122, inaccessible due to its protection level)";
             string path = only.Key;
             return decl.Outer is null || decl.Outer == decl.Namespace
                 ? $" (it is {path}: add `using {decl.Namespace};`)"
@@ -10841,7 +10846,7 @@ public sealed partial class Binder
     {
         MemberExpr helper = new()
         {
-            Target = new NameExpr { Name = DelegatesHelper, Line = at.Line, Col = at.Col },
+            Target = new NameExpr { Name = LibraryType(DelegatesHelper), Line = at.Line, Col = at.Col },
             Name = add ? "Combine" : "Remove", Line = at.Line, Col = at.Col,
         };
         // THE DELEGATE NAMED, not inferred: a lambda or a method group on the
@@ -10858,7 +10863,12 @@ public sealed partial class Binder
         return made;
     }
 
-    /// <summary>The runtime's class of what delegate operators become, under a name no program writes.</summary>
+    /// <summary>
+    /// The runtime's class of what delegate operators become, under a name no
+    /// program writes, and named by its library spelling (LibraryType): it is
+    /// the class library's own, which a program's code does not see
+    /// (HiddenFromProgram), and the compiler writes it into that code.
+    /// </summary>
     private const string DelegatesHelper = "__Delegates";
 
     /// <summary>
@@ -26894,7 +26904,7 @@ public sealed partial class Binder
                     {
                         Target = new MemberExpr
                         {
-                            Target = new NameExpr { Name = DelegatesHelper, Line = b.Line, Col = b.Col, File = b.File },
+                            Target = new NameExpr { Name = LibraryType(DelegatesHelper), Line = b.Line, Col = b.Col, File = b.File },
                             Name = "Same", Line = b.Line, Col = b.Col, File = b.File,
                         },
                         Line = b.Line, Col = b.Col, File = b.File,

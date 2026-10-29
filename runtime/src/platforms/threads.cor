@@ -8,7 +8,7 @@
 // and no threads, which is how the same scheduler (lib/threading.cor) runs
 // in the bootloader and the kernel.
 
-static partial class Scheduler
+public static partial class Scheduler
 {
     /// Runs posted work on `count` threads from now on. Zero leaves the
     /// single-threaded event loop alone, which is the default.
@@ -52,7 +52,7 @@ static partial class Scheduler
 /// (Scheduler.UseThreads), once -- a later call leaves them as they are.
 /// corc asks for its --jobs this way; an #if !NET around UseThreads was
 /// never compiled, as corc defines NET for the framework it builds for.
-static partial class ThreadPool
+public static partial class ThreadPool
 {
     public static bool SetMinThreads(int workerThreads, int completionPortThreads)
     {
@@ -62,7 +62,7 @@ static partial class ThreadPool
     }
 }
 
-static partial class Scheduler
+public static partial class Scheduler
 {
     /// How many worker threads UseThreads started: zero for the event loop alone.
     public static int ThreadCount => _workers;
@@ -212,7 +212,7 @@ public delegate void ThreadStart();
 /// A thread body handed one argument, Start(object) passing it, as .NET's.
 public delegate void ParameterizedThreadStart(object? obj);
 
-class ThreadStateException : SystemException
+public class ThreadStateException : SystemException
 {
 
     internal override int Code => unchecked((int)0x80131520);
@@ -221,7 +221,7 @@ class ThreadStateException : SystemException
     public ThreadStateException(string? message, Exception? innerException) : base(message ?? "Thread was in an invalid state for the operation being executed.", innerException) { }
 }
 
-partial class Thread
+public partial class Thread
 {
     // LAYOUT: these two must stay the first instance fields (see Atom). _done
     // is what Join waits on, and it is a futex word, so it must have an
@@ -847,7 +847,7 @@ partial class Thread
 /// The half of System.Environment (stdlib's environment.cor) that is a
 /// thread's, kept here beside Thread: a freestanding image has no Thread,
 /// and compiles environment.cor all the same -- CORSAC's ring-1 kernels do.
-static partial class Environment
+public static partial class Environment
 {
     /// The running thread's ManagedThreadId, as Thread.CurrentThread has it:
     /// 1 on the first thread.
@@ -2691,7 +2691,7 @@ public class ManualResetEventSlim : IDisposable
 // which that stack is empty. No safepoint poll goes in a Runtime routine's
 // loop (BackEdgePolls), and nothing is left in an MMX register from one
 // instruction to the next: the scans read their pattern from memory.
-static partial class Runtime
+public static partial class Runtime
 {
     /// THE COPY AROUND THE CACHES of a block too long to be read again soon
     /// (Selector.StreamBytes and over, a length known only as it runs):

@@ -2091,7 +2091,7 @@ namespace System.Runtime.InteropServices
 /// are, references, wrappers released, HRESULTs, BSTRs and VARIANTs. Its
 /// pointers are IntPtr, as .NET's are; each becomes the library's nuint at
 /// its one call into ComMarshal (CONTRACT 1).
-static partial class Marshal
+public static partial class Marshal
 {
     public static nint GetIUnknownForObject(object o)
     {

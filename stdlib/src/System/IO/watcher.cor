@@ -9,7 +9,7 @@ using System.IO;
 using System.Threading;
 
 [Flags]
-enum NotifyFilters
+public enum NotifyFilters
 {
     FileName = 1,
     DirectoryName = 2,
@@ -22,7 +22,7 @@ enum NotifyFilters
 }
 
 [Flags]
-enum WatcherChangeTypes
+public enum WatcherChangeTypes
 {
     Created = 1,
     Deleted = 2,

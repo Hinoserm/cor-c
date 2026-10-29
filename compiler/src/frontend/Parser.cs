@@ -2320,6 +2320,8 @@ public sealed class Parser
         // see refused it ("'Maker' could not be found").
         Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(delegateDecl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated, _written = false };
         CompilationUnit unit = sub.ParseUnit();
+        foreach (TypeDecl madeType in unit.Types)
+            foreach (MemberDecl madeMember in madeType.Members) madeMember.Made = true;
         if (unit.Types.Count != 1) return null;
         TypeDecl made = unit.Types[0];
         // The declaration index slices a file by each type's source span and
@@ -2729,6 +2731,7 @@ public sealed class Parser
         Parser sub = new(Lexer.Tokenize(generated, _file), _file, SkipWritten(decl.TypeParams.Count > 0), _includeTemplateBodies) { Source = generated, _written = false };
         CompilationUnit unit = sub.ParseUnit();
         if (unit.Types.Count != 1) return;
+        foreach (MemberDecl made in unit.Types[0].Members) made.Made = true;
         Adopt(unit.Types[0].Members);
         decl.Members.AddRange(unit.Types[0].Members);
     }

@@ -7,7 +7,7 @@
 using System;
 using System.IO;
 
-enum FileMode
+public enum FileMode
 {
     CreateNew = 1,
     Create = 2,
@@ -17,7 +17,7 @@ enum FileMode
     Append = 6
 }
 
-enum FileAccess
+public enum FileAccess
 {
     Read = 1,
     Write = 2,
@@ -30,7 +30,7 @@ enum FileAccess
 /// (IOException) when another stream's lock is in the way. The other bits
 /// are .NET's and are accepted.
 [Flags]
-enum FileShare
+public enum FileShare
 {
     None = 0,
     Read = 1,
@@ -43,7 +43,7 @@ enum FileShare
 /// How a file is opened beyond its mode and access, as .NET names it. Accepted;
 /// none changes what a read or a write does here.
 [Flags]
-enum FileOptions
+public enum FileOptions
 {
     WriteThrough = unchecked((int)0x80000000),
     None = 0,
@@ -54,7 +54,7 @@ enum FileOptions
     Asynchronous = 0x40000000
 }
 
-enum SeekOrigin
+public enum SeekOrigin
 {
     Begin = 0,
     Current = 1,
@@ -66,7 +66,7 @@ enum SeekOrigin
 /// single-threaded and the descriptors block -- which is legal for a
 /// Stream and what .NET's base class does for a stream that does not
 /// override them.
-abstract class Stream : IDisposable, IAsyncDisposable
+public abstract class Stream : IDisposable, IAsyncDisposable
 {
     public abstract bool CanRead { get; }
     public abstract bool CanWrite { get; }
@@ -330,7 +330,7 @@ abstract class Stream : IDisposable, IAsyncDisposable
 }
 
 /// .NET 6's FileStreamOptions, and .NET 7's UnixCreateMode.
-sealed class FileStreamOptions
+public sealed class FileStreamOptions
 {
     public FileMode Mode { get; set; } = FileMode.Open;
     public FileAccess Access { get; set; } = FileAccess.Read;
@@ -342,7 +342,7 @@ sealed class FileStreamOptions
 
 /// A stream over a descriptor: a file opened by path, or a handle the
 /// program already holds (standard input, a pipe end).
-class FileStream : Stream
+public class FileStream : Stream
 {
     int _fd;
     bool _canRead;
@@ -829,7 +829,7 @@ sealed class NullStream : Stream
     public override void Write(byte[] buffer, int offset, int count) { }
 }
 
-class MemoryStream : Stream, IOwnsStorage
+public class MemoryStream : Stream, IOwnsStorage
 {
     byte[] _bytes;
     /// Whether GetBuffer handed the array out: it is then the caller's too,
@@ -1070,7 +1070,7 @@ class MemoryStream : Stream, IOwnsStorage
 /// .NET's TextWriter: characters out, in whatever encoding the writer
 /// underneath uses. A line ends with NewLine, "\n" on this system as on
 /// every Unix .NET runs on.
-abstract class TextWriter : IDisposable
+public abstract class TextWriter : IDisposable
 {
     string _newLine = "\n";
 
@@ -1334,7 +1334,7 @@ sealed class NullTextWriter : TextWriter
     public override void Write(char[] buffer, int index, int count) { }
 }
 
-abstract class TextReader : IDisposable
+public abstract class TextReader : IDisposable
 {
     public virtual void Close()
     {
@@ -1403,7 +1403,7 @@ abstract class TextReader : IDisposable
 /// The characters are gathered and encoded a block at a time. A high surrogate
 /// at the end of a block waits for the low one that follows it, so a pair split
 /// across two writes is still one character in the bytes.
-class StreamWriter : TextWriter
+public class StreamWriter : TextWriter
 {
     const int DefaultBufferSize = 1024;
 
@@ -1619,7 +1619,7 @@ class StreamWriter : TextWriter
 ///
 /// Bytes are decoded a buffer at a time, and a sequence cut off by the end of
 /// one buffer waits for the rest of it in the next.
-class StreamReader : TextReader
+public class StreamReader : TextReader
 {
     const int DefaultBufferSize = 1024;
 
@@ -1929,7 +1929,7 @@ class StreamReader : TextReader
 }
 
 /// Whether a search looks in the directory alone or in every one below it.
-enum SearchOption
+public enum SearchOption
 {
     TopDirectoryOnly = 0,
     AllDirectories = 1,
@@ -1939,7 +1939,7 @@ enum SearchOption
 /// System.IO.Enumeration.FileSystemName -- .NET's own matcher for the search
 /// pattern GetFiles and GetDirectories take. `*` stands for any run of
 /// characters, `?` for exactly one, and everything else for itself.
-static class FileSystemName
+public static class FileSystemName
 {
     public static bool MatchesSimpleExpression(string expression, string name)
     {
@@ -1975,7 +1975,7 @@ static class FileSystemName
 }
 
 
-partial static class Directory
+public partial static class Directory
 {
     public static bool Exists(string path)
     {
@@ -2160,7 +2160,7 @@ partial static class Directory
 /// library with the rest of Path, where a freestanding image can have them.
 /// GetFullPath cannot: it asks where the program is, and a machine with no
 /// operating system has no answer.
-static partial class Path
+public static partial class Path
 {
     /// WHAT THE FILING SYSTEM REFUSES IN A NAME, which on Unix is NUL and the
     /// separator and nothing else -- .NET's answer there. A new array each
@@ -2336,7 +2336,7 @@ static partial class Path
 /// them. A [Flags] enum whose values are the octal ones the kernel uses, so
 /// that the enum and the number a chmod takes are the same bits.
 [Flags]
-enum UnixFileMode
+public enum UnixFileMode
 {
     None = 0,
     OtherExecute = 1,
@@ -2355,7 +2355,7 @@ enum UnixFileMode
 
 /// System.IO.File: whole-file reads and writes, as .NET spells them. A
 /// missing file is a FileNotFoundException, not a null.
-partial static class File
+public partial static class File
 {
     public static bool Exists(string path)
     {
@@ -2746,7 +2746,7 @@ partial static class File
 
 // ---- the file system as objects: FileSystemInfo, FileInfo, DirectoryInfo ---
 
-enum FileAttributes
+public enum FileAttributes
 {
     ReadOnly = 1,
     Hidden = 2,
@@ -2763,7 +2763,7 @@ enum FileAttributes
 /// reading a clock is a call on the platform, and a freestanding build has
 /// no platform to call. This machine keeps no zone, so the local reading and
 /// the UTC one differ by the offset TimeZoneInfo.Local has at that moment.
-partial struct DateTimeOffset
+public partial struct DateTimeOffset
 {
     public static DateTimeOffset UtcNow => new DateTimeOffset(DateTime.UtcNow, TimeSpan.Zero);
 
@@ -2785,7 +2785,7 @@ partial struct DateTimeOffset
 
 /// What .NET calls a moment on this platform's clock: the wall clock, as
 /// gettimeofday reports it, and the monotonic clock for Environment.
-partial struct DateTime
+public partial struct DateTime
 {
     public static DateTime UtcNow
     {
@@ -2890,7 +2890,7 @@ static class IoErrno
 /// has it. The extra members beyond .NET's -- OwnerId, GroupId, LinkCount,
 /// Inode, IsSymbolicLink, IsDirectoryEntry -- are the few things a Unix
 /// utility needs that .NET's own class leaves to P/Invoke.
-abstract class FileSystemInfo
+public abstract class FileSystemInfo
 {
     protected string _path;
     protected byte[]? _stat;
@@ -3151,7 +3151,7 @@ abstract class FileSystemInfo
     }
 }
 
-class FileInfo : FileSystemInfo
+public class FileInfo : FileSystemInfo
 {
     public FileInfo(string path) : base(path)
     {
@@ -3256,7 +3256,7 @@ class FileInfo : FileSystemInfo
     }
 }
 
-class DirectoryInfo : FileSystemInfo
+public class DirectoryInfo : FileSystemInfo
 {
     public DirectoryInfo(string path) : base(path)
     {
@@ -3436,7 +3436,7 @@ static class FileSystem
     }
 }
 
-partial static class File
+public partial static class File
 {
     public static FileStream Create(string path)
     {
@@ -3696,7 +3696,7 @@ partial static class File
     }
 }
 
-partial static class Directory
+public partial static class Directory
 {
     /// Where a symbolic link to a directory points (.NET 6's
     /// Directory.ResolveLinkTarget): File.ResolveLinkTarget's walk, the
@@ -3874,7 +3874,7 @@ namespace System.IO
 }
 
 /// System.IO.DriveType, as .NET names the kinds.
-enum DriveType
+public enum DriveType
 {
     Unknown = 0,
     NoRootDirectory = 1,
@@ -3893,7 +3893,7 @@ enum DriveType
 /// members. The one addition is DeviceName, which .NET has nowhere to put and
 /// `df` cannot print its first column without: the thing mounted, as opposed
 /// to the place it is mounted on.
-class DriveInfo
+public class DriveInfo
 {
     string _mount;
     string _device = "";
@@ -4323,7 +4323,7 @@ namespace Microsoft.Win32.SafeHandles
     }
 }
 
-partial static class File
+public partial static class File
 {
     /// A handle on a file with no stream and no position of its own, as
     /// .NET's File.OpenHandle: what RandomAccess reads and writes by offset.

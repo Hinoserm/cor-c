@@ -13,7 +13,7 @@
 // itself keeps (its handlers run on a thread pool thread, not in the
 // signal frame).
 
-enum PosixSignal
+public enum PosixSignal
 {
     SIGHUP = 1,
     SIGINT = 2,
@@ -30,7 +30,7 @@ enum PosixSignal
     SIGWINCH = 28
 }
 
-class PosixSignalContext
+public class PosixSignalContext
 {
     public PosixSignal Signal;
     public bool Cancel;
@@ -41,7 +41,7 @@ interface PosixSignalHandler
     void Invoke(PosixSignalContext context);
 }
 
-class PosixSignalRegistration : IDisposable
+public class PosixSignalRegistration : IDisposable
 {
     const int MaxSignal = 32;
     static PosixSignalHandler?[]? _handlers;

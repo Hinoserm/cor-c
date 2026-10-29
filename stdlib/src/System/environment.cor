@@ -1,7 +1,7 @@
 // System.Environment: the process's arguments, environment, working
 // directory and exit, as .NET spells them. CurrentManagedThreadId is the
 // Linux runtime's (runtime/src/platforms/linux/threading.cor), beside Thread.
-static partial class Environment
+public static partial class Environment
 {
     static string[]? _args;
     static string[]? _env;
@@ -498,7 +498,7 @@ static partial class Environment
 /// GetData as a string, and by TryGetSwitch when it reads as a bool, as
 /// .NET's AppContext answers runtimeconfig.json's configProperties. What the
 /// program sets itself comes first, as it does in .NET.
-static class AppContext
+public static class AppContext
 {
     /// .NET's run-time switches: a name and whether it is on, set by the
     /// program, read by whoever asks. The collector asks "Corsac.GC.Stats" as

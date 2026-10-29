@@ -98,7 +98,7 @@ interface IConsole
 /// `new`, no arrays, no strings built at run time. A string LITERAL is data
 /// the compiler laid out, and is fine. That is system.cor's rule and it is
 /// the same rule here.
-static class Platform
+public static class Platform
 {
     /// A call that may wait, made as a blocking one to the collector, as the
     /// Linux platform makes one. A ring-1 kernel has a kernel below it, and
@@ -1121,7 +1121,7 @@ static class Platform
 /// Partial for the one exception: CORSAC's ring-1 kernels, which have a
 /// kernel below them that answers Linux's file calls, compile the Linux
 /// platform's files.cor beside this for them.
-static partial class Os
+public static partial class Os
 {
     /// The processors the kernel below says this image runs on
     /// (Platform.ProcessorCountHook), and never fewer than one, as .NET's
@@ -1275,7 +1275,7 @@ static partial class Os
 /// clock ran twice as fast as time until StartClock, and every timeout
 /// taken before it -- a loader's wait, Task.Delay, Monitor.Wait -- was
 /// half as long. The mode is read back from the 8254 at the first look.
-static class Clock
+public static class Clock
 {
     const int Control = 0x43;
     const int Channel0 = 0x40;

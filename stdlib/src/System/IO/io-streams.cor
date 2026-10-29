@@ -12,7 +12,7 @@ using System.IO;
 /// of the device precisely because it is its own type.
 namespace System.IO
 {
-class EndOfStreamException : IOException
+public class EndOfStreamException : IOException
 {
     internal override int Code => unchecked((int)0x80070026);
     public EndOfStreamException() : base("Attempted to read past the end of the stream.") { }
@@ -29,7 +29,7 @@ class EndOfStreamException : IOException
 /// with the device, and .NET puts it under SystemException for that reason.
 namespace System.IO
 {
-class InvalidDataException : SystemException
+public class InvalidDataException : SystemException
 {
     public InvalidDataException() : base("Found invalid data while decoding.") { }
 
@@ -49,7 +49,7 @@ class InvalidDataException : SystemException
 /// A TextWriter that keeps what is written to it. This is how a program calls
 /// something that formats to a TextWriter and gets the text back instead of a
 /// file -- .NET's own ToString-by-writer pattern.
-class StringWriter : TextWriter
+public class StringWriter : TextWriter
 {
     StringBuilder _text;
 
@@ -91,7 +91,7 @@ class StringWriter : TextWriter
 
 /// A TextReader over a string, so that something written to read a file reads
 /// a literal in a test without one.
-class StringReader : TextReader
+public class StringReader : TextReader
 {
     string _text;
     int _at;
@@ -139,7 +139,7 @@ class StringReader : TextReader
 ///
 /// Read and write share no buffer: .NET's does the same, and flushing the
 /// write side before a read is what keeps a read-write stream coherent.
-class BufferedStream : Stream
+public class BufferedStream : Stream
 {
     Stream _inner;
     byte[] _buffer;
@@ -324,7 +324,7 @@ class BufferedStream : Stream
 // BinaryReader there and the other way round, which is the only reason to have
 // a byte format at all.
 
-class BinaryWriter : IDisposable
+public class BinaryWriter : IDisposable
 {
     Stream _stream;
     bool _leaveOpen;
@@ -517,7 +517,7 @@ class BinaryWriter : IDisposable
     // most it can take.
 }
 
-class BinaryReader : IDisposable
+public class BinaryReader : IDisposable
 {
     Stream _stream;
     bool _leaveOpen;

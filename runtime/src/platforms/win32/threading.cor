@@ -6,7 +6,7 @@
 // a word parks on one of a few semaphores chosen by the word's address
 // (Win32.Park), and a wake releases what waits there.
 
-static class Clock
+public static class Clock
 {
     const long NanosPerMilli = 1000000;
 
@@ -71,7 +71,7 @@ static class Native
 
 namespace System.Threading
 {
-partial class Thread
+public partial class Thread
 {
     [DllImport("kernel32")] static extern nuint CreateThread(nuint security, nuint stack, nuint start, nuint argument, int flags, nuint id);
     [DllImport("kernel32")] static extern int CloseHandle(nuint handle);

@@ -97,7 +97,7 @@
 //
 // The record is not a block and is never swept.
 
-static class Gc
+public static class Gc
 {
     // AN ADDRESS IS A nuint (Sys's), and so is a length in memory: one
     // register on i386. These layout figures are ints, which a nuint's sum
@@ -15378,7 +15378,7 @@ static class Gc
 // The record is not a block and is never swept. This class knows nothing
 // about blocks; it is the part of the heap a precise collector keeps.
 
-static class HeapChunks
+public static class HeapChunks
 {
     const int ChunkNext = 0;
     const int ChunkEnd = WordSize.Bytes;
@@ -17041,7 +17041,7 @@ static class GcRoots
 /// The heap lock, and the flag that says a collection is running. Both are
 /// words of memory from the operating system rather than static fields: a
 /// futex needs an address, and a static field has none the language can take.
-static class GcLock
+public static class GcLock
 {
     public const int Collecting = 0 * WordSize.Bytes;   // 1 while a collection is running
     public const int Held = 1 * WordSize.Bytes;         // the heap lock: 0 free, else the thread block of its holder
@@ -17189,7 +17189,7 @@ static class GcLock
 /// same reason GcRoots' extra roots are: registering a thread must not
 /// allocate, and a heap block here would be one the collector had to keep
 /// alive forever. A program with one thread never makes the table at all.
-static class GcThreads
+public static class GcThreads
 {
     const int Max = 256;
 

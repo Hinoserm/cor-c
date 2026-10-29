@@ -264,7 +264,7 @@ static class LinuxCall
 #endif
 
 /// The three standard descriptors, as os/lib/user.cor spells them.
-static class Fd
+public static class Fd
 {
     public const int In = 0;
     public const int Out = 1;
@@ -273,7 +273,7 @@ static class Fd
 
 /// open(2) flags, Linux i386 values. The same names and -- not by accident --
 /// the same numbers as os/lib/user.cor's O, which took them from Linux.
-static class O
+public static class O
 {
     public const int Read = 0;          // O_RDONLY
     public const int Write = 1;         // O_WRONLY
@@ -299,7 +299,7 @@ static class O
 /// The errno values a program here has a reason to test for. A failed call
 /// answers the NEGATIVE of one of these, as the raw kernel interface does;
 /// there is no errno variable because there is no libc.
-static class Err
+public static class Err
 {
     public const int Perm = 1;         // EPERM
     public const int NoEnt = 2;        // ENOENT
@@ -394,7 +394,7 @@ static class SyscallRegister
 
 /// Little-endian fields in a byte array. The one place that knows how the
 /// machine spells a number wider than a byte.
-static class Raw
+public static class Raw
 {
     public static byte U8(byte[] b, int at)
     {
@@ -482,7 +482,7 @@ static class Raw
 }
 
 /// lseek(2)'s third argument.
-static class Whence
+public static class Whence
 {
     public const int Set = 0;
     public const int Current = 1;
@@ -495,7 +495,7 @@ static class Whence
 /// every count and time in it 64 bits wide, so a file's size, its inode and
 /// its times need no year-2038 or 2 GB workaround on i386. (stat64 packed
 /// i386's 64-bit fields to four bytes and kept its times in 32 bits.)
-static class StatBuf
+public static class StatBuf
 {
     public const int Bytes = 256;
 
@@ -596,7 +596,7 @@ static class StatBuf
 /// name Stat then means that method and never the type, so the type had to be
 /// called something else. A utility written against user.cor says Stat.IsDir
 /// and Stat.Room, and outside Os those resolve to this.
-static class Stat
+public static class Stat
 {
     public const int Bytes = StatBuf.Bytes;
 
@@ -732,7 +732,7 @@ static class StatFs
 /// One record in a getdents64(2) buffer: an inode, an offset, the length of
 /// the record itself, a kind, and a NUL-terminated name. The records are
 /// variable length, which is why the length is in the record.
-static class Dirent
+public static class Dirent
 {
     public const int InoAt = 0;         // 8 bytes
     public const int OffAt = 8;         // 8 bytes
@@ -782,7 +782,7 @@ static class Dirent
 /// The kernel's 64-bit `struct timespec` (the time64 calls', which is also
 /// x86-64's): whole seconds and nanoseconds within the second, each 64 bits
 /// wide, on both interfaces.
-static class TimeSpec
+public static class TimeSpec
 {
     public const int Bytes = 16;
     public const int NanosAt = 8;
@@ -834,7 +834,7 @@ static class TimeVal
 
 /// Which clock. Realtime can jump -- it is the one a user sets -- so anything
 /// measuring an interval must use Monotonic and nothing else.
-static class ClockId
+public static class ClockId
 {
     public const int Realtime = 0;
     public const int Monotonic = 1;

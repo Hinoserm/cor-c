@@ -32,7 +32,7 @@ using System.Text;
 // the same as the invariant ones -- but they exist, because source that says
 // StringComparison.OrdinalIgnoreCase has to compile, and because the day a
 // culture arrives the names are already the right ones.
-enum StringComparison {
+public enum StringComparison {
     CurrentCulture,
     CurrentCultureIgnoreCase,
     InvariantCulture,
@@ -44,7 +44,7 @@ enum StringComparison {
 // WHAT SPLIT DOES WITH THE PIECES IT MAKES. A FLAGS ENUM, as .NET has it since
 // 5: the two options combine, and a caller that wants both writes the `|` it
 // would write there.
-enum StringSplitOptions {
+public enum StringSplitOptions {
     None = 0,
     RemoveEmptyEntries = 1,
     TrimEntries = 2,
@@ -63,7 +63,7 @@ static class TypeNameCache {
     internal static int Gate;       // the spin gate: 0 free, 1 held (the 32-bit atomics)
 }
 
-static class String {
+public static class String {
     // String.ToString: the string itself, as .NET answers it, whether or not
     // a format provider is given -- a string is already its own text.
     public static string ToString(string value) { return value; }
@@ -2006,7 +2006,7 @@ static class String {
 // is POSIX, so there is one separator and no drive letters; accepting '\\' as
 // well would be inventing a convention rather than following one.
 
-static partial class Path {
+public static partial class Path {
     public static char DirectorySeparatorChar = '/';
 
     /// Joins two paths. A SECOND PATH THAT IS ABSOLUTE WINS OUTRIGHT, which is
@@ -2229,7 +2229,7 @@ static partial class Path {
 // the keyword is an alias for the type and the checker resolves it. ASCII,
 // which is what this machine's console and filing system are.
 
-static class Char {
+public static class Char {
     // Equals and GetHashCode as Char overrides them: equal to its own
     // type's value only, and hashed as .NET hashes it.
     public static bool Equals(char value, char other) { return value == other; }
@@ -2405,7 +2405,7 @@ static class Char {
 // .NET puts IsHexDigit on Uri, of all places, and this compiler's own lexer
 // calls it there. The name is the part that has to match.
 /// WHAT A URI MAY BE: a whole one, or a piece to be resolved against another.
-enum UriKind {
+public enum UriKind {
     RelativeOrAbsolute = 0,
     Absolute = 1,
     Relative = 2,
@@ -2419,7 +2419,7 @@ enum UriKind {
 /// The path is NORMALISED as .NET normalises it: "/a/../b" is "/b", because a
 /// caller comparing two URIs for equality means the same resource and not the
 /// same spelling.
-class Uri {
+public class Uri {
     private string scheme;
     private string userInfo;
     private string host;
@@ -2733,7 +2733,7 @@ class Uri {
 
 /// The URI could not be read. .NET derives it from FormatException, and a
 /// program catching that catches this.
-class UriFormatException : FormatException {
+public class UriFormatException : FormatException {
     internal override int Code => unchecked((int)0x80131537);
     public UriFormatException() : base("Invalid URI: The format of the URI could not be determined.") { }
     public UriFormatException(string message) : base(message) { }
@@ -2755,7 +2755,7 @@ class UriFormatException : FormatException {
 // error, which is .NET's rule for every target except Char; other text is
 // read by the target type's own Parse, as .NET's Convert reads it.
 /// .NET's TypeCode: which of the types Convert knows a value is.
-enum TypeCode {
+public enum TypeCode {
     Empty = 0,
     Object = 1,
     DBNull = 2,
@@ -2777,12 +2777,12 @@ enum TypeCode {
 }
 
 /// Whether base 64 is broken into lines of 76.
-enum Base64FormattingOptions {
+public enum Base64FormattingOptions {
     None = 0,
     InsertLineBreaks = 1
 }
 
-static class Convert {
+public static class Convert {
     // .NET's overflow message for each target, in its words: "an Int32",
     // "a UInt32", "an unsigned byte", "a character".
     private static OverflowException Over(string what) {
@@ -4004,7 +4004,7 @@ static class Convert {
 // .NET's BitConverter, with the four members that reinterpret a number's BITS
 // rather than convert its value -- which is what a compiler does to put a
 // double in an image and take it out again.
-static class BitConverter {
+public static class BitConverter {
     public static long DoubleToInt64Bits(double value) { return Sys.Bits(value); }
     public static double Int64BitsToDouble(long value) { return Sys.FromBits(value); }
     public static int SingleToInt32Bits(float value) { return Sys.SingleBits(value); }
@@ -6736,7 +6736,7 @@ static class __Bits {
     public static int Log2(ulong value) { return value == 0 ? 0 : 63 - LeadingZeroCount(value); }
 }
 
-static class SByte {
+public static class SByte {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(sbyte value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -6928,7 +6928,7 @@ static class SByte {
     }
 }
 
-static class Int16 {
+public static class Int16 {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(short value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -7134,7 +7134,7 @@ static class Int16 {
     }
 }
 
-static class UInt16 {
+public static class UInt16 {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(ushort value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -7339,7 +7339,7 @@ static class UInt16 {
     }
 }
 
-static class UInt32 {
+public static class UInt32 {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(uint value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -7544,7 +7544,7 @@ static class UInt32 {
     }
 }
 
-static class Int64 {
+public static class Int64 {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(long value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -7753,7 +7753,7 @@ static class Int64 {
     }
 }
 
-static class Int32 {
+public static class Int32 {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(int value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -7961,7 +7961,7 @@ static class Int32 {
 
 /// The number forms a parser accepts, .NET's flags and their values.
 [Flags]
-enum NumberStyles {
+public enum NumberStyles {
     None = 0,
     AllowLeadingWhite = 1,
     AllowTrailingWhite = 2,
@@ -7986,11 +7986,11 @@ enum NumberStyles {
 /// What a formatter or a parser is told to use. .NET's every Parse, TryParse
 /// and ToString that takes a culture takes this, and a null means "the current
 /// one" -- which on a machine with one culture is the invariant one either way.
-interface IFormatProvider {
+public interface IFormatProvider {
     object? GetFormat(Type? formatType);
 }
 
-class CultureInfo : IFormatProvider {
+public class CultureInfo : IFormatProvider {
     /// One invariant culture, the same object every time, as .NET's.
     public static CultureInfo InvariantCulture { get; } = new CultureInfo();
 
@@ -8185,12 +8185,12 @@ class CultureInfo : IFormatProvider {
 }
 
 /// An object that copies itself, .NET's ICloneable.
-interface ICloneable {
+public interface ICloneable {
     object Clone();
 }
 
 /// System.IntPtr's statics: `nint` is IntPtr (C# 11), one machine word.
-static class IntPtr {
+public static class IntPtr {
     public static int Size => (int)WordSize.Bytes;
     public static nint Zero => 0;
     public static nint MaxValue => nint.MaxValue;
@@ -8216,7 +8216,7 @@ static class IntPtr {
 }
 
 /// System.UIntPtr's statics: `nuint` is UIntPtr (C# 11).
-static class UIntPtr {
+public static class UIntPtr {
     public static int Size => (int)WordSize.Bytes;
     public static nuint Zero => 0;
     public static nuint MaxValue => nuint.MaxValue;
@@ -8239,7 +8239,7 @@ static class UIntPtr {
     }
 }
 
-static class UInt64 {
+public static class UInt64 {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(ulong value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -8444,7 +8444,7 @@ static class UInt64 {
     }
 }
 
-static class Byte {
+public static class Byte {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(byte value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -8649,7 +8649,7 @@ static class Byte {
     }
 }
 
-static class Double {
+public static class Double {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(double value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -8987,7 +8987,7 @@ static class Double {
 /// exactly. Its general format is seven significant digits, as .NET
 /// Framework's float.ToString() was, so 0.1f prints 0.1 and not the double
 /// it widens to.
-static class Single {
+public static class Single {
     // Its text into chars (ISpanFormattable), as ToString would make it.
     public static bool TryFormat(float value, Span<char> destination, out int charsWritten, ReadOnlySpan<char> format = default, IFormatProvider? provider = null) {
         string text = format.IsEmpty ? value.ToString(provider) : value.ToString(string.FromChars(format), provider);
@@ -9223,7 +9223,7 @@ static class Single {
 /// System.Boolean's statics: the text a bool is written as, and reading it
 /// back -- "True" or "False" in any case, with white space around it and null
 /// characters after it ignored, as .NET's parser has it.
-static class Boolean {
+public static class Boolean {
     public static int CompareTo(bool value, object? other) {
         if (other == null) return 1;
         if (other is bool flag) return CompareTo(value, flag);
@@ -9279,7 +9279,7 @@ static class Boolean {
 // unpaired surrogate becomes U+FFFD (or '?' in a single-byte encoding), and each
 // maximal ill-formed run of bytes one U+FFFD.
 
-class UTF8Encoding : Encoding {
+public class UTF8Encoding : Encoding {
     public override int CodePage => 65001;
     public override string WebName => "utf-8";
     public override string EncodingName => "Unicode (UTF-8)";
@@ -9349,7 +9349,7 @@ class UTF8Encoding : Encoding {
 // pair (one character) becomes one. A four-character section tag read as
 // ASCII must be four characters whatever the image holds, or a corrupt tag
 // reads back as a valid one.
-class ASCIIEncoding : Encoding {
+public class ASCIIEncoding : Encoding {
     public override int CodePage => 20127;
     public override string WebName => "us-ascii";
     public override string EncodingName => "US-ASCII";
@@ -9405,7 +9405,7 @@ class ASCIIEncoding : Encoding {
 /// .NET's StringRuneEnumerator, what string.EnumerateRunes answers: a
 /// foreach over it is a foreach over the runes, and it is its own
 /// enumerable and enumerator, as .NET's is.
-struct StringRuneEnumerator : IEnumerable<Rune>, IEnumerator<Rune> {
+public struct StringRuneEnumerator : IEnumerable<Rune>, IEnumerator<Rune> {
     private readonly string _string;
     private Rune _current;
     private int _nextIndex;
@@ -9455,7 +9455,7 @@ struct StringRuneEnumerator : IEnumerable<Rune>, IEnumerator<Rune> {
     }
 }
 
-struct Rune {
+public struct Rune {
     private int value;
 
     public Rune(char ch) {
@@ -9729,7 +9729,7 @@ struct Rune {
 /// UTF-16, which is what .NET's Encoding.Unicode is: two bytes per code unit,
 /// little end first unless told otherwise. A string is UTF-16 already, so
 /// encoding is putting its units down in the byte order asked for.
-class UnicodeEncoding : Encoding {
+public class UnicodeEncoding : Encoding {
     public override int CodePage => big ? 1201 : 1200;
     public override string WebName => big ? "utf-16BE" : "utf-16";
     public override string EncodingName => big ? "Unicode (Big-Endian)" : "Unicode";
@@ -9858,7 +9858,7 @@ class UnicodeEncoding : Encoding {
 /// in it and plenty of things hold text in it, because indexing is then what
 /// indexing looks like -- the nth character is at the nth position, which is
 /// true in neither of the other two.
-class UTF32Encoding : Encoding {
+public class UTF32Encoding : Encoding {
     public override int CodePage => big ? 12001 : 12000;
     public override string WebName => big ? "utf-32BE" : "utf-32";
     public override string EncodingName => big ? "Unicode (UTF-32 Big-Endian)" : "Unicode (UTF-32)";
@@ -10040,7 +10040,7 @@ class CodePageEncoding : Encoding {
 /// static properties naming the common ones, typed Encoding as .NET types
 /// them. What a derived encoding must say is how text becomes bytes and bytes
 /// text; everything else is said once, here, in terms of those.
-abstract class Encoding {
+public abstract class Encoding {
     public static Encoding UTF8 => new UTF8Encoding(true);
     public static Encoding ASCII => new ASCIIEncoding();
 
@@ -10340,7 +10340,7 @@ static class ThrowHelper {
 /// window begins and how long it is, read and written through as a list. It
 /// copies nothing -- a sorted array's run handed out as an ArraySegment is
 /// the run itself.
-struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
+public struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
     private readonly T[]? array;
@@ -10424,7 +10424,7 @@ struct ArraySegment<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T> {
     void IList<T>.RemoveAt(int index) { throw new NotSupportedException(); }
 }
 
-struct ReadOnlySpan<T> {
+public struct ReadOnlySpan<T> {
     private T[] items;
     private int from;
     private int count;
@@ -10523,7 +10523,7 @@ struct ReadOnlySpan<T> {
 
 /// .NET's Memory<T>: a window onto an array that, unlike a span, may be kept
 /// in a field or handed to an asynchronous method. Span is how it is read.
-readonly struct Memory<T> {
+public readonly struct Memory<T> {
     private readonly T[]? items;
     private readonly int from;
     private readonly int count;
@@ -10579,7 +10579,7 @@ readonly struct Memory<T> {
 }
 
 /// .NET's ReadOnlyMemory<T>: a Memory the holder promises not to write.
-readonly struct ReadOnlyMemory<T> {
+public readonly struct ReadOnlyMemory<T> {
     private readonly T[]? items;
     private readonly int from;
     private readonly int count;
@@ -10631,7 +10631,7 @@ readonly struct ReadOnlyMemory<T> {
     public override string ToString() => typeof(T) == typeof(char) ? Span.ToString() : "System.ReadOnlyMemory<" + typeof(T).Name + ">[" + count + "]";
 }
 
-struct Span<T> {
+public struct Span<T> {
     private T[] items;
     private int from;
     private int count;
@@ -11529,7 +11529,7 @@ public static class MemoryExtensions {
 // touched. The check is on the span's own length -- a span's indexer reads
 // its array, and an array longer than the span would let a read run past it.
 
-static class BinaryPrimitives {
+public static class BinaryPrimitives {
     // `width` bytes of `from` as one number, the first byte the low one or
     // the high one as `big` says.
     private static ulong Gather(ReadOnlySpan<byte> from, int width, bool big) {
@@ -12134,7 +12134,7 @@ static class Memory {
 /// OUT, so an enumerator of a derived type is one of the base.
 /// .NET's non-generic IEnumerator (System.Collections): what IEnumerator<T>
 /// also is, its Current an object.
-interface IEnumerator {
+public interface IEnumerator {
     object Current { get; }
     bool MoveNext();
     void Reset();
@@ -12142,21 +12142,21 @@ interface IEnumerator {
 
 /// .NET's non-generic IEnumerable (System.Collections): what IEnumerable<T>
 /// also is.
-interface IEnumerable {
+public interface IEnumerable {
     IEnumerator GetEnumerator();
 }
 
 /// .NET's non-generic ICollection and IList (System.Collections): what an
 /// array is (Lowering.ArrayFaces) and List<T> too, besides ArrayList and
 /// the rest of the non-generic collections (Collections.cor).
-interface ICollection : IEnumerable {
+public interface ICollection : IEnumerable {
     int Count { get; }
     bool IsSynchronized { get; }
     object SyncRoot { get; }
     void CopyTo(Array array, int index);
 }
 
-interface IList : ICollection {
+public interface IList : ICollection {
     object? this[int index] { get; set; }
     bool IsFixedSize { get; }
     bool IsReadOnly { get; }
@@ -12171,13 +12171,13 @@ interface IList : ICollection {
 
 /// .NET's non-generic IDictionary (System.Collections), with its walker and
 /// entry: what Hashtable is (Collections.cor), and an exception's Data.
-interface IDictionaryEnumerator : IEnumerator {
+public interface IDictionaryEnumerator : IEnumerator {
     DictionaryEntry Entry { get; }
     object Key { get; }
     object? Value { get; }
 }
 
-interface IDictionary : ICollection {
+public interface IDictionary : ICollection {
     object? this[object key] { get; set; }
     ICollection Keys { get; }
     ICollection Values { get; }
@@ -12190,7 +12190,7 @@ interface IDictionary : ICollection {
     void Remove(object key);
 }
 
-struct DictionaryEntry {
+public struct DictionaryEntry {
     private object _key;
     private object? _value;
 
@@ -12270,18 +12270,18 @@ sealed class __ListDictionary : IDictionary {
 
 /// .NET's IEnumerator<T>, which is an IDisposable and an IEnumerator: a
 /// foreach disposes the enumerator it walked, however the loop ended.
-interface IEnumerator<out T> : IDisposable, IEnumerator {
+public interface IEnumerator<out T> : IDisposable, IEnumerator {
     T Current { get; }
 }
 
 /// A SEQUENCE READ BY AWAITING, as .NET's: each MoveNextAsync a ValueTask
 /// that says whether there is another, the enumerator disposed by awaiting.
 /// `await foreach` walks one, and an async iterator is one.
-interface IAsyncEnumerable<out T> {
+public interface IAsyncEnumerable<out T> {
     IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default);
 }
 
-interface IAsyncEnumerator<out T> : System.IAsyncDisposable {
+public interface IAsyncEnumerator<out T> : System.IAsyncDisposable {
     T Current { get; }
     System.Threading.Tasks.ValueTask<bool> MoveNextAsync();
 }
@@ -12611,7 +12611,7 @@ readonly struct AsyncIteratorYield<T> {
 /// what `await foreach` walks the sequence with, the token handed to its
 /// GetAsyncEnumerator and each MoveNextAsync and the DisposeAsync awaited as
 /// configured. .NET's, member for member.
-readonly struct ConfiguredCancelableAsyncEnumerable<T> {
+public readonly struct ConfiguredCancelableAsyncEnumerable<T> {
     readonly IAsyncEnumerable<T> _enumerable;
     readonly CancellationToken _cancellationToken;
     readonly bool _continueOnCapturedContext;
@@ -12650,7 +12650,7 @@ readonly struct ConfiguredCancelableAsyncEnumerable<T> {
 
 /// `resource.ConfigureAwait(false)` in an `await using`: the resource's
 /// DisposeAsync awaited as configured.
-readonly struct ConfiguredAsyncDisposable {
+public readonly struct ConfiguredAsyncDisposable {
     readonly System.IAsyncDisposable _source;
     readonly bool _continueOnCapturedContext;
 
@@ -12669,7 +12669,7 @@ namespace System.Threading.Tasks {
 /// .NET's TaskAsyncEnumerableExtensions: ConfigureAwait and WithCancellation
 /// for an async sequence and ConfigureAwait for an async resource, and the
 /// sequence walked by waiting for each element.
-static class TaskAsyncEnumerableExtensions {
+public static class TaskAsyncEnumerableExtensions {
     public static System.Runtime.CompilerServices.ConfiguredAsyncDisposable ConfigureAwait(this System.IAsyncDisposable source, bool continueOnCapturedContext)
         => new System.Runtime.CompilerServices.ConfiguredAsyncDisposable(source, continueOnCapturedContext);
 
@@ -12698,7 +12698,7 @@ static class TaskAsyncEnumerableExtensions {
 /// `out T`. Everything read from a sequence is a T, so a sequence of
 /// FieldDecl IS a sequence of MemberDecl -- which is what lets
 /// `decl.Members.AddRange(several.More)` be written at all.
-interface IEnumerable<out T> : IEnumerable {
+public interface IEnumerable<out T> : IEnumerable {
     IEnumerator<T> GetEnumerator();
 }
 
@@ -12945,7 +12945,7 @@ static class OutgrownStorage {
     }
 }
 
-class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, IOwnsElements {
+public class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, IOwnsElements {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -13792,7 +13792,7 @@ class List<T> : IList<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection, 
 // specialising a generic discovers more generics to specialise, which is
 // exactly the shape a queue is for.
 
-class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
+public class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -14033,11 +14033,11 @@ class Queue<T> : IReadOnlyCollection<T>, IEnumerable<T> {
 // type says its Equals is about VALUE rather than identity, and this
 // compiler's own Type says exactly that.
 
-interface IEquatable<T> {
+public interface IEquatable<T> {
     bool Equals(T other);
 }
 
-interface IDisposable {
+public interface IDisposable {
     void Dispose();
 }
 
@@ -14048,7 +14048,7 @@ interface IDisposable {
 /// same OBJECT, whatever their own Equals says. .NET declares it as an
 /// `IEqualityComparer<object>` and it serves as an IEqualityComparer of
 /// anything, which is what `in T` on the interface is for.
-sealed class ReferenceEqualityComparer : IEqualityComparer<object> {
+public sealed class ReferenceEqualityComparer : IEqualityComparer<object> {
     private static ReferenceEqualityComparer? only;
 
     public static ReferenceEqualityComparer Instance {
@@ -14071,16 +14071,16 @@ sealed class ReferenceEqualityComparer : IEqualityComparer<object> {
 /// .NET's shape exactly: a collection knows how many it has, a list can be
 /// indexed, and both are sequences. The hierarchy is what lets one set of
 /// operators over IEnumerable<T> serve every one of them.
-interface IReadOnlyCollection<out T> : IEnumerable<T> {
+public interface IReadOnlyCollection<out T> : IEnumerable<T> {
     int Count { get; }
 }
 
-interface IReadOnlyList<out T> : IReadOnlyCollection<T> {
+public interface IReadOnlyList<out T> : IReadOnlyCollection<T> {
     T this[int index] { get; }
 }
 
 /// A set, read only: what it holds and whether it holds a thing.
-interface IReadOnlySet<T> : IReadOnlyCollection<T> {
+public interface IReadOnlySet<T> : IReadOnlyCollection<T> {
     bool Contains(T item);
     bool IsProperSubsetOf(IEnumerable<T> other);
     bool IsProperSupersetOf(IEnumerable<T> other);
@@ -14095,7 +14095,7 @@ interface IReadOnlySet<T> : IReadOnlyCollection<T> {
 // is written against, and what List, Dictionary, HashSet and the rest say
 // they are. A read-only one answers IsReadOnly and refuses the mutators with
 // NotSupportedException, as ReadOnlyCollection does.
-interface ICollection<T> : IEnumerable<T> {
+public interface ICollection<T> : IEnumerable<T> {
     int Count { get; }
     bool IsReadOnly { get; }
     void Add(T item);
@@ -14105,14 +14105,14 @@ interface ICollection<T> : IEnumerable<T> {
     bool Remove(T item);
 }
 
-interface IList<T> : ICollection<T> {
+public interface IList<T> : ICollection<T> {
     T this[int index] { get; set; }
     int IndexOf(T item);
     void Insert(int index, T item);
     void RemoveAt(int index);
 }
 
-interface ISet<T> : ICollection<T> {
+public interface ISet<T> : ICollection<T> {
     new bool Add(T item);
     void UnionWith(IEnumerable<T> other);
     void IntersectWith(IEnumerable<T> other);
@@ -14126,7 +14126,7 @@ interface ISet<T> : ICollection<T> {
     bool SetEquals(IEnumerable<T> other);
 }
 
-interface IDictionary<K, V> : ICollection<KeyValuePair<K, V>> {
+public interface IDictionary<K, V> : ICollection<KeyValuePair<K, V>> {
     V this[K key] { get; set; }
     ICollection<K> Keys { get; }
     ICollection<V> Values { get; }
@@ -14164,20 +14164,20 @@ interface IDictionary<K, V> : ICollection<KeyValuePair<K, V>> {
 // IEnumerable with a Key on it, which is what lets `foreach (var g in
 // items.GroupBy(...))` walk the group itself and ask what it is at the same
 // time.
-interface IGrouping<K, T> : IEnumerable<T> {
+public interface IGrouping<K, T> : IEnumerable<T> {
     K Key { get; }
 }
 
 /// .NET's ILookup: groups by key, each asked for by its key -- an empty
 /// sequence for a key that is not there, where a Dictionary would throw.
-interface ILookup<K, T> : IEnumerable<IGrouping<K, T>> {
+public interface ILookup<K, T> : IEnumerable<IGrouping<K, T>> {
     int Count { get; }
     IEnumerable<T> this[K key] { get; }
     bool Contains(K key);
 }
 
 /// .NET's IOrderedEnumerable: a sorted sequence that a ThenBy sorts further.
-interface IOrderedEnumerable<T> : IEnumerable<T> {
+public interface IOrderedEnumerable<T> : IEnumerable<T> {
     IOrderedEnumerable<T> CreateOrderedEnumerable<K>(Func<T, K> keySelector, IComparer<K>? comparer, bool descending);
 }
 
@@ -14221,7 +14221,7 @@ class Grouping<K, T> : IGrouping<K, T>, IList<T>, IReadOnlyList<T>, IEnumerable<
 /// THE WHOLE GROUPING, KEPT: what ToLookup makes, and what GroupBy walks.
 /// The groups in the order their keys were first seen, each group's elements
 /// in source order, which is .NET's promise.
-class Lookup<K, T> : ILookup<K, T>, IEnumerable<IGrouping<K, T>> {
+public class Lookup<K, T> : ILookup<K, T>, IEnumerable<IGrouping<K, T>> {
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
     private List<Grouping<K, T>> groups;
@@ -14595,7 +14595,7 @@ sealed class ElementLevel<T> : SortLevel<T> {
     }
 }
 
-static class Enumerable {
+public static class Enumerable {
     // ---- the checks every operator starts with ---------------------------
 
     // GENERIC, so each copy is compiled in the unit that calls it, as the
@@ -16312,7 +16312,7 @@ static class Enumerable {
 /// count taken modulo 128 as .NET takes it, and .NET's conversions: a double
 /// out of range saturates, as the unchecked one does in .NET, and the
 /// checked one throws.
-readonly struct UInt128 : IComparable, IComparable<UInt128>, IEquatable<UInt128>, IFormattable {
+public readonly struct UInt128 : IComparable, IComparable<UInt128>, IEquatable<UInt128>, IFormattable {
     readonly ulong _lower;
     readonly ulong _upper;
 
@@ -16792,7 +16792,7 @@ readonly struct UInt128 : IComparable, IComparable<UInt128>, IEquatable<UInt128>
 /// A 128-BIT SIGNED INTEGER, .NET's System.Int128: two's complement over
 /// two 64-bit halves, every operator of the built-in integers wrapping, the
 /// checked forms throwing, and .NET's conversions and statics.
-readonly struct Int128 : IComparable, IComparable<Int128>, IEquatable<Int128>, IFormattable {
+public readonly struct Int128 : IComparable, IComparable<Int128>, IEquatable<Int128>, IFormattable {
     readonly ulong _lower;
     readonly ulong _upper;
 
@@ -17231,7 +17231,7 @@ static class Int128Format {
 /// single rounding to nearest, ties to even, and a NaN keeps its sign and
 /// the top of its payload, quiet. Written as the shortest digits that read
 /// back as the same half: 0.1 is 0.1, not the double 0.0999755859375 is.
-readonly struct Half : IComparable, IComparable<Half>, IEquatable<Half>, IFormattable {
+public readonly struct Half : IComparable, IComparable<Half>, IEquatable<Half>, IFormattable {
     internal readonly ushort _value;
 
     internal Half(ushort value) { _value = value; }
@@ -17608,7 +17608,7 @@ static class HalfBits {
 /// construction from its words, and a constant expression of them is folded
 /// by the compiler with .NET's own arithmetic (Binder.Decimal). Arithmetic
 /// that does not fit is an OverflowException, checked or not, as in .NET.
-readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>, IFormattable {
+public readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>, IFormattable {
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -19741,7 +19741,7 @@ static class DecimalCalc {
 /// A POSITION IN A SEQUENCE, counted from its start or from its end: `3`,
 /// `^1`. What C#'s `^` makes, and what an index of a countable type may be.
 /// Held as .NET holds it: one int, complemented when counted from the end.
-readonly struct Index : IEquatable<Index> {
+public readonly struct Index : IEquatable<Index> {
     readonly int _value;
 
     public Index(int value, bool fromEnd = false) {
@@ -19776,7 +19776,7 @@ readonly struct Index : IEquatable<Index> {
 
 /// A SLICE OF A SEQUENCE: where it starts and where it stops, each an Index.
 /// What C#'s `..` makes.
-readonly struct Range : IEquatable<Range> {
+public readonly struct Range : IEquatable<Range> {
     public Index Start { get; }
     public Index End { get; }
 
@@ -19809,7 +19809,7 @@ readonly struct Range : IEquatable<Range> {
 /// code that slices an image header depends on the copy being independent of
 /// the bytes it came from. The two-number form is what the compiler calls for
 /// a range written in the brackets, where the numbers are at hand.
-static class RuntimeHelpers {
+public static class RuntimeHelpers {
     /// THE OBJECT'S OWN HASH, whatever its GetHashCode says: the one
     /// ReferenceEqualityComparer hashes by. 0 for null, as .NET's.
     public static int GetHashCode(object? o) { return o == null ? 0 : (int)Sys.HashValue(o); }
@@ -19842,7 +19842,7 @@ static class RuntimeHelpers {
 /// object, written from one, and the array copied into another whatever
 /// their elements. Its explicit IList and ICollection members are never
 /// reached, every Array being an array whose descriptor answers them.
-abstract class Array : IList, ICollection {
+public abstract class Array : IList, ICollection {
     private Array() { }
 
     public int Length => ((ICollection)(object)this).Count;
@@ -20405,7 +20405,7 @@ static class __ArrayExtensions {
 /// value IS the input.
 /// .NET's HashCode: the static Combine, and a value that is added to a part
 /// at a time and asked for ToHashCode at the end.
-struct HashCode {
+public struct HashCode {
     private long _hash;
     private int _parts;
 
@@ -20479,7 +20479,7 @@ struct HashCode {
 // never that. StringComparer is what a table of strings is given instead.
 /// `in T`, as .NET declares it: a comparer only ever takes its values IN, so
 /// an IEqualityComparer of object can compare anything at all.
-interface IEqualityComparer<in T> {
+public interface IEqualityComparer<in T> {
     bool Equals(T a, T b);
     int GetHashCode(T value);
 }
@@ -20488,7 +20488,7 @@ interface IEqualityComparer<in T> {
 // a static for each way of comparing, and this is the same. There is one
 // culture on this machine, so the invariant pair and the ordinal pair are the
 // same comparison -- the NAMES are all four, because source says them.
-class StringComparer : IEqualityComparer<string>, IComparer<string> {
+public class StringComparer : IEqualityComparer<string>, IComparer<string> {
     private bool fold;
 
     public StringComparer(bool ignoreCase) { fold = ignoreCase; }
@@ -20595,7 +20595,7 @@ class StringComparer : IEqualityComparer<string>, IComparer<string> {
 
 // ONE ENTRY, which is what walking a dictionary hands back -- key and value
 // together, because a hash table has no other order to give them in.
-struct KeyValuePair<K, V> {
+public struct KeyValuePair<K, V> {
     private K key;
     private V value;
 
@@ -20628,7 +20628,7 @@ struct KeyValuePair<K, V> {
 // it is written inside the class and does exactly the same thing.
 // .NET's read-only view of a table, and Dictionary implements it. What it
 // promises is that a caller cannot add to what it was handed.
-interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
+public interface IReadOnlyDictionary<K, V> : IEnumerable<KeyValuePair<K, V>> {
     int Count { get; }
     V this[K key] { get; }
     IEnumerable<K> Keys { get; }
@@ -20681,7 +20681,7 @@ static class HashSizes {
     }
 }
 
-class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
+public class Dictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>, IOwnsElements {
     // A TABLE MADE WITH NO CAPACITY STARTS AT FOUR SLOTS, and grows as it
     // fills: the compiler's own symbols make tens of thousands of tables
     // that hold one or two entries, each five arrays of sixteen slots at
@@ -21753,7 +21753,7 @@ public delegate TOutput Converter<in TInput, out TOutput>(TInput input);
 // System.Threading.Monitor, which `lock` expands to, is in the runtime's
 // threading.cor: whose it is and how a waiter sleeps are the platform's.
 
-class SynchronizationLockException : SystemException {
+public class SynchronizationLockException : SystemException {
     internal override int Code => unchecked((int)0x80131518);
     public SynchronizationLockException() : base("Object synchronization method was called from an unsynchronized block of code.") { }
     public SynchronizationLockException(string? message) : base(message ?? "Object synchronization method was called from an unsynchronized block of code.") { }
@@ -21780,7 +21780,7 @@ class SynchronizationLockException : SystemException {
 // name, but C# source declares its own as `class XAttribute : Attribute` and
 // marks them [AttributeUsage(...)], and both have to compile.
 
-abstract class Attribute
+public abstract class Attribute
 {
     protected Attribute() { }
 
@@ -21841,7 +21841,7 @@ abstract class Attribute
 
 // WHERE AN ATTRIBUTE MAY BE WRITTEN, .NET's values to the bit.
 [Flags]
-enum AttributeTargets
+public enum AttributeTargets
 {
     Assembly = 0x0001,
     Module = 0x0002,
@@ -21862,7 +21862,7 @@ enum AttributeTargets
 }
 
 [AttributeUsage(AttributeTargets.Class, Inherited = true)]
-sealed class AttributeUsageAttribute : Attribute
+public sealed class AttributeUsageAttribute : Attribute
 {
     public AttributeUsageAttribute(AttributeTargets validOn) { ValidOn = validOn; }
 
@@ -21882,7 +21882,7 @@ sealed class AttributeUsageAttribute : Attribute
 // than the other way about: Message, InnerException, and a ToString that reads
 // like the real one.
 
-class Exception
+public class Exception
 {
     // THE MESSAGE AS GIVEN: null when none was, and then Message invents one
     // from the type, as .NET's does -- an empty one stays empty.
@@ -22174,7 +22174,7 @@ class Exception
 /// (which derive from Exception, or historically from ApplicationException)
 /// outside it. It carries nothing: what it is for is `catch (SystemException)`
 /// and the shape of the tree.
-class SystemException : Exception
+public class SystemException : Exception
 {
     internal override int Code => unchecked((int)0x80131501);
     public SystemException() : base("System error.") { }
@@ -22186,7 +22186,7 @@ class SystemException : Exception
 /// own exceptions were once meant to derive from. The framework throws it
 /// itself in one place still -- a Mutex released by a thread that does not
 /// own it -- which is why it is here.
-class ApplicationException : Exception
+public class ApplicationException : Exception
 {
     internal override int Code => unchecked((int)0x80131600);
     public ApplicationException() : base("Error in the application.") { }
@@ -22197,7 +22197,7 @@ class ApplicationException : Exception
 /// System.Runtime.InteropServices' ExternalException: a failure outside the
 /// runtime, with the error code it came with (an HRESULT, E_FAIL unless
 /// said) -- what Clipboard throws when another program holds it open.
-class ExternalException : SystemException
+public class ExternalException : SystemException
 {
     internal override int Code => unchecked((int)0x80004005);
     const string External = "External component has thrown an exception.";
@@ -22209,7 +22209,7 @@ class ExternalException : SystemException
     public virtual int ErrorCode => HResult;
 }
 
-class TypeInitializationException : SystemException
+public class TypeInitializationException : SystemException
 {
     internal override int Code => unchecked((int)0x80131534);
     private string _typeName;
@@ -22221,7 +22221,7 @@ class TypeInitializationException : SystemException
 
 /// A value that formats itself by a format string, .NET's IFormattable: what
 /// `{value:format}` calls, and what string.Format hands a format to.
-interface IFormattable
+public interface IFormattable
 {
     string ToString(string? format, IFormatProvider? formatProvider);
 }
@@ -22230,7 +22230,7 @@ interface IFormattable
 /// IPAddress and the like declare it. (The numbers' TryFormat into a span
 /// is theirs as members; a boxed number answering it through the
 /// interface is not yet one of its BoxedFaces.)
-interface ISpanFormattable : IFormattable
+public interface ISpanFormattable : IFormattable
 {
     bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider);
 }
@@ -22239,13 +22239,13 @@ interface ISpanFormattable : IFormattable
 /// own way, .NET's ICustomFormatter: String.Format and AppendFormat ask the
 /// provider for one (GetFormat(typeof(ICustomFormatter))) once, and an
 /// argument it answers null for is written as if there were none.
-interface ICustomFormatter
+public interface ICustomFormatter
 {
     string Format(string? format, object? arg, IFormatProvider? formatProvider);
 }
 
 /// One of the arguments was not acceptable. C#'s, spelled C#'s way.
-class ArgumentException : SystemException
+public class ArgumentException : SystemException
 {
     internal override int Code => unchecked((int)0x80070057);
     // THE MESSAGE AND THE PARAMETER ARE KEPT APART, as .NET keeps them:
@@ -22292,7 +22292,7 @@ class ArgumentException : SystemException
 }
 
 /// An argument's value was outside the range accepted by the method.
-class ArgumentOutOfRangeException : ArgumentException
+public class ArgumentOutOfRangeException : ArgumentException
 {
     internal override int Code => unchecked((int)0x80131502);
     readonly object? _actualValue;
@@ -22377,7 +22377,7 @@ class ArgumentOutOfRangeException : ArgumentException
 }
 
 /// An argument was null and the method cannot work with that.
-class ArgumentNullException : ArgumentException
+public class ArgumentNullException : ArgumentException
 {
     internal override int Code => unchecked((int)0x80004003);
     public ArgumentNullException() : base("Value cannot be null.") { }
@@ -22396,7 +22396,7 @@ class ArgumentNullException : ArgumentException
 
 /// One object named twice where each must be named once: a handle twice in
 /// what WaitHandle.WaitAll is to take all at once.
-class DuplicateWaitObjectException : ArgumentException
+public class DuplicateWaitObjectException : ArgumentException
 {
     internal override int Code => unchecked((int)0x80131529);
     const string Duplicate = "Duplicate objects in argument.";
@@ -22411,7 +22411,7 @@ class DuplicateWaitObjectException : ArgumentException
 /// A value stored into an array whose elements cannot hold it: a Cat into a
 /// Dog[] held as an Animal[], as C#'s array covariance allows at compile time
 /// and refuses at run time (Runtime.ArrayStoreCheck).
-class ArrayTypeMismatchException : SystemException
+public class ArrayTypeMismatchException : SystemException
 {
     internal override int Code => unchecked((int)0x80131503);
     public ArrayTypeMismatchException() : base("Attempted to access an element as a type incompatible with the array.") { }
@@ -22419,7 +22419,7 @@ class ArrayTypeMismatchException : SystemException
     public ArrayTypeMismatchException(string? message, Exception? innerException) : base(message ?? "Attempted to access an element as a type incompatible with the array.", innerException) { }
 }
 
-class IndexOutOfRangeException : SystemException
+public class IndexOutOfRangeException : SystemException
 {
     internal override int Code => unchecked((int)0x80131508);
     public IndexOutOfRangeException(string? message) : base(message ?? "Index was outside the bounds of the array.") { }
@@ -22430,7 +22430,7 @@ class IndexOutOfRangeException : SystemException
 /// There is not enough memory for what was asked: an array larger than any
 /// allocation can be, or a heap that has run out (Gc.ThrowOutOfMemory), as
 /// .NET throws it.
-class OutOfMemoryException : SystemException
+public class OutOfMemoryException : SystemException
 {
     internal override int Code => unchecked((int)0x8007000E);
     public OutOfMemoryException() : base("Insufficient memory to continue the execution of the program.") { }
@@ -22445,7 +22445,7 @@ class OutOfMemoryException : SystemException
 }
 
 /// The object is not in a state where that call makes sense.
-class InvalidOperationException : SystemException
+public class InvalidOperationException : SystemException
 {
     internal override int Code => unchecked((int)0x80131509);
     public InvalidOperationException() : base("Operation is not valid due to the current state of the object.") { }
@@ -22453,7 +22453,7 @@ class InvalidOperationException : SystemException
     public InvalidOperationException(string? message, Exception? inner) : base(message ?? "Operation is not valid due to the current state of the object.", inner) { }
 }
 
-class FormatException : SystemException
+public class FormatException : SystemException
 {
     internal override int Code => unchecked((int)0x80131537);
     public FormatException(string? message) : base(message ?? "One of the identified items was in an invalid format.") { }
@@ -22463,7 +22463,7 @@ class FormatException : SystemException
 
 /// UNDER ArithmeticException, which is where .NET puts it -- with
 /// DivideByZeroException and NotFiniteNumberException, its two siblings.
-class OverflowException : ArithmeticException
+public class OverflowException : ArithmeticException
 {
     internal override int Code => unchecked((int)0x80131516);
     public OverflowException(string? message) : base(message ?? "Arithmetic operation resulted in an overflow.") { }
@@ -22476,7 +22476,7 @@ namespace System.IO
 /// System.IO.FileNotFoundException, with the file it could not find in
 /// FileName -- which .NET's own System.IO always fills, and which a catch
 /// uses rather than taking the name back out of the sentence.
-class FileNotFoundException : IOException
+public class FileNotFoundException : IOException
 {
     internal override int Code => unchecked((int)0x80070002);
     // THE MESSAGE AS GIVEN, null included (Exception.Given), because .NET's
@@ -22537,7 +22537,7 @@ class FileNotFoundException : IOException
 /// Unix is EACCES, EPERM or EBADF. .NET throws this rather than IOException
 /// for those, with the system's own words in the inner exception, and a
 /// caller that wants the exact reason reads HResult.
-class UnauthorizedAccessException : SystemException
+public class UnauthorizedAccessException : SystemException
 {
     internal override int Code => unchecked((int)0x80070005);
     public UnauthorizedAccessException() : base("Attempted to perform an unauthorized operation.") { }
@@ -22550,7 +22550,7 @@ class UnauthorizedAccessException : SystemException
 /// rather than the file is what is missing.
 namespace System.IO
 {
-class DirectoryNotFoundException : IOException
+public class DirectoryNotFoundException : IOException
 {
     internal override int Code => unchecked((int)0x80070003);
     public DirectoryNotFoundException(string? message) : base(message ?? "Attempted to access a path that is not on the disk.") { }
@@ -22567,7 +22567,7 @@ class DirectoryNotFoundException : IOException
 
 /// The operation cannot be done on this object, ever. Distinct from
 /// InvalidOperationException, which means "not just now".
-class NotSupportedException : SystemException
+public class NotSupportedException : SystemException
 {
     internal override int Code => unchecked((int)0x80131515);
     public NotSupportedException() : base("Specified method is not supported.") { }
@@ -22577,7 +22577,7 @@ class NotSupportedException : SystemException
 
 /// Not on this platform: the operation exists, and what the program runs on
 /// cannot do it.
-class PlatformNotSupportedException : NotSupportedException
+public class PlatformNotSupportedException : NotSupportedException
 {
     internal override int Code => unchecked((int)0x80131539);
     public PlatformNotSupportedException() : base("Operation is not supported on this platform.") { }
@@ -22612,7 +22612,7 @@ public static partial class Activator
 }
 
 /// A method that exists so that something compiles and has not been written.
-class NotImplementedException : SystemException
+public class NotImplementedException : SystemException
 {
     internal override int Code => unchecked((int)0x80004001);
     public NotImplementedException() : base("The method or operation is not implemented.") { }
@@ -22623,7 +22623,7 @@ class NotImplementedException : SystemException
 /// The key is not in the table. .NET's indexer throws this where the one here
 /// answers default(V); a caller that wants the throw writes it, and a caller
 /// that wants the test uses TryGetValue.
-class KeyNotFoundException : SystemException
+public class KeyNotFoundException : SystemException
 {
     internal override int Code => unchecked((int)0x80131577);
     public KeyNotFoundException() : base("The given key was not present in the dictionary.") { }
@@ -22639,7 +22639,7 @@ class KeyNotFoundException : SystemException
 /// program actually writes, and the reason the tree is not flat.
 namespace System.IO
 {
-class IOException : SystemException
+public class IOException : SystemException
 {
     internal override int Code => unchecked((int)0x80131620);
     public IOException() : base("I/O error occurred.") { }
@@ -22652,7 +22652,7 @@ class IOException : SystemException
 /// The path, or a name in it, is longer than the filing system allows.
 namespace System.IO
 {
-class PathTooLongException : IOException
+public class PathTooLongException : IOException
 {
     internal override int Code => unchecked((int)0x800700CE);
     public PathTooLongException() : base("The specified file name or path is too long, or a component of the specified path is too long.") { }
@@ -22664,7 +22664,7 @@ class PathTooLongException : IOException
 /// The file was found and could not be loaded.
 namespace System.IO
 {
-class FileLoadException : IOException
+public class FileLoadException : IOException
 {
     internal override int Code => unchecked((int)0x80131621);
     // THE MESSAGE AS GIVEN (Exception.Given), as FileNotFoundException reads
@@ -22709,7 +22709,7 @@ class FileLoadException : IOException
 }
 }
 
-class TimeoutException : SystemException
+public class TimeoutException : SystemException
 {
     internal override int Code => unchecked((int)0x80131505);
     public TimeoutException() : base("The operation has timed out.") { }
@@ -22719,7 +22719,7 @@ class TimeoutException : SystemException
 
 /// UNDER InvalidOperationException, which is .NET's placing and says what the
 /// failure is: the call would have been fine a moment ago.
-class ObjectDisposedException : InvalidOperationException
+public class ObjectDisposedException : InvalidOperationException
 {
     internal override int Code => unchecked((int)0x80131622);
     readonly string? _objectName;
@@ -22753,7 +22753,7 @@ class ObjectDisposedException : InvalidOperationException
 
 /// What a switch expression throws when no arm matched its value (C# 12.11).
 /// System.Runtime.CompilerServices in .NET.
-sealed class SwitchExpressionException : InvalidOperationException
+public sealed class SwitchExpressionException : InvalidOperationException
 {
     readonly object? _unmatched;
 
@@ -22778,7 +22778,7 @@ sealed class SwitchExpressionException : InvalidOperationException
     }
 }
 
-class ArithmeticException : SystemException
+public class ArithmeticException : SystemException
 {
     internal override int Code => unchecked((int)0x80070216);
     public ArithmeticException(string? message) : base(message ?? "Overflow or underflow in the arithmetic operation.") { }
@@ -22800,7 +22800,7 @@ class ArithmeticException : SystemException
 // Neither is for keys or nonces -- see os/lib/crypto_random and
 // RandomNumberGenerator for those, and note that the difference is not a
 // matter of degree.
-class Random {
+public class Random {
     // The .NET 5 SEEDED GENERATOR, kept digit for digit: Knuth's subtractive
     // method over a ring of 56 numbers. .NET's own Random(seed) is this, and
     // it is this rather than something better BECAUSE a seeded sequence is a
@@ -23216,7 +23216,7 @@ class Random {
     }
 }
 
-class StringBuilder : IOwnsStorage {
+public class StringBuilder : IOwnsStorage {
     private string buffer;
     private int used;
 
@@ -24415,7 +24415,7 @@ class StringBuilder : IOwnsStorage {
 //
 // .NET's API: Add returns whether it was new, Contains, Remove, Count, Clear.
 
-class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
+public class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // As Dictionary's: four slots to begin with (SmallestTable).
     private const int SmallestTable = 4;
     // The non-generic IEnumerable's, as .NET's collections have it.
@@ -25210,7 +25210,7 @@ class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
 /// the element type's own order (text by its characters, a number by value).
 /// A sorted array searched by halving, rather than .NET's red-black tree: the
 /// same answers and the same order of enumeration.
-class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
+public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
@@ -25599,7 +25599,7 @@ class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 // and a sort takes a bare function with Comparison.
 
 /// A type that knows its own order. `class Version : IComparable<Version>`.
-interface IComparable<T> {
+public interface IComparable<T> {
     int CompareTo(T other);
 }
 
@@ -25607,14 +25607,14 @@ interface IComparable<T> {
 /// over objects and every boxed number and tuple answers. Less than zero
 /// when this comes first, zero when neither does, more when `obj` does; a
 /// null `obj` comes first.
-interface IComparable {
+public interface IComparable {
     int CompareTo(object? obj);
 }
 
 /// An order imposed from outside, for a type that has none or has the wrong
 /// one. This is what List.Sort and Array.Sort are given.
 /// `in T`, for the reason IEqualityComparer's is.
-interface IComparer<in T> {
+public interface IComparer<in T> {
     int Compare(T a, T b);
 }
 
@@ -25658,7 +25658,7 @@ class DefaultComparer<T> : IComparer<T> {
 
 /// .NET's EqualityComparer<T>.Default and Comparer<T>.Default, which are how
 /// generic code asks for "the usual" without knowing what T is.
-abstract class Comparer<T> : IComparer<T> {
+public abstract class Comparer<T> : IComparer<T> {
     // ONE, as .NET has one: made at every use, a record's CompareTo and every
     // sort paid an allocation for each comparison.
     static readonly IComparer<T> _default = new DefaultComparer<T>();
@@ -25698,7 +25698,7 @@ class DefaultEqualityComparer<T> : EqualityComparer<T> {
 // AN ABSTRACT CLASS, as .NET's is, so `EqualityComparer<T> same =
 // EqualityComparer<T>.Default;` compiles: Default is typed as the class, not
 // only as the interface it implements.
-abstract class EqualityComparer<T> : IEqualityComparer<T> {
+public abstract class EqualityComparer<T> : IEqualityComparer<T> {
     // ONE, as .NET has one: made at every use, a record's synthesised
     // GetHashCode allocated a comparer for each field it hashed.
     static readonly EqualityComparer<T> _default = new DefaultEqualityComparer<T>();
@@ -26081,7 +26081,7 @@ class ComparisonComparer<T> : IComparer<T> {
 /// The days of the week, numbered as .NET numbers them -- Sunday first,
 /// because that is what `(int)DayOfWeek.Sunday == 0` means in every C# program
 /// that indexes an array of names by it.
-enum DayOfWeek {
+public enum DayOfWeek {
     Sunday = 0,
     Monday = 1,
     Tuesday = 2,
@@ -26094,7 +26094,7 @@ enum DayOfWeek {
 /// AN AMOUNT OF TIME, which is not a moment: the difference between two
 /// DateTimes, or how long to wait. Signed, because a difference can go either
 /// way and refusing that would make subtraction an error half the time.
-struct TimeSpan : IComparable, IComparable<TimeSpan>, IEquatable<TimeSpan>, IFormattable {
+public struct TimeSpan : IComparable, IComparable<TimeSpan>, IEquatable<TimeSpan>, IFormattable {
     private long ticks;
 
     // ---- the units --------------------------------------------------------
@@ -27123,7 +27123,7 @@ struct TimeSpan : IComparable, IComparable<TimeSpan>, IEquatable<TimeSpan>, IFor
 /// Whether a DateTime is UTC, the machine's local time, or not said --
 /// .NET's three, with .NET's meanings: ToLocalTime treats Unspecified as
 /// UTC, and ToUniversalTime treats it as local.
-enum DateTimeKind {
+public enum DateTimeKind {
     Unspecified = 0,
     Utc = 1,
     Local = 2,
@@ -27136,7 +27136,7 @@ enum DateTimeKind {
 /// the rule about centuries is applied to years long before anybody agreed to
 /// it, because a calendar that changes its rules partway is a calendar no
 /// arithmetic can be done on.
-partial struct DateTime : IFormattable {
+public partial struct DateTime : IFormattable {
     private long ticks;
     private DateTimeKind kind;
 
@@ -27715,7 +27715,7 @@ static unsafe class LocalZone {
 /// Ticks is the LOCAL reading and UtcTicks is the moment: subtracting the
 /// offset is what turns one into the other, and .NET's members are named so
 /// that a caller has to say which they meant.
-partial struct DateTimeOffset : IFormattable {
+public partial struct DateTimeOffset : IFormattable {
     private long ticks;    // the local reading
     private long offset;   // ticks east of UTC
 
@@ -31169,7 +31169,7 @@ sealed class FreeDateReader {
 /// WHICH WAY A HALF GOES. .NET's enum, with .NET's numbers, because a program
 /// that says MidpointRounding.AwayFromZero is naming the value 1 and the two
 /// sides have to agree on which that is.
-enum MidpointRounding {
+public enum MidpointRounding {
     ToEven = 0,
     AwayFromZero = 1,
     ToZero = 2,
@@ -31177,7 +31177,7 @@ enum MidpointRounding {
     ToPositiveInfinity = 4,
 }
 
-static class Math {
+public static class Math {
     /// CONSTANTS, AS .NET'S ARE, so that `const double TwoPi = Math.PI * 2` is
     /// a constant expression: as properties they were values a program could
     /// read but never fold. Each is the double nearest the number.
@@ -32998,7 +32998,7 @@ static class Math {
 /// logarithm to a base are .NET's own float arithmetic instead, step by
 /// step, because the same steps in doubles round differently: MathF.Round(
 /// 2.675f, 2) is 2.68, since 2.675f times 100 is 267.5 as a float.
-static class MathF {
+public static class MathF {
     public const float PI = 3.14159265f, E = 2.71828183f, Tau = 6.28318531f;
 
     public static float Abs(float x) { return Math.Abs(x); }

@@ -15,7 +15,7 @@ using System.IO;
 // 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff. Microsoft's layout, kept
 // because a Guid that does not round-trip through a file or a wire is not one.
 
-struct Guid {
+public struct Guid {
     // Bytes 0-7 and 8-15, each byte i of the half at bit 8*i. Two words rather
     // than an array because a Guid is a VALUE: copying one must copy it.
     private long low;
@@ -253,7 +253,7 @@ namespace System
     /// zero -- .NET reports -1 for a field that was never given, and "1.0" and
     /// "1.0.0" are different Versions that compare equal. The distinction is what
     /// lets ToString give back what Parse was handed.
-    class Version : IComparable<Version>, IEquatable<Version> {
+    public class Version : IComparable<Version>, IEquatable<Version> {
         private int major;
         private int minor;
         private int build;
@@ -435,7 +435,7 @@ namespace System
 /// THE FACTORY IS DROPPED once it has run, which is what .NET does and is not
 /// mere tidiness: it is the only way a closure over something large stops
 /// holding it alive for as long as the Lazy lives.
-class Lazy<T> {
+public class Lazy<T> {
     /// NULL ONCE IT HAS RUN, which is the whole point -- see above -- so the
     /// field says so. Only the getter ever reads it, and only while `made` is
     /// still false.
@@ -478,7 +478,7 @@ class Lazy<T> {
 
 /// .NET's factory, which exists because `Tuple.Create(1, "a")` infers what
 /// `new Tuple<int, string>(1, "a")` makes you write out.
-static class Tuple {
+public static class Tuple {
     public static Tuple<T1, T2> Create<T1, T2>(T1 one, T2 two) {
         return new Tuple<T1, T2>(one, two);
     }
@@ -492,7 +492,7 @@ static class Tuple {
     }
 }
 
-class Tuple<T1, T2> {
+public class Tuple<T1, T2> {
     public T1 Item1;
     public T2 Item2;
 
@@ -507,7 +507,7 @@ class Tuple<T1, T2> {
     }
 }
 
-class Tuple<T1, T2, T3> {
+public class Tuple<T1, T2, T3> {
     public T1 Item1;
     public T2 Item2;
     public T3 Item3;
@@ -532,7 +532,7 @@ class Tuple<T1, T2, T3> {
     }
 }
 
-class Tuple<T1, T2, T3, T4> {
+public class Tuple<T1, T2, T3, T4> {
     public T1 Item1;
     public T2 Item2;
     public T3 Item3;
@@ -652,7 +652,7 @@ namespace System.Buffers.Text
 namespace System
 {
     /// Which operating system's line a version is of (System.PlatformID).
-    enum PlatformID
+    public enum PlatformID
     {
         Win32S = 0, Win32Windows = 1, Win32NT = 2, WinCE = 3, Unix = 4, Xbox = 5, MacOSX = 6, Other = 7,
     }
@@ -661,7 +661,7 @@ namespace System
     /// Environment.OSVersion answers; and which one this is, asked the way .NET
     /// 5 added. The second is settled at compile time: Windows for an image
     /// built for it (TARGET_WINDOWS), Linux when hosted otherwise.
-    sealed class OperatingSystem
+    public sealed class OperatingSystem
     {
         public PlatformID Platform { get; }
         public Version Version { get; }
@@ -725,7 +725,7 @@ namespace System
     }
 }
 
-static partial class Environment
+public static partial class Environment
 {
     static System.OperatingSystem? _osVersion;
 

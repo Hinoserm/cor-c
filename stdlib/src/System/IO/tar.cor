@@ -24,7 +24,7 @@
 using System.IO;
 
 /// Which of the four interchange formats an entry is in.
-enum TarEntryFormat
+public enum TarEntryFormat
 {
     V7 = 1,
     Ustar = 2,
@@ -34,7 +34,7 @@ enum TarEntryFormat
 
 /// The typeflag byte of a header, under .NET's names. The values are the
 /// ASCII characters the format actually stores.
-enum TarEntryType
+public enum TarEntryType
 {
     V7RegularFile = 0,
     RegularFile = 48,                           // '0'
@@ -58,7 +58,7 @@ enum TarEntryType
 
 /// The 512-byte header record: where each field is, and how a value gets
 /// into and out of one.
-static class TarHeaderFields
+public static class TarHeaderFields
 {
     public const int BlockSize = 512;
 
@@ -249,7 +249,7 @@ class TarSubStream : Stream
 /// One archive member. .NET's shape: the type and the format are what the
 /// entry was made as, the rest is metadata, and the bytes arrive through
 /// DataStream.
-abstract class TarEntry
+public abstract class TarEntry
 {
     string _name = "";
     string _linkName = "";
@@ -415,7 +415,7 @@ abstract class TarEntry
 
 /// An entry in the original Seventh Edition format: a name, a mode, three
 /// numbers and nothing else.
-class V7TarEntry : TarEntry
+public class V7TarEntry : TarEntry
 {
     public V7TarEntry(TarEntryType entryType, string entryName)
         : base(entryType, entryName, TarEntryFormat.V7)
@@ -425,7 +425,7 @@ class V7TarEntry : TarEntry
 
 /// Everything POSIX added to V7: the owner and group by name, and a device
 /// number for a device node.
-abstract class PosixTarEntry : TarEntry
+public abstract class PosixTarEntry : TarEntry
 {
     string _userName = "";
     string _groupName = "";
@@ -448,7 +448,7 @@ abstract class PosixTarEntry : TarEntry
     }
 }
 
-class UstarTarEntry : PosixTarEntry
+public class UstarTarEntry : PosixTarEntry
 {
     public UstarTarEntry(TarEntryType entryType, string entryName)
         : base(entryType, entryName, TarEntryFormat.Ustar)
@@ -458,7 +458,7 @@ class UstarTarEntry : PosixTarEntry
 
 /// A PAX entry, which is a ustar entry plus the extended attributes that
 /// override it.
-class PaxTarEntry : PosixTarEntry
+public class PaxTarEntry : PosixTarEntry
 {
     Dictionary<string, string> _attributes;
 
@@ -473,7 +473,7 @@ class PaxTarEntry : PosixTarEntry
 
 /// A GNU entry, which carries the two extra timestamps GNU tar put where
 /// ustar keeps its prefix.
-class GnuTarEntry : PosixTarEntry
+public class GnuTarEntry : PosixTarEntry
 {
     long _atime;
     long _ctime;
@@ -497,7 +497,7 @@ class GnuTarEntry : PosixTarEntry
 }
 
 /// Reads the entries of an archive in order.
-class TarReader : IDisposable
+public class TarReader : IDisposable
 {
     Stream _archive;
     bool _leaveOpen;
@@ -824,7 +824,7 @@ class TarReader : IDisposable
 }
 
 /// Writes entries to an archive in the format it was made with.
-class TarWriter : IDisposable
+public class TarWriter : IDisposable
 {
     Stream _archive;
     TarEntryFormat _format;
@@ -1206,7 +1206,7 @@ class TarWriter : IDisposable
 
 /// The two whole-directory conveniences .NET puts beside the reader and the
 /// writer.
-static class TarFile
+public static class TarFile
 {
     public static void CreateFromDirectory(string sourceDirectoryName,
                                            string destinationFileName,

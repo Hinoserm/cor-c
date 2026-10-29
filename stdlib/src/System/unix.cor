@@ -113,7 +113,7 @@ static class UnixMount
     }
 }
 
-static class UnixProcess
+public static class UnixProcess
 {
     // ---- making a process -------------------------------------------------
 

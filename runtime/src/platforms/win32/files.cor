@@ -12,7 +12,7 @@
 // knows. Windows 2000 is the floor (MoveFileEx, CreateHardLink,
 // GetFileAttributesEx); 9x has no wide calls and is for later.
 
-static partial class Os
+public static partial class Os
 {
     const int StdInput = -10, StdOutput = -11, StdError = -12;
     const uint GenericRead = 0x80000000, GenericWrite = 0x40000000;

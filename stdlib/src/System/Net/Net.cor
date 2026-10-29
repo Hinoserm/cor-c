@@ -6,7 +6,7 @@ using System.IO;
 
 /// .NET's values (Windows' AF_ numbers): InterNetworkV6 is 23, where
 /// Linux's AF_INET6 is 10 (Socket says which it asks the kernel for).
-enum AddressFamily
+public enum AddressFamily
 {
     Unknown = -1,
     Unspecified = 0,
@@ -15,14 +15,14 @@ enum AddressFamily
     InterNetworkV6 = 23
 }
 
-enum SocketType
+public enum SocketType
 {
     Stream = 1,
     Dgram = 2,
     Raw = 3
 }
 
-enum ProtocolType
+public enum ProtocolType
 {
     IP = 0,
     IPv6HopByHopOptions = 0,
@@ -48,7 +48,7 @@ enum ProtocolType
     Unknown = -1,
 }
 
-enum SelectMode
+public enum SelectMode
 {
     SelectRead = 0,
     SelectWrite = 1,
@@ -56,7 +56,7 @@ enum SelectMode
 }
 
 /// send(2) and recv(2)'s flags, .NET's names for them.
-enum SocketFlags
+public enum SocketFlags
 {
     None = 0,
     OutOfBand = 1,
@@ -69,7 +69,7 @@ enum SocketFlags
     Partial = 32768,
 }
 
-enum SocketShutdown
+public enum SocketShutdown
 {
     Receive = 0,
     Send = 1,
@@ -78,7 +78,7 @@ enum SocketShutdown
 
 /// .NET's socket errors, by .NET's numbers (the Winsock ones, which is what
 /// SocketException.SocketErrorCode has always answered on every platform).
-enum SocketError
+public enum SocketError
 {
     Success = 0,
     IOPending = 997,
@@ -134,7 +134,7 @@ enum SocketError
 /// SocketErrorCode the SocketError that errno is. new SocketException(int)
 /// takes a SocketError, as .NET's does; the class library's own system calls
 /// make theirs from the errno (FromErrno).
-class SocketException : Win32Exception
+public class SocketException : Win32Exception
 {
     internal override int Code => unchecked((int)0x80004005);
     readonly SocketError _error;
@@ -275,7 +275,7 @@ class SocketException : Win32Exception
 /// name for one read as the interface's index; IPv6 written as RFC 5952
 /// writes it, the last 32 bits dotted for the compatible, mapped, SIIT and
 /// ISATAP forms.
-class IPAddress
+public class IPAddress
 {
     readonly byte[] _bytes;
     long _scope;
@@ -740,7 +740,7 @@ class IPAddress
     }
 }
 
-class IPEndPoint
+public class IPEndPoint
 {
     public IPAddress Address;
     public int Port;
@@ -804,7 +804,7 @@ class IPEndPoint
 }
 
 /// A host's name and addresses: what System.Net.Dns answers with.
-class IPHostEntry
+public class IPHostEntry
 {
     public string HostName = "";
     public string[] Aliases = new string[0];
@@ -1564,7 +1564,7 @@ class DnsResolver
 /// name servers /etc/resolv.conf names -- which is the order nsswitch.conf
 /// puts them in on every machine that has one, and the order a program
 /// expects whether or not this system has grown one of those yet.
-static class Dns
+public static class Dns
 {
     public static string GetHostName()
     {
@@ -1698,7 +1698,7 @@ static class Dns
 }
 
 /// System.Net.Sockets.Socket over the platform's descriptor calls.
-class Socket : IDisposable
+public class Socket : IDisposable
 {
     int _fd;
     bool _connected;
@@ -2115,7 +2115,7 @@ class Socket : IDisposable
 }
 
 /// A Stream over a connected Socket.
-class NetworkStream : Stream
+public class NetworkStream : Stream
 {
     Socket _socket;
     bool _owns;
@@ -2221,7 +2221,7 @@ class NetworkStream : Stream
     }
 }
 
-class TcpClient : IDisposable
+public class TcpClient : IDisposable
 {
     Socket _socket;
     NetworkStream? _stream;
@@ -2286,7 +2286,7 @@ class TcpClient : IDisposable
     }
 }
 
-class TcpListener
+public class TcpListener
 {
     Socket _socket;
     IPEndPoint _endPoint;
@@ -2348,7 +2348,7 @@ class TcpListener
 /// each time, as .NET does; Connect fixes a destination for the shorter
 /// Send and makes Receive take only that peer's datagrams, which is what a
 /// connected datagram socket is.
-class UdpClient : IDisposable
+public class UdpClient : IDisposable
 {
     Socket _socket;
     bool _connected;

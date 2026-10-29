@@ -13,7 +13,7 @@
 
 /// A DAY, counted from 0001-01-01 -- .NET's DayNumber, and the same epoch as
 /// DateTime's ticks, so the two convert by multiplication.
-struct DateOnly {
+public struct DateOnly {
     private int day;
 
     public DateOnly(int year, int month, int day1) {
@@ -79,7 +79,7 @@ struct DateOnly {
 /// A TIME OF DAY, in ticks from midnight, and never as much as a whole day:
 /// adding hours WRAPS rather than overflowing, which is .NET's rule and the
 /// only one that makes sense for a clock face.
-struct TimeOnly {
+public struct TimeOnly {
     private long ticks;
 
     public TimeOnly(int hour, int minute) {
@@ -163,7 +163,7 @@ struct TimeOnly {
 /// date was corrected halfway through. Its unit here is the nanosecond, so
 /// Frequency is a thousand million and IsHighResolution is true, both of which
 /// are also what .NET reports on Linux.
-class Stopwatch {
+public class Stopwatch {
     private long started;       // timestamp of the last Start, when running
     private long accumulated;   // nanoseconds from every earlier run
     private bool running;

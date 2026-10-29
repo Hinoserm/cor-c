@@ -18,21 +18,21 @@
 
 using System.IO;
 
-class TimeZoneNotFoundException : Exception
+public class TimeZoneNotFoundException : Exception
 {
     public TimeZoneNotFoundException() : base() { }
     public TimeZoneNotFoundException(string? message) : base(message) { }
     public TimeZoneNotFoundException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
-class InvalidTimeZoneException : Exception
+public class InvalidTimeZoneException : Exception
 {
     public InvalidTimeZoneException() : base() { }
     public InvalidTimeZoneException(string? message) : base(message) { }
     public InvalidTimeZoneException(string? message, Exception? innerException) : base(message, innerException) { }
 }
 
-sealed class TimeZoneInfo : IEquatable<TimeZoneInfo>
+public sealed class TimeZoneInfo : IEquatable<TimeZoneInfo>
 {
     public string Id { get; private set; }
     public string DisplayName { get; private set; }

@@ -103,7 +103,7 @@ static class Cmsg
 /// and nothing else. The heap is the caller of Map, so NOTHING in this
 /// class may allocate: no `new`, no arrays, no strings built at run time.
 /// A string LITERAL is data the compiler laid out, and is fine.
-static class Platform
+public static class Platform
 {
     // The raw answer, as is: -errno for a call that answers a count or
     // zero. An address-returning call goes through Err.Failed/Err.Address.
@@ -1320,7 +1320,7 @@ static class Platform
 ///     above is why they come out negative at all.
 ///   - Args() is new: user.cor's Getarg read one argument string from the
 ///     kernel; Linux left argc and argv on the stack at entry.
-static partial class Os
+public static partial class Os
 {
     static nuint _signalRestorer;
 
@@ -2482,7 +2482,7 @@ static partial class Os
 
 /// The status word waitpid(2) writes, and what it means. The encoding is the
 /// kernel's and has been since v6: the low byte says how it ended.
-static class WaitStatus
+public static class WaitStatus
 {
     public const int NoHang = 1;        // WNOHANG
     public const int Untraced = 2;      // WUNTRACED

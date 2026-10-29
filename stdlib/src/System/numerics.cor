@@ -20,7 +20,7 @@
 
 using System.Globalization;
 
-readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<BigInteger>, IFormattable {
+public readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<BigInteger>, IFormattable {
     private readonly int sign;       // -1, 0 or 1
     private readonly uint[] limbs;   // least significant first; no leading zeros
 
@@ -1616,7 +1616,7 @@ readonly struct BigInteger : IComparable, IComparable<BigInteger>, IEquatable<Bi
 /// written out. What matters to a caller is the answer, and the answers are
 /// .NET's exactly: a count of set bits, and the number of zeroes at either
 /// end of a word -- 32 or 64 for a zero word, which is what .NET returns.
-static class BitOperations {
+public static class BitOperations {
     // BY THE BITS' SUMS IN PLACE, not a turn of a loop for each bit set: the
     // pairs, then the nibbles, then one multiply adds the four bytes into the
     // top one. Twelve instructions whatever the value; the K8 has no POPCNT.
@@ -1698,7 +1698,7 @@ static class BitOperations {
 // with a double on one side are their own, as .NET's are, and treat an
 // infinite part as .NET does. Written "<re; im>", each part as a double is.
 
-readonly struct Complex : IEquatable<Complex>, IFormattable {
+public readonly struct Complex : IEquatable<Complex>, IFormattable {
     private readonly double m_real;
     private readonly double m_imaginary;
 

@@ -17,7 +17,7 @@
 // the kernel writing into its fields, needs the compiler to promise a
 // layout it does not promise.
 
-static partial class Os
+public static partial class Os
 {
     /// `s` as UTF-8 with a zero byte after it, which is what the kernel
     /// means by a path: a string is UTF-16 code units, and a path a Unix

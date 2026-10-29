@@ -6,7 +6,7 @@
 // same reason: a hash of a Stream reads the stream.
 
 /// Something went wrong in a cryptographic operation.
-class CryptographicException : SystemException
+public class CryptographicException : SystemException
 {
     internal override int Code => unchecked((int)0x80131501);
     public CryptographicException() : base("Error occurred during a cryptographic operation.") { }
@@ -18,7 +18,7 @@ class CryptographicException : SystemException
 
 /// A hash algorithm: data in, in as many pieces as it comes in, and a hash
 /// out at the end.
-abstract class HashAlgorithm : ICryptoTransform, IDisposable
+public abstract class HashAlgorithm : ICryptoTransform, IDisposable
 {
     byte[]? _hash;
     bool _disposed;
@@ -214,7 +214,7 @@ abstract class HashAlgorithm : ICryptoTransform, IDisposable
 }
 
 /// SHA-256 (FIPS 180-4): a 256-bit hash.
-abstract class SHA256 : HashAlgorithm
+public abstract class SHA256 : HashAlgorithm
 {
     public const int HashSizeInBits = 256;
     public const int HashSizeInBytes = 32;
@@ -464,7 +464,7 @@ sealed class Sha256Implementation : SHA256
 
 /// A transformation of data a block at a time: what a CryptoStream runs
 /// what passes through it through.
-interface ICryptoTransform : IDisposable
+public interface ICryptoTransform : IDisposable
 {
     int InputBlockSize { get; }
     int OutputBlockSize { get; }
@@ -475,7 +475,7 @@ interface ICryptoTransform : IDisposable
 }
 
 /// A hash algorithm by name, as .NET's APIs that make one are given it.
-readonly struct HashAlgorithmName : IEquatable<HashAlgorithmName>
+public readonly struct HashAlgorithmName : IEquatable<HashAlgorithmName>
 {
     readonly string? _name;
 
@@ -532,7 +532,7 @@ readonly struct HashAlgorithmName : IEquatable<HashAlgorithmName>
 
 /// MD5 (RFC 1321): a 128-bit hash. For checksums, as .NET warns: it is not
 /// safe against someone making collisions on purpose.
-abstract class MD5 : HashAlgorithm
+public abstract class MD5 : HashAlgorithm
 {
     public const int HashSizeInBits = 128;
     public const int HashSizeInBytes = 16;
@@ -560,7 +560,7 @@ abstract class MD5 : HashAlgorithm
 }
 
 /// SHA-1 (FIPS 180-4): a 160-bit hash.
-abstract class SHA1 : HashAlgorithm
+public abstract class SHA1 : HashAlgorithm
 {
     public const int HashSizeInBits = 160;
     public const int HashSizeInBytes = 20;
@@ -588,7 +588,7 @@ abstract class SHA1 : HashAlgorithm
 }
 
 /// SHA-512 (FIPS 180-4): a 512-bit hash, over 128-byte blocks.
-abstract class SHA512 : HashAlgorithm
+public abstract class SHA512 : HashAlgorithm
 {
     public const int HashSizeInBits = 512;
     public const int HashSizeInBytes = 64;
@@ -616,7 +616,7 @@ abstract class SHA512 : HashAlgorithm
 }
 
 /// SHA-384 (FIPS 180-4): SHA-512 from other initial values, cut to 384 bits.
-abstract class SHA384 : HashAlgorithm
+public abstract class SHA384 : HashAlgorithm
 {
     public const int HashSizeInBits = 384;
     public const int HashSizeInBytes = 48;
@@ -1073,7 +1073,7 @@ sealed class Sha384Implementation : SHA384
 }
 
 /// A hash with a key (System.Security.Cryptography.KeyedHashAlgorithm).
-abstract class KeyedHashAlgorithm : HashAlgorithm
+public abstract class KeyedHashAlgorithm : HashAlgorithm
 {
     protected byte[] KeyValue = new byte[0];
 
@@ -1097,7 +1097,7 @@ abstract class KeyedHashAlgorithm : HashAlgorithm
 
 /// HMAC (RFC 2104) over any of the hashes: H(K ^ opad, H(K ^ ipad, data)),
 /// a key longer than a block hashed first, a shorter one padded with zeros.
-class HMAC : KeyedHashAlgorithm
+public class HMAC : KeyedHashAlgorithm
 {
     readonly HashAlgorithmName _algorithm;
     HashAlgorithm _inner;
@@ -1162,7 +1162,7 @@ class HMAC : KeyedHashAlgorithm
     }
 }
 
-class HMACMD5 : HMAC
+public class HMACMD5 : HMAC
 {
     public HMACMD5() : base(HashAlgorithmName.MD5, RandomNumberGenerator.GetBytes(64)) { }
     public HMACMD5(byte[] key) : base(HashAlgorithmName.MD5, key) { }
@@ -1196,7 +1196,7 @@ class HMACMD5 : HMAC
     public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACMD5(key.ToArray()), source, destination); }
 }
 
-class HMACSHA1 : HMAC
+public class HMACSHA1 : HMAC
 {
     public HMACSHA1() : base(HashAlgorithmName.SHA1, RandomNumberGenerator.GetBytes(64)) { }
     public HMACSHA1(byte[] key) : base(HashAlgorithmName.SHA1, key) { }
@@ -1230,7 +1230,7 @@ class HMACSHA1 : HMAC
     public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACSHA1(key.ToArray()), source, destination); }
 }
 
-class HMACSHA256 : HMAC
+public class HMACSHA256 : HMAC
 {
     public HMACSHA256() : base(HashAlgorithmName.SHA256, RandomNumberGenerator.GetBytes(64)) { }
     public HMACSHA256(byte[] key) : base(HashAlgorithmName.SHA256, key) { }
@@ -1264,7 +1264,7 @@ class HMACSHA256 : HMAC
     public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACSHA256(key.ToArray()), source, destination); }
 }
 
-class HMACSHA384 : HMAC
+public class HMACSHA384 : HMAC
 {
     public HMACSHA384() : base(HashAlgorithmName.SHA384, RandomNumberGenerator.GetBytes(128)) { }
     public HMACSHA384(byte[] key) : base(HashAlgorithmName.SHA384, key) { }
@@ -1298,7 +1298,7 @@ class HMACSHA384 : HMAC
     public static int HashData(ReadOnlySpan<byte> key, Stream source, Span<byte> destination) { return OneShot.Hash(new HMACSHA384(key.ToArray()), source, destination); }
 }
 
-class HMACSHA512 : HMAC
+public class HMACSHA512 : HMAC
 {
     public HMACSHA512() : base(HashAlgorithmName.SHA512, RandomNumberGenerator.GetBytes(128)) { }
     public HMACSHA512(byte[] key) : base(HashAlgorithmName.SHA512, key) { }
@@ -1335,7 +1335,7 @@ class HMACSHA512 : HMAC
 /// A hash, or an HMAC, made a piece at a time and read when wanted: after
 /// everything (GetHashAndReset, which starts it again) or part way
 /// (GetCurrentHash, which does not).
-sealed class IncrementalHash : IDisposable
+public sealed class IncrementalHash : IDisposable
 {
     readonly HashAlgorithm _algorithm;
     readonly HashAlgorithmName _name;
@@ -1426,7 +1426,7 @@ sealed class IncrementalHash : IDisposable
     }
 }
 
-enum CryptoStreamMode
+public enum CryptoStreamMode
 {
     Read = 0,
     Write = 1,
@@ -1436,7 +1436,7 @@ enum CryptoStreamMode
 /// on (Write mode), what is read is read and transformed (Read mode). The
 /// last block is transformed by FlushFinalBlock, or on disposal. Run over a
 /// hash, it hashes everything that passes through.
-class CryptoStream : Stream
+public class CryptoStream : Stream
 {
     readonly Stream _stream;
     readonly ICryptoTransform _transform;

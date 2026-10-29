@@ -123,8 +123,8 @@ public sealed class Monomorphiser
 
     /// <summary>
     /// The class library's top-level types not declared public, by path: what
-    /// C# never shows another assembly, so through a program's using
-    /// directives each steps aside for any other type of its name (Named). System.Threading's internal `Named`, beside
+    /// C# never shows another assembly, so a program's using directives
+    /// bring in none of them (Named; Binder.HiddenFromProgram). System.Threading's internal `Named`, beside
     /// Corsac.Lang.RegAlloc's under the implicit `using System.Threading`,
     /// made the program's name ambiguous, and so no type at all.
     /// </summary>
@@ -271,6 +271,7 @@ public sealed class Monomorphiser
         // its file's `using Corsac.Lang.X86` -- could not name what it calls.
         made.Scope = template.Scope;
         made.Namespace = template.Namespace;
+        made.Made = template.Made;
         // ONE LIST FOR EVERY ROUND'S COPY OF IT, empty or not: the binder adds
         // what the copy's own calls need (Binder.NoteCopyNeeds).
         made.CopyNeeds = m._needs;
@@ -656,33 +657,25 @@ public sealed class Monomorphiser
             }
         }
 
-        string? found = null, aside = null;
-        bool asideTwice = false;
+        string? found = null;
 
         foreach ((string In, string Namespace) import in _usings.Imports)
         {
-            if (import.In != at || !HasPath(import.Namespace, name))
+            // Not a class library type the program cannot see (Binder.HiddenFromProgram).
+            if (import.In != at || !HasPath(import.Namespace, name)
+                || !_libraryCode && _libraryInternal.Contains(import.Namespace + "." + name))
             {
-                continue;
-            }
-            // A class library's type not declared public steps aside for any
-            // other of the name (Binder.ImportedNow), alone the one meant.
-            if (!_libraryCode && _libraryInternal.Contains(import.Namespace + "." + name))
-            {
-                string path = import.Namespace + "." + name;
-                asideTwice |= aside is not null && aside != path;
-                aside = path;
                 continue;
             }
 
-            if (found != null)
+            if (found != null && found != import.Namespace + "." + name)
             {
                 return null;
             }
             found = import.Namespace + "." + name;
         }
 
-        return found ?? (asideTwice ? null : aside);
+        return found;
     }
 
     private bool IsWord(TypeRef r)
@@ -3210,6 +3203,7 @@ public sealed class Monomorphiser
             }
 
             copy.Scope = members[i].Scope;
+            copy.Made = members[i].Made;
             copy.OwnedImplementation = d.TypeParams.Count != 0 ? true : members[i].OwnedImplementation;
             copy.Namespace = members[i].Namespace;
             copy.TemplateIndex = i;

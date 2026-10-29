@@ -31,7 +31,7 @@
 using System.Globalization;
 using System.Threading;
 
-enum RegexOptions
+public enum RegexOptions
 {
     None = 0,
     IgnoreCase = 1,
@@ -47,7 +47,7 @@ enum RegexOptions
 }
 
 /// Which rule a pattern broke, named and numbered as .NET's.
-enum RegexParseError
+public enum RegexParseError
 {
     Unknown = 0,
     AlternationHasTooManyConditions = 1,
@@ -85,7 +85,7 @@ enum RegexParseError
 
 /// Thrown for a pattern that is not a pattern: which rule it broke, and how
 /// far into the pattern the parser had read when it found out.
-class RegexParseException : ArgumentException
+public class RegexParseException : ArgumentException
 {
     public RegexParseError Error { get; }
     public int Offset { get; }
@@ -98,7 +98,7 @@ class RegexParseException : ArgumentException
 }
 
 /// A match that ran past its regular expression's MatchTimeout.
-class RegexMatchTimeoutException : TimeoutException
+public class RegexMatchTimeoutException : TimeoutException
 {
     public string Input { get; }
     public string Pattern { get; }
@@ -132,7 +132,7 @@ class RegexMatchTimeoutException : TimeoutException
     }
 }
 
-delegate string MatchEvaluator(Match match);
+public delegate string MatchEvaluator(Match match);
 
 // ---- character classes ------------------------------------------------------
 
@@ -4658,7 +4658,7 @@ class RegexInterpreter
 // ---- what a match answers ---------------------------------------------------
 
 /// .NET's Capture: a piece of the input, by where it is and what it says.
-class Capture
+public class Capture
 {
     internal string Text;
 
@@ -4683,7 +4683,7 @@ class Capture
 }
 
 /// A group of a match: its last capture, and every capture it made.
-class Group : Capture
+public class Group : Capture
 {
     internal static readonly Group EmptyGroup = new Group("", new int[0], 0, "");
 
@@ -4723,7 +4723,7 @@ class Group : Capture
 }
 
 /// Every capture of a group, first to last; the last is the group itself.
-class CaptureCollection : IList<Capture>, IReadOnlyList<Capture>
+public class CaptureCollection : IList<Capture>, IReadOnlyList<Capture>
 {
     Group _group;
     int _capcount;
@@ -4813,7 +4813,7 @@ class CaptureCollection : IList<Capture>, IReadOnlyList<Capture>
 /// name none has, is a group that matched nothing, named "". A list of the
 /// groups and a read-only dictionary of them by name, as .NET's is: its
 /// entries, each group under its name, are the dictionary's enumerator.
-class GroupCollection : IList<Group>, IReadOnlyList<Group>, IReadOnlyDictionary<string, Group>
+public class GroupCollection : IList<Group>, IReadOnlyList<Group>, IReadOnlyDictionary<string, Group>
 {
     Match _match;
     Dictionary<int, int>? _captureMap;
@@ -4978,7 +4978,7 @@ class GroupCollection : IList<Group>, IReadOnlyList<Group>, IReadOnlyDictionary<
 /// keeps them while the interpreter runs -- per slot, pairs of index and
 /// length, with a count -- and a balancing group's removals as negative
 /// entries until Tidy compacts them.
-class Match : Group
+public class Match : Group
 {
     internal static readonly Match EmptyMatch = new Match(null, 1, "", 0, 0, 0);
 
@@ -5214,7 +5214,7 @@ class Match : Group
 }
 
 /// Every match of a regex in an input, found as they are asked for.
-class MatchCollection : IList<Match>, IReadOnlyList<Match>
+public class MatchCollection : IList<Match>, IReadOnlyList<Match>
 {
     Regex _regex;
     string _input;
@@ -5336,7 +5336,7 @@ class MatchCollection : IList<Match>, IReadOnlyList<Match>
 
 // ---- Regex -------------------------------------------------------------------------
 
-class Regex
+public class Regex
 {
     public static readonly TimeSpan InfiniteMatchTimeout = TimeSpan.FromMilliseconds(-1);
 

@@ -418,7 +418,7 @@ public static class Prelude
     public const string TypeFullNameMethod = "TypeFullName";
 
     public const string Source = """
-        static class Sys {
+        public static class Sys {
             public static void PrintInt(long value) { }
             public static void Print(string text) { }
             // Bytes as they are, to the same output: a "text"u8 literal or a
@@ -1085,11 +1085,11 @@ public static class Prelude
         // EIGHT BYTES OF PACKED LANES, as MMX holds them (Packed): bytes,
         // words, doublewords, the quadword or two floats, by the operation
         // that reads them. Bits is all eight, lowest lane lowest.
-        struct Packed64 {
+        public struct Packed64 {
             public ulong Bits;
         }
         // SIXTEEN, as SSE holds them: Lo the low eight, Hi the high.
-        struct Packed128 {
+        public struct Packed128 {
             public ulong Lo;
             public ulong Hi;
         }
@@ -1111,7 +1111,7 @@ public static class Prelude
         // Store32 move four bytes (MOVD), the high four zero in; Prefetch and
         // PrefetchWrite ask for a cache line ahead (PREFETCHNTA, 3DNow!'s
         // PREFETCH and PREFETCHW) and are nothing where there is none.
-        static class Packed {
+        public static class Packed {
             public static int Features() { return 0; }
             public static Packed64 FromBits(ulong bits) { return new Packed64(); }
             public static Packed128 FromBits(ulong lo, ulong hi) { return new Packed128(); }
@@ -1272,7 +1272,7 @@ public static class Prelude
             public static Packed128 UnpackLowF32(Packed128 a, Packed128 b) { return a; }
             public static Packed128 UnpackHighF32(Packed128 a, Packed128 b) { return a; }
         }
-        static class Math {
+        public static class Math {
             public static double Sqrt(double x) { return 0.0; }
             public static double Abs(double x) { return 0.0; }
             public static double Floor(double x) { return 0.0; }

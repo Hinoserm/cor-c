@@ -26,7 +26,7 @@
 using System.IO;
 
 /// Whether a compressing stream compresses or decompresses. .NET's.
-enum CompressionMode
+public enum CompressionMode
 {
     Decompress = 0,
     Compress = 1
@@ -35,7 +35,7 @@ enum CompressionMode
 /// How hard a compressing stream tries. .NET's four values map onto the
 /// deflate levels they map onto in .NET: Fastest is 1, Optimal is 6 and
 /// SmallestSize is 9.
-enum CompressionLevel
+public enum CompressionLevel
 {
     Optimal = 0,
     Fastest = 1,
@@ -50,7 +50,7 @@ enum CompressionLevel
 /// lookup per byte and, on a stream that inflates at three hundred megabytes
 /// a second, was costing more than the inflating: eight columns turn eight
 /// dependent lookups into eight independent ones and run three times as fast.
-static class Crc32
+public static class Crc32
 {
     static uint[] _table = Build();
 
@@ -120,7 +120,7 @@ static class Crc32
 
 /// The Adler-32 of RFC 1950. The inner sums are deferred 5552 bytes at a
 /// time, which is the most that cannot overflow 32 bits.
-static class Adler32
+public static class Adler32
 {
     public const uint Seed = 1;
 
@@ -2161,7 +2161,7 @@ class Inflater
 
 /// System.IO.Compression.DeflateStream: raw RFC 1951 data, with no header and
 /// no checksum, over any Stream.
-class DeflateStream : Stream
+public class DeflateStream : Stream
 {
     Stream _stream;
     CompressionMode _mode;
@@ -2251,7 +2251,7 @@ class DeflateStream : Stream
 
 /// System.IO.Compression.ZLibStream: RFC 1950's two-byte header and Adler-32
 /// trailer around the same DEFLATE data.
-class ZLibStream : Stream
+public class ZLibStream : Stream
 {
     Stream _stream;
     CompressionMode _mode;
@@ -2413,7 +2413,7 @@ class ZLibStream : Stream
 /// System.IO.Compression.GZipStream: RFC 1952 framing, including the
 /// concatenated members gzip writes and every optional header field it may
 /// have put in front of them.
-class GZipStream : Stream
+public class GZipStream : Stream
 {
     Stream _stream;
     CompressionMode _mode;
