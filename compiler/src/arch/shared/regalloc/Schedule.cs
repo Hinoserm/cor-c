@@ -59,6 +59,7 @@ public static class Schedule
         // any it reorders must.
         BitSet[]? liveOut = null;
         Dictionary<int, int>? index = null;
+        HashSet<int> named = new();
         for (int b = 0; b < f.Blocks.Count; b++)
         {
             List<AInstr> instrs = f.Blocks[b].Instrs;
@@ -71,7 +72,7 @@ public static class Schedule
             for (int at = 0; at <= instrs.Count; at++)
             {
                 if (at < instrs.Count && (instrs[at].Effects & Effect.Barrier) == 0) continue;
-                if (at - start >= 3 && at - start <= Longest && Names(f, instrs, start, at) > k)
+                if (at - start >= 3 && at - start <= Longest && NamesMore(f, instrs, start, at, k, named))
                 {
                     if (liveOut is null) liveOut = LiveOut(f, home, Cyclic(f), out index);
                     Stretch(f, instrs, start, at, liveOut[b], index!, padRead, lastIn, k);
@@ -204,17 +205,21 @@ public static class Schedule
         return cyclic;
     }
 
-    /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
-    /// <summary>How many of the first class's values the stretch [from, to) names: its peak counts no more.</summary>
-    private static int Names(AFunction f, List<AInstr> instrs, int from, int to)
+    /// <summary>
+    /// Whether the stretch [from, to) names more than `k` of the first
+    /// class's values -- its peak counts no more than it names -- stopping
+    /// once it does.
+    /// </summary>
+    private static bool NamesMore(AFunction f, List<AInstr> instrs, int from, int to, int k, HashSet<int> named)
     {
-        HashSet<int> named = new();
+        named.Clear();
         for (int x = from; x < to; x++)
             foreach (Named r in instrs[x].Regs)
-                if (r.Reg >= f.Registers.FirstVirtual && f.Target.ClassOf(r.Reg) == 0) named.Add(r.Reg);
-        return named.Count;
+                if (r.Reg >= f.Registers.FirstVirtual && f.Target.ClassOf(r.Reg) == 0 && named.Add(r.Reg) && named.Count > k) return true;
+        return false;
     }
 
+    /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
     private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, BitSet liveOut, Dictionary<int, int> index, HashSet<int> padRead, Dictionary<int, int> lastIn, int k)
     {
         int n = to - from;
@@ -226,8 +231,8 @@ public static class Schedule
         // included) is live from the stretch's start -- in any order the
         // dependences allow, as each later definition depends on every read
         // before it and on the definition before it (the register edges
-        // below); one mentioned after the stretch, or live out of the block,
-        // to its end.
+        // below); one mentioned after the stretch, live out of the block or
+        // named by a landing pad, to its end.
         HashSet<int> liveIn = new(), outlives = new(), seen = new();
         for (int x = 0; x < n; x++)
         {
