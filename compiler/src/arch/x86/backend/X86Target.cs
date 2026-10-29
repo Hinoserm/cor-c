@@ -111,7 +111,13 @@ internal sealed class X86Target : ITarget
     /// <summary>
     /// An address an LEA makes from nothing the allocator places -- off EBP,
     /// which holds still through the function, or a symbol -- remade where it
-    /// is wanted (AInstr.Constant); not off ESP, which every push moves.
+    /// is wanted (AInstr.Constant); not off ESP, which every push moves. EBP
+    /// is not the frame only in a six-argument system call's window (Select:
+    /// `push ebp; mov ebp, a6; int 0x80; pop ebp`), where nothing is remade:
+    /// the trap names no value the allocator places, and the sixth argument's
+    /// own remaking lands ahead of the move into EBP; and in a leaf giving EBP
+    /// a value, where the frame address it makes becomes ESP's
+    /// (FramePointerFree).
     /// </summary>
     private static MMem? Address(MInstr i) => i.Op == MOp.Lea && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsPhys: false }
         && i.Operands[1] is MMem { Index: null } m && (m.Base is null ? m.Symbol is not null && m.Reloc == RelocKind.Abs32 : m.Base.Id == (int)Gpr.Ebp && m.Symbol is null)

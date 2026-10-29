@@ -119,7 +119,7 @@ public sealed class Allocator
     private readonly int[] _slot;
     private readonly Dictionary<(int VReg, int Instr), int> _shortReg = new();
     private readonly HashSet<(int Instr, int Operand)> _folded = new();
-    /// <summary>Registers whose one definition is a constant: spilled, they are re-made rather than stored.</summary>
+    /// <summary>Registers whose one definition is a constant or an address (AInstr.Constant): spilled, they are re-made rather than stored.</summary>
     private readonly object?[] _remat;
     /// <summary>Values whose one definition loads them from a home (AInstr.HomeSlot): the home, else 0.</summary>
     private int[] _home = Array.Empty<int>();
@@ -308,9 +308,10 @@ public sealed class Allocator
             }
         }
 
-        // A register defined exactly once, by a constant, need never live in
-        // a spill slot: wherever it is wanted the constant can be written
-        // again, and often folded into the instruction that wanted it.
+        // A register defined exactly once, by a constant or an address off the
+        // frame or a symbol, need never live in a spill slot: wherever it is
+        // wanted it can be made again -- a constant often folded into the
+        // instruction that wanted it, an address by its LEA.
         for (int v = _fv; v < _n; v++)
         {
             Occurrence? def = null;
@@ -1411,7 +1412,7 @@ public sealed class Allocator
             Occurrence o = _occAll[occ];
             if (remat && (o.Role & Role.Def) != 0)
             {
-                // The defining move is gone: the constant is written where it is used instead.
+                // The defining move is gone: the constant (or address) is made where it is used instead.
                 continue;
             }
             if (o.Instr >= until || (again && o.Instr < from))
@@ -1543,7 +1544,7 @@ public sealed class Allocator
     /// straight run that reads it from here on (a reload's register carries
     /// through a run), and one where the back edge comes in when the value
     /// is carried round and read before here (HeldBeforeSpill). A constant
-    /// remade where it is read costs no store and half a load.
+    /// or an address remade where it is read costs no store and half a load.
     /// </summary>
     private int LapCost(int vreg, int at, int loop)
     {
@@ -2224,7 +2225,9 @@ public sealed class Allocator
         /// <summary>
         /// Where the values live across the call at `index` are, once the scan
         /// has placed them. INTERIM RULE: every live value that is not
-        /// remade from a constant counts as a potential reference -- on i386 a
+        /// remade from a constant or an address (a frame's, which no collector
+        /// moves, or a static's, a root already) counts as a potential
+        /// reference -- on i386 a
         /// reference and an int are both 32 bits and the IR does not tell them
         /// apart -- so the table is a superset of the truth, safe for a
         /// collector that does not move. Its slot wherever it has one, and its
@@ -2302,7 +2305,7 @@ public sealed class Allocator
                 if (a._folded.Contains((index, 0))) { _dropped = true; return; }
                 _noStore = i.CopyDst;
             }
-            // The defining move of a spilled constant goes: see Spill. (A home's
+            // The defining move of a spilled constant or address goes: see Spill. (A home's
             // load stays, even spilled from it: the register it loads may be
             // carried on to the reads after it, Reach. Only its store goes.)
             if (regs.Length > 0 && regs[0] is { Operand: 0, InMem: false } d && d.Reg >= a._fv
