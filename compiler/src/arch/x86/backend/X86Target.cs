@@ -202,21 +202,23 @@ internal sealed class X86Target : ITarget
     /// (Effect): the flags and memory of the plain integer instructions it may
     /// move; anything else -- a call, a branch, a push, a divide (it may fault
     /// on its own), x87 and packed state, a locked or device access -- a
-    /// barrier. INC, DEC, a shift by CL (a count of 0 changes nothing) and
-    /// ADC/SBB read the flags they leave partly or wholly as they were.
+    /// barrier. INC, DEC, a rotate (SF, ZF and PF kept), a shift by CL or by
+    /// a constant the processor masks to 0 (the flags all kept) and ADC/SBB
+    /// read the flags they leave partly or wholly as they were.
     /// </summary>
     private static Effect Effects(MInstr i)
     {
         if (i.Lock) return Effect.Barrier;
-        bool countImm = i.Operands.Count >= 2 && i.Operands[^1] is MImm { Value: >= 1 };
+        bool countImm = i.Operands.Count >= 2 && i.Operands[^1] is MImm { Value: var c } && (c & 31) != 0;
         Effect e = i.Op switch
         {
             MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Not or MOp.Bswap or MOp.Cdq => Effect.None,
             MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg
                 or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.ImulWide => Effect.WritesFlags,
             MOp.Adc or MOp.Sbb or MOp.Inc or MOp.Dec => Effect.ReadsFlags | Effect.WritesFlags,
-            MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd
+            MOp.Shl or MOp.Shr or MOp.Sar or MOp.Shld or MOp.Shrd
                 => countImm ? Effect.WritesFlags : Effect.ReadsFlags | Effect.WritesFlags,
+            MOp.Ror => Effect.ReadsFlags | Effect.WritesFlags,
             MOp.Setcc or MOp.Cmov => Effect.ReadsFlags,
             _ => Effect.Barrier,
         };

@@ -5,10 +5,13 @@ namespace Corsac.Lang.RegAlloc;
 /// <summary>
 /// INSTRUCTIONS REORDERED TO NEED FEWER REGISTERS AT ONCE, before the scan,
 /// on any machine: each block, between its barriers (Effect.Barrier), list-
-/// scheduled bottom-up (Chen's min-register list scheduler, Intel IGC: an
-/// instruction that ends as many values as it starts placed at once, the
-/// rest by the fewest it starts; LLVM's register-reduction scheduler; Barany
-/// and Krall measured such a scheduler's spills against a latency one's).
+/// scheduled bottom-up, each place given to the ready instruction that
+/// starts the fewest of the first class's values above it (net of those it
+/// ends), the latest of the selector's order among equals (Chen's min-
+/// register list scheduler, arXiv 2303.06855; LLVM's register-reduction
+/// scheduler; Barany and Krall measured such a scheduler's spills against a
+/// latency one's). Loads may pass loads: two that fault on a null reference
+/// can swap which faults first, as the same exception.
 /// Out-of-order machines hide the latency a shorter value exposes, and on an
 /// in-order one the selector's order is kept unless the stretch needs more
 /// registers than the machine has: a stretch is reordered only where its
@@ -52,11 +55,16 @@ public static class Schedule
             // them (division's lap: three loads and a store more).
             if (cyclic[b]) continue;
             List<AInstr> instrs = f.Blocks[b].Instrs;
+            // Each register's last mention in the block, for what outlives a stretch.
+            Dictionary<int, int> lastIn = new();
+            for (int x = 0; x < instrs.Count; x++)
+                foreach (Named r in instrs[x].Regs)
+                    if (r.Reg >= rf.FirstVirtual) lastIn[r.Reg] = x;
             int start = 0;
             for (int at = 0; at <= instrs.Count; at++)
             {
                 if (at < instrs.Count && (instrs[at].Effects & Effect.Barrier) == 0) continue;
-                if (at - start >= 3 && at - start <= Longest) Stretch(f, instrs, start, at, b, home, k);
+                if (at - start >= 3 && at - start <= Longest) Stretch(f, instrs, start, at, b, home, lastIn, k);
                 start = at + 1;
             }
         }
@@ -119,11 +127,31 @@ public static class Schedule
     }
 
     /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
-    private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, int block, Dictionary<int, int> home, int k)
+    private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, int block, Dictionary<int, int> home, Dictionary<int, int> lastIn, int k)
     {
         int n = to - from;
         RegisterFile rf = f.Registers;
         ITarget t = f.Target;
+
+        // The registers whose pressure is counted: the first class's values.
+        // Each value's last read in the stretch and its definition there; a
+        // value mentioned after the stretch, or in another block, lives to its
+        // end -- one defined before it, from its start.
+        Dictionary<int, int> lastUse = new();
+        HashSet<int> defined = new(), outlives = new();
+        for (int x = 0; x < n; x++)
+            foreach (Named r in instrs[from + x].Regs)
+            {
+                if (r.Reg < rf.FirstVirtual || t.ClassOf(r.Reg) != 0) continue;
+                if ((r.Role & Role.Use) != 0) lastUse[r.Reg] = x;
+                if ((r.Role & Role.Def) != 0) defined.Add(r.Reg);
+                if (!home.TryGetValue(r.Reg, out int h) || h != block || lastIn[r.Reg] >= to) outlives.Add(r.Reg);
+            }
+        int before = Peak(instrs, from, Enumerable.Range(0, n).ToArray(), lastUse, defined, outlives, rf, t);
+        // Only a stretch whose own values outnumber the registers somewhere:
+        // below that, the selector's order costs no spill (Goodman and Hsu).
+        if (before <= k) return;
+
         List<int>[] succ = new List<int>[n];
         int[] preds = new int[n];
         for (int x = 0; x < n; x++) succ[x] = new();
@@ -224,31 +252,6 @@ public static class Schedule
             }
         }
 
-        // The registers whose pressure is counted: the first class's values.
-        // Each value's last read in the stretch and its definition there; a
-        // value read after the stretch, or named in another block, lives to
-        // its end.
-        Dictionary<int, int> lastUse = new();
-        HashSet<int> defined = new(), outlives = new();
-        for (int x = 0; x < n; x++)
-            foreach (Named r in instrs[from + x].Regs)
-            {
-                if (r.Reg < rf.FirstVirtual || t.ClassOf(r.Reg) != 0) continue;
-                if ((r.Role & Role.Use) != 0) lastUse[r.Reg] = x;
-                if ((r.Role & Role.Def) != 0) defined.Add(r.Reg);
-            }
-        foreach (int v in defined)
-        {
-            if (!home.TryGetValue(v, out int h) || h != block) { outlives.Add(v); continue; }
-            for (int x = to; x < instrs.Count && !outlives.Contains(v); x++)
-                foreach (Named r in instrs[x].Regs)
-                    if (r.Reg == v) { outlives.Add(v); break; }
-        }
-
-        int before = Peak(instrs, from, Enumerable.Range(0, n).ToArray(), lastUse, defined, outlives, rf, t);
-        // Only a stretch whose own values outnumber the registers somewhere:
-        // below that, the selector's order costs no spill (Goodman and Hsu).
-        if (before <= k) return;
 
         // Bottom-up: a node is ready once everything after it is placed.
         int[] after = new int[n];
@@ -288,13 +291,23 @@ public static class Schedule
     /// <summary>How many more of the first class's values are live above `i` than below it, placed bottom-up.</summary>
     private static int Delta(AInstr i, HashSet<int> live, RegisterFile rf, ITarget t)
     {
-        int delta = 0;
+        // A register named twice (`add v, v`, `[v+v*2]`) once, by all it does.
+        Span<(int Reg, Role Role)> seen = stackalloc (int, Role)[i.Regs.Length];
+        int count = 0;
         foreach (Named r in i.Regs)
         {
             if (r.Reg < rf.FirstVirtual || t.ClassOf(r.Reg) != 0) continue;
-            bool use = (r.Role & Role.Use) != 0, def = (r.Role & Role.Def) != 0;
-            if (use && !live.Contains(r.Reg)) delta++;
-            else if (def && !use && live.Contains(r.Reg)) delta--;
+            int at = 0;
+            while (at < count && seen[at].Reg != r.Reg) at++;
+            if (at == count) seen[count++] = (r.Reg, r.Role);
+            else seen[at].Role |= r.Role;
+        }
+        int delta = 0;
+        for (int at = 0; at < count; at++)
+        {
+            bool use = (seen[at].Role & Role.Use) != 0, def = (seen[at].Role & Role.Def) != 0;
+            if (use && !live.Contains(seen[at].Reg)) delta++;
+            else if (def && !use && live.Contains(seen[at].Reg)) delta--;
         }
         return delta;
     }
