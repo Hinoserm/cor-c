@@ -71,7 +71,9 @@ public static class IrReachability
             if (owner is null || !archives.TryGetValue(owner, out IrArchive? archive)) continue;
             string key = "F:" + reference.Symbol;
             if (!archive.Entries.ContainsKey(key)) key = "D:" + reference.Symbol;
-            if (!archive.Entries.TryGetValue(key, out IrArchiveEntry? definition) || !retained[owner].Add(key)) continue;
+            // The entry's own key, read once with its archive: the one made
+            // here to look it up was a second copy of every name kept.
+            if (!archive.Entries.TryGetValue(key, out IrArchiveEntry? definition) || !retained[owner].Add(definition.Key)) continue;
             foreach (string named in definition.References)
                 if (IrArchiveEntry.Named(named) is var dependency && Kept(owner, reference.Symbol, dependency)) pending.Push((owner, dependency));
         }
