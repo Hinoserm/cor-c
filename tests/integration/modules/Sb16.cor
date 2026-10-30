@@ -19,8 +19,11 @@ public sealed class Sb16 : Driver
     public override int Bind(int port)
     {
         _base = port;
+        Ports.All.Put(new IoPort { Base = port, Irq = 5 });
+        Fifo<int> seen = new Fifo<int>(2);
+        seen.Put(port);
         Log.Write("sb16 at " + port + ", " + Sb16Module.Greeting);
-        return Sb16Module.Loads + Tick.Twice(port) - Tick.Twice(port);
+        return Sb16Module.Loads + Tick.Twice(port) - Tick.Twice(port) + seen.Count + Ports.All.Count - 2;
     }
 }
 

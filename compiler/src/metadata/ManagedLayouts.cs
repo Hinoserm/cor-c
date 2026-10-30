@@ -28,7 +28,13 @@ public static class ManagedLayouts
     /// defines: what a module's unit binds to by name. Not the compiler's own
     /// (the prelude's Sys, a tuple made here), which no unit defines.
     /// </param>
-    public static List<ManagedTypeLayout> Capture(BindResult bound, bool library = true, HashSet<string>? defined = null, HashSet<string>? read = null)
+    /// <param name="instances">
+    /// And, where given, with a record of each closed instantiation of a
+    /// generic type this unit made: a layout for a ring's unit to say by name
+    /// (LayoutNames), not among those returned.
+    /// </param>
+    public static List<ManagedTypeLayout> Capture(BindResult bound, bool library = true, HashSet<string>? defined = null, HashSet<string>? read = null,
+        List<ManagedTypeLayout>? instances = null)
     {
         // WHAT THIS UNIT HAS AN OPINION ABOUT. Every type the binder
         // materialised used to be described here, which made the section
@@ -120,103 +126,161 @@ public static class ManagedLayouts
             .Where(type => described.Contains(type))
             .Where(type => type.Decl is { Specialised: false, LocalOnly: false, TypeParams.Count: 0 })
             .Where(type => !(type.Kind == TypeKind.Interface && type.MembersPending)).ToList();
+
+        // A PRIVATE MEMBER OF A TYPE NO OTHER UNIT COPIES BODIES OF
+        // (SourceIndexBuilder.HidesPrivate) is left out of what the type's
+        // readers are rebuilt for, and so of what they must agree on: an
+        // instance field is described by its place and its type, not its
+        // name; a private method or static, not at all -- a unit compiled
+        // against the type before one was renamed or retyped still agrees
+        // with it about all it can reach. A private const is not hidden:
+        // readers fold it.
+        static bool Hides(TypeSymbol type) => type.Decl is { } declared && Metadata.SourceIndexBuilder.HidesPrivate(declared);
+        static HashSet<string> Hidden(TypeSymbol type) => new(Hides(type) ? type.Decl!.Members
+            .Where(member => member is FieldDecl { FixedSize: null } && (member.Mods & (Mods.Public | Mods.Protected | Mods.Internal | Mods.Const)) == 0)
+            .Select(member => member.Name) : Enumerable.Empty<string>(), StringComparer.Ordinal);
+        static void TypeName(BinaryWriter writer, Type value)
+        {
+            // As stored: a class's '?' is an annotation, not layout.
+            writer.Write(value.LayoutText());
+            writer.Write(value.Symbol?.Key ?? "");
+        }
+
+        // THE TYPE'S OWN RECORD: its kind, size, base, interfaces, instance
+        // fields at their places, interface implementations and slots -- the
+        // "type:" record's bytes, for a type described here and for a closed
+        // instantiation (below) alike.
+        byte[] Shape(TypeSymbol type, HashSet<string> hidden)
+        {
+            using MemoryStream stream = new();
+            using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);
+            writer.Write((int)type.Kind); writer.Write(type.InstanceSize); writer.Write(type.Depth);
+            writer.Write(type.Decl?.IsDelegate == true);
+            writer.Write((int)(type.Decl?.Mods ?? Mods.None));
+            writer.Write(type.Base?.Key ?? "");
+            foreach (TypeSymbol face in type.Interfaces.OrderBy(face => face.Key, StringComparer.Ordinal)) writer.Write(face.Key);
+            writer.Write("");
+            foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Offset)
+                .ThenBy(field => field.Type.LayoutText(), StringComparer.Ordinal)
+                .ThenBy(field => hidden.Contains(field.Name) ? "" : field.Name, StringComparer.Ordinal))
+            {
+                writer.Write(hidden.Contains(field.Name) ? "" : field.Name); TypeName(writer, field.Type);
+                writer.Write(field.Static); writer.Write(field.Static ? 0 : field.Offset);
+                writer.Write(field.Boxed); writer.Write(field.Volatile); writer.Write(field.Required); writer.Write(field.Inline);
+            }
+            writer.Write("");
+            foreach (var implementation in type.InterfaceImplementations.OrderBy(pair => pair.Key))
+            { writer.Write(implementation.Key); writer.Write(Lowering.Label(implementation.Value)); }
+            writer.Write(-1);
+            foreach (MethodSymbol method in type.Methods.Where(method => method.VtableSlot >= 0 && method.Decl?.LocalCopy != true)
+                .OrderBy(method => method.VtableSlot).ThenBy(method => method.Name, StringComparer.Ordinal)
+                .ThenBy(method => method.Signature, StringComparer.Ordinal))
+            {
+                writer.Write(method.Name); writer.Write(method.VtableSlot); TypeName(writer, method.Returns);
+                writer.Write(method.Static); writer.Write(method.IsCtor); writer.Write(method.Abstract);
+                writer.Write(method.Params.Count);
+                foreach (ParamSymbol parameter in method.Params)
+                { TypeName(writer, parameter.Type); writer.Write(parameter.ByRef); writer.Write(parameter.ReadOnly); }
+            }
+            if (DumpLayout is string want && want == type.Key)
+            {
+                Console.Error.WriteLine("layout " + type.Key + " kind=" + (int)type.Kind + " size=" + type.InstanceSize
+                    + " depth=" + type.Depth + " base=" + (type.Base?.Key ?? "")
+                    + " interfaces=[" + string.Join(",", type.Interfaces.OrderBy(f => f.Key, StringComparer.Ordinal).Select(f => f.Key)) + "]"
+                    + " impls=[" + string.Join(",", type.InterfaceImplementations.OrderBy(pair => pair.Key).Select(pair => pair.Key + "=>" + Lowering.Label(pair.Value))) + "]");
+                Console.Error.WriteLine("  delegate=" + (type.Decl?.IsDelegate == true) + " mods=" + (int)(type.Decl?.Mods ?? Mods.None));
+                foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Name, StringComparer.Ordinal))
+                    Console.Error.WriteLine("  field " + field.Name + " " + field.Type + "|" + (field.Type.Symbol?.Key ?? "") + " @" + field.Offset
+                        + " boxed=" + field.Boxed + " volatile=" + field.Volatile + " required=" + field.Required + " inline=" + field.Inline);
+                foreach (MethodSymbol method in type.Methods.Where(m => m.VtableSlot >= 0 && m.Decl?.LocalCopy != true).OrderBy(m => m.VtableSlot))
+                    Console.Error.WriteLine("  slot " + method.VtableSlot + " " + method.Name + " " + method.Returns + "|" + (method.Returns.Symbol?.Key ?? "")
+                        + " static=" + method.Static + " ctor=" + method.IsCtor + " abstract=" + method.Abstract + " ("
+                        + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
+                foreach (FieldSymbol field in type.Fields.Where(field => field.Static))
+                    Console.Error.WriteLine("  static " + field.Name + " " + field.Type + "|" + (field.Type.Symbol?.Key ?? ""));
+                foreach (MethodSymbol method in type.Methods.Where(m => m.Decl?.LocalCopy != true && m.TypeParams.Count == 0))
+                    Console.Error.WriteLine("  method " + Lowering.Label(method) + " " + method.Returns + "|" + (method.Returns.Symbol?.Key ?? "")
+                        + " mods=" + (int)(method.Decl?.Mods ?? Mods.None) + " ("
+                        + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
+            }
+            return stream.ToArray();
+        }
+
         IEnumerable<ManagedTypeLayout> Records()
         {
+            using MemoryStream stream = new();
+            using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);
             foreach (TypeSymbol type in toDescribe)
             {
-                using MemoryStream stream = new();
-                using BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true);
-                void TypeName(Type value)
-                {
-                    // As stored: a class's '?' is an annotation, not layout.
-                    writer.Write(value.LayoutText());
-                    writer.Write(value.Symbol?.Key ?? "");
-                }
-                writer.Write((int)type.Kind); writer.Write(type.InstanceSize); writer.Write(type.Depth);
-                writer.Write(type.Decl?.IsDelegate == true);
-                writer.Write((int)(type.Decl?.Mods ?? Mods.None));
-                writer.Write(type.Base?.Key ?? "");
-                foreach (TypeSymbol face in type.Interfaces.OrderBy(face => face.Key, StringComparer.Ordinal)) writer.Write(face.Key);
-                writer.Write("");
-                // A PRIVATE MEMBER OF A TYPE NO OTHER UNIT COPIES BODIES OF
-                // (SourceIndexBuilder.HidesPrivate) is left out of what the
-                // type's readers are rebuilt for, and so of what they must
-                // agree on: an instance field is described by its place and
-                // its type, not its name; a private method or static, not at
-                // all -- a unit compiled against the type before one was
-                // renamed or retyped still agrees with it about all it can
-                // reach. A private const is not hidden: readers fold it.
-                bool hides = type.Decl is { } declared && Metadata.SourceIndexBuilder.HidesPrivate(declared);
-                HashSet<string> hidden = new(hides ? type.Decl!.Members
-                    .Where(member => member is FieldDecl { FixedSize: null } && (member.Mods & (Mods.Public | Mods.Protected | Mods.Internal | Mods.Const)) == 0)
-                    .Select(member => member.Name) : Enumerable.Empty<string>(), StringComparer.Ordinal);
+                bool hides = Hides(type);
+                HashSet<string> hidden = Hidden(type);
                 bool Private(MethodSymbol method) => hides && method.VtableSlot < 0 && method.Decl is { ExplicitInterface: null } decl
                     && (decl.Mods & (Mods.Public | Mods.Protected | Mods.Internal)) == 0;
-                foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Offset)
-                    .ThenBy(field => field.Type.LayoutText(), StringComparer.Ordinal)
-                    .ThenBy(field => hidden.Contains(field.Name) ? "" : field.Name, StringComparer.Ordinal))
-                {
-                    writer.Write(hidden.Contains(field.Name) ? "" : field.Name); TypeName(field.Type);
-                    writer.Write(field.Static); writer.Write(field.Static ? 0 : field.Offset);
-                    writer.Write(field.Boxed); writer.Write(field.Volatile); writer.Write(field.Required); writer.Write(field.Inline);
-                }
-                writer.Write("");
-                foreach (var implementation in type.InterfaceImplementations.OrderBy(pair => pair.Key))
-                { writer.Write(implementation.Key); writer.Write(Lowering.Label(implementation.Value)); }
-                writer.Write(-1);
-                foreach (MethodSymbol method in type.Methods.Where(method => method.VtableSlot >= 0 && method.Decl?.LocalCopy != true)
-                    .OrderBy(method => method.VtableSlot).ThenBy(method => method.Name, StringComparer.Ordinal)
-                    .ThenBy(method => method.Signature, StringComparer.Ordinal))
-                {
-                    writer.Write(method.Name); writer.Write(method.VtableSlot); TypeName(method.Returns);
-                    writer.Write(method.Static); writer.Write(method.IsCtor); writer.Write(method.Abstract);
-                    writer.Write(method.Params.Count);
-                    foreach (ParamSymbol parameter in method.Params)
-                    { TypeName(parameter.Type); writer.Write(parameter.ByRef); writer.Write(parameter.ReadOnly); }
-                }
-                if (DumpLayout is string want && want == type.Key)
-                {
-                    Console.Error.WriteLine("layout " + type.Key + " kind=" + (int)type.Kind + " size=" + type.InstanceSize
-                        + " depth=" + type.Depth + " base=" + (type.Base?.Key ?? "")
-                        + " interfaces=[" + string.Join(",", type.Interfaces.OrderBy(f => f.Key, StringComparer.Ordinal).Select(f => f.Key)) + "]"
-                        + " impls=[" + string.Join(",", type.InterfaceImplementations.OrderBy(pair => pair.Key).Select(pair => pair.Key + "=>" + Lowering.Label(pair.Value))) + "]");
-                    Console.Error.WriteLine("  delegate=" + (type.Decl?.IsDelegate == true) + " mods=" + (int)(type.Decl?.Mods ?? Mods.None));
-                    foreach (FieldSymbol field in type.Fields.Where(field => !field.Static).OrderBy(field => field.Name, StringComparer.Ordinal))
-                        Console.Error.WriteLine("  field " + field.Name + " " + field.Type + "|" + (field.Type.Symbol?.Key ?? "") + " @" + field.Offset
-                            + " boxed=" + field.Boxed + " volatile=" + field.Volatile + " required=" + field.Required + " inline=" + field.Inline);
-                    foreach (MethodSymbol method in type.Methods.Where(m => m.VtableSlot >= 0 && m.Decl?.LocalCopy != true).OrderBy(m => m.VtableSlot))
-                        Console.Error.WriteLine("  slot " + method.VtableSlot + " " + method.Name + " " + method.Returns + "|" + (method.Returns.Symbol?.Key ?? "")
-                            + " static=" + method.Static + " ctor=" + method.IsCtor + " abstract=" + method.Abstract + " ("
-                            + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
-                    foreach (FieldSymbol field in type.Fields.Where(field => field.Static))
-                        Console.Error.WriteLine("  static " + field.Name + " " + field.Type + "|" + (field.Type.Symbol?.Key ?? ""));
-                    foreach (MethodSymbol method in type.Methods.Where(m => m.Decl?.LocalCopy != true && m.TypeParams.Count == 0))
-                        Console.Error.WriteLine("  method " + Lowering.Label(method) + " " + method.Returns + "|" + (method.Returns.Symbol?.Key ?? "")
-                            + " mods=" + (int)(method.Decl?.Mods ?? Mods.None) + " ("
-                            + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
-                }
                 bool own = type.Decl is { Elsewhere: false, Specialised: false, SourcePath: not null };
                 bool indexed = type.Decl is { Elsewhere: true, Specialised: false };
                 if (own) defined?.Add("type:" + type.Key);
                 if (indexed) read?.Add("type:" + type.Key);
-                yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(stream.ToArray()));
+                yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(Shape(type, hidden)));
                 foreach (FieldSymbol field in type.Fields.Where(field => field.Static && !hidden.Contains(field.Name)))
                 {
                     stream.SetLength(0); stream.Position = 0;
-                    TypeName(field.Type); writer.Write(field.Volatile); writer.Write(field.Required);
+                    TypeName(writer, field.Type); writer.Write(field.Volatile); writer.Write(field.Required);
+                    writer.Flush();
                     yield return new ManagedTypeLayout("field:" + type.Key + "." + field.Name, SHA256.HashData(stream.ToArray()));
                 }
                 foreach (MethodSymbol method in type.Methods.Where(method => method.Decl?.LocalCopy != true && method.TypeParams.Count == 0 && !Private(method)))
                 {
                     stream.SetLength(0); stream.Position = 0;
-                    TypeName(method.Returns); writer.Write(method.Static); writer.Write(method.IsCtor);
+                    TypeName(writer, method.Returns); writer.Write(method.Static); writer.Write(method.IsCtor);
                     writer.Write((int)(method.Decl?.Mods ?? Mods.None)); writer.Write(method.Params.Count);
                     foreach (ParamSymbol parameter in method.Params)
-                    { TypeName(parameter.Type); writer.Write(parameter.ByRef); writer.Write(parameter.ReadOnly); }
+                    { TypeName(writer, parameter.Type); writer.Write(parameter.ByRef); writer.Write(parameter.ReadOnly); }
+                    writer.Flush();
                     yield return new ManagedTypeLayout("method:" + Lowering.Label(method), SHA256.HashData(stream.ToArray()));
                 }
             }
         }
-        return Records().ToList();
+        List<ManagedTypeLayout> records = Records().ToList();
+
+        // A CLOSED INSTANTIATION'S LAYOUT, for a unit for a ring to say by
+        // name (LayoutNames) -- not a record the link holds this image's units
+        // to each other by: each unit makes its own copy of a specialisation,
+        // and none is its definition. Its record is its own, as a type's
+        // above: its fields at the places this instantiation gives them, its
+        // base, interfaces and slots -- all of them the open definition's,
+        // made over again, so a change there that reaches the layout reaches
+        // every instantiation's hash. With it, the layouts of its value-type
+        // arguments, folded in by their own: a struct argument whose fields
+        // moved without its size changing moves nothing here, and is still
+        // another instantiation. One still open (made for a template's own
+        // code, over its parameters) is no layout anyone binds to; nor one
+        // whose members, or a value argument's, this unit never declared --
+        // asked for now, a copy's bodies would be wanted after binding, and a
+        // unit that never laid it out has no layout of it to say. Another
+        // unit that made it does.
+        if (instances is not null)
+        {
+            static bool Closed(Type type) => type.ParamName is null && type.Args.All(Closed)
+                && (type.Symbol is null || type.Symbol.TemplateArgTypes.All(Closed));
+            static bool Declared(TypeSymbol type) => !type.MembersPending && type.TemplateArgTypes.All(argument
+                => argument is not { IsArray: false, IsPointer: false, Symbol: { Kind: TypeKind.Struct or TypeKind.Enum } value } || Declared(value));
+            Dictionary<TypeSymbol, byte[]> folded = new(ReferenceEqualityComparer.Instance);
+            byte[] Instance(TypeSymbol type)
+            {
+                if (folded.TryGetValue(type, out byte[]? done)) return done;
+                using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                hash.AppendData(Shape(type, Hidden(type)));
+                foreach (Type argument in type.TemplateArgTypes)
+                    if (argument is { IsArray: false, IsPointer: false, Symbol: { Kind: TypeKind.Struct or TypeKind.Enum } value })
+                        hash.AppendData(value.Decl is { Specialised: true } ? Instance(value) : SHA256.HashData(Shape(value, Hidden(value))));
+                return folded[type] = hash.GetHashAndReset();
+            }
+            // A snapshot: a record read declares what it names.
+            foreach (TypeSymbol type in bound.Types.Values.Distinct().Where(type => described.Contains(type)).ToList())
+                if (type.Decl is { Specialised: true, LocalOnly: false, TypeParams.Count: 0, TemplateArgs.Count: > 0 } made
+                    && type.TemplateArgTypes.Count == made.TemplateArgs.Count && type.TemplateArgTypes.All(Closed) && Declared(type))
+                    instances.Add(new ManagedTypeLayout("type:" + type.Key, Instance(type)));
+        }
+        return records;
     }
 }

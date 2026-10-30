@@ -68,6 +68,35 @@ public static class Log
     }
 }
 
+// A KERNEL GENERIC a module instantiates (LayoutNames): the kernel lays out
+// Fifo<IoPort>, and a module that puts an IoPort in it imports that layout's
+// name. A Fifo the kernel never made -- the module's Fifo<int> -- is the
+// module's alone, and names nothing of the kernel's.
+public sealed class Fifo<T>
+{
+    T[] _items;
+    int _count;
+
+    public Fifo(int size) { _items = new T[size]; }
+
+    public void Put(T item) { _items[_count++] = item; }
+
+    public T At(int index) => _items[index];
+
+    public int Count => _count;
+}
+
+public struct IoPort
+{
+    public int Base;
+    public int Irq;
+}
+
+public static class Ports
+{
+    public static Fifo<IoPort> All = new Fifo<IoPort>(4);
+}
+
 // THE KERNEL'S OWN ANSWER TO A MODULE'S LINUX FILE CALLS (--kernel-syscalls):
 // a plain function every Sys.Syscall of such a module is a call of, saying
 // what it was given so the test can see every argument arrived.

@@ -17,7 +17,7 @@ public static class DefinitionCoalescer
                 group.Add((input.Name, input.Object, symbol, contracts.GetValueOrDefault(symbol.Name)));
             }
         }
-        List<(ObjectFile Object, Symbol Symbol)> remove = new();
+        List<(ObjectFile Object, Symbol Symbol)> remove = new(), layoutCopies = new();
         List<string> errors = new();
         foreach (var pair in groups.Where(pair => pair.Value.Count > 1))
         {
@@ -29,6 +29,14 @@ public static class DefinitionCoalescer
             var group = pair.Value.ToArray();
             if (group.Select(value => value.Name).Distinct(StringComparer.Ordinal).Count() != group.Length)
             { errors.Add("Duplicate input identity while coalescing '" + pair.Key + "'"); continue; }
+            // A CLOSED INSTANTIATION'S LAYOUT NAME (LayoutNames), defined by
+            // every unit that made it: the name is the layout's own hash, its
+            // proof, and its byte nothing reads. The others' names go.
+            if (group.All(value => value.Symbol.Section?.Name == LayoutNames.DefinedSection && value.Symbol.Name.StartsWith(LayoutNames.Prefix, StringComparison.Ordinal)))
+            {
+                foreach (var loser in group.Skip(1)) layoutCopies.Add((loser.Object, loser.Symbol));
+                continue;
+            }
             byte[]? expected = group[0].Semantic;
             if (expected is null || group.Any(value => value.Semantic is null || !value.Semantic.SequenceEqual(expected)))
             {
@@ -54,6 +62,11 @@ public static class DefinitionCoalescer
                 throw new ElfFormatException("Reserved coalescing alias collision: " + item.Symbol.Name);
         }
         if (validateOnly) return remove.Count;
+        foreach (var copies in layoutCopies.GroupBy(copy => copy.Object, ReferenceEqualityComparer.Instance))
+        {
+            HashSet<Symbol> gone = new(copies.Select(copy => copy.Symbol), ReferenceEqualityComparer.Instance);
+            ((ObjectFile)copies.Key!).Symbols.RemoveAll(gone.Contains);
+        }
         // The copies are cut out of their objects where that is plainly safe
         // (DuplicateCutter); only what it leaves stays, as dead bytes under a
         // local name its own tables still point at.

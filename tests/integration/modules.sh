@@ -8,8 +8,12 @@
 # several files, a unit a file against its own index made on the kernel's.
 # Then a kernel whose method a module calls has another signature, and one
 # whose Driver has a field more -- its layout's name another (LayoutNames)
-# -- each refusing the module by that name, its loader and the link; and one
-# changed only where no module looks, which loads it.
+# -- each refusing the module by that name, its loader and the link; one
+# whose generic Fifo<T> has a field more, refusing it by the name of the
+# instantiation the module used; one whose IoPort, a value argument of that
+# instantiation, has its fields the other way round, which names the
+# instantiation otherwise; and one changed only where no module looks, which
+# loads it.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
@@ -118,6 +122,13 @@ for ko in "$work/sb16.ko" "$work/linked/sb16.ko" "$work/project/sb16.ko"; do
     driverShape=$(awk '$1 ~ /^z_Kernel\$002eDriver\$[0-9a-f]+$/ { print $1 }' "$work/exports.syms")
     test -n "$driverShape" || fail "the kernel does not export its Driver's layout"
     awk -v n="$driverShape" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import the kernel's Driver's layout"
+    # AND A KERNEL GENERIC'S INSTANTIATION IT USES, Fifo<IoPort>, by that
+    # instantiation's own name; its own Fifo<int>, which the kernel never
+    # made, by none.
+    fifoShape=$(awk '$1 ~ /^z_Kernel\$0024Fifo\$0024Kernel\$0024IoPort\$[0-9a-f]+$/ { print $1 }' "$work/exports.syms")
+    test -n "$fifoShape" || fail "the kernel does not export its Fifo<IoPort>'s layout"
+    awk -v n="$fifoShape" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import the kernel's Fifo<IoPort>'s layout"
+    if awk '$8 ~ /^z_Kernel\$0024Fifo\$0024int\$/ { found = 1 } END { exit !found }' "$ko.syms"; then fail "$ko names a Fifo<int> the kernel never made"; fi
     # DT_INIT is the link's: __corsac_init, then the [ModuleInitializer].
     init=$(awk '/(INIT)/ { print strtonum($3) }' "$ko.dynamic")
     stub=$(readelf --dyn-syms -W "$ko" | awk '$8 == "__corsac_module_init" { print strtonum("0x" $2); exit }')
@@ -380,6 +391,33 @@ test "$status" = 3 && grep -q '^refused: undefined symbol z_Kernel\$002eDriver\$
     || { cat "$d/refused.out"; fail "a module compiled against another Driver was loaded"; }
 if "$corc" link "$work/sb16.o" --kernel "$d/kernel" -o "$d/wrong.ko" 2> "$d/wrong-link.log"; then fail "a module compiled against another Driver linked"; fi
 grep -q "compiled against type Kernel.Driver's layout" "$d/wrong-link.log" || { cat "$d/wrong-link.log"; fail "the wrong layout's link said otherwise"; }
+
+# A KERNEL WHOSE FIFO<T> HAS A FIELD MORE: the open definition changed, so
+# every instantiation's layout is another, and its name. The module built
+# for the first is refused by the loader and the link, naming Fifo<IoPort>.
+mkdir -p "$work/e"
+sed '/^public sealed class Fifo<T>/{n;s/^{$/{\n    public int Generation;/}' $here/Kernel.cor > "$work/e/Kernel.cor"
+grep -q 'public int Generation;' "$work/e/Kernel.cor" || fail "kernel e is not different"
+kernel "$work/e" $here/Host.cor "$work/e/Kernel.cor" $here/Loader.cor
+e=$work/e
+cp "$work/linked/sb16.ko" "$e/module.ko"
+status=0
+(cd "$e" && ./kernel) > "$e/refused.out" 2>&1 || status=$?
+test "$status" = 3 && grep -q '^refused: undefined symbol z_Kernel\$0024Fifo\$0024Kernel\$0024IoPort\$[0-9a-f]*$' "$e/refused.out" \
+    || { cat "$e/refused.out"; fail "a module compiled against another Fifo<T> was loaded"; }
+if "$corc" link "$work/sb16.o" --kernel "$e/kernel" -o "$e/wrong.ko" 2> "$e/wrong-link.log"; then fail "a module compiled against another Fifo<T> linked"; fi
+grep -q "compiled against type Kernel\$Fifo\$Kernel\$IoPort's layout" "$e/wrong-link.log" || { cat "$e/wrong-link.log"; fail "the wrong Fifo<T>'s link said otherwise"; }
+
+# A KERNEL WHOSE IOPORT HAS ITS FIELDS THE OTHER WAY ROUND: the same size,
+# so Fifo<IoPort>'s own record is the same -- but a value argument's layout
+# is folded into the instantiation's, and its name is another.
+mkdir -p "$work/f"
+sed '/^public struct IoPort/,/^}/{s/^    public int Base;$/    public int Irq;/;t;s/^    public int Irq;$/    public int Base;/}' $here/Kernel.cor > "$work/f/Kernel.cor"
+awk '/^public struct IoPort/ { s = 1 } s && /public int/ { print $3; n++ } n == 2 { exit }' "$work/f/Kernel.cor" | tr '\n' ' ' | grep -qx 'Irq; Base; ' || fail "kernel f is not different"
+kernel "$work/f" $here/Host.cor "$work/f/Kernel.cor" $here/Loader.cor
+exports "$work/f/kernel" > "$work/f/exports.syms"
+grep -q '^z_Kernel\$0024Fifo\$0024Kernel\$0024IoPort\$' "$work/f/exports.syms" || fail "kernel f does not export its Fifo<IoPort>'s layout"
+if grep -q "^$fifoShape " "$work/f/exports.syms"; then fail "Fifo<IoPort>'s name did not change with its argument's layout"; fi
 
 # A KERNEL CHANGED ONLY WHERE NO MODULE LOOKS -- a method more in Unused,
 # which nothing calls -- binds the same module's object, built for the

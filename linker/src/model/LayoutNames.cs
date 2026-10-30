@@ -24,10 +24,14 @@ namespace Corsac.Lang.Ir;
 /// load, naming the type. Changed where no module looks, it is the same
 /// name, and binds.
 ///
-/// NOT GENERICS: a template, and a specialisation of one, has no record
-/// (ManagedLayouts describes neither), and so no name -- a generic kernel
-/// type a module was compiled against is held to nothing but its methods'
-/// names, as units of one image are held to nothing more about it.
+/// A CLOSED INSTANTIATION of a generic type -- `List<Driver>`, keyed as the
+/// monomorphiser names its copy, `List$Driver` -- has a name of its own, its
+/// fingerprint its own layout's with its value-type arguments' folded in
+/// (ManagedLayouts.Capture). Every unit that makes one makes it alike, and
+/// none is its definition: every kernel unit that makes it defines its name,
+/// the link keeping one (Linker, DefinedSection), and a module's unit imports
+/// it where the kernel's file has a name for that instantiation at all -- one
+/// the kernel never made is the module's alone, and binds to nothing.
 /// </summary>
 public static class LayoutNames
 {
@@ -47,6 +51,9 @@ public static class LayoutNames
                 names[layout.Name[5..]] = Prefix + Escaped(layout.Name[5..]) + "$" + Convert.ToHexString(layout.Fingerprint, 0, 8).ToLowerInvariant();
         return names;
     }
+
+    /// <summary>A layout name's escaped key, its fingerprint cut off: what two images' names of one type share.</summary>
+    public static string KeyOf(string name) => name[..^17];
 
     /// <summary>What a layout name is of, as an error says it: "type Kernel.Driver's layout"; null for a name that is not one.</summary>
     public static string? Describe(string name)
@@ -84,15 +91,24 @@ public static class LayoutNames
     /// byte of their own; and, for a module's unit, <paramref name="imported"/>'s
     /// -- what it read of another unit's, the kernel's or its own module's --
     /// imported, a word each relocated against its name, so the module's link
-    /// and its loader both bind it or refuse it.
+    /// and its loader both bind it or refuse it. Its closed
+    /// <paramref name="instances"/> defined by a kernel's unit
+    /// (<paramref name="kernelHas"/> null), and imported by a module's where
+    /// the kernel has a name of that key.
     /// </summary>
-    public static void Attach(ObjectFile obj, IEnumerable<ManagedTypeLayout> layouts, IReadOnlySet<string> defined, IReadOnlySet<string>? imported, bool wide)
+    public static void Attach(ObjectFile obj, IEnumerable<ManagedTypeLayout> layouts, IReadOnlySet<string> defined, IReadOnlySet<string>? imported,
+        IEnumerable<ManagedTypeLayout> instances, IReadOnlySet<string>? kernelHas, bool wide)
     {
         SortedSet<string> mine = new(StringComparer.Ordinal), theirs = new(StringComparer.Ordinal);
         foreach ((string type, string name) in Of(layouts))
         {
             if (defined.Contains("type:" + type)) mine.Add(name);
             else if (imported?.Contains("type:" + type) == true) theirs.Add(name);
+        }
+        foreach (string name in Of(instances).Values)
+        {
+            if (kernelHas is null) mine.Add(name);
+            else if (kernelHas.Contains(KeyOf(name))) theirs.Add(name);
         }
         if (mine.Count > 0)
         {

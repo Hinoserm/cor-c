@@ -661,13 +661,14 @@ public static class Driver
 
     /// <summary>What a unit's front end leaves for the rest of its compile: the module and what is taken from the syntax and bindings before they go.</summary>
     private sealed record UnitFront(Module Module, Dictionary<string, string> Entries, Dictionary<string, byte[]> DefinitionSemantics,
-        List<ManagedTypeLayout> Layouts, List<RegistrySchema> Schemas, List<string> ModuleInfo, HashSet<string> DefinedLayouts, HashSet<string> ReadLayouts);
+        List<ManagedTypeLayout> Layouts, List<RegistrySchema> Schemas, List<string> ModuleInfo, HashSet<string> DefinedLayouts, HashSet<string> ReadLayouts,
+        List<ManagedTypeLayout>? InstanceLayouts);
 
     /// <summary>--check: the program is read and bound, and its errors reported, and nothing more (FrontToModule).</summary>
     private static bool _checkOnly;
 
     /// <summary>What FrontToModule answers for a program --check found nothing wrong with: no module is made.</summary>
-    private static readonly UnitFront Checked = new(null!, new(), new(), new(), new(), new(), new(), new());
+    private static readonly UnitFront Checked = new(null!, new(), new(), new(), new(), new(), new(), new(), null);
 
     /// <summary>
     /// Parses, binds and lowers a unit, and takes from its syntax and
@@ -745,7 +746,9 @@ public static class Driver
         // after code generation, and they were a unit's largest structure
         // alive through its largest phase. What those two need is taken now.
         HashSet<string> definedLayouts = new(StringComparer.Ordinal), readLayouts = new(StringComparer.Ordinal);
-        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library, definedLayouts, readLayouts);
+        // A unit for a ring's closed instantiations too, to say by name.
+        List<ManagedTypeLayout>? instanceLayouts = Parser.Ring >= 0 ? new() : null;
+        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library, definedLayouts, readLayouts, instanceLayouts);
         // AND WHICH TYPES IT NAMED AND NEVER ASKED THE MEMBERS OF, now that
         // nothing more will (Dependence.Header).
         if (declarations is not null)
@@ -767,7 +770,7 @@ public static class Driver
             declarations.MembersUnread(decl => unread.GetValueOrDefault(Binder.TypeKey(decl)));
         }
         List<RegistrySchema> schemas = new(front.Value.unit.RegistrySchemas);
-        return new UnitFront(module, entries, definitionSemantics, layouts, schemas, moduleInfo, definedLayouts, readLayouts);
+        return new UnitFront(module, entries, definitionSemantics, layouts, schemas, moduleInfo, definedLayouts, readLayouts, instanceLayouts);
     }
 
     internal static int Compile(string[] argv)
@@ -1621,7 +1624,17 @@ public static class Driver
         // A UNIT FOR A RING -- a kernel's, a module's -- says its layouts by
         // name (LayoutNames): those of the types it defines, for other images
         // to bind to, and a module's, those it was compiled against, to bind.
-        if (ring >= 0) LayoutNames.Attach(obj, layouts, made.DefinedLayouts, kernel is not null ? made.ReadLayouts : null, wide: longMode);
+        // A closed instantiation the kernel's units define, every one of them
+        // that makes it; a module's unit imports those the kernel's file has
+        // a name for, whatever their layout there -- one the kernel never
+        // made is the module's alone, and binds to nothing.
+        if (ring >= 0)
+        {
+            HashSet<string>? kernelInstances = kernel is null ? null
+                : new(kernel.Names.Where(name => LayoutNames.Describe(name) is not null).Select(LayoutNames.KeyOf), StringComparer.Ordinal);
+            LayoutNames.Attach(obj, layouts, made.DefinedLayouts, kernel is not null ? made.ReadLayouts : null,
+                made.InstanceLayouts ?? new(), kernelInstances, wide: longMode);
+        }
         if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
         // What the link checks interrupt handlers' calls into other units by.
         if (module.InterruptFacts is { } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);
