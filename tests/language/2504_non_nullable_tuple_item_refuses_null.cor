@@ -1,11 +1,18 @@
-// test: a non-nullable tuple item or array element still refuses null
-// expect-compile-error: is not nullable
+// test: a non-nullable tuple item, array element or deconstructed place is warned of a null
+// expect-exit: 0
+// expect-compile-warning: warning CS8625: assignment: 'Backing' is not nullable
+// expect-compile-warning: warning CS8625: assignment: 'Backing' is not nullable
+// expect-compile-warning: warning CS8625
+// expect-output:
+// done
 //
 // The other side of 2503: an assignment's target is its declared type, and a
-// `(Backing, int)`'s item and a `Backing[]`'s element are declared without
-// the `?`, so a null written to them is refused as C# refuses it.
+// `(Backing, int)`'s item, a `Backing[]`'s element and a `string` place
+// taken a tuple literal apart into are declared without the `?`, so a null
+// written to them is warned of as C# warns of it (CS8625).
 
 #nullable enable
+using System;
 
 sealed class Backing { }
 
@@ -17,6 +24,10 @@ static class Program
         t.Item1 = null;
         Backing[] all = { new Backing() };
         all[0] = null;
+        string s = "";
+        int n = 0;
+        (s, n) = (null, 5);
+        Console.WriteLine("done");
         return 0;
     }
 }

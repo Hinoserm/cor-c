@@ -1,0 +1,16 @@
+// test: a tuple literal's null taken apart into an int is refused
+// expect-compile-error: is a value type and cannot be null
+//
+// A tuple literal taken apart converts item by item to its places (C#
+// 12.21.2), and a null converts to no int: `(k, n) = (null, 5)` is an
+// error, as `k = null` is.
+
+static class Program
+{
+    static int Main()
+    {
+        int k = 0, n = 0;
+        (k, n) = (null, 5);
+        return k + n;
+    }
+}

@@ -7664,17 +7664,33 @@ public sealed partial class Binder
             // Deconstruct for anything else.
             case DeconstructStmt taken:
             {
-                // A TUPLE LITERAL TAKEN APART INTO PLACES converts item by item
-                // to them (C# 12.21.2): `(e, n) = (null, 5)` is an Entry? and
-                // an int, and a bare null or default has the type of its
-                // place, as declared -- which nothing else here gives it.
-                if (taken.Value is TupleExpr literal && literal.Items.Count == taken.Names.Count)
-                    for (int i = 0; i < literal.Items.Count; i++)
-                        if (literal.Items[i] is LiteralExpr { Kind: Lit.Null } or DefaultExpr { Type.Name.Length: 0 }
-                            && taken.Names[i] is { Type: null, Target: Expr place } && Peek(place) is { IsError: false } known
-                            && RefOf(DeclaredTypeOf(place) ?? known) is TypeRef placeType)
-                            literal.Items[i] = new CastExpr { Type = placeType, Operand = literal.Items[i], Line = literal.Items[i].Line, Col = literal.Items[i].Col, File = literal.Items[i].File };
-                Type had = Peek(taken.Value);
+                // A TUPLE LITERAL TAKEN APART converts item by item to what
+                // receives it (C# 12.21.2): `(e, n) = (null, 5)` is an Entry?
+                // and an int, and so is `(Entry? e, int n) = (null, 5)`. A bare
+                // null or default has no type of its own, so the literal is
+                // held as the tuple its receivers make -- each a declared
+                // type, or a place's as declared -- and each item checked as
+                // that assignment is, null's warning or error included. One
+                // that nothing types (a discard, `var`) is left to be refused.
+                Type? receivers = null;
+                if (taken.Value is TupleExpr literal && literal.Items.Count == taken.Names.Count
+                    && literal.Items.Any(item => item is LiteralExpr { Kind: Lit.Null } or DefaultExpr { Type.Name.Length: 0 }))
+                {
+                    List<Type>? slots = new(literal.Items.Count);
+                    for (int i = 0; i < literal.Items.Count && slots is not null; i++)
+                    {
+                        Binding into = taken.Names[i];
+                        bool bare = literal.Items[i] is LiteralExpr { Kind: Lit.Null } or DefaultExpr { Type.Name.Length: 0 };
+                        Type? slot = into.Type is { Name: not "var" } written ? Resolve(written, _thisType)
+                            : into is { Type: null, Target: Expr place } && Peek(place) is { IsError: false } known ? DeclaredTypeOf(place) ?? known
+                            : bare ? null : Peek(literal.Items[i]);
+                        if (slot is null || slot.IsError) slots = null;
+                        else slots.Add(slot);
+                    }
+                    if (slots is not null)
+                        receivers = new Type { Prim = Prim.Void, Symbol = TupleType(slots), UseArgs = slots };
+                }
+                Type had = receivers ?? Peek(taken.Value);
                 string held = $"$taken${_iterations++}";
                 Block block = new() { Line = taken.Line, Col = taken.Col };
 
@@ -7693,7 +7709,7 @@ public sealed partial class Binder
 
                 block.WritableStatements.Add(new LocalDecl
                 {
-                    Name = held, Init = whole, Line = taken.Line, Col = taken.Col,
+                    Name = held, Type = receivers is null ? null : RefOf(receivers), Init = whole, Line = taken.Line, Col = taken.Col,
                 });
                 block.WritableStatements.AddRange(Deconstruct(
                     taken,
@@ -10931,14 +10947,6 @@ public sealed partial class Binder
             };
             if (said is not null) return said;
         }
-        // A field by its name on the receiver, only where the member was
-        // resolved to nothing else: a property's setter, a method, is no
-        // variable, and a hiding member is not the base's field.
-        if (target is MemberExpr member && !_r.Resolved.ContainsKey(member)
-            && (DeclaredTypeOf(member.Target) ?? (_r.ExprType.TryGetValue(member.Target, out Type? bound) ? bound : null)) is Type receiver)
-            for (TypeSymbol? owner = receiver.Symbol; owner is not null; owner = owner.Base)
-                foreach (FieldSymbol field in owner.Fields)
-                    if (field.Name == member.Name) return field.Type;
         if (target is IndexExpr element && (DeclaredTypeOf(element.Target) ?? (_r.ExprType.TryGetValue(element.Target, out Type? read) ? read : null)) is { IsArray: true, Element: Type each })
             return each;
         return null;
@@ -16207,11 +16215,18 @@ public sealed partial class Binder
                 // NOTHING GAVE AN ELEMENT A TYPE: `var pair = (1, null)`. C#
                 // refuses it, and so does this -- a tuple class whose field is
                 // the type of null is a shape no program can name.
+                // A TARGET THAT SAID ONE, which the null does not convert to --
+                // `(k, n) = (null, 5)` into an int: refused as that assignment
+                // is ("is a value type and cannot be null"), not as untyped.
                 for (int i = 0; i < elements.Count; i++)
                 {
                     if (elements[i].Prim == Prim.NullLiteral)
                     {
-                        Error(tup.Items[i], $"tuple element {i + 1} is null, and nothing here says what type it should be");
+                        if (want is not null)
+                            CheckAssignable(elements[i], outerWanted?.UseArgs is { } said && said.Count == elements.Count ? said[i] : want.Fields[i].Type,
+                                tup.Items[i], What.Element(i + 1));
+                        else
+                            Error(tup.Items[i], $"tuple element {i + 1} is null, and nothing here says what type it should be");
                         return Type.Error;
                     }
                 }
