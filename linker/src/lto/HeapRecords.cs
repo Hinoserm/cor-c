@@ -167,6 +167,7 @@ public sealed class HeapRecords
                 for (int i = 0; i < list.Length; i++) list[i] = Name();
                 return list;
             }
+            List<string> latchBuffer = new();
             HeapRecords records = new() { CallsCollector = reader.ReadBoolean(), NoCollector = reader.ReadBoolean() };
             records.StaticWrites.UnionWith(NameList());
             for (int g = Count(8); g > 0; g--)
@@ -180,18 +181,26 @@ public sealed class HeapRecords
                 function.LatchSets.AddRange(NameList()); function.LatchBreaks.AddRange(NameList());
                 int events = Count(23);
                 function.Events.Capacity = events;
+                // A block's events are latched alike: the latches last read
+                // are held once, and so is the rare part of an event that has
+                // nothing else -- every such event after it shares both.
+                string[] latches = Array.Empty<string>();
+                HeapEvent? latchedOnly = null;
                 for (int e = events; e > 0; e--)
                 {
                     byte kind = reader.ReadByte();
                     if (kind > (byte)HeapEventKind.Store) throw new ElfFormatException("Invalid heap event");
                     HeapFlags flags = (HeapFlags)reader.ReadUInt16();
                     string name = Name();
-                    string[] latches = NameList();
-                    string? permanent = MaybeName(), thrown = MaybeName();
-                    HeapEvent read = new((HeapEventKind)kind, name, flags, latches, permanent, thrown) { Held = MaybeName() };
-                    // A block's events are latched alike: the one before's latches, held once.
-                    if (function.Events.Count > 0 && function.Events[^1] is var before && read.Latches.Length > 0 && read.RareAs(before))
-                        read = before with { Kind = read.Kind, Name = read.Name, Flags = read.Flags };
+                    latchBuffer.Clear();
+                    for (int l = Count(4); l > 0; l--) latchBuffer.Add(Name());
+                    if (!latchBuffer.SequenceEqual(latches)) { latches = latchBuffer.Count == 0 ? Array.Empty<string>() : latchBuffer.ToArray(); latchedOnly = null; }
+                    string? permanent = MaybeName(), thrown = MaybeName(), held = MaybeName();
+                    bool plain = permanent is null && thrown is null && held is null;
+                    HeapEvent read = plain && latchedOnly is { } same ? same with { Kind = (HeapEventKind)kind, Name = name, Flags = flags }
+                        : held is null ? new((HeapEventKind)kind, name, flags, latches, permanent, thrown)
+                        : new((HeapEventKind)kind, name, flags, latches, permanent, thrown) { Held = held };
+                    if (plain && latches.Length > 0) latchedOnly = read;
                     function.Events.Add(read);
                 }
                 records.Functions.Add(function);
@@ -285,13 +294,21 @@ public enum HeapFlags : ushort
 ///
 /// A VALUE, AND SMALL: the kind, the flags and the name are every event's,
 /// and the rest -- latches, Permanent, Thrown, Held -- is held apart, and
-/// only where an event has any of it, which most have not. The heap decision
-/// holds every unit's events at once, the compiler's own link 2.7 million of
-/// them, and each its own object of six fields made them 200 MB.
+/// only where an event has any of it: a block's events share their latches
+/// (HeapRecords.Read), and the compiler's own link holds 23 thousand rare
+/// parts for its 2.7 million events. The heap decision holds every unit's
+/// events at once; each an object of seven fields, they were 173 MB, and
+/// the phase's live heap went from 1347 MB to 1255 MB.
 /// </summary>
 public readonly record struct HeapEvent
 {
-    private sealed record Rare(string[] Latches, string? Permanent, string? Thrown, string? Held);
+    private sealed class Rare(string[] latches, string? permanent, string? thrown, string? held)
+    {
+        public string[] Latches { get; } = latches;
+        public string? Permanent { get; } = permanent;
+        public string? Thrown { get; } = thrown;
+        public string? Held { get; } = held;
+    }
     private readonly Rare? _rare;
 
     public HeapEvent(HeapEventKind Kind, string Name, HeapFlags Flags, string[] Latches, string? Permanent, string? Thrown)
@@ -309,11 +326,6 @@ public readonly record struct HeapEvent
     public string? Permanent { get => _rare?.Permanent; init => _rare = Of(Latches, value, Thrown, Held); }
     public string? Thrown { get => _rare?.Thrown; init => _rare = Of(Latches, Permanent, value, Held); }
     public string? Held { get => _rare?.Held; init => _rare = Of(Latches, Permanent, Thrown, value); }
-
-    /// <summary>Whether this event's rare part is the other's: one read after another in a block shares it (HeapRecords.Read).</summary>
-    public bool RareAs(HeapEvent other) => ReferenceEquals(_rare, other._rare)
-        || _rare is { } mine && other._rare is { } theirs && mine.Permanent is null && mine.Thrown is null && mine.Held is null
-            && theirs.Permanent is null && theirs.Thrown is null && theirs.Held is null && mine.Latches.SequenceEqual(theirs.Latches);
 
     private static Rare? Of(string[] latches, string? permanent, string? thrown, string? held)
         => latches.Length == 0 && permanent is null && thrown is null && held is null ? null : new(latches, permanent, thrown, held);
