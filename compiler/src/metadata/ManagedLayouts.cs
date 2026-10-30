@@ -24,7 +24,12 @@ public static class ManagedLayouts
     /// statics: what a unit for a ring says by name (LayoutNames) for other
     /// images to bind to.
     /// </param>
-    public static List<ManagedTypeLayout> Capture(BindResult bound, bool library = true, HashSet<string>? defined = null)
+    /// <param name="read">
+    /// And with those of the types it READ from an index, which another unit
+    /// defines: what a module's unit binds to by name. Not the compiler's own
+    /// (the prelude's Sys, a tuple made here), which no unit defines.
+    /// </param>
+    public static List<ManagedTypeLayout> Capture(BindResult bound, bool library = true, HashSet<string>? defined = null, HashSet<string>? read = null)
     {
         // WHAT THIS UNIT HAS AN OPINION ABOUT. Every type the binder
         // materialised used to be described here, which made the section
@@ -192,13 +197,16 @@ public static class ManagedLayouts
                             + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
                 }
                 bool own = type.Decl is { Elsewhere: false, Specialised: false, SourcePath: not null };
+                bool indexed = type.Decl is { Elsewhere: true, Specialised: false };
                 if (own) defined?.Add("type:" + type.Key);
+                if (indexed) read?.Add("type:" + type.Key);
                 yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(stream.ToArray()));
                 foreach (FieldSymbol field in type.Fields.Where(field => field.Static && !hidden.Contains(field.Name)))
                 {
                     stream.SetLength(0); stream.Position = 0;
                     TypeName(field.Type); writer.Write(field.Volatile); writer.Write(field.Required);
                     if (own) defined?.Add("field:" + type.Key + "." + field.Name);
+                    if (indexed) read?.Add("field:" + type.Key + "." + field.Name);
                     yield return new ManagedTypeLayout("field:" + type.Key + "." + field.Name, SHA256.HashData(stream.ToArray()));
                 }
                 foreach (MethodSymbol method in type.Methods.Where(method => method.Decl?.LocalCopy != true && method.TypeParams.Count == 0 && !Private(method)))

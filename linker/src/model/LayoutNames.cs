@@ -75,15 +75,20 @@ public static class LayoutNames
 
     /// <summary>
     /// A unit's names: <paramref name="defined"/>'s records defined, at one
-    /// byte of their own; and, for a module's unit (<paramref name="imports"/>),
-    /// every other record imported, a word each relocated against its name,
-    /// so the module's link and its loader both bind it or refuse it.
+    /// byte of their own; and, for a module's unit, <paramref name="imported"/>'s
+    /// -- what it read of another unit's, the kernel's or its own module's --
+    /// imported, a word each relocated against its name, so the module's link
+    /// and its loader both bind it or refuse it.
     /// </summary>
-    public static void Attach(ObjectFile obj, IEnumerable<ManagedTypeLayout> layouts, IReadOnlySet<string> defined, bool imports, bool wide)
+    public static void Attach(ObjectFile obj, IEnumerable<ManagedTypeLayout> layouts, IReadOnlySet<string> defined, IReadOnlySet<string>? imported, bool wide)
     {
         SortedSet<string> mine = new(StringComparer.Ordinal), theirs = new(StringComparer.Ordinal);
         foreach (ManagedTypeLayout layout in layouts)
-            if (Of(layout) is string name) (defined.Contains(layout.Name) ? mine : theirs).Add(name);
+            if (Of(layout) is string name)
+            {
+                if (defined.Contains(layout.Name)) mine.Add(name);
+                else if (imported?.Contains(layout.Name) == true) theirs.Add(name);
+            }
         if (mine.Count > 0)
         {
             Section at = new(DefinedSection, SectionKind.ReadOnlyData) { Align = 1 };
@@ -92,7 +97,7 @@ public static class LayoutNames
             foreach (string name in mine) obj.Symbols.Add(new Symbol { Name = name, Section = at, Offset = 0, Size = 0 });
         }
         theirs.ExceptWith(mine);
-        if (!imports || theirs.Count == 0) return;
+        if (theirs.Count == 0) return;
         int word = wide ? 8 : 4;
         Section words = new(ImportedSection, SectionKind.Data) { Align = word };
         words.Bytes.AddRange(new byte[theirs.Count * word]);
