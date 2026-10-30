@@ -79,6 +79,20 @@ again for the heap decision (a44b7544), the owned-field name sets are small
 The regions' peak RSS is 4.18 GB (4.85 at the start); the 32-bit native
 link of stage 1>2>3 peaks at 3.3-3.4 GB per process.
 
+The regions phase is now the link's peak (RSS 3.6-4.2 GB against 1.1-1.6
+GB live), and on the compiler's own link it is spent for nothing: from
+`--region-report "+memsteps"` on 10-30, the copies and sites (1 s, 1.50 GB
+live), every call's targets (7.5 s, 1.60 GB), the reachable types (25 s),
+the receiver types -- which give up past their budget of 20 million carried
+after 89 s, every target kept -- and the escape graphs, which grow the heap
+to 2.7 GB in some 40 s before the whole engine gives up past the link's
+work budget (24 million locations carried) and answers nothing. A region
+engine that fits this program, or knows early and cheaply that it will
+not, is the largest saving left in the link: about 2.5 GB of peak and two
+minutes. Lowering the budgets alone would give the same answer here sooner
+but may take regions from smaller closed programs that get them now; a
+budget by memory would make an image depend on the machine that linked it.
+
 ## The plan
 
 The link holds the whole program -- every section's bytes, every symbol by
