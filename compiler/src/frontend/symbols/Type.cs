@@ -302,6 +302,16 @@ public sealed class Type : IEquatable<Type>
     public Type AsNullable() => Nullable ? this : With(nullable: true);
     public Type AsNonNullable() => !Nullable ? this : With(nullable: false);
 
+    /// <summary>This type without the marks its use wrote on its arguments (UseArgs): a tuple's items as its shape stores them.</summary>
+    public Type WithoutUseArgs() => UseArgs is null ? this : new()
+    {
+        Prim = Prim, Symbol = Symbol, Nullable = Nullable, Element = Element,
+        ArrayRank = ArrayRank, Args = Args, ParamName = ParamName, StructParam = StructParam,
+        Names = Names, PointerDepth = PointerDepth, Pointee = Pointee, Function = Function,
+        CanonParam = CanonParam, CanonOwner = CanonOwner,
+        Dynamic = Dynamic,
+    };
+
     private Type With(bool nullable) => IsPlain ? Plain(Symbol, Prim, nullable) : new()
     {
         Prim = Prim, Symbol = Symbol, Nullable = nullable, Element = Element,

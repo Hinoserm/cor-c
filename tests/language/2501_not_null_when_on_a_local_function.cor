@@ -1,13 +1,14 @@
 // test: [NotNullWhen] on a local function's parameter proves its out value
 // expect-exit: 0
 // expect-output:
-// 3
+// 5
 //
 // A local function says what its answer proves as a method does: C# reads
 // `bool Provider(string key, [NotNullWhen(true)] out Entry? body)` declared
 // in a body exactly as one declared in a type, so `!Provider(a, out body) ||
-// !body.Importable` reads body only where the call said it had one. The
-// compiler's own IrLinkOptimizer is written so; it warned there.
+// !body.Importable` reads body only where the call said it had one, named
+// arguments in any order alike. The compiler's own IrLinkOptimizer is
+// written so; it warned there.
 
 #nullable enable
 using System;
@@ -27,6 +28,9 @@ static class Program
         if (a.Length == 0 || !Find(a, out Entry? two) || !two.Importable) n++;
         bool Provider(string key, [NotNullWhen(true)] out Entry? body) { body = key.Length > 0 ? new Entry() : null; return body is not null; }
         if (a.Length == 0 || !Provider(a, out Entry? three) || !three.Importable) n++;
+        // Named, out of order: the attribute is the parameter's, not the position's.
+        if (!Find(found: out Entry? four, key: a) || !four.Importable) n++;
+        if (!Provider(body: out Entry? five, key: a) || !five.Importable) n++;
         Console.WriteLine(n);
         return 0;
     }

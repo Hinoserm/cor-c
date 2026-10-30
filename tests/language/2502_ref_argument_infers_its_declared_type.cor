@@ -1,14 +1,16 @@
 // test: a ref argument infers from its variable as declared, not as narrowed
 // expect-exit: 0
 // expect-output:
-// True
+// True True True True
 //
 // C# infers a generic method's type argument from a ref argument's variable
 // as declared: after `_backing is not { } held` returned, `_backing` is known
 // not null, but `ref _backing` is still a `Backing?`, and
 // Volatile.Write(ref _backing, null) is Write<Backing?>. Inferred from the
 // narrowed state it was Write<Backing>, and the null refused (the linker's
-// own Section.Load).
+// own Section.Load). The same for a field through a receiver, a captured
+// local and an array's element. And one copy of Write for both spellings:
+// a reference's `?` names no copy (tests/integration/method-copy-names.sh).
 
 #nullable enable
 using System;
@@ -25,6 +27,27 @@ sealed class Holder
     public static void Set<T>(ref T at, T value) { at = value; }
     public void Mine() { Set(ref _backing, null); }
     public bool Empty => _backing is null;
+
+    // Through a receiver, as the other's field is declared.
+    public static void ClearOther(Holder other) { if (other._backing is null) return; Volatile.Write(ref other._backing, null); }
+
+    // Captured into a closure, as the local was declared.
+    public static bool Captured()
+    {
+        Backing? held = new Backing();
+        Action clear = () => { if (held is null) return; Volatile.Write(ref held, null); };
+        clear();
+        return held is null;
+    }
+
+    // An array's element, as the array's element type is declared.
+    public static bool Element()
+    {
+        Backing?[] slots = { new Backing() };
+        if (slots[0] is null) return false;
+        Volatile.Write(ref slots[0], null);
+        return slots[0] is null;
+    }
 }
 
 static class Program
@@ -32,7 +55,8 @@ static class Program
     static int Main()
     {
         Holder h = new(); h.Fill(1); h.Clear(); h.Swap(); h.Mine();
-        Console.WriteLine(h.Empty);
+        Holder o = new(); Holder.ClearOther(o);
+        Console.WriteLine(h.Empty + " " + o.Empty + " " + Holder.Captured() + " " + Holder.Element());
         return 0;
     }
 }

@@ -10894,6 +10894,31 @@ public sealed partial class Binder
         return ok;
     }
 
+    /// <summary>
+    /// The type a variable was DECLARED with, whatever is known of it here: a
+    /// local, a parameter, a field (named alone, through a receiver, or
+    /// captured into a closure), an array's element. Null for anything else.
+    /// </summary>
+    private Type? DeclaredTypeOf(Expr target)
+    {
+        if (_r.Resolved.TryGetValue(target, out Sym? variable))
+        {
+            Type? said = variable switch
+            {
+                LocalSym local => local.Type, ParamSym parameter => parameter.Type,
+                FieldSym field => field.Field.Type, CapturedFieldSym captured => captured.Field.Type, _ => null,
+            };
+            if (said is not null) return said;
+        }
+        if (target is MemberExpr member && _r.ExprType.TryGetValue(member.Target, out Type? receiver))
+            for (TypeSymbol? owner = receiver.Symbol; owner is not null; owner = owner.Base)
+                foreach (FieldSymbol field in owner.Fields)
+                    if (field.Name == member.Name) return field.Type;
+        if (target is IndexExpr element && _r.ExprType.TryGetValue(element.Target, out Type? array) && array is { IsArray: true, Element: Type each })
+            return each;
+        return null;
+    }
+
     private bool InferOnce(MethodSymbol m, List<Type> args, List<Expr> written, out Dictionary<string, Type> bound)
     {
         bound = new Dictionary<string, Type>(StringComparer.Ordinal);
@@ -10933,9 +10958,7 @@ public sealed partial class Binder
             // from the variable's type, not its state here): `ref _backing`
             // after `_backing is not { }` returned is still a `Backing?`, and
             // Volatile.Write(ref _backing, null) is Write<Backing?>.
-            Type given = i < written.Count && written[i] is RefArgExpr { Target: var target }
-                && _r.Resolved.TryGetValue(target, out Sym? variable)
-                && (variable switch { LocalSym local => local.Type, ParamSym parameter => parameter.Type, FieldSym field => field.Field.Type, _ => null }) is Type declared
+            Type given = i < written.Count && written[i] is RefArgExpr { Target: var target } && DeclaredTypeOf(target) is Type declared
                 && declared.Nullable && !args[i].Nullable && declared.AsNonNullable().Equals(args[i])
                 ? declared : args[i];
             if (!Unify(m, m.Params[i].Type, given, bound))
@@ -13274,6 +13297,27 @@ public sealed partial class Binder
     /// as (one shape serves `(dynamic, int)` and `(object, int)`, whichever was
     /// made first); anything else as it is.
     /// </summary>
+    /// <summary>
+    /// A generic method's type argument as its copy is named and made: ONE
+    /// COPY PER TYPE, AS C# HAS IT, a reference's `?` an annotation of the use
+    /// (Monomorphiser.WithoutReferenceMarks, for a class's) -- its own, a
+    /// one-level array's reference elements', a tuple's items'. Spelled with
+    /// the marks, `Volatile.Write(ref _backing, x)` made Write$Backing?! where
+    /// _backing was a Backing? and Write$Backing where the call came after a
+    /// test proved it, two copies of one body. The checker keeps the marks
+    /// (the call's own bound types).
+    /// </summary>
+    /// <summary>Whether a type holds a mark its copy's type does not (CopyArgument): what the use must keep.</summary>
+    private static bool CarriesMarks(Type t) => !CopyArgument(t).Equals(t);
+
+    private static Type CopyArgument(Type t)
+    {
+        Type bare = Unmarked(t).WithoutUseArgs();
+        if (bare is { IsArray: true, ArrayRank: 1, Element: { IsArray: false, Nullable: true, IsReference: true, IsPointer: false } element })
+            return Type.ArrayOf(element.AsNonNullable());
+        return bare;
+    }
+
     private static Type Unmarked(Type e)
         => e.Dynamic && e.Prim == Prim.Any && !e.IsArray && !e.IsPointer ? Type.Any
             : e.Nullable && e.IsReference && !e.IsPointer ? e.AsNonNullable() : e;
@@ -20395,13 +20439,17 @@ public sealed partial class Binder
         // declared in a body exactly as one declared in a type.
         List<Param>? saidBy = cond is CallExpr asked
             ? _r.Calls.TryGetValue(asked, out MethodSymbol? says) && says.Decl is { } signature && says.Returns.Prim == Prim.Bool ? signature.Params
-                : _r.LocalFunctionCalls.TryGetValue(asked, out LocalDecl? function) && function.Init is LambdaExpr declared ? declared.Params : null
+                : _r.LocalFunctionCalls.TryGetValue(asked, out LocalDecl? function) && function.Init is LambdaExpr declared
+                    && _r.ExprType.TryGetValue(asked, out Type? answered) && answered.Prim == Prim.Bool && !answered.Nullable ? declared.Params : null
             : null;
         if (cond is CallExpr told && saidBy is not null)
         {
-            for (int i = 0; i < told.Args.Count && i < saidBy.Count; i++)
+            for (int i = 0; i < told.Args.Count; i++)
             {
-                if (saidBy[i].NotNullWhen != holds)
+                // BY ITS PARAMETER: a named argument's by the name written
+                // (`Find(found: out var f, key: k)`), the rest by position.
+                int at = told.ArgNames.Count > i && told.ArgNames[i] is string named ? saidBy.FindIndex(p => p.Name == named) : i;
+                if (at < 0 || at >= saidBy.Count || saidBy[at].NotNullWhen != holds)
                 {
                     continue;
                 }
@@ -25076,8 +25124,12 @@ public sealed partial class Binder
                 Type want = Close(!c.ReceiverAdded && c.Target is MemberExpr wantOn
                     ? ContextualParameterType(_r.TypeOf(wantOn.Target), best, i)
                     : best.Params[i].Type, bound);
-                if (best.TypeParams.Count > 0 && HasTupleUse(want)
-                    && IsFunctionSource(c.Args[i]) && RefOf(want) is TypeRef argumentUse)
+                // AND A REFERENCE'S `?`, which names no copy (CopyArgument): the
+                // copy of Volatile.Write<Backing?> takes a Backing, and the call,
+                // checked against the copy in the round after, would refuse the
+                // null it was given. The use keeps it, as a class's does.
+                if (best.TypeParams.Count > 0 && (HasTupleUse(want) && IsFunctionSource(c.Args[i]) || CarriesMarks(want))
+                    && RefOf(want) is TypeRef argumentUse)
                 {
                     c.ArgumentTypeUses ??= new();
                     c.ArgumentTypeUses[i] = argumentUse;
@@ -25155,7 +25207,7 @@ public sealed partial class Binder
 
             foreach (string p in best.TypeParams)
             {
-                if (!bound.TryGetValue(p, out Type? was) || RefOf(was) is not TypeRef spell)
+                if (!bound.TryGetValue(p, out Type? was) || RefOf(CopyArgument(was)) is not TypeRef spell)
                 {
                     spelt.Clear();
                     break;
@@ -25343,7 +25395,7 @@ public sealed partial class Binder
         if (best.TypeParams.Count > 0)
         {
             c.ResultTupleNames = answer.Names is null ? null : new List<string>(answer.Names);
-            c.ResultTypeUse = HasTupleUse(answer) ? RefOf(answer) : null;
+            c.ResultTypeUse = HasTupleUse(answer) || CarriesMarks(answer) ? RefOf(answer) : null;
         }
         else if (c.ResultTypeUse is TypeRef resultUse)
             answer = Resolve(resultUse, _thisType);
