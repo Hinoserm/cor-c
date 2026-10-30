@@ -102,6 +102,24 @@ an image depend on the machine that linked it.
 HeapEvent a value (2ade9134, a2358fff): the heap decision's live heap
 1347 MB -> 1255 MB.
 
+10-30, on the stage's own objects (relinked in sc3m-6ee4b2e6/source1 and
+compared with its stage1, byte-identical), the IR archives' lists and
+entries held once a link (f85d2c2c..1679adf0) and the owned-field
+conditions shared through the link's pool (4c337061):
+
+| phase                          | live (MB) | before |
+|--------------------------------|----------:|-------:|
+| archives and hints             |       797 |    937 |
+| catches and owned fields       |       950 |   1090 |
+| units regenerated              |      1019 |   1160 |
+| heap decision                  |      1114 |   1347 |
+| layout and write               |       574 |    510 |
+
+What is left largest at the heap decision (a dump, 10-30): strings 150 MB,
+Relocation[] 137 MB (chunks of 2048 a section, the last one part full),
+string[] 70 MB, Symbol 63 MB, HeapEvent[] 53 MB, archive directories'
+dictionaries 41 MB.
+
 ## The plan
 
 The link holds the whole program -- every section's bytes, every symbol by
