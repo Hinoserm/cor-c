@@ -137,7 +137,7 @@ public static class SourceIndexBuilder
     public static void Write(string output, IEnumerable<string> paths, string assembly,
         IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024,
         IReadOnlyDictionary<string, IReadOnlyCollection<string>>? fileSymbols = null,
-        Func<string, bool>? librarySource = null, string? on = null)
+        Func<string, bool>? librarySource = null, string? on = null, Action? interruptHandler = null)
     {
         string identity = AssemblyIdentity(assembly);
         // ON ANOTHER INDEX (a kernel module's on its kernel's): this one
@@ -211,6 +211,11 @@ public static class SourceIndexBuilder
                     yield return new DeclarationRecord(GlobalUsingKey(identity, librarySide), Encoding.UTF8.GetBytes(use));
                 foreach (TypeDecl type in unit.Types)
                 {
+                    // AN INTERRUPT HANDLER DECLARED, or an interface method a
+                    // handler implements (Binder.IsInterruptHandler): said to
+                    // the build, whose units keep their facts for one.
+                    if (interruptHandler is not null && type.Members.Any(member => member is MethodDecl method && method.Attributes.Any(attribute => attribute.Is("InterruptHandler"))))
+                        interruptHandler();
                     skeletons.Add(InterfaceForms.Declared.Of(type, librarySide));
                     StringBuilder declaration = new();
                     var bodies = parser.OmittedBodies.Where(b => b.From >= type.SourceFrom && b.To <= type.SourceTo).OrderBy(b => b.From).ToArray();

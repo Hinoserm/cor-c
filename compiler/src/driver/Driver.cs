@@ -350,6 +350,8 @@ public static class Driver
                                  call of the kernel's KernelFiles.Syscall(number,
                                  a..f), missing arguments 0 -- ring 0's Linux file
                                  calls, served by the kernel without a trap
+              --no-interrupt-facts  with --obj: keep no interrupt facts for the
+                                 link (the build has no interrupt handler)
               --dll              a 32-bit Windows DLL (PE32): entered at DllMain and at
                                  each [UnmanagedCallersOnly(EntryPoint = "Name")]
                                  method, which it exports by that name; its
@@ -1169,7 +1171,12 @@ public static class Driver
         // A unit linked with others keeps its interrupt facts for the link's
         // check of handlers across units (InterruptNotes); so does any
         // build naming code that may never wait, handler or none.
-        Binder.CollectInterruptFacts = args.Contains("--obj") || library || Corsac.Switches.WaitFreeRoots is { Length: > 0 } || Corsac.Switches.IrqRoots is { Length: > 0 };
+        // NOT WHERE THE BUILD KNOWS NO HANDLER CAN BE (--no-interrupt-facts,
+        // ProjectCommand): a hosted project none of whose sources names one.
+        // Its link reads no fact (InterruptNotes.Check, no handler), and the
+        // self-hosted compiler's units wrote some 8.8 MB each of them.
+        Binder.CollectInterruptFacts = (args.Contains("--obj") || library) && !args.Contains("--no-interrupt-facts")
+            || Corsac.Switches.WaitFreeRoots is { Length: > 0 } || Corsac.Switches.IrqRoots is { Length: > 0 };
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
         // A CLOSED WORLD: everything that can call through a vtable is in this
         // compile, so a slot's method is compiled only once something reads

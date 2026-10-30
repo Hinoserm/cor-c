@@ -157,8 +157,17 @@ public static class ProjectCommand
         // units read the library's declarations here rather than parsing its
         // every file again (--ref).
         foreach (string library in libraries) symbols.TryAdd(library, Driver.TargetSymbols(target).ToArray());
+        bool interruptHandlers = false;
         if (!linkOnly || !File.Exists(index))
-            SourceIndexBuilder.Write(index, owners.Keys.Concat(libraries), project.AssemblyName, fileSymbols: symbols, librarySource: Driver.IsLibrarySource);
+            SourceIndexBuilder.Write(index, owners.Keys.Concat(libraries), project.AssemblyName, fileSymbols: symbols, librarySource: Driver.IsLibrarySource,
+                interruptHandler: () => interruptHandlers = true);
+        // NO INTERRUPT HANDLER ANYWHERE, NO FACTS FOR ONE (InterruptNotes): a
+        // handler is a method marked [InterruptHandler] or one implementing an
+        // interface method so marked, and a hosted project's can only be
+        // declared in its own sources or the class library's, every one of
+        // which the index has just read. None declared, no unit keeps the
+        // facts the link would walk from one. (Link only, nothing compiles.)
+        string[] factsArguments = interruptHandlers || linkOnly ? Array.Empty<string>() : new[] { "--no-interrupt-facts" };
         string toolchain = ProjectState.Digest(ToolIdentity(typeof(Driver).Assembly) + "\n" + ToolIdentity(typeof(ObjectLinkCommand).Assembly));
         string libraryState = ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity)));
         List<string> objects = new();
@@ -181,6 +190,7 @@ public static class ProjectCommand
             List<string> runtimeArgs = new() { "compile", "--nostdlib", "--lib", "--obj", "--jobs", workers.ToString(), "--decl-index", index, "--assembly", project.AssemblyName };
             runtimeArgs.AddRange(runtimeSources);
             runtimeArgs.AddRange(cpuArguments);
+            runtimeArgs.AddRange(factsArguments);
             if (unusedReport is not null) { runtimeArgs.Add("--unused-report"); runtimeArgs.Add("-"); }
             string runtimeSignature = ProjectState.Digest(toolchain + "\n" + string.Join("\n", runtimeSources.Select(ProjectState.FileIdentity))
                 + "\n" + string.Join("\n", runtimeArgs));
@@ -196,6 +206,7 @@ public static class ProjectCommand
         {
             List<string> options = new() { "--nostdlib", "--obj", "--decl-index", index, "--assembly", project.AssemblyName };
             options.AddRange(cpuArguments);
+            options.AddRange(factsArguments);
             if (unusedReport is not null) { options.Add("--unused-report"); options.Add("-"); }
             List<(string Source, string Object)> units = new();
             foreach (string library in librarySources)
@@ -214,6 +225,7 @@ public static class ProjectCommand
             bool entry = source == entries[0].Path;
             List<string> options = new() { "--nostdlib", "--obj", "--decl-index", index, "--assembly", project.AssemblyName };
             options.AddRange(cpuArguments);
+            options.AddRange(factsArguments);
             if (unusedReport is not null) { options.Add("--unused-report"); options.Add("-"); }
             if (entry) { options.Add("--main-type"); options.Add(entries[0].Type); }
             // The program's runtime settings go where its entry stub is made:
