@@ -216,8 +216,9 @@ public sealed class KernelExports
     // ---- writing -------------------------------------------------------------
 
     /// <summary>
-    /// The table: <paramref name="symbols"/> in a .dynsym with a SysV hash
-    /// over them, the contract and the processor, and the dynamic array that
+    /// The table: <paramref name="symbols"/> in a .dynsym -- REORDERED, in
+    /// order of their GNU buckets -- with a SysV hash and a GNU hash over
+    /// them, the contract and the processor, and the dynamic array that
     /// names them all ahead of them, every offset the section's own.
     /// </summary>
     public static byte[] Table(IReadOnlyList<Export> symbols, byte[]? abi, byte[]? cpu, byte[] linkId, bool wide)
@@ -227,8 +228,8 @@ public sealed class KernelExports
         int word = wide ? 8 : 4;
 
         // THE GNU HASH, which a loader reading the table from the file asks
-        // first: a bloom word tells most names absent without a page of the
-        // table's more, and a chain holds each symbol's hash, so a name is
+        // first: a bloom word tells most names absent without reading the rest
+        // of the table, and a chain holds each symbol's hash, so a name is
         // compared only where its hash is the same. Its symbols lie in order
         // of their buckets, the first one after the null symbol; the SysV
         // hash, by symbol number, does not mind the order.

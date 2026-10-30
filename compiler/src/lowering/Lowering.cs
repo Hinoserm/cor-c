@@ -336,7 +336,7 @@ public sealed partial class Lowering
         for (int at = 0; at < escaped.Length; at++)
         {
             if (escaped[at] == '$' && at + 4 < escaped.Length
-                && int.TryParse(escaped.AsSpan(at + 1, 4), System.Globalization.NumberStyles.HexNumber, null, out int code))
+                && int.TryParse(escaped.AsSpan(at + 1, 4), System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out int code))
             {
                 key.Append((char)code);
                 at += 4;

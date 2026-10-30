@@ -121,11 +121,20 @@ if len(sys.argv) > 2 and sys.argv[2] == '--gnu':
             if ch & 1:
                 return None
             i += 1
+    # As a glibc reader takes the table for granted.
+    if symoffset != 1 or nbuckets % 2 == 0 or bloom_size & (bloom_size - 1) or shift != (6 if wide else 5):
+        sys.exit('gnu hash header: nbuckets %d symoffset %d bloom %d shift %d' % (nbuckets, symoffset, bloom_size, shift))
+    last, = struct.unpack_from('<I', table, chains + (count - 1 - symoffset) * 4)
+    if count > 1 and not last & 1:
+        sys.exit('gnu hash: the last chain does not end')
     missed = [name_of(i) for i in range(1, count) if lookup(name_of(i)) != i]
     if missed:
         sys.exit('gnu hash misses %d of %d: %s' % (len(missed), count - 1, ', '.join(missed[:5])))
-    if lookup('no_such_name_at_all') is not None:
-        sys.exit('gnu hash finds a name it does not hold')
+    held = {name_of(i) for i in range(1, count)}
+    for k in range(500):
+        absent = 'absent_%d_%x' % (k, k * 2654435761 & 0xffffffff)
+        if absent not in held and lookup(absent) is not None:
+            sys.exit('gnu hash finds a name it does not hold: ' + absent)
     print('gnu ok', count - 1)
     sys.exit(0)
 strings, entry = tags[5], tags[11]
