@@ -18,6 +18,13 @@ public sealed class ObjectFile
     public List<Section> Sections { get; } = new();
     /// <summary>The file it was read from, unchanged since (ElfReader.ReadObjectFile); null for one made in memory.</summary>
     public string? SourcePath { get; set; }
+    /// <summary>
+    /// The link's pool of what its units' IR archives say alike, given to
+    /// each input it reads (ObjectLinkCommand): whoever reads the archive
+    /// first -- the preinit solve, the IR optimiser -- shares through it
+    /// (Lto.IrArchive.Read). Null for an object read outside a link.
+    /// </summary>
+    public Lto.IrArchivePool? ArchivePool { get; set; }
     public List<Symbol> Symbols { get; } = new();
     internal HashSet<string> SuppressedDefinitions { get; } = new(StringComparer.Ordinal);
 

@@ -121,7 +121,7 @@ public sealed class IrArchive
     /// checked against, or one whose sections or symbols changed since: what
     /// each read used to check (NativeHash), without the whole directory.
     /// </summary>
-    public static IrArchive? Read(ObjectFile obj, IrArchivePool? pool = null)
+    public static IrArchive? Read(ObjectFile obj)
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
@@ -132,7 +132,7 @@ public sealed class IrArchive
             held.CheckedAgainst(obj);
             return held;
         }
-        IrArchive made = ReadSection(obj, section, pool);
+        IrArchive made = ReadSection(obj, section, obj.ArchivePool);
         return Interlocked.CompareExchange(ref section.ArchiveRead, made, null) as IrArchive ?? made;
     }
 
@@ -319,8 +319,10 @@ public sealed class IrArchive
 /// again the library bodies it imported, with their calls and references --
 /// the compiler's own link 885 thousand entries for 320 thousand bodies, 921
 /// thousand call and reference lists of which 148 thousand differ. One pool
-/// a link (ObjectLinkCommand), let go with it: a compile reads its units'
-/// archives one at a time and shares nothing between them.
+/// a link, held by its inputs (ObjectFile.ArchivePool) and let go with them:
+/// a compile reads its units' archives one at a time and shares nothing.
+/// Names are interned (IrArchive.ReadName), so a list is hashed by its
+/// strings' identities.
 /// </summary>
 public sealed class IrArchivePool
 {

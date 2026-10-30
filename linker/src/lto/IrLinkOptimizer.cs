@@ -24,7 +24,7 @@ public static class IrLinkOptimizer
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
         string? regionReport = null, bool madeOnly = false, bool openTypes = false, string? reachableFrom = null,
         IEnumerable<string>? keep = null, bool moduleOfKernel = false, IReadOnlyList<HeapRecords?>? withoutCollector = null,
-        IrArchive? kernelBodies = null, IrArchivePool? archivePool = null)
+        IrArchive? kernelBodies = null)
     {
         // THE SECOND MAKING OF A PROGRAM THAT NEEDS NO COLLECTOR (below,
         // HeapDecision): `withoutCollector` holds each input's records as
@@ -46,7 +46,7 @@ public static class IrLinkOptimizer
         LifetimeHintPool pool = new();
         foreach (var input in inputs)
         {
-            IrArchive? archive = IrArchive.Read(input.Object, archivePool);
+            IrArchive? archive = IrArchive.Read(input.Object);
             if (archive is not null) archives.Add(input.Object, archive);
             // Hints without the IR they would recompile are nothing to act on.
             if (archive is not null && LifetimeHints.Read(input.Object, pool) is LifetimeHints unit)
@@ -640,7 +640,11 @@ public static class IrLinkOptimizer
                     {
                         ObjectFile original = originals[index];
                         if (archives.ContainsKey(original) && original.Sections.Count == 0)
+                        {
+                            IrArchivePool? pool = original.ArchivePool;
                             original = ElfReader.ReadObjectFile(original.SourcePath ?? throw new ElfFormatException("A unit to make again has no file"));
+                            original.ArchivePool = pool;
+                        }
                         again.Add((inputs[index].Name, archives.ContainsKey(originals[index]) ? original : inputs[index].Object));
                     }
                     // The compile's records: their edges are the archive's (HeapRecords.Gone).
@@ -655,7 +659,7 @@ public static class IrLinkOptimizer
                     units.Clear();
                     now = Array.Empty<HeapRecords?>();
                     int made2 = Run(again, backend, enabled, importBytes, bodyLimit, closedImageEntry, parallelBackends, regionReport,
-                        madeOnly, openTypes, reachableFrom, keep, moduleOfKernel, compiled, archivePool: archivePool);
+                        madeOnly, openTypes, reachableFrom, keep, moduleOfKernel, compiled);
                     for (int index = 0; index < inputs.Count; index++) inputs[index] = again[index];
                     return made2;
                 }

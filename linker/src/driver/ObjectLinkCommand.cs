@@ -191,6 +191,9 @@ public static class ObjectLinkCommand
         // Resolve every input and relocation before writing the destination.
         // LinkException is rendered by Driver, just as for compile-and-link.
         LinkTimings.Phase("read objects");
+        // What the units' archives say alike, held once whoever reads them first (IrArchivePool).
+        IrArchivePool archivePool = new();
+        foreach ((string _, ObjectFile obj) in inputs) obj.ArchivePool = archivePool;
         TargetContract.Validate(inputs);
         X86CodeGenerationContract? selected = cpuArguments.Count == 0 ? null : Lang.X86.X86Cpu.Parse(cpuArguments).Contract;
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
@@ -248,9 +251,7 @@ public static class ObjectLinkCommand
         byte[]? decls = exportsPath is null ? null : declarationTable?.Invoke(stampIndex!);
         // The kernel's small functions for its modules, read before this link's
         // own optimiser takes the units' IR out (KernelExports.SmallBodies).
-        // The first to read the units' archives share what they say alike (IrArchivePool).
-        IrArchivePool archivePool = new();
-        List<IrArchiveRecord>? smallBodies = exportsPath is not null && lto ? KernelExports.SmallBodies(inputs, archivePool) : null;
+        List<IrArchiveRecord>? smallBodies = exportsPath is not null && lto ? KernelExports.SmallBodies(inputs) : null;
         // A KERNEL WITH EXPORTS IS NOT CLOSED, whatever its address says:
         // what a module calls, subclasses or stores into is outside it, so
         // nothing the link proves about the whole program holds (closed
@@ -265,7 +266,7 @@ public static class ObjectLinkCommand
             // derives from (VirtualTargets.Made).
             madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && exportsPath is null && kernel is null,
             openTypes: exportsPath is not null || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
-            moduleOfKernel: kernel is not null, kernelBodies: kernel?.Bodies, archivePool: archivePool);
+            moduleOfKernel: kernel is not null, kernelBodies: kernel?.Bodies);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
