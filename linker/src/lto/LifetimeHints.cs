@@ -599,7 +599,7 @@ public sealed class LifetimeHints
             for (int i = Count(14); i > 0; i--) { string function = Text(); string type = Text(); hints.Throws.Add(new(function, type, Condition())); }
             for (int i = Count(10); i > 0; i--) { string field = Text(); hints.StaticStores.Add((field, Text())); }
             for (int i = Count(5); i > 0; i--) hints.StaticWrites.Add(Text());
-            if (reader.ReadBoolean()) hints.Owned = OwnedFieldHints.Read(reader, total);
+            if (reader.ReadBoolean()) hints.Owned = OwnedFieldHints.Read(reader, total, pool);
             if (stream.Position != total) throw new ElfFormatException("Trailing lifetime hint data");
             return hints;
         }

@@ -227,7 +227,13 @@ public sealed class OwnedFieldHints
         foreach (((string callee, int argument), string field) in StoredParameters) { writer.Write(index[callee]); writer.Write(argument); writer.Write(index[field]); }
     }
 
-    internal static OwnedFieldHints Read(BinaryReader reader, long length)
+    /// <param name="pool">
+    /// A link's pool of conditions (LifetimeHintPool): each record's, site's
+    /// and sink's held once it is read, as the lifetime hints' are -- what
+    /// they need is summed while they are read and only asked after, and
+    /// most need nothing, which is then one condition for all of them.
+    /// </param>
+    internal static OwnedFieldHints Read(BinaryReader reader, long length, LifetimeHintPool? pool = null)
     {
         Stream stream = reader.BaseStream;
         int Count(int size)
@@ -269,6 +275,7 @@ public sealed class OwnedFieldHints
             for (int i = Count(8); i > 0; i--)
                 if (!add((Name(), reader.ReadInt32()))) throw new ElfFormatException("Duplicate owned-field hint pair");
         }
+        LifetimeCondition Shared(LifetimeCondition c) => pool is null ? c : pool.Share(c);
         LifetimeCondition Needs()
         {
             LifetimeCondition c = new();
@@ -289,6 +296,7 @@ public sealed class OwnedFieldHints
                 if (!into.TryAdd(function, site)) throw new ElfFormatException("Duplicate owned-field site");
                 needs.Add(site.Needs); danger.UnionWith(site.Danger); dangerFields?.UnionWith(site.DangerFields);
                 kinds?.UnionWith(site.Kinds); assumes?.UnionWith(site.Assumes);
+                site.Needs = Shared(site.Needs);
             }
         }
         OwnedFieldHints hints = new();
@@ -299,6 +307,7 @@ public sealed class OwnedFieldHints
             NamesInto(record.RefusedBy.Add); ReadSites(record.Sites, record.Needs, record.Danger, null, record.Kinds, record.Assumes); Pairs(record.Sinks);
             record.ElementsRefused = reader.ReadBoolean(); record.ElementArrays = reader.ReadBoolean();
             record.ElementNeeds.Add(Needs()); NamesInto(record.ElementDanger.Add); NamesInto(record.ElementDangerFields.Add);
+            record.Needs = Shared(record.Needs); record.ElementNeeds = Shared(record.ElementNeeds);
             if (!hints.Fields.TryAdd(field, record)) throw new ElfFormatException("Duplicate owned-field record");
         }
         for (int i = Count(20); i > 0; i--)
@@ -312,6 +321,7 @@ public sealed class OwnedFieldHints
             string callee = Name();
             OwnedCallRead read = new() { Refused = reader.ReadBoolean() };
             NamesInto(read.RefusedBy.Add); ReadSites(read.Sites, read.Needs, read.Danger, read.DangerFields, null, null); NamesInto(read.ReturnedBy.Add);
+            read.Needs = Shared(read.Needs);
             if (!hints.CallReads.TryAdd(callee, read)) throw new ElfFormatException("Duplicate owned-field call read");
         }
         for (int i = Count(8); i > 0; i--)
@@ -329,9 +339,10 @@ public sealed class OwnedFieldHints
             {
                 string caller = Name();
                 LifetimeCondition needs = Needs();
-                if (!sink.NeedsIn.TryAdd(caller, needs)) throw new ElfFormatException("Duplicate owned-field sink caller");
                 sink.Needs.Add(needs);
+                if (!sink.NeedsIn.TryAdd(caller, Shared(needs))) throw new ElfFormatException("Duplicate owned-field sink caller");
             }
+            sink.Needs = Shared(sink.Needs);
             Pairs(sink.Sinks);
             if (argument < 0 || !hints.Sinks.TryAdd((callee, argument), sink)) throw new ElfFormatException("Invalid owned-field sink");
         }
@@ -350,6 +361,7 @@ public sealed class OwnedFieldHints
         {
             OwnedElementRecord record = new(Name());
             record.Needs.Add(Needs());
+            record.Needs = Shared(record.Needs);
             NamesInto(record.Accessors.Add); NamesInto(record.Fixed.Add);
             return record;
         }
@@ -401,7 +413,7 @@ public sealed class OwnedFieldRecord
     /// What its stores and reads need of other units' functions -- the sum of
     /// its sites', on which the unit keeps its bound; not written (Sites).
     /// </summary>
-    public LifetimeCondition Needs { get; } = new();
+    public LifetimeCondition Needs { get; internal set; } = new();
     /// <summary>Parameters it is stored from, which every caller must hand over.</summary>
     public SortedSet<(string Callee, int Argument)> Sinks { get; } = new(OwnedFieldHints.PairOrder.Instance);
     /// <summary>The calls a read of it is live across: none may replace it. The sum of its sites', as Needs is.</summary>
@@ -426,7 +438,7 @@ public sealed class OwnedFieldRecord
     /// <summary>A store here puts an array whose elements are proved in it.</summary>
     public bool ElementArrays { get; set; }
     /// <summary>What the proof of its elements needs of other units' functions.</summary>
-    public LifetimeCondition ElementNeeds { get; } = new();
+    public LifetimeCondition ElementNeeds { get; internal set; } = new();
     /// <summary>The calls an element is live across: none may store into the field.</summary>
     public SmallSortedSet<string> ElementDanger { get; } = new(StringComparer.Ordinal);
     /// <summary>The fields stored into while an element is live: none may be owned.</summary>
@@ -454,7 +466,7 @@ public sealed class OwnedFieldRecord
 /// </summary>
 public sealed class OwnedSite
 {
-    public LifetimeCondition Needs { get; } = new();
+    public LifetimeCondition Needs { get; internal set; } = new();
     public SmallSortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
     public SmallSortedSet<string> DangerFields { get; } = new(StringComparer.Ordinal);
     public SmallSortedSet<string> Kinds { get; } = new(StringComparer.Ordinal);
@@ -476,7 +488,7 @@ public sealed class OwnedCallRead
     public bool Refused { get; set; }
     /// <summary>The functions whose read lets it go, or lives across a free: as Refused, if the program runs any of them.</summary>
     public SmallSortedSet<string> RefusedBy { get; } = new(StringComparer.Ordinal);
-    public LifetimeCondition Needs { get; } = new();
+    public LifetimeCondition Needs { get; internal set; } = new();
     /// <summary>The calls a read is live across.</summary>
     public SmallSortedSet<string> Danger { get; } = new(StringComparer.Ordinal);
     /// <summary>The fields stored into while a read is live.</summary>
@@ -493,7 +505,7 @@ public sealed class OwnedElementRecord
 {
     public OwnedElementRecord(string kind) { Kind = kind; }
     public string Kind { get; }
-    public LifetimeCondition Needs { get; } = new();
+    public LifetimeCondition Needs { get; internal set; } = new();
     /// <summary>
     /// Where the unit proved its reads through the field's accessors (Opt.
     /// OwnedElements.AccessorsProved): the functions that are its reads --
@@ -510,7 +522,7 @@ public sealed class OwnedElementRecord
 public sealed class OwnedSink
 {
     /// <summary>The sum of NeedsIn, on which the unit keeps its bound.</summary>
-    public LifetimeCondition Needs { get; } = new();
+    public LifetimeCondition Needs { get; internal set; } = new();
     /// <summary>What each calling function's calls need: counted where the program runs it.</summary>
     public SortedDictionary<string, LifetimeCondition> NeedsIn { get; } = new(StringComparer.Ordinal);
     /// <summary>The callers' own parameters it passes on, each of which must be a sink too.</summary>
