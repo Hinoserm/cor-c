@@ -652,7 +652,17 @@ public static class RegionSolver
             // In a method of its own: past it nothing holds the pass's working
             // sets -- twenty million values when it gives up -- which held
             // through the graphs below ran a 32-bit linker out of memory.
-            if (_report?.Contains("+typesoff") != true) NarrowByReceiverTypes(targets, keys, rooted, typedThis, reached);
+            //
+            // A PROGRAM WHOSE RECEIVERS' TYPES OUTGREW THEIR BUDGET IS NOT
+            // FOLLOWED FURTHER: the escape graphs carry objects where that
+            // solve carried types, over every target it could not narrow, and
+            // the compiler's own link -- the only program that has outgrown
+            // it -- then spent forty seconds and a heap grown to 2.9 GB before
+            // they too gave up past the link's work budget. Counted in values
+            // carried, as both budgets are, so a link answers alike on every
+            // host (--region-report +typesbudget=M to follow such a program).
+            if (_report?.Contains("+typesoff") != true && !NarrowByReceiverTypes(targets, keys, rooted, typedThis, reached))
+                return GiveUp("past the receiver types' budget");
             Step("receiver types");
             bool[] wanted = new bool[count];
             for (int f = 0; f < count; f++) wanted[f] = _functions[f].MayBeBoundary || _functions[f].Loops.Count > 0;
@@ -840,9 +850,10 @@ public static class RegionSolver
 
         /// <summary>
         /// ONLY WHAT EACH RECEIVER'S TYPES RUN (RegionTypes): each virtual call's
-        /// targets narrowed in place, the pass's sets dropped when it returns.
+        /// targets narrowed in place, the pass's sets dropped when it returns;
+        /// false, every target kept, when it gave up.
         /// </summary>
-        private void NarrowByReceiverTypes(int[]?[][] targets, string?[][] keys, bool[] rooted, bool[] typedThis, bool[]? reached)
+        private bool NarrowByReceiverTypes(int[]?[][] targets, string?[][] keys, bool[] rooted, bool[] typedThis, bool[]? reached)
         {
             RegionTypes types = new(_functions, targets, keys, rooted, (f, k, table, at) => RunsOn(f, k, targets[f][k]!, table, at))
             {
@@ -871,7 +882,8 @@ public static class RegionSolver
                 Log("receiver types path: " + types.PathTo(pathAsk[(pipe + 1)..at], pathNode));
             Log(pruned
                 ? $"receiver types: {types.Objects} objects, {types.Instances} instances, {types.Steps} carried; {types.Narrowed} of {types.Calls} virtual calls narrowed, {types.Unknown} left every target, targets {types.Before} -> {types.After}, {_clock.ElapsedMilliseconds} ms"
-                : $"receiver types: gave up past its budget ({types.Steps} carried, {types.Instances} instances), every target kept, {_clock.ElapsedMilliseconds} ms");
+                : $"receiver types: gave up past its budget ({types.Steps} carried, {types.Instances} instances), {_clock.ElapsedMilliseconds} ms");
+            return pruned;
         }
 
         private int[]? RunsOn(int f, int k, int[] those, string table, long at)
