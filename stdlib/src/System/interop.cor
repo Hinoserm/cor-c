@@ -20,8 +20,9 @@
 // And Interop.GetExceptionForIoErrno, which is how .NET's own System.IO turns
 // an errno into the exception the caller catches -- FileNotFoundException,
 // DirectoryNotFoundException, UnauthorizedAccessException, PathTooLongException
-// or IOException, each with .NET's message -- with the errno kept in HResult
-// so the system's own words can still be recovered.
+// or IOException, each with .NET's message and HResult -- with the errno kept
+// where the caller can read it: bare in an IOException's HResult, or in the
+// IOException inside where the type stands for several (Interop).
 
 using System.IO;
 using System.Runtime.InteropServices;
