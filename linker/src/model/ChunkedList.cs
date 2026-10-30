@@ -25,13 +25,18 @@ public sealed class ChunkedList<T> : IReadOnlyList<T>
 
     public int Count => _count;
 
-    private void Reserve(int needed)
+    // EXACT, where the list is told what it will hold (EnsureCapacity): the
+    // last chunk only as long as that, grown whole before anything past it.
+    // A link reads every section's relocations so, and a whole last chunk a
+    // section was a third of their arrays on the compiler's own link.
+    private void Reserve(int needed, bool exact = false)
     {
         if (needed <= _capacity) return;
         if (needed <= ChunkSize)
         {
             int size = _chunks.Count == 0 ? FirstChunk : _chunks[0].Length * 2;
             while (size < needed) size *= 2;
+            if (exact) size = needed;
             T[] grown = new T[Math.Min(size, ChunkSize)];
             if (_chunks.Count == 0) _chunks.Add(grown);
             else
@@ -49,8 +54,19 @@ public sealed class ChunkedList<T> : IReadOnlyList<T>
             Array.Copy(_chunks[0], whole, _count);
             _chunks[0] = whole;
         }
-        while ((long)_chunks.Count << ChunkShift < needed) _chunks.Add(new T[ChunkSize]);
-        _capacity = _chunks.Count << ChunkShift;
+        // A last chunk made short, made whole before the list goes past it.
+        if (_chunks.Count > 1 && _chunks[^1].Length < ChunkSize)
+        {
+            T[] whole = new T[ChunkSize];
+            Array.Copy(_chunks[^1], whole, _chunks[^1].Length);
+            _chunks[^1] = whole;
+        }
+        while ((long)_chunks.Count << ChunkShift < needed)
+        {
+            int rest = needed - (_chunks.Count << ChunkShift);
+            _chunks.Add(new T[exact && rest < ChunkSize ? rest : ChunkSize]);
+        }
+        _capacity = exact ? needed : _chunks.Count << ChunkShift;
     }
 
     public T this[int index]
@@ -80,8 +96,8 @@ public sealed class ChunkedList<T> : IReadOnlyList<T>
         foreach (T item in items) Add(item);
     }
 
-    /// <summary>Room for `capacity` items made now (List.EnsureCapacity); only the first chunk is ever copied.</summary>
-    public void EnsureCapacity(int capacity) => Reserve(capacity);
+    /// <summary>Room for `capacity` items made now (List.EnsureCapacity), the last chunk no longer than that; only the first and last chunks are ever copied.</summary>
+    public void EnsureCapacity(int capacity) => Reserve(capacity, exact: true);
 
     /// <summary>Empties the list and lets every chunk go.</summary>
     public void Clear()
