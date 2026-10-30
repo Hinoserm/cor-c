@@ -212,6 +212,8 @@ public sealed class IrArchive
                 string[] references = referenceCount == 0 ? Array.Empty<string>() : new string[referenceCount];
                 for (int reference = 0; reference < referenceCount; reference++) references[reference] = ReadName(reader);
                 if (references.SequenceEqual(calls)) references = calls;
+                calls = Shared(calls);
+                references = Shared(references);
                 long decodeBytes = reader.ReadInt64();
                 if (decodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
                 int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hashBytes = reader.ReadBytes(32);
@@ -270,6 +272,37 @@ public sealed class IrArchive
     }
 
     [ThreadStatic] private static byte[]? _nameBuffer;
+
+    /// <summary>
+    /// EVERY LIST OF NAMES ONCE, as every name is (ReadName): each unit's
+    /// directory lists the library bodies it imported again, with their calls
+    /// and references -- the compiler's own link 885 thousand entries for 320
+    /// thousand bodies, 921 thousand lists of which 148 thousand differ.
+    /// </summary>
+    private static readonly Dictionary<string[], string[]> Lists = new(SameNames.Instance);
+
+    private static string[] Shared(string[] list)
+    {
+        if (list.Length == 0) return list;
+        lock (Lists)
+        {
+            if (Lists.TryGetValue(list, out string[]? held)) return held;
+            Lists.Add(list, list);
+            return list;
+        }
+    }
+
+    private sealed class SameNames : IEqualityComparer<string[]>
+    {
+        public static readonly SameNames Instance = new();
+        public bool Equals(string[]? x, string[]? y) => x is not null && y is not null && x.AsSpan().SequenceEqual(y);
+        public int GetHashCode(string[] list)
+        {
+            HashCode hash = new();
+            foreach (string name in list) hash.Add(name, StringComparer.Ordinal);
+            return hash.ToHashCode();
+        }
+    }
 
     private static string ReadName(BinaryReader reader)
     {
