@@ -158,7 +158,9 @@ public static partial class Linker
         {
             if (s.Name.Length == 0 || s.Definition is not null || kernel.Names.Contains(s.Name)) continue;
             if (theirs.Values.Any(exports => exports.Contains(s.Name))) continue;
-            errors.Add("'" + s.Name + "' is imported, and neither " + kernel.Name + " nor a module this one depends on exports it");
+            errors.Add(LayoutNames.Describe(s.Name) is string layout
+                ? "compiled against " + layout + " as '" + s.Name + "', which neither " + kernel.Name + " nor a module this one depends on has now: compile the module again"
+                : "'" + s.Name + "' is imported, and neither " + kernel.Name + " nor a module this one depends on exports it");
         }
         if (errors.Count != 0) throw new LinkException(errors);
         return image;

@@ -465,6 +465,20 @@ public sealed class UnitBackend : IUnitBackend
             else copy.Bytes.AddRange(section.Bytes);
             copy.Relocs.AddRange(section.Relocs); result.Sections.Add(copy);
         }
+        // ITS LAYOUTS BY NAME (LayoutNames), a unit for a ring's: the names it
+        // defines, at their byte, and the words it imports by, with the names.
+        HashSet<string> symbolNames = new(result.Symbols.Select(symbol => symbol.Name), StringComparer.Ordinal);
+        foreach (Section section in original.Sections.Where(section => section.Name is LayoutNames.DefinedSection or LayoutNames.ImportedSection))
+        {
+            Section copy = new(section.Name, section.Kind) { Align = section.Align };
+            copy.Bytes.AddRange(section.Bytes);
+            copy.Relocs.AddRange(section.Relocs);
+            result.Sections.Add(copy);
+            foreach (Symbol symbol in original.Symbols.Where(symbol => ReferenceEquals(symbol.Section, section)))
+                if (symbolNames.Add(symbol.Name)) result.Symbols.Add(new Symbol { Name = symbol.Name, Section = copy, Offset = symbol.Offset, Size = symbol.Size, Global = symbol.Global });
+            foreach (Relocation reloc in section.Relocs)
+                if (symbolNames.Add(reloc.Symbol)) result.Symbols.Add(new Symbol { Name = reloc.Symbol });
+        }
         DefinitionSemantics.Attach(result, semantics);
         // The unit's records as this making left it, for the link's decision on a collector.
         if (preLate && module.HeapRecords is { } heap) heap.Attach(result);

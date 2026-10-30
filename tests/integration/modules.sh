@@ -6,9 +6,10 @@
 # way its binder binds a library, the table read from the kernel's file --
 # built in rings, with its aliases in .corsac.modinfo; and a module of
 # several files, a unit a file against its own index made on the kernel's.
-# Then a kernel whose method a module calls has another signature, refusing
-# the module by that name -- its loader and the link -- and one changed only
-# where no module looks, which loads it.
+# Then a kernel whose method a module calls has another signature, and one
+# whose Driver has a field more -- its layout's name another (LayoutNames)
+# -- each refusing the module by that name, its loader and the link; and one
+# changed only where no module looks, which loads it.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
@@ -112,6 +113,10 @@ for ko in "$work/sb16.ko" "$work/linked/sb16.ko" "$work/project/sb16.ko"; do
     for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt' 't_Kernel$002eDriver'; do
         awk -v n="$name" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import $name"
     done
+    # AND THE LAYOUT IT WAS COMPILED AGAINST, by name: the kernel's Driver's.
+    driverShape=$(awk '$1 ~ /^z_Kernel\$002eDriver\$/ { print $1 }' "$work/exports.syms")
+    test -n "$driverShape" || fail "the kernel does not export its Driver's layout"
+    awk -v n="$driverShape" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import the kernel's Driver's layout"
     # DT_INIT is the link's: __corsac_init, then the [ModuleInitializer].
     init=$(awk '/(INIT)/ { print strtonum($3) }' "$ko.dynamic")
     stub=$(readelf --dyn-syms -W "$ko" | awk '$8 == "__corsac_module_init" { print strtonum("0x" $2); exit }')
@@ -358,6 +363,22 @@ if "$corc" compile-project --units "$m/wrong/units.tsv" --obj --kernel "$b/kerne
     fail "a module's units compiled with an index made on another kernel's"
 fi
 grep -q 'was not made on' "$m/wrong/units.log" || { cat "$m/wrong/units.log"; fail "the wrong module index said otherwise"; }
+
+# A KERNEL WHOSE DRIVER HAS A FIELD MORE: every name the module calls is
+# there, but its Driver's layout is another's, and so is its name. Refused
+# by the loader and the link, naming the type.
+mkdir -p "$work/d"
+sed '/^public abstract class Driver/{n;s/^{$/{\n    public int Generation;/}' $here/Kernel.cor > "$work/d/Kernel.cor"
+grep -q 'public int Generation;' "$work/d/Kernel.cor" || fail "kernel d is not different"
+kernel "$work/d" $here/Host.cor "$work/d/Kernel.cor" $here/Loader.cor
+d=$work/d
+cp "$work/linked/sb16.ko" "$d/module.ko"
+status=0
+(cd "$d" && ./kernel) > "$d/refused.out" 2>&1 || status=$?
+test "$status" = 3 && grep -qx "refused: undefined symbol $driverShape" "$d/refused.out" \
+    || { cat "$d/refused.out"; fail "a module compiled against another Driver was loaded"; }
+if "$corc" link "$work/sb16.o" --kernel "$d/kernel" -o "$d/wrong.ko" 2> "$d/wrong-link.log"; then fail "a module compiled against another Driver linked"; fi
+grep -q "compiled against type Kernel.Driver's layout" "$d/wrong-link.log" || { cat "$d/wrong-link.log"; fail "the wrong layout's link said otherwise"; }
 
 # A KERNEL CHANGED ONLY WHERE NO MODULE LOOKS -- a method more in Unused,
 # which nothing calls -- binds the same module's object, built for the

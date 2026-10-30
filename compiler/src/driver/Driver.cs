@@ -661,13 +661,13 @@ public static class Driver
 
     /// <summary>What a unit's front end leaves for the rest of its compile: the module and what is taken from the syntax and bindings before they go.</summary>
     private sealed record UnitFront(Module Module, Dictionary<string, string> Entries, Dictionary<string, byte[]> DefinitionSemantics,
-        List<ManagedTypeLayout> Layouts, List<RegistrySchema> Schemas, List<string> ModuleInfo);
+        List<ManagedTypeLayout> Layouts, List<RegistrySchema> Schemas, List<string> ModuleInfo, HashSet<string> DefinedLayouts);
 
     /// <summary>--check: the program is read and bound, and its errors reported, and nothing more (FrontToModule).</summary>
     private static bool _checkOnly;
 
     /// <summary>What FrontToModule answers for a program --check found nothing wrong with: no module is made.</summary>
-    private static readonly UnitFront Checked = new(null!, new(), new(), new(), new(), new());
+    private static readonly UnitFront Checked = new(null!, new(), new(), new(), new(), new(), new());
 
     /// <summary>
     /// Parses, binds and lowers a unit, and takes from its syntax and
@@ -744,7 +744,8 @@ public static class Driver
         // held to the end of the unit for two things written into the object
         // after code generation, and they were a unit's largest structure
         // alive through its largest phase. What those two need is taken now.
-        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library);
+        HashSet<string> definedLayouts = new(StringComparer.Ordinal);
+        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library, definedLayouts);
         // AND WHICH TYPES IT NAMED AND NEVER ASKED THE MEMBERS OF, now that
         // nothing more will (Dependence.Header).
         if (declarations is not null)
@@ -766,7 +767,7 @@ public static class Driver
             declarations.MembersUnread(decl => unread.GetValueOrDefault(Binder.TypeKey(decl)));
         }
         List<RegistrySchema> schemas = new(front.Value.unit.RegistrySchemas);
-        return new UnitFront(module, entries, definitionSemantics, layouts, schemas, moduleInfo);
+        return new UnitFront(module, entries, definitionSemantics, layouts, schemas, moduleInfo, definedLayouts);
     }
 
     internal static int Compile(string[] argv)
@@ -1617,6 +1618,10 @@ public static class Driver
         // And what a DLL exports, for its link's export directory.
         NativeExports.Attach(obj, module.NativeExports);
         ManagedLayoutContract.Attach(obj, layouts);
+        // A UNIT FOR A RING -- a kernel's, a module's -- says its layouts by
+        // name (LayoutNames): those of the types it defines, for other images
+        // to bind to, and a module's, those it was compiled against, to bind.
+        if (ring >= 0) LayoutNames.Attach(obj, layouts, made.DefinedLayouts, imports: kernel is not null, wide: longMode);
         if (usesNotes is not null) Corsac.Lang.Lto.UsesNotes.Attach(obj, usesNotes);
         // What the link checks interrupt handlers' calls into other units by.
         if (module.InterruptFacts is { } interruptFacts) Corsac.Lang.Lto.InterruptNotes.Attach(obj, interruptFacts);

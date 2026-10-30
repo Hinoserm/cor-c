@@ -18,7 +18,13 @@ public static class ManagedLayouts
     /// symbols can then be let go before it is optimised and generated,
     /// and the records written into the object at the end.
     /// </summary>
-    public static List<ManagedTypeLayout> Capture(BindResult bound, bool library = true)
+    /// <param name="defined">
+    /// Filled, where given, with the records of the types this unit DEFINES
+    /// -- compiled from its own sources, not read from an index -- and their
+    /// statics: what a unit for a ring says by name (LayoutNames) for other
+    /// images to bind to.
+    /// </param>
+    public static List<ManagedTypeLayout> Capture(BindResult bound, bool library = true, HashSet<string>? defined = null)
     {
         // WHAT THIS UNIT HAS AN OPINION ABOUT. Every type the binder
         // materialised used to be described here, which made the section
@@ -185,11 +191,14 @@ public static class ManagedLayouts
                             + " mods=" + (int)(method.Decl?.Mods ?? Mods.None) + " ("
                             + string.Join(", ", method.Params.Select(p => p.Type + "|" + (p.Type.Symbol?.Key ?? "") + (p.ByRef ? " ref" : "") + (p.ReadOnly ? " in" : ""))) + ")");
                 }
+                bool own = type.Decl is { Elsewhere: false, Specialised: false, SourcePath: not null };
+                if (own) defined?.Add("type:" + type.Key);
                 yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(stream.ToArray()));
                 foreach (FieldSymbol field in type.Fields.Where(field => field.Static && !hidden.Contains(field.Name)))
                 {
                     stream.SetLength(0); stream.Position = 0;
                     TypeName(field.Type); writer.Write(field.Volatile); writer.Write(field.Required);
+                    if (own) defined?.Add("field:" + type.Key + "." + field.Name);
                     yield return new ManagedTypeLayout("field:" + type.Key + "." + field.Name, SHA256.HashData(stream.ToArray()));
                 }
                 foreach (MethodSymbol method in type.Methods.Where(method => method.Decl?.LocalCopy != true && method.TypeParams.Count == 0 && !Private(method)))
