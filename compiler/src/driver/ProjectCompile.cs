@@ -551,15 +551,18 @@ public static class ProjectCompile
             .OrderByDescending(Size).ThenBy(unit => unit.Source, StringComparer.Ordinal).ToArray();
         int next = -1;
         // A FRESH PROCESS FOR WHAT IS LEFT, once this one's heap is past half
-        // its ceiling: a 32-bit child of a build (--claim-dir) compiles unit
-        // after unit in one heap that moves nothing, and every unit leaves
-        // chunks mapped that one survivor holds. Its live heap between units
-        // is the same half gigabyte from the first to the hundred-and-
-        // twentieth; what it has mapped climbed past two and a half, and a
-        // unit's few-megabyte array -- the interrupt facts at the end of its
-        // binding -- found no room under the 3.25 GB ceiling. Spent, it takes
-        // no more units and says so (Recycle); the build starts another in
-        // its place, which takes the units no child has claimed.
+        // of what it may hold (TotalAvailableMemoryBytes: the 32-bit ceiling,
+        // or less under a cap or on a small machine): a 32-bit child of a
+        // build (--claim-dir) compiles unit after unit in one heap that moves
+        // nothing. Measured on the self-hosted compiler (10-30), its live heap
+        // after each unit stayed near 515 MB from the second unit to the
+        // hundred-and-twentieth while what it had mapped climbed past 2.5 GB
+        // -- chunks a few survivors keep, as it seems -- and in the 7d2923cf
+        // native stage nine units' interrupt facts (InterruptNotes.Encode, a
+        // few megabytes at the end of binding) found no room under the 3.25
+        // GB ceiling; each compiled alone in a fresh process. Spent, it takes
+        // no more units and says so (Recycle) where one is left unclaimed;
+        // the build starts another in its place.
         bool spent = false;
         bool Spent()
         {
@@ -635,7 +638,10 @@ public static class ProjectCompile
             + " gen1=" + GC.CollectionCount(1) + " gen2=" + GC.CollectionCount(2) + ", "
             + "allocated=" + GC.GetTotalAllocatedBytes());
         if (failures != 0) return 1;
-        return spent && Volatile.Read(ref next) + 1 < rest.Length ? Recycle : 0;
+        if (!spent) return 0;
+        for (int left = Math.Max(0, Volatile.Read(ref next) + 1); left < rest.Length; left++)
+            if (!File.Exists(Path.Combine(claims!, left.ToString(System.Globalization.CultureInfo.InvariantCulture)))) return Recycle;
+        return 0;
     }
 
     /// <summary>

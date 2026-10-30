@@ -457,8 +457,20 @@ public static class ProjectCommand
                 // ceiling, it took no more units; another takes its place.
                 while (code == ProjectCompile.Recycle)
                 {
+                    int spent = child.Id;
                     child.Dispose();
-                    child = System.Diagnostics.Process.Start(start)!;
+                    try { child = System.Diagnostics.Process.Start(start)!; }
+                    catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException or OutOfMemoryException)
+                    {
+                        lock (gate)
+                        {
+                            ok = false;
+                            Console.Error.WriteLine("corc: the compile-project process for " + which + " could not be started again after pid " + spent + ": " + e.Message
+                                + "; units of it not yet compiled are not built");
+                        }
+                        return;
+                    }
+                    lock (gate) Console.Error.WriteLine("corc: the compile-project process for " + which + " (pid " + spent + ") is spent; pid " + child.Id + " takes its place");
                     child.WaitForExit();
                     code = child.ExitCode;
                 }
