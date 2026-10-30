@@ -12118,7 +12118,7 @@ public sealed partial class Binder
         => (t.IsArray || t.Prim == Prim.String) ? name == "Length"
          : t.Symbol is { } sym && (Reachable(sym, "get_" + name).Any(g => g.Params.Count == 0) || sym.FindField(name) is not null);
 
-    /// <summary>A written type resolved as Peek binds an expression: what it says of a name it cannot find, taken back.</summary>
+    /// <summary>A written type resolved as a look: the errors and warnings it says (a name it cannot find) taken back, nothing else.</summary>
     private Type ResolveQuietly(TypeRef written)
     {
         int errors = _r.Errors.Count, warnings = _r.Warnings.Count;
@@ -16235,7 +16235,7 @@ public sealed partial class Binder
                 {
                     if (elements[i].Prim == Prim.NullLiteral)
                     {
-                                // Every element against its item, as an assignment
+                        // Every element against its item, as an assignment
                         // would be checked: the null that fits its own may
                         // sit beside one that does not, `(s, n) = (null,
                         // "x")`, and that is the error to say. Refused only
@@ -16247,6 +16247,8 @@ public sealed partial class Binder
                             for (int k = 0; k < elements.Count; k++)
                                 CheckAssignable(elements[k], said?[k] ?? want.Fields[k].Type, tup.Items[k], What.Element(k + 1));
                             if (_r.Errors.Count > before) return Type.Error;
+                            Error(tup.Items[i], $"tuple element {i + 1} is null and converts to no item of the tuple '{outerWanted}' it is wanted as");
+                            return Type.Error;
                         }
                         Error(tup.Items[i], $"tuple element {i + 1} is null, and nothing here says what type it should be");
                         return Type.Error;
