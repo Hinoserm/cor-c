@@ -3,14 +3,21 @@ namespace Corsac.Lang.Lto;
 /// <summary>
 /// AN ARCHIVE RECORD'S KEY: what it is -- a function (F), data (D), a shadow
 /// (S), the unit's own record (M) -- and the name of it. Written as one text,
-/// `F:name` (IrArchive, the record's key on disk), and held as the two: the
-/// name is the one string the link holds for it, the symbol's own (both read
-/// interned), where the text was a second copy of every name the link held
-/// -- 66 MB of the compiler's own link at its heap decision.
+/// `F:name` (IrArchive, the record's key on disk), and held as the two: a key
+/// read from an archive holds its name interned, the very string the link's
+/// symbols hold (one made to look a key up need not be), where the text was
+/// a second copy of every name the link held -- 66 MB of the compiler's own
+/// link at its heap decision.
 /// </summary>
 public readonly record struct IrKey(char Kind, string Name) : IComparable<IrKey>
 {
     public const char Function = 'F', Data = 'D', Shadow = 'S', Unit = 'M';
+
+    /// <summary>Whether a kind is one an archive holds.</summary>
+    public static bool IsKind(char kind) => kind is Function or Data or Shadow or Unit;
+
+    /// <summary>Whether a written key is one (`K:name`, a kind an archive holds, a name of its own).</summary>
+    public static bool IsWritten(string text) => text.Length > 2 && text[1] == ':' && IsKind(text[0]);
 
     /// <summary>The unit's own record (M:unit).</summary>
     public static readonly IrKey UnitRecord = new(Unit, "unit");
@@ -20,7 +27,7 @@ public readonly record struct IrKey(char Kind, string Name) : IComparable<IrKey>
 
     /// <summary>A key as written (`F:name`), its name interned as every name the link reads is.</summary>
     public static IrKey Parse(string text)
-        => text.Length > 2 && text[1] == ':' ? new(text[0], string.Intern(text[2..])) : throw new FormatException("Invalid IR key: " + text);
+        => IsWritten(text) ? new(text[0], string.Intern(text[2..])) : throw new FormatException("Invalid IR key: " + text);
 
     /// <summary>As written: the kind, a colon, the name.</summary>
     public override string ToString() => Kind + ":" + Name;

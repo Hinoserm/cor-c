@@ -62,7 +62,7 @@ public sealed class IrArchive
         int bodyBytes = 0;
         foreach (IrArchiveRecord record in records)
         {
-            if (!seen.Add(record.Key) || record.Instructions < 0 || record.Calls.Count > 100000)
+            if (!IrKey.IsWritten(record.Key) || !seen.Add(record.Key) || record.Instructions < 0 || record.Calls.Count > 100000)
                 throw new ElfFormatException("Invalid IR record: " + record.Key);
             WriteName(writer, record.Key); writer.Write(record.Importable); writer.Write(record.Instructions);
             writer.Write(record.Calls.Count);
@@ -314,7 +314,7 @@ public sealed class IrArchive
         if (length < 3 || length > 16384 || length > reader.BaseStream.Length - reader.BaseStream.Position)
             throw new ElfFormatException("Invalid IR key length");
         byte[] bytes = reader.ReadBytes(length);
-        if (bytes.Length != length || bytes[0] >= 0x80 || bytes[1] != (byte)':') throw new ElfFormatException("Invalid IR key");
+        if (bytes.Length != length || !IrKey.IsKind((char)bytes[0]) || bytes[1] != (byte)':') throw new ElfFormatException("Invalid IR key");
         string name = string.Intern(Utf8.GetString(bytes, 2, length - 2));
         if (name.Contains('\0')) throw new ElfFormatException("Invalid IR name");
         return new IrKey((char)bytes[0], name);
@@ -340,8 +340,8 @@ public sealed class IrArchive
 /// a link, held by its inputs (ObjectFile.ArchivePool) until the last of
 /// their archives is read (ObjectLinkCommand): a compile reads its units'
 /// archives one at a time and shares nothing.
-/// Names are interned (IrArchive.ReadName), so a list is hashed by its
-/// strings' identities.
+/// Names are interned (IrArchive.ReadName, ReadKey), so a list is hashed by
+/// its strings' identities.
 /// </summary>
 public sealed class IrArchivePool
 {
