@@ -58,6 +58,8 @@ test -n "$section" || fail "the kernel carries no export table"
 readelf -l -W "$a/kernel" | awk -v s="$section" 'BEGIN { split(s, t, " ") } $1 == "LOAD" { o = strtonum($2); n = strtonum($5); if (t[1] < o + n && t[1] + t[2] > o) bad = 1 } END { exit bad }' \
     || fail "the kernel's export table is loaded"
 if readelf -s -W "$a/kernel" | grep -q '__corsac_build_stamp'; then fail "the kernel carries a build stamp"; fi
+python3 -I "$root/$here/exports.py" "$a/kernel" --identity | grep -qx 'identity ok' \
+    || fail "the kernel's link identity is not its loaded bytes' hash, or its copies differ"
 exports "$a/kernel" > "$work/exports.syms"
 for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver' 't_Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt'; do
     awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' "$work/exports.syms" || fail "the kernel does not export $name"
@@ -339,7 +341,7 @@ test "$status" = 3 && grep -qx 'refused: undefined symbol m_Kernel$Log_Write_1_V
 if "$corc" link "$work/sb16.o" --kernel "$b/kernel" -o "$work/wrong.ko" 2> "$work/wrong-link.log"; then fail "a module calling what the kernel no longer has linked"; fi
 grep -q "'m_Kernel\$Log_Write_1_V\$String' is imported, and neither kernel nor a module this one depends on exports it" "$work/wrong-link.log" \
     || { cat "$work/wrong-link.log"; fail "the wrong link said otherwise"; }
-if "$corc" compile --kernel "$b/kernel" --decl-index "$a/kernel.idx" --assembly Kernel $here/Sb16.cor -o "$work/wrong.ko" 2> "$work/wrong-compile.log"; then
+if "$corc" compile --kernel "$b/kernel" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 $here/Sb16.cor -o "$work/wrong.ko" 2> "$work/wrong-compile.log"; then
     fail "a module compiled against an index its kernel does not answer"
 fi
 grep -q "'m_Kernel\$Log_Write_1_V\$String' is imported" "$work/wrong-compile.log" || { cat "$work/wrong-compile.log"; fail "the wrong compile said otherwise"; }

@@ -6,14 +6,14 @@ namespace Corsac.Lang.Ir;
 /// <summary>
 /// THE FUNCTIONS AN IMAGE OFFERS TO C, by the names C calls them: each
 /// `[UnmanagedCallersOnly(EntryPoint = "...")]` method, as .NET's native AOT
-/// exports them. A section of their own (`.corsac.exports`), each entry the
+/// exports them. A section of their own (`.corsac.unmanaged`), each entry the
 /// export's name and the function's symbol, both NUL-terminated. A Windows
 /// DLL's link makes them its export directory; the section itself goes no
 /// further.
 /// </summary>
 public static class NativeExports
 {
-    public const string SectionName = ".corsac.exports";
+    public const string SectionName = ".corsac.unmanaged";
 
     public static void Attach(ObjectFile obj, IEnumerable<(string Export, string Symbol)> exports)
     {

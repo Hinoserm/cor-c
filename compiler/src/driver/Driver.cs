@@ -227,16 +227,17 @@ public static class Driver
             + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-engine escape|andersen] [--no-rta] [--region-report names] [--unused-report file] [--timings]");
         Console.WriteLine("""
 
-              --exports <file>     a kernel as a library: write its globals to <file>, a
-                                   .dynsym a module links against, and stamp the kernel and
-                                   the file with the hash of --decl-index. The kernel is then
-                                   not closed: modules call into it and derive from its classes
-              --decl-index <idx>   with --exports: the declaration index the kernel's units
-                                   were compiled against; its hash is the build stamp
-              --kernel <exports>   link a module of that kernel: a shared object with no
-                                   runtime of its own, importing from the kernel and from
-                                   the modules named with --link-shared, with the kernel's
-                                   stamp and the units' .corsac.modinfo
+              --exports            a kernel as a library: its globals in .corsac.exports, a
+                                   section of its own file no segment loads, which a module
+                                   links and is loaded against, and its link's identity. The
+                                   kernel is then not closed: modules call into it and derive
+                                   from its classes
+              --keep <names>       with --exports: keep only what the kernel and these, its
+                                   modules' imports, reach
+              --kernel <kernel>    link a module of that kernel: a shared object with no
+                                   runtime of its own, importing from the kernel's
+                                   .corsac.exports and from the modules named with
+                                   --link-shared, with the units' .corsac.modinfo
             """);
         return 0;
     }
@@ -286,11 +287,11 @@ public static class Driver
                                  libraries were found. `/lib` for a disc
               --pic              position-independent code: globals through the GOT
               --link-shared <so> link against a shared object; may be repeated
-              --kernel <exports> compile a kernel module: a freestanding shared object
-                                 with no runtime of its own, against the exports
-                                 `corc link --exports` wrote and the kernel's own
-                                 --decl-index (whose stamp must be the kernel's).
-                                 Implies --shared --freestanding --nostdlib
+              --kernel <kernel>  compile a kernel module: a freestanding shared object
+                                 with no runtime of its own, against the exports of
+                                 a kernel `corc link --exports` linked, and the
+                                 kernel's --decl-index. Every name it imports must be
+                                 the kernel's. Implies --shared --freestanding --nostdlib
               --ring <n>         the ring being compiled, 0 to 3: a class marked
                                  [Ring0]..[Ring3] for another ring is left out
                                  before binding; an unmarked one is every ring's.
@@ -1187,12 +1188,13 @@ public static class Driver
         // A MODULE OF SEVERAL UNITS (--module-index): each unit is compiled
         // against the module's own index, made on the kernel's (corc index
         // --on), which answers for the kernel's declarations from the
-        // kernel's index and for the module's other units from its own. The
-        // stamp is still the kernel index's: the module index must have been
-        // made on the very index --decl-index names, the one checked above.
+        // kernel's index and for the module's other units from its own. It
+        // must have been made on the very index --decl-index names (below).
         string? moduleIndex = Value(args, "--module-index");
         if (moduleIndex is not null && kernel is null)
             return Fail("--module-index is a kernel module's own index, made on its kernel's: it goes with --kernel");
+        if (moduleIndex is not null && declarationIndex is null)
+            return Fail("--module-index is made on the kernel's index: name that with --decl-index");
         using IndexedDeclarations? declarations = declarationIndex is null ? null
             : Session is not null ? new IndexedDeclarations(Session, files)
             : new IndexedDeclarations(moduleIndex ?? declarationIndex, Value(args, "--assembly")!, files);

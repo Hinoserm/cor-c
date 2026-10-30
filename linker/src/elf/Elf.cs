@@ -123,7 +123,7 @@ internal static class Elf
     /// And where a kernel's export table (KernelExports) holds the native
     /// contract and the processor its units were built for, and how many
     /// bytes: what a module's link holds the module's units to. A loader
-    /// knows none of them and passes them by.
+    /// needs none of them and passes them by.
     /// </summary>
     public const int DtCorsacAbi = 0x60000C03, DtCorsacAbiSz = 0x60000C04, DtCorsacCpu = 0x60000C05, DtCorsacCpuSz = 0x60000C06;
     /// <summary>

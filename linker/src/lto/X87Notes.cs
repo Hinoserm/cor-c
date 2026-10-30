@@ -183,24 +183,6 @@ public static class X87Notes
     }
 
     /// <summary>
-    /// What a fact says to another image's link (Check), not where it was
-    /// written: whether it floats, escapes or is entered by itself, and
-    /// what it calls, inside a block or not ("Y:", KernelExports.WithFacts).
-    /// </summary>
-    public static byte[] Said(Fact f)
-    {
-        using MemoryStream stream = new();
-        using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
-        {
-            writer.Write(f.Name); writer.Write(f.Floats); writer.Write(f.Escapes); writer.Write(f.Entered);
-            Call[] calls = f.Calls.OrderBy(c => c.Callee, StringComparer.Ordinal).ThenBy(c => c.Inside).ToArray();
-            writer.Write(calls.Length);
-            foreach (Call call in calls) { writer.Write(call.Callee); writer.Write(call.Inside); }
-        }
-        return System.Security.Cryptography.SHA256.HashData(stream.ToArray())[..16];
-    }
-
-    /// <summary>
     /// The facts an image's link wrote beside it (WriteBeside). Refused where
     /// there are none and `needed` (this link's own units carry facts, so it
     /// judges calls into the image): an image linked without them -- by an

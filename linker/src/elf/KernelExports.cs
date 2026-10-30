@@ -300,9 +300,12 @@ public sealed class KernelExports
     }
 
     /// <summary>
-    /// The written kernel's identity, made and put where __corsac_link_id is:
-    /// the SHA-256 of what its PT_LOAD segments take from the file, in their
-    /// order, the identity's own bytes nought as the link left them.
+    /// The written kernel's identity, made and put where __corsac_link_id is
+    /// and in its .corsac.exports (DT_CORSAC_LINKID): the SHA-256 of what its
+    /// PT_LOAD segments take from the file, in their order, the identity's
+    /// own bytes nought as the link left them. Made last, the file's header
+    /// -- in the first segment -- as AddTo left it: a loader hashing the
+    /// file's segments, those 32 bytes nought, makes the same.
     /// </summary>
     public static byte[] StampLinkId(string imagePath)
     {
@@ -329,6 +332,20 @@ public sealed class KernelExports
         if (at < 0) throw new ElfFormatException(imagePath + ": " + LinkIdSymbol + " is in no loaded segment");
         byte[] made = hash.GetHashAndReset();
         made.CopyTo(bytes, (int)at);
+        // And the table's copy, which no segment loads: the hash is the same.
+        SectionView table = Sections(bytes, imagePath).Find(s => s.Name == SectionName)
+            ?? throw new ElfFormatException(imagePath + ": no " + SectionName + " to stamp");
+        int word = wide ? 8 : 4;
+        long field = -1;
+        for (long d = table.Offset; d + 2 * word <= table.Offset + table.Size; d += 2 * word)
+        {
+            long tag = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan((int)d)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan((int)d));
+            if (tag == Elf.DtNull) break;
+            if (tag == Elf.DtCorsacLinkId)
+                field = table.Offset + (wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan((int)d + word)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan((int)d + word)));
+        }
+        if (field < table.Offset || field + LinkIdBytes > table.Offset + table.Size) throw new ElfFormatException(imagePath + ": " + SectionName + " has no room for the link's identity");
+        made.CopyTo(bytes, (int)field);
         File.WriteAllBytes(imagePath, bytes);
         return made;
     }
@@ -401,10 +418,12 @@ public sealed class KernelExports
         int shent = wide ? Elf.SectionHeader64Size : Elf.SectionHeaderSize;
         int shnum = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 60 : 48));
         int shstrndx = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 62 : 50));
+        if (shoff < 0 || shoff > bytes.Length || (long)shnum * shent > bytes.Length - shoff)
+            throw new ElfFormatException(what + ": section headers run past the end of the file");
         List<(uint Name, uint Type, long Offset, long Size, uint Link)> raw = new();
         for (int i = 0; i < shnum && shoff != 0; i++)
         {
-            int at = checked((int)shoff + i * shent);
+            int at = (int)shoff + i * shent;
             if (at + shent > bytes.Length) throw new ElfFormatException(what + ": section headers run past the end of the file");
             uint name = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(at));
             uint type = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(at + 4));
@@ -419,7 +438,8 @@ public sealed class KernelExports
         if (names.Offset + names.Size > bytes.Length) throw new ElfFormatException(what + ": the section name table runs past the end of the file");
         foreach (var s in raw)
         {
-            if (s.Type != Elf.ShtNoBits && s.Offset + s.Size > bytes.Length) throw new ElfFormatException(what + ": a section runs past the end of the file");
+            if (s.Type != Elf.ShtNoBits && (s.Offset < 0 || s.Size < 0 || s.Offset > bytes.Length || s.Size > bytes.Length - s.Offset))
+                throw new ElfFormatException(what + ": a section runs past the end of the file");
             sections.Add(new SectionView(StringTable.Read(bytes.AsSpan((int)names.Offset, (int)names.Size), s.Name, ".shstrtab"), s.Type, s.Offset, s.Size, s.Link));
         }
         return sections;

@@ -264,7 +264,7 @@ public sealed class Module
 
     /// <summary>
     /// What a DLL offers C: each export's name and the function's symbol
-    /// (Lowering.RootExports). The object records them (.corsac.exports) and
+    /// (Lowering.RootExports). The object records them (.corsac.unmanaged) and
     /// the link makes them the export directory.
     /// </summary>
     public List<(string Export, string Symbol)> NativeExports { get; } = new();

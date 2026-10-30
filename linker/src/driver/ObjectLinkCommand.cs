@@ -326,12 +326,12 @@ public static class ObjectLinkCommand
         LinkTimings.Phase("layout and write");
         if (exports)
         {
-            // In the kernel's own file, a section nothing loads (KernelExports),
-            // with the identity the written kernel holds.
-            byte[] linkId = KernelExports.StampLinkId(output);
+            // In the kernel's own file, a section nothing loads (KernelExports);
+            // then, the file's header final, the identity, in both places.
             List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
-            byte[] table = KernelExports.Table(globals, kernelAbi, kernelCpu, linkId, longMode);
+            byte[] table = KernelExports.Table(globals, kernelAbi, kernelCpu, new byte[KernelExports.LinkIdBytes], longMode);
             KernelExports.AddTo(output, table);
+            KernelExports.StampLinkId(output);
             Console.Error.WriteLine($"{output}: {globals.Count} kernel exports, {KernelExports.SectionName} {table.Length} bytes");
         }
         if (!OperatingSystem.IsWindows())

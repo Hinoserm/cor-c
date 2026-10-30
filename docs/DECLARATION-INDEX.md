@@ -193,7 +193,7 @@ is no longer the one recorded, and answers every exact and prefix lookup from
 BASE first and then from its own records -- the kernel's declarations through
 the kernel's index, the module's through the module's. Writing it refuses a
 type whose `T:` key BASE already holds: the two would read as fragments of one
-partial type. The build stamp a module carries is still BASE's hash
-(`--decl-index` names BASE, `--module-index` the index made on it), and the
+partial type. A module's compile names BASE with `--decl-index` and the
+index made on it with `--module-index`, and the
 interface families BASE lists are the kernel's; the rest are the module's,
 numbered in a tier of their own above the kernel's classes (Binder).

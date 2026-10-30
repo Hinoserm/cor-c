@@ -1,12 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
-using Corsac.Lang.Elf;
 
 namespace Corsac.Lang.Metadata;
 
 /// <summary>
-/// WHAT A KERNEL'S DECLARATION INDEX SAYS UNDER ONE NAME, in 16 bytes
-/// (DeclarationReads, in the linker, keeps the tables): the per-key form of
+/// WHAT A DECLARATION INDEX SAYS UNDER ONE NAME, in 16 bytes: the per-key form of
 /// the build stamp (DeclarationStamp), by the same rule -- a type's records
 /// by the hash the index keeps of their tokens with the bodies left out, any
 /// other record by its payload, which names keys and counts -- so it moves
@@ -18,6 +16,11 @@ namespace Corsac.Lang.Metadata;
 /// </summary>
 public static class DeclarationFingerprint
 {
+    public const int HashBytes = 16;
+
+    /// <summary>The answer of a name the index has nothing under: SHA-256 of nothing, its first 16 bytes.</summary>
+    public static readonly byte[] Empty = Convert.FromHexString("e3b0c44298fc1c149afbf4c8996fb924");
+
     /// <summary>Whether a lookup's key is an interface plan's, answered by every record under it.</summary>
     public static bool IsPlan(string key) => (key.StartsWith("I:", StringComparison.Ordinal) || key.StartsWith("X:", StringComparison.Ordinal)) && key.EndsWith('\n');
 
@@ -35,7 +38,7 @@ public static class DeclarationFingerprint
     /// </summary>
     public static string MemberKey(string typeKey, string name) => "M:" + typeKey[2..] + "\n" + name;
 
-    /// <summary>What <paramref name="index"/> says under <paramref name="key"/>: <see cref="DeclarationReads.Empty"/> where nothing.</summary>
+    /// <summary>What <paramref name="index"/> says under <paramref name="key"/>: <see cref="Empty"/> where nothing.</summary>
     public static byte[] Of(DeclarationIndex index, string key)
     {
         if (key.StartsWith("H:", StringComparison.Ordinal) || key.StartsWith("M:", StringComparison.Ordinal)) return OfType(index, key);
@@ -50,7 +53,7 @@ public static class DeclarationFingerprint
             if (plan) Append(hash, Encoding.UTF8.GetBytes(record.Key));
             Append(hash, Said(record));
         }
-        return hash.GetHashAndReset()[..DeclarationReads.HashBytes];
+        return hash.GetHashAndReset()[..HashBytes];
     }
 
     /// <summary>A header key's answer, or a member name key's (HeaderKey, MemberKey).</summary>
@@ -69,7 +72,7 @@ public static class DeclarationFingerprint
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         bool said = false;
         foreach (SourceDeclaration declared in records) { Append(hash, declared.HeaderHash); said = true; }
-        return said ? hash.GetHashAndReset()[..DeclarationReads.HashBytes] : DeclarationReads.Empty;
+        return said ? hash.GetHashAndReset()[..HashBytes] : Empty;
     }
 
     /// <summary>A member name's answer of a type's records: its name once for each record that has it, or nothing.</summary>
@@ -83,7 +86,7 @@ public static class DeclarationFingerprint
             Append(hash, Encoding.UTF8.GetBytes(name));
             said = true;
         }
-        return said ? hash.GetHashAndReset()[..DeclarationReads.HashBytes] : DeclarationReads.Empty;
+        return said ? hash.GetHashAndReset()[..HashBytes] : Empty;
     }
 
     /// <summary>Whether a sorted list of member names (SourceDeclaration.MemberNames) holds one.</summary>

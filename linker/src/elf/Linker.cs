@@ -709,8 +709,8 @@ public static partial class Linker
     /// ManagedLayoutContract.Validate, X86CodeGenerationContract.ValidateTarget).
     /// Every link checks them before it lays anything out, and that is all
     /// they are for: nothing reads them from a linked image -- a module's
-    /// link takes the kernel's from the exports file the kernel's link wrote
-    /// (KernelExports.Write) -- and one copy per input laid end to end is no
+    /// link takes the kernel's from the kernel's .corsac.exports
+    /// (KernelExports.Table) -- and one copy per input laid end to end is no
     /// contract at all. The layouts alone were most of a small program's file.
     /// </summary>
     public static bool ConsumedContract(string sectionName)
