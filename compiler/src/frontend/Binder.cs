@@ -7681,14 +7681,17 @@ public sealed partial class Binder
                     {
                         Binding into = taken.Names[i];
                         bool bare = literal.Items[i] is LiteralExpr { Kind: Lit.Null } or DefaultExpr { Type.Name.Length: 0 };
-                        Type? slot = into.Type is { Name: not "var" } written ? Resolve(written, _thisType)
+                        // A written type resolved as a look (ResolveQuietly):
+                        // what it cannot find, the declaration itself says.
+                        Type? slot = into.Type is { Name: not "var" } written ? ResolveQuietly(written)
                             : into is { Type: null, Target: Expr place } && Peek(place) is { IsError: false } known ? DeclaredTypeOf(place) ?? known
                             : bare ? null : Peek(literal.Items[i]);
-                        if (slot is null || slot.IsError) slots = null;
+                        if (slot is null || slot.IsError || slot.Prim == Prim.NullLiteral) slots = null;
                         else slots.Add(slot);
                     }
-                    if (slots is not null)
-                        receivers = new Type { Prim = Prim.Void, Symbol = TupleType(slots), UseArgs = slots };
+                    Type? made = slots is null ? null : new Type { Prim = Prim.Void, Symbol = TupleType(slots), UseArgs = slots };
+                    // Held as it can be written down, or not at all.
+                    if (made is not null && RefOf(made) is not null) receivers = made;
                 }
                 Type had = receivers ?? Peek(taken.Value);
                 string held = $"$taken${_iterations++}";
@@ -12115,6 +12118,16 @@ public sealed partial class Binder
         => (t.IsArray || t.Prim == Prim.String) ? name == "Length"
          : t.Symbol is { } sym && (Reachable(sym, "get_" + name).Any(g => g.Params.Count == 0) || sym.FindField(name) is not null);
 
+    /// <summary>A written type resolved as Peek binds an expression: what it says of a name it cannot find, taken back.</summary>
+    private Type ResolveQuietly(TypeRef written)
+    {
+        int errors = _r.Errors.Count, warnings = _r.Warnings.Count;
+        Type made = Resolve(written, _thisType);
+        _r.Errors.RemoveRange(errors, _r.Errors.Count - errors);
+        _r.Warnings.RemoveRange(warnings, _r.Warnings.Count - warnings);
+        return made;
+    }
+
     private Type Peek(Expr e)
     {
         int errors = _r.Errors.Count;
@@ -16222,11 +16235,20 @@ public sealed partial class Binder
                 {
                     if (elements[i].Prim == Prim.NullLiteral)
                     {
+                                // Every element against its item, as an assignment
+                        // would be checked: the null that fits its own may
+                        // sit beside one that does not, `(s, n) = (null,
+                        // "x")`, and that is the error to say. Refused only
+                        // where one was said; never silently.
                         if (want is not null)
-                            CheckAssignable(elements[i], outerWanted?.UseArgs is { } said && said.Count == elements.Count ? said[i] : want.Fields[i].Type,
-                                tup.Items[i], What.Element(i + 1));
-                        else
-                            Error(tup.Items[i], $"tuple element {i + 1} is null, and nothing here says what type it should be");
+                        {
+                            int before = _r.Errors.Count;
+                            IReadOnlyList<Type>? said = outerWanted?.UseArgs is { } items && items.Count == elements.Count ? items : null;
+                            for (int k = 0; k < elements.Count; k++)
+                                CheckAssignable(elements[k], said?[k] ?? want.Fields[k].Type, tup.Items[k], What.Element(k + 1));
+                            if (_r.Errors.Count > before) return Type.Error;
+                        }
+                        Error(tup.Items[i], $"tuple element {i + 1} is null, and nothing here says what type it should be");
                         return Type.Error;
                     }
                 }

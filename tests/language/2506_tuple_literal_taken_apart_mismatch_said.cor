@@ -1,0 +1,16 @@
+// test: a tuple literal taken apart says the item that converts to nothing
+// expect-compile-error: element 2: cannot convert 'string' to 'int'
+//
+// `(s, n) = (null, "x")`: the null converts to the string s, the "x" to no
+// int n. The error is the "x"'s, as the assignment n = "x" would say it --
+// not the null's, which has a type here, and never no error at all.
+
+static class Program
+{
+    static int Main()
+    {
+        string s = ""; int n = 0;
+        (s, n) = (null, "x");
+        return n;
+    }
+}

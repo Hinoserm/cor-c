@@ -1,8 +1,8 @@
 // test: a non-nullable tuple item, array element or deconstructed place is warned of a null
 // expect-exit: 0
-// expect-compile-warning: warning CS8625: assignment: 'Backing' is not nullable
-// expect-compile-warning: warning CS8625: assignment: 'Backing' is not nullable
-// expect-compile-warning: warning CS8625
+// expect-compile-warning: (24,19): warning CS8625: assignment: 'Backing' is not nullable
+// expect-compile-warning: (26,18): warning CS8625: assignment: 'Backing' is not nullable
+// expect-compile-warning: (29,19): warning CS8625: element 1: 'string' is not nullable
 // expect-output:
 // done
 //
