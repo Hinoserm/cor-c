@@ -10929,7 +10929,16 @@ public sealed partial class Binder
                 continue;
             }
 
-            if (!Unify(m, m.Params[i].Type, args[i], bound))
+            // A REF OR OUT ARGUMENT IS ITS VARIABLE, as declared (C# infers
+            // from the variable's type, not its state here): `ref _backing`
+            // after `_backing is not { }` returned is still a `Backing?`, and
+            // Volatile.Write(ref _backing, null) is Write<Backing?>.
+            Type given = i < written.Count && written[i] is RefArgExpr { Target: var target }
+                && _r.Resolved.TryGetValue(target, out Sym? variable)
+                && (variable switch { LocalSym local => local.Type, ParamSym parameter => parameter.Type, FieldSym field => field.Field.Type, _ => null }) is Type declared
+                && declared.Nullable && !args[i].Nullable && declared.AsNonNullable().Equals(args[i])
+                ? declared : args[i];
+            if (!Unify(m, m.Params[i].Type, given, bound))
             {
                 return false;
             }

@@ -1,0 +1,38 @@
+// test: a ref argument infers from its variable as declared, not as narrowed
+// expect-exit: 0
+// expect-output:
+// True
+//
+// C# infers a generic method's type argument from a ref argument's variable
+// as declared: after `_backing is not { } held` returned, `_backing` is known
+// not null, but `ref _backing` is still a `Backing?`, and
+// Volatile.Write(ref _backing, null) is Write<Backing?>. Inferred from the
+// narrowed state it was Write<Backing>, and the null refused (the linker's
+// own Section.Load).
+
+#nullable enable
+using System;
+using System.Threading;
+
+sealed class Backing { public int N; }
+
+sealed class Holder
+{
+    Backing? _backing = new Backing();
+    public void Fill(int n) { Volatile.Write(ref _backing, n > 0 ? new Backing() : null); }
+    public void Clear() { if (_backing is not { } held) return; held.N++; Volatile.Write(ref _backing, null); }
+    public void Swap() { Interlocked.Exchange(ref _backing, null); }
+    public static void Set<T>(ref T at, T value) { at = value; }
+    public void Mine() { Set(ref _backing, null); }
+    public bool Empty => _backing is null;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Holder h = new(); h.Fill(1); h.Clear(); h.Swap(); h.Mine();
+        Console.WriteLine(h.Empty);
+        return 0;
+    }
+}
