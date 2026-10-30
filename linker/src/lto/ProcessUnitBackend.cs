@@ -114,20 +114,34 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
             // LEFT IN ITS FILE, as the link's inputs are: the regenerated
             // unit's code, data and notes stay there until the layout reads
             // them -- held in memory, every regenerated unit stayed from here
-            // to the end. The file is kept until this backend is let go
-            // (Dispose), its path the object's own (SourcePath).
+            // to the end. Read through the handle the object was parsed by
+            // (Section.Backing), which outlives the file's name: Dispose
+            // removes the names when this backend's units are done, before
+            // the layout, and the disc the bytes take is freed with the
+            // handles. The work directory is TMPDIR's, a disc's, never a
+            // memory file system's, or the heap saved here is spent there.
             return ElfReader.ReadObjectFile(output, leaveInFile: true);
         }
         // WHICH UNIT, AND HOW THE BACKEND ENDED: a backend that died left
         // only "Broken pipe" behind, from the next request written to it.
         catch (IOException e) when (!Volatile.Read(ref timedOut))
         {
+            Forget(output);
             string how = process.HasExited ? "exited with " + process.ExitCode : "still running";
             throw new IOException("compiler backend failed on " + (original.SourcePath ?? input) + " (" + how + "): " + e.Message, e);
         }
         // The output only if it was never read: a read one is the object's file now.
-        catch { File.Delete(output); throw; }
+        catch { Forget(output); throw; }
         finally { if (!own) File.Delete(input); }
+    }
+
+    // A file's name removed, or left for the directory's removal: never in
+    // the way of the error that asked for it.
+    private static void Forget(string path)
+    {
+        try { File.Delete(path); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     public void Dispose()
@@ -138,7 +152,12 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         if (!process.WaitForExit(2000)) { process.Kill(entireProcessTree: true); process.WaitForExit(); }
         reader.Dispose(); process.Dispose();
         // Only this instance's exact private directory; no recursive deletion.
-        foreach (string file in Directory.EnumerateFiles(work)) File.Delete(file);
-        Directory.Delete(work);
+        // A regenerated unit still read through its handle keeps its file on
+        // Windows until the handle closes (FileShare.Delete leaves it pending),
+        // and the directory with it: left for TMPDIR's own clearing then.
+        foreach (string file in Directory.EnumerateFiles(work)) Forget(file);
+        try { Directory.Delete(work); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 }
