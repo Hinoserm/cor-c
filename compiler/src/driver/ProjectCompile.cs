@@ -550,14 +550,32 @@ public static class ProjectCompile
         Unit[] rest = units.Where(unit => !unit.Entry || !dynamic)
             .OrderByDescending(Size).ThenBy(unit => unit.Source, StringComparer.Ordinal).ToArray();
         int next = -1;
+        // A FRESH PROCESS FOR WHAT IS LEFT, once this one's heap is past half
+        // its ceiling: a 32-bit child of a build (--claim-dir) compiles unit
+        // after unit in one heap that moves nothing, and every unit leaves
+        // chunks mapped that one survivor holds. Its live heap between units
+        // is the same half gigabyte from the first to the hundred-and-
+        // twentieth; what it has mapped climbed past two and a half, and a
+        // unit's few-megabyte array -- the interrupt facts at the end of its
+        // binding -- found no room under the 3.25 GB ceiling. Spent, it takes
+        // no more units and says so (Recycle); the build starts another in
+        // its place, which takes the units no child has claimed.
+        bool spent = false;
+        bool Spent()
+        {
+            if (claims is null || Environment.Is64BitProcess) return false;
+            GCMemoryInfo info = GC.GetGCMemoryInfo();
+            return info.HeapSizeBytes > info.TotalAvailableMemoryBytes / 2;
+        }
         void Worker()
         {
-            while (true)
+            while (!Volatile.Read(ref spent))
             {
                 int i = Interlocked.Increment(ref next);
                 if (i >= rest.Length) return;
                 if (!Claim(i.ToString(System.Globalization.CultureInfo.InvariantCulture))) continue;
                 if (Gated(rest[i]) != 0) Interlocked.Increment(ref failures);
+                if (Spent()) Volatile.Write(ref spent, true);
             }
         }
         int threads = Math.Min(limit, rest.Length);
@@ -616,8 +634,15 @@ public static class ProjectCompile
             + "gc pause=" + (long)GC.GetTotalPauseDuration().TotalMilliseconds + "ms gen0=" + GC.CollectionCount(0)
             + " gen1=" + GC.CollectionCount(1) + " gen2=" + GC.CollectionCount(2) + ", "
             + "allocated=" + GC.GetTotalAllocatedBytes());
-        return failures == 0 ? 0 : 1;
+        if (failures != 0) return 1;
+        return spent && Volatile.Read(ref next) + 1 < rest.Length ? Recycle : 0;
     }
+
+    /// <summary>
+    /// What a child of a build (--claim-dir) answers when its heap is spent
+    /// and units are left unclaimed: start another in its place (ProjectCommand).
+    /// </summary>
+    public const int Recycle = 75;
 
     // ---- calls between units inside a kept state -------------------------------------
     //

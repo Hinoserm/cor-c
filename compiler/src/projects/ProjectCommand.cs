@@ -412,7 +412,7 @@ public static class ProjectCommand
         Directory.CreateDirectory(claims);
         // One worker each (Processes): a 32-bit space holds one large unit.
         int each = 1;
-        List<(System.Diagnostics.Process Child, string Share)> children = new();
+        List<(System.Diagnostics.Process Child, string Share, System.Diagnostics.ProcessStartInfo Start)> children = new();
         for (int i = 0; i < processes; i++)
         {
             System.Diagnostics.ProcessStartInfo start = new() { FileName = Environment.ProcessPath!, UseShellExecute = false };
@@ -436,7 +436,7 @@ public static class ProjectCommand
             start.ArgumentList.Add("--claim-dir"); start.ArgumentList.Add(claims);
             start.ArgumentList.Add("--jobs"); start.ArgumentList.Add(each.ToString());
             foreach (string option in options) start.ArgumentList.Add(option);
-            children.Add((System.Diagnostics.Process.Start(start)!, share + " #" + i));
+            children.Add((System.Diagnostics.Process.Start(start)!, share + " #" + i, start));
         }
         // EACH ONE WATCHED ON ITS OWN, and a failure said the moment it
         // happens. Waited on in turn, a child killed by a signal -- which
@@ -446,12 +446,22 @@ public static class ProjectCommand
         bool ok = true;
         object gate = new();
         List<Thread> waits = new();
-        foreach ((System.Diagnostics.Process child, string which) in children)
+        foreach ((System.Diagnostics.Process first, string which, System.Diagnostics.ProcessStartInfo start) in children)
         {
             Thread wait = new(() =>
             {
+                System.Diagnostics.Process child = first;
                 child.WaitForExit();
                 int code = child.ExitCode;
+                // SPENT (ProjectCompile.Recycle): its heap past half its
+                // ceiling, it took no more units; another takes its place.
+                while (code == ProjectCompile.Recycle)
+                {
+                    child.Dispose();
+                    child = System.Diagnostics.Process.Start(start)!;
+                    child.WaitForExit();
+                    code = child.ExitCode;
+                }
                 if (code == 0) return;
                 lock (gate)
                 {
