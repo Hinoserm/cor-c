@@ -49,23 +49,23 @@ readelf -s -W "$a/Shade.o" | awk '$7 == "UND" { print $8 }' | grep -q 'Pixels_Da
 if grep -q "^inside facts round\|rebuilt:" "$a/again.log"; then grep "inside facts\|rebuilt:" "$a/again.log"; fail "a build with nothing changed compiled again"; fi
 objects=$(cut -f2 "$a/units.tsv" | tr '\n' ' ')
 # shellcheck disable=SC2086
-"$corc" link $objects -o "$a/kernel" --exports "$a/kernel.exports" --decl-index "$a/kernel.idx" $cpu 2> "$a/link.log" \
+"$corc" link $objects -o "$a/kernel" --exports $cpu 2> "$a/link.log" \
     || { cat "$a/link.log"; fail "kernel link"; }
 
 # THE KERNEL EXPORTS THE ROUTINE AND ITS COPY that runs inside.
-readelf --dyn-syms -W "$a/kernel.exports" | awk '$8 != "" { print $8 }' > "$work/exported"
+python3 -I "$root/$here/exports.py" "$a/kernel" | awk '{ print $1 }' > "$work/exported"
 routine=$(grep -E '^m_Kernel\$Pixels_Brighten_' "$work/exported" | grep -v '\$inside$' | head -1)
 test -n "$routine" || fail "the kernel does not export Pixels.Brighten"
 grep -qxF "$routine\$inside" "$work/exported" || fail "the kernel does not export Pixels.Brighten's \$inside copy"
 
 # THE MODULE KEEPS THE STATE ROUND ITS LOOP, and calls the copy.
 # shellcheck disable=SC2086
-"$corc" compile --kernel "$a/kernel.exports" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 $cpu --packed-report \
+"$corc" compile --kernel "$a/kernel" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 $cpu --packed-report \
     $here/Blit.cor --obj -o "$work/blit.o" 2> "$work/blit.log" || { cat "$work/blit.log"; fail "module object"; }
 grep -qF "packed: 'Blitter.Bind(Int32 port)' keeps the processor's state (calls 'Pixels.Brighten' in a loop)" "$work/blit.log" \
     || { cat "$work/blit.log"; fail "the module's loop does not keep the state for the kernel's packed routine"; }
 # shellcheck disable=SC2086
-"$corc" link "$work/blit.o" --kernel "$a/kernel.exports" $cpu -o "$work/blit.ko" 2> "$work/blit-link.log" \
+"$corc" link "$work/blit.o" --kernel "$a/kernel" $cpu -o "$work/blit.ko" 2> "$work/blit-link.log" \
     || { cat "$work/blit-link.log"; fail "module link"; }
 readelf --dyn-syms -W "$work/blit.ko" | awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > "$work/imports"
 grep -qxF "$routine\$inside" "$work/imports" || { cat "$work/imports"; fail "the module does not call the routine's \$inside copy"; }
@@ -79,18 +79,17 @@ grep -qx 'blit 11732' "$work/run.out" && grep -qx 'shade 1520' "$work/run.out" &
 # the copy, whose callers there are none of in the kernel. The module's
 # link takes the routine itself, which keeps the state of its own.
 mkdir -p "$work/pruned"
-# What the module's object names and what its link imported -- small
-# functions it carried from the open kernel name theirs -- but the copy.
+# What the module's object names and what its link imported, but the copy.
 { readelf -s -W "$work/blit.o" | awk '$7 == "UND" && $8 != "" { print $8 }'; cat "$work/imports"; echo "$routine"; } \
     | grep -vxF "$routine\$inside" | sort -u > "$work/pruned/keep"
 # shellcheck disable=SC2086
-"$corc" link $objects -o "$work/pruned/kernel" --exports "$work/pruned/kernel.exports" --decl-index "$a/kernel.idx" --keep "$work/pruned/keep" $cpu \
+"$corc" link $objects -o "$work/pruned/kernel" --exports --keep "$work/pruned/keep" $cpu \
     2> "$work/pruned/link.log" || { cat "$work/pruned/link.log"; fail "the kernel did not link with --keep"; }
-if readelf --dyn-syms -W "$work/pruned/kernel.exports" | awk '$8 != "" { print $8 }' | grep -qxF "$routine\$inside"; then
+if python3 -I "$root/$here/exports.py" "$work/pruned/kernel" | awk '{ print $1 }' | grep -qxF "$routine\$inside"; then
     fail "the pruned kernel kept the copy nothing of its own calls"
 fi
 # shellcheck disable=SC2086
-"$corc" link "$work/blit.o" --kernel "$work/pruned/kernel.exports" $cpu -o "$work/pruned/blit.ko" 2> "$work/pruned/blit-link.log" \
+"$corc" link "$work/blit.o" --kernel "$work/pruned/kernel" $cpu -o "$work/pruned/blit.ko" 2> "$work/pruned/blit-link.log" \
     || { cat "$work/pruned/blit-link.log"; fail "the module did not link against the kernel without the copy"; }
 readelf --dyn-syms -W "$work/pruned/blit.ko" | awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > "$work/pruned/imports"
 grep -qxF "$routine" "$work/pruned/imports" || { cat "$work/pruned/imports"; fail "the module does not call the routine itself"; }

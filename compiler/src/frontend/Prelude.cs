@@ -1073,12 +1073,11 @@ public static class Prelude
             public static string AsString(object x) { return ""; }
             public static nuint DataStart() { return 0; }
             public static nuint DataEnd() { return 0; }
-            // THE KERNEL'S BUILD STAMP: the address of the thirty-two bytes
-            // `corc link --exports` writes into a kernel, the hash of the
-            // declarations it was compiled against. A module's .corsac.stamp
-            // must be the same bytes to be loaded. Only in an image linked so,
-            // and in a module, where the name is the kernel's.
-            public static nuint BuildStamp() { return 0; }
+            // THE KERNEL'S LINK IDENTITY: the address of the thirty-two bytes
+            // `corc link --exports` writes into a kernel, the hash of its
+            // loaded image, which its file's export table holds too. Only in
+            // a kernel linked so.
+            public static nuint LinkId() { return 0; }
 
         }
 

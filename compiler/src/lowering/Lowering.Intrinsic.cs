@@ -770,8 +770,8 @@ public sealed partial class Lowering
                 return Fit(_e.Address("__data_start"), returns);
             case "DataEnd":
                 return Fit(_e.Address("_end"), returns);
-            case "BuildStamp":
-                return Fit(_e.Address(Corsac.Lang.Elf.KernelExports.StampSymbol), returns);
+            case "LinkId":
+                return Fit(_e.Address(Corsac.Lang.Elf.KernelExports.LinkIdSymbol), returns);
             case "KernelSyscalls":
                 // Whether this compile's Sys.Syscall is the kernel's own
                 // function (--kernel-syscalls): a constant, its tests folded.

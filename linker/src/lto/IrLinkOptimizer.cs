@@ -23,8 +23,7 @@ public static class IrLinkOptimizer
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
         string? regionReport = null, bool madeOnly = false, bool openTypes = false, string? reachableFrom = null,
-        IEnumerable<string>? keep = null, bool moduleOfKernel = false, IReadOnlyList<HeapRecords?>? withoutCollector = null,
-        IrArchive? kernelBodies = null)
+        IEnumerable<string>? keep = null, bool moduleOfKernel = false, IReadOnlyList<HeapRecords?>? withoutCollector = null)
     {
         // THE SECOND MAKING OF A PROGRAM THAT NEEDS NO COLLECTOR (below,
         // HeapDecision): `withoutCollector` holds each input's records as
@@ -330,20 +329,15 @@ public static class IrLinkOptimizer
             // Not where stores go through the store-sequence stubs, which call the barriers whatever the program needs.
             && !owners.ContainsKey(RuntimeAbi.RefStore);
         List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<string>? Retained, HashSet<string>? Read)> plans = new();
-        // Where a call's body is: the unit of this link that defines it, or --
-        // a module's link -- the kernel's small functions in its exports
-        // (KernelExports.SmallBodies), for a call into the kernel no unit here
-        // answers.
+        // Where a call's body is: the unit of this link that defines it. Never
+        // the kernel's, for a module: a body copied across the boundary would
+        // bind to nothing when the kernel changes, and the call is a name.
         bool Provider(string call, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IrArchive? provider, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IrArchiveEntry? body)
         {
-            if (owners.TryGetValue(call, out ObjectFile? owner))
-            {
-                body = null;
-                return archives.TryGetValue(owner, out provider) && provider.Entries.TryGetValue("F:" + call, out body);
-            }
-            provider = kernelBodies;
             body = null;
-            return provider is not null && provider.Entries.TryGetValue("F:" + call, out body);
+            provider = null;
+            return owners.TryGetValue(call, out ObjectFile? owner)
+                && archives.TryGetValue(owner, out provider) && provider.Entries.TryGetValue("F:" + call, out body);
         }
         if (enabled)
             for (int index = 0; index < inputs.Count; index++)

@@ -119,6 +119,19 @@ internal static class Elf
     /// </summary>
     public const int DtCorsacChecksum = 0x60000C01;
     public const int DtCorsacPrebound = 0x60000C02;
+    /// <summary>
+    /// And where a kernel's export table (KernelExports) holds the native
+    /// contract and the processor its units were built for, and how many
+    /// bytes: what a module's link holds the module's units to. A loader
+    /// knows none of them and passes them by.
+    /// </summary>
+    public const int DtCorsacAbi = 0x60000C03, DtCorsacAbiSz = 0x60000C04, DtCorsacCpu = 0x60000C05, DtCorsacCpuSz = 0x60000C06;
+    /// <summary>
+    /// And where it holds the kernel's link identity (KernelExports.LinkId):
+    /// thirty-two bytes, the same as the running kernel's own copy, or the
+    /// file is another link's than the kernel running.
+    /// </summary>
+    public const int DtCorsacLinkId = 0x60000C07;
     public const int DtRel = 17;
     public const int DtRelSz = 18;
     public const int DtRelEnt = 19;

@@ -19,7 +19,6 @@ namespace Corsac.Lang.Elf;
 ///           .data.rel.ro (descriptors, string objects)  \
 ///           .data.rel.ro.imports                        |  PT_LOAD RW
 ///           .data, .got, .dynamic, .bss                 /
-///           .corsac.stamp     the kernel's build stamp
 ///           .corsac.modinfo   name, ring, aliases, dependencies
 ///
 /// It is a shared object as any library is, so the kernel's binder
@@ -41,9 +40,11 @@ namespace Corsac.Lang.Elf;
 ///   - DT_NEEDED for another module it imports from, never for the kernel,
 ///     which is always there.
 ///
-/// Every name it imports must be one the kernel or a module it depends on
-/// exports. A name neither has would be "undefined symbol" at insmod, on the
-/// machine; here it is the build failing.
+/// Every name it imports must be one the kernel (its .corsac.exports) or a
+/// module it depends on exports. A name neither has would be "undefined
+/// symbol" at insmod, on the machine; here it is the build failing. A name
+/// says what it was compiled against, so that is the whole check: no stamp,
+/// no build of the kernel's in particular.
 /// </summary>
 public static partial class Linker
 {
@@ -95,93 +96,24 @@ public static partial class Linker
     /// (os/gui/guimodules.cor). Ring 0's loader does not yet.
     /// </param>
     public static byte[] LinkModule(IEnumerable<(string Name, ObjectFile Object)> objects, string fileName, KernelExports kernel, IReadOnlyList<string>? dependencies = null,
-        bool relocatedText = false, IReadOnlyDictionary<string, byte[]>? factsRead = null)
+        bool relocatedText = false)
     {
         List<(string Name, ObjectFile Object)> inputs = objects.ToList();
         AgreeWithKernel(inputs, kernel);
-        // EACH UNIT AGREES WITH THIS KERNEL IN WHAT IT READ OF IT, by name
-        // (DeclarationReads): every key its compile read, and every lookup it
-        // asked, is what the kernel's index says now -- a unit kept from a
-        // build before is right for a kernel changed only where it never
-        // looked, and one that read something since changed is refused here
-        // rather than linked. A unit stamped with a whole index (an older
-        // compile's) is held to the kernel's whole stamp, as it was.
-        List<string> others = new();
-        Dictionary<string, byte[]> read = new(StringComparer.Ordinal);
-        bool anyReads = false;
-        foreach ((string what, ObjectFile obj) in inputs)
-        {
-            foreach (Section section in obj.Sections.Where(section => section.Name == KernelExports.StampSection))
-                if (!section.Content().AsSpan().SequenceEqual(kernel.Stamp))
-                    others.Add(what + ": compiled against the declarations of another kernel (build stamp "
-                        + KernelExports.Text(section.Content()) + ", " + kernel.Name + "'s " + KernelExports.Text(kernel.Stamp) + ")");
-            foreach (Section section in obj.Sections.Where(section => section.Name == DeclarationReads.ReadsSection))
-            {
-                anyReads = true;
-                Dictionary<string, byte[]> unit;
-                try { unit = DeclarationReads.Read(section.Content(), what); }
-                catch (InvalidDataException error) { others.Add(error.Message); continue; }
-                if (kernel.Decls is null)
-                {
-                    others.Add(what + ": compiled against " + kernel.Name + " by name, whose exports carry no declaration table: link the kernel again with this compiler");
-                    continue;
-                }
-                List<string> differences = DeclarationReads.Differences(unit, kernel.Decls);
-                if (differences.Count > 0)
-                    others.Add(what + ": compiled against declarations " + kernel.Name + " has since changed -- "
-                        + string.Join("; ", differences.Take(5)) + (differences.Count > 5 ? $"; and {differences.Count - 5} more" : ""));
-                foreach ((string key, byte[] hash) in unit) read[key] = hash;
-            }
-            obj.Sections.RemoveAll(section => section.Name == KernelExports.StampSection || section.Name == DeclarationReads.ReadsSection);
-        }
-        if (others.Count != 0) throw new LinkException(others);
-        // AND THE KERNEL'S SMALL BODIES THIS LINK MAY COPY IN: every one a unit
-        // calls, and every one those call, by name and hash (KernelExports.
-        // WithBodies) -- a module relinked against a kernel whose body it
-        // copied has changed carries the new hash; one not relinked is refused.
-        if (anyReads && kernel.Bodies is { } small)
-        {
-            Queue<string> calls = new();
-            foreach ((string _, ObjectFile obj) in inputs)
-            {
-                foreach (Symbol symbol in obj.Symbols) if (!symbol.IsDefined) calls.Enqueue(symbol.Name);
-                if (Lto.IrArchive.Read(obj) is { } archive)
-                    foreach (Lto.IrArchiveEntry entry in archive.Entries.Values)
-                        foreach (string call in entry.Calls) calls.Enqueue(call);
-            }
-            HashSet<string> seen = new(StringComparer.Ordinal);
-            while (calls.Count > 0)
-            {
-                string call = calls.Dequeue();
-                if (!seen.Add(call) || !small.Entries.TryGetValue("F:" + call, out Lto.IrArchiveEntry? body)) continue;
-                read[KernelExports.BodyName(call)] = KernelExports.BodyHash(body);
-                foreach (string next in body.Calls) calls.Enqueue(next);
-            }
-        }
+        // A MODULE'S UNIT SAYS SO (KernelExports.ModuleUnitSection), for its
+        // making again; the module is held to the kernel by the names it
+        // imports alone, so the mark goes no further.
+        foreach ((string _, ObjectFile obj) in inputs) obj.Sections.RemoveAll(section => section.Name == KernelExports.ModuleUnitSection);
         List<string> said = ModuleInfo.Take(inputs, ModuleInfo.SectionName);
-        // Consumed: what remains of them is the module's stamp and modinfo.
+        // Consumed: what remains of them is the module's modinfo.
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => ConsumedContract(section.Name) || section.Name == UsesNotes.SectionName || section.Name == X87Notes.SectionName);
 
+        // A MODULE IT DEPENDS ON is held to nothing but its exports, as the
+        // kernel is: what this one imports from it binds, or the link fails.
         Dictionary<string, HashSet<string>> theirs = new(StringComparer.Ordinal);
         foreach (string dependency in dependencies ?? Array.Empty<string>())
-        {
-            byte[] bytes = File.ReadAllBytes(dependency);
-            // HELD TO WHAT IT READ OF THE KERNEL, as a unit is: a module the
-            // build kept from before, its kernel changed only where it never
-            // looked, is still this kernel's. One with no such table, to the
-            // kernel's whole stamp.
-            if (KernelExports.ReadsOf(bytes, dependency) is { } reads && kernel.Decls is not null)
-            {
-                List<string> differences = DeclarationReads.Differences(DeclarationReads.Read(reads, dependency), kernel.Decls);
-                if (differences.Count > 0)
-                    throw new LinkException(new[] { dependency + ": not a module of this kernel -- " + string.Join("; ", differences.Take(5))
-                        + (differences.Count > 5 ? $"; and {differences.Count - 5} more" : "") });
-            }
-            else if (KernelExports.StampOf(bytes, dependency) is not { } stamp || !stamp.AsSpan().SequenceEqual(kernel.Stamp))
-                throw new LinkException(new[] { dependency + ": not a module of this kernel (its build stamp is not " + KernelExports.Text(kernel.Stamp) + ")" });
-            theirs[dependency] = new HashSet<string>(ElfReader.ExportsOf(bytes), StringComparer.Ordinal);
-        }
+            theirs[dependency] = new HashSet<string>(ElfReader.ExportsOf(File.ReadAllBytes(dependency)), StringComparer.Ordinal);
         // A CALL TO THE KERNEL'S OR A DEPENDENCY'S $inside COPY that neither
         // exports now is to the method itself (InsideOrItself).
         InsideOrItself(inputs.Select(input => input.Object), name => kernel.Names.Contains(name) || theirs.Values.Any(exports => exports.Contains(name)));
@@ -191,12 +123,6 @@ public static partial class Linker
         HashSet<string> defined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => s.IsDefined).Select(s => s.Name), StringComparer.Ordinal);
         HashSet<string> undefined = new(inputs.SelectMany(input => input.Object.Symbols).Where(s => !s.IsDefined && !defined.Contains(s.Name)).Select(s => s.Name), StringComparer.Ordinal);
         List<string> needed = theirs.Where(pair => pair.Value.Overlaps(undefined)).Select(pair => pair.Key).ToList();
-        // AND THE KERNEL'S FACTS ITS CHECKS WALKED (KernelExports.FactsRead).
-        if (anyReads && factsRead is not null) foreach ((string key, byte[] hash) in factsRead) read[key] = hash;
-        // AND EVERY NAME IT TAKES FROM THE KERNEL, which must stay exported.
-        if (anyReads)
-            foreach (string import in undefined)
-                if (kernel.Names.Contains(import)) read[KernelExports.ExportName(import)] = KernelExports.ExportHash(import);
 
         // THE MODULE'S OWN NAME AND RING FIRST, then what its source said,
         // then a dependency the link found that the source did not name.
@@ -212,12 +138,7 @@ public static partial class Linker
             string depends = "depends=" + ModuleInfo.NameOf(SoName(dependency));
             if (!entries.Contains(depends)) entries.Add(depends);
         }
-        // THE MODULE SAYS WHAT IT READ OF THE KERNEL, its units' merged, for
-        // the kernel's binder to hold it to by name (os/kernel/arch/x86/
-        // modules.cor); and the whole stamp still, for a binder that checks
-        // only that.
-        ObjectFile own = KernelExports.StampObject(kernel.Stamp, loaded: false);
-        if (anyReads) own.Sections.Add(KernelExports.ReadsNote(DeclarationReads.Write(read)));
+        ObjectFile own = new();
         own.Sections.Add(ModuleInfo.Note(ModuleInfo.SectionName, entries));
 
         Dyn dyn = new() { Shared = true, Soname = Path.GetFileName(fileName), DirectCalls = relocatedText, PageRelocations = true };

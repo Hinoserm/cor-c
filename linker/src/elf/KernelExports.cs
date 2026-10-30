@@ -1,6 +1,5 @@
 #nullable enable
 using System.Buffers.Binary;
-using System.Text;
 using Corsac.Lang.Ir;
 
 namespace Corsac.Lang.Elf;
@@ -8,48 +7,53 @@ namespace Corsac.Lang.Elf;
 /// <summary>
 /// THE KERNEL AS A LIBRARY (docs/software/DRIVERS.md in the OS repository,
 /// "Modules"). A module is a shared object linked against the kernel the way
-/// a program is linked against libSystem.so, and this is what stands in for
-/// the library: a file `corc link --exports` writes beside the kernel, with
-/// every global the kernel defines in a .dynsym, its SysV hash and a
-/// .dynamic that names them, and nothing else loaded.
+/// a program is linked against libSystem.so, and a module and a kernel of
+/// different builds go together exactly when every name the module imports
+/// binds: a name carries what was compiled against it, so a changed
+/// declaration is a missing name, never a wrong address.
 ///
-///   0x0000  ELF header, program headers      \
-///           .hash, .dynsym, .dynstr           |  PT_LOAD R, at 0
-///           .dynamic                          /
-///           .corsac.stamp   the build stamp
-///           .corsac.abi     the kernel units' native contract
-///           .corsac.cpu     and the processor they were built for
-///           .corsac.ir      its small functions' bodies, for modules' links
-///           .corsac.decls   what its index says under each key, and its
-///                           small bodies' hashes (DeclarationReads)
+/// What stands in for the library is a section of the kernel's own file,
+/// .corsac.exports, outside every PT_LOAD -- nothing of it is in the
+/// kernel's memory. The loader opens the file the kernel booted from, finds
+/// the section by its header, reads it alone when it binds a module, and
+/// lets it go. Its offsets are the section's own, from its first byte:
 ///
-/// Every symbol is SHN_ABS: its value is where the kernel already is, and a
-/// binder that maps this file to read its tables adds no bias to one. So the
-/// kernel's own binder (elfload.cor) looks a module's imports up here with
-/// the code it looks a library's up with -- DT_HASH, the chains, the names --
-/// as one more image whose bias is nought.
+///   0x0000  the dynamic array: DT_HASH, DT_SYMTAB, DT_STRTAB, DT_STRSZ,
+///           DT_SYMENT, the native contract and processor (DT_CORSAC_ABI,
+///           _CPU and their sizes, Elf.DtCorsacAbi), DT_NULL; each value an
+///           offset in this section
+///           .hash     the SysV hash over the symbols
+///           .dynsym   every export, SHN_ABS, its value the kernel's address
+///           .dynstr
+///           the contract and the processor, as the kernel's units say them
+///           the link's identity (DT_CORSAC_LINKID): 32 bytes
 ///
-/// It is a file and not a section of the kernel because nothing in the
-/// kernel's own memory needs it until the first module loads: the tables of
-/// thirty thousand mangled names are megabytes the kernel image, held below
-/// the bootloader's scratch, cannot spare.
+/// THE LINK'S IDENTITY is the SHA-256 of every byte the kernel's PT_LOAD
+/// segments take from its file, those 32 bytes read as nought, and the
+/// kernel holds it too, loaded, as __corsac_link_id (Sys.LinkId()). An
+/// install that writes a new kernel over the running one's file leaves the
+/// two different: the loader, comparing them, refuses to bind a module to
+/// addresses of a kernel not running.
 ///
-/// THE BUILD STAMP is a hash of the declaration index the kernel was compiled
-/// against (DeclarationStamp in the compiler): what every type's fields and
-/// every method's signature were, and nothing of any body. The kernel carries
-/// it twice -- as `__corsac_build_stamp`, thirty-two bytes of .rodata the
-/// running kernel can compare with (Sys.BuildStamp), and in a .corsac.stamp
-/// note -- and so does every module built against it, in its own note. A
-/// module whose stamp is not the running kernel's is refused: before
-/// Release 0 there is no compatibility between builds, so exact is the rule.
+/// A loader reads it with what it reads a library's tables with, DT_HASH and
+/// the chains, as one more image whose bias is nought. A module's link (the
+/// build) checks every import against the same section of the built kernel.
 /// </summary>
 public sealed class KernelExports
 {
-    /// <summary>The note holding the stamp, in the kernel, this file and every module.</summary>
-    public const string StampSection = ".corsac.stamp";
-    /// <summary>The kernel's own copy, loaded: what Sys.BuildStamp() answers the address of.</summary>
-    public const string StampSymbol = "__corsac_build_stamp";
-    public const int StampBytes = 32;
+    /// <summary>The kernel's export table, in its file and not its memory.</summary>
+    public const string SectionName = ".corsac.exports";
+
+    /// <summary>
+    /// What a module's unit carries for its link to know it a module's: an
+    /// empty note its compile against a kernel adds (Driver), which the
+    /// module's link takes out.
+    /// </summary>
+    public const string ModuleUnitSection = ".corsac.moduleunit";
+
+    /// <summary>The kernel's own copy of its link identity, loaded: what Sys.LinkId() answers the address of.</summary>
+    public const string LinkIdSymbol = "__corsac_link_id";
+    public const int LinkIdBytes = 32;
 
     /// <summary>
     /// What is never a kernel export, though the kernel's symbol table calls
@@ -61,30 +65,19 @@ public sealed class KernelExports
     {
         "__text_start", "_etext", "__data_start", "_edata", "__bss_start", "_end",
         "_DYNAMIC", "_GLOBAL_OFFSET_TABLE_", "_start", Elf.SharedInitName,
+        // The kernel's own: a module asks the kernel, never binds to it.
+        LinkIdSymbol,
     };
 
     public string Path { get; }
-    /// <summary>The kernel's file name: what the exports call themselves (DT_SONAME).</summary>
+    /// <summary>The kernel's file name, for what a module's link says of it.</summary>
     public string Name { get; }
-    public byte[] Stamp { get; }
     /// <summary>The kernel units' .corsac.abi and .corsac.cpu, which a module's units must agree with; null where the kernel's had none.</summary>
     public byte[]? Abi { get; }
     public byte[]? Cpu { get; }
     public bool LongMode { get; }
     /// <summary>Every name the kernel exports.</summary>
     public HashSet<string> Names { get; }
-    /// <summary>
-    /// The kernel's small functions' IR (SmallBodies), for a module's link to
-    /// bring into the module where it calls them; null where the exports have
-    /// none.
-    /// </summary>
-    public Lto.IrArchive? Bodies { get; }
-    /// <summary>
-    /// What the kernel's declaration index says under each key
-    /// (DeclarationReads.KernelSection), for a module's units to be held to
-    /// by name; null where the exports were written without it.
-    /// </summary>
-    public IReadOnlyDictionary<string, byte[]>? Decls { get; }
 
     /// <summary>
     /// The kernel units' code-generation contract, read from Cpu: their
@@ -105,118 +98,74 @@ public sealed class KernelExports
         }
     }
 
-    private KernelExports(string path, string name, byte[] stamp, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names, Lto.IrArchive? bodies,
-        IReadOnlyDictionary<string, byte[]>? decls)
+    private KernelExports(string path, string name, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names)
     {
-        Path = path; Name = name; Stamp = stamp; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names; Bodies = bodies; Decls = decls;
-    }
-
-    // ---- the kernel's small functions -------------------------------------------
-    //
-    // A MODULE'S CALL INTO THE KERNEL IS AN INDIRECT CALL THROUGH ITS GOT, and
-    // its return, for what is a getter, one RDTSC (Cycles.Now) or a forwarder
-    // to an intrinsic: in win32k, on every call the GUI kernel answers, and
-    // under 86Box each return leaves the recompiler's chain of blocks. So the
-    // kernel's link writes the IR of its exported functions small enough to
-    // copy wherever they are called (SmallBody instructions), each only if
-    // everything it names is exported too -- a module's copy can name nothing
-    // else of the kernel's -- and a module's link imports them as it imports
-    // its own units' (IrLinkOptimizer). What the copies name becomes the
-    // module's imports, which the kernel's second link keeps.
-
-    /// <summary>The largest kernel function written for the modules: the link's tiny bodies.</summary>
-    public const int SmallBody = 24;
-
-    /// <summary>The importable small functions every unit of a kernel's link defines globally, with their bodies.</summary>
-    public static List<Lto.IrArchiveRecord> SmallBodies(IEnumerable<(string Name, ObjectFile Object)> inputs)
-    {
-        List<Lto.IrArchiveRecord> found = new();
-        HashSet<string> taken = new(StringComparer.Ordinal);
-        foreach ((string _, ObjectFile obj) in inputs)
-        {
-            Lto.IrArchive? archive = Lto.IrArchive.Read(obj);
-            if (archive is null) continue;
-            foreach (Symbol symbol in obj.Symbols)
-            {
-                if (!symbol.IsDefined || !symbol.Global || !symbol.IsFunction || !taken.Add(symbol.Name)) continue;
-                if (!archive.Entries.TryGetValue("F:" + symbol.Name, out Lto.IrArchiveEntry? entry) || !entry.Importable || entry.Instructions > SmallBody) continue;
-                found.Add(new Lto.IrArchiveRecord(entry.Key, true, entry.Instructions, entry.Calls, archive.ReadBody(entry.Key), entry.References, entry.DecodeBytes));
-            }
-        }
-        return found;
-    }
-
-    /// <summary>Those whose every name is among the kernel's final exports, as an archive's bytes; null for none.</summary>
-    public static byte[]? BodiesNote(List<Lto.IrArchiveRecord> bodies, IReadOnlyList<Export> globals)
-    {
-        HashSet<string> exported = new(globals.Select(g => g.Name), StringComparer.Ordinal);
-        List<Lto.IrArchiveRecord> kept = bodies.Where(r => exported.Contains(r.Key[2..])
-            && (r.References ?? r.Calls).All(name => exported.Contains(Lto.IrArchiveEntry.Named(name)))).ToList();
-        if (kept.Count == 0) return null;
-        ObjectFile holder = new();
-        Lto.IrArchive.Attach(holder, kept);
-        return holder.Sections[0].Bytes.ToArray();
+        Path = path; Name = name; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names;
     }
 
     /// <summary>One global of a linked image: what a .dynsym entry of it says.</summary>
     public readonly record struct Export(string Name, ulong Value, ulong Size, byte Type);
 
-    /// <summary>The stamp as it is written in a message: its hex.</summary>
-    public static string Text(byte[] stamp) => Convert.ToHexString(stamp).ToLowerInvariant();
-
     // ---- reading -------------------------------------------------------------
 
     /// <summary>
-    /// A file `corc link --exports` wrote. Anything else -- the kernel image
-    /// itself, a library -- is refused by name: it has no stamp, and building
-    /// a module against it would build one no kernel can load.
+    /// A kernel `corc link --exports` linked: its .corsac.exports. Anything
+    /// else -- a kernel linked without --exports, a library -- is refused by
+    /// name, having no table to bind a module against.
     /// </summary>
     public static KernelExports Read(string path)
     {
         byte[] bytes;
         try { bytes = File.ReadAllBytes(path); }
         catch (IOException error) { throw new ElfFormatException(path + ": " + error.Message); }
-        List<SectionView> sections = Sections(bytes, path);
-        SectionView? stamp = sections.Find(s => s.Name == StampSection);
-        if (stamp is null || stamp.Size != StampBytes)
-            throw new ElfFormatException(path + ": not a kernel's exports (no build stamp); write them with `corc link ... --exports`");
-        byte[]? Copy(string name) => sections.Find(s => s.Name == name) is { } s ? bytes.AsSpan((int)s.Offset, (int)s.Size).ToArray() : null;
-        HashSet<string> names = new(ElfReader.ExportsOf(bytes), StringComparer.Ordinal);
-        string name = ElfReader.SoNameOf(bytes) ?? System.IO.Path.GetFileName(path);
-        Lto.IrArchive? bodies = null;
-        if (Copy(Lto.IrArchive.SectionName) is { } note)
+        SectionView table = Sections(bytes, path).Find(s => s.Name == SectionName)
+            ?? throw new ElfFormatException(path + ": not a kernel with exports (no " + SectionName + "); link it with `corc link ... --exports`");
+        bool wide = bytes[4] == Elf.Class64;
+        byte[] section = bytes.AsSpan((int)table.Offset, (int)table.Size).ToArray();
+        int word = wide ? 8 : 4;
+        long Word(int at)
         {
-            ObjectFile holder = new() { NativeOmitted = true };
-            Section section = new(Lto.IrArchive.SectionName, SectionKind.Note);
-            section.Bytes.AddRange(note);
-            holder.Sections.Add(section);
-            bodies = Lto.IrArchive.Read(holder);
+            if (at < 0 || at + word > section.Length) throw new ElfFormatException(path + ": " + SectionName + " is cut short");
+            return wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(section.AsSpan(at)) : BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan(at));
         }
-        IReadOnlyDictionary<string, byte[]>? decls = null;
-        if (Copy(DeclarationReads.KernelSection) is { } table)
+        Dictionary<long, long> tags = new();
+        for (int at = 0; ; at += 2 * word)
         {
-            try { decls = DeclarationReads.Read(table, path); }
-            catch (InvalidDataException error) { throw new ElfFormatException(error.Message); }
+            long tag = Word(at);
+            if (tag == Elf.DtNull) break;
+            tags[tag] = Word(at + word);
         }
-        return new KernelExports(path, name, Copy(StampSection)!, Copy(TargetContract.SectionName), Copy(X86CodeGenerationContract.SectionName),
-            bytes[4] == Elf.Class64, names, bodies, decls);
-    }
-
-    /// <summary>The stamp in a linked image's .corsac.stamp, or null where it has none: a kernel's, a module's, or these exports'.</summary>
-    public static byte[]? StampOf(byte[] image, string what)
-    {
-        SectionView? stamp = Sections(image, what).Find(s => s.Name == StampSection);
-        return stamp is null || stamp.Size != StampBytes ? null : image.AsSpan((int)stamp.Offset, StampBytes).ToArray();
+        long Tag(int tag) => tags.TryGetValue(tag, out long value) ? value : throw new ElfFormatException(path + ": " + SectionName + " has no tag " + tag);
+        long symbols = Tag(Elf.DtSymTab), strings = Tag(Elf.DtStrTab), stringBytes = Tag(Elf.DtStrSz), hash = Tag(Elf.DtHash), entry = Tag(Elf.DtSymEnt);
+        if (entry != (wide ? Elf.Symbol64Size : Elf.SymbolSize) || hash < 0 || hash + 8 > section.Length
+            || strings < 0 || stringBytes < 0 || strings + stringBytes > section.Length)
+            throw new ElfFormatException(path + ": " + SectionName + " is malformed");
+        // The hash's chain count is the symbols' count.
+        long count = BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan((int)(hash + 4)));
+        if (symbols < 0 || symbols + count * entry > section.Length) throw new ElfFormatException(path + ": " + SectionName + " is malformed");
+        ReadOnlySpan<byte> names = section.AsSpan((int)strings, (int)stringBytes);
+        HashSet<string> exported = new(StringComparer.Ordinal);
+        for (long i = 1; i < count; i++)
+            exported.Add(StringTable.Read(names, BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan((int)(symbols + i * entry))), SectionName));
+        byte[]? Bytes(int at, int size)
+        {
+            if (!tags.TryGetValue(at, out long offset) || !tags.TryGetValue(size, out long length)) return null;
+            if (offset < 0 || length < 0 || offset + length > section.Length) throw new ElfFormatException(path + ": " + SectionName + " is malformed");
+            return section.AsSpan((int)offset, (int)length).ToArray();
+        }
+        return new KernelExports(path, System.IO.Path.GetFileName(path), Bytes(Elf.DtCorsacAbi, Elf.DtCorsacAbiSz), Bytes(Elf.DtCorsacCpu, Elf.DtCorsacCpuSz),
+            wide, exported);
     }
 
     /// <summary>
     /// Every global a linked image DEFINES, from its .symtab: the kernel's
     /// functions, statics and type descriptors, with their addresses, less
     /// what <see cref="NeverExported"/> names and the per-image tables the
-    /// linker and the code generator make (<see cref="PerImage"/>). Its own
-    /// stamp is kept: Sys.BuildStamp() in a module asks for the kernel's.
+    /// linker and the code generator make (<see cref="PerImage"/>).
     /// </summary>
-    public static List<Export> GlobalsOf(string imagePath)
+    public static List<Export> GlobalsOf(string imagePath) => GlobalsOf(imagePath, everything: false);
+
+    private static List<Export> GlobalsOf(string imagePath, bool everything)
     {
         byte[] bytes = File.ReadAllBytes(imagePath);
         bool wide = bytes[4] == Elf.Class64;
@@ -240,7 +189,7 @@ public sealed class KernelExports
             int binding = info >> 4;
             if (name == 0 || shndx == Elf.ShnUndef || (binding != Elf.StbGlobal && binding != Elf.StbWeak)) continue;
             string text = StringTable.Read(names, name, ".strtab");
-            if (NeverExported.Contains(text) || PerImage(text)) continue;
+            if (!everything && (NeverExported.Contains(text) || PerImage(text))) continue;
             if (!seen.Add(text)) continue;
             exports.Add(new Export(text, value, length, (byte)(info & 0xF)));
         }
@@ -265,22 +214,16 @@ public sealed class KernelExports
     // ---- writing -------------------------------------------------------------
 
     /// <summary>
-    /// The exports file: <paramref name="symbols"/> in a .dynsym with a SysV
-    /// hash over them, a .dynamic naming the tables and the kernel
-    /// (DT_SONAME), and the stamp and the contracts as notes.
+    /// The table: <paramref name="symbols"/> in a .dynsym with a SysV hash
+    /// over them, the contract and the processor, and the dynamic array that
+    /// names them all ahead of them, every offset the section's own.
     /// </summary>
-    public static void Write(string path, string kernelName, IReadOnlyList<Export> symbols, byte[] stamp, byte[]? abi, byte[]? cpu, bool wide, byte[]? bodies = null,
-        byte[]? decls = null)
+    public static byte[] Table(IReadOnlyList<Export> symbols, byte[]? abi, byte[]? cpu, byte[] linkId, bool wide)
     {
-        if (stamp.Length != StampBytes) throw new ArgumentException("a build stamp is " + StampBytes + " bytes");
-        int header = wide ? Elf.Header64Size : Elf.HeaderSize;
-        int phent = wide ? Elf.ProgramHeader64Size : Elf.ProgramHeaderSize;
-        int shent = wide ? Elf.SectionHeader64Size : Elf.SectionHeaderSize;
+        if (linkId.Length != LinkIdBytes) throw new ArgumentException("a link identity is " + LinkIdBytes + " bytes");
         int symbolSize = wide ? Elf.Symbol64Size : Elf.SymbolSize;
         int word = wide ? 8 : 4;
-
         StringTable dynstr = new();
-        uint soname = dynstr.Add(kernelName);
         uint[] nameAt = symbols.Select(s => dynstr.Add(s.Name)).ToArray();
         byte[] strings = dynstr.ToArray();
 
@@ -296,62 +239,34 @@ public sealed class KernelExports
             bucket[b] = (uint)i;
         }
 
-        long Align(long at, int to) => (at + to - 1) / to * to;
-        long hashAt = Align(header + 2L * phent, 8);
+        static long Align(long at, int to) => (at + to - 1) / to * to;
+        int tagCount = 7 + (abi is null ? 0 : 2) + (cpu is null ? 0 : 2);
+        long hashAt = Align(tagCount * 2L * word, 8);
         long dynsymAt = Align(hashAt + (2L + buckets + count) * 4, word);
         long dynstrAt = dynsymAt + (long)count * symbolSize;
-        long dynamicAt = Align(dynstrAt + strings.Length, word);
-        (long Tag, ulong Value)[] dynamic =
+        long abiAt = Align(dynstrAt + strings.Length, 4);
+        long cpuAt = Align(abiAt + (abi?.Length ?? 0), 4);
+        long linkIdAt = Align(cpuAt + (cpu?.Length ?? 0), 4);
+        long end = linkIdAt + LinkIdBytes;
+        List<(long Tag, ulong Value)> dynamic = new()
         {
-            ((long)Elf.DtSoName, (ulong)soname), ((long)Elf.DtHash, (ulong)hashAt), ((long)Elf.DtStrTab, (ulong)dynstrAt), ((long)Elf.DtSymTab, (ulong)dynsymAt),
-            ((long)Elf.DtStrSz, (ulong)strings.Length), ((long)Elf.DtSymEnt, (ulong)symbolSize), ((long)Elf.DtNull, 0UL),
+            (Elf.DtHash, (ulong)hashAt), (Elf.DtSymTab, (ulong)dynsymAt), (Elf.DtStrTab, (ulong)dynstrAt),
+            (Elf.DtStrSz, (ulong)strings.Length), (Elf.DtSymEnt, (ulong)symbolSize),
         };
-        long loadEnd = dynamicAt + dynamic.Length * 2L * word;
-
-        List<(string Name, byte[] Bytes)> notes = new() { (StampSection, stamp) };
-        if (abi is not null) notes.Add((TargetContract.SectionName, abi));
-        if (cpu is not null) notes.Add((X86CodeGenerationContract.SectionName, cpu));
-        if (bodies is not null) notes.Add((Lto.IrArchive.SectionName, bodies));
-        if (decls is not null) notes.Add((DeclarationReads.KernelSection, decls));
-        long[] noteAt = new long[notes.Count];
-        long at = loadEnd;
-        for (int i = 0; i < notes.Count; i++) { at = Align(at, 4); noteAt[i] = at; at += notes[i].Bytes.Length; }
-        StringTable shstr = new();
-        string[] sectionNames = new[] { ".hash", ".dynsym", ".dynstr", ".dynamic" }.Concat(notes.Select(n => n.Name)).Append(".shstrtab").ToArray();
-        uint[] shName = sectionNames.Select(shstr.Add).ToArray();
-        byte[] shstrtab = shstr.ToArray();
-        long shstrAt = at;
-        long shoff = Align(shstrAt + shstrtab.Length, 8);
-        int shnum = sectionNames.Length + 1;
+        if (abi is not null) { dynamic.Add((Elf.DtCorsacAbi, (ulong)abiAt)); dynamic.Add((Elf.DtCorsacAbiSz, (ulong)abi.Length)); }
+        if (cpu is not null) { dynamic.Add((Elf.DtCorsacCpu, (ulong)cpuAt)); dynamic.Add((Elf.DtCorsacCpuSz, (ulong)cpu.Length)); }
+        dynamic.Add((Elf.DtCorsacLinkId, (ulong)linkIdAt));
+        dynamic.Add((Elf.DtNull, 0UL));
 
         using MemoryStream stream = new();
         using BinaryWriter w = new(stream);
         void Word(ulong value) { if (wide) w.Write(value); else w.Write(checked((uint)value)); }
         void Pad(long to) { while (stream.Position < to) w.Write((byte)0); }
-
-        // ELF header.
-        w.Write(Elf.Magic.ToArray()); w.Write(wide ? Elf.Class64 : Elf.Class32); w.Write(Elf.Data2Lsb); w.Write(Elf.VersionCurrent); w.Write(Elf.OsAbiSysV);
-        Pad(16);
-        w.Write(Elf.TypeDyn); w.Write(wide ? Elf.MachineX86_64 : Elf.MachineI386); w.Write((uint)Elf.VersionCurrent);
-        Word(0); Word((ulong)header); Word((ulong)shoff);
-        w.Write(0u); w.Write((ushort)header); w.Write((ushort)phent); w.Write((ushort)2);
-        w.Write((ushort)shent); w.Write((ushort)shnum); w.Write((ushort)(shnum - 1));
-
-        // PT_LOAD over the tables, PT_DYNAMIC over .dynamic.
-        void Segment(uint type, long offset, long bytes, uint flags, ulong align)
-        {
-            w.Write(type);
-            if (wide) { w.Write(flags); w.Write((ulong)offset); w.Write((ulong)offset); w.Write((ulong)offset); w.Write((ulong)bytes); w.Write((ulong)bytes); w.Write(align); }
-            else { w.Write((uint)offset); w.Write((uint)offset); w.Write((uint)offset); w.Write((uint)bytes); w.Write((uint)bytes); w.Write(flags); w.Write((uint)align); }
-        }
-        Segment(Elf.PtLoad, 0, loadEnd, Elf.PfR, Elf.PageSize);
-        Segment(Elf.PtDynamic, dynamicAt, loadEnd - dynamicAt, Elf.PfR, (ulong)word);
-
+        foreach ((long tag, ulong value) in dynamic) { Word(unchecked((ulong)tag)); Word(value); }
         Pad(hashAt);
         w.Write((uint)buckets); w.Write((uint)count);
         foreach (uint b in bucket) w.Write(b);
         foreach (uint c in chain) w.Write(c);
-
         Pad(dynsymAt);
         w.Write(new byte[symbolSize]);
         for (int i = 0; i < symbols.Count; i++)
@@ -362,223 +277,112 @@ public sealed class KernelExports
             else { w.Write(nameAt[i]); w.Write(checked((uint)s.Value)); w.Write(checked((uint)s.Size)); w.Write(info); w.Write((byte)0); w.Write(Elf.ShnAbs); }
         }
         w.Write(strings);
-
-        Pad(dynamicAt);
-        foreach ((long tag, ulong value) in dynamic) { Word(unchecked((ulong)tag)); Word(value); }
-
-        for (int i = 0; i < notes.Count; i++) { Pad(noteAt[i]); w.Write(notes[i].Bytes); }
-        Pad(shstrAt);
-        w.Write(shstrtab);
-        Pad(shoff);
-
-        // Section headers: name, type, flags, address, offset, size, link, info, alignment, entry size.
-        void SectionHeader(uint name, uint type, ulong flags, long address, long offset, long size, uint link, uint align, uint entsize)
-        {
-            w.Write(name); w.Write(type);
-            if (wide) { w.Write(flags); w.Write((ulong)address); w.Write((ulong)offset); w.Write((ulong)size); w.Write(link); w.Write(type == Elf.ShtDynSym ? 1u : 0u); w.Write((ulong)align); w.Write((ulong)entsize); }
-            else { w.Write((uint)flags); w.Write((uint)address); w.Write((uint)offset); w.Write((uint)size); w.Write(link); w.Write(type == Elf.ShtDynSym ? 1u : 0u); w.Write(align); w.Write(entsize); }
-        }
-        w.Write(new byte[shent]);
-        SectionHeader(shName[0], Elf.ShtHash, Elf.ShfAlloc, hashAt, hashAt, (2L + buckets + count) * 4, 2, 4, 4);
-        SectionHeader(shName[1], Elf.ShtDynSym, Elf.ShfAlloc, dynsymAt, dynsymAt, (long)count * symbolSize, 3, (uint)word, (uint)symbolSize);
-        SectionHeader(shName[2], Elf.ShtStrTab, Elf.ShfAlloc, dynstrAt, dynstrAt, strings.Length, 0, 1, 0);
-        SectionHeader(shName[3], Elf.ShtDynamic, Elf.ShfAlloc, dynamicAt, dynamicAt, loadEnd - dynamicAt, 3, (uint)word, (uint)(2 * word));
-        for (int i = 0; i < notes.Count; i++)
-            SectionHeader(shName[4 + i], Elf.ShtProgBits, 0, 0, noteAt[i], notes[i].Bytes.Length, 0, 4, 0);
-        SectionHeader(shName[^1], Elf.ShtStrTab, 0, 0, shstrAt, shstrtab.Length, 0, 1, 0);
+        if (abi is not null) { Pad(abiAt); w.Write(abi); }
+        if (cpu is not null) { Pad(cpuAt); w.Write(cpu); }
+        Pad(linkIdAt);
+        w.Write(linkId);
         w.Flush();
-        File.WriteAllBytes(path, stream.ToArray());
+        return stream.ToArray();
     }
 
     /// <summary>
-    /// THE KERNEL'S SMALL BODIES IN ITS TABLE TOO, a name each ("@" and the
-    /// function's symbol, the body's hash): a module's link copies them into
-    /// the module (IrLinkOptimizer), so a module holds what it copied to them
-    /// by name as it does declarations, and one whose copy is of a body the
-    /// kernel has changed since is refused (DeclarationReads).
+    /// What the kernel's link adds for its identity: thirty-two bytes of
+    /// .rodata, nought until the image is written (StampLinkId).
     /// </summary>
-    public static byte[] WithBodies(byte[] decls, IEnumerable<Lto.IrArchiveRecord> bodies)
+    public static ObjectFile LinkIdObject()
     {
-        Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
-        foreach (Lto.IrArchiveRecord record in bodies)
-            if (record.Key.StartsWith("F:", StringComparison.Ordinal)) entries["@" + record.Key[2..]] = record.BodyHash()[..DeclarationReads.HashBytes];
-        return DeclarationReads.Write(entries);
+        ObjectFile made = new();
+        Section data = new(".rodata", SectionKind.ReadOnlyData) { Align = 4 };
+        data.Bytes.AddRange(new byte[LinkIdBytes]);
+        made.Sections.Add(data);
+        made.Symbols.Add(new Symbol { Name = LinkIdSymbol, Section = data, Offset = 0, Size = LinkIdBytes });
+        return made;
     }
 
     /// <summary>
-    /// THE NAMES THE KERNEL EXPORTS IN ITS TABLE TOO, "E:" and the name each:
-    /// a module's link binds its imports, and turns a call to a $inside copy
-    /// the kernel no longer exports into one to the method (InsideOrItself),
-    /// by the names it finds, and its table holds it to them (LinkModule).
-    /// Not their addresses: the kernel's binder finds those by name.
+    /// The written kernel's identity, made and put where __corsac_link_id is:
+    /// the SHA-256 of what its PT_LOAD segments take from the file, in their
+    /// order, the identity's own bytes nought as the link left them.
     /// </summary>
-    public static byte[] WithExports(byte[] decls, IEnumerable<Export> globals)
+    public static byte[] StampLinkId(string imagePath)
     {
-        Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
-        foreach (Export export in globals) entries[ExportName(export.Name)] = ExportHash(export.Name);
-        return DeclarationReads.Write(entries);
+        byte[] bytes = File.ReadAllBytes(imagePath);
+        bool wide = bytes[4] == Elf.Class64;
+        Export id = GlobalsOf(imagePath, everything: true).Find(e => e.Name == LinkIdSymbol);
+        if (id.Name is null) throw new ElfFormatException(imagePath + ": no " + LinkIdSymbol + " to stamp");
+        long phoff = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(32)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28));
+        int phent = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 54 : 42));
+        int phnum = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 56 : 44));
+        using System.Security.Cryptography.IncrementalHash hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        long at = -1;
+        for (int p = 0; p < phnum; p++)
+        {
+            ReadOnlySpan<byte> ph = bytes.AsSpan((int)(phoff + p * phent), phent);
+            if (BinaryPrimitives.ReadUInt32LittleEndian(ph) != Elf.PtLoad) continue;
+            long offset = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(ph[8..]) : BinaryPrimitives.ReadUInt32LittleEndian(ph[4..]);
+            ulong address = wide ? BinaryPrimitives.ReadUInt64LittleEndian(ph[16..]) : BinaryPrimitives.ReadUInt32LittleEndian(ph[8..]);
+            long size = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(ph[32..]) : BinaryPrimitives.ReadUInt32LittleEndian(ph[16..]);
+            if (offset < 0 || size < 0 || offset + size > bytes.Length) throw new ElfFormatException(imagePath + ": a segment runs past the end of the file");
+            hash.AppendData(bytes, (int)offset, (int)size);
+            if (id.Value >= address && id.Value + LinkIdBytes <= address + (ulong)size) at = offset + (long)(id.Value - address);
+        }
+        if (at < 0) throw new ElfFormatException(imagePath + ": " + LinkIdSymbol + " is in no loaded segment");
+        byte[] made = hash.GetHashAndReset();
+        made.CopyTo(bytes, (int)at);
+        File.WriteAllBytes(imagePath, bytes);
+        return made;
     }
 
     /// <summary>
-    /// AND THE FACTS ITS LINK WROTE BESIDE IT, "Q:" an interrupt fact's and
-    /// "Y:" a float fact's name (InterruptNotes.Said, X87Notes.Said), and
-    /// "Q:" alone its set of handlers (HandlersSaid). A
-    /// module's link judges its handlers and its float code through the
-    /// kernel's, and its table holds it to the ones it walked.
+    /// <paramref name="table"/> added to the linked image at <paramref name="imagePath"/>
+    /// as .corsac.exports, a section no segment loads: its bytes and a new
+    /// section name table after the file's end, and the section headers again
+    /// after them, the old ones as they were. Nothing loaded moves.
     /// </summary>
-    public static byte[] WithFacts(byte[] decls, IEnumerable<Lto.InterruptNotes.Fact> interrupts, IEnumerable<Lto.X87Notes.Fact> floats)
+    public static void AddTo(string imagePath, byte[] table)
     {
-        Dictionary<string, byte[]> entries = DeclarationReads.Read(decls, "the kernel's declaration table");
-        foreach (Lto.InterruptNotes.Fact fact in interrupts) entries["Q:" + fact.Name] = Lto.InterruptNotes.Said(fact);
-        entries[Handlers] = HandlersSaid(interrupts);
-        foreach (Lto.X87Notes.Fact fact in floats) entries["Y:" + fact.Name] = Lto.X87Notes.Said(fact);
-        return DeclarationReads.Write(entries);
-    }
+        byte[] bytes = File.ReadAllBytes(imagePath);
+        bool wide = bytes[4] == Elf.Class64;
+        List<SectionView> sections = Sections(bytes, imagePath);
+        if (sections.Any(s => s.Name == SectionName)) throw new ElfFormatException(imagePath + ": already has " + SectionName);
+        int shent = wide ? Elf.SectionHeader64Size : Elf.SectionHeaderSize;
+        long shoff = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(40)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(32));
+        int shnum = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 60 : 48));
+        int shstrndx = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 62 : 50));
+        if (shnum == 0 || shstrndx >= shnum) throw new ElfFormatException(imagePath + ": no section headers to add to");
+        SectionView names = sections[shstrndx];
+        byte[] oldNames = bytes.AsSpan((int)names.Offset, (int)names.Size).ToArray();
+        uint nameAt = (uint)oldNames.Length;
+        byte[] newNames = oldNames.Concat(System.Text.Encoding.ASCII.GetBytes(SectionName)).Append((byte)0).ToArray();
 
-    /// <summary>The key of the kernel's interrupt handlers, all of them by name (HandlersSaid).</summary>
-    public const string Handlers = "Q:";
-
-    /// <summary>
-    /// The kernel's handlers, by name, as one answer: a module whose checks
-    /// walk from them is held to the set, so a handler the kernel gains --
-    /// which may reach the module's code through a slot -- refuses it.
-    /// </summary>
-    public static byte[] HandlersSaid(IEnumerable<Lto.InterruptNotes.Fact> interrupts)
-    {
+        static long Align(long at, int to) => (at + to - 1) / to * to;
+        long tableAt = Align(bytes.Length, 8);
+        long namesAt = tableAt + table.Length;
+        long headersAt = Align(namesAt + newNames.Length, 8);
         using MemoryStream stream = new();
-        using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
-            foreach (string name in interrupts.Where(fact => fact.Handler).Select(fact => fact.Name).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
-                writer.Write(name);
-        return System.Security.Cryptography.SHA256.HashData(stream.ToArray())[..DeclarationReads.HashBytes];
-    }
-
-    /// <summary>
-    /// The kernel's facts a module's link walks from its own (Check): each by
-    /// name, "Q:" and "Y:", with what it says -- nothing, for a kernel
-    /// function it calls that has none. Held to them, an unrelinked module
-    /// is refused where a kernel change would have failed its checks.
-    /// </summary>
-    public static Dictionary<string, byte[]> FactsRead(KernelExports kernel, IEnumerable<ObjectFile> own,
-        IReadOnlyList<Lto.InterruptNotes.Fact> kernelInterrupts, IReadOnlyList<Lto.InterruptNotes.Fact> imported,
-        IReadOnlyList<Lto.X87Notes.Fact> kernelFloats, bool judges)
-    {
-        Dictionary<string, byte[]> read = new(StringComparer.Ordinal);
-        List<ObjectFile> units = own.ToList();
-        // THE INTERRUPT CHECKS' WALK (InterruptNotes.Walked), from every
-        // handler -- the kernel's too, whose slots reach the module's code --
-        // and every root; of it, what the kernel's facts say, by name, and
-        // the kernel's set of handlers ("Q:"). A kernel name walked to with
-        // no fact, nothing: one given a fact later refuses the module. Not
-        // held: a kernel method the walk did not reach that a kernel edit
-        // makes reachable only through a root a module names (--irq-roots,
-        // --wait-free-roots: the kernel's link roots, not a module's). A
-        // shared library's facts are walked through, not keyed: the
-        // kernel's table has none of them (Differences would say "no longer
-        // in the kernel"), and a library relinked is a dependency's change,
-        // which relinks its dependents.
-        Dictionary<string, Lto.InterruptNotes.Fact> q = new(StringComparer.Ordinal);
-        foreach (Lto.InterruptNotes.Fact fact in kernelInterrupts) q.TryAdd(fact.Name, fact);
-        HashSet<string> walked = Lto.InterruptNotes.Walked(units, imported);
-        foreach (string name in walked)
+        stream.Write(bytes);
+        while (stream.Position < tableAt) stream.WriteByte(0);
+        stream.Write(table);
+        stream.Write(newNames);
+        while (stream.Position < headersAt) stream.WriteByte(0);
+        byte[] headers = bytes.AsSpan((int)shoff, shnum * shent).ToArray();
+        // The name table's header, pointed at the new one.
+        Span<byte> nameHeader = headers.AsSpan(shstrndx * shent, shent);
+        if (wide) { BinaryPrimitives.WriteUInt64LittleEndian(nameHeader[24..], (ulong)namesAt); BinaryPrimitives.WriteUInt64LittleEndian(nameHeader[32..], (ulong)newNames.Length); }
+        else { BinaryPrimitives.WriteUInt32LittleEndian(nameHeader[16..], (uint)namesAt); BinaryPrimitives.WriteUInt32LittleEndian(nameHeader[20..], (uint)newNames.Length); }
+        stream.Write(headers);
+        // Name, type, flags (none: not loaded), address, offset, size, link, info, alignment, entry size.
+        using (BinaryWriter w = new(stream, System.Text.Encoding.ASCII, leaveOpen: true))
         {
-            if (q.TryGetValue(name, out Lto.InterruptNotes.Fact? fact)) read["Q:" + name] = Lto.InterruptNotes.Said(fact);
-            else if (kernel.Names.Contains(name)) read["Q:" + name] = DeclarationReads.Empty;
+            w.Write(nameAt); w.Write(Elf.ShtProgBits);
+            if (wide) { w.Write(0UL); w.Write(0UL); w.Write((ulong)tableAt); w.Write((ulong)table.Length); w.Write(0u); w.Write(0u); w.Write(8UL); w.Write(0UL); }
+            else { w.Write(0u); w.Write(0u); w.Write((uint)tableAt); w.Write((uint)table.Length); w.Write(0u); w.Write(0u); w.Write(8u); w.Write(0u); }
         }
-        if (walked.Count > 0) read[Handlers] = HandlersSaid(kernelInterrupts);
-        // THE FLOAT CHECK'S. Where the units carry facts (judges), every
-        // float fact of the kernel's, as the check reads them all -- only the
-        // methods that reach float code are written beside it. Where they
-        // carry none, the check judges them by the names they take: those,
-        // and the kernel's facts their calls reach. Either way a kernel name
-        // they take or reach with no fact is held to having none, so one
-        // that floats later refuses the module. The kernel's own entered and
-        // escaping facts, which the check also starts from, are judged by the
-        // kernel's own link.
-        if (judges || kernelFloats.Count > 0)
-        {
-            Dictionary<string, Lto.X87Notes.Fact> y = new(StringComparer.Ordinal);
-            foreach (Lto.X87Notes.Fact fact in kernelFloats) y.TryAdd(fact.Name, fact);
-            if (judges) foreach (Lto.X87Notes.Fact fact in y.Values) read["Y:" + fact.Name] = Lto.X87Notes.Said(fact);
-            Stack<string> work = new();
-            foreach (ObjectFile unit in units)
-                foreach (Symbol symbol in unit.Symbols)
-                    if (!symbol.IsDefined && kernel.Names.Contains(symbol.Name)) work.Push(symbol.Name);
-            HashSet<string> seen = new(StringComparer.Ordinal);
-            while (work.Count > 0)
-            {
-                string name = work.Pop();
-                if (!seen.Add(name)) continue;
-                if (!y.TryGetValue(name, out Lto.X87Notes.Fact? fact))
-                {
-                    if (kernel.Names.Contains(name)) read.TryAdd("Y:" + name, DeclarationReads.Empty);
-                    continue;
-                }
-                read["Y:" + name] = Lto.X87Notes.Said(fact);
-                foreach (Lto.X87Notes.Call call in fact.Calls) work.Push(call.Callee);
-            }
-        }
-        return read;
-    }
-
-    /// <summary>An exported name in the tables: "E:" and the name.</summary>
-    public static string ExportName(string symbol) => "E:" + symbol;
-
-    /// <summary>An exported name's answer: the hash of the name, its first 16 bytes.</summary>
-    public static byte[] ExportHash(string symbol)
-        => System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(symbol))[..DeclarationReads.HashBytes];
-
-    /// <summary>A linked module's table of what it read of the kernel (its .corsac.reads), or null.</summary>
-    public static byte[]? ReadsOf(byte[] image, string what)
-    {
-        SectionView? reads = Sections(image, what).Find(s => s.Name == DeclarationReads.ReadsSection);
-        return reads is null ? null : image.AsSpan((int)reads.Offset, (int)reads.Size).ToArray();
-    }
-
-    /// <summary>A small body's name in the tables: "@" and its symbol.</summary>
-    public static string BodyName(string symbol) => "@" + symbol;
-
-    /// <summary>A small body's hash in the tables: the archive's own, its first 16 bytes.</summary>
-    public static byte[] BodyHash(Lto.IrArchiveEntry entry)
-        => entry.Hash.ToArray()[..DeclarationReads.HashBytes];
-
-    /// <summary>The small bodies a bodies note holds (BodiesNote), or null.</summary>
-    public static Lto.IrArchive? BodiesOf(byte[] note)
-    {
-        ObjectFile holder = new() { NativeOmitted = true };
-        Section section = new(Lto.IrArchive.SectionName, SectionKind.Note);
-        section.Bytes.AddRange(note);
-        holder.Sections.Add(section);
-        return Lto.IrArchive.Read(holder);
-    }
-
-    /// <summary>A module unit's, or a module's, table of what it read of the kernel (DeclarationReads), as a note.</summary>
-    public static Section ReadsNote(byte[] table)
-    {
-        Section note = new(DeclarationReads.ReadsSection, SectionKind.Note) { Align = 4 };
-        note.Bytes.AddRange(table);
-        return note;
-    }
-
-    /// <summary>
-    /// What the kernel's link adds to stamp it: thirty-two bytes of .rodata
-    /// called <see cref="StampSymbol"/>, and the same in a .corsac.stamp note.
-    /// A module's link adds only the note: its Sys.BuildStamp() is the
-    /// kernel's, which is the one worth comparing with.
-    /// </summary>
-    public static ObjectFile StampObject(byte[] stamp, bool loaded)
-    {
-        ObjectFile stamped = new();
-        Section note = new(StampSection, SectionKind.Note) { Align = 1 };
-        note.Bytes.AddRange(stamp);
-        stamped.Sections.Add(note);
-        if (loaded)
-        {
-            Section data = new(".rodata", SectionKind.ReadOnlyData) { Align = 4 };
-            data.Bytes.AddRange(stamp);
-            stamped.Sections.Add(data);
-            stamped.Symbols.Add(new Symbol { Name = StampSymbol, Section = data, Offset = 0, Size = StampBytes });
-        }
-        return stamped;
+        byte[] result = stream.ToArray();
+        if (wide) BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan(40), (ulong)headersAt);
+        else BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(32), checked((uint)headersAt));
+        BinaryPrimitives.WriteUInt16LittleEndian(result.AsSpan(wide ? 60 : 48), checked((ushort)(shnum + 1)));
+        File.WriteAllBytes(imagePath, result);
     }
 
     // ---- an image's sections, by name ------------------------------------------

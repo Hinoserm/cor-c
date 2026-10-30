@@ -9,17 +9,7 @@ namespace Corsac;
 /// <summary>Link previously compiled objects without invoking the frontend.</summary>
 public static class ObjectLinkCommand
 {
-    /// <param name="declarationStamp">
-    /// The build stamp of a declaration index (DeclarationStamp), for
-    /// --exports: the index is the compiler's format, and this is how the
-    /// compiler's own `corc link` hands the linker the means to read one.
-    /// </param>
-    /// <param name="declarationTable">
-    /// What a declaration index says under each key (DeclarationReads), for
-    /// --exports, by the same means: the table a kernel's modules are held to
-    /// by name.
-    /// </param>
-    public static int Run(string[] args, IUnitBackend? backend = null, Func<string, byte[]>? declarationStamp = null, Func<string, byte[]>? declarationTable = null)
+    public static int Run(string[] args, IUnitBackend? backend = null)
     {
         string? output = null;
         string entry = "_start";
@@ -43,11 +33,11 @@ public static class ObjectLinkCommand
         string? runpath = null;
         string? regionReport = null;
         string? unusedReport = null;
-        // THE KERNEL AS A LIBRARY (KernelExports): --exports FILE writes the
-        // kernel's globals beside it, stamped with the hash of --decl-index,
-        // the index its units were compiled against. --kernel FILE links a
-        // module against such a file (Linker.LinkModule).
-        string? exportsPath = null, stampIndex = null, kernelPath = null, keepPath = null;
+        // THE KERNEL AS A LIBRARY (KernelExports): --exports puts the
+        // kernel's export table in its own file, a section nothing loads.
+        // --kernel FILE links a module against such a kernel (Linker.LinkModule).
+        bool exports = false;
+        string? kernelPath = null, keepPath = null;
         List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
         {
@@ -69,10 +59,11 @@ public static class ObjectLinkCommand
             }
             // The program's dead code (UnusedReport), into a file ("-": the
             // error stream), from the notes units compiled with the same flag left.
-            if (arg is "--exports" or "--decl-index" or "--kernel" or "--keep")
+            if (arg == "--exports") { exports = true; continue; }
+            if (arg is "--kernel" or "--keep")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
-                if (arg == "--exports") exportsPath = args[i]; else if (arg == "--kernel") kernelPath = args[i]; else if (arg == "--keep") keepPath = args[i]; else stampIndex = args[i];
+                if (arg == "--kernel") kernelPath = args[i]; else keepPath = args[i];
                 continue;
             }
             // THE WAIT CHECK, as corc's own link takes it (InterruptNotes.WaitsFromHandlers):
@@ -139,19 +130,15 @@ public static class ObjectLinkCommand
         }
         if (output is null || paths.Count == 0)
             return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings] [--unused-report file]"
-                + " [--exports file --decl-index index [--keep names]] [--kernel exports]");
+                + " [--exports [--keep names]] [--kernel kernel]");
         if (unusedReport is not null && shared) return Fail("--unused-report is for an image with an entry, not a shared object");
-        if (exportsPath is not null)
+        if (exports)
         {
             if (shared || flat || kernelPath is not null || sharedLibraries.Count > 0)
                 return Fail("--exports is for a kernel: one image linked whole, with an entry and its symbols");
             if (closed) return Fail("--exports makes the kernel a library, whose modules call into it: it is not --closed");
-            if (stampIndex is null) return Fail("--exports needs --decl-index: the declaration index the kernel was compiled against, whose hash is its build stamp");
-            if (declarationStamp is null) return Fail("--exports: this linker cannot read a declaration index; link with `corc link`");
-            if (!File.Exists(stampIndex)) return Fail("--decl-index '" + stampIndex + "' does not exist");
             if (keepPath is not null && !File.Exists(keepPath)) return Fail("--keep '" + keepPath + "' does not exist");
         }
-        else if (stampIndex is not null) return Fail("--decl-index stamps a kernel linked with --exports");
         else if (keepPath is not null) return Fail("--keep names what a kernel linked with --exports keeps for its modules");
         // WHAT THE BUILD'S MODULES IMPORT, one name a line: with it the kernel
         // is pruned to what it and they reach, as a closed image is; without
@@ -233,25 +220,12 @@ public static class ObjectLinkCommand
         foreach (string library in sharedLibraries) floatsImported.AddRange(X87Notes.ReadBeside(library, judges));
         List<string> floatErrors = X87Notes.Check(inputs.Select(input => input.Item2), floatsImported, new[] { entry });
         if (floatErrors.Count > 0) throw new LinkException(floatErrors);
-        // What of the kernel's facts the checks walked, for the module's table.
-        Dictionary<string, byte[]>? factsRead = kernel is null ? null
-            : KernelExports.FactsRead(kernel, inputs.Select(input => input.Item2), kernelImported, imported, kernelFloatsImported, judges);
         // AN IMAGE OTHERS LINK AGAINST says what its units call and take
-        // beside it, for their links' checks: a kernel's beside its exports,
-        // a module's beside itself.
-        List<InterruptNotes.Fact>? kernelInterrupts = null;
-        if (exportsPath is not null) kernelInterrupts = InterruptNotes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
-        else if (kernel is not null) InterruptNotes.WriteBeside(destination, inputs.Select(input => input.Item2));
+        // beside it, for their links' checks -- a kernel's and a module's
+        // beside the image, in the build, never in what is installed.
+        if (exports || kernel is not null) InterruptNotes.WriteBeside(destination, inputs.Select(input => input.Item2));
         // And a shared object's: what links against it calls into it too.
-        List<X87Notes.Fact>? kernelFloats = null;
-        if (exportsPath is not null) kernelFloats = X87Notes.WriteBeside(exportsPath, inputs.Select(input => input.Item2));
-        else if (kernel is not null || shared) X87Notes.WriteBeside(destination, inputs.Select(input => input.Item2));
-        byte[]? stamp = exportsPath is null ? null : declarationStamp!(stampIndex!);
-        // And what the index says under each key, for modules held to it by name (DeclarationReads).
-        byte[]? decls = exportsPath is null ? null : declarationTable?.Invoke(stampIndex!);
-        // The kernel's small functions for its modules, read before this link's
-        // own optimiser takes the units' IR out (KernelExports.SmallBodies).
-        List<IrArchiveRecord>? smallBodies = exportsPath is not null && lto ? KernelExports.SmallBodies(inputs) : null;
+        if (exports || kernel is not null || shared) X87Notes.WriteBeside(destination, inputs.Select(input => input.Item2));
         // A KERNEL WITH EXPORTS IS NOT CLOSED, whatever its address says:
         // what a module calls, subclasses or stores into is outside it, so
         // nothing the link proves about the whole program holds (closed
@@ -260,13 +234,13 @@ public static class ObjectLinkCommand
         // the kernel's Driver.Bind. NOR A MODULE: its units' calls reach the
         // kernel's overrides too, and other modules'.
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
-            closedImageEntry: (flat || closed || physicalAddress is not null) && exportsPath is null ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
+            closedImageEntry: (flat || closed || physicalAddress is not null) && !exports ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
             // Only the types the image makes, where nothing outside it makes
             // any: no shared object, no shared library, no exports a module
             // derives from (VirtualTargets.Made).
-            madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && exportsPath is null && kernel is null,
-            openTypes: exportsPath is not null || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
-            moduleOfKernel: kernel is not null, kernelBodies: kernel?.Bodies);
+            madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && !exports && kernel is null,
+            openTypes: exports || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
+            moduleOfKernel: kernel is not null);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         // The archives' last reader done: their pool goes, not held through layout.
         foreach ((string _, ObjectFile obj) in inputs) obj.ArchivePool = null;
@@ -282,7 +256,7 @@ public static class ObjectLinkCommand
         // the 486, and a Pentium kernel's modules were refused for being
         // built as the kernel was.
         byte[]? kernelAbi = null, kernelCpu = null, firstCpu = null;
-        if (exportsPath is not null)
+        if (exports)
         {
             foreach (var input in inputs)
             {
@@ -298,7 +272,7 @@ public static class ObjectLinkCommand
                 if (abi is not null && kernelAbi is null) { kernelAbi = abi; kernelCpu = cpu; }
             }
             kernelCpu ??= firstCpu;
-            inputs.Add(("the build stamp", KernelExports.StampObject(stamp!, loaded: true)));
+            inputs.Add(("the link's identity", KernelExports.LinkIdObject()));
         }
         if (kernel is not null) Linker.AgreeWithKernel(inputs, kernel);
         // These contracts have been consumed by validation, and the layout
@@ -323,7 +297,7 @@ public static class ObjectLinkCommand
         }
         else if (kernel is not null)
         {
-            image = Linker.LinkModule(inputs, output, kernel, sharedLibraries.Distinct(StringComparer.Ordinal).ToList(), relocatedText, factsRead);
+            image = Linker.LinkModule(inputs, output, kernel, sharedLibraries.Distinct(StringComparer.Ordinal).ToList(), relocatedText);
         }
         else if (shared || sharedLibraries.Count > 0)
         {
@@ -350,21 +324,15 @@ public static class ObjectLinkCommand
         }
         if (!streamed) File.WriteAllBytes(output, image);
         LinkTimings.Phase("layout and write");
-        if (exportsPath is not null)
+        if (exports)
         {
+            // In the kernel's own file, a section nothing loads (KernelExports),
+            // with the identity the written kernel holds.
+            byte[] linkId = KernelExports.StampLinkId(output);
             List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
-            byte[]? bodies = smallBodies is null ? null : KernelExports.BodiesNote(smallBodies, globals);
-            // EVERY SMALL BODY IN THE TABLE, as the units made it, not only
-            // those this link kept: a module that copied one needs nothing of
-            // the kernel's own, and the kernel's open link and its pruned one
-            // must answer a module alike (the build checks it against the
-            // one, the loader against the other).
-            if (decls is not null && smallBodies is { Count: > 0 }) decls = KernelExports.WithBodies(decls, smallBodies);
-            if (decls is not null) decls = KernelExports.WithExports(decls, globals);
-            if (decls is not null) decls = KernelExports.WithFacts(decls, kernelInterrupts ?? new(), kernelFloats ?? new());
-            KernelExports.Write(exportsPath, Path.GetFileName(output), globals, stamp!, kernelAbi, kernelCpu, longMode, bodies, decls);
-            Console.Error.WriteLine($"{exportsPath}: {globals.Count} kernel exports, build stamp {KernelExports.Text(stamp!)}"
-                + (bodies is null ? "" : ", small functions' IR " + (bodies.Length >> 10) + " KiB"));
+            byte[] table = KernelExports.Table(globals, kernelAbi, kernelCpu, linkId, longMode);
+            KernelExports.AddTo(output, table);
+            Console.Error.WriteLine($"{output}: {globals.Count} kernel exports, {KernelExports.SectionName} {table.Length} bytes");
         }
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)

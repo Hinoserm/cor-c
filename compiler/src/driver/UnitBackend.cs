@@ -64,11 +64,11 @@ public sealed class UnitBackend : IUnitBackend
         bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
         // A kernel module's unit is part of a shared object, and is made again as one.
         bool positionIndependent = IrUnitCodec.ReadSettings(archive).Settings is { PositionIndependent: true };
-        // A kernel module's unit, by what its compile put in it of the kernel
-        // (its reads, or an older compile's stamp): position-independent, or
-        // not when its text is relocated at load (--relocated-text), and kept
-        // to what its compile defined either way.
-        bool moduleUnit = original.Sections.Any(section => section.Name is KernelExports.StampSection or DeclarationReads.ReadsSection);
+        // A kernel module's unit, by the mark its compile put in it
+        // (KernelExports.ModuleUnitSection): position-independent, or not when
+        // its text is relocated at load (--relocated-text), and kept to what
+        // its compile defined either way.
+        bool moduleUnit = original.Sections.Any(section => section.Name == KernelExports.ModuleUnitSection);
         // The late passes need the unit whole, so its decode is bounded by a
         // fixed limit, the same on every machine: sized by what the machine
         // has free (a quarter of what the process's 768 MB heap leaves), a
@@ -450,11 +450,10 @@ public sealed class UnitBackend : IUnitBackend
         if (errors.Count > 0) throw new InvalidDataException("IR backend: " + string.Join("; ", errors));
         foreach (Section section in original.Sections.Where(section => section.Name is TargetContract.SectionName or ManagedLayoutContract.SectionName
                        or ".corsac.tag" or RegistrySchema.SectionName or NativeLibraries.SectionName
-                       // A module's unit: what it read of the kernel (or an older
-                       // compile's stamp), what it says of itself and its
+                       // A module's unit: its mark, what it says of itself and its
                        // initialisers, which its link reads after this
                        // (Linker.LinkModule).
-                       or KernelExports.StampSection or DeclarationReads.ReadsSection or ModuleInfo.SectionName or ModuleInfo.InitializerSection
+                       or KernelExports.ModuleUnitSection or ModuleInfo.SectionName or ModuleInfo.InitializerSection
                        // And what its static initialisers and constructors do, for the
                        // link to lay statics down made (Preinit).
                        or Corsac.Lang.Lto.Preinit.SectionName))

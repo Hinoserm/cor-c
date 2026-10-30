@@ -79,9 +79,8 @@ public static class KernelFiles
     }
 }
 
-// A SMALL FUNCTION A MODULE CALLS: its IR goes in the exports, and the
-// module's link puts its body where the module calls it -- no call into the
-// kernel for a getter (KernelExports.SmallBodies).
+// A SMALL FUNCTION A MODULE CALLS: called, never copied into the module --
+// a body copied across the boundary would not change with the kernel.
 public static class Tick
 {
     public static int Twice(int value) => value * 2 + Log.Lines;
@@ -111,7 +110,7 @@ static class Program
     {
         Host.Start(32 * 1024 * 1024);
         Log.Write("kernel " + Drivers.Count);
-        if (!Modules.Insmod("module.ko", "kernel.exports"))
+        if (!Modules.Insmod("module.ko", "kernel"))
         {
             Log.Write("refused: " + Modules.Refusal);
             Host.Done(3);
