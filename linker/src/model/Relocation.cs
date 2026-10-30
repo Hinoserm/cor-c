@@ -14,7 +14,8 @@ namespace Corsac.Lang.Ir;
 /// `label - 0xffffffff80000000`, a `.dq` of one) and is kept whole in a table
 /// of them (Wide), the word holding its place there. An offset past 2^26
 /// either side -- a section of 64 MiB, which no unit's is -- is refused, never
-/// cut short.
+/// cut short, with the InvalidOperationException the backends report as a
+/// compile error.
 /// </summary>
 public readonly record struct Relocation
 {
@@ -75,8 +76,8 @@ public readonly record struct Relocation
     private static (int OffsetKind, int Addend) Pack(int offset, RelocKind kind, long addend)
     {
         if (offset < -(1 << 26) || offset >= 1 << 26)
-            throw new Corsac.Lang.Elf.ElfFormatException($"a relocation at 0x{offset:x}, past the 2^26 bytes a section's relocation can be at");
-        if ((byte)kind > 0xF) throw new Corsac.Lang.Elf.ElfFormatException("a relocation kind past the four bits it is held in: " + kind);
+            throw new InvalidOperationException($"a relocation at 0x{offset:x}, past the 2^26 bytes a section's relocation can be at");
+        if ((byte)kind > 0xF) throw new InvalidOperationException("a relocation kind past the four bits it is held in: " + kind);
         bool wide = addend is < int.MinValue or > int.MaxValue;
         return (offset << 5 | (wide ? 0x10 : 0) | (byte)kind, wide ? Wide.Place(addend) : (int)addend);
     }

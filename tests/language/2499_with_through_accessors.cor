@@ -3,6 +3,8 @@
 // expect-output:
 // 3 4 7 4 7 9 r True False
 // 1 2 1 5
+// 6 1
+// 20
 //
 // A record struct whose properties pack two numbers into one field has no
 // field to change: `with` calls the init accessor on the copy, as C# does.
@@ -18,14 +20,23 @@ readonly record struct Packed
     public string Name { get; init; }
 }
 
-class Box
+struct Shaped
 {
     private int _v;
-    public int V { get => _v; set => _v = value * 2; }
+    public int V { readonly get => _v; set => _v = value * 2; }
     public int W;
 }
 
 struct Plain { public int X; public int Y { get; set; } }
+
+// A NEARER DECLARATION HIDES THE BASE'S: `with { Side = 2 }` on a Derived
+// sets Derived's Side through its init accessor, not Based's field.
+record Based { public int Side { get; init; } }
+record Derived : Based
+{
+    private int _side;
+    public new int Side { get => _side; init => _side = value * 10; }
+}
 
 static class Program
 {
@@ -38,6 +49,12 @@ static class Program
         Plain s = new() { X = 1, Y = 2 };
         Plain t = s with { Y = 5 };
         Console.WriteLine($"{s.X} {s.Y} {t.X} {t.Y}");
+        Shaped u = new() { W = 1 };
+        Shaped v = u with { V = 3 };
+        Console.WriteLine($"{v.V} {v.W}");
+        Derived d = new();
+        Derived e = d with { Side = 2 };
+        Console.WriteLine(e.Side);
         return 0;
     }
 }

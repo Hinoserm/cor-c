@@ -15426,8 +15426,9 @@ public sealed partial class Binder
                 continue;
             }
 
+            // An instance member's: C# sets no static one in an initialiser.
             MethodSymbol? setter = field is null
-                                 ? owner.FindMethods("set_", init.Name).FirstOrDefault()
+                                 ? owner.FindMethods("set_", init.Name).FirstOrDefault(s => !s.Static)
                                  : null;
 
             if (field is null && (setter is null || setter.Params.Count != 1))
@@ -19399,6 +19400,9 @@ public sealed partial class Binder
 
                     FieldSymbol? field = owner.FindField(init.Name)
                                       ?? owner.FindBackingField(init.Name);
+                    // A NEARER DECLARATION HIDES IT, as in an object initialiser:
+                    // a derived `new` property's accessor, not the base's field.
+                    if (field is not null && HiddenByNearerProperty(owner, field, init.Name)) field = null;
 
                     // A TUPLE'S ELEMENT BY THE NAME IT WAS GIVEN (C# 10):
                     // `t with { Breaks = true }` over a `(bool Breaks, bool
@@ -19418,7 +19422,7 @@ public sealed partial class Binder
                     // set through it, as C# does in a `with` as in an object
                     // initialiser: a record struct's packed Offset is no field.
                     MethodSymbol? setter = field is null
-                        ? owner.FindMethods("set_", init.Name).FirstOrDefault(s => s.Params.Count == 1)
+                        ? owner.FindMethods("set_", init.Name).FirstOrDefault(s => s.Params.Count == 1 && !s.Static)
                         : null;
 
                     if (field is null && setter is null)
