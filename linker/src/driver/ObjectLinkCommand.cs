@@ -328,11 +328,20 @@ public static class ObjectLinkCommand
         {
             // In the kernel's own file, a section nothing loads (KernelExports);
             // then, the file's header final, the identity, in both places.
-            List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
-            byte[] table = KernelExports.Table(globals, kernelAbi, kernelCpu, new byte[KernelExports.LinkIdBytes], longMode);
-            KernelExports.AddTo(output, table);
-            KernelExports.StampLinkId(output);
-            Console.Error.WriteLine($"{output}: {globals.Count} kernel exports, {KernelExports.SectionName} {table.Length} bytes");
+            // A kernel whose table cannot be made is no kernel: not left behind.
+            try
+            {
+                List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
+                byte[] table = KernelExports.Table(globals, kernelAbi, kernelCpu, new byte[KernelExports.LinkIdBytes], longMode);
+                KernelExports.AddTo(output, table);
+                KernelExports.StampLinkId(output);
+                Console.Error.WriteLine($"{output}: {globals.Count} kernel exports, {KernelExports.SectionName} {table.Length} bytes");
+            }
+            catch (Exception error) when (error is LinkException or ElfFormatException)
+            {
+                File.Delete(output);
+                throw;
+            }
         }
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)

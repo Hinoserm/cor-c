@@ -140,13 +140,6 @@ internal static class Elf
     /// </summary>
     public const int DtCorsacNames64 = 0x60000C08;
 
-    /// <summary>A name's FNV-1a 64-bit hash over its UTF-8: what DT_CORSAC_NAMES64 holds, independent of the GNU hash.</summary>
-    public static ulong FnvName(string name)
-    {
-        ulong h = 0xcbf29ce484222325;
-        foreach (byte c in Encoding.UTF8.GetBytes(name)) h = unchecked((h ^ c) * 0x100000001b3);
-        return h;
-    }
     public const int DtRel = 17;
     public const int DtRelSz = 18;
     public const int DtRelEnt = 19;
@@ -179,6 +172,14 @@ internal static class Elf
     {
         uint h = 5381;
         foreach (byte c in Encoding.UTF8.GetBytes(name)) h = unchecked(h * 33 + c);
+        return h;
+    }
+
+    /// <summary>A name's FNV-1a 64-bit hash over its UTF-8: what DT_CORSAC_NAMES64 holds, independent of the GNU hash.</summary>
+    public static ulong FnvName(string name)
+    {
+        ulong h = 0xcbf29ce484222325;
+        foreach (byte c in Encoding.UTF8.GetBytes(name)) h = unchecked((h ^ c) * 0x100000001b3);
         return h;
     }
 

@@ -129,30 +129,33 @@ public static class Modules
         return true;
     }
 
-    /// Where the kernel's exports say `name` is: their DT_HASH, chain by
-    /// chain, every offset the section's own, from its dynamic array at nought.
+    /// Where the kernel's exports say `name` is, as the kernel's binder finds
+    /// it: the GNU hash's bloom word, its bucket and chain, then the name as
+    /// a number beside the symbol (DT_CORSAC_NAMES64) -- no symbol and no
+    /// string of the table read.
     static uint Export(byte[] table, string name)
     {
-        int hash = 0, symtab = 0, strtab = 0;
-        for (int d = 0; U32(table, d) != 0; d += 8)
-        {
-            uint tag = U32(table, d);
-            int value = (int)U32(table, d + 4);
-            if (tag == 4) hash = value; else if (tag == 6) symtab = value; else if (tag == 5) strtab = value;
-        }
-        uint h = 0;
+        int gnu = Tag(table, 0x6FFFFEF5), names = Tag(table, 0x60000C08);
+        if (gnu < 0 || names < 0) return 0;
+        // The names are ASCII, each character its own byte.
+        uint h = 5381;
+        ulong strong = 0xCBF29CE484222325UL;
         for (int i = 0; i < name.Length; i++)
         {
-            h = unchecked((h << 4) + name[i]);
-            uint g = h & 0xF0000000u;
-            if (g != 0) h ^= g >> 24;
-            h &= ~g;
+            h = unchecked(h * 33 + name[i]);
+            strong = unchecked((strong ^ name[i]) * 0x100000001B3UL);
         }
-        uint buckets = U32(table, hash);
-        for (uint i = U32(table, hash + 8 + (int)(h % buckets) * 4); i != 0; i = U32(table, hash + 8 + (int)(buckets + i) * 4))
+        uint buckets = U32(table, gnu), first = U32(table, gnu + 4), words = U32(table, gnu + 8), shift = U32(table, gnu + 12);
+        uint bloom = U32(table, gnu + 16 + (int)((h / 32) % words) * 4);
+        if ((((bloom >> (int)(h % 32)) & (bloom >> (int)((h >> (int)shift) % 32))) & 1) == 0) return 0;
+        int bucketsAt = gnu + 16 + (int)words * 4, chainsAt = bucketsAt + (int)buckets * 4;
+        for (uint i = U32(table, bucketsAt + (int)(h % buckets) * 4); i != 0; i++)
         {
-            int sym = symtab + (int)i * 16;
-            if (Text(table, strtab + (int)U32(table, sym)) == name) return U32(table, sym + 4);
+            uint chain = U32(table, chainsAt + (int)(i - first) * 4);
+            int entry = names + (int)(i - 1) * 16;
+            if ((chain | 1) == (h | 1) && U32(table, entry) == (uint)strong && U32(table, entry + 4) == (uint)(strong >> 32))
+                return U32(table, entry + 8);
+            if ((chain & 1) != 0) break;
         }
         return 0;
     }

@@ -134,9 +134,10 @@ if len(sys.argv) > 2 and sys.argv[2] == '--gnu':
     # As a glibc reader takes the table for granted.
     if symoffset != 1 or nbuckets % 2 == 0 or bloom_size & (bloom_size - 1) or shift != (6 if wide else 5):
         sys.exit('gnu hash header: nbuckets %d symoffset %d bloom %d shift %d' % (nbuckets, symoffset, bloom_size, shift))
-    last, = struct.unpack_from('<I', table, chains + (count - 1 - symoffset) * 4)
-    if count > 1 and not last & 1:
+    if count > 1 and not struct.unpack_from('<I', table, chains + (count - 1 - symoffset) * 4)[0] & 1:
         sys.exit('gnu hash: the last chain does not end')
+    if tags[0x60000C08] % 8 or tags[0x60000C08] + 16 * (count - 1) > tags[6]:
+        sys.exit('names64 is not 8-aligned before .dynsym')
     missed = [name_of(i) for i in range(1, count) if lookup(name_of(i)) != i]
     # And each value the same as the symbol's.
     for i in range(1, count):

@@ -18,9 +18,10 @@ namespace Corsac.Lang.Elf;
 /// the section by its header, reads it alone when it binds a module, and
 /// lets it go. Its offsets are the section's own, from its first byte:
 ///
-///   0x0000  the dynamic array: DT_HASH, DT_SYMTAB, DT_STRTAB, DT_STRSZ,
-///           DT_SYMENT, the native contract and processor (DT_CORSAC_ABI,
-///           _CPU and their sizes, Elf.DtCorsacAbi), DT_NULL; each value an
+///   0x0000  the dynamic array: DT_HASH, DT_GNU_HASH, DT_CORSAC_NAMES64,
+///           DT_SYMTAB, DT_STRTAB, DT_STRSZ, DT_SYMENT, the native contract
+///           and processor (DT_CORSAC_ABI, _CPU and their sizes,
+///           Elf.DtCorsacAbi), DT_CORSAC_LINKID, DT_NULL; each value an
 ///           offset in this section
 ///           .hash     the SysV hash over the symbols
 ///           .gnu.hash the GNU hash (DT_GNU_HASH): a bloom filter and each
@@ -222,7 +223,7 @@ public sealed class KernelExports
     /// <summary>
     /// The table: <paramref name="symbols"/> in a .dynsym -- REORDERED, in
     /// order of their GNU buckets -- with a SysV hash and a GNU hash over
-    /// them, the contract and the processor, and the dynamic array that
+    /// them, each name's 64-bit hash and value beside it (names64), the contract and the processor, and the dynamic array that
     /// names them all ahead of them, every offset the section's own.
     /// </summary>
     public static byte[] Table(IReadOnlyList<Export> symbols, byte[]? abi, byte[]? cpu, byte[] linkId, bool wide)
@@ -315,13 +316,16 @@ public sealed class KernelExports
         Pad(names64At);
         // TWO NAMES THE SAME AS NUMBERS, both hashes alike, would bind one for
         // the other: refused, the link naming them, not left to chance.
+        // A loader matches the GNU hash but its lowest bit (the chain's end),
+        // so the pair is taken as a loader takes it.
         Dictionary<(uint, ulong), string> numbered = new();
-        foreach (Export s in symbols)
+        for (int i = 0; i < symbols.Count; i++)
         {
-            ulong strong = Elf.FnvName(s.Name);
-            if (!numbered.TryAdd((Elf.GnuHashName(s.Name), strong), s.Name))
-                throw new LinkException(new[] { "two exports are one name to a loader (the same GNU and FNV-1a 64 hashes): '" + numbered[(Elf.GnuHashName(s.Name), strong)] + "' and '" + s.Name + "'" });
-            w.Write(strong); w.Write(s.Value);
+            ulong strong = Elf.FnvName(symbols[i].Name);
+            (uint, ulong) key = (gnuHash[i] | 1, strong);
+            if (!numbered.TryAdd(key, symbols[i].Name))
+                throw new LinkException(new[] { "two exports are one name to a loader (the same GNU and FNV-1a 64 hashes): '" + numbered[key] + "' and '" + symbols[i].Name + "'" });
+            w.Write(strong); w.Write(symbols[i].Value);
         }
         Pad(dynsymAt);
         w.Write(new byte[symbolSize]);
