@@ -157,17 +157,26 @@ public static class ProjectCommand
         // units read the library's declarations here rather than parsing its
         // every file again (--ref).
         foreach (string library in libraries) symbols.TryAdd(library, Driver.TargetSymbols(target).ToArray());
+        // WHETHER ANY DECLARATION CAN MAKE AN INTERRUPT HANDLER, as the index
+        // read of the sources found (below), kept beside the index for a
+        // build that does not read them again (--runtime-only) to compile its
+        // units as the last build did.
         bool interruptHandlers = false;
+        string handlersNote = index + ".handlers";
         if (!linkOnly || !File.Exists(index))
+        {
             SourceIndexBuilder.Write(index, owners.Keys.Concat(libraries), project.AssemblyName, fileSymbols: symbols, librarySource: Driver.IsLibrarySource,
                 interruptHandler: () => interruptHandlers = true);
+            File.WriteAllText(handlersNote, interruptHandlers ? "1" : "0");
+        }
+        else interruptHandlers = !File.Exists(handlersNote) || File.ReadAllText(handlersNote) != "0";
         // NO INTERRUPT HANDLER ANYWHERE, NO FACTS FOR ONE (InterruptNotes): a
-        // handler is a method marked [InterruptHandler] or one implementing an
-        // interface method so marked, and a hosted project's can only be
-        // declared in its own sources or the class library's, every one of
-        // which the index has just read. None declared, no unit keeps the
-        // facts the link would walk from one. (Link only, nothing compiles.)
-        string[] factsArguments = interruptHandlers || linkOnly ? Array.Empty<string>() : new[] { "--no-interrupt-facts" };
+        // handler is a method marked [InterruptHandler], one implementing an
+        // interface method so marked, or an IIrqHandler's OnIrq, and a hosted
+        // project's can only be declared in its own sources or the class
+        // library's, every one of which the index reads. None declared, no
+        // unit keeps the facts the link would walk from one.
+        string[] factsArguments = interruptHandlers ? Array.Empty<string>() : new[] { "--no-interrupt-facts" };
         string toolchain = ProjectState.Digest(ToolIdentity(typeof(Driver).Assembly) + "\n" + ToolIdentity(typeof(ObjectLinkCommand).Assembly));
         string libraryState = ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity)));
         List<string> objects = new();
@@ -478,7 +487,7 @@ public static class ProjectCommand
                         {
                             ok = false;
                             Console.Error.WriteLine("corc: the compile-project process for " + which + " could not be started again after pid " + spent + ": " + e.Message
-                                + "; units of it not yet compiled are not built");
+                                + "; the build fails");
                         }
                         return;
                     }

@@ -1101,6 +1101,21 @@ public sealed partial class Binder
         return false;
     }
 
+    /// <summary>The interface whose method is a handler by its name alone (HandlerInterface).</summary>
+    public const string IrqInterface = "IIrqHandler", IrqMethod = "OnIrq";
+
+    /// <summary>
+    /// Whether a declaration can make a handler: a method marked
+    /// [InterruptHandler] -- one, or an interface's that implementations are
+    /// -- or the IIrqHandler interface with its OnIrq (HandlerInterface). What
+    /// the index read of a project asks of each type (SourceIndexBuilder): a
+    /// project none of whose types can make one keeps no facts for one.
+    /// </summary>
+    public static bool DeclaresInterruptHandler(TypeDecl type)
+        => type.Members.Any(member => member is MethodDecl method
+            && (method.Attributes.Any(attribute => attribute.Is("InterruptHandler"))
+                || type.Kind == TypeKind.Interface && ShortName(type.Name) == IrqInterface && method.Name == IrqMethod));
+
     private bool HandlerInterface(TypeSymbol i, MethodSymbol m, HashSet<TypeSymbol> seen)
     {
         if (!seen.Add(i))
@@ -1111,7 +1126,7 @@ public sealed partial class Binder
         {
             string implemented = m.ExplicitMember ?? m.Name;
             if (im.Name != implemented || im.Params.Count != m.Params.Count) continue;
-            if (ShortName(i.Name) == "IIrqHandler" && im.Name == "OnIrq") return true;
+            if (ShortName(i.Name) == IrqInterface && im.Name == IrqMethod) return true;
             if (im.Decl is MethodDecl d && d.Attributes.Any(a => a.Is("InterruptHandler"))) return true;
         }
         foreach (TypeSymbol up in i.Interfaces)

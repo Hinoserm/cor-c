@@ -1176,7 +1176,7 @@ public static class Driver
         // Its link reads no fact (InterruptNotes.Check, no handler), and the
         // self-hosted compiler's units wrote some 8.8 MB each of them.
         Binder.CollectInterruptFacts = (args.Contains("--obj") || library) && !args.Contains("--no-interrupt-facts")
-            || Corsac.Switches.WaitFreeRoots is { Length: > 0 } || Corsac.Switches.IrqRoots is { Length: > 0 };
+            || Corsac.Switches.WaitFreeRoots is { Length: > 0 } || Corsac.Switches.IrqRoots is { Length: > 0 } || Corsac.Switches.IrqLocksReport;
         Corsac.Lang.Lower.Lowering.Dynamic = !library && sharedLibs.Count > 0;
         // A CLOSED WORLD: everything that can call through a vtable is in this
         // compile, so a slot's method is compiled only once something reads
