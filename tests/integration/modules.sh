@@ -61,6 +61,7 @@ readelf -l -W "$a/kernel" | awk -v s="$section" 'BEGIN { split(s, t, " ") } $1 =
 if readelf -s -W "$a/kernel" | grep -q '__corsac_build_stamp'; then fail "the kernel carries a build stamp"; fi
 python3 -I "$root/$here/exports.py" "$a/kernel" --identity | grep -qx 'identity ok' \
     || fail "the kernel's link identity is not its loaded bytes' hash, or its copies differ"
+python3 -I "$root/$here/exports.py" "$a/kernel" --gnu | grep -q '^gnu ok' || fail "the kernel's GNU hash does not find its every export"
 exports "$a/kernel" > "$work/exports.syms"
 for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver_r$V$Void' 't_Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt_r$V$Void'; do
     awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' "$work/exports.syms" || fail "the kernel does not export $name"

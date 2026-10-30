@@ -23,6 +23,8 @@ namespace Corsac.Lang.Elf;
 ///           _CPU and their sizes, Elf.DtCorsacAbi), DT_NULL; each value an
 ///           offset in this section
 ///           .hash     the SysV hash over the symbols
+///           .gnu.hash the GNU hash (DT_GNU_HASH): a bloom filter and each
+///                     symbol's hash, its symbols in order of its buckets
 ///           .dynsym   every export, SHN_ABS, its value the kernel's address
 ///           .dynstr
 ///           the contract and the processor, as the kernel's units say them
@@ -223,6 +225,33 @@ public sealed class KernelExports
         if (linkId.Length != LinkIdBytes) throw new ArgumentException("a link identity is " + LinkIdBytes + " bytes");
         int symbolSize = wide ? Elf.Symbol64Size : Elf.SymbolSize;
         int word = wide ? 8 : 4;
+
+        // THE GNU HASH, which a loader reading the table from the file asks
+        // first: a bloom word tells most names absent without a page of the
+        // table's more, and a chain holds each symbol's hash, so a name is
+        // compared only where its hash is the same. Its symbols lie in order
+        // of their buckets, the first one after the null symbol; the SysV
+        // hash, by symbol number, does not mind the order.
+        int gnuBuckets = Math.Max(1, symbols.Count / 4) | 1;
+        uint[] gnuHash = symbols.Select(s => Elf.GnuHashName(s.Name)).ToArray();
+        int[] order = Enumerable.Range(0, symbols.Count).OrderBy(i => gnuHash[i] % (uint)gnuBuckets).ThenBy(i => i).ToArray();
+        symbols = order.Select(i => symbols[i]).ToList();
+        gnuHash = order.Select(i => gnuHash[i]).ToArray();
+        int bloomBits = word * 8, bloomShift = wide ? 6 : 5;
+        int bloomWords = 1;
+        while (bloomWords * bloomBits < symbols.Count * 12) bloomWords <<= 1;
+        ulong[] bloom = new ulong[bloomWords];
+        uint[] gnuBucket = new uint[gnuBuckets], gnuChain = new uint[symbols.Count];
+        for (int i = 0; i < symbols.Count; i++)
+        {
+            uint h = gnuHash[i];
+            bloom[(h / (uint)bloomBits) % (uint)bloomWords] |= (1UL << (int)(h % (uint)bloomBits)) | (1UL << (int)((h >> bloomShift) % (uint)bloomBits));
+            uint b = h % (uint)gnuBuckets;
+            if (gnuBucket[b] == 0) gnuBucket[b] = (uint)(i + 1);
+            bool last = i + 1 == symbols.Count || gnuHash[i + 1] % (uint)gnuBuckets != b;
+            gnuChain[i] = last ? h | 1 : h & ~1u;
+        }
+
         StringTable dynstr = new();
         uint[] nameAt = symbols.Select(s => dynstr.Add(s.Name)).ToArray();
         byte[] strings = dynstr.ToArray();
@@ -240,9 +269,10 @@ public sealed class KernelExports
         }
 
         static long Align(long at, int to) => (at + to - 1) / to * to;
-        int tagCount = 7 + (abi is null ? 0 : 2) + (cpu is null ? 0 : 2);
+        int tagCount = 8 + (abi is null ? 0 : 2) + (cpu is null ? 0 : 2);
         long hashAt = Align(tagCount * 2L * word, 8);
-        long dynsymAt = Align(hashAt + (2L + buckets + count) * 4, word);
+        long gnuHashAt = Align(hashAt + (2L + buckets + count) * 4, word);
+        long dynsymAt = Align(gnuHashAt + 16 + (long)bloomWords * word + (gnuBuckets + (long)symbols.Count) * 4, word);
         long dynstrAt = dynsymAt + (long)count * symbolSize;
         long abiAt = Align(dynstrAt + strings.Length, 4);
         long cpuAt = Align(abiAt + (abi?.Length ?? 0), 4);
@@ -250,7 +280,7 @@ public sealed class KernelExports
         long end = linkIdAt + LinkIdBytes;
         List<(long Tag, ulong Value)> dynamic = new()
         {
-            (Elf.DtHash, (ulong)hashAt), (Elf.DtSymTab, (ulong)dynsymAt), (Elf.DtStrTab, (ulong)dynstrAt),
+            (Elf.DtHash, (ulong)hashAt), (Elf.DtGnuHash, (ulong)gnuHashAt), (Elf.DtSymTab, (ulong)dynsymAt), (Elf.DtStrTab, (ulong)dynstrAt),
             (Elf.DtStrSz, (ulong)strings.Length), (Elf.DtSymEnt, (ulong)symbolSize),
         };
         if (abi is not null) { dynamic.Add((Elf.DtCorsacAbi, (ulong)abiAt)); dynamic.Add((Elf.DtCorsacAbiSz, (ulong)abi.Length)); }
@@ -267,6 +297,13 @@ public sealed class KernelExports
         w.Write((uint)buckets); w.Write((uint)count);
         foreach (uint b in bucket) w.Write(b);
         foreach (uint c in chain) w.Write(c);
+        // The GNU hash: its buckets, the first symbol it covers, the bloom's
+        // words and shift; the words, the buckets, each symbol's hash.
+        Pad(gnuHashAt);
+        w.Write((uint)gnuBuckets); w.Write(1u); w.Write((uint)bloomWords); w.Write((uint)bloomShift);
+        foreach (ulong bits in bloom) Word(bits);
+        foreach (uint b in gnuBucket) w.Write(b);
+        foreach (uint c in gnuChain) w.Write(c);
         Pad(dynsymAt);
         w.Write(new byte[symbolSize]);
         for (int i = 0; i < symbols.Count; i++)

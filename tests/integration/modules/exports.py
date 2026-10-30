@@ -89,6 +89,45 @@ if len(sys.argv) > 2 and sys.argv[2] == '--identity':
     sys.exit(0)
 
 count, = struct.unpack_from('<I', table, tags[4] + 4)
+
+if len(sys.argv) > 2 and sys.argv[2] == '--gnu':
+    # Every name found again through DT_GNU_HASH as a loader finds it: the
+    # bloom words, the bucket, the chain's hashes, then the name.
+    at = tags[0x6ffffef5]
+    nbuckets, symoffset, bloom_size, shift = struct.unpack_from('<IIII', table, at)
+    bits = word * 8
+    bloom = struct.unpack_from(('<%dQ' if wide else '<%dI') % bloom_size, table, at + 16)
+    buckets = struct.unpack_from('<%dI' % nbuckets, table, at + 16 + bloom_size * word)
+    chains = at + 16 + bloom_size * word + nbuckets * 4
+    strings, entry = tags[5], tags[11]
+    def name_of(i):
+        at_sym = tags[6] + i * entry
+        n, = struct.unpack_from('<I', table, at_sym)
+        return table[strings + n:table.index(b'\0', strings + n)].decode()
+    def lookup(text):
+        h = 5381
+        for c in text.encode():
+            h = (h * 33 + c) & 0xffffffff
+        w = bloom[(h // bits) % bloom_size]
+        if not (w >> (h % bits)) & 1 or not (w >> ((h >> shift) % bits)) & 1:
+            return None
+        i = buckets[h % nbuckets]
+        if i == 0:
+            return None
+        while True:
+            ch, = struct.unpack_from('<I', table, chains + (i - symoffset) * 4)
+            if (ch | 1) == (h | 1) and name_of(i) == text:
+                return i
+            if ch & 1:
+                return None
+            i += 1
+    missed = [name_of(i) for i in range(1, count) if lookup(name_of(i)) != i]
+    if missed:
+        sys.exit('gnu hash misses %d of %d: %s' % (len(missed), count - 1, ', '.join(missed[:5])))
+    if lookup('no_such_name_at_all') is not None:
+        sys.exit('gnu hash finds a name it does not hold')
+    print('gnu ok', count - 1)
+    sys.exit(0)
 strings, entry = tags[5], tags[11]
 for i in range(1, count):
     at = tags[6] + i * entry

@@ -156,6 +156,17 @@ internal static class Elf
     public const int DtRelaSz = 8;
     public const int DtRelaEnt = 9;
 
+    /// <summary>The GNU hash table (DT_GNU_HASH): a bloom filter and each symbol's hash beside it, so a lookup compares a name only where the hashes agree.</summary>
+    public const int DtGnuHash = 0x6ffffef5;
+
+    /// <summary>The GNU hash of a symbol name (dl_new_hash): h = h * 33 + c from 5381, over its UTF-8.</summary>
+    public static uint GnuHashName(string name)
+    {
+        uint h = 5381;
+        foreach (byte c in Encoding.UTF8.GetBytes(name)) h = unchecked(h * 33 + c);
+        return h;
+    }
+
     /// <summary>The SysV hash of a symbol name, as the ELF specification defines it.</summary>
     public static uint HashName(string name)
     {
