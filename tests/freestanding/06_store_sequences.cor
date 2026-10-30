@@ -4,7 +4,7 @@
 // expect-asm-x86: Store: __corsac_refstore
 // expect-no-asm-x86: Store: cmp __corsac_cardmark __corsac_barrier
 // expect-asm-x86: Swap: __corsac_refxchg
-// expect-no-asm-x86: Swap: [s_Runtime_Marking] __corsac_cardmark __corsac_barrier
+// expect-no-asm-x86: Swap: [s_Runtime_Marking_t$V$I32] __corsac_cardmark __corsac_barrier
 // expect-asm-x86-64: Store: __corsac_refstore
 // expect-no-asm-x86-64: Store: cmp s_Runtime_Marking s_Runtime_Cards shr __corsac_cardstore
 // expect-asm-x86-64: Swap: __corsac_refxchg

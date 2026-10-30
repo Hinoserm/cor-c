@@ -116,7 +116,7 @@ public sealed class X86Backend : IBackend
     public const string StackMapStart = "__corsac_stackmaps";
 
     /// <summary>Each object's card-marking stub, and the table it reads (Runtime.Cards).</summary>
-    public const string CardStub = "__corsac_cardmark", CardTable = "s_Runtime_Cards";
+    public const string CardStub = "__corsac_cardmark", CardTable = "s_Runtime_Cards_t$V$NUInt";
 
     /// <summary>Each object's barrier stub, and the runtime routine it calls (Runtime.WriteBarrier).</summary>
     public const string BarrierStub = "__corsac_barrier", BarrierRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
@@ -125,9 +125,9 @@ public sealed class X86Backend : IBackend
     /// <summary>The store sequences' stubs and the range they lie in (RuntimeAbi.RefStore; CardMarks.FuseStores).</summary>
     public const string RefStoreStub = Corsac.Lang.Lto.RuntimeAbi.RefStore, CardStoreStub = Corsac.Lang.Lto.RuntimeAbi.CardStore;
     public const string RefExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefExchange, RefCompareExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefCompareExchange;
-    public const string MarkingFlag = "s_Runtime_Marking";
+    public const string MarkingFlag = "s_Runtime_Marking_t$V$I32";
     /// <summary>The runtime's 386 lock word (Runtime.Atomics386), which the 386 form of __corsac_refcas takes where it may not turn interrupts off.</summary>
-    public const string Atomics386Lock = "s_Runtime_Atomics386";
+    public const string Atomics386Lock = "s_Runtime_Atomics386_t$V$I32";
     /// <summary>What the store sequences call while Marking is set: the report, the store and the card in one (Runtime.WriteBarrierStore).</summary>
     public const string BarrierStoreRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrierStore,
         BarrierExchangeRoutine = Corsac.Lang.Lto.RuntimeAbi.WriteBarrierExchange,

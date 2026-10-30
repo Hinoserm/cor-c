@@ -736,7 +736,7 @@ public sealed class Inline : IParallelModulePass
         foreach (Block b in f.Blocks)
         {
             if (b.Terminator is { Op: Opcode.Unreachable } || b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee is { } c
-                    && (c.StartsWith("m_ThrowHelper_", StringComparison.Ordinal) || c == "m_Runtime_IndexOutOfRange_0")))
+                    && (c.StartsWith("m_ThrowHelper_", StringComparison.Ordinal) || c == "m_Runtime_IndexOutOfRange_0_r$V$Void")))
             {
                 continue;
             }
@@ -751,7 +751,7 @@ public sealed class Inline : IParallelModulePass
                 }
                 // The flag's read and the branch on it, and the field address
                 // that only the bookkeeping takes.
-                if (i.Op == Opcode.Load && i.Operands.Count > 0 && i.Operands[0] is SymOperand { Name: "s_Runtime_Marking" }) continue;
+                if (i.Op == Opcode.Load && i.Operands.Count > 0 && i.Operands[0] is SymOperand { Name: "s_Runtime_Marking_t$V$I32" }) continue;
                 if (k + 1 < b.Instrs.Count && i.Op == Opcode.Add && b.Instrs[k + 1] is { Op: Opcode.Call, Callee: Corsac.Lang.Lto.RuntimeAbi.WriteBarrier or Corsac.Lang.Lto.RuntimeAbi.CardMark }) continue;
                 if (i.Op == Opcode.Jump && b.Instrs.Count <= 3 && b.Instrs.Any(x => x.Op == Opcode.Call && x.Callee == Corsac.Lang.Lto.RuntimeAbi.WriteBarrier)) continue;
                 n++;

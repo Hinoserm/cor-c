@@ -62,11 +62,11 @@ if readelf -s -W "$a/kernel" | grep -q '__corsac_build_stamp'; then fail "the ke
 python3 -I "$root/$here/exports.py" "$a/kernel" --identity | grep -qx 'identity ok' \
     || fail "the kernel's link identity is not its loaded bytes' hash, or its copies differ"
 exports "$a/kernel" > "$work/exports.syms"
-for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver' 't_Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt'; do
+for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver_r$V$Void' 't_Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt_r$V$Void'; do
     awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' "$work/exports.syms" || fail "the kernel does not export $name"
 done
-kernelAddress=$(readelf -s -W "$a/kernel" | awk '$8 == "m_Kernel$Log_Write_1_V$String" { print $2 }')
-exportAddress=$(awk '$1 == "m_Kernel$Log_Write_1_V$String" { print $2 }' "$work/exports.syms")
+kernelAddress=$(readelf -s -W "$a/kernel" | awk '$8 == "m_Kernel$Log_Write_1_V$String_r$V$Void" { print $2 }')
+exportAddress=$(awk '$1 == "m_Kernel$Log_Write_1_V$String_r$V$Void" { print $2 }' "$work/exports.syms")
 test -n "$kernelAddress" && test "$kernelAddress" = "$exportAddress" || fail "an export is not where the kernel has it"
 for name in _start __data_start _end __corsac_units; do
     if awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' "$work/exports.syms"; then fail "the kernel exports its own $name"; fi
@@ -110,11 +110,11 @@ for ko in "$work/sb16.ko" "$work/linked/sb16.ko" "$work/project/sb16.ko"; do
     # No runtime of its own: the kernel's collector, allocator and strings.
     readelf --dyn-syms -W "$ko" > "$ko.syms"
     if awk '$7 != "UND" && $8 ~ /^m_(Runtime|Gc|String)_/ { found = 1 } END { exit !found }' "$ko.syms"; then fail "$ko carries a runtime"; fi
-    for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt' 't_Kernel$002eDriver'; do
+    for name in 'm_Kernel$Drivers_Register_1_T$Kernel$002eDriver_r$V$Void' 'm_Runtime_BeginImage_3_V$NUInt_V$NUInt_V$NUInt_r$V$Void' 't_Kernel$002eDriver'; do
         awk -v n="$name" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import $name"
     done
     # AND THE LAYOUT IT WAS COMPILED AGAINST, by name: the kernel's Driver's.
-    driverShape=$(awk '$1 ~ /^z_Kernel\$002eDriver\$/ { print $1 }' "$work/exports.syms")
+    driverShape=$(awk '$1 ~ /^z_Kernel\$002eDriver\$[0-9a-f]+$/ { print $1 }' "$work/exports.syms")
     test -n "$driverShape" || fail "the kernel does not export its Driver's layout"
     awk -v n="$driverShape" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import the kernel's Driver's layout"
     # DT_INIT is the link's: __corsac_init, then the [ModuleInitializer].
@@ -292,7 +292,7 @@ readelf -p .corsac.modinfo "$ko" | sed -n 's/^ *\[ *[0-9a-f]*\]  //p' > "$ko.mod
 grep -qx 'depends=mixer' "$ko.modinfo" || { cat "$ko.modinfo"; fail "$ko does not depend on the mixer"; }
 readelf --dyn-syms -W "$ko" > "$ko.syms"
 # The kernel's Log.Write is called by its name, never copied in.
-for name in 't_Sound$002eChannel' 'm_Sound$Channels_Total_0' 'm_Kernel$Log_Write_1_V$String'; do
+for name in 't_Sound$002eChannel' 'm_Sound$Channels_Total_0_r$V$I32' 'm_Kernel$Log_Write_1_V$String_r$V$Void'; do
     awk -v n="$name" '$8 == n && $7 == "UND" { found = 1 } END { exit !found }' "$ko.syms" || fail "$ko does not import $name"
 done
 if readelf -s -W "$ko" | awk '$8 == "t_Sound$002eChannel" && $7 != "UND" { found = 1 } END { exit !found }'; then fail "$ko defines the mixer's Channel"; fi
@@ -341,21 +341,21 @@ b=$work/b
 cp "$work/linked/sb16.ko" "$b/module.ko"
 status=0
 (cd "$b" && ./kernel) > "$work/refused.out" 2>&1 || status=$?
-test "$status" = 3 && grep -qx 'refused: undefined symbol m_Kernel$Log_Write_1_V$String' "$work/refused.out" \
+test "$status" = 3 && grep -qx 'refused: undefined symbol m_Kernel$Log_Write_1_V$String_r$V$Void' "$work/refused.out" \
     || { cat "$work/refused.out"; fail "a module calling what the kernel no longer has was loaded"; }
 if "$corc" link "$work/sb16.o" --kernel "$b/kernel" -o "$work/wrong.ko" 2> "$work/wrong-link.log"; then fail "a module calling what the kernel no longer has linked"; fi
-grep -q "'m_Kernel\$Log_Write_1_V\$String' is imported, and neither kernel nor a module this one depends on exports it" "$work/wrong-link.log" \
+grep -q "'m_Kernel\$Log_Write_1_V\$String_r\$V\$Void' is imported, and neither kernel nor a module this one depends on exports it" "$work/wrong-link.log" \
     || { cat "$work/wrong-link.log"; fail "the wrong link said otherwise"; }
 if "$corc" compile --kernel "$b/kernel" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 $here/Sb16.cor -o "$work/wrong.ko" 2> "$work/wrong-compile.log"; then
     fail "a module compiled against an index its kernel does not answer"
 fi
-grep -q "'m_Kernel\$Log_Write_1_V\$String' is imported" "$work/wrong-compile.log" || { cat "$work/wrong-compile.log"; fail "the wrong compile said otherwise"; }
+grep -q "'m_Kernel\$Log_Write_1_V\$String_r\$V\$Void' is imported" "$work/wrong-compile.log" || { cat "$work/wrong-compile.log"; fail "the wrong compile said otherwise"; }
 test ! -e "$work/wrong.ko"
 
 # AND THE SEVERAL-FILE MODULE'S: its units are refused by kernel b's link,
 # and its index made on a's refused beside b's index.
 if "$corc" link $objects --kernel "$b/kernel" -o "$m/wrong.ko" 2> "$m/wrong-link.log"; then fail "a several-file module calling what the kernel no longer has linked"; fi
-grep -q "'m_Kernel\$Log_Write_1_V\$String' is imported" "$m/wrong-link.log" || { cat "$m/wrong-link.log"; fail "the several-file wrong link said otherwise"; }
+grep -q "'m_Kernel\$Log_Write_1_V\$String_r\$V\$Void' is imported" "$m/wrong-link.log" || { cat "$m/wrong-link.log"; fail "the several-file wrong link said otherwise"; }
 mkdir -p "$m/wrong"
 sed "s|$m/|$m/wrong/|g" "$m/units.tsv" > "$m/wrong/units.tsv"
 if "$corc" compile-project --units "$m/wrong/units.tsv" --obj --kernel "$b/kernel" --decl-index "$b/kernel.idx" \
@@ -375,7 +375,7 @@ d=$work/d
 cp "$work/linked/sb16.ko" "$d/module.ko"
 status=0
 (cd "$d" && ./kernel) > "$d/refused.out" 2>&1 || status=$?
-test "$status" = 3 && grep -q "^refused: undefined symbol z_Kernel" "$d/refused.out" \
+test "$status" = 3 && grep -q '^refused: undefined symbol z_Kernel\$002eDriver\$[0-9a-f]*$' "$d/refused.out" \
     || { cat "$d/refused.out"; fail "a module compiled against another Driver was loaded"; }
 if "$corc" link "$work/sb16.o" --kernel "$d/kernel" -o "$d/wrong.ko" 2> "$d/wrong-link.log"; then fail "a module compiled against another Driver linked"; fi
 grep -q "compiled against type Kernel.Driver's layout" "$d/wrong-link.log" || { cat "$d/wrong-link.log"; fail "the wrong layout's link said otherwise"; }

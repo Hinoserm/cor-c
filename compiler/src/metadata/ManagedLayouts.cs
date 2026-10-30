@@ -20,9 +20,8 @@ public static class ManagedLayouts
     /// </summary>
     /// <param name="defined">
     /// Filled, where given, with the records of the types this unit DEFINES
-    /// -- compiled from its own sources, not read from an index -- and their
-    /// statics: what a unit for a ring says by name (LayoutNames) for other
-    /// images to bind to.
+    /// -- compiled from its own sources, not read from an index: what a unit
+    /// for a ring says by name (LayoutNames) for other images to bind to.
     /// </param>
     /// <param name="read">
     /// And with those of the types it READ from an index, which another unit

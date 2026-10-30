@@ -42,8 +42,8 @@ public sealed class RegionPointsTo : IModulePass
     public const string Enter = Corsac.Lang.Lto.RuntimeAbi.RegionEnter;
     public const string Leave = Corsac.Lang.Lto.RuntimeAbi.RegionLeave;
     public const string InRegion = Corsac.Lang.Lto.RuntimeAbi.AllocRegion;
-    public const string Near = "m_Runtime_AllocNear_4_V$NUInt_V$NUInt_V$NUInt_V$NUInt";
-    public const string Catch = "m_Runtime_RegionCatch_1_V$NUInt";
+    public const string Near = "m_Runtime_AllocNear_4_V$NUInt_V$NUInt_V$NUInt_V$NUInt_r$V$NUInt";
+    public const string Catch = "m_Runtime_RegionCatch_1_V$NUInt_r$V$Void";
     private const long LeafKind = 0x4C454146, ObjectKind = 0x4F424A54;
 
     private const int Global = 0;
@@ -2753,9 +2753,9 @@ public sealed class RegionPointsTo : IModulePass
     }
 
     /// <summary>Runtime.InvalidCastTo(object, string): a failed cast's throw.</summary>
-    internal const string FailedCast = "m_Runtime_InvalidCastTo_2_V$Any_V$String";
+    internal const string FailedCast = "m_Runtime_InvalidCastTo_2_V$Any_V$String_r$V$Void";
     /// <summary>Runtime.InvalidCastOfType(Type, string): a failed cast's throw from the type alone, as Lowering.CastFailed makes it.</summary>
-    internal const string FailedCastOfType = "m_Runtime_InvalidCastOfType_2_V$Type_V$String";
+    internal const string FailedCastOfType = "m_Runtime_InvalidCastOfType_2_V$Type_V$String_r$V$Void";
 
     /// <summary>
     /// How many instructions a block begins with, after its joins, that read
@@ -2786,13 +2786,13 @@ public sealed class RegionPointsTo : IModulePass
     /// </summary>
     private static readonly string[] TypeChecks =
     {
-        "m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt",
+        "m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt_r$V$Void",
         Opt.Escape.ArrayStoreRefused,
         Opt.Escape.ArrayCopyCheck,
         Opt.Escape.ArrayCopyRefused,
-        "m_Runtime_ArrayOf_2_V$NUInt_V$NUInt",
-        "m_Runtime_DescribedAs_2_V$NUInt_V$NUInt",
-        "m_Runtime_ShapedAs_7_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt",
+        "m_Runtime_ArrayOf_2_V$NUInt_V$NUInt_r$V$Bool",
+        "m_Runtime_DescribedAs_2_V$NUInt_V$NUInt_r$V$Bool",
+        "m_Runtime_ShapedAs_7_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt_r$V$Bool",
     };
 
     // The collector's notes and the runtime's frees keep no pointer.

@@ -25,8 +25,8 @@ public sealed class SignedPowerOfTwo : IPass
                 if (i.Op == Opcode.Call && i.Dest?.Type == IrType.I64)
                     operation = i.Callee switch
                     {
-                        "m_Runtime_DivS_2_V$I64_V$I64" => Opcode.DivS,
-                        "m_Runtime_RemS_2_V$I64_V$I64" => Opcode.RemS,
+                        "m_Runtime_DivS_2_V$I64_V$I64_r$V$I64" => Opcode.DivS,
+                        "m_Runtime_RemS_2_V$I64_V$I64_r$V$I64" => Opcode.RemS,
                         _ => i.Op,
                     };
                 if (operation is not (Opcode.DivS or Opcode.RemS) || i.Dest?.Type is not (IrType.I32 or IrType.I64)

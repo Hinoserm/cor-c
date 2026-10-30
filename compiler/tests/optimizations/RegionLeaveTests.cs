@@ -13,7 +13,7 @@ public static partial class Program
     /// </summary>
     private static void RegionLeavesAfterFrees()
     {
-        const string Free = "m_Runtime_FreeStorageInFrame_1_V$Any";
+        const string Free = "m_Runtime_FreeStorageInFrame_1_V$Any_r$V$Void";
         string Shape(Function f) => string.Join(" ", f.Blocks[0].Instrs.Select(i =>
             i.Op == Opcode.Ret ? "ret" : i.Callee == RegionPointsTo.Leave ? "leave" + ((RegOperand)i.Operands[0]).Reg.Id
             : i.Callee == Free ? "free" : i.Callee == Escape.Allocator ? "alloc" : i.Op.ToString()));

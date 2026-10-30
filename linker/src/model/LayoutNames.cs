@@ -6,15 +6,16 @@ namespace Corsac.Lang.Ir;
 /// <summary>
 /// A LAYOUT AS A NAME, for a kernel and its modules (KernelExports): what a
 /// unit compiled against of another image's types -- a type's fields, base,
-/// interfaces and slots, and its statics' types -- said by a symbol whose
-/// name carries the layout's fingerprint (ManagedTypeLayout, the records the
-/// link already holds units to each other by):
+/// interfaces and slots -- said by a symbol whose name carries the layout's
+/// fingerprint (ManagedTypeLayout, the record the link already holds units
+/// to each other by). A static is not in it: its own symbol says its type
+/// (Lowering.StaticSymbol), as a method's label says its signature.
 ///
 ///   z_&lt;type key&gt;$&lt;fingerprint&gt;
 ///
 /// the key escaped as a descriptor's is (every character but a letter, a
 /// digit or `_` as `$` and four hex digits), the fingerprint the first eight
-/// bytes of the hash of the type's record and its statics' records. A unit
+/// bytes of the type's record's. A unit
 /// for a ring defines one for each type it defines, at a byte of its own; a
 /// module's unit imports one for each type it read from an index -- the
 /// kernel's, or its own module's other units', or a module's it depends on.
@@ -37,34 +38,13 @@ public static class LayoutNames
 
     public const string Prefix = "z_";
 
-    /// <summary>
-    /// Each type's name, from its records: "type:" its own, and "field:" each
-    /// of its statics', folded in in order of name. A method's record is
-    /// not: its label says what it is.
-    /// </summary>
+    /// <summary>Each type's name, by its key, from its "type:" record; the others are said by their own symbols.</summary>
     public static Dictionary<string, string> Of(IEnumerable<ManagedTypeLayout> layouts)
     {
-        Dictionary<string, byte[]> types = new(StringComparer.Ordinal);
-        Dictionary<string, SortedDictionary<string, byte[]>> statics = new(StringComparer.Ordinal);
-        foreach (ManagedTypeLayout layout in layouts)
-        {
-            if (layout.Name.StartsWith("type:", StringComparison.Ordinal)) types[layout.Name[5..]] = layout.Fingerprint;
-            else if (layout.Name.StartsWith("field:", StringComparison.Ordinal) && layout.Name.LastIndexOf('.') is int dot and > 6)
-            {
-                string type = layout.Name[6..dot];
-                if (!statics.TryGetValue(type, out SortedDictionary<string, byte[]>? those)) statics[type] = those = new(StringComparer.Ordinal);
-                those[layout.Name[(dot + 1)..]] = layout.Fingerprint;
-            }
-        }
         Dictionary<string, string> names = new(StringComparer.Ordinal);
-        foreach ((string type, byte[] fingerprint) in types)
-        {
-            using System.Security.Cryptography.IncrementalHash hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
-            hash.AppendData(fingerprint);
-            if (statics.TryGetValue(type, out SortedDictionary<string, byte[]>? those))
-                foreach ((string field, byte[] its) in those) { hash.AppendData(Encoding.UTF8.GetBytes(field + "\n")); hash.AppendData(its); }
-            names[type] = Prefix + Escaped(type) + "$" + Convert.ToHexString(hash.GetHashAndReset(), 0, 8).ToLowerInvariant();
-        }
+        foreach (ManagedTypeLayout layout in layouts)
+            if (layout.Name.StartsWith("type:", StringComparison.Ordinal))
+                names[layout.Name[5..]] = Prefix + Escaped(layout.Name[5..]) + "$" + Convert.ToHexString(layout.Fingerprint, 0, 8).ToLowerInvariant();
         return names;
     }
 
@@ -72,7 +52,8 @@ public static class LayoutNames
     public static string? Describe(string name)
     {
         int end = name.LastIndexOf('$');
-        if (!name.StartsWith(Prefix, StringComparison.Ordinal) || end < 0) return null;
+        if (!name.StartsWith(Prefix, StringComparison.Ordinal) || end < 0 || name.Length - end != 17
+            || !name.AsSpan(end + 1).ToString().All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')) return null;
         string escaped = name[Prefix.Length..end];
         StringBuilder key = new();
         for (int at = 0; at < escaped.Length; at++)

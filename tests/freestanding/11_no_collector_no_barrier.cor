@@ -1,6 +1,6 @@
 // test: a program proved to need no collector stores without a barrier, a card or a sequence
 // flags-x86: --store-sequences
-// expect-no-asm-x86: Store: __corsac_refstore [s_Runtime_Marking] __corsac_cardmark __corsac_barrier m_Runtime_WriteBarrier m_Runtime_CardMark
+// expect-no-asm-x86: Store: __corsac_refstore [s_Runtime_Marking_t$V$I32] __corsac_cardmark __corsac_barrier m_Runtime_WriteBarrier m_Runtime_CardMark
 // expect-exit: 0
 // expect-output:
 // stored first

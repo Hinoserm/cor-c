@@ -12,7 +12,7 @@ public sealed class ByteSwapCalls : IPass
         for (int k = 0; k < block.Instrs.Count; k++)
         {
             Instr i = block.Instrs[k];
-            if (i.Op == Opcode.Call && i.Callee == "m_Runtime_ByteSwap_1_V$I64"
+            if (i.Op == Opcode.Call && i.Callee == "m_Runtime_ByteSwap_1_V$I64_r$V$I64"
                 && i.Dest?.Type == IrType.I64 && i.Operands.Count == 1 && i.Operands[0].Type == IrType.I64)
                 block.Instrs[k] = new Instr { Op = Opcode.ByteSwap, Dest = i.Dest, Line = i.Line,
                     Operands = { i.Operands[0] } };

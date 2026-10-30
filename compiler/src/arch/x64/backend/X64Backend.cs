@@ -436,7 +436,7 @@ public sealed class X64Backend : IBackend
     /// <summary>The store sequences' stubs, named as i386's (RuntimeAbi; CardMarks.FuseStores).</summary>
     public const string RefStoreStub = Corsac.Lang.Lto.RuntimeAbi.RefStore, CardStoreStub = Corsac.Lang.Lto.RuntimeAbi.CardStore;
     public const string RefExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefExchange, RefCompareExchangeStub = Corsac.Lang.Lto.RuntimeAbi.RefCompareExchange;
-    private const string MarkingFlag = "s_Runtime_Marking", CardTable = "s_Runtime_Cards";
+    private const string MarkingFlag = "s_Runtime_Marking_t$V$I32", CardTable = "s_Runtime_Cards_t$V$NUInt";
 
     /// <summary>
     /// THE STORE SEQUENCES IN LONG MODE (MOp.CallKeep; i386's in

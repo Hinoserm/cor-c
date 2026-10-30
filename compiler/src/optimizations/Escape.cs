@@ -426,25 +426,25 @@ public sealed partial class Escape : IModulePass
     public const string ManualLive = Corsac.Lang.Lto.RuntimeAbi.ManualObject;
 
     /// <summary>The collector's own free and liveness test, which the runtime's frees call.</summary>
-    public const string CollectorFreer = "m_Gc_Free_1_V$NUInt";
-    public const string CollectorLive = "m_Gc_LiveObject_1_V$NUInt";
+    public const string CollectorFreer = "m_Gc_Free_1_V$NUInt_r$V$Void";
+    public const string CollectorLive = "m_Gc_LiveObject_1_V$NUInt_r$V$Bool";
 
     /// <summary>A thread telling the collector it blocks, is back, or is at a safepoint.</summary>
-    public const string ThreadBlocking = "m_GcThreads_BeginBlocking_0";
-    public const string ThreadUnblocking = "m_GcThreads_EndBlocking_0";
-    public const string ThreadSafePoint = "m_GcThreads_SafePoint_1_V$I32";
+    public const string ThreadBlocking = "m_GcThreads_BeginBlocking_0_r$V$Void";
+    public const string ThreadUnblocking = "m_GcThreads_EndBlocking_0_r$V$Void";
+    public const string ThreadSafePoint = "m_GcThreads_SafePoint_1_V$I32_r$V$Void";
     /// <summary>The runtime asking whether the program has a collector (answered here, per program).</summary>
-    public const string CollectorQuery = "m_Runtime_CollectorLinked_0";
+    public const string CollectorQuery = "m_Runtime_CollectorLinked_0_r$V$Bool";
 
     /// <summary>
     /// Where the fault handler sends a thread that dereferenced null, to throw
     /// NullReferenceException: named by the handler's address, run only by a
     /// program that has already faulted.
     /// </summary>
-    public const string NullFault = "m_Runtime_NullFault_2_V$NUInt_V$NUInt";
+    public const string NullFault = "m_Runtime_NullFault_2_V$NUInt_V$NUInt_r$V$Void";
 
     /// <summary>A thread made known to the collector as it starts.</summary>
-    public const string ThreadRegister = "m_GcThreads_Register_1_V$NUInt";
+    public const string ThreadRegister = "m_GcThreads_Register_1_V$NUInt_r$V$Void";
 
     /// <summary>
     /// Giving a block back by hand. The compiler calls this only for an
@@ -556,12 +556,12 @@ public sealed partial class Escape : IModulePass
 
     /// <summary>The runtime's routine a catch body's end calls (Lowering.EndCatch).</summary>
     /// <summary>The runtime's end of a catch body's hold on its exception (Runtime.CatchEnd).</summary>
-    public const string CatchEnder = "m_Runtime_CatchEnd_1_V$Any";
+    public const string CatchEnder = "m_Runtime_CatchEnd_1_V$Any_r$V$Void";
 
     public static bool IsCatchEnd(string? callee) => callee is not null && callee.StartsWith("m_Runtime_CatchEnd_1_", StringComparison.Ordinal);
 
     /// <summary>The runtime's routine an exception nothing catches goes to.</summary>
-    public const string Unhandled = "m_Runtime_Unhandled_1_V$Any";
+    public const string Unhandled = "m_Runtime_Unhandled_1_V$Any_r$V$Void";
 
     /// <summary>
     /// The types of the catches that keep what they caught (OwnCaught), null
@@ -2161,55 +2161,55 @@ continue;
     /// </summary>
     private static readonly (string Name, int Params)[] KeepsNothing =
     {
-        ("m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt", 2),
+        ("m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt_r$V$Void", 2),
         // Its refusal, out of line: says what the free journal knows and throws.
         (ArrayStoreRefused, 2),
         // CopyTo's check of an array's element, and its refusal (Lowering.ArrayFaces).
         (ArrayCopyCheck, 2),
         (ArrayCopyRefused, 2),
         // A failed cast's exception names the object's type; it keeps no reference.
-        ("m_Runtime_InvalidCastTo_2_V$Any_V$String", 2),
+        ("m_Runtime_InvalidCastTo_2_V$Any_V$String_r$V$Void", 2),
         // And from the object's type alone (Lowering.CastFailed): the descriptor, no object.
-        ("m_Runtime_InvalidCastOfType_2_V$Type_V$String", 2),
+        ("m_Runtime_InvalidCastOfType_2_V$Type_V$String_r$V$Void", 2),
         // The string routines that read their strings and keep none of them:
         // comparing, searching, hashing, and copying into a new one.
-        ("m_String_Compare_2_V$String_V$String", 2),
-        ("m_String_Compare_3_V$String_V$String_T$StringComparison", 3),
-        ("m_String_Compare_3_V$String_V$String_V$Bool", 3),
-        ("m_String_CompareOrdinal_2_V$String_V$String", 2),
-        ("m_String_CompareOrdinal_5_V$String_V$I32_V$String_V$I32_V$I32", 5),
-        ("m_String_Contains_2_V$String_V$Char", 2),
-        ("m_String_Contains_2_V$String_V$String", 2),
-        ("m_String_Contains_3_V$String_V$String_T$StringComparison", 3),
-        ("m_String_EndsWith_2_V$String_V$Char", 2),
-        ("m_String_EndsWith_2_V$String_V$String", 2),
-        ("m_String_EndsWith_3_V$String_V$String_T$StringComparison", 3),
-        ("m_String_Equals_2_V$String_V$String", 2),
-        ("m_String_Equals_3_V$String_V$String_T$StringComparison", 3),
-        ("m_String_GetHashCode_1_V$String", 1),
-        ("m_String_IndexOf_2_V$String_V$I32", 2),
-        ("m_String_IndexOf_2_V$String_V$String", 2),
-        ("m_String_IndexOf_3_V$String_V$Char_V$I32", 3),
-        ("m_String_IndexOf_3_V$String_V$String_T$StringComparison", 3),
-        ("m_String_IndexOf_3_V$String_V$String_V$I32", 3),
-        ("m_String_IndexOf_4_V$String_V$Char_V$I32_V$I32", 4),
-        ("m_String_IndexOf_4_V$String_V$String_V$I32_T$StringComparison", 4),
-        ("m_String_IsNullOrEmpty_1_V$String", 1),
-        ("m_String_IsNullOrWhiteSpace_1_V$String", 1),
-        ("m_String_KeyHash_1_V$String", 1),
-        ("m_String_LastIndexOf_2_V$String_V$I32", 2),
-        ("m_String_LastIndexOf_2_V$String_V$String", 2),
-        ("m_String_LastIndexOf_3_V$String_V$Char_V$I32", 3),
-        ("m_String_LastIndexOf_3_V$String_V$String_T$StringComparison", 3),
-        ("m_String_StartsWith_2_V$String_V$Char", 2),
-        ("m_String_StartsWith_2_V$String_V$String", 2),
-        ("m_String_StartsWith_3_V$String_V$String_T$StringComparison", 3),
-        ("m_Runtime_StringHashCode_1_V$String", 1),
-        ("m_String_Concat_2_V$String_V$String", 2),
-        ("m_String_Concat_3_V$String_V$String_V$String", 3),
-        ("m_String_Concat_4_V$String_V$String_V$String_V$String", 4),
-        ("m_String_Substring_2_V$String_V$I32", 2),
-        ("m_String_Substring_3_V$String_V$I32_V$I32", 3),
+        ("m_String_Compare_2_V$String_V$String_r$V$I32", 2),
+        ("m_String_Compare_3_V$String_V$String_T$StringComparison_r$V$I32", 3),
+        ("m_String_Compare_3_V$String_V$String_V$Bool_r$V$I32", 3),
+        ("m_String_CompareOrdinal_2_V$String_V$String_r$V$I32", 2),
+        ("m_String_CompareOrdinal_5_V$String_V$I32_V$String_V$I32_V$I32_r$V$I32", 5),
+        ("m_String_Contains_2_V$String_V$Char_r$V$Bool", 2),
+        ("m_String_Contains_2_V$String_V$String_r$V$Bool", 2),
+        ("m_String_Contains_3_V$String_V$String_T$StringComparison_r$V$Bool", 3),
+        ("m_String_EndsWith_2_V$String_V$Char_r$V$Bool", 2),
+        ("m_String_EndsWith_2_V$String_V$String_r$V$Bool", 2),
+        ("m_String_EndsWith_3_V$String_V$String_T$StringComparison_r$V$Bool", 3),
+        ("m_String_Equals_2_V$String_V$String_r$V$Bool", 2),
+        ("m_String_Equals_3_V$String_V$String_T$StringComparison_r$V$Bool", 3),
+        ("m_String_GetHashCode_1_V$String_r$V$I32", 1),
+        ("m_String_IndexOf_2_V$String_V$I32_r$V$I32", 2),
+        ("m_String_IndexOf_2_V$String_V$String_r$V$I32", 2),
+        ("m_String_IndexOf_3_V$String_V$Char_V$I32_r$V$I32", 3),
+        ("m_String_IndexOf_3_V$String_V$String_T$StringComparison_r$V$I32", 3),
+        ("m_String_IndexOf_3_V$String_V$String_V$I32_r$V$I32", 3),
+        ("m_String_IndexOf_4_V$String_V$Char_V$I32_V$I32_r$V$I32", 4),
+        ("m_String_IndexOf_4_V$String_V$String_V$I32_T$StringComparison_r$V$I32", 4),
+        ("m_String_IsNullOrEmpty_1_V$String_r$V$Bool", 1),
+        ("m_String_IsNullOrWhiteSpace_1_V$String_r$V$Bool", 1),
+        ("m_String_KeyHash_1_V$String_r$V$I32", 1),
+        ("m_String_LastIndexOf_2_V$String_V$I32_r$V$I32", 2),
+        ("m_String_LastIndexOf_2_V$String_V$String_r$V$I32", 2),
+        ("m_String_LastIndexOf_3_V$String_V$Char_V$I32_r$V$I32", 3),
+        ("m_String_LastIndexOf_3_V$String_V$String_T$StringComparison_r$V$I32", 3),
+        ("m_String_StartsWith_2_V$String_V$Char_r$V$Bool", 2),
+        ("m_String_StartsWith_2_V$String_V$String_r$V$Bool", 2),
+        ("m_String_StartsWith_3_V$String_V$String_T$StringComparison_r$V$Bool", 3),
+        ("m_Runtime_StringHashCode_1_V$String_r$V$I32", 1),
+        ("m_String_Concat_2_V$String_V$String_r$V$String", 2),
+        ("m_String_Concat_3_V$String_V$String_V$String_r$V$String", 3),
+        ("m_String_Concat_4_V$String_V$String_V$String_V$String_r$V$String", 4),
+        ("m_String_Substring_2_V$String_V$I32_r$V$String", 2),
+        ("m_String_Substring_3_V$String_V$I32_V$I32_r$V$String", 3),
     };
 
     /// <summary>
@@ -2221,12 +2221,12 @@ continue;
     /// </summary>
     private static readonly string[] AlwaysFresh =
     {
-        "m_String_Concat_2_V$String_V$String",
-        "m_String_Concat_3_V$String_V$String_V$String",
-        "m_String_Concat_4_V$String_V$String_V$String_V$String",
-        "m_String_Substring_2_V$String_V$I32",
-        "m_String_Substring_3_V$String_V$I32_V$I32",
-        "m_String_FromInt_1_V$I64",
+        "m_String_Concat_2_V$String_V$String_r$V$String",
+        "m_String_Concat_3_V$String_V$String_V$String_r$V$String",
+        "m_String_Concat_4_V$String_V$String_V$String_V$String_r$V$String",
+        "m_String_Substring_2_V$String_V$I32_r$V$String",
+        "m_String_Substring_3_V$String_V$I32_V$I32_r$V$String",
+        "m_String_FromInt_1_V$I64_r$V$String",
     };
 
     /// <summary>
@@ -2243,7 +2243,7 @@ continue;
     private static readonly string[] ReturnsFirstKnown =
     {
         "m_StringBuilder_Append_", "m_StringBuilder_AppendLine_", "m_StringBuilder_AppendFormat_", "m_StringBuilder_AppendJoin_",
-        "m_StringBuilder_Insert_", "m_StringBuilder_Remove_", "m_StringBuilder_Replace_", "m_StringBuilder_Clear_0",
+        "m_StringBuilder_Insert_", "m_StringBuilder_Remove_", "m_StringBuilder_Replace_", "m_StringBuilder_Clear_0_r$T$StringBuilder",
     };
 
     /// <summary>EitherResult's answer that the result lets the object go, kept so a call's overrides ask once.</summary>
@@ -2841,17 +2841,17 @@ continue;
     // and its store of the bigger one, the List's own free of the old array
     // was no self-replacing free (EscapeSelfFrees), and the field was refused.
     internal static bool NeverWritesFields(string callee) =>
-        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt" || callee == ArrayStoreRefused || callee == DescribedAs
+        IsAllocator(callee) || callee == "m_Runtime_ArrayStoreCheck_2_V$NUInt_V$NUInt_r$V$Void" || callee == ArrayStoreRefused || callee == DescribedAs
         || callee == ArrayCopyCheck || callee == ArrayCopyRefused;
 
     /// <summary>Runtime.ArrayStoreRefused(array, value): an array store check's refusal, kept out of line.</summary>
-    internal const string ArrayStoreRefused = "m_Runtime_ArrayStoreRefused_2_V$NUInt_V$NUInt";
+    internal const string ArrayStoreRefused = "m_Runtime_ArrayStoreRefused_2_V$NUInt_V$NUInt_r$V$Void";
 
     /// <summary>Runtime.ArrayCopyCheck(array, value) and its refusal: CopyTo's check of an element copied into an array (Lowering.ArrayFaces).</summary>
-    internal const string ArrayCopyCheck = "m_Runtime_ArrayCopyCheck_2_V$NUInt_V$NUInt", ArrayCopyRefused = "m_Runtime_ArrayCopyRefused_2_V$NUInt_V$NUInt";
+    internal const string ArrayCopyCheck = "m_Runtime_ArrayCopyCheck_2_V$NUInt_V$NUInt_r$V$Void", ArrayCopyRefused = "m_Runtime_ArrayCopyRefused_2_V$NUInt_V$NUInt_r$V$Void";
 
     /// <summary>Runtime.DescribedAs(desc, want): whether a type is another or derives from it, read from their descriptors.</summary>
-    internal const string DescribedAs = "m_Runtime_DescribedAs_2_V$NUInt_V$NUInt";
+    internal const string DescribedAs = "m_Runtime_DescribedAs_2_V$NUInt_V$NUInt_r$V$Bool";
 
     private enum SourceKind { Null, Static, Parameter, Fresh, Unknown }
     private readonly record struct Source(SourceKind Kind, int Index, Instr? Made);
@@ -5540,7 +5540,7 @@ continue;
     private ulong[]? _handedLive;
 
     /// <summary>The runtime's release of a frame-made collection's storage (Runtime.FreeStorageInFrame).</summary>
-    public const string StorageFreer = "m_Runtime_FreeStorageInFrame_1_V$Any";
+    public const string StorageFreer = "m_Runtime_FreeStorageInFrame_1_V$Any_r$V$Void";
     private bool _storageFreer;
     /// <summary>Whether FreeOwnedReplaced is there for an owner with no descriptor's fields (OwnFields).</summary>
     private bool _headerlessFreer;
@@ -5880,8 +5880,9 @@ continue;
     {
         if (!callee.StartsWith("m_", StringComparison.Ordinal)) return null;
         int end = callee.Length;
-        int conversion = callee.LastIndexOf("_to_", StringComparison.Ordinal);
-        if (conversion > 0) end = conversion;
+        // What it returns is after the parameters (Lowering.Label).
+        int returns = callee.LastIndexOf(Corsac.Lang.Lower.Lowering.ReturnMark, StringComparison.Ordinal);
+        if (returns > 0) end = returns;
         bool[] references = new bool[operands];
         int position = end;
         for (int k = operands - 1; k >= 0; k--)

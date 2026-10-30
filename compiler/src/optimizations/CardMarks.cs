@@ -31,7 +31,7 @@ public sealed class CardMarks : IModulePass
     public const string CardMark = Corsac.Lang.Lto.RuntimeAbi.CardMark;
 
     /// <summary>Runtime.Cards: the table, 0 when the collector keeps none.</summary>
-    public const string Cards = "s_Runtime_Cards";
+    public const string Cards = "s_Runtime_Cards_t$V$NUInt";
 
     /// <summary>A card is a kilobyte (Runtime.CardShift).</summary>
     public const int CardShift = 10;

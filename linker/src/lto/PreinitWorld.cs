@@ -356,7 +356,7 @@ public sealed class PreinitWorld
         // it only steers frees, which are nothing here. The run's IR is the
         // snapshot from before those passes. Marking and Cards, which say
         // what a store does, are not guessed.
-        if (symbol == "s_Gc_IgnoredFrees")
+        if (symbol == "s_Gc_IgnoredFrees_t$V$I64")
         {
             if (!_regions.TryGetValue(symbol, out Region? knob))
                 _regions[symbol] = knob = new() { Kind = RegionKind.Storage, Symbol = symbol, Bytes = new byte[8], Maker = "the collector", Dropped = true };
@@ -493,7 +493,7 @@ public sealed class PreinitWorld
     // THE COLLECTOR'S STATE, read by every reference store's barrier test and
     // by a free put in place in its caller (List.Grow's): which way the store
     // or the free goes, never what the program holds.
-    private static readonly HashSet<string> Collector = new(StringComparer.Ordinal) { "s_Runtime_Marking", "s_Runtime_Cards", "s_Gc_IgnoredFrees" };
+    private static readonly HashSet<string> Collector = new(StringComparer.Ordinal) { "s_Runtime_Marking_t$V$I32", "s_Runtime_Cards_t$V$NUInt", "s_Gc_IgnoredFrees_t$V$I64" };
 
     /// <summary>
     /// WHAT A RUN MAY READ, as NativeAOT's preinitialisation may: the image's

@@ -8,7 +8,7 @@
 // The K8 floor has SSE2, so the question is no question: the else branch
 // is dead code, and Main reads no processor word at all. 3DNow! is banned
 // by --disable-3dnow, so its question is answered no the same way.
-// expect-no-asm-x86: Main: [s_Processor__features] Processor_Has Processor_get_Features Processor_Ask
+// expect-no-asm-x86: Main: [s_Processor__features_t$V$I32] Processor_Has Processor_get_Features Processor_Ask
 
 static class Program
 {

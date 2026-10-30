@@ -18,8 +18,8 @@ namespace Corsac.Lang.RegAlloc;
 public sealed class SpillCounter
 {
     /// <summary>The runtime's counters (runtime.cor's SpillCounts), by their static symbols: each total's low half and high half.</summary>
-    public const string ReadsLow = "s_SpillCounts_ReadsLow", ReadsHigh = "s_SpillCounts_ReadsHigh",
-        WritesLow = "s_SpillCounts_WritesLow", WritesHigh = "s_SpillCounts_WritesHigh";
+    public const string ReadsLow = "s_SpillCounts_ReadsLow_t$V$U32", ReadsHigh = "s_SpillCounts_ReadsHigh_t$V$U32",
+        WritesLow = "s_SpillCounts_WritesLow_t$V$U32", WritesHigh = "s_SpillCounts_WritesHigh_t$V$U32";
 
     /// <summary>The table of each counted block's runs, eight bytes a block (--count-spills-map).</summary>
     public const string BlocksSymbol = "spill$blocks";
@@ -72,8 +72,8 @@ public sealed class SpillCounter
     {
         if (_mapPath is null) return;
         int n = _blocks.Count;
-        int at = module.Data.FindIndex(d => d.Name == "s_SpillCounts_Blocks");
-        int count = module.Data.FindIndex(d => d.Name == "s_SpillCounts_BlockCount");
+        int at = module.Data.FindIndex(d => d.Name == "s_SpillCounts_Blocks_t$V$NUInt");
+        int count = module.Data.FindIndex(d => d.Name == "s_SpillCounts_BlockCount_t$V$U32");
         if (at < 0 || count < 0)
         {
             errors.Add("--count-spills-map: the runtime's SpillCounts.Blocks and BlockCount are not in this compile (a program compiled whole is)");

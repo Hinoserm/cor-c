@@ -34,13 +34,13 @@ internal static class OwnedElements
         if (Trace is { } t && f.Name.Contains(t, StringComparison.Ordinal)) Console.Error.WriteLine($"elements {f.Name}: {what}");
     }
 
-    public const string Freer = "m_Runtime_FreeOwnedElements_1_V$Any";
+    public const string Freer = "m_Runtime_FreeOwnedElements_1_V$Any_r$V$Void";
 
     /// <summary>The runtime's free of a dying array's elements (Escape.ConfirmArrayElements).</summary>
-    public const string ArrayFreer = "m_Runtime_FreeArrayElements_1_V$Any";
+    public const string ArrayFreer = "m_Runtime_FreeArrayElements_1_V$Any_r$V$Void";
 
     /// <summary>The runtime's mark on a collection whose elements go with its storage (Runtime.OwnElements).</summary>
-    public const string Marker = "m_Runtime_OwnElements_1_V$Any";
+    public const string Marker = "m_Runtime_OwnElements_1_V$Any_r$V$Void";
 
     /// <summary>
     /// WHERE A COLLECTION IS HANDED TO A FIELD: a store of it into an
@@ -808,7 +808,7 @@ internal static class OwnedElements
     /// </summary>
     internal static HashSet<VReg>? WalkerOf(Function f, Instr get, IReadOnlySet<Instr>? ignore)
     {
-        if (get.Callee is not { } callee || !callee.EndsWith("_GetEnumerator_0", StringComparison.Ordinal)) return null;
+        if (get.Callee is not { } callee || !Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_GetEnumerator_0", StringComparison.Ordinal)) return null;
         if (ViewEnumerator(callee) is { } enumerator) return Walker(f, new Defs(f, buildCfg: false), "Dictionary", get, null, enumerator, reads: false, ignore);
         string? kind = callee.StartsWith("m_List$", StringComparison.Ordinal) ? "List"
             : callee.StartsWith("m_Dictionary$", StringComparison.Ordinal) ? "Dictionary" : null;
@@ -825,7 +825,7 @@ internal static class OwnedElements
     internal static HashSet<VReg>? ViewOf(Function f, Instr get, IReadOnlySet<Instr>? ignore)
     {
         if (get.Callee is not { } callee || get.Operands.Count != 1
-            || !callee.EndsWith("_get_Values_0", StringComparison.Ordinal) && !callee.EndsWith("_get_Keys_0", StringComparison.Ordinal)
+            || !Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_get_Values_0", StringComparison.Ordinal) && !Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_get_Keys_0", StringComparison.Ordinal)
             || !RoleOf("Dictionary", callee).Views) return null;
         return View(f, new Defs(f, buildCfg: false), get, null, ignore);
     }
@@ -849,7 +849,7 @@ internal static class OwnedElements
     private static HashSet<VReg>? View(Function f, Defs defs, Instr get, List<(Block B, Instr Call, Role Role)>? calls, IReadOnlySet<Instr>? ignore = null)
     {
         if (get.Dest is null) return null;
-        bool values = get.Callee!.EndsWith("_get_Values_0", StringComparison.Ordinal);
+        bool values = Corsac.Lang.Lower.Lowering.Bare(get.Callee!).EndsWith("_get_Values_0", StringComparison.Ordinal);
         string collection = values ? "m_Dictionary$ValueCollection$" : "m_Dictionary$KeyCollection$";
         HashSet<VReg> view = new() { get.Dest };
         bool grew = true;
@@ -876,8 +876,8 @@ internal static class OwnedElements
                 if (i.Op != Opcode.Call || i.Callee is not { } callee || count != 1) return null;
                 if (Escape.IsPlainUse(callee) || Escape.IsCollectorNote(callee)) continue;
                 if (at != 0 || !callee.StartsWith(collection, StringComparison.Ordinal)) return null;
-                if (callee.EndsWith("_get_Count_0", StringComparison.Ordinal) && i.Operands.Count == 1) calls?.Add((b, i, new(true)));
-                else if (callee.EndsWith("_GetEnumerator_0", StringComparison.Ordinal) && ViewEnumerator(callee) is { } enumerator
+                if (Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_get_Count_0", StringComparison.Ordinal) && i.Operands.Count == 1) calls?.Add((b, i, new(true)));
+                else if (Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_GetEnumerator_0", StringComparison.Ordinal) && ViewEnumerator(callee) is { } enumerator
                     && Walker(f, defs, "Dictionary", i, calls, enumerator, reads: values, ignore) is not null)
                     calls?.Add((b, i, new(true)));
                 else return null;
@@ -958,14 +958,14 @@ internal static class OwnedElements
                 if (Escape.IsPlainUse(calledAt) || Escape.IsCollectorNote(calledAt)) continue;
                 (string callee, int lead) = Member(calledAt);
                 if (at == lead && i.Operands.Count == 2 + lead && enumerator is null && kind == "Dictionary" && callee.StartsWith(prefix, StringComparison.Ordinal)
-                    && callee.EndsWith("_get_Current_0", StringComparison.Ordinal))
+                    && Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_get_Current_0", StringComparison.Ordinal))
                 {
                     if (!Pair(f, defs, b, i, calls, ignore)) return null;
                     continue;
                 }
                 if (at != lead || i.Operands.Count != 1 + lead || !callee.StartsWith(prefix, StringComparison.Ordinal)) return null;
-                if (callee.EndsWith("_MoveNext_0", StringComparison.Ordinal) || callee.EndsWith("_Dispose_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true)));
-                else if (callee.EndsWith("_get_Current_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: reads)));
+                if (Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_MoveNext_0", StringComparison.Ordinal) || Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_Dispose_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true)));
+                else if (Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_get_Current_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: reads)));
                 else return null;
             }
         return walker;
@@ -1054,8 +1054,8 @@ internal static class OwnedElements
                 if (Escape.IsPlainUse(calledAt) || Escape.IsCollectorNote(calledAt)) continue;
                 (string callee, int lead) = Member(calledAt);
                 if (pairAt != lead || i.Operands.Count != 1 + lead || !callee.StartsWith("m_KeyValuePair$", StringComparison.Ordinal)) return false;
-                if (callee.EndsWith("_get_Value_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: true)));
-                else if (callee.EndsWith("_get_Key_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true)));
+                if (Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_get_Value_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: true)));
+                else if (Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_get_Key_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true)));
                 else return false;
             }
         calls?.Add((at, current, new(true)));

@@ -169,7 +169,7 @@ public static partial class Program
             SameResults(Build, inputs, new SignedPowerOfTwo());
         }
         foreach (long divisor in new long[] { 0, 1, -1, 3, 8, -8, long.MinValue })
-        foreach (string callee in new[] { "m_Runtime_DivS_2_V$I64_V$I64", "m_Runtime_RemS_2_V$I64_V$I64", "user_divide" })
+        foreach (string callee in new[] { "m_Runtime_DivS_2_V$I64_V$I64_r$V$I64", "m_Runtime_RemS_2_V$I64_V$I64_r$V$I64", "user_divide" })
         {
             (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
             b.Ret(RegOperand.Of(b.Call(callee, IrType.I64, RegOperand.Of(f.Params[0]), new ImmOperand(divisor, IrType.I64))!));

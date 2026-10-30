@@ -294,21 +294,33 @@ public sealed partial class Lowering
     // ---- names ---------------------------------------------------------------
 
     /// <summary>
-    /// The symbol a method is compiled under. The owner's key and the full
-    /// parameter signature are part of it, so overloads and same-named nested
-    /// types never collide, and it is identical to what the old backend used
-    /// so `corc syms` and every library header keep working.
+    /// The symbol a method is compiled under: THE WHOLE OF WHAT A CALLER
+    /// COMPILED AGAINST -- the owner's key, the name, every parameter's type
+    /// and its passing, and what it returns -- so overloads and same-named
+    /// nested types never collide, and an image built against another's
+    /// method binds to it only while it is still that method: a kernel's
+    /// module, refused by name when the method it calls now returns another
+    /// type (KernelExports). The return comes last, after ReturnMark, which
+    /// nothing else in a label holds (Mangle escapes every '_').
+    ///
+    ///   m_Owner_Name_0_r$V$Void                    void Name()
+    ///   m_Owner_Name_2_V$I32_R$T$Key_r$V$String    string Name(int, ref Key)
     /// </summary>
     public static string Label(MethodSymbol m) => m.LabelMade ??= MakeLabel(m);
+
+    /// <summary>Where a label's return begins (Label).</summary>
+    public const string ReturnMark = "_r$";
 
     private static string MakeLabel(MethodSymbol m)
         => (m.Params.Count == 0
          ? $"m_{Owner(m)}_{m.Name}_0"
          : $"m_{Owner(m)}_{m.Name}_{m.Params.Count}_"
          + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type))))
-         // A CONVERSION OPERATOR IS ALSO WHAT IT MAKES: JsonNode's explicit
-         // operators to bool, int, long and double all take one JsonNode.
-         + (m.Name is "op_Implicit" or "op_Explicit" or "op_CheckedExplicit" ? "_to_" + Mangle(m.Returns) : "");
+         + ReturnMark + Mangle(m.Returns);
+
+    /// <summary>A label without its return: the owner, name and parameters, which a pass that knows a method by its name and arity reads.</summary>
+    public static string Bare(string label)
+        => label.LastIndexOf(ReturnMark, StringComparison.Ordinal) is int at and > 0 ? label[..at] : label;
 
     private static string Owner(MethodSymbol m) => m.Owner.Key.Replace('.', '$');
 
@@ -353,8 +365,17 @@ public sealed partial class Lowering
         return sb.ToString();
     }
 
-    /// <summary>The symbol of a static field: its own ELF symbol, so a library's statics are the library's.</summary>
-    private static string StaticSymbol(FieldSymbol f) => f.StaticSymbolMade ??= $"s_{TypeKey(f.Owner)}_{f.Name}";
+    /// <summary>
+    /// The symbol of a static field: its own ELF symbol, so a library's
+    /// statics are the library's -- and, as a method's label is, the whole of
+    /// what a reader compiled against: the owner, the name, and its type
+    /// after TypeMark, so a kernel's module reading a static the kernel has
+    /// retyped is refused by name.
+    /// </summary>
+    private static string StaticSymbol(FieldSymbol f) => f.StaticSymbolMade ??= $"s_{TypeKey(f.Owner)}_{f.Name}{TypeMark}{Mangle(f.Type)}";
+
+    /// <summary>Where a static's symbol says its type (StaticSymbol).</summary>
+    public const string TypeMark = "_t$";
 
     /// <summary>
     /// THE PROGRAM'S DECLARATIONS NOTHING LOWERED, for the unused-code report
