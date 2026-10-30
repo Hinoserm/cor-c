@@ -1,0 +1,37 @@
+// test: io errno kept in the exception
+// expect-exit: 0
+// expect-output:
+// missing directory DirectoryNotFoundException 0x80070002 inner=none
+// not a directory DirectoryNotFoundException 0x80070014 inner=none
+// missing file FileNotFoundException 0x80070002 inner=none
+// missing file's directory DirectoryNotFoundException 0x80070002 inner=none
+// access refused UnauthorizedAccessException 0x80070005 inner=0x0000000D
+//
+// THE ERRNO BEHIND A FAILED FILE CALL, read off the exception caught: a
+// type that stands for one errno holds .NET's own HResult (ENOENT's
+// FileNotFoundException 0x80070002) or the errno in the IOException inside
+// it (EACCES); a DirectoryNotFoundException, which stands for ENOENT and
+// ENOTDIR alike, holds 0x80070000 | errno -- where .NET on Unix holds
+// 0x80070003 for both and the reason is lost (Interop).
+
+using System;
+using System.IO;
+
+static class Program
+{
+    static void Try(string what, Action action)
+    {
+        try { action(); Console.WriteLine(what + " no exception"); }
+        catch (Exception e) { Console.WriteLine(what + " " + e.GetType().Name + " 0x" + e.HResult.ToString("X8") + " inner=" + (e.InnerException == null ? "none" : "0x" + e.InnerException.HResult.ToString("X8"))); }
+    }
+
+    static int Main()
+    {
+        Try("missing directory", () => Directory.GetFiles("/no-such-directory-2500"));
+        Try("not a directory", () => Directory.GetFiles("/dev/null/x"));
+        Try("missing file", () => File.ReadAllText("/dev/no-such-file-2500"));
+        Try("missing file's directory", () => File.ReadAllText("/no-such-directory-2500/f"));
+        Try("access refused", () => File.ReadAllText("/proc/1/mem"));
+        return 0;
+    }
+}

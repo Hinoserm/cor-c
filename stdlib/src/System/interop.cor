@@ -400,8 +400,15 @@ public static partial class Marshal
 /// find file '...'.", "Access to the path '...' is denied." -- because a
 /// program prints e.Message and a test compares it; strerror with the path
 /// after it is only what an errno with no sentence of its own says. The errno
-/// itself is kept in HResult, so a program that wants the system's words can
-/// still ask Marshal for them.
+/// itself is kept where a program that caught the exception can read it --
+/// the last error Marshal holds is any later call's by then: an IOException
+/// holds it bare in HResult, as .NET's own on Unix; an access refused, in the
+/// IOException inside it; a type that stands for one errno alone
+/// (FileNotFoundException, PathTooLongException, a cancellation) holds
+/// .NET's own HResult and needs no more. The two whose type stands for more
+/// than one -- a DirectoryNotFoundException, ENOENT or ENOTDIR, and EFBIG's
+/// ArgumentOutOfRangeException -- hold it as Windows holds a system error,
+/// 0x80070000 | errno.
 public static class Interop
 {
     public static Exception GetExceptionForIoErrno(int error, string? path)
@@ -437,6 +444,7 @@ public static class Interop
             if (isDirectory)
             {
                 made = PathNotFound(path);
+                made.HResult = unchecked((int)0x80070000) | error;
             }
             else
             {
@@ -447,6 +455,7 @@ public static class Interop
         else if (error == Err.NotDir)
         {
             made = PathNotFound(path);
+            made.HResult = unchecked((int)0x80070000) | error;
         }
         else if (error == Err.Access || error == Err.BadF || error == Err.Perm)
         {
@@ -473,6 +482,7 @@ public static class Interop
         else if (error == Err.FBig)
         {
             made = new ArgumentOutOfRangeException("value", "Specified file length was too large for the file system.");
+            made.HResult = unchecked((int)0x80070000) | error;
         }
         else if (error == Err.Exist && named)
         {
