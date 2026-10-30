@@ -125,6 +125,36 @@ every static's type). Interning gains little more; the plan's step 2 --
 names once, as ids, or held as UTF-8 -- is what shrinks them. The
 Relocation arrays' last chunks are exact since 945aaf29.
 
+WHAT THE STRINGS ARE (a dump at the units' regeneration, relinking the
+daec9928 stage's objects, 10-30). The symbol tables of the 588 objects
+hold 323 thousand distinct names, 28 million characters, `m_` labels the
+most of them (122 thousand, 14 million characters). The link held 790
+thousand strings, 151 MB; the largest group beside the names themselves
+was the same names again with a prefix, `F:name` and `D:name`: the IR
+archives' directory keys, one for each of 321 thousand entries, 66 MB.
+de20aff5 holds a key as its kind and the interned name (IrKey), the
+symbol's own string; the written text exists only on disk and in the
+backend protocol. Relinked byte-identical:
+
+| phase                          | live (MB) | before |
+|--------------------------------|----------:|-------:|
+| archives and hints             |       741 |    794 |
+| catches and owned fields       |       898 |    947 |
+| units regenerated              |       962 |   1011 |
+| heap decision                  |      1058 |   1106 |
+| constant returns, coalescing   |       549 |    611 |
+
+What the names themselves cost is next: 323 thousand of them as UTF-16
+.NET strings, some 65 MB, against about 28 MB as UTF-8 bytes.
+
+THE NATIVE COMPILE'S CHILDREN (not the link, but the same goal): a 32-bit
+child of a build held some 515 MB live between units while what it had
+mapped climbed to 2.7 GB, and a few-megabyte array at the end of a unit's
+binding found no room under the 3.25 GB ceiling (the 7d2923cf stage,
+nine units). A spent child now hands its units to a fresh one (9bc26eb1),
+and a project with no interrupt handler writes no interrupt facts
+(daec9928: 8.8 MB a unit, 0.7 GB of the compiler's objects).
+
 ## The plan
 
 The link holds the whole program -- every section's bytes, every symbol by
