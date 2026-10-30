@@ -641,9 +641,9 @@ public static class IrLinkOptimizer
                         ObjectFile original = originals[index];
                         if (archives.ContainsKey(original) && original.Sections.Count == 0)
                         {
-                            IrArchivePool? pool = original.ArchivePool;
+                            IrArchivePool? sharing = original.ArchivePool;
                             original = ElfReader.ReadObjectFile(original.SourcePath ?? throw new ElfFormatException("A unit to make again has no file"));
-                            original.ArchivePool = pool;
+                            original.ArchivePool = sharing;
                         }
                         again.Add((inputs[index].Name, archives.ContainsKey(originals[index]) ? original : inputs[index].Object));
                     }
