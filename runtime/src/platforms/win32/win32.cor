@@ -492,9 +492,11 @@ public static class Win32
     {
         // One query at a time through the buffer made for it the first time:
         // the heap gives back from more than one thread. A holder put off
-        // the processor is waited for with Sleep(0), not spun at.
+        // the processor is waited for, not spun at: Sleep(0) yields only to
+        // threads of the waiter's priority or above, so after a few turns
+        // Sleep(1), which lets a lower-priority holder run.
         nuint lockWord = Sys.AddressOf(ref _querying);
-        while (Sys.Cas32(lockWord, 0, 1) != 0) Sleep(0);
+        for (int turn = 0; Sys.Cas32(lockWord, 0, 1) != 0; turn++) Sleep(turn < 16 ? 0 : 1);
         try
         {
             // The reservation asked for while `at` is still ours: decommitted
