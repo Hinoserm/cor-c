@@ -337,7 +337,7 @@ public static class ObjectLinkCommand
                 KernelExports.StampLinkId(output);
                 Console.Error.WriteLine($"{output}: {globals.Count} kernel exports, {KernelExports.SectionName} {table.Length} bytes");
             }
-            catch (Exception error) when (error is LinkException or ElfFormatException)
+            catch
             {
                 File.Delete(output);
                 throw;

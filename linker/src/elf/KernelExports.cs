@@ -42,9 +42,12 @@ namespace Corsac.Lang.Elf;
 /// two different: the loader, comparing them, refuses to bind a module to
 /// addresses of a kernel not running.
 ///
-/// A loader reads it with what it reads a library's tables with, DT_HASH and
-/// the chains, as one more image whose bias is nought. A module's link (the
-/// build) checks every import against the same section of the built kernel.
+/// A loader binds a name through DT_GNU_HASH -- its bloom word, bucket and
+/// chain -- and the name's 64-bit hash and value in DT_CORSAC_NAMES64,
+/// reading neither a symbol nor a string (tests/integration/modules/Loader.cor
+/// is one); DT_HASH and .dynsym serve one that reads them as a library's, as
+/// one more image whose bias is nought. A module's link (the build) checks
+/// every import against the same section of the built kernel.
 /// </summary>
 public sealed class KernelExports
 {

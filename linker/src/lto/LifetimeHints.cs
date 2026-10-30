@@ -37,11 +37,24 @@ public sealed class LifetimeCondition : IEquatable<LifetimeCondition>
     public bool IsTrue => Count == 0;
 
     /// <summary>Nothing needed any more: the condition "always" (a refusal empties one this way).</summary>
-    public void Clear() { Stays.Clear(); Fresh.Clear(); Fields.Clear(); Either.Clear(); }
+    public void Clear() { Unfrozen(); Stays.Clear(); Fresh.Clear(); Fields.Clear(); Either.Clear(); }
+
+    /// <summary>
+    /// HELD BY A POOL (LifetimeHintPool.Share), one object for every record
+    /// that needs the same: changed in place, it would change all of them.
+    /// Add, AddEither and Clear refuse it.
+    /// </summary>
+    internal bool Frozen { get; set; }
+
+    private void Unfrozen()
+    {
+        if (Frozen) throw new InvalidOperationException("a lifetime condition a pool shares is changed in place");
+    }
 
     /// <summary>An either-need, put in its place in order; false when the condition grew past <see cref="Limit"/>.</summary>
     public bool AddEither(string callee, int argument, LifetimeCondition or)
     {
+        Unfrozen();
         int at = 0;
         while (at < Either.Count && StaysOrder.Instance.Compare((Either[at].Callee, Either[at].Argument), (callee, argument)) < 0) at++;
         if (at < Either.Count && Either[at].Callee == callee && Either[at].Argument == argument)
@@ -59,6 +72,7 @@ public sealed class LifetimeCondition : IEquatable<LifetimeCondition>
     /// <summary>False when the condition grew past <see cref="Limit"/>, which means "never".</summary>
     public bool Add(LifetimeCondition other)
     {
+        Unfrozen();
         Stays.UnionWith(other.Stays);
         Fresh.UnionWith(other.Fresh);
         Fields.UnionWith(other.Fields);
@@ -625,6 +639,7 @@ public sealed class LifetimeHintPool
     {
         if (_conditions.TryGetValue(condition, out LifetimeCondition? known)) return known;
         _conditions.Add(condition, condition);
+        condition.Frozen = true;
         return condition;
     }
 

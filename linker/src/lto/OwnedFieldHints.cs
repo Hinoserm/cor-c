@@ -111,7 +111,11 @@ public sealed class OwnedFieldHints
     internal void Write(BinaryWriter writer)
     {
         SortedSet<string> names = new(StringComparer.Ordinal);
-        void Condition(LifetimeCondition c) { foreach (var s in c.Stays) names.Add(s.Callee); names.UnionWith(c.Fresh); foreach (var s in c.Fields) names.Add(s.Callee); }
+        void Condition(LifetimeCondition c)
+        {
+            foreach (var s in c.Stays) names.Add(s.Callee); names.UnionWith(c.Fresh); foreach (var s in c.Fields) names.Add(s.Callee);
+            foreach (var e in c.Either) { names.Add(e.Callee); Condition(e.Or); }
+        }
         foreach ((string field, OwnedFieldRecord record) in Fields)
         {
             names.Add(field); Sites(record.Sites); names.UnionWith(record.RefusedBy);
@@ -166,6 +170,10 @@ public sealed class OwnedFieldHints
         {
             if (c.Count > LifetimeCondition.Limit) throw new ElfFormatException("Owned-field condition exceeds its bound");
             Pairs(c.Stays); Names(c.Fresh, c.Fresh.Count); Pairs(c.Fields);
+            // AND ITS EITHER-NEEDS, each with the way it holds otherwise: left
+            // out, a condition read back was weaker than the one proven.
+            writer.Write(c.Either.Count);
+            foreach ((string callee, int argument, LifetimeCondition or) in c.Either) { writer.Write(index[callee]); writer.Write(argument); Needs(or); }
         }
         writer.Write(Fields.Count);
         foreach ((string field, OwnedFieldRecord record) in Fields)
@@ -280,6 +288,12 @@ public sealed class OwnedFieldHints
         {
             LifetimeCondition c = new();
             PairsInto(c.Stays.Add); NamesInto(c.Fresh.Add); PairsInto(c.Fields.Add);
+            for (int i = Count(24); i > 0; i--)
+            {
+                string callee = Name(); int argument = reader.ReadInt32();
+                if (argument < 0 || c.Either.Any(e => e.Callee == callee && e.Argument == argument)) throw new ElfFormatException("Invalid owned-field condition");
+                c.Either.Add((callee, argument, Needs()));
+            }
             if (c.Count > LifetimeCondition.Limit) throw new ElfFormatException("Owned-field condition exceeds its bound");
             return c;
         }
