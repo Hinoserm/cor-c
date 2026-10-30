@@ -85,8 +85,11 @@ GB live), and on the compiler's own link it is spent for nothing: from
 live), every call's targets (7.5 s, 1.60 GB), the reachable types (25 s),
 the receiver types -- which give up past their budget of 20 million carried
 after 89 s, every target kept -- and the escape graphs, which grow the heap
-to 2.7 GB in some 40 s before the whole engine gives up past the link's
-work budget (24 million locations carried) and answers nothing. A region
+to 2.9 GB in some 40 s before the whole engine gives up past the link's
+work budget (24 million locations carried) and answers nothing. Since
+eac52673 the engine stops where the receiver types give up -- no other
+program in any build log has outgrown their budget -- and the escape
+graphs' 40 s and 1.3 GB are gone; the receiver types' own 64 s remain. A region
 engine that fits this program, or knows early and cheaply that it will
 not, is the largest saving left in the link: about 2.5 GB of peak and two
 minutes. Lowering the budgets alone would give the same answer here sooner

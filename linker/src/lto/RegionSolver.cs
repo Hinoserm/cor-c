@@ -656,9 +656,10 @@ public static class RegionSolver
             // A PROGRAM WHOSE RECEIVERS' TYPES OUTGREW THEIR BUDGET IS NOT
             // FOLLOWED FURTHER: the escape graphs carry objects where that
             // solve carried types, over every target it could not narrow, and
-            // the compiler's own link -- the only program that has outgrown
-            // it -- then spent forty seconds and a heap grown to 2.9 GB before
-            // they too gave up past the link's work budget. Counted in values
+            // the compiler's own link -- the only program seen to outgrow it
+            // (every build log on 10-30) -- then spent forty seconds and a
+            // heap grown to 2.9 GB (--region-report +memsteps) before they
+            // too gave up past the link's work budget. Counted in values
             // carried, as both budgets are, so a link answers alike on every
             // host (--region-report +typesbudget=M to follow such a program).
             if (_report?.Contains("+typesoff") != true && !NarrowByReceiverTypes(targets, keys, rooted, typedThis, reached))

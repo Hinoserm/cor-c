@@ -1328,7 +1328,7 @@ public static class RegionEscapeTests
     /// </summary>
     private static void BlindSlots()
     {
-        RegionFacts?[]? Solve(long slot, bool known)
+        RegionFacts?[]? Solve(long slot, bool known, string? report = null)
         {
             RegionHints unit = new();
             RegionFunction start = new("_start", true, false, false, 0, 1, 0, Array.Empty<RegionSite>());
@@ -1357,9 +1357,12 @@ public static class RegionEscapeTests
             if (known) slotsOf = method => method == "MoveNext" ? new long[] { 0 } : null;
             Dictionary<string, string[]> virtuals = new(StringComparer.Ordinal) { [VirtualTargets.Prefix + "t_It+0"] = new[] { "MoveNext" } };
             return RegionSolver.Solve(new[] { read }, virtuals, (table, at) => table == "t_It" && at == 48 ? "MoveNext" : null,
-                "_start", new HashSet<string>(StringComparer.Ordinal), null, slotsOf: slotsOf);
+                "_start", new HashSet<string>(StringComparer.Ordinal), report, slotsOf: slotsOf);
         }
         Check(Solve(4, known: true) is [{ } apart] && apart.Sites.Contains(("MoveNext", 0)), "read at slot 4 alone, MoveNext is not called blind, and its element is made in Walk's region");
+        // The receivers' types past their budget (none at all): nothing is
+        // followed further, and nothing is made in a region.
+        Check(Solve(4, known: true, "+typesbudget=0") is null, "past the receiver types' budget, the engine stops");
         Check(Solve(0, known: true) is not [{ } at0] || !at0.Sites.Contains(("MoveNext", 0)), "read at slot 0, MoveNext is called blind, and its element is everyone's");
         Check(Solve(4, known: false) is not [{ } blindAll] || !blindAll.Sites.Contains(("MoveNext", 0)), "not knowing where methods are held, every method is called blind");
     }
