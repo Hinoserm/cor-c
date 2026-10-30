@@ -23,6 +23,10 @@ for copy in 'Volatile_Write\$Backing' 'Interlocked_Exchange\$Backing' 'Holder_Se
     count=$(grep -c "$copy" "$work/copies" || true)
     test "$count" = 1 || { cat "$work/copies"; fail "$copy has $count copies, not one"; }
 done
+# And Id's three (over List<Backing?>, string?[][] and (Backing?, int)[]),
+# each once.
+count=$(grep -c 'Holder_Id\$' "$work/copies" || true)
+test "$count" = 3 || { cat "$work/copies"; fail "Id has $count copies, not three"; }
 if grep -q '?' "$work/copies"; then cat "$work/copies"; fail "a copy's name holds a reference's ?"; fi
 
 printf 'PASS method copy names: %s\n' "$work"

@@ -2,12 +2,15 @@
 // expect-exit: 0
 // expect-output:
 // True True True True
+// True True 6
 //
 // C# checks an assignment against its target as declared: `one.Item1 =
 // null` is a Backing? item of a `(Backing?, int)`, however full the
 // initialiser left it, and so is an item of an element of a `(Backing?,
 // int)[]`, and of one handed back through a generic method. The tuples'
-// shared shape stores a Backing; the use says the `?` (TupleItem).
+// shared shape stores a Backing; the use says the `?` (TupleItem). And a
+// tuple literal taken apart into places converts item by item to them:
+// `(e, n) = (null, 5)` gives the null e's type (C# 12.21.2).
 
 #nullable enable
 using System;
@@ -28,6 +31,13 @@ static class Program
         pairs[0].Item1 = null;
         Id(pairs)[1].Item1 = null;
         Console.WriteLine((one.Item1 is null) + " " + (got.Item1 is null) + " " + (pairs[0].Item1 is null) + " " + (pairs[1].Item1 is null));
+        // Taken apart into places, a tuple literal's null is each place's.
+        Backing? e = new Backing();
+        int n = 0;
+        (e, n) = (null, 5);
+        (Backing?, int) two = (new Backing(), 1);
+        (two.Item1, n) = (null, n + 1);
+        Console.WriteLine((e is null) + " " + (two.Item1 is null) + " " + n);
         return 0;
     }
 }

@@ -1,7 +1,7 @@
 // test: [NotNullWhen] on a local function's parameter proves its out value
 // expect-exit: 0
 // expect-output:
-// 5
+// 7 2
 //
 // A local function says what its answer proves as a method does: C# reads
 // `bool Provider(string key, [NotNullWhen(true)] out Entry? body)` declared
@@ -31,7 +31,13 @@ static class Program
         // Named, out of order: the attribute is the parameter's, not the position's.
         if (!Find(found: out Entry? four, key: a) || !four.Importable) n++;
         if (!Provider(body: out Entry? five, key: a) || !five.Importable) n++;
-        Console.WriteLine(n);
+        // Generic, and capturing a local: the captures go in before the
+        // arguments, and the attribute is still its parameter's.
+        int seen = 0;
+        bool Generic<T>(T key, [NotNullWhen(true)] out Entry? found) { seen++; found = key is not null ? new Entry() : null; return found is not null; }
+        if (!Generic(found: out Entry? six, key: a) || !six.Importable) n++;
+        if (!Generic(a, out Entry? seven) || !seven.Importable) n++;
+        Console.WriteLine(n + " " + seen);
         return 0;
     }
 }

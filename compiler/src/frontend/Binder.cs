@@ -7664,6 +7664,16 @@ public sealed partial class Binder
             // Deconstruct for anything else.
             case DeconstructStmt taken:
             {
+                // A TUPLE LITERAL TAKEN APART INTO PLACES converts item by item
+                // to them (C# 12.21.2): `(e, n) = (null, 5)` is an Entry? and
+                // an int, and a bare null or default has the type of its
+                // place, as declared -- which nothing else here gives it.
+                if (taken.Value is TupleExpr literal && literal.Items.Count == taken.Names.Count)
+                    for (int i = 0; i < literal.Items.Count; i++)
+                        if (literal.Items[i] is LiteralExpr { Kind: Lit.Null } or DefaultExpr { Type.Name.Length: 0 }
+                            && taken.Names[i] is { Type: null, Target: Expr place } && Peek(place) is { IsError: false } known
+                            && RefOf(DeclaredTypeOf(place) ?? known) is TypeRef placeType)
+                            literal.Items[i] = new CastExpr { Type = placeType, Operand = literal.Items[i], Line = literal.Items[i].Line, Col = literal.Items[i].Col, File = literal.Items[i].File };
                 Type had = Peek(taken.Value);
                 string held = $"$taken${_iterations++}";
                 Block block = new() { Line = taken.Line, Col = taken.Col };
@@ -10897,14 +10907,18 @@ public sealed partial class Binder
     /// <summary>
     /// The type a variable was DECLARED with, whatever is known of it here: a
     /// local, a parameter, a field (named alone, through a receiver, or
-    /// captured into a closure), an array's element. Null for anything else.
+    /// captured into a closure), an array's element, a tuple's item as its
+    /// use wrote it -- the receiver of each found the same way, by its
+    /// declared type, down the chain. Null for anything else.
     /// </summary>
     private Type? DeclaredTypeOf(Expr target)
     {
         // A TUPLE'S ITEM AS ITS USE WROTE IT (TupleItem): the shape's field is
         // shared by every `(Backing?, int)` and `(Backing, int)`, and stores the
-        // Backing; the receiver's declared type says which this is.
+        // Backing; the receiver's declared type says which this is. Asked of a
+        // tuple's field only, before anything of its receiver is.
         if (target is MemberExpr item && _r.Resolved.TryGetValue(item, out Sym? itemSym) && itemSym is FieldSym { Field: var itemField }
+            && itemField.Owner.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal)
             && (DeclaredTypeOf(item.Target) ?? (_r.ExprType.TryGetValue(item.Target, out Type? itemOf) ? itemOf : null)) is { Symbol: TypeSymbol shape } holder
             && shape.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal) && shape.Fields.IndexOf(itemField) is int which and >= 0)
             return TupleItem(holder, shape, which);
@@ -10917,7 +10931,11 @@ public sealed partial class Binder
             };
             if (said is not null) return said;
         }
-        if (target is MemberExpr member && (DeclaredTypeOf(member.Target) ?? (_r.ExprType.TryGetValue(member.Target, out Type? bound) ? bound : null)) is Type receiver)
+        // A field by its name on the receiver, only where the member was
+        // resolved to nothing else: a property's setter, a method, is no
+        // variable, and a hiding member is not the base's field.
+        if (target is MemberExpr member && !_r.Resolved.ContainsKey(member)
+            && (DeclaredTypeOf(member.Target) ?? (_r.ExprType.TryGetValue(member.Target, out Type? bound) ? bound : null)) is Type receiver)
             for (TypeSymbol? owner = receiver.Symbol; owner is not null; owner = owner.Base)
                 foreach (FieldSymbol field in owner.Fields)
                     if (field.Name == member.Name) return field.Type;
@@ -13290,10 +13308,14 @@ public sealed partial class Binder
     /// are types of their own, and kept. Spelled with the marks,
     /// Volatile.Write over a Backing? and over a Backing proved not null
     /// were two copies of one body. The call keeps the marks (CarriesMarks).
+    /// The type itself where nothing in it changes and it has no use's marks;
+    /// otherwise one made again, Equal to it but for the marks.
     /// </summary>
     private static Type CopyArgument(Type t)
     {
-        if (t.IsPointer) return t;
+        // Not a type parameter's `T?`, which may be Nullable<T> (as
+        // SpecialisationKey has it); nor anything of a pointer.
+        if (t.IsPointer || t.ParamName is not null) return t;
         if (t.Dynamic && t.Prim == Prim.Any && !t.IsArray) return Type.Any;
         Type? element = t.Element is Type each ? CopyArgument(each) : null;
         List<Type>? args = null;
