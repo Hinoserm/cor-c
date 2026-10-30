@@ -89,7 +89,9 @@ to 2.9 GB in some 40 s before the whole engine gives up past the link's
 work budget (24 million locations carried) and answers nothing. Since
 eac52673 the engine stops where the receiver types give up -- no other
 program in any build log has outgrown their budget -- and the escape
-graphs' 40 s and 1.3 GB are gone; the receiver types' own 64 s remain. A region
+graphs' 40 s and 1.3 GB are gone: the regions phase 129 s -> 85 s, the
+link's peak RSS 3643 MB -> 3287 MB, output byte-identical. The receiver
+types' own solve, about 80 s, is now that peak. A region
 engine that fits this program, or knows early and cheaply that it will
 not, is the largest saving left in the link: about 2.5 GB of peak and two
 minutes. Lowering the budgets alone would give the same answer here sooner
