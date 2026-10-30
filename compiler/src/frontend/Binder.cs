@@ -19397,7 +19397,6 @@ public sealed partial class Binder
                         continue;
                     }
 
-                    Type value = CheckExpr(given);
                     FieldSymbol? field = owner.FindField(init.Name)
                                       ?? owner.FindBackingField(init.Name);
 
@@ -19415,14 +19414,30 @@ public sealed partial class Binder
                         if (which >= 0 && which < owner.Fields.Count) field = owner.Fields[which];
                     }
 
-                    if (field is null)
+                    // A PROPERTY WITH AN ACCESSOR OF ITS OWN, `init` or `set`, is
+                    // set through it, as C# does in a `with` as in an object
+                    // initialiser: a record struct's packed Offset is no field.
+                    MethodSymbol? setter = field is null
+                        ? owner.FindMethods("set_", init.Name).FirstOrDefault(s => s.Params.Count == 1)
+                        : null;
+
+                    if (field is null && setter is null)
                     {
+                        CheckExpr(given);
                         Error(init, $"'{owner.Name}' has no member '{init.Name}' to change");
                         continue;
                     }
 
-                    _r.InitField[init] = field;
-                    CheckAssignable(value, field.Type, given, What.Quoted(init.Name));
+                    // The member's type is what the value is read as: `X = new()`, `X = default`.
+                    Type wants = field?.Type ?? setter!.Params[0].Type;
+                    Type? outer = _wanted;
+                    _wanted = wants;
+                    Type value = Settle(given, wants, CheckExpr(given));
+                    _wanted = outer;
+
+                    if (field is not null) _r.InitField[init] = field;
+                    else _r.InitSetter[init] = setter!;
+                    CheckAssignable(value, wants, given, What.Quoted(init.Name));
                 }
 
                 return of;

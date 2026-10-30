@@ -2427,6 +2427,12 @@ public sealed partial class Lowering
                     _e.Block.Instrs[^1].Family = FieldFamily(field, field.Offset);
                 }
             }
+            // Through its own accessor, on the copy (Binder: a property with a body).
+            else if (init.Value is Expr set && _b.InitSetter.TryGetValue(init, out MethodSymbol? setter))
+            {
+                VReg v = EvalAs(set, setter.Params[0]);
+                CallMethod(setter, obj, new List<Operand> { R(obj), R(v) });
+            }
         }
         return obj;
     }

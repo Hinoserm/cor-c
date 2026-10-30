@@ -1,0 +1,43 @@
+// test: with sets a property through its own init or set accessor
+// expect-exit: 0
+// expect-output:
+// 3 4 7 4 7 9 r True False
+// 1 2 1 5
+//
+// A record struct whose properties pack two numbers into one field has no
+// field to change: `with` calls the init accessor on the copy, as C# does.
+
+using System;
+
+readonly record struct Packed
+{
+    private readonly int _both;
+    public Packed(int a, int b) { _both = a << 8 | b; Name = "p"; }
+    public int A { get => _both >> 8; init => _both = value << 8 | B; }
+    public int B { get => _both & 0xFF; init => _both = A << 8 | value; }
+    public string Name { get; init; }
+}
+
+class Box
+{
+    private int _v;
+    public int V { get => _v; set => _v = value * 2; }
+    public int W;
+}
+
+struct Plain { public int X; public int Y { get; set; } }
+
+static class Program
+{
+    static int Main()
+    {
+        Packed p = new(3, 4);
+        Packed q = p with { A = 7 };
+        Packed r = q with { B = 9, Name = "r" };
+        Console.WriteLine($"{p.A} {p.B} {q.A} {q.B} {r.A} {r.B} {r.Name} {p == new Packed(3, 4)} {q == p}");
+        Plain s = new() { X = 1, Y = 2 };
+        Plain t = s with { Y = 5 };
+        Console.WriteLine($"{s.X} {s.Y} {t.X} {t.Y}");
+        return 0;
+    }
+}
