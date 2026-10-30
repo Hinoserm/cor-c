@@ -5,7 +5,7 @@ namespace Corsac.Lang.Lto;
 /// <summary>Closed-image roots through IR code/data and all retained native-object relocations.</summary>
 public static class IrReachability
 {
-    public static Dictionary<ObjectFile, HashSet<string>> Find(IReadOnlyList<(string Name, ObjectFile Object)> inputs,
+    public static Dictionary<ObjectFile, HashSet<IrKey>> Find(IReadOnlyList<(string Name, ObjectFile Object)> inputs,
         IReadOnlyDictionary<ObjectFile, IrArchive> archives, IReadOnlyDictionary<string, ObjectFile> owners, string entry,
         IEnumerable<string>? roots = null, Func<ObjectFile, string, string, bool>? gone = null,
         IReadOnlyDictionary<string, HashSet<string>>? also = null)
@@ -17,7 +17,7 @@ public static class IrReachability
         // `gone`: an edge from a unit's function to a name it no longer
         // refers to as the link will make it (HeapDecision.GoneEdges).
         bool Kept(ObjectFile obj, string from, string to) => gone is null || !gone(obj, from, to);
-        Dictionary<ObjectFile, HashSet<string>> retained = archives.Keys.ToDictionary(obj => obj, _ => new HashSet<string>(StringComparer.Ordinal));
+        Dictionary<ObjectFile, HashSet<IrKey>> retained = archives.Keys.ToDictionary(obj => obj, _ => new HashSet<IrKey>());
         Dictionary<ObjectFile, HashSet<string>> locals = inputs.ToDictionary(input => input.Object,
             input => input.Object.Symbols.Where(symbol => symbol.IsDefined && !symbol.Global).Select(symbol => symbol.Name).ToHashSet(StringComparer.Ordinal));
         // Each unit's own copies of what another unit keeps, already looked
@@ -47,7 +47,7 @@ public static class IrReachability
             // small (StaticInitGuards). The link runs those passes again over
             // the archived callers, which still call it, so the body is kept.
             if (owner is null && reference.Origin is not null && archives.TryGetValue(reference.Origin, out IrArchive? origin)
-                && (origin.Entries.ContainsKey("F:" + reference.Symbol) || origin.Entries.ContainsKey("D:" + reference.Symbol)))
+                && (origin.Entries.ContainsKey(IrKey.OfFunction(reference.Symbol)) || origin.Entries.ContainsKey(IrKey.OfData(reference.Symbol))))
                 owner = reference.Origin;
             // THE UNIT'S OWN COPY OF WHAT ANOTHER UNIT KEEPS. A generic copy
             // every unit compiles (Dictionary's ContainsKey at __canon) is
@@ -64,16 +64,14 @@ public static class IrReachability
             // itself is not kept (PruneAfterLate keeps the owner's).
             if (reference.Origin is not null && owner != reference.Origin
                 && archives.TryGetValue(reference.Origin, out IrArchive? own) && copies[reference.Origin].Add(reference.Symbol)
-                && (own.Entries.TryGetValue("F:" + reference.Symbol, out IrArchiveEntry? copy)
-                    || own.Entries.TryGetValue("D:" + reference.Symbol, out copy)))
+                && (own.Entries.TryGetValue(IrKey.OfFunction(reference.Symbol), out IrArchiveEntry? copy)
+                    || own.Entries.TryGetValue(IrKey.OfData(reference.Symbol), out copy)))
                 foreach (string named in copy.References)
                     if (IrArchiveEntry.Named(named) is var dependency && Kept(reference.Origin, reference.Symbol, dependency)) pending.Push((reference.Origin, dependency));
             if (owner is null || !archives.TryGetValue(owner, out IrArchive? archive)) continue;
-            string key = "F:" + reference.Symbol;
-            if (!archive.Entries.ContainsKey(key)) key = "D:" + reference.Symbol;
-            // The entry's own key, read once with its archive: the one made
-            // here to look it up was a second copy of every name kept.
-            if (!archive.Entries.TryGetValue(key, out IrArchiveEntry? definition) || !retained[owner].Add(definition.Key)) continue;
+            if ((!archive.Entries.TryGetValue(IrKey.OfFunction(reference.Symbol), out IrArchiveEntry? definition)
+                    && !archive.Entries.TryGetValue(IrKey.OfData(reference.Symbol), out definition))
+                || !retained[owner].Add(definition.Key)) continue;
             foreach (string named in definition.References)
                 if (IrArchiveEntry.Named(named) is var dependency && Kept(owner, reference.Symbol, dependency)) pending.Push((owner, dependency));
         }

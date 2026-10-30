@@ -23,10 +23,10 @@ public static class IrArchiveTests
         ObjectFile source = Make("function", true, new[] { "other" });
         ObjectFile roundTrip = ElfReader.ReadObject(ElfWriter.WriteObject(source));
         IrArchive archive = IrArchive.Read(roundTrip)!;
-        Check(archive.Entries.Count == 1 && archive.Entries["F:function"].Calls.Single() == "other", "IR summary round trip");
-        Check(archive.ReadBody("F:function").SequenceEqual(new byte[] { 1, 2, 3 }), "IR body round trip");
+        Check(archive.Entries.Count == 1 && archive.Entries[IrKey.Parse("F:function")].Calls.Single() == "other", "IR summary round trip");
+        Check(archive.ReadBody(IrKey.Parse("F:function")).SequenceEqual(new byte[] { 1, 2, 3 }), "IR body round trip");
         roundTrip.Section(IrArchive.SectionName).Bytes[^1] ^= 1;
-        Reject(() => archive.ReadBody("F:function"));
+        Reject(() => archive.ReadBody(IrKey.Parse("F:function")));
         // Opening summaries must not clone the full, potentially huge payload.
         ObjectFile largeArchive = new();
         IrArchive.Attach(largeArchive, new[] { new IrArchiveRecord("F:large", false, 0,
@@ -45,7 +45,7 @@ public static class IrArchiveTests
         Reject(() => IrArchive.Read(source));
         source = Make("function", true, Array.Empty<string>()); source.Section(IrArchive.SectionName).Bytes[^1] ^= 1;
         archive = IrArchive.Read(source)!; // Untouched bodies remain lazy.
-        Reject(() => archive.ReadBody("F:function"));
+        Reject(() => archive.ReadBody(IrKey.Parse("F:function")));
         source = Make("function", true, Array.Empty<string>()); source.Section(IrArchive.SectionName).Bytes.RemoveAt(8);
         Reject(() => IrArchive.Read(source));
 

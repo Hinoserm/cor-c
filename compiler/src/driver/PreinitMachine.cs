@@ -89,8 +89,8 @@ public sealed class PreinitMachine : Preinit.IMachine
                 continue;
             }
             if (IrArchive.Read(obj) is not IrArchive archive) continue;
-            foreach (string key in archive.Entries.Keys)
-                if (key.StartsWith("F:", StringComparison.Ordinal)) _bodies.TryAdd(key[2..], (obj, () => archive.ReadBody(key)));
+            foreach (IrKey key in archive.Entries.Keys)
+                if (key.Kind == IrKey.Function) _bodies.TryAdd(key.Name, (obj, () => archive.ReadBody(key)));
         }
     }
 

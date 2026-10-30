@@ -89,7 +89,7 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         }
     }
 
-    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
+    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<IrKey>? retained = null,
         LifetimeFacts? facts = null, IrArchive? archive = null)
     {
         // The unit's own file when it was read from one and is unchanged:

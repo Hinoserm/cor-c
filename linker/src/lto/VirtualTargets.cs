@@ -262,7 +262,7 @@ public static class VirtualTargets
     /// relocation in them or by any function of <paramref name="archives"/>.
     /// </summary>
     public static Made MadeIn(List<(string Name, ObjectFile Object)> inputs, IReadOnlyDictionary<ObjectFile, IrArchive> archives,
-        IReadOnlyDictionary<ObjectFile, HashSet<string>>? reached = null)
+        IReadOnlyDictionary<ObjectFile, HashSet<IrKey>>? reached = null)
         => IndexOf(inputs).MadeTypes(archives, reached);
 
     /// <summary>
@@ -431,7 +431,7 @@ public static class VirtualTargets
         /// (1311). Relocations inside a dropped function and a dropped
         /// function's or data item's IR name nothing made; everything else
         /// counts as before.
-        public Made MadeTypes(IReadOnlyDictionary<ObjectFile, IrArchive> archives, IReadOnlyDictionary<ObjectFile, HashSet<string>>? reached)
+        public Made MadeTypes(IReadOnlyDictionary<ObjectFile, IrArchive> archives, IReadOnlyDictionary<ObjectFile, HashSet<IrKey>>? reached)
         {
             if (_made is not null) return _made;
             Made made = new() { Defined = _named.Count };
@@ -499,7 +499,7 @@ public static class VirtualTargets
             }
             foreach (var (_, obj) in _inputs)
             {
-                HashSet<string>? kept = reached?.GetValueOrDefault(obj);
+                HashSet<IrKey>? kept = reached?.GetValueOrDefault(obj);
                 IrArchive? its = kept is null ? null : archives.GetValueOrDefault(obj);
                 foreach (Section section in obj.Sections)
                 {
@@ -518,7 +518,7 @@ public static class VirtualTargets
                     {
                         foreach (Symbol symbol in obj.Symbols)
                             if (symbol.IsDefined && symbol.IsFunction && symbol.Size > 0 && ReferenceEquals(symbol.Section, section)
-                                && its.Entries.ContainsKey("F:" + symbol.Name))
+                                && its.Entries.ContainsKey(IrKey.OfFunction(symbol.Name)))
                                 (dropped ??= new()).Add((symbol.Offset, symbol.Offset + symbol.Size));
                         dropped?.Sort((a, b) => a.Start.CompareTo(b.Start));
                     }
@@ -543,19 +543,19 @@ public static class VirtualTargets
             }
             foreach (var (owner, archive) in archives)
             {
-                HashSet<string>? kept = reached?.GetValueOrDefault(owner);
+                HashSet<IrKey>? kept = reached?.GetValueOrDefault(owner);
                 foreach (IrArchiveEntry entry in archive.Entries.Values)
                 {
                     // A function: every descriptor it names. A data item (and
                     // a shadow of another unit's descriptor): what it names,
                     // but itself, and nothing of a display or interface table.
-                    bool function = entry.Key.StartsWith("F:", StringComparison.Ordinal);
-                    if (!function && !entry.Key.StartsWith("D:", StringComparison.Ordinal) && !entry.Key.StartsWith("S:", StringComparison.Ordinal)) continue;
-                    string own = entry.Key[2..];
+                    bool function = entry.Key.Kind == IrKey.Function;
+                    if (!function && entry.Key.Kind is not (IrKey.Data or IrKey.Shadow)) continue;
+                    string own = entry.Key.Name;
                     if (own.StartsWith("tk_", StringComparison.Ordinal)) continue;
                     // Kept by its key (IrReachability keeps F: and D: records);
                     // a shadow (S:) is never a record it keeps, and counts.
-                    if (kept is not null && entry.Key[0] != 'S' && !kept.Contains(entry.Key)) continue;
+                    if (kept is not null && entry.Key.Kind != IrKey.Shadow && !kept.Contains(entry.Key)) continue;
                     if (!function && tableNames.Contains(own)) continue;
                     foreach (string named in entry.References)
                         if (IsDescriptor(named) && (function || named != own)) made.Descriptors.Add(named);

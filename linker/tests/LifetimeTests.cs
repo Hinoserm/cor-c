@@ -204,7 +204,7 @@ public static class LifetimeTests
         List<(string Name, ObjectFile Object)> closed = new() { ("app", Unit(new[] { "entry" }, gaining)), ("rt", Unit(new[] { "helper", "other" }, null)) };
         PruningBackend pruning = new();
         IrLinkOptimizer.Run(closed, () => pruning, closedImageEntry: "entry");
-        Check(pruning.Retained.Any(kept => kept is not null && kept.Contains("F:helper") && !kept.Contains("F:other")),
+        Check(pruning.Retained.Any(kept => kept is not null && kept.Contains(IrKey.Parse("F:helper")) && !kept.Contains(IrKey.Parse("F:other"))),
             "a closed image keeps the free a regenerated unit will call, and drops what nothing calls");
 
         Console.WriteLine("  lifetime hint format, whole-program solve, cycles, unknown callees, fields, field sites, held boxes, closed-image roots and backend facts passed");
@@ -214,15 +214,15 @@ public static class LifetimeTests
 /// <summary>Answers a regeneration with the unit cut down to what it was asked to keep, and remembers what that was.</summary>
 internal sealed class PruningBackend : IUnitBackend
 {
-    public List<IReadOnlySet<string>?> Retained { get; } = new();
-    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
+    public List<IReadOnlySet<IrKey>?> Retained { get; } = new();
+    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<IrKey>? retained = null,
         LifetimeFacts? facts = null, IrArchive? archive = null)
     {
         Retained.Add(retained);
         ObjectFile kept = new();
         kept.Sections.AddRange(original.Sections.Where(section => section.Name != IrArchive.SectionName && section.Name != LifetimeHints.SectionName));
         kept.Symbols.AddRange(original.Symbols.Where(symbol => !symbol.Global || retained is null
-            || retained.Contains("F:" + symbol.Name) || retained.Contains("D:" + symbol.Name)));
+            || retained.Contains(IrKey.OfFunction(symbol.Name)) || retained.Contains(IrKey.OfData(symbol.Name))));
         return kept;
     }
 }

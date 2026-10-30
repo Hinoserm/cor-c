@@ -9,6 +9,6 @@ namespace Corsac.Lang.Lto;
 /// </summary>
 public interface IUnitBackend
 {
-    ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
+    ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<IrKey>? retained = null,
         LifetimeFacts? facts = null, IrArchive? archive = null);
 }

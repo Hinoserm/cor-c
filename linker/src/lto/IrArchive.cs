@@ -19,13 +19,13 @@ public sealed class IrArchive
     private readonly Func<int, int, byte[]> readAt;
     private readonly int total;
     // Each body by its key, and where it lies in this archive.
-    private readonly Dictionary<string, (IrArchiveEntry Entry, int Offset)> _places;
-    public IReadOnlyDictionary<string, IrArchiveEntry> Entries { get; }
+    private readonly Dictionary<IrKey, (IrArchiveEntry Entry, int Offset)> _places;
+    public IReadOnlyDictionary<IrKey, IrArchiveEntry> Entries { get; }
 
-    private IrArchive(Func<int, int, byte[]> readAt, int total, Dictionary<string, (IrArchiveEntry Entry, int Offset)> places)
+    private IrArchive(Func<int, int, byte[]> readAt, int total, Dictionary<IrKey, (IrArchiveEntry Entry, int Offset)> places)
     { this.readAt = readAt; this.total = total; _places = places; Entries = new EntryView(places); }
 
-    public byte[] ReadBody(string key)
+    public byte[] ReadBody(IrKey key)
     {
         if (!_places.TryGetValue(key, out (IrArchiveEntry Entry, int Offset) place)) throw new ElfFormatException("Missing IR record: " + key);
         IrArchiveEntry entry = place.Entry;
@@ -196,10 +196,10 @@ public sealed class IrArchive
             if (!HashDirectory(stream, directoryBytes).SequenceEqual(directoryHash))
                 throw new ElfFormatException("IR directory integrity mismatch");
             int bodyStart = 84 + directoryBytes, next = bodyStart;
-            Dictionary<string, (IrArchiveEntry Entry, int Offset)> entries = new(StringComparer.Ordinal);
+            Dictionary<IrKey, (IrArchiveEntry Entry, int Offset)> entries = new();
             for (int i = 0; i < count; i++)
             {
-                string key = ReadName(reader);
+                IrKey key = ReadKey(reader);
                 byte flags = reader.ReadByte(); int instructions = reader.ReadInt32(), callCount = reader.ReadInt32();
                 if (flags > 1 || instructions < 0 || callCount < 0 || callCount > 100000 || callCount > (bodyStart - stream.Position) / 5)
                     throw new ElfFormatException("Invalid IR import summary");
@@ -279,28 +279,45 @@ public sealed class IrArchive
     [ThreadStatic] private static byte[]? _nameBuffer;
 
     /// <summary>An archive's entries by key, where they lie left out.</summary>
-    private sealed class EntryView(Dictionary<string, (IrArchiveEntry Entry, int Offset)> places) : IReadOnlyDictionary<string, IrArchiveEntry>
+    private sealed class EntryView(Dictionary<IrKey, (IrArchiveEntry Entry, int Offset)> places) : IReadOnlyDictionary<IrKey, IrArchiveEntry>
     {
-        public IrArchiveEntry this[string key] => places[key].Entry;
-        public IEnumerable<string> Keys => places.Keys;
+        public IrArchiveEntry this[IrKey key] => places[key].Entry;
+        public IEnumerable<IrKey> Keys => places.Keys;
         public IEnumerable<IrArchiveEntry> Values => places.Values.Select(place => place.Entry);
         public int Count => places.Count;
-        public bool ContainsKey(string key) => places.ContainsKey(key);
+        public bool ContainsKey(IrKey key) => places.ContainsKey(key);
 
-        public bool TryGetValue(string key, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out IrArchiveEntry value)
+        public bool TryGetValue(IrKey key, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out IrArchiveEntry value)
         {
             bool found = places.TryGetValue(key, out (IrArchiveEntry Entry, int Offset) place);
             value = place.Entry;
             return found;
         }
 
-        public IEnumerator<KeyValuePair<string, IrArchiveEntry>> GetEnumerator()
+        public IEnumerator<KeyValuePair<IrKey, IrArchiveEntry>> GetEnumerator()
         {
-            foreach (KeyValuePair<string, (IrArchiveEntry Entry, int Offset)> place in places)
+            foreach (KeyValuePair<IrKey, (IrArchiveEntry Entry, int Offset)> place in places)
                 yield return new(place.Key, place.Value.Entry);
         }
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    /// <summary>
+    /// A record's key as the directory writes it, `F:name`, read as its kind
+    /// and its name: the name interned, so it is the very string the link's
+    /// symbols and calls hold, and the written text never made.
+    /// </summary>
+    private static IrKey ReadKey(BinaryReader reader)
+    {
+        int length = reader.ReadInt32();
+        if (length < 3 || length > 16384 || length > reader.BaseStream.Length - reader.BaseStream.Position)
+            throw new ElfFormatException("Invalid IR key length");
+        byte[] bytes = reader.ReadBytes(length);
+        if (bytes.Length != length || bytes[0] >= 0x80 || bytes[1] != (byte)':') throw new ElfFormatException("Invalid IR key");
+        string name = string.Intern(Utf8.GetString(bytes, 2, length - 2));
+        if (name.Contains('\0')) throw new ElfFormatException("Invalid IR name");
+        return new IrKey((char)bytes[0], name);
     }
 
     private static string ReadName(BinaryReader reader)

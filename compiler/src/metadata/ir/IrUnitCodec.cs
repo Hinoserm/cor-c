@@ -136,7 +136,7 @@ public static class IrUnitCodec
     /// <summary>A unit's settings record alone, without its functions: what a link reads of every unit before it plans.</summary>
     public static (Settings? Settings, bool StackMaps) ReadSettings(IrArchive archive)
     {
-        using MemoryStream stream = new(archive.ReadBody("M:unit"), writable: false);
+        using MemoryStream stream = new(archive.ReadBody(Corsac.Lang.Lto.IrKey.UnitRecord), writable: false);
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         IrReadBudget budget = new(1024 * 1024);
         if (reader.ReadInt32() != 0) throw new InvalidDataException("Unsupported IR unit version");
@@ -163,7 +163,7 @@ public static class IrUnitCodec
     }
 
     public static (Module Module, bool StackMaps, long AccountedBytes) Read(IrArchive archive, long memoryBudget = 64L * 1024 * 1024,
-        IReadOnlySet<string>? retained = null, IReadOnlyDictionary<string, bool>? functionHeaders = null)
+        IReadOnlySet<Corsac.Lang.Lto.IrKey>? retained = null, IReadOnlyDictionary<string, bool>? functionHeaders = null)
     {
         var (module, stackMaps, used, _) = ReadWithSettings(archive, memoryBudget, retained, functionHeaders);
         return (module, stackMaps, used);
@@ -171,10 +171,10 @@ public static class IrUnitCodec
 
     /// <summary>The unit and, for one taken before the late passes, what it was compiled with (applied to the module too).</summary>
     public static (Module Module, bool StackMaps, long AccountedBytes, Settings? Settings) ReadWithSettings(IrArchive archive,
-        long memoryBudget = 64L * 1024 * 1024, IReadOnlySet<string>? retained = null, IReadOnlyDictionary<string, bool>? functionHeaders = null)
+        long memoryBudget = 64L * 1024 * 1024, IReadOnlySet<Corsac.Lang.Lto.IrKey>? retained = null, IReadOnlyDictionary<string, bool>? functionHeaders = null)
     {
         IrReadBudget budget = new(memoryBudget);
-        using MemoryStream stream = new(archive.ReadBody("M:unit"), writable: false);
+        using MemoryStream stream = new(archive.ReadBody(Corsac.Lang.Lto.IrKey.UnitRecord), writable: false);
         using BinaryReader reader = new(stream, IrBinary.Utf8);
         try
         {
@@ -199,22 +199,22 @@ public static class IrUnitCodec
             // the module holds what was made of them, never them.
             foreach (IrArchiveEntry entry in archive.Entries.Values)
             {
-                if (entry.Key == "M:unit") continue;
-                if (entry.Key.StartsWith("S:", StringComparison.Ordinal))
+                if (entry.Key == Corsac.Lang.Lto.IrKey.UnitRecord) continue;
+                if (entry.Key.Kind == Corsac.Lang.Lto.IrKey.Shadow)
                 {
                     byte[] body = archive.ReadBody(entry.Key);
                     DataItem shadow = IrDataCodec.Read(body, memoryBudget, budget);
                     budget.Release(body.Length);
-                    if (entry.Key != "S:" + shadow.Name) throw new InvalidDataException("IR shadow key mismatch");
+                    if (entry.Key.Name != shadow.Name) throw new InvalidDataException("IR shadow key mismatch");
                     module.ShadowData[shadow.Name] = shadow;
                     continue;
                 }
                 if (retained is not null && !retained.Contains(entry.Key)) continue;
-                if (entry.Key.StartsWith("F:", StringComparison.Ordinal))
+                if (entry.Key.Kind == Corsac.Lang.Lto.IrKey.Function)
                 {
                     if (functionHeaders is not null)
                     {
-                        string name = entry.Key[2..];
+                        string name = entry.Key.Name;
                         if (!functionHeaders.TryGetValue(name, out bool exported) || entry.DecodeBytes < entry.Length)
                             throw new InvalidDataException("Invalid deferred IR function header");
                         budget.Charge(512L + 2L * name.Length, 1, "function header");
@@ -224,15 +224,15 @@ public static class IrUnitCodec
                     byte[] body = archive.ReadBody(entry.Key);
                     Function function = IrFunctionCodec.Read(body, budget, module.KeepCalls);
                     budget.Release(body.Length);
-                    if (entry.Key != "F:" + function.Name) throw new InvalidDataException("IR function key mismatch");
+                    if (entry.Key.Name != function.Name) throw new InvalidDataException("IR function key mismatch");
                     module.Functions.Add(function);
                 }
-                else if (entry.Key.StartsWith("D:", StringComparison.Ordinal))
+                else if (entry.Key.Kind == Corsac.Lang.Lto.IrKey.Data)
                 {
                     byte[] body = archive.ReadBody(entry.Key);
                     DataItem item = IrDataCodec.Read(body, memoryBudget, budget);
                     budget.Release(body.Length);
-                    if (entry.Key != "D:" + item.Name) throw new InvalidDataException("IR data key mismatch");
+                    if (entry.Key.Name != item.Name) throw new InvalidDataException("IR data key mismatch");
                     module.Data.Add(item);
                 }
                 else throw new InvalidDataException("Unknown required IR record " + entry.Key);

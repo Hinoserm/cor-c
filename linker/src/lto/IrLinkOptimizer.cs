@@ -140,7 +140,7 @@ public static class IrLinkOptimizer
         // every name those modules import.
         if (keep is not null) linkRoots.UnionWith(keep);
         string? reachEntry = closedImageEntry ?? reachableFrom;
-        Dictionary<ObjectFile, HashSet<string>>? reachability = enabled && reachEntry is not null
+        Dictionary<ObjectFile, HashSet<IrKey>>? reachability = enabled && reachEntry is not null
             ? IrReachability.Find(inputs, archives, owners, reachEntry, linkRoots,
                 noCollector ? HeapDecision.GoneEdges(inputs.Select((input, index) => (input.Object, withoutCollector![index]))
                     .Where(unit => unit.Item2 is not null).Select(unit => (unit.Object, unit.Item2!)).ToList()) : null,
@@ -208,7 +208,7 @@ public static class IrLinkOptimizer
             // before it -- List.Insert's, imported, still calls the
             // ArgumentException constructor the library's record had inlined
             // away -- so what the archives' references keep may run too.
-            if (reachability is not null) foreach (HashSet<string> kept in reachability.Values) reachedNames.UnionWith(kept);
+            if (reachability is not null) foreach (HashSet<IrKey> kept in reachability.Values) reachedNames.UnionWith(kept.Select(key => key.ToString()));
             neverRun = recorded.SelectMany(unit => unit.Records.Functions).Select(function => function.Name)
                 .Where(name => !reachedNames.Contains(name)).ToHashSet(StringComparer.Ordinal);
             catchable = ForeignCatchable(inputs, hintOrder, hints, throwing, lifetimes);
@@ -291,7 +291,7 @@ public static class IrLinkOptimizer
             unsaid.Add(RuntimeAbi.AllocMissed);
             RegionFacts?[]? solved = RegionSolver.Solve(regionUnits, regionVirtuals, (table, offset) => VirtualTargets.MethodAt(inputs, table, offset),
                 closedImageEntry!, unsaid, regionReport,
-                (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains("F:" + name),
+                (u, name) => reachability?.GetValueOrDefault(regionOrder[u]) is not { } kept || kept.Contains(IrKey.OfFunction(name)),
                 (table, at, offset) => VirtualTargets.HoldsNoReference(inputs, table, at, offset), loopRegionsPossible,
                 (table, type) => VirtualTargets.IsA(inputs, table, type), VirtualTargets.SlotsOf(inputs),
                 VirtualTargets.Receivers(inputs, archives.Keys.ToHashSet()), dataObjects, VirtualTargets.MethodsOf(inputs));
@@ -328,7 +328,7 @@ public static class IrLinkOptimizer
             && !foreign.Contains("*") && !foreign.Any(CollectorName) && ManualHeap.All(owners.ContainsKey)
             // Not where stores go through the store-sequence stubs, which call the barriers whatever the program needs.
             && !owners.ContainsKey(RuntimeAbi.RefStore);
-        List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<string>? Retained, HashSet<string>? Read)> plans = new();
+        List<(int Index, List<(string Symbol, IrArchive Archive, IrArchiveEntry Body)> Imports, HashSet<IrKey>? Retained, HashSet<string>? Read)> plans = new();
         // Where a call's body is: the unit of this link that defines it. Never
         // the kernel's, for a module: a body copied across the boundary would
         // bind to nothing when the kernel changes, and the call is a name.
@@ -337,15 +337,15 @@ public static class IrLinkOptimizer
             body = null;
             provider = null;
             return owners.TryGetValue(call, out ObjectFile? owner)
-                && archives.TryGetValue(owner, out provider) && provider.Entries.TryGetValue("F:" + call, out body);
+                && archives.TryGetValue(owner, out provider) && provider.Entries.TryGetValue(IrKey.OfFunction(call), out body);
         }
         if (enabled)
             for (int index = 0; index < inputs.Count; index++)
             {
                 ObjectFile obj = inputs[index].Object;
                 if (!archives.TryGetValue(obj, out IrArchive? archive)) continue;
-                HashSet<string>? retained = reachability?.GetValueOrDefault(obj);
-                bool prune = retained is not null && archive.Entries.Keys.Count(key => key != "M:unit") != retained.Count;
+                HashSet<IrKey>? retained = reachability?.GetValueOrDefault(obj);
+                bool prune = retained is not null && archive.Entries.Keys.Count(key => key != IrKey.UnitRecord) != retained.Count;
                 HashSet<string> defined = obj.Symbols.Where(symbol => symbol.IsDefined).Select(symbol => symbol.Name).ToHashSet(StringComparer.Ordinal);
                 // A unit with an object it left to the collector only for want
                 // of what another unit does, which the whole program now says.
@@ -418,7 +418,7 @@ public static class IrLinkOptimizer
                     {
                         if ((read?.Count ?? 0) >= MostRead) break;
                         if (defined.Contains(call) || imports.Any(import => import.Symbol == call) || !owners.TryGetValue(call, out ObjectFile? owner)
-                            || !archives.TryGetValue(owner, out IrArchive? provider) || !provider.Entries.TryGetValue("F:" + call, out IrArchiveEntry? body)
+                            || !archives.TryGetValue(owner, out IrArchive? provider) || !provider.Entries.TryGetValue(IrKey.OfFunction(call), out IrArchiveEntry? body)
                             || body.DecodeBytes > 4L * 1024 * 1024 || body.Length > importBytes - used || imports.Count >= BackendProtocol.MostImports - 2) continue;
                         imports.Add((call, provider, body)); used += body.Length;
                         (read ??= new(StringComparer.Ordinal)).Add(call);
@@ -433,13 +433,13 @@ public static class IrLinkOptimizer
                 foreach (string placed in new[] { RuntimeAbi.AllocFastSized, RuntimeAbi.AllocFast })
                     if (planned && !noCollector && !defined.Contains(placed) && imports.All(import => import.Symbol != placed)
                         && owners.TryGetValue(placed, out ObjectFile? allocOwner) && archives.TryGetValue(allocOwner, out IrArchive? allocArchive)
-                        && allocArchive.Entries.TryGetValue("F:" + placed, out IrArchiveEntry? allocBody) && allocBody.Importable)
+                        && allocArchive.Entries.TryGetValue(IrKey.OfFunction(placed), out IrArchiveEntry? allocBody) && allocBody.Importable)
                         imports.Add((placed, allocArchive, allocBody));
                 // And a region's allocation of a size the compiler knows, which
                 // the region sites become as the unit is regenerated.
                 if (planned && regionsPossible && !defined.Contains(RuntimeAbi.AllocRegionSized) && imports.All(import => import.Symbol != RuntimeAbi.AllocRegionSized)
                     && owners.TryGetValue(RuntimeAbi.AllocRegionSized, out ObjectFile? regionOwner) && archives.TryGetValue(regionOwner, out IrArchive? regionArchive)
-                    && regionArchive.Entries.TryGetValue("F:" + RuntimeAbi.AllocRegionSized, out IrArchiveEntry? regionBody) && regionBody.Importable)
+                    && regionArchive.Entries.TryGetValue(IrKey.OfFunction(RuntimeAbi.AllocRegionSized), out IrArchiveEntry? regionBody) && regionBody.Importable)
                     imports.Add((RuntimeAbi.AllocRegionSized, regionArchive, regionBody));
                 if (planned) plans.Add((index, imports, prune ? retained : null, read));
             }
@@ -522,8 +522,8 @@ public static class IrLinkOptimizer
                     TargetContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
                     ManagedLayoutContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
                     IrArchive originalArchive = archives[original];
-                    bool Kept(Symbol symbol) => plan.Retained is null || plan.Retained.Contains("F:" + symbol.Name) || plan.Retained.Contains("D:" + symbol.Name)
-                        || !originalArchive.Entries.ContainsKey("F:" + symbol.Name) && !originalArchive.Entries.ContainsKey("D:" + symbol.Name);
+                    bool Kept(Symbol symbol) => plan.Retained is null || plan.Retained.Contains(IrKey.OfFunction(symbol.Name)) || plan.Retained.Contains(IrKey.OfData(symbol.Name))
+                        || !originalArchive.Entries.ContainsKey(IrKey.OfFunction(symbol.Name)) && !originalArchive.Entries.ContainsKey(IrKey.OfData(symbol.Name));
                     string[] before = original.Symbols.Where(symbol => symbol.Global && symbol.IsDefined && Kept(symbol)).Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
                     string[] after = replacement.Symbols.Where(symbol => symbol.Global && symbol.IsDefined).Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
                     if (!before.SequenceEqual(after))

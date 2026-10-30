@@ -21,7 +21,7 @@ public sealed class UnitBackend : IUnitBackend
     /// <summary>The most a unit whose late passes run at the link may take decoded.</summary>
     private const long PreLateDecodeLimit = 512L * 1024 * 1024;
 
-    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<string>? retained = null,
+    public ObjectFile Recompile(ObjectFile original, IReadOnlyList<IrImport> imports, IReadOnlySet<IrKey>? retained = null,
         LifetimeFacts? facts = null, IrArchive? archive = null)
     {
         // EACH UNIT AS IN A PROCESS OF ITS OWN (ProjectCompile.ForgetUnit): a
@@ -90,7 +90,7 @@ public sealed class UnitBackend : IUnitBackend
         // allocators, the regions, the barriers). Decoded whole, a unit
         // holding the class library was 21,000 functions and 320 MB of IR for
         // a program that used fifty, and the link ran out of memory.
-        IReadOnlySet<string>? decode = preLate ? ReachableInUnit(archive, retained) : retained;
+        IReadOnlySet<IrKey>? decode = preLate ? ReachableInUnit(archive, retained) : retained;
         var read = IrUnitCodec.ReadWithSettings(archive, memoryBudget: preLate ? PreLateDecodeLimit : 64L * 1024 * 1024,
             retained: decode, functionHeaders: preLate ? null : visibility);
         var unit = (read.Module, StackMaps: read.StackMaps, read.AccountedBytes);
@@ -151,7 +151,7 @@ public sealed class UnitBackend : IUnitBackend
             // be a second copy of the kernel's, in the module.
             else if (positionIndependent || moduleUnit)
                 PruneAfterLate(module, archive, original.Symbols.Where(symbol => symbol.IsDefined)
-                    .SelectMany(symbol => new[] { "F:" + symbol.Name, "D:" + symbol.Name }).ToHashSet(StringComparer.Ordinal));
+                    .SelectMany(symbol => new[] { IrKey.OfFunction(symbol.Name), IrKey.OfData(symbol.Name) }).ToHashSet());
             lateDone = Environment.TickCount64;
         }
         Corsac.Lang.Lto.LinkTimings.Memory("backend late passes");
@@ -185,7 +185,7 @@ public sealed class UnitBackend : IUnitBackend
         }
         IrImport[] Selected(int index)
         {
-            if (!archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record)) return Array.Empty<IrImport>();
+            if (!archive.Entries.TryGetValue(IrKey.OfFunction(module.Functions[index].Name), out IrArchiveEntry? record)) return Array.Empty<IrImport>();
             List<IrImport> chosen = new();
             HashSet<string> seen = new(StringComparer.Ordinal);
             // ITS FORWARDERS AS IT STANDS, as well as its record's calls: the late passes
@@ -209,7 +209,7 @@ public sealed class UnitBackend : IUnitBackend
                         if (forwarding.Contains(callee) && seen.Add(callee)) chosen.Add(available[callee]);
             return chosen.ToArray();
         }
-        long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue("F:" + module.Functions[index].Name, out IrArchiveEntry? record) ? record.DecodeBytes : 0)
+        long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue(IrKey.OfFunction(module.Functions[index].Name), out IrArchiveEntry? record) ? record.DecodeBytes : 0)
             + Selected(index).Sum(import => import.DecodeBytes)) + 512 * 1024);
         // The unit's read-only items, made once before any worker asks for
         // them: made on first use inside Load, every backend worker could
@@ -225,7 +225,7 @@ public sealed class UnitBackend : IUnitBackend
         const long CalleeDecodeLimit = 4L * 1024 * 1024;
         Function? Callee(string name)
         {
-            if (archive.Entries.TryGetValue("F:" + name, out IrArchiveEntry? entry))
+            if (archive.Entries.TryGetValue(IrKey.OfFunction(name), out IrArchiveEntry? entry))
                 return entry.DecodeBytes > CalleeDecodeLimit ? null
                     : IrFunctionCodec.Read(archive.ReadBody(entry.Key), new IrReadBudget(entry.DecodeBytes));
             if (available.TryGetValue(name, out IrImport? import))
@@ -245,7 +245,7 @@ public sealed class UnitBackend : IUnitBackend
             if (preLate) function = header;
             else
             {
-                IrArchiveEntry entry = archive.Entries["F:" + header.Name];
+                IrArchiveEntry entry = archive.Entries[IrKey.OfFunction(header.Name)];
                 function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), new IrReadBudget(entry.DecodeBytes));
             }
             if (function.Name != header.Name || function.Exported != header.Exported)
@@ -541,23 +541,23 @@ public sealed class UnitBackend : IUnitBackend
     /// calls they may add (RuntimeAbi). Null -- the whole unit -- where
     /// the link kept nothing of it to start from.
     /// </summary>
-    private static HashSet<string>? ReachableInUnit(IrArchive archive, IReadOnlySet<string>? retained)
+    private static HashSet<IrKey>? ReachableInUnit(IrArchive archive, IReadOnlySet<IrKey>? retained)
     {
         if (retained is null) return null;
-        HashSet<string> wanted = new(StringComparer.Ordinal);
-        Stack<string> pending = new();
-        void Want(string key)
+        HashSet<IrKey> wanted = new();
+        Stack<IrKey> pending = new();
+        void Want(IrKey key)
         {
             if (archive.Entries.ContainsKey(key) && wanted.Add(key)) pending.Push(key);
         }
-        foreach (string key in retained) Want(key);
-        foreach (string helper in RuntimeAbi.Helpers) { Want("F:" + helper); Want("D:" + helper); }
+        foreach (IrKey key in retained) Want(key);
+        foreach (string helper in RuntimeAbi.Helpers) { Want(IrKey.OfFunction(helper)); Want(IrKey.OfData(helper)); }
         while (pending.Count > 0)
             foreach (string named in archive.Entries[pending.Pop()].References)
             {
                 string symbol = IrArchiveEntry.Named(named);
-                Want("F:" + symbol);
-                Want("D:" + symbol);
+                Want(IrKey.OfFunction(symbol));
+                Want(IrKey.OfData(symbol));
             }
         return wanted;
     }
@@ -571,39 +571,39 @@ public sealed class UnitBackend : IUnitBackend
     /// locals, which nothing reached in the IR the link judged. An exported
     /// one is the copy another unit keeps.
     /// </summary>
-    private static void PruneAfterLate(Module module, IrArchive archive, IReadOnlySet<string> retained)
+    private static void PruneAfterLate(Module module, IrArchive archive, IReadOnlySet<IrKey> retained)
     {
-        bool Kept(string key) => !archive.Entries.ContainsKey(key) || retained.Contains(key);
+        bool Kept(IrKey key) => !archive.Entries.ContainsKey(key) || retained.Contains(key);
         Dictionary<string, Function> functions = new(StringComparer.Ordinal);
         foreach (Function function in module.Functions) functions[function.Name] = function;
         Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
         foreach (DataItem item in module.Data) data[item.Name] = item;
-        HashSet<string> keep = new(StringComparer.Ordinal);
-        Stack<string> pending = new();
-        foreach (Function function in module.Functions) if (Kept("F:" + function.Name)) { keep.Add("F:" + function.Name); pending.Push("F:" + function.Name); }
-        foreach (DataItem item in module.Data) if (Kept("D:" + item.Name)) { keep.Add("D:" + item.Name); pending.Push("D:" + item.Name); }
+        HashSet<IrKey> keep = new();
+        Stack<IrKey> pending = new();
+        foreach (Function function in module.Functions) if (Kept(IrKey.OfFunction(function.Name))) { keep.Add(IrKey.OfFunction(function.Name)); pending.Push(IrKey.OfFunction(function.Name)); }
+        foreach (DataItem item in module.Data) if (Kept(IrKey.OfData(item.Name))) { keep.Add(IrKey.OfData(item.Name)); pending.Push(IrKey.OfData(item.Name)); }
         void Name(string name)
         {
-            if (functions.TryGetValue(name, out Function? function) && !function.Exported && keep.Add("F:" + name)) pending.Push("F:" + name);
-            else if (data.TryGetValue(name, out DataItem? item) && !item.Exported && keep.Add("D:" + name)) pending.Push("D:" + name);
+            if (functions.TryGetValue(name, out Function? function) && !function.Exported && keep.Add(IrKey.OfFunction(name))) pending.Push(IrKey.OfFunction(name));
+            else if (data.TryGetValue(name, out DataItem? item) && !item.Exported && keep.Add(IrKey.OfData(name))) pending.Push(IrKey.OfData(name));
         }
         while (pending.Count > 0)
         {
-            string key = pending.Pop();
+            IrKey key = pending.Pop();
             // What the archive counts as a reference (IrUnitCodec.Snapshot):
             // calls, and every symbol an operand names; a datum's relocations.
-            if (key.StartsWith("F:", StringComparison.Ordinal))
+            if (key.Kind == IrKey.Function)
             {
-                foreach (Corsac.Lang.Ir.Block block in functions[key[2..]].Blocks)
+                foreach (Corsac.Lang.Ir.Block block in functions[key.Name].Blocks)
                     foreach (Instr instruction in block.Instrs)
                     {
                         if (instruction.Op == Opcode.Call && instruction.Callee is not null) Name(instruction.Callee);
                         foreach (Operand operand in instruction.Operands) if (operand is SymOperand address) Name(address.Name);
                     }
             }
-            else foreach (DataReloc relocation in data[key[2..]].Relocs) Name(relocation.Symbol);
+            else foreach (DataReloc relocation in data[key.Name].Relocs) Name(relocation.Symbol);
         }
-        module.Functions.RemoveAll(function => !keep.Contains("F:" + function.Name));
-        module.Data.RemoveAll(item => !keep.Contains("D:" + item.Name));
+        module.Functions.RemoveAll(function => !keep.Contains(IrKey.OfFunction(function.Name)));
+        module.Data.RemoveAll(item => !keep.Contains(IrKey.OfData(item.Name)));
     }
 }

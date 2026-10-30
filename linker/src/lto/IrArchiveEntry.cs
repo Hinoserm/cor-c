@@ -1,11 +1,41 @@
 namespace Corsac.Lang.Lto;
 
 /// <summary>
+/// AN ARCHIVE RECORD'S KEY: what it is -- a function (F), data (D), a shadow
+/// (S), the unit's own record (M) -- and the name of it. Written as one text,
+/// `F:name` (IrArchive, the record's key on disk), and held as the two: the
+/// name is the one string the link holds for it, the symbol's own (both read
+/// interned), where the text was a second copy of every name the link held
+/// -- 66 MB of the compiler's own link at its heap decision.
+/// </summary>
+public readonly record struct IrKey(char Kind, string Name) : IComparable<IrKey>
+{
+    public const char Function = 'F', Data = 'D', Shadow = 'S', Unit = 'M';
+
+    /// <summary>The unit's own record (M:unit).</summary>
+    public static readonly IrKey UnitRecord = new(Unit, "unit");
+
+    public static IrKey OfFunction(string name) => new(Function, name);
+    public static IrKey OfData(string name) => new(Data, name);
+
+    /// <summary>A key as written (`F:name`), its name interned as every name the link reads is.</summary>
+    public static IrKey Parse(string text)
+        => text.Length > 2 && text[1] == ':' ? new(text[0], string.Intern(text[2..])) : throw new FormatException("Invalid IR key: " + text);
+
+    /// <summary>As written: the kind, a colon, the name.</summary>
+    public override string ToString() => Kind + ":" + Name;
+
+    /// <summary>In the order of the written text.</summary>
+    public int CompareTo(IrKey other)
+        => Kind != other.Kind ? Kind.CompareTo(other.Kind) : string.CompareOrdinal(Name, other.Name);
+}
+
+/// <summary>
 /// A body's summary, not a deserialized compiler IR graph: where it lies is
 /// its archive's (IrArchive), so one body every unit imported is one entry
 /// for all of them.
 /// </summary>
-public sealed record IrArchiveEntry(string Key, bool Importable, int Instructions,
+public sealed record IrArchiveEntry(IrKey Key, bool Importable, int Instructions,
     IReadOnlyList<string> Calls, int Length, BodyHash Hash, IReadOnlyList<string> References, long DecodeBytes)
 {
     /// <summary>

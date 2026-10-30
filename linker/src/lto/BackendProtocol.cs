@@ -24,7 +24,7 @@ public static class BackendProtocol
         }
         writer.Write(request.Retained?.Count ?? -1);
         if (request.Retained is not null)
-            foreach (string key in request.Retained.Order(StringComparer.Ordinal)) WriteText(writer, key);
+            foreach (IrKey key in request.Retained.Order()) WriteText(writer, key.ToString());
         // The link's lifetime answers for the unit (LifetimeSolver), in name order.
         LifetimeFacts? facts = request.Facts;
         writer.Write(facts is null ? -1 : facts.Escapes.Count);
@@ -137,12 +137,12 @@ public static class BackendProtocol
         }
         int retainedCount = reader.ReadInt32();
         if (retainedCount < -1 || retainedCount > 100000) throw new InvalidDataException("Invalid backend retention count");
-        HashSet<string>? retained = retainedCount < 0 ? null : new(StringComparer.Ordinal);
+        HashSet<IrKey>? retained = retainedCount < 0 ? null : new();
         int nameBytes = 0;
         for (int i = 0; i < retainedCount; i++)
         {
             string key = ReadText(reader); nameBytes = checked(nameBytes + Utf8.GetByteCount(key));
-            if (nameBytes > 16 * 1024 * 1024 || !retained!.Add(key)) throw new InvalidDataException("Invalid backend retention set");
+            if (nameBytes > 16 * 1024 * 1024 || key.Length < 3 || key[1] != ':' || !retained!.Add(IrKey.Parse(key))) throw new InvalidDataException("Invalid backend retention set");
         }
         LifetimeFacts? facts = null;
         int summaries = reader.ReadInt32();
