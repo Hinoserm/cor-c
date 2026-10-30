@@ -14,8 +14,8 @@
 // the await on every path; the branch where TryEnter answered false; a
 // method that takes and leaves a lock inside its own body; a `lock` with no
 // await in it; an async lambda in a method that holds a lock (the lambda's
-// body runs later, holding nothing); and AsyncLock, the awaitable lock a
-// hold across an await takes instead.
+// body runs later, holding nothing); and SemaphoreSlim, the awaitable lock
+// a hold across an await takes instead.
 
 using System;
 using System.Threading;
@@ -41,7 +41,7 @@ static class Program
     static readonly IrqSpinLock Spin = new IrqSpinLock();
     static readonly KernelGate Gate = new KernelGate();
     static readonly object Monitorless = new object();
-    static readonly AsyncLock Long = new AsyncLock();
+    static readonly SemaphoreSlim Long = new SemaphoreSlim(1, 1);
     static int _shared;
 
     static int Bump()
@@ -115,10 +115,15 @@ static class Program
 
     static async Task<int> Locked()
     {
-        using (await Long.LockAsync())
+        await Long.WaitAsync();
+        try
         {
             await Task.Yield();
-            return Long.IsHeld ? 2 : 0;
+            return Long.CurrentCount == 0 ? 2 : 0;
+        }
+        finally
+        {
+            Long.Release();
         }
     }
 
@@ -131,10 +136,10 @@ static class Program
         Console.WriteLine("lambda " + await Lambda());
         int held = await Locked();
         Console.WriteLine("async-lock " + held + " " + (held == 2));
-        Console.WriteLine("released " + !Long.IsHeld);
-        AsyncLockReleaser quick = await Long.LockAsync();
-        quick.Dispose();
-        Console.WriteLine("uncontended " + (Long.TryLock() ? 7 : 0));
+        Console.WriteLine("released " + (Long.CurrentCount == 1));
+        await Long.WaitAsync();
+        Long.Release();
+        Console.WriteLine("uncontended " + (Long.Wait(0) ? 7 : 0));
         Long.Release();
     }
 }

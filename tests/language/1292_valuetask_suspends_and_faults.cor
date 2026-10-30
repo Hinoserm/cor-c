@@ -28,7 +28,7 @@ struct Big
 
 static class Program
 {
-    static readonly AsyncLock Gate = new AsyncLock();
+    static readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
 
     static async ValueTask<int> Later(int x)
     {
@@ -82,10 +82,15 @@ static class Program
 
     static async ValueTask<int> Locked()
     {
-        using (await Gate.LockAsync())
+        await Gate.WaitAsync();
+        try
         {
             await Task.Yield();
-            return Gate.IsHeld ? 2 : 0;
+            return Gate.CurrentCount == 0 ? 2 : 0;
+        }
+        finally
+        {
+            Gate.Release();
         }
     }
 
@@ -115,6 +120,6 @@ static class Program
         Console.WriteLine("big " + b.A + " " + b.B + " " + b.C);
         Console.WriteLine("nested " + await Nested(6));
         Console.WriteLine("locked " + await Locked());
-        Console.WriteLine("released " + !Gate.IsHeld);
+        Console.WriteLine("released " + (Gate.CurrentCount == 1));
     }
 }
