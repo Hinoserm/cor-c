@@ -214,6 +214,13 @@ public static class IrLinkOptimizer
                 .Where(name => !reachedNames.Contains(name)).ToHashSet(StringComparer.Ordinal);
             catchable = ForeignCatchable(inputs, hintOrder, hints, throwing, lifetimes);
         }
+        // LET GO UNTIL THE HEAP DECISION, which reads them again from each
+        // unit's file (HeapRecords is left there, ElfReader.LeftInFile): held
+        // from here, every function's events were the largest thing the link
+        // kept through the owned fields, the regions and the regeneration --
+        // 2.7 million of them on the compiler's own link, 220 MB.
+        HashSet<ObjectFile> recordedUnits = new(heapRecords.Keys, ReferenceEqualityComparer.Instance);
+        heapRecords.Clear();
         bool programFacts = catchable is not null;
         if (programFacts) Console.Error.WriteLine("LTO catches: " + (catchable!.Length == 0 ? "every catch frees what it caught" : catchable.Length + " types keep what they catch"));
         // FIELDS THAT OWN WHAT THEY HOLD, judged over every unit's hints as a
@@ -318,7 +325,7 @@ public static class IrLinkOptimizer
         // whose code without IR names nothing of the collector's, and that
         // holds the manual heap. Its first making is the usual one; what it
         // leaves decides whether there is a second, without a collector.
-        bool heapPossible = !noCollector && keep is null && !moduleOfKernel && !openTypes && heapRecords.Count > 0 && archives.Keys.All(heapRecords.ContainsKey) && archives.Keys.All(hints.ContainsKey)
+        bool heapPossible = !noCollector && keep is null && !moduleOfKernel && !openTypes && recordedUnits.Count > 0 && archives.Keys.All(recordedUnits.Contains) && archives.Keys.All(hints.ContainsKey)
             && !foreign.Contains("*") && !foreign.Any(CollectorName) && ManualHeap.All(owners.ContainsKey)
             // Not where stores go through the store-sequence stubs, which call the barriers whatever the program needs.
             && !owners.ContainsKey(RuntimeAbi.RefStore);
@@ -595,7 +602,7 @@ public static class IrLinkOptimizer
             {
                 if (!archives.ContainsKey(originals[index])) continue;
                 ObjectFile current = inputs[index].Object;
-                now[index] = ReferenceEquals(current, originals[index]) ? heapRecords[originals[index]] : HeapRecords.Read(current);
+                now[index] = HeapRecords.Read(current);
                 if (now[index] is HeapRecords records) units.Add((current, records)); else complete = false;
             }
             if (complete)
@@ -634,7 +641,7 @@ public static class IrLinkOptimizer
                         again.Add((inputs[index].Name, archives.ContainsKey(originals[index]) ? original : inputs[index].Object));
                     }
                     // The compile's records: their edges are the archive's (HeapRecords.Gone).
-                    HeapRecords?[] compiled = originals.Select(original => heapRecords.GetValueOrDefault(original)).ToArray();
+                    HeapRecords?[] compiled = again.Select((made, index) => recordedUnits.Contains(originals[index]) ? HeapRecords.Read(made.Item2) : null).ToArray();
                     int made2 = Run(again, backend, enabled, importBytes, bodyLimit, closedImageEntry, parallelBackends, regionReport,
                         madeOnly, openTypes, reachableFrom, keep, moduleOfKernel, compiled);
                     for (int index = 0; index < inputs.Count; index++) inputs[index] = again[index];
