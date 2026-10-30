@@ -20381,12 +20381,18 @@ public sealed partial class Binder
         // reason `if (!string.IsNullOrEmpty(dir)) { Use(dir); }` is how the
         // check is written. The shape-based rule above covers the `out` case;
         // this is the attribute itself, for every parameter and either answer.
-        if (cond is CallExpr told && _r.Calls.TryGetValue(told, out MethodSymbol? says)
-            && says.Decl is { } signature && says.Returns.Prim == Prim.Bool)
+        // A LOCAL FUNCTION'S PARAMETERS SAY IT TOO, as a method's do: C#
+        // reads `bool Find(string k, [NotNullWhen(true)] out T? found)`
+        // declared in a body exactly as one declared in a type.
+        List<Param>? saidBy = cond is CallExpr asked
+            ? _r.Calls.TryGetValue(asked, out MethodSymbol? says) && says.Decl is { } signature && says.Returns.Prim == Prim.Bool ? signature.Params
+                : _r.LocalFunctionCalls.TryGetValue(asked, out LocalDecl? function) && function.Init is LambdaExpr declared ? declared.Params : null
+            : null;
+        if (cond is CallExpr told && saidBy is not null)
         {
-            for (int i = 0; i < told.Args.Count && i < signature.Params.Count; i++)
+            for (int i = 0; i < told.Args.Count && i < saidBy.Count; i++)
             {
-                if (signature.Params[i].NotNullWhen != holds)
+                if (saidBy[i].NotNullWhen != holds)
                 {
                     continue;
                 }

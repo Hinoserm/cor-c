@@ -14,7 +14,7 @@ public static class DeclarationCatalogTests
             for (int i = 0; i < 100; i++)
                 yield return new SourceDeclaration { Key = "T:" + assembly + "\nNs.T" + i,
                     Path = Path.Combine(work, "source.cs"), Text = "class T" + i + " {}", Namespace = "Ns", Outer = "",
-                    From = 0, To = 10, Line = 1, Column = 1, SourceHash = new byte[32], DeclarationHash = new byte[32], TemplateHash = new byte[32], Scope = new FileScope() }.Encode();
+                    From = 0, To = 10, Line = 1, Column = 1, SourceHash = new byte[32], DeclarationHash = new byte[32], TemplateHash = new byte[32], HeaderHash = new byte[32], Scope = new FileScope() }.Encode();
         }
         DeclarationIndexWriter.Write(path, Records());
         using DeclarationCatalog catalog = new(path, 4096);

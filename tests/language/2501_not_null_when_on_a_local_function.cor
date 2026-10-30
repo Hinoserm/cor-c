@@ -1,0 +1,33 @@
+// test: [NotNullWhen] on a local function's parameter proves its out value
+// expect-exit: 0
+// expect-output:
+// 3
+//
+// A local function says what its answer proves as a method does: C# reads
+// `bool Provider(string key, [NotNullWhen(true)] out Entry? body)` declared
+// in a body exactly as one declared in a type, so `!Provider(a, out body) ||
+// !body.Importable` reads body only where the call said it had one. The
+// compiler's own IrLinkOptimizer is written so; it warned there.
+
+#nullable enable
+using System;
+using System.Diagnostics.CodeAnalysis;
+
+sealed class Entry { public bool Importable; }
+
+static class Program
+{
+    static bool Find(string key, [NotNullWhen(true)] out Entry? found) { found = key.Length > 0 ? new Entry() : null; return found is not null; }
+
+    static int Main()
+    {
+        int n = 0;
+        string a = "x";
+        if (!Find(a, out Entry? one) || !one.Importable) n++;
+        if (a.Length == 0 || !Find(a, out Entry? two) || !two.Importable) n++;
+        bool Provider(string key, [NotNullWhen(true)] out Entry? body) { body = key.Length > 0 ? new Entry() : null; return body is not null; }
+        if (a.Length == 0 || !Provider(a, out Entry? three) || !three.Importable) n++;
+        Console.WriteLine(n);
+        return 0;
+    }
+}
