@@ -414,7 +414,11 @@ internal static class Expr
 
         private static bool IsNameStart(char c) => char.IsLetter(c) || c == '_' || c == '.' || c == '?' || c == '@';
 
-        private static bool IsNamePart(char c) => char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '?' || c == '@';
+        // '$' IN A NAME, past its first character, as NASM has it: a COR-C#
+        // symbol says what it is with one (`s_Arch_BootBlock_t$V$NUInt`,
+        // Lowering.StaticSymbol). A '$' that starts a token is still the
+        // address being assembled.
+        private static bool IsNamePart(char c) => char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '?' || c == '@' || c == '$';
     }
 
     /// <summary>Expands the backslash escapes a quoted string may carry.</summary>

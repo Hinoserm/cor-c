@@ -3,13 +3,13 @@
 .bits 64
 .global _start
 .extern corc_start
-.extern s_Program_FromAsm
-.extern s_Program_StubStack
+.extern s_Program_FromAsm_t$V$I64
+.extern s_Program_StubStack_t$V$I64
 
 _start:
     and rsp, -16
-    mov qword [rip + s_Program_FromAsm], 42
-    mov [rip + s_Program_StubStack], rsp
+    mov qword [rip + s_Program_FromAsm_t$V$I64], 42
+    mov [rip + s_Program_StubStack_t$V$I64], rsp
     call corc_start
     mov edi, eax
     mov eax, 60

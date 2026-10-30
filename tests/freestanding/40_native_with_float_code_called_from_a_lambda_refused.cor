@@ -2,7 +2,7 @@
 // targets: x86
 // with-asm: 40_native_with_float_code_called_from_a_lambda_refused
 // flags: --asm-entry corc_start --entry _start --x87-in-blocks-only
-// expect-compile-error: 'float_one' has float code (40_native_with_float_code_called_from_a_lambda_refused.x86.asm:22) that can run where no kept state is: 'the routine in s_Program_Native' calls 'float_one'
+// expect-compile-error: 'float_one' has float code (40_native_with_float_code_called_from_a_lambda_refused.x86.asm:22) that can run where no kept state is: 'the routine in s_Program_Native_t$V$NUInt' calls 'float_one'
 //
 // As 39, but the call is made from a lambda, a delegate that may run from
 // anywhere: the compiler keeps the state around methods that call such a

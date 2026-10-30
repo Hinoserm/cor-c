@@ -2,10 +2,10 @@
 .bits 64
 .global _start
 .extern corc_start
-.extern s_Program_FromAsm
+.extern s_Program_FromAsm_t$V$I64
 _start:
-    mov qword [s_Program_FromAsm], 42
-    mov rax, s_Program_FromAsm
-    lea rbx, [rip + s_Program_FromAsm]
+    mov qword [s_Program_FromAsm_t$V$I64], 42
+    mov rax, s_Program_FromAsm_t$V$I64
+    lea rbx, [rip + s_Program_FromAsm_t$V$I64]
     call corc_start
     hlt

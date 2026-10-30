@@ -1,6 +1,6 @@
 // test: region_version_alike_its_function_not_made
 // regions: taken
-// expect-no-symbol: m_Acc_Sum_1_V$I32$region$
+// expect-no-symbol: m_Acc_Sum_1_V$I32_r$V$I32$region$
 // expect-exit: 0
 // expect-output:
 // 580400 5 5

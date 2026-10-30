@@ -106,13 +106,15 @@ public sealed class StaticInitGuards : IPass
         if (test is not { Op: Opcode.Eq, Operands: [RegOperand { Reg: var v }, ImmOperand { Value: 1 }] } || !ReferenceEquals(test.Dest, c)) return null;
         if (fence.Op != Opcode.CompilerFence) return null;
         if (load is not { Op: Opcode.Load, Offset: 0, Operands: [SymOperand { Name: var ready, Offset: 0 }] } || !ReferenceEquals(load.Dest, v)) return null;
-        if (load.Size != IrTypes.Word.Bytes() || !ready.EndsWith("_" + Corsac.Lang.BindResult.ReadyField, StringComparison.Ordinal)) return null;
+        // The static's symbol says its type after the name (Lowering.StaticSymbol).
+        string readyName = ready.LastIndexOf(Corsac.Lang.Lower.Lowering.TypeMark, StringComparison.Ordinal) is int typed and > 0 ? ready[..typed] : ready;
+        if (load.Size != IrTypes.Word.Bytes() || !readyName.EndsWith("_" + Corsac.Lang.BindResult.ReadyField, StringComparison.Ordinal)) return null;
         // The arm that is not ready: the initialiser's call and back.
         if (run.Instrs is not [{ Op: Opcode.Call, Dest: null, Operands.Count: 0, Callee: { } callee }, { Op: Opcode.Jump, Targets: [var back] }]
             || !ReferenceEquals(back, done)) return null;
         // And the initialiser of the type whose word it read: s_T_StaticReady$ and m_T_StaticInit$.
-        if (!ready.StartsWith("s_", StringComparison.Ordinal)) return null;
-        string type = ready[2..^(Corsac.Lang.BindResult.ReadyField.Length + 1)];
+        if (!readyName.StartsWith("s_", StringComparison.Ordinal)) return null;
+        string type = readyName[2..^(Corsac.Lang.BindResult.ReadyField.Length + 1)];
         if (!callee.StartsWith("m_" + type + "_StaticInit$", StringComparison.Ordinal)) return null;
         // No join to fix up where the guard's own arms meet.
         if (done.Instrs.Count > 0 && done.Instrs[0].Op == Opcode.Phi) return null;

@@ -5,11 +5,11 @@
 .global _start
 .global float_one
 .extern corc_start
-.extern s_Program_Native
+.extern s_Program_Native_t$V$NUInt
 
 _start:
     and esp, -16
-    mov dword [s_Program_Native], float_one
+    mov dword [s_Program_Native_t$V$NUInt], float_one
     call corc_start
     mov ebx, eax
     mov eax, 1

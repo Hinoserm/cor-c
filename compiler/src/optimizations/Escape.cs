@@ -2814,7 +2814,7 @@ continue;
                     if (index is not null) BlockReaders.Mark(bearing!, index.Readers(i.Dest));
                 }
                 if (i.Op == Opcode.Store && i.Offset == 0 && i.Operands.Count >= 2 && i.Operands[0] is RegOperand bas && same.Contains(bas.Reg)
-                    && i.Operands[1] is SymOperand vt && vt.Name.Contains("Lambda$", StringComparison.Ordinal))
+                    && i.Operands[1] is SymOperand vt && vt.Name.StartsWith("t_", StringComparison.Ordinal) && vt.Name.Contains("Lambda$", StringComparison.Ordinal))
                 {
                     if (found is { } known && (known.Name != vt.Name || known.Offset != vt.Offset)) return null;
                     found = (vt.Name, vt.Offset);
@@ -5870,8 +5870,9 @@ continue;
     /// </summary>
     /// <summary>
     /// Which of a call's `operands` are objects, read off the callee's label
-    /// (Lowering.Label: `m_Owner_Name_N_p1_..._pN`, each parameter mangled
-    /// without an underscore of its own): arrays, classes and type
+    /// (Lowering.Label: `m_Owner_Name_N_p1_..._pN_r$ret`, each parameter
+    /// mangled without an underscore of its own, the return after the last
+    /// `_r$` and read past): arrays, classes and type
     /// parameters; a receiver ahead of the N. Null when the label is not one.
     /// Only ever a reason to ask the link about a result, which it answers
     /// by the callee's own body, so a wrong guess costs a question, no more.

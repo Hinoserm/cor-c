@@ -305,6 +305,7 @@ public sealed partial class Lowering
     ///
     ///   m_Owner_Name_0_r$V$Void                    void Name()
     ///   m_Owner_Name_2_V$I32_R$T$Key_r$V$String    string Name(int, ref Key)
+    ///   m_Owner_Name_0_r$R$V$I32                   ref int Name()
     /// </summary>
     public static string Label(MethodSymbol m) => m.LabelMade ??= MakeLabel(m);
 
@@ -316,7 +317,8 @@ public sealed partial class Lowering
          ? $"m_{Owner(m)}_{m.Name}_0"
          : $"m_{Owner(m)}_{m.Name}_{m.Params.Count}_"
          + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type))))
-         + ReturnMark + Mangle(m.Returns);
+         // A RESULT BY REFERENCE is an address, as a ref parameter is: R$.
+         + ReturnMark + (m.RefReturn || m.RefReturnReadOnly ? "R$" : "") + Mangle(m.Returns);
 
     /// <summary>A label without its return: the owner, name and parameters, which a pass that knows a method by its name and arity reads.</summary>
     public static string Bare(string label)

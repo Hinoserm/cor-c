@@ -722,9 +722,10 @@ public sealed partial class X86Assembler : ISymbols
         {
             return false;
         }
+        // A '$' past the first character, as a COR-C# symbol has (Expr.IsNamePart).
         foreach (char c in text)
         {
-            if (!char.IsLetterOrDigit(c) && c != '_' && c != '.')
+            if (!char.IsLetterOrDigit(c) && c != '_' && c != '.' && c != '$')
             {
                 return false;
             }
