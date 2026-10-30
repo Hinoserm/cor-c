@@ -804,7 +804,7 @@ public static partial class Linker
                 }
                 if (layout.Globals.TryGetValue(sym.Name, out Definition other))
                 {
-                    // A CLOSED INSTANTIATION'S LAYOUT NAME (LayoutNames) is
+                    // A LAYOUT NAME (LayoutNames) -- a closed instantiation's,
                     // defined by each unit that made it: the name is the
                     // layout, so one is all the others, and the first is kept.
                     if (sym.Section!.Name == LayoutNames.DefinedSection && other.Symbol?.Section?.Name == LayoutNames.DefinedSection) continue;

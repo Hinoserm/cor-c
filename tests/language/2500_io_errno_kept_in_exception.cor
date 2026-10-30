@@ -1,18 +1,19 @@
 // test: io errno kept in the exception
 // expect-exit: 0
 // expect-output:
-// missing directory DirectoryNotFoundException 0x80070002 inner=none
-// not a directory DirectoryNotFoundException 0x80070014 inner=none
+// missing directory DirectoryNotFoundException 0x80070003 inner=0x00000002
+// not a directory DirectoryNotFoundException 0x80070003 inner=0x00000014
 // missing file FileNotFoundException 0x80070002 inner=none
-// missing file's directory DirectoryNotFoundException 0x80070002 inner=none
+// missing file's directory DirectoryNotFoundException 0x80070003 inner=0x00000002
 // access refused UnauthorizedAccessException 0x80070005 inner=0x0000000D
 //
-// THE ERRNO BEHIND A FAILED FILE CALL, read off the exception caught: a
-// type that stands for one errno holds .NET's own HResult (ENOENT's
-// FileNotFoundException 0x80070002) or the errno in the IOException inside
-// it (EACCES); a DirectoryNotFoundException, which stands for ENOENT and
-// ENOTDIR alike, holds 0x80070000 | errno -- where .NET on Unix holds
-// 0x80070003 for both and the reason is lost (Interop).
+// THE ERRNO BEHIND A FAILED FILE CALL, read off the exception caught. Every
+// HResult is .NET's own; a type that stands for one errno (ENOENT's
+// FileNotFoundException) needs no more, and one that stands for several --
+// an access refused, a DirectoryNotFoundException (ENOENT or ENOTDIR) --
+// holds the errno in the IOException inside it (Interop), where .NET on
+// Unix holds nothing inside a DirectoryNotFoundException and the reason is
+// lost. Run as a user: root may read /proc/1/mem.
 
 using System;
 using System.IO;

@@ -332,6 +332,12 @@ public static class ObjectLinkCommand
             try
             {
                 List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
+                // ONE LAYOUT A TYPE: two of a key's names (LayoutNames), two
+                // units' differing records of one instantiation, would bind a
+                // module built against either -- a compiler's fault, refused.
+                foreach (IGrouping<string, string> key in globals.Select(e => e.Name).Where(name => LayoutNames.Describe(name) is not null)
+                    .GroupBy(LayoutNames.KeyOf, StringComparer.Ordinal).Where(key => key.Count() > 1))
+                    throw new ElfFormatException(output + ": units laid out " + LayoutNames.Describe(key.First()) + " differently: " + string.Join(", ", key));
                 byte[] table = KernelExports.Table(globals, kernelAbi, kernelCpu, new byte[KernelExports.LinkIdBytes], longMode);
                 KernelExports.AddTo(output, table);
                 KernelExports.StampLinkId(output);

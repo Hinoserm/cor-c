@@ -29,9 +29,9 @@ public static class DefinitionCoalescer
             var group = pair.Value.ToArray();
             if (group.Select(value => value.Name).Distinct(StringComparer.Ordinal).Count() != group.Length)
             { errors.Add("Duplicate input identity while coalescing '" + pair.Key + "'"); continue; }
-            // A CLOSED INSTANTIATION'S LAYOUT NAME (LayoutNames), defined by
-            // every unit that made it: the name is the layout's own hash, its
-            // proof, and its byte nothing reads. The others' names go.
+            // A LAYOUT NAME (LayoutNames) -- a closed instantiation's, defined
+            // by every unit that made it: the name is the layout's own hash,
+            // its proof, and its byte nothing reads. The others' names go.
             if (group.All(value => value.Symbol.Section?.Name == LayoutNames.DefinedSection && value.Symbol.Name.StartsWith(LayoutNames.Prefix, StringComparison.Ordinal)))
             {
                 foreach (var loser in group.Skip(1)) layoutCopies.Add((loser.Object, loser.Symbol));
