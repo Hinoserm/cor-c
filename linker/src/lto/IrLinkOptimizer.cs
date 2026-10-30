@@ -651,7 +651,7 @@ public static class IrLinkOptimizer
                     for (int index = 0; index < inputs.Count; index++)
                         if (recordedUnits.Contains(originals[index]))
                             compiled[index] = ReferenceEquals(inputs[index].Object, originals[index]) && now[index] is { } same ? same : HeapRecords.Read(again[index].Object);
-                    // The first making's own, let go before the second.
+                    // The lists, and a regenerated unit's records, let go before the second.
                     units.Clear();
                     now = Array.Empty<HeapRecords?>();
                     int made2 = Run(again, backend, enabled, importBytes, bodyLimit, closedImageEntry, parallelBackends, regionReport,

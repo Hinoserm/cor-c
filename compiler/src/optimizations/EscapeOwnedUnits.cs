@@ -573,16 +573,20 @@ public sealed partial class Escape
         // What the unit names: every symbol code or data takes the address of.
         HashSet<string> own = new(m.Data.Select(d => d.Name), StringComparer.Ordinal);
         bool Named(string name) => !own.Contains(name) && !IsDescriptor(name) && !name.StartsWith("i_", StringComparison.Ordinal);
+        // Gathered, then added in bulk: the sets are kept sorted in one array
+        // each (SmallSortedSet), and a unit's names come in no order.
+        HashSet<string> addressed = new(StringComparer.Ordinal), slotted = new(StringComparer.Ordinal), codeNamed = new(StringComparer.Ordinal);
         foreach (DataItem d in m.Data)
             foreach (DataReloc r in d.Relocs)
             {
                 if (!Named(r.Symbol)) continue;
-                hints.Addressed.Add(r.Symbol);
-                if (IsDescriptor(d.Name)) hints.Slotted.Add(r.Symbol);
+                addressed.Add(r.Symbol);
+                if (IsDescriptor(d.Name)) slotted.Add(r.Symbol);
             }
         foreach (Function f in m.Functions) foreach (Block b in f.Blocks) foreach (Instr i in b.Instrs)
             foreach (Operand o in i.Operands)
-                if (o is SymOperand sym && Named(sym.Name)) { hints.Addressed.Add(sym.Name); hints.CodeNamed.Add(sym.Name); }
+                if (o is SymOperand sym && Named(sym.Name)) { addressed.Add(sym.Name); codeNamed.Add(sym.Name); }
+        hints.Addressed.UnionWith(addressed); hints.Slotted.UnionWith(slotted); hints.CodeNamed.UnionWith(codeNamed);
         foreach (Function g in m.Functions)
             if (g.Blocks.Any(bb => bb.Instrs.Any(i => i.Op == Opcode.CallIndirect && i.DispatchType is not null && (_indirect is null || !_indirect.ContainsKey(i)))))
                 hints.UnresolvedIn.Add(g.Name);

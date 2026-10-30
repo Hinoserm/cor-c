@@ -7,8 +7,9 @@ namespace Corsac.Lang.Lto;
 /// A SET KEPT IN ORDER IN ONE ARRAY, none until its first member: what a
 /// lifetime condition's and a field summary's needs are (LifetimeCondition,
 /// LifetimeFields), and an owned-field site's names (OwnedFieldHints), a few
-/// each and none at all for most -- bounded at 32, 64 and OwnedFieldHints.
-/// Limit -- and held, the compiler's link, by the hundred thousand. As
+/// each and none at all for most -- the conditions bounded at 32 and 64, a
+/// unit's name sets as large as the unit (UnionWith fills those in bulk) --
+/// and held, the compiler's link, by the hundred thousand. As
 /// SortedSets they were a set object and a tree a set, empty or not, and a
 /// node of 48 bytes a member: 1.5 million sets and 220 MB of the link's live
 /// heap. Inserting moves the members above it, which at these sizes is
@@ -63,9 +64,36 @@ public sealed class SmallSortedSet<T> : IReadOnlyCollection<T>
         _version++;
     }
 
+    /// <summary>
+    /// Every member of <paramref name="other"/> added: a few one at a time,
+    /// many sorted once and merged in, so a large set filled in no order
+    /// costs n log n, not an insert's move per member.
+    /// </summary>
     public void UnionWith(IEnumerable<T> other)
     {
-        foreach (T value in other) Add(value);
+        T[] given = other is ICollection<T> sized ? new T[sized.Count] : other.ToArray();
+        if (other is ICollection<T> collection) collection.CopyTo(given, 0);
+        if (given.Length <= 8)
+        {
+            foreach (T value in given) Add(value);
+            return;
+        }
+        Array.Sort(given, _order);
+        T[] merged = new T[_count + given.Length];
+        int mine = 0, theirs = 0, made = 0;
+        while (mine < _count || theirs < given.Length)
+        {
+            int order = mine == _count ? 1 : theirs == given.Length ? -1 : _order.Compare(_items![mine], given[theirs]);
+            T next = order <= 0 ? _items![mine] : given[theirs];
+            if (order <= 0) mine++;
+            if (order >= 0) theirs++;
+            if (made == 0 || _order.Compare(merged[made - 1], next) != 0) merged[made++] = next;
+        }
+        if (made == _count) return;
+        Array.Resize(ref merged, made);
+        _items = merged;
+        _count = made;
+        _version++;
     }
 
     /// <summary>Only what <paramref name="other"/> holds kept, in order.</summary>
