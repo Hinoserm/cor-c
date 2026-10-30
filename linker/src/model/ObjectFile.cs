@@ -22,7 +22,9 @@ public sealed class ObjectFile
     /// The link's pool of what its units' IR archives say alike, given to
     /// each input it reads (ObjectLinkCommand): whoever reads the archive
     /// first -- the preinit solve, the IR optimiser -- shares through it
-    /// (Lto.IrArchive.Read). Null for an object read outside a link.
+    /// (Lto.IrArchive.Read), and the archive read is the section's for good.
+    /// Taken back once the link has read the last of them; null for an object
+    /// read outside a link, or made by a unit backend.
     /// </summary>
     public Lto.IrArchivePool? ArchivePool { get; set; }
     public List<Symbol> Symbols { get; } = new();

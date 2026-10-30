@@ -268,6 +268,8 @@ public static class ObjectLinkCommand
             openTypes: exportsPath is not null || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
             moduleOfKernel: kernel is not null, kernelBodies: kernel?.Bodies);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
+        // The archives' last reader done: their pool goes, not held through layout.
+        foreach ((string _, ObjectFile obj) in inputs) obj.ArchivePool = null;
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);
         // Long mode is read before the notes that say so go.

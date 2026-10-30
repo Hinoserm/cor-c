@@ -215,17 +215,18 @@ public sealed class IrArchive
                 string[] references = referenceCount == 0 ? Array.Empty<string>() : new string[referenceCount];
                 for (int reference = 0; reference < referenceCount; reference++) references[reference] = ReadName(reader);
                 if (references.SequenceEqual(calls)) references = calls;
-                if (pool is not null) { calls = pool.Share(calls); references = pool.Share(references); }
                 long decodeBytes = reader.ReadInt64();
                 if (decodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
                 int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hashBytes = reader.ReadBytes(32);
                 if (hashBytes.Length != 32) throw new ElfFormatException("Truncated IR body hash");
                 BodyHash hash = BodyHash.Of(hashBytes);
+                if (offset != next - bodyStart || length < 0 || length > bytesCount - next || stream.Position > bodyStart || entries.ContainsKey(key))
+                    throw new ElfFormatException("Invalid IR body directory");
+                // Checked first: what the directory refuses is not pooled.
+                if (pool is not null) { calls = pool.Share(calls); references = pool.Share(references); }
                 IrArchiveEntry entry = new(key, flags != 0, instructions, calls, length, hash, references, decodeBytes);
                 if (pool is not null) entry = pool.Share(entry);
-                if (offset != next - bodyStart || length < 0 || length > bytesCount - next
-                    || stream.Position > bodyStart || !entries.TryAdd(key, (entry, next)))
-                    throw new ElfFormatException("Invalid IR body directory");
+                entries.Add(key, (entry, next));
                 next += length;
             }
             if (stream.Position != bodyStart || next != bytesCount) throw new ElfFormatException("Unclaimed IR directory/payload bytes");
@@ -319,8 +320,9 @@ public sealed class IrArchive
 /// again the library bodies it imported, with their calls and references --
 /// the compiler's own link 885 thousand entries for 320 thousand bodies, 921
 /// thousand call and reference lists of which 148 thousand differ. One pool
-/// a link, held by its inputs (ObjectFile.ArchivePool) and let go with them:
-/// a compile reads its units' archives one at a time and shares nothing.
+/// a link, held by its inputs (ObjectFile.ArchivePool) until the last of
+/// their archives is read (ObjectLinkCommand): a compile reads its units'
+/// archives one at a time and shares nothing.
 /// Names are interned (IrArchive.ReadName), so a list is hashed by its
 /// strings' identities.
 /// </summary>
