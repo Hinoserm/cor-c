@@ -595,6 +595,9 @@ public static class IrLinkOptimizer
         // program reaches kept -- the collector, and what only it used, gone.
         if (heapPossible)
         {
+            // Read again here: each unit's as it is now -- a regenerated
+            // one's own, a unit unchanged the compile's, which the second
+            // making below takes as they are rather than decoding a copy.
             HeapRecords?[] now = new HeapRecords?[inputs.Count];
             List<(ObjectFile Object, HeapRecords Records)> units = new();
             bool complete = true;
@@ -641,7 +644,16 @@ public static class IrLinkOptimizer
                         again.Add((inputs[index].Name, archives.ContainsKey(originals[index]) ? original : inputs[index].Object));
                     }
                     // The compile's records: their edges are the archive's (HeapRecords.Gone).
-                    HeapRecords?[] compiled = again.Select((made, index) => recordedUnits.Contains(originals[index]) ? HeapRecords.Read(made.Item2) : null).ToArray();
+                    // A unit not regenerated is its original, whose records
+                    // were read above; a regenerated one's are its original's,
+                    // read from `again`, which holds the originals.
+                    HeapRecords?[] compiled = new HeapRecords?[inputs.Count];
+                    for (int index = 0; index < inputs.Count; index++)
+                        if (recordedUnits.Contains(originals[index]))
+                            compiled[index] = ReferenceEquals(inputs[index].Object, originals[index]) && now[index] is { } same ? same : HeapRecords.Read(again[index].Object);
+                    // The first making's own, let go before the second.
+                    units.Clear();
+                    now = Array.Empty<HeapRecords?>();
                     int made2 = Run(again, backend, enabled, importBytes, bodyLimit, closedImageEntry, parallelBackends, regionReport,
                         madeOnly, openTypes, reachableFrom, keep, moduleOfKernel, compiled);
                     for (int index = 0; index < inputs.Count; index++) inputs[index] = again[index];
