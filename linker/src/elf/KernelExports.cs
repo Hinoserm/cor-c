@@ -25,6 +25,10 @@ namespace Corsac.Lang.Elf;
 ///           .hash     the SysV hash over the symbols
 ///           .gnu.hash the GNU hash (DT_GNU_HASH): a bloom filter and each
 ///                     symbol's hash, its symbols in order of its buckets
+///           names64   beside each symbol from the first, its name's FNV-1a
+///                     64-bit hash and its value (DT_CORSAC_NAMES64): a
+///                     loader binds through the GNU hash and these, reading
+///                     neither a symbol nor a string
 ///           .dynsym   every export, SHN_ABS, its value the kernel's address
 ///           .dynstr
 ///           the contract and the processor, as the kernel's units say them
@@ -270,10 +274,11 @@ public sealed class KernelExports
         }
 
         static long Align(long at, int to) => (at + to - 1) / to * to;
-        int tagCount = 8 + (abi is null ? 0 : 2) + (cpu is null ? 0 : 2);
+        int tagCount = 9 + (abi is null ? 0 : 2) + (cpu is null ? 0 : 2);
         long hashAt = Align(tagCount * 2L * word, 8);
         long gnuHashAt = Align(hashAt + (2L + buckets + count) * 4, word);
-        long dynsymAt = Align(gnuHashAt + 16 + (long)bloomWords * word + (gnuBuckets + (long)symbols.Count) * 4, word);
+        long names64At = Align(gnuHashAt + 16 + (long)bloomWords * word + (gnuBuckets + (long)symbols.Count) * 4, 8);
+        long dynsymAt = Align(names64At + 16L * symbols.Count, word);
         long dynstrAt = dynsymAt + (long)count * symbolSize;
         long abiAt = Align(dynstrAt + strings.Length, 4);
         long cpuAt = Align(abiAt + (abi?.Length ?? 0), 4);
@@ -281,7 +286,8 @@ public sealed class KernelExports
         long end = linkIdAt + LinkIdBytes;
         List<(long Tag, ulong Value)> dynamic = new()
         {
-            (Elf.DtHash, (ulong)hashAt), (Elf.DtGnuHash, (ulong)gnuHashAt), (Elf.DtSymTab, (ulong)dynsymAt), (Elf.DtStrTab, (ulong)dynstrAt),
+            (Elf.DtHash, (ulong)hashAt), (Elf.DtGnuHash, (ulong)gnuHashAt), (Elf.DtCorsacNames64, (ulong)names64At),
+            (Elf.DtSymTab, (ulong)dynsymAt), (Elf.DtStrTab, (ulong)dynstrAt),
             (Elf.DtStrSz, (ulong)strings.Length), (Elf.DtSymEnt, (ulong)symbolSize),
         };
         if (abi is not null) { dynamic.Add((Elf.DtCorsacAbi, (ulong)abiAt)); dynamic.Add((Elf.DtCorsacAbiSz, (ulong)abi.Length)); }
@@ -305,6 +311,18 @@ public sealed class KernelExports
         foreach (ulong bits in bloom) Word(bits);
         foreach (uint b in gnuBucket) w.Write(b);
         foreach (uint c in gnuChain) w.Write(c);
+        // Each symbol's name as a number, and its value.
+        Pad(names64At);
+        // TWO NAMES THE SAME AS NUMBERS, both hashes alike, would bind one for
+        // the other: refused, the link naming them, not left to chance.
+        Dictionary<(uint, ulong), string> numbered = new();
+        foreach (Export s in symbols)
+        {
+            ulong strong = Elf.FnvName(s.Name);
+            if (!numbered.TryAdd((Elf.GnuHashName(s.Name), strong), s.Name))
+                throw new LinkException(new[] { "two exports are one name to a loader (the same GNU and FNV-1a 64 hashes): '" + numbered[(Elf.GnuHashName(s.Name), strong)] + "' and '" + s.Name + "'" });
+            w.Write(strong); w.Write(s.Value);
+        }
         Pad(dynsymAt);
         w.Write(new byte[symbolSize]);
         for (int i = 0; i < symbols.Count; i++)

@@ -132,6 +132,21 @@ internal static class Elf
     /// file is another link's than the kernel running.
     /// </summary>
     public const int DtCorsacLinkId = 0x60000C07;
+    /// <summary>
+    /// And where its names are as numbers (KernelExports.Table): beside each
+    /// symbol, from the first, its name's 64-bit hash (FnvName) and its value,
+    /// sixteen bytes, so a loader finds a name through the GNU hash without a
+    /// page of the symbols or their strings.
+    /// </summary>
+    public const int DtCorsacNames64 = 0x60000C08;
+
+    /// <summary>A name's FNV-1a 64-bit hash over its UTF-8: what DT_CORSAC_NAMES64 holds, independent of the GNU hash.</summary>
+    public static ulong FnvName(string name)
+    {
+        ulong h = 0xcbf29ce484222325;
+        foreach (byte c in Encoding.UTF8.GetBytes(name)) h = unchecked((h ^ c) * 0x100000001b3);
+        return h;
+    }
     public const int DtRel = 17;
     public const int DtRelSz = 18;
     public const int DtRelEnt = 19;

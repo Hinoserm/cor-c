@@ -104,7 +104,15 @@ if len(sys.argv) > 2 and sys.argv[2] == '--gnu':
         at_sym = tags[6] + i * entry
         n, = struct.unpack_from('<I', table, at_sym)
         return table[strings + n:table.index(b'\0', strings + n)].decode()
+    names64 = tags[0x60000C08]
+    def fnv(text):
+        h = 0xcbf29ce484222325
+        for c in text.encode():
+            h = ((h ^ c) * 0x100000001b3) & 0xffffffffffffffff
+        return h
     def lookup(text):
+        # As a loader binds: no symbol and no string read, the names as numbers.
+        strong = fnv(text)
         h = 5381
         for c in text.encode():
             h = (h * 33 + c) & 0xffffffff
@@ -116,8 +124,10 @@ if len(sys.argv) > 2 and sys.argv[2] == '--gnu':
             return None
         while True:
             ch, = struct.unpack_from('<I', table, chains + (i - symoffset) * 4)
-            if (ch | 1) == (h | 1) and name_of(i) == text:
-                return i
+            if (ch | 1) == (h | 1):
+                held64, value = struct.unpack_from('<QQ', table, names64 + (i - 1) * 16)
+                if held64 == strong:
+                    return i
             if ch & 1:
                 return None
             i += 1
@@ -128,6 +138,12 @@ if len(sys.argv) > 2 and sys.argv[2] == '--gnu':
     if count > 1 and not last & 1:
         sys.exit('gnu hash: the last chain does not end')
     missed = [name_of(i) for i in range(1, count) if lookup(name_of(i)) != i]
+    # And each value the same as the symbol's.
+    for i in range(1, count):
+        at_sym = tags[6] + i * entry
+        sym_value = struct.unpack_from('<Q', table, at_sym + 8)[0] if wide else struct.unpack_from('<I', table, at_sym + 4)[0]
+        if struct.unpack_from('<QQ', table, names64 + (i - 1) * 16)[1] != sym_value:
+            sys.exit('names64 value of ' + name_of(i) + ' is not its symbol\'s')
     if missed:
         sys.exit('gnu hash misses %d of %d: %s' % (len(missed), count - 1, ', '.join(missed[:5])))
     held = {name_of(i) for i in range(1, count)}
