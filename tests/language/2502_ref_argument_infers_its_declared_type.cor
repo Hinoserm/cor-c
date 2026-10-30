@@ -2,6 +2,7 @@
 // expect-exit: 0
 // expect-output:
 // True True True True
+// True True 1 True True
 //
 // C# infers a generic method's type argument from a ref argument's variable
 // as declared: after `_backing is not { } held` returned, `_backing` is known
@@ -9,11 +10,14 @@
 // Volatile.Write(ref _backing, null) is Write<Backing?>. Inferred from the
 // narrowed state it was Write<Backing>, and the null refused (the linker's
 // own Section.Load). The same for a field through a receiver, a captured
-// local and an array's element. And one copy of Write for both spellings:
-// a reference's `?` names no copy (tests/integration/method-copy-names.sh).
+// local and an array's element. And one copy of a generic method for every
+// spelling of its type -- Backing and Backing?, object and object? -- the
+// use keeping its marks: Id over a List<Backing?> takes a null, and so do
+// its string?[][] and (Backing?, int)[] (tests/integration/method-copy-names.sh).
 
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.Threading;
 
 sealed class Backing { public int N; }
@@ -40,6 +44,26 @@ sealed class Holder
         return held is null;
     }
 
+    // ONE COPY FOR EVERY SPELLING (tests/integration/method-copy-names.sh):
+    // a Backing written not null, an object and an object?.
+    public static bool Plain() { Backing b = new(); Volatile.Write(ref b, new Backing()); return b.N == 0; }
+    static object? _maybe = new object();
+    public static bool Objects() { object plain = new object(); Volatile.Write(ref plain, new object()); Volatile.Write(ref _maybe, null); return _maybe is null; }
+
+    // A use's marks kept through a copy: Id over a List<Backing?> hands back
+    // one that takes a null; deeper arrays and an array of tuples alike.
+    static T Id<T>(T value) => value;
+    public static string Kept()
+    {
+        List<Backing?> list = new();
+        Id(list).Add(null);
+        string?[][] rows = { new string?[] { "x" } };
+        Id(rows)[0][0] = null;
+        (Backing?, int)[] pairs = { (new Backing(), 1) };
+        Id(pairs)[0].Item1 = null;
+        return list.Count + " " + (rows[0][0] is null) + " " + (pairs[0].Item1 is null);
+    }
+
     // An array's element, as the array's element type is declared.
     public static bool Element()
     {
@@ -57,6 +81,7 @@ static class Program
         Holder h = new(); h.Fill(1); h.Clear(); h.Swap(); h.Mine();
         Holder o = new(); Holder.ClearOther(o);
         Console.WriteLine(h.Empty + " " + o.Empty + " " + Holder.Captured() + " " + Holder.Element());
+        Console.WriteLine(Holder.Plain() + " " + Holder.Objects() + " " + Holder.Kept());
         return 0;
     }
 }

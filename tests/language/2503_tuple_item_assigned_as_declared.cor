@@ -1,0 +1,33 @@
+// test: a tuple item is assigned as its tuple was declared, not as known
+// expect-exit: 0
+// expect-output:
+// True True True True
+//
+// C# checks an assignment against its target as declared: `one.Item1 =
+// null` is a Backing? item of a `(Backing?, int)`, however full the
+// initialiser left it, and so is an item of an element of a `(Backing?,
+// int)[]`, and of one handed back through a generic method. The tuples'
+// shared shape stores a Backing; the use says the `?` (TupleItem).
+
+#nullable enable
+using System;
+
+sealed class Backing { public int N; }
+
+static class Program
+{
+    static T Id<T>(T value) => value;
+
+    static int Main()
+    {
+        (Backing?, int) one = (new Backing(), 1);
+        one.Item1 = null;
+        (Backing?, int)[] pairs = { (new Backing(), 1), (new Backing(), 2) };
+        var got = pairs[0];
+        got.Item1 = null;
+        pairs[0].Item1 = null;
+        Id(pairs)[1].Item1 = null;
+        Console.WriteLine((one.Item1 is null) + " " + (got.Item1 is null) + " " + (pairs[0].Item1 is null) + " " + (pairs[1].Item1 is null));
+        return 0;
+    }
+}

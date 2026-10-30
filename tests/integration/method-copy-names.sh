@@ -16,10 +16,12 @@ fail() { printf 'FAIL %s\n' "$1"; exit 1; }
 
 "$corc" compile tests/language/2502_ref_argument_infers_its_declared_type.cor --obj -o "$work/2502.o" 2> "$work/compile.log" \
     || { cat "$work/compile.log"; fail "test 2502 did not compile"; }
-readelf -s -W "$work/2502.o" | awk '$8 ~ /^m_.*(Volatile_Write|Interlocked_Exchange|Holder_Set)\$/ { print $8 }' | sort -u > "$work/copies"
-for method in Volatile_Write Interlocked_Exchange Holder_Set; do
-    count=$(grep -c "${method}\\\$Backing" "$work/copies" || true)
-    test "$count" = 1 || { cat "$work/copies"; fail "$method has $count copies over Backing, not one"; }
+readelf -s -W "$work/2502.o" | awk '$8 ~ /^m_.*(Volatile_Write|Interlocked_Exchange|Holder_Set|Holder_Id)\$/ { print $8 }' | sort -u > "$work/copies"
+# One copy each over Backing (written Backing? and Backing), and one of
+# Volatile.Write over object (written object? and object).
+for copy in 'Volatile_Write\$Backing' 'Interlocked_Exchange\$Backing' 'Holder_Set\$Backing' 'Volatile_Write\$object'; do
+    count=$(grep -c "$copy" "$work/copies" || true)
+    test "$count" = 1 || { cat "$work/copies"; fail "$copy has $count copies, not one"; }
 done
 if grep -q '?' "$work/copies"; then cat "$work/copies"; fail "a copy's name holds a reference's ?"; fi
 

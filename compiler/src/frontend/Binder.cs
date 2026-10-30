@@ -10901,6 +10901,13 @@ public sealed partial class Binder
     /// </summary>
     private Type? DeclaredTypeOf(Expr target)
     {
+        // A TUPLE'S ITEM AS ITS USE WROTE IT (TupleItem): the shape's field is
+        // shared by every `(Backing?, int)` and `(Backing, int)`, and stores the
+        // Backing; the receiver's declared type says which this is.
+        if (target is MemberExpr item && _r.Resolved.TryGetValue(item, out Sym? itemSym) && itemSym is FieldSym { Field: var itemField }
+            && (DeclaredTypeOf(item.Target) ?? (_r.ExprType.TryGetValue(item.Target, out Type? itemOf) ? itemOf : null)) is { Symbol: TypeSymbol shape } holder
+            && shape.Name.StartsWith(TypeRef.Tuple + "$", StringComparison.Ordinal) && shape.Fields.IndexOf(itemField) is int which and >= 0)
+            return TupleItem(holder, shape, which);
         if (_r.Resolved.TryGetValue(target, out Sym? variable))
         {
             Type? said = variable switch
@@ -10910,11 +10917,11 @@ public sealed partial class Binder
             };
             if (said is not null) return said;
         }
-        if (target is MemberExpr member && _r.ExprType.TryGetValue(member.Target, out Type? receiver))
+        if (target is MemberExpr member && (DeclaredTypeOf(member.Target) ?? (_r.ExprType.TryGetValue(member.Target, out Type? bound) ? bound : null)) is Type receiver)
             for (TypeSymbol? owner = receiver.Symbol; owner is not null; owner = owner.Base)
                 foreach (FieldSymbol field in owner.Fields)
                     if (field.Name == member.Name) return field.Type;
-        if (target is IndexExpr element && _r.ExprType.TryGetValue(element.Target, out Type? array) && array is { IsArray: true, Element: Type each })
+        if (target is IndexExpr element && (DeclaredTypeOf(element.Target) ?? (_r.ExprType.TryGetValue(element.Target, out Type? read) ? read : null)) is { IsArray: true, Element: Type each })
             return each;
         return null;
     }
@@ -13274,6 +13281,72 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// A generic method's type argument as its copy is named and made: ONE
+    /// COPY PER TYPE, AS C# HAS IT. A reference's `?` is an annotation of the
+    /// use, here as it is for a class's specialisation (Monomorphiser.
+    /// WithoutReferenceMarks): its own (`object?` too), every array level's
+    /// element's, and its arguments' and use's, all the way down; `dynamic`
+    /// is object's. A Nullable&lt;T&gt; value, `int?[]`'s elements and a pointer
+    /// are types of their own, and kept. Spelled with the marks,
+    /// Volatile.Write over a Backing? and over a Backing proved not null
+    /// were two copies of one body. The call keeps the marks (CarriesMarks).
+    /// </summary>
+    private static Type CopyArgument(Type t)
+    {
+        if (t.IsPointer) return t;
+        if (t.Dynamic && t.Prim == Prim.Any && !t.IsArray) return Type.Any;
+        Type? element = t.Element is Type each ? CopyArgument(each) : null;
+        List<Type>? args = null;
+        for (int i = 0; i < t.Args.Count; i++)
+        {
+            Type made = CopyArgument(t.Args[i]);
+            if (args is null && !ReferenceEquals(made, t.Args[i])) { args = new(t.Args.Count); for (int k = 0; k < i; k++) args.Add(t.Args[k]); }
+            args?.Add(made);
+        }
+        bool marked = t.Nullable && (t.IsArray || ReferenceMarked(t));
+        // The very type where nothing in it changes: a plain type is one
+        // instance the compiler compares by reference here and there.
+        if (ReferenceEquals(element, t.Element) && args is null && t.UseArgs is null) return marked ? t.AsNonNullable() : t;
+        return t.Rebuilt(t.Nullable && !marked, element, args ?? t.Args);
+    }
+
+    /// <summary>
+    /// Whether a use says more than its copy's type (CopyArgument): a mark
+    /// the copy's name leaves out, or one its use wrote on an argument
+    /// (List&lt;Box?&gt;). The call keeps such a parameter's or result's type,
+    /// which the round after reads in place of the copy's.
+    /// </summary>
+    private static bool CarriesMarks(Type t) => !CopyArgument(t).Equals(t) || HasReferenceMark(t, 0);
+
+    /// <summary>Whether a template's type mentions one of its type parameters: only such a type is made otherwise in its copy.</summary>
+    private static bool MentionsTypeParameter(Type t)
+    {
+        if (t.ParamName is not null) return true;
+        if (t.Element is Type element && MentionsTypeParameter(element)) return true;
+        foreach (Type argument in t.Args) if (MentionsTypeParameter(argument)) return true;
+        if (t.UseArgs is not null) foreach (Type argument in t.UseArgs) if (MentionsTypeParameter(argument)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// A reference without its `?`, and `dynamic` as the object it is stored
+    /// as (one shape serves `(dynamic, int)` and `(object, int)`, whichever was
+    /// made first); anything else as it is.
+    /// </summary>
+    private static Type Unmarked(Type e)
+        => e.Dynamic && e.Prim == Prim.Any && !e.IsArray && !e.IsPointer ? Type.Any
+            : e.Nullable && e.IsReference && !e.IsPointer ? e.AsNonNullable() : e;
+
+    /// <summary>
+    /// Item <paramref name="which"/> of a tuple as THIS use wrote it: `(int,
+    /// Box?)` reads a Box? where the shared shape stores a Box.
+    /// </summary>
+    private static Type TupleItem(Type tuple, TypeSymbol shape, int which)
+        => tuple.UseArgs is { } items && items.Count == shape.Fields.Count(f => !f.Static) && which < items.Count
+            && Unmarked(items[which]).Equals(shape.Fields[which].Type)
+            ? items[which] : shape.Fields[which].Type;
+
+    /// <summary>
     /// The class a tuple of these element types is.
     ///
     /// ONE PER SHAPE, written by the checker and shared by everything with that
@@ -13292,45 +13365,6 @@ public sealed partial class Binder
     /// true. Nothing in C# source that this compiler has to read does that, and
     /// giving one out here would mean claiming a bit after they were numbered.
     /// </summary>
-    /// <summary>
-    /// A reference without its `?`, and `dynamic` as the object it is stored
-    /// as (one shape serves `(dynamic, int)` and `(object, int)`, whichever was
-    /// made first); anything else as it is.
-    /// </summary>
-    /// <summary>
-    /// A generic method's type argument as its copy is named and made: ONE
-    /// COPY PER TYPE, AS C# HAS IT, a reference's `?` an annotation of the use
-    /// (Monomorphiser.WithoutReferenceMarks, for a class's) -- its own, a
-    /// one-level array's reference elements', a tuple's items'. Spelled with
-    /// the marks, `Volatile.Write(ref _backing, x)` made Write$Backing?! where
-    /// _backing was a Backing? and Write$Backing where the call came after a
-    /// test proved it, two copies of one body. The checker keeps the marks
-    /// (the call's own bound types).
-    /// </summary>
-    /// <summary>Whether a type holds a mark its copy's type does not (CopyArgument): what the use must keep.</summary>
-    private static bool CarriesMarks(Type t) => !CopyArgument(t).Equals(t);
-
-    private static Type CopyArgument(Type t)
-    {
-        Type bare = Unmarked(t).WithoutUseArgs();
-        if (bare is { IsArray: true, ArrayRank: 1, Element: { IsArray: false, Nullable: true, IsReference: true, IsPointer: false } element })
-            return Type.ArrayOf(element.AsNonNullable());
-        return bare;
-    }
-
-    private static Type Unmarked(Type e)
-        => e.Dynamic && e.Prim == Prim.Any && !e.IsArray && !e.IsPointer ? Type.Any
-            : e.Nullable && e.IsReference && !e.IsPointer ? e.AsNonNullable() : e;
-
-    /// <summary>
-    /// Item <paramref name="which"/> of a tuple as THIS use wrote it: `(int,
-    /// Box?)` reads a Box? where the shared shape stores a Box.
-    /// </summary>
-    private static Type TupleItem(Type tuple, TypeSymbol shape, int which)
-        => tuple.UseArgs is { } items && items.Count == shape.Fields.Count(f => !f.Static) && which < items.Count
-            && Unmarked(items[which]).Equals(shape.Fields[which].Type)
-            ? items[which] : shape.Fields[which].Type;
-
     private TypeSymbol TupleType(IReadOnlyList<Type> elements, IReadOnlyList<string>? names = null)
     {
         // SPELLED THE WAY THE MONOMORPHISER SPELLS IT. A specialisation's name
@@ -17933,6 +17967,12 @@ public sealed partial class Binder
                     }
                 }
 
+                // THE TARGET AS DECLARED, not as known here (C#): `one.Item1 =
+                // null` where one is a `(Backing?, int)` its initialiser
+                // proved full, or an element of a `(Backing?, int)[]`.
+                if (a.Op is null && !target.Nullable && DeclaredTypeOf(a.Target) is { Nullable: true } declaredTarget
+                    && declaredTarget.AsNonNullable().Equals(target))
+                    target = declaredTarget;
                 if (a.Op is null)
                 {
                     CheckAssignable(value, target, a.Value, assignedLocal is not null ? "assignment to a local" : "assignment");
@@ -20444,12 +20484,11 @@ public sealed partial class Binder
             : null;
         if (cond is CallExpr told && saidBy is not null)
         {
-            for (int i = 0; i < told.Args.Count; i++)
+            // By position: named arguments are in their parameters' order by
+            // now (Reorder, CompleteLocalArguments).
+            for (int i = 0; i < told.Args.Count && i < saidBy.Count; i++)
             {
-                // BY ITS PARAMETER: a named argument's by the name written
-                // (`Find(found: out var f, key: k)`), the rest by position.
-                int at = told.ArgNames.Count > i && told.ArgNames[i] is string named ? saidBy.FindIndex(p => p.Name == named) : i;
-                if (at < 0 || at >= saidBy.Count || saidBy[at].NotNullWhen != holds)
+                if (saidBy[i].NotNullWhen != holds)
                 {
                     continue;
                 }
@@ -25128,7 +25167,8 @@ public sealed partial class Binder
                 // copy of Volatile.Write<Backing?> takes a Backing, and the call,
                 // checked against the copy in the round after, would refuse the
                 // null it was given. The use keeps it, as a class's does.
-                if (best.TypeParams.Count > 0 && (HasTupleUse(want) && IsFunctionSource(c.Args[i]) || CarriesMarks(want))
+                if (best.TypeParams.Count > 0 && (HasTupleUse(want) && IsFunctionSource(c.Args[i])
+                        || CarriesMarks(want) && MentionsTypeParameter(best.Params[i].Type))
                     && RefOf(want) is TypeRef argumentUse)
                 {
                     c.ArgumentTypeUses ??= new();
@@ -25395,7 +25435,7 @@ public sealed partial class Binder
         if (best.TypeParams.Count > 0)
         {
             c.ResultTupleNames = answer.Names is null ? null : new List<string>(answer.Names);
-            c.ResultTypeUse = HasTupleUse(answer) || CarriesMarks(answer) ? RefOf(answer) : null;
+            c.ResultTypeUse = HasTupleUse(answer) || CarriesMarks(answer) && MentionsTypeParameter(resultType) ? RefOf(answer) : null;
         }
         else if (c.ResultTypeUse is TypeRef resultUse)
             answer = Resolve(resultUse, _thisType);
