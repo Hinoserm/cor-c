@@ -1,8 +1,12 @@
 namespace Corsac.Lang.Lto;
 
-/// <summary>A body location, not a deserialized compiler IR graph.</summary>
+/// <summary>
+/// A body's summary, not a deserialized compiler IR graph: where it lies is
+/// its archive's (IrArchive), so one body every unit imported is one entry
+/// for all of them.
+/// </summary>
 public sealed record IrArchiveEntry(string Key, bool Importable, int Instructions,
-    IReadOnlyList<string> Calls, int Offset, int Length, BodyHash Hash, IReadOnlyList<string> References, long DecodeBytes)
+    IReadOnlyList<string> Calls, int Length, BodyHash Hash, IReadOnlyList<string> References, long DecodeBytes)
 {
     /// <summary>
     /// A REFERENCE ONLY COMPARED WITH: a descriptor a function names only to

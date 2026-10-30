@@ -18,16 +18,19 @@ public sealed class IrArchive
     // so that no unit's IR is held whole, only the record being decoded.
     private readonly Func<int, int, byte[]> readAt;
     private readonly int total;
+    // Each body by its key, and where it lies in this archive.
+    private readonly Dictionary<string, (IrArchiveEntry Entry, int Offset)> _places;
     public IReadOnlyDictionary<string, IrArchiveEntry> Entries { get; }
 
-    private IrArchive(Func<int, int, byte[]> readAt, int total, Dictionary<string, IrArchiveEntry> entries)
-    { this.readAt = readAt; this.total = total; Entries = entries; }
+    private IrArchive(Func<int, int, byte[]> readAt, int total, Dictionary<string, (IrArchiveEntry Entry, int Offset)> places)
+    { this.readAt = readAt; this.total = total; _places = places; Entries = new EntryView(places); }
 
     public byte[] ReadBody(string key)
     {
-        if (!Entries.TryGetValue(key, out IrArchiveEntry? entry)) throw new ElfFormatException("Missing IR record: " + key);
-        if (entry.Offset > total - entry.Length) throw new ElfFormatException("IR archive changed after validation");
-        byte[] body = readAt(entry.Offset, entry.Length);
+        if (!_places.TryGetValue(key, out (IrArchiveEntry Entry, int Offset) place)) throw new ElfFormatException("Missing IR record: " + key);
+        IrArchiveEntry entry = place.Entry;
+        if (place.Offset > total - entry.Length) throw new ElfFormatException("IR archive changed after validation");
+        byte[] body = readAt(place.Offset, entry.Length);
         if (body.Length != entry.Length) throw new ElfFormatException("IR archive changed after validation");
         if (!entry.Hash.Matches(FastHash.Of(body))) throw new ElfFormatException("IR payload integrity mismatch: " + key);
         return body;
@@ -193,7 +196,7 @@ public sealed class IrArchive
             if (!HashDirectory(stream, directoryBytes).SequenceEqual(directoryHash))
                 throw new ElfFormatException("IR directory integrity mismatch");
             int bodyStart = 84 + directoryBytes, next = bodyStart;
-            Dictionary<string, IrArchiveEntry> entries = new(StringComparer.Ordinal);
+            Dictionary<string, (IrArchiveEntry Entry, int Offset)> entries = new(StringComparer.Ordinal);
             for (int i = 0; i < count; i++)
             {
                 string key = ReadName(reader);
@@ -220,7 +223,7 @@ public sealed class IrArchive
                 if (hashBytes.Length != 32) throw new ElfFormatException("Truncated IR body hash");
                 BodyHash hash = BodyHash.Of(hashBytes);
                 if (offset != next - bodyStart || length < 0 || length > bytesCount - next
-                    || stream.Position > bodyStart || !entries.TryAdd(key, new(key, flags != 0, instructions, calls, next, length, hash, references, decodeBytes)))
+                    || stream.Position > bodyStart || !entries.TryAdd(key, (Shared(new IrArchiveEntry(key, flags != 0, instructions, calls, length, hash, references, decodeBytes)), next)))
                     throw new ElfFormatException("Invalid IR body directory");
                 next += length;
             }
@@ -272,6 +275,48 @@ public sealed class IrArchive
     }
 
     [ThreadStatic] private static byte[]? _nameBuffer;
+
+    /// <summary>
+    /// EVERY BODY'S ENTRY ONCE: the same body in two units' directories is
+    /// one entry, its lists already one (Lists), so a record's equality is
+    /// the body's.
+    /// </summary>
+    private static readonly Dictionary<IrArchiveEntry, IrArchiveEntry> Bodies = new();
+
+    private static IrArchiveEntry Shared(IrArchiveEntry entry)
+    {
+        lock (Bodies)
+        {
+            if (Bodies.TryGetValue(entry, out IrArchiveEntry? held)) return held;
+            Bodies.Add(entry, entry);
+            return entry;
+        }
+    }
+
+    /// <summary>An archive's entries by key, where they lie left out.</summary>
+    private sealed class EntryView(Dictionary<string, (IrArchiveEntry Entry, int Offset)> places) : IReadOnlyDictionary<string, IrArchiveEntry>
+    {
+        public IrArchiveEntry this[string key] => places[key].Entry;
+        public IEnumerable<string> Keys => places.Keys;
+        public IEnumerable<IrArchiveEntry> Values => places.Values.Select(place => place.Entry);
+        public int Count => places.Count;
+        public bool ContainsKey(string key) => places.ContainsKey(key);
+
+        public bool TryGetValue(string key, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out IrArchiveEntry value)
+        {
+            bool found = places.TryGetValue(key, out (IrArchiveEntry Entry, int Offset) place);
+            value = place.Entry;
+            return found;
+        }
+
+        public IEnumerator<KeyValuePair<string, IrArchiveEntry>> GetEnumerator()
+        {
+            foreach (KeyValuePair<string, (IrArchiveEntry Entry, int Offset)> place in places)
+                yield return new(place.Key, place.Value.Entry);
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 
     /// <summary>
     /// EVERY LIST OF NAMES ONCE, as every name is (ReadName): each unit's
