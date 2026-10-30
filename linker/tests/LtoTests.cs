@@ -37,10 +37,10 @@ public static class LtoTests
             return obj;
         }
         void Require(bool condition, string message) { if (!condition) throw new Exception(message); }
-        void Reject(Action action)
+        void Reject(Action action, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
         {
             try { action(); } catch (ElfFormatException) { return; } catch (LinkException) { return; }
-            throw new Exception("Malformed optimization metadata was accepted");
+            throw new Exception("Malformed optimization metadata was accepted (LtoTests.cs line " + line + ")");
         }
 
         ObjectFile caller = ElfReader.ReadObject(ElfWriter.WriteObject(Caller()));
@@ -148,8 +148,11 @@ public static class LtoTests
         new X86CodeGenerationContract("k6-3+", "x87", X86Feature.I486 | X86Feature.Pentium).Attach(excluded);
         Reject(() => X86CodeGenerationContract.ValidateRegeneration(cpuA, excluded));
         Reject(() => new X86CodeGenerationContract("486", "none", X86Feature.I486 | X86Feature.Mmx).Attach(Function(4)));
-        // The five 3DNow! extensions are the model's, never a switch's; SSE2 needs SSE.
-        Reject(() => new X86CodeGenerationContract("k6-2", "x87", X86Cpu.Model("k6-2+")).Attach(Function(5)));
+        // A feature with what it needs left out: 3DNow!'s extensions without
+        // 3DNow!, SSE2 without SSE (X86Cpu.Settled). The extensions on a K6-2
+        // are a switch's now (--enable-3dnow-ext), and allowed.
+        new X86CodeGenerationContract("k6-2", "x87", X86Cpu.Model("k6-2+")).Attach(Function(11));
+        Reject(() => new X86CodeGenerationContract("k6-2", "x87", X86Cpu.Model("k6-2+") & ~X86Feature.ThreeDNow).Attach(Function(5)));
         Reject(() => new X86CodeGenerationContract("pentium4", "x87", X86Cpu.Model("pentium4") & ~X86Feature.Sse).Attach(Function(6)));
         // Processors are sets, not a line: an Athlon unit may use CMOV, which
         // no K6 has, and a K6-2 unit nothing the Athlon lacks.
