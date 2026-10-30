@@ -60,6 +60,25 @@ out, step 1 below), the same relink, byte-identical:
 | heap decision                  |      1930 |   2105 |
 | layout and write               |       573 |    748 |
 
+Then (2026-10-30, the same relink, byte-identical each step): reachability's
+retained sets hold the archive's own keys (cf10cf65), relocations are 16
+bytes (a630c3b2, e4a7b37a), a regenerated unit's code and data stay in its
+file (185360e7), the heap records are let go after the catches and read
+again for the heap decision (a44b7544), the owned-field name sets are small
+(d593999f):
+
+| phase                          | live (MB) | 10-29 start |
+|--------------------------------|----------:|------------:|
+| read objects                   |       203 |         413 |
+| archives and hints             |       937 |        1184 |
+| catches and owned fields       |      1090 |        1662 |
+| units regenerated              |      1160 |        2100 |
+| heap decision                  |      1163 |        2103 |
+| layout and write               |       510 |         748 |
+
+The regions' peak RSS is 4.18 GB (4.85 at the start); the 32-bit native
+link of stage 1>2>3 peaks at 3.3-3.4 GB per process.
+
 ## The plan
 
 The link holds the whole program -- every section's bytes, every symbol by
