@@ -53,21 +53,21 @@ public sealed class OwnedFieldHints
     /// </summary>
     public SortedDictionary<(string Callee, int Argument), SortedSet<string>> KeptIn { get; } = new(PairOrder.Instance);
     /// <summary>Functions whose address the unit takes, in code or in data other than a descriptor's.</summary>
-    public SortedSet<string> Addressed { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Addressed { get; } = new(StringComparer.Ordinal);
     /// <summary>Functions whose address the unit's code takes.</summary>
-    public SortedSet<string> CodeNamed { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> CodeNamed { get; } = new(StringComparer.Ordinal);
     /// <summary>Functions a descriptor of the unit's holds in a slot.</summary>
-    public SortedSet<string> Slotted { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Slotted { get; } = new(StringComparer.Ordinal);
     /// <summary>
     /// The functions with a virtual call the unit could not name by declaring
     /// type and slot: one the program runs could call any slotted function.
     /// </summary>
-    public SortedSet<string> UnresolvedIn { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> UnresolvedIn { get; } = new(StringComparer.Ordinal);
 
     // ---- elements owned through a field (Opt.OwnedElements) ----
 
     /// <summary>Every field the unit reads, or takes the address of: anything but a store.</summary>
-    public SortedSet<string> Loaded { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> Loaded { get; } = new(StringComparer.Ordinal);
     /// <summary>
     /// The fields every read of which here is proved, as a collection of a
     /// kind ("List", "Dictionary"), to keep the field's value alive past every
@@ -82,7 +82,7 @@ public sealed class OwnedFieldHints
     /// <summary>The unit's own parameters stored into a field and put to no other use, with the field.</summary>
     public SortedDictionary<(string Callee, int Argument), string> StoredParameters { get; } = new(PairOrder.Instance);
     /// <summary>The fields whose reads here were kept from the inliner for this rule: the link's answer lets them go again.</summary>
-    public SortedSet<string> ElementKept { get; } = new(StringComparer.Ordinal);
+    public SmallSortedSet<string> ElementKept { get; } = new(StringComparer.Ordinal);
 
     public sealed class PairOrder : IComparer<(string, int)>
     {
@@ -343,9 +343,9 @@ public sealed class OwnedFieldHints
             NameSet(callers);
             if (argument < 0 || !hints.KeptIn.TryAdd((callee, argument), callers)) throw new ElfFormatException("Invalid owned-field kept argument");
         }
-        NameSet(hints.Addressed); NameSet(hints.CodeNamed); NameSet(hints.Slotted);
-        NameSet(hints.UnresolvedIn);
-        NameSet(hints.Loaded); NameSet(hints.ElementKept);
+        NamesInto(hints.Addressed.Add); NamesInto(hints.CodeNamed.Add); NamesInto(hints.Slotted.Add);
+        NamesInto(hints.UnresolvedIn.Add);
+        NamesInto(hints.Loaded.Add); NamesInto(hints.ElementKept.Add);
         OwnedElementRecord Element()
         {
             OwnedElementRecord record = new(Name());
