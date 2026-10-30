@@ -167,7 +167,7 @@ public sealed class HeapRecords
                 for (int i = 0; i < list.Length; i++) list[i] = Name();
                 return list;
             }
-            List<string> latchBuffer = new();
+            string[] latchBuffer = new string[8];
             HeapRecords records = new() { CallsCollector = reader.ReadBoolean(), NoCollector = reader.ReadBoolean() };
             records.StaticWrites.UnionWith(NameList());
             for (int g = Count(8); g > 0; g--)
@@ -192,9 +192,16 @@ public sealed class HeapRecords
                     if (kind > (byte)HeapEventKind.Store) throw new ElfFormatException("Invalid heap event");
                     HeapFlags flags = (HeapFlags)reader.ReadUInt16();
                     string name = Name();
-                    latchBuffer.Clear();
-                    for (int l = Count(4); l > 0; l--) latchBuffer.Add(Name());
-                    if (!latchBuffer.SequenceEqual(latches)) { latches = latchBuffer.Count == 0 ? Array.Empty<string>() : latchBuffer.ToArray(); latchedOnly = null; }
+                    // Compared as read, names being one string each (the table's).
+                    int latchCount = Count(4);
+                    if (latchBuffer.Length < latchCount) latchBuffer = new string[Math.Max(latchCount, 2 * latchBuffer.Length)];
+                    bool alike = latchCount == latches.Length;
+                    for (int l = 0; l < latchCount; l++)
+                    {
+                        latchBuffer[l] = Name();
+                        if (alike) alike = ReferenceEquals(latchBuffer[l], latches[l]);
+                    }
+                    if (!alike) { latches = latchCount == 0 ? Array.Empty<string>() : latchBuffer.AsSpan(0, latchCount).ToArray(); latchedOnly = null; }
                     string? permanent = MaybeName(), thrown = MaybeName(), held = MaybeName();
                     bool plain = permanent is null && thrown is null && held is null;
                     HeapEvent read = plain && latchedOnly is { } same ? same with { Kind = (HeapEventKind)kind, Name = name, Flags = flags }
@@ -302,6 +309,8 @@ public enum HeapFlags : ushort
 /// </summary>
 public readonly record struct HeapEvent
 {
+    // Shared, not compared: two events are equal only holding the one rare
+    // part, which nothing asks (events are walked, never looked up).
     private sealed class Rare(string[] latches, string? permanent, string? thrown, string? held)
     {
         public string[] Latches { get; } = latches;

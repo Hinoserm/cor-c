@@ -128,13 +128,13 @@ public sealed class KernelExports
     public const int SmallBody = 24;
 
     /// <summary>The importable small functions every unit of a kernel's link defines globally, with their bodies.</summary>
-    public static List<Lto.IrArchiveRecord> SmallBodies(IEnumerable<(string Name, ObjectFile Object)> inputs)
+    public static List<Lto.IrArchiveRecord> SmallBodies(IEnumerable<(string Name, ObjectFile Object)> inputs, Lto.IrArchivePool? pool = null)
     {
         List<Lto.IrArchiveRecord> found = new();
         HashSet<string> taken = new(StringComparer.Ordinal);
         foreach ((string _, ObjectFile obj) in inputs)
         {
-            Lto.IrArchive? archive = Lto.IrArchive.Read(obj);
+            Lto.IrArchive? archive = Lto.IrArchive.Read(obj, pool);
             if (archive is null) continue;
             foreach (Symbol symbol in obj.Symbols)
             {

@@ -248,7 +248,9 @@ public static class ObjectLinkCommand
         byte[]? decls = exportsPath is null ? null : declarationTable?.Invoke(stampIndex!);
         // The kernel's small functions for its modules, read before this link's
         // own optimiser takes the units' IR out (KernelExports.SmallBodies).
-        List<IrArchiveRecord>? smallBodies = exportsPath is not null && lto ? KernelExports.SmallBodies(inputs) : null;
+        // The first to read the units' archives share what they say alike (IrArchivePool).
+        IrArchivePool archivePool = new();
+        List<IrArchiveRecord>? smallBodies = exportsPath is not null && lto ? KernelExports.SmallBodies(inputs, archivePool) : null;
         // A KERNEL WITH EXPORTS IS NOT CLOSED, whatever its address says:
         // what a module calls, subclasses or stores into is outside it, so
         // nothing the link proves about the whole program holds (closed
@@ -263,7 +265,7 @@ public static class ObjectLinkCommand
             // derives from (VirtualTargets.Made).
             madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && exportsPath is null && kernel is null,
             openTypes: exportsPath is not null || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
-            moduleOfKernel: kernel is not null, kernelBodies: kernel?.Bodies);
+            moduleOfKernel: kernel is not null, kernelBodies: kernel?.Bodies, archivePool: archivePool);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         LinkTimings.Phase("constant returns and coalescing");
         if (selected is not null) X86CodeGenerationContract.ValidateTarget(inputs, selected);

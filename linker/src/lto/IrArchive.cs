@@ -121,7 +121,7 @@ public sealed class IrArchive
     /// checked against, or one whose sections or symbols changed since: what
     /// each read used to check (NativeHash), without the whole directory.
     /// </summary>
-    public static IrArchive? Read(ObjectFile obj)
+    public static IrArchive? Read(ObjectFile obj, IrArchivePool? pool = null)
     {
         Section[] sections = obj.Sections.Where(section => section.Name == SectionName).ToArray();
         if (sections.Length == 0) return null;
@@ -132,7 +132,7 @@ public sealed class IrArchive
             held.CheckedAgainst(obj);
             return held;
         }
-        IrArchive made = ReadSection(obj, section);
+        IrArchive made = ReadSection(obj, section, pool);
         return Interlocked.CompareExchange(ref section.ArchiveRead, made, null) as IrArchive ?? made;
     }
 
@@ -153,7 +153,7 @@ public sealed class IrArchive
         }
     }
 
-    private static IrArchive ReadSection(ObjectFile obj, Section section)
+    private static IrArchive ReadSection(ObjectFile obj, Section section, IrArchivePool? pool)
     {
         int size = section.Size;
         // A FILE OPENED ONCE, read by position: a link reads thousands of
@@ -205,8 +205,8 @@ public sealed class IrArchive
                     throw new ElfFormatException("Invalid IR import summary");
                 // Arrays, the empty one shared, and the references the calls
                 // themselves when they are the same names: a link holds every
-                // unit's directory -- the compiler's own, 366 thousand records
-                // -- from the first phase to the last.
+                // unit's directory from the first phase to the last, and what
+                // they say alike once (IrArchivePool).
                 string[] calls = callCount == 0 ? Array.Empty<string>() : new string[callCount];
                 for (int call = 0; call < callCount; call++) calls[call] = ReadName(reader);
                 int referenceCount = reader.ReadInt32();
@@ -215,15 +215,16 @@ public sealed class IrArchive
                 string[] references = referenceCount == 0 ? Array.Empty<string>() : new string[referenceCount];
                 for (int reference = 0; reference < referenceCount; reference++) references[reference] = ReadName(reader);
                 if (references.SequenceEqual(calls)) references = calls;
-                calls = Shared(calls);
-                references = Shared(references);
+                if (pool is not null) { calls = pool.Share(calls); references = pool.Share(references); }
                 long decodeBytes = reader.ReadInt64();
                 if (decodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
                 int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hashBytes = reader.ReadBytes(32);
                 if (hashBytes.Length != 32) throw new ElfFormatException("Truncated IR body hash");
                 BodyHash hash = BodyHash.Of(hashBytes);
+                IrArchiveEntry entry = new(key, flags != 0, instructions, calls, length, hash, references, decodeBytes);
+                if (pool is not null) entry = pool.Share(entry);
                 if (offset != next - bodyStart || length < 0 || length > bytesCount - next
-                    || stream.Position > bodyStart || !entries.TryAdd(key, (Shared(new IrArchiveEntry(key, flags != 0, instructions, calls, length, hash, references, decodeBytes)), next)))
+                    || stream.Position > bodyStart || !entries.TryAdd(key, (entry, next)))
                     throw new ElfFormatException("Invalid IR body directory");
                 next += length;
             }
@@ -276,23 +277,6 @@ public sealed class IrArchive
 
     [ThreadStatic] private static byte[]? _nameBuffer;
 
-    /// <summary>
-    /// EVERY BODY'S ENTRY ONCE: the same body in two units' directories is
-    /// one entry, its lists already one (Lists), so a record's equality is
-    /// the body's.
-    /// </summary>
-    private static readonly Dictionary<IrArchiveEntry, IrArchiveEntry> Bodies = new();
-
-    private static IrArchiveEntry Shared(IrArchiveEntry entry)
-    {
-        lock (Bodies)
-        {
-            if (Bodies.TryGetValue(entry, out IrArchiveEntry? held)) return held;
-            Bodies.Add(entry, entry);
-            return entry;
-        }
-    }
-
     /// <summary>An archive's entries by key, where they lie left out.</summary>
     private sealed class EntryView(Dictionary<string, (IrArchiveEntry Entry, int Offset)> places) : IReadOnlyDictionary<string, IrArchiveEntry>
     {
@@ -318,37 +302,6 @@ public sealed class IrArchive
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
-    /// <summary>
-    /// EVERY LIST OF NAMES ONCE, as every name is (ReadName): each unit's
-    /// directory lists the library bodies it imported again, with their calls
-    /// and references -- the compiler's own link 885 thousand entries for 320
-    /// thousand bodies, 921 thousand lists of which 148 thousand differ.
-    /// </summary>
-    private static readonly Dictionary<string[], string[]> Lists = new(SameNames.Instance);
-
-    private static string[] Shared(string[] list)
-    {
-        if (list.Length == 0) return list;
-        lock (Lists)
-        {
-            if (Lists.TryGetValue(list, out string[]? held)) return held;
-            Lists.Add(list, list);
-            return list;
-        }
-    }
-
-    private sealed class SameNames : IEqualityComparer<string[]>
-    {
-        public static readonly SameNames Instance = new();
-        public bool Equals(string[]? x, string[]? y) => x is not null && y is not null && x.AsSpan().SequenceEqual(y);
-        public int GetHashCode(string[] list)
-        {
-            HashCode hash = new();
-            foreach (string name in list) hash.Add(name, StringComparer.Ordinal);
-            return hash.ToHashCode();
-        }
-    }
-
     private static string ReadName(BinaryReader reader)
     {
         int length = reader.ReadInt32();
@@ -358,5 +311,54 @@ public sealed class IrArchive
         if (name.Contains('\0')) throw new ElfFormatException("Invalid IR name");
         // Every unit's directory names the same callees: one copy of each.
         return string.Intern(name);
+    }
+}
+
+/// <summary>
+/// WHAT A LINK'S ARCHIVES SAY ALIKE, HELD ONCE: each unit's directory lists
+/// again the library bodies it imported, with their calls and references --
+/// the compiler's own link 885 thousand entries for 320 thousand bodies, 921
+/// thousand call and reference lists of which 148 thousand differ. One pool
+/// a link (ObjectLinkCommand), let go with it: a compile reads its units'
+/// archives one at a time and shares nothing between them.
+/// </summary>
+public sealed class IrArchivePool
+{
+    private readonly Dictionary<string[], string[]> _lists = new(SameNames.Instance);
+    // Entries, their lists already shared: a record's equality is the body's.
+    private readonly Dictionary<IrArchiveEntry, IrArchiveEntry> _bodies = new();
+
+    public string[] Share(string[] list)
+    {
+        if (list.Length == 0) return list;
+        lock (_lists)
+        {
+            if (_lists.TryGetValue(list, out string[]? held)) return held;
+            _lists.Add(list, list);
+            return list;
+        }
+    }
+
+    public IrArchiveEntry Share(IrArchiveEntry entry)
+    {
+        lock (_bodies)
+        {
+            if (_bodies.TryGetValue(entry, out IrArchiveEntry? held)) return held;
+            _bodies.Add(entry, entry);
+            return entry;
+        }
+    }
+
+    // By the names, which are interned (IrArchive.ReadName): the same name is the same string.
+    private sealed class SameNames : IEqualityComparer<string[]>
+    {
+        public static readonly SameNames Instance = new();
+        public bool Equals(string[]? x, string[]? y) => ReferenceEquals(x, y) || x is not null && y is not null && x.AsSpan().SequenceEqual(y);
+        public int GetHashCode(string[] list)
+        {
+            HashCode hash = new();
+            foreach (string name in list) hash.Add(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(name));
+            return hash.ToHashCode();
+        }
     }
 }
