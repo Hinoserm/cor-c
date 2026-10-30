@@ -479,12 +479,49 @@ public static class Win32
     }
 
     /// Given back by DECOMMIT: the heap gives back pieces of what it was
-    /// mapped, and only a whole reservation can be released.
+    /// mapped, and only a whole reservation can be released -- AND THEN THE
+    /// RESERVATION RELEASED, once none of it is committed any more. A
+    /// decommitted reservation keeps its addresses, and VirtualAlloc never
+    /// hands them out again: every chunk the heap mapped and gave back was
+    /// address space lost for good, at least 64 KB a time. A game's ICD
+    /// mapped and gave back two large arrays a frame, and Half-Life's own
+    /// calloc ran out of address space after five minutes (CORSAC on the
+    /// K8, 2026-10-30: 31,050 maps and unmaps, the address space a wall of
+    /// reserved holes).
     static nuint Unmap(nuint at, nuint bytes, nuint c)
     {
         VirtualFree(at, bytes, MemDecommit);
-        return 0;
+        // One query at a time through the buffer made for it the first time:
+        // the heap gives back from more than one thread.
+        nuint lockWord = Sys.AddressOf(ref _querying);
+        while (Sys.Cas32(lockWord, 0, 1) != 0) { }
+        try
+        {
+            if (_query == 0) _query = VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
+            nuint info = _query;
+            if (info == 0 || VirtualQuery(at, info, InfoBytes) == 0) return 0;
+            // MEMORY_BASIC_INFORMATION: BaseAddress, AllocationBase,
+            // AllocationProtect, RegionSize, State -- 32 bits each here.
+            nuint reservation = Sys.Read32(info + 4);
+            // Every run of the reservation in turn, from its base: any still
+            // committed keeps it.
+            nuint walk = reservation;
+            while (true)
+            {
+                if (VirtualQuery(walk, info, InfoBytes) == 0 || Sys.Read32(info + 4) != reservation) break;
+                if (Sys.Read32(info + 16) == MemCommit) return 0;
+                nuint size = Sys.Read32(info + 12);
+                if (size == 0) return 0;
+                walk = walk + size;
+            }
+            VirtualFree(reservation, 0, MemRelease);
+            return 0;
+        }
+        finally { Sys.AtomicSwap32(lockWord, 0); }
     }
+
+    static nuint _query;
+    static int _querying;
 
     /// The performance counter as nanoseconds, or the tick count's
     /// milliseconds on a machine without one.
