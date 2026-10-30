@@ -460,6 +460,11 @@ internal static class Elf64Object
                 string symbol = symType[symIdx] == Elf.SttSection
                     ? sectionSym[symIdx]?.Name ?? throw new ElfFormatException($"relocation in '{target.Name}' is against a section that cannot be linked")
                     : symNames[symIdx];
+                // Inside its section, as the 32-bit reader holds it: refused
+                // here, naming the object, not at layout.
+                int width = kind == RelocKind.Abs64 ? 8 : 4;
+                if (target.Kind != SectionKind.Uninitialised && offset + (ulong)width > (ulong)target.Size)
+                    throw new ElfFormatException($"relocation at 0x{offset:x} is outside '{target.Name}' ({target.Size} bytes)");
                 target.Relocs.Add(Relocation.Read(offset, symbol, addend, kind, target.Name));
             }
         }

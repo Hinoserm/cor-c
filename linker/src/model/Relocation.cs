@@ -14,8 +14,9 @@ namespace Corsac.Lang.Ir;
 /// `label - 0xffffffff80000000`, a `.dq` of one) and is kept whole in a table
 /// of them (Wide), the word holding its place there. An offset past 2^26
 /// either side -- a section of 64 MiB, which no unit's is -- is refused, never
-/// cut short, with the InvalidOperationException the backends report as a
-/// compile error.
+/// cut short: made in memory, with the InvalidOperationException the backends
+/// report as a compile error; read from an object file (Read), with the
+/// ElfFormatException a reader's other faults are.
 /// </summary>
 public readonly record struct Relocation
 {
@@ -38,7 +39,7 @@ public readonly record struct Relocation
     /// </summary>
     public static Relocation Read(ulong offset, string symbol, long addend, RelocKind kind, string section)
     {
-        if (offset > int.MaxValue) throw new Corsac.Lang.Elf.ElfFormatException($"relocation in '{section}' at 0x{offset:x}, past what a section holds");
+        if (offset > int.MaxValue) throw new Corsac.Lang.Elf.ElfFormatException($"relocation in '{section}' at 0x{offset:x}, past the 2 GiB a section can be");
         try { return new Relocation((int)offset, symbol, addend, kind); }
         catch (InvalidOperationException error) { throw new Corsac.Lang.Elf.ElfFormatException($"relocation in '{section}': {error.Message}"); }
     }
