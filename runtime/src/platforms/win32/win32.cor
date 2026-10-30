@@ -490,19 +490,23 @@ public static class Win32
     /// reserved holes).
     static nuint Unmap(nuint at, nuint bytes, nuint c)
     {
-        VirtualFree(at, bytes, MemDecommit);
         // One query at a time through the buffer made for it the first time:
-        // the heap gives back from more than one thread.
+        // the heap gives back from more than one thread. A holder put off
+        // the processor is waited for with Sleep(0), not spun at.
         nuint lockWord = Sys.AddressOf(ref _querying);
-        while (Sys.Cas32(lockWord, 0, 1) != 0) { }
+        while (Sys.Cas32(lockWord, 0, 1) != 0) Sleep(0);
         try
         {
+            // The reservation asked for while `at` is still ours: decommitted
+            // first, a reservation another thread then released and a third
+            // made over the same addresses would have been taken for ours.
             if (_query == 0) _query = VirtualAlloc(0, InfoBytes, MemCommit | MemReserve, PageReadWrite);
             nuint info = _query;
-            if (info == 0 || VirtualQuery(at, info, InfoBytes) == 0) return 0;
+            nuint reservation = info != 0 && VirtualQuery(at, info, InfoBytes) != 0 ? Sys.Read32(info + 4) : 0;
+            VirtualFree(at, bytes, MemDecommit);
+            if (reservation == 0) return 0;
             // MEMORY_BASIC_INFORMATION: BaseAddress, AllocationBase,
             // AllocationProtect, RegionSize, State -- 32 bits each here.
-            nuint reservation = Sys.Read32(info + 4);
             // Every run of the reservation in turn, from its base: any still
             // committed keeps it.
             nuint walk = reservation;
