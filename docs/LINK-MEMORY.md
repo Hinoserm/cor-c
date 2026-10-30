@@ -76,27 +76,31 @@ again for the heap decision (a44b7544), the owned-field name sets are small
 | heap decision                  |      1163 |        2103 |
 | layout and write               |       510 |         748 |
 
-The regions' peak RSS is 4.18 GB (4.85 at the start); the 32-bit native
+The regions' peak RSS was 4.18 GB in this table's run (4.85 at the start); the 32-bit native
 link of stage 1>2>3 peaks at 3.3-3.4 GB per process.
 
-The regions phase is now the link's peak (RSS 3.6-4.2 GB against 1.1-1.6
-GB live), and on the compiler's own link it is spent for nothing: from
-`--region-report "+memsteps"` on 10-30, the copies and sites (1 s, 1.50 GB
-live), every call's targets (7.5 s, 1.60 GB), the reachable types (25 s),
-the receiver types -- which give up past their budget of 20 million carried
-after 89 s, every target kept -- and the escape graphs, which grow the heap
-to 2.9 GB in some 40 s before the whole engine gives up past the link's
-work budget (24 million locations carried) and answers nothing. Since
-eac52673 the engine stops where the receiver types give up -- no other
-program in any build log has outgrown their budget -- and the escape
-graphs' 40 s and 1.3 GB are gone: the regions phase 129 s -> 85 s, the
-link's peak RSS 3643 MB -> 3287 MB, output byte-identical. The receiver
-types' own solve, about 80 s, is now that peak. A region
-engine that fits this program, or knows early and cheaply that it will
-not, is the largest saving left in the link: about 2.5 GB of peak and two
-minutes. Lowering the budgets alone would give the same answer here sooner
-but may take regions from smaller closed programs that get them now; a
-budget by memory would make an image depend on the machine that linked it.
+The regions phase is the link's peak, and on the compiler's own link it
+is spent for nothing. From `--region-report "+memsteps"` on 10-30, on the
+regions' own clock: the copies and sites (to 1 s, 1.50 GB live), every
+call's targets (to 7.5 s, 1.60 GB), the reachable types (to 25 s), the
+receiver types -- which give up past their budget of 20 million carried at
+89 s, a solve of some 64 s -- and the escape graphs, which grew the heap to
+2.9 GB in some 40 s before the whole engine gave up past the link's work
+budget (24 million locations carried) and answered nothing.
+
+Since eac52673 the engine stops where the receiver types give up -- no
+other program in any build log has outgrown their budget -- and the escape
+graphs' part is gone: the regions phase 129 s -> 70-85 s, the link's peak
+RSS 3643 MB -> 3221-3287 MB, output byte-identical. The receiver types'
+solve is now the peak, some 2 GB of RSS over a live heap of 1.1-1.6 GB. A
+region engine that fits this program, or knows early and cheaply that it
+will not, is the largest saving left in that phase. Lowering the budgets
+alone would give the same answer here sooner but may take regions from
+smaller closed programs that get them now; a budget by memory would make
+an image depend on the machine that linked it.
+
+HeapEvent a value (2ade9134, a2358fff): the heap decision's live heap
+1347 MB -> 1255 MB.
 
 ## The plan
 
