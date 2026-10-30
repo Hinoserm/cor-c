@@ -111,7 +111,12 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
             { throw new IOException("Compiler backend stopped on " + (original.SourcePath ?? input) + ": it " + killedFor); }
             finally { Interlocked.Exchange(ref inFlight, 0); }
             if (!File.Exists(output)) throw new IOException("Compiler backend reported success without an object");
-            return ElfReader.ReadObjectFile(output, leaveInFile: false);
+            // LEFT IN ITS FILE, as the link's inputs are: the regenerated
+            // unit's code, data and notes stay there until the layout reads
+            // them -- held in memory, every regenerated unit stayed from here
+            // to the end. The file is kept until this backend is let go
+            // (Dispose), its path the object's own (SourcePath).
+            return ElfReader.ReadObjectFile(output, leaveInFile: true);
         }
         // WHICH UNIT, AND HOW THE BACKEND ENDED: a backend that died left
         // only "Broken pipe" behind, from the next request written to it.
@@ -120,7 +125,9 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
             string how = process.HasExited ? "exited with " + process.ExitCode : "still running";
             throw new IOException("compiler backend failed on " + (original.SourcePath ?? input) + " (" + how + "): " + e.Message, e);
         }
-        finally { if (!own) File.Delete(input); File.Delete(output); }
+        // The output only if it was never read: a read one is the object's file now.
+        catch { File.Delete(output); throw; }
+        finally { if (!own) File.Delete(input); }
     }
 
     public void Dispose()
