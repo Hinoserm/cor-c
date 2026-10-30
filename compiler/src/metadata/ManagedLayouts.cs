@@ -205,8 +205,6 @@ public static class ManagedLayouts
                 {
                     stream.SetLength(0); stream.Position = 0;
                     TypeName(field.Type); writer.Write(field.Volatile); writer.Write(field.Required);
-                    if (own) defined?.Add("field:" + type.Key + "." + field.Name);
-                    if (indexed) read?.Add("field:" + type.Key + "." + field.Name);
                     yield return new ManagedTypeLayout("field:" + type.Key + "." + field.Name, SHA256.HashData(stream.ToArray()));
                 }
                 foreach (MethodSymbol method in type.Methods.Where(method => method.Decl?.LocalCopy != true && method.TypeParams.Count == 0 && !Private(method)))

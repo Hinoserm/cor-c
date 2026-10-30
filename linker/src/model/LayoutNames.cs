@@ -5,22 +5,28 @@ namespace Corsac.Lang.Ir;
 
 /// <summary>
 /// A LAYOUT AS A NAME, for a kernel and its modules (KernelExports): what a
-/// unit compiled against of another image's types -- a type's fields and
-/// slots, a static's type -- said by a symbol whose name carries the layout's
-/// fingerprint (ManagedTypeLayout, the record the link already holds units
-/// to each other by). A unit for a ring defines one for each type it defines
-/// (z_, at a byte of its own); a module's unit imports one for each type of
-/// the kernel's, or another module's, it was compiled against. The kernel
-/// changed where the module looks is then a name the module imports and the
-/// kernel has not: refused at the module's link, and at its load, naming the
-/// type. Changed where no module looks, it is the same name, and binds.
+/// unit compiled against of another image's types -- a type's fields, base,
+/// interfaces and slots, and its statics' types -- said by a symbol whose
+/// name carries the layout's fingerprint (ManagedTypeLayout, the records the
+/// link already holds units to each other by):
 ///
-///   z_&lt;type key&gt;$&lt;fingerprint&gt;          a type's fields, base, interfaces and slots
-///   zf_&lt;type key.field&gt;$&lt;fingerprint&gt;  a static field's type
+///   z_&lt;type key&gt;$&lt;fingerprint&gt;
 ///
-/// The key escaped as a descriptor's is (every character but a letter, a
-/// digit or `_` as `$` and four hex digits), the fingerprint its first eight
-/// bytes in hex.
+/// the key escaped as a descriptor's is (every character but a letter, a
+/// digit or `_` as `$` and four hex digits), the fingerprint the first eight
+/// bytes of the hash of the type's record and its statics' records. A unit
+/// for a ring defines one for each type it defines, at a byte of its own; a
+/// module's unit imports one for each type it read from an index -- the
+/// kernel's, or its own module's other units', or a module's it depends on.
+/// The kernel changed where the module looks is then a name the module
+/// imports and the kernel has not: refused at the module's link, and at its
+/// load, naming the type. Changed where no module looks, it is the same
+/// name, and binds.
+///
+/// NOT GENERICS: a template, and a specialisation of one, has no record
+/// (ManagedLayouts describes neither), and so no name -- a generic kernel
+/// type a module was compiled against is held to nothing but its methods'
+/// names, as units of one image are held to nothing more about it.
 /// </summary>
 public static class LayoutNames
 {
@@ -29,26 +35,45 @@ public static class LayoutNames
     /// <summary>A word a name a module's unit imports, relocated against it.</summary>
     public const string ImportedSection = ".data.rel.ro.shapes";
 
-    public const string TypePrefix = "z_", StaticPrefix = "zf_";
+    public const string Prefix = "z_";
 
-    /// <summary>The name a layout record is said by, or null for one no image is held to by name (a method's: its label says it).</summary>
-    public static string? Of(ManagedTypeLayout layout)
+    /// <summary>
+    /// Each type's name, from its records: "type:" its own, and "field:" each
+    /// of its statics', folded in in order of name. A method's record is
+    /// not: its label says what it is.
+    /// </summary>
+    public static Dictionary<string, string> Of(IEnumerable<ManagedTypeLayout> layouts)
     {
-        string prefix;
-        string key;
-        if (layout.Name.StartsWith("type:", StringComparison.Ordinal)) { prefix = TypePrefix; key = layout.Name[5..]; }
-        else if (layout.Name.StartsWith("field:", StringComparison.Ordinal)) { prefix = StaticPrefix; key = layout.Name[6..]; }
-        else return null;
-        return prefix + Escaped(key) + "$" + Convert.ToHexString(layout.Fingerprint, 0, 8).ToLowerInvariant();
+        Dictionary<string, byte[]> types = new(StringComparer.Ordinal);
+        Dictionary<string, SortedDictionary<string, byte[]>> statics = new(StringComparer.Ordinal);
+        foreach (ManagedTypeLayout layout in layouts)
+        {
+            if (layout.Name.StartsWith("type:", StringComparison.Ordinal)) types[layout.Name[5..]] = layout.Fingerprint;
+            else if (layout.Name.StartsWith("field:", StringComparison.Ordinal) && layout.Name.LastIndexOf('.') is int dot and > 6)
+            {
+                string type = layout.Name[6..dot];
+                if (!statics.TryGetValue(type, out SortedDictionary<string, byte[]>? those)) statics[type] = those = new(StringComparer.Ordinal);
+                those[layout.Name[(dot + 1)..]] = layout.Fingerprint;
+            }
+        }
+        Dictionary<string, string> names = new(StringComparer.Ordinal);
+        foreach ((string type, byte[] fingerprint) in types)
+        {
+            using System.Security.Cryptography.IncrementalHash hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+            hash.AppendData(fingerprint);
+            if (statics.TryGetValue(type, out SortedDictionary<string, byte[]>? those))
+                foreach ((string field, byte[] its) in those) { hash.AppendData(Encoding.UTF8.GetBytes(field + "\n")); hash.AppendData(its); }
+            names[type] = Prefix + Escaped(type) + "$" + Convert.ToHexString(hash.GetHashAndReset(), 0, 8).ToLowerInvariant();
+        }
+        return names;
     }
 
-    /// <summary>What a layout name is of, as an error says it: "type Kernel.Driver's layout", "static Kernel.Log.Lines's type"; null for a name that is not one.</summary>
+    /// <summary>What a layout name is of, as an error says it: "type Kernel.Driver's layout"; null for a name that is not one.</summary>
     public static string? Describe(string name)
     {
-        bool type = name.StartsWith(TypePrefix, StringComparison.Ordinal), field = name.StartsWith(StaticPrefix, StringComparison.Ordinal);
         int end = name.LastIndexOf('$');
-        if (!type && !field || end < 0) return null;
-        string escaped = name[(type ? TypePrefix.Length : StaticPrefix.Length)..end];
+        if (!name.StartsWith(Prefix, StringComparison.Ordinal) || end < 0) return null;
+        string escaped = name[Prefix.Length..end];
         StringBuilder key = new();
         for (int at = 0; at < escaped.Length; at++)
         {
@@ -59,7 +84,7 @@ public static class LayoutNames
             }
             else key.Append(escaped[at]);
         }
-        return type ? "type " + key + "'s layout" : "static " + key + "'s type";
+        return "type " + key + "'s layout";
     }
 
     private static string Escaped(string key)
@@ -83,12 +108,11 @@ public static class LayoutNames
     public static void Attach(ObjectFile obj, IEnumerable<ManagedTypeLayout> layouts, IReadOnlySet<string> defined, IReadOnlySet<string>? imported, bool wide)
     {
         SortedSet<string> mine = new(StringComparer.Ordinal), theirs = new(StringComparer.Ordinal);
-        foreach (ManagedTypeLayout layout in layouts)
-            if (Of(layout) is string name)
-            {
-                if (defined.Contains(layout.Name)) mine.Add(name);
-                else if (imported?.Contains(layout.Name) == true) theirs.Add(name);
-            }
+        foreach ((string type, string name) in Of(layouts))
+        {
+            if (defined.Contains("type:" + type)) mine.Add(name);
+            else if (imported?.Contains("type:" + type) == true) theirs.Add(name);
+        }
         if (mine.Count > 0)
         {
             Section at = new(DefinedSection, SectionKind.ReadOnlyData) { Align = 1 };

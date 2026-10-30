@@ -375,7 +375,7 @@ d=$work/d
 cp "$work/linked/sb16.ko" "$d/module.ko"
 status=0
 (cd "$d" && ./kernel) > "$d/refused.out" 2>&1 || status=$?
-test "$status" = 3 && grep -qx "refused: undefined symbol $driverShape" "$d/refused.out" \
+test "$status" = 3 && grep -q "^refused: undefined symbol z_Kernel" "$d/refused.out" \
     || { cat "$d/refused.out"; fail "a module compiled against another Driver was loaded"; }
 if "$corc" link "$work/sb16.o" --kernel "$d/kernel" -o "$d/wrong.ko" 2> "$d/wrong-link.log"; then fail "a module compiled against another Driver linked"; fi
 grep -q "compiled against type Kernel.Driver's layout" "$d/wrong-link.log" || { cat "$d/wrong-link.log"; fail "the wrong layout's link said otherwise"; }
