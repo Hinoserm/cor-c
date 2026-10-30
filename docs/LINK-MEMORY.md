@@ -118,7 +118,12 @@ conditions shared through the link's pool (4c337061):
 What is left largest at the heap decision (a dump, 10-30): strings 150 MB,
 Relocation[] 137 MB (chunks of 2048 a section, the last one part full),
 string[] 70 MB, Symbol 63 MB, HeapEvent[] 53 MB, archive directories'
-dictionaries 41 MB.
+dictionaries 41 MB. Of the strings' 151 MB only 16 MB are second copies
+of one text: 688 thousand distinct names of some 200 bytes each, UTF-16
+and long (escaped type keys, and since ac6d8ff1 every label's return and
+every static's type). Interning gains little more; the plan's step 2 --
+names once, as ids, or held as UTF-8 -- is what shrinks them. The
+Relocation arrays' last chunks are exact since 945aaf29.
 
 ## The plan
 
