@@ -9,7 +9,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// A TYPE'S INITIALISER GUARD BEHIND ANOTHER FOR THE SAME TYPE GOES. Lowering
 /// tests the ready word at every touch of another type (Lowering.TouchType):
 ///
-///     %v = load @s_T_StaticReady$
+///     %v = load @s_T_StaticReady$_t$V$NInt
 ///     compilerfence
 ///     %c = eq %v 1
 ///     branch %c ->done ->run
@@ -112,7 +112,7 @@ public sealed class StaticInitGuards : IPass
         // The arm that is not ready: the initialiser's call and back.
         if (run.Instrs is not [{ Op: Opcode.Call, Dest: null, Operands.Count: 0, Callee: { } callee }, { Op: Opcode.Jump, Targets: [var back] }]
             || !ReferenceEquals(back, done)) return null;
-        // And the initialiser of the type whose word it read: s_T_StaticReady$ and m_T_StaticInit$.
+        // And the initialiser of the type whose word it read: s_T_StaticReady$_t$V$NInt and m_T_StaticInit$_0_r$V$Void.
         if (!readyName.StartsWith("s_", StringComparison.Ordinal)) return null;
         string type = readyName[2..^(Corsac.Lang.BindResult.ReadyField.Length + 1)];
         if (!callee.StartsWith("m_" + type + "_StaticInit$", StringComparison.Ordinal)) return null;

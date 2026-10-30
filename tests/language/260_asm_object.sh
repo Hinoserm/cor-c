@@ -132,7 +132,7 @@ symbols="$(readelf -sW "$work/parts.o" 2>&1)"
 wants ".global exports _start"               "$symbols" "GLOBAL DEFAULT *$text _start"
 wants ".global exports helper"               "$symbols" "GLOBAL DEFAULT *$text helper"
 wants ".extern leaves corc_start undefined"  "$symbols" "UND corc_start"
-wants "the COR-C# static is undefined too"   "$symbols" "UND s_Marker_Value_t\$V\$I64"
+wants "the COR-C# static is undefined too"   "$symbols" "UND s_Marker_Value_t\\\$V\\\$I64"
 
 relocs="$(readelf -rW "$work/parts.o" 2>&1)"
 wants "an absolute relocation on the static" "$relocs" "R_386_32 .*s_Marker_Value_t\\\$V\\\$I64"

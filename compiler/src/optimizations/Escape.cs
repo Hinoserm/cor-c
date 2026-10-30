@@ -5862,13 +5862,6 @@ continue;
     }
 
     /// <summary>
-    /// Every register used as the address of the memory it points at -- read
-    /// through, written through, its length taken -- directly or through the
-    /// copies and width changes that lead to such a use: what tells a call's
-    /// object result from a number, which the IR types do not. One pass over
-    /// the function, then back along the copies, for all of its calls at once.
-    /// </summary>
-    /// <summary>
     /// Which of a call's `operands` are objects, read off the callee's label
     /// (Lowering.Label: `m_Owner_Name_N_p1_..._pN_r$ret`, each parameter
     /// mangled without an underscore of its own, the return after the last
@@ -5908,6 +5901,13 @@ continue;
         return references;
     }
 
+    /// <summary>
+    /// Every register used as the address of the memory it points at -- read
+    /// through, written through, its length taken -- directly or through the
+    /// copies and width changes that lead to such a use: what tells a call's
+    /// object result from a number, which the IR types do not. One pass over
+    /// the function, then back along the copies, for all of its calls at once.
+    /// </summary>
     private static HashSet<VReg> AddressRegisters(Function f)
     {
         HashSet<VReg> used = new();

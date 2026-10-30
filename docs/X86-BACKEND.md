@@ -260,9 +260,13 @@ library carries the instantiations ITS OWN code needs, and anything else --
 wanted one -- is compiled into the program. An instantiation the linked
 libraries do have is never compiled twice: see "What each image contains".
 
-**Symbols** keep the mangled names the old backend used, which encode the
-owner and the full parameter signature, so two libraries never collide and
-`corc syms` is unchanged.
+**Symbols** say the whole of what a caller compiled against: a method's
+label the owner, the name, every parameter's type and its passing, and
+after `_r$` what it returns (`m_Owner_Name_1_V$I32_r$V$String`; `_r$R$...`
+for a result by reference); a static's symbol its owner, its name, and
+after `_t$` its type. Two libraries never collide, and an image built
+against another binds to a method or static only while it is still that
+one -- a kernel's module is refused by name (KernelExports).
 
 ### The ELF contract
 
@@ -844,8 +848,7 @@ The backend emits a relocatable ELF object and our own linker produces a
 static, non-PIE executable at 0x08048000, the traditional i386 Linux load
 address. Sections are the usual `.text`, `.rodata`, `.data` and `.bss`,
 plus `.corsac.meta` for the type table so `typeof` and reflection keep
-working and a future loader can read it. Symbols use the same mangled names
-the old backend used, so `corc syms` is unchanged.
+working and a future loader can read it. Symbols are the names above.
 
 ## Memory
 
