@@ -724,7 +724,7 @@ public static class ElfReader
                 {
                     kind = RelocKind.Got32;
                 }
-                target.Relocs.Add(new Relocation((int)offset, symbol, addend, kind.Value));
+                target.Relocs.Add(Relocation.Read(offset, symbol, addend, kind.Value, target.Name));
             }
         }
 

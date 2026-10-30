@@ -19398,8 +19398,10 @@ public sealed partial class Binder
                         continue;
                     }
 
+                    // By the object initialiser's own rule (BackingField): a
+                    // virtual auto-property is set through its accessor.
                     FieldSymbol? field = owner.FindField(init.Name)
-                                      ?? owner.FindBackingField(init.Name);
+                                      ?? BackingField(owner, init.Name);
                     // A NEARER DECLARATION HIDES IT, as in an object initialiser:
                     // a derived `new` property's accessor, not the base's field.
                     if (field is not null && HiddenByNearerProperty(owner, field, init.Name)) field = null;

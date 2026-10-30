@@ -30,6 +30,19 @@ public readonly record struct Relocation
         this.Symbol = Symbol;
     }
 
+    /// <summary>
+    /// One read from an object file: a place it cannot hold is the file's
+    /// fault, an ElfFormatException naming the section, as every other
+    /// malformed thing a reader meets is -- a half-written object left by a
+    /// killed build is then compiled again, not a crash (ProjectCompile).
+    /// </summary>
+    public static Relocation Read(ulong offset, string symbol, long addend, RelocKind kind, string section)
+    {
+        if (offset > int.MaxValue) throw new Corsac.Lang.Elf.ElfFormatException($"relocation in '{section}' at 0x{offset:x}, past what a section holds");
+        try { return new Relocation((int)offset, symbol, addend, kind); }
+        catch (InvalidOperationException error) { throw new Corsac.Lang.Elf.ElfFormatException($"relocation in '{section}': {error.Message}"); }
+    }
+
     public int Offset
     {
         get => _offsetKind >> 5;

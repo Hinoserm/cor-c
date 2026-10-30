@@ -460,7 +460,7 @@ internal static class Elf64Object
                 string symbol = symType[symIdx] == Elf.SttSection
                     ? sectionSym[symIdx]?.Name ?? throw new ElfFormatException($"relocation in '{target.Name}' is against a section that cannot be linked")
                     : symNames[symIdx];
-                target.Relocs.Add(new Relocation(checked((int)offset), symbol, addend, kind));
+                target.Relocs.Add(Relocation.Read(offset, symbol, addend, kind, target.Name));
             }
         }
         return obj;
