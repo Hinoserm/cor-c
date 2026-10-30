@@ -324,7 +324,27 @@ public sealed partial class Lowering
     public static string Bare(string label)
         => label.LastIndexOf(ReturnMark, StringComparison.Ordinal) is int at and > 0 ? label[..at] : label;
 
-    private static string Owner(MethodSymbol m) => m.Owner.Key.Replace('.', '$');
+    private static string Owner(MethodSymbol m) => OwnerOf(m.Owner.Key);
+
+    /// <summary>A type's key as a method's label spells its owner.</summary>
+    public static string OwnerOf(string key) => key.Replace('.', '$');
+
+    /// <summary>A type's key from a static's symbol's spelling of it (Escaped): every `$` and four hex digits the character.</summary>
+    public static string Unescaped(string escaped)
+    {
+        StringBuilder key = new();
+        for (int at = 0; at < escaped.Length; at++)
+        {
+            if (escaped[at] == '$' && at + 4 < escaped.Length
+                && int.TryParse(escaped.AsSpan(at + 1, 4), System.Globalization.NumberStyles.HexNumber, null, out int code))
+            {
+                key.Append((char)code);
+                at += 4;
+            }
+            else key.Append(escaped[at]);
+        }
+        return key.ToString();
+    }
 
     /// <summary>An injective structural type encoding using '$' as the escape.</summary>
     public static string Mangle(Type t)

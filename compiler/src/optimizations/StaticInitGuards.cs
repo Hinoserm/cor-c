@@ -114,7 +114,9 @@ public sealed class StaticInitGuards : IPass
             || !ReferenceEquals(back, done)) return null;
         // And the initialiser of the type whose word it read: s_T_StaticReady$_t$V$NInt and m_T_StaticInit$_0_r$V$Void.
         if (!readyName.StartsWith("s_", StringComparison.Ordinal)) return null;
-        string type = readyName[2..^(Corsac.Lang.BindResult.ReadyField.Length + 1)];
+        // The symbol spells the type's key escaped, a label its owner with
+        // '.' as '$': a nested type's are two spellings of one key.
+        string type = Corsac.Lang.Lower.Lowering.OwnerOf(Corsac.Lang.Lower.Lowering.Unescaped(readyName[2..^(Corsac.Lang.BindResult.ReadyField.Length + 1)]));
         if (!callee.StartsWith("m_" + type + "_StaticInit$", StringComparison.Ordinal)) return null;
         // No join to fix up where the guard's own arms meet.
         if (done.Instrs.Count > 0 && done.Instrs[0].Op == Opcode.Phi) return null;
