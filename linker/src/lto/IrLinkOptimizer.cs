@@ -208,7 +208,13 @@ public static class IrLinkOptimizer
             // before it -- List.Insert's, imported, still calls the
             // ArgumentException constructor the library's record had inlined
             // away -- so what the archives' references keep may run too.
-            if (reachability is not null) foreach (HashSet<IrKey> kept in reachability.Values) reachedNames.UnionWith(kept.Select(key => key.ToString()));
+            // By the function's name: the sets held the record's written key
+            // (F:name) and so matched no name here, and what they keep counted
+            // as never run all the same.
+            if (reachability is not null)
+                foreach (HashSet<IrKey> kept in reachability.Values)
+                    foreach (IrKey key in kept)
+                        if (key.Kind == IrKey.Function) reachedNames.Add(key.Name);
             neverRun = recorded.SelectMany(unit => unit.Records.Functions).Select(function => function.Name)
                 .Where(name => !reachedNames.Contains(name)).ToHashSet(StringComparer.Ordinal);
             catchable = ForeignCatchable(inputs, hintOrder, hints, throwing, lifetimes);
