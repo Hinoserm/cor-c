@@ -181,12 +181,23 @@ internal sealed partial class Selector
             for (int k = made.at + 1; k < copy.at && clear; k++)
             {
                 Instr between = made.b.Instrs[k];
-                // Nothing between that may throw: a handler would read the variable's old value.
-                clear = !ReferenceEquals(between.Dest, copy.x) && (between.Op == Opcode.Copy
-                    || between.Op == Opcode.Call && between.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal));
+                // Nothing between that may throw -- a handler would read the
+                // variable's old value: only copies, and packed operations on
+                // values kept in registers, which touch no memory.
+                clear = !ReferenceEquals(between.Dest, copy.x) && (between.Op == Opcode.Copy || OnRegistersOnly(between));
                 foreach (Operand o in between.Operands) clear &= !ReferenceEquals(NodeOf(o), copy.x);
             }
             if (clear) values[s] = into;
+        }
+
+        bool OnRegistersOnly(Instr i)
+        {
+            if (i.Op != Opcode.Call || i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
+                || !XmmValueOp(c, out string[] part) || part[0] == "xstorent")
+                return false;
+            for (int k = 0; k < i.Operands.Count; k++)
+                if (!(part[0] == "xinsert" && k == 2) && !(NodeOf(i.Operands[k]) is { } n && values.ContainsKey(n))) return false;
+            return true;
         }
         _packedValues = values;
         _packedAliases = aliases;

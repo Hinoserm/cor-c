@@ -20,6 +20,7 @@ internal static class Peephole
     {
         ParameterHomes(m);
         ForwardSpillLoadsAcrossBlocks(m);
+        foreach (MBlock block in m.Blocks) ForwardXmmSpillLoads(block.Instrs);
         DeadSpillStores(m);
         SpillStoresDeadAcrossBlocks(m);
         int[] liveOut = LiveOut(m, out int[] liveIn);
@@ -924,6 +925,62 @@ internal static class Peephole
         }
         return i;
     }
+
+    /// <summary>
+    /// AN XMM VALUE RELOADED FROM THE SLOT A REGISTER STILL HOLDS IT IN:
+    /// `movups [s], x6 ; movaps x6', x5 ; ... ; movups x2, [s]` -- the
+    /// allocator gave x6 to something else, so it reloaded for x2 what x6
+    /// held all along. When nothing between writes the register or the
+    /// slot, the load becomes a register move (MOVAPS, no memory). The store
+    /// may then have nothing left to read it; DeadSpillStores, after this,
+    /// takes it. Within a block, past only instructions whose every register
+    /// write is an operand's (no call: it clobbers XMM registers unnamed).
+    /// </summary>
+    private static void ForwardXmmSpillLoads(List<MInstr> instrs)
+    {
+        for (int k = 0; k < instrs.Count; k++)
+        {
+            MInstr load = instrs[k];
+            if (load.Op != MOp.MovF || load.Operands.Count != 2 || load.Operands[0] is not MReg { IsXmm: true } dest
+                || load.Operands[1] is not MMem slot || !PrivateSpill(slot))
+                continue;
+            long clobbered = 0;
+            for (int p = k - 1; p >= 0 && p >= k - 32; p--)
+            {
+                MInstr prev = instrs[p];
+                if (prev.Lock || !XmmSpillTransparent(prev.Op)) break;
+                // The slot stored from a register, or loaded into one: that register holds it.
+                MReg? held = null;
+                if (prev.Op == MOp.MovF && prev.Width == load.Width && prev.Operands.Count == 2)
+                {
+                    if (prev.Operands[0] is MMem to && SameMem(to, slot) && prev.Operands[1] is MReg { IsXmm: true } from) held = from;
+                    else if (prev.Operands[1] is MMem src && SameMem(src, slot) && prev.Operands[0] is MReg { IsXmm: true } into) held = into;
+                }
+                if (held is not null)
+                {
+                    if ((clobbered & Bit(held.Id)) == 0)
+                    {
+                        if (held.Id == dest.Id) { instrs.RemoveAt(k); k--; }
+                        else instrs[k] = new MInstr(MOp.MovF, MReg.Of(dest.Id), MReg.Of(held.Id)) { Width = load.Width, Line = load.Line };
+                    }
+                    break;
+                }
+                bool near = false;
+                foreach (MOperand o in prev.Operands)
+                    if (o is MMem mem && PrivateSpill(mem) && Math.Abs((long)mem.Disp - slot.Disp) < 16) near = true;
+                if (near) break;
+                Masks(prev, out _, out long written);
+                clobbered |= written;
+                if ((clobbered & Bit((int)Gpr.Ebp)) != 0) break;
+            }
+        }
+    }
+
+    /// <summary>An instruction whose register writes are all its operands' (Roles), and which writes memory only through them.</summary>
+    private static bool XmmSpillTransparent(MOp op) => SpillTransparent(op) && op != MOp.Nop
+        || op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.CvtIntToF
+            or MOp.XorPs or MOp.MovdToX or MOp.MovdFromX or MOp.Punpckldq
+            or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV;
 
     private static bool SpillTransparent(MOp op) => op is MOp.Mov or MOp.Movsx or MOp.Movzx
         or MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or or MOp.Xor
