@@ -31,7 +31,10 @@ for target in x86 x86-64; do
     frame=ebp; test "$target" = x86-64 && frame=rbp
     for f in m_Program_Add_ m_Program_Cpuid_; do
         code "$out" "$f" > "$out.$f.s"
-        if grep -qE -- "-0x[0-9a-f]+\(%$frame\)" "$out.$f.s"; then
+        # Long mode's prologue saves a callee-saved register by a move into
+        # the frame and its epilogue takes it back: those are no locals'.
+        if grep -vE -- "mov +(%(rbx|r1[2-5]),-0x[0-9a-f]+\(%rbp\)|-0x[0-9a-f]+\(%rbp\),%(rbx|r1[2-5]))" "$out.$f.s" \
+            | grep -qE -- "-0x[0-9a-f]+\(%$frame\)"; then
             cat "$out.$f.s"; fail "$f on $target passes a bound local through the frame"
         fi
     done

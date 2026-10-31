@@ -129,9 +129,37 @@ public sealed partial class Binder
                     CheckName(name);
                     continue;
                 default:
-                    Error(name, $"asm: '{name.Name}' is not a local, a parameter, a constant or a label of this block");
+                {
+                    // A LOCAL A LAMBDA CAPTURED is a field of its closure where
+                    // the lambda's body is bound for it: the same variable.
+                    int errors = _r.Errors.Count;
+                    if (sym is null) CheckName(name);
+                    Sym? resolved = sym ?? (_r.Resolved.TryGetValue(name, out Sym? named) ? named : null);
+                    FieldSymbol? closureField = resolved switch
+                    {
+                        CapturedFieldSym c => c.Field,
+                        FieldSym { Field: var f } when IsClosure(f.Owner) => f,
+                        _ => null,
+                    };
+                    if (closureField is not null)
+                    {
+                        if (sym is not null) CheckName(name);
+                        if (AsmShape(closureField.Type, out string capturedWhy) is not { } capturedShape)
+                        {
+                            Error(name, $"asm: '{name.Name}' {capturedWhy}");
+                            failed = true;
+                            continue;
+                        }
+                        locals.Add(new AsmLocal(name.Name, capturedShape.Width, capturedShape.Kind));
+                        symbols.Add(resolved!);
+                        localNames.Add(name);
+                        continue;
+                    }
+                    if (_r.Errors.Count == errors)
+                        Error(name, $"asm: '{name.Name}' is not a local, a parameter, a constant or a label of this block");
                     failed = true;
                     continue;
+                }
             }
         }
         if (failed) return;
