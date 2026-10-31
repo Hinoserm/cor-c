@@ -2,16 +2,17 @@
 // targets: x86
 // flags: --x87-in-blocks-only
 // expect-output:
-// thread 3 kept 2 5
+// thread 3 kept 0 5
 //
 // Main keeps the state for its own double. Its first two blocks only load
 // and read the control word: each runs on the thread's own state, given
 // back around it (Lowering.OnOwnState) as around a plain Sys.CallNative --
-// the first sets the thread's precision to 64 bits (0x037F), the second
-// reads it back. The third block computes (FLD1, FSTP), and so runs on the
-// state Main keeps, whose control word is the compiler's 0x027F, 53 bits:
-// the two words differ only if the state was given back
-// (docs/INLINE-ASSEMBLY.md).
+// the first sets the thread's rounding to toward zero (0x0C7F, a mode
+// neither the start nor the kept state has), the second reads it back
+// across the save and restore between them. The third block computes
+// (FLD1, FSTP), and so runs on the state Main keeps, whose control word is
+// the compiler's, rounding to nearest: the rounding modes differ only if
+// the state was given back (docs/INLINE-ASSEMBLY.md).
 
 static class Program
 {
@@ -21,7 +22,7 @@ static class Program
     {
         Host.Start(1024 * 1024);
         double d = _half * 0.5 * 2;
-        ushort want = 0x037F;
+        ushort want = 0x0C7F;
         asm
         {
             fldcw want
@@ -38,7 +39,7 @@ static class Program
             fld1
             fstp st0
         }
-        Host.Line("thread " + ((mine >> 8) & 3).ToString() + " kept " + ((kept >> 8) & 3).ToString() + " " + ((int)d).ToString());
+        Host.Line("thread " + ((mine >> 10) & 3).ToString() + " kept " + ((kept >> 10) & 3).ToString() + " " + ((int)d).ToString());
         Host.Done(0);
         return 0;
     }
