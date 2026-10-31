@@ -144,6 +144,11 @@ public class CorsacSecureCrypto_ChaCha20Context
 
     private uint[] _state;
     private uint[] _keystream;
+    // Generate4's: the state with each word four times over, one for each
+    // block (word 12, the counter, c to c + 3), and its keystream in the
+    // same layout.
+    private uint[] _broad;
+    private uint[] _keystream4;
     private byte[] _block;
     private bool _closed;
     private int _error;
@@ -152,6 +157,8 @@ public class CorsacSecureCrypto_ChaCha20Context
     {
         _state = new uint[16];
         _keystream = new uint[16];
+        _broad = new uint[64];
+        _keystream4 = new uint[64];
         _block = new byte[64];
         if (!CorsacSecureCrypto_Bytes.Range(key, keyOffset, 32))
         {
@@ -165,6 +172,13 @@ public class CorsacSecureCrypto_ChaCha20Context
         _state[3] = 0x6b206574;
         for (int i = 0; i < 8; i = i + 1)
             _state[4 + i] = (uint)ReadLittleWord(key, keyOffset + i * 4);
+        for (int i = 0; i < 12; i = i + 1) Broadcast(i);
+    }
+
+    private void Broadcast(int word)
+    {
+        uint value = _state[word];
+        for (int lane = 0; lane < 4; lane = lane + 1) _broad[word * 4 + lane] = value;
     }
 
     public int Error => _error;
@@ -203,6 +217,21 @@ public class CorsacSecureCrypto_ChaCha20Context
         SetNonce(nonce, nonceOffset);
         long done = 0;
         long blockCounter = counter;
+        // Four blocks at a time while four whole ones are left, each block's
+        // words out of the vertical keystream (Generate4).
+        while (count - done >= 256 && Generate4(blockCounter))
+        {
+            uint[] k4 = _keystream4;
+            nuint into = Sys.ArrayData(output) + (nuint)(outputOffset + done), from = Sys.ArrayData(input) + (nuint)(inputOffset + done);
+            for (int blk = 0; blk < 4; blk = blk + 1)
+            {
+                nuint o = into + (nuint)(blk * 64), n = from + (nuint)(blk * 64);
+                for (int w = 0; w < 16; w = w + 1)
+                    Sys.Write32(o + (nuint)(w * 4), Sys.Read32(n + (nuint)(w * 4)) ^ k4[w * 4 + blk]);
+            }
+            done = done + 256;
+            blockCounter = blockCounter + 4;
+        }
         while (done < count)
         {
             Generate(blockCounter);
@@ -231,6 +260,7 @@ public class CorsacSecureCrypto_ChaCha20Context
         if (_closed) return;
         for (int i = 0; i < _state.Length; i = i + 1) _state[i] = 0;
         for (int i = 0; i < _keystream.Length; i = i + 1) _keystream[i] = 0;
+        for (int i = 0; i < _broad.Length; i = i + 1) _broad[i] = 0;
         EraseBlock();
         _closed = true;
     }
@@ -267,7 +297,10 @@ public class CorsacSecureCrypto_ChaCha20Context
     private void SetNonce(byte[] nonce, long nonceOffset)
     {
         for (int i = 0; i < 3; i = i + 1)
+        {
             _state[13 + i] = (uint)ReadLittleWord(nonce, nonceOffset + i * 4);
+            Broadcast(13 + i);
+        }
     }
 
     /// THE BLOCK FUNCTION IN 32-BIT WORDS, as ChaCha20 is defined: sixteen
@@ -334,6 +367,95 @@ public class CorsacSecureCrypto_ChaCha20Context
         k[15] = x15 + st[15];
     }
 
+    /// FOUR BLOCKS AT ONCE, with SSE2 (OpenSSL's and libsodium's layout):
+    /// each vector one word of the state in four consecutive blocks --
+    /// counters c to c + 3 -- so a quarter round is the same on whole
+    /// vectors, column by column and then diagonal by diagonal, nothing
+    /// shuffled inside the rounds, and every instruction four blocks' work.
+    /// One block's rows in four vectors made every step wait for the one
+    /// before, with a shuffle on the chain at each diagonal: slower than the
+    /// scalar block on the K8. The keystream is left in the same layout
+    /// (_keystream4[word * 4 + block]), which Xor reads straight. False
+    /// without SSE2, where Xor goes on a block at a time.
+    private bool Generate4(long counter)
+    {
+        if ((Packed.Features() & 0x20) == 0) return false;
+        uint[] b = _broad;
+        uint c = (uint)counter;
+        b[48] = c; b[49] = c + 1; b[50] = c + 2; b[51] = c + 3;
+        nuint s = Sys.ArrayData(b), k = Sys.ArrayData(_keystream4);
+        {
+            Packed128 x0 = Packed.Load128(s + 0);
+            Packed128 x1 = Packed.Load128(s + 16);
+            Packed128 x2 = Packed.Load128(s + 32);
+            Packed128 x3 = Packed.Load128(s + 48);
+            Packed128 x4 = Packed.Load128(s + 64);
+            Packed128 x5 = Packed.Load128(s + 80);
+            Packed128 x6 = Packed.Load128(s + 96);
+            Packed128 x7 = Packed.Load128(s + 112);
+            Packed128 x8 = Packed.Load128(s + 128);
+            Packed128 x9 = Packed.Load128(s + 144);
+            Packed128 x10 = Packed.Load128(s + 160);
+            Packed128 x11 = Packed.Load128(s + 176);
+            Packed128 x12 = Packed.Load128(s + 192);
+            Packed128 x13 = Packed.Load128(s + 208);
+            Packed128 x14 = Packed.Load128(s + 224);
+            Packed128 x15 = Packed.Load128(s + 240);
+            for (int round = 0; round < 10; round = round + 1)
+            {
+                x0 = Packed.Add32(x0, x4); x12 = Packed.Xor(x12, x0); x12 = Packed.ShuffleHigh16(Packed.ShuffleLow16(x12, 0xB1), 0xB1);
+                x8 = Packed.Add32(x8, x12); x4 = Packed.Xor(x4, x8); x4 = Packed.Or(Packed.ShiftLeft32(x4, 12), Packed.ShiftRightU32(x4, 20));
+                x0 = Packed.Add32(x0, x4); x12 = Packed.Xor(x12, x0); x12 = Packed.Or(Packed.ShiftLeft32(x12, 8), Packed.ShiftRightU32(x12, 24));
+                x8 = Packed.Add32(x8, x12); x4 = Packed.Xor(x4, x8); x4 = Packed.Or(Packed.ShiftLeft32(x4, 7), Packed.ShiftRightU32(x4, 25));
+                x1 = Packed.Add32(x1, x5); x13 = Packed.Xor(x13, x1); x13 = Packed.ShuffleHigh16(Packed.ShuffleLow16(x13, 0xB1), 0xB1);
+                x9 = Packed.Add32(x9, x13); x5 = Packed.Xor(x5, x9); x5 = Packed.Or(Packed.ShiftLeft32(x5, 12), Packed.ShiftRightU32(x5, 20));
+                x1 = Packed.Add32(x1, x5); x13 = Packed.Xor(x13, x1); x13 = Packed.Or(Packed.ShiftLeft32(x13, 8), Packed.ShiftRightU32(x13, 24));
+                x9 = Packed.Add32(x9, x13); x5 = Packed.Xor(x5, x9); x5 = Packed.Or(Packed.ShiftLeft32(x5, 7), Packed.ShiftRightU32(x5, 25));
+                x2 = Packed.Add32(x2, x6); x14 = Packed.Xor(x14, x2); x14 = Packed.ShuffleHigh16(Packed.ShuffleLow16(x14, 0xB1), 0xB1);
+                x10 = Packed.Add32(x10, x14); x6 = Packed.Xor(x6, x10); x6 = Packed.Or(Packed.ShiftLeft32(x6, 12), Packed.ShiftRightU32(x6, 20));
+                x2 = Packed.Add32(x2, x6); x14 = Packed.Xor(x14, x2); x14 = Packed.Or(Packed.ShiftLeft32(x14, 8), Packed.ShiftRightU32(x14, 24));
+                x10 = Packed.Add32(x10, x14); x6 = Packed.Xor(x6, x10); x6 = Packed.Or(Packed.ShiftLeft32(x6, 7), Packed.ShiftRightU32(x6, 25));
+                x3 = Packed.Add32(x3, x7); x15 = Packed.Xor(x15, x3); x15 = Packed.ShuffleHigh16(Packed.ShuffleLow16(x15, 0xB1), 0xB1);
+                x11 = Packed.Add32(x11, x15); x7 = Packed.Xor(x7, x11); x7 = Packed.Or(Packed.ShiftLeft32(x7, 12), Packed.ShiftRightU32(x7, 20));
+                x3 = Packed.Add32(x3, x7); x15 = Packed.Xor(x15, x3); x15 = Packed.Or(Packed.ShiftLeft32(x15, 8), Packed.ShiftRightU32(x15, 24));
+                x11 = Packed.Add32(x11, x15); x7 = Packed.Xor(x7, x11); x7 = Packed.Or(Packed.ShiftLeft32(x7, 7), Packed.ShiftRightU32(x7, 25));
+                x0 = Packed.Add32(x0, x5); x15 = Packed.Xor(x15, x0); x15 = Packed.ShuffleHigh16(Packed.ShuffleLow16(x15, 0xB1), 0xB1);
+                x10 = Packed.Add32(x10, x15); x5 = Packed.Xor(x5, x10); x5 = Packed.Or(Packed.ShiftLeft32(x5, 12), Packed.ShiftRightU32(x5, 20));
+                x0 = Packed.Add32(x0, x5); x15 = Packed.Xor(x15, x0); x15 = Packed.Or(Packed.ShiftLeft32(x15, 8), Packed.ShiftRightU32(x15, 24));
+                x10 = Packed.Add32(x10, x15); x5 = Packed.Xor(x5, x10); x5 = Packed.Or(Packed.ShiftLeft32(x5, 7), Packed.ShiftRightU32(x5, 25));
+                x1 = Packed.Add32(x1, x6); x12 = Packed.Xor(x12, x1); x12 = Packed.ShuffleHigh16(Packed.ShuffleLow16(x12, 0xB1), 0xB1);
+                x11 = Packed.Add32(x11, x12); x6 = Packed.Xor(x6, x11); x6 = Packed.Or(Packed.ShiftLeft32(x6, 12), Packed.ShiftRightU32(x6, 20));
+                x1 = Packed.Add32(x1, x6); x12 = Packed.Xor(x12, x1); x12 = Packed.Or(Packed.ShiftLeft32(x12, 8), Packed.ShiftRightU32(x12, 24));
+                x11 = Packed.Add32(x11, x12); x6 = Packed.Xor(x6, x11); x6 = Packed.Or(Packed.ShiftLeft32(x6, 7), Packed.ShiftRightU32(x6, 25));
+                x2 = Packed.Add32(x2, x7); x13 = Packed.Xor(x13, x2); x13 = Packed.ShuffleHigh16(Packed.ShuffleLow16(x13, 0xB1), 0xB1);
+                x8 = Packed.Add32(x8, x13); x7 = Packed.Xor(x7, x8); x7 = Packed.Or(Packed.ShiftLeft32(x7, 12), Packed.ShiftRightU32(x7, 20));
+                x2 = Packed.Add32(x2, x7); x13 = Packed.Xor(x13, x2); x13 = Packed.Or(Packed.ShiftLeft32(x13, 8), Packed.ShiftRightU32(x13, 24));
+                x8 = Packed.Add32(x8, x13); x7 = Packed.Xor(x7, x8); x7 = Packed.Or(Packed.ShiftLeft32(x7, 7), Packed.ShiftRightU32(x7, 25));
+                x3 = Packed.Add32(x3, x4); x14 = Packed.Xor(x14, x3); x14 = Packed.ShuffleHigh16(Packed.ShuffleLow16(x14, 0xB1), 0xB1);
+                x9 = Packed.Add32(x9, x14); x4 = Packed.Xor(x4, x9); x4 = Packed.Or(Packed.ShiftLeft32(x4, 12), Packed.ShiftRightU32(x4, 20));
+                x3 = Packed.Add32(x3, x4); x14 = Packed.Xor(x14, x3); x14 = Packed.Or(Packed.ShiftLeft32(x14, 8), Packed.ShiftRightU32(x14, 24));
+                x9 = Packed.Add32(x9, x14); x4 = Packed.Xor(x4, x9); x4 = Packed.Or(Packed.ShiftLeft32(x4, 7), Packed.ShiftRightU32(x4, 25));
+            }
+            Packed.Store(k + 0, Packed.Add32(x0, Packed.Load128(s + 0)));
+            Packed.Store(k + 16, Packed.Add32(x1, Packed.Load128(s + 16)));
+            Packed.Store(k + 32, Packed.Add32(x2, Packed.Load128(s + 32)));
+            Packed.Store(k + 48, Packed.Add32(x3, Packed.Load128(s + 48)));
+            Packed.Store(k + 64, Packed.Add32(x4, Packed.Load128(s + 64)));
+            Packed.Store(k + 80, Packed.Add32(x5, Packed.Load128(s + 80)));
+            Packed.Store(k + 96, Packed.Add32(x6, Packed.Load128(s + 96)));
+            Packed.Store(k + 112, Packed.Add32(x7, Packed.Load128(s + 112)));
+            Packed.Store(k + 128, Packed.Add32(x8, Packed.Load128(s + 128)));
+            Packed.Store(k + 144, Packed.Add32(x9, Packed.Load128(s + 144)));
+            Packed.Store(k + 160, Packed.Add32(x10, Packed.Load128(s + 160)));
+            Packed.Store(k + 176, Packed.Add32(x11, Packed.Load128(s + 176)));
+            Packed.Store(k + 192, Packed.Add32(x12, Packed.Load128(s + 192)));
+            Packed.Store(k + 208, Packed.Add32(x13, Packed.Load128(s + 208)));
+            Packed.Store(k + 224, Packed.Add32(x14, Packed.Load128(s + 224)));
+            Packed.Store(k + 240, Packed.Add32(x15, Packed.Load128(s + 240)));
+        }
+        return true;
+    }
+
     private static uint Rotate(uint value, int bits)
     {
         return (value << bits) | (value >> (32 - bits));
@@ -366,5 +488,6 @@ public class CorsacSecureCrypto_ChaCha20Context
     {
         CorsacSecureCrypto_Bytes.Zero(_block, 0, _block.Length);
         for (int i = 0; i < _keystream.Length; i = i + 1) _keystream[i] = 0;
+        for (int i = 0; i < _keystream4.Length; i = i + 1) _keystream4[i] = 0;
     }
 }

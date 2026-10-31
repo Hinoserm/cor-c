@@ -91,7 +91,9 @@ public class CorsacSecureCrypto_Poly1305
     public int Error => _error;
 
     /// Borrows message bytes only until this call returns.  The amount of
-    /// work depends on the public byte count, never on message or key values.
+    /// work depends on the public byte count, and no branch on message or
+    /// key values; the 32x32 multiplies are fixed-time on a Pentium and
+    /// later, but a 486's MUL may take longer for some operands.
     public bool Update(byte[] message, long messageOffset, long messageCount)
     {
         if (_closed || _finished || _error != 0)
