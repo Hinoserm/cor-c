@@ -994,6 +994,11 @@ public static class Prelude
             // loaded from them (its home slots), which a write there would
             // change under them.
             public static nuint FramePointer() { return 0; }
+            // EVERY CALLEE-SAVED REGISTER PUSHED BY THIS FUNCTION'S PROLOGUE:
+            // they count as written here, and nothing is emitted. What a
+            // safepoint needs, so that a reference its caller left in one is
+            // on the stack below the caller's frame (GcRoots, GcThreads.Spill).
+            public static void SaveRegisters() { }
 
             // ---- the thread block ----------------------------------------
             //

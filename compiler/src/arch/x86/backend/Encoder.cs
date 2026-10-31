@@ -879,6 +879,7 @@ internal sealed class Encoder
                 B(0x90);
                 break;
             case MOp.CompilerFence:
+            case MOp.SaveRegs:
                 break;
             case MOp.Pause:
                 // rep nop: a plain nop to a 486, the spin hint to anything newer.

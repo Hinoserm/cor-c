@@ -3799,6 +3799,9 @@ internal sealed partial class Selector
                 Emit(MOp.Test, kept, kept);
                 return;
             }
+            case MachineIntrinsics.SaveRegisters:
+                Emit(MOp.SaveRegs);
+                return;
             case MachineIntrinsics.GetGs:
                 // NOTHING WHERE NOTHING READS IT: `Runtime.NativeGs =
                 // Sys.GetGs();` in a program that never reads NativeGs lost

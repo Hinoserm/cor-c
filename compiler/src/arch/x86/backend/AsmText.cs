@@ -103,6 +103,9 @@ internal static class AsmText
             case MOp.CompilerFence:
                 yield return "; compiler fence (nothing encoded)";
                 yield break;
+            case MOp.SaveRegs:
+                yield return "; callee-saved registers pushed (nothing encoded)";
+                yield break;
             case MOp.Jcc:
                 yield return $"j{i.Cond.Mnemonic()} {Op(i.Operands[0], 4, false)}";
                 yield break;

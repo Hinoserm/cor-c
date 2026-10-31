@@ -1946,6 +1946,9 @@ internal sealed class Selector
                 EmitW(MOp.Test, 8, kept, kept);
                 return;
             }
+            case Corsac.Lang.X86.MachineIntrinsics.SaveRegisters:
+                Emit(MOp.SaveRegs);
+                return;
             case Corsac.Lang.X86.MachineIntrinsics.In8:
             case Corsac.Lang.X86.MachineIntrinsics.In16:
             case Corsac.Lang.X86.MachineIntrinsics.In32:

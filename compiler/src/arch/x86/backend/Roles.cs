@@ -133,6 +133,7 @@ public static class Roles
     private static readonly Gpr[] Gpr_ImplicitDefs10 = { Gpr.Eax };
     private static readonly Gpr[] Gpr_ImplicitDefs11 = { Gpr.Edi, Gpr.Ecx };
     private static readonly Gpr[] Gpr_ImplicitDefs12 = { Gpr.Esi, Gpr.Ecx };
+    private static readonly Gpr[] Gpr_CalleeSaved = { Gpr.Ebx, Gpr.Esi, Gpr.Edi };
 
     /// <summary>Registers an instruction reads without naming them.</summary>
     public static Gpr[] ImplicitUses(MInstr i)
@@ -244,6 +245,8 @@ public static class Roles
                 return Gpr_ImplicitDefs11;
             case MOp.RepOutsw:
                 return Gpr_ImplicitDefs12;
+            case MOp.SaveRegs:
+                return Gpr_CalleeSaved;
             default:
                 return NoneGpr_;
         }

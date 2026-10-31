@@ -384,9 +384,9 @@ public static class Tls
     /// so that it is not arranged twice; cleared by the answer.
     public const int HandshakeArmed = 18 * WordSize.Bytes;
 
-    /// The registers of a thread that went blocked. Platform.SafePoint pushes
-    /// every callee-saved register in its own frame -- and then returns,
-    /// and the wait that follows writes its frames over that one. A caller's
+    /// The registers of a thread that went blocked. GcThreads.BeginBlocking
+    /// pushes every callee-saved register in its own frame -- and then
+    /// returns, and the wait that follows writes its frames over that one. A caller's
     /// reference that lives only in EBX, ESI or EDI for the length of the
     /// wait would be nowhere the collector reads. So the frame is copied
     /// here as the thread says it is stopped (GcThreads.Spill), and read with

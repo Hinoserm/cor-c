@@ -463,10 +463,6 @@ public static class Platform
         Sys.MemorySet(at, 0, count);
     }
 
-    /// Where EnterCollection's spill values are kept between calls, so that
-    /// nothing can prove them dead. Never read for its value.
-    private static long _spill;
-
     // ---- the thread block ------------------------------------------------
     //
     // ONE THREAD, and no operating system to give it a segment: the block's
@@ -907,25 +903,13 @@ public static class Platform
     }
 
     /// The one thread never has to stop for another, but the shape is the
-    /// runtime's and not the machine's. The register pressure is the same
-    /// trick EnterCollection uses below, for the same reason.
+    /// runtime's and not the machine's. Every callee-saved register pushed,
+    /// as EnterCollection below has them, for the same reason.
     public static void SafePoint(int mode)
     {
-        long a = _spill + 1;
-        long b = _spill + 2;
-        long c = _spill + 3;
-#if TARGET_64BIT
-        long d = _spill + 4;
-        long e = _spill + 5;
-        long f = _spill + 6;
-#endif
+        Sys.SaveRegisters();
         GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());
         GcThreads.SafePoint(mode);
-#if TARGET_64BIT
-        _spill = a + b + c + d + e + f;
-#else
-        _spill = a + b + c;
-#endif
     }
 
     /// Enters a collection with every callee-saved register on the stack.
@@ -935,32 +919,13 @@ public static class Platform
     /// invisible to it unless something pushed those registers first. What
     /// pushes them is this function's own prologue, and the prologue pushes
     /// exactly the callee-saved registers the allocator handed out -- so the
-    /// job here is to need all three.
-    ///
-    /// system.cor gets that from a system call, whose arguments the backend
-    /// loads into EBX, ECX, EDX, ESI and EDI. There is no system call here,
-    /// and `int 0x80` on a machine with no interrupt table is a triple fault,
-    /// so the pressure is made honestly instead: six 32-bit halves live
-    /// across the call, more than the three registers that survive one, which
-    /// leaves the allocator no choice. See GcRoots in runtime/src/core/gc.cor for the
-    /// full reasoning.
+    /// job here is to need all three, which Sys.SaveRegisters says, with no
+    /// instruction. See GcRoots in runtime/src/core/gc.cor for the full
+    /// reasoning.
     public static void EnterCollection()
     {
-        long a = _spill + 1;
-        long b = _spill + 2;
-        long c = _spill + 3;
-#if TARGET_64BIT
-        // Long mode keeps five callee-saved registers (RBX, R12-R15) and a
-        // long fits one, so six values across the call are what fills them.
-        long d = _spill + 4;
-        long e = _spill + 5;
-        long f = _spill + 6;
+        Sys.SaveRegisters();
         if (Runtime.CollectorLinked()) Gc.CollectInner();
-        _spill = a + b + c + d + e + f;
-#else
-        if (Runtime.CollectorLinked()) Gc.CollectInner();
-        _spill = a + b + c;
-#endif
     }
 
     /// An image that is not alone on the machine -- CORSAC's ring-1 kernels,

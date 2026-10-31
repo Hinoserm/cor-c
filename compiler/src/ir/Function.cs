@@ -88,6 +88,15 @@ public sealed class Function
     public int CalleePops { get; set; }
 
     /// <summary>
+    /// WHETHER IT LEAVES ITS CALLER'S REGISTERS AS THEY ARE: no callee-saved
+    /// register given a value, every value kept across a call in its frame
+    /// instead. An export's thunk (Lowering.EmitFromCThunk) is made so, and
+    /// what it calls on its way back out to C finds C's own registers in
+    /// them, to copy for the collector (GcThreads.BeginBlocking).
+    /// </summary>
+    public bool KeepsCallerRegisters { get; set; }
+
+    /// <summary>
     /// What an analysis keeps of this function between questions, with the
     /// instruction count it was made at (Escape.StampOf): asked again of a
     /// function that has grown since, it is made again.

@@ -1047,6 +1047,7 @@ public sealed class RegionPointsTo : IModulePass
         {
             Exported = false, SourceFile = f.SourceFile, Line = f.Line, Display = f.Display, FromLibrary = f.FromLibrary, SystemCode = f.SystemCode,
             NoInlining = f.NoInlining, CalleePops = f.CalleePops, Dispatched = f.Dispatched, InsideState = f.InsideState, Unjudged = f.Unjudged, SourcePath = f.SourcePath,
+            KeepsCallerRegisters = f.KeepsCallerRegisters,
         };
         Dictionary<VReg, VReg> regs = new();
         Dictionary<FrameSlot, FrameSlot> slots = new();

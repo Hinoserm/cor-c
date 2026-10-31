@@ -84,6 +84,37 @@ internal sealed class X64Target : ITarget
         },
     };
 
+    /// <summary>
+    /// A THUNK'S REGISTERS (Function.KeepsCallerRegisters): the caller-saved
+    /// nine alone, so RBX and R12 to R15 keep what its caller left in them,
+    /// and a value it holds across a call is held in its frame.
+    /// </summary>
+    private static readonly RegisterFile CallerOnlyFile = new()
+    {
+        PhysCount = MReg.FirstVirtual,
+        FirstVirtual = MReg.FirstVirtual,
+        Untracked = new[] { (int)Gpr.Rsp, (int)Gpr.Rbp },
+        Classes = new[]
+        {
+            new RegClass
+            {
+                Name = "gpr",
+                Preference = new[]
+                {
+                    (int)Gpr.Rax, (int)Gpr.Rcx, (int)Gpr.Rdx, (int)Gpr.Rsi, (int)Gpr.Rdi,
+                    (int)Gpr.R8, (int)Gpr.R9, (int)Gpr.R10, (int)Gpr.R11,
+                },
+                CalleeSaved = Array.Empty<int>(),
+            },
+            new RegClass
+            {
+                Name = "xmm",
+                Preference = Enumerable.Range(MReg.XmmBase, 16).ToArray(),
+                CalleeSaved = Array.Empty<int>(),
+            },
+        },
+    };
+
     private readonly MFunction _m;
     private readonly bool _leaf;
 
@@ -118,7 +149,7 @@ internal sealed class X64Target : ITarget
         return true;
     }
 
-    public RegisterFile Registers => _leaf ? LeafFile : File;
+    public RegisterFile Registers => _m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File;
 
     public int ClassOf(int reg) => reg < MReg.FirstVirtual
         ? (reg >= MReg.XmmBase ? Xmms : Gprs)

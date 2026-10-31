@@ -412,6 +412,9 @@ public sealed partial class Lowering
                 _e.Emit(Opcode.FramePointer, fp);
                 return Fit(fp, returns);
             }
+            case "SaveRegisters":
+                _e.Call(MachineIntrinsics.SaveRegisters, IrType.Void);
+                return Void();
             case "ThreadBlock":
                 return Fit(ThreadBlockNow(), returns);
             case "MainThreadBlock":

@@ -74,6 +74,11 @@ internal static class MachineIntrinsics
     /// object C was given a pointer into alive until the C call is over.
     /// </summary>
     public const string KeepAlive = Prefix + "keepalive";
+    /// <summary>
+    /// Every callee-saved register counted as written, no instruction made:
+    /// the function's prologue pushes them all (Sys.SaveRegisters).
+    /// </summary>
+    public const string SaveRegisters = Prefix + "saveregs";
     public const string ReadMsr = Prefix + "rdmsr";
     public const string WriteMsr = Prefix + "wrmsr";
     public const string Cpuid = Prefix + "cpuid";

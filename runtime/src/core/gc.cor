@@ -18121,8 +18121,21 @@ public static class GcThreads
     /// answer: it counts as stopped, and its stack is read where it stands,
     /// until EndBlocking. The collector, waiting for it to answer a round,
     /// is told, so that it answers for it.
+    ///
+    /// ITS CALLER'S REGISTERS, FROM THIS FRAME. The prologue pushes every
+    /// callee-saved register as the caller left it (Sys.SaveRegisters), and
+    /// the spill copies them from here: the caller's frame is the one that
+    /// stays while the thread waits -- a [DllImport]'s around its C call, an
+    /// export's thunk returning to C (Lowering.EmitFromCThunk), which touches
+    /// none of them. Copied from a frame below this one (Platform.SafePoint's,
+    /// as it was), they were the registers as this function had them, and a
+    /// caller's reference this prologue had pushed went with its frame the
+    /// moment C wrote over it. Never put in place in a caller, for the same
+    /// reason: its own frame is the one copied.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void BeginBlocking()
     {
+        Sys.SaveRegisters();
         nuint self = Sys.ThreadBlock();
 
         if (GcLock.IsCollector(self) || Sys.ReadAddress(self + Tls.InAlloc) != 0 || GcLock.HeldByMe())
@@ -18130,7 +18143,8 @@ public static class GcThreads
             return;
         }
 
-        Platform.SafePoint(Stopped);
+        Spill(Stopped, Sys.Stack(), Sys.FramePointer());
+        SafePoint(Stopped);
     }
 
     // NOT FROM INSIDE THE ALLOCATOR OR THE BARRIER (Tls.InAlloc), NOR WITH
@@ -18221,15 +18235,16 @@ public static class GcThreads
         }
     }
 
-    /// What Platform.SafePoint calls first when the thread is about to count
-    /// as stopped: the frame it pushed every callee-saved register into,
-    /// [from, to), copied into the thread block (Tls.Spill). Those registers
-    /// are pushed at the frame's bottom, under its locals, so a frame larger
-    /// than the room is copied from the bottom. The frame is gone once
-    /// SafePoint returns and the wait begins; the copy is what the collector
-    /// reads instead, and it stays true for the whole wait, because a
-    /// register a caller left a value in is either pushed again by some
-    /// frame still on the stack or not touched at all until the wait ends.
+    /// What BeginBlocking (and Platform.SafePoint) calls first when the thread
+    /// is about to count as stopped: the frame it pushed every callee-saved
+    /// register into, [from, to), copied into the thread block (Tls.Spill).
+    /// Those registers are pushed at the frame's bottom, under its locals, so
+    /// a frame larger than the room is copied from the bottom. The frame is
+    /// gone once BeginBlocking returns and the wait begins; the copy is what
+    /// the collector reads instead, and it stays true for the whole wait,
+    /// because a register its caller left a value in is either pushed again
+    /// by some frame still on the stack or not touched at all until the wait
+    /// ends.
     public static void Spill(int mode, nuint from, nuint to)
     {
         if (mode == Running)
@@ -18253,9 +18268,9 @@ public static class GcThreads
         Sys.WriteAddress(block + Tls.SpillCount, words);
     }
 
-    /// What Platform.SafePoint calls once every callee-saved register is on
-    /// the stack -- which is the whole reason it is entered that way, and the
-    /// same reasoning as GcRoots.Enter's.
+    /// What Platform.SafePoint and BeginBlocking call once every callee-saved
+    /// register is on the stack -- which is the whole reason they are entered
+    /// that way, and the same reasoning as GcRoots.Enter's.
     public static void SafePoint(int mode)
     {
         nuint block = Sys.ThreadBlock();

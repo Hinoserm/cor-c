@@ -1183,29 +1183,30 @@ public static class Platform
     }
 
     /// Stops this thread at a safepoint, with every callee-saved register on
-    /// the stack. The system call is the same trick EnterCollection uses and
-    /// for the same reason: a reference the caller left in EBX, ESI or EDI is
-    /// invisible to a collector that reads memory unless a prologue pushed it,
-    /// and the stack pointer written down inside GcThreads.SafePoint is below
-    /// these pushes. See GcRoots in runtime/src/core/gc.cor.
+    /// the stack, as EnterCollection does and for the same reason: a
+    /// reference the caller left in EBX, ESI or EDI is invisible to a
+    /// collector that reads memory unless a prologue pushed it, and the stack
+    /// pointer written down inside GcThreads.SafePoint is below these pushes.
+    /// See GcRoots in runtime/src/core/gc.cor.
     public static void SafePoint(int mode)
     {
-        Sys.Syscall(LinuxCall.Getpid, 0, 0, 0, 0, 0, 0);
+        Sys.SaveRegisters();
         GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());
         GcThreads.SafePoint(mode);
     }
 
     /// Enters a collection with every callee-saved register on the stack.
     ///
-    /// The system call below is the whole trick. The backend loads its
-    /// arguments into EBX, ECX, EDX, ESI and EDI, so this function USES
-    /// every callee-saved register and its prologue pushes them; the values
-    /// the caller of Runtime.Alloc left in them are then on the stack, above
-    /// the ESP that Gc.CollectInner scans from. getpid is the cheapest call
-    /// with no effect. See GcRoots in runtime/src/core/gc.cor for the full reasoning.
+    /// Sys.SaveRegisters is the whole trick: this function's prologue pushes
+    /// every callee-saved register, and the values the caller of
+    /// Runtime.Alloc left in them are then on the stack, above the ESP that
+    /// Gc.CollectInner scans from -- with no instruction, where a system
+    /// call (getpid, its arguments in those registers) used to make the same
+    /// pushes at the price of a trip into the kernel. See GcRoots in
+    /// runtime/src/core/gc.cor for the full reasoning.
     public static void EnterCollection()
     {
-        Sys.Syscall(LinuxCall.Getpid, 0, 0, 0, 0, 0, 0);
+        Sys.SaveRegisters();
         if (Runtime.CollectorLinked()) Gc.CollectInner();
     }
 

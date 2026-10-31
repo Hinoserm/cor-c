@@ -61,6 +61,11 @@ public enum MOp : byte
     /// memory accesses -- the scheduler's (Effect.Barrier) among them.
     /// </summary>
     CompilerFence,
+    /// <summary>
+    /// Sys.SaveRegisters: no instruction, but EBX, ESI and EDI counted as
+    /// written (Roles.ImplicitDefs), so the prologue pushes all three.
+    /// </summary>
+    SaveRegs,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>
     Prologue, Epilogue,
     /// <summary>Linux only: the system-call trap. Isolated so a bare-metal variant swaps it.</summary>

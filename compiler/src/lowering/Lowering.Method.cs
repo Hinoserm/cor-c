@@ -288,14 +288,16 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function((TakesContext(m) ? BodyLabel(m) : Label(m)) + (_insideCopy ? "$inside" : ""), ReturnIr(m))
+        // A METHOD C CALLS is a body and a thunk C enters by (EmitFromCThunk).
+        bool fromC = CalledByC(m) && !_insideCopy;
+        _f = new Function((TakesContext(m) ? BodyLabel(m) : Label(m)) + (_insideCopy ? "$inside" : fromC ? FromCBody : ""), ReturnIr(m))
         {
             SourceFile = _in, Line = decl.Line, Display = Display(m) + (_insideCopy ? " (inside)" : ""), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
             Exported = m.Owner.Decl?.LocalOnly != true,
             // A TYPE'S INITIALISER BODY STAYS A ROUTINE OF ITS OWN: the link
             // runs it in the type's place (Lto.Preinit, NotePreinitType).
-            NoInlining = NoInlining(decl) || (m.Static && decl.Name == "StaticInitBody$"), Unjudged = decl.AutoAccessor,
+            NoInlining = NoInlining(decl) || (m.Static && decl.Name == "StaticInitBody$") || fromC, Unjudged = decl.AutoAccessor,
             // A copy that runs inside its caller's state is called directly only.
             Dispatched = !_insideCopy && !m.Static && (m.Virtual || m.Override || m.Abstract || ImplementsAny(m.Owner)),
             InsideState = _insideCopy,
@@ -467,25 +469,6 @@ public sealed partial class Lowering
             CallDirect(inherited, IrType.Void, new List<Operand> { RegOperand.Of(_this!) });
         }
 
-        VReg? fromC = CalledByC(m) ? EnterFromC(decl) : null;
-        if (fromC is not null && _t.WordSize == 4 && CalledStdcall(m))
-        {
-            // STDCALL'S CALLEE TAKES ITS ARGUMENTS OFF: every parameter a
-            // word, a 64-bit one two, as the stack holds them.
-            int pops = 0;
-            foreach (ParamSymbol p in m.Params) pops += !p.ByRef && IrTypes.Of(p.Type) is IrType.I64 or IrType.F64 ? 8 : 4;
-            _f.CalleePops = pops;
-        }
-
-        // ITS OWN TYPE IS TOUCHED, as Main's is (EmitRunMain): C enters here
-        // from outside, so no other method of the type need have run first,
-        // and a DLL's export is the first code of its type that runs. Its
-        // static arrays had no storage until this was done.
-        if (fromC is not null)
-        {
-            TouchType(m.Owner, fromOutside: true);
-        }
-
         if (NativeImportOf(m) is NativeImport native)
         {
             EmitNativeBody(m, native);
@@ -511,10 +494,6 @@ public sealed partial class Lowering
 
         _e.SetBlock(_returnBlock);
         KeepHeldToReturn();
-        if (fromC is not null)
-        {
-            LeaveToC(decl, fromC);
-        }
         if (_resultBuffer is not null && _returnValue is not null)
         {
             // THE RESULT INTO THE CALLER'S BUFFER, and its address answered:
@@ -530,6 +509,7 @@ public sealed partial class Lowering
 
         _m.Functions.Add(_f);
         if (TakesContext(m)) ContextStub(m);
+        if (fromC) EmitFromCThunk(m, decl);
         _method = null;
         _decl = null;
     }
@@ -560,6 +540,63 @@ public sealed partial class Lowering
         VReg? result = e.Call(_f.Name, stub.Returns, args.ToArray());
         e.Ret(result is null ? null : RegOperand.Of(result));
         _m.Functions.Add(stub);
+    }
+
+    /// <summary>What a method C calls has its body called under: its label and this.</summary>
+    private const string FromCBody = "$fromc";
+
+    /// <summary>
+    /// THE WAY IN FROM C to a method C calls ([UnmanagedCallersOnly]), under
+    /// its label: the thread running again (EnterFromC), its type touched, the
+    /// body called with every argument as it came -- a call of its own,
+    /// never put in place here -- and the thread counted as in C again on the
+    /// way out (LeaveToC). It gives no callee-saved register a value
+    /// (Function.KeepsCallerRegisters), so they hold C's own as it leaves,
+    /// which the way out copies for the collector to read while C runs
+    /// (GcThreads.BeginBlocking): copied from inside a body that used them,
+    /// they were the body's, and C's -- a managed caller's beyond it, for a
+    /// callback -- were gone with the body's frame. stdcall's arguments are
+    /// taken off here; the body is called as C calls anything.
+    /// </summary>
+    private void EmitFromCThunk(MethodSymbol m, MethodDecl decl)
+    {
+        Function body = _f;
+        Builder bodyBuilder = _e;
+        Function thunk = new(Label(m), body.Returns)
+        {
+            SourceFile = body.SourceFile, Line = body.Line, Display = body.Display, FromLibrary = body.FromLibrary, SystemCode = body.SystemCode,
+            SourcePath = body.SourcePath, Exported = body.Exported, Unjudged = true, KeepsCallerRegisters = true,
+        };
+        _f = thunk;
+        _e = new Builder(thunk, thunk.NewBlock("entry"));
+        List<Operand> args = new();
+        foreach (VReg p in body.Params)
+        {
+            VReg mine = thunk.NewReg(p.Type, p.Name);
+            mine.Number = p.Number;
+            thunk.Params.Add(mine);
+            args.Add(RegOperand.Of(mine));
+        }
+        if (_t.WordSize == 4 && CalledStdcall(m))
+        {
+            // STDCALL'S CALLEE TAKES ITS ARGUMENTS OFF: every parameter a
+            // word, a 64-bit one two, as the stack holds them.
+            int pops = 0;
+            foreach (ParamSymbol p in m.Params) pops += !p.ByRef && IrTypes.Of(p.Type) is IrType.I64 or IrType.F64 ? 8 : 4;
+            thunk.CalleePops = pops;
+        }
+        VReg? chain = EnterFromC(decl);
+        // ITS OWN TYPE IS TOUCHED, as Main's is (EmitRunMain): C enters here
+        // from outside, so no other method of the type need have run first,
+        // and a DLL's export is the first code of its type that runs. Its
+        // static arrays had no storage until this was done.
+        TouchType(m.Owner, fromOutside: true);
+        VReg? result = _e.Call(body.Name, body.Returns, args.ToArray());
+        if (chain is not null) LeaveToC(decl, chain);
+        _e.Ret(result is null ? null : RegOperand.Of(result));
+        _m.Functions.Add(thunk);
+        _f = body;
+        _e = bodyBuilder;
     }
 
     /// <summary>
@@ -1858,6 +1895,15 @@ public sealed partial class Lowering
     /// A [ThreadStatic] field's cell on this thread: Runtime.ThreadStaticCell,
     /// handed the word with the field's number and the bytes a cell needs --
     /// a static's own size, a struct held by pointer being a word.
+    ///
+    /// IN LINE, THE WAY EVERY TOUCH BUT A THREAD'S FIRST GOES, where the
+    /// thread's table is the word of its block (a program's: a kernel's
+    /// system call finds its own through Platform.ThreadStaticsHook): the
+    /// field's number, the table, its length and the cell read as the words
+    /// they are (ThreadStatics.Cell), and the call made only for a field not
+    /// numbered yet, a table too short or none, or a cell not made. Called
+    /// every time, it was a cast and a check of the table's type at every
+    /// touch -- 2.7% of a GL program's thread in the ICD's.
     /// </summary>
     private VReg ThreadStaticCell(FieldSymbol f, Node at)
     {
@@ -1868,8 +1914,41 @@ public sealed partial class Lowering
         }
         Require(helper);
         long bytes = Math.Max(_t.WordSize, Math.Max(1, f.Type.Size));
-        VReg cell = _e.Call(CallLabel(helper), IrTypes.Of(helper.Returns), R(_e.Address(ThreadStaticIndex(f))), R(_e.Const(bytes, IrTypes.Word)))!;
-        return cell.Type == IrTypes.Word ? cell : _e.Unary(Opcode.Trunc64, cell);
+        VReg numberAt = _e.Address(ThreadStaticIndex(f));
+        VReg Slow()
+        {
+            VReg made = _e.Call(CallLabel(helper), IrTypes.Of(helper.Returns), R(numberAt), R(_e.Const(bytes, IrTypes.Word)))!;
+            return made.Type == IrTypes.Word ? made : _e.Unary(Opcode.Trunc64, made);
+        }
+        if (Freestanding) return Slow();
+        int w = _t.WordSize;
+        IrType word = IrTypes.Word;
+        VReg cell = _e.Reg(word, "cell");
+        Block counted = _f.NewBlock("ts.table"), inside = _f.NewBlock("ts.inside"), found = _f.NewBlock("ts.found");
+        Block slow = _f.NewBlock("ts.slow"), done = _f.NewBlock("ts.done");
+        VReg number = _e.Load(word, numberAt, 0);
+        VReg table = _e.Load(word, ThreadBlockNow(), TlsThreadStatics / 4 * w);
+        _e.Branch(_e.Binary(Opcode.Eq, R(table), Imm(0, word), IrType.I32), slow, counted);
+        _e.SetBlock(counted);
+        // Numbered 1 up: slot 0 is the table's node, and 0 a field not numbered
+        // yet -- which the subtraction sends past every length.
+        VReg length = _e.Load(IrType.I32, table, _t.ArrayCountOffset, 4, signed: false);
+        if (word != IrType.I32) length = _e.Unary(Opcode.ZExt32, length);
+        VReg past = _e.Binary(Opcode.GeU, R(_e.Binary(Opcode.Sub, R(number), Imm(1, word), word)),
+            R(_e.Binary(Opcode.Sub, R(length), Imm(1, word), word)), IrType.I32);
+        _e.Branch(past, slow, inside);
+        _e.SetBlock(inside);
+        VReg slot = _e.Binary(Opcode.Add, R(table), R(_e.Binary(Opcode.Shl, R(number), Imm(w == 8 ? 3 : 2, IrType.I32), word)), word);
+        VReg held = _e.Load(word, slot, _t.ArrayHeaderBytes);
+        _e.Branch(_e.Binary(Opcode.Eq, R(held), Imm(0, word), IrType.I32), slow, found);
+        _e.SetBlock(found);
+        _e.CopyTo(cell, R(held));
+        _e.Jump(done);
+        _e.SetBlock(slow);
+        _e.CopyTo(cell, R(Slow()));
+        _e.Jump(done);
+        _e.SetBlock(done);
+        return cell;
     }
 
     /// <summary>The place an assignable expression denotes.</summary>

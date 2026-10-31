@@ -75,6 +75,28 @@ internal sealed class X86Target : ITarget
 
     private readonly bool _leaf;
 
+    /// <summary>
+    /// A THUNK'S REGISTERS (Function.KeepsCallerRegisters): EAX, ECX and EDX
+    /// alone, so EBX, ESI and EDI keep what its caller left in them, and a
+    /// value it holds across a call is held in its frame.
+    /// </summary>
+    private static readonly RegisterFile CallerOnlyFile = new()
+    {
+        PhysCount = 8,
+        FirstVirtual = 8,
+        Untracked = new[] { (int)Gpr.Esp, (int)Gpr.Ebp },
+        Classes = new[]
+        {
+            new RegClass
+            {
+                Name = "gpr",
+                Preference = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx },
+                CalleeSaved = Array.Empty<int>(),
+                ByteCapable = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx },
+            },
+        },
+    };
+
     /// <summary>Whether the function may run without a frame pointer (LeafFile).</summary>
     private static bool Leaf(MFunction m)
     {
@@ -100,7 +122,7 @@ internal sealed class X86Target : ITarget
         return true;
     }
 
-    public RegisterFile Registers => _leaf ? LeafFile : File;
+    public RegisterFile Registers => _m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File;
     public int ClassOf(int reg) => 0;
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
     public int NewSlot(int vreg) => _m.Frame.Spill();

@@ -549,6 +549,7 @@ internal sealed class Encoder
             case MOp.Ud2: Byte(0x0F); Byte(0x0B); break;
             case MOp.Nop: Byte(0x90); break;
             case MOp.CompilerFence: break;
+            case MOp.SaveRegs: break;
             case MOp.Pause: Byte(0xF3); Byte(0x90); break;
             case MOp.Syscall: Byte(0x0F); Byte(0x05); break;
             case MOp.In:

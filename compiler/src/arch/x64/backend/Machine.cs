@@ -278,6 +278,12 @@ public enum MOp : byte
     /// memory accesses -- the scheduler's (Effect.Barrier) among them.
     /// </summary>
     CompilerFence,
+    /// <summary>
+    /// Sys.SaveRegisters: no instruction, but the function saves every
+    /// callee-saved register (MFunction.SavesEverything), as one that makes
+    /// a system call does.
+    /// </summary>
+    SaveRegs,
     /// <summary>The system call instruction. Number in RAX, arguments RDI RSI RDX R10 R8 R9.</summary>
     Syscall,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>
