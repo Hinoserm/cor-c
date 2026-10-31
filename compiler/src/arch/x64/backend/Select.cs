@@ -1949,6 +1949,9 @@ internal sealed class Selector
             case Corsac.Lang.X86.MachineIntrinsics.SaveRegisters:
                 Emit(MOp.SaveRegs);
                 return;
+            case Corsac.Lang.X86.MachineIntrinsics.SpillRegisters:
+                Emit(MOp.SpillRegs, R(i.Operands[0]));
+                return;
             case Corsac.Lang.X86.MachineIntrinsics.In8:
             case Corsac.Lang.X86.MachineIntrinsics.In16:
             case Corsac.Lang.X86.MachineIntrinsics.In32:

@@ -415,6 +415,9 @@ public sealed partial class Lowering
             case "SaveRegisters":
                 _e.Call(MachineIntrinsics.SaveRegisters, IrType.Void);
                 return Void();
+            case "SpillRegisters":
+                _e.Call(MachineIntrinsics.SpillRegisters, IrType.Void, R(ToWord(Arg(call, target, 0))));
+                return Fit(_e.Const(_t.WordSize == 8 ? 5 : 3, word), returns);
             case "ThreadBlock":
                 return Fit(ThreadBlockNow(), returns);
             case "MainThreadBlock":

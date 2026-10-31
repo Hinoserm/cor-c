@@ -16,10 +16,23 @@ namespace Corsac.Lang.X86;
 /// </summary>
 internal sealed class X86Target : ITarget
 {
+    /// <summary>
+    /// THE XMM CLASS: scalar floats where --cpu has SSE and the code owns its
+    /// state (Selector's _xmm32, _xmm64). Every one caller-saved, as i386's C
+    /// has them; none ever a reference.
+    /// </summary>
+    private static readonly RegClass XmmClass = new()
+    {
+        Name = "xmm",
+        Preference = Enumerable.Range(MReg.XmmBase, 8).ToArray(),
+        CalleeSaved = Array.Empty<int>(),
+        HoldsReferences = false,
+    };
+
     private static readonly RegisterFile File = new()
     {
-        PhysCount = 8,
-        FirstVirtual = 8,
+        PhysCount = MReg.XmmBase + 8,
+        FirstVirtual = MReg.FirstVirtual,
         Untracked = new[] { (int)Gpr.Esp, (int)Gpr.Ebp },
         Classes = new[]
         {
@@ -33,6 +46,7 @@ internal sealed class X86Target : ITarget
                 CalleeSaved = new[] { (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi },
                 ByteCapable = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx },
             },
+            XmmClass,
         },
     };
 
@@ -58,8 +72,8 @@ internal sealed class X86Target : ITarget
     /// </summary>
     private static readonly RegisterFile LeafFile = new()
     {
-        PhysCount = 8,
-        FirstVirtual = 8,
+        PhysCount = MReg.XmmBase + 8,
+        FirstVirtual = MReg.FirstVirtual,
         Untracked = new[] { (int)Gpr.Esp },
         Classes = new[]
         {
@@ -70,6 +84,7 @@ internal sealed class X86Target : ITarget
                 CalleeSaved = new[] { (int)Gpr.Ebx, (int)Gpr.Esi, (int)Gpr.Edi, (int)Gpr.Ebp },
                 ByteCapable = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx, (int)Gpr.Ebx },
             },
+            XmmClass,
         },
     };
 
@@ -82,8 +97,8 @@ internal sealed class X86Target : ITarget
     /// </summary>
     private static readonly RegisterFile CallerOnlyFile = new()
     {
-        PhysCount = 8,
-        FirstVirtual = 8,
+        PhysCount = MReg.XmmBase + 8,
+        FirstVirtual = MReg.FirstVirtual,
         Untracked = new[] { (int)Gpr.Esp, (int)Gpr.Ebp },
         Classes = new[]
         {
@@ -94,6 +109,7 @@ internal sealed class X86Target : ITarget
                 CalleeSaved = Array.Empty<int>(),
                 ByteCapable = new[] { (int)Gpr.Eax, (int)Gpr.Ecx, (int)Gpr.Edx },
             },
+            XmmClass,
         },
     };
 
@@ -123,10 +139,11 @@ internal sealed class X86Target : ITarget
     }
 
     public RegisterFile Registers => _m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File;
-    public int ClassOf(int reg) => 0;
+    public int ClassOf(int reg) => reg < MReg.FirstVirtual ? (reg >= MReg.XmmBase ? 1 : 0) : _m.XmmRegs.Contains(reg) ? 1 : 0;
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
-    public int NewSlot(int vreg) => _m.Frame.Spill();
-    public string RegName(int reg) => ((Gpr)reg).ToString();
+    /// <summary>A slot of a word, or of eight bytes for a float of the XMM class, a double's or a float's alike (XmmSpillWidth).</summary>
+    public int NewSlot(int vreg) => _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(8, 8) : _m.Frame.Spill();
+    public string RegName(int reg) => reg >= MReg.XmmBase ? $"xmm{reg - MReg.XmmBase}" : ((Gpr)reg).ToString();
     public bool PlainConstant(object constant) => constant is MImm { IsPlain: true };
     public bool Immediate(object constant) => constant is MImm;
 
@@ -149,6 +166,7 @@ internal sealed class X86Target : ITarget
     public int NewVRegLike(int like)
     {
         int v = _m.NewReg().Id;
+        if (_m.XmmRegs.Contains(like)) _m.XmmRegs.Add(v);
         if (_m.ByteRegs.Contains(like)) _m.ByteRegs.Add(v);
         if (_m.WideHalves.Contains(like)) _m.WideHalves.Add(v);
         return v;
@@ -188,9 +206,16 @@ internal sealed class X86Target : ITarget
         // In a leaf the frame's base is no use of the register EBP holds:
         // FramePointerFree makes it ESP (Leaf: EBP is named nowhere else).
         if (_leaf) regs.RemoveAll(r => r.Reg.Id == (int)Gpr.Ebp);
-        Named[] named = new Named[regs.Count];
+        // A CALL CLOBBERS EVERY XMM REGISTER, all caller-saved in i386's C: said
+        // only in a function that has the XMM class, every other one's calls
+        // left as they were.
+        bool clobbersXmm = _m.XmmRegs.Count > 0 && i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd
+            or MOp.CallKeepEax or MOp.CallKeepEaxInd;
+        Named[] named = new Named[regs.Count + (clobbersXmm ? 8 : 0)];
         for (int k = 0; k < regs.Count; k++)
             named[k] = new Named(regs[k].Reg.Id, (Role)(byte)regs[k].Role, regs[k].Operand, regs[k].InMem);
+        if (clobbersXmm)
+            for (int x = 0; x < 8; x++) named[regs.Count + x] = new Named(MReg.XmmBase + x, Role.Def, -1, false);
         uint mayMemory = 0, isMemory = 0, mayImmediate = 0;
         for (int k = 0; k < i.Operands.Count && k < 32; k++)
         {
@@ -198,7 +223,7 @@ internal sealed class X86Target : ITarget
             if (Allocator.FoldableImm(i.Op, k)) mayImmediate |= 1u << k;
             if (i.Operands[k] is MMem) isMemory |= 1u << k;
         }
-        bool copy = i.Op == MOp.Mov && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MReg;
+        bool copy = i.Op is MOp.Mov or MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MReg;
         List<ABlock>? targets = null;
         if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands[0] is MLabel label) targets = new() { blocks[label.Target] };
         else if (i.Op == MOp.JmpTable) targets = i.Table!.Select(t => blocks[t]).ToList();
@@ -208,7 +233,8 @@ internal sealed class X86Target : ITarget
             Regs = named,
             IsCall = i.Op is MOp.Call or MOp.CallInd,
             IsCopy = copy,
-            WholeCopy = copy && i.Width == 4 && !i.Lock,
+            // MOVAPS between two XMM registers is the whole register, whatever it holds.
+            WholeCopy = copy && (i.Width == 4 || i.Op == MOp.MovF) && !i.Lock,
             DropsSelf = copy,
             Constant = i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm : Address(i),
             OperandCount = i.Operands.Count,
@@ -249,6 +275,10 @@ internal sealed class X86Target : ITarget
                 => countImm ? Effect.WritesFlags : Effect.ReadsFlags | Effect.WritesFlags,
             MOp.Ror => Effect.ReadsFlags | Effect.WritesFlags,
             MOp.Setcc or MOp.Cmov => Effect.ReadsFlags,
+            // Scalar SSE: masked exceptions, so nothing faults but a memory operand.
+            MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.CvtFToF or MOp.CvtIntToF
+                or MOp.XorPs or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si => Effect.None,
+            MOp.UcomiF => Effect.WritesFlags,
             _ => Effect.Barrier,
         };
         if (e == Effect.Barrier) return e;
@@ -302,7 +332,9 @@ internal sealed class X86Target : ITarget
                         if (mem.Disp >= 0) touched.Add((mem.Disp, mem.Disp + 16));
                         continue;
                     }
-                    if (i.Op == MOp.Mov && k == 1 && i.Width == 4 && !i.Lock && i.Operands[0] is MReg { IsPhys: false } && (mem.Disp & 3) == 0)
+                    // A word's MOV, or a float's MOVSS or a double's MOVSD into the XMM class.
+                    if ((i.Op == MOp.Mov && i.Width == 4 || i.Op == MOp.MovF) && k == 1 && !i.Lock
+                        && i.Operands[0] is MReg { IsPhys: false, IsXmm: false } && (mem.Disp & 3) == 0)
                     {
                         // A second load of the word makes it no home.
                         load[mem.Disp] = load.ContainsKey(mem.Disp) ? null : i;
@@ -310,7 +342,7 @@ internal sealed class X86Target : ITarget
                     else touched.Add((mem.Disp, mem.Disp + 16));
                 }
         foreach ((int disp, MInstr? i) in load)
-            if (i is not null && !touched.Any(t => t.From < disp + 4 && disp < t.To)) homes.Add(i);
+            if (i is not null && !touched.Any(t => t.From < disp + i.Width && disp < t.To)) homes.Add(i);
         return homes;
     }
 
@@ -345,16 +377,14 @@ internal sealed class X86Target : ITarget
                     _m.Safepoints[n] = map;
                 }
                 foreach ((int reg, int slot, bool load) in p.MovesBefore(index))
-                    outList.Add(load
-                        ? new MInstr(MOp.Mov, Out(reg), Slot(slot)) { Line = ai.Line }
-                        : new MInstr(MOp.Mov, Slot(slot), Out(reg)) { Line = ai.Line });
+                    outList.Add(load ? Move(Out(reg), Slot(slot), ai.Line) : Move(Slot(slot), Out(reg), ai.Line));
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
                     outList.Add(constant is MMem address
                         ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = ai.Line }
-                        : new MInstr(MOp.Mov, Out(reg), constant is MImm imm ? imm : Slot(slot)) { Line = ai.Line });
+                        : constant is MImm imm ? new MInstr(MOp.Mov, Out(reg), imm) { Line = ai.Line } : Move(Out(reg), Slot(slot), ai.Line));
                 if (n is not null) outList.Add(n);
                 foreach ((int reg, int slot) in p.After(index))
-                    outList.Add(new MInstr(MOp.Mov, Slot(slot), Out(reg)) { Line = ai.Line });
+                    outList.Add(Move(Slot(slot), Out(reg), ai.Line));
                 index++;
             }
             b.Instrs.Clear();
@@ -390,6 +420,16 @@ internal sealed class X86Target : ITarget
             _ => original.IsPhys ? original : Out(at.Reg),
         };
 
+    /// <summary>
+    /// A move the allocator asked for, by the class of its register: MOV for
+    /// a general one, MOVSD (MOVSS without SSE2) to or from an XMM one's slot,
+    /// MOVAPS between two.
+    /// </summary>
+    private MInstr Move(MOperand to, MOperand from, int line)
+        => to is MReg { IsXmm: true } || from is MReg { IsXmm: true }
+            ? new MInstr(MOp.MovF, to, from) { Width = _m.XmmSpillWidth, Line = line }
+            : new MInstr(MOp.Mov, to, from) { Line = line };
+
     /// <summary>A register the allocator placed a value in: EBP as the value it holds (MReg.EbpData), no frame's base.</summary>
     private static MReg Out(int reg) => reg == (int)Gpr.Ebp ? MReg.EbpData : MReg.Of(reg);
 
@@ -398,7 +438,7 @@ internal sealed class X86Target : ITarget
         if (ai.Tag is not MInstr i)
         {
             if (ai.Made == Made.Jump) return new MInstr(MOp.Jmp, new MLabel(blocks[ai.Targets![0]])) { Line = ai.Line };
-            return new MInstr(MOp.Mov, PlaceOf(p.Of(index, 0), MReg.Of(ai.Regs[0].Reg)), PlaceOf(p.Of(index, 1), MReg.Of(ai.Regs[1].Reg))) { Line = ai.Line };
+            return Move(PlaceOf(p.Of(index, 0), MReg.Of(ai.Regs[0].Reg)), PlaceOf(p.Of(index, 1), MReg.Of(ai.Regs[1].Reg)), ai.Line);
         }
         // The table as it is where no pass moved a target, so nothing that holds it sees another list.
         List<MBlock>? table = i.Table;

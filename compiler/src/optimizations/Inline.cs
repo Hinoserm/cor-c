@@ -526,6 +526,9 @@ public sealed class Inline : IParallelModulePass
                         return false;
                     case Opcode.Call when i.Callee == "__exception":
                         return false;
+                    // Its caller's registers, read where its own prologue saved them.
+                    case Opcode.Call when i.Callee == Corsac.Lang.X86.MachineIntrinsics.SpillRegisters:
+                        return false;
                 }
             }
         }

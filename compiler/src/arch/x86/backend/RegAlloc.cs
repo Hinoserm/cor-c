@@ -116,7 +116,7 @@ internal static class Allocator
         into.Clear();
         // `xor v, v` zeroes v without caring what it held: a definition
         // only, so no reload of a spilled v is needed before it.
-        bool zeroing = i.Op == MOp.Xor && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
+        bool zeroing = i.Op is MOp.Xor or MOp.XorPs && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
         for (int k = 0; k < i.Operands.Count; k++)
         {
             switch (i.Operands[k])
@@ -154,6 +154,11 @@ internal static class Allocator
         MOp.Push or MOp.Test or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg or MOp.Not
             or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Setcc or MOp.CallInd => operand == 0,
         MOp.Imul or MOp.Imul3 or MOp.Movzx or MOp.Movsx or MOp.Cmov => operand == 1,
+        // The scalar SSE forms: a move either way, every other source.
+        MOp.MovF => true,
+        MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.CvtIntToF
+            or MOp.Cvttss2si or MOp.Cvttsd2si or MOp.MovdToX => operand == 1,
+        MOp.MovdFromX => operand == 0,
         _ => false,
     };
 

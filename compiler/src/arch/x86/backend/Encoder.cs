@@ -282,6 +282,20 @@ internal sealed class Encoder
     private static int Reg(MOperand o) => ((MReg)o).Id is var id && id < 8 ? id
         : throw new InvalidOperationException($"register v{id} left unallocated (EBP's value is made EBP by FramePointerFree)");
 
+    /// <summary>An XMM register's hardware number.</summary>
+    private static int Xmm(MOperand o) => o is MReg { IsXmm: true } r ? r.XmmNumber
+        : throw new InvalidOperationException($"{o} is not an XMM register (one left unallocated?)");
+
+    /// <summary>ModRM for a register field and an r/m that is an XMM register or memory.</summary>
+    private void XmmRM(int reg, MOperand rm)
+    {
+        if (rm is MReg { IsXmm: true } r) _out.Add((byte)(0xC0 | ((reg & 7) << 3) | r.XmmNumber));
+        else ModRM(reg, rm);
+    }
+
+    /// <summary>A scalar instruction's prefix: F3 for a float, F2 for a double.</summary>
+    private static byte Scalar(MInstr i) => i.Width == 8 ? (byte)0xF2 : (byte)0xF3;
+
     /// <summary>
     /// ModRM, SIB and displacement for a register field and an r/m operand.
     /// [EBP] with no displacement does not exist (that encoding means
@@ -862,12 +876,67 @@ internal sealed class Encoder
             case MOp.Cvttsd2si:
                 // F3 0F 2C /r is cvttss2si, F2 0F 2C /r cvttsd2si; the audit
                 // has checked the profile has SSE or SSE2 (Isa). The source
-                // is memory: a register there would name an XMM register,
-                // which nothing here owns.
-                if (i.Operands.Count != 2 || i.Operands[0] is not MReg || i.Operands[1] is not MMem)
-                    throw new InvalidOperationException("Truncating conversion takes a register and memory");
+                // is memory, or an XMM register of the scalar class.
+                if (i.Operands.Count != 2 || i.Operands[0] is not MReg || i.Operands[1] is not (MMem or MReg { IsXmm: true }))
+                    throw new InvalidOperationException("Truncating conversion takes a register and memory or an XMM register");
                 B(i.Op == MOp.Cvttss2si ? (byte)0xF3 : (byte)0xF2, 0x0F, 0x2C);
-                ModRM(Reg(i.Operands[0]), i.Operands[1]);
+                XmmRM(Reg(i.Operands[0]), i.Operands[1]);
+                break;
+            // ---- scalar SSE (Select.Sse) -------------------------------------
+            case MOp.MovF:
+                if (i.Operands[0] is MReg { IsXmm: true } && i.Operands[1] is MReg { IsXmm: true })
+                {
+                    // movaps xmm, xmm: the whole register, no merge with what
+                    // the destination held -- movss between two registers keeps
+                    // its top, a dependency on whatever was there.
+                    B(0x0F, 0x28);
+                    XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
+                }
+                else if (i.Operands[0] is MReg { IsXmm: true })
+                {
+                    B(Scalar(i), 0x0F, 0x10);
+                    ModRM(Xmm(i.Operands[0]), i.Operands[1]);
+                }
+                else
+                {
+                    B(Scalar(i), 0x0F, 0x11);
+                    ModRM(Xmm(i.Operands[1]), i.Operands[0]);
+                }
+                break;
+            case MOp.AddF:
+            case MOp.SubF:
+            case MOp.MulF:
+            case MOp.DivF:
+            case MOp.SqrtF:
+                B(Scalar(i), 0x0F, i.Op switch { MOp.AddF => (byte)0x58, MOp.MulF => (byte)0x59, MOp.SubF => (byte)0x5C, MOp.DivF => (byte)0x5E, _ => (byte)0x51 });
+                XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.UcomiF:
+                // ucomiss 0F 2E, ucomisd 66 0F 2E.
+                if (i.Width == 8) B(0x66);
+                B(0x0F, 0x2E);
+                XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.CvtFToF:
+                // To a double: cvtss2sd (F3); to a float: cvtsd2ss (F2).
+                B(i.Width == 8 ? (byte)0xF3 : (byte)0xF2, 0x0F, 0x5A);
+                XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.CvtIntToF:
+                B(Scalar(i), 0x0F, 0x2A);
+                ModRM(Xmm(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.XorPs:
+                B(0x0F, 0x57);
+                XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.MovdToX:
+                B(0x66, 0x0F, 0x6E);
+                ModRM(Xmm(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.MovdFromX:
+                B(0x66, 0x0F, 0x7E);
+                ModRM(Xmm(i.Operands[1]), i.Operands[0]);
                 break;
             case MOp.Int:
                 B(0xCD, (byte)((MImm)i.Operands[0]).Value);
@@ -881,6 +950,28 @@ internal sealed class Encoder
             case MOp.CompilerFence:
             case MOp.SaveRegs:
                 break;
+            case MOp.SpillRegs:
+            {
+                // After `push ebp; mov ebp, esp; sub esp, Size` the prologue
+                // pushes SavedRegs in order: the k-th at EBP - Size - 4(k+1).
+                if (_m.FramePointerFree) throw new InvalidOperationException($"{_m.Source.Name}: Sys.SpillRegisters in a function without a frame pointer");
+                MReg at = (MReg)i.Operands[0];
+                Gpr[] kept = { Gpr.Ebx, Gpr.Esi, Gpr.Edi };
+                for (int k = 0; k < kept.Length; k++)
+                {
+                    int saved = _m.SavedRegs.IndexOf(kept[k]);
+                    if (saved >= 0)
+                    {
+                        B(0xFF); ModRM(6, MMem.Frame(-_m.Frame.Size - 4 * (saved + 1)));   // push dword [ebp-...]
+                        B(0x8F); ModRM(0, new MMem(at, 4 * k));                          // pop dword [at+4k]
+                    }
+                    else
+                    {
+                        B(0x89); ModRM((int)kept[k], new MMem(at, 4 * k));               // mov [at+4k], reg
+                    }
+                }
+                break;
+            }
             case MOp.Pause:
                 // rep nop: a plain nop to a 486, the spin hint to anything newer.
                 B(0xF3, 0x90);

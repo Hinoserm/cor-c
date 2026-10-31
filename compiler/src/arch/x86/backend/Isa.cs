@@ -61,6 +61,8 @@ internal static class Isa
         // FXSAVE with LDMXCSR: the SSE state's.
         MOp.PackedSaveFxsr or MOp.PackedRestoreFxsr => X86Feature.Sse,
         MOp.Cvttsd2si => X86Feature.Sse | X86Feature.Sse2,
+        MOp.XorPs => X86Feature.Sse,
+        MOp.MovdToX or MOp.MovdFromX or MOp.CvtFToF => X86Feature.Sse | X86Feature.Sse2,
         // PAUSE is F3 90, REP NOP: a plain no-op to anything before the
         // Pentium 4, and so needs nothing.
         _ => X86Feature.None,
@@ -73,7 +75,12 @@ internal static class Isa
     /// INVLPG is (Select): a kernel that runs on a 486 too asks first.
     /// </summary>
     public static X86Feature Requires(MInstr i)
-        => Requires(i.Op) | (i.Op is MOp.MovFromCr or MOp.MovToCr && i.Operands.Any(o => o is MImm { Value: 4 }) ? X86Feature.Pentium : X86Feature.None)
+        => Requires(i.Op)
+        // THE SCALAR FORMS BY WIDTH: a float's is SSE's, a double's SSE2's --
+        // but a move between two registers, MOVAPS, whatever they hold.
+        | (i.Op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtIntToF
+           ? (i.Width == 8 && !(i.Op == MOp.MovF && i.Operands[0] is MReg && i.Operands[1] is MReg) ? X86Feature.Sse | X86Feature.Sse2 : X86Feature.Sse)
+           : X86Feature.None) | (i.Op is MOp.MovFromCr or MOp.MovToCr && i.Operands.Any(o => o is MImm { Value: 4 }) ? X86Feature.Pentium : X86Feature.None)
         | (i.Op == MOp.MmxOp && i.Operands[0] is MImm { Value: var op } && ExtendedOp((byte)op) ? X86Feature.MmxExtensions : X86Feature.None)
         // PADDQ and PSUBQ on the MMX registers are SSE2's.
         | (i.Op == MOp.MmxOp && i.Operands[0] is MImm { Value: 0xD4 or 0xFB } ? X86Feature.Sse | X86Feature.Sse2 : X86Feature.None)
@@ -96,7 +103,8 @@ internal static class Isa
     public static bool UsesPackedState(MOp op) => (Requires(op) & PackedState) != 0 && op is not (MOp.PrefetchLine or MOp.PrefetchWrite);
 
     /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code whose thread owns its state (X86Backend.AutomaticPacked: Linux, Windows), or code inside a state FXSAVE keeps (MInstr.OwnsState 2), may use.</summary>
-    public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0;
+    public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0
+        || op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtIntToF;
 
     /// <summary>The features in <paramref name="features"/>, by the names a programmer knows them by.</summary>
     public static string Describe(X86Feature features)

@@ -25,7 +25,7 @@ public sealed class MFunction
     public Function Source { get; }
     public List<MBlock> Blocks { get; } = new();
     public Frame Frame { get; }
-    public int NextVReg { get; set; } = 8;
+    public int NextVReg { get; set; } = MReg.FirstVirtual + 1;
 
     /// <summary>Whether a card mark calls the object's stub (X86Backend.CardStub).</summary>
     public bool UsesCardStub { get; set; }
@@ -48,6 +48,19 @@ public sealed class MFunction
     /// a state FXSAVE keeps say so themselves (MInstr.OwnsState 2).
     /// </summary>
     public bool SseState { get; init; }
+
+    /// <summary>
+    /// Virtual registers of the XMM class: scalar floats where --cpu has SSE
+    /// (Selector's _xmm32, _xmm64), allocated among XMM0 to XMM7.
+    /// </summary>
+    public HashSet<int> XmmRegs { get; } = new();
+
+    /// <summary>
+    /// The bytes a spilled XMM value is moved by: 8 (MOVSD) where --cpu has
+    /// SSE2, a float's as well as a double's; 4 (MOVSS) where it has SSE
+    /// alone, which has floats in the XMM registers and no doubles.
+    /// </summary>
+    public int XmmSpillWidth { get; set; } = 8;
 
     /// <summary>Virtual registers that must land in a register with an 8-bit form (EAX..EBX).</summary>
     public HashSet<int> ByteRegs { get; } = new();

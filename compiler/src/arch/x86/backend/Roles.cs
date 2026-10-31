@@ -49,6 +49,12 @@ public static class Roles
             case MOp.XmmExtractW:
             case MOp.Cvttss2si:
             case MOp.Cvttsd2si:
+            case MOp.MovF:
+            case MOp.SqrtF:
+            case MOp.CvtFToF:
+            case MOp.CvtIntToF:
+            case MOp.MovdToX:
+            case MOp.MovdFromX:
                 return operand == 0 ? Role.Def : Role.Use;
             case MOp.Add:
             case MOp.Adc:
@@ -69,6 +75,11 @@ public static class Roles
             case MOp.Sar:
             case MOp.Shld:
             case MOp.Shrd:
+            case MOp.AddF:
+            case MOp.SubF:
+            case MOp.MulF:
+            case MOp.DivF:
+            case MOp.XorPs:
                 return operand == 0 ? Role.UseDef : Role.Use;
             case MOp.Xchg:
             case MOp.FsLoad:

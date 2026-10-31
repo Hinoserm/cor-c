@@ -53,6 +53,27 @@ public enum MOp : byte
     /// whatever the rounding mode, so no control word changes.
     /// </summary>
     Cvttss2si, Cvttsd2si,
+    // ---- scalar SSE and SSE2: floats in the XMM registers (Select.Sse) -------
+    //
+    // Width 4 is a float (SSE: the F3 forms), 8 a double (SSE2: F2, and 66
+    // for the compare). The XMM operands are registers of the allocator's XMM
+    // class (MReg.XmmBase on), or memory where Allocator.Foldable says so.
+    /// <summary>movss/movsd xmm, m; m, xmm; movaps xmm, xmm between registers.</summary>
+    MovF,
+    /// <summary>addss/sd, subss/sd, mulss/sd, divss/sd: xmm op= xmm/m.</summary>
+    AddF, SubF, MulF, DivF,
+    /// <summary>sqrtss/sd xmm, xmm/m.</summary>
+    SqrtF,
+    /// <summary>ucomiss/ucomisd xmm, xmm/m: ZF, PF and CF as FUCOMIP leaves them.</summary>
+    UcomiF,
+    /// <summary>cvtss2sd (Width 8) and cvtsd2ss (Width 4): xmm, xmm/m.</summary>
+    CvtFToF,
+    /// <summary>cvtsi2ss (Width 4) and cvtsi2sd (Width 8): xmm, r/m32.</summary>
+    CvtIntToF,
+    /// <summary>xorps xmm, xmm: the sign flipped by a mask, or zero.</summary>
+    XorPs,
+    /// <summary>movd xmm, r/m32 and movd r/m32, xmm (SSE2): a float's bits between the files.</summary>
+    MovdToX, MovdFromX,
     // odds and ends
     Int, Int3, Nop, Pause,
     /// <summary>
@@ -66,6 +87,12 @@ public enum MOp : byte
     /// written (Roles.ImplicitDefs), so the prologue pushes all three.
     /// </summary>
     SaveRegs,
+    /// <summary>
+    /// Sys.SpillRegisters: EBX, ESI and EDI as the caller left them into
+    /// [operand], [operand+4], [operand+8] -- each saved by the prologue
+    /// copied from its slot (push, pop), each not stored as it is.
+    /// </summary>
+    SpillRegs,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>
     Prologue, Epilogue,
     /// <summary>Linux only: the system-call trap. Isolated so a bare-metal variant swaps it.</summary>

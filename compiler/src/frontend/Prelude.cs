@@ -999,6 +999,15 @@ public static class Prelude
             // safepoint needs, so that a reference its caller left in one is
             // on the stack below the caller's frame (GcRoots, GcThreads.Spill).
             public static void SaveRegisters() { }
+            // THE CALLEE-SAVED REGISTERS AS THIS FUNCTION'S CALLER LEFT THEM,
+            // into the words at `at` -- each read from where the prologue
+            // saved it, or from the register itself where the function never
+            // gave it a value -- answering how many: EBX, ESI and EDI on
+            // i386, RBX and R12 to R15 in long mode. What a function its
+            // caller waits through calls to write that caller's registers
+            // down for the collector (Tls.Spill), whatever it did with them
+            // itself; never put in place in a caller.
+            public static nuint SpillRegisters(nuint at) { return 0; }
 
             // ---- the thread block ----------------------------------------
             //

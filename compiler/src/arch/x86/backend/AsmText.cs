@@ -56,6 +56,8 @@ internal static class AsmText
         {
             case MReg r when r.IsPhys:
                 return RegName(r.Id, width);
+            case MReg r when r.IsXmm:
+                return $"xmm{r.XmmNumber}";
             case MReg { Id: MReg.EbpDataId }:
                 return "ebp";
             case MReg r:
@@ -105,6 +107,9 @@ internal static class AsmText
                 yield break;
             case MOp.SaveRegs:
                 yield return "; callee-saved registers pushed (nothing encoded)";
+                yield break;
+            case MOp.SpillRegs:
+                yield return $"; the caller's ebx, esi, edi into [{Op(i.Operands[0], 4, false)}]";
                 yield break;
             case MOp.Jcc:
                 yield return $"j{i.Cond.Mnemonic()} {Op(i.Operands[0], 4, false)}";
@@ -214,6 +219,35 @@ internal static class AsmText
                 yield break;
             case MOp.Cvttsd2si:
                 yield return $"cvttsd2si {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 8, true)}";
+                yield break;
+            case MOp.MovF:
+                yield return i.Operands[0] is MReg && i.Operands[1] is MReg
+                    ? $"movaps {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, false)}"
+                    : $"{(i.Width == 8 ? "movsd" : "movss")} {Op(i.Operands[0], i.Width, true)}, {Op(i.Operands[1], i.Width, true)}";
+                yield break;
+            case MOp.AddF:
+            case MOp.SubF:
+            case MOp.MulF:
+            case MOp.DivF:
+            case MOp.SqrtF:
+            case MOp.UcomiF:
+            {
+                string name = i.Op switch { MOp.AddF => "add", MOp.SubF => "sub", MOp.MulF => "mul", MOp.DivF => "div", MOp.SqrtF => "sqrt", _ => "ucomi" };
+                yield return $"{name}{(i.Width == 8 ? "sd" : "ss")} {Op(i.Operands[0], i.Width, false)}, {Op(i.Operands[1], i.Width, true)}";
+                yield break;
+            }
+            case MOp.CvtFToF:
+                yield return $"{(i.Width == 8 ? "cvtss2sd" : "cvtsd2ss")} {Op(i.Operands[0], 8, false)}, {Op(i.Operands[1], i.Width == 8 ? 4 : 8, true)}";
+                yield break;
+            case MOp.CvtIntToF:
+                yield return $"{(i.Width == 8 ? "cvtsi2sd" : "cvtsi2ss")} {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, true)}";
+                yield break;
+            case MOp.XorPs:
+                yield return $"xorps {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, false)}";
+                yield break;
+            case MOp.MovdToX:
+            case MOp.MovdFromX:
+                yield return $"movd {Op(i.Operands[0], 4, true)}, {Op(i.Operands[1], 4, true)}";
                 yield break;
             case MOp.Int:
                 yield return $"int {Op(i.Operands[0], 1, false)}";

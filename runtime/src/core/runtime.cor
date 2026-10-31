@@ -384,13 +384,13 @@ public static class Tls
     /// so that it is not arranged twice; cleared by the answer.
     public const int HandshakeArmed = 18 * WordSize.Bytes;
 
-    /// The registers of a thread that went blocked. GcThreads.BeginBlocking
-    /// pushes every callee-saved register in its own frame -- and then
-    /// returns, and the wait that follows writes its frames over that one. A caller's
-    /// reference that lives only in EBX, ESI or EDI for the length of the
-    /// wait would be nowhere the collector reads. So the frame is copied
-    /// here as the thread says it is stopped (GcThreads.Spill), and read with
-    /// its stack while it is (Gc.ScanStack). SpillCount words from Spill.
+    /// The registers of a thread that went blocked. A reference that lives
+    /// only in EBX, ESI or EDI for the length of the wait would be nowhere
+    /// the collector reads, so the waiting frame's are written here as the
+    /// thread says it is stopped -- by the function it calls to say so,
+    /// as that frame left them (Sys.SpillRegisters: Runtime.BeginBlocking,
+    /// EnterNative, GcThreads.BeginBlocking) -- and read with its stack while
+    /// it is (Gc.ScanStack). SpillCount words from Spill.
     public const int SpillCount = 19 * WordSize.Bytes;
     public const int Spill = 20 * WordSize.Bytes;
     public const int SpillMax = 12;
@@ -1576,10 +1576,16 @@ public static partial class Runtime
     /// About to wait for something only another thread can provide. The
     /// collector may read this thread's stack where it stands until the wait
     /// is over; without this pair it would wait for a thread that is asleep
-    /// in the kernel and will not allocate until somebody wakes it.
+    /// in the kernel and will not allocate until somebody wakes it. The
+    /// caller's registers written down here, as it left them (GcThreads.
+    /// BeginBlocking says why): never put in place in it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void BeginBlocking()
     {
-        GcThreads.BeginBlocking();
+        nuint self = Sys.ThreadBlock();
+        if (!GcThreads.Stops(self)) return;
+        Sys.WriteAddress(self + Tls.SpillCount, Sys.SpillRegisters(self + Tls.Spill));
+        GcThreads.Stop();
     }
 
     public static void EndBlocking()
@@ -3026,9 +3032,19 @@ public static partial class Runtime
     /// i386: the selector of the runtime's own thread blocks.
     public static int ManagedGs;
 
+    /// Its caller's registers written down as BeginBlocking writes its own:
+    /// a [DllImport]'s around the C call, an export's thunk on its way back
+    /// to C (Lowering.EmitFromCThunk) -- which gives none of them a value, so
+    /// they are C's.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void EnterNative()
     {
-        BeginBlocking();
+        nuint self = Sys.ThreadBlock();
+        if (GcThreads.Stops(self))
+        {
+            Sys.WriteAddress(self + Tls.SpillCount, Sys.SpillRegisters(self + Tls.Spill));
+            GcThreads.Stop();
+        }
 #if !TARGET_64BIT
         if (NativeGs != 0)
         {

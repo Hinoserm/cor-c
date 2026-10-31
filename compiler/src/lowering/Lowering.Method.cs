@@ -290,6 +290,7 @@ public sealed partial class Lowering
 
         // A METHOD C CALLS is a body and a thunk C enters by (EmitFromCThunk).
         bool fromC = CalledByC(m) && !_insideCopy;
+        if (fromC && TakesContext(m)) Error(decl, $"'{m.Name}': a method C calls is static and takes no generic context");
         _f = new Function((TakesContext(m) ? BodyLabel(m) : Label(m)) + (_insideCopy ? "$inside" : fromC ? FromCBody : ""), ReturnIr(m))
         {
             SourceFile = _in, Line = decl.Line, Display = Display(m) + (_insideCopy ? " (inside)" : ""), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
@@ -566,6 +567,9 @@ public sealed partial class Lowering
         {
             SourceFile = body.SourceFile, Line = body.Line, Display = body.Display, FromLibrary = body.FromLibrary, SystemCode = body.SystemCode,
             SourcePath = body.SourcePath, Exported = body.Exported, Unjudged = true, KeepsCallerRegisters = true,
+            // Called by C only; put in place in anything, it would lose the
+            // register file it is made with.
+            NoInlining = true,
         };
         _f = thunk;
         _e = new Builder(thunk, thunk.NewBlock("entry"));
@@ -1897,13 +1901,17 @@ public sealed partial class Lowering
     /// a static's own size, a struct held by pointer being a word.
     ///
     /// IN LINE, THE WAY EVERY TOUCH BUT A THREAD'S FIRST GOES, where the
-    /// thread's table is the word of its block (a program's: a kernel's
-    /// system call finds its own through Platform.ThreadStaticsHook): the
-    /// field's number, the table, its length and the cell read as the words
-    /// they are (ThreadStatics.Cell), and the call made only for a field not
-    /// numbered yet, a table too short or none, or a cell not made. Called
-    /// every time, it was a cast and a check of the table's type at every
-    /// touch -- 2.7% of a GL program's thread in the ICD's.
+    /// thread's table is the word of its block: the field's number, the
+    /// table, its length and the cell read as the words they are
+    /// (ThreadStatics.Cell), and the call made only for a field not numbered
+    /// yet, a table too short or none, or a cell not made. Called every
+    /// time, it was a cast and a check of the table's type at every touch --
+    /// 2.7% of a GL program's thread in the ICD's. A program's table is
+    /// always its block's (Linux's Platform.ThreadStaticsHook is the
+    /// constant 0); a bare-metal runtime's -- a Windows image's, a kernel's
+    /// -- is unless a kernel installed the hook, whose system calls find
+    /// their own, so there the hook is read first and the call made when it
+    /// is set.
     /// </summary>
     private VReg ThreadStaticCell(FieldSymbol f, Node at)
     {
@@ -1920,12 +1928,24 @@ public sealed partial class Lowering
             VReg made = _e.Call(CallLabel(helper), IrTypes.Of(helper.Returns), R(numberAt), R(_e.Const(bytes, IrTypes.Word)))!;
             return made.Type == IrTypes.Word ? made : _e.Unary(Opcode.Trunc64, made);
         }
-        if (Freestanding) return Slow();
+        FieldSymbol? hook = null;
+        if (Freestanding)
+        {
+            hook = _b.Types.TryGetValue("Platform", out TypeSymbol? platform) ? platform.FindField("ThreadStaticsHook") : null;
+            if (hook is not { Static: true, ThreadStatic: false }) return Slow();
+        }
         int w = _t.WordSize;
         IrType word = IrTypes.Word;
         VReg cell = _e.Reg(word, "cell");
         Block counted = _f.NewBlock("ts.table"), inside = _f.NewBlock("ts.inside"), found = _f.NewBlock("ts.found");
         Block slow = _f.NewBlock("ts.slow"), done = _f.NewBlock("ts.done");
+        if (hook is not null)
+        {
+            Block own = _f.NewBlock("ts.own");
+            VReg installed = _e.Load(word, new SymOperand(StaticSymbol(hook)), 0);
+            _e.Branch(_e.Binary(Opcode.Eq, R(installed), Imm(0, word), IrType.I32), own, slow);
+            _e.SetBlock(own);
+        }
         VReg number = _e.Load(word, numberAt, 0);
         VReg table = _e.Load(word, ThreadBlockNow(), TlsThreadStatics / 4 * w);
         _e.Branch(_e.Binary(Opcode.Eq, R(table), Imm(0, word), IrType.I32), slow, counted);

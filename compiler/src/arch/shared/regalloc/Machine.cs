@@ -33,6 +33,8 @@ public sealed class RegClass
     public required int[] Preference { get; init; }
     public required int[] CalleeSaved { get; init; }
     public int[]? ByteCapable { get; init; }
+    /// <summary>Whether a value of the class may be a reference: one that may not (a float's) is in no stack map.</summary>
+    public bool HoldsReferences { get; init; } = true;
 }
 
 /// <summary>

@@ -12176,12 +12176,14 @@ public static class Gc
     ///
     /// THE REGISTERS FIRST. The range is the stack this runs on, registered
     /// before its owner's registers are spilled into it, so a reference
-    /// held only in EBX, ESI or EDI is not in it yet. Three longs live
-    /// across the scan are six halves in the three registers a call
-    /// preserves, and the prologue here pushes the caller's values of them
-    /// inside the range, as Platform.EnterCollection does for the collector.
+    /// held only in EBX, ESI or EDI is not in it yet. The prologue here
+    /// pushes the caller's values of every one (Sys.SaveRegisters) inside the
+    /// range, as Platform.EnterCollection does for the collector; never put
+    /// in place in a caller, whose own prologue pushes only what it uses.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     public static void MarkRegistered(nuint start, nuint end)
     {
+        Sys.SaveRegisters();
         // The range is published (GcRoots.Register) before this reads the
         // phase, and the collector sets the phase before it reads the
         // ranges: one of the two sees the other.
@@ -12199,20 +12201,13 @@ public static class Gc
 
         if (Runtime.Marking == 2)
         {
-            nuint a = _spill + 1;
-            nuint b = _spill + 2;
-            nuint c = _spill + 3;
             ScanRange(start, end);
-            _spill = a + b + c;
             RegisteredMidMark = RegisteredMidMark + 1;
         }
 
         Sys.WriteAddress(tb + Tls.InAlloc, was);
     }
 
-    /// Where MarkRegistered's register pressure is kept, so that nothing can
-    /// prove it dead. Never read for its value.
-    static nuint _spill;
 
     /// Root ranges marked from as they were registered, a mark under way.
     public static long RegisteredMidMark;
@@ -16840,16 +16835,17 @@ static class GcRoots
     ///     that register. It reaches the stack when some frame between the
     ///     caller and the scan pushes that register in its prologue. The
     ///     backend pushes exactly the callee-saved registers a function uses,
-    ///     so the guarantee is made explicit: Platform.EnterCollection uses
-    ///     all of them (on Linux, by making a system call, which needs EBX,
-    ///     ECX, EDX, ESI and EDI), so its prologue pushes them, and only THEN
-    ///     calls back into Gc.CollectInner. Those pushes are above
-    ///     CollectInner's ESP and inside the range ScanAll scans.
+    ///     so the guarantee is made explicit: Platform.EnterCollection says
+    ///     it uses all of them (Sys.SaveRegisters, no instruction), so its
+    ///     prologue pushes them, and only THEN calls back into
+    ///     Gc.CollectInner. Those pushes are above CollectInner's ESP and
+    ///     inside the range ScanAll scans.
     ///   - EBP is the frame pointer, pushed by every prologue (only a leaf,
     ///     which calls nothing, gives it a value after).
     ///
     /// This is a property of the backend's prologue that a test checks by
-    /// reading the assembly; it is not something the language can state.
+    /// reading the code (tests/integration/save-registers.sh); it is not
+    /// something the language can state.
     public static void Enter()
     {
         Platform.EnterCollection();
@@ -18122,28 +18118,40 @@ public static class GcThreads
     /// until EndBlocking. The collector, waiting for it to answer a round,
     /// is told, so that it answers for it.
     ///
-    /// ITS CALLER'S REGISTERS, FROM THIS FRAME. The prologue pushes every
-    /// callee-saved register as the caller left it (Sys.SaveRegisters), and
-    /// the spill copies them from here: the caller's frame is the one that
-    /// stays while the thread waits -- a [DllImport]'s around its C call, an
-    /// export's thunk returning to C (Lowering.EmitFromCThunk), which touches
-    /// none of them. Copied from a frame below this one (Platform.SafePoint's,
-    /// as it was), they were the registers as this function had them, and a
-    /// caller's reference this prologue had pushed went with its frame the
-    /// moment C wrote over it. Never put in place in a caller, for the same
-    /// reason: its own frame is the one copied.
+    /// ITS CALLER'S REGISTERS, AS THE CALLER LEFT THEM (Sys.SpillRegisters):
+    /// the caller's is the frame that stays while the thread waits, and the
+    /// registers it holds then are the ones the collector must read. Written
+    /// down from inside a frame below it -- Platform.SafePoint's, as it was --
+    /// they were that frame's own, and a caller's reference its prologue had
+    /// pushed went with it the moment the wait wrote over it. Never put in
+    /// place in a caller: what it writes down is its caller's.
+    /// Runtime.BeginBlocking and Runtime.EnterNative do the same for theirs.
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void BeginBlocking()
     {
-        Sys.SaveRegisters();
         nuint self = Sys.ThreadBlock();
 
-        if (GcLock.IsCollector(self) || Sys.ReadAddress(self + Tls.InAlloc) != 0 || GcLock.HeldByMe())
+        if (!Stops(self))
         {
             return;
         }
 
-        Spill(Stopped, Sys.Stack(), Sys.FramePointer());
+        Sys.WriteAddress(self + Tls.SpillCount, Sys.SpillRegisters(self + Tls.Spill));
+        SafePoint(Stopped);
+    }
+
+    /// Whether a thread about to wait counts as stopped meanwhile: not the
+    /// collector, not inside the allocator or the barrier, not holding the
+    /// heap lock (EndBlocking's reasons).
+    public static bool Stops(nuint self)
+    {
+        return !GcLock.IsCollector(self) && Sys.ReadAddress(self + Tls.InAlloc) == 0 && !GcLock.HeldByMe();
+    }
+
+    /// The thread counted as stopped, its registers already written down
+    /// (Tls.Spill) by the function its waiting frame called.
+    public static void Stop()
+    {
         SafePoint(Stopped);
     }
 
@@ -18235,16 +18243,15 @@ public static class GcThreads
         }
     }
 
-    /// What BeginBlocking (and Platform.SafePoint) calls first when the thread
-    /// is about to count as stopped: the frame it pushed every callee-saved
-    /// register into, [from, to), copied into the thread block (Tls.Spill).
-    /// Those registers are pushed at the frame's bottom, under its locals, so
-    /// a frame larger than the room is copied from the bottom. The frame is
-    /// gone once BeginBlocking returns and the wait begins; the copy is what
-    /// the collector reads instead, and it stays true for the whole wait,
-    /// because a register its caller left a value in is either pushed again
-    /// by some frame still on the stack or not touched at all until the wait
-    /// ends.
+    /// What Platform.SafePoint calls first: when the thread is about to count
+    /// as stopped, the frame it pushed every callee-saved register into,
+    /// [from, to), copied into the thread block (Tls.Spill). Those registers
+    /// are pushed at the frame's bottom, under its locals, so a frame larger
+    /// than the room is copied from the bottom. The frame is gone once
+    /// SafePoint returns and the wait begins; the copy is what the collector
+    /// reads instead. Nothing in the runtime stops that way any more: a wait
+    /// says so through BeginBlocking, which writes its caller's registers
+    /// down itself (Sys.SpillRegisters); Running asks nothing here.
     public static void Spill(int mode, nuint from, nuint to)
     {
         if (mode == Running)

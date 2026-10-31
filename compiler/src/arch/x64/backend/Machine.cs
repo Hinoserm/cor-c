@@ -284,6 +284,12 @@ public enum MOp : byte
     /// a system call does.
     /// </summary>
     SaveRegs,
+    /// <summary>
+    /// Sys.SpillRegisters: RBX and R12 to R15 as the caller left them into
+    /// [operand] and the four words after it -- each saved by the prologue
+    /// copied from its slot, each not stored as it is.
+    /// </summary>
+    SpillRegs,
     /// <summary>The system call instruction. Number in RAX, arguments RDI RSI RDX R10 R8 R9.</summary>
     Syscall,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>

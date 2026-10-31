@@ -550,6 +550,22 @@ internal sealed class Encoder
             case MOp.Nop: Byte(0x90); break;
             case MOp.CompilerFence: break;
             case MOp.SaveRegs: break;
+            case MOp.SpillRegs:
+            {
+                MReg at = (MReg)i.Operands[0];
+                Gpr[] kept = { Gpr.Rbx, Gpr.R12, Gpr.R13, Gpr.R14, Gpr.R15 };
+                for (int k = 0; k < kept.Length; k++)
+                {
+                    int saved = _m.SavedRegs.IndexOf(kept[k]);
+                    if (saved >= 0)
+                    {
+                        Op(4, 6, SaveSlot(saved), 0, 0xFF);              // push qword [save slot]
+                        Op(4, 0, new MMem(at, 8 * k), 0, 0x8F);          // pop qword [at+8k]
+                    }
+                    else Op(8, (int)kept[k], new MMem(at, 8 * k), 0, 0x89);   // mov [at+8k], reg
+                }
+                break;
+            }
             case MOp.Pause: Byte(0xF3); Byte(0x90); break;
             case MOp.Syscall: Byte(0x0F); Byte(0x05); break;
             case MOp.In:

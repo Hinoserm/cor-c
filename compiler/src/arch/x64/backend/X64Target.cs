@@ -42,6 +42,7 @@ internal sealed class X64Target : ITarget
                 Name = "xmm",
                 Preference = Enumerable.Range(MReg.XmmBase, 16).ToArray(),
                 CalleeSaved = Array.Empty<int>(),
+                HoldsReferences = false,
             },
         },
     };
@@ -80,6 +81,7 @@ internal sealed class X64Target : ITarget
                 Name = "xmm",
                 Preference = Enumerable.Range(MReg.XmmBase, 16).ToArray(),
                 CalleeSaved = Array.Empty<int>(),
+                HoldsReferences = false,
             },
         },
     };
@@ -111,6 +113,7 @@ internal sealed class X64Target : ITarget
                 Name = "xmm",
                 Preference = Enumerable.Range(MReg.XmmBase, 16).ToArray(),
                 CalleeSaved = Array.Empty<int>(),
+                HoldsReferences = false,
             },
         },
     };

@@ -2245,7 +2245,7 @@ public sealed class Allocator
             List<int> slots = new(), registers = new();
             foreach (int v in live)
             {
-                if (v < a._fv || a._remat[v] is not null) continue;
+                if (v < a._fv || a._remat[v] is not null || !a._rf.Classes[a._t.ClassOf(v)].HoldsReferences) continue;
                 // A home is an incoming argument's word, which the frame
                 // outside reads as what it is pushing: no map names it.
                 bool inRegister = a._spilledFrom[v] > index && a._assigned[v] >= 0
