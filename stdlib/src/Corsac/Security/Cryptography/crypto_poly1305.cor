@@ -249,9 +249,11 @@ public class CorsacSecureCrypto_Poly1305
 
     private void ProcessBlock(byte[] block, long offset, bool complete)
     {
-        int at = (int)offset;
-        uint t0 = Word(block, at), t1 = Word(block, at + 4);
-        uint t2 = Word(block, at + 8), t3 = Word(block, at + 12);
+        // The block's four words read whole: Update checked the range, and
+        // the processor takes them in any alignment.
+        nuint at = Sys.ArrayData(block) + (nuint)offset;
+        uint t0 = Sys.Read32(at), t1 = Sys.Read32(at + 4);
+        uint t2 = Sys.Read32(at + 8), t3 = Sys.Read32(at + 12);
         uint h0 = _h0 + (t0 & 0x3ffffff);
         uint h1 = _h1 + (((t0 >> 26) | (t1 << 6)) & 0x3ffffff);
         uint h2 = _h2 + (((t1 >> 20) | (t2 << 12)) & 0x3ffffff);
@@ -288,12 +290,6 @@ public class CorsacSecureCrypto_Poly1305
         h0 = h0 & 0x3ffffff;
         h1 = h1 + carry;
         _h0 = h0; _h1 = h1; _h2 = h2; _h3 = h3; _h4 = h4;
-    }
-
-    /// Four bytes, little-endian.
-    private static uint Word(byte[] bytes, int at)
-    {
-        return (uint)bytes[at] | ((uint)bytes[at + 1] << 8) | ((uint)bytes[at + 2] << 16) | ((uint)bytes[at + 3] << 24);
     }
 
     private void FinalReduce()

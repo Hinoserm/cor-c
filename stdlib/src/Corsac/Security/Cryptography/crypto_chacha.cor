@@ -210,15 +210,13 @@ public class CorsacSecureCrypto_ChaCha20Context
             int o = (int)(outputOffset + done), n = (int)(inputOffset + done);
             uint[] k = _keystream;
             int i = 0;
-            // A word of keystream at a time, its four bytes in order.
+            // A WORD AT A TIME, read and written whole: both ranges were
+            // checked above, and the keystream is little-endian words as
+            // the input's bytes are (a byte at a time, each one checked,
+            // was a third of the cipher's time).
+            nuint into = Sys.ArrayData(output) + (nuint)o, from = Sys.ArrayData(input) + (nuint)n;
             for (; i + 4 <= take; i = i + 4)
-            {
-                uint word = k[i >> 2];
-                output[o + i] = (byte)(input[n + i] ^ word);
-                output[o + i + 1] = (byte)(input[n + i + 1] ^ (word >> 8));
-                output[o + i + 2] = (byte)(input[n + i + 2] ^ (word >> 16));
-                output[o + i + 3] = (byte)(input[n + i + 3] ^ (word >> 24));
-            }
+                Sys.Write32(into + (nuint)i, Sys.Read32(from + (nuint)i) ^ k[i >> 2]);
             for (; i < take; i = i + 1)
                 output[o + i] = (byte)(input[n + i] ^ (k[i >> 2] >> ((i & 3) * 8)));
             done = done + take;
