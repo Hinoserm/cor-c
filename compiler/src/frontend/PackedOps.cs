@@ -13,6 +13,8 @@ namespace Corsac.Lang;
 public static class PackedOps
 {
     public const int Mmx = 1 << 2, MmxExtensions = 1 << 3, Sse = 1 << 4, Sse2 = 1 << 5, ThreeDNow = 1 << 6;
+    /// <summary>Every feature: what a body asking Packed.Features() and naming no operation is told apart by.</summary>
+    public const int AllFeatures = Mmx | MmxExtensions | Sse | Sse2 | ThreeDNow;
 
     /// <summary>
     /// THE PROCESSORS A BLOCK'S VARIANTS ARE FOR, best first: the K8, the
@@ -97,6 +99,9 @@ public static class PackedOps
     /// </summary>
     public static int FeaturesOf(string name)
     {
+        // Features tells nothing apart of its own: the answer is the
+        // variant's, which the body's operations decide (Parser's
+        // ParsePackedBlock, AllFeatures where it names none).
         int features = Named(name);
         // SSE2'S INSTRUCTIONS ARE SSE'S REGISTERS: a variant with SSE2 has SSE
         // too, or the operations that want it would never find it (Lowering.
@@ -119,13 +124,6 @@ public static class PackedOps
             // SSE2, which no name tells apart from a Packed64's (Lowering).
             "StoreNonTemporal" or "Fence" => Mmx | MmxExtensions,
             "Load32" or "Store32" => Mmx,
-            // THE QUESTION ITSELF tells every class apart: its answer is the
-            // variant's features, and a body that asks it and names no
-            // operation (one that calls a packed helper) had the one variant
-            // with none -- Features() 0 on every processor, the SSE2 path
-            // asked for never taken (ChaCha20's Generate calling its packed
-            // block function).
-            "Features" => Mmx | MmxExtensions | ThreeDNow | Sse | Sse2,
             // Prefetch and PrefetchWrite tell no variants apart: a block's
             // copy for each of their instructions would be the whole body
             // again for one hint. They take what the variant has, or --cpu.

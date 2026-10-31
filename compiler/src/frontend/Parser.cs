@@ -5486,9 +5486,20 @@ public sealed class Parser
             else if (knownEnd >= 0) _i = knownEnd;
             else ReadBody(0);
             int used = 0;
+            bool asks = false;
             for (int k = start; k + 2 < _i; k++)
                 if (_t[k] is { Kind: Tok.Ident, Text: "Packed" } && _t[k + 1].Kind == Tok.Dot && _t[k + 2].Kind == Tok.Ident)
+                {
                     used |= PackedOps.FeaturesOf(_t[k + 2].Text);
+                    asks |= _t[k + 2].Text == "Features";
+                }
+            // A BODY THAT ASKS PACKED.FEATURES() AND NAMES NO OPERATION -- its
+            // packed work in a helper it calls, ChaCha20's Generate calling its
+            // block function -- is told apart by every feature, the answer
+            // each class's own: it had the one variant with none, Features()
+            // 0 on every processor and the path asked for never taken. A body
+            // with operations of its own keeps its variants theirs.
+            if (asks && used == 0) used = PackedOps.AllFeatures;
             foreach (int c in PackedOps.Classes)
                 if (!masks.Contains(c & used)) masks.Add(c & used);
         }

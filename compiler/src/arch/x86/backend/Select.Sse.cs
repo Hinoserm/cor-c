@@ -93,6 +93,11 @@ internal sealed partial class Selector
     {
         if (!_positionIndependent) return FloatConstant(bits, width);
         MReg r = XTemp();
+        if (bits == 0)
+        {
+            Emit(MOp.XorPs, r, r);
+            return r;
+        }
         if (width == 4 && !Target.Current.X86Profile.Has(X86Feature.Sse2))
         {
             Mov(FloatScratch, Imm(unchecked((int)bits)));

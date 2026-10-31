@@ -4,12 +4,24 @@
 // expect-exit: 0
 // expect-output:
 // sse2 2 8
+// run-with: --runtime-knob Corsac.Cpu.Features=0
+// expect-output:
+// scalar 1 4
+// run-with: --runtime-knob Corsac.Cpu.Features=28
+// expect-output:
+// scalar 1 4
+// run-with: --runtime-knob Corsac.Cpu.Features=124
+// expect-output:
+// sse2 2 8
 //
 // PACKED.FEATURES() IN A BODY THAT NAMES NO PACKED OPERATION, its packed
 // work in a helper: the question tells every processor class apart
 // (PackedOps.FeaturesOf), so the body has a variant for each and the one
-// that runs answers its own features. It had one variant, with none, and
-// took the scalar path on every processor.
+// that runs answers its own features -- none where the processor is held
+// to none, MMX and SSE without SSE2 at 28 -- the helper's SSE2 path taken
+// only where SSE2 is. It had one variant, with none, and took the scalar
+// path on every processor. A body naming operations of its own keeps its
+// variants theirs (test 2470).
 using System;
 using System.Runtime.CompilerServices;
 

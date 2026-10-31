@@ -18142,8 +18142,8 @@ public static class GcThreads
     /// arguments in a frame of its own until then: an interrupt a kernel
     /// takes on the thread before this is called, waiting itself, writes its
     /// own and leaves these. Between the writes below and SafePoint's
-    /// Stopped such an interrupt's wait would still write over them, as it
-    /// would have over Platform.SafePoint's copy. What a program without a
+    /// Stopped such an interrupt's wait would still write over them -- the
+    /// window the frame copy this replaced had too. What a program without a
     /// collector drops (Escape.ThreadBlockingWith).
     public static void BeginBlockingWith(nuint a, nuint b, nuint c, nuint d, nuint e)
     {

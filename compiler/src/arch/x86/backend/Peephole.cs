@@ -1298,7 +1298,7 @@ internal static class Peephole
 
     private static IEnumerable<(MReg Reg, bool IsDef)> Regs(MInstr i)
     {
-        if (i.Op == MOp.Xor && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id)
+        if (i.Op is MOp.Xor or MOp.XorPs && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id)
         {
             // Zeroing a register reads nothing that matters.
             yield return (x, true);
@@ -1358,8 +1358,10 @@ internal static class Peephole
         for (int k = instrs.Count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
-            // A move, or a register zeroed (XORPS with itself), that nothing reads.
-            if ((i.Op == MOp.MovF && i.Operands[1] is not MMem { Device: true }
+            // A move, or a register zeroed (XORPS with itself), that nothing
+            // reads -- not a load that may fault (CannotFault: DeadDefs' rule),
+            // which may be the NullReferenceException the program must raise.
+            if ((i.Op == MOp.MovF && (i.Operands[1] is not MMem from || CannotFault(from))
                  || i.Op == MOp.XorPs && i.Operands[1] is MReg same && same.Id == ((MReg)i.Operands[0]).Id)
                 && i.Operands[0] is MReg { IsXmm: true } to && (dead & (1 << to.XmmNumber)) != 0)
             {

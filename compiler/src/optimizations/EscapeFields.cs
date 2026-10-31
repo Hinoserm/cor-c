@@ -118,10 +118,15 @@ public sealed partial class Escape
         // it, it stayed one of the heap's -- Runtime.Alloc at every copy, and
         // a value the backend could not keep in a register. Not an insert,
         // whose third operand is a number put into a lane: a pointer could
-        // be that number.
+        // be that number. Nor one that copies bytes from one address to
+        // another (a move, a 32-bit load or store, a non-temporal store),
+        // which carries what the bytes hold where MemCopy's rule follows it.
         || callee is not null && callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
            && !callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix + "insert.", StringComparison.Ordinal)
-           && !callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix + "xinsert.", StringComparison.Ordinal);
+           && !callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix + "xinsert.", StringComparison.Ordinal)
+           && callee is not (Corsac.Lang.X86.MachineIntrinsics.PackedMove or Corsac.Lang.X86.MachineIntrinsics.PackedLoad32
+               or Corsac.Lang.X86.MachineIntrinsics.PackedStore32 or Corsac.Lang.X86.MachineIntrinsics.PackedStoreNonTemporal
+               or Corsac.Lang.X86.MachineIntrinsics.PackedWideStoreNonTemporal);
 
     /// <summary>
     /// The notes the barrier is built from, which are never inlined. Whether

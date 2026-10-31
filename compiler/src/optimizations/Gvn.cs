@@ -355,6 +355,8 @@ public sealed class Gvn : IPass
             sb.Append(i.Targets[0].Label);
             return sb.ToString();
         }
+        // A pure call (IrInfo.IsPure: Sys.CallerRegister) is its callee's.
+        if (i.Op == Opcode.Call) sb.Append(i.Callee).Append(':');
         List<string> keys = i.Operands.Select(OperandKey).ToList();
         if (Commutative(i.Op) && keys.Count == 2 && string.CompareOrdinal(keys[0], keys[1]) > 0)
         {
