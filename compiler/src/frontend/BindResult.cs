@@ -19,7 +19,8 @@ public sealed partial class BindResult
     public HashSet<MethodSymbol> PackedCopyable { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
-    /// The methods that call a plain native (Sys.CallNative), themselves or
+    /// The methods that call a plain native (Sys.CallNative), or hold an asm
+    /// block that only keeps or reads the x87's or SSE's state, themselves or
     /// through the methods they call directly and the constructors they run,
     /// in this unit (Binder.PackedStateOf): a kept state is given back
     /// around a call of one (Lowering), which runs on the thread's own -- a

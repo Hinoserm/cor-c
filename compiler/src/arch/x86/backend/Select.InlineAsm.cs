@@ -182,7 +182,7 @@ internal sealed partial class Selector
         return true;
     }
 
-    /// <summary>Whether an IR instruction is an asm block that runs float or packed code (the x87's, MMX's or SSE's).</summary>
+    /// <summary>Whether an IR instruction is an asm block that touches the x87, MMX or SSE at all, their state included (FNINIT, FXRSTOR): what a packed block's save must count.</summary>
     internal static bool AsmUsesFloatState(Instr i)
         => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal)
            && StateOf(c).Float;

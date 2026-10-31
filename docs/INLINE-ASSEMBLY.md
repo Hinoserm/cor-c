@@ -185,7 +185,15 @@ keeps, loads or reads that state -- `fnsave`, `fxsave`, `fnstenv`,
 `fnstsw`, `fldcw`, `fninit`, `ldmxcsr` and their kin -- is no float code:
 it runs on the thread's own state, as a plain `Sys.CallNative` does, given
 back around it where its method keeps one (`fnstenv` then `fldcw` reads a
-program's own x87 environment). `fldenv` and `frstor` stay refused: they
+program's own x87 environment). So such a block's `fldcw` or `ldmxcsr`
+changes the thread's control word, not the one the method's own float code
+runs under: a rounding mode for float code is set in the same block as the
+code. The state is given back where the block's method is called directly;
+reached through a virtual call, an interface or a delegate from a method
+that keeps the state, the block runs on that kept state, as a native
+reached so does. In an interrupt handler, an asm block's float code is
+refused as a double's is; one that only keeps the state (a switch's
+`fxsave`) is not. `fldenv` and `frstor` stay refused: they
 load the stack's tags and top, and the block's x87 depth after them could
 not be followed. Inside a packed block one that uses SSE has FXSAVE save
 the thread's state.

@@ -1594,15 +1594,17 @@ public sealed partial class Binder
     /// WHERE A FREESTANDING PROGRAM KEEPS THE PROCESSOR'S STATE (Lowering:
     /// the compiler's own block around each body, Parser.ImplicitKind): each
     /// method that needs it, and why -- its own float code or packed
-    /// operations, a native that uses the FPU (Sys.CallNativeFloat), or a
+    /// operations, a native that uses the FPU (Sys.CallNativeFloat), an asm
+    /// block's float code (AsmBinding.FloatCode), or a
     /// call in a loop to one that needs it, so that the state is kept once
     /// around the loop and not on every call (the callee runs inside,
     /// Lowering's $inside copy) -- another image's too, the kernel's or a
     /// module's this one is built on, that exports such a copy
     /// (KeepsStateElsewhere). Not an async body's, whose frame outlives
     /// a run; nor a lambda's, a function of its own. And what reaches a
-    /// plain native (BindResult.PackedNatives), which runs on the thread's
-    /// own state.
+    /// plain native (BindResult.PackedNatives), or an asm block that only
+    /// keeps or reads the state (AsmBinding.StateOnly), which runs on the
+    /// thread's own state.
     /// </summary>
     private Dictionary<MethodSymbol, string> PackedStateOf()
     {
@@ -1881,6 +1883,13 @@ public sealed partial class Binder
                 case Expr floats when !floatSaid && Parser.PackedEverywhere && FloatTyped(floats):
                     floatSaid = true;
                     yield return (n, Corsac.Lang.Lto.InterruptNotes.FloatCode + ", the x87's, which takes the interrupted thread's state");
+                    break;
+                // An asm block's float code, as a double's: one that only
+                // keeps or reads the state (a switch's FXSAVE) is no float
+                // code, and stays.
+                case AsmStmt asm when !floatSaid && Parser.PackedEverywhere && _r.AsmBlocks.TryGetValue(asm, out AsmBinding? block) && block.FloatCode:
+                    floatSaid = true;
+                    yield return (n, Corsac.Lang.Lto.InterruptNotes.FloatCode + " (an asm block's x87, MMX or SSE code), which takes the interrupted thread's state");
                     break;
                 case LambdaExpr l:
                     yield return (n, l.GroupIdentity is not null ? "makes a delegate of a method" : "makes a lambda");

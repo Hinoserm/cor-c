@@ -26,8 +26,6 @@ public sealed partial class Lowering
         for (int k = 0; k < block.Locals.Length; k++)
             if (block.Read[k]) inputs.Add(R(Eval(block.Names[k])));
         string spec = InlineAsm.Encode(new InlineAsm.Spec(block.Bits, block.Locals, block.Read, block.Written, block.Text));
-        // The block's own line 1 is its brace's: an error the encoder finds
-        // in it (InlineAsmCode.Assembled) is at that line plus its own.
         // A block that only keeps, loads or reads the x87's or SSE's state
         // runs on the thread's own, given back around it where this code
         // keeps one (OnOwnState), as a plain native does; the give-back and
@@ -35,6 +33,8 @@ public sealed partial class Lowering
         // together (TryInlineAsm).
         List<(int Local, VReg Value)> EmitBlock()
         {
+            // The block's own line 1 is its brace's: an error the encoder
+            // finds in it (InlineAsmCode.Assembled) is at that line plus its own.
             int line = _e.Line;
             _e.Line = a.BodyLine;
             _e.Call(MachineIntrinsics.Asm + spec, IrType.Void, inputs.ToArray());

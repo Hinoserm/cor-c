@@ -1,0 +1,34 @@
+// test: an asm block's float code in an interrupt handler is refused, as a double's is
+// targets: x86
+// flags: --x87-in-blocks-only
+// expect-compile-error: 'Program.Tick' is an interrupt handler and must not use float code
+//
+// An interrupt handler runs in the middle of whatever the interrupted
+// thread was doing with the x87: the block's FILD and FISTP would take that
+// state, as 38's double would (docs/INLINE-ASSEMBLY.md).
+
+static class Program
+{
+    static int _count;
+
+    [InterruptHandler]
+    static void Tick()
+    {
+        int c = _count;
+        int r;
+        asm
+        {
+            fild c
+            fistp r
+        }
+        _count = r + 1;
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Tick();
+        Host.Done(0);
+        return 0;
+    }
+}

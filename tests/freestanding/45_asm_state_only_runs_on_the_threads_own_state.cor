@@ -2,13 +2,14 @@
 // targets: x86
 // flags: --x87-in-blocks-only
 // expect-output:
-// masked yes 5
+// precision 3 masked yes 5
 //
 // FNSTCW only reads the control word: as in an .asm file, the link counts
 // it no float code (X87Notes). Main keeps the state for its own double, and
 // gives the thread's back around the block (Lowering.OnOwnState), as
 // around a plain Sys.CallNative: the block reads the thread's control word,
-// every exception masked (docs/INLINE-ASSEMBLY.md).
+// FNINIT's 0x037F -- precision 3, the 64-bit mantissa -- and not the kept
+// state's 0x027F, every exception masked in both (docs/INLINE-ASSEMBLY.md).
 
 static class Program
 {
@@ -23,7 +24,7 @@ static class Program
         {
             fnstcw cw
         }
-        Host.Line("masked " + ((cw & 0x3F) == 0x3F ? "yes" : "no") + " " + ((int)d).ToString());
+        Host.Line("precision " + ((cw >> 8) & 3).ToString() + " masked " + ((cw & 0x3F) == 0x3F ? "yes" : "no") + " " + ((int)d).ToString());
         Host.Done(0);
         return 0;
     }
