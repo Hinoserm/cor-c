@@ -57,7 +57,7 @@ public enum Tok : byte
 
     /// <summary>
     /// An `asm { ... }` block (InlineAsm), COR-C#'s own: its RAW text from
-    /// `asm` through the closing brace, which the C# lexer does not read --
+    /// after `asm` through the closing brace, which the C# lexer does not read --
     /// an assembly comment's apostrophe is no character literal.
     /// </summary>
     AsmBlock,

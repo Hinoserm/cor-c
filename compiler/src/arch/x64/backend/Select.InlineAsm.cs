@@ -20,6 +20,8 @@ public sealed class InlineAsmCode
     public required int[] Uses { get; init; }
     /// <summary>The registers the block destroys, by id: general ones and XMM ones.</summary>
     public required int[] Defs { get; init; }
+    /// <summary>Whether it needs the method's frame as it is (i386's InlineAsmCode.NeedsFrame).</summary>
+    public bool NeedsFrame => Analysis.UsesStack || Plan.InMemory.Contains(true);
 
     private string? _text;
     private byte[]? _bytes;

@@ -331,7 +331,7 @@ public sealed partial class X86Assembler
             SseEmit(single ? (byte)0 : (byte)0x66, mn.StartsWith('u') ? (byte)0x2E : (byte)0x2F, d.Reg, s);
             return true;
         }
-        if (mn.Length > 5 && mn.StartsWith("cmp", StringComparison.Ordinal) && FloatSuffix(mn[^2..]) is { } compare)
+        if (mn.Length >= 5 && mn.StartsWith("cmp", StringComparison.Ordinal) && FloatSuffix(mn[^2..]) is { } compare)
         {
             string predicate = mn[3..^2];
             int fixedPredicate = predicate.Length == 0 ? -1 : Array.IndexOf(ComparePredicates, predicate);

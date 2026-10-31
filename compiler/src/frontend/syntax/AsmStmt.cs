@@ -6,7 +6,7 @@ namespace Corsac.Lang;
 /// COR-C#'s few departures from C#. The method's locals, parameters and
 /// constants are named in its instructions themselves; what goes in, what
 /// comes out and what the block destroys is worked out from them (Binder:
-/// BindAsm; Lowering: LowerAsm).
+/// CheckAsm; Lowering: LowerAsm).
 /// </summary>
 public sealed class AsmStmt : Stmt
 {

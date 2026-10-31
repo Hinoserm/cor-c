@@ -1,0 +1,102 @@
+// test: inline_asm_stack_flags_and_compares_x86
+// only-target: x86
+// requires-host: sse
+// expect-exit: 0
+// expect-output:
+// twice 9
+// flags 6
+// all 15
+// compare FFFFFFFF00000000
+// base 7
+//
+// The stack's rules followed through what it holds (docs/INLINE-ASSEMBLY.md):
+// two blocks one after the other; PUSHFD, STD and POPFD, which puts the
+// direction flag back as PUSHFD found it; PUSHAD and POPAD, which puts EBP
+// back as PUSHAD found it; CMPPS with its predicate as an immediate; and a
+// class whose base is a class named asm, which its colon makes no block.
+using System;
+
+class asm { public int Seven => 7; }
+class Derived : asm { }
+
+static class Program
+{
+    static int Twice(int a)
+    {
+        int r, s;
+        asm
+        {
+            mov eax, a
+            add eax, eax
+            mov r, eax
+        }
+        asm
+        {
+            mov ecx, r
+            add ecx, a
+            mov s, ecx
+        }
+        return s;
+    }
+
+    static int Flags(int a)
+    {
+        int r;
+        asm
+        {
+            pushfd
+            std
+            popfd
+            mov eax, a
+            add eax, eax
+            mov r, eax
+        }
+        return r;
+    }
+
+    static int All(int a)
+    {
+        int r;
+        asm
+        {
+            pushad
+            mov eax, 1
+            mov ebx, 2
+            mov esi, 4
+            popad
+            mov eax, a
+            add eax, 12
+            mov r, eax
+        }
+        return r;
+    }
+
+    static unsafe ulong Compare(float* four)
+    {
+        ulong low;
+        asm
+        {
+            .runtime sse
+            mov eax, four
+            movups xmm0, [eax]
+            movups xmm1, [eax + 16]
+            cmpps xmm0, xmm1, 1
+            movlps [eax + 32], xmm0
+        }
+        low = *(ulong*)(four + 8);
+        return low;
+    }
+
+    static unsafe int Main()
+    {
+        Console.WriteLine("twice " + Twice(3));
+        Console.WriteLine("flags " + Flags(3));
+        Console.WriteLine("all " + All(3));
+        float* f = stackalloc float[12];
+        f[0] = 2; f[1] = 1; f[2] = 5; f[3] = 5;
+        f[4] = 1; f[5] = 2; f[6] = 5; f[7] = 4;
+        Console.WriteLine("compare " + Compare(f).ToString("X16"));
+        Console.WriteLine("base " + new Derived().Seven);
+        return 0;
+    }
+}

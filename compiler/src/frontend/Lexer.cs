@@ -263,26 +263,58 @@ public sealed class Lexer
     /// <summary>The kind of the token Next handed back last: whether an `asm` begins a statement (AsmBlockAhead).</summary>
     private Tok _last = Tok.End;
 
+    /// <summary>
+    /// Inside a type's head -- `class`, `struct`, `interface`, `enum`,
+    /// `record` or `where` seen since the last brace or semicolon -- where a
+    /// colon begins a base list or a constraint, not a label's statement.
+    /// </summary>
+    private bool _typeHead;
+
     public Token Next()
     {
         Token t = NextToken();
         _last = t.Kind;
+        if (t.Kind is Tok.KwClass or Tok.KwStruct or Tok.KwInterface or Tok.KwEnum or Tok.KwWhere
+            || t.Kind == Tok.Ident && t.Text == "record")
+            _typeHead = true;
+        else if (t.Kind is Tok.LBrace or Tok.RBrace or Tok.Semi)
+            _typeHead = false;
         return t;
+    }
+
+    /// <summary>Past white space and comments from `p`: where the next thing in the text begins.</summary>
+    private int PastTrivia(int p)
+    {
+        while (p < _end)
+        {
+            if (char.IsWhiteSpace(_src[p])) { p++; continue; }
+            if (_src[p] == '/' && p + 1 < _end && _src[p + 1] == '/') { while (p < _end && _src[p] != '\n') p++; continue; }
+            if (_src[p] == '/' && p + 1 < _end && _src[p + 1] == '*')
+            {
+                int close = _src.IndexOf("*/", p + 2, StringComparison.Ordinal);
+                p = close < 0 ? _end : close + 2;
+                continue;
+            }
+            break;
+        }
+        return p;
     }
 
     /// <summary>
     /// `asm {` WHERE A STATEMENT BEGINS -- after `;`, `{`, `}`, `)`, `:`,
-    /// `else` or `do` -- is an inline assembly block (Corsac.Asm.InlineAsm),
-    /// not C#: nowhere else may an identifier be followed by a brace there.
-    /// A property named asm (`int asm { get; }`) follows a type, and is
-    /// read as C# is.
+    /// `else`, `do` or another block -- is an inline assembly block
+    /// (Corsac.Asm.InlineAsm), not C#: nowhere else may an identifier be
+    /// followed by a brace there. A property named asm (`int asm { get; }`)
+    /// follows a type, and a type named asm after a base list's or a
+    /// constraint's colon (`class C : asm {`) is inside a type's head
+    /// (_typeHead): both are read as C# reads them.
     /// </summary>
     private bool AsmBlockAhead(Token word)
     {
         if (word.Kind != Tok.Ident || word.Text != "asm" || word.Global) return false;
-        if (_last is not (Tok.Semi or Tok.LBrace or Tok.RBrace or Tok.RParen or Tok.Colon or Tok.KwElse or Tok.KwDo)) return false;
-        int p = _pos;
-        while (p < _end && char.IsWhiteSpace(_src[p])) p++;
+        if (_last is not (Tok.Semi or Tok.LBrace or Tok.RBrace or Tok.RParen or Tok.Colon or Tok.KwElse or Tok.KwDo or Tok.AsmBlock)) return false;
+        if (_last == Tok.Colon && _typeHead) return false;
+        int p = PastTrivia(_pos);
         return p < _end && _src[p] == '{';
     }
 
@@ -294,7 +326,8 @@ public sealed class Lexer
     private Token AsmBlock(int line, int col, int start)
     {
         int from = _pos;
-        while (!Done && Cur != '{') Advance();
+        int brace = PastTrivia(_pos);
+        while (_pos < brace) Advance();
         Advance();
         while (true)
         {

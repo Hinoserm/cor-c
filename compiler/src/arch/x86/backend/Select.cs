@@ -838,6 +838,8 @@ internal sealed partial class Selector
                             || named.StartsWith(MachineIntrinsics.PackedSavePrefix, StringComparison.Ordinal)) x87 = true;
                     }
                     if (SettleWantsX87(i)) x87 = true;
+                    // An asm block that uses SSE: its XMM registers saved too.
+                    if (AsmUsesSse(i)) xmm = true;
                     if (LandingOf(i) is { } pad && seen.Add(pad)) work.Push((pad, 0));
                 }
                 if (closed) continue;

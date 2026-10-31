@@ -89,7 +89,18 @@ public sealed partial class Binder
         List<AsmLocal> locals = new();
         List<Sym> symbols = new();
         List<NameExpr> localNames = new();
+        // Those already bound as reads (a closure's field, found by binding it).
+        HashSet<NameExpr> checkedNames = new(ReferenceEqualityComparer.Instance);
         bool failed = false;
+        // A REGISTER IS A REGISTER: a local, a parameter or a constant spelt
+        // as one a block names (`cx`, `si`) would be read as the register
+        // without a word, so the block may not use that spelling.
+        foreach (string register in InlineAsm.RegisterWords(a.Body))
+            if (Lookup(register) is LocalSym or ParamSym or ConstSym)
+            {
+                Error(AsmAt(a, 1), $"asm: '{register}' is a register in an asm block, and so is not the local of that name: rename the local");
+                failed = true;
+            }
         foreach (NameExpr name in a.Names)
         {
             Sym? sym = Lookup(name.Name);
@@ -133,8 +144,8 @@ public sealed partial class Binder
                     // A LOCAL A LAMBDA CAPTURED is a field of its closure where
                     // the lambda's body is bound for it: the same variable.
                     int errors = _r.Errors.Count;
-                    if (sym is null) CheckName(name);
-                    Sym? resolved = sym ?? (_r.Resolved.TryGetValue(name, out Sym? named) ? named : null);
+                    CheckName(name);
+                    Sym? resolved = _r.Resolved.TryGetValue(name, out Sym? named) ? named : sym;
                     FieldSymbol? closureField = resolved switch
                     {
                         CapturedFieldSym c => c.Field,
@@ -143,7 +154,7 @@ public sealed partial class Binder
                     };
                     if (closureField is not null)
                     {
-                        if (sym is not null) CheckName(name);
+                        checkedNames.Add(name);
                         if (AsmShape(closureField.Type, out string capturedWhy) is not { } capturedShape)
                         {
                             Error(name, $"asm: '{name.Name}' {capturedWhy}");
@@ -162,7 +173,13 @@ public sealed partial class Binder
                 }
             }
         }
-        if (failed) return;
+        if (failed)
+        {
+            // Its locals taken as written: the block's error is the one to read.
+            foreach (Sym sym in symbols)
+                if (sym is LocalSym refused) _assigned.Add(refused);
+            return;
+        }
 
         string text = InlineAsm.Substitute(a.Body, constants);
         AsmLocal[] shapes = locals.ToArray();
@@ -173,8 +190,16 @@ public sealed partial class Binder
             // ONCE, AS IT WILL BE: every local a memory operand (the
             // bindings only take instructions away), every instruction held
             // to the 386 unless the block's `.runtime` names it.
-            string trial = InlineAsm.Render(analysis, null, _ => bits == 64 ? "[rbp - 0x400]" : "[ebp - 0x400]");
+            // Each slot one byte's displacement from the frame, the shortest
+            // a slot's form is: a rel8 branch (LOOP, JECXZ) is out of reach
+            // here only where it is out of reach in any frame.
+            string trial = InlineAsm.Render(analysis, null, _ => bits == 64 ? "[rbp - 8]" : "[ebp - 8]");
             InlineAsm.Assemble(trial, bits, InlineAsm.Baseline(Target.Current.X86Profile, bits));
+            // THE IR CARRIES IT IN A NAME (MachineIntrinsics.Asm), and an IR
+            // name is at most 16384 bytes (IrBinary.Text).
+            int spec = System.Text.Encoding.UTF8.GetByteCount(InlineAsm.Encode(new InlineAsm.Spec(bits, shapes, analysis.Read, analysis.Written, text)));
+            if (spec > 16000)
+                throw new AsmException("<asm>", 1, $"the block is {spec} bytes, and one is at most 16000: split it, or put it in an .asm file");
         }
         catch (AsmException e)
         {
@@ -192,7 +217,7 @@ public sealed partial class Binder
         {
             NameExpr n = bound[k];
             if (!analysis.Read[k] && symbols[k] is LocalSym assigned) _assigned.Add(assigned);
-            CheckName(n);
+            if (!checkedNames.Contains(n)) CheckName(n);
             if (analysis.Written[k])
             {
                 RequireAssignable(n, "write in an asm block");

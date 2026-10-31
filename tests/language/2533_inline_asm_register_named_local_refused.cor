@@ -1,0 +1,20 @@
+// test: inline_asm_register_named_local_refused
+// only-target: x86
+// expect-compile-error: is a register in an asm block
+//
+// A local spelt as a register would be read as the register: the block may
+// not use that spelling while the local is in scope (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        short cx = 5;
+        short r;
+        asm
+        {
+            mov ax, cx
+            mov r, ax
+        }
+        return r + cx;
+    }
+}

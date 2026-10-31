@@ -636,11 +636,14 @@ public static class Gir
                     U8((byte)S.Asm);
                     Str(asm.Body);
                     I32(asm.BodyLine);
+                    I32(asm.Line);
+                    I32(asm.Col);
                     I32(asm.Names.Count);
                     foreach (NameExpr name in asm.Names)
                     {
                         Str(name.Name);
                         I32(name.Line);
+                        I32(name.Col);
                     }
                     break;
 
@@ -1560,12 +1563,14 @@ public static class Gir
                 {
                     string body = Str();
                     int bodyLine = I32();
-                    AsmStmt asm = new() { Body = body, BodyLine = bodyLine, Line = bodyLine };
+                    int line = I32();
+                    AsmStmt asm = new() { Body = body, BodyLine = bodyLine, Line = line, Col = I32() };
                     int names = Count();
                     for (int i = 0; i < names; i++)
                     {
                         string name = Str();
-                        asm.Names.Add(new NameExpr { Name = name, Line = I32() });
+                        int at = I32();
+                        asm.Names.Add(new NameExpr { Name = name, Line = at, Col = I32() });
                     }
                     return asm;
                 }

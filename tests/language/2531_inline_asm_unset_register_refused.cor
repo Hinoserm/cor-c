@@ -1,0 +1,20 @@
+// test: inline_asm_unset_register_refused
+// only-target: x86
+// expect-compile-error: which the block has not set
+//
+// A block's registers hold nothing of the method's but what its own
+// instructions put there: REP STOSD with EDI never set is refused
+// (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            mov ecx, 4
+            xor eax, eax
+            rep stosd
+        }
+        return 0;
+    }
+}

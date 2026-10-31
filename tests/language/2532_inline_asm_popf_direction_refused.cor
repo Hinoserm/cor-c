@@ -1,0 +1,18 @@
+// test: inline_asm_popf_direction_refused
+// only-target: x86
+// expect-compile-error: direction flag
+//
+// POPFD of anything but its own PUSHFD's flags may set the direction flag,
+// which must be clear at the end (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            push 0x402
+            popfd
+        }
+        return 0;
+    }
+}

@@ -125,9 +125,10 @@ internal sealed class X86Target : ITarget
                 // The store sequences' stubs are calls too (CallKeep*): frameless,
                 // so the barrier they call links to this function's EBP.
                 // A caller's register is read off the frame pointer (Encoder's CallerReg).
-                // An asm block may push and pop, and names its slots off EBP.
+                // An asm block that pushes, names ESP or EBP or a slot off EBP.
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
-                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.CallerReg or MOp.InlineAsm) return false;
+                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.CallerReg) return false;
+                if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))

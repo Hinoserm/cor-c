@@ -30,6 +30,9 @@ public sealed class CommonTailMerge : IPass
                 if (--budget < 0) return;
                 int count = 0, limit = Math.Min(32, Math.Min(block.Instrs.Count, other.Instrs.Count));
                 while (count < limit && Same(block.Instrs[^(count + 1)], other.Instrs[^(count + 1)])) count++;
+                // An asm block's results stay with it (MachineIntrinsics.Asm):
+                // no shared tail begins at one of them.
+                while (count > 0 && block.Instrs[^count] is { Op: Opcode.Call, Callee: Corsac.Lang.X86.MachineIntrinsics.AsmOut }) count--;
                 // A block the link gave a loop region is merged only into one
                 // given the same: the one kept is the one the mark is read on.
                 if (count == block.Instrs.Count && count == other.Instrs.Count

@@ -138,9 +138,10 @@ internal sealed class X64Target : ITarget
             {
                 // The store sequences' stubs are calls too (CallKeep*): frameless,
                 // so the barrier they call links to this function's RBP.
-                // An asm block may push and pop, and names its slots off RBP.
+                // An asm block that pushes, names RSP or RBP or a slot off RBP.
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas
-                    or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.InlineAsm) return false;
+                    or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf) return false;
+                if (i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Rbp } }) return false;
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i))

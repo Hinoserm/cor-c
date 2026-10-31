@@ -43,9 +43,11 @@ static void Cpuid(uint leaf, uint subleaf, out uint a, out uint b, out uint c, o
 
 ## Where a block may stand
 
-`asm {` begins a statement: after `;`, `{`, `}`, `)`, `:`, `else` or `do`.
+`asm {` begins a statement: after `;`, `{`, `}`, `)`, `:`, `else`, `do` or
+another block, with white space or comments between `asm` and its brace.
 Anywhere else `asm` is an ordinary identifier, so a property named `asm`
-still compiles. The lexer reads the block's text raw, up to the first `}`
+still compiles, and so does a type named `asm` after a base list's or a
+constraint's colon (`class C : asm {`). The lexer reads the block's text raw, up to the first `}`
 that is not in a comment or a quoted string, so an assembly comment's
 apostrophe is not a C# character literal. A block has no braces of its own.
 
@@ -71,6 +73,10 @@ What the block does with each local follows from its instructions:
 - a local the block writes is an **output**, assigned as any assignment
   assigns it. One the block writes on some paths only is an input too: where
   the block does not write it, it keeps its value.
+
+A name spelt as a register (`cx`, `si`) is the register. A local, a
+parameter or a constant of that spelling cannot be named in a block, and
+using the spelling while one is in scope is an error: rename the local.
 
 A local's type must be one register's worth: an integer, `char`, `bool`, an
 enum, a pointer, `nint`/`nuint`, `float` or `double`. **Its width is the
@@ -108,23 +114,44 @@ them:
   call would be one;
 - **ESP is left where the block found it**: `push` and `pop` pair up (on every
   path), and nothing else writes ESP. **EBP is never written**: the method's
-  frame is reached through it. CS and SS are not loaded;
+  frame is reached through it -- `popa` only where `pusha`'s eight are on top
+  of the stack, which puts EBP back. CS and SS are not loaded;
+- **a register is set before it is read**: a block's registers hold nothing
+  of the method's but what its own instructions put there, the head's
+  bindings among them. Reading one the block has not set on every path is an
+  error (`rep stosd` with EDI never set), except a register made zero from
+  itself (`xor eax, eax`), a push's register (saved to be put back), and what
+  a trap or CPUID may read (`int`'s and `syscall`'s arguments, CPUID's
+  subleaf in ECX);
 - **the x87 stack is as deep at the end as at the start**. `fincstp`,
   `fdecstp` and `ffree` are refused, since they move the top without its tags
-  and the depth could not be followed;
+  and the depth could not be followed, and so are `frstor` and `fldenv`,
+  which load a state of unknown depth;
 - **`emms` (or `femms`) after MMX**, before the end, and no x87 instruction
   between MMX and its `emms`. No MMX instruction runs with values on the x87
   stack: the MMX registers are the x87's;
-- **the direction flag is clear at the end** (`cld` after `std`);
+- **the direction flag is clear at the end** (`cld` after `std`). `popf`
+  puts DF back as its own `pushf` found it; a `popf` of anything else may set
+  it;
 - **the code does not depend on where it lands**: the block is assembled at
   two origins, and an absolute address of one of its labels, which moves
   with the method, is refused.
+
+A local is never the operand of an instruction whose memory is larger than
+any local (`fxsave`, `lgdt`, `fnsave`, `fnstenv`): give it an address in a
+register. A block is at most 16000 bytes of text, the IR carrying it in a
+name; a longer one belongs in an `.asm` file.
 
 Every register the block writes, named (`mov ebx, 1`) or not (`cpuid`
 writes EAX to EDX), is clobbered: the register allocator keeps nothing there
 across the block, and a callee-saved one is saved by the prologue as for any
 use. The block reads and writes memory as it likes, so the optimiser treats
-it as it treats a call to an unknown function.
+it as it treats a call to an unknown function. A block that names no local
+as memory, pushes nothing and names neither ESP nor EBP leaves its method
+free to go without a frame pointer. A block with x87, MMX or SSE code counts
+as float code in the facts the link reads about where float code runs
+(X87Notes), and inside a packed block one that uses SSE has FXSAVE save
+the thread's state.
 
 ## How a block meets its method
 

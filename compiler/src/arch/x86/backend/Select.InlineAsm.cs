@@ -23,6 +23,12 @@ public sealed class InlineAsmCode
     public required Gpr[] Defs { get; init; }
     /// <summary>The XMM registers it writes, by number.</summary>
     public required uint XmmClobbers { get; init; }
+    /// <summary>
+    /// Whether it needs the method's frame as it is: a local in a slot, or
+    /// ESP or EBP named or moved (a push, an address off either). Without,
+    /// its method may still go without a frame pointer (X86Target.Leaf).
+    /// </summary>
+    public bool NeedsFrame => Analysis.UsesStack || Plan.InMemory.Contains(true);
 
     private string? _text;
     private byte[]? _bytes;
@@ -168,20 +174,26 @@ internal sealed partial class Selector
     /// <summary>Whether an IR instruction is an asm block that runs float or packed code (the x87's, MMX's or SSE's).</summary>
     internal static bool AsmUsesFloatState(Instr i)
         => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal)
-           && FloatStateOf(c);
+           && StateOf(c).Float;
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> FloatState = new(StringComparer.Ordinal);
+    /// <summary>Whether an IR instruction is an asm block that uses SSE's registers or state.</summary>
+    internal static bool AsmUsesSse(Instr i)
+        => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal)
+           && StateOf(c).Sse;
 
-    private static bool FloatStateOf(string callee) => FloatState.GetOrAdd(callee, c =>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Float, bool Sse)> FloatState = new(StringComparer.Ordinal);
+
+    private static (bool Float, bool Sse) StateOf(string callee) => FloatState.GetOrAdd(callee, c =>
     {
         try
         {
             InlineAsm.Spec spec = InlineAsm.Decode(c[MachineIntrinsics.Asm.Length..]);
-            return InlineAsm.Analyze(spec.Text, spec.Bits, spec.Locals).UsesFloatState;
+            InlineAsm.Analysis a = InlineAsm.Analyze(spec.Text, spec.Bits, spec.Locals);
+            return (a.UsesFloatState, a.UsesSse);
         }
         catch (AsmException)
         {
-            return true;
+            return (true, true);
         }
     });
 }
