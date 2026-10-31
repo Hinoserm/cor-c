@@ -1,0 +1,161 @@
+// test: xmm_values_renamed_inside_a_block
+// only-target: x86
+// cpu: --cpu=athlon64 --disable-3dnow
+// requires-host: sse2
+// expect-exit: 0
+// expect-output:
+// packed True
+// doubles True
+// floats True
+//
+// AN XMM VARIABLE WRITTEN WHOLE SEVERAL TIMES IN A BLOCK (XmmLocalSplit):
+// each value but the block's last its own register, read between the
+// writes; the value coming in read before the first; a value zeroed; an
+// `if` in the middle, whose blocks are split apart; the last value carried
+// round the loop, five more values live across it so the registers run
+// short. Packed128 values made by shuffles of others, doubles and floats
+// made by moves and two-address arithmetic, each against the same steps done
+// through arrays in memory. (Where the split moves code, Generate4, test 2530
+// checks the keystream against one block at a time.)
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe bool Rows(uint[] s, uint[] o)
+    {
+        if ((Packed.Features() & 0x20) == 0) return false;
+        nuint f = Sys.ArrayData(s), t = Sys.ArrayData(o);
+        Packed128 x = Packed.Load128(f), y = Packed.Load128(f + 16), z = Packed.Load128(f + 32);
+        Packed128 acc = default;
+        Packed128 w0 = Packed.Load128(f + 48), w1 = Packed.Load128(f + 64), w2 = Packed.Load128(f + 80), w3 = Packed.Load128(f + 96), w4 = Packed.Load128(f + 112);
+        for (int r = 0; r < 6; r++)
+        {
+            w0 = Packed.Add32(w0, w1); w1 = Packed.Xor(w1, w2); w2 = Packed.Add32(w2, w3); w3 = Packed.Xor(w3, w4); w4 = Packed.Add32(w4, w0);
+            acc = Packed.Add32(acc, x);
+            x = Packed.Shuffle32(y, 0x39);
+            acc = Packed.Xor(acc, x);
+            x = Packed.Shuffle32(z, 0x4E);
+            acc = Packed.Add32(acc, x);
+            if ((r & 1) == 0) acc = Packed.Xor(acc, y);
+            y = Packed.Shuffle32(acc, 0x93);
+            x = Packed.Shuffle32(Packed.Add32(x, y), 0x1B);
+            acc = Packed.Xor(acc, Packed.Add32(w0, w4));
+        }
+        Packed.Store(t, acc); Packed.Store(t + 16, x); Packed.Store(t + 32, y);
+        Packed.Store(t + 48, w0); Packed.Store(t + 64, w1); Packed.Store(t + 80, w2); Packed.Store(t + 96, w3); Packed.Store(t + 112, w4);
+        return true;
+    }
+
+    static uint[] Shuffle(uint[] v, int k) => new uint[] { v[k & 3], v[(k >> 2) & 3], v[(k >> 4) & 3], v[(k >> 6) & 3] };
+    static uint[] Add(uint[] a, uint[] b) => new uint[] { a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3] };
+    static uint[] Xor(uint[] a, uint[] b) => new uint[] { a[0] ^ b[0], a[1] ^ b[1], a[2] ^ b[2], a[3] ^ b[3] };
+
+    static void RowsInMemory(uint[] s, uint[] o)
+    {
+        uint[] x = { s[0], s[1], s[2], s[3] }, y = { s[4], s[5], s[6], s[7] }, z = { s[8], s[9], s[10], s[11] };
+        uint[] acc = new uint[4];
+        uint[][] w = new uint[5][];
+        for (int i = 0; i < 5; i++) w[i] = new uint[] { s[12 + 4 * i], s[13 + 4 * i], s[14 + 4 * i], s[15 + 4 * i] };
+        for (int r = 0; r < 6; r++)
+        {
+            w[0] = Add(w[0], w[1]); w[1] = Xor(w[1], w[2]); w[2] = Add(w[2], w[3]); w[3] = Xor(w[3], w[4]); w[4] = Add(w[4], w[0]);
+            acc = Add(acc, x);
+            x = Shuffle(y, 0x39);
+            acc = Xor(acc, x);
+            x = Shuffle(z, 0x4E);
+            acc = Add(acc, x);
+            if ((r & 1) == 0) acc = Xor(acc, y);
+            y = Shuffle(acc, 0x93);
+            x = Shuffle(Add(x, y), 0x1B);
+            acc = Xor(acc, Add(w[0], w[4]));
+        }
+        for (int j = 0; j < 4; j++) { o[j] = acc[j]; o[4 + j] = x[j]; o[8 + j] = y[j]; }
+        for (int i = 0; i < 5; i++) for (int j = 0; j < 4; j++) o[12 + 4 * i + j] = w[i][j];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static double Doubles(double a, double b, int n)
+    {
+        double d = a, s = 0;
+        for (int i = 0; i < n; i++)
+        {
+            s += d;
+            d = a * b;
+            s += d;
+            d = b - a;
+            s -= d;
+            if ((i & 1) != 0) s *= 0.75;
+            d = s * 0.5 + a;
+            a += 1.25;
+        }
+        return s + d;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static double DoublesInMemory(double a0, double b, int n)
+    {
+        double[] c = { a0, 0, a0 };   // a, s, d
+        for (int i = 0; i < n; i++)
+        {
+            c[1] += c[2];
+            c[2] = c[0] * b;
+            c[1] += c[2];
+            c[2] = b - c[0];
+            c[1] -= c[2];
+            if ((i & 1) != 0) c[1] *= 0.75;
+            c[2] = c[1] * 0.5 + c[0];
+            c[0] += 1.25;
+        }
+        return c[1] + c[2];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static float Floats(float a, float b, int n)
+    {
+        float d = 0, s = a;
+        for (int i = 0; i < n; i++)
+        {
+            s += d;
+            d = a / b;
+            s += d;
+            d = (float)i;
+            s += d * 0.125f;
+            d = s - a;
+            a = a * 1.5f + 0.25f;
+        }
+        return s - d;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static float FloatsInMemory(float a0, float b, int n)
+    {
+        float[] c = { a0, a0, 0 };   // a, s, d
+        for (int i = 0; i < n; i++)
+        {
+            c[1] += c[2];
+            c[2] = c[0] / b;
+            c[1] += c[2];
+            c[2] = (float)i;
+            c[1] += c[2] * 0.125f;
+            c[2] = c[1] - c[0];
+            c[0] = c[0] * 1.5f + 0.25f;
+        }
+        return c[1] - c[2];
+    }
+
+    static int Main()
+    {
+        uint[] s = new uint[32], o = new uint[32], r = new uint[32];
+        for (int i = 0; i < 32; i++) s[i] = (uint)i * 0x9E3779B9u + 0x7F4A7C15u;
+        bool ran = Rows(s, o);
+        RowsInMemory(s, r);
+        bool same = ran;
+        for (int i = 0; i < 32; i++) same &= o[i] == r[i];
+        Console.WriteLine("packed " + same);
+        Console.WriteLine("doubles " + (BitConverter.DoubleToInt64Bits(Doubles(1.5, 3.25, 9)) == BitConverter.DoubleToInt64Bits(DoublesInMemory(1.5, 3.25, 9))));
+        Console.WriteLine("floats " + (BitConverter.SingleToInt32Bits(Floats(0.75f, 7f, 11)) == BitConverter.SingleToInt32Bits(FloatsInMemory(0.75f, 7f, 11))));
+        return 0;
+    }
+}

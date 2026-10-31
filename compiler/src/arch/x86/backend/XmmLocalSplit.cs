@@ -13,9 +13,11 @@ namespace Corsac.Lang.X86;
 /// up to that write: it becomes a register of its own there, which the
 /// allocator's hint can then put in t1's. The block's last value keeps the
 /// variable's register, for what is read after; what is read before the
-/// first is the one coming in. The renaming of a web split at its kills,
-/// as SSA construction does it, within a block (Briggs, Cooper, Harvey and
-/// Simpson's live-range splitting at definitions).
+/// first is the one coming in. SSA construction's renaming (Cytron, Ferrante,
+/// Rosen, Wegman and Zadeck, 1991), within a block. A float's write that
+/// keeps the register's top lanes (CVTSI2SS, SQRTSS: Roles' Def) counts as
+/// whole: nothing reads a scalar's top lanes, and Packed128 values are never
+/// written by a scalar operation.
 ///
 /// Not in a block with a jump before its end -- a value read where it goes
 /// would be read under its old name -- nor in a function with a handler,
@@ -23,10 +25,10 @@ namespace Corsac.Lang.X86;
 /// </summary>
 internal static class XmmLocalSplit
 {
-    public static int Run(MFunction m)
+    public static void Run(MFunction m)
     {
-        if (m.XmmRegs.Count == 0 || m.Blocks.Any(b => b.Source is { IsLandingPad: true })) return 0;
-        int made = 0;
+        if (m.XmmRegs.Count == 0 || m.Blocks.Any(b => b.Source is { IsLandingPad: true })) return;
+        List<int> whole = new();
         Dictionary<int, int> lastWhole = new(), current = new();
         foreach (MBlock b in m.Blocks)
         {
@@ -38,11 +40,15 @@ internal static class XmmLocalSplit
             lastWhole.Clear();
             current.Clear();
             for (int k = 0; k < instrs.Count; k++)
-                foreach (int v in WrittenWhole(m, instrs[k])) lastWhole[v] = k;
+            {
+                WrittenWhole(m, instrs[k], whole);
+                foreach (int v in whole) lastWhole[v] = k;
+            }
+            if (lastWhole.Count == 0) continue;
             for (int k = 0; k < instrs.Count; k++)
             {
                 MInstr i = instrs[k];
-                List<int> whole = WrittenWhole(m, i);
+                WrittenWhole(m, i, whole);
                 bool zeroing = Zeroing(i);
                 // Reads first, under the name the value read has now.
                 for (int o = 0; o < i.Operands.Count; o++)
@@ -59,7 +65,6 @@ internal static class XmmLocalSplit
                     {
                         name = m.NewReg().Id;
                         m.XmmRegs.Add(name);
-                        made++;
                     }
                     if (name == v) current.Remove(v); else current[v] = name;
                     for (int o = 0; o < i.Operands.Count; o++)
@@ -68,7 +73,6 @@ internal static class XmmLocalSplit
                 }
             }
         }
-        return made;
     }
 
     /// <summary>XORPS of a register with itself: a write of all of it that reads nothing.</summary>
@@ -76,14 +80,14 @@ internal static class XmmLocalSplit
         => i.Op == MOp.XorPs && i.Operands.Count == 2 && i.Operands[0] is MReg a && i.Operands[1] is MReg b && a.Id == b.Id;
 
     /// <summary>The XMM-class virtual registers an instruction writes whole: a Def it does not also read.</summary>
-    private static List<int> WrittenWhole(MFunction m, MInstr i)
+    private static void WrittenWhole(MFunction m, MInstr i, List<int> whole)
     {
-        List<int> whole = new();
+        whole.Clear();
         if (Zeroing(i))
         {
             int z = ((MReg)i.Operands[0]).Id;
             if (z >= MReg.FirstVirtual && m.XmmRegs.Contains(z)) whole.Add(z);
-            return whole;
+            return;
         }
         for (int o = 0; o < i.Operands.Count; o++)
         {
@@ -96,6 +100,5 @@ internal static class XmmLocalSplit
                 if (p != o && i.Operands[p] is MReg { } q && q.Id == r.Id && (Roles.Of(i.Op, p) & Roles.Role.Use) != 0) readToo = true;
             if (!readToo && !whole.Contains(r.Id)) whole.Add(r.Id);
         }
-        return whole;
     }
 }
