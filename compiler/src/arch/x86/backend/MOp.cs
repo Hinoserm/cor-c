@@ -76,6 +76,23 @@ public enum MOp : byte
     MovdToX, MovdFromX,
     /// <summary>punpckldq xmm, xmm (SSE2): a double's two halves, each MOVD'd, made one.</summary>
     Punpckldq,
+    // ---- packed values in the XMM class (Select.PackedValues) ----------------
+    //
+    // The XMM packed operations on the allocator's registers: XmmOpRR's and
+    // its kin's bytes, the registers MRegs of the XMM class where those name
+    // them by number. MovF of Width 16 moves the whole register (MOVUPS).
+    /// <summary>[prefix] 0F op xmm, xmm [, imm]: operands prefix, op, the destination (read and written), the source.</summary>
+    XmmOpV,
+    /// <summary>The same with a destination only written: PSHUFD, a one-operand float operation.</summary>
+    XmmOpVDef,
+    /// <summary>66 0F op /digit xmm, imm: operands the register (read and written), op, digit, count.</summary>
+    XmmShiftV,
+    /// <summary>pextrw r32, xmm, imm: operands the general register (written), the XMM one, the word.</summary>
+    XmmExtractV,
+    /// <summary>pinsrw xmm, r32, imm: operands the XMM register (read and written), the general one, the word.</summary>
+    XmmInsertV,
+    /// <summary>movntdq m128, xmm: operands the memory, the register.</summary>
+    XmmStoreNtV,
     // odds and ends
     Int, Int3, Nop, Pause,
     /// <summary>

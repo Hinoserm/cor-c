@@ -883,6 +883,11 @@ internal sealed class Encoder
                 XmmRM(Reg(i.Operands[0]), i.Operands[1]);
                 break;
             // ---- scalar SSE (Select.Sse) -------------------------------------
+            case MOp.MovF when i.Width == 16 && !(i.Operands[0] is MReg { IsXmm: true } && i.Operands[1] is MReg { IsXmm: true }):
+                // movups: the whole register, no alignment asked of memory.
+                if (i.Operands[0] is MReg { IsXmm: true }) { B(0x0F, 0x10); ModRM(Xmm(i.Operands[0]), i.Operands[1]); }
+                else { B(0x0F, 0x11); ModRM(Xmm(i.Operands[1]), i.Operands[0]); }
+                break;
             case MOp.MovF:
                 if (i.Operands[0] is MReg { IsXmm: true } && i.Operands[1] is MReg { IsXmm: true })
                 {
@@ -929,6 +934,29 @@ internal sealed class Encoder
             case MOp.XorPs:
                 B(0x0F, 0x57);
                 XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
+                break;
+            case MOp.XmmOpV:
+            case MOp.XmmOpVDef:
+            {
+                long prefix = ((MImm)i.Operands[0]).Value;
+                if (prefix != 0) B((byte)prefix);
+                B(0x0F, (byte)((MImm)i.Operands[1]).Value);
+                XmmRM(Xmm(i.Operands[2]), i.Operands[3]);
+                if (i.Operands.Count > 4) B((byte)((MImm)i.Operands[4]).Value);
+                break;
+            }
+            case MOp.XmmShiftV:
+                B(0x66, 0x0F, (byte)((MImm)i.Operands[1]).Value, (byte)(0xC0 | (int)(((MImm)i.Operands[2]).Value << 3) | Xmm(i.Operands[0])), (byte)((MImm)i.Operands[3]).Value);
+                break;
+            case MOp.XmmExtractV:
+                B(0x66, 0x0F, 0xC5, (byte)(0xC0 | (Reg(i.Operands[0]) << 3) | Xmm(i.Operands[1])), (byte)((MImm)i.Operands[2]).Value);
+                break;
+            case MOp.XmmInsertV:
+                B(0x66, 0x0F, 0xC4, (byte)(0xC0 | (Xmm(i.Operands[0]) << 3) | Reg(i.Operands[1])), (byte)((MImm)i.Operands[2]).Value);
+                break;
+            case MOp.XmmStoreNtV:
+                B(0x66, 0x0F, 0xE7);
+                ModRM(Xmm(i.Operands[1]), i.Operands[0]);
                 break;
             case MOp.Punpckldq:
                 B(0x66, 0x0F, 0x62);

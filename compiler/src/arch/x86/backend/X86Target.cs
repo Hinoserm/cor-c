@@ -163,7 +163,7 @@ internal sealed class X86Target : ITarget
     public int ClassOf(int reg) => reg < MReg.FirstVirtual ? (reg >= MReg.XmmBase ? 1 : 0) : _m.XmmRegs.Contains(reg) ? 1 : 0;
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
     /// <summary>A slot of a word, or of eight bytes for a float of the XMM class, a double's or a float's alike (XmmSpillWidth).</summary>
-    public int NewSlot(int vreg) => _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(8, 8) : _m.Frame.Spill();
+    public int NewSlot(int vreg) => _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(Math.Max(8, _m.XmmSpillWidth), 8) : _m.Frame.Spill();
     public string RegName(int reg) => reg >= MReg.XmmBase ? $"xmm{reg - MReg.XmmBase}" : ((Gpr)reg).ToString();
     public bool PlainConstant(object constant) => constant is MImm { IsPlain: true };
     public bool Immediate(object constant) => constant is MImm;
@@ -312,7 +312,8 @@ internal sealed class X86Target : ITarget
             MOp.Setcc or MOp.Cmov => Effect.ReadsFlags,
             // Scalar SSE: masked exceptions, so nothing faults but a memory operand.
             MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.CvtFToF or MOp.CvtIntToF
-                or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si => Effect.None,
+                or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si
+                or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV => Effect.None,
             MOp.UcomiF => Effect.WritesFlags,
             _ => Effect.Barrier,
         };

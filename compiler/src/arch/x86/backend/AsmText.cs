@@ -223,7 +223,23 @@ internal static class AsmText
             case MOp.MovF:
                 yield return i.Operands[0] is MReg && i.Operands[1] is MReg
                     ? $"movaps {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, false)}"
-                    : $"{(i.Width == 8 ? "movsd" : "movss")} {Op(i.Operands[0], i.Width, true)}, {Op(i.Operands[1], i.Width, true)}";
+                    : $"{(i.Width == 16 ? "movups" : i.Width == 8 ? "movsd" : "movss")} {Op(i.Operands[0], i.Width, i.Width != 16)}, {Op(i.Operands[1], i.Width, i.Width != 16)}";
+                yield break;
+            case MOp.XmmOpV:
+            case MOp.XmmOpVDef:
+                yield return $"sse {((MImm)i.Operands[0]).Value:x2} 0f {((MImm)i.Operands[1]).Value:x2}, {Op(i.Operands[2], 16, false)}, {Op(i.Operands[3], 16, false)}" + (i.Operands.Count > 4 ? $", {((MImm)i.Operands[4]).Value}" : "");
+                yield break;
+            case MOp.XmmShiftV:
+                yield return $"sse 66 0f {((MImm)i.Operands[1]).Value:x2} /{((MImm)i.Operands[2]).Value}, {Op(i.Operands[0], 16, false)}, {((MImm)i.Operands[3]).Value}";
+                yield break;
+            case MOp.XmmExtractV:
+                yield return $"pextrw {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 16, false)}, {((MImm)i.Operands[2]).Value}";
+                yield break;
+            case MOp.XmmInsertV:
+                yield return $"pinsrw {Op(i.Operands[0], 16, false)}, {Op(i.Operands[1], 4, false)}, {((MImm)i.Operands[2]).Value}";
+                yield break;
+            case MOp.XmmStoreNtV:
+                yield return $"movntdq {Op(i.Operands[0], 16, false)}, {Op(i.Operands[1], 16, false)}";
                 yield break;
             case MOp.AddF:
             case MOp.SubF:

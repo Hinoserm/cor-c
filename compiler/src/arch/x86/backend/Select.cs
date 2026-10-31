@@ -139,11 +139,6 @@ internal sealed partial class Selector
         // A FUNCTION WITH A PACKED OPERATION TOO shares the XMM registers: its
         // packed values in XMM4 to XMM7 (PackedFree), its floats' class in
         // XMM0 to XMM3 (X86Target), so neither knows of the other.
-        if (_xmm32 && UsesPackedRegisters(f))
-        {
-            _packedXmmFirst = MFunction.XmmShared;
-            _m.XmmClassCount = MFunction.XmmShared;
-        }
         foreach (VReg parameter in f.Params) _definitions[parameter] = null;
         foreach (Block b in f.Blocks)
         foreach (Instr instruction in b.Instrs)
@@ -1358,6 +1353,18 @@ internal sealed partial class Selector
             }
         }
 
+        // PACKED128 VALUES IN THE CLASS where they can be (Select.PackedValues),
+        // asked once every definition is known:
+        // then no XMM register is the packed registers', and the class has all
+        // eight, whole sixteen-byte values spilled.
+        if (_xmm32) PackedFindValues();
+        if (PackedValueMode) _m.XmmSpillWidth = 16;
+        else if (_xmm32 && UsesPackedRegisters(_f))
+        {
+            _packedXmmFirst = MFunction.XmmShared;
+            _m.XmmClassCount = MFunction.XmmShared;
+        }
+
         _cur = _heads[_f.Entry];
         Emit(MOp.Prologue);
         LoadParams();
@@ -1387,12 +1394,15 @@ internal sealed partial class Selector
                     _mmxDirty = false;
                 }
                 else if (_mmxDirty && EmptiesMmx(i)) _mmxDirty = false;
-                if (TryPackedArithmetic(b.Instrs, n, out int consumed) || TryPackedRounding(b.Instrs, n, out consumed)
+                // Not where Packed128 values are the class's: their slots' bytes
+                // are not in memory for a pattern to read (Select.PackedValues).
+                int consumed = 0;
+                if (!PackedValueMode && (TryPackedArithmetic(b.Instrs, n, out consumed) || TryPackedRounding(b.Instrs, n, out consumed)
                     || TryPackedShifts(b.Instrs, n, out consumed)
                     || TryPackedConversions(b.Instrs, n, out consumed)
                     || TryPackedFloatArithmetic(b.Instrs, n, out consumed)
                     || TryPackedDotProducts(b.Instrs, n, out consumed)
-                    || TryPackedComparisons(b.Instrs, n, out consumed)
+                    || TryPackedComparisons(b.Instrs, n, out consumed))
                     || TryRotate(b.Instrs, n, out consumed))
                 {
                     // Their own MMX code uses mm0 and mm1.
@@ -1793,6 +1803,7 @@ internal sealed partial class Selector
 
     private void SelectCopy(Instr i)
     {
+        if (PackedValueCopy(i)) return;
         VReg d = i.Dest!;
         Operand src = i.Operands[0];
         switch (d.Type)
@@ -3025,7 +3036,7 @@ internal sealed partial class Selector
     private void SelectLoad(Instr i)
     {
         VReg d = i.Dest!;
-        MMem m = Address(i.Operands[0], i.Offset);
+        MMem m = PackedValueBytes(i.Operands[0], i.Offset) ?? Address(i.Operands[0], i.Offset);
         if (i.Device) m = new MMem(m.Base, m.Disp) { Index = m.Index, Scale = m.Scale, Symbol = m.Symbol, Reloc = m.Reloc, Label = m.Label, Device = true };
         if (d.Type.IsFloat())
         {
@@ -3251,6 +3262,7 @@ internal sealed partial class Selector
 
     private void SelectMemCopy(Instr i)
     {
+        if (PackedValueMemCopy(i)) return;
         if (SelectMmxFrameCopy(i)) return;
         if (SelectSmallCopy(i)) return;
         if (i.Operands[2] is not ImmOperand && _streamCopy is { } copy) StreamedOr(i, copy, () => InlineMemCopy(i));
@@ -3637,7 +3649,8 @@ internal sealed partial class Selector
     {
         if (name.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal))
         {
-            SelectPackedOp(name, i);
+            if (PackedValueMode && XmmValueOp(name, out string[] part)) SelectPackedValueOp(part, i);
+            else SelectPackedOp(name, i);
             return;
         }
         switch (name)

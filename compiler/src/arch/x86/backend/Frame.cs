@@ -29,6 +29,7 @@ public sealed class Frame
     private readonly Dictionary<int, int> _floatHomes = new();
     private int _scratch;
     private int _floatScratch;
+    private int _packedScratch;
     private readonly List<(int Offset, int Bytes, int Align)> _allocations = new();
 
     /// <summary>Every block of the frame handed out, as (offset, bytes, alignment).</summary>
@@ -61,6 +62,7 @@ public sealed class Frame
             if (moved.TryGetValue(_floatHomes[id], out int to)) _floatHomes[id] = to;
         if (_scratch != 0 && moved.TryGetValue(_scratch, out int scratch)) _scratch = scratch;
         if (_floatScratch != 0 && moved.TryGetValue(_floatScratch, out int floatScratch)) _floatScratch = floatScratch;
+        if (_packedScratch != 0 && moved.TryGetValue(_packedScratch, out int packedScratch)) _packedScratch = packedScratch;
         for (int i = 0; i < _allocations.Count; i++)
             if (moved.TryGetValue(_allocations[i].Offset, out int to)) _allocations[i] = (to, _allocations[i].Bytes, _allocations[i].Align);
     }
@@ -123,6 +125,19 @@ public sealed class Frame
                 _floatScratch = Allocate(8, 8);
             }
             return _floatScratch;
+        }
+    }
+
+    /// <summary>Sixteen bytes a Packed128 value of the XMM class is stored to, a field of it read back (Select.PackedValues).</summary>
+    public int PackedScratch
+    {
+        get
+        {
+            if (_packedScratch == 0)
+            {
+                _packedScratch = Allocate(16, 16);
+            }
+            return _packedScratch;
         }
     }
 
