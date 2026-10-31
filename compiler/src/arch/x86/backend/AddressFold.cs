@@ -217,8 +217,8 @@ internal static class AddressFold
             {
                 case MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Push or MOp.Pop or MOp.Nop:
                     continue;
-                // The scalar SSE forms leave every flag as it was.
                 case var op when Isa.FlagNeutralScalar(op):
+                    // The scalar SSE forms leave every flag as it was.
                     continue;
                 case MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg or MOp.UcomiF:
                     return true;

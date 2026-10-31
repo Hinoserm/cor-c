@@ -237,13 +237,13 @@ internal sealed partial class Selector
     }
 
     /// <summary>
-    /// A FLOAT TO AN UNSIGNED 32-BIT INTEGER, as .NET 10 answers it, in three
+    /// A FLOAT TO AN UNSIGNED 32-BIT INTEGER, as .NET 10 answers it, in two
     /// truncations at most and no classification: CVTTSS2SI answers every
     /// value below 2^31 that truncates to no negative number -- (-1, 0) to 0.
     /// The value less 2^31 (exact for [2^31, 2^32)) truncated to no negative
-    /// number is that range's, the top bit set again. Anything else made the
-    /// "integer indefinite" both times -- NaN, -1 and below, 2^32 and up --
-    /// and is 0, or uint.MaxValue for 2^32 and up (ordered, not below).
+    /// number is that range's, the top bit set again. Anything that answered
+    /// a negative number both times -- NaN, -1 and below, 2^32 and up -- is
+    /// 0, or uint.MaxValue for 2^32 and up (ordered, not below).
     /// </summary>
     private void SseToUInt(Instr i)
     {
