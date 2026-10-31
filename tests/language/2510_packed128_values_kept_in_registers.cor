@@ -1,0 +1,103 @@
+// test: packed128_values_kept_in_registers
+// only-target: x86
+// cpu: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// packed True same True check 32EAC4ED
+// copies 6CC9E155DFA866C1
+//
+// PACKED128 VALUES IN THE XMM REGISTERS (Select.PackedValues): a ChaCha20
+// block in four rows kept in registers across its ten double rounds, the
+// same words as the sixteen-word reference; a copy taken before its source
+// is made again keeps the value it had, as C# copies a struct; a zeroed
+// value (default) and fields read from values in registers. The answers
+// are the reference's, and the same as the x87's and the packed registers'.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static uint Rotl(uint x, int n) => (x << n) | (x >> (32 - n));
+
+    // The reference: a ChaCha20 block of sixteen words, ten double rounds.
+    static void Scalar(uint[] s, uint[] o)
+    {
+        uint[] x = new uint[16];
+        for (int i = 0; i < 16; i++) x[i] = s[i];
+        for (int r = 0; r < 10; r++)
+        {
+            Quarter(x, 0, 4, 8, 12); Quarter(x, 1, 5, 9, 13); Quarter(x, 2, 6, 10, 14); Quarter(x, 3, 7, 11, 15);
+            Quarter(x, 0, 5, 10, 15); Quarter(x, 1, 6, 11, 12); Quarter(x, 2, 7, 8, 13); Quarter(x, 3, 4, 9, 14);
+        }
+        for (int i = 0; i < 16; i++) o[i] = x[i] + s[i];
+    }
+
+    static void Quarter(uint[] x, int a, int b, int c, int d)
+    {
+        x[a] += x[b]; x[d] = Rotl(x[d] ^ x[a], 16);
+        x[c] += x[d]; x[b] = Rotl(x[b] ^ x[c], 12);
+        x[a] += x[b]; x[d] = Rotl(x[d] ^ x[a], 8);
+        x[c] += x[d]; x[b] = Rotl(x[b] ^ x[c], 7);
+    }
+
+    // The same in four Packed128 rows, kept in registers across the loop.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe bool Rows(uint[] s, uint[] o)
+    {
+        if ((Packed.Features() & 0x20) == 0) return false;
+        nuint from = Sys.ArrayData(s), into = Sys.ArrayData(o);
+        Packed128 a0 = Packed.Load128(from), b0 = Packed.Load128(from + 16);
+        Packed128 c0 = Packed.Load128(from + 32), d0 = Packed.Load128(from + 48);
+        Packed128 a = a0, b = b0, c = c0, d = d0;
+        for (int r = 0; r < 10; r++)
+        {
+            a = Packed.Add32(a, b); d = Packed.Xor(d, a); d = Packed.ShuffleHigh16(Packed.ShuffleLow16(d, 0xB1), 0xB1);
+            c = Packed.Add32(c, d); b = Packed.Xor(b, c); b = Packed.Or(Packed.ShiftLeft32(b, 12), Packed.ShiftRightU32(b, 20));
+            a = Packed.Add32(a, b); d = Packed.Xor(d, a); d = Packed.Or(Packed.ShiftLeft32(d, 8), Packed.ShiftRightU32(d, 24));
+            c = Packed.Add32(c, d); b = Packed.Xor(b, c); b = Packed.Or(Packed.ShiftLeft32(b, 7), Packed.ShiftRightU32(b, 25));
+            b = Packed.Shuffle32(b, 0x39); c = Packed.Shuffle32(c, 0x4E); d = Packed.Shuffle32(d, 0x93);
+            a = Packed.Add32(a, b); d = Packed.Xor(d, a); d = Packed.ShuffleHigh16(Packed.ShuffleLow16(d, 0xB1), 0xB1);
+            c = Packed.Add32(c, d); b = Packed.Xor(b, c); b = Packed.Or(Packed.ShiftLeft32(b, 12), Packed.ShiftRightU32(b, 20));
+            a = Packed.Add32(a, b); d = Packed.Xor(d, a); d = Packed.Or(Packed.ShiftLeft32(d, 8), Packed.ShiftRightU32(d, 24));
+            c = Packed.Add32(c, d); b = Packed.Xor(b, c); b = Packed.Or(Packed.ShiftLeft32(b, 7), Packed.ShiftRightU32(b, 25));
+            b = Packed.Shuffle32(b, 0x93); c = Packed.Shuffle32(c, 0x4E); d = Packed.Shuffle32(d, 0x39);
+        }
+        Packed.Store(into, Packed.Add32(a, a0)); Packed.Store(into + 16, Packed.Add32(b, b0));
+        Packed.Store(into + 32, Packed.Add32(c, c0)); Packed.Store(into + 48, Packed.Add32(d, d0));
+        return true;
+    }
+
+    // A copy taken before its source is made again keeps the value it had,
+    // as C# copies a struct; a field read from a value in a register.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe ulong Copies(uint[] s, int n)
+    {
+        nuint from = Sys.ArrayData(s);
+        Packed128 a = Packed.Load128(from), b = Packed.Load128(from + 16), zero = default;
+        ulong sum = 0;
+        for (int i = 0; i < n; i++)
+        {
+            Packed128 kept = a;
+            a = Packed.Add32(a, b);
+            zero = Packed.Xor(zero, kept);
+            sum = sum * 31 + kept.Lo + (a.Hi >> 7) + zero.Lo;
+        }
+        return sum;
+    }
+
+    static int Main()
+    {
+        uint[] s = new uint[16], o = new uint[16], p = new uint[16];
+        uint seed = 0x6170786B;
+        for (int i = 0; i < 16; i++) { seed = seed * 1664525 + 1013904223; s[i] = seed; }
+        Scalar(s, o);
+        bool packed = Rows(s, p);
+        bool same = true;
+        for (int i = 0; i < 16; i++) same &= !packed || o[i] == p[i];
+        uint check = 0;
+        foreach (uint w in o) check = check * 33 + w;
+        Console.WriteLine($"packed {packed} same {same} check {check:X8}");
+        Console.WriteLine($"copies {Copies(s, 12):X16}");
+        return 0;
+    }
+}

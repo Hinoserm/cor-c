@@ -15,9 +15,11 @@ using Block = Corsac.Lang.Ir.Block;
 /// unsigned one, a call's result in ST0) goes through the x87 as before, the
 /// value moved between the two through a slot of the frame (Fld, Fstp).
 ///
-/// A function with a packed operation too (MachineIntrinsics.PackedOpPrefix),
-/// whose packed registers the selector numbers itself, splits them: the
-/// class XMM0 to XMM3, the packed values XMM4 to XMM7 (MFunction.XmmShared).
+/// A function with a packed operation too (MachineIntrinsics.PackedOpPrefix):
+/// its Packed128 values in the class where they can be (Select.PackedValues);
+/// where an XMM packed operation names none of them, the packed registers
+/// the selector numbers itself hold XMM4 to XMM7 and the class XMM0 to XMM3
+/// (MFunction.XmmShared).
 /// </summary>
 internal sealed partial class Selector
 {
@@ -80,6 +82,33 @@ internal sealed partial class Selector
     /// </summary>
     private static MMem FloatConstant(long bits, int width) => SymbolMem(X86Backend.FloatPoolName(bits, width), 0);
 
+    /// <summary>
+    /// A float constant as an operand: the pool's word; in position-independent
+    /// code, which would reach the pool off a GOT register made for it alone
+    /// (Pic), its bits moved into a register -- MOVD from a general register
+    /// (two and PUNPCKLDQ for a double) where --cpu has SSE2, through the
+    /// scratch where it has SSE alone.
+    /// </summary>
+    private MOperand FloatConstantOperand(long bits, int width)
+    {
+        if (!_positionIndependent) return FloatConstant(bits, width);
+        MReg r = XTemp();
+        if (width == 4 && !Target.Current.X86Profile.Has(X86Feature.Sse2))
+        {
+            Mov(FloatScratch, Imm(unchecked((int)bits)));
+            MovF(r, FloatScratch, 4);
+            return r;
+        }
+        Emit(MOp.MovdToX, r, InRegister(Imm(unchecked((int)bits))));
+        if (width == 8)
+        {
+            MReg high = XTemp();
+            Emit(MOp.MovdToX, high, InRegister(Imm(unchecked((int)(bits >> 32)))));
+            Emit(MOp.Punpckldq, r, high);
+        }
+        return r;
+    }
+
     /// <summary>The bits of a float constant: an immediate, or a register a constant was copied into in this block.</summary>
     private bool KnownBits(Operand o, out long bits)
     {
@@ -116,7 +145,8 @@ internal sealed partial class Selector
     /// </summary>
     private MMem? PoolConstant(VReg v)
     {
-        if (!v.Type.IsFloat() || !_definitions.TryGetValue(v, out Instr? def) || def is not { Op: Opcode.Bits, Operands: [var bitsOf] }
+        // Not in position-independent code: the pool is off a GOT register there (FloatConstantOperand).
+        if (_positionIndependent || !v.Type.IsFloat() || !_definitions.TryGetValue(v, out Instr? def) || def is not { Op: Opcode.Bits, Operands: [var bitsOf] }
             || !ConstantEverywhere(bitsOf, out long bits)) return null;
         int w = FWidth(v.Type);
         return FloatConstant(w == 4 ? bits & 0xFFFFFFFFL : bits, w);
@@ -191,7 +221,7 @@ internal sealed partial class Selector
     {
         int w = FWidth(i.Dest!.Type);
         MReg mask = XTemp();
-        MovF(mask, FloatConstant(w == 4 ? 0x80000000L : long.MinValue, w), w);
+        MovF(mask, FloatConstantOperand(w == 4 ? 0x80000000L : long.MinValue, w), w);
         MReg d = X(i.Dest!), a = X(i.Operands[0]);
         if (d.Id == a.Id)
         {
@@ -259,11 +289,11 @@ internal sealed partial class Selector
         Jcc(Cond.Ns, exit);
         MReg t = XTemp();
         MovF(t, x, w);
-        EmitW(MOp.SubF, w, t, FloatConstant(w == 4 ? 0x4F000000L : 0x41E0000000000000L, w));
+        EmitW(MOp.SubF, w, t, FloatConstantOperand(w == 4 ? 0x4F000000L : 0x41E0000000000000L, w));
         Emit(truncate, d, t);
         Emit(MOp.Test, d, d);
         Jcc(Cond.Ns, high);
-        EmitW(MOp.UcomiF, w, x, FloatConstant(w == 4 ? 0x4F800000L : 0x41F0000000000000L, w));
+        EmitW(MOp.UcomiF, w, x, FloatConstantOperand(w == 4 ? 0x4F800000L : 0x41F0000000000000L, w));
         Jcc(Cond.Ae, maximum);
         Mov(d, Imm(0));
         Jmp(exit);
@@ -311,7 +341,7 @@ internal sealed partial class Selector
         int w = FWidth(d.Type);
         if (KnownBits(src, out long bits))
         {
-            MovF(X(d), FloatConstant(w == 4 ? bits & 0xFFFFFFFFL : bits, w), w);
+            MovF(X(d), FloatConstantOperand(w == 4 ? bits & 0xFFFFFFFFL : bits, w), w);
             return;
         }
         if (w == 4)

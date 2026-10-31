@@ -95,7 +95,7 @@ public sealed partial class Escape
 
     /// <summary>
     /// A USE OF WHAT IT IS HANDED AND NOTHING MORE, for whether an object
-    /// escapes: KeepAlive's `test r, r`, and the MMX scans and prefetches
+    /// escapes: KeepAlive's `test r, r`, the packed operations, and the MMX scans and prefetches
     /// (Runtime.PackedStringFind and the rest), which read bytes at the
     /// address and keep nothing. Taken for escapes, every string a packed
     /// search or compare was handed stayed alive. Not a collector's note
@@ -110,7 +110,18 @@ public sealed partial class Escape
             or Corsac.Lang.X86.MachineIntrinsics.PackedEqual8
             or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetch or Corsac.Lang.X86.MachineIntrinsics.StreamPrefetchLine
         // And a packed block's prefetch (Packed.Prefetch), the same.
-        || callee is not null && callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedPrefetchPrefix, StringComparison.Ordinal);
+        || callee is not null && callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedPrefetchPrefix, StringComparison.Ordinal)
+        // AND A PACKED OPERATION (Packed.Add32 and its kin), which reads and
+        // writes the eight or sixteen bytes at each address it is handed and
+        // keeps none: a Packed128 copied (`b = a`) is a block CopyStruct
+        // allocates, and taken for escaping through the operations that use
+        // it, it stayed one of the heap's -- Runtime.Alloc at every copy, and
+        // a value the backend could not keep in a register. Not an insert,
+        // whose third operand is a number put into a lane: a pointer could
+        // be that number.
+        || callee is not null && callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
+           && !callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix + "insert.", StringComparison.Ordinal)
+           && !callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix + "xinsert.", StringComparison.Ordinal);
 
     /// <summary>
     /// The notes the barrier is built from, which are never inlined. Whether

@@ -1182,16 +1182,16 @@ public static class Platform
         Native.Wake(at, 1);
     }
 
-    /// Stops this thread at a safepoint, with every callee-saved register on
-    /// the stack, as EnterCollection does and for the same reason: a
+    /// This thread at a safepoint, with every callee-saved register on the
+    /// stack, as EnterCollection has them and for the same reason: a
     /// reference the caller left in EBX, ESI or EDI is invisible to a
     /// collector that reads memory unless a prologue pushed it, and the stack
-    /// pointer written down inside GcThreads.SafePoint is below these pushes.
-    /// See GcRoots in runtime/src/core/gc.cor.
+    /// pointer GcThreads.SafePoint answers the round from is below these
+    /// pushes. See GcRoots in runtime/src/core/gc.cor. (A wait counts the
+    /// thread as stopped through GcThreads.BeginBlocking, not here.)
     public static void SafePoint(int mode)
     {
         Sys.SaveRegisters();
-        GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());
         GcThreads.SafePoint(mode);
     }
 
@@ -1200,10 +1200,8 @@ public static class Platform
     /// Sys.SaveRegisters is the whole trick: this function's prologue pushes
     /// every callee-saved register, and the values the caller of
     /// Runtime.Alloc left in them are then on the stack, above the ESP that
-    /// Gc.CollectInner scans from -- with no instruction, where a system
-    /// call (getpid, its arguments in those registers) used to make the same
-    /// pushes at the price of a trip into the kernel. See GcRoots in
-    /// runtime/src/core/gc.cor for the full reasoning.
+    /// Gc.CollectInner scans from, with no instruction made for it. See
+    /// GcRoots in runtime/src/core/gc.cor for the full reasoning.
     public static void EnterCollection()
     {
         Sys.SaveRegisters();

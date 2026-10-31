@@ -136,9 +136,6 @@ internal sealed partial class Selector
         _xmm32 = sse && cpu.Has(X86Feature.Sse);
         _xmm64 = _xmm32 && cpu.Has(X86Feature.Sse2);
         _m.XmmSpillWidth = _xmm64 ? 8 : 4;
-        // A FUNCTION WITH A PACKED OPERATION TOO shares the XMM registers: its
-        // packed values in XMM4 to XMM7 (PackedFree), its floats' class in
-        // XMM0 to XMM3 (X86Target), so neither knows of the other.
         foreach (VReg parameter in f.Params) _definitions[parameter] = null;
         foreach (Block b in f.Blocks)
         foreach (Instr instruction in b.Instrs)
@@ -1354,12 +1351,14 @@ internal sealed partial class Selector
         }
 
         // PACKED128 VALUES IN THE CLASS where they can be (Select.PackedValues),
-        // asked once every definition is known:
-        // then no XMM register is the packed registers', and the class has all
-        // eight, whole sixteen-byte values spilled.
-        if (_xmm32) PackedFindValues();
+        // found once every definition is known; spilled whole, sixteen bytes.
+        // AN XMM PACKED OPERATION ON NONE OF THEM -- every one, where nothing
+        // is taken -- goes through the packed registers, which then hold
+        // XMM4 to XMM7 (PackedFree) and the class XMM0 to XMM3 (X86Target),
+        // so neither knows of the other.
+        if (_xmm32 && UsesPackedRegisters(_f)) PackedFindValues();
         if (PackedValueMode) _m.XmmSpillWidth = 16;
-        else if (_xmm32 && UsesPackedRegisters(_f))
+        if (PackedValueMode ? PackedOperationsOutside() : _xmm32 && UsesPackedRegisters(_f))
         {
             _packedXmmFirst = MFunction.XmmShared;
             _m.XmmClassCount = MFunction.XmmShared;
@@ -1730,6 +1729,7 @@ internal sealed partial class Selector
                 SelectMemCopy(i);
                 break;
             case Opcode.MemSet:
+                if (PackedValueMemSet(i)) break;
                 if (SelectFrameSet(i)) break;
                 SelectMemSet(i);
                 break;
@@ -3035,6 +3035,7 @@ internal sealed partial class Selector
 
     private void SelectLoad(Instr i)
     {
+        if (PackedValueLane(i)) return;
         VReg d = i.Dest!;
         MMem m = PackedValueBytes(i.Operands[0], i.Offset) ?? Address(i.Operands[0], i.Offset);
         if (i.Device) m = new MMem(m.Base, m.Disp) { Index = m.Index, Scale = m.Scale, Symbol = m.Symbol, Reloc = m.Reloc, Label = m.Label, Device = true };
@@ -3649,7 +3650,7 @@ internal sealed partial class Selector
     {
         if (name.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal))
         {
-            if (PackedValueMode && XmmValueOp(name, out string[] part)) SelectPackedValueOp(part, i);
+            if (PackedValueMode && XmmValueOp(name, out string[] part) && TouchesPackedValue(i)) SelectPackedValueOp(part, i);
             else SelectPackedOp(name, i);
             return;
         }

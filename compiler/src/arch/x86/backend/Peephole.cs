@@ -45,6 +45,7 @@ internal static class Peephole
             ForwardStoreLoad(block.Instrs);
             ForwardSpillLoads(block.Instrs);
             DeadDefs(block.Instrs, liveOut[b], Jumped);
+            DeadXmmMoves(block.Instrs);
             RepeatedStores(block.Instrs, liveOut[b], Usable(m), Jumped);
             // Again: a run of stores of one constant now stores a register,
             // and a load of the slot just stored can read the register.
@@ -1331,6 +1332,52 @@ internal static class Peephole
                     }
                     break;
             }
+        }
+    }
+
+    // ---- dead moves into the XMM registers --------------------------------------------
+
+    /// <summary>
+    /// A MOVE INTO AN XMM REGISTER WRITTEN AGAIN BEFORE IT IS READ, in a block:
+    /// gone. A Packed128 variable is a register its every assignment copies
+    /// into (Select.PackedValues), and one assigned twice with no read between
+    /// left the first copy behind -- the ChaCha20 rounds had one in every
+    /// line. Every register is taken for live at the block's end and at a
+    /// jump out of its middle, which this walk knows nothing of; a call
+    /// writes them all (none survives one). A block with an instruction that
+    /// names its XMM register by number -- the packed registers', a state's
+    /// save -- is left as it is.
+    /// </summary>
+    private static void DeadXmmMoves(List<MInstr> instrs)
+    {
+        foreach (MInstr i in instrs)
+            if (i.Op is MOp.XmmOpRR or MOp.XmmOp or MOp.XmmLoad or MOp.XmmStore or MOp.XmmLoadLow or MOp.XmmStoreLow or MOp.XmmShiftImm
+                or MOp.XmmExtractW or MOp.XmmInsertW or MOp.XmmStoreNt or MOp.PackedSaveFxsr or MOp.PackedRestoreFxsr)
+                return;
+        int dead = 0;
+        for (int k = instrs.Count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            // A move, or a register zeroed (XORPS with itself), that nothing reads.
+            if ((i.Op == MOp.MovF && i.Operands[1] is not MMem { Device: true }
+                 || i.Op == MOp.XorPs && i.Operands[1] is MReg same && same.Id == ((MReg)i.Operands[0]).Id)
+                && i.Operands[0] is MReg { IsXmm: true } to && (dead & (1 << to.XmmNumber)) != 0)
+            {
+                instrs.RemoveAt(k);
+                continue;
+            }
+            if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd)
+            {
+                dead = 0xFF;
+                continue;
+            }
+            if (i.Op is MOp.Jcc or MOp.Jmp or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Epilogue)
+            {
+                dead = 0;
+                continue;
+            }
+            foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.IsXmm) dead |= 1 << r.XmmNumber;
+            foreach ((MReg r, bool isDef) in Regs(i)) if (!isDef && r.IsXmm) dead &= ~(1 << r.XmmNumber);
         }
     }
 

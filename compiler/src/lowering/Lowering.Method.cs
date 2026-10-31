@@ -295,7 +295,8 @@ public sealed partial class Lowering
         {
             SourceFile = _in, Line = decl.Line, Display = Display(m) + (_insideCopy ? " (inside)" : ""), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
-            Exported = m.Owner.Decl?.LocalOnly != true,
+            // A body C's thunk calls is the thunk's alone: nothing else reaches it, past the way in (EmitFromCThunk).
+            Exported = m.Owner.Decl?.LocalOnly != true && !fromC,
             // A TYPE'S INITIALISER BODY STAYS A ROUTINE OF ITS OWN: the link
             // runs it in the type's place (Lto.Preinit, NotePreinitType).
             NoInlining = NoInlining(decl) || (m.Static && decl.Name == "StaticInitBody$") || fromC, Unjudged = decl.AutoAccessor,
@@ -566,7 +567,7 @@ public sealed partial class Lowering
         Function thunk = new(Label(m), body.Returns)
         {
             SourceFile = body.SourceFile, Line = body.Line, Display = body.Display, FromLibrary = body.FromLibrary, SystemCode = body.SystemCode,
-            SourcePath = body.SourcePath, Exported = body.Exported, Unjudged = true, KeepsCallerRegisters = true,
+            SourcePath = body.SourcePath, Exported = m.Owner.Decl?.LocalOnly != true, Unjudged = true, KeepsCallerRegisters = true,
             // Called by C only; put in place in anything, it would lose the
             // register file it is made with.
             NoInlining = true,

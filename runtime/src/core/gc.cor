@@ -18263,41 +18263,11 @@ public static class GcThreads
         }
     }
 
-    /// What Platform.SafePoint calls first: when the thread is about to count
-    /// as stopped, the frame it pushed every callee-saved register into,
-    /// [from, to), copied into the thread block (Tls.Spill). Those registers
-    /// are pushed at the frame's bottom, under its locals, so a frame larger
-    /// than the room is copied from the bottom. The frame is gone once
-    /// SafePoint returns and the wait begins; the copy is what the collector
-    /// reads instead. Nothing in the runtime stops that way any more: a wait
-    /// says so through BeginBlocking, which writes its caller's registers
-    /// down itself (Sys.CallerRegister); Running asks nothing here.
-    public static void Spill(int mode, nuint from, nuint to)
-    {
-        if (mode == Running)
-        {
-            return;
-        }
-
-        nuint block = Sys.ThreadBlock();
-        nuint words = to > from ? (to - from) / WordSize.Bytes : 0;
-
-        if (words > Tls.SpillMax)
-        {
-            words = Tls.SpillMax;
-        }
-
-        for (nuint i = 0; i < words; i++)
-        {
-            Sys.WriteAddress(block + Tls.Spill + i * WordSize.Bytes, Sys.ReadAddress(from + i * WordSize.Bytes));
-        }
-
-        Sys.WriteAddress(block + Tls.SpillCount, words);
-    }
-
-    /// What Platform.SafePoint and BeginBlocking call once every callee-saved
-    /// register is on the stack -- which is the whole reason they are entered
-    /// that way, and the same reasoning as GcRoots.Enter's.
+    /// What Platform.SafePoint calls once every callee-saved register is on
+    /// the stack -- the whole reason it is entered that way, the same
+    /// reasoning as GcRoots.Enter's -- to answer a round (Running); and
+    /// BeginBlockingWith, the waiting frame's registers written down already,
+    /// to count the thread as stopped.
     public static void SafePoint(int mode)
     {
         nuint block = Sys.ThreadBlock();

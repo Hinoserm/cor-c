@@ -58,7 +58,9 @@ public sealed class MFunction
     /// <summary>
     /// The bytes a spilled XMM value is moved by: 8 (MOVSD) where --cpu has
     /// SSE2, a float's as well as a double's; 4 (MOVSS) where it has SSE
-    /// alone, which has floats in the XMM registers and no doubles.
+    /// alone, which has floats in the XMM registers and no doubles; 16
+    /// (MOVUPS) in a function whose Packed128 values are the class's
+    /// (Select.PackedValues).
     /// </summary>
     public int XmmSpillWidth { get; set; } = 8;
 

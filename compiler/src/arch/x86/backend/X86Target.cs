@@ -162,7 +162,7 @@ internal sealed class X86Target : ITarget
     };
     public int ClassOf(int reg) => reg < MReg.FirstVirtual ? (reg >= MReg.XmmBase ? 1 : 0) : _m.XmmRegs.Contains(reg) ? 1 : 0;
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
-    /// <summary>A slot of a word, or of eight bytes for a float of the XMM class, a double's or a float's alike (XmmSpillWidth).</summary>
+    /// <summary>A slot of a word, or one an XMM value's moves fill -- eight bytes, sixteen for a Packed128's (MFunction.XmmSpillWidth).</summary>
     public int NewSlot(int vreg) => _m.XmmRegs.Contains(vreg) ? _m.Frame.Allocate(Math.Max(8, _m.XmmSpillWidth), 8) : _m.Frame.Spill();
     public string RegName(int reg) => reg >= MReg.XmmBase ? $"xmm{reg - MReg.XmmBase}" : ((Gpr)reg).ToString();
     public bool PlainConstant(object constant) => constant is MImm { IsPlain: true };
@@ -448,6 +448,13 @@ internal sealed class X86Target : ITarget
             if (catches || p.Touched.Contains(g)) _m.SavedRegs.Add((Gpr)g);
         // EBP given a value: saved by the prologue's own push, not among these.
         _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Ebp);
+        // A THUNK C ENTERS GIVES NONE OF THEM A VALUE (Function.KeepsCallerRegisters):
+        // what it calls on its way out reads them for C's, and one it saved it
+        // wrote -- an instruction's own register (CPUID's EBX, REP MOVS's ESI
+        // and EDI) the register file does not see. Refused, never a reference
+        // the collector would not find.
+        if (_m.Source.KeepsCallerRegisters && _m.SavedRegs.Count > 0)
+            throw new InvalidOperationException($"{_m.Source.Name}: the way in from C writes {string.Join(", ", _m.SavedRegs)}, which it must leave as C left them");
     }
 
     /// <summary>

@@ -27,8 +27,10 @@ using Block = Corsac.Lang.Ir.Block;
 /// read of some of its bytes (a field), or a copy into another of them; and
 /// every write -- an operation's result, a MemCopy's destination -- is to a
 /// slot or an alias, never through a variable. Any other use of any of them
-/// leaves all of them in memory, as they were. Not in a function with an
-/// SSE operation on a Packed64 (f2), which the packed registers hold.
+/// leaves all of them in memory, as they were. An XMM packed operation
+/// touching none of them -- a Packed64's floats (f2) among them -- goes
+/// through the packed registers as before, in XMM4 to XMM7, the class keeping
+/// XMM0 to XMM3 (MFunction.XmmShared).
 /// </summary>
 internal sealed partial class Selector
 {
@@ -95,6 +97,8 @@ internal sealed partial class Selector
         // What a packed operation names: only their kin is taken, never a
         // struct of sixteen bytes no packed operation touches.
         List<object> operated = new();
+        // Every slot named, directly or by an alias: each in a group kept is given its register.
+        List<FrameSlot> slots = new();
         bool anyOperation = false;
         foreach (Block b in _f.Blocks)
             foreach (Instr i in b.Instrs)
@@ -102,17 +106,12 @@ internal sealed partial class Selector
                 bool valueOp = i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
                     && XmmValueOp(c, out string[] part);
                 string kind = valueOp ? i.Callee![MachineIntrinsics.PackedOpPrefix.Length..].Split('.')[0] : "";
-                // A Packed64's floats in an XMM register: the packed registers', which this mode does not keep.
-                if (i.Op == Opcode.Call && i.Callee is { } f2 && f2.StartsWith(MachineIntrinsics.PackedOpPrefix + "f2.", StringComparison.Ordinal))
-                {
-                    _packedValues = null;
-                    return;
-                }
                 if (valueOp) anyOperation = true;
                 // A variable's assignment links it to what it copies.
                 if (i.Op == Opcode.Copy && i.Dest is { } dest && variables.Contains(dest) && NodeOf(i.Operands[0]) is { } from)
                 {
                     Union(dest, from);
+                    if (from is FrameSlot copied) slots.Add(copied);
                     continue;
                 }
                 // An alias's one definition: it is its slot.
@@ -121,11 +120,14 @@ internal sealed partial class Selector
                 {
                     if (NodeOf(i.Operands[k]) is not { } node) continue;
                     if (valueOp) operated.Add(node);
+                    if (node is FrameSlot named) slots.Add(named);
                     bool slotItself = node is FrameSlot;
                     bool fine = valueOp
-                        ? !(kind == "xinsert" && k == 2) && !(kind == "xstorent" && k == 0) && !(kind == "xf" && !XmmFloatsWide(i))
+                        ? !(kind == "xinsert" && k == 2) && !(kind == "xstorent" && k == 0)
                           && (k != 0 || kind == "xextract" || slotItself)
                         : i.Op == Opcode.MemCopy && k < 2 && i.Operands[2] is ImmOperand { Value: 16 } && (k == 1 || slotItself)
+                          // Zeroed whole: a fresh block escape analysis put in the frame (`b = a`'s copy).
+                          || i.Op == Opcode.MemSet && k == 0 && slotItself && i.Operands[1] is ImmOperand { Value: 0 } && i.Operands[2] is ImmOperand { Value: 16 }
                           || i.Op == Opcode.Load && k == 0 && i.Offset >= 0 && i.Offset + i.Size <= 16;
                     if (!fine) escaped.Add(node);
                 }
@@ -143,13 +145,31 @@ internal sealed partial class Selector
         foreach (FrameSlot s in aliases.Values) Take(s);
         foreach (VReg v in variables) Take(v);
         foreach (object o in operated) Take(o);
+        foreach (FrameSlot s in slots) Take(s);
         if (values.Count == 0) return;
         _packedValues = values;
         _packedAliases = aliases;
     }
 
-    /// <summary>Whether an xf operation works on four floats (sixteen bytes), not a Packed64's two.</summary>
-    private static bool XmmFloatsWide(Instr i) => i.Callee!.StartsWith(MachineIntrinsics.PackedOpPrefix + "xf.", StringComparison.Ordinal);
+    /// <summary>Whether a packed operation names a value this mode keeps: then it is made on registers (SelectPackedValueOp).</summary>
+    private bool TouchesPackedValue(Instr i)
+    {
+        foreach (Operand o in i.Operands)
+            if (PackedValue(o) is not null) return true;
+        return false;
+    }
+
+    /// <summary>Whether any XMM packed operation of the function names no value this mode keeps: the packed registers' then, beside the class.</summary>
+    private bool PackedOperationsOutside()
+    {
+        foreach (Block b in _f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
+                    && (c.StartsWith(MachineIntrinsics.PackedOpPrefix + "x", StringComparison.Ordinal) || c.StartsWith(MachineIntrinsics.PackedOpPrefix + "f2.", StringComparison.Ordinal))
+                    && !TouchesPackedValue(i))
+                    return true;
+        return false;
+    }
 
     /// <summary>The XMM register of the value an operand names, or null where it names none taken.</summary>
     private MReg? PackedValue(Operand o) => _packedValues is null ? null : o switch
@@ -180,8 +200,40 @@ internal sealed partial class Selector
         MReg? to = PackedValue(i.Operands[0]), from = PackedValue(i.Operands[1]);
         if (to is null && from is null) return false;
         if (to is not null && from is not null) MovF(to, from, 16);
-        else if (to is not null) MovF(to, PackedValueIn(i.Operands[1]), 16);
+        else if (to is not null)
+        {
+            // Straight into the value's register: bytes the MMX registers hold newer written back first.
+            PackedLetGo(PackedPlaceOf(i.Operands[1]), 16, replaced: false);
+            MovF(to, PackedAt(i.Operands[1]), 16);
+        }
         else PackedValueOut(i.Operands[0], from!);
+        return true;
+    }
+
+    /// <summary>A value this mode keeps zeroed whole (a fresh block's MemSet): XORPS with itself.</summary>
+    private bool PackedValueMemSet(Instr i)
+    {
+        if (_packedValues is null || PackedValue(i.Operands[0]) is not { } v) return false;
+        Emit(MOp.XorPs, v, v);
+        return true;
+    }
+
+    /// <summary>
+    /// A WORD OF A VALUE this mode keeps, read where --cpu has SSE2: the low
+    /// one by MOVD, another first brought down by PSHUFD -- no store of the
+    /// whole value to read four bytes of it back.
+    /// </summary>
+    private bool PackedValueLane(Instr i)
+    {
+        if (PackedValue(i.Operands[0]) is not { } v || i.Size != 4 || i.Dest is not { Type: IrType.I32 } d
+            || (i.Offset & 3) != 0 || i.Offset is < 0 or > 12 || !Target.Current.X86Profile.Has(X86Feature.Sse2)) return false;
+        MReg lane = v;
+        if (i.Offset != 0)
+        {
+            lane = XTemp();
+            Emit(new MInstr(MOp.XmmOpVDef, Imm(0x66), Imm(0x70), lane, v, Imm((int)(i.Offset / 4))) { Probed = true });
+        }
+        Emit(MOp.MovdFromX, Lo(d), lane);
         return true;
     }
 

@@ -41,11 +41,25 @@ for f in m_Runtime_BeginBlocking_0 m_Runtime_EnterNative_0 m_GcThreads_BeginBloc
     code "$f" > "$work/$f.s"
     grep -q 'call.*m_GcThreads_BeginBlockingWith_' "$work/$f.s" || { cat "$work/$f.s"; fail "$f does not call BeginBlockingWith"; }
     read=0
-    for r in ebx esi edi; do
-        if grep -qE "mov +%$r,%e" "$work/$f.s"; then read=$((read + 1)); continue; fi
-        # Saved by the prologue: its push, and a load from below the frame pointer.
-        if grep -qE "push +%$r" "$work/$f.s" && grep -qE 'mov +-0x[0-9a-f]+\(%ebp\),%e' "$work/$f.s"; then read=$((read + 1)); fi
+    # The frame's size (sub esp, n), and each register the prologue pushes
+    # after it: the k-th at ebp - n - 4(k+1).
+    size=$(awk 'NR <= 4 && /sub +\$0x[0-9a-f]+,%esp/ { sub(/.*\$0x/, ""); sub(/,.*/, ""); print; exit }' "$work/$f.s")
+    size=$((0x${size:-0}))
+    k=0
+    for pushed in $(head -8 "$work/$f.s" | grep -oE 'push +%e(bx|si|di)' | awk '{ print $2 }'); do
+        k=$((k + 1)); eval "slot_${pushed#%}=$((size + 4 * k))"
     done
+    for r in ebx esi edi; do
+        eval "slot=\${slot_$r:-}"
+        if [ -n "$slot" ]; then
+            # Saved: read from its own slot.
+            grep -qE "mov +-0x$(printf '%x' "$slot")\(%ebp\),%e" "$work/$f.s" && read=$((read + 1))
+        else
+            # Never given a value: read from the register itself.
+            grep -qE "mov +%$r,%e" "$work/$f.s" && read=$((read + 1))
+        fi
+    done
+    unset slot_ebx slot_esi slot_edi
     test $read = 3 || { cat "$work/$f.s"; fail "$f reads $read of its caller's registers, not three"; }
 done
 # The thunk C enters by touches none of them.
@@ -73,9 +87,18 @@ for f in m_Runtime_BeginBlocking_0 m_Runtime_EnterNative_0; do
     code64 "$f" > "$work/$f-64.s"
     grep -q 'call.*m_GcThreads_BeginBlockingWith_' "$work/$f-64.s" || { cat "$work/$f-64.s"; fail "$f (x86-64) does not call BeginBlockingWith"; }
     for r in rbx r12 r13 r14 r15; do
-        grep -qE "mov +(%$r,%r|-0x[0-9a-f]+\(%rbp\),%r)" "$work/$f-64.s" || { cat "$work/$f-64.s"; fail "$f (x86-64) does not read its caller's $r"; }
+        # Saved by the prologue (mov %r, -n(%rbp)): read back from that slot;
+        # never given a value: read from the register itself.
+        slot=$(grep -oE "mov +%$r,-0x[0-9a-f]+\(%rbp\)" "$work/$f-64.s" | head -1 | grep -oE -- '-0x[0-9a-f]+' || true)
+        if [ -n "$slot" ]; then pattern="mov +$slot\(%rbp\),%r"; else pattern="mov +%$r,%r"; fi
+        grep -qE -- "$pattern" "$work/$f-64.s" || { cat "$work/$f-64.s"; fail "$f (x86-64) does not read its caller's $r"; }
     done
 done
+# The thunk touches none of RBX, R12 to R15.
+thunk64=$(nm "$work/701x" | awk '$3 ~ /^m_Program_Compare_.*I32$/ { print $3; exit }')
+test -n "$thunk64" || fail "no x86-64 thunk for Compare"
+code64 "$thunk64" > "$work/thunk64.s"
+if grep -qE '%(rbx|ebx|r1[2-5])' "$work/thunk64.s"; then cat "$work/thunk64.s"; fail "the x86-64 thunk gives a callee-saved register a value"; fi
 "$work/701x" > "$work/run64.log" 2>&1 || { cat "$work/run64.log"; fail "test 701 did not run for x86-64"; }
 
 printf 'PASS save registers: %s\n' "$work"

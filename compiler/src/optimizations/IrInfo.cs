@@ -44,6 +44,12 @@ public static class IrInfo
     {
         switch (i.Op)
         {
+            // A register the caller left, read off this function's own frame
+            // (Sys.CallerRegister): nothing done but the reading, so one the
+            // program no longer needs -- the collector's note it fed dropped
+            // (Escape.IsThreadNote) -- goes.
+            case Opcode.Call when i.Callee == Corsac.Lang.X86.MachineIntrinsics.CallerRegister:
+                return true;
             case Opcode.Load:
             case Opcode.ArrayLength:
                 // A load through a register may fault on a bad address, and

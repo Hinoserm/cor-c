@@ -908,7 +908,6 @@ public static class Platform
     public static void SafePoint(int mode)
     {
         Sys.SaveRegisters();
-        GcThreads.Spill(mode, Sys.Stack(), Sys.FramePointer());
         GcThreads.SafePoint(mode);
     }
 

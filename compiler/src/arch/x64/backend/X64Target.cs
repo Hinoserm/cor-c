@@ -400,6 +400,11 @@ internal sealed class X64Target : ITarget
             if (_m.SavesEverything || p.Touched.Contains((int)g)) _m.SavedRegs.Add(g);
         // RBP given a value: saved by the prologue's own push, not among these.
         _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Rbp);
+        // A THUNK C ENTERS GIVES NONE OF THEM A VALUE (Function.KeepsCallerRegisters):
+        // what it calls on its way out reads them for C's. Refused, never a
+        // reference the collector would not find.
+        if (_m.Source.KeepsCallerRegisters && _m.SavedRegs.Count > 0)
+            throw new InvalidOperationException($"{_m.Source.Name}: the way in from C writes {string.Join(", ", _m.SavedRegs)}, which it must leave as C left them");
     }
 
     /// <summary>

@@ -16,9 +16,9 @@
 // would wait for it until the call came back. Here the host's write stands
 // for the gate's: the call is bracketed, its answer is the kernel's, and the
 // one thread is a running thread again after it -- the collection it then
-// makes keeps what it holds. Platform.Blocking is inlined into Main, and so,
-// in long mode, is GcThreads.BeginBlocking, whose call to Platform.SafePoint
-// is what is left of it there.
+// makes keeps what it holds. Platform.Blocking is inlined into Main, and
+// Runtime.BeginBlocking, never put in place (it reads its caller's registers,
+// Sys.CallerRegister), is called from it.
 
 using System;
 
