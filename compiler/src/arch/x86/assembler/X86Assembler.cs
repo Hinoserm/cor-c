@@ -872,7 +872,9 @@ public sealed partial class X86Assembler : ISymbols
             // is the SSE bit, which brings SSE's integer half on the MMX
             // registers (AMD's extended MMX: the streaming prefetches,
             // SFENCE, PSHUFW...). A list names everything checked for, and
-            // replaces the last one.
+            // adds to what earlier lines promised -- `.runtime sse` then
+            // `.runtime mmx` is both, never a silent narrowing; only
+            // `.runtime none` takes it all back.
             case ".runtime":
             {
                 if (ops.Length == 0) throw Error(".runtime takes none, or what the code checked for: " + RuntimeNames);
@@ -886,8 +888,16 @@ public sealed partial class X86Assembler : ISymbols
                             throw Error($".runtime: '{op.Trim()}' is not a processor feature or instruction this assembler checks for; it takes none or any of " + RuntimeNames);
                     }
                 }
-                _runtime = promised;
-                _runtimeInstructions = instructions;
+                if (ops is ["none"])
+                {
+                    _runtime = Corsac.Lang.X86.X86Feature.None;
+                    _runtimeInstructions = new HashSet<string>(StringComparer.Ordinal);
+                }
+                else
+                {
+                    _runtime |= promised;
+                    _runtimeInstructions.UnionWith(instructions);
+                }
                 return;
             }
 

@@ -10,6 +10,7 @@
 // commented 4
 // records 6
 // transfer 2.5
+// stacked 0
 //
 // What a block may read without having set it (docs/INLINE-ASSEMBLY.md: a
 // register is set before it is read): SBB of a register with itself, the
@@ -19,6 +20,7 @@
 // and its own; and a variable named record, which begins no type's head.
 // An SSE float handed to the x87 through a slot the block pushed: MOVSS's
 // store sets the four bytes PUSH left unset, which FLD then reads.
+// Two `.runtime` lines, SSE's then MMX's, admit both: each adds.
 using System;
 
 static class Program
@@ -129,6 +131,22 @@ static class Program
         return r;
     }
 
+    static int Stacked()
+    {
+        int r;
+        asm
+        {
+            .runtime sse
+            .runtime mmx
+            pxor mm0, mm0
+            xorps xmm0, xmm0
+            movd eax, mm0
+            emms
+            mov r, eax
+        }
+        return r;
+    }
+
     static int Main()
     {
         Console.WriteLine("mask " + Mask(1, 2) + " " + Mask(2, 1));
@@ -138,6 +156,7 @@ static class Program
         Console.WriteLine("commented " + Commented(2));
         Console.WriteLine("records " + Records(new[] { 1, 2, 3 }));
         Console.WriteLine("transfer " + Transfer(2.5f));
+        Console.WriteLine("stacked " + Stacked());
         return 0;
     }
 }

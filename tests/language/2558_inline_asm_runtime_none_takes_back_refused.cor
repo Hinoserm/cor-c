@@ -1,0 +1,19 @@
+// test: inline_asm_runtime_none_takes_back_refused
+// only-target: x86
+// expect-compile-error: requires
+//
+// `.runtime none` takes back what the lines before it promised: XORPS after
+// it needs SSE again (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            .runtime sse
+            .runtime none
+            xorps xmm0, xmm0
+        }
+        return 0;
+    }
+}
