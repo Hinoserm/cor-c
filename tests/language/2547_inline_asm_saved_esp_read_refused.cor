@@ -1,0 +1,23 @@
+// test: inline_asm_saved_esp_read_refused
+// only-target: x86
+// expect-compile-error: this reads off the stack what the block pushed
+//
+// PUSHAD's saved ESP read back through [esp + 12]: a copy of ESP by another
+// way, through which PUSHF's flags could be changed unseen
+// (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            pushfd
+            pushad
+            mov eax, [esp + 12]
+            or dword [eax], 0x400
+            popad
+            popfd
+        }
+        return 0;
+    }
+}

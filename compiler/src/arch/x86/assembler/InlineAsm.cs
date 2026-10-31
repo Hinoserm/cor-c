@@ -759,8 +759,11 @@ public static class InlineAsm
         };
     }
 
-    private const string EspCopied = "an asm block may not take ESP's value (`mov ebx, esp`, `lea ebx, [esp + 4]`, `push esp`): "
+    private const string EspCopied = "an asm block may not read ESP as a value (`mov ebx, esp`, `cmp esp, ebx`, `lea ebx, [esp + 4]`, `push esp`): "
         + "what it pushed is followed through ESP alone -- address the stack as [esp + n]";
+
+    private const string StackUnsetRead = "this reads off the stack what the block pushed from a register it had not set, or the ESP PUSHA saved: "
+        + "a block's registers hold nothing of the method's, and ESP's value is not the block's to take";
 
     // THE STACK'S BYTES as Analyze follows them (its `stack`): 'v' a value,
     // 'u' a value pushed from a register the block had not set, 'c' and 's'
@@ -840,18 +843,29 @@ public static class InlineAsm
         return g;
     }
 
-    /// <summary>A memory operand's displacement as a number, or null where it is an expression.</summary>
+    /// <summary>
+    /// A memory operand's displacement as a number, as the assembler reads
+    /// it (Expr), or null where it names anything: a block knows no names
+    /// but its labels, and a label's address is no offset into the stack.
+    /// </summary>
     private static int? Displacement(Operand o)
     {
         if (!o.HasDisp) return 0;
-        string d = o.Disp.Replace(" ", "");
-        bool negative = d.StartsWith('-');
-        d = d.TrimStart('+', '-');
-        int value;
-        if (d.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) { if (!int.TryParse(d[2..], System.Globalization.NumberStyles.HexNumber, null, out value)) return null; }
-        else if (d.EndsWith('h') || d.EndsWith('H')) { if (!int.TryParse(d[..^1], System.Globalization.NumberStyles.HexNumber, null, out value)) return null; }
-        else if (!int.TryParse(d, out value)) return null;
-        return negative ? -value : value;
+        try
+        {
+            long value = Expr.Eval(o.Disp, NoSymbols.Instance, "<asm>", 0, out bool resolved);
+            return resolved && value is >= int.MinValue and <= int.MaxValue ? (int)value : null;
+        }
+        catch (AsmException)
+        {
+            return null;
+        }
+    }
+
+    private sealed class NoSymbols : ISymbols
+    {
+        public static readonly NoSymbols Instance = new();
+        public bool TryLookup(string name, out long value) { value = 0; return false; }
     }
 
     /// <summary>The words of a block's operands that name registers, as written: a local spelt as one could not be named (Binder.CheckAsm).</summary>
@@ -966,7 +980,7 @@ public static class InlineAsm
                 {
                     if (op.Base >= 0) a.GprRead |= 1u << (op.Base & 15);
                     if (op.Index >= 0) a.GprRead |= 1u << (op.Index & 15);
-                    if (s.Mnemonic == "lea" && ((op.Base & 15) == Esp && op.Base >= 0 || (op.Index & 15) == Esp && op.Index >= 0))
+                    if (s.Mnemonic == "lea" && op.Base >= 0 && (op.Base & 15) == Esp)
                         throw new AsmException("<asm>", s.Line, EspCopied);
                     continue;
                 }
@@ -1028,11 +1042,16 @@ public static class InlineAsm
         // that is a `mov` the block sets it by).
         ulong[] gset = new ulong[count + 1], vset = new ulong[count + 1];
         // Per statement: the parts and the vector registers it needs set and
-        // those it sets; and the bytes it writes through ESP -- from the top,
-        // so many (stackAt, stackSize), stackSize -1 where they are not
-        // known (an index, a displacement not a number) and 0 for none.
+        // those it sets; and the bytes it reads and writes through ESP --
+        // from the top, so many (stackAt, stackSize; readAt, readSize), the
+        // size -1 where they are not known (an index, a displacement not a
+        // number, a bit string's offset in a register, a write's size),
+        // Unsized for a read whose size is not known, and 0 for none; and
+        // whether the write is only maybe (CMPXCHG's).
         ulong[] gneeds = new ulong[count], vneeds = new ulong[count], gsets = new ulong[count], vsets = new ulong[count];
-        int[] stackAt = new int[count], stackSize = new int[count];
+        int[] stackAt = new int[count], stackSize = new int[count], readAt = new int[count], readSize = new int[count];
+        bool[] maybeWrite = new bool[count];
+        const int Unsized = int.MaxValue / 2;
         for (int k = 0; k < count; k++)
         {
             AsmStatement s = statements[k];
@@ -1065,11 +1084,19 @@ public static class InlineAsm
                 {
                     if (op.Base >= 0) gneed |= Parts(op.Base & 15, bits / 8, false, false);
                     if (op.Index >= 0) gneed |= Parts(op.Index & 15, bits / 8, false, false);
-                    if ((role & AsmRole.Write) != 0 && op.Base >= 0 && (op.Base & 15) == Esp)
+                    if (op.Base >= 0 && (op.Base & 15) == Esp)
                     {
                         int size = op.Size != 0 ? op.Size : Array.Find(ops, other => other.Kind == OperandKind.Register)?.Size ?? 0;
-                        stackSize[k] = op.Index < 0 && size > 0 && Displacement(op) is not null ? size : -1;
-                        stackAt[k] = Displacement(op) ?? 0;
+                        // BT's kin with the bit's offset in a register reach
+                        // past the operand, by the offset over eight.
+                        bool known = op.Index < 0 && Displacement(op) is not null
+                            && !(s.Mnemonic is "bt" or "bts" or "btr" or "btc" && ops.Length == 2 && ops[1].Kind == OperandKind.Register);
+                        // A write of a size not known is a write of no byte known;
+                        // a read, of every byte from where it starts.
+                        int span = !known ? -1 : size > 0 ? size : Unsized;
+                        if ((role & AsmRole.Write) != 0) { stackSize[k] = span == Unsized ? -1 : span; stackAt[k] = Displacement(op) ?? 0; }
+                        if ((role & AsmRole.Read) != 0) { readSize[k] = span; readAt[k] = Displacement(op) ?? 0; }
+                        maybeWrite[k] = s.Mnemonic is "cmpxchg" or "cmpxchg8b";
                     }
                     continue;
                 }
@@ -1167,11 +1194,24 @@ public static class InlineAsm
                 ulong before = g;
                 g |= gsets[at];
                 v |= vsets[at];
+                // A read through ESP of what the block pushed: nothing it had
+                // not set, nor the ESP PUSHA saved (EspCopied); where it is
+                // not known which bytes, none such on the stack at all.
+                if (readSize[at] != 0)
+                {
+                    int from = readSize[at] < 0 ? 0 : readAt[at], to = readSize[at] < 0 ? st.Length : (int)Math.Min((long)from + readSize[at], st.Length);
+                    for (int b = Math.Max(0, from); b < to; b++)
+                        if (UnsetByte(st[^(b + 1)])) throw new AsmException("<asm>", s.Line, StackUnsetRead);
+                }
                 if (f.Pops != '\0')
                 {
                     if (st.Length < f.Esp) throw new AsmException("<asm>", s.Line, "this pops more off the stack than the block pushed");
                     string taken = st[^f.Esp..];
                     st = st[..^f.Esp];
+                    // A value popped to memory: nothing unset (a register
+                    // popped is unset as it was, below).
+                    if (f.Pops == 'v' && s.Parsed is [{ Kind: OperandKind.Memory }] && taken.Any(UnsetByte))
+                        throw new AsmException("<asm>", s.Line, StackUnsetRead);
                     // DF is bit 10: in the second byte from the top.
                     if (f.Pops == 'f') d = taken[^2] != 'c';
                     if (f.Pops is 'a' or 'A')
@@ -1189,16 +1229,18 @@ public static class InlineAsm
                 // it stores the block had set), still PUSHA's in their places
                 // -- but for the saved EBP, which POPA would load; where it is
                 // not known which, no byte is PUSHA's or the flags' any more.
+                // CMPXCHG's write may not happen: what was unset stays so.
                 if (stackSize[at] > 0)
                 {
                     char[] c = st.ToCharArray();
-                    for (int b = stackAt[at]; b < stackAt[at] + stackSize[at]; b++)
+                    for (long b = stackAt[at]; b < Math.Min((long)stackAt[at] + stackSize[at], c.Length); b++)
                     {
-                        if (b < 0 || b >= c.Length) continue;
-                        char was = c[^(b + 1)];
+                        if (b < 0) continue;
+                        char was = c[^(int)(b + 1)];
                         if (was >= PushaPlace && PushaOrder[(was & 0xFF) / ((was & 0x2000) != 0 ? 2 : 4)] == Ebp)
                             throw new AsmException("<asm>", s.Line, "this writes the EBP PUSHA saved, which POPA would load: the method's frame is reached through it");
-                        c[^(b + 1)] = was >= PushaPlace ? (char)(was & ~PushaUnset) : 'v';
+                        c[^(int)(b + 1)] = was >= PushaPlace ? (maybeWrite[at] ? was : (char)(was & ~PushaUnset))
+                            : maybeWrite[at] && was == 'u' ? 'u' : 'v';
                     }
                     st = new string(c);
                 }

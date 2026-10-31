@@ -120,10 +120,14 @@ them:
   pops, but a `popad` two bytes off its frame is refused. A write through
   ESP changes the bytes it covers (`pushad`, `mov [esp + 28], eax`, `popad`
   returns EAX through the frame; `mov dword [esp], 0x400` under a `popfd`
-  may set DF; a write to the EBP `pusha` saved is refused). ESP's value is never taken (`mov ebx, esp`,
-  `lea ebx, [esp + 4]`, `push esp`): what the block pushed is reached
-  through ESP alone. A register pushed or saved by `pusha` comes back from
-  its `pop` or `popa` set as it was. CS and SS are not loaded;
+  may set DF; a write to the EBP `pusha` saved is refused; a `bts` with
+  its bit's offset in a register reaches bytes not known, and so does a
+  write of no stated size). ESP is never read as a value (`mov ebx, esp`,
+  `cmp esp, ebx`, `lea ebx, [esp + 4]`, `push esp`): what the block pushed
+  is reached through ESP alone. A register pushed, or saved by `pusha`,
+  comes back from its `pop` or `popa` set as it was; read off the stack
+  any other way (`mov eax, [esp]`, `pop dword [ebx]`), it must have been
+  set, and the ESP `pusha` saved is never read. CS and SS are not loaded;
 - **a register is set before it is read**: a block's registers hold nothing
   of the method's but what its own instructions put there, the head's
   bindings among them. Reading one the block has not set on every path is an
