@@ -143,7 +143,7 @@ public class CorsacSecureCrypto_ChaCha20Context
     private const long CounterLimit = 0x100000000L;
 
     private uint[] _state;
-    private long[] _work;
+    private uint[] _keystream;
     private byte[] _block;
     private bool _closed;
     private int _error;
@@ -151,7 +151,7 @@ public class CorsacSecureCrypto_ChaCha20Context
     public CorsacSecureCrypto_ChaCha20Context(byte[] key, long keyOffset)
     {
         _state = new uint[16];
-        _work = new long[16];
+        _keystream = new uint[16];
         _block = new byte[64];
         if (!CorsacSecureCrypto_Bytes.Range(key, keyOffset, 32))
         {
@@ -180,6 +180,7 @@ public class CorsacSecureCrypto_ChaCha20Context
 
         SetNonce(nonce, nonceOffset);
         Generate(counter);
+        KeystreamBytes();
         bool okay = CorsacSecureCrypto_Bytes.Copy(
             output, outputOffset, _block, 0, 64);
         EraseBlock();
@@ -206,11 +207,20 @@ public class CorsacSecureCrypto_ChaCha20Context
         {
             Generate(blockCounter);
             int take = (int)(count - done < 64 ? count - done : 64);
-            for (int i = 0; i < take; i = i + 1)
+            int o = (int)(outputOffset + done), n = (int)(inputOffset + done);
+            uint[] k = _keystream;
+            int i = 0;
+            // A word of keystream at a time, its four bytes in order.
+            for (; i + 4 <= take; i = i + 4)
             {
-                output[(int)(outputOffset + done) + i] = (byte)(
-                    input[(int)(inputOffset + done) + i] ^ _block[i]);
+                uint word = k[i >> 2];
+                output[o + i] = (byte)(input[n + i] ^ word);
+                output[o + i + 1] = (byte)(input[n + i + 1] ^ (word >> 8));
+                output[o + i + 2] = (byte)(input[n + i + 2] ^ (word >> 16));
+                output[o + i + 3] = (byte)(input[n + i + 3] ^ (word >> 24));
             }
+            for (; i < take; i = i + 1)
+                output[o + i] = (byte)(input[n + i] ^ (k[i >> 2] >> ((i & 3) * 8)));
             done = done + take;
             blockCounter = blockCounter + 1;
         }
@@ -222,7 +232,7 @@ public class CorsacSecureCrypto_ChaCha20Context
     {
         if (_closed) return;
         for (int i = 0; i < _state.Length; i = i + 1) _state[i] = 0;
-        for (int i = 0; i < _work.Length; i = i + 1) _work[i] = 0;
+        for (int i = 0; i < _keystream.Length; i = i + 1) _keystream[i] = 0;
         EraseBlock();
         _closed = true;
     }
@@ -262,52 +272,87 @@ public class CorsacSecureCrypto_ChaCha20Context
             _state[13 + i] = (uint)ReadLittleWord(nonce, nonceOffset + i * 4);
     }
 
+    /// THE BLOCK FUNCTION IN 32-BIT WORDS, as ChaCha20 is defined: sixteen
+    /// UInt32 locals, rotations of 32 bits, the keystream left in words
+    /// (_keystream). It was written in Int64 with a mask after every add and
+    /// rotation, through the work array at every quarter round -- on a 32-bit
+    /// processor each operation two or three, and SSH's cipher took a fifth
+    /// of the processor generating keystream at 9 MB/s.
     private void Generate(long counter)
     {
-        _state[12] = (uint)counter;
-        // (no hardware assist on this machine: the software path follows)
-        for (int i = 0; i < 16; i = i + 1) _work[i] = _state[i];
+        uint[] st = _state;
+        st[12] = (uint)counter;
+        uint x0 = st[0];
+        uint x1 = st[1];
+        uint x2 = st[2];
+        uint x3 = st[3];
+        uint x4 = st[4];
+        uint x5 = st[5];
+        uint x6 = st[6];
+        uint x7 = st[7];
+        uint x8 = st[8];
+        uint x9 = st[9];
+        uint x10 = st[10];
+        uint x11 = st[11];
+        uint x12 = st[12];
+        uint x13 = st[13];
+        uint x14 = st[14];
+        uint x15 = st[15];
         for (int round = 0; round < 10; round = round + 1)
         {
-            QuarterRound(0, 4, 8, 12);
-            QuarterRound(1, 5, 9, 13);
-            QuarterRound(2, 6, 10, 14);
-            QuarterRound(3, 7, 11, 15);
-            QuarterRound(0, 5, 10, 15);
-            QuarterRound(1, 6, 11, 12);
-            QuarterRound(2, 7, 8, 13);
-            QuarterRound(3, 4, 9, 14);
+            x0 += x4; x12 = Rotate(x12 ^ x0, 16); x8 += x12; x4 = Rotate(x4 ^ x8, 12);
+            x0 += x4; x12 = Rotate(x12 ^ x0, 8); x8 += x12; x4 = Rotate(x4 ^ x8, 7);
+            x1 += x5; x13 = Rotate(x13 ^ x1, 16); x9 += x13; x5 = Rotate(x5 ^ x9, 12);
+            x1 += x5; x13 = Rotate(x13 ^ x1, 8); x9 += x13; x5 = Rotate(x5 ^ x9, 7);
+            x2 += x6; x14 = Rotate(x14 ^ x2, 16); x10 += x14; x6 = Rotate(x6 ^ x10, 12);
+            x2 += x6; x14 = Rotate(x14 ^ x2, 8); x10 += x14; x6 = Rotate(x6 ^ x10, 7);
+            x3 += x7; x15 = Rotate(x15 ^ x3, 16); x11 += x15; x7 = Rotate(x7 ^ x11, 12);
+            x3 += x7; x15 = Rotate(x15 ^ x3, 8); x11 += x15; x7 = Rotate(x7 ^ x11, 7);
+            x0 += x5; x15 = Rotate(x15 ^ x0, 16); x10 += x15; x5 = Rotate(x5 ^ x10, 12);
+            x0 += x5; x15 = Rotate(x15 ^ x0, 8); x10 += x15; x5 = Rotate(x5 ^ x10, 7);
+            x1 += x6; x12 = Rotate(x12 ^ x1, 16); x11 += x12; x6 = Rotate(x6 ^ x11, 12);
+            x1 += x6; x12 = Rotate(x12 ^ x1, 8); x11 += x12; x6 = Rotate(x6 ^ x11, 7);
+            x2 += x7; x13 = Rotate(x13 ^ x2, 16); x8 += x13; x7 = Rotate(x7 ^ x8, 12);
+            x2 += x7; x13 = Rotate(x13 ^ x2, 8); x8 += x13; x7 = Rotate(x7 ^ x8, 7);
+            x3 += x4; x14 = Rotate(x14 ^ x3, 16); x9 += x14; x4 = Rotate(x4 ^ x9, 12);
+            x3 += x4; x14 = Rotate(x14 ^ x3, 8); x9 += x14; x4 = Rotate(x4 ^ x9, 7);
         }
-
-        for (int i = 0; i < 16; i = i + 1)
-        {
-            long word = (_work[i] + _state[i]) & Mask32;
-            int at = i * 4;
-            _block[at] = (byte)(word & 255);
-            _block[at + 1] = (byte)((word >> 8) & 255);
-            _block[at + 2] = (byte)((word >> 16) & 255);
-            _block[at + 3] = (byte)((word >> 24) & 255);
-        }
+        uint[] k = _keystream;
+        k[0] = x0 + st[0];
+        k[1] = x1 + st[1];
+        k[2] = x2 + st[2];
+        k[3] = x3 + st[3];
+        k[4] = x4 + st[4];
+        k[5] = x5 + st[5];
+        k[6] = x6 + st[6];
+        k[7] = x7 + st[7];
+        k[8] = x8 + st[8];
+        k[9] = x9 + st[9];
+        k[10] = x10 + st[10];
+        k[11] = x11 + st[11];
+        k[12] = x12 + st[12];
+        k[13] = x13 + st[13];
+        k[14] = x14 + st[14];
+        k[15] = x15 + st[15];
     }
 
-    private void QuarterRound(int ai, int bi, int ci, int di)
+    private static uint Rotate(uint value, int bits)
     {
-        long a = _work[ai], b = _work[bi];
-        long c = _work[ci], d = _work[di];
+        return (value << bits) | (value >> (32 - bits));
+    }
 
-        a = (a + b) & Mask32;
-        d = RotateLeft32((d ^ a) & Mask32, 16);
-        c = (c + d) & Mask32;
-        b = RotateLeft32((b ^ c) & Mask32, 12);
-        a = (a + b) & Mask32;
-        d = RotateLeft32((d ^ a) & Mask32, 8);
-        c = (c + d) & Mask32;
-        b = RotateLeft32((b ^ c) & Mask32, 7);
-
-        _work[ai] = a;
-        _work[bi] = b;
-        _work[ci] = c;
-        _work[di] = d;
+    /// The keystream's 64 bytes, little-endian, for Block.
+    private void KeystreamBytes()
+    {
+        for (int i = 0; i < 16; i = i + 1)
+        {
+            uint word = _keystream[i];
+            int at = i * 4;
+            _block[at] = (byte)word;
+            _block[at + 1] = (byte)(word >> 8);
+            _block[at + 2] = (byte)(word >> 16);
+            _block[at + 3] = (byte)(word >> 24);
+        }
     }
 
     private static long ReadLittleWord(byte[] bytes, long offset)
@@ -319,13 +364,9 @@ public class CorsacSecureCrypto_ChaCha20Context
              | (((long)bytes[at + 3] & 255) << 24);
     }
 
-    private static long RotateLeft32(long value, int bits)
-    {
-        return (((value & Mask32) << bits) | ((value & Mask32) >> (32 - bits))) & Mask32;
-    }
-
     private void EraseBlock()
     {
         CorsacSecureCrypto_Bytes.Zero(_block, 0, _block.Length);
+        for (int i = 0; i < _keystream.Length; i = i + 1) _keystream[i] = 0;
     }
 }

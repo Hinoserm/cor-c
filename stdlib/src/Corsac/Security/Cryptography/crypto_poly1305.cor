@@ -1,10 +1,12 @@
 // CORSAC/SECURE Crypto Poly1305, with a per-block optional CPU assist.
 //
-// Binary keys, messages and tags are byte arrays.  The five 26-bit limb
-// representation is deliberately narrower than the machine word: after a
-// block h0, h2, h3 and h4 are below 2^26, and h1 is at most 2^26 + 37.  With
-// the clamped r masks below, every five-term product/carry sum is below 2^57,
-// so no signed Int64 operation can overflow.
+// Binary keys, messages and tags are byte arrays.  Five 26-bit limbs in
+// 32-bit words, poly1305-donna-32's way: after a block h0, h2, h3 and h4 are
+// below 2^26 and h1 at most 2^26 + 37, so every limb, and r*5, fits a UInt32,
+// and each product is one 32x32->64 multiply; with the clamped r masks every
+// five-term product/carry sum is below 2^57.  The limbs were Int64: every
+// product a full 64x64 multiply and every add two, on a 32-bit processor --
+// with ChaCha20, two fifths of the processor at 9 MB/s of SSH.
 
 /// A single-use streaming Poly1305 context.  The 32-byte one-time key is
 /// copied into private numeric state at construction and erased by Finish,
@@ -27,21 +29,21 @@ public class CorsacSecureCrypto_Poly1305
     private byte[] _block;
     private int _held;
 
-    private long _r0;
-    private long _r1;
-    private long _r2;
-    private long _r3;
-    private long _r4;
-    private long _s1;
-    private long _s2;
-    private long _s3;
-    private long _s4;
+    private uint _r0;
+    private uint _r1;
+    private uint _r2;
+    private uint _r3;
+    private uint _r4;
+    private uint _s1;
+    private uint _s2;
+    private uint _s3;
+    private uint _s4;
 
-    private long _h0;
-    private long _h1;
-    private long _h2;
-    private long _h3;
-    private long _h4;
+    private uint _h0;
+    private uint _h1;
+    private uint _h2;
+    private uint _h3;
+    private uint _h4;
 
     private long _pad0;
     private long _pad1;
@@ -70,21 +72,15 @@ public class CorsacSecureCrypto_Poly1305
         // These overlapping loads are the 0ffffffc0ffffffc0ffffffc0fffffff
         // clamp expressed directly in radix 2^26.  No unclamped copy of r is
         // retained by the context.
-        _r0 = Load32(key, keyOffset) & 0x3ffffff;
-        _r1 = (Load32(key, keyOffset + 3) >> 2) & 0x3ffff03;
-        _r2 = (Load32(key, keyOffset + 6) >> 4) & 0x3ffc0ff;
-        _r3 = (Load32(key, keyOffset + 9) >> 6) & 0x3f03fff;
-        _r4 = (Load32(key, keyOffset + 12) >> 8) & 0x00fffff;
+        _r0 = (uint)Load32(key, keyOffset) & 0x3ffffff;
+        _r1 = (uint)(Load32(key, keyOffset + 3) >> 2) & 0x3ffff03;
+        _r2 = (uint)(Load32(key, keyOffset + 6) >> 4) & 0x3ffc0ff;
+        _r3 = (uint)(Load32(key, keyOffset + 9) >> 6) & 0x3f03fff;
+        _r4 = (uint)(Load32(key, keyOffset + 12) >> 8) & 0x00fffff;
         _s1 = _r1 * 5;
         _s2 = _r2 * 5;
         _s3 = _r3 * 5;
         _s4 = _r4 * 5;
-
-        nuint assistKey = Sys.ArrayData(_block) + 72;
-        Sys.Write64(assistKey, (ulong)(_r0 | ((_r1 & 0x3ffff) << 26)));
-        Sys.Write64(assistKey + 8, (ulong)((_r1 >> 18) | (_r2 << 8)
-                                | ((_r3 & 0x3ff) << 34)));
-        Sys.Write64(assistKey + 16, (ulong)((_r3 >> 10) | (_r4 << 16)));
 
         _pad0 = Load32(key, keyOffset + 16);
         _pad1 = Load32(key, keyOffset + 20);
@@ -253,139 +249,107 @@ public class CorsacSecureCrypto_Poly1305
 
     private void ProcessBlock(byte[] block, long offset, bool complete)
     {
-        if (TryProcessBlock(block, offset, complete)) return;
-
-        _h0 = _h0 + (Load32(block, offset) & LimbMask);
-        _h1 = _h1 + ((Load32(block, offset + 3) >> 2) & LimbMask);
-        _h2 = _h2 + ((Load32(block, offset + 6) >> 4) & LimbMask);
-        _h3 = _h3 + ((Load32(block, offset + 9) >> 6) & LimbMask);
-        _h4 = _h4 + (Load32(block, offset + 12) >> 8)
-                    + (complete ? 0x1000000 : 0);
+        int at = (int)offset;
+        uint t0 = Word(block, at), t1 = Word(block, at + 4);
+        uint t2 = Word(block, at + 8), t3 = Word(block, at + 12);
+        uint h0 = _h0 + (t0 & 0x3ffffff);
+        uint h1 = _h1 + (((t0 >> 26) | (t1 << 6)) & 0x3ffffff);
+        uint h2 = _h2 + (((t1 >> 20) | (t2 << 12)) & 0x3ffffff);
+        uint h3 = _h3 + (((t2 >> 14) | (t3 << 18)) & 0x3ffffff);
+        uint h4 = _h4 + ((t3 >> 8) | (complete ? 0x1000000u : 0u));
+        uint r0 = _r0, r1 = _r1, r2 = _r2, r3 = _r3, r4 = _r4;
+        uint s1 = _s1, s2 = _s2, s3 = _s3, s4 = _s4;
 
         // At entry to the products, h0..h3 are at most about 2^27 and h4 is
         // below 3*2^25.  Clamping makes the largest sum d0 < 2^57; the other
         // sums and all propagated carries are smaller.
-        long d0 = _h0 * _r0 + _h1 * _s4 + _h2 * _s3
-                + _h3 * _s2 + _h4 * _s1;
-        long d1 = _h0 * _r1 + _h1 * _r0 + _h2 * _s4
-                + _h3 * _s3 + _h4 * _s2;
-        long d2 = _h0 * _r2 + _h1 * _r1 + _h2 * _r0
-                + _h3 * _s4 + _h4 * _s3;
-        long d3 = _h0 * _r3 + _h1 * _r2 + _h2 * _r1
-                + _h3 * _r0 + _h4 * _s4;
-        long d4 = _h0 * _r4 + _h1 * _r3 + _h2 * _r2
-                + _h3 * _r1 + _h4 * _r0;
+        ulong d0 = (ulong)h0 * r0 + (ulong)h1 * s4 + (ulong)h2 * s3 + (ulong)h3 * s2 + (ulong)h4 * s1;
+        ulong d1 = (ulong)h0 * r1 + (ulong)h1 * r0 + (ulong)h2 * s4 + (ulong)h3 * s3 + (ulong)h4 * s2;
+        ulong d2 = (ulong)h0 * r2 + (ulong)h1 * r1 + (ulong)h2 * r0 + (ulong)h3 * s4 + (ulong)h4 * s3;
+        ulong d3 = (ulong)h0 * r3 + (ulong)h1 * r2 + (ulong)h2 * r1 + (ulong)h3 * r0 + (ulong)h4 * s4;
+        ulong d4 = (ulong)h0 * r4 + (ulong)h1 * r3 + (ulong)h2 * r2 + (ulong)h3 * r1 + (ulong)h4 * r0;
 
-        long carry = d0 >> 26;
-        _h0 = d0 & LimbMask;
+        uint carry = (uint)(d0 >> 26);
+        h0 = (uint)d0 & 0x3ffffff;
         d1 = d1 + carry;
-        carry = d1 >> 26;
-        _h1 = d1 & LimbMask;
+        carry = (uint)(d1 >> 26);
+        h1 = (uint)d1 & 0x3ffffff;
         d2 = d2 + carry;
-        carry = d2 >> 26;
-        _h2 = d2 & LimbMask;
+        carry = (uint)(d2 >> 26);
+        h2 = (uint)d2 & 0x3ffffff;
         d3 = d3 + carry;
-        carry = d3 >> 26;
-        _h3 = d3 & LimbMask;
+        carry = (uint)(d3 >> 26);
+        h3 = (uint)d3 & 0x3ffffff;
         d4 = d4 + carry;
-        carry = d4 >> 26;
-        _h4 = d4 & LimbMask;
-        _h0 = _h0 + carry * 5;
-        carry = _h0 >> 26;
-        _h0 = _h0 & LimbMask;
-        _h1 = _h1 + carry;
+        carry = (uint)(d4 >> 26);
+        h4 = (uint)d4 & 0x3ffffff;
+        h0 = h0 + carry * 5;
+        carry = h0 >> 26;
+        h0 = h0 & 0x3ffffff;
+        h1 = h1 + carry;
+        _h0 = h0; _h1 = h1; _h2 = h2; _h3 = h3; _h4 = h4;
     }
 
-    private bool TryProcessBlock(byte[] block, long offset, bool complete)
+    /// Four bytes, little-endian.
+    private static uint Word(byte[] bytes, int at)
     {
-        // Avoid packing on absent/older units and in --no-units builds. The
-        // actual operation checks again: migration is not an affinity lock.
-        if ((0 & 16) == 0) return false;
-
-        // The scalar accumulator has only one loose limb: h1 <= 2^26+37.
-        // ADD its excess carry (OR would lose it at a boundary). The whole
-        // value is below 2^130+38*2^26. If the top carries, the residual low
-        // value is below 38*2^26, so adding five cannot overflow the low 44
-        // bits. This yields tight 44/44/42 limbs without data-dependent work.
-        long h0 = _h0 | ((_h1 & 0x3ffff) << 26);
-        long h1 = (_h1 >> 18) + (_h2 << 8) + ((_h3 & 0x3ff) << 34);
-        long h2 = (_h3 >> 10) + (_h4 << 16) + (h1 >> 44);
-        h1 = h1 & 0xfffffffffffL;
-        h0 = h0 + (h2 >> 42) * 5;
-        h2 = h2 & 0x3ffffffffffL;
-        // Repack on every call, so the scratch position need not survive a
-        // relocation. Rounding up after the pending message needs at most
-        // 31 padding bytes: the accumulator ends before fixed key offset 72.
-        nuint scratch = (Sys.ArrayData(_block) + 16 + 31) & ~(nuint)31;
-        Sys.Write64(scratch, (ulong)h0);
-        Sys.Write64(scratch + 8, (ulong)h1);
-        Sys.Write64(scratch + 16, (ulong)h2);
-        return false;
-
-        // Keep the original five-limb scalar state authoritative after EVERY
-        // block, so a following call can freely take the portable path.
-        h0 = (long)Sys.Read64(scratch);
-        h1 = (long)Sys.Read64(scratch + 8);
-        h2 = (long)Sys.Read64(scratch + 16);
-        _h0 = h0 & LimbMask;
-        _h1 = ((h0 >> 26) | (h1 << 18)) & LimbMask;
-        _h2 = (h1 >> 8) & LimbMask;
-        _h3 = ((h1 >> 34) | (h2 << 10)) & LimbMask;
-        _h4 = h2 >> 16;
-        return true;
+        return (uint)bytes[at] | ((uint)bytes[at + 1] << 8) | ((uint)bytes[at + 2] << 16) | ((uint)bytes[at + 3] << 24);
     }
 
     private void FinalReduce()
     {
+        long h0 = _h0, h1 = _h1, h2 = _h2, h3 = _h3, h4 = _h4;
         // Propagate once through every limb.  The post-block bounds make every
         // carry here at most one except the already-folded 5*h carry.
-        long carry = _h1 >> 26;
-        _h1 = _h1 & LimbMask;
-        _h2 = _h2 + carry;
-        carry = _h2 >> 26;
-        _h2 = _h2 & LimbMask;
-        _h3 = _h3 + carry;
-        carry = _h3 >> 26;
-        _h3 = _h3 & LimbMask;
-        _h4 = _h4 + carry;
-        carry = _h4 >> 26;
-        _h4 = _h4 & LimbMask;
-        _h0 = _h0 + carry * 5;
-        carry = _h0 >> 26;
-        _h0 = _h0 & LimbMask;
-        _h1 = _h1 + carry;
+        long carry = h1 >> 26;
+        h1 = h1 & LimbMask;
+        h2 = h2 + carry;
+        carry = h2 >> 26;
+        h2 = h2 & LimbMask;
+        h3 = h3 + carry;
+        carry = h3 >> 26;
+        h3 = h3 & LimbMask;
+        h4 = h4 + carry;
+        carry = h4 >> 26;
+        h4 = h4 & LimbMask;
+        h0 = h0 + carry * 5;
+        carry = h0 >> 26;
+        h0 = h0 & LimbMask;
+        h1 = h1 + carry;
 
         // g = h + 5 - 2^130.  g4 is nonnegative exactly when h >= p.
         // ConstantTimeSelect is a branch-free mask operation both in the
         // Crypto-unit instruction and in the compiler's portable fallback.
-        long g0 = _h0 + 5;
+        long g0 = h0 + 5;
         carry = g0 >> 26;
         g0 = g0 & LimbMask;
-        long g1 = _h1 + carry;
+        long g1 = h1 + carry;
         carry = g1 >> 26;
         g1 = g1 & LimbMask;
-        long g2 = _h2 + carry;
+        long g2 = h2 + carry;
         carry = g2 >> 26;
         g2 = g2 & LimbMask;
-        long g3 = _h3 + carry;
+        long g3 = h3 + carry;
         carry = g3 >> 26;
         g3 = g3 & LimbMask;
-        long g4 = _h4 + carry - 0x4000000;
+        long g4 = h4 + carry - 0x4000000;
         bool useReduced = g4 >= 0;
 
-        _h0 = CorsacSecureCrypto_Bytes.Select(g0, _h0, useReduced);
-        _h1 = CorsacSecureCrypto_Bytes.Select(g1, _h1, useReduced);
-        _h2 = CorsacSecureCrypto_Bytes.Select(g2, _h2, useReduced);
-        _h3 = CorsacSecureCrypto_Bytes.Select(g3, _h3, useReduced);
-        _h4 = CorsacSecureCrypto_Bytes.Select(g4, _h4, useReduced);
+        h0 = CorsacSecureCrypto_Bytes.Select(g0, h0, useReduced);
+        h1 = CorsacSecureCrypto_Bytes.Select(g1, h1, useReduced);
+        h2 = CorsacSecureCrypto_Bytes.Select(g2, h2, useReduced);
+        h3 = CorsacSecureCrypto_Bytes.Select(g3, h3, useReduced);
+        h4 = CorsacSecureCrypto_Bytes.Select(g4, h4, useReduced);
+        _h0 = (uint)h0; _h1 = (uint)h1; _h2 = (uint)h2; _h3 = (uint)h3; _h4 = (uint)h4;
     }
 
     private void WriteTag(byte[] tag)
     {
-        long f0 = (_h0 | (_h1 << 26)) & WordMask;
-        long f1 = ((_h1 >> 6) | (_h2 << 20)) & WordMask;
-        long f2 = ((_h2 >> 12) | (_h3 << 14)) & WordMask;
-        long f3 = ((_h3 >> 18) | (_h4 << 8)) & WordMask;
+        long h0 = _h0, h1 = _h1, h2 = _h2, h3 = _h3, h4 = _h4;
+        long f0 = (h0 | (h1 << 26)) & WordMask;
+        long f1 = ((h1 >> 6) | (h2 << 20)) & WordMask;
+        long f2 = ((h2 >> 12) | (h3 << 14)) & WordMask;
+        long f3 = ((h3 >> 18) | (h4 << 8)) & WordMask;
 
         f0 = f0 + _pad0;
         f1 = f1 + _pad1 + (f0 >> 32);
