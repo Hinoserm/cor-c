@@ -1,0 +1,79 @@
+// test: chacha20_four_blocks_against_one
+// only-target: x86
+// cpu: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// cases 70 different 0
+//
+// CHACHA20'S FOUR BLOCKS AT ONCE (CorsacSecureCrypto_ChaCha20Context.Xor's
+// Generate4, SSE2): every byte the same as the keystream a block at a time
+// (Block), for lengths around the 256 bytes it takes, offsets into both
+// arrays, the same array in place, and a counter 2^32 - 4 -- the last four
+// blocks CounterRange allows.
+using System;
+using Corsac.Security.Cryptography;
+
+static class Program
+{
+    static CorsacSecureCrypto_ChaCha20Context _c = null!;
+    static byte[] _nonce = new byte[12];
+
+    // The reference: input XOR Block's keystream, one 64-byte block at a time.
+    static void Reference(long counter, byte[] input, int inAt, byte[] output, int outAt, int count)
+    {
+        byte[] block = new byte[64];
+        for (int done = 0; done < count; done += 64)
+        {
+            _c.Block(counter + done / 64, _nonce, 0, block, 0);
+            for (int i = 0; i < 64 && done + i < count; i++) output[outAt + done + i] = (byte)(input[inAt + done + i] ^ block[i]);
+        }
+    }
+
+    static int Main()
+    {
+        byte[] key = new byte[32];
+        for (int i = 0; i < 32; i++) key[i] = (byte)i;                // RFC 8439 2.4.2's key and nonce
+        _nonce[7] = 0x4A;
+        _c = new CorsacSecureCrypto_ChaCha20Context(key, 0);
+        int cases = 0, different = 0;
+        int[] lengths = { 255, 256, 257, 320, 511, 512, 1000, 1024, 1025, 4096 };
+        long[] counters = { 1, 0xFFFFFFFFL - 100 };
+        foreach (int n in lengths)
+            foreach (long counter in counters)
+                for (int off = 0; off < 3; off++)
+                {
+                    long first = counter == 1 ? 1 : 0x100000000L - (n + 63) / 64;   // up to the last block allowed
+                    byte[] input = new byte[n + 8], a = new byte[n + 8], b = new byte[n + 8];
+                    for (int i = 0; i < input.Length; i++) input[i] = (byte)(i * 29 + n);
+                    if (!_c.Xor(first, _nonce, 0, input, off, a, off + 1, n)) { different++; cases++; continue; }
+                    Reference(first, input, off, b, off + 1, n);
+                    cases++;
+                    for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) { different++; Console.WriteLine("different: length " + n + " counter " + first + " offset " + off + " byte " + i); break; }
+                }
+        // In place, as SSH does it.
+        foreach (int n in new int[] { 256, 777, 2048 })
+            for (int k = 0; k < 3; k++)
+            {
+                byte[] p = new byte[n], q = new byte[n], copy = new byte[n];
+                for (int i = 0; i < n; i++) { p[i] = (byte)(i * 7 + k); copy[i] = p[i]; }
+                _c.Xor(5 + k, _nonce, 0, p, 0, p, 0, n);
+                Reference(5 + k, copy, 0, q, 0, n);
+                cases++;
+                for (int i = 0; i < n; i++) if (p[i] != q[i]) { different++; Console.WriteLine("different in place: length " + n + " byte " + i); break; }
+            }
+        // The last four blocks the counter allows: 2^32 - 4 .. 2^32 - 1.
+        {
+            byte[] input = new byte[256], a = new byte[256], b = new byte[256];
+            for (int i = 0; i < 256; i++) input[i] = (byte)i;
+            cases++;
+            if (!_c.Xor(0xFFFFFFFCL, _nonce, 0, input, 0, a, 0, 256)) { different++; Console.WriteLine("refused the last four blocks"); }
+            else
+            {
+                Reference(0xFFFFFFFCL, input, 0, b, 0, 256);
+                for (int i = 0; i < 256; i++) if (a[i] != b[i]) { different++; Console.WriteLine("different at the counter's end, byte " + i); break; }
+            }
+        }
+        Console.WriteLine("cases " + cases + " different " + different);
+        return different == 0 ? 0 : 1;
+    }
+}
