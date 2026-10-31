@@ -899,8 +899,10 @@ public static class InlineAsm
             // MMX's low unpacks read four bytes; XMM's, sixteen.
             case "punpcklbw" or "punpcklwd" or "punpckldq" when Array.Exists(ops, x => x.Kind == OperandKind.Mmx): return 4;
             case "fxsave" or "fxrstor": return 512;
-            case "fnsave" or "fsave": return 108;
-            case "fnstenv" or "fstenv": return 28;
+            case "fnsave" or "fsave" or "frstor": return 108;
+            case "fnstenv" or "fstenv" or "fldenv": return 28;
+            // Two doubles in, two ints out to an MMX register.
+            case "cvtpd2pi" or "cvttpd2pi": return 16;
             case "ldmxcsr" or "stmxcsr" or "movd" or "cvtsi2ss" or "cvtsi2sd" or "movsxd": return 4;
             case "pinsrw": return 2;
             case "movq" or "movlps" or "movhps" or "movlpd" or "movhpd" or "cvtpi2ps" or "cvtps2pi" or "cvttps2pi" or "cvtpi2pd"
@@ -1104,11 +1106,11 @@ public static class InlineAsm
         ulong[] gset = new ulong[count + 1], vset = new ulong[count + 1];
         // Per statement: the parts and the vector registers it needs set and
         // those it sets; and the bytes it reads and writes through ESP --
-        // from the top, so many (stackAt, stackSize; readAt, readSize), the
-        // size -1 where they are not known (an index, a displacement not a
-        // number, a bit string's offset in a register, a write's size),
-        // Unsized for a read whose size is not known, and 0 for none.
-        // (An index or a displacement not a number is refused outright.)
+        // from the top, so many (stackAt, stackSize; readAt, readSize): a
+        // write's size -1 where its width is not known, a read's Unsized,
+        // and 0 for none. (Where the offset is not known -- an index, a
+        // displacement not a number, a bit string's offset in a register --
+        // the block is refused outright.)
         ulong[] gneeds = new ulong[count], vneeds = new ulong[count], gsets = new ulong[count], vsets = new ulong[count];
         int[] stackAt = new int[count], stackSize = new int[count], readAt = new int[count], readSize = new int[count];
         const int Unsized = int.MaxValue / 2;

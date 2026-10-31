@@ -1,0 +1,25 @@
+// test: inline_asm_cvtpd2pi_width_refused
+// only-target: x86
+// expect-compile-error: past what the block pushed
+//
+// CVTPD2PI reads sixteen bytes, two doubles: at [esp + 4] with twelve
+// pushed it reaches eight into the method's frame (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            .runtime sse2
+            push 0
+            push 0
+            push 0
+            cvtpd2pi mm0, [esp + 4]
+            emms
+            pop eax
+            pop eax
+            pop eax
+        }
+        return 0;
+    }
+}
