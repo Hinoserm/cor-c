@@ -147,6 +147,47 @@ internal sealed partial class Selector
         foreach (object o in operated) Take(o);
         foreach (FrameSlot s in slots) Take(s);
         if (values.Count == 0) return;
+
+        // A RESULT MADE ONLY TO BE A VARIABLE'S NEXT VALUE -- `x = x + y` is
+        // an operation into a slot of its own, then `x = copy` of it -- made
+        // in the variable's register: no second value, no copy, no second
+        // slot stored. Where the slot is named by the operation that writes
+        // it and the one copy into the variable after it in its block, and
+        // nothing between names the variable or may throw.
+        Dictionary<FrameSlot, (Block b, int at)> madeAt = new(ReferenceEqualityComparer.Instance);
+        Dictionary<FrameSlot, (VReg x, Block b, int at)> copiedAt = new(ReferenceEqualityComparer.Instance);
+        Dictionary<FrameSlot, int> namings = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in _f.Blocks)
+            for (int at = 0; at < b.Instrs.Count; at++)
+            {
+                Instr i = b.Instrs[at];
+                if (i.Op == Opcode.Copy && i.Dest is { } alias && aliases.ContainsKey(alias)) continue;
+                bool result = i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
+                    && XmmValueOp(c, out string[] part) && part[0] is "x" or "xshift" or "xshuffle" or "xinsert" or "xf";
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (NodeOf(i.Operands[k]) is not FrameSlot s) continue;
+                    namings[s] = namings.GetValueOrDefault(s) + 1;
+                    if (result && k == 0) madeAt[s] = (b, at);
+                    else if (i.Op == Opcode.Copy && i.Dest is { } x && variables.Contains(x)) copiedAt[s] = (x, b, at);
+                }
+            }
+        foreach ((FrameSlot s, (Block b, int at) made) in madeAt)
+        {
+            if (namings[s] != 2 || !copiedAt.TryGetValue(s, out var copy) || !ReferenceEquals(copy.b, made.b) || copy.at < made.at
+                || !values.ContainsKey(s) || !values.TryGetValue(copy.x, out MReg? into))
+                continue;
+            bool clear = true;
+            for (int k = made.at + 1; k < copy.at && clear; k++)
+            {
+                Instr between = made.b.Instrs[k];
+                // Nothing between that may throw: a handler would read the variable's old value.
+                clear = !ReferenceEquals(between.Dest, copy.x) && (between.Op == Opcode.Copy
+                    || between.Op == Opcode.Call && between.Callee is { } c && c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal));
+                foreach (Operand o in between.Operands) clear &= !ReferenceEquals(NodeOf(o), copy.x);
+            }
+            if (clear) values[s] = into;
+        }
         _packedValues = values;
         _packedAliases = aliases;
     }

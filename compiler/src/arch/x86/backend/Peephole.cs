@@ -552,7 +552,7 @@ internal static class Peephole
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     if (i.Operands[k] is not MMem mem || !mem.IsSpill) continue;
-                    if (k == 0 && IsMov(i) && !i.Lock && PrivateSpill(mem)) { any = true; continue; }
+                    if (k == 0 && StoreSlot(i) is not null) { any = true; continue; }
                     read.Add(mem.Disp);
                 }
         if (!any) return;
@@ -561,8 +561,7 @@ internal static class Peephole
         bool handlers = m.Blocks.Any(b => b.Source is { IsLandingPad: true });
         foreach (MBlock b in m.Blocks)
         {
-            b.Instrs.RemoveAll(i => IsMov(i) && !i.Lock && i.Operands.Count == 2 && i.Operands[0] is MMem mem
-                && PrivateSpill(mem) && !read.Contains(mem.Disp));
+            b.Instrs.RemoveAll(i => StoreSlot(i) is int slot && !read.Contains(slot));
             // And within a block, a store the next store to the same slot
             // overwrites before anything reads it -- the slot shared with
             // other values that do read it. Walked backwards: `written` holds
@@ -574,9 +573,9 @@ internal static class Peephole
             for (int k = b.Instrs.Count - 1; k >= 0; k--)
             {
                 MInstr i = b.Instrs[k];
-                if (IsMov(i) && !i.Lock && i.Operands.Count == 2 && i.Operands[0] is MMem store && PrivateSpill(store))
+                if (StoreSlot(i) is int stored)
                 {
-                    if (!written.Add(store.Disp)) { b.Instrs.RemoveAt(k); continue; }
+                    if (!written.Add(stored)) { b.Instrs.RemoveAt(k); continue; }
                     if (i.Operands[1] is MMem) written.Clear();
                     continue;
                 }
@@ -684,9 +683,16 @@ internal static class Peephole
         for (int b = 0; b < nb; b++) Walk(b, remove: true);
     }
 
-    /// <summary>The allocator slot a plain store writes, or null.</summary>
+    /// <summary>
+    /// The allocator slot a plain store writes, or null: a word's MOV, or an
+    /// XMM value's MovF -- the slot whole either way, every slot of a class
+    /// one width (X86Target.NewSlot) and named only at its start. A Packed128
+    /// made in two-address form, `movaps t, a ; paddd t, b`, was stored after
+    /// each, the first for nothing: 63 of Generate4's 104 stores.
+    /// </summary>
     private static int? StoreSlot(MInstr i)
-        => IsMov(i) && !i.Lock && i.Operands.Count == 2 && i.Operands[0] is MMem store && PrivateSpill(store) ? store.Disp : null;
+        => (IsMov(i) && !i.Lock || i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[1] is MReg)
+           && i.Operands.Count == 2 && i.Operands[0] is MMem store && PrivateSpill(store) ? store.Disp : null;
 
     // ---- a register written and then written again before being read -------------
 
