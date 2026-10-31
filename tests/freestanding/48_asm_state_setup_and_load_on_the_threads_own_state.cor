@@ -1,0 +1,89 @@
+// test: asm blocks that set a thread's x87 state up (FNINIT, FLDZ, FNINIT) or load it (FRSTOR) are no float code, and run on the thread's own state
+// targets: x86
+// flags: --x87-in-blocks-only
+// expect-output:
+// registers 0 5
+//
+// Main keeps the state for its own double. FRSTOR of an area whose eight
+// registers hold 0x5A bytes puts that into the thread's own x87 (a state
+// load, the block's last x87 instruction); ClearMmx and Clear then write
+// every physical register -- PXOR's eight, between FNINITs, and FLDZ's
+// eight -- which is state set up, no float code (docs/INLINE-ASSEMBLY.md),
+// and so lands in the thread's state, given back around each call
+// (Lowering.OnOwnState), not in the one Main keeps: FNSAVE then finds the
+// thread's registers all zero.
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static int _k = 5;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void ClearMmx()
+    {
+        asm
+        {
+            .runtime mmx
+            fninit
+            pxor mm0, mm0
+            pxor mm1, mm1
+            pxor mm2, mm2
+            pxor mm3, mm3
+            pxor mm4, mm4
+            pxor mm5, mm5
+            pxor mm6, mm6
+            pxor mm7, mm7
+            fninit
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Clear()
+    {
+        asm
+        {
+            fninit
+            fldz
+            fldz
+            fldz
+            fldz
+            fldz
+            fldz
+            fldz
+            fldz
+            fninit
+        }
+    }
+
+    static unsafe int Main()
+    {
+        Host.Start(1024 * 1024);
+        double d = _k * 0.5 * 2;
+        byte* area = stackalloc byte[108];
+        asm
+        {
+            mov eax, area
+            fnsave [eax]
+        }
+        for (int i = 28; i < 108; i++) area[i] = 0x5A;
+        asm
+        {
+            mov eax, area
+            frstor [eax]
+        }
+        ClearMmx();
+        Clear();
+        asm
+        {
+            mov eax, area
+            fnsave [eax]
+            frstor [eax]
+        }
+        int nonzero = 0;
+        for (int i = 28; i < 108; i++) if (area[i] != 0) nonzero++;
+        Host.Line("registers " + nonzero.ToString() + " " + ((int)d).ToString());
+        Host.Done(0);
+        return 0;
+    }
+}

@@ -153,11 +153,15 @@ them:
   another only a byte of it, after them it is set a byte;
 - **the x87 stack is as deep at the end as at the start**. `fincstp`,
   `fdecstp` and `ffree` are refused, since they move the top without its tags
-  and the depth could not be followed, and so are `frstor` and `fldenv`,
-  which load a state of unknown depth;
+  and the depth could not be followed. `fninit` (and `fnsave`, which ends
+  with one) empties it. A state load -- `frstor`, `fldenv`, `fxrstor`, a
+  thread's state put back -- leaves the stack as the state loaded has it:
+  nothing after it in the block may touch the x87, MMX or SSE, and it runs
+  on every path to the end or on none;
 - **`emms` (or `femms`) after MMX**, before the end, and no x87 instruction
-  between MMX and its `emms`. No MMX instruction runs with values on the x87
-  stack: the MMX registers are the x87's;
+  between MMX and its `emms` -- or `fninit`, which empties the MMX
+  registers' tags as `emms` does. No MMX instruction runs with values on the
+  x87 stack: the MMX registers are the x87's;
 - **the direction flag is clear at the end** (`cld` after `std`). `popf`
   puts DF back as its own `pushf` found it; a `popf` of anything else, or of
   flags written through ESP since, may set it;
@@ -193,9 +197,12 @@ reached through a virtual call, an interface or a delegate from a method
 that keeps the state, the block runs on that kept state, as a native
 reached so does. In an interrupt handler, an asm block's float code is
 refused as a double's is; one that only keeps the state (a switch's
-`fxsave`) is not. `fldenv` and `frstor` stay refused: they
-load the stack's tags and top, and the block's x87 depth after them could
-not be followed. Inside a packed block one that uses SSE has FXSAVE save
+`fxsave`) is not. A block that sets a thread's state up is no float code
+either: a constant loaded (`fldz`, `fld1`) or a vector register combined
+with itself (`pxor mm0, mm0`, `xorps xmm0, xmm0`) gives nothing out, so
+`fninit`, eight `fldz`, `fninit` -- every physical register written, so that
+a first use reads no other thread's values -- runs on the thread's own
+state; whatever reads such a register out is float code. Inside a packed block one that uses SSE has FXSAVE save
 the thread's state.
 
 ## How a block meets its method

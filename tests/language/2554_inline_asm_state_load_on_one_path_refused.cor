@@ -1,0 +1,24 @@
+// test: inline_asm_state_load_on_one_path_refused
+// only-target: x86
+// expect-compile-error: on one path to here and not on another
+//
+// FRSTOR on one path only: after the paths meet, the x87's depth is the
+// loaded state's on one and the block's on the other (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static unsafe int Main()
+    {
+        byte* area = stackalloc byte[108];
+        int which = 1;
+        asm
+        {
+            mov eax, area
+            mov ecx, which
+            test ecx, ecx
+            jz skip
+            frstor [eax]
+        skip:
+        }
+        return 0;
+    }
+}

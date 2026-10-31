@@ -1,0 +1,21 @@
+// test: inline_asm_x87_after_state_load_refused
+// only-target: x86
+// expect-compile-error: after a state load
+//
+// After FRSTOR the x87 holds the state loaded, whose stack depth the block
+// cannot know: no x87 instruction may follow it (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static unsafe int Main()
+    {
+        byte* area = stackalloc byte[108];
+        asm
+        {
+            mov eax, area
+            frstor [eax]
+            fld1
+            fstp st0
+        }
+        return 0;
+    }
+}

@@ -375,6 +375,12 @@ public static class InlineAsm
         /// <summary>The x87 stack's change in depth; ResetsX87: FNINIT and its kin leave it empty.</summary>
         public int X87;
         public bool ResetsX87, UsesX87, UsesMmx, EmptiesMmx, UsesSse, SetsDf, ClearsDf;
+        /// <summary>
+        /// It loads the x87's state whole, or its tags and top -- FRSTOR,
+        /// FLDENV, FXRSTOR: a thread's state put back, after which the x87
+        /// stack is the loaded state's, not the block's to count (Analyze).
+        /// </summary>
+        public bool LoadsState;
         /// <summary>What ESP moves by: a push's -size, a pop's +size.</summary>
         public int Esp;
         /// <summary>
@@ -672,11 +678,9 @@ public static class InlineAsm
                 f.Refused = $"{mn} moves the x87 stack's top without its tags; the block's stack depth could not be checked";
                 return f;
             }
-            if (mn is "frstor" or "fldenv")
-            {
-                f.Refused = $"{mn} loads an x87 state whose stack depth the block cannot know; save and restore it outside the block";
-                return f;
-            }
+            if (mn is "frstor" or "fldenv") f.LoadsState = true;
+            // FNINIT (and FNSAVE, which ends with one) empties the stack and
+            // the MMX registers' tags alike.
             if (mn is "finit" or "fninit" or "fsave" or "fnsave") f.ResetsX87 = true;
             f.X87 = X87Depth.GetValueOrDefault(mn);
             for (int k = 0; k < n; k++)
@@ -693,7 +697,7 @@ public static class InlineAsm
         f.UsesMmx = mmx || mn == "maskmovq";
         f.UsesSse = xmm || mn is "ldmxcsr" or "stmxcsr" or "fxsave" or "fxrstor";
         if (mn is "emms" or "femms") { f.EmptiesMmx = true; return f; }
-        if (mn is "ldmxcsr" or "fxrstor") { All(AsmRole.Read, AsmRole.Read); return f; }
+        if (mn is "ldmxcsr" or "fxrstor") { All(AsmRole.Read, AsmRole.Read); f.LoadsState = mn == "fxrstor"; return f; }
         if (mn is "stmxcsr" or "fxsave") { All(AsmRole.Write, AsmRole.Write); return f; }
         if (mn is "maskmovq" or "maskmovdqu") { All(AsmRole.Read, AsmRole.Read); f.ImplicitRead |= G(Edi); return f; }
         // A move writes the destination whole, but these keep part of it.
@@ -752,6 +756,19 @@ public static class InlineAsm
         /// </summary>
         public bool FloatCode;
     }
+
+    /// <summary>A register combined with itself to make zero (or every bit set), reading nothing of what it held: `xor eax, eax`, `pxor mm0, mm0`, `sbb edx, edx`.</summary>
+    private static bool SelfCombined(string mn, Operand[] ops)
+        => ops.Length == 2 && ops[0].Kind == ops[1].Kind && ops[0].Kind is OperandKind.Register or OperandKind.Xmm or OperandKind.Mmx
+           && ops[0].Reg == ops[1].Reg && ops[0].Size == ops[1].Size
+           && mn is "xor" or "sub" or "sbb" or "pxor" or "xorps" or "xorpd" or "pandn" or "andnps" or "andnpd"
+               or "psubb" or "psubw" or "psubd" or "psubq" or "psubsb" or "psubsw" or "psubusb" or "psubusw"
+               or "pcmpeqb" or "pcmpeqw" or "pcmpeqd" or "pcmpgtb" or "pcmpgtw" or "pcmpgtd";
+
+    /// <summary>An x87, MMX or SSE register given a value of nothing's: an x87 constant (FLDZ and its kin), a vector register combined with itself (SelfCombined).</summary>
+    private static bool Clears(string mn, Operand[] ops)
+        => mn is "fldz" or "fld1" or "fldpi" or "fldl2e" or "fldl2t" or "fldlg2" or "fldln2"
+           || SelfCombined(mn, ops) && ops[0].Kind is OperandKind.Xmm or OperandKind.Mmx;
 
     /// <summary>A general register by the parts of it a read needs (Parts): `al`, `ah`, `ax`, `eax`, `rax`, `r9b`.</summary>
     private static string PartName(int r, ulong parts, int bits)
@@ -1086,7 +1103,11 @@ public static class InlineAsm
             a.UsesX87 |= f.UsesX87;
             a.UsesMmx |= f.UsesMmx || f.EmptiesMmx;
             a.UsesSse |= f.UsesSse;
-            a.FloatCode |= (f.UsesX87 || f.UsesSse) && !X86Assembler.IsFpuStateOnly(s.Mnemonic) || f.UsesMmx || f.EmptiesMmx;
+            // A clear -- a constant loaded, a register combined with itself
+            // (Clears) -- reads nothing and gives nothing out: a thread's
+            // state being set up (FNINIT, FLDZ eight times, FNINIT), no float
+            // code; what then reads it out is.
+            a.FloatCode |= ((f.UsesX87 || f.UsesSse) && !X86Assembler.IsFpuStateOnly(s.Mnemonic) || f.UsesMmx || f.EmptiesMmx) && !Clears(s.Mnemonic, ops);
         }
 
         // EVERY PATH: the x87's depth, ESP's and what the stack holds,
@@ -1095,6 +1116,9 @@ public static class InlineAsm
         int count = statements.Count;
         int[] x87 = new int[count + 1], esp = new int[count + 1];
         bool[] mmx = new bool[count + 1], df = new bool[count + 1], seen = new bool[count + 1];
+        // Whether a state load (Facts.LoadsState) has run on the paths here:
+        // the x87 then holds the loaded state, and nothing after may touch it.
+        bool[] loaded = new bool[count + 1];
         ulong[] must = new ulong[count + 1];
         // WHAT THE BLOCK'S PUSHES LEFT ON THE STACK, a char to each byte, the
         // top (the lowest address) last (PushaPlace's summary): a value, set
@@ -1130,11 +1154,7 @@ public static class InlineAsm
             Operand[] ops = s.Parsed;
             // A register combined with itself to make zero (or every bit set)
             // reads nothing of what it held.
-            bool idiom = ops.Length == 2 && ops[0].Kind == ops[1].Kind && ops[0].Kind is OperandKind.Register or OperandKind.Xmm or OperandKind.Mmx
-                && ops[0].Reg == ops[1].Reg && ops[0].Size == ops[1].Size
-                && s.Mnemonic is "xor" or "sub" or "sbb" or "pxor" or "xorps" or "xorpd" or "pandn" or "andnps" or "andnpd"
-                    or "psubb" or "psubw" or "psubd" or "psubq" or "psubsb" or "psubsw" or "psubusb" or "psubusw"
-                    or "pcmpeqb" or "pcmpeqw" or "pcmpeqd" or "pcmpgtb" or "pcmpgtw" or "pcmpgtd";
+            bool idiom = SelfCombined(s.Mnemonic, ops);
             // A destination these keep the rest of, and so read, without
             // needing it set: a scalar into the low lane, half of a register.
             // After, it counts as set: its lanes are followed as one, and the
@@ -1215,14 +1235,16 @@ public static class InlineAsm
                     : UnsetByte(a[k]) || UnsetByte(b[k]) ? 'u' : 'v';
             return new string(c);
         }
-        void Arrive(int at, int x, int e, bool m, bool d, ulong w, string st, ulong g, ulong v, int line)
+        void Arrive(int at, int x, int e, bool m, bool d, bool l, ulong w, string st, ulong g, ulong v, int line)
         {
             if (!seen[at])
             {
-                seen[at] = true; x87[at] = x; esp[at] = e; mmx[at] = m; df[at] = d; must[at] = w; stack[at] = st; gset[at] = g; vset[at] = v;
+                seen[at] = true; x87[at] = x; esp[at] = e; mmx[at] = m; df[at] = d; loaded[at] = l; must[at] = w; stack[at] = st; gset[at] = g; vset[at] = v;
                 work.Push(at);
                 return;
             }
+            if (loaded[at] != l)
+                throw new AsmException("<asm>", line, "a state load (FRSTOR, FLDENV, FXRSTOR) on one path to here and not on another: the x87's depth after could not be followed");
             if (x87[at] != x) throw new AsmException("<asm>", line, $"the x87 stack is {x} deep on one path to here and {x87[at]} on another");
             if (esp[at] != e || stack[at].Length != st.Length)
                 throw new AsmException("<asm>", line, $"ESP is {e} bytes from where the block found it on one path to here and {esp[at]} on another");
@@ -1238,7 +1260,7 @@ public static class InlineAsm
             if ((vset[at] & v) != vset[at]) { vset[at] &= v; changed = true; }
             if (changed) work.Push(at);
         }
-        Arrive(0, 0, 0, false, false, 0, "", WordParts(G(Esp, Ebp), 64, true), 0, statements.Count > 0 ? statements[0].Line : 1);
+        Arrive(0, 0, 0, false, false, false, 0, "", WordParts(G(Esp, Ebp), 64, true), 0, statements.Count > 0 ? statements[0].Line : 1);
         while (work.Count > 0)
         {
             int at = work.Pop();
@@ -1246,7 +1268,7 @@ public static class InlineAsm
             AsmStatement s = statements[at];
             Facts f = facts[at];
             int x = x87[at], e = esp[at];
-            bool m = mmx[at], d = df[at];
+            bool m = mmx[at], d = df[at], l = loaded[at];
             ulong w = must[at];
             string st = stack[at];
             ulong g = gset[at], v = vset[at];
@@ -1341,8 +1363,13 @@ public static class InlineAsm
                     };
                 }
                 if (f.UsesMmx && x != 0) throw new AsmException("<asm>", s.Line, "an MMX instruction with values on the x87 stack: the MMX registers are the x87's");
-                if (f.UsesX87 && m) throw new AsmException("<asm>", s.Line, "an x87 instruction after MMX with no EMMS between: the MMX registers are the x87's");
-                x = f.ResetsX87 ? 0 : x + f.X87;
+                if (l && (f.UsesX87 || f.UsesMmx || f.UsesSse || f.EmptiesMmx))
+                    throw new AsmException("<asm>", s.Line, "after a state load (FRSTOR, FLDENV, FXRSTOR) nothing in the block may touch the x87, MMX or SSE: "
+                        + "they hold the state loaded, whose stack depth the block cannot know");
+                if (f.UsesX87 && !f.ResetsX87 && m) throw new AsmException("<asm>", s.Line, "an x87 instruction after MMX with no EMMS between: the MMX registers are the x87's");
+                x = f.ResetsX87 || f.LoadsState ? 0 : x + f.X87;
+                if (f.ResetsX87 || f.LoadsState) m = false;
+                if (f.LoadsState) l = true;
                 if (x < 0) throw new AsmException("<asm>", s.Line, "this pops more off the x87 stack than the block pushed");
                 if (x > 8) throw new AsmException("<asm>", s.Line, "the x87 stack holds eight");
                 e += f.Esp;
@@ -1354,8 +1381,8 @@ public static class InlineAsm
                 for (int o = 0; o < s.Local.Length; o++)
                     if (s.Local[o] >= 0 && (s.Roles[o] & AsmRole.Write) != 0) w |= 1UL << s.Local[o];
             }
-            if (f.Branch != 0) Arrive(target[at], x, e, m, d, w, st, g, v, s.Line);
-            if (f.Branch != 2) Arrive(at + 1, x, e, m, d, w, st, g, v, s.Line);
+            if (f.Branch != 0) Arrive(target[at], x, e, m, d, l, w, st, g, v, s.Line);
+            if (f.Branch != 2) Arrive(at + 1, x, e, m, d, l, w, st, g, v, s.Line);
         }
 
         a.UsesStack |= ((a.GprRead | a.GprWritten) & ((1u << Esp) | (1u << Ebp))) != 0;
