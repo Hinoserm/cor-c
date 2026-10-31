@@ -1,6 +1,6 @@
 // test: inline_asm_partial_register_refused
 // only-target: x86
-// expect-compile-error: set only a byte or a word of
+// expect-compile-error: this reads eax, which the block has set only part of
 //
 // A 32-bit read of a register the block set only a byte of: the rest holds
 // nothing of the method's (docs/INLINE-ASSEMBLY.md).

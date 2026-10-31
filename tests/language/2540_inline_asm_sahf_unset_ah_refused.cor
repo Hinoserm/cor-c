@@ -1,0 +1,18 @@
+// test: inline_asm_sahf_unset_ah_refused
+// only-target: x86
+// expect-compile-error: this reads ah, which the block has not set
+//
+// SAHF reads AH: AL set is not enough, a register followed a byte at a time
+// (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            mov al, 1
+            sahf
+        }
+        return 0;
+    }
+}

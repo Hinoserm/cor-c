@@ -1,0 +1,19 @@
+// test: inline_asm_popf_after_stack_write_refused
+// only-target: x86
+// expect-compile-error: direction flag
+//
+// PUSHFD's flags changed through ESP before POPFD takes them back: DF may
+// come back set (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            pushfd
+            mov dword [esp], 0x400
+            popfd
+        }
+        return 0;
+    }
+}

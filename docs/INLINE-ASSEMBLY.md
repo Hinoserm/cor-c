@@ -115,9 +115,11 @@ them:
 - **ESP is left where the block found it**: `push` and `pop` pair up (on every
   path), and nothing else writes ESP. **EBP is never written**: the method's
   frame is reached through it -- `popa` only where `pusha`'s eight are on top
-  of the stack, which puts EBP back. The stack is followed a byte at a time,
-  so a `pushad` taken back by 16-bit pops, or a word's `push` under a
-  dword's `popf`, is read for what each byte holds. CS and SS are not loaded;
+  of the stack, whole and in place, which puts EBP back. The stack is
+  followed a byte at a time: a `pushad` may be taken back by sixteen 16-bit
+  pops, but a `popad` two bytes off its frame is refused. A write through
+  ESP (`mov dword [esp], 0x400`) makes nothing more known of what the block
+  pushed. CS and SS are not loaded;
 - **a register is set before it is read**: a block's registers hold nothing
   of the method's but what its own instructions put there, the head's
   bindings among them. Reading one the block has not set on every path is an
@@ -126,12 +128,15 @@ them:
   of a register a scalar or a half is written into (`cvtsi2sd xmm0, eax`,
   `movss xmm0, xmm1`), a push's register (saved to be put back), and what a
   trap or CPUID may read (`int`'s and `syscall`'s arguments, CPUID's subleaf
-  in ECX). A byte's or a word's write sets that much: a 32-bit read of a
-  register the block set only a byte of is refused, and a byte's or a word's
-  read, named or not, needs only that much (`mov al, x` then `cbw`,
+  in ECX). A register is followed by its parts -- bits 0-7, 8-15 (AH's),
+  16-31 and 32-63 -- named or not: a byte's or a word's write sets that much
+  and a byte's or a word's read needs that much set (`mov al, x` then `cbw`,
   `fnstsw ax` then `sahf`, `lahf` then `sahf`, `mov al, 0` then
-  `repne scasb`, `mov al, x` then `mul bl`). Where one path sets a register
-  whole and another only a byte of it, after them it is set a byte;
+  `repne scasb`, `mov al, x` then `mul bl`), and a 32-bit read of a register
+  the block set only a byte of is refused, as is `mov al, 1` then `sahf`
+  (AH) or a byte's `div` (which divides AX). A 32-bit write sets the whole
+  register, in long mode too. Where one path sets a register whole and
+  another only a byte of it, after them it is set a byte;
 - **the x87 stack is as deep at the end as at the start**. `fincstp`,
   `fdecstp` and `ffree` are refused, since they move the top without its tags
   and the depth could not be followed, and so are `frstor` and `fldenv`,
@@ -140,8 +145,8 @@ them:
   between MMX and its `emms`. No MMX instruction runs with values on the x87
   stack: the MMX registers are the x87's;
 - **the direction flag is clear at the end** (`cld` after `std`). `popf`
-  puts DF back as its own `pushf` found it; a `popf` of anything else may set
-  it;
+  puts DF back as its own `pushf` found it; a `popf` of anything else, or of
+  flags written through ESP since, may set it;
 - **the code does not depend on where it lands**: the block is assembled at
   two origins, and an absolute address of one of its labels, which moves
   with the method, is refused.

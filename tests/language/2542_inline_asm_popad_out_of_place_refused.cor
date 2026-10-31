@@ -1,0 +1,21 @@
+// test: inline_asm_popad_out_of_place_refused
+// only-target: x86
+// expect-compile-error: POPA here takes what PUSHA did not push
+//
+// POPAD two bytes off its PUSHAD's frame: thirty-two of PUSHAD's bytes on
+// top, but EBP would be loaded from half of the saved EBP and half of ESP
+// (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            pushad
+            pushad
+            pop ax
+            popad
+        }
+        return 0;
+    }
+}

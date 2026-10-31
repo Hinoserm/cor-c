@@ -1,0 +1,22 @@
+// test: inline_asm_byte_div_unset_ah_refused
+// only-target: x86
+// expect-compile-error: this reads ax, which the block has set only part of
+//
+// A byte's DIV divides AX, not AL: AH holds nothing of the method's
+// (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        int r;
+        asm
+        {
+            mov al, 100
+            mov bl, 7
+            div bl
+            movzx ecx, al
+            mov r, ecx
+        }
+        return r;
+    }
+}

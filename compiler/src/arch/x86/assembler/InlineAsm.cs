@@ -378,17 +378,20 @@ public static class InlineAsm
         /// <summary>What ESP moves by: a push's -size, a pop's +size.</summary>
         public int Esp;
         /// <summary>
-        /// What the stack holds, for the rules a pop of flags or of every
-        /// register meets (Analyze), a byte to each of its bytes: a push's
-        /// 'v', PUSHF's 'f' (the flags as they are), PUSHAD's 'A', PUSHAW's 'a'.
+        /// What kind of push it is, for the rules a pop of flags or of every
+        /// register meets (Analyze): 'v' a value, 'f' PUSHF, 'A' PUSHAD,
+        /// 'a' PUSHAW; and of pop, the same. Its bytes are Esp's.
         /// </summary>
         public char Pushes;
-        /// <summary>What kind of pop it is: 'v' a value, 'f' POPF, 'A' POPAD, 'a' POPAW; its bytes are Esp's.</summary>
         public char Pops;
-        /// <summary>The registers it writes only in part -- AH by LAHF, AX by a word's MUL -- which a wider read later may not count on.</summary>
-        public uint PartialWritten;
-        /// <summary>The registers it reads only a byte or a word of -- AL by CBW, AH by SAHF -- which a byte's or a word's write sets enough of.</summary>
-        public uint NarrowRead;
+        /// <summary>
+        /// The parts (Parts) of the general registers it reads and writes
+        /// without naming them where that is less than the machine's word --
+        /// AL by CBW, AH by LAHF and SAHF, AX by a word's MUL. The registers
+        /// are in ImplicitRead and ImplicitWritten too; for any other there,
+        /// the word.
+        /// </summary>
+        public ulong ReadBytes, WrittenBytes;
         /// <summary>0 no branch, 1 a conditional one, 2 an unconditional one; the label is the first operand.</summary>
         public int Branch;
         /// <summary>Why the block may not have this instruction, or null.</summary>
@@ -396,6 +399,40 @@ public static class InlineAsm
     }
 
     private static uint G(params int[] regs) { uint m = 0; foreach (int r in regs) m |= 1u << r; return m; }
+
+    /// <summary>
+    /// A GENERAL REGISTER'S PARTS, four bits of a set to each register
+    /// (register r's at 4r): bits 0-7, 8-15 (AH's), 16-31 and 32-63, which
+    /// a read of a byte, a word, 32 or 64 bits needs set and a write of as
+    /// much sets. A 32-bit write sets all four (long mode clears the top).
+    /// </summary>
+    internal static ulong Parts(int reg, int size, bool high, bool write) => (size switch
+    {
+        1 => high ? 2UL : 1UL,
+        2 => 3UL,
+        4 => write ? 15UL : 7UL,
+        _ => 15UL,
+    }) << (4 * reg);
+
+    /// <summary>The parts of a register an operand names: AH..BH a high byte.</summary>
+    internal static ulong Parts(Operand o, bool write)
+        => Parts(GprNumber(o), o.Size, o.Size == 1 && !o.Rex8 && o.Reg is >= 4 and <= 7, write);
+
+    /// <summary>Each register of a mask as the machine's word, read or written.</summary>
+    private static ulong WordParts(uint regs, int bits, bool write)
+    {
+        ulong m = 0;
+        for (int r = 0; r < 16; r++) if ((regs & (1u << r)) != 0) m |= Parts(r, bits / 8, false, write);
+        return m;
+    }
+
+    /// <summary>The registers any of whose parts are in a set.</summary>
+    private static uint PartRegisters(ulong parts)
+    {
+        uint m = 0;
+        for (int r = 0; r < 16; r++) if (((parts >> (4 * r)) & 15) != 0) m |= 1u << r;
+        return m;
+    }
     private const int Eax = 0, Ecx = 1, Edx = 2, Ebx = 3, Esp = 4, Ebp = 5, Esi = 6, Edi = 7;
 
     private static readonly HashSet<string> Alu = new(StringComparer.Ordinal) { "add", "sub", "adc", "sbb", "and", "or", "xor" };
@@ -438,6 +475,16 @@ public static class InlineAsm
             for (int k = 0; k < n; k++) f.Roles[k] = k == 0 ? first : rest;
         }
         int word = bits == 64 ? 8 : 4;
+        // THE ACCUMULATOR'S WIDTH IS THE OPERATION'S: a byte's MUL reads AL
+        // and writes AX -- parts of registers (Parts), not their words.
+        ulong Acc(int size, bool write) => Parts(Eax, size, false, write);
+        void Implicit(ulong read, ulong written)
+        {
+            f.ReadBytes |= read;
+            f.WrittenBytes |= written;
+            f.ImplicitRead |= PartRegisters(read);
+            f.ImplicitWritten |= PartRegisters(written);
+        }
         // A rep or a lock's instruction: the prefix adds ECX for rep.
         if (prefix is "rep" or "repe" or "repz" or "repne" or "repnz")
         {
@@ -514,10 +561,12 @@ public static class InlineAsm
         if (mn is "popa" or "popad" or "popaw")
         {
             // EBP comes back as PUSHA left it, which the stack's rule checks
-            // (Analyze: POPA only where PUSHA's eight are on top).
+            // (Analyze: POPA only where its PUSHA's frame is on top, whole and in place).
             if (bits == 64) { f.Refused = $"{mn} is not a long-mode instruction"; return f; }
-            f.ImplicitWritten |= G(Eax, Ecx, Edx, Ebx, Esi, Edi);
-            if (mn == "popaw") f.PartialWritten |= G(Eax, Ecx, Edx, Ebx, Esi, Edi);
+            if (mn == "popaw")
+                Implicit(0, Parts(Eax, 2, false, true) | Parts(Ecx, 2, false, true) | Parts(Edx, 2, false, true)
+                    | Parts(Ebx, 2, false, true) | Parts(Esi, 2, false, true) | Parts(Edi, 2, false, true));
+            else f.ImplicitWritten |= G(Eax, Ecx, Edx, Ebx, Esi, Edi);
             f.Esp = mn == "popaw" ? 16 : 32;
             f.Pops = mn == "popaw" ? 'a' : 'A';
             return f;
@@ -540,9 +589,10 @@ public static class InlineAsm
         if (mn is "xchg" or "xadd") { All(AsmRole.ReadWrite, AsmRole.ReadWrite); return f; }
         if (mn == "cmpxchg")
         {
+            // The accumulator as wide as the source register.
             All(AsmRole.ReadWrite, AsmRole.Read);
-            bool narrow = n > 0 && ops[0].Size is 1 or 2;
-            Implicit(G(Eax), G(Eax), narrow, narrow);
+            int size = n == 2 && ops[1].Size != 0 ? ops[1].Size : n > 0 && ops[0].Size != 0 ? ops[0].Size : word;
+            Implicit(Acc(size, false), Acc(size, true));
             return f;
         }
         if (mn == "cmpxchg8b")
@@ -552,36 +602,30 @@ public static class InlineAsm
             f.ImplicitWritten |= G(Eax, Edx);
             return f;
         }
-        // THE ACCUMULATOR'S WIDTH IS THE OPERATION'S: a byte's MUL reads AL
-        // and writes AX, a word's reads AX and writes AX and DX -- reads and
-        // writes of part of a register (NarrowRead, PartialWritten).
-        void Implicit(uint read, uint written, bool narrowRead, bool partialWrite)
-        {
-            f.ImplicitRead |= read;
-            f.ImplicitWritten |= written;
-            if (narrowRead) f.NarrowRead |= read;
-            if (partialWrite) f.PartialWritten |= written;
-        }
         if (mn is "mul" or "div" or "idiv" || mn == "imul" && n == 1)
         {
+            // A byte's MUL reads AL and writes AX; a byte's DIV reads and
+            // writes AX. Wider, the pair DX:AX (EDX:EAX, RDX:RAX): MUL reads
+            // the accumulator, DIV both; each writes both.
             All(AsmRole.Read, AsmRole.Read);
-            int size = n == 1 ? ops[0].Size : word;
+            int size = n == 1 && ops[0].Size != 0 ? ops[0].Size : word;
             bool divides = mn is "div" or "idiv";
-            if (size == 1) Implicit(G(Eax), G(Eax), true, true);
-            else Implicit(divides ? G(Eax, Edx) : G(Eax), G(Eax, Edx), size == 2, size == 2);
+            if (size == 1) Implicit(Acc(divides ? 2 : 1, false), Acc(2, true));
+            else Implicit(Acc(size, false) | (divides ? Parts(Edx, size, false, false) : 0), Acc(size, true) | Parts(Edx, size, false, true));
             return f;
         }
         if (mn == "imul") { All(n == 3 ? AsmRole.Write : AsmRole.ReadWrite, AsmRole.Read); return f; }
-        if (mn == "cbw") { Implicit(G(Eax), G(Eax), true, true); return f; }
-        if (mn == "cwde") { Implicit(G(Eax), G(Eax), true, false); return f; }
-        if (mn == "cdqe") { Implicit(G(Eax), G(Eax), false, false); return f; }
-        if (mn == "cwd") { Implicit(G(Eax), G(Edx), true, true); return f; }
-        if (mn is "cdq" or "cqo") { Implicit(G(Eax), G(Edx), false, false); return f; }
+        if (mn == "cbw") { Implicit(Acc(1, false), Acc(2, true)); return f; }
+        if (mn == "cwde") { Implicit(Acc(2, false), Acc(4, true)); return f; }
+        if (mn == "cdqe") { Implicit(Acc(4, false), Acc(8, true)); return f; }
+        if (mn == "cwd") { Implicit(Acc(2, false), Parts(Edx, 2, false, true)); return f; }
+        if (mn == "cdq") { Implicit(Acc(4, false), Parts(Edx, 4, false, true)); return f; }
+        if (mn == "cqo") { Implicit(Acc(8, false), Parts(Edx, 8, false, true)); return f; }
         // AH from the flags, and back: the rest of EAX neither read nor changed.
-        if (mn == "lahf") { Implicit(0, G(Eax), false, true); return f; }
-        if (mn == "sahf") { Implicit(G(Eax), 0, true, false); return f; }
-        // AL looked up at [EBX + AL]: EBX whole, AL in and out.
-        if (mn is "xlat" or "xlatb") { Implicit(G(Eax), G(Eax), true, true); f.ImplicitRead |= G(Ebx); return f; }
+        if (mn == "lahf") { Implicit(0, Parts(Eax, 1, true, true)); return f; }
+        if (mn == "sahf") { Implicit(Parts(Eax, 1, true, false), 0); return f; }
+        // AL looked up at [EBX + AL]: EBX the word, AL in and out.
+        if (mn is "xlat" or "xlatb") { Implicit(Acc(1, false), Acc(1, true)); f.ImplicitRead |= G(Ebx); return f; }
         if (mn == "cpuid") { f.ImplicitRead |= G(Eax, Ecx); f.MayRead |= G(Ecx); f.ImplicitWritten |= G(Eax, Ebx, Ecx, Edx); return f; }
         if (mn == "rdtsc") { f.ImplicitWritten |= G(Eax, Edx); return f; }
         if (mn == "rdmsr") { f.ImplicitRead |= G(Ecx); f.ImplicitWritten |= G(Eax, Edx); return f; }
@@ -601,17 +645,18 @@ public static class InlineAsm
         // MOVSD and CMPSD have two): what each reads and steps, and REP's count.
         if (n == 0 && StringInstructions.Contains(mn))
         {
-            // The accumulator by the suffix: AL for b, AX for w; the port in DX, a word.
-            bool part = mn[^1] is 'b' or 'w';
+            // The accumulator as wide as the suffix: AL for b, AX for w, EAX
+            // for d, RAX for q; the port in DX, a word.
+            int size = mn[^1] switch { 'b' => 1, 'w' => 2, 'd' => 4, _ => 8 };
             switch (mn.StartsWith("ins", StringComparison.Ordinal) ? "ins" : mn[..4])
             {
                 case "movs": f.ImplicitRead |= G(Esi, Edi); f.ImplicitWritten |= G(Esi, Edi); break;
                 case "cmps": f.ImplicitRead |= G(Esi, Edi); f.ImplicitWritten |= G(Esi, Edi); break;
-                case "stos": Implicit(G(Eax), 0, part, false); f.ImplicitRead |= G(Edi); f.ImplicitWritten |= G(Edi); break;
-                case "lods": Implicit(0, G(Eax), false, part); f.ImplicitRead |= G(Esi); f.ImplicitWritten |= G(Esi); break;
-                case "scas": Implicit(G(Eax), 0, part, false); f.ImplicitRead |= G(Edi); f.ImplicitWritten |= G(Edi); break;
-                case "ins": Implicit(G(Edx), 0, true, false); f.ImplicitRead |= G(Edi); f.ImplicitWritten |= G(Edi); break;
-                case "outs": Implicit(G(Edx), 0, true, false); f.ImplicitRead |= G(Esi); f.ImplicitWritten |= G(Esi); break;
+                case "stos": Implicit(Acc(size, false), 0); f.ImplicitRead |= G(Edi); f.ImplicitWritten |= G(Edi); break;
+                case "lods": Implicit(0, Acc(size, true)); f.ImplicitRead |= G(Esi); f.ImplicitWritten |= G(Esi); break;
+                case "scas": Implicit(Acc(size, false), 0); f.ImplicitRead |= G(Edi); f.ImplicitWritten |= G(Edi); break;
+                case "ins": Implicit(Parts(Edx, 2, false, false), 0); f.ImplicitRead |= G(Edi); f.ImplicitWritten |= G(Edi); break;
+                case "outs": Implicit(Parts(Edx, 2, false, false), 0); f.ImplicitRead |= G(Esi); f.ImplicitWritten |= G(Esi); break;
             }
             return f;
         }
@@ -698,13 +743,31 @@ public static class InlineAsm
         public bool UsesFloatState => UsesX87 || UsesMmx || UsesSse;
     }
 
-    /// <summary>A register by its number in the set's bits: a general one as the target's word names it, then xmm and mm.</summary>
-    private static string RegisterName(int bit, int bits) => bit switch
+    /// <summary>A general register by the parts of it a read needs (Parts): `al`, `ah`, `ax`, `eax`, `rax`, `r9b`.</summary>
+    private static string PartName(int r, ulong parts, int bits)
     {
-        < 16 => (bits == 64 ? Operands.Reg64 : Operands.Reg32.Concat(Operands.Reg32Extended).ToArray())[bit],
-        < 32 => "xmm" + (bit - 16),
-        _ => "mm" + (bit - 32),
-    };
+        if (r >= 8) return parts switch { 1 => $"r{r}b", 3 => $"r{r}w", 7 => $"r{r}d", _ => $"r{r}" };
+        return parts switch
+        {
+            1 => r < 4 ? Operands.Reg8[r] : Operands.Reg8Rex[r - 4],
+            2 => Operands.Reg8[r + 4],
+            3 => Operands.Reg16[r],
+            15 when bits == 64 => Operands.Reg64[r],
+            _ => Operands.Reg32[r],
+        };
+    }
+
+    /// <summary>
+    /// What PUSHAD ('A', 32 bytes) or PUSHAW ('a', 16) leaves on the stack,
+    /// as Analyze follows it: each byte its own place in the frame, the top
+    /// (place 0) last -- so that POPA finds a frame whole and in place.
+    /// </summary>
+    private static string PushaBytes(char kind, int size)
+    {
+        char[] c = new char[size];
+        for (int k = 0; k < size; k++) c[size - 1 - k] = (char)((kind == 'A' ? 0x100 : 0x200) + k);
+        return new string(c);
+    }
 
     /// <summary>The words of a block's operands that name registers, as written: a local spelt as one could not be named (Binder.CheckAsm).</summary>
     public static HashSet<string> RegisterWords(string text)
@@ -856,22 +919,26 @@ public static class InlineAsm
         int[] x87 = new int[count + 1], esp = new int[count + 1];
         bool[] mmx = new bool[count + 1], df = new bool[count + 1], seen = new bool[count + 1];
         ulong[] must = new ulong[count + 1];
-        // WHAT THE BLOCK'S PUSHES LEFT ON THE STACK, top last: 'v' a value,
-        // 'c' and 's' the flags PUSHF saved with DF clear or set, 'a'
-        // PUSHA's eight. POPF takes DF back from its PUSHF's, and from
-        // anything else may set it; POPA takes EBP back only from PUSHA's.
+        // WHAT THE BLOCK'S PUSHES LEFT ON THE STACK, a char to each byte, the
+        // top (the lowest address) last: 'v' a value; of PUSHF's, its DF
+        // byte (the second) 'c' or 's' as DF was clear or set, the rest 'v';
+        // of PUSHAD's and PUSHAW's, each byte its place in the frame
+        // (PushaBytes). POPF takes DF back from a PUSHF's DF byte, and from
+        // anything else may set it; POPA takes only a whole frame of its own
+        // width, in place, since EBP comes back from it. A write through ESP
+        // leaves every byte a value.
         string[] stack = new string[count + 1];
-        // THE REGISTERS SET ON EVERY PATH SO FAR: the general ones in bits
-        // 0-15, the XMM ones 16-31, the MMX ones 32-39. ESP and EBP are the
-        // method's, set at the start; anything else read before the block
-        // sets it holds nothing of the method's (only a head's binding puts a
-        // local in a register, and that is a `mov` the block sets it by).
-        ulong[] set = new ulong[count + 1], part = new ulong[count + 1];
-        // Per statement: what it needs set whole (a read of 32 bits or more,
-        // an address), what it needs set at all (a byte's or a word's read),
-        // and what it sets whole and in part (a byte's or a word's write in
-        // 32-bit code keeps the rest of the register as it was).
-        ulong[] needs = new ulong[count], needsAny = new ulong[count], sets = new ulong[count], partSets = new ulong[count];
+        // THE REGISTERS SET ON EVERY PATH SO FAR: the general ones by their
+        // parts (Parts), the XMM ones in bits 0-15 of a set of their own and
+        // the MMX ones in 16-23. ESP and EBP are the method's, set at the
+        // start; anything else read before the block sets it holds nothing of
+        // the method's (only a head's binding puts a local in a register, and
+        // that is a `mov` the block sets it by).
+        ulong[] gset = new ulong[count + 1], vset = new ulong[count + 1];
+        // Per statement: the parts and the vector registers it needs set and
+        // those it sets, and whether it writes memory through ESP.
+        ulong[] gneeds = new ulong[count], vneeds = new ulong[count], gsets = new ulong[count], vsets = new ulong[count];
+        bool[] stackWrite = new bool[count];
         for (int k = 0; k < count; k++)
         {
             AsmStatement s = statements[k];
@@ -891,45 +958,47 @@ public static class InlineAsm
             bool merges = s.Mnemonic is "cvtsi2ss" or "cvtsi2sd" or "cvtss2sd" or "cvtsd2ss" or "cvtpi2ps" or "sqrtss" or "sqrtsd"
                 or "rcpss" or "rsqrtss" or "movlps" or "movhps" or "movlpd" or "movhpd" or "movhlps" or "movlhps" or "pinsrw"
                 || s.Mnemonic is "movss" or "movsd" && ops.Length == 2 && ops[1].Kind == OperandKind.Xmm;
-            ulong need = f.ImplicitRead & ~f.MayRead & ~f.NarrowRead, any = f.NarrowRead & ~f.MayRead;
-            ulong made = f.ImplicitWritten & ~f.PartialWritten, partly = f.PartialWritten;
+            // The registers it does not name: by their parts where it gave
+            // them (ReadBytes, WrittenBytes), the rest as the machine's word.
+            ulong gneed = WordParts(f.ImplicitRead & ~f.MayRead & ~PartRegisters(f.ReadBytes), bits, false) | f.ReadBytes;
+            ulong gmade = WordParts(f.ImplicitWritten & ~PartRegisters(f.WrittenBytes), bits, true) | f.WrittenBytes;
+            ulong vneed = 0, vmade = 0;
             for (int o = 0; o < ops.Length; o++)
             {
                 AsmRole role = f.Roles.Length > o ? f.Roles[o] : AsmRole.Read;
                 Operand op = ops[o];
-                ulong bit = op.Kind switch
-                {
-                    OperandKind.Register => 1UL << GprNumber(op),
-                    OperandKind.Xmm => 1UL << (16 + op.Reg),
-                    OperandKind.Mmx => 1UL << (32 + op.Reg),
-                    _ => 0,
-                };
                 if (op.Kind == OperandKind.Memory)
                 {
-                    if (op.Base >= 0) need |= 1UL << (op.Base & 15);
-                    if (op.Index >= 0) need |= 1UL << (op.Index & 15);
+                    if (op.Base >= 0) gneed |= Parts(op.Base & 15, bits / 8, false, false);
+                    if (op.Index >= 0) gneed |= Parts(op.Index & 15, bits / 8, false, false);
+                    if ((role & AsmRole.Write) != 0 && op.Base >= 0 && (op.Base & 15) == Esp) stackWrite[k] = true;
+                    continue;
                 }
-                bool narrow = op.Kind == OperandKind.Register && op.Size < 4;
-                if ((role & AsmRole.Read) != 0 && !idiom && !(merges && o == 0)
-                    && (op.Kind != OperandKind.Register || (f.MayRead & bit) == 0))
+                bool reads = (role & AsmRole.Read) != 0 && !idiom && !(merges && o == 0);
+                bool writes = (role & AsmRole.Write) != 0;
+                if (op.Kind == OperandKind.Register)
                 {
-                    if (narrow) any |= bit; else need |= bit;
+                    // A byte's or a word's write sets that much (in long mode
+                    // too: only a 32-bit write clears the top), and a byte's
+                    // or a word's read needs only that much.
+                    if (reads && (f.MayRead & (1u << GprNumber(op))) == 0) gneed |= Parts(op, false);
+                    if (writes) gmade |= Parts(op, true);
                 }
-                if ((role & AsmRole.Write) != 0)
+                else if (op.Kind is OperandKind.Xmm or OperandKind.Mmx)
                 {
-                    // A byte's or a word's write is the register's in part
-                    // (in long mode too: only a 32-bit write clears the top).
-                    if (narrow) partly |= bit; else made |= bit;
+                    ulong bit = 1UL << (op.Kind == OperandKind.Xmm ? op.Reg : 16 + op.Reg);
+                    if (reads) vneed |= bit;
+                    if (writes) vmade |= bit;
                 }
             }
-            needs[k] = need;
-            needsAny[k] = any;
-            sets[k] = made;
-            partSets[k] = partly;
+            gneeds[k] = gneed;
+            vneeds[k] = vneed;
+            gsets[k] = gmade;
+            vsets[k] = vmade;
         }
         Stack<int> work = new();
         // Two paths' stacks, as one: where they differ the flags may hold DF
-        // set, and a value is no PUSHA's.
+        // set, and a byte is no PUSHA's.
         static string Join(string a, string b)
         {
             char[] c = new char[a.Length];
@@ -937,11 +1006,11 @@ public static class InlineAsm
                 c[k] = a[k] == b[k] ? a[k] : a[k] is 'c' or 's' && b[k] is 'c' or 's' ? 's' : 'v';
             return new string(c);
         }
-        void Arrive(int at, int x, int e, bool m, bool d, ulong w, string st, ulong regs, ulong partial, int line)
+        void Arrive(int at, int x, int e, bool m, bool d, ulong w, string st, ulong g, ulong v, int line)
         {
             if (!seen[at])
             {
-                seen[at] = true; x87[at] = x; esp[at] = e; mmx[at] = m; df[at] = d; must[at] = w; stack[at] = st; set[at] = regs; part[at] = partial;
+                seen[at] = true; x87[at] = x; esp[at] = e; mmx[at] = m; df[at] = d; must[at] = w; stack[at] = st; gset[at] = g; vset[at] = v;
                 work.Push(at);
                 return;
             }
@@ -954,14 +1023,13 @@ public static class InlineAsm
             if ((must[at] & w) != must[at]) { must[at] &= w; changed = true; }
             string joined = Join(stack[at], st);
             if (joined != stack[at]) { stack[at] = joined; changed = true; }
-            // Set whole where both set it whole; set at least in part where
-            // both set at least part of it -- a whole write on one path and a
-            // byte's on the other leave the byte.
-            ulong whole = set[at] & regs, some = (set[at] | part[at]) & (regs | partial) & ~whole;
-            if (whole != set[at] || some != part[at]) { set[at] = whole; part[at] = some; changed = true; }
+            // Set after both where both set it: a whole write on one path and
+            // a byte's on the other leave the byte.
+            if ((gset[at] & g) != gset[at]) { gset[at] &= g; changed = true; }
+            if ((vset[at] & v) != vset[at]) { vset[at] &= v; changed = true; }
             if (changed) work.Push(at);
         }
-        Arrive(0, 0, 0, false, false, 0, "", (1UL << Esp) | (1UL << Ebp), (1UL << Esp) | (1UL << Ebp), statements.Count > 0 ? statements[0].Line : 1);
+        Arrive(0, 0, 0, false, false, 0, "", WordParts(G(Esp, Ebp), 64, true), 0, statements.Count > 0 ? statements[0].Line : 1);
         while (work.Count > 0)
         {
             int at = work.Pop();
@@ -972,29 +1040,49 @@ public static class InlineAsm
             bool m = mmx[at], d = df[at];
             ulong w = must[at];
             string st = stack[at];
-            ulong regs = set[at], partial = part[at];
+            ulong g = gset[at], v = vset[at];
             if (s.IsInstruction)
             {
-                ulong unset = needs[at] & ~regs | needsAny[at] & ~(regs | partial);
-                if (unset != 0)
+                string? unset = null;
+                bool some = false;
+                if ((gneeds[at] & ~g) is var gu and not 0)
                 {
-                    int r = System.Numerics.BitOperations.TrailingZeroCount(unset);
-                    bool some = (partial & (1UL << r)) != 0;
-                    throw new AsmException("<asm>", s.Line, $"this reads {RegisterName(r, bits)}, which the block has {(some ? "set only a byte or a word of" : "not set")} on every path to here: "
-                        + "a block's registers hold nothing of the method's but what its own instructions -- its head's `mov reg, local` among them -- put there");
+                    int r = System.Numerics.BitOperations.TrailingZeroCount(gu) / 4;
+                    ulong wanted = (gneeds[at] >> (4 * r)) & 15;
+                    unset = PartName(r, wanted, bits);
+                    some = ((g >> (4 * r)) & wanted) != 0;
                 }
-                regs |= sets[at];
-                partial |= partSets[at];
+                else if ((vneeds[at] & ~v) is var vu and not 0)
+                {
+                    int b = System.Numerics.BitOperations.TrailingZeroCount(vu);
+                    unset = b < 16 ? "xmm" + b : "mm" + (b - 16);
+                }
+                if (unset != null)
+                    throw new AsmException("<asm>", s.Line, $"this reads {unset}, which the block has {(some ? "set only part of" : "not set")} on every path to here: "
+                        + "a block's registers hold nothing of the method's but what its own instructions -- its head's `mov reg, local` among them -- put there");
+                g |= gsets[at];
+                v |= vsets[at];
+                if (stackWrite[at]) st = new string('v', st.Length);
                 if (f.Pops != '\0')
                 {
                     if (st.Length < f.Esp) throw new AsmException("<asm>", s.Line, "this pops more off the stack than the block pushed");
                     string taken = st[^f.Esp..];
                     st = st[..^f.Esp];
-                    if (f.Pops == 'f') d = taken.Any(c => c != 'c');
-                    if (f.Pops is 'a' or 'A' && taken.Any(c => c != f.Pops))
+                    // DF is bit 10: in the second byte from the top.
+                    if (f.Pops == 'f') d = taken[^2] != 'c';
+                    if (f.Pops is 'a' or 'A' && taken != PushaBytes(f.Pops, f.Esp))
                         throw new AsmException("<asm>", s.Line, "POPA here takes what PUSHA did not push: EBP would be loaded from it");
                 }
-                if (f.Pushes != '\0') st += new string(f.Pushes == 'f' ? (d ? 's' : 'c') : f.Pushes, -f.Esp);
+                if (f.Pushes != '\0')
+                {
+                    int size = -f.Esp;
+                    st += f.Pushes switch
+                    {
+                        'f' => new string('v', size - 2) + (d ? 's' : 'c') + 'v',
+                        'a' or 'A' => PushaBytes(f.Pushes, size),
+                        _ => new string('v', size),
+                    };
+                }
                 if (f.UsesMmx && x != 0) throw new AsmException("<asm>", s.Line, "an MMX instruction with values on the x87 stack: the MMX registers are the x87's");
                 if (f.UsesX87 && m) throw new AsmException("<asm>", s.Line, "an x87 instruction after MMX with no EMMS between: the MMX registers are the x87's");
                 x = f.ResetsX87 ? 0 : x + f.X87;
@@ -1009,8 +1097,8 @@ public static class InlineAsm
                 for (int o = 0; o < s.Local.Length; o++)
                     if (s.Local[o] >= 0 && (s.Roles[o] & AsmRole.Write) != 0) w |= 1UL << s.Local[o];
             }
-            if (f.Branch != 0) Arrive(target[at], x, e, m, d, w, st, regs, partial, s.Line);
-            if (f.Branch != 2) Arrive(at + 1, x, e, m, d, w, st, regs, partial, s.Line);
+            if (f.Branch != 0) Arrive(target[at], x, e, m, d, w, st, g, v, s.Line);
+            if (f.Branch != 2) Arrive(at + 1, x, e, m, d, w, st, g, v, s.Line);
         }
 
         a.UsesStack |= ((a.GprRead | a.GprWritten) & ((1u << Esp) | (1u << Ebp))) != 0;
