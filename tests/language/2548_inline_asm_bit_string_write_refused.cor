@@ -1,20 +1,20 @@
 // test: inline_asm_bit_string_write_refused
 // only-target: x86
-// expect-compile-error: POPA here takes what PUSHA did not push
+// expect-compile-error: direction flag
 //
-// BTR with its bit's offset in a register writes eight bytes on per 64:
-// which of PUSHAD's bytes it changed is not known, the saved EBP among
-// them, and POPAD may not take it back (docs/INLINE-ASSEMBLY.md).
+// BTS with its bit's offset in a register writes a byte on per eight: which
+// of PUSHFD's bytes it changed is not known, DF's among them, and POPFD may
+// set DF (docs/INLINE-ASSEMBLY.md).
 static class Program
 {
     static int Main()
     {
         asm
         {
-            pushad
-            mov eax, 64
-            btr dword [esp], eax
-            popad
+            pushfd
+            mov eax, 10
+            bts dword [esp], eax
+            popfd
         }
         return 0;
     }

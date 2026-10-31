@@ -126,8 +126,14 @@ them:
   `cmp esp, ebx`, `lea ebx, [esp + 4]`, `push esp`): what the block pushed
   is reached through ESP alone. A register pushed, or saved by `pusha`,
   comes back from its `pop` or `popa` set as it was; read off the stack
-  any other way (`mov eax, [esp]`, `pop dword [ebx]`), it must have been
-  set, and the ESP `pusha` saved is never read. CS and SS are not loaded;
+  any other way (`mov eax, [esp]`, `pop dword [ebx]`, `popfd`, `pop ds`),
+  it must have been set, and the ESP `pusha` saved is never read. Through
+  ESP a block reaches only what it pushed: not below ESP, where an
+  interrupt or a signal may write, nor past its pushes into the method's
+  frame, which the compiler lays out (name the local instead). An operand
+  through ESP is as wide as its size word says, or as the instruction
+  makes it (`movss` 4, `movsd` 8, `movaps` 16, `movq` 8). CS and SS are
+  not loaded;
 - **a register is set before it is read**: a block's registers hold nothing
   of the method's but what its own instructions put there, the head's
   bindings among them. Reading one the block has not set on every path is an
