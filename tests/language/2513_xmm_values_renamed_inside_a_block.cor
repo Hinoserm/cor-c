@@ -93,10 +93,10 @@ static class Program
         return s + d;
     }
 
+    // The cells a, s and d passed in, so the array stays one: no register for any of them.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static double DoublesInMemory(double a0, double b, int n)
+    static double DoublesInMemory(double[] c, double b, int n)
     {
-        double[] c = { a0, 0, a0 };   // a, s, d
         for (int i = 0; i < n; i++)
         {
             c[1] += c[2];
@@ -129,9 +129,8 @@ static class Program
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static float FloatsInMemory(float a0, float b, int n)
+    static float FloatsInMemory(float[] c, float b, int n)
     {
-        float[] c = { a0, a0, 0 };   // a, s, d
         for (int i = 0; i < n; i++)
         {
             c[1] += c[2];
@@ -154,8 +153,8 @@ static class Program
         bool same = ran;
         for (int i = 0; i < 32; i++) same &= o[i] == r[i];
         Console.WriteLine("packed " + same);
-        Console.WriteLine("doubles " + (BitConverter.DoubleToInt64Bits(Doubles(1.5, 3.25, 9)) == BitConverter.DoubleToInt64Bits(DoublesInMemory(1.5, 3.25, 9))));
-        Console.WriteLine("floats " + (BitConverter.SingleToInt32Bits(Floats(0.75f, 7f, 11)) == BitConverter.SingleToInt32Bits(FloatsInMemory(0.75f, 7f, 11))));
+        Console.WriteLine("doubles " + (BitConverter.DoubleToInt64Bits(Doubles(1.5, 3.25, 9)) == BitConverter.DoubleToInt64Bits(DoublesInMemory(new double[] { 1.5, 0, 1.5 }, 3.25, 9))));
+        Console.WriteLine("floats " + (BitConverter.SingleToInt32Bits(Floats(0.75f, 7f, 11)) == BitConverter.SingleToInt32Bits(FloatsInMemory(new float[] { 0.75f, 0.75f, 0 }, 7f, 11))));
         return 0;
     }
 }

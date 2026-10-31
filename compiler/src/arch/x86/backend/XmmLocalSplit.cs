@@ -15,9 +15,10 @@ namespace Corsac.Lang.X86;
 /// variable's register, for what is read after; what is read before the
 /// first is the one coming in. SSA construction's renaming (Cytron, Ferrante,
 /// Rosen, Wegman and Zadeck, 1991), within a block. A float's write that
-/// keeps the register's top lanes (CVTSI2SS, SQRTSS: Roles' Def) counts as
-/// whole: nothing reads a scalar's top lanes, and Packed128 values are never
-/// written by a scalar operation.
+/// keeps the register's top lanes (MOVSS between registers, CVTSI2SS,
+/// CVTSS2SD, SQRTSS: Roles' Def) counts as whole: nothing reads a scalar's
+/// top lanes, and a Packed128 value is written only by Select.PackedValues'
+/// MOVUPS, XORPS of itself and the packed operations, never a scalar one.
 ///
 /// Not in a block with a jump before its end -- a value read where it goes
 /// would be read under its old name -- nor in a function with a handler,
