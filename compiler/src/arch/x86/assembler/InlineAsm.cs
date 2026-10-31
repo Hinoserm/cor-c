@@ -741,8 +741,16 @@ public static class InlineAsm
         public bool UsesX87, UsesMmx, UsesSse;
         /// <summary>Whether it pushes or pops, or names ESP or EBP -- an operand of either, or an address off either: what a method without a frame pointer could not give it.</summary>
         public bool UsesStack;
-        /// <summary>Whether the block runs any float or packed code -- x87, MMX or SSE -- which the x87 facts and the packed registers care about.</summary>
+        /// <summary>Whether the block touches the x87, MMX or SSE at all -- its state included (FNINIT, FXRSTOR) -- which a packed block's registers care about.</summary>
         public bool UsesFloatState => UsesX87 || UsesMmx || UsesSse;
+        /// <summary>
+        /// Whether the block computes with the x87, MMX or SSE: float code,
+        /// as an .asm file's is to the link (X86Assembler.IsFpuStateOnly) --
+        /// not what only keeps, loads or reads their state (FNSAVE, FXSAVE,
+        /// FNSTENV, FLDCW, FNINIT, LDMXCSR...), which runs on the thread's
+        /// own state (Binder.PackedStateOf).
+        /// </summary>
+        public bool FloatCode;
     }
 
     /// <summary>A general register by the parts of it a read needs (Parts): `al`, `ah`, `ax`, `eax`, `rax`, `r9b`.</summary>
@@ -1078,6 +1086,7 @@ public static class InlineAsm
             a.UsesX87 |= f.UsesX87;
             a.UsesMmx |= f.UsesMmx || f.EmptiesMmx;
             a.UsesSse |= f.UsesSse;
+            a.FloatCode |= (f.UsesX87 || f.UsesSse) && !X86Assembler.IsFpuStateOnly(s.Mnemonic) || f.UsesMmx || f.EmptiesMmx;
         }
 
         // EVERY PATH: the x87's depth, ESP's and what the stack holds,

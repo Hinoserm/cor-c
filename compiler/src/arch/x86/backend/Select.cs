@@ -1011,7 +1011,7 @@ internal sealed partial class Selector
                     && home.StartsWith("home", StringComparison.Ordinal) && f.Params.Contains(stored))
                     continue;
                 if (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)
-                    || AsmUsesFloatState(i)) floatLine = i.Line;
+                    || AsmFloatCode(i)) floatLine = i.Line;
             }
         }
         return new(f.Name, f.Display ?? f.Name, Path.GetFileName(f.SourceFile ?? ""), floatLine, f.Dispatched, calls.ToArray());

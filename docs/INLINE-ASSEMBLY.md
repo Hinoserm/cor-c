@@ -176,9 +176,18 @@ across the block, and a callee-saved one is saved by the prologue as for any
 use. The block reads and writes memory as it likes, so the optimiser treats
 it as it treats a call to an unknown function. A block that names no local
 as memory, pushes nothing and names neither ESP nor EBP leaves its method
-free to go without a frame pointer. A block with x87, MMX or SSE code counts
-as float code in the facts the link reads about where float code runs
-(X87Notes), and inside a packed block one that uses SSE has FXSAVE save
+free to go without a frame pointer. A block that computes with the x87, MMX or
+SSE is float code, as an `.asm` file's is: in the facts the link reads
+about where float code runs (X87Notes), and, freestanding, its method
+keeps the state for it as for a `Sys.CallNativeFloat` -- the block runs on
+the clean state kept, its control word the compiler's. A block that only
+keeps, loads or reads that state -- `fnsave`, `fxsave`, `fnstenv`,
+`fnstsw`, `fldcw`, `fninit`, `ldmxcsr` and their kin -- is no float code:
+it runs on the thread's own state, as a plain `Sys.CallNative` does, given
+back around it where its method keeps one (`fnstenv` then `fldcw` reads a
+program's own x87 environment). `fldenv` and `frstor` stay refused: they
+load the stack's tags and top, and the block's x87 depth after them could
+not be followed. Inside a packed block one that uses SSE has FXSAVE save
 the thread's state.
 
 ## How a block meets its method

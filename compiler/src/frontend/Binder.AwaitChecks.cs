@@ -1641,6 +1641,10 @@ public sealed partial class Binder
                     calls.Add(runs);
                 else if (n is CallExpr plain && _r.Calls.TryGetValue(plain, out MethodSymbol? sys) && sys.Name == "CallNative"
                          && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>") natives.Add(m);
+                // An asm block that only keeps, loads or reads the x87's or
+                // SSE's state (FNSTENV, FLDCW, FXSAVE...) runs on the thread's
+                // own, as a plain native does (Lowering.LowerAsm).
+                else if (n is AsmStmt stateOnly && _r.AsmBlocks.TryGetValue(stateOnly, out AsmBinding? touches) && touches.StateOnly) natives.Add(m);
             }
             callees[m] = calls;
             if (m.Async || d.Body.Iterator) continue;
@@ -1694,6 +1698,9 @@ public sealed partial class Binder
                 // return to user code (PackedNatives).
                 if (own is null && n is CallExpr native && _r.Calls.TryGetValue(native, out MethodSymbol? sys) && sys.Name == "CallNativeFloat"
                     && sys.Owner.Name == "Sys" && sys.Decl?.File == "<prelude>") own = "a call of a native that uses the FPU (Sys.CallNativeFloat)";
+                // An asm block's float code, as CallNativeFloat's native's:
+                // it runs on the state kept for it.
+                if (own is null && n is AsmStmt asm && _r.AsmBlocks.TryGetValue(asm, out AsmBinding? block) && block.FloatCode) own = "an asm block's float code";
                 if (own is null && n is CallExpr call && PackedOperation(call)) own = "packed operations";
                 else if (own is null && n is Expr e && FloatTyped(e)) own = "float code";
                 if (n is WhileStmt or DoStmt or ForStmt or ForeachStmt)

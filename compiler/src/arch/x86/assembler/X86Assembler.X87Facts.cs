@@ -50,6 +50,9 @@ public sealed partial class X86Assembler
         "fninit", "finit", "fldcw", "fldenv", "fnclex", "fclex", "ldmxcsr", "stmxcsr",
     };
 
+    /// <summary>Whether an instruction only keeps, loads or reads the x87's or SSE's state, and so is no float code (FpuStateOnly): an asm block's too (InlineAsm.Analysis.FloatCode).</summary>
+    internal static bool IsFpuStateOnly(string mn) => FpuStateOnly.Contains(mn);
+
     private static readonly string[] PackedRegisters = ["mm0", "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm7"];
 
     private bool NotingFloats => _pass == 2 && _object && !_everLongMode;

@@ -1,0 +1,36 @@
+// test: an asm block that computes with the x87 keeps the state for its method, as a call of Sys.CallNativeFloat does
+// targets: x86
+// flags: --x87-in-blocks-only
+// expect-output:
+// scale 42
+//
+// Scale has no float code of its own but the block's FILD, FIMUL and
+// FISTP: the block is float code to the link (X87Notes), and the method
+// keeps the state for it (Binder.PackedStateOf), so it runs on the clean
+// state kept and is no error (docs/INLINE-ASSEMBLY.md).
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Scale(int a, int b)
+    {
+        int r;
+        asm
+        {
+            fild a
+            fimul b
+            fistp r
+        }
+        return r;
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Host.Line("scale " + Scale(6, 7).ToString());
+        Host.Done(0);
+        return 0;
+    }
+}

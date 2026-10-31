@@ -187,24 +187,29 @@ internal sealed partial class Selector
         => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal)
            && StateOf(c).Float;
 
+    /// <summary>Whether an IR instruction is an asm block that computes with the x87, MMX or SSE -- float code to the link (X87Notes), not what only keeps their state.</summary>
+    internal static bool AsmFloatCode(Instr i)
+        => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal)
+           && StateOf(c).FloatCode;
+
     /// <summary>Whether an IR instruction is an asm block that uses SSE's registers or state.</summary>
     internal static bool AsmUsesSse(Instr i)
         => i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal)
            && StateOf(c).Sse;
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Float, bool Sse)> FloatState = new(StringComparer.Ordinal);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Float, bool Sse, bool FloatCode)> FloatState = new(StringComparer.Ordinal);
 
-    private static (bool Float, bool Sse) StateOf(string callee) => FloatState.GetOrAdd(callee, c =>
+    private static (bool Float, bool Sse, bool FloatCode) StateOf(string callee) => FloatState.GetOrAdd(callee, c =>
     {
         try
         {
             InlineAsm.Spec spec = InlineAsm.Decode(c[MachineIntrinsics.Asm.Length..]);
             InlineAsm.Analysis a = InlineAsm.Analyze(spec.Text, spec.Bits, spec.Locals);
-            return (a.UsesFloatState, a.UsesSse);
+            return (a.UsesFloatState, a.UsesSse, a.FloatCode);
         }
         catch (AsmException)
         {
-            return (true, true);
+            return (true, true, true);
         }
     });
 }

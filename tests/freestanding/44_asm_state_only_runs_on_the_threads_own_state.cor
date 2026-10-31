@@ -1,0 +1,30 @@
+// test: an asm block that only reads the x87's state is no float code, and runs on the thread's own state where its method keeps one
+// targets: x86
+// flags: --x87-in-blocks-only
+// expect-output:
+// masked yes 5
+//
+// FNSTCW only reads the control word: as in an .asm file, the link counts
+// it no float code (X87Notes). Main keeps the state for its own double, and
+// gives the thread's back around the block (Lowering.OnOwnState), as
+// around a plain Sys.CallNative: the block reads the thread's control word,
+// every exception masked (docs/INLINE-ASSEMBLY.md).
+
+static class Program
+{
+    static double _half = 2.5;
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        double d = _half * 2;
+        ushort cw;
+        asm
+        {
+            fnstcw cw
+        }
+        Host.Line("masked " + ((cw & 0x3F) == 0x3F ? "yes" : "no") + " " + ((int)d).ToString());
+        Host.Done(0);
+        return 0;
+    }
+}

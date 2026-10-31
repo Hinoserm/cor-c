@@ -17,7 +17,9 @@ namespace Corsac.Lang;
 /// <param name="Names">A name of each, bound as any read of it is, for lowering to read and write.</param>
 /// <param name="Read">Per local: the block needs its value.</param>
 /// <param name="Written">Per local: the block gives it one.</param>
-public sealed record AsmBinding(string Text, int Bits, AsmLocal[] Locals, NameExpr[] Names, bool[] Read, bool[] Written);
+/// <param name="FloatCode">It computes with the x87, MMX or SSE: its method keeps the state for it, freestanding (PackedStateOf).</param>
+/// <param name="StateOnly">It touches their state and computes nothing: it runs on the thread's own (PackedNatives).</param>
+public sealed record AsmBinding(string Text, int Bits, AsmLocal[] Locals, NameExpr[] Names, bool[] Read, bool[] Written, bool FloatCode, bool StateOnly);
 
 public sealed partial class BindResult
 {
@@ -226,6 +228,7 @@ public sealed partial class Binder
                 if (symbols[k] is LocalSym written) _assigned.Add(written);
             }
         }
-        _r.AsmBlocks[a] = new AsmBinding(text, bits, shapes, bound, analysis.Read, analysis.Written);
+        _r.AsmBlocks[a] = new AsmBinding(text, bits, shapes, bound, analysis.Read, analysis.Written,
+            analysis.FloatCode, analysis.UsesFloatState && !analysis.FloatCode);
     }
 }
