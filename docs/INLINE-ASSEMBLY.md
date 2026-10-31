@@ -120,11 +120,11 @@ them:
   pops, but a `popad` two bytes off its frame is refused. A write through
   ESP changes the bytes it covers (`pushad`, `mov [esp + 28], eax`, `popad`
   returns EAX through the frame; `mov dword [esp], 0x400` under a `popfd`
-  may set DF; a write to the EBP `pusha` saved is refused; a `bts` with
-  its bit's offset in a register reaches bytes not known, and so does a
-  write of no stated size). ESP is never read as a value (`mov ebx, esp`,
+  may set DF; a write to the EBP `pusha` saved is refused; a write of a
+  width not known makes nothing more known of the pushes). ESP is never read as a value (`mov ebx, esp`,
   `cmp esp, ebx`, `lea ebx, [esp + 4]`, `push esp`): what the block pushed
-  is reached through ESP alone. A register pushed, or saved by `pusha`,
+  is reached through ESP alone, at an offset it states (`[esp + 12]`, no
+  index, a number; a `bt` through ESP with an immediate bit). A register pushed, or saved by `pusha`,
   comes back from its `pop` or `popa` set as it was; read off the stack
   any other way (`mov eax, [esp]`, `pop dword [ebx]`, `popfd`, `pop ds`),
   it must have been set, and the ESP `pusha` saved is never read. Through

@@ -1,10 +1,10 @@
 // test: inline_asm_bit_string_write_refused
 // only-target: x86
-// expect-compile-error: direction flag
+// expect-compile-error: at an offset it states
 //
-// BTS with its bit's offset in a register writes a byte on per eight: which
-// of PUSHFD's bytes it changed is not known, DF's among them, and POPFD may
-// set DF (docs/INLINE-ASSEMBLY.md).
+// BTS with its bit's offset in a register reaches a byte on per eight past
+// [esp]: which of PUSHFD's bytes it changes, and whether it stays within
+// the block's pushes, is not known (docs/INLINE-ASSEMBLY.md).
 static class Program
 {
     static int Main()

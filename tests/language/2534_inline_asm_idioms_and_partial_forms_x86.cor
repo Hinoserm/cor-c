@@ -9,6 +9,7 @@
 // popped 7
 // commented 4
 // records 6
+// transfer 2.5
 //
 // What a block may read without having set it (docs/INLINE-ASSEMBLY.md: a
 // register is set before it is read): SBB of a register with itself, the
@@ -16,6 +17,8 @@
 // register the block never set, whose top lane it keeps; PUSHAD's eight
 // taken back one POP at a time. A comment holding a brace between `asm`
 // and its own; and a variable named record, which begins no type's head.
+// An SSE float handed to the x87 through a slot the block pushed: MOVSS's
+// store sets the four bytes PUSH left unset, which FLD then reads.
 using System;
 
 static class Program
@@ -110,6 +113,22 @@ static class Program
         return sum;
     }
 
+    static float Transfer(float x)
+    {
+        float r;
+        asm
+        {
+            .runtime sse
+            movss xmm0, x
+            push eax
+            movss [esp], xmm0
+            fld dword [esp]
+            fstp r
+            pop eax
+        }
+        return r;
+    }
+
     static int Main()
     {
         Console.WriteLine("mask " + Mask(1, 2) + " " + Mask(2, 1));
@@ -118,6 +137,7 @@ static class Program
         Console.WriteLine("popped " + Popped(7));
         Console.WriteLine("commented " + Commented(2));
         Console.WriteLine("records " + Records(new[] { 1, 2, 3 }));
+        Console.WriteLine("transfer " + Transfer(2.5f));
         return 0;
     }
 }

@@ -1,0 +1,20 @@
+// test: inline_asm_past_pushes_refused
+// only-target: x86
+// expect-compile-error: past what the block pushed
+//
+// Past the block's own pushes is the method's frame, laid out by the
+// compiler: SETE into it, a store of no size word, is a byte's
+// (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            push 0
+            sete [esp + 4]
+            pop eax
+        }
+        return 0;
+    }
+}

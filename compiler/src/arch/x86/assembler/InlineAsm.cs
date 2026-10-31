@@ -878,7 +878,7 @@ public static class InlineAsm
         if (at < 0) throw new AsmException("<asm>", line, "this reaches below ESP, where an interrupt or a signal may write at any time");
         if ((long)at + size > pushed)
             throw new AsmException("<asm>", line, $"this reaches {(long)at + size - pushed} bytes past what the block pushed, into the method's frame, "
-                + "which the compiler lays out: name the local instead");
+                + "which the compiler lays out: a local is named, not reached through ESP");
     }
 
     /// <summary>
@@ -890,21 +890,29 @@ public static class InlineAsm
     private static int MemoryWidth(string mn, Operand[] ops, int o, int bits)
     {
         if (ops[o].Size != 0) return ops[o].Size;
+        if (mn.StartsWith("set", StringComparison.Ordinal)) return 1;
         switch (mn)
         {
+            case "push" or "pop": return bits / 8;
+            case "fnstcw" or "fstcw" or "fnstsw" or "fstsw" or "fldcw" or "str" or "sldt" or "smsw" or "ltr" or "lldt": return 2;
+            case "cmpxchg8b": return 8;
+            // MMX's low unpacks read four bytes; XMM's, sixteen.
+            case "punpcklbw" or "punpcklwd" or "punpckldq" when Array.Exists(ops, x => x.Kind == OperandKind.Mmx): return 4;
             case "fxsave" or "fxrstor": return 512;
             case "fnsave" or "fsave": return 108;
             case "fnstenv" or "fstenv": return 28;
             case "ldmxcsr" or "stmxcsr" or "movd" or "cvtsi2ss" or "cvtsi2sd" or "movsxd": return 4;
             case "pinsrw": return 2;
             case "movq" or "movlps" or "movhps" or "movlpd" or "movhpd" or "cvtpi2ps" or "cvtps2pi" or "cvttps2pi" or "cvtpi2pd"
-                or "cvtpd2pi" or "cvttpd2pi" or "cvtps2pd" or "cvtdq2pd" or "movntq": return 8;
+                or "cvtps2pd" or "cvtdq2pd" or "movntq": return 8;
             case "lgdt" or "lidt": return bits == 64 ? 10 : 6;
             case "movzx" or "movsx": return 0;
             // A conversion reads its source's width, not its destination's.
             case "cvtss2sd" or "cvtss2si" or "cvttss2si": return 4;
             case "cvtsd2ss" or "cvtsd2si" or "cvttsd2si": return 8;
         }
+        // Every SSE and SSE2 name ending so is a scalar's (the assembler has
+        // no SSE4 `pmaxsd`); a new packed one would need its own case above.
         if (mn.EndsWith("ss", StringComparison.Ordinal)) return 4;
         if (mn.EndsWith("sd", StringComparison.Ordinal)) return 8;
         for (int k = 0; k < ops.Length; k++)
@@ -912,6 +920,7 @@ public static class InlineAsm
             if (k == o) continue;
             switch (ops[k].Kind)
             {
+                case OperandKind.Segment: return 2;
                 case OperandKind.Xmm: return 16;
                 case OperandKind.Mmx: return 8;
                 case OperandKind.Register: return ops[k].Size;
@@ -1099,6 +1108,7 @@ public static class InlineAsm
         // size -1 where they are not known (an index, a displacement not a
         // number, a bit string's offset in a register, a write's size),
         // Unsized for a read whose size is not known, and 0 for none.
+        // (An index or a displacement not a number is refused outright.)
         ulong[] gneeds = new ulong[count], vneeds = new ulong[count], gsets = new ulong[count], vsets = new ulong[count];
         int[] stackAt = new int[count], stackSize = new int[count], readAt = new int[count], readSize = new int[count];
         const int Unsized = int.MaxValue / 2;
@@ -1139,13 +1149,19 @@ public static class InlineAsm
                         int size = MemoryWidth(s.Mnemonic, ops, o, bits);
                         // LGDT and LIDT read their table through the address.
                         if (s.Mnemonic is "lgdt" or "lidt") role |= AsmRole.Read;
-                        // BT's kin with the bit's offset in a register reach
-                        // past the operand, by the offset over eight.
-                        bool known = op.Index < 0 && Displacement(op) is not null
-                            && !(s.Mnemonic is "bt" or "bts" or "btr" or "btc" && ops.Length == 2 && ops[1].Kind == OperandKind.Register);
-                        // A write of a size not known is a write of no byte known;
-                        // a read, of every byte from where it starts.
-                        int span = !known ? -1 : size > 0 ? size : Unsized;
+                        // Through ESP only at an offset known here: not with an
+                        // index, nor a BT's kin with the bit's offset in a
+                        // register, which reach past the operand by the offset
+                        // over eight -- what bytes they touch, and whether
+                        // they stay within the block's pushes, is not known.
+                        if (op.Index >= 0 || Displacement(op) is null
+                            || s.Mnemonic is "bt" or "bts" or "btr" or "btc" && ops.Length == 2 && ops[1].Kind == OperandKind.Register)
+                            throw new AsmException("<asm>", s.Line, "through ESP a block reaches what it pushed at an offset it states: [esp + n], "
+                                + "with no index and a number for n (a BT's bit offset an immediate)");
+                        // A write of a size not known is a write of no byte known
+                        // (but where it starts within the pushes); a read, of
+                        // every byte from where it starts.
+                        int span = size > 0 ? size : Unsized;
                         if ((role & AsmRole.Write) != 0) { stackSize[k] = span == Unsized ? -1 : span; stackAt[k] = Displacement(op) ?? 0; }
                         if ((role & AsmRole.Read) != 0) { readSize[k] = span; readAt[k] = Displacement(op) ?? 0; }
                     }
@@ -1299,7 +1315,10 @@ public static class InlineAsm
                     st = new string(c);
                 }
                 else if (stackSize[at] < 0)
+                {
+                    StackRange(stackAt[at], 1, st.Length, s.Line);
                     st = string.Concat(st.Select(c => UnsetByte(c) ? 'u' : 'v'));
+                }
                 if (f.Pushes != '\0')
                 {
                     int size = -f.Esp;

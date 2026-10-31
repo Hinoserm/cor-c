@@ -1,0 +1,18 @@
+// test: inline_asm_popfd_unset_refused
+// only-target: x86
+// expect-compile-error: this reads off the stack what the block pushed
+//
+// POPFD of a register the block never set: the flags would take what the
+// method left there (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            push ebx
+            popfd
+        }
+        return 0;
+    }
+}
