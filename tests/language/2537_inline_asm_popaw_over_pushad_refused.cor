@@ -1,0 +1,19 @@
+// test: inline_asm_popaw_over_pushad_refused
+// only-target: x86
+// expect-compile-error: POPA here takes what PUSHA did not push
+//
+// POPAW over PUSHAD's eight: BP would be loaded from half of ESI, and the
+// method's frame is reached through EBP (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            pushad
+            popaw
+            popaw
+        }
+        return 0;
+    }
+}

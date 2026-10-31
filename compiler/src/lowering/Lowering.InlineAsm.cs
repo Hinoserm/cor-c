@@ -26,7 +26,11 @@ public sealed partial class Lowering
         for (int k = 0; k < block.Locals.Length; k++)
             if (block.Read[k]) inputs.Add(R(Eval(block.Names[k])));
         string spec = InlineAsm.Encode(new InlineAsm.Spec(block.Bits, block.Locals, block.Read, block.Written, block.Text));
+        // The block's own line 1 is its brace's: an error the encoder finds
+        // in it (InlineAsmCode.Assembled) is at that line plus its own.
+        _e.Line = a.BodyLine;
         _e.Call(MachineIntrinsics.Asm + spec, IrType.Void, inputs.ToArray());
+        _e.Line = a.Line;
         List<(int Local, VReg Value)> outputs = new();
         for (int k = 0; k < block.Locals.Length; k++)
             if (block.Written[k])

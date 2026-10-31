@@ -333,7 +333,14 @@ internal static class AsmText
             case MOp.Cpuid: yield return "cpuid"; yield break;
             case MOp.InlineAsm:
             {
-                (string text, byte[] bytes) = i.Asm!.Assembled(i);
+                // A block the frame put out of reach lists as the error the
+                // encoder reports for it (InlineAsmCode.Assembled), not a crash.
+                string text;
+                byte[] bytes;
+                string? failed = null;
+                try { (text, bytes) = i.Asm!.Assembled(i); }
+                catch (InvalidOperationException e) { (text, bytes, failed) = ("", Array.Empty<byte>(), e.Message); }
+                if (failed != null) { yield return "; asm block refused: " + failed; yield break; }
                 yield return "; asm block";
                 foreach (string line in text.Split('\n'))
                     if (line.Trim().Length > 0) yield return "; " + line.Trim();

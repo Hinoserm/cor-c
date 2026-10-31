@@ -1,0 +1,197 @@
+// test: inline_asm_narrow_accumulator_x86
+// only-target: x86
+// expect-exit: 0
+// expect-output:
+// fcom 1 0
+// flags -1
+// cbw -5
+// strlen 5
+// stos 684
+// mul 132
+// idiv -14
+// joined 44 5
+// popped 7
+//
+// Reads of a byte or a word of the accumulator (docs/INLINE-ASSEMBLY.md: a
+// register is set before it is read): a byte's or a word's write sets
+// enough of it for an instruction that reads only that much -- SAHF after
+// FNSTSW AX (the x87 compare before FCOMI) and after LAHF; CBW and CWDE
+// after a byte's MOV; REPNE SCASB and REP STOSB with only AL set; a byte's
+// MUL; CWD and a word's IDIV. A register set whole on one path and a byte
+// of it on the other is set a byte after them; PUSHAD taken back by 16-bit
+// POPs, the stack followed a byte at a time.
+using System;
+
+static class Program
+{
+    static int Above(double a, double b)
+    {
+        int r;
+        asm
+        {
+            fld a
+            fcomp b
+            fnstsw ax
+            sahf
+            mov ecx, 0
+            jbe done
+            mov ecx, 1
+        done:
+            mov r, ecx
+        }
+        return r;
+    }
+
+    static int Flags()
+    {
+        int r;
+        asm
+        {
+            stc
+            lahf
+            clc
+            sahf
+            sbb eax, eax
+            mov r, eax
+        }
+        return r;
+    }
+
+    static int Cbw(sbyte s)
+    {
+        int r;
+        asm
+        {
+            mov al, s
+            cbw
+            cwde
+            mov r, eax
+        }
+        return r;
+    }
+
+    static unsafe int Strlen(byte* p)
+    {
+        int n;
+        asm
+        {
+            mov edi, p
+            mov al, 0
+            mov ecx, -1
+            repne scasb
+            not ecx
+            dec ecx
+            mov n, ecx
+        }
+        return n;
+    }
+
+    static unsafe int Stos()
+    {
+        byte* p = stackalloc byte[4];
+        asm
+        {
+            mov edi, p
+            mov al, 0xAB
+            mov ecx, 4
+            rep stosb
+        }
+        int sum = 0;
+        for (int i = 0; i < 4; i++) sum += p[i];
+        return sum;
+    }
+
+    static int Mul(byte a, byte b)
+    {
+        int r;
+        asm
+        {
+            mov al, a
+            mov bl, b
+            mul bl
+            movzx ecx, ax
+            mov r, ecx
+        }
+        return r;
+    }
+
+    static int Idiv(short x)
+    {
+        int r;
+        asm
+        {
+            mov ax, x
+            cwd
+            mov bx, 7
+            idiv bx
+            movsx ecx, ax
+            mov r, ecx
+        }
+        return r;
+    }
+
+    static int Joined(int flag)
+    {
+        int r;
+        asm
+        {
+            mov eax, flag
+            test eax, eax
+            jz small
+            mov ecx, 300
+            jmp joined
+        small:
+            mov cl, 5
+        joined:
+            mov al, cl
+            movzx edx, al
+            mov r, edx
+        }
+        return r;
+    }
+
+    static int Popped(int a)
+    {
+        int r;
+        asm
+        {
+            mov ecx, a
+            pushad
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            pop ax
+            mov r, ecx
+        }
+        return r;
+    }
+
+    static unsafe int Main()
+    {
+        Console.WriteLine("fcom " + Above(2.5, 1.0) + " " + Above(1.0, 2.5));
+        Console.WriteLine("flags " + Flags());
+        Console.WriteLine("cbw " + Cbw(-5));
+        byte* text = stackalloc byte[8];
+        for (int i = 0; i < 5; i++) text[i] = (byte)('a' + i);
+        text[5] = 0;
+        Console.WriteLine("strlen " + Strlen(text));
+        Console.WriteLine("stos " + Stos());
+        Console.WriteLine("mul " + Mul(12, 11));
+        Console.WriteLine("idiv " + Idiv(-100));
+        Console.WriteLine("joined " + Joined(1) + " " + Joined(0));
+        Console.WriteLine("popped " + Popped(7));
+        return 0;
+    }
+}

@@ -53,8 +53,9 @@ public sealed class InlineAsmCode
                 {
                     // Where the frame came out larger than the binder's trial
                     // (a LOOP's eight bits of reach past slots far from EBP):
-                    // an error of the compile, at the block's line, not a crash.
-                    throw new InvalidOperationException($"line {i.Line}: asm block, its line {e.Line}: {e.Message}");
+                    // an error of the compile, at the source line, not a crash.
+                    // The call's line is the block's brace (LowerAsm), its line 1.
+                    throw new InvalidOperationException($"line {i.Line + Math.Max(1, e.Line) - 1}: asm: {e.Message}");
                 }
                 _text = text;
             }
@@ -116,7 +117,7 @@ internal sealed partial class Selector
         }
         catch (AsmException e)
         {
-            Error($"asm block (line {e.Line}): {e.Message}");
+            Error($"line {i.Line + Math.Max(1, e.Line) - 1}: asm: {e.Message}");
             return true;
         }
 

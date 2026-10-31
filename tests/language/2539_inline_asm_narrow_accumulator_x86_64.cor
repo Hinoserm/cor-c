@@ -1,0 +1,110 @@
+// test: inline_asm_narrow_accumulator_x86_64
+// only-target: x86-64
+// expect-exit: 0
+// expect-output:
+// cbw -5 -5
+// strlen 5
+// mul 132
+// idiv -14
+// joined 44 5
+//
+// Long mode's reads of a byte or a word of the accumulator, as i386's
+// (2536): CBW, CWDE and CDQE after a byte's MOV; REPNE SCASB with only AL
+// set; a byte's MUL; CWD and a word's IDIV; a register set whole on one
+// path and a byte of it on the other.
+using System;
+
+static class Program
+{
+    static long Cbw(sbyte s)
+    {
+        long r;
+        asm
+        {
+            mov al, s
+            cbw
+            cwde
+            cdqe
+            mov r, rax
+        }
+        return r;
+    }
+
+    static unsafe long Strlen(byte* p)
+    {
+        long n;
+        asm
+        {
+            mov rdi, p
+            mov al, 0
+            mov rcx, -1
+            repne scasb
+            not rcx
+            dec rcx
+            mov n, rcx
+        }
+        return n;
+    }
+
+    static int Mul(byte a, byte b)
+    {
+        int r;
+        asm
+        {
+            mov al, a
+            mov r10b, b
+            mul r10b
+            movzx ecx, ax
+            mov r, ecx
+        }
+        return r;
+    }
+
+    static int Idiv(short x)
+    {
+        int r;
+        asm
+        {
+            mov ax, x
+            cwd
+            mov r9w, 7
+            idiv r9w
+            movsx ecx, ax
+            mov r, ecx
+        }
+        return r;
+    }
+
+    static int Joined(int flag)
+    {
+        int r;
+        asm
+        {
+            mov eax, flag
+            test eax, eax
+            jz small
+            mov ecx, 300
+            jmp joined
+        small:
+            mov cl, 5
+        joined:
+            mov al, cl
+            movzx edx, al
+            mov r, edx
+        }
+        return r;
+    }
+
+    static unsafe int Main()
+    {
+        Console.WriteLine("cbw " + Cbw(-5) + " " + (int)Cbw(-5));
+        byte* text = stackalloc byte[8];
+        for (int i = 0; i < 5; i++) text[i] = (byte)('a' + i);
+        text[5] = 0;
+        Console.WriteLine("strlen " + Strlen(text));
+        Console.WriteLine("mul " + Mul(12, 11));
+        Console.WriteLine("idiv " + Idiv(-100));
+        Console.WriteLine("joined " + Joined(1) + " " + Joined(0));
+        return 0;
+    }
+}
