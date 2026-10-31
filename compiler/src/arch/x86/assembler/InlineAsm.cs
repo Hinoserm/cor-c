@@ -534,7 +534,9 @@ public static class InlineAsm
         // ---- the stack ----
         // A segment register is pushed and popped as a word of the machine's,
         // whatever its own two bytes; a general register or memory as its size.
-        int StackSize(Operand o) => o.Kind is OperandKind.Register or OperandKind.Memory && o.Size != 0 ? o.Size : word;
+        // An immediate is the machine's word but where `word` says two bytes.
+        int StackSize(Operand o) => o.Kind is OperandKind.Register or OperandKind.Memory && o.Size != 0 ? o.Size
+            : o.Kind == OperandKind.Immediate && o.SizeGiven && o.Size == 2 ? 2 : word;
         if (mn == "push")
         {
             All(AsmRole.Read, AsmRole.Read);
@@ -757,16 +759,99 @@ public static class InlineAsm
         };
     }
 
-    /// <summary>
-    /// What PUSHAD ('A', 32 bytes) or PUSHAW ('a', 16) leaves on the stack,
-    /// as Analyze follows it: each byte its own place in the frame, the top
-    /// (place 0) last -- so that POPA finds a frame whole and in place.
-    /// </summary>
-    private static string PushaBytes(char kind, int size)
+    private const string EspCopied = "an asm block may not take ESP's value (`mov ebx, esp`, `lea ebx, [esp + 4]`, `push esp`): "
+        + "what it pushed is followed through ESP alone -- address the stack as [esp + n]";
+
+    // THE STACK'S BYTES as Analyze follows them (its `stack`): 'v' a value,
+    // 'u' a value pushed from a register the block had not set, 'c' and 's'
+    // PUSHF's DF byte with DF clear or set; and from PushaPlace up, a byte
+    // PUSHAD or PUSHAW left, its place in the frame in the low bits and
+    // PushaUnset where its register was not set.
+    private const char PushaPlace = (char)0x1000;
+    private const char PushaUnset = (char)0x0800;
+
+    private static bool UnsetByte(char c) => c == 'u' || c >= PushaPlace && (c & PushaUnset) != 0;
+
+    /// <summary>PUSHAD's ('A') or PUSHAW's ('a') byte at a place in its frame (0 the top), set or not.</summary>
+    private static char PushaByte(char kind, int place, bool unset)
+        => (char)((kind == 'A' ? 0x1000 : 0x2000) + place | (unset ? PushaUnset : 0));
+
+    /// <summary>The part (Parts) of a register a byte of it is in: 0, 1, 2 for bytes 2-3, 3 for 4-7.</summary>
+    private static int PartOfByte(int b) => b switch { 0 => 0, 1 => 1, 2 or 3 => 2, _ => 3 };
+
+    /// <summary>A register's `size` bytes pushed, the top last: each unset where its part was not set in `g`.</summary>
+    private static string Pushed(int r, int size, ulong g)
     {
         char[] c = new char[size];
-        for (int k = 0; k < size; k++) c[size - 1 - k] = (char)((kind == 'A' ? 0x100 : 0x200) + k);
+        for (int b = 0; b < size; b++) c[size - 1 - b] = ((g >> (4 * r + PartOfByte(b))) & 1) != 0 ? 'v' : 'u';
         return new string(c);
+    }
+
+    /// <summary>The parts of register r a pop leaves unset: those any byte of which was unset on the stack.</summary>
+    private static ulong UnsetParts(int r, string taken)
+    {
+        ulong m = 0;
+        for (int b = 0; b < taken.Length; b++)
+            if (UnsetByte(taken[^(b + 1)])) m |= 1UL << (4 * r + PartOfByte(b));
+        return m;
+    }
+
+    /// <summary>PUSHA's eight, top first: EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX.</summary>
+    private static readonly int[] PushaOrder = { Edi, Esi, Ebp, Esp, Ebx, Edx, Ecx, Eax };
+
+    /// <summary>
+    /// What PUSHAD ('A', 32 bytes) or PUSHAW ('a', 16) leaves on the stack:
+    /// each byte its own place in the frame, the top (place 0) last, so that
+    /// POPA finds its frame whole and in place; unset where its register's
+    /// part was not set in `g`, and the saved ESP always unset -- a value
+    /// the block may not take (EspCopied).
+    /// </summary>
+    private static string Pusha(char kind, ulong g)
+    {
+        int width = kind == 'A' ? 4 : 2, size = 8 * width;
+        char[] c = new char[size];
+        for (int place = 0; place < size; place++)
+        {
+            int r = PushaOrder[place / width];
+            bool unset = r == Esp || ((g >> (4 * r + PartOfByte(place % width))) & 1) == 0;
+            c[size - 1 - place] = PushaByte(kind, place, unset);
+        }
+        return new string(c);
+    }
+
+    /// <summary>
+    /// The registers after POPA from its frame: each as set as it was when
+    /// PUSHA saved it -- POPAD writes all of each, POPAW the low word.
+    /// </summary>
+    private static ulong Popa(ulong g, string taken, char kind)
+    {
+        int width = kind == 'A' ? 4 : 2;
+        for (int slot = 0; slot < 8; slot++)
+        {
+            int r = PushaOrder[slot];
+            if (r is Esp or Ebp) continue;
+            ulong parts = width == 4 ? 15UL : 3UL, set = parts;
+            for (int b = 0; b < width; b++)
+                if (UnsetByte(taken[^(slot * width + b + 1)])) set &= ~(1UL << PartOfByte(b));
+            // Bits 32-63 follow 16-31: POPAD is no long-mode instruction.
+            if (width == 4 && (set & 4) == 0) set &= ~8UL;
+            g = g & ~(parts << (4 * r)) | set << (4 * r);
+        }
+        return g;
+    }
+
+    /// <summary>A memory operand's displacement as a number, or null where it is an expression.</summary>
+    private static int? Displacement(Operand o)
+    {
+        if (!o.HasDisp) return 0;
+        string d = o.Disp.Replace(" ", "");
+        bool negative = d.StartsWith('-');
+        d = d.TrimStart('+', '-');
+        int value;
+        if (d.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) { if (!int.TryParse(d[2..], System.Globalization.NumberStyles.HexNumber, null, out value)) return null; }
+        else if (d.EndsWith('h') || d.EndsWith('H')) { if (!int.TryParse(d[..^1], System.Globalization.NumberStyles.HexNumber, null, out value)) return null; }
+        else if (!int.TryParse(d, out value)) return null;
+        return negative ? -value : value;
     }
 
     /// <summary>The words of a block's operands that name registers, as written: a local spelt as one could not be named (Binder.CheckAsm).</summary>
@@ -881,17 +966,23 @@ public static class InlineAsm
                 {
                     if (op.Base >= 0) a.GprRead |= 1u << (op.Base & 15);
                     if (op.Index >= 0) a.GprRead |= 1u << (op.Index & 15);
+                    if (s.Mnemonic == "lea" && ((op.Base & 15) == Esp && op.Base >= 0 || (op.Index & 15) == Esp && op.Index >= 0))
+                        throw new AsmException("<asm>", s.Line, EspCopied);
                     continue;
                 }
                 if (op.Kind == OperandKind.Register)
                 {
                     int r = GprNumber(op);
-                    if ((role & AsmRole.Read) != 0) a.GprRead |= 1u << r;
                     if ((role & AsmRole.Write) != 0)
                     {
                         if (r == Esp) throw new AsmException("<asm>", s.Line, "an asm block may not write ESP but by PUSH and POP, which must pair up");
                         if (r == Ebp) throw new AsmException("<asm>", s.Line, "an asm block may not write EBP: the method's frame is reached through it");
                         a.GprWritten |= 1u << r;
+                    }
+                    if ((role & AsmRole.Read) != 0)
+                    {
+                        if (r == Esp) throw new AsmException("<asm>", s.Line, EspCopied);
+                        a.GprRead |= 1u << r;
                     }
                 }
                 else if (op.Kind == OperandKind.Xmm)
@@ -920,13 +1011,14 @@ public static class InlineAsm
         bool[] mmx = new bool[count + 1], df = new bool[count + 1], seen = new bool[count + 1];
         ulong[] must = new ulong[count + 1];
         // WHAT THE BLOCK'S PUSHES LEFT ON THE STACK, a char to each byte, the
-        // top (the lowest address) last: 'v' a value; of PUSHF's, its DF
-        // byte (the second) 'c' or 's' as DF was clear or set, the rest 'v';
-        // of PUSHAD's and PUSHAW's, each byte its place in the frame
-        // (PushaBytes). POPF takes DF back from a PUSHF's DF byte, and from
-        // anything else may set it; POPA takes only a whole frame of its own
-        // width, in place, since EBP comes back from it. A write through ESP
-        // leaves every byte a value.
+        // top (the lowest address) last (PushaPlace's summary): a value, set
+        // or not as its register was; of PUSHF's, its DF byte (the second)
+        // 'c' or 's' as DF was clear or set; of PUSHAD's and PUSHAW's, each
+        // byte its place in the frame (Pusha). POPF takes DF back from a
+        // PUSHF's DF byte, and from anything else may set it; POPA takes only
+        // a whole frame of its own width, in place, since EBP comes back from
+        // it; a register popped is set as what it takes was. A write through
+        // ESP makes the bytes it covers values.
         string[] stack = new string[count + 1];
         // THE REGISTERS SET ON EVERY PATH SO FAR: the general ones by their
         // parts (Parts), the XMM ones in bits 0-15 of a set of their own and
@@ -936,9 +1028,11 @@ public static class InlineAsm
         // that is a `mov` the block sets it by).
         ulong[] gset = new ulong[count + 1], vset = new ulong[count + 1];
         // Per statement: the parts and the vector registers it needs set and
-        // those it sets, and whether it writes memory through ESP.
+        // those it sets; and the bytes it writes through ESP -- from the top,
+        // so many (stackAt, stackSize), stackSize -1 where they are not
+        // known (an index, a displacement not a number) and 0 for none.
         ulong[] gneeds = new ulong[count], vneeds = new ulong[count], gsets = new ulong[count], vsets = new ulong[count];
-        bool[] stackWrite = new bool[count];
+        int[] stackAt = new int[count], stackSize = new int[count];
         for (int k = 0; k < count; k++)
         {
             AsmStatement s = statements[k];
@@ -971,7 +1065,12 @@ public static class InlineAsm
                 {
                     if (op.Base >= 0) gneed |= Parts(op.Base & 15, bits / 8, false, false);
                     if (op.Index >= 0) gneed |= Parts(op.Index & 15, bits / 8, false, false);
-                    if ((role & AsmRole.Write) != 0 && op.Base >= 0 && (op.Base & 15) == Esp) stackWrite[k] = true;
+                    if ((role & AsmRole.Write) != 0 && op.Base >= 0 && (op.Base & 15) == Esp)
+                    {
+                        int size = op.Size != 0 ? op.Size : Array.Find(ops, other => other.Kind == OperandKind.Register)?.Size ?? 0;
+                        stackSize[k] = op.Index < 0 && size > 0 && Displacement(op) is not null ? size : -1;
+                        stackAt[k] = Displacement(op) ?? 0;
+                    }
                     continue;
                 }
                 bool reads = (role & AsmRole.Read) != 0 && !idiom && !(merges && o == 0);
@@ -998,12 +1097,17 @@ public static class InlineAsm
         }
         Stack<int> work = new();
         // Two paths' stacks, as one: where they differ the flags may hold DF
-        // set, and a byte is no PUSHA's.
+        // set, a byte PUSHA left in the same place is unset where it is
+        // unset on either, and any other byte is a value -- unset if it is on
+        // either.
         static string Join(string a, string b)
         {
             char[] c = new char[a.Length];
             for (int k = 0; k < a.Length; k++)
-                c[k] = a[k] == b[k] ? a[k] : a[k] is 'c' or 's' && b[k] is 'c' or 's' ? 's' : 'v';
+                c[k] = a[k] == b[k] ? a[k]
+                    : a[k] is 'c' or 's' && b[k] is 'c' or 's' ? 's'
+                    : a[k] >= PushaPlace && (a[k] | PushaUnset) == (b[k] | PushaUnset) ? (char)(a[k] | PushaUnset)
+                    : UnsetByte(a[k]) || UnsetByte(b[k]) ? 'u' : 'v';
             return new string(c);
         }
         void Arrive(int at, int x, int e, bool m, bool d, ulong w, string st, ulong g, ulong v, int line)
@@ -1060,9 +1164,9 @@ public static class InlineAsm
                 if (unset != null)
                     throw new AsmException("<asm>", s.Line, $"this reads {unset}, which the block has {(some ? "set only part of" : "not set")} on every path to here: "
                         + "a block's registers hold nothing of the method's but what its own instructions -- its head's `mov reg, local` among them -- put there");
+                ulong before = g;
                 g |= gsets[at];
                 v |= vsets[at];
-                if (stackWrite[at]) st = new string('v', st.Length);
                 if (f.Pops != '\0')
                 {
                     if (st.Length < f.Esp) throw new AsmException("<asm>", s.Line, "this pops more off the stack than the block pushed");
@@ -1070,17 +1174,44 @@ public static class InlineAsm
                     st = st[..^f.Esp];
                     // DF is bit 10: in the second byte from the top.
                     if (f.Pops == 'f') d = taken[^2] != 'c';
-                    if (f.Pops is 'a' or 'A' && taken != PushaBytes(f.Pops, f.Esp))
-                        throw new AsmException("<asm>", s.Line, "POPA here takes what PUSHA did not push: EBP would be loaded from it");
+                    if (f.Pops is 'a' or 'A')
+                    {
+                        for (int b = 0; b < taken.Length; b++)
+                            if (taken[^(b + 1)] < PushaPlace || (taken[^(b + 1)] | PushaUnset) != PushaByte(f.Pops, b, true))
+                                throw new AsmException("<asm>", s.Line, "POPA here takes what PUSHA did not push, or not in place: EBP would be loaded from it");
+                        g = Popa(g, taken, f.Pops);
+                    }
+                    // A register popped holds what was pushed: unset where that was.
+                    if (f.Pops == 'v' && s.Parsed is [{ Kind: OperandKind.Register } dest])
+                        g &= ~UnsetParts(GprNumber(dest), taken);
                 }
+                // A write through ESP: the bytes it covers are set values (what
+                // it stores the block had set), still PUSHA's in their places
+                // -- but for the saved EBP, which POPA would load; where it is
+                // not known which, no byte is PUSHA's or the flags' any more.
+                if (stackSize[at] > 0)
+                {
+                    char[] c = st.ToCharArray();
+                    for (int b = stackAt[at]; b < stackAt[at] + stackSize[at]; b++)
+                    {
+                        if (b < 0 || b >= c.Length) continue;
+                        char was = c[^(b + 1)];
+                        if (was >= PushaPlace && PushaOrder[(was & 0xFF) / ((was & 0x2000) != 0 ? 2 : 4)] == Ebp)
+                            throw new AsmException("<asm>", s.Line, "this writes the EBP PUSHA saved, which POPA would load: the method's frame is reached through it");
+                        c[^(b + 1)] = was >= PushaPlace ? (char)(was & ~PushaUnset) : 'v';
+                    }
+                    st = new string(c);
+                }
+                else if (stackSize[at] < 0)
+                    st = string.Concat(st.Select(c => UnsetByte(c) ? 'u' : 'v'));
                 if (f.Pushes != '\0')
                 {
                     int size = -f.Esp;
                     st += f.Pushes switch
                     {
                         'f' => new string('v', size - 2) + (d ? 's' : 'c') + 'v',
-                        'a' or 'A' => PushaBytes(f.Pushes, size),
-                        _ => new string('v', size),
+                        'a' or 'A' => Pusha(f.Pushes, before),
+                        _ => s.Parsed is [{ Kind: OperandKind.Register } pushed] ? Pushed(GprNumber(pushed), size, before) : new string('v', size),
                     };
                 }
                 if (f.UsesMmx && x != 0) throw new AsmException("<asm>", s.Line, "an MMX instruction with values on the x87 stack: the MMX registers are the x87's");

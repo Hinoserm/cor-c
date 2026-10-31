@@ -1,0 +1,20 @@
+// test: inline_asm_unset_through_popad_refused
+// only-target: x86
+// expect-compile-error: this reads eax, which the block has not set
+//
+// PUSHAD then POPAD gives EAX back as it was: a register the block never
+// set holds nothing of the method's after it as before (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        int r;
+        asm
+        {
+            pushad
+            popad
+            mov r, eax
+        }
+        return r;
+    }
+}

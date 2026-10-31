@@ -11,6 +11,8 @@
 // idiv -14
 // joined 44 5
 // popped 7
+// patched 9
+// word 5
 //
 // Reads of a byte or a word of the accumulator (docs/INLINE-ASSEMBLY.md: a
 // register is set before it is read): a byte's or a word's write sets
@@ -19,7 +21,8 @@
 // after a byte's MOV; REPNE SCASB and REP STOSB with only AL set; a byte's
 // MUL; CWD and a word's IDIV. A register set whole on one path and a byte
 // of it on the other is set a byte after them; PUSHAD taken back by 16-bit
-// POPs, the stack followed a byte at a time.
+// POPs, the stack followed a byte at a time; PUSHAD's saved EAX written
+// through ESP before POPAD; `push word` and a 16-bit POP.
 using System;
 
 static class Program
@@ -178,6 +181,33 @@ static class Program
         return r;
     }
 
+    static int Patched(int a)
+    {
+        int r;
+        asm
+        {
+            mov ecx, a
+            pushad
+            mov dword [esp + 28], ecx
+            popad
+            mov r, eax
+        }
+        return r;
+    }
+
+    static int Word()
+    {
+        int r;
+        asm
+        {
+            push word 5
+            pop ax
+            movzx ecx, ax
+            mov r, ecx
+        }
+        return r;
+    }
+
     static unsafe int Main()
     {
         Console.WriteLine("fcom " + Above(2.5, 1.0) + " " + Above(1.0, 2.5));
@@ -192,6 +222,8 @@ static class Program
         Console.WriteLine("idiv " + Idiv(-100));
         Console.WriteLine("joined " + Joined(1) + " " + Joined(0));
         Console.WriteLine("popped " + Popped(7));
+        Console.WriteLine("patched " + Patched(9));
+        Console.WriteLine("word " + Word());
         return 0;
     }
 }

@@ -118,8 +118,12 @@ them:
   of the stack, whole and in place, which puts EBP back. The stack is
   followed a byte at a time: a `pushad` may be taken back by sixteen 16-bit
   pops, but a `popad` two bytes off its frame is refused. A write through
-  ESP (`mov dword [esp], 0x400`) makes nothing more known of what the block
-  pushed. CS and SS are not loaded;
+  ESP changes the bytes it covers (`pushad`, `mov [esp + 28], eax`, `popad`
+  returns EAX through the frame; `mov dword [esp], 0x400` under a `popfd`
+  may set DF; a write to the EBP `pusha` saved is refused). ESP's value is never taken (`mov ebx, esp`,
+  `lea ebx, [esp + 4]`, `push esp`): what the block pushed is reached
+  through ESP alone. A register pushed or saved by `pusha` comes back from
+  its `pop` or `popa` set as it was. CS and SS are not loaded;
 - **a register is set before it is read**: a block's registers hold nothing
   of the method's but what its own instructions put there, the head's
   bindings among them. Reading one the block has not set on every path is an
