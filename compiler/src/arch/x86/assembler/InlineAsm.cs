@@ -670,7 +670,8 @@ public static class InlineAsm
         }
 
         // ---- the x87 ----
-        if (mn.StartsWith('f') && mn != "fxsave" && mn != "fxrstor")
+        // FEMMS is 3DNow!'s EMMS, no x87 instruction.
+        if (mn.StartsWith('f') && mn is not ("fxsave" or "fxrstor" or "femms"))
         {
             f.UsesX87 = true;
             if (mn is "fincstp" or "fdecstp" or "ffree")
@@ -748,13 +749,21 @@ public static class InlineAsm
         /// <summary>Whether the block touches the x87, MMX or SSE at all -- its state included (FNINIT, FXRSTOR) -- which a packed block's registers care about.</summary>
         public bool UsesFloatState => UsesX87 || UsesMmx || UsesSse;
         /// <summary>
-        /// Whether the block computes with the x87, MMX or SSE: float code,
-        /// as an .asm file's is to the link (X86Assembler.IsFpuStateOnly) --
-        /// not what only keeps, loads or reads their state (FNSAVE, FXSAVE,
-        /// FNSTENV, FLDCW, FNINIT, LDMXCSR...), which runs on the thread's
-        /// own state (Binder.PackedStateOf).
+        /// Whether the block computes with the x87, MMX or SSE: float code
+        /// (X86Assembler.IsFpuStateOnly) -- not what only keeps, loads or
+        /// reads their state (FNSAVE, FXSAVE, FNSTENV, FLDCW, FNINIT,
+        /// LDMXCSR...), nor a clear (Clears), a register given a value of
+        /// nothing's, which an .asm file's facts do count: those run on the
+        /// thread's own state (Binder.PackedStateOf).
         /// </summary>
         public bool FloatCode;
+        /// <summary>
+        /// Whether it writes the x87's, MMX's or SSE's registers with no
+        /// result of its own -- a clear (Clears), a state load (FRSTOR,
+        /// FLDENV, FXRSTOR): no float code, but in an interrupt handler a
+        /// write over the interrupted thread's registers (Binder).
+        /// </summary>
+        public bool WritesState;
     }
 
     /// <summary>A register combined with itself to make zero (or every bit set), reading nothing of what it held: `xor eax, eax`, `pxor mm0, mm0`, `sbb edx, edx`.</summary>
@@ -914,6 +923,14 @@ public static class InlineAsm
     /// </summary>
     private static int MemoryWidth(string mn, Operand[] ops, int o, int bits)
     {
+        // An area of the instruction's own size, whatever size word is written.
+        switch (mn)
+        {
+            case "fxsave" or "fxrstor": return 512;
+            case "fnsave" or "fsave" or "frstor": return 108;
+            case "fnstenv" or "fstenv" or "fldenv": return 28;
+            case "lgdt" or "lidt": return bits == 64 ? 10 : 6;
+        }
         if (ops[o].Size != 0) return ops[o].Size;
         if (mn.StartsWith("set", StringComparison.Ordinal)) return 1;
         switch (mn)
@@ -923,16 +940,12 @@ public static class InlineAsm
             case "cmpxchg8b": return 8;
             // MMX's low unpacks read four bytes; XMM's, sixteen.
             case "punpcklbw" or "punpcklwd" or "punpckldq" when Array.Exists(ops, x => x.Kind == OperandKind.Mmx): return 4;
-            case "fxsave" or "fxrstor": return 512;
-            case "fnsave" or "fsave" or "frstor": return 108;
-            case "fnstenv" or "fstenv" or "fldenv": return 28;
             // Two doubles in, two ints out to an MMX register.
             case "cvtpd2pi" or "cvttpd2pi": return 16;
             case "ldmxcsr" or "stmxcsr" or "movd" or "cvtsi2ss" or "cvtsi2sd" or "movsxd": return 4;
             case "pinsrw": return 2;
             case "movq" or "movlps" or "movhps" or "movlpd" or "movhpd" or "cvtpi2ps" or "cvtps2pi" or "cvttps2pi" or "cvtpi2pd"
                 or "cvtps2pd" or "cvtdq2pd" or "movntq": return 8;
-            case "lgdt" or "lidt": return bits == 64 ? 10 : 6;
             case "movzx" or "movsx": return 0;
             // A conversion reads its source's width, not its destination's.
             case "cvtss2sd" or "cvtss2si" or "cvttss2si": return 4;
@@ -1016,6 +1029,8 @@ public static class InlineAsm
         foreach (string label in endLabels) labelAt[label] = statements.Count;
 
         Facts[] facts = new Facts[statements.Count];
+        // Where a state load is, for the rule that keeps one out of float code.
+        int loadsAt = 0;
         Analysis a = new()
         {
             Statements = statements, EndLabels = endLabels, Locals = locals, Bits = bits,
@@ -1042,7 +1057,7 @@ public static class InlineAsm
             Facts f = InstructionFacts(s.Prefix, s.Mnemonic, ops, bits);
             if (f.Refused is not null) throw new AsmException("<asm>", s.Line, f.Refused);
             // A block of memory bigger than any local: no local is it.
-            if (s.Mnemonic is "fxsave" or "fxrstor" or "lgdt" or "lidt" or "fnsave" or "fsave" or "fnstenv" or "fstenv"
+            if (s.Mnemonic is "fxsave" or "fxrstor" or "lgdt" or "lidt" or "fnsave" or "fsave" or "frstor" or "fnstenv" or "fstenv" or "fldenv"
                 && Array.Exists(s.Local, l => l >= 0))
                 throw new AsmException("<asm>", s.Line, $"{s.Mnemonic} takes memory larger than a local: give it an address, as a nuint in a register");
             facts[k] = f;
@@ -1108,6 +1123,8 @@ public static class InlineAsm
             // state being set up (FNINIT, FLDZ eight times, FNINIT), no float
             // code; what then reads it out is.
             a.FloatCode |= ((f.UsesX87 || f.UsesSse) && !X86Assembler.IsFpuStateOnly(s.Mnemonic) || f.UsesMmx || f.EmptiesMmx) && !Clears(s.Mnemonic, ops);
+            a.WritesState |= Clears(s.Mnemonic, ops) || f.LoadsState;
+            if (f.LoadsState) loadsAt = s.Line;
         }
 
         // EVERY PATH: the x87's depth, ESP's and what the stack holds,
@@ -1385,6 +1402,12 @@ public static class InlineAsm
             if (f.Branch != 2) Arrive(at + 1, x, e, m, d, l, w, st, g, v, s.Line);
         }
 
+        // A state load replaces the state the block's own float code would
+        // run on (the method's kept one): a load belongs in a block that only
+        // keeps or loads the state, which runs on the thread's own.
+        if (a.FloatCode && loadsAt != 0)
+            throw new AsmException("<asm>", loadsAt, "a state load (FRSTOR, FLDENV, FXRSTOR) in a block with float code: "
+                + "it would replace the state that code runs on -- load the thread's state in a block of its own");
         a.UsesStack |= ((a.GprRead | a.GprWritten) & ((1u << Esp) | (1u << Ebp))) != 0;
         int endLine = statements.Count > 0 ? statements[^1].Line : 1;
         if (seen[count])

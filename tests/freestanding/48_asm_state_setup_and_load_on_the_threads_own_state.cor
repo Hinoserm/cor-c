@@ -2,16 +2,18 @@
 // targets: x86
 // flags: --x87-in-blocks-only
 // expect-output:
-// registers 0 5
+// registers 0 16 5
 //
 // Main keeps the state for its own double. FRSTOR of an area whose eight
 // registers hold 0x5A bytes puts that into the thread's own x87 (a state
-// load, the block's last x87 instruction); ClearMmx and Clear then write
-// every physical register -- PXOR's eight, between FNINITs, and FLDZ's
-// eight -- which is state set up, no float code (docs/INLINE-ASSEMBLY.md),
-// and so lands in the thread's state, given back around each call
-// (Lowering.OnOwnState), not in the one Main keeps: FNSAVE then finds the
-// thread's registers all zero.
+// load, the block's last x87 instruction); Clear then writes every
+// physical register with FLDZ's eight, between FNINITs -- state set up, no
+// float code (docs/INLINE-ASSEMBLY.md) -- and so lands in the thread's
+// state, given back around the call (Lowering.OnOwnState), not in the one
+// Main keeps: FNSAVE finds the thread's registers all zero. ClearMmx's
+// eight PXORs then leave each with a zero mantissa and the exponent MMX
+// writes, all ones: two bytes of ten not zero, sixteen in all. ClearSse
+// (XORPS's eight and LDMXCSR of 0x1F80) is set-up too.
 
 using System.Runtime.CompilerServices;
 
@@ -56,6 +58,40 @@ static class Program
         }
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void ClearSse()
+    {
+        uint csr = 0x1F80;
+        asm
+        {
+            .runtime sse
+            fninit
+            xorps xmm0, xmm0
+            xorps xmm1, xmm1
+            xorps xmm2, xmm2
+            xorps xmm3, xmm3
+            xorps xmm4, xmm4
+            xorps xmm5, xmm5
+            xorps xmm6, xmm6
+            xorps xmm7, xmm7
+            ldmxcsr csr
+            fninit
+        }
+    }
+
+    static unsafe int Saved(byte* area)
+    {
+        asm
+        {
+            mov eax, area
+            fnsave [eax]
+            frstor [eax]
+        }
+        int nonzero = 0;
+        for (int i = 28; i < 108; i++) if (area[i] != 0) nonzero++;
+        return nonzero;
+    }
+
     static unsafe int Main()
     {
         Host.Start(1024 * 1024);
@@ -72,17 +108,12 @@ static class Program
             mov eax, area
             frstor [eax]
         }
-        ClearMmx();
         Clear();
-        asm
-        {
-            mov eax, area
-            fnsave [eax]
-            frstor [eax]
-        }
-        int nonzero = 0;
-        for (int i = 28; i < 108; i++) if (area[i] != 0) nonzero++;
-        Host.Line("registers " + nonzero.ToString() + " " + ((int)d).ToString());
+        int cleared = Saved(area);
+        ClearMmx();
+        int mmx = Saved(area);
+        ClearSse();
+        Host.Line("registers " + cleared.ToString() + " " + mmx.ToString() + " " + ((int)d).ToString());
         Host.Done(0);
         return 0;
     }

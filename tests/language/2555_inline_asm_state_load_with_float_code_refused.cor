@@ -1,0 +1,22 @@
+// test: inline_asm_state_load_with_float_code_refused
+// only-target: x86
+// expect-compile-error: a state load (FRSTOR, FLDENV, FXRSTOR) in a block with float code
+//
+// FRSTOR in a block that also computes with the x87: the load would replace
+// the state that code runs on (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static unsafe int Main()
+    {
+        byte* area = stackalloc byte[108];
+        float x = 1, y;
+        asm
+        {
+            fld x
+            fstp y
+            mov eax, area
+            frstor [eax]
+        }
+        return (int)y - 1;
+    }
+}

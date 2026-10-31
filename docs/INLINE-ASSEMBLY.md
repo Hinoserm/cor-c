@@ -156,8 +156,9 @@ them:
   and the depth could not be followed. `fninit` (and `fnsave`, which ends
   with one) empties it. A state load -- `frstor`, `fldenv`, `fxrstor`, a
   thread's state put back -- leaves the stack as the state loaded has it:
-  nothing after it in the block may touch the x87, MMX or SSE, and it runs
-  on every path to the end or on none;
+  nothing after it in the block may touch the x87, MMX or SSE, it runs on
+  every path to the end or on none, and the block holds no float code,
+  whose state it would replace;
 - **`emms` (or `femms`) after MMX**, before the end, and no x87 instruction
   between MMX and its `emms` -- or `fninit`, which empties the MMX
   registers' tags as `emms` does. No MMX instruction runs with values on the
@@ -170,7 +171,7 @@ them:
   with the method, is refused.
 
 A local is never the operand of an instruction whose memory is larger than
-any local (`fxsave`, `lgdt`, `fnsave`, `fnstenv`): give it an address in a
+any local (`fxsave`, `lgdt`, `fnsave`, `frstor`, `fnstenv`): give it an address in a
 register. A block is at most 16000 bytes of text, the IR carrying it in a
 name; a longer one belongs in an `.asm` file.
 
@@ -202,7 +203,12 @@ either: a constant loaded (`fldz`, `fld1`) or a vector register combined
 with itself (`pxor mm0, mm0`, `xorps xmm0, xmm0`) gives nothing out, so
 `fninit`, eight `fldz`, `fninit` -- every physical register written, so that
 a first use reads no other thread's values -- runs on the thread's own
-state; whatever reads such a register out is float code. Inside a packed block one that uses SSE has FXSAVE save
+state; whatever reads such a register out is float code. (An `.asm`
+file's facts still count a clear as float code.) An interrupt handler may
+not hold a clear or a state load, which would overwrite the interrupted
+thread's registers.
+
+Inside a packed block one that uses SSE has FXSAVE save
 the thread's state.
 
 ## How a block meets its method

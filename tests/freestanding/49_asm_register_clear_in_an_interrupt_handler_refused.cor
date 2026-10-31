@@ -1,0 +1,32 @@
+// test: an asm block that clears an SSE register in an interrupt handler is refused: it would overwrite the interrupted thread's
+// targets: x86
+// flags: --x87-in-blocks-only
+// expect-compile-error: 'Program.Tick' is an interrupt handler and must not use float code
+//
+// XORPS of a register with itself is no float code -- it gives nothing out
+// -- but in a handler it zeroes the interrupted thread's XMM0, whose state
+// the handler keeps nothing of (docs/INLINE-ASSEMBLY.md).
+
+static class Program
+{
+    static int _count;
+
+    [InterruptHandler]
+    static void Tick()
+    {
+        asm
+        {
+            .runtime sse
+            xorps xmm0, xmm0
+        }
+        _count = _count + 1;
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Tick();
+        Host.Done(0);
+        return 0;
+    }
+}

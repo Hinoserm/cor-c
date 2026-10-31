@@ -1,0 +1,18 @@
+// test: inline_asm_frstor_local_refused
+// only-target: x86
+// expect-compile-error: frstor takes memory larger than a local
+//
+// FRSTOR reads 108 bytes: a local, four of them here, is too small for it,
+// whatever size word is written (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        int x = 0;
+        asm
+        {
+            frstor x
+        }
+        return x;
+    }
+}

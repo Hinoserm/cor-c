@@ -1884,12 +1884,16 @@ public sealed partial class Binder
                     floatSaid = true;
                     yield return (n, Corsac.Lang.Lto.InterruptNotes.FloatCode + ", the x87's, which takes the interrupted thread's state");
                     break;
-                // An asm block's float code, as a double's: one that only
-                // keeps or reads the state (a switch's FXSAVE) is no float
-                // code, and stays.
-                case AsmStmt asm when !floatSaid && Parser.PackedEverywhere && _r.AsmBlocks.TryGetValue(asm, out AsmBinding? block) && block.FloatCode:
+                // An asm block's float code, as a double's, and one that writes
+                // the registers (a clear, a state load) over the interrupted
+                // thread's: one that only keeps or reads the state (a switch's
+                // FXSAVE) is no float code, and stays.
+                case AsmStmt asm when !floatSaid && Parser.PackedEverywhere && _r.AsmBlocks.TryGetValue(asm, out AsmBinding? block)
+                                      && (block.FloatCode || block.WritesState):
                     floatSaid = true;
-                    yield return (n, Corsac.Lang.Lto.InterruptNotes.FloatCode + " (an asm block's x87, MMX or SSE code), which takes the interrupted thread's state");
+                    yield return (n, Corsac.Lang.Lto.InterruptNotes.FloatCode + (block.FloatCode
+                        ? " (an asm block's x87, MMX or SSE code), which takes the interrupted thread's state"
+                        : " (an asm block that writes the x87's, MMX's or SSE's registers), which overwrites the interrupted thread's"));
                     break;
                 case LambdaExpr l:
                     yield return (n, l.GroupIdentity is not null ? "makes a delegate of a method" : "makes a lambda");
