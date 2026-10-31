@@ -1,0 +1,22 @@
+// test: inline_asm_femms_empties_mmx
+// only-target: x86
+// expect-compile-error: direction flag
+//
+// FEMMS is 3DNow!'s EMMS: after it the block ends with no MMX in use, and
+// the first rule it breaks is the direction flag's, checked after the
+// MMX registers' -- not "MMX in use", nor an x87 instruction after MMX
+// (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            .runtime 3dnow
+            pxor mm0, mm0
+            femms
+            std
+        }
+        return 0;
+    }
+}

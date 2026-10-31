@@ -205,8 +205,10 @@ with itself (`pxor mm0, mm0`, `xorps xmm0, xmm0`) gives nothing out, so
 a first use reads no other thread's values -- runs on the thread's own
 state; whatever reads such a register out is float code. (An `.asm`
 file's facts still count a clear as float code.) An interrupt handler may
-not hold a clear or a state load, which would overwrite the interrupted
-thread's registers.
+not hold a clear or a state load (`frstor`, `fldenv`, `fxrstor`), which
+would overwrite the interrupted thread's registers; what keeps, reads or
+resets the state -- `fxsave`, `fnsave`, `fnstenv`, `fnstcw`, `fninit`,
+`fldcw`, `ldmxcsr` -- it may, as an `.asm` handler may.
 
 Inside a packed block one that uses SSE has FXSAVE save
 the thread's state.
