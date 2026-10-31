@@ -1,0 +1,39 @@
+// test: packed_features_asked_where_no_operation_is
+// only-target: x86
+// cpu: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// sse2 2 8
+//
+// PACKED.FEATURES() IN A BODY THAT NAMES NO PACKED OPERATION, its packed
+// work in a helper: the question tells every processor class apart
+// (PackedOps.FeaturesOf), so the body has a variant for each and the one
+// that runs answers its own features. It had one variant, with none, and
+// took the scalar path on every processor.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe void Packed16(uint[] s)
+    {
+        nuint at = Sys.ArrayData(s);
+        Packed.Store(at, Packed.Add32(Packed.Load128(at), Packed.Load128(at)));
+    }
+
+    // The test here, the packed operations in the helper.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Generate(uint[] s)
+    {
+        if ((Packed.Features() & 0x20) != 0) { Packed16(s); return "sse2"; }
+        return "scalar";
+    }
+
+    static int Main()
+    {
+        uint[] s = new uint[4] { 1, 2, 3, 4 };
+        Console.WriteLine(Generate(s) + " " + s[0] + " " + s[3]);
+        return 0;
+    }
+}

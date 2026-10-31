@@ -119,6 +119,13 @@ public static class PackedOps
             // SSE2, which no name tells apart from a Packed64's (Lowering).
             "StoreNonTemporal" or "Fence" => Mmx | MmxExtensions,
             "Load32" or "Store32" => Mmx,
+            // THE QUESTION ITSELF tells every class apart: its answer is the
+            // variant's features, and a body that asks it and names no
+            // operation (one that calls a packed helper) had the one variant
+            // with none -- Features() 0 on every processor, the SSE2 path
+            // asked for never taken (ChaCha20's Generate calling its packed
+            // block function).
+            "Features" => Mmx | MmxExtensions | ThreeDNow | Sse | Sse2,
             // Prefetch and PrefetchWrite tell no variants apart: a block's
             // copy for each of their instructions would be the whole body
             // again for one hint. They take what the variant has, or --cpu.
