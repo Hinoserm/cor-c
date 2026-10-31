@@ -1,0 +1,123 @@
+// test: inline_asm_idioms_and_partial_forms_x86
+// only-target: x86
+// requires-host: sse2
+// expect-exit: 0
+// expect-output:
+// mask -1 0
+// lahf True
+// cvt 7.5
+// popped 7
+// commented 4
+// records 6
+//
+// What a block may read without having set it (docs/INLINE-ASSEMBLY.md: a
+// register is set before it is read): SBB of a register with itself, the
+// carry as a mask; LAHF, which reads only the flags; CVTSI2SD into an XMM
+// register the block never set, whose top lane it keeps; PUSHAD's eight
+// taken back one POP at a time. A comment holding a brace between `asm`
+// and its own; and a variable named record, which begins no type's head.
+using System;
+
+static class Program
+{
+    static int Mask(int a, int b)
+    {
+        int r;
+        asm
+        {
+            mov eax, a
+            mov ecx, b
+            cmp eax, ecx
+            sbb edx, edx
+            mov r, edx
+        }
+        return r;
+    }
+
+    static int Lahf()
+    {
+        int r;
+        asm
+        {
+            xor ecx, ecx
+            cmp ecx, ecx
+            lahf
+            movzx ecx, ah
+            mov r, ecx
+        }
+        return r;
+    }
+
+    static double Cvt(int v)
+    {
+        double d;
+        asm
+        {
+            .runtime sse2
+            mov eax, v
+            cvtsi2sd xmm0, eax
+            addsd xmm0, xmm0
+            movsd d, xmm0
+        }
+        return d / 2 + 0.5;
+    }
+
+    static int Popped(int a)
+    {
+        int r;
+        asm
+        {
+            mov ecx, a
+            pushad
+            pop eax
+            pop eax
+            pop eax
+            pop eax
+            pop eax
+            pop eax
+            pop eax
+            pop eax
+            mov r, ecx
+        }
+        return r;
+    }
+
+    static int Commented(int a)
+    {
+        int r;
+        asm /* a brace here, {, is a comment's */
+        {
+            mov eax, a
+            add eax, eax
+            mov r, eax
+        }
+        return r;
+    }
+
+    static int Records(int[] rs)
+    {
+        int sum = 0;
+        foreach (var record in rs)
+        {
+            int t;
+            asm
+            {
+                mov eax, record
+                mov t, eax
+            }
+            sum += t;
+        }
+        return sum;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("mask " + Mask(1, 2) + " " + Mask(2, 1));
+        Console.WriteLine("lahf " + ((Lahf() & 0x40) != 0));
+        Console.WriteLine("cvt " + Cvt(7));
+        Console.WriteLine("popped " + Popped(7));
+        Console.WriteLine("commented " + Commented(2));
+        Console.WriteLine("records " + Records(new[] { 1, 2, 3 }));
+        return 0;
+    }
+}

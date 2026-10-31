@@ -1580,7 +1580,7 @@ public sealed partial class X86Assembler : ISymbols
         "mul", "imul", "div", "idiv", "neg", "not", "lea",
         "jmp", "call", "ret", "retn", "retf", "iret", "iretd", "loop", "loope", "loopz",
         "loopne", "loopnz", "jcxz", "jecxz", "int", "int3", "into",
-        "cli", "sti", "hlt", "nop", "cld", "std", "clc", "stc", "cmc",
+        "cli", "sti", "hlt", "nop", "cld", "std", "clc", "stc", "cmc", "lahf", "sahf", "xlat", "xlatb",
         "in", "out", "lgdt", "lidt", "xchg", "cbw", "cwde", "cwd", "cdq",
         "lodsb", "lodsw", "lodsd", "stosb", "stosw", "stosd",
         "movsb", "movsw", "movsd", "scasb", "scasw", "scasd", "cmpsb", "cmpsw", "cmpsd",
@@ -1651,6 +1651,15 @@ public sealed partial class X86Assembler : ISymbols
             case "clc":  Bare(a, 0xF8); return;
             case "stc":  Bare(a, 0xF9); return;
             case "cmc":  Bare(a, 0xF5); return;
+            // The flags' low byte to and from AH, and AL looked up at [EBX + AL]: the 8086's own.
+            // Not in long mode: the first K8s have neither there (CPUID's LAHF-SAHF bit).
+            case "lahf":
+            case "sahf":
+                if (_bits == 64) throw Error($"{mn} is not on every long-mode processor: the first K8s have none there");
+                Bare(a, mn == "lahf" ? (byte)0x9F : (byte)0x9E);
+                return;
+            case "xlat":
+            case "xlatb": Bare(a, 0xD7); return;
             case "int3": Bare(a, 0xCC); return;
             case "into": Bare(a, 0xCE); return;
             case "iret": Bare(a, 0xCF); return;

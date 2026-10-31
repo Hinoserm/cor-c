@@ -45,7 +45,17 @@ public sealed class InlineAsmCode
         {
             if (_text != text)
             {
-                _bytes = InlineAsm.Assemble(text, 32, InlineAsm.Baseline(Target.Current.X86Profile, 32));
+                try
+                {
+                    _bytes = InlineAsm.Assemble(text, 32, InlineAsm.Baseline(Target.Current.X86Profile, 32));
+                }
+                catch (AsmException e)
+                {
+                    // Where the frame came out larger than the binder's trial
+                    // (a LOOP's eight bits of reach past slots far from EBP):
+                    // an error of the compile, at the block's line, not a crash.
+                    throw new InvalidOperationException($"line {i.Line}: asm block, its line {e.Line}: {e.Message}");
+                }
                 _text = text;
             }
             return (text, _bytes!);

@@ -119,10 +119,13 @@ them:
 - **a register is set before it is read**: a block's registers hold nothing
   of the method's but what its own instructions put there, the head's
   bindings among them. Reading one the block has not set on every path is an
-  error (`rep stosd` with EDI never set), except a register made zero from
-  itself (`xor eax, eax`), a push's register (saved to be put back), and what
-  a trap or CPUID may read (`int`'s and `syscall`'s arguments, CPUID's
-  subleaf in ECX);
+  error (`rep stosd` with EDI never set), except a register made from itself
+  without its value (`xor eax, eax`, `sbb eax, eax`, `pxor mm0, mm0`), the part
+  of a register a scalar or a half is written into (`cvtsi2sd xmm0, eax`,
+  `movss xmm0, xmm1`), a push's register (saved to be put back), and what a
+  trap, CPUID or LAHF may read (`int`'s and `syscall`'s arguments, CPUID's
+  subleaf in ECX). A byte's or a word's write sets that much: a 32-bit read
+  of a register the block set only a byte of is refused;
 - **the x87 stack is as deep at the end as at the start**. `fincstp`,
   `fdecstp` and `ffree` are refused, since they move the top without its tags
   and the depth could not be followed, and so are `frstor` and `fldenv`,

@@ -99,6 +99,7 @@ public sealed partial class Binder
             if (Lookup(register) is LocalSym or ParamSym or ConstSym)
             {
                 Error(AsmAt(a, 1), $"asm: '{register}' is a register in an asm block, and so is not the local of that name: rename the local");
+                if (Lookup(register) is LocalSym spelt) _assigned.Add(spelt);
                 failed = true;
             }
         foreach (NameExpr name in a.Names)

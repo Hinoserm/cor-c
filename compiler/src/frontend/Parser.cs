@@ -5803,7 +5803,8 @@ public sealed class Parser
             {
                 _i++;
                 string raw = at.Text;
-                int open = raw.IndexOf('{');
+                // The brace past any comment between `asm` and it, as the lexer found it.
+                int open = Lexer.PastTrivia(raw, 0, raw.Length);
                 int braceLine = at.Line;
                 for (int c = 0; c < open; c++) if (raw[c] == '\n') braceLine++;
                 AsmStmt asm = new() { Body = raw[(open + 1)..^1], BodyLine = braceLine, Line = at.Line, Col = at.Col };

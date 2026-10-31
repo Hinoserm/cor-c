@@ -275,7 +275,7 @@ public sealed class Lexer
         Token t = NextToken();
         _last = t.Kind;
         if (t.Kind is Tok.KwClass or Tok.KwStruct or Tok.KwInterface or Tok.KwEnum or Tok.KwWhere
-            || t.Kind == Tok.Ident && t.Text == "record")
+            || t.Kind == Tok.Ident && t.Text == "record" && RecordDeclarationAhead())
             _typeHead = true;
         else if (t.Kind is Tok.LBrace or Tok.RBrace or Tok.Semi)
             _typeHead = false;
@@ -283,21 +283,42 @@ public sealed class Lexer
     }
 
     /// <summary>Past white space and comments from `p`: where the next thing in the text begins.</summary>
-    private int PastTrivia(int p)
+    private int PastTrivia(int p) => PastTrivia(_src, p, _end);
+
+    /// <summary>Past white space and `//` and `/* */` comments in `text` from `p`, to no further than `end`: an asm block's brace (Parser: Tok.AsmBlock).</summary>
+    public static int PastTrivia(string text, int p, int end)
     {
-        while (p < _end)
+        while (p < end)
         {
-            if (char.IsWhiteSpace(_src[p])) { p++; continue; }
-            if (_src[p] == '/' && p + 1 < _end && _src[p + 1] == '/') { while (p < _end && _src[p] != '\n') p++; continue; }
-            if (_src[p] == '/' && p + 1 < _end && _src[p + 1] == '*')
+            if (char.IsWhiteSpace(text[p])) { p++; continue; }
+            if (text[p] == '/' && p + 1 < end && text[p + 1] == '/') { while (p < end && text[p] != '\n') p++; continue; }
+            if (text[p] == '/' && p + 1 < end && text[p + 1] == '*')
             {
-                int close = _src.IndexOf("*/", p + 2, StringComparison.Ordinal);
-                p = close < 0 ? _end : close + 2;
+                int close = text.IndexOf("*/", p + 2, StringComparison.Ordinal);
+                p = close < 0 || close + 2 > end ? end : close + 2;
                 continue;
             }
             break;
         }
         return p;
+    }
+
+    /// <summary>
+    /// Whether a `record` begins a type's declaration: `record class`,
+    /// `record struct`, or `record Name` followed by `(`, `<`, `:` or `{`.
+    /// Not a variable of that name (`foreach (var record in rs)`).
+    /// </summary>
+    private bool RecordDeclarationAhead()
+    {
+        int p = PastTrivia(_pos);
+        int start = p;
+        while (p < _end && (char.IsLetterOrDigit(_src[p]) || _src[p] == '_')) p++;
+        if (p == start) return false;
+        string word = _src[start..p];
+        if (word is "class" or "struct") return true;
+        if (Keywords.ContainsKey(word)) return false;
+        p = PastTrivia(p);
+        return p < _end && _src[p] is '(' or '<' or ':' or '{';
     }
 
     /// <summary>
