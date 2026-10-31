@@ -1261,13 +1261,7 @@ internal sealed partial class Selector
         : PoolHome(v) ?? MMem.Frame(_m.Frame.FloatHome(v));
 
     /// <summary>The pool's word a float constant of the x87's lives in (FHome), or null.</summary>
-    private MMem? PoolHome(VReg v)
-    {
-        if (!v.Type.IsFloat() || !_definitions.TryGetValue(v, out Instr? def) || def is not { Op: Opcode.Bits, Operands: [var bitsOf] }
-            || !ConstantEverywhere(bitsOf, out long bits)) return null;
-        int w = FWidth(v.Type);
-        return FloatConstant(w == 4 ? bits & 0xFFFFFFFFL : bits, w);
-    }
+    private MMem? PoolHome(VReg v) => PoolConstant(v);
 
     private MMem FHome(Operand o) => o is RegOperand r ? FHome(r.Reg) : throw new InvalidOperationException($"{o} is not a float register");
 

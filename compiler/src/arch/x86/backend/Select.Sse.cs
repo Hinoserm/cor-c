@@ -107,14 +107,19 @@ internal sealed partial class Selector
     /// its register.
     /// </summary>
     private MOperand XSource(Operand o)
+        => o is RegOperand r && InXmm(r.Reg.Type) && PoolConstant(r.Reg) is { } pool ? pool : X(o);
+
+    /// <summary>
+    /// The pool's word of a float made once by Bits from bits known
+    /// everywhere -- what the XMM class reads in place (XSource) and the
+    /// x87's lives in (PoolHome) -- or null for any other value.
+    /// </summary>
+    private MMem? PoolConstant(VReg v)
     {
-        if (o is RegOperand r && InXmm(r.Reg.Type) && _definitions.TryGetValue(r.Reg, out Instr? def)
-            && def is { Op: Opcode.Bits, Operands: [var bitsOf] } && ConstantEverywhere(bitsOf, out long bits))
-        {
-            int w = FWidth(r.Reg.Type);
-            return FloatConstant(w == 4 ? bits & 0xFFFFFFFFL : bits, w);
-        }
-        return X(o);
+        if (!v.Type.IsFloat() || !_definitions.TryGetValue(v, out Instr? def) || def is not { Op: Opcode.Bits, Operands: [var bitsOf] }
+            || !ConstantEverywhere(bitsOf, out long bits)) return null;
+        int w = FWidth(v.Type);
+        return FloatConstant(w == 4 ? bits & 0xFFFFFFFFL : bits, w);
     }
 
     /// <summary>Bits known wherever they are read: an immediate, or a register an immediate is its one definition.</summary>
@@ -234,18 +239,37 @@ internal sealed partial class Selector
     /// <summary>
     /// A FLOAT TO AN UNSIGNED 32-BIT INTEGER: CVTTSS2SI answers every value
     /// below 2^31 that truncates to no negative number -- (-1, 0) to 0, as
-    /// .NET has it; a negative result -- 2^31 and up, -1 and below, NaN -- sends
-    /// the value to the classification (SelectFloatToInt), whose limits are
-    /// .NET's, and whose in-range path is SseUIntCore's.
+    /// .NET has it. A negative result is a value of [2^31, 2^32), truncated
+    /// less 2^31 and the top bit set again, or one outside -- -1 and below,
+    /// 2^32 and up, NaN (unordered: below) -- sent to the classification
+    /// (SelectFloatToInt), whose limits are .NET's.
     /// </summary>
     private void SseToUInt(Instr i)
     {
-        bool single = FWidth(i.Operands[0].Type) == 4;
-        MReg d = Lo(i.Dest!);
-        EmitW(single ? MOp.Cvttss2si : MOp.Cvttsd2si, 4, d, X(i.Operands[0]));
+        int w = FWidth(i.Operands[0].Type);
+        MOp truncate = w == 4 ? MOp.Cvttss2si : MOp.Cvttsd2si;
+        MReg d = Lo(i.Dest!), x = X(i.Operands[0]);
+        EmitW(truncate, 4, d, x);
         Emit(MOp.Test, d, d);
-        MBlock exit = _m.NewBlock($"{_cur.Name}.{_splits++}", _cur);
+        MBlock anchor = _cur;
+        MBlock high = _m.NewBlock($"{_cur.Name}.{_splits++}", anchor);
+        MBlock outside = _m.NewBlock($"{_cur.Name}.{_splits++}", high);
+        MBlock exit = _m.NewBlock($"{_cur.Name}.{_splits++}", outside);
         Jcc(Cond.Ns, exit);
+        MMem half = FloatConstant(w == 4 ? 0x4F000000L : 0x41E0000000000000L, w);
+        EmitW(MOp.UcomiF, w, x, half);
+        Jcc(Cond.B, outside);
+        EmitW(MOp.UcomiF, w, x, FloatConstant(w == 4 ? 0x4F800000L : 0x41F0000000000000L, w));
+        Jcc(Cond.Ae, outside);
+        Jmp(high);
+        _cur = high;
+        MReg t = XTemp();
+        MovF(t, x, w);
+        EmitW(MOp.SubF, w, t, half);
+        Emit(truncate, d, t);
+        Emit(MOp.Xor, d, Imm(int.MinValue));
+        Jmp(exit);
+        _cur = outside;
         SelectFloatToInt(i);
         Jmp(exit);
         _cur = exit;

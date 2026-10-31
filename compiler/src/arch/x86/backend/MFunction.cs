@@ -51,7 +51,7 @@ public sealed class MFunction
 
     /// <summary>
     /// Virtual registers of the XMM class: scalar floats where --cpu has SSE
-    /// (Selector's _xmm32, _xmm64), allocated among XMM0 to XMM7.
+    /// (Selector's _xmm32, _xmm64), allocated among XMM0 up to XmmClassCount.
     /// </summary>
     public HashSet<int> XmmRegs { get; } = new();
 

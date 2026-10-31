@@ -216,8 +216,11 @@ internal static class AddressFold
             switch (ins[j].Op)
             {
                 case MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Push or MOp.Pop or MOp.Nop:
+                // The scalar SSE forms leave every flag as it was.
+                case MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.CvtFToF or MOp.CvtIntToF
+                    or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si:
                     continue;
-                case MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg:
+                case MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg or MOp.UcomiF:
                     return true;
                 // A shift by a constant from 1 up writes the flags it leaves
                 // (a count of 0, which only CL can give, leaves them all);
