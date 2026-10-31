@@ -878,26 +878,21 @@ public sealed partial class X86Assembler : ISymbols
             case ".runtime":
             {
                 if (ops.Length == 0) throw Error(".runtime takes none, or what the code checked for: " + RuntimeNames);
-                Corsac.Lang.X86.X86Feature promised = Corsac.Lang.X86.X86Feature.None;
-                HashSet<string> instructions = new(StringComparer.Ordinal);
-                if (ops is not ["none"])
-                {
-                    foreach (string op in ops)
-                    {
-                        if (!RuntimePromise(op.Trim().ToLowerInvariant(), ref promised, instructions))
-                            throw Error($".runtime: '{op.Trim()}' is not a processor feature or instruction this assembler checks for; it takes none or any of " + RuntimeNames);
-                    }
-                }
                 if (ops is ["none"])
                 {
                     _runtime = Corsac.Lang.X86.X86Feature.None;
                     _runtimeInstructions = new HashSet<string>(StringComparer.Ordinal);
+                    return;
                 }
-                else
+                Corsac.Lang.X86.X86Feature promised = Corsac.Lang.X86.X86Feature.None;
+                HashSet<string> instructions = new(StringComparer.Ordinal);
+                foreach (string op in ops)
                 {
-                    _runtime |= promised;
-                    _runtimeInstructions.UnionWith(instructions);
+                    if (!RuntimePromise(op.Trim().ToLowerInvariant(), ref promised, instructions))
+                        throw Error($".runtime: '{op.Trim()}' is not a processor feature or instruction this assembler checks for; it takes none or any of " + RuntimeNames);
                 }
+                _runtime |= promised;
+                _runtimeInstructions.UnionWith(instructions);
                 return;
             }
 
