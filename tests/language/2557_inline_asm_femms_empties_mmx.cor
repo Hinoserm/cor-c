@@ -12,7 +12,7 @@ static class Program
     {
         asm
         {
-            .runtime 3dnow
+            .runtime mmx, 3dnow
             pxor mm0, mm0
             femms
             std
