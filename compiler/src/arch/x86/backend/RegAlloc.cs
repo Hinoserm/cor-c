@@ -34,9 +34,11 @@ internal static class Allocator
         Predicate<MInstr> unused = i => i.Operands.Count > 0 && i.Operands[0] is MReg dest && !dest.IsPhys
             && !used.Contains(dest.Id) && (deadFlags.Contains(i)
                 || (i.Op == MOp.Mov && !i.Lock && i.Operands.Count == 2 && i.Operands[1] is not MMem)
-                // An XMM copy, or a load of the float pool's read-only words: nothing seen.
+                // An XMM copy, or a load of the float pool's read-only words --
+                // by its address, or off the GOT in position-independent code
+                // (Pic: [got + pool@GOTOFF]): nothing seen.
                 || (i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg
-                    && (i.Operands[1] is MReg || i.Operands[1] is MMem { Base: null, Index: null, Symbol: { } pool }
+                    && (i.Operands[1] is MReg || i.Operands[1] is MMem { Index: null, Symbol: { } pool }
                         && pool.StartsWith(X86Backend.FloatPoolPrefix, StringComparison.Ordinal))));
         do
         {
@@ -54,12 +56,12 @@ internal static class Allocator
                     // cannot fault (IfConvert). Read only by itself -- the half
                     // of a long nothing reads, kept by cmov after cmov -- it goes.
                     if (i.Op == MOp.Cmov && !i.Lock && i.Operands[0] is MReg { IsPhys: false }) deadFlags.Add(i);
-                    // Fucomipp writes every status flag, as cmp does: ZF, PF and CF
+                    // Fucomipp and UcomiF write every status flag, as cmp does: ZF, PF and CF
                     // from the comparison, OF, SF and AF cleared.
                     // BSF and BSR leave ZF and every other flag undefined; POPFD
                     // writes them all.
                     if (i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or
-                        or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg or MOp.Fucomipp
+                        or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Neg or MOp.Fucomipp or MOp.UcomiF
                         or MOp.Bsf or MOp.Bsr or MOp.WriteFlags) flagsLive = false;
                     if (i.Op is MOp.Adc or MOp.Sbb or MOp.Jcc or MOp.Setcc or MOp.Cmov) flagsLive = true;
                     else if (!KnownFlagEffect(i.Op)) flagsLive = true;
@@ -106,7 +108,10 @@ internal static class Allocator
         or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg or MOp.Not or MOp.Bswap
         or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Cdq
         or MOp.Setcc or MOp.Cmov or MOp.Jcc or MOp.Jmp or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Nop or MOp.Pause
-        or MOp.RepMovsb or MOp.RepMovsd or MOp.RepStosb or MOp.RepStosd or MOp.Fucomipp
+        or MOp.RepMovsb or MOp.RepMovsd or MOp.RepStosb or MOp.RepStosd or MOp.Fucomipp or MOp.UcomiF
+        // The scalar SSE forms leave every flag as it was.
+        or MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.CvtFToF or MOp.CvtIntToF
+        or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si
         or MOp.Bsf or MOp.Bsr or MOp.WriteFlags;
 
     /// <summary>

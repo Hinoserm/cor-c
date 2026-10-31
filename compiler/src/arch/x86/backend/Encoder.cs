@@ -930,6 +930,10 @@ internal sealed class Encoder
                 B(0x0F, 0x57);
                 XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
                 break;
+            case MOp.Punpckldq:
+                B(0x66, 0x0F, 0x62);
+                XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
+                break;
             case MOp.MovdToX:
                 B(0x66, 0x0F, 0x6E);
                 ModRM(Xmm(i.Operands[0]), i.Operands[1]);

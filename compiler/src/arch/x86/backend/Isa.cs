@@ -62,7 +62,7 @@ internal static class Isa
         MOp.PackedSaveFxsr or MOp.PackedRestoreFxsr => X86Feature.Sse,
         MOp.Cvttsd2si => X86Feature.Sse | X86Feature.Sse2,
         MOp.XorPs => X86Feature.Sse,
-        MOp.MovdToX or MOp.MovdFromX or MOp.CvtFToF => X86Feature.Sse | X86Feature.Sse2,
+        MOp.MovdToX or MOp.MovdFromX or MOp.CvtFToF or MOp.Punpckldq => X86Feature.Sse | X86Feature.Sse2,
         // PAUSE is F3 90, REP NOP: a plain no-op to anything before the
         // Pentium 4, and so needs nothing.
         _ => X86Feature.None,

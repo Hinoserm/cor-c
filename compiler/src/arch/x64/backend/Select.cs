@@ -1950,7 +1950,9 @@ internal sealed class Selector
                 Emit(MOp.SaveRegs);
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.CallerRegister:
-                Emit(MOp.CallerReg, V(i.Dest!), new MImm(((ImmOperand)i.Operands[0]).Value));
+                // Read by nothing (the note it was for dropped): nothing made.
+                if (i.Dest is null) return;
+                Emit(MOp.CallerReg, V(i.Dest), new MImm(((ImmOperand)i.Operands[0]).Value));
                 return;
             case Corsac.Lang.X86.MachineIntrinsics.In8:
             case Corsac.Lang.X86.MachineIntrinsics.In16:

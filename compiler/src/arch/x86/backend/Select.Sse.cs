@@ -15,9 +15,9 @@ using Block = Corsac.Lang.Ir.Block;
 /// unsigned one, a call's result in ST0) goes through the x87 as before, the
 /// value moved between the two through a slot of the frame (Fld, Fstp).
 ///
-/// Not in a function with a packed operation (MachineIntrinsics.
-/// PackedOpPrefix): its packed registers are XMM registers too, numbered by
-/// the selector, which the allocator would not know were taken.
+/// A function with a packed operation too (MachineIntrinsics.PackedOpPrefix),
+/// whose packed registers the selector numbers itself, splits them: the
+/// class XMM0 to XMM3, the packed values XMM4 to XMM7 (MFunction.XmmShared).
 /// </summary>
 internal sealed partial class Selector
 {
@@ -27,7 +27,7 @@ internal sealed partial class Selector
     /// <summary>A float type of the XMM class here.</summary>
     private bool InXmm(IrType t) => t == IrType.F32 ? _xmm32 : t == IrType.F64 && _xmm64;
 
-    /// <summary>Whether a function names a packed operation, whose XMM registers the selector numbers itself.</summary>
+    /// <summary>Whether a function names a packed operation, whose XMM registers the selector numbers itself (MFunction.XmmShared).</summary>
     private static bool UsesPackedRegisters(Function f)
     {
         foreach (Block b in f.Blocks)
@@ -75,7 +75,7 @@ internal sealed partial class Selector
 
     /// <summary>
     /// A FLOAT CONSTANT, from the object's read-only pool (X86Backend.
-    /// FloatPool): one load, where its bits stored into the frame and read
+    /// FloatPoolName): one load, where its bits stored into the frame and read
     /// back were two instructions and a store to forward from.
     /// </summary>
     private static MMem FloatConstant(long bits, int width) => SymbolMem(X86Backend.FloatPoolName(bits, width), 0);
@@ -231,6 +231,54 @@ internal sealed partial class Selector
         _cur = exit;
     }
 
+    /// <summary>
+    /// A FLOAT TO AN UNSIGNED 32-BIT INTEGER: CVTTSS2SI answers every value
+    /// below 2^31 that truncates to no negative number -- (-1, 0) to 0, as
+    /// .NET has it; a negative result -- 2^31 and up, -1 and below, NaN -- sends
+    /// the value to the classification (SelectFloatToInt), whose limits are
+    /// .NET's, and whose in-range path is SseUIntCore's.
+    /// </summary>
+    private void SseToUInt(Instr i)
+    {
+        bool single = FWidth(i.Operands[0].Type) == 4;
+        MReg d = Lo(i.Dest!);
+        EmitW(single ? MOp.Cvttss2si : MOp.Cvttsd2si, 4, d, X(i.Operands[0]));
+        Emit(MOp.Test, d, d);
+        MBlock exit = _m.NewBlock($"{_cur.Name}.{_splits++}", _cur);
+        Jcc(Cond.Ns, exit);
+        SelectFloatToInt(i);
+        Jmp(exit);
+        _cur = exit;
+    }
+
+    /// <summary>
+    /// A value of [0, 2^32) truncated to an unsigned 32-bit integer: below
+    /// 2^31 as it is; from 2^31 less 2^31 -- exact, a power of two the value's
+    /// exponent covers -- and the top bit set again.
+    /// </summary>
+    private void SseUIntCore(Instr i)
+    {
+        int w = FWidth(i.Operands[0].Type);
+        MOp truncate = w == 4 ? MOp.Cvttss2si : MOp.Cvttsd2si;
+        MReg d = Lo(i.Dest!), x = X(i.Operands[0]);
+        MMem half = FloatConstant(w == 4 ? 0x4F000000L : 0x41E0000000000000L, w);
+        MBlock anchor = _cur;
+        MBlock high = _m.NewBlock($"{_cur.Name}.{_splits++}", anchor);
+        MBlock done = _m.NewBlock($"{_cur.Name}.{_splits++}", high);
+        EmitW(MOp.UcomiF, w, x, half);
+        Jcc(Cond.Ae, high);
+        Emit(truncate, d, x);
+        Jmp(done);
+        _cur = high;
+        MReg t = XTemp();
+        MovF(t, x, w);
+        EmitW(MOp.SubF, w, t, half);
+        Emit(truncate, d, t);
+        Emit(MOp.Xor, d, Imm(int.MinValue));
+        Jmp(done);
+        _cur = done;
+    }
+
     /// <summary>A float loaded from memory, as it is or widened or narrowed on the way.</summary>
     private void SseLoad(VReg d, MMem m, int size)
     {
@@ -280,10 +328,22 @@ internal sealed partial class Selector
             MovF(X(d), FloatScratch, 4);
             return;
         }
+        // MOVD each half and PUNPCKLDQ them together: two stores read back as
+        // one eight-byte load forward from neither, on the P6, the K7 or the K8.
         (MOperand lo, MOperand hi) = PairRM(src);
-        Mov(FloatScratch, lo);
-        Mov(Displaced(FloatScratch, 4), hi);
-        MovF(X(d), FloatScratch, 8);
+        MReg high = XTemp();
+        Emit(MOp.MovdToX, X(d), InRegister(lo));
+        Emit(MOp.MovdToX, high, InRegister(hi));
+        Emit(MOp.Punpckldq, X(d), high);
+    }
+
+    /// <summary>A half as MOVD takes it: a register, an immediate moved into one.</summary>
+    private MOperand InRegister(MOperand o)
+    {
+        if (o is not MImm) return o;
+        MReg t = Temp();
+        Mov(t, o);
+        return t;
     }
 
     /// <summary>A float of the XMM class as an integer's bits.</summary>

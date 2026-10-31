@@ -133,9 +133,17 @@ internal sealed partial class Selector
         _packedBase = automaticPacked || !f.InsideState || cpu.Fpu == "none" ? 0 : cpu.Has(X86Feature.Sse) ? 2 : 1;
         // THE XMM CLASS (Select.Sse): floats where --cpu has SSE, doubles where
         // it has SSE2, in code that owns that state.
-        _xmm32 = sse && cpu.Has(X86Feature.Sse) && !UsesPackedRegisters(f);
+        _xmm32 = sse && cpu.Has(X86Feature.Sse);
         _xmm64 = _xmm32 && cpu.Has(X86Feature.Sse2);
         _m.XmmSpillWidth = _xmm64 ? 8 : 4;
+        // A FUNCTION WITH A PACKED OPERATION TOO shares the XMM registers: its
+        // packed values in XMM4 to XMM7 (PackedFree), its floats' class in
+        // XMM0 to XMM3 (X86Target), so neither knows of the other.
+        if (_xmm32 && UsesPackedRegisters(f))
+        {
+            _packedXmmFirst = MFunction.XmmShared;
+            _m.XmmClassCount = MFunction.XmmShared;
+        }
         foreach (VReg parameter in f.Params) _definitions[parameter] = null;
         foreach (Block b in f.Blocks)
         foreach (Instr instruction in b.Instrs)
@@ -373,6 +381,9 @@ internal sealed partial class Selector
     }
 
     private readonly PackedRegisters _mm = new(), _xmm = new();
+
+    /// <summary>The first XMM register a packed value may take: 0, or past the float class's where a function has both (Select.Sse).</summary>
+    private int _packedXmmFirst;
     private long _packedClock;
 
     /// <summary>Whether either file may hold anything: where neither does, nothing before an instruction has anything to give up.</summary>
@@ -525,7 +536,7 @@ internal sealed partial class Selector
     {
         PackedRegisters file = PackedFile(xmm);
         int pick = -1;
-        for (int r = 0; r < 8; r++)
+        for (int r = xmm ? _packedXmmFirst : 0; r < 8; r++)
         {
             if (r == pinned || r == pinned2) continue;
             if (file.Name[r] is null) { pick = r; break; }
@@ -1239,10 +1250,24 @@ internal sealed partial class Selector
 
     private static int FWidth(IrType t) => t == IrType.F32 ? 4 : 8;
 
-    /// <summary>The home slot of a floating-point virtual register: one of the x87's, never one of the XMM class.</summary>
+    /// <summary>
+    /// The home of a floating-point virtual register: one of the x87's, never
+    /// one of the XMM class. A constant's, made once by Bits from bits known
+    /// everywhere, is the pool's word (PoolHome), read where it is wanted and
+    /// never written.
+    /// </summary>
     private MMem FHome(VReg v) => InXmm(v.Type)
         ? throw new InvalidOperationException($"{_f.Name}: {v}, of the XMM class, has no home")
-        : MMem.Frame(_m.Frame.FloatHome(v));
+        : PoolHome(v) ?? MMem.Frame(_m.Frame.FloatHome(v));
+
+    /// <summary>The pool's word a float constant of the x87's lives in (FHome), or null.</summary>
+    private MMem? PoolHome(VReg v)
+    {
+        if (!v.Type.IsFloat() || !_definitions.TryGetValue(v, out Instr? def) || def is not { Op: Opcode.Bits, Operands: [var bitsOf] }
+            || !ConstantEverywhere(bitsOf, out long bits)) return null;
+        int w = FWidth(v.Type);
+        return FloatConstant(w == 4 ? bits & 0xFFFFFFFFL : bits, w);
+    }
 
     private MMem FHome(Operand o) => o is RegOperand r ? FHome(r.Reg) : throw new InvalidOperationException($"{o} is not a float register");
 
@@ -1675,7 +1700,11 @@ internal sealed partial class Selector
                 break;
             case Opcode.FToI:
             case Opcode.FToU:
-                if (i.Op == Opcode.FToI && i.Dest!.Type == IrType.I32 && InXmm(i.Operands[0].Type)) SseToInt(i);
+                if (i.Dest!.Type == IrType.I32 && InXmm(i.Operands[0].Type))
+                {
+                    if (i.Op == Opcode.FToI) SseToInt(i);
+                    else SseToUInt(i);
+                }
                 else SelectFloatToInt(i);
                 break;
             case Opcode.Bits:
@@ -2759,7 +2788,8 @@ internal sealed partial class Selector
     {
         Operand a = i.Operands[0];
         Operand b = i.Operands[1];
-        // ST(0) is whichever was loaded second; the flags describe ST(0) ? ST(1).
+        // On the x87, ST(0) is whichever was loaded second and the flags
+        // describe ST(0) ? ST(1); the order here is that of every relation.
         bool aOnTop = i.Op is Opcode.FGt or Opcode.FGe or Opcode.FEq or Opcode.FNe;
         if (InXmm(a.Type))
         {
@@ -2909,14 +2939,20 @@ internal sealed partial class Selector
         // the operand here is finite and inside the destination's range, where
         // cvttss2si and cvttsd2si answer exactly what .NET does, and need no
         // FNSTCW/FLDCW round trip: FLDCW is an expensive instruction on the P6
-        // and the K7. They read the float's home, so no XMM register is taken
-        // or kept live. Only code whose thread owns its state
-        // (Lowering.OwnsFpuState), and only where --cpu has SSE: the
-        // operating system enables it (CR4.OSFXSR) and keeps it, as it keeps
-        // the x87 and MMX state AutomaticPacked borrows -- Linux wherever the
-        // processor has it, Windows where that --cpu says it does. 32-bit SSE has no 64-bit integer result, so
-        // Int64, and the UInt32 that needs the 64-bit store, stay on the x87.
+        // and the K7. They read the float's home, or its XMM register. Only
+        // code whose thread owns its state (Lowering.OwnsFpuState), and only
+        // where --cpu has SSE: the operating system enables it (CR4.OSFXSR)
+        // and keeps it, as it keeps the x87 and MMX state AutomaticPacked
+        // borrows -- Linux wherever the processor has it, Windows where that
+        // --cpu says it does. 32-bit SSE has no 64-bit integer result, so
+        // Int64 stays on the x87; a UInt32 of the XMM class is truncated less
+        // 2^31 where it is that or more (SseUIntCore), on the x87 otherwise.
         bool single = FWidth(i.Operands[0].Type) == 4;
+        if (!unsignedHighHalf && i.Op == Opcode.FToU && d.Type == IrType.I32 && InXmm(i.Operands[0].Type))
+        {
+            SseUIntCore(i);
+            return;
+        }
         if (!unsignedHighHalf && i.Op == Opcode.FToI && d.Type == IrType.I32 && SseHere
             && Target.Current.X86Profile.Has(single ? X86Feature.Sse : X86Feature.Sse2))
         {
@@ -2967,6 +3003,8 @@ internal sealed partial class Selector
             SseToBits(d, src);
             return;
         }
+        // An x87 constant's home is the pool's word: nothing to write.
+        if (PoolHome(d) is not null) return;
         switch (d.Type)
         {
             case IrType.I32:
@@ -2976,7 +3014,7 @@ internal sealed partial class Selector
             {
                 MMem home = FHome(src);
                 Mov(Lo(d), home);
-                Mov(Hi(d), new MMem(home.Base, home.Disp + 4));
+                Mov(Hi(d), Displaced(home, 4));
                 break;
             }
             case IrType.F32:
@@ -2987,7 +3025,7 @@ internal sealed partial class Selector
                 (MOperand lo, MOperand hi) = PairRM(src);
                 MMem home = FHome(d);
                 Mov(home, lo);
-                Mov(new MMem(home.Base, home.Disp + 4), hi);
+                Mov(Displaced(home, 4), hi);
                 break;
             }
         }
@@ -3363,7 +3401,7 @@ internal sealed partial class Selector
             case IrType.F64:
             {
                 MMem home = FHome(o);
-                Emit(MOp.Push, new MMem(home.Base, home.Disp + 4));
+                Emit(MOp.Push, Displaced(home, 4));
                 Emit(MOp.Push, home);
                 return 8;
             }
@@ -3877,7 +3915,10 @@ internal sealed partial class Selector
                 Emit(MOp.SaveRegs);
                 return;
             case MachineIntrinsics.CallerRegister:
-                Emit(MOp.CallerReg, Lo(i.Dest!), Imm((int)((ImmOperand)i.Operands[0]).Value));
+                // Read by nothing -- the note it was for dropped, a program
+                // without a collector (Escape.IsThreadNote) -- nothing made.
+                if (i.Dest is null) return;
+                Emit(MOp.CallerReg, Lo(i.Dest), Imm((int)((ImmOperand)i.Operands[0]).Value));
                 return;
             case MachineIntrinsics.GetGs:
                 // NOTHING WHERE NOTHING READS IT: `Runtime.NativeGs =

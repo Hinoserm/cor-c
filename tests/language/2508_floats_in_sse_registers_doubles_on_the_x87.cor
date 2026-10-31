@@ -1,0 +1,116 @@
+// test: floats_in_sse_registers_doubles_on_the_x87
+// only-target: x86
+// cpu: --cpu=athlon-xp --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// f 00000000 neg 80000000 int 0 uint 0 long 0 wide 0000000000000000 root 00000000 mad FF800000 sub 3FA00000
+// f 80000000 neg 00000000 int 0 uint 0 long 0 wide 8000000000000000 root 80000000 mad 7F800000 sub 3FA00000
+// f 3FC00000 neg BFC00000 int 1 uint 1 long 1 wide 3FF8000000000000 root 3F9CC471 mad 3FE00000 sub BE800000
+// f BFC00000 neg 3FC00000 int -1 uint 0 long -1 wide BFF8000000000000 root FFC00000 mad BFE00000 sub 40300000
+// f FFC00000 neg 7FC00000 int 0 uint 0 long 0 wide FFF8000000000000 root FFC00000 mad FFC00000 sub FFC00000
+// f FFC00000 neg 7FC00000 int 0 uint 0 long 0 wide FFF8000000000000 root FFC00000 mad FFC00000 sub FFC00000
+// f 7F800000 neg FF800000 int 2147483647 uint 4294967295 long 9223372036854775807 wide 7FF0000000000000 root 7F800000 mad FFC00000 sub FF800000
+// f FF800000 neg 7F800000 int -2147483648 uint 0 long -9223372036854775808 wide FFF0000000000000 root FFC00000 mad FFC00000 sub 7F800000
+// f 00000001 neg 80000001 int 0 uint 0 long 0 wide 36A0000000000000 root 1A3504F3 mad FF800000 sub 3FA00000
+// f 4EFFFFFF neg CEFFFFFF int 2147483520 uint 2147483520 long 2147483520 wide 41DFFFFFE0000000 root 473504F3 mad 4F9FFFFF sub CEFFFFFF
+// f 4F000000 neg CF000000 int 2147483647 uint 2147483648 long 2147483648 wide 41E0000000000000 root 473504F3 mad 4FA00000 sub CF000000
+// f CF000000 neg 4F000000 int -2147483648 uint 0 long -2147483648 wide C1E0000000000000 root FFC00000 mad CFA00000 sub 4F000000
+// f CF000001 neg 4F000001 int -2147483648 uint 0 long -2147483904 wide C1E0000020000000 root FFC00000 mad CFA00002 sub 4F000001
+// f 4F7FFFFF neg CF7FFFFF int 2147483647 uint 4294967040 long 4294967040 wide 41EFFFFFE0000000 root 477FFFFF mad 501FFFFF sub CF7FFFFF
+// f 4F800000 neg CF800000 int 2147483647 uint 4294967295 long 4294967296 wide 41F0000000000000 root 47800000 mad 50200000 sub CF800000
+// f BF400000 neg 3F400000 int 0 uint 0 long 0 wide BFE8000000000000 root FFC00000 mad 40080000 sub 40000000
+// f 7F7FC99E neg FF7FC99E int 2147483647 uint 4294967295 long 9223372036854775807 wide 47EFF933C0000000 root 5F7FE4CE mad 7F800000 sub FF7FC99E
+// f 000116C2 neg 800116C2 int 0 uint 0 long 0 wide 37A16C2000000000 root 1E3CE4E7 mad FF800000 sub 3FA00000
+// d 0000000000000000 neg 8000000000000000 int 0 uint 0 ulong 0 narrow 00000000 root 0000000000000000 mad FFF0000000000000
+// d 8000000000000000 neg 0000000000000000 int 0 uint 0 ulong 0 narrow 80000000 root 8000000000000000 mad 7FF0000000000000
+// d 3FF8000000000000 neg BFF8000000000000 int 1 uint 1 ulong 1 narrow 3FC00000 root 3FF3988E1409212E mad 3FFC000000000000
+// d BFF8000000000000 neg 3FF8000000000000 int -1 uint 0 ulong 0 narrow BFC00000 root FFF8000000000000 mad BFFC000000000000
+// d FFF8000000000000 neg 7FF8000000000000 int 0 uint 0 ulong 0 narrow FFC00000 root FFF8000000000000 mad nan
+// d FFF8000000000000 neg 7FF8000000000000 int 0 uint 0 ulong 0 narrow FFC00000 root FFF8000000000000 mad nan
+// d 7FF0000000000000 neg FFF0000000000000 int 2147483647 uint 4294967295 ulong 18446744073709551615 narrow 7F800000 root 7FF0000000000000 mad FFF8000000000000
+// d FFF0000000000000 neg 7FF0000000000000 int -2147483648 uint 0 ulong 0 narrow FF800000 root FFF8000000000000 mad FFF8000000000000
+// d 0000000000000001 neg 8000000000000001 int 0 uint 0 ulong 0 narrow 00000000 root 1E60000000000000 mad FFF0000000000000
+// d 41DFFFFFFFF00000 neg C1DFFFFFFFF00000 int 2147483647 uint 2147483647 ulong 2147483647 narrow 4F000000 root 40E6A09E667993A5 mad 41F3FFFFFFF60000
+// d 41E0000000000000 neg C1E0000000000000 int 2147483647 uint 2147483648 ulong 2147483648 narrow 4F000000 root 40E6A09E667F3BCD mad 41F4000000000000
+// d C1E0000000100000 neg 41E0000000100000 int -2147483648 uint 0 ulong 0 narrow CF000000 root FFF8000000000000 mad C1F4000000140000
+// d C1E0000000200000 neg 41E0000000200000 int -2147483648 uint 0 ulong 0 narrow CF000000 root FFF8000000000000 mad C1F4000000280000
+// d 41EFFFFFFFF00000 neg C1EFFFFFFFF00000 int 2147483647 uint 4294967295 ulong 4294967295 narrow 4F800000 root 40EFFFFFFFF80000 mad 4203FFFFFFF60000
+// d 41F0000000000000 neg C1F0000000000000 int 2147483647 uint 4294967295 ulong 4294967296 narrow 4F800000 root 40F0000000000000 mad 4204000000000000
+// d BFE8000000000000 neg 3FE8000000000000 int 0 uint 0 ulong 0 narrow BF400000 root FFF8000000000000 mad 4001000000000000
+// d 7FEE42D130773B76 neg FFEE42D130773B76 int 2147483647 uint 4294967295 ulong 18446744073709551615 narrow 7F800000 root 5FEF1E4CA52E6B9A mad 7FF0000000000000
+// d 000012688B70E62B neg 800012688B70E62B int 0 uint 0 ulong 0 narrow 00000000 root 1FC1297872D9CBAE mad FFF0000000000000
+// d 7E37E43C8800759C neg FE37E43C8800759C int 2147483647 uint 4294967295 ulong 18446744073709551615 narrow 7F800000 root 5F138D352E5096AF mad 7E4DDD4BAA009303
+// i 0 00000000 0000000000000000 00000000
+// i 1 3F800000 3FF0000000000000 40400000
+// i -1 BF800000 41EFFFFFFFE00000 C0400000
+// i 2147483647 4F000000 41DFFFFFFFC00000 4FC00000
+// i -2147483648 CF000000 41E0000000000000 CFC00000
+// i 16777217 4B800000 4170000010000000 4C400001
+// i -16777217 CB800000 41EFDFFFFFE00000 CC400001
+// bits 3F800000 3F800000
+// bits 80000000 80000000
+// bits 7FC00001 7FC00001
+// bits FFC00000 FFC00000
+// bits 3FF0000000000000 3FF0000000000000
+// bits 8000000000000000 8000000000000000
+// bits 7FF8000000000001 7FF8000000000001
+// bits 0000000000000001 0000000000000001
+// store 3F2AAAAB load 4011555556000000
+//
+// Test 2507's program where --cpu has SSE and not SSE2: floats in the XMM
+// registers, doubles on the x87, and every conversion between the two through
+// the frame's scratch (Select.Sse's Fld and Fstp). The same answers as .NET's.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)] static float Neg(float x) => -x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static double Neg(double x) => -x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int ToInt(float x) => (int)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int ToInt(double x) => (int)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static uint ToUInt(float x) => (uint)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static uint ToUInt(double x) => (uint)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static long ToLong(float x) => (long)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static ulong ToULong(double x) => (ulong)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static double Widen(float x) => x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static float Narrow(double x) => (float)x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static float FromInt(int x) => x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static double FromUInt(uint x) => x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static float FromLong(long x) => x;
+    [MethodImpl(MethodImplOptions.NoInlining)] static float Mad(float a, float b, float c) => a * b + c * 0.5f - 3f / a;
+    [MethodImpl(MethodImplOptions.NoInlining)] static double Mad(double a, double b, double c) => a * b + c * 0.5 - 3.0 / a;
+    [MethodImpl(MethodImplOptions.NoInlining)] static float Sub(float a, float b) => b - a;
+    [MethodImpl(MethodImplOptions.NoInlining)] static double Root(double a) => Math.Sqrt(a);
+    [MethodImpl(MethodImplOptions.NoInlining)] static float RootF(float a) => MathF.Sqrt(a);
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Bits(float a) => BitConverter.SingleToInt32Bits(a);
+    [MethodImpl(MethodImplOptions.NoInlining)] static long Bits(double a) => BitConverter.DoubleToInt64Bits(a);
+    [MethodImpl(MethodImplOptions.NoInlining)] static float FromBits(int b) => BitConverter.Int32BitsToSingle(b);
+    [MethodImpl(MethodImplOptions.NoInlining)] static double FromBits(long b) => BitConverter.Int64BitsToDouble(b);
+    [MethodImpl(MethodImplOptions.NoInlining)] static float Store(float[] a, double d) { a[1] = (float)d; return a[1] * 2; }
+    [MethodImpl(MethodImplOptions.NoInlining)] static double Load(float[] a) { double s = 0; for (int i = 0; i < a.Length; i++) s += a[i]; return s; }
+
+    static string H(float x) => Bits(x).ToString("X8");
+    static string H(double x) => Bits(x).ToString("X16");
+
+    static int Main()
+    {
+        float[] fs = { 0f, -0f, 1.5f, -1.5f, float.NaN, -float.NaN, float.PositiveInfinity, float.NegativeInfinity, float.Epsilon,
+            2147483520f, 2147483648f, -2147483648f, -2147483904f, 4294967040f, 4294967296f, -0.75f, 3.4e38f, 1e-40f };
+        double[] ds = { 0.0, -0.0, 1.5, -1.5, double.NaN, -double.NaN, double.PositiveInfinity, double.NegativeInfinity, double.Epsilon,
+            2147483647.75, 2147483648.0, -2147483648.5, -2147483649.0, 4294967295.5, 4294967296.0, -0.75, 1.7e308, 1e-310, 1e300 };
+        foreach (float f in fs)
+            Console.WriteLine($"f {H(f)} neg {H(Neg(f))} int {ToInt(f)} uint {ToUInt(f)} long {ToLong(f)} wide {H(Widen(f))} root {H(RootF(f))} mad {H(Mad(f, 3f, -f))} sub {H(Sub(f, 1.25f))}");
+        foreach (double d in ds)
+            Console.WriteLine($"d {H(d)} neg {H(Neg(d))} int {ToInt(d)} uint {ToUInt(d)} ulong {ToULong(d)} narrow {H(Narrow(d))} root {H(Root(d))} mad {(double.IsNaN(d) ? "nan" : H(Mad(d, 3.0, -d)))}");
+        foreach (int i in new[] { 0, 1, -1, int.MaxValue, int.MinValue, 16777217, -16777217 })
+            Console.WriteLine($"i {i} {H(FromInt(i))} {H(FromUInt((uint)i))} {H(FromLong(i * 3L))}");
+        foreach (int b in new[] { 0x3F800000, unchecked((int)0x80000000), 0x7FC00001, unchecked((int)0xFFC00000) })
+            Console.WriteLine($"bits {b:X8} {H(FromBits(b))}");
+        foreach (long b in new[] { 0x3FF0000000000000L, unchecked((long)0x8000000000000000UL), 0x7FF8000000000001L, 0x0000000000000001L })
+            Console.WriteLine($"bits {b:X16} {H(FromBits(b))}");
+        float[] arr = { 1f, 2f, 3f };
+        Console.WriteLine($"store {H(Store(arr, 1.0 / 3.0))} load {H(Load(arr))}");
+        return 0;
+    }
+}

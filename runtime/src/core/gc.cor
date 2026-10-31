@@ -18139,10 +18139,12 @@ public static class GcThreads
     /// (EBX, ESI and EDI on i386, the rest 0; RBX and R12 to R15 in long
     /// mode), handed over by the function that frame called: written into the
     /// thread block (Tls.Spill) only if the thread counts as stopped, as
-    /// arguments in a frame of its own until then -- an interrupt a kernel
-    /// takes on the thread meanwhile, waiting itself, writes its own and
-    /// leaves these. What a program without a collector drops
-    /// (Escape.ThreadBlockingWith).
+    /// arguments in a frame of its own until then: an interrupt a kernel
+    /// takes on the thread before this is called, waiting itself, writes its
+    /// own and leaves these. Between the writes below and SafePoint's
+    /// Stopped such an interrupt's wait would still write over them, as it
+    /// would have over Platform.SafePoint's copy. What a program without a
+    /// collector drops (Escape.ThreadBlockingWith).
     public static void BeginBlockingWith(nuint a, nuint b, nuint c, nuint d, nuint e)
     {
         nuint self = Sys.ThreadBlock();
@@ -18172,8 +18174,6 @@ public static class GcThreads
     {
         return !GcLock.IsCollector(self) && Sys.ReadAddress(self + Tls.InAlloc) == 0 && !GcLock.HeldByMe();
     }
-
-
 
     // NOT FROM INSIDE THE ALLOCATOR OR THE BARRIER (Tls.InAlloc), NOR WITH
     // THE HEAP LOCK HELD. On a kernel an interrupt lands anywhere, its

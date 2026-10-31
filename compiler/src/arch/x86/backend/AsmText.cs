@@ -245,6 +245,9 @@ internal static class AsmText
             case MOp.XorPs:
                 yield return $"xorps {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, false)}";
                 yield break;
+            case MOp.Punpckldq:
+                yield return $"punpckldq {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, false)}";
+                yield break;
             case MOp.MovdToX:
             case MOp.MovdFromX:
                 yield return $"movd {Op(i.Operands[0], 4, true)}, {Op(i.Operands[1], 4, true)}";

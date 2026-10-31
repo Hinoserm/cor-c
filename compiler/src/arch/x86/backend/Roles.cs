@@ -81,6 +81,7 @@ public static class Roles
             case MOp.MulF:
             case MOp.DivF:
             case MOp.XorPs:
+            case MOp.Punpckldq:
                 return operand == 0 ? Role.UseDef : Role.Use;
             case MOp.Xchg:
             case MOp.FsLoad:

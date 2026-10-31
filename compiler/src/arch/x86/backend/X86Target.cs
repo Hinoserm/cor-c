@@ -139,7 +139,27 @@ internal sealed class X86Target : ITarget
         return true;
     }
 
-    public RegisterFile Registers => _m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File;
+    public RegisterFile Registers => _registers ??= Halved(_m.Source.KeepsCallerRegisters ? CallerOnlyFile : _leaf ? LeafFile : File);
+
+    private RegisterFile? _registers;
+
+    /// <summary>
+    /// The file with the XMM class XMM0 to XMM3 alone, where the function's
+    /// packed operations hold XMM4 to XMM7 (MFunction.XmmClassCount).
+    /// </summary>
+    private RegisterFile Halved(RegisterFile f) => _m.XmmClassCount == 8 ? f : new RegisterFile
+    {
+        PhysCount = f.PhysCount, FirstVirtual = f.FirstVirtual, Untracked = f.Untracked,
+        Classes = new[]
+        {
+            f.Classes[0],
+            new RegClass
+            {
+                Name = XmmClass.Name, CalleeSaved = XmmClass.CalleeSaved, HoldsReferences = false,
+                Preference = Enumerable.Range(MReg.XmmBase, _m.XmmClassCount).ToArray(),
+            },
+        },
+    };
     public int ClassOf(int reg) => reg < MReg.FirstVirtual ? (reg >= MReg.XmmBase ? 1 : 0) : _m.XmmRegs.Contains(reg) ? 1 : 0;
     public bool ByteOnly(int vreg) => _m.ByteRegs.Contains(vreg);
     /// <summary>A slot of a word, or of eight bytes for a float of the XMM class, a double's or a float's alike (XmmSpillWidth).</summary>
@@ -165,9 +185,10 @@ internal sealed class X86Target : ITarget
         && m.Label is null && !m.IsSpill ? m : null;
 
     /// <summary>
-    /// A FLOAT CONSTANT LOADED FROM THE POOL (X86Backend.FloatPool), remade
+    /// A FLOAT CONSTANT LOADED FROM THE POOL (X86Backend.FloatPoolName), remade
     /// where it is wanted -- one load from read-only memory, as a spill's
-    /// reload is, with no store before it.
+    /// reload is, with no store before it. Not in position-independent code,
+    /// whose load is off the GOT's register (Pic) and no constant's.
     /// </summary>
     internal sealed record FloatPoolLoad(MMem Pool, int Width);
 
@@ -291,7 +312,7 @@ internal sealed class X86Target : ITarget
             MOp.Setcc or MOp.Cmov => Effect.ReadsFlags,
             // Scalar SSE: masked exceptions, so nothing faults but a memory operand.
             MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.CvtFToF or MOp.CvtIntToF
-                or MOp.XorPs or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si => Effect.None,
+                or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si => Effect.None,
             MOp.UcomiF => Effect.WritesFlags,
             _ => Effect.Barrier,
         };

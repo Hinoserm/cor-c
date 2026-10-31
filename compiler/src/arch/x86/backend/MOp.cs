@@ -74,6 +74,8 @@ public enum MOp : byte
     XorPs,
     /// <summary>movd xmm, r/m32 and movd r/m32, xmm (SSE2): a float's bits between the files.</summary>
     MovdToX, MovdFromX,
+    /// <summary>punpckldq xmm, xmm (SSE2): a double's two halves, each MOVD'd, made one.</summary>
+    Punpckldq,
     // odds and ends
     Int, Int3, Nop, Pause,
     /// <summary>

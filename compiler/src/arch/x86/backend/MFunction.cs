@@ -62,6 +62,14 @@ public sealed class MFunction
     /// </summary>
     public int XmmSpillWidth { get; set; } = 8;
 
+    /// <summary>
+    /// How many XMM registers the XMM class has, from XMM0: all eight, or
+    /// XmmShared in a function whose packed operations hold the rest
+    /// (Selector.PackedFree).
+    /// </summary>
+    public int XmmClassCount { get; set; } = 8;
+    public const int XmmShared = 4;
+
     /// <summary>Virtual registers that must land in a register with an 8-bit form (EAX..EBX).</summary>
     public HashSet<int> ByteRegs { get; } = new();
 
