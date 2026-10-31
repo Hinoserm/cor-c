@@ -415,9 +415,15 @@ public sealed partial class Lowering
             case "SaveRegisters":
                 _e.Call(MachineIntrinsics.SaveRegisters, IrType.Void);
                 return Void();
-            case "SpillRegisters":
-                _e.Call(MachineIntrinsics.SpillRegisters, IrType.Void, R(ToWord(Arg(call, target, 0))));
-                return Fit(_e.Const(_t.WordSize == 8 ? 5 : 3, word), returns);
+            case "CallerRegister":
+            {
+                if (call.Args.Count != 1 || IntegerConstantOf(call.Args[0]) is not long k || k < 0 || k >= (_t.WordSize == 8 ? 5 : 3))
+                {
+                    Error(call, $"Sys.CallerRegister takes a constant from 0 to {(_t.WordSize == 8 ? 4 : 2)}");
+                    return Void();
+                }
+                return Fit(_e.Call(MachineIntrinsics.CallerRegister, word, new ImmOperand(k, IrType.I32))!, returns);
+            }
             case "ThreadBlock":
                 return Fit(ThreadBlockNow(), returns);
             case "MainThreadBlock":

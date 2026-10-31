@@ -950,25 +950,21 @@ internal sealed class Encoder
             case MOp.CompilerFence:
             case MOp.SaveRegs:
                 break;
-            case MOp.SpillRegs:
+            case MOp.CallerReg:
             {
                 // After `push ebp; mov ebp, esp; sub esp, Size` the prologue
                 // pushes SavedRegs in order: the k-th at EBP - Size - 4(k+1).
-                if (_m.FramePointerFree) throw new InvalidOperationException($"{_m.Source.Name}: Sys.SpillRegisters in a function without a frame pointer");
-                MReg at = (MReg)i.Operands[0];
-                Gpr[] kept = { Gpr.Ebx, Gpr.Esi, Gpr.Edi };
-                for (int k = 0; k < kept.Length; k++)
+                // Never in a leaf without a frame pointer (X86Target.Leaf).
+                if (_m.FramePointerFree) throw new InvalidOperationException($"{_m.Source.Name}: Sys.CallerRegister in a function without a frame pointer");
+                Gpr kept = ((MImm)i.Operands[1]).Value switch { 0 => Gpr.Ebx, 1 => Gpr.Esi, _ => Gpr.Edi };
+                int to = Reg(i.Operands[0]), saved = _m.SavedRegs.IndexOf(kept);
+                if (saved >= 0)
                 {
-                    int saved = _m.SavedRegs.IndexOf(kept[k]);
-                    if (saved >= 0)
-                    {
-                        B(0xFF); ModRM(6, MMem.Frame(-_m.Frame.Size - 4 * (saved + 1)));   // push dword [ebp-...]
-                        B(0x8F); ModRM(0, new MMem(at, 4 * k));                          // pop dword [at+4k]
-                    }
-                    else
-                    {
-                        B(0x89); ModRM((int)kept[k], new MMem(at, 4 * k));               // mov [at+4k], reg
-                    }
+                    B(0x8B); ModRM(to, MMem.Frame(-_m.Frame.Size - 4 * (saved + 1)));   // mov r, [ebp-...]
+                }
+                else if (to != (int)kept)
+                {
+                    B(0x89); ModRM((int)kept, i.Operands[0]);                          // mov r, reg
                 }
                 break;
             }

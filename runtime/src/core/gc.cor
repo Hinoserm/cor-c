@@ -12208,7 +12208,6 @@ public static class Gc
         Sys.WriteAddress(tb + Tls.InAlloc, was);
     }
 
-
     /// Root ranges marked from as they were registered, a mark under way.
     public static long RegisteredMidMark;
 
@@ -18118,16 +18117,33 @@ public static class GcThreads
     /// until EndBlocking. The collector, waiting for it to answer a round,
     /// is told, so that it answers for it.
     ///
-    /// ITS CALLER'S REGISTERS, AS THE CALLER LEFT THEM (Sys.SpillRegisters):
+    /// ITS CALLER'S REGISTERS, AS THE CALLER LEFT THEM (Sys.CallerRegister):
     /// the caller's is the frame that stays while the thread waits, and the
-    /// registers it holds then are the ones the collector must read. Written
-    /// down from inside a frame below it -- Platform.SafePoint's, as it was --
+    /// registers it holds then are the ones the collector must read. Copied
+    /// from inside a frame below it -- Platform.SafePoint's, as it was --
     /// they were that frame's own, and a caller's reference its prologue had
     /// pushed went with it the moment the wait wrote over it. Never put in
-    /// place in a caller: what it writes down is its caller's.
-    /// Runtime.BeginBlocking and Runtime.EnterNative do the same for theirs.
+    /// place in a caller: what it reads is its caller's. Runtime.BeginBlocking
+    /// and Runtime.EnterNative do the same for theirs.
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void BeginBlocking()
+    {
+#if TARGET_64BIT
+        BeginBlockingWith(Sys.CallerRegister(0), Sys.CallerRegister(1), Sys.CallerRegister(2), Sys.CallerRegister(3), Sys.CallerRegister(4));
+#else
+        BeginBlockingWith(Sys.CallerRegister(0), Sys.CallerRegister(1), Sys.CallerRegister(2), 0, 0);
+#endif
+    }
+
+    /// THE WAIT SAID, with the callee-saved registers of the frame that waits
+    /// (EBX, ESI and EDI on i386, the rest 0; RBX and R12 to R15 in long
+    /// mode), handed over by the function that frame called: written into the
+    /// thread block (Tls.Spill) only if the thread counts as stopped, as
+    /// arguments in a frame of its own until then -- an interrupt a kernel
+    /// takes on the thread meanwhile, waiting itself, writes its own and
+    /// leaves these. What a program without a collector drops
+    /// (Escape.ThreadBlockingWith).
+    public static void BeginBlockingWith(nuint a, nuint b, nuint c, nuint d, nuint e)
     {
         nuint self = Sys.ThreadBlock();
 
@@ -18136,7 +18152,16 @@ public static class GcThreads
             return;
         }
 
-        Sys.WriteAddress(self + Tls.SpillCount, Sys.SpillRegisters(self + Tls.Spill));
+        Sys.WriteAddress(self + Tls.Spill, a);
+        Sys.WriteAddress(self + Tls.Spill + WordSize.Bytes, b);
+        Sys.WriteAddress(self + Tls.Spill + 2 * WordSize.Bytes, c);
+#if TARGET_64BIT
+        Sys.WriteAddress(self + Tls.Spill + 3 * WordSize.Bytes, d);
+        Sys.WriteAddress(self + Tls.Spill + 4 * WordSize.Bytes, e);
+        Sys.WriteAddress(self + Tls.SpillCount, 5);
+#else
+        Sys.WriteAddress(self + Tls.SpillCount, 3);
+#endif
         SafePoint(Stopped);
     }
 
@@ -18148,12 +18173,7 @@ public static class GcThreads
         return !GcLock.IsCollector(self) && Sys.ReadAddress(self + Tls.InAlloc) == 0 && !GcLock.HeldByMe();
     }
 
-    /// The thread counted as stopped, its registers already written down
-    /// (Tls.Spill) by the function its waiting frame called.
-    public static void Stop()
-    {
-        SafePoint(Stopped);
-    }
+
 
     // NOT FROM INSIDE THE ALLOCATOR OR THE BARRIER (Tls.InAlloc), NOR WITH
     // THE HEAP LOCK HELD. On a kernel an interrupt lands anywhere, its
@@ -18170,7 +18190,7 @@ public static class GcThreads
     {
         nuint block = Sys.ThreadBlock();
 
-        if (GcLock.IsCollector(block) || Sys.ReadAddress(block + Tls.InAlloc) != 0 || GcLock.HeldByMe())
+        if (!Stops(block))
         {
             return;
         }
@@ -18251,7 +18271,7 @@ public static class GcThreads
     /// SafePoint returns and the wait begins; the copy is what the collector
     /// reads instead. Nothing in the runtime stops that way any more: a wait
     /// says so through BeginBlocking, which writes its caller's registers
-    /// down itself (Sys.SpillRegisters); Running asks nothing here.
+    /// down itself (Sys.CallerRegister); Running asks nothing here.
     public static void Spill(int mode, nuint from, nuint to)
     {
         if (mode == Running)

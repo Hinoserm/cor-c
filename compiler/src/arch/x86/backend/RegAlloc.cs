@@ -33,7 +33,11 @@ internal static class Allocator
         HashSet<int> used = new();
         Predicate<MInstr> unused = i => i.Operands.Count > 0 && i.Operands[0] is MReg dest && !dest.IsPhys
             && !used.Contains(dest.Id) && (deadFlags.Contains(i)
-                || (i.Op == MOp.Mov && !i.Lock && i.Operands.Count == 2 && i.Operands[1] is not MMem));
+                || (i.Op == MOp.Mov && !i.Lock && i.Operands.Count == 2 && i.Operands[1] is not MMem)
+                // An XMM copy, or a load of the float pool's read-only words: nothing seen.
+                || (i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg
+                    && (i.Operands[1] is MReg || i.Operands[1] is MMem { Base: null, Index: null, Symbol: { } pool }
+                        && pool.StartsWith(X86Backend.FloatPoolPrefix, StringComparison.Ordinal))));
         do
         {
             deadFlags.Clear();

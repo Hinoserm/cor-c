@@ -229,6 +229,8 @@ public sealed class Inline : IParallelModulePass
             pinned.Add(Escape.CollectorLive);
             // And what a thread tells the collector, which such a program drops.
             pinned.Add(Escape.ThreadBlocking);
+            pinned.Add(Escape.ThreadBlockingWith);
+            pinned.Add(Escape.RuntimeBlocking);
             pinned.Add(Escape.ThreadUnblocking);
             pinned.Add(Escape.ThreadSafePoint);
             pinned.Add(Escape.ThreadRegister);
@@ -501,6 +503,12 @@ public sealed class Inline : IParallelModulePass
             return false;
         }
 
+        // ITS CALLER'S REGISTERS, read where its own prologue saved them
+        // (Sys.CallerRegister): put in place, they would be another's.
+        foreach (Block b in callee.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee == Corsac.Lang.X86.MachineIntrinsics.CallerRegister) return false;
+
         // A TRY IN THE CALLEE comes along whole when the caller asks for it
         // (handlers): its record is a frame slot cloned with the others, its
         // pad a block cloned and named by the cloned labeladdr, the stack and
@@ -525,9 +533,6 @@ public sealed class Inline : IParallelModulePass
                     case Opcode.FramePointer:
                         return false;
                     case Opcode.Call when i.Callee == "__exception":
-                        return false;
-                    // Its caller's registers, read where its own prologue saved them.
-                    case Opcode.Call when i.Callee == Corsac.Lang.X86.MachineIntrinsics.SpillRegisters:
                         return false;
                 }
             }

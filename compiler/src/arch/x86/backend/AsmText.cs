@@ -108,8 +108,8 @@ internal static class AsmText
             case MOp.SaveRegs:
                 yield return "; callee-saved registers pushed (nothing encoded)";
                 yield break;
-            case MOp.SpillRegs:
-                yield return $"; the caller's ebx, esi, edi into [{Op(i.Operands[0], 4, false)}]";
+            case MOp.CallerReg:
+                yield return $"; {Op(i.Operands[0], 4, false)} = the caller's {(((MImm)i.Operands[1]).Value switch { 0 => "ebx", 1 => "esi", _ => "edi" })}";
                 yield break;
             case MOp.Jcc:
                 yield return $"j{i.Cond.Mnemonic()} {Op(i.Operands[0], 4, false)}";

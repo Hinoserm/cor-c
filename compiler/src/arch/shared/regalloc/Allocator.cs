@@ -124,7 +124,12 @@ public sealed class Allocator
     /// <summary>Values whose one definition loads them from a home (AInstr.HomeSlot): the home, else 0.</summary>
     private int[] _home = Array.Empty<int>();
     /// <summary>Spill slots whose owners' intervals have ended, with the position each is free from.</summary>
-    private readonly List<(int Slot, int FreeFrom)> _freeSlots = new();
+    /// <summary>
+    /// Slots free from a point on, each with the class it was made for: a slot
+    /// is taken again only by a value of that class, whose moves are its width
+    /// (an XMM value's eight bytes on i386, where a word's slot is four).
+    /// </summary>
+    private readonly List<(int Slot, int FreeFrom, int Class)> _freeSlots = new();
     /// <summary>Virtual registers live across each call, by instruction index: the raw material of a stack map.</summary>
     private readonly Dictionary<int, List<int>> _liveAtCall = new();
     private readonly PriorityQueue<Interval, (int, int)> _unhandled = new();
@@ -1721,10 +1726,10 @@ public sealed class Allocator
                 end = Math.Max(end, _end[v]);
             }
         }
-        int taken = -1;
+        int taken = -1, klass = _t.ClassOf(vreg);
         for (int k = 0; k < _freeSlots.Count; k++)
         {
-            if (_freeSlots[k].FreeFrom < start)
+            if (_freeSlots[k].FreeFrom < start && _freeSlots[k].Class == klass)
             {
                 taken = _freeSlots[k].Slot;
                 _freeSlots.RemoveAt(k);
@@ -1732,7 +1737,7 @@ public sealed class Allocator
             }
         }
         if (taken < 0) taken = _t.NewSlot(vreg);
-        _freeSlots.Add((taken, end));
+        _freeSlots.Add((taken, end, klass));
         if (root >= 0) _rootSlot[root] = taken;
         return taken;
     }

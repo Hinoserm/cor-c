@@ -20,8 +20,14 @@ public sealed class MReg : MOperand
 
     public MReg(int id) => Id = id;
 
-    /// <summary>A general machine register.</summary>
+    /// <summary>
+    /// A general machine register. Before allocation every register a pass
+    /// meets is this or virtual -- no selection names an XMM register then --
+    /// so `!IsPhys` there means virtual; after it, test IsVirtual.
+    /// </summary>
     public bool IsPhys => Id < 8;
+    /// <summary>A register the allocator has still to place.</summary>
+    public bool IsVirtual => Id >= FirstVirtual;
     /// <summary>An XMM machine register.</summary>
     public bool IsXmm => Id is >= XmmBase and < XmmBase + 8;
     public Gpr Phys => (Gpr)Id;

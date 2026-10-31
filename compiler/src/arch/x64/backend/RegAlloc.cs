@@ -26,6 +26,7 @@ internal static class Roles
             case MOp.Imul3:
             case MOp.MovF:
             case MOp.MovGx:
+            case MOp.CallerReg:
             case MOp.CvtIntToF:
             case MOp.CvtFToInt:
             case MOp.CvtFToF:

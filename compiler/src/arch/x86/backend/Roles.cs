@@ -55,6 +55,7 @@ public static class Roles
             case MOp.CvtIntToF:
             case MOp.MovdToX:
             case MOp.MovdFromX:
+            case MOp.CallerReg:
                 return operand == 0 ? Role.Def : Role.Use;
             case MOp.Add:
             case MOp.Adc:

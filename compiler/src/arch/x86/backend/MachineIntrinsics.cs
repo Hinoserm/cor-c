@@ -79,8 +79,8 @@ internal static class MachineIntrinsics
     /// the function's prologue pushes them all (Sys.SaveRegisters).
     /// </summary>
     public const string SaveRegisters = Prefix + "saveregs";
-    /// <summary>The caller's callee-saved registers, as it left them, into the words its operand addresses (Sys.SpillRegisters).</summary>
-    public const string SpillRegisters = Prefix + "spillregs";
+    /// <summary>The caller's k-th callee-saved register, as it left it (Sys.CallerRegister).</summary>
+    public const string CallerRegister = Prefix + "callerreg";
     public const string ReadMsr = Prefix + "rdmsr";
     public const string WriteMsr = Prefix + "wrmsr";
     public const string Cpuid = Prefix + "cpuid";

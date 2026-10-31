@@ -88,11 +88,11 @@ public enum MOp : byte
     /// </summary>
     SaveRegs,
     /// <summary>
-    /// Sys.SpillRegisters: EBX, ESI and EDI as the caller left them into
-    /// [operand], [operand+4], [operand+8] -- each saved by the prologue
-    /// copied from its slot (push, pop), each not stored as it is.
+    /// Sys.CallerRegister: operand 0 given EBX, ESI or EDI (operand 1: 0, 1,
+    /// 2) as the caller left it -- read from the prologue's save slot where
+    /// the function saved it, moved from the register itself where not.
     /// </summary>
-    SpillRegs,
+    CallerReg,
     /// <summary>Frame entry and exit; expanded once the frame is known.</summary>
     Prologue, Epilogue,
     /// <summary>Linux only: the system-call trap. Isolated so a bare-metal variant swaps it.</summary>

@@ -363,7 +363,7 @@ public sealed partial class Escape : IModulePass
         bool changed = AnswerCollectorQuery(f, heap: false);
         foreach (Block b in f.Blocks)
             changed |= b.Instrs.RemoveAll(i => i.Op == Opcode.Call && i.Dest is null
-                && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister)) > 0;
+                && (IsCollectorNote(i.Callee) || IsThreadNote(i.Callee))) > 0;
         if (changed) f.Edited();
         return changed;
     }
@@ -380,7 +380,7 @@ public sealed partial class Escape : IModulePass
                 {
                     continue;
                 }
-                if (i.Dest is null && (IsCollectorNote(i.Callee) || i.Callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister))
+                if (i.Dest is null && (IsCollectorNote(i.Callee) || IsThreadNote(i.Callee)))
                 {
                     b.Instrs.RemoveAt(k);
                     f.Edited();
@@ -431,8 +431,19 @@ public sealed partial class Escape : IModulePass
 
     /// <summary>A thread telling the collector it blocks, is back, or is at a safepoint.</summary>
     public const string ThreadBlocking = "m_GcThreads_BeginBlocking_0_r$V$Void";
+    /// <summary>
+    /// The same, handed its caller's registers (GcThreads.BeginBlockingWith),
+    /// and the runtime's own way to it, which is nothing more
+    /// (Runtime.BeginBlocking): a program without a collector has neither.
+    /// </summary>
+    public const string ThreadBlockingWith = "m_GcThreads_BeginBlockingWith_5_V$NUInt_V$NUInt_V$NUInt_V$NUInt_V$NUInt_r$V$Void";
+    public const string RuntimeBlocking = "m_Runtime_BeginBlocking_0_r$V$Void";
     public const string ThreadUnblocking = "m_GcThreads_EndBlocking_0_r$V$Void";
     public const string ThreadSafePoint = "m_GcThreads_SafePoint_1_V$I32_r$V$Void";
+    /// <summary>Whether a call is a thread's note to the collector, which a program without one drops.</summary>
+    public static bool IsThreadNote(string? callee)
+        => callee is ThreadBlocking or ThreadBlockingWith or RuntimeBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister;
+
     /// <summary>The runtime asking whether the program has a collector (answered here, per program).</summary>
     public const string CollectorQuery = "m_Runtime_CollectorLinked_0_r$V$Bool";
 

@@ -228,6 +228,17 @@ public sealed class X86Backend : IBackend
 
     private X87Facts? _x87;
 
+    /// <summary>
+    /// THE FLOAT CONSTANTS' POOL: a float's or a double's bits, read-only, one
+    /// copy an object, named by its width and its bits and local to the object
+    /// (Select.Sse's FloatConstant reads them). Made after the code, for every
+    /// name of it the code's relocations hold.
+    /// </summary>
+    public const string FloatPoolPrefix = "__corsac_fpool";
+
+    public static string FloatPoolName(long bits, int width)
+        => width == 4 ? $"{FloatPoolPrefix}4_{(uint)bits:x8}" : $"{FloatPoolPrefix}8_{(ulong)bits:x16}";
+
     public ObjectFile Generate(Module module, List<string> errors)
     {
         if (Workers < 1 || Workers > 64) throw new ArgumentOutOfRangeException(nameof(Workers));
@@ -326,7 +337,7 @@ public sealed class X86Backend : IBackend
                 }
             }
         }
-        bool IsPrivate(string name) => privateNames.Contains(name);
+        bool IsPrivate(string name) => privateNames.Contains(name) || name.StartsWith(FloatPoolPrefix, StringComparison.Ordinal);
 
         // A name this object defines, exported or not. A call to one is a
         // direct relative call even in a shared object, because the linker
@@ -346,7 +357,7 @@ public sealed class X86Backend : IBackend
                 definedNames.Add(d.Name);
             }
         }
-        bool IsDefined(string name) => definedNames.Contains(name);
+        bool IsDefined(string name) => definedNames.Contains(name) || name.StartsWith(FloatPoolPrefix, StringComparison.Ordinal);
 
         // What the loader will supply. Only a non-position-independent
         // object asks: a shared one reaches everything it does not define
@@ -632,6 +643,22 @@ public sealed class X86Backend : IBackend
                 d.Relocs.Clear();
                 d.Relocs.TrimExcess();
             }
+        }
+
+        // The float constants the code reads (FloatPoolPrefix), each once, eight-byte aligned.
+        SortedSet<string> pool = new(StringComparer.Ordinal);
+        foreach (Relocation r in text.Relocs)
+            if (r.Symbol.StartsWith(FloatPoolPrefix, StringComparison.Ordinal)) pool.Add(r.Symbol);
+        foreach (string name in pool)
+        {
+            int width = name[FloatPoolPrefix.Length] == '4' ? 4 : 8;
+            ulong bits = Convert.ToUInt64(name[(FloatPoolPrefix.Length + 2)..], 16);
+            Pad(rodata, 8, 0);
+            int at = rodata.Bytes.Count;
+            for (int k = 0; k < width; k++) rodata.Bytes.Add((byte)(bits >> (8 * k)));
+            rodata.Align = Math.Max(rodata.Align, 8);
+            obj.Symbols.Add(new Symbol { Name = name, Section = rodata, Offset = at, Size = width, Global = false });
+            defined.Add(name);
         }
 
         if (cardStub)

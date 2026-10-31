@@ -9,7 +9,8 @@ internal sealed partial class Selector
         VReg destination = instruction.Dest!;
         bool wide = destination.Type == IrType.I64, unsigned = instruction.Op == Opcode.FToU;
         bool single = instruction.Operands[0].Type == IrType.F32;
-        MMem home = FHome(instruction.Operands[0]);
+        // Its bits read where they are: its home, or the scratch an XMM register is stored to.
+        MMem home = FloatInMemory(instruction.Operands[0]);
         MReg sign = Temp(), magnitude = Temp();
         Mov(sign, single ? home : Displaced(home, 4));
         Mov(magnitude, sign); Emit(MOp.And, magnitude, Imm(int.MaxValue));

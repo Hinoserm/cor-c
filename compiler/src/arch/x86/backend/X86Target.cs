@@ -124,8 +124,9 @@ internal sealed class X86Target : ITarget
             {
                 // The store sequences' stubs are calls too (CallKeep*): frameless,
                 // so the barrier they call links to this function's EBP.
+                // A caller's register is read off the frame pointer (Encoder's CallerReg).
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
-                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd) return false;
+                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.CallerReg) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
@@ -162,6 +163,18 @@ internal sealed class X86Target : ITarget
     private static MMem? Address(MInstr i) => i.Op == MOp.Lea && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg { IsPhys: false }
         && i.Operands[1] is MMem { Index: null } m && (m.Base is null ? m.Symbol is not null && m.Reloc == RelocKind.Abs32 : m.Base.Id == (int)Gpr.Ebp && m.Symbol is null)
         && m.Label is null && !m.IsSpill ? m : null;
+
+    /// <summary>
+    /// A FLOAT CONSTANT LOADED FROM THE POOL (X86Backend.FloatPool), remade
+    /// where it is wanted -- one load from read-only memory, as a spill's
+    /// reload is, with no store before it.
+    /// </summary>
+    internal sealed record FloatPoolLoad(MMem Pool, int Width);
+
+    private static FloatPoolLoad? PoolLoad(MInstr i)
+        => i.Op == MOp.MovF && i.Operands.Count == 2 && i.Operands[0] is MReg { IsPhys: false, IsXmm: false }
+           && i.Operands[1] is MMem { Base: null, Index: null, Symbol: { } s } m && s.StartsWith(X86Backend.FloatPoolPrefix, StringComparison.Ordinal)
+           ? new FloatPoolLoad(m, i.Width) : null;
 
     public int NewVRegLike(int like)
     {
@@ -236,7 +249,8 @@ internal sealed class X86Target : ITarget
             // MOVAPS between two XMM registers is the whole register, whatever it holds.
             WholeCopy = copy && (i.Width == 4 || i.Op == MOp.MovF) && !i.Lock,
             DropsSelf = copy,
-            Constant = i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm : Address(i),
+            Constant = i.Op == MOp.Mov && i.Width == 4 && i.Operands.Count == 2 && i.Operands[0] is MReg && i.Operands[1] is MImm imm ? imm
+                : PoolLoad(i) is { } pool ? pool : Address(i),
             OperandCount = i.Operands.Count,
             MayMemory = mayMemory,
             MayMemoryWrite = mayMemory,
@@ -295,6 +309,9 @@ internal sealed class X86Target : ITarget
 
     private HashSet<MInstr> _homes = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>A float home's width, by its offset: reloaded as it was loaded, never past its argument's bytes.</summary>
+    private readonly Dictionary<int, int> _homeWidths = new();
+
     /// <summary>
     /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot): `mov v, [ebp+d]` of an
     /// incoming argument's word, where it is the only thing in the function
@@ -342,7 +359,11 @@ internal sealed class X86Target : ITarget
                     else touched.Add((mem.Disp, mem.Disp + 16));
                 }
         foreach ((int disp, MInstr? i) in load)
-            if (i is not null && !touched.Any(t => t.From < disp + i.Width && disp < t.To)) homes.Add(i);
+            if (i is not null && !touched.Any(t => t.From < disp + i.Width && disp < t.To))
+            {
+                homes.Add(i);
+                if (i.Op == MOp.MovF) _homeWidths[disp] = i.Width;
+            }
         return homes;
     }
 
@@ -381,7 +402,9 @@ internal sealed class X86Target : ITarget
                 foreach ((int reg, int slot, object? constant) in p.Before(index))
                     outList.Add(constant is MMem address
                         ? new MInstr(MOp.Lea, Out(reg), new MMem(address.Base, address.Disp) { Symbol = address.Symbol, Reloc = address.Reloc, Device = address.Device }) { Line = ai.Line }
-                        : constant is MImm imm ? new MInstr(MOp.Mov, Out(reg), imm) { Line = ai.Line } : Move(Out(reg), Slot(slot), ai.Line));
+                        : constant is MImm imm ? new MInstr(MOp.Mov, Out(reg), imm) { Line = ai.Line }
+                        : constant is FloatPoolLoad pool ? new MInstr(MOp.MovF, Out(reg), pool.Pool) { Width = pool.Width, Line = ai.Line }
+                        : Move(Out(reg), Slot(slot), ai.Line));
                 if (n is not null) outList.Add(n);
                 foreach ((int reg, int slot) in p.After(index))
                     outList.Add(Move(Slot(slot), Out(reg), ai.Line));
@@ -427,7 +450,11 @@ internal sealed class X86Target : ITarget
     /// </summary>
     private MInstr Move(MOperand to, MOperand from, int line)
         => to is MReg { IsXmm: true } || from is MReg { IsXmm: true }
-            ? new MInstr(MOp.MovF, to, from) { Width = _m.XmmSpillWidth, Line = line }
+            ? new MInstr(MOp.MovF, to, from)
+            {
+                Width = from is MMem { Disp: > 0 } home && _homeWidths.TryGetValue(home.Disp, out int width) ? width : _m.XmmSpillWidth,
+                Line = line,
+            }
             : new MInstr(MOp.Mov, to, from) { Line = line };
 
     /// <summary>A register the allocator placed a value in: EBP as the value it holds (MReg.EbpData), no frame's base.</summary>

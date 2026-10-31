@@ -387,10 +387,11 @@ public static class Tls
     /// The registers of a thread that went blocked. A reference that lives
     /// only in EBX, ESI or EDI for the length of the wait would be nowhere
     /// the collector reads, so the waiting frame's are written here as the
-    /// thread says it is stopped -- by the function it calls to say so,
-    /// as that frame left them (Sys.SpillRegisters: Runtime.BeginBlocking,
-    /// EnterNative, GcThreads.BeginBlocking) -- and read with its stack while
-    /// it is (Gc.ScanStack). SpillCount words from Spill.
+    /// thread says it is stopped -- read as that frame left them by the
+    /// function it calls to say so (Sys.CallerRegister: Runtime.BeginBlocking,
+    /// EnterNative, GcThreads.BeginBlocking) and handed to
+    /// GcThreads.BeginBlockingWith -- and read with its stack while it is
+    /// (Gc.ScanStack). SpillCount words from Spill.
     public const int SpillCount = 19 * WordSize.Bytes;
     public const int Spill = 20 * WordSize.Bytes;
     public const int SpillMax = 12;
@@ -1582,10 +1583,11 @@ public static partial class Runtime
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void BeginBlocking()
     {
-        nuint self = Sys.ThreadBlock();
-        if (!GcThreads.Stops(self)) return;
-        Sys.WriteAddress(self + Tls.SpillCount, Sys.SpillRegisters(self + Tls.Spill));
-        GcThreads.Stop();
+#if TARGET_64BIT
+        GcThreads.BeginBlockingWith(Sys.CallerRegister(0), Sys.CallerRegister(1), Sys.CallerRegister(2), Sys.CallerRegister(3), Sys.CallerRegister(4));
+#else
+        GcThreads.BeginBlockingWith(Sys.CallerRegister(0), Sys.CallerRegister(1), Sys.CallerRegister(2), 0, 0);
+#endif
     }
 
     public static void EndBlocking()
@@ -3039,12 +3041,11 @@ public static partial class Runtime
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void EnterNative()
     {
-        nuint self = Sys.ThreadBlock();
-        if (GcThreads.Stops(self))
-        {
-            Sys.WriteAddress(self + Tls.SpillCount, Sys.SpillRegisters(self + Tls.Spill));
-            GcThreads.Stop();
-        }
+#if TARGET_64BIT
+        GcThreads.BeginBlockingWith(Sys.CallerRegister(0), Sys.CallerRegister(1), Sys.CallerRegister(2), Sys.CallerRegister(3), Sys.CallerRegister(4));
+#else
+        GcThreads.BeginBlockingWith(Sys.CallerRegister(0), Sys.CallerRegister(1), Sys.CallerRegister(2), 0, 0);
+#endif
 #if !TARGET_64BIT
         if (NativeGs != 0)
         {

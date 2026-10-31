@@ -554,7 +554,7 @@ public sealed partial class Lowering
     /// way out (LeaveToC). It gives no callee-saved register a value
     /// (Function.KeepsCallerRegisters), so they hold C's own as it leaves,
     /// which the way out copies for the collector to read while C runs
-    /// (GcThreads.BeginBlocking): copied from inside a body that used them,
+    /// (Runtime.EnterNative, Sys.CallerRegister): read inside a body that used them,
     /// they were the body's, and C's -- a managed caller's beyond it, for a
     /// callback -- were gone with the body's frame. stdcall's arguments are
     /// taken off here; the body is called as C calls anything.

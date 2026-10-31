@@ -28,6 +28,7 @@ public sealed class Frame
     private readonly Dictionary<FrameSlot, int> _slots = new();
     private readonly Dictionary<int, int> _floatHomes = new();
     private int _scratch;
+    private int _floatScratch;
     private readonly List<(int Offset, int Bytes, int Align)> _allocations = new();
 
     /// <summary>Every block of the frame handed out, as (offset, bytes, alignment).</summary>
@@ -59,6 +60,7 @@ public sealed class Frame
         foreach (int id in _floatHomes.Keys.ToList())
             if (moved.TryGetValue(_floatHomes[id], out int to)) _floatHomes[id] = to;
         if (_scratch != 0 && moved.TryGetValue(_scratch, out int scratch)) _scratch = scratch;
+        if (_floatScratch != 0 && moved.TryGetValue(_floatScratch, out int floatScratch)) _floatScratch = floatScratch;
         for (int i = 0; i < _allocations.Count; i++)
             if (moved.TryGetValue(_allocations[i].Offset, out int to)) _allocations[i] = (to, _allocations[i].Bytes, _allocations[i].Align);
     }
@@ -105,6 +107,22 @@ public sealed class Frame
                 _scratch = Allocate(16, 8);
             }
             return _scratch;
+        }
+    }
+
+    /// <summary>
+    /// Eight bytes a float of the XMM class crosses to the x87 or a general
+    /// register by (Select.Sse), stored and read back at once.
+    /// </summary>
+    public int FloatScratch
+    {
+        get
+        {
+            if (_floatScratch == 0)
+            {
+                _floatScratch = Allocate(8, 8);
+            }
+            return _floatScratch;
         }
     }
 

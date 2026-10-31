@@ -92,7 +92,7 @@ public sealed class Function
     /// register given a value, every value kept across a call in its frame
     /// instead. An export's thunk (Lowering.EmitFromCThunk) is made so, and
     /// what it calls on its way back out to C finds C's own registers in
-    /// them, to copy for the collector (GcThreads.BeginBlocking).
+    /// them, to hand the collector (Runtime.EnterNative, Sys.CallerRegister).
     /// </summary>
     public bool KeepsCallerRegisters { get; set; }
 

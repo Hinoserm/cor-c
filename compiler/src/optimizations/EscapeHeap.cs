@@ -625,7 +625,7 @@ public sealed partial class Escape
                 if (i.Callee is string callee)
                 {
                     bool dropped = callee == CollectorQuery
-                        || i.Dest is null && (IsCollectorNote(callee) || callee is ThreadBlocking or ThreadUnblocking or ThreadSafePoint or ThreadRegister);
+                        || i.Dest is null && (IsCollectorNote(callee) || IsThreadNote(callee));
                     if (!dropped)
                         kept.Add(callee switch
                         {
