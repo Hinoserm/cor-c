@@ -11,8 +11,10 @@
 // neither the start nor the kept state has), the second reads it back
 // across the save and restore between them. The third block computes
 // (FLD1, FSTP), and so runs on the state Main keeps, whose control word is
-// the compiler's, rounding to nearest: the rounding modes differ only if
-// the state was given back (docs/INLINE-ASSEMBLY.md).
+// the compiler's, rounding to nearest. The kept half shows the first two
+// blocks left the kept state alone (the compiler before 14bb5182 printed
+// kept 3); the thread half, that the thread's word survived the save and
+// restore between them (docs/INLINE-ASSEMBLY.md).
 
 static class Program
 {
