@@ -14,8 +14,9 @@ using Block = Corsac.Lang.Ir.Block;
 /// final, the blocks are laid out again, the most used per byte first, so
 /// what the code touches most sits within the 128 bytes a one-byte
 /// displacement reaches; every EBP-relative operand, safepoint and the frame's
-/// own records follow. The frame does not grow. A function with an EBP-relative
-/// access this cannot place in a block is left as it was.
+/// own records follow. The frame does not grow; where AlignedSlots released
+/// its Packed128 slots, it shrinks to the blocks left. A function with an
+/// EBP-relative access this cannot place in a block is left as it was.
 /// </summary>
 internal static class FrameCompact
 {

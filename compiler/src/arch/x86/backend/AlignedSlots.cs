@@ -16,11 +16,15 @@ namespace Corsac.Lang.X86;
 ///
 /// Only where nothing moves ESP between the prologue and the epilogue but a
 /// call with nothing on the stack -- no push, no pop, no `sub esp` for
-/// arguments, no operand already off ESP -- and no handler (an unwind lands
-/// in one with ESP at the saved registers), so ESP is where the prologue left
-/// it at every slot's access. Last but FrameCompact, which then packs the
-/// EBP frame without them, and FramePointerFree, whose functions are left
-/// alone.
+/// arguments, no operand already off ESP -- so ESP is where the prologue left
+/// it at every slot's access: a leaf of packed rounds, like Generate4, whose
+/// only calls are its bounds checks' throws; a function that passes stack
+/// arguments keeps its slots on EBP and MOVUPS. Not in a function with a
+/// handler either, as a precaution: SelectUnwind lands with the ESP the try
+/// recorded, which would be the aligned one, but every way a handler is
+/// entered (the kernel's fault recovery among them) is not proven so. Last
+/// but FrameCompact, which then packs the EBP frame without them, and
+/// FramePointerFree, whose functions are left alone.
 /// </summary>
 internal static class AlignedSlots
 {
@@ -53,10 +57,18 @@ internal static class AlignedSlots
             }
         }
         if (slots.Count == 0) return;
+        // Every spill operand inside a slot names its start: the whole slot moves.
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+                foreach (MOperand o in i.Operands)
+                    if (Spill(o, out MMem mem) && !slots.Contains(mem.Disp) && slots.GetViewBetween(mem.Disp - 15, mem.Disp).Count > 0)
+                        return;
         foreach (Safepoint point in m.Safepoints.Values)
             foreach (int offset in point.SlotOffsets)
                 if (slots.Contains(offset)) return;
-        // A frame of under a page stays under one: nothing probes the stack.
+        // A frame of under a page stays under one: nothing probes the stack,
+        // and a frame of a page or more could step over a guard page. Counted
+        // with the slots still in Frame.Size, so twice: on the safe side.
         if (m.Frame.Size + 4 * m.SavedRegs.Count + 16 * slots.Count + 15 >= 4096 && m.Frame.Size + 4 * m.SavedRegs.Count < 4096) return;
         Dictionary<int, int> at = new();
         foreach (int disp in slots) at[disp] = 16 * at.Count;
@@ -67,5 +79,63 @@ internal static class AlignedSlots
                         i.Operands[k] = new MMem(MReg.Of(Gpr.Esp), to) { IsSpill = true, Aligned = true };
         m.AlignedArea = 16 * at.Count;
         m.Frame.Release(slots);
+        foreach (MBlock b in m.Blocks) FoldReloads(b.Instrs);
+    }
+
+    /// <summary>
+    /// A RELOAD READ ONCE, BY AN SSE OPERATION, READ FROM THE SLOT ITSELF:
+    /// `movaps x2, [esp+32] ; pxor x6, x2` is `pxor x6, [esp+32]`, which
+    /// the slot's alignment now allows (an SSE operation's sixteen bytes of
+    /// memory must be aligned) -- a load and a register less. Where the
+    /// operation is the reload's register's next naming, as its source, and
+    /// the register is written again before anything reads it, all in the
+    /// block, no jump between and the slot not written between.
+    /// </summary>
+    private static void FoldReloads(List<MInstr> instrs)
+    {
+        static bool Names(MInstr i, int reg)
+        {
+            foreach (MOperand o in i.Operands)
+                if (o is MReg r && r.Id == reg) return true;
+            return false;
+        }
+        static bool Jumps(MInstr i) => i.Op is MOp.Jcc or MOp.Jmp or MOp.JmpTable or MOp.JmpInd;
+        for (int k = 0; k < instrs.Count; k++)
+        {
+            MInstr load = instrs[k];
+            if (load.Op != MOp.MovF || load.Width != 16 || load.Operands.Count != 2
+                || load.Operands[0] is not MReg { IsXmm: true } x || load.Operands[1] is not MMem { Aligned: true } slot)
+                continue;
+            int n = k + 1;
+            while (n < instrs.Count && !Names(instrs[n], x.Id) && !Jumps(instrs[n])
+                   && !instrs[n].Operands.Any(o => o is MMem { Aligned: true } w && w.Disp == slot.Disp))
+                n++;
+            if (n >= instrs.Count) continue;
+            MInstr user = instrs[n];
+            if (user.Op is not (MOp.XmmOpV or MOp.XmmOpVDef) || user.Operands[3] is not MReg { } source || source.Id != x.Id
+                || user.Operands[2] is MReg { } d && d.Id == x.Id)
+                continue;
+            // Written again before any read, in the block: dead after the operation.
+            bool dead = false;
+            for (int after = n + 1; after < instrs.Count && !Jumps(instrs[after]); after++)
+            {
+                MInstr i = instrs[after];
+                if (!Names(i, x.Id)) continue;
+                bool read = false, written = false;
+                for (int o = 0; o < i.Operands.Count; o++)
+                    if (i.Operands[o] is MReg r && r.Id == x.Id)
+                    {
+                        Roles.Role role = Roles.Of(i.Op, o);
+                        read |= (role & Roles.Role.Use) != 0;
+                        written |= (role & Roles.Role.Def) != 0;
+                    }
+                dead = written && !read;
+                break;
+            }
+            if (!dead) continue;
+            user.Operands[3] = slot;
+            instrs.RemoveAt(k);
+            k--;
+        }
     }
 }

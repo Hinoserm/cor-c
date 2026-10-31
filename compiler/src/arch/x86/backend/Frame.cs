@@ -14,6 +14,8 @@ namespace Corsac.Lang.X86;
 ///   [EBP+0]     caller's EBP
 ///   [EBP-N..-1] IR frame slots, floating-point homes, spill slots
 ///   below that  the callee-saved registers this function uses
+///   below that  in a function with Packed128 spills, the aligned area:
+///               their slots, off an ESP aligned down to sixteen (AlignedSlots)
 ///
 /// Locals sit directly under EBP and the saved registers under them, rather
 /// than the other way round, so that every local's offset is known the
@@ -52,7 +54,8 @@ public sealed class Frame
 
     /// <summary>
     /// Moves blocks of the frame (FrameCompact): every offset that named the
-    /// start of an old block names the new one. The size does not change.
+    /// start of an old block names the new one. The size does not change
+    /// here; Shrink cuts it once blocks were released.
     /// </summary>
     public void Move(Dictionary<int, int> moved)
     {

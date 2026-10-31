@@ -4,24 +4,27 @@
 // requires-host: sse2
 // expect-exit: 0
 // expect-output:
-// rows True True
+// rows 1 True
+// aligned True
 // caught 3 after True
 //
 // PACKED128 SPILLS SIXTEEN-BYTE ALIGNED (AlignedSlots): twelve values live
 // across a loop, more than the XMM registers hold, spilled to an area the
 // prologue aligns ESP down to and moved by MOVAPS; the answers are the
-// lane-by-lane scalar ones. An index out of range thrown from that frame
-// is caught two frames up, three times over, and the frame between, with
-// values of its own in the callee-saved registers, has them back after.
+// lane-by-lane scalar ones. ESP is sixteen-aligned in that function however
+// deep it is called -- two recursions whose frames differ by a word put its
+// entry at every alignment, so a function the pass left alone would show.
+// An index out of range thrown from that frame through another is caught
+// in Main, three times over, and Main's own values are as they were.
 using System;
 using System.Runtime.CompilerServices;
 
 static class Program
 {
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static unsafe bool Mix(uint[] s, uint[] o, int at)
+    static unsafe int Mix(uint[] s, uint[] o, int at)
     {
-        if ((Packed.Features() & 0x20) == 0) return false;
+        if ((Packed.Features() & 0x20) == 0) return 0;
         nuint f = Sys.ArrayData(s), t = Sys.ArrayData(o);
         Packed128 v0 = Packed.Load128(f), v1 = Packed.Load128(f + 16), v2 = Packed.Load128(f + 32), v3 = Packed.Load128(f + 48);
         Packed128 v4 = Packed.Load128(f + 64), v5 = Packed.Load128(f + 80), v6 = Packed.Load128(f + 96), v7 = Packed.Load128(f + 112);
@@ -38,8 +41,14 @@ static class Program
         Packed.Store(t + 64, v4); Packed.Store(t + 80, v5); Packed.Store(t + 96, v6); Packed.Store(t + 112, v7);
         Packed.Store(t + 128, v8); Packed.Store(t + 144, v9); Packed.Store(t + 160, v10); Packed.Store(t + 176, v11);
         o[at] ^= 0;
-        return true;
+        return (Sys.Stack() & 15) == 0 ? 1 : 2;
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Deep3(int n, uint[] s, uint[] o) => n == 0 ? Mix(s, o, 0) : Deep3(n - 1, s, o);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Deep4(int n, uint[] s, uint[] o, int pad) => n == 0 ? Mix(s, o, pad - pad) : Deep4(n - 1, s, o, pad + 1);
 
     static uint Rotl(uint x, int n) => (x << n) | (x >> (32 - n));
 
@@ -73,11 +82,18 @@ static class Program
     {
         uint[] s = new uint[48], o = new uint[48], r = new uint[48];
         for (int i = 0; i < 48; i++) s[i] = (uint)i * 0x9E3779B9u + 0x1234567u;
-        bool ran = Mix(s, o, 0);
+        int ran = Mix(s, o, 0);
         Scalar(s, r);
         bool same = true;
         for (int i = 0; i < 48; i++) same &= o[i] == r[i];
         Console.WriteLine("rows " + ran + " " + same);
+        int bad = 0;
+        for (int d = 0; d < 4; d++)
+        {
+            if (Deep3(d, s, o) != 1) bad++;
+            if (Deep4(d, s, o, d) != 1) bad++;
+        }
+        Console.WriteLine("aligned " + (bad == 0));
         int caught = 0;
         bool after = true;
         for (int k = 1; k <= 3; k++)
