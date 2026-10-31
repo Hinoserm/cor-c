@@ -97,6 +97,24 @@ It never names a processor: a TSC read admits RDTSC and not RDMSR with it,
 and a late 486 has CPUID. `.asm` files take the same names. A 64-bit block
 runs on a K8 or later and has all of it.
 
+`.runtime` takes a list, and each `.runtime` line replaces the one before
+it, as in an `.asm` file: a block that clears MMX and SSE registers names
+both on one line,
+
+```
+asm
+{
+    .runtime sse, mmx
+    fninit
+    pxor mm0, mm0
+    xorps xmm0, xmm0
+    fninit
+}
+```
+
+where `.runtime sse` and then `.runtime mmx` on two lines leaves only MMX,
+and XORPS is refused as needing SSE.
+
 The compiler holds the block to that. It does not hold it to `--cpu`: the
 emitted-code audit leaves the block to its own `.runtime`, as it leaves
 `Sys.Cpuid` to the program's check. Nor does it hold the block to who owns
