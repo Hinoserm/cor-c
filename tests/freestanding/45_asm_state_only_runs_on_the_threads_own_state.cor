@@ -1,15 +1,17 @@
-// test: an asm block that only reads the x87's state is no float code, and runs on the thread's own state where its method keeps one
+// test: an asm block that only touches the x87's state runs on the thread's own state where its method keeps one; a block of float code, on the kept state
 // targets: x86
 // flags: --x87-in-blocks-only
 // expect-output:
-// precision 3 masked yes 5
+// thread 3 kept 2 5
 //
-// FNSTCW only reads the control word: as in an .asm file, the link counts
-// it no float code (X87Notes). Main keeps the state for its own double, and
-// gives the thread's back around the block (Lowering.OnOwnState), as
-// around a plain Sys.CallNative: the block reads the thread's control word,
-// FNINIT's 0x037F -- precision 3, the 64-bit mantissa -- and not the kept
-// state's 0x027F, every exception masked in both (docs/INLINE-ASSEMBLY.md).
+// Main keeps the state for its own double. Its first two blocks only load
+// and read the control word: each runs on the thread's own state, given
+// back around it (Lowering.OnOwnState) as around a plain Sys.CallNative --
+// the first sets the thread's precision to 64 bits (0x037F), the second
+// reads it back. The third block computes (FLD1, FSTP), and so runs on the
+// state Main keeps, whose control word is the compiler's 0x027F, 53 bits:
+// the two words differ only if the state was given back
+// (docs/INLINE-ASSEMBLY.md).
 
 static class Program
 {
@@ -19,12 +21,24 @@ static class Program
     {
         Host.Start(1024 * 1024);
         double d = _half * 0.5 * 2;
-        ushort cw;
+        ushort want = 0x037F;
         asm
         {
-            fnstcw cw
+            fldcw want
         }
-        Host.Line("precision " + ((cw >> 8) & 3).ToString() + " masked " + ((cw & 0x3F) == 0x3F ? "yes" : "no") + " " + ((int)d).ToString());
+        ushort mine;
+        asm
+        {
+            fnstcw mine
+        }
+        ushort kept;
+        asm
+        {
+            fnstcw kept
+            fld1
+            fstp st0
+        }
+        Host.Line("thread " + ((mine >> 8) & 3).ToString() + " kept " + ((kept >> 8) & 3).ToString() + " " + ((int)d).ToString());
         Host.Done(0);
         return 0;
     }
