@@ -237,70 +237,43 @@ internal sealed partial class Selector
     }
 
     /// <summary>
-    /// A FLOAT TO AN UNSIGNED 32-BIT INTEGER: CVTTSS2SI answers every value
-    /// below 2^31 that truncates to no negative number -- (-1, 0) to 0, as
-    /// .NET has it. A negative result is a value of [2^31, 2^32), truncated
-    /// less 2^31 and the top bit set again, or one outside -- -1 and below,
-    /// 2^32 and up, NaN (unordered: below) -- sent to the classification
-    /// (SelectFloatToInt), whose limits are .NET's.
+    /// A FLOAT TO AN UNSIGNED 32-BIT INTEGER, as .NET 10 answers it, in three
+    /// truncations at most and no classification: CVTTSS2SI answers every
+    /// value below 2^31 that truncates to no negative number -- (-1, 0) to 0.
+    /// The value less 2^31 (exact for [2^31, 2^32)) truncated to no negative
+    /// number is that range's, the top bit set again. Anything else made the
+    /// "integer indefinite" both times -- NaN, -1 and below, 2^32 and up --
+    /// and is 0, or uint.MaxValue for 2^32 and up (ordered, not below).
     /// </summary>
     private void SseToUInt(Instr i)
     {
         int w = FWidth(i.Operands[0].Type);
         MOp truncate = w == 4 ? MOp.Cvttss2si : MOp.Cvttsd2si;
         MReg d = Lo(i.Dest!), x = X(i.Operands[0]);
+        MBlock anchor = _cur;
+        MBlock high = _m.NewBlock($"{_cur.Name}.{_splits++}", anchor);
+        MBlock maximum = _m.NewBlock($"{_cur.Name}.{_splits++}", high);
+        MBlock exit = _m.NewBlock($"{_cur.Name}.{_splits++}", maximum);
         EmitW(truncate, 4, d, x);
         Emit(MOp.Test, d, d);
-        MBlock anchor = _cur;
-        MBlock high = _m.NewBlock($"{_cur.Name}.{_splits++}", anchor);
-        MBlock outside = _m.NewBlock($"{_cur.Name}.{_splits++}", high);
-        MBlock exit = _m.NewBlock($"{_cur.Name}.{_splits++}", outside);
         Jcc(Cond.Ns, exit);
-        MMem half = FloatConstant(w == 4 ? 0x4F000000L : 0x41E0000000000000L, w);
-        EmitW(MOp.UcomiF, w, x, half);
-        Jcc(Cond.B, outside);
-        EmitW(MOp.UcomiF, w, x, FloatConstant(w == 4 ? 0x4F800000L : 0x41F0000000000000L, w));
-        Jcc(Cond.Ae, outside);
-        Jmp(high);
-        _cur = high;
         MReg t = XTemp();
         MovF(t, x, w);
-        EmitW(MOp.SubF, w, t, half);
+        EmitW(MOp.SubF, w, t, FloatConstant(w == 4 ? 0x4F000000L : 0x41E0000000000000L, w));
         Emit(truncate, d, t);
+        Emit(MOp.Test, d, d);
+        Jcc(Cond.Ns, high);
+        EmitW(MOp.UcomiF, w, x, FloatConstant(w == 4 ? 0x4F800000L : 0x41F0000000000000L, w));
+        Jcc(Cond.Ae, maximum);
+        Mov(d, Imm(0));
+        Jmp(exit);
+        _cur = high;
         Emit(MOp.Xor, d, Imm(int.MinValue));
         Jmp(exit);
-        _cur = outside;
-        SelectFloatToInt(i);
+        _cur = maximum;
+        Mov(d, Imm(-1));
         Jmp(exit);
         _cur = exit;
-    }
-
-    /// <summary>
-    /// A value of [0, 2^32) truncated to an unsigned 32-bit integer: below
-    /// 2^31 as it is; from 2^31 less 2^31 -- exact, a power of two the value's
-    /// exponent covers -- and the top bit set again.
-    /// </summary>
-    private void SseUIntCore(Instr i)
-    {
-        int w = FWidth(i.Operands[0].Type);
-        MOp truncate = w == 4 ? MOp.Cvttss2si : MOp.Cvttsd2si;
-        MReg d = Lo(i.Dest!), x = X(i.Operands[0]);
-        MMem half = FloatConstant(w == 4 ? 0x4F000000L : 0x41E0000000000000L, w);
-        MBlock anchor = _cur;
-        MBlock high = _m.NewBlock($"{_cur.Name}.{_splits++}", anchor);
-        MBlock done = _m.NewBlock($"{_cur.Name}.{_splits++}", high);
-        EmitW(MOp.UcomiF, w, x, half);
-        Jcc(Cond.Ae, high);
-        Emit(truncate, d, x);
-        Jmp(done);
-        _cur = high;
-        MReg t = XTemp();
-        MovF(t, x, w);
-        EmitW(MOp.SubF, w, t, half);
-        Emit(truncate, d, t);
-        Emit(MOp.Xor, d, Imm(int.MinValue));
-        Jmp(done);
-        _cur = done;
     }
 
     /// <summary>A float loaded from memory, as it is or widened or narrowed on the way.</summary>

@@ -102,6 +102,10 @@ internal static class Isa
     /// </summary>
     public static bool UsesPackedState(MOp op) => (Requires(op) & PackedState) != 0 && op is not (MOp.PrefetchLine or MOp.PrefetchWrite);
 
+    /// <summary>The scalar SSE forms, which neither read nor write a flag (UCOMISS, which writes them, is not one).</summary>
+    public static bool FlagNeutralScalar(MOp op) => op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF
+        or MOp.CvtFToF or MOp.CvtIntToF or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si;
+
     /// <summary>Whether <paramref name="op"/> is an SSE instruction, which only code whose thread owns its state (X86Backend.AutomaticPacked: Linux, Windows), or code inside a state FXSAVE keeps (MInstr.OwnsState 2), may use.</summary>
     public static bool UsesSseState(MOp op) => (Requires(op) & SseState) != 0
         || op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtIntToF;

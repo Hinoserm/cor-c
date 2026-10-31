@@ -109,10 +109,9 @@ internal static class Allocator
         or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd or MOp.Cdq
         or MOp.Setcc or MOp.Cmov or MOp.Jcc or MOp.Jmp or MOp.JmpInd or MOp.JmpTable or MOp.Ret or MOp.Nop or MOp.Pause
         or MOp.RepMovsb or MOp.RepMovsd or MOp.RepStosb or MOp.RepStosd or MOp.Fucomipp or MOp.UcomiF
+        or MOp.Bsf or MOp.Bsr or MOp.WriteFlags
         // The scalar SSE forms leave every flag as it was.
-        or MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.CvtFToF or MOp.CvtIntToF
-        or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX or MOp.Cvttss2si or MOp.Cvttsd2si
-        or MOp.Bsf or MOp.Bsr or MOp.WriteFlags;
+        || Isa.FlagNeutralScalar(op);
 
     /// <summary>
     /// The registers an instruction names, with what it does with each, into

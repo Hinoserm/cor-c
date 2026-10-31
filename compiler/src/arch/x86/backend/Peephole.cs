@@ -1376,9 +1376,7 @@ internal static class Peephole
                     if (!logical && after.Cond is not (Cond.E or Cond.Ne or Cond.S or Cond.Ns or Cond.P or Cond.Np)) safe = false;
                     continue;
                 }
-                if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Nop or MOp.Jmp
-                    or MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.CvtFToF or MOp.CvtIntToF
-                    or MOp.XorPs or MOp.Punpckldq or MOp.MovdToX or MOp.MovdFromX) continue;
+                if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Nop or MOp.Jmp || Isa.FlagNeutralScalar(after.Op)) continue;
                 if (WritesFlags(after) && !ReadsFlags(after)) break;
                 safe = false;
             }

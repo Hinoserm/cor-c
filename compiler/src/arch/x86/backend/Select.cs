@@ -2939,14 +2939,9 @@ internal sealed partial class Selector
         // and keeps it, as it keeps the x87 and MMX state AutomaticPacked
         // borrows -- Linux wherever the processor has it, Windows where that
         // --cpu says it does. 32-bit SSE has no 64-bit integer result, so
-        // Int64 stays on the x87; a UInt32 of the XMM class is truncated less
-        // 2^31 where it is that or more (SseUIntCore), on the x87 otherwise.
+        // Int64, and the UInt32 that needs the 64-bit store, stay on the x87
+        // (a UInt32 of the XMM class never comes here: SseToUInt).
         bool single = FWidth(i.Operands[0].Type) == 4;
-        if (!unsignedHighHalf && i.Op == Opcode.FToU && d.Type == IrType.I32 && InXmm(i.Operands[0].Type))
-        {
-            SseUIntCore(i);
-            return;
-        }
         if (!unsignedHighHalf && i.Op == Opcode.FToI && d.Type == IrType.I32 && SseHere
             && Target.Current.X86Profile.Has(single ? X86Feature.Sse : X86Feature.Sse2))
         {
