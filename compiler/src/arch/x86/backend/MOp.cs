@@ -81,7 +81,7 @@ public enum MOp : byte
     // The XMM packed operations on the allocator's registers: XmmOpRR's and
     // its kin's bytes, the registers MRegs of the XMM class where those name
     // them by number. MovF of Width 16 moves the whole register (MOVUPS).
-    /// <summary>[prefix] 0F op xmm, xmm [, imm]: operands prefix, op, the destination (read and written), the source.</summary>
+    /// <summary>[prefix] 0F op xmm, xmm [, imm]: operands prefix, op, the destination (read and written), the source -- a register, or after AlignedSlots an aligned slot (FoldReloads).</summary>
     XmmOpV,
     /// <summary>The same with a destination only written: PSHUFD, a one-operand float operation.</summary>
     XmmOpVDef,

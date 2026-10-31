@@ -984,6 +984,7 @@ public sealed class X86Backend : IBackend
         {
             AddressFold.Run(m, absolute: true, compareMemory: true);
             if (Target.X86Profile.Has(X86Feature.Cmov)) IfConvert.Run(m);
+            XmmLocalSplit.Run(m);
             Allocator.Run(m);
             Layout.Run(m);
             LoopRotate.Run(m);

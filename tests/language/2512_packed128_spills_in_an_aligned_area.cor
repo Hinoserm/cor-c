@@ -11,9 +11,10 @@
 // PACKED128 SPILLS SIXTEEN-BYTE ALIGNED (AlignedSlots): twelve values live
 // across a loop, more than the XMM registers hold, spilled to an area the
 // prologue aligns ESP down to and moved by MOVAPS; the answers are the
-// lane-by-lane scalar ones. ESP is sixteen-aligned in that function however
-// deep it is called -- two recursions whose frames differ by a word put its
-// entry at every alignment, so a function the pass left alone would show.
+// scalar ones, two of the values shuffled each lap (a slot read by PSHUFD
+// itself, FoldReloads). ESP is sixteen-aligned in that function however deep
+// it is called -- two recursions of different frames put its entry at every
+// alignment, so a function the pass left alone would show.
 // An index out of range thrown from that frame through another is caught
 // in Main, three times over, and Main's own values are as they were.
 using System;
@@ -36,6 +37,7 @@ static class Program
             v8 = Packed.Add32(v8, v9); v9 = Packed.Xor(v9, v10); v10 = Packed.Add32(v10, v11); v11 = Packed.Xor(v11, v0);
             v0 = Packed.Or(Packed.ShiftLeft32(v0, 7), Packed.ShiftRightU32(v0, 25));
             v6 = Packed.Or(Packed.ShiftLeft32(v6, 9), Packed.ShiftRightU32(v6, 23));
+            v3 = Packed.Shuffle32(v3, 0x39); v9 = Packed.Shuffle32(v9, 0x93);
         }
         Packed.Store(t, v0); Packed.Store(t + 16, v1); Packed.Store(t + 32, v2); Packed.Store(t + 48, v3);
         Packed.Store(t + 64, v4); Packed.Store(t + 80, v5); Packed.Store(t + 96, v6); Packed.Store(t + 112, v7);
@@ -52,21 +54,29 @@ static class Program
 
     static uint Rotl(uint x, int n) => (x << n) | (x >> (32 - n));
 
+    // Lane j of a 32-bit shuffle by k is lane (k >> 2j) & 3 of its source.
+    static void Shuffle(uint[] v, int k)
+    {
+        uint a = v[k & 3], b = v[(k >> 2) & 3], c = v[(k >> 4) & 3], d = v[(k >> 6) & 3];
+        v[0] = a; v[1] = b; v[2] = c; v[3] = d;
+    }
+
     static void Scalar(uint[] s, uint[] o)
     {
-        for (int j = 0; j < 4; j++)
+        uint[][] v = new uint[12][];
+        for (int i = 0; i < 12; i++) { v[i] = new uint[4]; for (int j = 0; j < 4; j++) v[i][j] = s[4 * i + j]; }
+        for (int r = 0; r < 4; r++)
         {
-            uint[] v = new uint[12];
-            for (int i = 0; i < 12; i++) v[i] = s[4 * i + j];
-            for (int r = 0; r < 4; r++)
+            for (int j = 0; j < 4; j++)
             {
-                v[0] += v[1]; v[1] ^= v[2]; v[2] += v[3]; v[3] ^= v[4];
-                v[4] += v[5]; v[5] ^= v[6]; v[6] += v[7]; v[7] ^= v[8];
-                v[8] += v[9]; v[9] ^= v[10]; v[10] += v[11]; v[11] ^= v[0];
-                v[0] = Rotl(v[0], 7); v[6] = Rotl(v[6], 9);
+                v[0][j] += v[1][j]; v[1][j] ^= v[2][j]; v[2][j] += v[3][j]; v[3][j] ^= v[4][j];
+                v[4][j] += v[5][j]; v[5][j] ^= v[6][j]; v[6][j] += v[7][j]; v[7][j] ^= v[8][j];
+                v[8][j] += v[9][j]; v[9][j] ^= v[10][j]; v[10][j] += v[11][j]; v[11][j] ^= v[0][j];
+                v[0][j] = Rotl(v[0][j], 7); v[6][j] = Rotl(v[6][j], 9);
             }
-            for (int i = 0; i < 12; i++) o[4 * i + j] = v[i];
+            Shuffle(v[3], 0x39); Shuffle(v[9], 0x93);
         }
+        for (int i = 0; i < 12; i++) for (int j = 0; j < 4; j++) o[4 * i + j] = v[i][j];
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

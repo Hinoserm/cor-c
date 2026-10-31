@@ -61,8 +61,7 @@ internal static class AlignedSlots
         foreach (MBlock b in m.Blocks)
             foreach (MInstr i in b.Instrs)
                 foreach (MOperand o in i.Operands)
-                    if (Spill(o, out MMem mem) && !slots.Contains(mem.Disp) && slots.GetViewBetween(mem.Disp - 15, mem.Disp).Count > 0)
-                        return;
+                    if (Spill(o, out MMem mem) && !slots.Contains(mem.Disp) && Inside(slots, mem.Disp)) return;
         foreach (Safepoint point in m.Safepoints.Values)
             foreach (int offset in point.SlotOffsets)
                 if (slots.Contains(offset)) return;
@@ -82,6 +81,14 @@ internal static class AlignedSlots
         foreach (MBlock b in m.Blocks) FoldReloads(b.Instrs);
     }
 
+    /// <summary>Whether a slot starts in the fifteen bytes below an offset: the offset inside it.</summary>
+    private static bool Inside(SortedSet<int> slots, int disp)
+    {
+        for (int d = disp - 15; d < disp; d++)
+            if (slots.Contains(d)) return true;
+        return false;
+    }
+
     /// <summary>
     /// A RELOAD READ ONCE, BY AN SSE OPERATION, READ FROM THE SLOT ITSELF:
     /// `movaps x2, [esp+32] ; pxor x6, x2` is `pxor x6, [esp+32]`, which
@@ -89,7 +96,9 @@ internal static class AlignedSlots
     /// memory must be aligned) -- a load and a register less. Where the
     /// operation is the reload's register's next naming, as its source, and
     /// the register is written again before anything reads it, all in the
-    /// block, no jump between and the slot not written between.
+    /// block, no jump between and the slot not written between. A float's
+    /// write counts as all of the register: nothing reads a scalar's top
+    /// lanes (as ForwardXmmSpillLoads).
     /// </summary>
     private static void FoldReloads(List<MInstr> instrs)
     {
@@ -100,6 +109,12 @@ internal static class AlignedSlots
             return false;
         }
         static bool Jumps(MInstr i) => i.Op is MOp.Jcc or MOp.Jmp or MOp.JmpTable or MOp.JmpInd;
+        static bool NamesSlot(MInstr i, int disp)
+        {
+            foreach (MOperand o in i.Operands)
+                if (o is MMem { Aligned: true } w && w.Disp == disp) return true;
+            return false;
+        }
         for (int k = 0; k < instrs.Count; k++)
         {
             MInstr load = instrs[k];
@@ -107,9 +122,7 @@ internal static class AlignedSlots
                 || load.Operands[0] is not MReg { IsXmm: true } x || load.Operands[1] is not MMem { Aligned: true } slot)
                 continue;
             int n = k + 1;
-            while (n < instrs.Count && !Names(instrs[n], x.Id) && !Jumps(instrs[n])
-                   && !instrs[n].Operands.Any(o => o is MMem { Aligned: true } w && w.Disp == slot.Disp))
-                n++;
+            while (n < instrs.Count && !Names(instrs[n], x.Id) && !Jumps(instrs[n]) && !NamesSlot(instrs[n], slot.Disp)) n++;
             if (n >= instrs.Count) continue;
             MInstr user = instrs[n];
             if (user.Op is not (MOp.XmmOpV or MOp.XmmOpVDef) || user.Operands[3] is not MReg { } source || source.Id != x.Id
