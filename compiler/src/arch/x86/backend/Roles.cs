@@ -161,6 +161,8 @@ public static class Roles
     {
         switch (i.Op)
         {
+            case MOp.InlineAsm:
+                return i.Asm!.Uses;
             case MOp.Rdmsr:
                 return Gpr_ImplicitUses0;
             case MOp.Wrmsr:
@@ -227,6 +229,8 @@ public static class Roles
     {
         switch (i.Op)
         {
+            case MOp.InlineAsm:
+                return i.Asm!.Defs;
             case MOp.Rdmsr:
             case MOp.Rdtsc:
                 return Gpr_ImplicitDefs0;

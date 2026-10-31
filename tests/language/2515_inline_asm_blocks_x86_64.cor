@@ -1,0 +1,192 @@
+// test: inline_asm_blocks_x86_64
+// only-target: x86-64
+// expect-exit: 0
+// expect-output:
+// add 42
+// long 81985529216486895
+// sum 5050
+// memory 23 12
+// int 4294967295 -1
+// high 9
+// xmm 6.25
+// gpr 3
+// cpuid True
+// stos 40
+// kept 7 9
+//
+// INLINE ASSEMBLY IN LONG MODE (docs/INLINE-ASSEMBLY.md): head and tail
+// bindings of 64-bit locals (Add, Long) and of a 32-bit one through EAX,
+// which a 32-bit write zero-extends as the int's register holds it (Int);
+// a loop on the block's labels; locals in the middle as memory; R8 to R15
+// and XMM8 to XMM15; MOVQ between an XMM register and a general one; CPUID;
+// REP STOSQ into a stackalloc buffer; a local written on one path only.
+using System;
+
+static class Program
+{
+    static long Add(long a, long b)
+    {
+        long r;
+        asm
+        {
+            mov rax, a
+            mov r9, b
+            add rax, r9
+            mov r, rax
+        }
+        return r;
+    }
+
+    static ulong Long(ulong x)
+    {
+        ulong y;
+        asm
+        {
+            mov r11, x
+            bswap r11
+            mov y, r11
+        }
+        return y;
+    }
+
+    static int Sum(int n)
+    {
+        int s;
+        asm
+        {
+            mov ecx, n
+            xor eax, eax
+        again:
+            add eax, ecx
+            dec ecx
+            jnz again
+            mov s, eax
+        }
+        return s;
+    }
+
+    static (int, int) Memory(int k, int x)
+    {
+        int r;
+        asm
+        {
+            mov eax, 3
+            imul eax, k
+            add eax, k
+            shl x, 2
+            mov r, eax
+        }
+        return (r + 3, x);
+    }
+
+    static (uint, int) Int()
+    {
+        uint u;
+        int s;
+        asm
+        {
+            mov eax, -1
+            mov ecx, eax
+            mov u, eax
+            mov s, ecx
+        }
+        return (u, s);
+    }
+
+    static long High(long a)
+    {
+        long r;
+        asm
+        {
+            mov r12, a
+            lea r13, [r12 + r12*2]
+            mov r, r13
+        }
+        return r;
+    }
+
+    static double Xmm(double d)
+    {
+        double e;
+        asm
+        {
+            movsd xmm9, d
+            mulsd xmm9, xmm9
+            movsd e, xmm9
+        }
+        return e;
+    }
+
+    static long Gpr(double d)
+    {
+        long r;
+        asm
+        {
+            movsd xmm12, d
+            cvttsd2si rax, xmm12
+            movq xmm3, rax
+            movq rdx, xmm3
+            mov r, rdx
+        }
+        return r;
+    }
+
+    static uint Vendor()
+    {
+        uint v;
+        asm
+        {
+            xor eax, eax
+            cpuid
+            mov v, ebx
+        }
+        return v;
+    }
+
+    static unsafe int Stos()
+    {
+        byte* p = stackalloc byte[16];
+        asm
+        {
+            mov rdi, p
+            mov ecx, 2
+            mov rax, 0x0102030401020304
+            rep stosq
+        }
+        int sum = 0;
+        for (int i = 0; i < 16; i++) sum += p[i];
+        return sum;
+    }
+
+    static int Kept(int flag)
+    {
+        int w = 7;
+        asm
+        {
+            mov eax, flag
+            test eax, eax
+            jz skip
+            mov w, eax
+        skip:
+        }
+        return w;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine("add " + Add(19, 23));
+        Console.WriteLine("long " + Long(0xEFCDAB8967452301UL));
+        Console.WriteLine("sum " + Sum(100));
+        (int m, int x) = Memory(5, 3);
+        Console.WriteLine("memory " + m + " " + x);
+        (uint u, int s) = Int();
+        Console.WriteLine("int " + u + " " + s);
+        Console.WriteLine("high " + High(3));
+        Console.WriteLine("xmm " + Xmm(2.5));
+        Console.WriteLine("gpr " + Gpr(3.75));
+        Console.WriteLine("cpuid " + (Vendor() != 0));
+        Console.WriteLine("stos " + Stos());
+        Console.WriteLine("kept " + Kept(0) + " " + Kept(9));
+        return 0;
+    }
+}

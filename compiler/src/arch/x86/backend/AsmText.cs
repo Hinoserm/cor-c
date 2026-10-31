@@ -331,6 +331,15 @@ internal static class AsmText
             case MOp.Rdmsr: yield return "rdmsr"; yield break;
             case MOp.Wrmsr: yield return "wrmsr"; yield break;
             case MOp.Cpuid: yield return "cpuid"; yield break;
+            case MOp.InlineAsm:
+            {
+                (string text, byte[] bytes) = i.Asm!.Assembled(i);
+                yield return "; asm block";
+                foreach (string line in text.Split('\n'))
+                    if (line.Trim().Length > 0) yield return "; " + line.Trim();
+                if (bytes.Length > 0) yield return ".db " + string.Join(", ", bytes.Select(b => "0x" + b.ToString("x2")));
+                yield break;
+            }
             case MOp.Rdtsc: yield return "rdtsc"; yield break;
             case MOp.MmxStoreNt:
                 yield return $"movntq {Op(i.Operands[0], 8, false)}, {Mm(i, 1)}";

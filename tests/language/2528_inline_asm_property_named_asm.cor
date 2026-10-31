@@ -1,0 +1,27 @@
+// test: inline_asm_property_named_asm
+// expect-exit: 0
+// expect-output:
+// asm 3 4
+//
+// `asm` is an ordinary identifier where no statement begins: a property, a
+// local and a parameter of that name compile as C# reads them
+// (docs/INLINE-ASSEMBLY.md: where a block may stand).
+using System;
+
+class Holder
+{
+    public int asm { get; set; }
+}
+
+static class Program
+{
+    static int Twice(int asm) => asm + asm;
+
+    static int Main()
+    {
+        Holder h = new() { asm = 3 };
+        int asm = Twice(2);
+        Console.WriteLine("asm " + h.asm + " " + asm);
+        return 0;
+    }
+}

@@ -1026,6 +1026,9 @@ internal sealed class Encoder
             case MOp.Rdmsr: B(0x0F, 0x32); break;
             case MOp.Wrmsr: B(0x0F, 0x30); break;
             case MOp.Cpuid: B(0x0F, 0xA2); break;
+            // An asm block: its bytes, assembled with its slots where they
+            // are now (InlineAsmCode.Assembled) -- the same wherever it lands.
+            case MOp.InlineAsm: B(i.Asm!.Assembled(i).Bytes); break;
             case MOp.Rdtsc: B(0x0F, 0x31); break;
             case MOp.WriteFlags:
                 // 50+r push r32, then 9D popfd.

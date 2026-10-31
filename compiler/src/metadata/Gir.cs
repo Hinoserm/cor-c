@@ -203,7 +203,7 @@ public static class Gir
         Block = 1, Local = 2, ExprStmt = 3, If = 4, While = 5, Do = 6, For = 7,
         Foreach = 8, Return = 9, Break = 10, Continue = 11, Throw = 12,
         Switch = 13, Try = 14, GotoCase = 15, Deconstruct = 16, UsingDecl = 17, Yield = 18,
-        Goto = 19, Labeled = 20,
+        Goto = 19, Labeled = 20, Asm = 21,
     }
 
     private enum E : byte
@@ -628,6 +628,20 @@ public static class Gir
                     U8((byte)S.Throw);
                     U8(t.IsRethrow ? (byte)1 : (byte)0);
                     Expr(t.Value);
+                    break;
+
+                // The text as written, its line, and its names: the copy is
+                // bound where it is used (Binder.CheckAsm).
+                case AsmStmt asm:
+                    U8((byte)S.Asm);
+                    Str(asm.Body);
+                    I32(asm.BodyLine);
+                    I32(asm.Names.Count);
+                    foreach (NameExpr name in asm.Names)
+                    {
+                        Str(name.Name);
+                        I32(name.Line);
+                    }
                     break;
 
                 case SwitchStmt sw:
@@ -1541,6 +1555,20 @@ public static class Gir
 
                 case S.Throw:
                     return new ThrowStmt { IsRethrow = U8() != 0, Value = Need() };
+
+                case S.Asm:
+                {
+                    string body = Str();
+                    int bodyLine = I32();
+                    AsmStmt asm = new() { Body = body, BodyLine = bodyLine, Line = bodyLine };
+                    int names = Count();
+                    for (int i = 0; i < names; i++)
+                    {
+                        string name = Str();
+                        asm.Names.Add(new NameExpr { Name = name, Line = I32() });
+                    }
+                    return asm;
+                }
 
                 case S.Switch:
                 {

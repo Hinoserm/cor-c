@@ -345,8 +345,9 @@ public sealed partial class Binder
                 if (t.Finally is not null && !Completes(t.Finally, flow) && !flow.Roslyn) return false;
                 return ends;
             }
-            case DeconstructStmt or UsingDeclStmt:
-                // On to the next statement: neither holds one of its own.
+            case DeconstructStmt or UsingDeclStmt or AsmStmt:
+                // On to the next statement: none holds one of its own (an asm
+                // block may not leave its method: InlineAsm).
                 return true;
             default:
                 // A statement this walk does not know may hold a return.

@@ -1999,6 +1999,7 @@ public sealed partial class Binder
             case ReturnStmt r: if (r.Value is not null) into.Add(r.Value); break;
             case YieldStmt y: if (y.Value is not null) into.Add(y.Value); break;
             case ThrowStmt t: if (t.Value is not null) into.Add(t.Value); break;
+            case AsmStmt asm: foreach (NameExpr name in asm.Names) into.Add(name); break;
             case SwitchStmt sw:
                 into.Add(sw.Subject);
                 foreach (SwitchCase c in sw.Cases)

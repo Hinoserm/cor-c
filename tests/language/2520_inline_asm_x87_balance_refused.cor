@@ -1,0 +1,16 @@
+// test: inline_asm_x87_balance_refused
+// only-target: x86
+// expect-compile-error: x87 stack
+//
+// The x87 stack is as deep at the end as at the start (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            fld1
+        }
+        return 0;
+    }
+}

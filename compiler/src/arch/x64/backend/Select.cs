@@ -23,7 +23,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// are preserved by the callee, everything else is not. The stack is
 /// sixteen-byte aligned at every call.
 /// </summary>
-internal sealed class Selector
+internal sealed partial class Selector
 {
     private readonly Function _f;
     private readonly MFunction _m;
@@ -300,6 +300,12 @@ internal sealed class Selector
                 Instr i = b.Instrs[n];
                 _line = i.Line;
                 NoteConstant(i);
+                // An asm block and its results, as one (Select.InlineAsm).
+                if (TryInlineAsm(b.Instrs, n, out int asmTaken))
+                {
+                    n += asmTaken - 1;
+                    continue;
+                }
                 if (IsCompare(i.Op) && i.Dest is not null && n + 1 < b.Instrs.Count && FusesInto(i, b.Instrs[n + 1]))
                 {
                     SelectFusedBranch(i, b.Instrs[n + 1]);
@@ -1288,42 +1294,43 @@ internal sealed class Selector
 
     // ---- memory --------------------------------------------------------------------
 
-    private void SelectLoad(Instr i)
+    private void SelectLoad(Instr i) => LoadInto(i.Dest!, Address(i.Operands[0], i.Offset), i.Size, i.Signed);
+
+    /// <summary>`size` bytes at `m` into d, widened as d's type and `signed` say: SelectLoad's, and an asm block's slot read back (TryInlineAsm).</summary>
+    private void LoadInto(VReg d, MMem m, int size, bool signed)
     {
-        VReg d = i.Dest!;
-        MMem m = Address(i.Operands[0], i.Offset);
         if (d.Type.IsFloat())
         {
             int fw = Width(d.Type);
-            if (i.Size == fw)
+            if (size == fw)
             {
                 EmitW(MOp.MovF, fw, V(d), m);
             }
             else
             {
                 MReg t = FTemp();
-                EmitW(MOp.MovF, i.Size, t, m);
-                Emit(new MInstr(MOp.CvtFToF, V(d), t) { Width = fw, SourceWidth = i.Size });
+                EmitW(MOp.MovF, size, t, m);
+                Emit(new MInstr(MOp.CvtFToF, V(d), t) { Width = fw, SourceWidth = size });
             }
             return;
         }
         MReg r = V(d);
-        switch (i.Size)
+        switch (size)
         {
             case 1:
             case 2:
-                if (i.Signed)
+                if (signed)
                 {
-                    EmitW(MOp.Movsx, i.Size, r, m);
+                    EmitW(MOp.Movsx, size, r, m);
                     if (d.Type == IrType.I32) Mov(r, r, 4);
                 }
                 else
                 {
-                    EmitW(MOp.Movzx, i.Size, r, m);
+                    EmitW(MOp.Movzx, size, r, m);
                 }
                 break;
             case 4:
-                if (d.Type == IrType.I64 && i.Signed)
+                if (d.Type == IrType.I64 && signed)
                 {
                     EmitW(MOp.Movsx, 4, r, m);
                 }
@@ -1341,42 +1348,43 @@ internal sealed class Selector
                 Mov(r, m, 8);
                 break;
             default:
-                Error($"load of size {i.Size}");
+                Error($"load of size {size}");
                 break;
         }
     }
 
-    private void SelectStore(Instr i)
+    private void SelectStore(Instr i) => StoreFrom(Address(i.Operands[0], i.Offset), i.StoredValue, i.Size);
+
+    /// <summary>`size` bytes of v at `m`: SelectStore's, and an asm block's slot filled (TryInlineAsm).</summary>
+    private void StoreFrom(MMem m, Operand v, int size)
     {
-        MMem m = Address(i.Operands[0], i.Offset);
-        Operand v = i.StoredValue;
         if (v.Type.IsFloat())
         {
             int fw = Width(v.Type);
             MReg x = F(v);
-            if (i.Size == fw)
+            if (size == fw)
             {
                 EmitW(MOp.MovF, fw, m, x);
             }
             else
             {
                 MReg t = FTemp();
-                Emit(new MInstr(MOp.CvtFToF, t, x) { Width = i.Size, SourceWidth = fw });
-                EmitW(MOp.MovF, i.Size, m, t);
+                Emit(new MInstr(MOp.CvtFToF, t, x) { Width = size, SourceWidth = fw });
+                EmitW(MOp.MovF, size, m, t);
             }
             return;
         }
-        if (i.Size is not (1 or 2 or 4 or 8))
+        if (size is not (1 or 2 or 4 or 8))
         {
-            Error($"store of size {i.Size}");
+            Error($"store of size {size}");
             return;
         }
-        MOperand src = RM(v, i.Size == 8 ? 8 : 4);
-        if (src is MImm imm && i.Size < 4)
+        MOperand src = RM(v, size == 8 ? 8 : 4);
+        if (src is MImm imm && size < 4)
         {
-            src = Imm(imm.Value & (i.Size == 1 ? 0xFF : 0xFFFF));
+            src = Imm(imm.Value & (size == 1 ? 0xFF : 0xFFFF));
         }
-        Mov(m, src, i.Size);
+        Mov(m, src, size);
     }
 
     /// <summary>The most bytes a constant clear or copy is written out as moves.</summary>

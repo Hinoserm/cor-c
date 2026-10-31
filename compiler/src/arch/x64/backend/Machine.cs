@@ -316,6 +316,12 @@ public enum MOp : byte
     ReadCs,             // r32 <- CS, zero-extended: mov r32, cs
     Swapgs,
     SoftInt,            // int imm8: a trap gate other than Linux's, with syscall's registers
+    /// <summary>
+    /// An asm block (Corsac.Asm.InlineAsm, TryInlineAsm): its code MInstr.Asm,
+    /// its operands the frame slots of the locals it names as memory; it
+    /// reads the registers its head binds and destroys those it writes.
+    /// </summary>
+    InlineAsm,
 }
 
 public sealed class MInstr
@@ -345,6 +351,9 @@ public sealed class MInstr
 
     /// <summary>For a call into C: AL holds the count of vector arguments, so RAX counts as read.</summary>
     public bool NativeAl { get; init; }
+
+    /// <summary>For InlineAsm: the block, its plan and its slots. Carried by every pass that rebuilds an instruction.</summary>
+    public InlineAsmCode? Asm { get; init; }
 
     public MInstr(MOp op, params MOperand[] operands)
     {

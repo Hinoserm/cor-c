@@ -1,0 +1,16 @@
+// test: inline_asm_direction_flag_refused
+// only-target: x86
+// expect-compile-error: direction flag
+//
+// The direction flag is clear at the end (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            std
+        }
+        return 0;
+    }
+}

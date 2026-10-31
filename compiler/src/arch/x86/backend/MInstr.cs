@@ -63,6 +63,9 @@ public sealed class MInstr : MOperandList
     /// </summary>
     public byte OwnsState { get; init; }
 
+    /// <summary>For InlineAsm: the block, its plan and its slots (InlineAsmCode). Carried by every pass that rebuilds an instruction, as Probed is.</summary>
+    public InlineAsmCode? Asm { get; init; }
+
     /// <summary>For JmpTable: the table's cases, in index order.</summary>
     public List<MBlock>? Table { get; init; }
 

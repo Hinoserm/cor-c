@@ -5797,6 +5797,29 @@ public sealed class Parser
                 _i++;
                 return new Block { Line = at.Line, Col = at.Col };
 
+            // `asm { ... }`, read whole by the lexer (Lexer.AsmBlock): the
+            // text from `asm` through the closing brace.
+            case Tok.AsmBlock:
+            {
+                _i++;
+                string raw = at.Text;
+                int open = raw.IndexOf('{');
+                int braceLine = at.Line;
+                for (int c = 0; c < open; c++) if (raw[c] == '\n') braceLine++;
+                AsmStmt asm = new() { Body = raw[(open + 1)..^1], BodyLine = braceLine, Line = at.Line, Col = at.Col };
+                // Its names, once each; a block that does not read is the
+                // binder's to report, with its line.
+                try
+                {
+                    HashSet<string> named = new(StringComparer.Ordinal);
+                    foreach (Corsac.Asm.AsmName name in Corsac.Asm.InlineAsm.Scan(asm.Body, 32).Names)
+                        if (named.Add(name.Name))
+                            asm.Names.Add(new NameExpr { Name = name.Name, Line = braceLine + name.Line - 1, Col = at.Col });
+                }
+                catch (Corsac.Asm.AsmException) { }
+                return asm;
+            }
+
             // Both using forms (ParseUsing), and `await using`.
             case Tok.KwAwait when Ahead().Kind == Tok.KwUsing:
             {

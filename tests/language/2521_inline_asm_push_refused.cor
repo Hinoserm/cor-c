@@ -1,0 +1,16 @@
+// test: inline_asm_push_refused
+// only-target: x86
+// expect-compile-error: every PUSH needs its POP
+//
+// ESP is left where the block found it (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            push eax
+        }
+        return 0;
+    }
+}

@@ -1,0 +1,20 @@
+// test: inline_asm_absolute_label_refused
+// only-target: x86
+// expect-compile-error: must not depend on where it is
+//
+// A block's code may not hold an absolute address of its own labels, which
+// move with the method (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        uint a;
+        asm
+        {
+        top:
+            mov eax, top
+            mov a, eax
+        }
+        return (int)(a & 0);
+    }
+}

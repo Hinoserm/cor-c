@@ -1,0 +1,50 @@
+// The bindings of an asm block (docs/INLINE-ASSEMBLY.md: how a block meets
+// its method), compiled for tests/integration/inline-asm.sh to read: a
+// head's `mov reg, local` and a tail's `mov local, reg` are no instructions
+// of their own -- the locals go into and come out of the registers as the
+// allocator places them, and nothing passes through the frame.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Add(int a, int b)
+    {
+        int r;
+        asm
+        {
+            mov eax, a
+            mov ecx, b
+            add eax, ecx
+            mov r, eax
+        }
+        return r;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe void Cpuid(uint leaf, uint subleaf, uint* into)
+    {
+        uint ra, rb, rc, rd;
+        asm
+        {
+            .runtime cpuid
+            mov eax, leaf
+            mov ecx, subleaf
+            cpuid
+            mov ra, eax
+            mov rb, ebx
+            mov rc, ecx
+            mov rd, edx
+        }
+        into[0] = ra; into[1] = rb; into[2] = rc; into[3] = rd;
+    }
+
+    static unsafe int Main()
+    {
+        uint* got = stackalloc uint[4];
+        Cpuid(0, 0, got);
+        Console.WriteLine(Add(40, 2) == 42 && got[0] != 0 ? "ok" : "wrong");
+        return 0;
+    }
+}

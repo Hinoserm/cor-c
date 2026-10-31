@@ -44,7 +44,7 @@ internal static class AlignedSlots
             if (b.Source is { IsLandingPad: true }) return;
             foreach (MInstr i in b.Instrs)
             {
-                if (i.Op is MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.Ret) return;
+                if (i.Op is MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.Ret or MOp.InlineAsm) return;
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     MOperand o = i.Operands[k];

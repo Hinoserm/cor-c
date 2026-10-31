@@ -733,6 +733,10 @@ public sealed partial class BindResult
                 CatchType.Remove(cc);
                 CatchSlot.Remove(cc);
                 break;
+            case AsmStmt asm:
+                if (AsmBlocks.Remove(asm, out AsmBinding? block))
+                    foreach (NameExpr name in block.Names) Resolved.Remove(name);
+                break;
         }
         if (n is Expr e)
         {

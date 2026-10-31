@@ -899,6 +899,7 @@ public sealed partial class Lowering
                 }
                 break;
             case ThrowStmt t: into.Add(t.Value); break;
+            case AsmStmt asm: foreach (NameExpr name in asm.Names) into.Add(name); break;
             case SwitchStmt sw:
                 into.Add(sw.Subject);
                 foreach (SwitchCase c in sw.Cases)

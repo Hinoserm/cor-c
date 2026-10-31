@@ -1,0 +1,18 @@
+// test: inline_asm_reference_refused
+// only-target: x86
+// expect-compile-error: is an object reference
+//
+// No object reference in a register: the collector could not follow it
+// (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        string s = "x";
+        asm
+        {
+            mov eax, s
+        }
+        return 0;
+    }
+}

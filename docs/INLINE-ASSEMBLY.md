@@ -1,0 +1,167 @@
+# Inline assembly
+
+An `asm { ... }` block puts machine instructions in a COR-C# method. It is
+one of the few departures from C# the language allows. The block is Intel
+syntax, read by the compiler's own assembler
+(`compiler/src/arch/x86/assembler`), and it names the method's locals,
+parameters and constants in its instructions directly, as MSVC's `__asm`
+does. There are no operand, output or clobber lists: the compiler reads
+every instruction, so it works all of that out itself
+(`Corsac.Asm.InlineAsm`).
+
+```csharp
+static ulong ReadTsc()
+{
+    uint lo, hi;
+    asm
+    {
+        .runtime tsc
+        rdtsc
+        mov lo, eax
+        mov hi, edx
+    }
+    return ((ulong)hi << 32) | lo;
+}
+
+static void Cpuid(uint leaf, uint subleaf, out uint a, out uint b, out uint c, out uint d)
+{
+    uint ra, rb, rc, rd;
+    asm
+    {
+        .runtime cpuid
+        mov eax, leaf
+        mov ecx, subleaf
+        cpuid
+        mov ra, eax
+        mov rb, ebx
+        mov rc, ecx
+        mov rd, edx
+    }
+    a = ra; b = rb; c = rc; d = rd;
+}
+```
+
+## Where a block may stand
+
+`asm {` begins a statement: after `;`, `{`, `}`, `)`, `:`, `else` or `do`.
+Anywhere else `asm` is an ordinary identifier, so a property named `asm`
+still compiles. The lexer reads the block's text raw, up to the first `}`
+that is not in a comment or a quoted string, so an assembly comment's
+apostrophe is not a C# character literal. A block has no braces of its own.
+
+One statement to a line; labels first (`again:`), a `;` comment to the end of
+the line. The only directive is `.runtime`.
+
+## Names
+
+A name an operand spells that is not a register, a size word (`byte` ...
+`oword`, `ptr`) or a label of the block is looked up in the method:
+
+- **a local or a parameter**: the instruction reads or writes it. It must be
+  a whole operand (`mov eax, x`, `dword x`), never part of an address or an
+  expression: load it into a register first.
+- **a constant** (a `const` local, or a `const` field of the type or one
+  around it, by its plain name): it is written into the block as its
+  number, and may stand anywhere a number may, inside an address too.
+
+What the block does with each local follows from its instructions:
+
+- a local read before the block writes it, on some path, is an **input**: C#'s
+  definite assignment holds for it as for any read;
+- a local the block writes is an **output**, assigned as any assignment
+  assigns it. One the block writes on some paths only is an input too: where
+  the block does not write it, it keeps its value.
+
+A local's type must be one register's worth: an integer, `char`, `bool`, an
+enum, a pointer, `nint`/`nuint`, `float` or `double`. **Its width is the
+register's it meets**: `mov eax, x` with a `ushort x` is an error, not an
+extension. An object reference cannot be named; the collector could not
+follow it into a register. Pass its address as a `nuint`, and keep the
+object alive while the block runs. A struct cannot be named either.
+
+## Permission: `.runtime`
+
+Inside a block **the baseline is the 386**, with an x87 where the target has
+one, **not `--cpu`**. Anything newer needs the block's own `.runtime`, which
+names what the code checked for: a CPUID feature bit (`mmx`, `mmxext`,
+`3dnow`, `3dnowext`, `cmov`, `sse`, `sse2`, `tsc`, `msr`, `cx8`, `fxsr`,
+`clflush`) or a single instruction (`cpuid`, `rdtsc`, `rdmsr`, `wrmsr`,
+`cmpxchg8b`, `cr4`, `bswap`, `xadd`, `cmpxchg`, `invlpg`, `invd`, `wbinvd`).
+It never names a processor: a TSC read admits RDTSC and not RDMSR with it,
+and a late 486 has CPUID. `.asm` files take the same names. A 64-bit block
+runs on a K8 or later and has all of it.
+
+The compiler holds the block to that. It does not hold it to `--cpu`: the
+emitted-code audit leaves the block to its own `.runtime`, as it leaves
+`Sys.Cpuid` to the program's check. Nor does it hold the block to who owns
+the x87 and SSE state: MMX or SSE in freestanding code, where a packed block
+would save the thread's state first, is the block's to arrange, as it is an
+`.asm` file's.
+
+## The rules
+
+Every path through the block is followed, and each rule holds on all of
+them:
+
+- **no jump out of the block**, and no `call`, `ret`, `iret`, `enter` or
+  `leave`. Jumps go to the block's own labels. A block is no safepoint, and a
+  call would be one;
+- **ESP is left where the block found it**: `push` and `pop` pair up (on every
+  path), and nothing else writes ESP. **EBP is never written**: the method's
+  frame is reached through it. CS and SS are not loaded;
+- **the x87 stack is as deep at the end as at the start**. `fincstp`,
+  `fdecstp` and `ffree` are refused, since they move the top without its tags
+  and the depth could not be followed;
+- **`emms` (or `femms`) after MMX**, before the end, and no x87 instruction
+  between MMX and its `emms`. No MMX instruction runs with values on the x87
+  stack: the MMX registers are the x87's;
+- **the direction flag is clear at the end** (`cld` after `std`);
+- **the code does not depend on where it lands**: the block is assembled at
+  two origins, and an absolute address of one of its labels, which moves
+  with the method, is refused.
+
+Every register the block writes, named (`mov ebx, 1`) or not (`cpuid`
+writes EAX to EDX), is clobbered: the register allocator keeps nothing there
+across the block, and a callee-saved one is saved by the prologue as for any
+use. The block reads and writes memory as it likes, so the optimiser treats
+it as it treats a call to an unknown function.
+
+## How a block meets its method
+
+A block is optimised, not turned into a chain of moves:
+
+- **the head's `mov reg, local`s are bindings, not instructions**: the local
+  is put in the register before the block, a move the register allocator
+  coalesces, so it is often already there and costs nothing;
+- **the tail's `mov local, reg`s are bindings too**: the local is taken from
+  the register after the block, so `mov a, eax` at the end of a block is the
+  store of EAX to wherever `a` goes;
+- **a local named anywhere else is a memory operand**: its frame slot, filled
+  before the block where the block reads it and read back after it where the
+  block writes it.
+
+The head is the run of `mov reg, local` from the block's first statement,
+each into a general register other than ESP and EBP, as wide as the local,
+until anything else or a label. The tail is the run of `mov local, reg` back
+from its last, each from a register written whole (a 32- or 64-bit one) into
+a local not taken yet, with no label at or after it, so that every path to
+the end runs them.
+
+`Sys.Cpuid`'s hand-written selection is exactly what the CPUID example above
+compiles to: the leaf straight into EAX, the subleaf into ECX, CPUID, and the
+four results stored from the registers.
+
+## In the compiler
+
+| Where | What |
+| --- | --- |
+| `frontend/Lexer.cs` (`AsmBlock`) | the block's raw text, one token |
+| `frontend/Parser.cs`, `syntax/AsmStmt.cs` | the statement and its names |
+| `frontend/Binder.InlineAsm.cs` | names, shapes, constants, roles, definite assignment, and the block assembled once for its errors |
+| `lowering/Lowering.InlineAsm.cs` | `__x86.i.asm:<spec>`, the inputs as operands, an `__x86.i.asmout` per output right after |
+| `arch/x86/assembler/InlineAsm.cs` | reading, the instructions' facts, the rules, the bindings, the text assembled |
+| `arch/x86/backend/Select.InlineAsm.cs`, `arch/x64/backend/Select.InlineAsm.cs` | the plan carried out: slots, bindings, `MOp.InlineAsm` |
+
+The block's spec travels in the IR in the call's name, so a unit regenerated
+at the link selects it as it did. The preinitialiser refuses a block: what it
+does is the machine's alone.

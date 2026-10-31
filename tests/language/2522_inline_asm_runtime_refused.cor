@@ -1,0 +1,21 @@
+// test: inline_asm_runtime_refused
+// only-target: x86
+// cpu: --cpu=athlon64 --disable-3dnow
+// expect-compile-error: cpuid requires
+//
+// Inside a block the baseline is the 386, not --cpu: CPUID needs the
+// block's own `.runtime cpuid` even where --cpu has it (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        uint v;
+        asm
+        {
+            xor eax, eax
+            cpuid
+            mov v, ebx
+        }
+        return (int)(v & 0);
+    }
+}

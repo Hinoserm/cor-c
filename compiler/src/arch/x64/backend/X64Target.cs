@@ -138,8 +138,9 @@ internal sealed class X64Target : ITarget
             {
                 // The store sequences' stubs are calls too (CallKeep*): frameless,
                 // so the barrier they call links to this function's RBP.
+                // An asm block may push and pop, and names its slots off RBP.
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepRax or MOp.CallKeepCas
-                    or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf) return false;
+                    or MOp.Push or MOp.Pop or MOp.Pushf or MOp.Popf or MOp.InlineAsm) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Rbp } }) return false;
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i))
@@ -442,7 +443,7 @@ internal sealed class X64Target : ITarget
         MInstr n = new(i.Op)
         {
             Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = table, TableSymbol = i.TableSymbol,
-            Line = i.Line, IntArgs = i.IntArgs, FloatArgs = i.FloatArgs, NativeAl = i.NativeAl,
+            Line = i.Line, IntArgs = i.IntArgs, FloatArgs = i.FloatArgs, NativeAl = i.NativeAl, Asm = i.Asm,
         };
         // The registers named, walked in the order Allocator.RegsOf named them.
         int k = 0;

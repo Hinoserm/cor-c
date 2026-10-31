@@ -13,6 +13,7 @@ and this index rather than creating a directory per topic.
 | [DECLARATION-INDEX.md](DECLARATION-INDEX.md) | Bounded declaration storage, source fragments, fingerprints and lookup |
 | [X86-BACKEND.md](X86-BACKEND.md) | x86 code generation, ABI and runtime mechanisms |
 | [X86-CPU-PROFILES.md](X86-CPU-PROFILES.md) | CPU/FPU selection, instruction coverage and remaining acceptance |
+| [INLINE-ASSEMBLY.md](INLINE-ASSEMBLY.md) | `asm { }` blocks: names, `.runtime`, the rules, how a block meets its method |
 | [WIN32-TARGET.md](WIN32-TARGET.md) | One 32-bit Windows program for Windows 95 through 11: the image, the platform layer, Forms over Windows' controls |
 | [DOTNET-LIBRARY.md](DOTNET-LIBRARY.md) | Standard-library surface and compatibility status |
 | [SELFHOST.md](SELFHOST.md) | Native self-compilation workflow and historical findings |

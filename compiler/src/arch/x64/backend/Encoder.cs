@@ -603,6 +603,9 @@ internal sealed class Encoder
             case MOp.Rdmsr: Byte(0x0F); Byte(0x32); break;
             case MOp.Wrmsr: Byte(0x0F); Byte(0x30); break;
             case MOp.Cpuid: Byte(0x0F); Byte(0xA2); break;
+            // An asm block: its bytes, assembled with its slots where they
+            // are now (InlineAsmCode.Assembled) -- the same wherever it lands.
+            case MOp.InlineAsm: foreach (byte b in i.Asm!.Assembled(i).Bytes) Byte(b); break;
             case MOp.Rdtsc: Byte(0x0F); Byte(0x31); break;
             case MOp.ReadCs:
             {

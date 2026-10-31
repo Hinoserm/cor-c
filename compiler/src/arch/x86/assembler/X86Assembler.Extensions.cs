@@ -38,6 +38,43 @@ public sealed partial class X86Assembler
     /// reached after a check of the processor, not because --cpu has them.
     private X86Feature _runtime;
 
+    /// Set by `.runtime` too: single instructions allowed by name (cpuid,
+    /// rdtsc, bswap...), past what --cpu has, each because the code checked
+    /// for it alone (RuntimePromise).
+    private HashSet<string> _runtimeInstructions = new(StringComparer.Ordinal);
+
+    /// <summary>Every name `.runtime` takes, for its error message.</summary>
+    private const string RuntimeNames = "mmx, mmxext, 3dnow, 3dnowext, cmov, sse, sse2, tsc, msr, cx8, fxsr, clflush, "
+        + "cpuid, rdtsc, rdmsr, wrmsr, cmpxchg8b, cr4, bswap, xadd, cmpxchg, invlpg, invd and wbinvd";
+
+    /// <summary>
+    /// One name of a `.runtime` list, into the families and the single
+    /// instructions it admits: a CPUID feature bit by its name in the
+    /// manuals (tsc, msr, cx8, fxsr, clflush) or by the family it brings, or
+    /// an instruction by its mnemonic. False for a name that is neither.
+    /// </summary>
+    internal static bool RuntimePromise(string name, ref X86Feature families, HashSet<string> instructions)
+    {
+        switch (name)
+        {
+            case "mmx": families |= X86Feature.Mmx; return true;
+            case "mmxext": families |= X86Feature.MmxExtensions; return true;
+            case "3dnow": families |= X86Feature.ThreeDNow; return true;
+            case "3dnowext": families |= X86Feature.ThreeDNow | X86Feature.ThreeDNowExtended; return true;
+            case "cmov": families |= X86Feature.Cmov | X86Feature.FloatCmov; return true;
+            case "sse": families |= X86Feature.Sse | X86Feature.MmxExtensions; return true;
+            case "sse2": families |= X86Feature.Sse2; return true;
+            case "tsc": instructions.Add("rdtsc"); return true;
+            case "msr": instructions.Add("rdmsr"); instructions.Add("wrmsr"); return true;
+            case "cx8": instructions.Add("cmpxchg8b"); return true;
+            case "fxsr": instructions.Add("fxsave"); instructions.Add("fxrstor"); return true;
+            case "clflush" or "cpuid" or "rdtsc" or "rdmsr" or "wrmsr" or "cmpxchg8b" or "cr4"
+                or "bswap" or "xadd" or "cmpxchg" or "invlpg" or "invd" or "wbinvd":
+                instructions.Add(name); return true;
+            default: return false;
+        }
+    }
+
     /// <summary>Whether --cpu, or the `.runtime` promise in force, allows every family in <paramref name="feature"/>.</summary>
     private bool Allowed(X86Feature feature) => ((_cpu.Features | _runtime) & feature) == feature;
 
@@ -107,7 +144,7 @@ public sealed partial class X86Assembler
         }
         if (mn is "bswap" or "xadd" or "cmpxchg" or "invd" or "wbinvd" or "invlpg")
         {
-            Require(_cpu.Has(Corsac.Lang.X86.X86Feature.I486), mn, "486");
+            Require(_cpu.Has(Corsac.Lang.X86.X86Feature.I486) || _runtimeInstructions.Contains(mn), mn, "486 (or .runtime " + mn + ")");
             if (mn is "invd" or "wbinvd")
             { Need(a, 0, mn); Emit(0x0f, mn == "invd" ? (byte)0x08 : (byte)0x09); return true; }
             if (mn == "bswap")
@@ -132,14 +169,14 @@ public sealed partial class X86Assembler
         }
         if (mn is "cpuid" or "rdtsc" or "rdmsr" or "wrmsr" or "rsm")
         {
-            Require(_cpu.Pentium, mn, "Pentium"); Need(a, 0, mn);
+            Require(_cpu.Pentium || _runtimeInstructions.Contains(mn), mn, "Pentium (or .runtime " + (mn == "rdtsc" ? "tsc" : mn is "rdmsr" or "wrmsr" ? "msr" : mn) + ")"); Need(a, 0, mn);
             Emit(0x0f, mn switch { "cpuid" => (byte)0xa2, "rdtsc" => (byte)0x31,
                 "rdmsr" => (byte)0x32, "wrmsr" => (byte)0x30, _ => (byte)0xaa });
             return true;
         }
         if (mn == "cmpxchg8b")
         {
-            Require(_cpu.Pentium, mn, "Pentium"); Need(a, 1, mn);
+            Require(_cpu.Pentium || _runtimeInstructions.Contains(mn), mn, "Pentium (or .runtime cx8)"); Need(a, 1, mn);
             Operand memory = P(a[0]);
             if (memory.Kind != OperandKind.Memory || (memory.SizeGiven && memory.Size != 8))
                 throw Error("cmpxchg8b requires a 64-bit memory operand");
@@ -159,7 +196,7 @@ public sealed partial class X86Assembler
         }
         if (mn is "prefetch" or "prefetchw")
         {
-            Require(_cpu.ThreeDNow, mn, "3DNow!"); Need(a, 1, mn);
+            Require(Allowed(X86Feature.ThreeDNow), mn, "3DNow!"); Need(a, 1, mn);
             Operand memory = P(a[0]);
             if (memory.Kind != OperandKind.Memory) throw Error(mn + " requires memory");
             Prefixes(0, memory); Emit(0x0f, 0x0d); EmitRM(mn == "prefetch" ? 0 : 1, memory); return true;
@@ -182,7 +219,7 @@ public sealed partial class X86Assembler
         }
         if (mn is "emms" or "femms")
         {
-            Require(mn == "emms" ? Allowed(X86Feature.Mmx) : _cpu.ThreeDNow, mn, mn == "emms" ? "MMX" : "3DNow!");
+            Require(Allowed(mn == "emms" ? X86Feature.Mmx : X86Feature.ThreeDNow), mn, mn == "emms" ? "MMX" : "3DNow!");
             Need(a, 0, mn); Emit(0x0f, mn == "emms" ? (byte)0x77 : (byte)0x0e); return true;
         }
         if (mn is "movd" or "movq")
@@ -204,9 +241,9 @@ public sealed partial class X86Assembler
         bool packed = MmxOpcodes.TryGetValue(mn, out byte opcode);
         bool now = ThreeDNowOpcodes.TryGetValue(mn, out byte suffix);
         if (!packed && !now) return false;
-        Require(now ? _cpu.ThreeDNow : Allowed(X86Feature.Mmx), mn, now ? "3DNow!" : "MMX");
+        Require(Allowed(now ? X86Feature.ThreeDNow : X86Feature.Mmx), mn, now ? "3DNow!" : "MMX");
         if (mn is "pf2iw" or "pi2fw" or "pfnacc" or "pfpnacc" or "pswapd")
-            Require(_cpu.ThreeDNowExtended, mn, "K6-2+/K6-III+/Athlon 3DNow! extensions");
+            Require(Allowed(X86Feature.ThreeDNowExtended), mn, "K6-2+/K6-III+/Athlon 3DNow! extensions");
         Need(a, 2, mn);
         Operand dest = P(a[0]), src = P(a[1]);
         if (dest.Kind != OperandKind.Mmx) throw Error(mn + " requires an MMX destination");

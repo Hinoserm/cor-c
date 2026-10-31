@@ -54,6 +54,13 @@ public enum Tok : byte
 
     /// <summary>`>>>` and `>>>=`, C# 11's unsigned right shift.</summary>
     UShr, UShrEq,
+
+    /// <summary>
+    /// An `asm { ... }` block (InlineAsm), COR-C#'s own: its RAW text from
+    /// `asm` through the closing brace, which the C# lexer does not read --
+    /// an assembly comment's apostrophe is no character literal.
+    /// </summary>
+    AsmBlock,
 }
 
 /// <summary>

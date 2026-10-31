@@ -1,0 +1,19 @@
+// test: inline_asm_local_in_address_refused
+// only-target: x86
+// expect-compile-error: must be a whole operand
+//
+// A local is a whole operand, never part of an address: load it into a
+// register first (docs/INLINE-ASSEMBLY.md).
+static unsafe class Program
+{
+    static int Main()
+    {
+        int x = 0;
+        int* p = &x;
+        asm
+        {
+            mov eax, [p]
+        }
+        return 0;
+    }
+}

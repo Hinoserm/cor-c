@@ -928,7 +928,9 @@ public sealed class Devirtualize : IModulePass
             // which may be a field's (Interlocked on a long field).
             || callee == Corsac.Lang.X86.MachineIntrinsics.Cas64
             // The streaming stores write a block's 64 bytes.
-            || callee == Corsac.Lang.X86.MachineIntrinsics.StreamCopy64 || callee == Corsac.Lang.X86.MachineIntrinsics.StreamFill64;
+            || callee == Corsac.Lang.X86.MachineIntrinsics.StreamCopy64 || callee == Corsac.Lang.X86.MachineIntrinsics.StreamFill64
+            // An asm block may write any memory, through any address it is given.
+            || callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.Asm, StringComparison.Ordinal);
 
     private static readonly string? Trace = Switches.TraceForward;
 

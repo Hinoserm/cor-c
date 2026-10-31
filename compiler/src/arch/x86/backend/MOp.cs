@@ -107,6 +107,14 @@ public enum MOp : byte
     /// </summary>
     SaveRegs,
     /// <summary>
+    /// AN ASM BLOCK (Corsac.Asm.InlineAsm, TryInlineAsm): its code is
+    /// MInstr.Asm; its operands are the frame slots of the locals it names
+    /// as memory, which every pass that moves the frame moves (FrameCompact).
+    /// It reads the registers its head binds and destroys those it writes
+    /// (Roles), and is assembled where it is encoded.
+    /// </summary>
+    InlineAsm,
+    /// <summary>
     /// Sys.CallerRegister: operand 0 given EBX, ESI or EDI (operand 1: 0, 1,
     /// 2) as the caller left it -- read from the prologue's save slot where
     /// the function saved it, moved from the register itself where not.

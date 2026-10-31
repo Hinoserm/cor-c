@@ -1,0 +1,20 @@
+// test: inline_asm_width_refused
+// only-target: x86
+// expect-compile-error: is 16 bits
+//
+// A local's width is the register's it meets: `mov eax, w` with a ushort w
+// is an error, not an extension (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        ushort w = 5;
+        int r;
+        asm
+        {
+            mov eax, w
+            mov r, eax
+        }
+        return r;
+    }
+}

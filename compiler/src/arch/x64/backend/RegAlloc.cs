@@ -85,6 +85,9 @@ internal static class Roles
     {
         switch (i.Op)
         {
+            case MOp.InlineAsm:
+                foreach (int r in i.Asm!.Uses) yield return r;
+                break;
             case MOp.Cwd:
             case MOp.MulWide:
             case MOp.ImulWide:
@@ -195,6 +198,9 @@ internal static class Roles
     {
         switch (i.Op)
         {
+            case MOp.InlineAsm:
+                foreach (int r in i.Asm!.Defs) yield return r;
+                break;
             case MOp.RepInsw:
                 yield return (int)Gpr.Rdi;
                 yield return (int)Gpr.Rcx;

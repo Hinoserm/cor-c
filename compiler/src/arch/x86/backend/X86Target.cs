@@ -125,8 +125,9 @@ internal sealed class X86Target : ITarget
                 // The store sequences' stubs are calls too (CallKeep*): frameless,
                 // so the barrier they call links to this function's EBP.
                 // A caller's register is read off the frame pointer (Encoder's CallerReg).
+                // An asm block may push and pop, and names its slots off EBP.
                 if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
-                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.CallerReg) return false;
+                    or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.CallerReg or MOp.InlineAsm) return false;
                 foreach (MOperand o in i.Operands)
                     if (o is MMem { Index: { Id: (int)Gpr.Ebp } }) return false;
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
@@ -245,11 +246,14 @@ internal sealed class X86Target : ITarget
         // left as they were.
         bool clobbersXmm = _m.XmmRegs.Count > 0 && i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd
             or MOp.CallKeepEax or MOp.CallKeepEaxInd;
-        Named[] named = new Named[regs.Count + (clobbersXmm ? 8 : 0)];
+        // AN ASM BLOCK CLOBBERS THE XMM REGISTERS IT WRITES, by number.
+        uint xmmWritten = clobbersXmm ? 0xFFu : _m.XmmRegs.Count > 0 && i.Op == MOp.InlineAsm ? i.Asm!.XmmClobbers & 0xFF : 0;
+        int xmmCount = System.Numerics.BitOperations.PopCount(xmmWritten);
+        Named[] named = new Named[regs.Count + xmmCount];
         for (int k = 0; k < regs.Count; k++)
             named[k] = new Named(regs[k].Reg.Id, (Role)(byte)regs[k].Role, regs[k].Operand, regs[k].InMem);
-        if (clobbersXmm)
-            for (int x = 0; x < 8; x++) named[regs.Count + x] = new Named(MReg.XmmBase + x, Role.Def, -1, false);
+        for (int x = 0, at = regs.Count; x < 8; x++)
+            if ((xmmWritten & (1u << x)) != 0) named[at++] = new Named(MReg.XmmBase + x, Role.Def, -1, false);
         uint mayMemory = 0, isMemory = 0, mayImmediate = 0;
         for (int k = 0; k < i.Operands.Count && k < 32; k++)
         {
@@ -500,7 +504,7 @@ internal sealed class X86Target : ITarget
         List<MBlock>? table = i.Table;
         if (i.Op == MOp.JmpTable && ai.Targets is { } targets && targets.Where((t, k) => !ReferenceEquals(blocks[t], i.Table![k])).Any())
             table = targets.Select(t => blocks[t]).ToList();
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState };
+        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm };
         // The registers named, walked in the order Allocator.RegsOf named them.
         int k = 0;
         for (int o = 0; o < i.Operands.Count; o++)

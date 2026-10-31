@@ -883,15 +883,16 @@ internal static class Peephole
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     if (i.Operands[k] is not MMem mem || !PrivateSpill(mem) || Roles.Of(i.Op, k) != Roles.Role.Use || Held(mem) is not (not 0 and var h)) continue;
-                    MInstr copy = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState };
+                    MInstr copy = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm };
                     for (int j = 0; j < i.Operands.Count; j++) copy.Operands.Add(j == k ? MReg.Of(Lowest(h)) : i.Operands[j]);
                     i = copy;
                     break;
                 }
             }
         }
-        // Its effect: a call or anything writing EBP lets go of everything.
-        if (i.Op is MOp.Call or MOp.CallInd) { state.Clear(); return i; }
+        // Its effect: a call, an asm block (which may write any memory) or
+        // anything writing EBP lets go of everything.
+        if (i.Op is MOp.Call or MOp.CallInd or MOp.InlineAsm) { state.Clear(); return i; }
         Masks(i, out _, out long written);
         if ((written & Bit((int)Gpr.Ebp)) != 0) { state.Clear(); return i; }
         // A write to an allocator slot: what held it holds it no more.

@@ -728,7 +728,10 @@ internal sealed partial class Selector
     private static bool WantsX87(Instr i)
     {
         if (i.Op is Opcode.CallIndirect or Opcode.Syscall or Opcode.Ret or Opcode.Unwind or Opcode.Trap) return true;
-        if (i.Op == Opcode.Call) return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception";
+        // An asm block finds the x87 stack empty, whatever it runs: its rules
+        // are checked from there (InlineAsm.Analyze).
+        if (i.Op == Opcode.Call) return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception"
+            || c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal);
         if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
         foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
         return false;
@@ -748,7 +751,8 @@ internal sealed partial class Selector
         // finally -- the compiler's own around a body -- kept the x87's
         // save, even a variant without the packed registers.
         if (i.Op == Opcode.Call)
-            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception";
+            return i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal) && c != "__exception"
+                || AsmUsesFloatState(i);
         if (i.Op is Opcode.Ret or Opcode.Unwind or Opcode.Trap) return false;
         if (i.Dest is { Type: IrType.F32 or IrType.F64 }) return true;
         foreach (Operand o in i.Operands) if (o.Type is IrType.F32 or IrType.F64) return true;
@@ -1004,7 +1008,8 @@ internal sealed partial class Selector
                 if (i.Op == Opcode.Store && i.Operands is [SlotOperand { Slot.Name: { } home }, RegOperand { Reg: var stored }]
                     && home.StartsWith("home", StringComparison.Ordinal) && f.Params.Contains(stored))
                     continue;
-                if (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)) floatLine = i.Line;
+                if (i.Dest is { Type: IrType.F32 or IrType.F64 } || i.Operands.Any(o => o.Type is IrType.F32 or IrType.F64)
+                    || AsmUsesFloatState(i)) floatLine = i.Line;
             }
         }
         return new(f.Name, f.Display ?? f.Name, Path.GetFileName(f.SourceFile ?? ""), floatLine, f.Dispatched, calls.ToArray());
@@ -1104,7 +1109,7 @@ internal sealed partial class Selector
     /// <summary>The same instruction, marked as selected inside the packed block (MInstr.OwnsState).</summary>
     private MInstr Owning(MInstr i)
     {
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = (byte)_packedNow };
+        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = (byte)_packedNow, Asm = i.Asm };
         n.Operands.AddRange(i.Operands);
         return n;
     }
@@ -1393,6 +1398,12 @@ internal sealed partial class Selector
                     _mmxDirty = false;
                 }
                 else if (_mmxDirty && EmptiesMmx(i)) _mmxDirty = false;
+                // An asm block and its results, as one (Select.InlineAsm).
+                if (TryInlineAsm(b.Instrs, n, out int asmTaken))
+                {
+                    n += asmTaken - 1;
+                    continue;
+                }
                 // Not where Packed128 values are the class's: their slots' bytes
                 // are not in memory for a pattern to read (Select.PackedValues).
                 int consumed = 0;
@@ -3039,21 +3050,27 @@ internal sealed partial class Selector
         VReg d = i.Dest!;
         MMem m = PackedValueBytes(i.Operands[0], i.Offset) ?? Address(i.Operands[0], i.Offset);
         if (i.Device) m = new MMem(m.Base, m.Disp) { Index = m.Index, Scale = m.Scale, Symbol = m.Symbol, Reloc = m.Reloc, Label = m.Label, Device = true };
+        LoadInto(d, m, i.Size, i.Signed);
+    }
+
+    /// <summary>`size` bytes at `m` into d, widened as d's type and `signed` say: SelectLoad's, and an asm block's slot read back (TryInlineAsm).</summary>
+    private void LoadInto(VReg d, MMem m, int size, bool signed)
+    {
         if (d.Type.IsFloat())
         {
             // A width the XMM class converts itself; SSE alone has no double.
-            if (InXmm(d.Type) && (i.Size == FWidth(d.Type) || _xmm64)) { SseLoad(d, m, i.Size); return; }
-            if (i.Size == FWidth(d.Type)) { CopyFloatBits(FHome(d), m, i.Size); return; }
-            EmitW(MOp.Fld, i.Size, m);
+            if (InXmm(d.Type) && (size == FWidth(d.Type) || _xmm64)) { SseLoad(d, m, size); return; }
+            if (size == FWidth(d.Type)) { CopyFloatBits(FHome(d), m, size); return; }
+            EmitW(MOp.Fld, size, m);
             Fstp(d);
             return;
         }
         MReg lo = Lo(d);
-        switch (i.Size)
+        switch (size)
         {
             case 1:
             case 2:
-                EmitW(i.Signed ? MOp.Movsx : MOp.Movzx, i.Size, lo, m);
+                EmitW(signed ? MOp.Movsx : MOp.Movzx, size, lo, m);
                 break;
             case 4:
                 Mov(lo, m);
@@ -3081,12 +3098,12 @@ internal sealed partial class Selector
                 break;
             }
             default:
-                Error($"load of size {i.Size}");
+                Error($"load of size {size}");
                 break;
         }
-        if (d.Type == IrType.I64 && i.Size < 8)
+        if (d.Type == IrType.I64 && size < 8)
         {
-            if (i.Signed)
+            if (signed)
             {
                 Mov(Hi(d), lo);
                 Emit(MOp.Sar, Hi(d), Imm(31));
@@ -3098,33 +3115,34 @@ internal sealed partial class Selector
         }
     }
 
-    private void SelectStore(Instr i)
+    private void SelectStore(Instr i) => StoreFrom(Address(i.Operands[0], i.Offset), i.StoredValue, i.Size);
+
+    /// <summary>`size` bytes of v at `m`: SelectStore's, and an asm block's slot filled (TryInlineAsm).</summary>
+    private void StoreFrom(MMem m, Operand v, int size)
     {
-        MMem m = Address(i.Operands[0], i.Offset);
-        Operand v = i.StoredValue;
         if (v.Type.IsFloat())
         {
-            if (InXmm(v.Type) && (i.Size == FWidth(v.Type) || _xmm64)) { SseStore(m, v, i.Size); return; }
-            if (i.Size == FWidth(v.Type)) { CopyFloatBits(m, FHome(v), i.Size); return; }
+            if (InXmm(v.Type) && (size == FWidth(v.Type) || _xmm64)) { SseStore(m, v, size); return; }
+            if (size == FWidth(v.Type)) { CopyFloatBits(m, FHome(v), size); return; }
             Fld(v);
-            EmitW(MOp.Fstp, i.Size, m);
+            EmitW(MOp.Fstp, size, m);
             return;
         }
-        switch (i.Size)
+        switch (size)
         {
             case 1:
             case 2:
             {
                 MOperand src = v.Type == IrType.I64 ? PairRM(v).Lo : RM(v);
-                if (src is MReg r && i.Size == 1)
+                if (src is MReg r && size == 1)
                 {
                     _m.ByteRegs.Add(r.Id);
                 }
                 if (src is MImm imm)
                 {
-                    src = Imm(imm.Value & (i.Size == 1 ? 0xFF : 0xFFFF));
+                    src = Imm(imm.Value & (size == 1 ? 0xFF : 0xFFFF));
                 }
-                EmitW(MOp.Mov, i.Size, m, src);
+                EmitW(MOp.Mov, size, m, src);
                 break;
             }
             case 4:
@@ -3138,7 +3156,7 @@ internal sealed partial class Selector
                 break;
             }
             default:
-                Error($"store of size {i.Size}");
+                Error($"store of size {size}");
                 break;
         }
     }

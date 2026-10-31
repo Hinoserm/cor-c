@@ -3546,6 +3546,15 @@ public sealed class Monomorphiser
             case ThrowStmt t:
                 return new ThrowStmt { Value = Rewrite(t.Value, map), IsRethrow = t.IsRethrow, Line = t.Line, Col = t.Col };
 
+            // A COPY OF ITS OWN, as every statement here: each copy is bound
+            // for itself, its names to that copy's locals (Binder.CheckAsm).
+            case AsmStmt asm:
+                return new AsmStmt
+                {
+                    Body = asm.Body, BodyLine = asm.BodyLine, Line = asm.Line, Col = asm.Col,
+                    Names = asm.Names.Select(n => new NameExpr { Name = n.Name, Line = n.Line, Col = n.Col }).ToList(),
+                };
+
             case BreakStmt:
                 return new BreakStmt { Line = s.Line, Col = s.Col };
 

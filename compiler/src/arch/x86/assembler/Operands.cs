@@ -9,6 +9,8 @@ internal enum OperandKind
     Segment,
     Control,
     Mmx,
+    /// <summary>An SSE register, xmm0-xmm7 (xmm8-xmm15 in long mode): sixteen bytes.</summary>
+    Xmm,
     Float,
     Debug,
     Test,
@@ -125,7 +127,7 @@ internal static class Operands
     /// <summary>True when the text names a register of any kind.</summary>
     public static bool IsRegisterName(string name)
         => Find(Reg8, name) >= 0 || Find(Reg16, name) >= 0 || Find(Reg32, name) >= 0 || LongRegister(name, out _, out _, out _)
-           || Find(SegReg, name) >= 0 || ControlNumber(name) >= 0 || MmxNumber(name) >= 0
+           || Find(SegReg, name) >= 0 || ControlNumber(name) >= 0 || MmxNumber(name) >= 0 || XmmNumber(name) >= 0
            || FloatNumber(name) >= 0 || SpecialNumber(name, "dr") >= 0 || SpecialNumber(name, "tr") >= 0;
 
     private static int SpecialNumber(string name, string prefix)
@@ -140,6 +142,15 @@ internal static class Operands
 
     private static int MmxNumber(string name)
         => name.Length == 3 && name.StartsWith("mm") && name[2] >= '0' && name[2] <= '7' ? name[2] - '0' : -1;
+
+    /// <summary>xmm0 to xmm15's number, or -1.</summary>
+    public static int XmmNumber(string name)
+    {
+        if (name.Length is < 4 or > 5 || !name.StartsWith("xmm", StringComparison.Ordinal)) return -1;
+        if (!int.TryParse(name.AsSpan(3), System.Globalization.NumberStyles.None, null, out int n)) return -1;
+        if (name.Length == 5 && name[3] == '0') return -1;
+        return n is >= 0 and <= 15 ? n : -1;
+    }
 
     private static int ControlNumber(string name)
         => name switch { "cr0" => 0, "cr2" => 2, "cr3" => 3, "cr4" => 4, "cr8" => 8, _ => -1 };
@@ -160,7 +171,7 @@ internal static class Operands
         while (true)
         {
             string lower = Lower(FirstWord(rest));
-            int size = lower switch { "byte" => 1, "word" => 2, "dword" => 4, "qword" => 8, "tword" or "tbyte" => 10, _ => 0 };
+            int size = lower switch { "byte" => 1, "word" => 2, "dword" => 4, "qword" => 8, "tword" or "tbyte" => 10, "oword" or "xmmword" or "dqword" => 16, _ => 0 };
             if (size == 0)
             {
                 break;
@@ -197,6 +208,15 @@ internal static class Operands
         if (special >= 0) { op.Kind = OperandKind.Debug; op.Reg = special; op.Size = 4; return op; }
         special = SpecialNumber(name, "tr");
         if (special >= 0) { op.Kind = OperandKind.Test; op.Reg = special; op.Size = 4; return op; }
+
+        int xmm = XmmNumber(name);
+        if (xmm >= 0)
+        {
+            if (op.SizeGiven && op.Size != 16) throw new AsmException(file, line, "XMM registers are 128 bits");
+            if (xmm >= 8 && bits != 64) throw new AsmException(file, line, $"'{name}' is a long-mode register; it needs .bits 64");
+            op.Kind = OperandKind.Xmm; op.Reg = xmm; op.Size = 16;
+            return op;
+        }
 
         int mm = MmxNumber(name);
         if (mm >= 0)

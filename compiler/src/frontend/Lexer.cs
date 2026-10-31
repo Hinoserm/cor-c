@@ -260,7 +260,67 @@ public sealed class Lexer
         _pos++;
     }
 
+    /// <summary>The kind of the token Next handed back last: whether an `asm` begins a statement (AsmBlockAhead).</summary>
+    private Tok _last = Tok.End;
+
     public Token Next()
+    {
+        Token t = NextToken();
+        _last = t.Kind;
+        return t;
+    }
+
+    /// <summary>
+    /// `asm {` WHERE A STATEMENT BEGINS -- after `;`, `{`, `}`, `)`, `:`,
+    /// `else` or `do` -- is an inline assembly block (Corsac.Asm.InlineAsm),
+    /// not C#: nowhere else may an identifier be followed by a brace there.
+    /// A property named asm (`int asm { get; }`) follows a type, and is
+    /// read as C# is.
+    /// </summary>
+    private bool AsmBlockAhead(Token word)
+    {
+        if (word.Kind != Tok.Ident || word.Text != "asm" || word.Global) return false;
+        if (_last is not (Tok.Semi or Tok.LBrace or Tok.RBrace or Tok.RParen or Tok.Colon or Tok.KwElse or Tok.KwDo)) return false;
+        int p = _pos;
+        while (p < _end && char.IsWhiteSpace(_src[p])) p++;
+        return p < _end && _src[p] == '{';
+    }
+
+    /// <summary>
+    /// The block's raw text, from after `asm` through its closing brace: to
+    /// the first `}` that is not in a `;` or `//` comment or a quoted
+    /// string. A block has no braces of its own.
+    /// </summary>
+    private Token AsmBlock(int line, int col, int start)
+    {
+        int from = _pos;
+        while (!Done && Cur != '{') Advance();
+        Advance();
+        while (true)
+        {
+            if (Done) throw Error("an asm block with no closing '}'", line, col);
+            char c = Cur;
+            if (c == '}') { Advance(); break; }
+            if (c == '{') throw Error("'{' inside an asm block: a block has no braces of its own", _line, _col);
+            if (c == ';' || c == '/' && Peek() == '/')
+            {
+                while (!Done && Cur != '\n') Advance();
+                continue;
+            }
+            if (c is '\'' or '"')
+            {
+                char quote = c;
+                Advance();
+                while (!Done && Cur != quote && Cur != '\n') { if (Cur == '\\') Advance(); if (!Done) Advance(); }
+                if (!Done && Cur == quote) Advance();
+                continue;
+            }
+            Advance();
+        }
+        return new Token(Tok.AsmBlock, _src[from.._pos], line, col, start);
+    }
+
+    private Token NextToken()
     {
         SkipTrivia();
 
@@ -284,6 +344,7 @@ public sealed class Lexer
         if (char.IsLetter(c) || c == '_')
         {
             Token word = Word(line, col, start);
+            if (AsmBlockAhead(word)) return AsmBlock(line, col, start);
 
             // `global::` NAMES THE GLOBAL NAMESPACE, which is where a qualified
             // name already begins here: namespaces are not a tree, and a name

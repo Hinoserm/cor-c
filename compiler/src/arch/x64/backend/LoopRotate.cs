@@ -151,7 +151,7 @@ internal static class LoopRotate
         MInstr made = new(i.Op)
         {
             Width = i.Width, SourceWidth = i.SourceWidth, Cond = i.Cond, Lock = i.Lock, Table = i.Table, TableSymbol = i.TableSymbol,
-            FloatArgs = i.FloatArgs, IntArgs = i.IntArgs, NativeAl = i.NativeAl, Line = i.Line,
+            FloatArgs = i.FloatArgs, IntArgs = i.IntArgs, NativeAl = i.NativeAl, Line = i.Line, Asm = i.Asm,
         };
         foreach (MOperand o in i.Operands)
             made.Operands.Add(o is MMem mem

@@ -1,0 +1,17 @@
+// test: inline_asm_emms_refused
+// only-target: x86
+// expect-compile-error: EMMS
+//
+// EMMS after MMX, before the block ends (docs/INLINE-ASSEMBLY.md).
+static class Program
+{
+    static int Main()
+    {
+        asm
+        {
+            .runtime mmx
+            pxor mm0, mm0
+        }
+        return 0;
+    }
+}

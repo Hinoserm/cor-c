@@ -136,6 +136,8 @@ public sealed class PreinitMachine : Preinit.IMachine
         result = null;
         if (label.StartsWith("__x86.i.", StringComparison.Ordinal))
         {
+            // An asm block is the machine's alone: what it does is not known here.
+            if (label.StartsWith("__x86.i.asm", StringComparison.Ordinal)) throw new Refused("an asm block, which only the machine runs");
             switch (label["__x86.i.".Length..])
             {
                 case "threadblock": result = w.ThreadBlock(); return true;

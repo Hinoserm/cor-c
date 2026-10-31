@@ -177,6 +177,10 @@ public sealed partial class Lowering
                 EvalForEffect(e.Expr);
                 break;
 
+            case AsmStmt asm:
+                LowerAsm(asm);
+                break;
+
             case IfStmt i:
             {
                 if (Fold.TryConst(i.Cond, out long known))

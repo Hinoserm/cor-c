@@ -23,6 +23,17 @@ internal static class MachineIntrinsics
 {
     public const string Prefix = "__x86.i.";
 
+    /// <summary>
+    /// AN ASM BLOCK (Corsac.Asm.InlineAsm): the callee is this, then the
+    /// block's spec (InlineAsm.Encode: its locals and its text); the
+    /// operands are the locals it reads, in order. Each local it writes is
+    /// the destination of an AsmOut right after it, in the same block,
+    /// operand the local's number: the selector makes them with the block
+    /// (TryInlineAsm), as one.
+    /// </summary>
+    public const string Asm = Prefix + "asm:";
+    public const string AsmOut = Prefix + "asmout";
+
     public const string In8 = Prefix + "in8";
     public const string In16 = Prefix + "in16";
     public const string In32 = Prefix + "in32";

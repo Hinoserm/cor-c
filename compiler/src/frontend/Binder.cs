@@ -7476,6 +7476,10 @@ public sealed partial class Binder
                 CheckExpr(e.Expr);
                 break;
 
+            case AsmStmt asm:
+                CheckAsm(asm);
+                break;
+
             case IfStmt i:
             {
                 CheckCondition(i.Cond);

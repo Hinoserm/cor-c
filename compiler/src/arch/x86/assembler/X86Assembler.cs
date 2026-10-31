@@ -142,6 +142,7 @@ public sealed partial class X86Assembler : ISymbols
             _decisionAt = 0;
             _bits = _defaultBits;
             _runtime = Corsac.Lang.X86.X86Feature.None;
+            _runtimeInstructions = new HashSet<string>(StringComparer.Ordinal);
             _baseLocked = false;
             if (_pass == 1)
             {
@@ -689,6 +690,13 @@ public sealed partial class X86Assembler : ISymbols
         _labels[name] = Pc;
     }
 
+    // The line-reading helpers, for InlineAsm, which reads a block's statements as this does.
+    internal static string StripCommentText(string text) => StripComment(text);
+    internal static int LabelEndText(string text) => LabelEnd(text);
+    internal static bool IsNameText(string text) => IsName(text);
+    internal static string HeadText(string text) => Head(text);
+    internal static string[] SplitText(string text) => Split(text);
+
     private static string Head(string text)
     {
         int i = 0;
@@ -854,31 +862,32 @@ public sealed partial class X86Assembler : ISymbols
             // assembled whatever --cpu says; `.runtime none` ends that. The
             // check against --cpu stays for everything else, and a routine
             // under `.runtime` is the caller's promise, not the assembler's.
-            // `cmov` is CPUID's CMOV bit, which with an x87 present means
-            // FCMOV and FCOMI too; `sse` is the SSE bit or AMD's extended MMX
-            // bit, either of which brings the streaming prefetches and SFENCE.
-            // A list names everything checked for, and replaces the last one.
+            // What is named is what was checked: a CPUID feature bit (mmx,
+            // mmxext, 3dnow, 3dnowext, cmov, sse, sse2, tsc, msr, cx8, fxsr,
+            // clflush) or one instruction (cpuid, rdtsc, rdmsr, wrmsr,
+            // cmpxchg8b, bswap, xadd, cmpxchg, invlpg, invd, wbinvd), never a
+            // processor: a TSC read admits RDTSC, not RDMSR with it, and a
+            // late 486 has CPUID (RuntimePromise). `cmov` is CPUID's CMOV
+            // bit, which with an x87 present means FCMOV and FCOMI too; `sse`
+            // is the SSE bit, which brings SSE's integer half on the MMX
+            // registers (AMD's extended MMX: the streaming prefetches,
+            // SFENCE, PSHUFW...). A list names everything checked for, and
+            // replaces the last one.
             case ".runtime":
             {
-                if (ops.Length == 0)
-                {
-                    throw Error(".runtime takes none, or any of mmx, cmov and sse");
-                }
+                if (ops.Length == 0) throw Error(".runtime takes none, or what the code checked for: " + RuntimeNames);
                 Corsac.Lang.X86.X86Feature promised = Corsac.Lang.X86.X86Feature.None;
+                HashSet<string> instructions = new(StringComparer.Ordinal);
                 if (ops is not ["none"])
                 {
                     foreach (string op in ops)
                     {
-                        promised |= op switch
-                        {
-                            "mmx" => Corsac.Lang.X86.X86Feature.Mmx,
-                            "cmov" => Corsac.Lang.X86.X86Feature.Cmov | Corsac.Lang.X86.X86Feature.FloatCmov,
-                            "sse" => Corsac.Lang.X86.X86Feature.MmxExtensions,
-                            _ => throw Error(".runtime takes none, or any of mmx, cmov and sse"),
-                        };
+                        if (!RuntimePromise(op.Trim().ToLowerInvariant(), ref promised, instructions))
+                            throw Error($".runtime: '{op.Trim()}' is not a processor feature or instruction this assembler checks for; it takes none or any of " + RuntimeNames);
                     }
                 }
                 _runtime = promised;
+                _runtimeInstructions = instructions;
                 return;
             }
 
@@ -1328,7 +1337,7 @@ public sealed partial class X86Assembler : ISymbols
     private void EmitRM(int reg, Operand rm)
     {
         RexReg(reg);
-        if (rm.Kind is OperandKind.Register)
+        if (rm.Kind is OperandKind.Register or OperandKind.Xmm)
         {
             RexRm(rm);
         }
@@ -1341,7 +1350,7 @@ public sealed partial class X86Assembler : ISymbols
             throw Error("internal: an operand needs a REX prefix and the instruction marked no place for one");
         }
 
-        if (rm.Kind is OperandKind.Register or OperandKind.Segment or OperandKind.Control or OperandKind.Mmx)
+        if (rm.Kind is OperandKind.Register or OperandKind.Segment or OperandKind.Control or OperandKind.Mmx or OperandKind.Xmm)
         {
             Emit((byte)(0xC0 | ((reg & 7) << 3) | (rm.Reg & 7)));
             return;
@@ -1591,7 +1600,7 @@ public sealed partial class X86Assembler : ISymbols
             || FloatBare.ContainsKey(word) || FloatNames.Contains(word)
             || FloatFlagForms.ContainsKey(word)
             || word is "cpuid" or "rdtsc" or "rdmsr" or "wrmsr" or "rsm" or "cmpxchg8b" or "prefetch" or "prefetchw" or "emms" or "femms" or "movd" or "movq"
-            || word is "prefetchnta" or "prefetcht0" or "prefetcht1" or "prefetcht2" or "sfence"
+            || word is "prefetchnta" or "prefetcht0" or "prefetcht1" or "prefetcht2" or "sfence" || IsSseMnemonic(word)
             || (word.StartsWith('j') && word.Length > 1 && ConditionCode(word[1..]) >= 0)
             || (word.StartsWith("cmov") && ConditionCode(word[4..]) >= 0);
 
@@ -1629,7 +1638,7 @@ public sealed partial class X86Assembler : ISymbols
 
         string[] a = Split(rest);
 
-        if (ExtendedInstruction(mn, a) || FloatInstruction(mn, a)) return;
+        if (SseInstruction(mn, a) || ExtendedInstruction(mn, a) || FloatInstruction(mn, a)) return;
 
         switch (mn)
         {
@@ -1970,7 +1979,7 @@ public sealed partial class X86Assembler : ISymbols
             }
             // CR4 CAME WITH THE PENTIUM: the 386 and the 486 have no such
             // register, and a move to or from it is an invalid opcode there.
-            if (control.Reg == 4) Require(_cpu.Pentium, $"mov {d.Text}, {s.Text}", "a Pentium's CR4");
+            if (control.Reg == 4) Require(_cpu.Pentium || _runtimeInstructions.Contains("cr4"), $"mov {d.Text}, {s.Text}", "a Pentium's CR4 (or .runtime cr4)");
             if (_bits == 64)
             {
                 _rexAt = _sec.Size;
@@ -2037,7 +2046,9 @@ public sealed partial class X86Assembler : ISymbols
 
         if (d.Kind == OperandKind.Register && s.Kind == OperandKind.Memory)
         {
-            int size = d.Size;
+            // A size the memory operand says is the register's, or an error:
+            // `mov eax, word [x]` was a 32-bit load, its `word` ignored.
+            int size = SizeOf(d, s, "mov");
             Prefixes(size, s);
             Emit(size == 1 ? (byte)0x8A : (byte)0x8B);
             EmitRM(d.Reg, s);
