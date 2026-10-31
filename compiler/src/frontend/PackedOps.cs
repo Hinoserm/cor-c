@@ -101,7 +101,7 @@ public static class PackedOps
     {
         // Features tells nothing apart of its own: the answer is the
         // variant's, which the body's operations decide (Parser's
-        // ParsePackedBlock, AllFeatures where it names none).
+        // ParsePackedBlock, AllFeatures where none of them tells any apart).
         int features = Named(name);
         // SSE2'S INSTRUCTIONS ARE SSE'S REGISTERS: a variant with SSE2 has SSE
         // too, or the operations that want it would never find it (Lowering.

@@ -119,8 +119,10 @@ public sealed partial class Escape
         // a value the backend could not keep in a register. Not an insert,
         // whose third operand is a number put into a lane: a pointer could
         // be that number. Nor one that copies bytes from one address to
-        // another (a move, a 32-bit load or store, a non-temporal store),
-        // which carries what the bytes hold where MemCopy's rule follows it.
+        // another (a move, a 32-bit load or store, a non-temporal store: the
+        // MMX variant's Load, Store, Load32 and Store32): taken, on purpose,
+        // for the escape every packed call was before, rather than given
+        // MemCopy's rule, which follows what the bytes hold.
         || callee is not null && callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)
            && !callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix + "insert.", StringComparison.Ordinal)
            && !callee.StartsWith(Corsac.Lang.X86.MachineIntrinsics.PackedOpPrefix + "xinsert.", StringComparison.Ordinal)

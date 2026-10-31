@@ -1,6 +1,7 @@
 // test: packed_features_asked_where_no_operation_is
 // only-target: x86
 // cpu: --cpu=athlon64 --disable-3dnow
+// requires-host: sse2
 // expect-exit: 0
 // expect-output:
 // sse2 2 8

@@ -5493,7 +5493,8 @@ public sealed class Parser
                     used |= PackedOps.FeaturesOf(_t[k + 2].Text);
                     asks |= _t[k + 2].Text == "Features";
                 }
-            // A BODY THAT ASKS PACKED.FEATURES() AND NAMES NO OPERATION -- its
+            // A BODY THAT ASKS PACKED.FEATURES() AND NAMES NO OPERATION THAT
+            // TELLS VARIANTS APART (a load or a store tells none) -- its
             // packed work in a helper it calls, ChaCha20's Generate calling its
             // block function -- is told apart by every feature, the answer
             // each class's own: it had the one variant with none, Features()
