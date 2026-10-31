@@ -88,8 +88,14 @@ internal static class AsmText
                 {
                     yield return $"push {RegName((int)g, 4)}";
                 }
+                if (m.AlignedArea > 0)
+                {
+                    yield return $"sub esp, {m.AlignedArea}";
+                    yield return "and esp, -16";
+                }
                 yield break;
             case MOp.Epilogue:
+                if (m.AlignedArea > 0 && m.SavedRegs.Count > 0) yield return $"lea esp, [ebp - {m.Frame.Size + 4 * m.SavedRegs.Count}]";
                 for (int k = m.SavedRegs.Count - 1; k >= 0; k--)
                 {
                     yield return $"pop {RegName((int)m.SavedRegs[k], 4)}";
@@ -223,7 +229,7 @@ internal static class AsmText
             case MOp.MovF:
                 yield return i.Operands[0] is MReg && i.Operands[1] is MReg
                     ? $"movaps {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, false)}"
-                    : $"{(i.Width == 16 ? "movups" : i.Width == 8 ? "movsd" : "movss")} {Op(i.Operands[0], i.Width, i.Width != 16)}, {Op(i.Operands[1], i.Width, i.Width != 16)}";
+                    : $"{(i.Width == 16 ? (i.Operands[0] is MMem { Aligned: true } || i.Operands[1] is MMem { Aligned: true } ? "movaps" : "movups") : i.Width == 8 ? "movsd" : "movss")} {Op(i.Operands[0], i.Width, i.Width != 16)}, {Op(i.Operands[1], i.Width, i.Width != 16)}";
                 yield break;
             case MOp.XmmOpV:
             case MOp.XmmOpVDef:

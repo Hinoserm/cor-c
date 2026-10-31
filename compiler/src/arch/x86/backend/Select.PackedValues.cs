@@ -183,13 +183,16 @@ internal sealed partial class Selector
                 Instr between = made.b.Instrs[k];
                 // Nothing between that may throw -- a handler would read the
                 // variable's old value: only copies, and packed operations on
-                // values kept in registers, which touch no memory.
+                // values kept in registers, which touch no memory (MXCSR keeps
+                // the float exceptions masked).
                 clear = !ReferenceEquals(between.Dest, copy.x) && (between.Op == Opcode.Copy || OnRegistersOnly(between));
                 foreach (Operand o in between.Operands) clear &= !ReferenceEquals(NodeOf(o), copy.x);
             }
             if (clear) values[s] = into;
         }
 
+        // NodeOf's node kept means PackedValue finds its register: both take
+        // an alias to its slot, so SelectPackedValueOp reads no memory for it.
         bool OnRegistersOnly(Instr i)
         {
             if (i.Op != Opcode.Call || i.Callee is not { } c || !c.StartsWith(MachineIntrinsics.PackedOpPrefix, StringComparison.Ordinal)

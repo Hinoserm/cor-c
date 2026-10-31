@@ -1,0 +1,93 @@
+// test: packed128_spills_in_an_aligned_area
+// only-target: x86
+// cpu: --cpu=athlon64 --disable-3dnow
+// requires-host: sse2
+// expect-exit: 0
+// expect-output:
+// rows True True
+// caught 3 after True
+//
+// PACKED128 SPILLS SIXTEEN-BYTE ALIGNED (AlignedSlots): twelve values live
+// across a loop, more than the XMM registers hold, spilled to an area the
+// prologue aligns ESP down to and moved by MOVAPS; the answers are the
+// lane-by-lane scalar ones. An index out of range thrown from that frame
+// is caught two frames up, three times over, and the frame between, with
+// values of its own in the callee-saved registers, has them back after.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe bool Mix(uint[] s, uint[] o, int at)
+    {
+        if ((Packed.Features() & 0x20) == 0) return false;
+        nuint f = Sys.ArrayData(s), t = Sys.ArrayData(o);
+        Packed128 v0 = Packed.Load128(f), v1 = Packed.Load128(f + 16), v2 = Packed.Load128(f + 32), v3 = Packed.Load128(f + 48);
+        Packed128 v4 = Packed.Load128(f + 64), v5 = Packed.Load128(f + 80), v6 = Packed.Load128(f + 96), v7 = Packed.Load128(f + 112);
+        Packed128 v8 = Packed.Load128(f + 128), v9 = Packed.Load128(f + 144), v10 = Packed.Load128(f + 160), v11 = Packed.Load128(f + 176);
+        for (int r = 0; r < 4; r++)
+        {
+            v0 = Packed.Add32(v0, v1); v1 = Packed.Xor(v1, v2); v2 = Packed.Add32(v2, v3); v3 = Packed.Xor(v3, v4);
+            v4 = Packed.Add32(v4, v5); v5 = Packed.Xor(v5, v6); v6 = Packed.Add32(v6, v7); v7 = Packed.Xor(v7, v8);
+            v8 = Packed.Add32(v8, v9); v9 = Packed.Xor(v9, v10); v10 = Packed.Add32(v10, v11); v11 = Packed.Xor(v11, v0);
+            v0 = Packed.Or(Packed.ShiftLeft32(v0, 7), Packed.ShiftRightU32(v0, 25));
+            v6 = Packed.Or(Packed.ShiftLeft32(v6, 9), Packed.ShiftRightU32(v6, 23));
+        }
+        Packed.Store(t, v0); Packed.Store(t + 16, v1); Packed.Store(t + 32, v2); Packed.Store(t + 48, v3);
+        Packed.Store(t + 64, v4); Packed.Store(t + 80, v5); Packed.Store(t + 96, v6); Packed.Store(t + 112, v7);
+        Packed.Store(t + 128, v8); Packed.Store(t + 144, v9); Packed.Store(t + 160, v10); Packed.Store(t + 176, v11);
+        o[at] ^= 0;
+        return true;
+    }
+
+    static uint Rotl(uint x, int n) => (x << n) | (x >> (32 - n));
+
+    static void Scalar(uint[] s, uint[] o)
+    {
+        for (int j = 0; j < 4; j++)
+        {
+            uint[] v = new uint[12];
+            for (int i = 0; i < 12; i++) v[i] = s[4 * i + j];
+            for (int r = 0; r < 4; r++)
+            {
+                v[0] += v[1]; v[1] ^= v[2]; v[2] += v[3]; v[3] ^= v[4];
+                v[4] += v[5]; v[5] ^= v[6]; v[6] += v[7]; v[7] ^= v[8];
+                v[8] += v[9]; v[9] ^= v[10]; v[10] += v[11]; v[11] ^= v[0];
+                v[0] = Rotl(v[0], 7); v[6] = Rotl(v[6], 9);
+            }
+            for (int i = 0; i < 12; i++) o[4 * i + j] = v[i];
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Between(uint[] s, uint[] o, int k)
+    {
+        int a = k * 7, b = k * 11, c = k * 13;
+        for (int i = 0; i < k; i++) { a += i; b ^= i; c -= i; }
+        Mix(s, o, 48 + k);
+        return a + b + c;
+    }
+
+    static int Main()
+    {
+        uint[] s = new uint[48], o = new uint[48], r = new uint[48];
+        for (int i = 0; i < 48; i++) s[i] = (uint)i * 0x9E3779B9u + 0x1234567u;
+        bool ran = Mix(s, o, 0);
+        Scalar(s, r);
+        bool same = true;
+        for (int i = 0; i < 48; i++) same &= o[i] == r[i];
+        Console.WriteLine("rows " + ran + " " + same);
+        int caught = 0;
+        bool after = true;
+        for (int k = 1; k <= 3; k++)
+        {
+            int x = k * 1000, y = k * 3;
+            try { Between(s, o, k); }
+            catch (IndexOutOfRangeException) { caught++; }
+            after &= x == k * 1000 && y == k * 3;
+        }
+        Console.WriteLine("caught " + caught + " after " + after);
+        return 0;
+    }
+}

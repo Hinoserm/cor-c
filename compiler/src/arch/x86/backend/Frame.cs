@@ -67,6 +67,18 @@ public sealed class Frame
             if (moved.TryGetValue(_allocations[i].Offset, out int to)) _allocations[i] = (to, _allocations[i].Bytes, _allocations[i].Align);
     }
 
+    /// <summary>
+    /// Blocks no operand names any more (AlignedSlots moved them off EBP),
+    /// handed back: FrameCompact lays out the rest and the frame shrinks to them.
+    /// </summary>
+    public void Release(ICollection<int> offsets) => _allocations.RemoveAll(a => offsets.Contains(a.Offset));
+
+    /// <summary>The frame cut down to what FrameCompact laid out, once blocks were released.</summary>
+    public void Shrink(int size)
+    {
+        if (size < _size) _size = size;
+    }
+
     /// <summary>The offset of an IR frame slot, placing it on first use.</summary>
     public int SlotOffset(FrameSlot slot)
     {

@@ -14,6 +14,9 @@ public sealed class MMem : MOperand
     /// <summary>Private allocator storage, never an address-taken source-language slot.</summary>
     public bool IsSpill { get; init; }
 
+    /// <summary>Sixteen-byte aligned (AlignedSlots): MovF moves it with MOVAPS.</summary>
+    public bool Aligned { get; init; }
+
     /// <summary>
     /// A device's register (Instr.Device: Sys.PeekByte, PeekHalf, PeekWord):
     /// read every time the source reads it, never one read for two -- a

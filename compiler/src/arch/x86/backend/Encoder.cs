@@ -885,8 +885,9 @@ internal sealed class Encoder
             // ---- scalar SSE (Select.Sse) -------------------------------------
             case MOp.MovF when i.Width == 16 && !(i.Operands[0] is MReg { IsXmm: true } && i.Operands[1] is MReg { IsXmm: true }):
                 // movups: the whole register, no alignment asked of memory.
-                if (i.Operands[0] is MReg { IsXmm: true }) { B(0x0F, 0x10); ModRM(Xmm(i.Operands[0]), i.Operands[1]); }
-                else { B(0x0F, 0x11); ModRM(Xmm(i.Operands[1]), i.Operands[0]); }
+                // movaps where AlignedSlots made the memory sixteen-byte aligned.
+                if (i.Operands[0] is MReg { IsXmm: true }) { B(0x0F, i.Operands[1] is MMem { Aligned: true } ? (byte)0x28 : (byte)0x10); ModRM(Xmm(i.Operands[0]), i.Operands[1]); }
+                else { B(0x0F, i.Operands[0] is MMem { Aligned: true } ? (byte)0x29 : (byte)0x11); ModRM(Xmm(i.Operands[1]), i.Operands[0]); }
                 break;
             case MOp.MovF:
                 if (i.Operands[0] is MReg { IsXmm: true } && i.Operands[1] is MReg { IsXmm: true })
@@ -1393,10 +1394,25 @@ internal sealed class Encoder
         {
             _out.Add((byte)(0x50 + (int)g));
         }
+        int a = _m.AlignedArea;
+        if (a > 0)
+        {
+            // sub esp, area ; and esp, -16 -- the Packed128 slots (AlignedSlots).
+            if (a <= 127) B(0x83, 0xEC, (byte)a);
+            else { B(0x81, 0xEC); D32(a); }
+            B(0x83, 0xE4, 0xF0);
+        }
     }
 
     private void EncodeEpilogue()
     {
+        if (_m.AlignedArea > 0 && _m.SavedRegs.Count > 0)
+        {
+            // lea esp, [ebp - frame - saves]: back up to the saved registers over the aligned area.
+            int at = -(_m.Frame.Size + 4 * _m.SavedRegs.Count);
+            if (at >= -128) B(0x8D, 0x65, (byte)at);
+            else { B(0x8D, 0xA5); D32(at); }
+        }
         for (int k = _m.SavedRegs.Count - 1; k >= 0; k--)
         {
             _out.Add((byte)(0x58 + (int)_m.SavedRegs[k]));

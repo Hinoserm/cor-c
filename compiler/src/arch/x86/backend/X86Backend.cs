@@ -988,6 +988,7 @@ public sealed class X86Backend : IBackend
             Layout.Run(m);
             LoopRotate.Run(m);
             Peephole.Run(m);
+            AlignedSlots.Run(m);
             FrameCompact.Run(m);
             FramePointerFree.Run(m);
         }

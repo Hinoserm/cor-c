@@ -86,6 +86,13 @@ public sealed class MFunction
     /// </summary>
     public bool FramePointerFree { get; set; }
 
+    /// <summary>
+    /// Bytes of Packed128 spill slots below the saved registers, at ESP after
+    /// the prologue aligns it down to sixteen (AlignedSlots): read and
+    /// written by MOVAPS. Zero in every other function.
+    /// </summary>
+    public int AlignedArea { get; set; }
+
     public MFunction(Function source)
     {
         Source = source;

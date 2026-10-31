@@ -22,7 +22,7 @@ internal static class FrameCompact
     public static void Run(MFunction m)
     {
         var allocations = m.Frame.Allocations.OrderBy(a => a.Offset).ToList();
-        if (allocations.Count < 2) return;
+        if (allocations.Count < 2 && m.AlignedArea == 0) return;
         int Find(int disp)
         {
             int lo = 0, hi = allocations.Count - 1;
@@ -71,6 +71,8 @@ internal static class FrameCompact
             placed[k] = -size;
         }
         if (size > m.Frame.Size) return;
+        // Blocks released (AlignedSlots): the frame is only what is left.
+        if (m.AlignedArea > 0) m.Frame.Shrink(size);
 
         Dictionary<int, int> moved = new();
         for (int k = 0; k < allocations.Count; k++)

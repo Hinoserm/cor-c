@@ -933,8 +933,11 @@ internal static class Peephole
     /// held all along. When nothing between writes the register or the
     /// slot, the load becomes a register move (MOVAPS, no memory). The store
     /// may then have nothing left to read it; DeadSpillStores, after this,
-    /// takes it. Within a block, past only instructions whose every register
-    /// write is an operand's (no call: it clobbers XMM registers unnamed).
+    /// takes it. Within a block, past only instructions whose register writes
+    /// Masks sees -- operands' and Roles' implicit ones; no call, which
+    /// clobbers XMM registers unnamed. A float's reload this way leaves the
+    /// register's top lanes the source's, not zero, as SseCopy's move does:
+    /// nothing reads a scalar's top lanes.
     /// </summary>
     private static void ForwardXmmSpillLoads(List<MInstr> instrs)
     {
@@ -965,9 +968,12 @@ internal static class Peephole
                     }
                     break;
                 }
+                // A write of any slot that could overlap this one ends it; a read does not.
                 bool near = false;
-                foreach (MOperand o in prev.Operands)
-                    if (o is MMem mem && PrivateSpill(mem) && Math.Abs((long)mem.Disp - slot.Disp) < 16) near = true;
+                for (int o = 0; o < prev.Operands.Count; o++)
+                    if (prev.Operands[o] is MMem mem && PrivateSpill(mem) && Math.Abs((long)mem.Disp - slot.Disp) < 16
+                        && (Roles.Of(prev.Op, o) & Roles.Role.Def) != 0)
+                        near = true;
                 if (near) break;
                 Masks(prev, out _, out long written);
                 clobbered |= written;
@@ -977,7 +983,7 @@ internal static class Peephole
     }
 
     /// <summary>An instruction whose register writes are all its operands' (Roles), and which writes memory only through them.</summary>
-    private static bool XmmSpillTransparent(MOp op) => SpillTransparent(op) && op != MOp.Nop
+    private static bool XmmSpillTransparent(MOp op) => SpillTransparent(op)
         || op is MOp.MovF or MOp.AddF or MOp.SubF or MOp.MulF or MOp.DivF or MOp.SqrtF or MOp.UcomiF or MOp.CvtFToF or MOp.CvtIntToF
             or MOp.XorPs or MOp.MovdToX or MOp.MovdFromX or MOp.Punpckldq
             or MOp.XmmOpV or MOp.XmmOpVDef or MOp.XmmShiftV or MOp.XmmExtractV or MOp.XmmInsertV;
