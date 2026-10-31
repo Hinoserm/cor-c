@@ -1,0 +1,37 @@
+// test: an asm block that only reads the x87's state is no float code to the link, in a program that keeps no state
+// targets: x86
+// flags: --x87-in-blocks-only
+// expect-output:
+// status 0
+//
+// FNSTSW only reads the status word, as an .asm file's FpuStateOnly
+// instructions do: nothing here keeps the state, and the link must not
+// take the block for float code run where no state is kept (X87Notes;
+// docs/INLINE-ASSEMBLY.md). The thread's x87 is fresh: no exception flags.
+
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Status()
+    {
+        int r;
+        asm
+        {
+            fnstsw ax
+            movzx eax, ax
+            and eax, 0x3F
+            mov r, eax
+        }
+        return r;
+    }
+
+    static int Main()
+    {
+        Host.Start(1024 * 1024);
+        Host.Line("status " + Status().ToString());
+        Host.Done(0);
+        return 0;
+    }
+}

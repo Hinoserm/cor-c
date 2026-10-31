@@ -12,12 +12,12 @@
 
 static class Program
 {
-    static double _half = 2.5;
+    static int _half = 5;
 
     static int Main()
     {
         Host.Start(1024 * 1024);
-        double d = _half * 2;
+        double d = _half * 0.5 * 2;
         ushort cw;
         asm
         {
