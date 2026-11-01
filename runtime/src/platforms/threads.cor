@@ -2774,13 +2774,18 @@ public static partial class Runtime
         else Sys.PackedEnd();
     }
 
+    // THE LONG HALVES ARE PUBLIC: each short front is inlined into compiled
+    // code in any image, a program's or a module's, and calls its long half
+    // there -- a call into the runtime's image, which must export it
+    // (Inline.CrossesImage).
+
     /// StringFind, four units a step by pcmpeqw (plain MMX: the P55C and the
     /// K6 on), eight by pmovmskb where the MMX extensions are; the first
     /// equal unit's place is BSF's of the step's mask.
     public static int PackedStringFind(string s, int at, int value, int count) { return count < PackedUnits ? StringFind(s, at, value, count) : PackedStringFindLong(s, at, value, count); }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    static int PackedStringFindLong(string s, int at, int value, int count)
+    public static int PackedStringFindLong(string s, int at, int value, int count)
     {
         if (count < PackedUnits || !Processor.Has(Processor.Mmx))
         {
@@ -2828,7 +2833,7 @@ public static partial class Runtime
     public static int PackedStringFindReverse(string s, int at, int value, int count) { return count < PackedUnits ? StringFindReverse(s, at, value, count) : PackedStringFindReverseLong(s, at, value, count); }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    static int PackedStringFindReverseLong(string s, int at, int value, int count)
+    public static int PackedStringFindReverseLong(string s, int at, int value, int count)
     {
         if (count < PackedUnits || !Processor.Has(Processor.Mmx))
         {
@@ -2881,7 +2886,7 @@ public static partial class Runtime
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    static int PackedStringSearchLong(string s, int at, string what, int whatAt, int count)
+    public static int PackedStringSearchLong(string s, int at, string what, int whatAt, int count)
     {
         int needle = what.Length - whatAt;
         if (needle <= 0)
@@ -2920,7 +2925,7 @@ public static partial class Runtime
     public static bool PackedBytesEqual(nuint a, nuint b, nuint count) { return count < PackedBytes ? BytesEqual(a, b, count) : PackedBytesEqualLong(a, b, count); }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    static bool PackedBytesEqualLong(nuint a, nuint b, nuint count)
+    public static bool PackedBytesEqualLong(nuint a, nuint b, nuint count)
     {
         if (count < PackedBytes || !Processor.Has(Processor.Mmx))
         {
@@ -2944,7 +2949,7 @@ public static partial class Runtime
     public static bool PackedStringEqual(string a, int aAt, string b, int bAt, int count) { return count < PackedUnits ? StringEqual(a, aAt, b, bAt, count) : PackedStringEqualLong(a, aAt, b, bAt, count); }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    static bool PackedStringEqualLong(string a, int aAt, string b, int bAt, int count)
+    public static bool PackedStringEqualLong(string a, int aAt, string b, int bAt, int count)
     {
         if (count < PackedUnits || !Processor.Has(Processor.Mmx))
         {
@@ -2959,7 +2964,7 @@ public static partial class Runtime
     public static int PackedStringCompare(string a, int aAt, string b, int bAt, int count) { return count < PackedUnits ? StringCompare(a, aAt, b, bAt, count) : PackedStringCompareLong(a, aAt, b, bAt, count); }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    static int PackedStringCompareLong(string a, int aAt, string b, int bAt, int count)
+    public static int PackedStringCompareLong(string a, int aAt, string b, int bAt, int count)
     {
         if (count < PackedUnits || !Processor.Has(Processor.Mmx))
         {

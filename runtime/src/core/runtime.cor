@@ -240,7 +240,11 @@ public static class Processor
     /// Set once asked, so a processor with none of the above is not asked again.
     const int Asked = 1 << 30;
 
-    static int _features;
+    // INTERNAL, so another image of the class library -- a program's Has,
+    // inlined -- reads it where it is (Lowering.SplitLibrary); a kernel's
+    // module calls Has instead. Ask, the cold half, is public: every
+    // image's inlined Features calls it.
+    internal static int _features;
 
     /// Whether the processor has every one of `features`.
     public static bool Has(int features) { return (Features & features) == features; }
@@ -268,7 +272,7 @@ public static class Processor
     // small-limit=40"), and every Has stayed a call -- two calls for one load
     // and a test at each question.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    static int Ask()
+    public static int Ask()
     {
 #if TARGET_64BIT
         // Every processor that runs long mode has all of them.
@@ -2617,7 +2621,9 @@ public static partial class Runtime
     /// type, and read as an object it took what that word points at for a
     /// type -- the self-hosted compiler's crash once its regions stopped
     /// filling up and sending such cells to the heap.
-    static void FreeHeld(nuint held)
+    // PUBLIC: the half every image's compiled code calls, its front inlined
+    // there, a program's or a module's (Inline.CrossesImage).
+    public static void FreeHeld(nuint held)
     {
         if (CollectorLinked() && Gc.IgnoredFrees != 'p' && Gc.InOwnRegion(held))
         {
@@ -2957,7 +2963,9 @@ public static partial class Runtime
     // (RegionSummary.MethodRead, RegionSolver.Addressed), and no region in
     // any program took what a virtual method made.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static nuint Tag(nuint dynamic, nuint want)
+    // PUBLIC: the half every image's compiled code calls, its front inlined
+    // there, a program's or a module's (Inline.CrossesImage).
+    public static nuint Tag(nuint dynamic, nuint want)
     {
         nuint at = dynamic;
 
@@ -5009,7 +5017,9 @@ public static partial class Runtime
     /// made without a collector included, which kept the collector's
     /// reporting routines, where nothing could ever turn the journal on.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void ArrayStoreRefused(nuint array, nuint value)
+    // PUBLIC: the half every image's compiled code calls, its front inlined
+    // there, a program's or a module's (Inline.CrossesImage).
+    public static void ArrayStoreRefused(nuint array, nuint value)
     {
         if (ArrayStoreReport != 0) Sys.Call(ArrayStoreReport, value, array, 0);
         throw new ArrayTypeMismatchException();
@@ -5046,7 +5056,7 @@ public static partial class Runtime
     /// The refusal, out of line as ArrayStoreRefused is: the element's type
     /// named by its descriptor.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void ArrayCopyRefused(nuint value, nuint element)
+    public static void ArrayCopyRefused(nuint value, nuint element)
     {
         object o = Sys.ObjectAt(value)!;
         // The descriptor's name word, as the image keeps it (String.TypeFullName).
@@ -5631,7 +5641,9 @@ public static partial class Runtime
 
     /// (u1:u0) / v and its remainder, for u1 < v and v nonzero: the quotient
     /// fits 32 bits. Hacker's Delight, divlu.
-    private static uint DivLU(uint u1, uint u0, uint v, out uint remainder)
+    // PUBLIC: the half every image's compiled code calls, its front inlined
+    // there, a program's or a module's (Inline.CrossesImage).
+    public static uint DivLU(uint u1, uint u0, uint v, out uint remainder)
     {
         uint b = 65536;
         int s = Clz32(v);
@@ -5662,7 +5674,7 @@ public static partial class Runtime
     }
 
     /// a / b and a % b for a divisor below 2^32.
-    private static ulong UDivShort(ulong a, uint b, out ulong remainder)
+    public static ulong UDivShort(ulong a, uint b, out ulong remainder)
     {
         uint hi = (uint)(a >> 32), lo = (uint)a;
         uint qhi = 0;
@@ -5713,7 +5725,7 @@ public static partial class Runtime
     /// Unsigned remainder: the same walk, keeping what is left instead of the
     /// bits taken. Written out rather than as a - b * UDiv(a, b) to save the
     /// multiply, which on a 486 is not free either.
-    private static ulong URem(ulong a, ulong b)
+    public static ulong URem(ulong a, ulong b)
     {
         if (b == (ulong)0)
         {
@@ -7060,7 +7072,9 @@ public static partial class Runtime
     /// (StringHashCode). NEVER TAKEN BACK IN: called from one place, it was
     /// inlined into the half meant to be small, and the half was its size.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static int StringHashWorkedOut(string s)
+    // PUBLIC: the half every image's compiled code calls, its front inlined
+    // there, a program's or a module's (Inline.CrossesImage).
+    public static int StringHashWorkedOut(string s)
     {
         nuint at = Sys.ObjectAddress(s) + StringHashAt;
         uint h = 2166136261;

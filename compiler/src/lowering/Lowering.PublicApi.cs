@@ -21,6 +21,13 @@ public sealed partial class Lowering
     public static bool SplitLibrary { get; set; }
 
     /// <summary>
+    /// The class library's sources this compile owns (full paths): named on
+    /// its command line, not read for their declarations. Empty for a
+    /// program's, a user's library's or a module's compile.
+    /// </summary>
+    public static IReadOnlySet<string> OwnLibrarySources { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>
     /// WHAT THIS UNIT OFFERS OTHER IMAGES (PublicApi, `.corsac.public`): of
     /// each method and static it defines, whether C# lets another assembly
     /// name it -- shown (Binder.ShownOutside) in a type public all the way
@@ -60,8 +67,10 @@ public sealed partial class Lowering
             // A PARTIAL TYPE'S PRIVATE MEMBERS ARE EVERY PART'S, and the split
             // class library writes parts of one type into two images:
             // Utf8Formatter's TryFormat in libSystem.Runtime.Extensions calls
-            // the private Text of its part in libcorsacrt.
-            bool parts = wide && !abi && (d.Mods & Mods.Partial) != 0;
+            // the private Text of its part in libcorsacrt. Only where a part
+            // is another image's: a member read from a source this compile
+            // does not own. Runtime's parts are all libcorsacrt's.
+            bool parts = wide && !abi && (d.Mods & Mods.Partial) != 0 && SpansImages(d);
             // ITS MEMBERS READ IN ITS OWN SCOPE (MemberWatch): every type of the
             // unit is walked, and an imported one -- the kernel's Arch, in
             // every unit -- lists nothing here: none of its methods is emitted
@@ -79,8 +88,13 @@ public sealed partial class Lowering
                     continue;
                 bool startup = method.Name == "StaticInit$";
                 bool offered = open && (startup || Binder.ShownOutside(d, method));
+                // AN EXPLICIT IMPLEMENTATION OF AN INTERFACE'S MEMBER is private
+                // to C#'s names and reached through the interface from anywhere:
+                // another image's descriptor of the type -- a program's box of a
+                // library struct -- names it in its table.
+                bool dispatched = (open || wide) && method.ExplicitInterface is not null;
                 List<string> into = offered ? _m.PublicSymbols
-                    : wide && (startup || parts || Binder.SeenInAssembly(d, method)) ? _m.OptionalSymbols
+                    : dispatched || wide && (startup || parts || Binder.SeenInAssembly(d, method)) ? _m.OptionalSymbols
                     : _m.WithheldSymbols;
                 into.Add(CallLabel(m));
                 if (CopiesInside(m)) into.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
@@ -209,6 +223,13 @@ public sealed partial class Lowering
         }
         return false;
     }
+
+    /// <summary>
+    /// A partial type with a part in another image of the split class
+    /// library: a member read from a source this compile does not own.
+    /// </summary>
+    private static bool SpansImages(TypeDecl d)
+        => d.Members.Any(m => m.File.Length > 0 && !OwnLibrarySources.Contains(Path.GetFullPath(m.File)));
 
     /// <summary>
     /// A type the rest of its assembly can name: any at the top, and one
