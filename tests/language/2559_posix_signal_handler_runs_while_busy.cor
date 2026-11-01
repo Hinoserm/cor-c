@@ -19,10 +19,11 @@
 // program.
 //
 // AND OS.PAUSE STILL SEES IT. A signal the thread has already run, which no
-// wait has seen, ends Pause at once, as it did -- a short sleep first sees
-// the earlier ones, so it is this one Pause answers. And Pause returns only
-// when the handlers have run (Settle): it waits for a slow one the thread
-// has started, whose own sleep inside it does not wait for itself.
+// wait has seen, ends Pause at once, as it did -- Deliver first sees the
+// earlier ones (a signal a program sends itself is dispatched before kill
+// returns), so it is this one Pause answers. And Pause returns only when
+// the handlers have run (Settle): it waits for a slow one the thread has
+// started, whose own sleep inside it neither sees the signal nor waits.
 
 using System;
 using System.Diagnostics;
@@ -84,7 +85,7 @@ static class Program
         registration.Dispose();
         Console.WriteLine("still running");
 
-        Thread.Sleep(1);
+        PosixSignalRegistration.Deliver();
         PosixSignalRegistration again = PosixSignalRegistration.Create(PosixSignal.SIGINT, new Counting());
         Os.Kill(Os.Getpid(), (int)PosixSignal.SIGINT);
         if (!Await(3)) { Console.WriteLine("never ran a third time"); return; }
@@ -92,7 +93,7 @@ static class Program
         Console.WriteLine("paused " + Counting.Ran);
         again.Dispose();
 
-        Thread.Sleep(1);
+        PosixSignalRegistration.Deliver();
         PosixSignalRegistration slow = PosixSignalRegistration.Create(PosixSignal.SIGINT, new Slow());
         Os.Kill(Os.Getpid(), (int)PosixSignal.SIGINT);
         long until = Stopwatch.GetTimestamp() + 5 * Stopwatch.Frequency;

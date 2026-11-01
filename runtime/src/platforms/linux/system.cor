@@ -1594,8 +1594,8 @@ public static partial class Os
             if (r == -Err.Intr || PosixSignalRegistration.Pending)
             {
                 // A signal arrived while waiting -- or just before, with
-                // nothing blocked for it to interrupt: its handlers run here,
-                // or are running on the thread that delivers them, which no
+                // nothing blocked for it to interrupt: seen here, its
+                // handlers run on the thread that delivers them, which no
                 // wait waits for, as in .NET. The caller sees the
                 // interruption and decides whether it still wants to wait.
                 PosixSignalRegistration.Deliver();
