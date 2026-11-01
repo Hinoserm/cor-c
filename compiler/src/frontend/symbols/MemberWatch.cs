@@ -25,7 +25,7 @@ public sealed class MemberWatch
     /// <summary>The names asked of it.</summary>
     public HashSet<string> Names { get; } = new(StringComparer.Ordinal);
 
-    /// <summary>Its own reads under way that are not the unit's (its declaring, its copying).</summary>
+    /// <summary>Its own reads under way that are not the unit's (its declaring, its copying): neither bulk reads nor names asked count.</summary>
     private int _quiet;
 
     /// <summary>Reads that are the shape's, of every type (a unit's layouts captured).</summary>
@@ -40,22 +40,33 @@ public sealed class MemberWatch
     public MemberWatch(string key) => Key = key;
 
     /// <summary>A name asked of the type by a lookup by name.</summary>
-    public void Asked(string name) => Names.Add(name);
+    public void Asked(string name)
+    {
+        // Not while its own reads are under way, nor its shape's, as for a
+        // read whole: working out its own constants asks each by its name.
+        if (_quiet > 0 || _shape > 0) return;
+        // Traced, where each name is first asked, as for a read whole.
+        if (Names.Add(name) && Trace) Say(name + " asked by ");
+    }
 
     /// <summary>The member lists read: in bulk, unless quietly.</summary>
     public void ReadAll()
     {
         if (_quiet > 0 || _shape > 0) return;
         // Traced, every place that reads one whole is said once, not only the first.
-        if (Trace)
-        {
-            // The stack's text, not its frames' methods, which a native
-            // compiler's trimming cannot promise.
-            string frames = string.Join(" < ", Environment.StackTrace.Split('\n').Skip(2).Take(6)
-                .Select(line => line.Trim().StartsWith("at ", StringComparison.Ordinal) ? line.Trim()[3..].Split('(')[0] : line.Trim()));
-            lock (Said) if (Said.Add(frames)) Console.Error.WriteLine("receipt: " + Key[(Key.IndexOf('\n') + 1)..] + " read whole by " + frames);
-        }
+        if (Trace) Say("read whole by ");
         Whole = true;
+    }
+
+    /// <summary>--receipt-trace: what was read of the type, and the call sites that read it, once each.</summary>
+    private void Say(string what)
+    {
+        // The stack's text, not its frames' methods, which a native
+        // compiler's trimming cannot promise.
+        string frames = string.Join(" < ", Environment.StackTrace.Split('\n').Skip(3).Take(8)
+            .Select(line => line.Trim().StartsWith("at ", StringComparison.Ordinal) ? line.Trim()[3..].Split('(')[0] : line.Trim()));
+        string said = "receipt: " + Key[(Key.IndexOf('\n') + 1)..] + " " + what + frames;
+        lock (Said) if (Said.Add(said)) Console.Error.WriteLine(said);
     }
 
     private static readonly HashSet<string> Said = new(StringComparer.Ordinal);

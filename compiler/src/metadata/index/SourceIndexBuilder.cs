@@ -122,16 +122,25 @@ public static class SourceIndexBuilder
 
     /// <summary>
     /// WHETHER A TYPE'S MEMBERS ARE TOLD APART for the units that read it
-    /// (SourceDeclaration.ByMember): one whose private members are left out
-    /// (HidesPrivate), with no base, no interface and no attribute -- nothing
-    /// a unit reads of it in bulk: a [Registry] class's schema is written into
-    /// every unit that loads it -- not an enum, and the program's, not the
-    /// class library's, whose members the compiler asks for by names of its
-    /// own (String.Concat, Gc's fields). The kernel's Arch, Mem and Irq: a
-    /// method more in Arch rebuilt 115 kernel units that never called it.
+    /// (SourceDeclaration.ByMember): a class or a struct, not generic, not
+    /// partial, no record and no primary constructor, with no base, no
+    /// interface and no attribute -- nothing a unit reads of it in bulk: a
+    /// [Registry] class's schema is written into every unit that loads it --
+    /// and the program's, not the class library's, whose members the compiler
+    /// asks for by names of its own (String.Concat, Gc's fields). The kernel's
+    /// Arch, Mem and Irq: a method more in Arch rebuilt 115 kernel units that
+    /// never called it.
+    ///
+    /// WITH GENERIC METHODS TOO -- Arch has two. A unit that copied one's body
+    /// depends on the whole file as it always did (Dependence.Source); one
+    /// that did not reads the template bodies for what they name, which is in
+    /// the shape (the template bodies' hash, SourceDeclaration.TemplateHash).
+    /// Its private members are then hashed as written, under their names.
     /// </summary>
-    private static bool ByMember(TypeDecl type, bool filtered, bool librarySide)
-        => filtered && !librarySide && type.Bases.Count == 0 && type.Attributes.Count == 0 && type.EnumMembers.Count == 0;
+    private static bool ByMember(TypeDecl type, bool librarySide)
+        => !librarySide && type.Kind is TypeKind.Class or TypeKind.Struct && !type.IsRecord && (type.Mods & Mods.Partial) == 0
+           && type.TypeParams.Count == 0 && type.PrimaryParameters is not { Count: > 0 }
+           && type.Bases.Count == 0 && type.Attributes.Count == 0 && type.EnumMembers.Count == 0;
 
     /// <summary>
     /// The name a member of a ByMember type is hashed under, or null where
@@ -330,18 +339,18 @@ public static class SourceIndexBuilder
                     StringBuilder visible = new();
                     bool filtered = HidesPrivate(type) && !bodies.Any(b => b.Template);
                     var nested = unit.Types.Where(other => other != type && other.SourceFrom >= type.SourceFrom && other.SourceTo <= type.SourceTo).ToArray();
-                    var members = filtered
+                    bool byMember = ByMember(type, librarySide);
+                    var members = filtered || byMember
                         ? parser.MemberSpans.Where(m => m.From >= type.SourceFrom && m.To <= type.SourceTo
                             && !nested.Any(n => m.From >= n.SourceFrom && m.To <= n.SourceTo)).OrderBy(m => m.From).ToArray()
                         : Array.Empty<(int From, int To, MemberDecl Member)>();
-                    int memberIndex = 0;
+                    int memberIndex = 0, braces = 0;
                     PrivateMember hiding = PrivateMember.Shown;
                     bool markedCtor = false, markedStatics = false;
                     // AND EACH MEMBER APART, where they can be told apart
                     // (ByMember): what a token shows goes to its member's text
                     // or to the type's shape, a nested type's to neither -- it
                     // is a key of its own.
-                    bool byMember = ByMember(type, filtered, librarySide);
                     StringBuilder shapeText = new();
                     Dictionary<string, (MemberDecl Member, StringBuilder Text)> memberTexts = new(StringComparer.Ordinal);
                     StringBuilder? routed = null;
@@ -369,8 +378,8 @@ public static class SourceIndexBuilder
                         while (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].To)
                         { bodyIndex++; wroteBody = false; }
                         while (memberIndex < members.Length && token.Pos >= members[memberIndex].To)
-                        { memberIndex++; markedCtor = false; }
-                        hiding = memberIndex < members.Length && token.Pos >= members[memberIndex].From
+                        { memberIndex++; markedCtor = false; braces = 0; }
+                        hiding = filtered && memberIndex < members.Length && token.Pos >= members[memberIndex].From
                             ? Hiding(members[memberIndex].Member) : PrivateMember.Shown;
                         routed = null;
                         if (byMember && !nested.Any(n => token.Pos >= n.SourceFrom && token.Pos < n.SourceTo))
@@ -451,19 +460,33 @@ public static class SourceIndexBuilder
                         }
                         else if (hiding == PrivateMember.Field && !parser.FieldInitialisers.Any(i => token.Pos >= i.From && token.Pos < i.To))
                         {
-                            string laid = parser.FieldNames.Contains(token.Pos) ? "_" : text.Substring(token.Pos, ends[tokenIndex] - token.Pos);
-                            visible.Append(laid).Append(' ');
-                            if (byMember) shapeText.Append(laid).Append(' ');
+                            if (parser.FieldNames.Contains(token.Pos))
+                            {
+                                visible.Append("_ ");
+                                if (byMember) shapeText.Append("_ ");
+                            }
+                            else
+                            {
+                                visible.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                                if (byMember) shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                            }
                         }
                         // A PRIVATE STATIC'S INITIALISER, to the shape: a table
                         // laid down as data makes no StaticInit$, a computed one
                         // does, and every unit touching the type reads which
-                        // (Binder.StaticInitialisers, Lowering.TouchType). By its
-                        // tokens without a literal's value, which decides neither
-                        // -- the table's bytes are its own unit's.
+                        // (Binder.StaticInitialisers, Lowering.TouchType). An
+                        // element's value inside `{ }` without its value -- the
+                        // table's bytes are its own unit's -- but a length's
+                        // with it: `new byte[60000]` is a zeroed table and
+                        // `new byte[70000]` code (Binder.ZeroedArrayOf).
                         else if (hiding == PrivateMember.Initialised && byMember)
-                            shapeText.Append(token.Kind is Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str
-                                ? token.Kind.ToString() : text.Substring(token.Pos, ends[tokenIndex] - token.Pos)).Append(' ');
+                        {
+                            if (token.Kind == Tok.LBrace) braces++;
+                            else if (token.Kind == Tok.RBrace && braces > 0) braces--;
+                            if (braces > 0 && token.Kind is Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str) shapeText.Append(token.Kind.ToString());
+                            else shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos);
+                            shapeText.Append(' ');
+                        }
                     }
                     shaped.Flush();
                     // Once, wherever they were written.
@@ -481,7 +504,7 @@ public static class SourceIndexBuilder
                         Dictionary<(int Line, int Col), int>? at = null;
                         foreach (MemberDecl unspanned in type.Members)
                         {
-                            if (spanned.Contains(unspanned) || Hiding(unspanned) != PrivateMember.Shown) continue;
+                            if (spanned.Contains(unspanned) || filtered && Hiding(unspanned) != PrivateMember.Shown) continue;
                             if (at is null)
                             {
                                 at = new();
@@ -491,7 +514,7 @@ public static class SourceIndexBuilder
                             int inside = at.TryGetValue((unspanned.Line, unspanned.Col), out int pos)
                                 ? Array.FindIndex(members, member => pos >= member.From && pos < member.To) : -1;
                             if (inside < 0) { byMember = false; break; }
-                            if (Hiding(members[inside].Member) == PrivateMember.Shown && MemberName(members[inside].Member) is string holder
+                            if ((!filtered || Hiding(members[inside].Member) == PrivateMember.Shown) && MemberName(members[inside].Member) is string holder
                                 && memberTexts.ContainsKey(holder))
                             {
                                 if (!alsoNamed.TryGetValue(holder, out HashSet<string>? names)) alsoNamed[holder] = names = new(StringComparer.Ordinal);
@@ -508,6 +531,30 @@ public static class SourceIndexBuilder
                     if (byMember && type.Members.Any(member => (member.Mods & Mods.Static) != 0
                             && member is FieldDecl { Init: not null } or PropertyDecl { Init: not null } or MethodDecl { IsCtor: true }))
                         shapeText.Append("static ;");
+                    // EACH MEMBER WITH THE CONSTANTS OF THE TYPE IT NAMES, and
+                    // theirs: `C = P + 1`, `B(int k = P)` change with P, and a
+                    // unit asking for C or B is not one asking for P -- the
+                    // binder works its constants out quietly (Binder.Run). The
+                    // shape too: `new byte[P]` is a table or code by P's value,
+                    // `fixed byte b[P]` its layout, read quietly as well.
+                    Dictionary<string, string> constantHolders = new(StringComparer.Ordinal);
+                    foreach (var held in memberTexts)
+                        if (held.Value.Member is FieldDecl { Mods: var constMods } && (constMods & Mods.Const) != 0)
+                            foreach (string name in (alsoNamed.GetValueOrDefault(held.Key) ?? new HashSet<string>(StringComparer.Ordinal)).Append(held.Key))
+                                constantHolders.TryAdd(name, held.Key);
+                    string WithConstants(string text, string? own)
+                    {
+                        SortedSet<string> named = new(StringComparer.Ordinal);
+                        Queue<string> reading = new();
+                        reading.Enqueue(text);
+                        while (reading.Count > 0)
+                            foreach (Token word in Lexer.Tokenize(reading.Dequeue(), path))
+                                if (word.Kind == Tok.Ident && constantHolders.TryGetValue(word.Text, out string? holder) && holder != own && named.Add(holder))
+                                    reading.Enqueue(memberTexts[holder].Text.ToString());
+                        StringBuilder said = new(text);
+                        foreach (string holder in named) said.Append("\n").Append(holder).Append(" : ").Append(memberTexts[holder].Text);
+                        return said.ToString();
+                    }
                     string syntax = declaration.ToString();
                     FileScope scope = type.Scope ?? new FileScope();
                     using MemoryStream canonical = new();
@@ -534,11 +581,12 @@ public static class SourceIndexBuilder
                         HeaderHash = HeaderHash(tokens, type, scope),
                         MemberNames = Monomorphiser.MemberNames(type.Members).Order(StringComparer.Ordinal).ToArray(),
                         ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
-                        ShapeHash = byMember ? Hashed(shapeText.ToString(), path, scope, 32) : Array.Empty<byte>(),
+                        // The shape, with what its template bodies name (a type with generic methods).
+                        ShapeHash = byMember ? SHA256.HashData(Hashed(WithConstants(shapeText.ToString(), null), path, scope, 32).Concat(SHA256.HashData(shape.ToArray())).ToArray()) : Array.Empty<byte>(),
                         MemberHashes = byMember
                             ? memberTexts.SelectMany(member =>
                                 {
-                                    byte[] said = Hashed(member.Value.Text.ToString(), path, null, 16);
+                                    byte[] said = Hashed(WithConstants(member.Value.Text.ToString(), member.Key), path, null, 16);
                                     return LookedUpBy(member.Value.Member, member.Key)
                                         .Concat(alsoNamed.GetValueOrDefault(member.Key) ?? Enumerable.Empty<string>())
                                         .Select(name => (Name: name, Hash: said));

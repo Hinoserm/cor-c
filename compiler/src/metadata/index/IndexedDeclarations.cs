@@ -857,8 +857,11 @@ public sealed class IndexedDeclarations : IDisposable
                 if (signatures && ReadLater(root)) root.ReadableAgain(ReadAgain(source, displayFile));
                 // AND FROM NOW ON WATCHED, member by member, where they can be
                 // told apart: what the unit reads of it (MemberWatch), one
-                // watch a key however often it is read.
-                if (signatures && source.ByMember)
+                // watch a key however often it is read. A type with generic
+                // methods too, read with their bodies: a unit that copies one
+                // depends on the whole file (Dependence.Source), and its
+                // copying is quiet (Monomorphiser.RewriteDeclIn).
+                if (source.ByMember)
                 {
                     if (!watches.TryGetValue(key, out MemberWatch? watch)) watches[key] = watch = new MemberWatch(key);
                     root.Watch = watch;

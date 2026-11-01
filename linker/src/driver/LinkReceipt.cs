@@ -42,11 +42,16 @@ public static class LinkReceipt
         void Say(string text) { byte[] bytes = Encoding.UTF8.GetBytes(text + "\n"); hash.AppendData(bytes); }
         Say("link receipt 2");
         foreach (string file in LinkerFiles()) Say(file);
-        if (backendPath is not null && File.Exists(backendPath)) Say("backend " + Written(backendPath));
+        // THE BACKEND IT STARTS, named or not: under dotnet, the native corc
+        // beside the assemblies, built again on its own (ProcessUnitBackend).
+        string backend = Corsac.Lang.Lto.ProcessUnitBackend.PathOf(backendPath);
+        if (File.Exists(backend)) Say("backend " + Path.GetFileName(backend) + " " + Written(backend));
         // THE SWITCHES THIS PROCESS WAS GIVEN, taken off the command line before
         // the link saw it (Switches.Take) and handed to every backend it starts:
-        // --no-rta, --region-engine and --skip-passes change the image.
-        foreach (string flag in Switches.ChildFlags) Say("switch " + flag);
+        // --no-rta, --region-engine and --skip-passes change the image. In
+        // order of name, whatever order they were taken in; not those that
+        // only say or check something (Diagnostic), a path by its name.
+        foreach (string flag in HandedOn()) Say("switch " + flag);
         for (int i = 0; i < args.Count; i++)
         {
             // A path the options name, by its name and never by whether it
@@ -140,6 +145,29 @@ public static class LinkReceipt
         return file.Length + " " + file.LastWriteTimeUtc.Ticks;
     }
 
+    /// <summary>The switches handed on, each with its value, sorted; those that change no image left out.</summary>
+    private static IEnumerable<string> HandedOn()
+    {
+        List<string> said = new();
+        IReadOnlyList<string> flags = Switches.ChildFlags;
+        for (int i = 0; i < flags.Count; i++)
+        {
+            string flag = flags[i];
+            // A value follows its flag, and is no flag itself (Switches.HandOn).
+            string? value = i + 1 < flags.Count && !flags[i + 1].StartsWith("--", StringComparison.Ordinal) ? flags[++i] : null;
+            if (Diagnostic(flag)) continue;
+            said.Add(value is null ? flag : flag + " " + (value.Contains('/') ? "<path>/" + Path.GetFileName(value) : value));
+        }
+        said.Sort(StringComparer.Ordinal);
+        return said;
+    }
+
+    /// <summary>A switch that traces, reports, dumps or checks, or sets how many threads do the same work: the image is the same with it or without.</summary>
+    private static bool Diagnostic(string flag)
+        => flag.StartsWith("--trace-", StringComparison.Ordinal) || flag.StartsWith("--report-", StringComparison.Ordinal)
+           || flag.StartsWith("--dump-", StringComparison.Ordinal) || flag.StartsWith("--verify-", StringComparison.Ordinal)
+           || flag is "--receipt-trace" or "--alloc-report" or "--irq-locks-report" or "--preinit-report" or "--lto-jobs" or "--gc-workers";
+
     /// <summary>
     /// The linker's own files by name, time and length: a linker built again
     /// links again. Every assembly of the toolchain loaded here -- the
@@ -158,7 +186,7 @@ public static class LinkReceipt
             string location = loaded.Location;
             if (location.Length > 0 && home.Length > 0 && location.StartsWith(home, StringComparison.Ordinal) && File.Exists(location)) files.Add(location);
         }
-        return files.Distinct(StringComparer.Ordinal).Select(path =>
+        return files.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(path =>
         {
             FileInfo file = new(path);
             return file.Name + " " + file.Length + " " + file.LastWriteTimeUtc.Ticks;

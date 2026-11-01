@@ -101,10 +101,13 @@ public static class UnitDependencies
         foreach (string key in ordered)
         {
             using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing dependency " + key);
+            // A type told apart by member, its bodies copied by none: by member,
+            // a template too, whose bodies' shape is in its shape (ByMember).
+            bool byMember = asked?.ContainsKey(key) == true && lease.Records.Count > 0 && lease.Records.All(record => record.ByMember);
             Dependence dependence = copied.Contains(key) ? Dependence.Source
-                : templates.Contains(key) ? Dependence.Template
+                : templates.Contains(key) ? (byMember ? Dependence.Members : Dependence.Template)
                 : named?.ContainsKey(key) == true ? Dependence.Header
-                : asked?.ContainsKey(key) == true && lease.Records.Count > 0 && lease.Records.All(record => record.ByMember) ? Dependence.Members
+                : byMember ? Dependence.Members
                 : Dependence.Declaration;
             byte[] encoded = Encoding.UTF8.GetBytes(key);
             if (encoded.Length > 4096) throw new InvalidDataException("Dependency key exceeds format limit");

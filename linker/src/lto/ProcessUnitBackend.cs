@@ -32,11 +32,7 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         // THE RUNNING COMPILER ITSELF, unless it runs under dotnet: a native
         // compiler need not be called corc, and the one beside it may be
         // another build.
-        string? running = Environment.ProcessPath;
-        bool hosted = running is null
-            || Path.GetFileNameWithoutExtension(running).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
-        string path = executable
-            ?? (hosted ? Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "corc.exe" : "corc") : running!);
+        string path = PathOf(executable);
         if (!File.Exists(path)) throw new FileNotFoundException("IR LTO needs the compiler backend; pass --lto-backend, or use --no-lto", path);
         ProcessStartInfo start = new(Path.GetFullPath(path)) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true };
         foreach (string flag in Switches.ChildFlags) start.ArgumentList.Add(flag);
@@ -48,6 +44,16 @@ public sealed class ProcessUnitBackend : IUnitBackend, IDisposable
         reader = new BinaryReader(process.StandardOutput.BaseStream, BackendProtocol.Utf8, leaveOpen: true);
         watchdog = new Thread(Watch, 256 * 1024) { IsBackground = true, Name = "lto-watchdog" };
         watchdog.Start();
+    }
+
+    /// <summary>The backend a link starts: the one named, or the running compiler, or under dotnet the native corc beside it (LinkReceipt says which).</summary>
+    public static string PathOf(string? executable)
+    {
+        string? running = Environment.ProcessPath;
+        bool hosted = running is null
+            || Path.GetFileNameWithoutExtension(running).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+        return executable
+            ?? (hosted ? Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "corc.exe" : "corc") : running!);
     }
 
     /// Kills the process when a request stops working (StallMs) or works past

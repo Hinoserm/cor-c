@@ -2248,6 +2248,14 @@ public sealed partial class Binder
     private readonly Dictionary<(TypeSymbol Owner, string Name), ConstantState>
         _constantStates = new();
 
+    /// <summary>A constant worked out because its type has it, not because the unit named it: quietly for its type (Run).</summary>
+    private void EvaluateOwnConstant(TypeSymbol owner, string name)
+    {
+        MemberWatch.Quiet? quiet = owner.Decl?.Watch?.Quietly();
+        try { EvaluateConstant(owner, name); }
+        finally { quiet?.Dispose(); }
+    }
+
     private void EvaluateConstant(TypeSymbol owner, string name)
     {
         // A constant of a type whose members wait to be asked for is not in
@@ -3116,9 +3124,13 @@ public sealed partial class Binder
         // whose members are declared on that first asking, which adds its own
         // constants to the table -- evaluated as they are declared, from here
         // on (DeclareMembersNow).
+        // QUIETLY for an imported type's own (MemberWatch): working out every
+        // constant it has is not the unit asking for each. One it names is
+        // asked by its name; what that one's value names of its own type is
+        // in its hash (SourceIndexBuilder, WithConstants).
         _constantsEvaluated = true;
         foreach (var key in _constantDeclarations.Keys.ToList())
-            EvaluateConstant(key.Owner, key.Name);
+            EvaluateOwnConstant(key.Owner, key.Name);
 
         // Interface methods get slot numbers FIRST, from one program-wide
         // counter. A call through an interface has no idea which class it will
@@ -4232,7 +4244,7 @@ public sealed partial class Binder
             if (_constantsEvaluated)
             {
                 foreach (var key in _constantDeclarations.Keys.Where(key => ReferenceEquals(key.Owner, sym)).ToList())
-                    EvaluateConstant(key.Owner, key.Name);
+                    EvaluateOwnConstant(key.Owner, key.Name);
             }
 
             if (_layingOut && !IsTemplate(sym))
@@ -5657,8 +5669,22 @@ public sealed partial class Binder
         => sym.Decl?.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name)?.Attributes.FirstOrDefault(a => a.Is("FieldOffset"))?.Argument is string written
            && Whole(written) is int offset ? offset : null;
 
-    /// <summary>Assigns field offsets and vtable slots.</summary>
+    /// <summary>
+    /// Assigns field offsets and vtable slots (LayOutNow), quietly for a
+    /// watched type (MemberWatch): what they read of its members -- instance
+    /// fields, virtual methods -- is its shape's to say. A type with generic methods comes with its members
+    /// made, not left to be asked for, and is laid out here in every unit
+    /// that reads it.
+    /// </summary>
     private void LayOut(TypeSymbol sym)
+    {
+        MemberWatch.Quiet? quiet = sym.Decl?.Watch?.Quietly();
+        try { LayOutNow(sym); }
+        finally { quiet?.Dispose(); }
+    }
+
+    /// <summary>Assigns field offsets and vtable slots.</summary>
+    private void LayOutNow(TypeSymbol sym)
     {
         // Its members first, if they were left to be asked for: declared now,
         // and laid out with them once layout has begun (DeclareMembersNow).
@@ -6802,7 +6828,9 @@ public sealed partial class Binder
         _thisType = sym;
         _member = null;
 
-        List<MethodDecl> bodies = d.Members.OfType<MethodDecl>().ToList();
+        // Quietly: one read for its signatures checks only its local copies,
+        // each of a body the unit copied (Dependence.Source).
+        List<MethodDecl> bodies = d.MembersQuietly.OfType<MethodDecl>().ToList();
         if (_synthesised.TryGetValue(sym, out List<MethodDecl>? accessors))
         {
             bodies.AddRange(accessors.Where(x => _r.Methods.TryGetValue(x, out MethodSymbol? ms) && ReferenceEquals(ms.Owner, sym)));

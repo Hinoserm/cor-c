@@ -176,7 +176,8 @@ public static class ObjectLinkCommand
             // a link holds the objects' code and tables, never their IR.
             try
             {
-                objectHashes.Add(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(full))));
+                // Streamed: an object is IR mostly, never held whole for its hash.
+                using (FileStream bytes = File.OpenRead(full)) objectHashes.Add(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)));
                 inputs.Add((path, ElfReader.ReadObjectFile(full)));
             }
             catch (ElfFormatException error) { return Fail(path + ": " + error.Message); }
@@ -239,13 +240,14 @@ public static class ObjectLinkCommand
         // what this link would write, and is left as it is. Not where a
         // report of the optimiser's own was asked for, which only a link makes.
         string? digest = null;
-        // Nor where a map was asked for and is not there to leave.
-        if (regionReport is null && (map is null || File.Exists(map)))
+        if (regionReport is null)
         {
             try { digest = LinkReceipt.Digest(args, objectHashes, inputs.Select(input => input.Item2).ToList(), keepPath, kernel, sharedLibraries, backendPath); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or ElfFormatException) { digest = null; }
         }
-        if (digest is not null && LinkReceipt.Current(output, digest))
+        // Nor where a map was asked for and is not there to leave: linked
+        // again, and its receipt written for the next.
+        if (digest is not null && (map is null || File.Exists(map)) && LinkReceipt.Current(output, digest))
         {
             Console.Error.WriteLine("link current: " + output + " (" + inputs.Count + " objects; nothing it is made from, nor any name it imports, changed)");
             return 0;

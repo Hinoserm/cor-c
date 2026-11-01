@@ -744,7 +744,19 @@ public static class ProjectCompile
             // The facts as the objects now are, and who would answer otherwise.
             facts = new(read.SelectMany(one => one.Copies), StringComparer.Ordinal);
             List<Unit> moved = read.Where(one => Answers(one, facts) != AnswersOf(one.Unit)).Select(one => one.Unit).ToList();
-            if (moved.Count == 0) return 0;
+            // SETTLED, the facts left as the objects now are: the file kept the
+            // ones read before this build, a method a unit compiled now no
+            // longer has among them, and differed from a clean build's.
+            if (moved.Count == 0)
+            {
+                try { WriteFacts(factsFile, facts); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    Console.Error.WriteLine("corc: the units' facts cannot be written to " + factsFile + ": " + e.Message);
+                    return 1;
+                }
+                return 0;
+            }
             if (round == 4)
             {
                 Console.Error.WriteLine("corc: the units' calls into each other's packed methods still move after four rounds ("
@@ -813,7 +825,10 @@ public static class ProjectCompile
         // tens of megabytes in every process a build started was most of
         // the SHA-256 a unit compile ran; a rebuilt compiler is written
         // again, and that is what changes its identity. Not its directory:
-        // a toolchain copied with its times is the same compiler.
+        // a toolchain copied with its times is the same compiler. Not its
+        // contents either, nor a module version id the self-hosted library
+        // does not have: two builds of the same length written in the same
+        // tick -- unpacked from archives -- are one compiler to a receipt.
         using SHA256 sha = SHA256.Create();
         byte[] described = Encoding.UTF8.GetBytes(string.Join("\n", parts.Distinct(StringComparer.Ordinal).Select(Corsac.Projects.ProjectState.WriteIdentity)));
         return _compilerIdentity = Convert.ToHexString(sha.ComputeHash(described));
