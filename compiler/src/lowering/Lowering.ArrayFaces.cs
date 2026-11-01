@@ -318,7 +318,7 @@ public sealed partial class Lowering
             _e.Ret(null);
             _e.SetBlock(some);
             // A BOX OF ANOTHER PRIMITIVE IS WIDENED, as SetValue widens it
-            // (Array.FaceWidenedWhole and FaceWidenedReal, which refuse what
+            // (Runtime.ArrayFaceWidenedWhole and ArrayFaceWidenedReal, which refuse what
             // does not widen): a box of the element's own type is unboxed.
             if (WidenKind(element) is int kind)
             {
@@ -347,7 +347,7 @@ public sealed partial class Lowering
         });
     }
 
-    /// <summary>A primitive element's kind as Array.FaceWidened* numbers it, or null for any other element.</summary>
+    /// <summary>A primitive element's kind as Runtime.ArrayFaceWidened* numbers it, or null for any other element.</summary>
     private static int? WidenKind(Type element)
         => element.Symbol is not null || element.IsNullableValue || element.IsArray || element.IsPointer ? null : element.Prim switch
         {

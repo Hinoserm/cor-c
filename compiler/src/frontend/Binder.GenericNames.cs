@@ -25,8 +25,13 @@ public sealed partial class Binder
     /// this unit's ever made is named here all the same -- an Enumerable
     /// method the library never calls, whose copy a program's struct makes.
     /// What a copy this unit made names exactly, lowered, is added to it
-    /// there. A name looked up here only, never demanded, never reported
-    /// (_namingOnly, _quiet): a member of what a local holds is a copy's to
+    /// there. A type's name looked up here only, never demanded, never
+    /// reported (_namingOnly, _quiet); a type found whose members wait is
+    /// declared to be asked, as binding declares one (DeclareMembersNow), and
+    /// what its declaring wants of the index is wanted as binding's is -- a
+    /// pass more, where the code names a type nothing else here used. A member
+    /// of what a value holds by its written type: a field's, a property's, a
+    /// parameter's, a local's; a `var`'s, or an expression's, is a copy's to
     /// name, bound.
     /// </summary>
     private void GenericNames()
@@ -47,12 +52,22 @@ public sealed partial class Binder
                 _scope = t;
                 _thisType = t;
                 _in = d.File;
+                Func<MemberDecl, bool>? generic = template ? null : member => member is MethodDecl { TypeParams.Count: > 0 };
+                // The names the code declares with their types, the template's
+                // fields and properties among them, then what it names.
+                Dictionary<string, List<TypeRef>> declared = new(StringComparer.Ordinal);
+                Metadata.BodyTypeNames.Walk(d, found: _ => { }, members: generic, declared: (name, type) =>
+                {
+                    if (type.Name == "var") return;
+                    if (!declared.TryGetValue(name, out List<TypeRef>? types)) declared[name] = types = new();
+                    types.Add(type);
+                });
                 Metadata.BodyTypeNames.Walk(d,
                     found: reference => NamedType(reference, t, made: false),
-                    access: member => NamedMember(member, t),
+                    access: member => NamedMember(member, t, declared),
                     bare: name => { if (name.TypeArgs.Count == 0) NamedAround(name.Name, t); },
                     made: reference => NamedType(reference, t, made: true),
-                    members: template ? null : member => member is MethodDecl { TypeParams.Count: > 0 });
+                    members: generic);
             }
         }
         finally
@@ -73,9 +88,7 @@ public sealed partial class Binder
     private void NamedType(TypeRef reference, TypeSymbol scope, bool made)
     {
         // Not a generic one, which is a copy, and asking for it could ask for one.
-        if (reference.Args.Count != 0 || reference.UseArgs is { Count: > 0 }) return;
-        Type resolved = Resolve(reference, scope);
-        if (Unresolved(resolved) || resolved.Symbol is not TypeSymbol type || !Ordinary(type)) return;
+        if (OrdinaryNamed(reference, scope) is not TypeSymbol type) return;
         _r.GenericNamedTypes.Add(type);
         if (made)
             foreach (MethodSymbol ctor in type.FindMethods(type.Name))
@@ -87,7 +100,7 @@ public sealed partial class Binder
     /// `base.N` and `this.N` as N alone. A member of what a value holds is
     /// left to the copies (Lowering.RecordReached).
     /// </summary>
-    private void NamedMember(MemberExpr member, TypeSymbol scope)
+    private void NamedMember(MemberExpr member, TypeSymbol scope, Dictionary<string, List<TypeRef>> declared)
     {
         if (member.TypeArgs.Count != 0) return;
         if (member.Target is BaseExpr or ThisExpr)
@@ -95,12 +108,35 @@ public sealed partial class Binder
             NamedAround(member.Name, scope);
             return;
         }
+        // WHAT A VALUE HOLDS, by the type it was declared with: `sb.Append`
+        // of a `StringBuilder sb`, `_root.Size` of a field, `this._root.Size`.
+        string? held = member.Target switch
+        {
+            NameExpr { TypeArgs.Count: 0 } name => name.Name,
+            MemberExpr { Target: ThisExpr, TypeArgs.Count: 0 } field => field.Name,
+            _ => null,
+        };
+        if (held is not null && declared.TryGetValue(held, out List<TypeRef>? types))
+        {
+            foreach (TypeRef type in types)
+                if (OrdinaryNamed(type, scope) is TypeSymbol holder) NamedOf(holder, member.Name);
+            return;
+        }
         // A TYPE'S NAME, by its spelling, as BodyTypeNames.Path reads one: a
-        // capital first, or the compiler's own two underscores. The member of
-        // what a local holds is a copy's to name.
-        if (NamesPath(member.Target) is not string qualifier || !(char.IsUpper(qualifier[0]) || qualifier.StartsWith("__", StringComparison.Ordinal))) return;
-        Type resolved = Resolve(new TypeRef { Name = qualifier, Line = member.Line, Col = member.Col }, scope);
-        if (!Unresolved(resolved) && resolved.Symbol is TypeSymbol type && Ordinary(type)) NamedOf(type, member.Name);
+        // capital first, or the compiler's own two underscores; a keyword's
+        // type by its own (`string.Concat`, `char.IsDigit`).
+        if (NamesPath(member.Target) is not string qualifier) return;
+        if (Alias(qualifier) is string keyword) qualifier = keyword;
+        else if (!(char.IsUpper(qualifier[0]) || qualifier.StartsWith("__", StringComparison.Ordinal))) return;
+        if (OrdinaryNamed(new TypeRef { Name = qualifier, Line = member.Line, Col = member.Col }, scope) is TypeSymbol named) NamedOf(named, member.Name);
+    }
+
+    /// <summary>The ordinary type a written type names in the code's scope, or null: never a generic one, which a copy has of its own.</summary>
+    private TypeSymbol? OrdinaryNamed(TypeRef reference, TypeSymbol scope)
+    {
+        if (reference.Args.Count != 0 || reference.UseArgs is { Count: > 0 }) return null;
+        Type resolved = Resolve(reference, scope);
+        return !Unresolved(resolved) && resolved.Symbol is TypeSymbol type && Ordinary(type) ? type : null;
     }
 
     /// <summary>The dotted name an expression spells, `A.B.C`, when it is nothing but names: a type, if anything.</summary>

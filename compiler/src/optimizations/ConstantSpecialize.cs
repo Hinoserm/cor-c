@@ -23,6 +23,10 @@ public sealed class ConstantSpecialize : IModulePass
     public void Run(Module module)
     {
         Dictionary<string, Function> originals = module.Functions.ToDictionary(f => f.Name, StringComparer.Ordinal);
+        // What of the library no image exports (Module.LibraryPrivate): a
+        // version of a body another image supplies is this image's code, and
+        // may name none of it (Inline.CrossesImage).
+        HashSet<string> hidden = module.LibraryPrivate();
         HashSet<string> addressed = Inline.AddressTaken(module);
         HashSet<Function> recursive = Inline.RecursiveFunctions(module, originals);
         Dictionary<string, Function> versions = new(StringComparer.Ordinal);
@@ -52,7 +56,8 @@ public sealed class ConstantSpecialize : IModulePass
             if (call.Op != Opcode.Call || call.Callee is null
                 || !originals.TryGetValue(call.Callee, out Function? target)
                 || recursive.Contains(target) || keeping.Contains(target.Name) || !Inline.Inlineable(target, addressed)
-                || (module.LibraryCodeIsShared && target.FromLibrary) || module.GoesElsewhere(target)
+                || (module.LibraryCodeIsShared && target.FromLibrary)
+                || module.GoesElsewhere(target) && hidden.Count > 0 && Inline.NamesAny(target, hidden)
                 || call.Operands.Count != target.Params.Count
                 || target.Blocks.Sum(b => b.Instrs.Count) > BodyLimit
                 || !Inline.ConstantControlsBranch(target, call)) continue;

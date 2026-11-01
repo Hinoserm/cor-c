@@ -49,12 +49,15 @@ public static class BodyTypeNames
     /// AND FOR WHAT GENERIC CODE NAMES (Binder.GenericNames): every member
     /// access to <paramref name="access"/>, every bare name to
     /// <paramref name="bare"/>, every type made with `new` to
-    /// <paramref name="made"/>; only the members <paramref name="members"/>
+    /// <paramref name="made"/>, every name declared with its type -- a
+    /// field, a property, a parameter, a local, a foreach variable -- to
+    /// <paramref name="declared"/>; only the members <paramref name="members"/>
     /// takes, and the declaration's own bases and constraints only where it
     /// takes them all.
     /// </summary>
     public static void Walk(TypeDecl declaration, Action<TypeRef> found, Action<string>? qualifier = null,
-        Action<MemberExpr>? access = null, Action<NameExpr>? bare = null, Action<TypeRef>? made = null, Func<MemberDecl, bool>? members = null)
+        Action<MemberExpr>? access = null, Action<NameExpr>? bare = null, Action<TypeRef>? made = null, Func<MemberDecl, bool>? members = null,
+        Action<string, TypeRef>? declared = null)
     {
         void Type(TypeRef? reference)
         {
@@ -102,7 +105,7 @@ public static class BodyTypeNames
                 case IndexExpr e: Expression(e.Target); foreach (Expr argument in e.Args) Expression(argument); return;
                 case IsExpr e: Expression(e.Operand); Type(e.Type); return;
                 case LambdaExpr e:
-                    foreach (Param parameter in e.Params) { Type(parameter.Type); Expression(parameter.Default); }
+                    foreach (Param parameter in e.Params) { declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
                     if (e.Returns is not null) Type(e.Returns);
                     Expression(e.Body); Statement(e.BlockBody);
                     return;
@@ -191,10 +194,14 @@ public static class BodyTypeNames
                     foreach (Expr step in s.Step) Expression(step);
                     Statement(s.Body);
                     return;
-                case ForeachStmt s: Type(s.Type); Expression(s.Sequence); Bindings(s.Bindings); Statement(s.Body); return;
+                case ForeachStmt s:
+                    if (s.Type is not null) declared?.Invoke(s.Name, s.Type);
+                    Type(s.Type); Expression(s.Sequence); Bindings(s.Bindings); Statement(s.Body);
+                    return;
                 case GotoCaseStmt s: Expression(s.Value); return;
                 case IfStmt s: Expression(s.Cond); Statement(s.Then); Statement(s.Else); return;
                 case LocalDecl s:
+                    if (s.Type is not null) declared?.Invoke(s.Name, s.Type);
                     Type(s.Type); Expression(s.Init);
                     foreach (LocalDecl also in s.Also) Statement(also);
                     return;
@@ -268,18 +275,20 @@ public static class BodyTypeNames
             {
                 case FieldDecl field:
                     bool bound = initialisers || field.Mods.HasFlag(Mods.Const);
+                    declared?.Invoke(field.Name, field.Type);
                     Type(field.Type); if (bound) Expression(field.Init);
-                    foreach (FieldDecl more in field.More) { Type(more.Type); if (bound) Expression(more.Init); }
+                    foreach (FieldDecl more in field.More) { declared?.Invoke(more.Name, more.Type); Type(more.Type); if (bound) Expression(more.Init); }
                     break;
                 case PropertyDecl property:
+                    declared?.Invoke(property.Name, property.Type);
                     Type(property.Type); if (initialisers) Expression(property.Init);
-                    foreach (Param parameter in property.Params) { Type(parameter.Type); Expression(parameter.Default); }
+                    foreach (Param parameter in property.Params) { declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
                     Statement(property.Getter); Statement(property.Setter);
                     break;
                 case MethodDecl method:
                     Type(method.Returns);
                     foreach (TypeParam parameter in method.TypeParams) Types(parameter.Constraints);
-                    foreach (Param parameter in method.Params) { Type(parameter.Type); Expression(parameter.Default); }
+                    foreach (Param parameter in method.Params) { declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
                     // A CONSTRUCTOR'S `: base(...)` OR `: this(...)` is code
                     // the binder binds like any call, and `: base(Kind.Leaf)`
                     // names a type no statement of the body does.

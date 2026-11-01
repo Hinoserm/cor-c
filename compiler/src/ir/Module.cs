@@ -278,10 +278,11 @@ public sealed class Module
 
     /// <summary>
     /// THE LIBRARY'S OWN THAT NO IMAGE EXPORTS, of what this compile read of
-    /// the class library (SystemCode: written in its sources): a method's body
-    /// or a static of a library type, no copy of a generic (Coalescible,
-    /// Function.GenericCode), and nothing a provider exports. A module's own
-    /// code and a library's are not it, which their compiles mark FromLibrary. Kept here, a static is
+    /// the class library (SystemCode: written in its sources): a method's
+    /// body, a static, a thread static's number or a type's descriptor of a
+    /// library type, no copy of generic code (Coalescible, GenericCode), and
+    /// nothing a provider exports. Not FromLibrary, which a module's and a
+    /// library's compiles say of their own code too. Kept here, a static is
     /// a second one of the library's -- a second collector's state -- and a
     /// body a second copy of code its library withholds, where its library's
     /// fixes never reach. What the passes may not put into code this image
@@ -297,7 +298,8 @@ public sealed class Module
                 && (f.Name.StartsWith("m_", StringComparison.Ordinal) || f.Name.StartsWith("mx_", StringComparison.Ordinal)))
                 found.Add(f.Name);
         foreach (DataItem d in Data)
-            if (d.SystemCode && !d.Coalescible && !provided.Contains(d.Name) && d.Name.StartsWith("s_", StringComparison.Ordinal))
+            if (d.SystemCode && !d.Coalescible && !d.GenericCode && !provided.Contains(d.Name)
+                && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("ts_", StringComparison.Ordinal) || d.Name.StartsWith("t_", StringComparison.Ordinal)))
                 found.Add(d.Name);
         return found;
     }

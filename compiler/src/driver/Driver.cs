@@ -1163,8 +1163,8 @@ public static class Driver
         // shadowing a library one be kept.
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
-        Corsac.Lang.Lower.Lowering.ExportingImage = shared || freestanding && !windows && args.Contains("--obj");
-        Corsac.Lang.Lower.Lowering.SplitLibrary = shared && !freestanding;
+        Corsac.Lang.Lower.Lowering.ExportingImage = !windows && (shared || freestanding && args.Contains("--obj"));
+        Corsac.Lang.Lower.Lowering.SplitLibrary = shared && !freestanding && !windows && files.Any(IsLibrarySource);
         Binder.NamesGenericCode = Corsac.Lang.Lower.Lowering.ExportingImage;
         // The runtime DLL is lowered as the library's own objects are (--obj),
         // which is how the class library has always been compiled whole.
@@ -2086,7 +2086,9 @@ public static class Driver
         foreach (Function f in module.Functions)
             if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
         foreach (DataItem d in module.Data)
-            if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || d.Coalescible) && live.Add(d.Name)) work.Push(d.Name);
+            if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || d.Coalescible || d.GenericCode) && live.Add(d.Name)) work.Push(d.Name);
+        // And what the backend will call, which no instruction names yet.
+        foreach (string helper in module.RuntimeHelpers.Order(StringComparer.Ordinal)) From("the code generator", helper);
         while (work.Count > 0)
         {
             string name = work.Pop();

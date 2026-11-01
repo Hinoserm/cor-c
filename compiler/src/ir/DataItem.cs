@@ -43,6 +43,9 @@ public sealed class DataItem
     /// <summary>Written in the system library's own sources; see Function.SystemCode.</summary>
     public bool SystemCode { get; init; }
 
+    /// <summary>A descriptor of a type made in generic code: a lambda's closure there (TypeDecl.InGenericCode); see Function.GenericCode.</summary>
+    public bool GenericCode { get; init; }
+
     /// <summary>The full path of the source file; see Function.SourcePath.</summary>
     public string? SourcePath { get; init; }
 

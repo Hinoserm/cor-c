@@ -8,8 +8,9 @@ public sealed partial class Lowering
 {
     /// <summary>
     /// The class library compiled into one of the several images it ships as
-    /// (--shared, and not freestanding: libcorsacrt.so and the libSystem.*.so
-    /// above it), every image of it a part of ONE assembly to C#. What its
+    /// (--shared, not freestanding, its sources the compile's own:
+    /// libcorsacrt.so and the libSystem.*.so above it), every image of it a
+    /// part of ONE assembly to C#. What its
     /// `internal` means is the assembly's, so another image of it naming an
     /// internal member of this one -- System.Runtime.Numerics formatting
     /// through Core's NumberFormat -- is C#, and this image exports it
@@ -160,16 +161,21 @@ public sealed partial class Lowering
         // a packed caller); a static by its symbol, with its type's startup
         // (its ready word and StaticInit$), which a copy touching the static
         // runs; a type by its descriptor, or its box's.
+        void Startup(TypeSymbol owner)
+        {
+            if (owner.FindField(BindResult.ReadyField) is { } ready) named.Add(StaticSymbol(ready));
+            foreach (MethodSymbol init in owner.FindMethods("StaticInit$")) named.Add(CallLabel(init));
+        }
         foreach (MethodSymbol m in _b.GenericNamedMethods)
         {
             named.Add(CallLabel(m));
             if (CopiesInside(m)) named.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
+            if (m.Static) Startup(m.Owner);
         }
         foreach (FieldSymbol f in _b.GenericNamedFields)
         {
             named.Add(StaticSymbol(f));
-            if (f.Owner.FindField(BindResult.ReadyField) is { } ready) named.Add(StaticSymbol(ready));
-            foreach (MethodSymbol init in f.Owner.FindMethods("StaticInit$")) named.Add(CallLabel(init));
+            Startup(f.Owner);
         }
         foreach (TypeSymbol t in _b.GenericNamedTypes)
         {

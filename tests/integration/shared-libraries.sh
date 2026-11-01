@@ -134,6 +134,12 @@ for lib in "$libdir"/*.so; do
     readelf --dyn-syms -W "$lib" | awk '$7 != "UND" && $8 ~ /^(m|mx|s)_/ { print $8 }'
 done | sort -u > "$work/libraries.exported"
 comm -23 "$work/libraries.defined" "$work/libraries.exported" > "$work/libraries.withheld"
+# Read, or the check below would hold of anything: libraries with no symbol
+# table to read it from.
+if [ ! -s "$work/libraries.defined" ]; then
+    echo "the libraries in $libdir have no symbol table to read what they define from" >&2
+    exit 2
+fi
 
 first=1
 for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor "$root/tests/language/514_stack_traces.cor"; do

@@ -813,7 +813,7 @@ public sealed partial class Lowering
         // marks a card, and the card table's static was new to a unit of
         // tables alone, added to the set being walked.
         // AND WHAT THEY REQUIRE, LOWERED IN TURN: such a descriptor's routines
-        // call the library (ArrayFaces' Array.FaceWidenedReal), required here
+        // call the library (ArrayFaces' Runtime.ArrayFaceWidenedReal), required here
         // after the methods were drained -- a call to a label no body was
         // made for, and the link refused the program (1963). Each round of
         // statics is followed by lowering what it required, and what that
@@ -872,6 +872,7 @@ public sealed partial class Lowering
                 DataItem holder = new(StaticSymbol(f), new byte[size])
                 {
                     Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner), ReadOnly = fixedField,
+                    Coalescible = f.Owner.Decl?.Specialised == true,
                     SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
                 };
                 holder.Relocs.Add(new DataReloc(0, table, 0));
@@ -3364,7 +3365,7 @@ public sealed partial class Lowering
             string copy = "t_" + FieldOwnerKey(s);
             if (!(shared ??= new()).Contains(copy)) shared.Add(copy);
         }
-        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Structural || t.Decl?.Specialised == true,
+        DataItem item = new(sym, block) { ReadOnly = true, Align = _t.Align64, FromLibrary = IsLibrary(t), SystemCode = SystemCode(t), SourcePath = SourcePathOf(t), Coalescible = t.Structural || t.Decl?.Specialised == true, GenericCode = t.Decl is { InGenericCode: true },
             Exported = t.Decl?.LocalOnly != true, SharedCopies = shared?.ToArray() };
         _m.Data.Add(item);
         item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes(DescriptorName(FullTypeName(t))), 0));
