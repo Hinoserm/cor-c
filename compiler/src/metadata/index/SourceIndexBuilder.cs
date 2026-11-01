@@ -547,8 +547,9 @@ public static class SourceIndexBuilder
                     // declarator's class in order (Binder.InitialiserClasses),
                     // once for a run of them alike: a static more or less among
                     // others of its class -- Ide's shutdown list removed --
-                    // changes nothing another unit compiles. An array made, which may be a
-                    // table laid down as data, by its tokens: a literal without
+                    // changes nothing another unit compiles. An array made,
+                    // which may be a table laid down as data, by its tokens:
+                    // a literal without
                     // its value -- a table's bytes are its own unit's -- but a
                     // length's with it, in `[ ]` outside any `{ }`:
                     // `new byte[60000]` is a zeroed table and `new byte[70000]`
