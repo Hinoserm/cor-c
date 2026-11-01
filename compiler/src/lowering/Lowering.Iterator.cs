@@ -120,13 +120,21 @@ public sealed partial class Lowering
             offsets[i] = at;
             at += 8;
         }
-        // AN ENUMERABLE'S ARGUMENTS AS GIVEN, beside the ones its body works
-        // on, and of a struct's method the struct as it was: what a second
-        // GetEnumerator starts from, as C#'s does -- started from the first
-        // enumerator's, a body that counted a parameter down left the second
-        // nothing to count.
+        // AN ENUMERABLE'S STRUCTS AS GIVEN, beside the copies its body works
+        // on -- a struct argument's, and of a struct's method the struct
+        // itself: what a second GetEnumerator starts from, as C#'s does. The
+        // body writes a struct in its block, so started from the first
+        // enumerator's, a body that counted a field down left the second
+        // nothing to count, and the two shared one block. Any other argument
+        // MoveNext reads once, into a register, and its field stays as given;
+        // -1 for those.
         int[] originals = enumerable ? new int[m.Params.Count] : Array.Empty<int>();
-        for (int i = 0; i < originals.Length; i++) { originals[i] = at; at += 8; }
+        for (int i = 0; i < originals.Length; i++)
+        {
+            if (m.Params[i].ByRef || !IsStructValue(m.Params[i].Type)) { originals[i] = -1; continue; }
+            originals[i] = at;
+            at += 8;
+        }
         int originalReceiver = -1;
         if (enumerable && !m.Static && m.Owner.Kind == TypeKind.Struct) { originalReceiver = at; at += 8; }
         // A SHARED METHOD COPY'S HIDDEN TYPE ARGUMENTS AND DICTIONARY
@@ -249,7 +257,7 @@ public sealed partial class Lowering
             {
                 CardMarkAt(R(machine), it.ParamOffsets[i]);
             }
-            if (it.OriginalOffsets.Length == 0) continue;
+            if (it.OriginalOffsets.Length == 0 || it.OriginalOffsets[i] < 0) continue;
             // A copy of its own: the body may write the working one.
             _e.Store(R(machine), R(MachineArgument(decl, args[i], m.Params[i])), it.OriginalOffsets[i], args[i].Type.Bytes());
             if (args[i].Type == IrTypes.Word)
@@ -382,21 +390,38 @@ public sealed partial class Lowering
                     e.Store(R(self), Imm(0, IrType.I32), IterStateField, 4);
                     e.Ret(R(self));
                     e.SetBlock(fresh);
+                    // The receiver and the structs AS GIVEN (OriginalOffsets),
+                    // not as the first enumerator's body left them: a copy of
+                    // each to work on, the original shared, since nothing
+                    // writes it. MADE BEFORE THE MACHINE, so nothing allocates
+                    // between the machine and its stores below, which then
+                    // need no card: made after, a collection inside a copy's
+                    // allocation could make the machine old, and the young
+                    // copies stored into it unmarked went with the next one.
+                    VReg? givenReceiver = null, receiverCopy = null;
+                    if (it.OriginalReceiver >= 0)
+                    {
+                        givenReceiver = e.Load(IrTypes.Word, self, it.OriginalReceiver);
+                        receiverCopy = CopyStruct(it.Decl, givenReceiver, it.Method.Owner);
+                    }
+                    VReg?[] given = new VReg?[it.ParamOffsets.Length];
+                    VReg?[] copies = new VReg?[it.ParamOffsets.Length];
+                    for (int i = 0; i < it.OriginalOffsets.Length; i++)
+                    {
+                        if (it.OriginalOffsets[i] < 0) continue;
+                        given[i] = e.Load(IrTypes.Word, self, it.OriginalOffsets[i]);
+                        copies[i] = CopyStruct(it.Decl, given[i]!, StructOf(it.Method.Params[i].Type));
+                    }
                     VReg copy = AllocateDynamic(it.Decl, Numbered(e, e.Load(IrTypes.Word, new SymOperand(it.SizeSymbol))));
                     // The same identity as the one asked (a variant, CanonMachineSlot).
                     if (it.Decl.CanonMachineSlot >= 0 || it.Decl.MachineNeed >= 0)
                         e.StoreDescribed(copy, VtableOf(it.Machine), e.Load(IrTypes.Word, self, 0), _t.WordSize);
                     else
                         e.Store(R(copy), VtableOf(it.Machine), 0, _t.WordSize);
-                    // The receiver and the arguments AS GIVEN (OriginalOffsets),
-                    // not as the first enumerator's body left them: a struct a
-                    // copy of its own to work on, the original shared, since
-                    // nothing writes it.
-                    if (it.OriginalReceiver >= 0)
+                    if (receiverCopy is not null)
                     {
-                        VReg given = e.Load(IrTypes.Word, self, it.OriginalReceiver);
-                        e.Store(R(copy), R(CopyStruct(it.Decl, given, it.Method.Owner)), IterReceiverField, _t.WordSize);
-                        e.Store(R(copy), R(given), it.OriginalReceiver, _t.WordSize);
+                        e.Store(R(copy), R(receiverCopy), IterReceiverField, _t.WordSize);
+                        e.Store(R(copy), R(givenReceiver!), it.OriginalReceiver, _t.WordSize);
                     }
                     else
                     {
@@ -404,17 +429,13 @@ public sealed partial class Lowering
                     }
                     for (int i = 0; i < it.ParamOffsets.Length; i++)
                     {
-                        ParamSymbol p = it.Method.Params[i];
-                        if (!p.ByRef && IsStructValue(p.Type))
+                        if (copies[i] is { } own)
                         {
-                            VReg given = e.Load(IrTypes.Word, self, it.OriginalOffsets[i]);
-                            e.Store(R(copy), R(CopyStruct(it.Decl, given, StructOf(p.Type))), it.ParamOffsets[i], _t.WordSize);
-                            e.Store(R(copy), R(given), it.OriginalOffsets[i], _t.WordSize);
+                            e.Store(R(copy), R(own), it.ParamOffsets[i], _t.WordSize);
+                            e.Store(R(copy), R(given[i]!), it.OriginalOffsets[i], _t.WordSize);
                             continue;
                         }
-                        VReg word = e.Load(IrType.I64, self, it.OriginalOffsets[i], 8);
-                        e.Store(R(copy), R(word), it.ParamOffsets[i], 8);
-                        e.Store(R(copy), R(word), it.OriginalOffsets[i], 8);
+                        e.Store(R(copy), R(e.Load(IrType.I64, self, it.ParamOffsets[i], 8)), it.ParamOffsets[i], 8);
                     }
                     foreach (int offset in it.HiddenOffsets)
                     {
