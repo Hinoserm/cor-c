@@ -232,6 +232,7 @@ public static class Console
     static bool _controlCAsInput;
     static List<ConsoleCancelEventHandler>? _cancel;
     static PosixSignalRegistration? _cancelRegistration;
+    static readonly object _cancelGate = new object();
 
     public static TextWriter Out
     {
@@ -700,27 +701,42 @@ public static class Console
             }
             // A NEW LIST EACH TIME, never one changed in place: the relay
             // walks it on the thread that delivers signals, while this runs.
-            List<ConsoleCancelEventHandler> grown = _cancel == null ? new List<ConsoleCancelEventHandler>() : new List<ConsoleCancelEventHandler>(_cancel);
-            grown.Add(value);
-            _cancel = grown;
-            if (_cancelRegistration == null)
+            // One change at a time (_cancelGate): two at once each copied
+            // the list as it was, and the second lost the first's.
+            lock (_cancelGate)
             {
-                _cancelRegistration = PosixSignalRegistration.Create(PosixSignal.SIGINT, new CancelRelay());
+                List<ConsoleCancelEventHandler> grown = _cancel == null ? new List<ConsoleCancelEventHandler>() : new List<ConsoleCancelEventHandler>(_cancel);
+                grown.Add(value);
+                _cancel = grown;
+                if (_cancelRegistration == null)
+                {
+                    _cancelRegistration = PosixSignalRegistration.Create(PosixSignal.SIGINT, new CancelRelay());
+                }
             }
         }
         remove
         {
-            if (value == null || _cancel == null)
+            if (value == null)
             {
                 return;
             }
-            List<ConsoleCancelEventHandler> less = new List<ConsoleCancelEventHandler>(_cancel);
-            less.Remove(value);
-            _cancel = less;
-            if (less.Count == 0 && _cancelRegistration != null)
+            lock (_cancelGate)
             {
-                _cancelRegistration.Dispose();
-                _cancelRegistration = null;
+                if (_cancel == null)
+                {
+                    return;
+                }
+                List<ConsoleCancelEventHandler> less = new List<ConsoleCancelEventHandler>(_cancel);
+                if (!less.Remove(value))
+                {
+                    return;
+                }
+                _cancel = less;
+                if (less.Count == 0 && _cancelRegistration != null)
+                {
+                    _cancelRegistration.Dispose();
+                    _cancelRegistration = null;
+                }
             }
         }
     }
