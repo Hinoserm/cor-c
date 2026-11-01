@@ -2002,9 +2002,9 @@ public static partial class Os
                 return;
             }
 
-            // A signal arrived while asleep, which is as quiet a moment as
-            // a program has: its handlers run now (as they do in Poll), and
-            // then the rest of the sleep is slept.
+            // A signal arrived while asleep: seen here, as in Poll, its
+            // handlers run on the thread that delivers them, and the rest of
+            // the sleep is slept.
             PosixSignalRegistration.Deliver();
             TimeSpec.Set(want, TimeSpec.Seconds(left), TimeSpec.Nanos(left));
         }

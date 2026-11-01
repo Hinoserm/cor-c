@@ -12,12 +12,12 @@
 // own, not in the signal frame, whatever the rest of the program is doing.
 // Run at the program's quiet moments instead, a program busy in a loop
 // never ran them: `ping -f`, sending back to back, let Ctrl+C and
-// `kill -INT` go by, and SIGKILL alone stopped it. The console, the
-// scheduler, the waits (Os.Poll, a thread's sleep) and the GUI seat
-// (Seat.Next) still call Deliver at theirs, which only marks what arrived
-// as seen, so a wait the signal ended is not ended by it again; none waits
-// for a handler, as no .NET wait does, and none runs one, so a scheduler
-// pass never runs a handler that waits for a task only that pass would.
+// `kill -INT` go by, and SIGKILL alone stopped it. The waits -- Os.Poll and
+// PollMany, a thread's sleep and the clock's, Windows' file waits -- and the
+// GUI seat (Seat.Next) still call Deliver when a signal ends them, which
+// only marks what arrived as seen, so the next wait is not ended by it
+// again; none waits for a handler, as no .NET wait does, and none runs one,
+// so no wait runs a handler that waits for what that wait's caller would do.
 // Os.Pause, whose promise is that the handlers have run, waits for them
 // (Settle).
 
@@ -135,7 +135,9 @@ public class PosixSignalRegistration : IDisposable
         }
     }
 
-    /// The default action again for this signal.
+    /// The default action again for this signal -- for one already arrived
+    /// whose handler the thread has not yet run too, as in .NET: the
+    /// process ends.
     public void Dispose()
     {
         int n = (int)_signal;
@@ -203,12 +205,26 @@ public class PosixSignalRegistration : IDisposable
         nuint gate = Sys.AddressOf(ref _running);
         while (true)
         {
-            if (_running != 0)
+            // _pending READ FIRST, _running after: a delivery takes _pending
+            // only while it holds _running, so nothing pending and then
+            // nothing running is a delivery finished. Read the other way, the
+            // thread could take the lock and the signal between the two, and
+            // Pause returned with its handler still running.
+            if (System.Threading.Interlocked.CompareExchange(ref _pending, 0, 0) == 0
+                && System.Threading.Interlocked.CompareExchange(ref _running, 0, 0) == 0)
+            {
+                return;
+            }
+            if (System.Threading.Interlocked.CompareExchange(ref _running, 0, 0) != 0)
             {
                 Native.Wait(gate, 1);
                 continue;
             }
-            if (_pending == 0)
+            // Not taken by the thread that delivers (or there is none -- a
+            // fork's child): run here. Not on a thread the runtime did not
+            // start, which has no block for the handlers' state (Run's
+            // _inside): it goes on, the thread that delivers to run them.
+            if (Sys.ThreadBlock() == 0)
             {
                 return;
             }
