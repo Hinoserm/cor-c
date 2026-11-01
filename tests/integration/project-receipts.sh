@@ -153,6 +153,21 @@ sed -i 's/private static int _a, _b = 1;/private static int _a, _b = A();/' "$wo
 run_build "$work" > "$work/declarators.log" 2>&1
 grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/declarators.log"
 test "$(answer "$program")" = 30
+# THE SAME TWO IN THE OTHER ORDER: the run the link may make ends at the
+# first, so `_a = A(), _b = 1` is not `_a = 1, _b = A()`.
+sed -i 's/private static int _a, _b = A();/private static int _a = 1, _b = A();/' "$work/Util.cs"
+run_build "$work" > "$work/order1.log" 2>&1
+sed -i 's/private static int _a = 1, _b = A();/private static int _a = A(), _b = 1;/' "$work/Util.cs"
+run_build "$work" > "$work/order2.log" 2>&1
+grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/order2.log"
+# A PUBLIC ONE, its first declarator without an initialiser: the whole
+# declaration is the shape's, not the first name's text.
+sed -i 's/    public const int R = 6;/    public const int R = 6;\n    public static int V, W = 1;/' "$work/Util.cs"
+run_build "$work" > "$work/public1.log" 2>&1
+sed -i 's/public static int V, W = 1;/public static int V, W = A();/' "$work/Util.cs"
+run_build "$work" > "$work/public2.log" 2>&1
+grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/public2.log"
+test "$(answer "$program")" = 30
 # The tree copied elsewhere, times and all: nothing compiled again.
 cp -a "$work" "$work-copy"
 run_build "$work-copy" > "$work-copy/copied.log" 2>&1

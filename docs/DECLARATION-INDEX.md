@@ -115,8 +115,10 @@ constructor; generic methods allowed), the index keeps:
 - a shape fingerprint: everything another unit reads of the type as a whole --
   its header, instance fields and constructors (its layout), virtual members,
   whether it has static work to run, and the template bodies' shape; a private
-  static's initialiser only by its class (Binder.InitialiserClass: startup work
-  that does or does not end the run of statics the link may lay down), an
+  static's initialiser only by its class, each declarator's in order
+  (Binder.InitialiserClasses: startup work that does or does not end the run
+  of statics the link may lay down), a declaration holding any static with an
+  initialiser whole, an
   array made by its tokens with an element's literal value left out and a
   length's kept, which decide a table laid down as data or code;
 - one 16-byte fingerprint per member name a unit can ask for: a method, a

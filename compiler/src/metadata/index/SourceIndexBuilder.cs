@@ -160,6 +160,9 @@ public static class SourceIndexBuilder
             // An initialised static is the shape's: what is made of the type's
             // statics -- a step the link may lay down, a call before first use
             // -- is read by every unit touching the type (Binder.StaticInitialisers).
+            // Decided per declaration too: one whose later declarator has an
+            // initialiser (`static int a, b = F();`) is the shape's whole,
+            // whatever this says of its first (the builder's spanStatics).
             FieldDecl field => shared && field.FixedSize is null && (field.Init is null || (field.Mods & Mods.Const) != 0) ? field.Name : null,
             PropertyDecl property => shared && property.Params.Count == 0 && property.Init is null ? property.Name : null,
             _ => null,
@@ -540,11 +543,11 @@ public static class SourceIndexBuilder
                     }
                     // A PRIVATE STATIC'S INITIALISER, to the shape: what every
                     // unit touching the type reads of it (Binder.StaticInitialisers,
-                    // Lowering.TouchType) and no more. Its class
-                    // (Binder.InitialiserClass), once, and once for a run of
-                    // them alike: a static more or less among others of its
-                    // class -- Ide's shutdown list removed -- changes nothing
-                    // another unit compiles. An array made, which may be a
+                    // Lowering.TouchType) and no more. Each initialised
+                    // declarator's class in order (Binder.InitialiserClasses),
+                    // once for a run of them alike: a static more or less among
+                    // others of its class -- Ide's shutdown list removed --
+                    // changes nothing another unit compiles. An array made, which may be a
                     // table laid down as data, by its tokens: a literal without
                     // its value -- a table's bytes are its own unit's -- but a
                     // length's with it, in `[ ]` outside any `{ }`:
