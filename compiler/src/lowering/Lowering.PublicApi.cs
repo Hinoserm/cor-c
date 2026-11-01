@@ -32,10 +32,12 @@ public sealed partial class Lowering
             bool open = Offered(d);
             // ITS MEMBERS READ IN ITS OWN SCOPE (MemberWatch): every type of the
             // unit is walked, and an imported one -- the kernel's Arch, in
-            // every unit -- emits nothing here but what the unit copied, on
-            // which the unit depends whole already. Read whole for the unit,
-            // 139 kernel units were compiled again for an Arch method none of
-            // them called.
+            // every unit -- lists nothing here: none of its methods is emitted
+            // (Emits; a generic method's copy is passed by, and the unit that
+            // made it depends on the type's file), and its statics are laid
+            // down by another unit (Elsewhere). Read whole for the unit, 139
+            // kernel units were compiled again for an Arch method none of them
+            // called.
             using MemberWatch.Scope own = MemberWatch.Within(d.Watch);
             foreach (MethodSymbol m in t.Methods)
             {
