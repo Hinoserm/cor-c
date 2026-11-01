@@ -124,12 +124,16 @@ public sealed partial class Binder
             return;
         }
         // A TYPE'S NAME, by its spelling, as BodyTypeNames.Path reads one: a
-        // capital first, or the compiler's own two underscores; a keyword's
-        // type by its own (`string.Concat`, `char.IsDigit`).
+        // capital first, or the compiler's own two underscores. As written
+        // first, as the binder looks one up, and then by the type a keyword
+        // or `Type` stands for (Alias: `string.Concat`, `Type.Missing`).
         if (NamesPath(member.Target) is not string qualifier) return;
-        if (char.IsLower(qualifier[0]) && Alias(qualifier) is string keyword) qualifier = keyword;
-        else if (!(char.IsUpper(qualifier[0]) || qualifier.StartsWith("__", StringComparison.Ordinal))) return;
-        if (OrdinaryNamed(new TypeRef { Name = qualifier, Line = member.Line, Col = member.Col }, scope) is TypeSymbol named) NamedOf(named, member.Name);
+        string? alias = Alias(qualifier);
+        if (alias is null && !(char.IsUpper(qualifier[0]) || qualifier.StartsWith("__", StringComparison.Ordinal))) return;
+        TypeSymbol? named = char.IsUpper(qualifier[0]) || qualifier.StartsWith("__", StringComparison.Ordinal)
+            ? OrdinaryNamed(new TypeRef { Name = qualifier, Line = member.Line, Col = member.Col }, scope) : null;
+        if (named is null && alias is not null) named = OrdinaryNamed(new TypeRef { Name = alias, Line = member.Line, Col = member.Col }, scope);
+        if (named is not null) NamedOf(named, member.Name);
     }
 
     /// <summary>The ordinary type a written type names in the code's scope, or null: never a generic one, which a copy has of its own.</summary>

@@ -282,8 +282,9 @@ public sealed class Module
     /// body, a static or a thread static's number of a library type, no copy
     /// of generic code (Coalescible, GenericCode), and nothing a provider
     /// exports. Not a descriptor: one the provider never made is the image's
-    /// to make, its receipt saying so (Driver, keptFromLibrary). Not FromLibrary, which a module's and a
-    /// library's compiles say of their own code too. Kept here, a static is
+    /// to make, its receipt saying so (Driver, keptFromLibrary). Not
+    /// FromLibrary, which a module's and a library's compiles say of their
+    /// own code too. Kept here, a static is
     /// a second one of the library's -- a second collector's state -- and a
     /// body a second copy of code its library withholds, where its library's
     /// fixes never reach. What the passes may not put into code this image

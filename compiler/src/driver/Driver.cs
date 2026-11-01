@@ -2108,7 +2108,7 @@ public static class Driver
                 + ": the library's own code and state are its library's, and a generic copy names them through what the library exports";
         module.Functions.RemoveAll(f => hidden.Contains(f.Name) || f.SystemCode && !f.GenericCode && !f.Coalescible && !live.Contains(f.Name));
         module.Data.RemoveAll(d => hidden.Contains(d.Name) || !swept && d.SystemCode && !d.Coalescible && !live.Contains(d.Name)
-            && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("t_", StringComparison.Ordinal)));
+            && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("ts_", StringComparison.Ordinal) || d.Name.StartsWith("t_", StringComparison.Ordinal)));
         return null;
     }
 

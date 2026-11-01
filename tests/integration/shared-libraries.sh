@@ -124,8 +124,8 @@ expected_output() {
 }
 
 # WHAT THE LIBRARIES DEFINE AND WITHHOLD: every global method, static and
-# thread static's number of theirs in .symtab and not in .dynsym (a local one is each image's own: a
-# state machine's, a closure's). A program defining one of these has its own
+# thread static's number of theirs in .symtab and not in .dynsym (a local
+# one is each image's own: a state machine's, a closure's). A program defining one of these has its own
 # copy of the library's private code or state -- its own collector's statics.
 for lib in "$libdir"/*.so; do
     readelf -sW "$lib" | awk '/Symbol table .\.symtab/ { s = 1 } s && $5 == "GLOBAL" && $7 != "UND" && $8 ~ /^(m|mx|s|ts)_/ { print $8 }'
