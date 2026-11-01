@@ -50,6 +50,24 @@ grep -q '^link output: .*/kernel (' "$work/kernel-2.log" || fail "the kernel wit
 "$corc" link "$work/sb16.o" --kernel "$k/kernel" -o "$work/sb16.ko" 2> "$work/module-3.log"
 grep -q '^link current: .*sb16.ko' "$work/module-3.log" || { cat "$work/module-3.log"; fail "the module was linked again for a kernel body"; }
 test "$(stat -c '%Y.%s' "$work/sb16.ko")" = "$before" || fail "the current module's image was written"
+# THE KERNEL LINKED AGAIN FROM THE SAME OBJECTS: current, and no new image.
+kernelBefore=$(stat -c '%Y.%s' "$k/kernel")
+# shellcheck disable=SC2086
+"$corc" link $(cut -f2 "$k/units.tsv" | tr '\n' ' ') -o "$k/kernel" --exports 2> "$work/kernel-3.log" || { cat "$work/kernel-3.log"; fail "kernel relink"; }
+grep -q '^link current: .*/kernel' "$work/kernel-3.log" || { cat "$work/kernel-3.log"; fail "the kernel linked again from the same objects was not current"; }
+test "$(stat -c '%Y.%s' "$k/kernel")" = "$kernelBefore" || fail "the current kernel's image was written"
+# A SWITCH THAT CHANGES THE IMAGE, taken off the command line before the link
+# sees it: not current.
+"$corc" link "$work/sb16.o" --kernel "$k/kernel" -o "$work/sb16.ko" --no-rta 2> "$work/module-norta.log" || { cat "$work/module-norta.log"; fail "module link --no-rta"; }
+if grep -q '^link current:' "$work/module-norta.log"; then fail "a link with --no-rta was taken as current"; fi
+# AN EXPORT THE MODULE IMPORTS GONE: linked again, and refused.
+sed -i 's/public static int Twice(int value)/public static int Thrice(int value)/' "$work/Kernel.cor"
+kernel "$work/kernel-4.log"
+if "$corc" link "$work/sb16.o" --kernel "$k/kernel" -o "$work/sb16.ko" 2> "$work/module-gone.log"; then fail "a module whose import is gone linked"; fi
+grep -q 'Twice' "$work/module-gone.log" || { cat "$work/module-gone.log"; fail "the refusal does not name the import"; }
+test ! -e "$work/sb16.ko.linked" || fail "a refused link left its receipt"
+sed -i 's/public static int Thrice(int value)/public static int Twice(int value)/' "$work/Kernel.cor"
+kernel "$work/kernel-5.log"
 # ITS OWN OBJECT CHANGED: linked again.
 sed -i 's/"sb16 at "/"sb16 found at "/' "$work/Sb16.cor"
 module "$work/module-4.log"

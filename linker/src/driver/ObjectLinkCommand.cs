@@ -163,6 +163,8 @@ public static class ObjectLinkCommand
         string destination = Path.GetFullPath(output);
         LinkTimings.Start();
         List<(string, ObjectFile)> inputs = new();
+        // Each object's bytes hashed as it is read (LinkReceipt): what the image is made of.
+        List<string> objectHashes = new();
         HashSet<string> seen = new(StringComparer.Ordinal);
         foreach (string path in paths)
         {
@@ -172,7 +174,11 @@ public static class ObjectLinkCommand
             if (!File.Exists(full)) return Fail("object does not exist: '" + path + "'");
             // Read so that each unit's IR stays in its file (ReadObjectFile):
             // a link holds the objects' code and tables, never their IR.
-            try { inputs.Add((path, ElfReader.ReadObjectFile(full))); }
+            try
+            {
+                objectHashes.Add(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(full))));
+                inputs.Add((path, ElfReader.ReadObjectFile(full)));
+            }
             catch (ElfFormatException error) { return Fail(path + ": " + error.Message); }
             // EACH INPUT SAID as it is read (Hino: a line for every file built or linked).
             Console.Error.WriteLine("link input: " + path + " (" + new FileInfo(full).Length + " bytes)");
@@ -233,10 +239,11 @@ public static class ObjectLinkCommand
         // what this link would write, and is left as it is. Not where a
         // report of the optimiser's own was asked for, which only a link makes.
         string? digest = null;
-        if (regionReport is null)
+        // Nor where a map was asked for and is not there to leave.
+        if (regionReport is null && (map is null || File.Exists(map)))
         {
-            try { digest = LinkReceipt.Digest(args, paths, inputs.Select(input => input.Item2).ToList(), keepPath, kernel, sharedLibraries); }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { digest = null; }
+            try { digest = LinkReceipt.Digest(args, objectHashes, inputs.Select(input => input.Item2).ToList(), keepPath, kernel, sharedLibraries, backendPath); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ElfFormatException) { digest = null; }
         }
         if (digest is not null && LinkReceipt.Current(output, digest))
         {

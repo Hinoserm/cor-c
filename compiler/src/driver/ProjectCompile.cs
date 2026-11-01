@@ -815,10 +815,7 @@ public static class ProjectCompile
         // again, and that is what changes its identity. Not its directory:
         // a toolchain copied with its times is the same compiler.
         using SHA256 sha = SHA256.Create();
-        // AND THE ASSEMBLY'S OWN BUILD (its module version id): two toolchains
-        // whose files' times were made alike, in an archive, are still two.
-        byte[] described = Encoding.UTF8.GetBytes(string.Join("\n", parts.Distinct(StringComparer.Ordinal).Select(Corsac.Projects.ProjectState.WriteIdentity))
-            + "\n" + typeof(ProjectCompile).Assembly.ManifestModule.ModuleVersionId);
+        byte[] described = Encoding.UTF8.GetBytes(string.Join("\n", parts.Distinct(StringComparer.Ordinal).Select(Corsac.Projects.ProjectState.WriteIdentity)));
         return _compilerIdentity = Convert.ToHexString(sha.ComputeHash(described));
     }
 }

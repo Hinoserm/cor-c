@@ -96,7 +96,9 @@ public static class SourceIndexBuilder
     /// - a constructor: that the type has one of its own;
     /// - a static with an initialiser: that the type has some, which every
     ///   unit touching the type reads as whether it must be made before use
-    ///   (Binder.StaticInitialisers, Lowering.TouchType).
+    ///   (Binder.StaticInitialisers, Lowering.TouchType) -- and, of a type
+    ///   whose members are told apart, the initialiser's tokens in its shape
+    ///   (ByMember), whether it is a table or code being what that reads.
     /// A const counts as written -- a public constant, a default argument or
     /// a buffer's length may be folded from it -- as does a member with
     /// attributes, an explicit interface's, an instance property (an
@@ -453,12 +455,15 @@ public static class SourceIndexBuilder
                             visible.Append(laid).Append(' ');
                             if (byMember) shapeText.Append(laid).Append(' ');
                         }
-                        // A PRIVATE STATIC'S INITIALISER WHOLE, to the shape: a
-                        // table laid down as data makes no StaticInit$, a
-                        // computed one does, and every unit touching the type
-                        // reads which (Binder.StaticInitialisers, Lowering.TouchType).
+                        // A PRIVATE STATIC'S INITIALISER, to the shape: a table
+                        // laid down as data makes no StaticInit$, a computed one
+                        // does, and every unit touching the type reads which
+                        // (Binder.StaticInitialisers, Lowering.TouchType). By its
+                        // tokens without a literal's value, which decides neither
+                        // -- the table's bytes are its own unit's.
                         else if (hiding == PrivateMember.Initialised && byMember)
-                            shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                            shapeText.Append(token.Kind is Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str
+                                ? token.Kind.ToString() : text.Substring(token.Pos, ends[tokenIndex] - token.Pos)).Append(' ');
                     }
                     shaped.Flush();
                     // Once, wherever they were written.
@@ -473,12 +478,16 @@ public static class SourceIndexBuilder
                     if (byMember)
                     {
                         HashSet<MemberDecl> spanned = new(members.Select(member => member.Member), ReferenceEqualityComparer.Instance);
-                        Dictionary<(int Line, int Col), int> at = new();
-                        foreach (Token placed in tokens)
-                            if (placed.Pos >= type.SourceFrom && placed.Pos < type.SourceTo) at.TryAdd((placed.Line, placed.Col), placed.Pos);
+                        Dictionary<(int Line, int Col), int>? at = null;
                         foreach (MemberDecl unspanned in type.Members)
                         {
                             if (spanned.Contains(unspanned) || Hiding(unspanned) != PrivateMember.Shown) continue;
+                            if (at is null)
+                            {
+                                at = new();
+                                foreach (Token placed in tokens)
+                                    if (placed.Pos >= type.SourceFrom && placed.Pos < type.SourceTo) at.TryAdd((placed.Line, placed.Col), placed.Pos);
+                            }
                             int inside = at.TryGetValue((unspanned.Line, unspanned.Col), out int pos)
                                 ? Array.FindIndex(members, member => pos >= member.From && pos < member.To) : -1;
                             if (inside < 0) { byMember = false; break; }
@@ -492,9 +501,10 @@ public static class SourceIndexBuilder
                         }
                     }
                     // WHETHER IT HAS STATICS TO MAKE, whoever's they are: every
-                    // unit touching the type reads that (Lowering.TouchType),
-                    // and a public static with an initialiser is a member's
-                    // text, not the shape's, where a private one was a mark.
+                    // unit touching the type reads that (Lowering.TouchType).
+                    // An initialised static's text is the shape's already
+                    // (MemberName; a private one's above); this says so even of
+                    // a static constructor's type.
                     if (byMember && type.Members.Any(member => (member.Mods & Mods.Static) != 0
                             && member is FieldDecl { Init: not null } or PropertyDecl { Init: not null } or MethodDecl { IsCtor: true }))
                         shapeText.Append("static ;");

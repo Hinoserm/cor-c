@@ -34,15 +34,35 @@ public static class LinkReceipt
     /// null where something it reads cannot be read (the link then goes on,
     /// and says so where it fails).
     /// </summary>
-    public static string Digest(IReadOnlyList<string> args, IReadOnlyList<string> objects, IReadOnlyList<ObjectFile> read,
-        string? keepPath, KernelExports? kernel, IReadOnlyList<string> sharedLibraries)
+    /// <param name="objectHashes">Each object's bytes hashed as the link read them (ObjectLinkCommand): what the image is made of, not a later read.</param>
+    public static string Digest(IReadOnlyList<string> args, IReadOnlyList<string> objectHashes, IReadOnlyList<ObjectFile> read,
+        string? keepPath, KernelExports? kernel, IReadOnlyList<string> sharedLibraries, string? backendPath)
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         void Say(string text) { byte[] bytes = Encoding.UTF8.GetBytes(text + "\n"); hash.AppendData(bytes); }
-        Say("link receipt 1");
+        Say("link receipt 2");
         foreach (string file in LinkerFiles()) Say(file);
-        foreach (string arg in args) Say(Unplaced(arg));
-        foreach (string path in objects) Say(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))));
+        if (backendPath is not null && File.Exists(backendPath)) Say("backend " + Written(backendPath));
+        // THE SWITCHES THIS PROCESS WAS GIVEN, taken off the command line before
+        // the link saw it (Switches.Take) and handed to every backend it starts:
+        // --no-rta, --region-engine and --skip-passes change the image.
+        foreach (string flag in Switches.ChildFlags) Say("switch " + flag);
+        for (int i = 0; i < args.Count; i++)
+        {
+            // A path the options name, by its name and never by whether it
+            // exists yet (the output's does not before its first link): what
+            // the link reads is hashed below, by its bytes or its answers. The
+            // run path is the image's own text, and is kept as written.
+            if (args[i] is "-o" or "--kernel" or "--keep" or "--link-shared" or "--map" or "--lto-backend" or "--region-report" or "--unused-report"
+                && i + 1 < args.Count)
+            {
+                Say(args[i] + " <path>/" + Path.GetFileName(args[i + 1]));
+                i++;
+            }
+            else if (args[i].Length > 0 && args[i][0] != '-' && (i == 0 || !Valued(args[i - 1]))) Say("<object>/" + Path.GetFileName(args[i]));
+            else Say(args[i]);
+        }
+        foreach (string objectHash in objectHashes) Say(objectHash);
         if (keepPath is not null) Say("keep " + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(keepPath))));
         if (kernel is not null)
         {
@@ -63,8 +83,16 @@ public static class LinkReceipt
                 asked.Add(name);
                 if (name.EndsWith(Linker.InsideSuffix, StringComparison.Ordinal)) asked.Add(name[..^Linker.InsideSuffix.Length]);
             }
-            List<(string Name, HashSet<string> Exports)> theirs = sharedLibraries.Distinct(StringComparer.Ordinal)
-                .Select(path => (Path.GetFileName(path), new HashSet<string>(ElfReader.ExportsOf(File.ReadAllBytes(path)), StringComparer.Ordinal))).ToList();
+            // A MODULE'S DEPENDENCY by its soname (its DT_NEEDED) and the names
+            // asked of it, as the kernel; ANY OTHER IMAGE'S by its bytes as well:
+            // a program's link prebinds the library's addresses into it.
+            List<(string Name, HashSet<string> Exports)> theirs = new();
+            foreach (string path in sharedLibraries.Distinct(StringComparer.Ordinal))
+            {
+                byte[] bytes = File.ReadAllBytes(path);
+                theirs.Add((Path.GetFileName(path), new HashSet<string>(ElfReader.ExportsOf(bytes), StringComparer.Ordinal)));
+                Say("library " + Path.GetFileName(path) + " " + (kernel is null ? Convert.ToHexString(SHA256.HashData(bytes)) : (ElfReader.SoNameOf(bytes) ?? Path.GetFileName(path))));
+            }
             foreach (string name in asked)
             {
                 StringBuilder answer = new(name);
@@ -99,6 +127,12 @@ public static class LinkReceipt
         try { File.Delete(output + Suffix); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
+    /// <summary>Whether a link option takes a value after it, which is then no object.</summary>
+    private static bool Valued(string option)
+        => option is "-o" or "--kernel" or "--keep" or "--link-shared" or "--map" or "--lto-backend" or "--region-report" or "--unused-report"
+            or "--runpath" or "--entry" or "--base" or "--paddr" or "--lto-import-bytes" or "--cpu" or "--fpu"
+            or "--irq-waits" or "--wait-free-roots" or "--wait-free-stop" or "--irq-roots" or "--irq-stop";
+
     /// <summary>Which write of the image it is: its length and time, the image changed by anything else is not current.</summary>
     private static string Written(string path)
     {
@@ -106,13 +140,24 @@ public static class LinkReceipt
         return file.Length + " " + file.LastWriteTimeUtc.Ticks;
     }
 
-    /// <summary>The linker's own files by name, time and length: a linker built again links again.</summary>
+    /// <summary>
+    /// The linker's own files by name, time and length: a linker built again
+    /// links again. Every assembly of the toolchain loaded here -- the
+    /// compiler's too, whose passes the link's backends run -- or the one
+    /// native image that holds them all.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("SingleFile", "IL3000",
+        Justification = "An empty location is a native image's, which the process path stands for.")]
     private static IEnumerable<string> LinkerFiles()
     {
         List<string> files = new();
         if (Environment.ProcessPath is string self && File.Exists(self)) files.Add(self);
-        string assembly = typeof(LinkReceipt).Assembly.Location;
-        if (assembly.Length > 0 && File.Exists(assembly)) files.Add(assembly);
+        string home = AppContext.BaseDirectory;
+        foreach (System.Reflection.Assembly loaded in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            string location = loaded.Location;
+            if (location.Length > 0 && home.Length > 0 && location.StartsWith(home, StringComparison.Ordinal) && File.Exists(location)) files.Add(location);
+        }
         return files.Distinct(StringComparer.Ordinal).Select(path =>
         {
             FileInfo file = new(path);
@@ -120,8 +165,4 @@ public static class LinkReceipt
         });
     }
 
-    /// <summary>An option as the receipt keeps it: a path as `&lt;path&gt;` (ProjectState.Unplaced), the output's own name kept, which a shared object's soname is.</summary>
-    private static string Unplaced(string option)
-        => option.Length > 0 && option[0] != '-'
-           && (Path.IsPathRooted(option) || option.Contains('/') && (File.Exists(option) || Directory.Exists(option))) ? "<path>/" + Path.GetFileName(option) : option;
 }
