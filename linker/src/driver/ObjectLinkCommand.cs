@@ -143,9 +143,9 @@ public static class ObjectLinkCommand
             if (keepPath is not null && !File.Exists(keepPath)) return Fail("--keep '" + keepPath + "' does not exist");
         }
         else if (keepPath is not null) return Fail("--keep names what a kernel linked with --exports keeps for its modules");
-        // WHAT THE BUILD'S MODULES IMPORT, one name a line: with it the kernel
-        // is pruned to what it and they reach, as a closed image is; without
-        // it every global is kept, for modules nobody has built yet.
+        // WHAT THE BUILD'S MODULES IMPORT, one name a line: roots beside the
+        // entry and the public surface (PublicApi), for the runtime's and the
+        // library's code those modules call. It never narrows the surface.
         string[]? keep = keepPath is null ? null
             : File.ReadAllLines(keepPath).Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith('#')).ToArray();
         KernelExports? kernel = null;
@@ -383,17 +383,15 @@ public static class ObjectLinkCommand
             try
             {
                 List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
-                {
-                    // Withheld: internal and private are the kernel's own. And
-                    // every public method of its own there (+), or the kernel is
-                    // not what it says; a static or the library's surface (~)
-                    // where the link kept it.
-                    globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name) && !optional.Contains(export.Name));
-                    HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
-                    List<string> lost = offered.Where(name => !exported.Contains(name)).Order(StringComparer.Ordinal).ToList();
-                    if (lost.Count > 0)
-                        throw new ElfFormatException(output + ": public members of the kernel not in the image to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
-                }
+                // Withheld: internal and private are the kernel's own. And
+                // every public method of its own there (+), or the kernel is
+                // not what it says; a static or the library's surface (~)
+                // where the link kept it.
+                globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name) && !optional.Contains(export.Name));
+                HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
+                List<string> lost = offered.Where(name => !exported.Contains(name)).Order(StringComparer.Ordinal).ToList();
+                if (lost.Count > 0)
+                    throw new ElfFormatException(output + ": public members of the kernel not in the image to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
                 // ONE LAYOUT A TYPE: two of a key's names (LayoutNames) -- two
                 // units' differing records of one instantiation, or of any
                 // type two units define -- would bind a module built against

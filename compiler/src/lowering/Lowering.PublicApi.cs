@@ -50,8 +50,6 @@ public sealed partial class Lowering
                 List<string> into = !offered ? _m.WithheldSymbols : library ? _m.OptionalSymbols : _m.PublicSymbols;
                 into.Add(CallLabel(m));
                 if (CopiesInside(m)) into.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
-                // AND THE BODY A CONTEXT'S CALLER ENTERS (BodyLabel), where it has one.
-                if (TakesContext(m)) (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(BodyLabel(m));
             }
             foreach (FieldSymbol f in t.Fields)
             {
@@ -68,7 +66,10 @@ public sealed partial class Lowering
             // that, and the kernel need never make one itself (Unused types,
             // a class only a module instantiates). By the name the unit gave
             // it, never one made here for the asking: a box for a struct or
-            // an enum (BoxDescriptor), an interface's own, a class's.
+            // an enum (BoxDescriptor), an interface's own, a class's. AN
+            // INTERFACE'S NEVER WITHHELD: a public class may implement an
+            // internal one, and a module's class deriving from it names the
+            // interface's descriptor in its own (ClassDescriptor's interfaces).
             string? descriptor = t.Kind switch
             {
                 TypeKind.Interface => _interfaceDescriptors.GetValueOrDefault(t),
@@ -76,7 +77,7 @@ public sealed partial class Lowering
                 _ => _descriptors.GetValueOrDefault(t),
             };
             if (descriptor is not null && !d.Elsewhere)
-                (open ? _m.OptionalSymbols : library ? null : _m.WithheldSymbols)?.Add(descriptor);
+                (open ? _m.OptionalSymbols : library || t.Kind == TypeKind.Interface ? null : _m.WithheldSymbols)?.Add(descriptor);
         }
     }
 

@@ -56,8 +56,9 @@ kernel "$work/a" $here/Host.cor $here/Kernel.cor $here/Loader.cor
 a=$work/a
 
 # THE KERNEL AS A LIBRARY: its export table a section of its own file,
-# outside every loaded segment, and in it every global but the per-image
-# ones, at the kernel's addresses. No stamp anywhere.
+# outside every loaded segment, and in it its public surface and the
+# runtime's and library's names it keeps, at the kernel's addresses. No stamp
+# anywhere.
 section=$(readelf -S -W "$a/kernel" | sed 's/\[ */[/' | awk '$2 == ".corsac.exports" { print strtonum("0x" $5), strtonum("0x" $6) }')
 test -n "$section" || fail "the kernel carries no export table"
 readelf -l -W "$a/kernel" | awk -v s="$section" 'BEGIN { split(s, t, " ") } $1 == "LOAD" { o = strtonum($2); n = strtonum($5); if (t[1] < o + n && t[1] + t[2] > o) bad = 1 } END { exit bad }' \
@@ -165,19 +166,18 @@ cp "$work/relocated/sb16.ko" "$a/module.ko"
 cmp -s "$work/run.out" "$work/relocated/run.out" || { cat "$work/relocated/run.out"; fail "the relocated module ran other than the other"; }
 cp "$work/linked/sb16.ko" "$a/module.ko"
 
-# PRUNED WITH --keep: the kernel linked again keeping only what it and the
-# module reach -- the module's imports the roots beside the entry -- drops
-# what nobody calls, keeps every import, and loads and runs the module the
-# same, bound by name against the pruned kernel's table.
-readelf -s -W "$a/kernel" | grep -q 'Unused_Never' || fail "the open kernel dropped what a module might call"
+# LINKED AGAIN WITH --keep: the module's imports roots beside the entry and
+# the public surface, which --keep never narrows -- Unused.Never, public and
+# called by nobody, is kept and exported either way -- every import exported,
+# and the module loaded and run the same, bound by name against its table.
+readelf -s -W "$a/kernel" | grep -q 'Unused_Never' || fail "the kernel dropped a public member nothing calls"
 readelf --dyn-syms -W "$work/linked/sb16.ko" | awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > "$work/keep"
 mkdir -p "$work/pruned"
 objects=$(cut -f2 "$a/units.tsv" | tr '\n' ' ')
 # shellcheck disable=SC2086
 "$corc" link $objects -o "$work/pruned/kernel" --exports --keep "$work/keep" \
     2> "$work/pruned/link.log" || { cat "$work/pruned/link.log"; fail "the kernel did not link with --keep"; }
-if readelf -s -W "$work/pruned/kernel" | grep -q 'Unused_Never'; then fail "the pruned kernel kept what nothing reaches"; fi
-test "$(stat -c %s "$work/pruned/kernel")" -lt "$(stat -c %s "$a/kernel")" || fail "the pruned kernel is no smaller"
+readelf -s -W "$work/pruned/kernel" | grep -q 'Unused_Never' || fail "--keep narrowed the public surface"
 exports "$work/pruned/kernel" | awk '{ print $1 }' | sort -u > "$work/pruned/exported"
 comm -23 "$work/keep" "$work/pruned/exported" > "$work/pruned/missing"
 test ! -s "$work/pruned/missing" || { cat "$work/pruned/missing"; fail "the pruned kernel does not export what the module imports"; }

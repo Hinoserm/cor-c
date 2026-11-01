@@ -75,27 +75,24 @@ cp "$work/blit.ko" "$a/module.ko"
 grep -qx 'blit 11732' "$work/run.out" && grep -qx 'shade 1520' "$work/run.out" && grep -qx 'bind 11732' "$work/run.out" \
     || { cat "$work/run.out"; fail "the module's blit came out wrong"; }
 
-# A KERNEL WITHOUT THE COPY: linked again keeping the module's imports but
-# the copy, whose callers there are none of in the kernel. The module's
-# link takes the routine itself, which keeps the state of its own.
+# LINKED AGAIN WITH --keep NAMING THE MODULE'S IMPORTS BUT THE COPY: the
+# copy is a public routine's, on the kernel's public surface, which --keep
+# never narrows -- kept and exported, and the module, linked again, calls it.
 mkdir -p "$work/pruned"
-# What the module's object names and what its link imported, but the copy.
 { readelf -s -W "$work/blit.o" | awk '$7 == "UND" && $8 != "" { print $8 }'; cat "$work/imports"; echo "$routine"; } \
     | grep -vxF "$routine\$inside" | sort -u > "$work/pruned/keep"
 # shellcheck disable=SC2086
 "$corc" link $objects -o "$work/pruned/kernel" --exports --keep "$work/pruned/keep" $cpu \
     2> "$work/pruned/link.log" || { cat "$work/pruned/link.log"; fail "the kernel did not link with --keep"; }
-if python3 -I "$root/$here/exports.py" "$work/pruned/kernel" | awk '{ print $1 }' | grep -qxF "$routine\$inside"; then
-    fail "the pruned kernel kept the copy nothing of its own calls"
-fi
+python3 -I "$root/$here/exports.py" "$work/pruned/kernel" | awk '{ print $1 }' | grep -qxF "$routine\$inside" \
+    || fail "--keep narrowed the public surface: the routine's copy is gone"
 # shellcheck disable=SC2086
 "$corc" link "$work/blit.o" --kernel "$work/pruned/kernel" $cpu -o "$work/pruned/blit.ko" 2> "$work/pruned/blit-link.log" \
-    || { cat "$work/pruned/blit-link.log"; fail "the module did not link against the kernel without the copy"; }
+    || { cat "$work/pruned/blit-link.log"; fail "the module did not link against the kernel linked again"; }
 readelf --dyn-syms -W "$work/pruned/blit.ko" | awk '$7 == "UND" && $8 != "" { print $8 }' | sort -u > "$work/pruned/imports"
-grep -qxF "$routine" "$work/pruned/imports" || { cat "$work/pruned/imports"; fail "the module does not call the routine itself"; }
-if grep -qxF "$routine\$inside" "$work/pruned/imports"; then fail "the module still names the copy the kernel no longer has"; fi
+grep -qxF "$routine\$inside" "$work/pruned/imports" || { cat "$work/pruned/imports"; fail "the module does not call the copy"; }
 cp "$work/pruned/blit.ko" "$work/pruned/module.ko"
-(cd "$work/pruned" && ./kernel) > "$work/pruned/run.out" 2>&1 || { cat "$work/pruned/run.out"; fail "the pruned kernel did not load the module"; }
-cmp -s "$work/run.out" "$work/pruned/run.out" || { cat "$work/pruned/run.out"; fail "the module ran otherwise on the routine itself"; }
+(cd "$work/pruned" && ./kernel) > "$work/pruned/run.out" 2>&1 || { cat "$work/pruned/run.out"; fail "the kernel linked again did not load the module"; }
+cmp -s "$work/run.out" "$work/pruned/run.out" || { cat "$work/pruned/run.out"; fail "the module ran otherwise"; }
 
 echo "PASS modules-packed"

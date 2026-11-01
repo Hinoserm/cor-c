@@ -236,8 +236,9 @@ public static class Driver
                                    ones pruned and inlined freely, and withheld. The kernel
                                    is not closed: modules call into it and derive from its
                                    classes
-              --keep <names>       with --exports: keep only what the kernel and these, its
-                                   modules' imports, reach
+              --keep <names>       with --exports: these too -- its modules' imports of the
+                                   runtime's and the library's code -- beside the entry and
+                                   the public surface, which it never narrows
               --kernel <kernel>    link a module of that kernel: a shared object with no
                                    runtime of its own, importing from the kernel's
                                    .corsac.exports and from the modules named with
