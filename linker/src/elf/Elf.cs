@@ -139,6 +139,15 @@ internal static class Elf
     /// page of the symbols or their strings.
     /// </summary>
     public const int DtCorsacNames64 = 0x60000C08;
+    /// <summary>
+    /// And in every image this linker writes with a dynamic array --
+    /// program, shared object, module -- whatever else it carries: that it
+    /// is COR-C#'s, the format's version its value (0 until a release). The
+    /// CORSAC kernel binds an image that has a tag of this range itself and
+    /// hands any other program asking for /lib/ld-linux.so.2 to glibc's
+    /// loader; a program had none of them, and would have gone there.
+    /// </summary>
+    public const int DtCorsacImage = 0x60000C09;
 
     public const int DtRel = 17;
     public const int DtRelSz = 18;
