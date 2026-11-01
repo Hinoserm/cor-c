@@ -2099,7 +2099,7 @@ public static class Driver
             else if (live.Add(target)) work.Push(target);
         }
         foreach (Function f in module.Functions)
-            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible || f.Version) && live.Add(f.Name)) work.Push(f.Name);
+            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
         foreach (DataItem d in module.Data)
             if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || d.Coalescible || d.GenericCode) && live.Add(d.Name)) work.Push(d.Name);
         void Walk()
@@ -2136,7 +2136,9 @@ public static class Driver
                 + string.Join("; ", named.Take(12).Select(n => n.Key + " (named by " + n.Value + ")"))
                 + (named.Count > 12 ? "; and " + (named.Count - 12) + " more" : "")
                 + ": the library's own code and state are its library's, and a generic copy names them through what the library exports";
-        module.Functions.RemoveAll(f => hidden.Contains(f.Name) || f.SystemCode && !f.GenericCode && !f.Coalescible && !f.Version && !live.Contains(f.Name));
+        // A version of library code the image's live code does not call goes
+        // with the library code it was made of.
+        module.Functions.RemoveAll(f => hidden.Contains(f.Name) || f.SystemCode && !f.GenericCode && !f.Coalescible && !live.Contains(f.Name));
         module.Data.RemoveAll(d => hidden.Contains(d.Name) || !swept && d.SystemCode && !d.Coalescible && !live.Contains(d.Name)
             && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("ts_", StringComparison.Ordinal) || d.Name.StartsWith("t_", StringComparison.Ordinal)));
         return null;
