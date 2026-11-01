@@ -29,6 +29,7 @@ if grep -q '^m_Api_Pick[^e]' "$work/exported"; then fail "the library exported a
 readelf -d "$work/libApi.so" > "$work/dynamic"
 grep -q 'GNU_HASH' "$work/dynamic" || fail "the library has no GNU hash"
 grep -qi '0x60000c08' "$work/dynamic" || fail "the library has no names64 (DT_CORSAC_NAMES64)"
+grep -qi '0x60000c09' "$work/dynamic" || fail "the library has no DT_CORSAC_IMAGE"
 # Every export found as a loader finds it, through those tables.
 python3 -I $here/lookup.py "$work/libApi.so" > "$work/lookup.out" 2>&1 || { cat "$work/lookup.out"; fail "an export is not found through the GNU hash and names64"; }
 grep -q '^lookup ok [1-9]' "$work/lookup.out" || { cat "$work/lookup.out"; fail "the lookup found no export"; }
@@ -39,6 +40,10 @@ grep -q '^lookup ok [1-9]' "$work/lookup.out" || { cat "$work/lookup.out"; fail 
     || { cat "$work/caller-link.log"; fail "caller link"; }
 status=0; "$work/caller" || status=$?
 test "$status" = 42 || fail "the caller answered $status, not 42"
+# A PROGRAM SAYS IT IS COR-C#'S too (DT_CORSAC_IMAGE): the CORSAC kernel
+# hands a program with none of this system's tags to glibc's loader.
+readelf -d "$work/caller" > "$work/caller.dynamic"
+grep -qi '0x60000c09' "$work/caller.dynamic" || fail "the program has no DT_CORSAC_IMAGE"
 # Its copy of Pick its own, calling what the library exported for it.
 readelf -sW "$work/caller" | awk '$7 != "UND" { print $8 }' > "$work/caller.defined"
 readelf --dyn-syms -W "$work/caller" | awk '$7 == "UND" { print $8 }' > "$work/caller.imports"

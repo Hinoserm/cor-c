@@ -1256,6 +1256,7 @@ public static partial class Linker
         // Eager binding, and this object's own definitions win: see the
         // class comment for why both.
         d.Add((Elf.DtBindNow, 0));
+        d.Add((Elf.DtCorsacImage, 0));
         if (dyn.Shared) d.Add((Elf.DtCorsacChecksum, dyn.Checksum));
         if (dyn.PreboundChecksum is uint prebound) d.Add((Elf.DtCorsacPrebound, prebound));
         uint flags = Elf.DfBindNow | Elf.DfSymbolic | (dyn.TextRel ? Elf.DfTextRel : 0);

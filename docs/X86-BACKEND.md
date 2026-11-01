@@ -304,17 +304,29 @@ the libraries were found in), `DT_INIT`, `DT_HASH`, `DT_STRTAB`,
 `DT_SYMTAB`, `DT_STRSZ`, `DT_SYMENT`, `DT_REL`, `DT_RELSZ`, `DT_RELENT`,
 `DT_PLTGOT`, `DT_PLTRELSZ`, `DT_PLTREL` (always `DT_REL`), `DT_JMPREL`,
 `DT_BIND_NOW`, `DT_FLAGS` (`DF_BIND_NOW | DF_SYMBOLIC`), `DT_FLAGS_1`
-(`DF_1_NOW`), `DT_NULL`. The `.plt` group appears only when there is a
-PLT entry, which an executable has and a library does not.
+(`DF_1_NOW`), `DT_NULL`; `DT_GNU_HASH` (libraries, beside `DT_HASH`) and
+`DT_DEBUG` (executables, where the loader puts its link map). The `.plt`
+group appears only when there is a PLT entry, which an executable has and
+a library does not.
+
+And this system's own, from the range ELF leaves an operating system
+(`Elf.cs`): `DT_CORSAC_IMAGE` (0x60000C09, every image, value 0: the
+format's version) says the image is COR-C#'s -- the CORSAC kernel binds an
+image with a tag of 0x60000C00-0x60000CFF itself and hands any other
+program asking for `/lib/ld-linux.so.2` to glibc's loader;
+`DT_CORSAC_CHECKSUM` (0x60000C01, libraries) and `DT_CORSAC_PREBOUND`
+(0x60000C02, a prebound image) for prebinding; `DT_CORSAC_NAMES64`
+(0x60000C08, libraries) for finding exports by hash. A loader that does
+not know one passes it by.
 
 Not emitted, and a loader need not implement them: `DT_RELA` and anything
-with an addend, `DT_INIT_ARRAY`/`DT_FINI_ARRAY`/`DT_FINI`, `DT_GNU_HASH`,
-symbol versioning (`DT_VERSYM`, `DT_VERDEF`, `DT_VERNEED`), `DT_RPATH`,
-`DT_TEXTREL`, `DT_DEBUG`.
+with an addend, `DT_INIT_ARRAY`/`DT_FINI_ARRAY`/`DT_FINI`, symbol
+versioning (`DT_VERSYM`, `DT_VERDEF`, `DT_VERNEED`), `DT_RPATH`,
+`DT_TEXTREL`.
 
-**DT_HASH is the only hash table.** The SysV one: `nbucket`, `nchain`,
-the buckets, the chains, with the ELF hash function. There is no GNU hash
-section to fall back to.
+**DT_HASH is in every image.** The SysV one: `nbucket`, `nchain`, the
+buckets, the chains, with the ELF hash function. A library has a GNU hash
+beside it (`DT_GNU_HASH`), which a loader may use instead.
 
 **Relocations.** `REL` only -- eight bytes, `r_offset` and `r_info`, the
 addend implicit in the word being relocated. Exactly four types appear:

@@ -107,6 +107,7 @@ for ko in "$work/sb16.ko" "$work/linked/sb16.ko" "$work/project/sb16.ko"; do
     readelf -d "$ko" > "$ko.dynamic"
     if grep -q 'NEEDED\|TEXTREL' "$ko.dynamic"; then fail "$ko needs a library or relocates its text"; fi
     grep -q '(HASH)' "$ko.dynamic" || fail "$ko has no DT_HASH"
+    grep -qi '0x60000c09' "$ko.dynamic" || fail "$ko has no DT_CORSAC_IMAGE"
     # Only what a library has: no COPY, no PC32, no TLS -- and none in text.
     readelf -r -W "$ko" | awk '/^[0-9a-f]+ / { print $3 }' | sort -u > "$ko.kinds"
     if grep -v -x -e R_386_RELATIVE -e R_386_32 -e R_386_GLOB_DAT -e R_386_JMP_SLOT "$ko.kinds"; then fail "$ko has a relocation the binder does not apply"; fi
