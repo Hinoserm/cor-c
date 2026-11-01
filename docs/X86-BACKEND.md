@@ -281,7 +281,7 @@ position-independent.
 
 | Header | Contents |
 |---|---|
-| `PT_LOAD` R+X | the ELF header, `.interp`, `.hash`, `.dynsym`, `.dynstr`, `.rel.dyn`, `.rel.plt`, `.plt`, `.text`, `.rodata` |
+| `PT_LOAD` R+X | the ELF header, `.interp`, `.hash`, `.gnu.hash` and `.corsac.names64` (shared objects and modules), `.dynsym`, `.dynstr`, `.rel.dyn`, `.rel.plt`, `.plt`, `.text`, `.rodata` |
 | `PT_LOAD` R+W | `.data`, `.got`, `.dynamic`, `.bss` (the zero tail is `p_memsz - p_filesz`) |
 | `PT_GNU_STACK` R+W | no execute permission on the stack |
 | `PT_INTERP` | executables only: `/lib/ld-linux.so.2` |
@@ -290,9 +290,11 @@ position-independent.
 Both `PT_LOAD`s are page-aligned and the read-only one is genuinely
 read-only: **there is never a relocation in a text or rodata page**, so
 the whole R+X mapping is shareable between every process running the
-image. `DT_TEXTREL` is never emitted, and a build that would need one is
-a bug in the code generator rather than something the loader should cope
-with.
+image. `DT_TEXTREL` is never emitted for code the generator made
+position-independent; the linker writes it (and `DF_TEXTREL`) only when
+an object it was given asks for a relocation in text, and such a build
+is a bug in whatever made that object rather than something the loader
+should cope with.
 
 There is no `PT_TLS`, no `PT_GNU_RELRO`, no `PT_NOTE` and no
 `PT_GNU_EH_FRAME`. A per-thread block exists but is ordinary memory the
@@ -305,7 +307,9 @@ the libraries were found in), `DT_INIT`, `DT_HASH`, `DT_STRTAB`,
 `DT_PLTGOT`, `DT_PLTRELSZ`, `DT_PLTREL` (always `DT_REL`), `DT_JMPREL`,
 `DT_BIND_NOW`, `DT_FLAGS` (`DF_BIND_NOW | DF_SYMBOLIC`), `DT_FLAGS_1`
 (`DF_1_NOW`), `DT_NULL`; `DT_GNU_HASH` (libraries, beside `DT_HASH`) and
-`DT_DEBUG` (executables, where the loader puts its link map). The `.plt`
+`DT_DEBUG` (executables, where the loader puts its link map); `DT_RELA`,
+`DT_RELASZ` and `DT_RELAENT` in place of the `REL` three in an x86-64
+image, whose relocations carry addends. The `.plt`
 group appears only when there is a PLT entry, which an executable has and
 a library does not.
 
@@ -314,15 +318,15 @@ And this system's own, from the range ELF leaves an operating system
 format's version) says the image is COR-C#'s -- the CORSAC kernel binds an
 image with a tag of 0x60000C00-0x60000CFF itself and hands any other
 program asking for `/lib/ld-linux.so.2` to glibc's loader;
-`DT_CORSAC_CHECKSUM` (0x60000C01, libraries) and `DT_CORSAC_PREBOUND`
-(0x60000C02, a prebound image) for prebinding; `DT_CORSAC_NAMES64`
-(0x60000C08, libraries) for finding exports by hash. A loader that does
-not know one passes it by.
+`DT_CORSAC_CHECKSUM` (0x60000C01, shared objects and modules) and
+`DT_CORSAC_PREBOUND` (0x60000C02, a prebound image) for prebinding;
+`DT_CORSAC_NAMES64` (0x60000C08, shared objects and modules) for finding
+exports by hash. A loader that does not know one passes it by.
 
-Not emitted, and a loader need not implement them: `DT_RELA` and anything
-with an addend, `DT_INIT_ARRAY`/`DT_FINI_ARRAY`/`DT_FINI`, symbol
-versioning (`DT_VERSYM`, `DT_VERDEF`, `DT_VERNEED`), `DT_RPATH`,
-`DT_TEXTREL`.
+Not emitted, and a loader need not implement them: in an i386 image
+`DT_RELA` and anything with an addend; in any, `DT_INIT_ARRAY`/
+`DT_FINI_ARRAY`/`DT_FINI`, symbol versioning (`DT_VERSYM`, `DT_VERDEF`,
+`DT_VERNEED`), `DT_RPATH`.
 
 **DT_HASH is in every image.** The SysV one: `nbucket`, `nchain`, the
 buckets, the chains, with the ELF hash function. A library has a GNU hash
