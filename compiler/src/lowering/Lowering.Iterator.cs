@@ -157,6 +157,23 @@ public sealed partial class Lowering
     /// The method as callers see it: the iterator object, with the receiver
     /// and the arguments in it, and nothing of the body run.
     /// </summary>
+    /// <summary>
+    /// A struct argument an iterator's or an async method's machine keeps: a
+    /// copy of its own, made as the method starts. C# gives the method a
+    /// copy, and the caller's block may be its frame (Instr.PassedByValue)
+    /// or changed once the call returns; stored as handed over, MoveNext read
+    /// a frame long gone. An argument of any other type is itself.
+    /// </summary>
+    private VReg MachineArgument(Node at, VReg value, ParamSymbol p) => p.ByRef ? value : HeapStruct(at, value, p.Type);
+
+    /// <summary>
+    /// The receiver such a machine keeps: of a struct's method, a copy of the
+    /// struct, as C# makes one -- the caller's variable changed after the call
+    /// was seen by the method, and a variable of its frame was kept past it.
+    /// </summary>
+    private VReg MachineReceiver(Node at, MethodSymbol m, VReg self)
+        => !m.Static && m.Owner.Kind == TypeKind.Struct ? CopyStruct(at, self, m.Owner) : self;
+
     private void EmitIteratorKickoff(MethodSymbol m, MethodDecl decl)
     {
         if (IteratorPieces(m, decl) is not IteratorMethod it)
@@ -212,11 +229,11 @@ public sealed partial class Lowering
         _e.Store(R(machine), Imm(it.Enumerable ? -2 : 0, IrType.I32), IterStateField, 4);
         if (self is not null)
         {
-            StoreNewReference(machine, self, IterReceiverField);
+            StoreNewReference(machine, MachineReceiver(decl, m, self), IterReceiverField);
         }
         for (int i = 0; i < args.Count; i++)
         {
-            _e.Store(R(machine), R(args[i]), it.ParamOffsets[i], args[i].Type.Bytes());
+            _e.Store(R(machine), R(MachineArgument(decl, args[i], m.Params[i])), it.ParamOffsets[i], args[i].Type.Bytes());
             if (args[i].Type == IrTypes.Word)
             {
                 CardMarkAt(R(machine), it.ParamOffsets[i]);

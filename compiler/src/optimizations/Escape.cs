@@ -3571,10 +3571,6 @@ continue;
                             {
                                 if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
                                 if (summary is not null && a < summary.Length && !summary[a]) continue;
-                                // A STRUCT PASSED BY VALUE (Instr.PassedByValue):
-                                // read or copied by any callee, kept by none --
-                                // another image's, with no summary here, too.
-                                if (i.PassesByValue(a)) continue;
                                 // THE OBJECT ITSELF, OF THE TYPE STAMPED INTO IT HERE,
                                 // handed to another unit's function the link read for
                                 // that type (LinkTyped): kept by nothing there.
@@ -3591,6 +3587,11 @@ continue;
                                 // Append, an iterator's GetEnumerator) -- known
                                 // here, not a condition on the link.
                                 if (a == 0 && ReturnsFirst(i.Callee)) { Derive(i.Dest, borrowing); continue; }
+                                // A STRUCT PASSED BY VALUE to a callee with no
+                                // summary here -- another image's -- (Instr.
+                                // PassedByValue): its body copies what it keeps.
+                                // A summary, where there is one, is the answer.
+                                if (summary is null && i.PassesByValue(a)) continue;
                                 // KEPT ONLY IN THE BOX IT HANDS BACK (Held):
                                 // the result holds the object, as frame memory
                                 // does, at the offsets the callee put it.
@@ -5959,21 +5960,21 @@ continue;
     /// <summary>
     /// Whether a call may keep what it is handed as operand `a` past its
     /// return -- in the object it hands back (Held), anywhere else, or as
-    /// that object itself (ReturnsFirst): a callee with no summary keeps all
-    /// but a struct passed by value (Instr.PassedByValue), and a virtual call
-    /// keeps what any override it reaches keeps.
+    /// that object itself (ReturnsFirst): a callee with no summary here keeps
+    /// all but a struct passed by value (Instr.PassedByValue), and a virtual
+    /// call keeps what any override it reaches keeps.
     /// </summary>
     private static bool KeepsArgument(Instr call, int a, Dictionary<string, bool[]> summaries)
     {
-        if (call.PassesByValue(a)) return false;
-        static bool Keeps(Dictionary<string, bool[]> summaries, string callee, int p)
-            => p == 0 && ReturnsFirst(callee) || !summaries.TryGetValue(callee, out bool[]? summary) || p >= summary.Length || summary[p];
-        if (call.Op == Opcode.Call) return call.Callee is not { } callee || Keeps(summaries, callee, a);
+        static bool Keeps(Dictionary<string, bool[]> summaries, string callee, int p, bool byValue)
+            => p == 0 && ReturnsFirst(callee)
+               || (summaries.TryGetValue(callee, out bool[]? summary) ? p >= summary.Length || summary[p] : !byValue);
+        if (call.Op == Opcode.Call) return call.Callee is not { } callee || Keeps(summaries, callee, a, call.PassesByValue(a));
         if (call.Op == Opcode.CallIndirect)
         {
             // Operand 0 is the method; the arguments follow.
             return a == 0 || _indirect is null || !_indirect.TryGetValue(call, out string[]? targets) || targets.Length == 0
-                || targets.Any(t => Keeps(summaries, t, a - 1));
+                || targets.Any(t => Keeps(summaries, t, a - 1, false));
         }
         return true;
     }

@@ -1,0 +1,90 @@
+// test: struct_copied_into_iterator_and_async_machines
+// expect-exit: 0
+// expect-output:
+// walk 10 11
+// up 10 11
+// later 10
+// value 10
+// ask 10
+// fresh 5 6
+//
+// AN ITERATOR'S OR AN ASYNC METHOD'S MACHINE KEEPS A COPY of a struct it is
+// handed, and of the struct whose method it is, as C# makes one when the
+// method starts (Lowering's MachineArgument, MachineReceiver). Stored as
+// handed over, the machine held the caller's block: a struct's own iterator
+// saw its variable changed after the call, and a struct the caller's frame
+// held -- a call's by-value struct may be one (Instr.PassedByValue) -- was
+// read by MoveNext after that frame was gone.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+struct Span3
+{
+    public int From;
+
+    public IEnumerable<int> Up(int n)
+    {
+        for (int i = 0; i < n; i++) yield return From + i;
+    }
+
+    public async Task<int> Ask()
+    {
+        await Task.Yield();
+        return From;
+    }
+}
+
+static class Program
+{
+    static IEnumerable<int> Walk(Span3 s)
+    {
+        yield return s.From;
+        yield return s.From + 1;
+    }
+
+    static async Task<int> Later(Span3 s)
+    {
+        await Task.Yield();
+        return s.From;
+    }
+
+    static async ValueTask<int> LaterValue(Span3 s)
+    {
+        await Task.Yield();
+        return s.From;
+    }
+
+    static string Join(IEnumerable<int> all)
+    {
+        string said = "";
+        foreach (int n in all) said += " " + n;
+        return said;
+    }
+
+    // Made in a frame that is gone before it is walked.
+    static IEnumerable<int> Fresh() => Walk(new Span3 { From = 5 });
+
+    // A deep frame over where Fresh's was.
+    static int Dirty(int depth, int a, int b, int c, int d) => depth == 0 ? a + b + c + d : Dirty(depth - 1, a + 1, b + 2, c + 3, d + 4) + 1;
+
+    static void Main()
+    {
+        Span3 s = new Span3 { From = 10 };
+        IEnumerable<int> walk = Walk(s);
+        IEnumerable<int> up = s.Up(2);
+        Task<int> later = Later(s);
+        ValueTask<int> value = LaterValue(s);
+        Task<int> ask = s.Ask();
+        s.From = 99;
+        Console.WriteLine("walk" + Join(walk));
+        Console.WriteLine("up" + Join(up));
+        Console.WriteLine("later " + later.Result);
+        Console.WriteLine("value " + value.Result);
+        Console.WriteLine("ask " + ask.Result);
+        IEnumerable<int> fresh = Fresh();
+        if (Dirty(40, 1, 2, 3, 4) < 0) return;
+        Console.WriteLine("fresh" + Join(fresh));
+    }
+}

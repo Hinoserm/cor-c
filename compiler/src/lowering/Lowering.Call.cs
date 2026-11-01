@@ -327,9 +327,11 @@ public sealed partial class Lowering
     /// The operands of a direct call to `m`, `given` of them, that are structs
     /// passed by value, and a struct method's receiver (Instr.PassedByValue):
     /// what the callee reads or copies and never keeps, whichever image's it
-    /// is. None where the operands are not the receiver and the parameters
-    /// one for one, nor for a method that answers by reference, which may
-    /// answer a place inside its receiver.
+    /// is -- an iterator or an async method too, whose machine keeps copies
+    /// (MachineArgument, MachineReceiver). None where the operands are not
+    /// the receiver and the parameters one for one, nor for a method that
+    /// answers by reference, which may answer a place inside its receiver;
+    /// nor an `in` parameter, which is the caller's own variable, not a copy.
     /// </summary>
     private static ulong ByValueOperands(MethodSymbol m, int given)
     {
@@ -337,7 +339,7 @@ public sealed partial class Lowering
         if (m.RefReturn || given != first + m.Params.Count || given > 63) return 0;
         ulong mask = !m.Static && m.Owner.Kind == TypeKind.Struct ? 1UL : 0;
         for (int k = 0; k < m.Params.Count; k++)
-            if (!m.Params[k].ByRef && IsStructValue(m.Params[k].Type)) mask |= 1UL << (first + k);
+            if (!m.Params[k].ByRef && !m.Params[k].ReadOnly && IsStructValue(m.Params[k].Type)) mask |= 1UL << (first + k);
         return mask;
     }
 

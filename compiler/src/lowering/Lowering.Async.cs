@@ -300,13 +300,13 @@ public sealed partial class Lowering
 
         if (self is not null)
         {
-            StoreNewReference(machine, self, ReceiverField);
+            StoreNewReference(machine, MachineReceiver(decl, m, self), ReceiverField);
         }
         // Descriptors and tables: static data, no card to mark.
         for (int i = 0; i < hiddenArgs.Length; i++) _e.Store(R(machine), R(hiddenArgs[i]), am.Hidden[i], _t.WordSize);
         for (int i = 0; i < args.Count; i++)
         {
-            _e.Store(R(machine), R(args[i]), am.ParamOffsets[i], args[i].Type.Bytes());
+            _e.Store(R(machine), R(MachineArgument(decl, args[i], m.Params[i])), am.ParamOffsets[i], args[i].Type.Bytes());
             // An argument the word size may be a reference; marking the card
             // of one that is not costs a byte store and nothing else.
             if (args[i].Type == IrTypes.Word)
@@ -412,13 +412,13 @@ public sealed partial class Lowering
         _e.Store(R(machine), VtableOf(am.StateMachine), 0, _t.WordSize);
         if (self is not null)
         {
-            StoreNewReference(machine, self, ReceiverField);
+            StoreNewReference(machine, MachineReceiver(decl, m, self), ReceiverField);
         }
         // Descriptors and tables: static data, no card to mark.
         for (int i = 0; i < hiddenArgs.Length; i++) _e.Store(R(machine), R(hiddenArgs[i]), am.Hidden[i], _t.WordSize);
         for (int i = 0; i < args.Count; i++)
         {
-            _e.Store(R(machine), R(args[i]), am.ParamOffsets[i], args[i].Type.Bytes());
+            _e.Store(R(machine), R(MachineArgument(decl, args[i], m.Params[i])), am.ParamOffsets[i], args[i].Type.Bytes());
             if (args[i].Type == IrTypes.Word)
             {
                 CardMarkAt(R(machine), am.ParamOffsets[i]);
