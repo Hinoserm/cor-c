@@ -97,8 +97,9 @@ public static class SourceIndexBuilder
     /// - a static with an initialiser: that the type has some, which every
     ///   unit touching the type reads as whether it must be made before use
     ///   (Binder.StaticInitialisers, Lowering.TouchType) -- and, of a type
-    ///   whose members are told apart, the initialiser's tokens in its shape
-    ///   (ByMember), whether it is a table or code being what that reads.
+    ///   whose members are told apart, in its shape (ByMember) an array's
+    ///   tokens (a table or code) and where the first that ends the link's
+    ///   run of statics stands, nothing else of a private one.
     /// A const counts as written -- a public constant, a default argument or
     /// a buffer's length may be folded from it -- as does a member with
     /// attributes, an explicit interface's, an instance property (an
@@ -551,18 +552,17 @@ public static class SourceIndexBuilder
                     // marked where it is among the public ones, and nothing
                     // else. A private static more or less, or in another order
                     // -- Ide's shutdown list removed -- changes nothing another
-                    // unit compiles. An array made,
-                    // which may be a table laid down as data, by its tokens:
-                    // a literal without
-                    // its value -- a table's bytes are its own unit's -- but a
-                    // length's with it, in `[ ]` outside any `{ }`:
-                    // `new byte[60000]` is a zeroed table and `new byte[70000]`
-                    // code (Binder.ZeroedArrayOf).
+                    // unit compiles. An array made, which may be a table laid
+                    // down as data, by its tokens: a literal without its value
+                    // -- a table's bytes are its own unit's -- but a length's
+                    // with it, in `[ ]` outside any `{ }`: `new byte[60000]`
+                    // is a zeroed table and `new byte[70000]` code
+                    // (Binder.ZeroedArrayOf).
                     void InitialiserToShape(Token token, int tokenIndex)
                     {
+                        if (markedMember == memberIndex) return;
                         if (Binder.InitialiserClasses(declarators[memberIndex]) is { } marks)
                         {
-                            if (markedMember == memberIndex) return;
                             markedMember = memberIndex;
                             if (!runEnded && marks.Contains("code"))
                             {

@@ -100,6 +100,7 @@ hand-maintained header is introduced.
 | .corsac.generics | Indexed template and instantiation records | Specified, pending integration |
 | .corsac.ir | Independently addressable optimized IR function bodies | First indexed implementation; see IR-LINK-OPTIMIZATION.md |
 | .corsac.roots | Explicit retention and deferred-resolution contracts | Specified, pending |
+| .corsac.public | A ring unit's public surface: each method and static another assembly can name, and each it cannot | Implemented (kernel exports) |
 
 GIR is the existing generic syntax representation, not serialized optimization
 IR. Its version is 0. The generic index must identify GIR version per
@@ -342,6 +343,26 @@ went. The checks a link makes against the kernel -- the wait and float facts
 its handlers walk into -- run whether or not the image is current. A link
 asked for a region report always links; one asked for a map links when the
 map is missing. A failed link leaves no receipt.
+
+## A kernel's exports: its public surface
+
+A kernel is a library its modules link against, as a program links against a
+shared object, and what it exports is what C# lets another assembly name: a
+method or static that is `public` (or `protected`, for a module's class
+deriving from one) in a type that is public all the way out. Each ring unit
+records its own types' members, offered or withheld, in `.corsac.public`
+(Lowering.RecordPublicApi); the library's types and generic instantiations are
+not the kernel's API and are left as they were.
+
+`corc link --exports=public` keeps every offered member out of line and in
+`.corsac.exports` however the kernel's own callers inlined it -- a public
+method nothing in the kernel calls included -- and needs no `--keep` to prune:
+everything else of the kernel's own is reached from the entry and the public
+surface, inlined and pruned freely, and withheld from the table. `internal`
+is the kernel's assembly's alone. A public member left with no body is a
+refused link, naming it; a module that imports a withheld name is a refused
+link, naming it. `--keep` still adds roots: library code the build's modules
+call. Plain `--exports` exports every global the link keeps, as before.
 
 ## Acceptance and migration
 

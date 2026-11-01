@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# A KERNEL'S EXPORTS ARE ITS PUBLIC SURFACE (--exports=public, PublicApi): a
+# public method of a public type is exported and kept out of line though
+# nothing in the kernel calls it; an internal type's members and an internal
+# member of a public type are not, and a module importing one is refused,
+# naming it.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+corc=${CORC:-$root/compiler/bin/managed/Release/net10.0/corc}
+mkdir -p "$root/build"
+work=$(mktemp -d "$root/build/kernel-public-exports.XXXXXX")
+fail() { printf 'FAIL %s\n' "$1"; exit 1; }
+cp tests/integration/modules/Host.cor tests/integration/modules/Kernel.cor tests/integration/modules/Loader.cor tests/integration/modules/Sb16.cor "$work/"
+# An internal member of a public type, and an internal type, both used by the kernel.
+sed -i 's/    public static int Twice(int value) => value \* 2 + Log.Lines;/&\n    internal static int Hidden(int value) => value + 1;/' "$work/Kernel.cor"
+printf '\nstatic class Secret\n{\n    public static int Value() => 7;\n}\n' >> "$work/Kernel.cor"
+sed -i 's/        Host.Start(32 \* 1024 \* 1024);/&\n        Log.Lines += Tick.Hidden(0) + Secret.Value() - 8;/' "$work/Kernel.cor"
+grep -q 'internal static int Hidden' "$work/Kernel.cor" || fail "the internal member was not written"
+grep -q 'Tick.Hidden(0)' "$work/Kernel.cor" || fail "the kernel's call was not written"
+k=$work/k
+mkdir -p "$k"
+runtime=$("$corc" library-sources --freestanding)
+# shellcheck disable=SC2086
+"$corc" index --assembly Kernel --ring 0 "$work/Host.cor" "$work/Kernel.cor" "$work/Loader.cor" $runtime -o "$k/kernel.idx" 2> "$k/index.log"
+: > "$k/units.tsv"
+for source in "$work/Host.cor" "$work/Kernel.cor" "$work/Loader.cor" $runtime; do
+    role=lib; case $source in */Kernel.cor) role=entry ;; esac
+    printf '%s\t%s\t%s\t%s\n' "$(realpath "$source")" "$k/$(basename "$source" .cor).o" "$k/$(basename "$source" .cor).o.deps" "$role" >> "$k/units.tsv"
+done
+"$corc" compile-project --units "$k/units.tsv" --nostdlib --obj --freestanding --ring 0 --decl-index "$k/kernel.idx" --assembly Kernel \
+    2> "$k/units.log" || { cat "$k/units.log"; fail "kernel units"; }
+# shellcheck disable=SC2086
+"$corc" link $(cut -f2 "$k/units.tsv" | tr '\n' ' ') -o "$k/kernel" --exports=public 2> "$work/kernel.log" || { cat "$work/kernel.log"; fail "kernel link"; }
+objcopy --dump-section .corsac.exports="$work/exports.bin" "$k/kernel"
+exported() { grep -aq "$1" "$work/exports.bin"; }
+exported 'm_Unused_Never_' || fail "a public method nothing calls is not exported"
+exported 'm_Tick_Twice_' || fail "a public method the module calls is not exported"
+if exported 'm_Tick_Hidden_'; then fail "an internal member of a public type is exported"; fi
+if exported 'm_Secret_Value_'; then fail "a public member of an internal type is exported"; fi
+# The module, which imports public members alone: linked.
+"$corc" compile --kernel "$k/kernel" --decl-index "$k/kernel.idx" --assembly Kernel --ring 0 "$work/Sb16.cor" --obj -o "$work/sb16.o" \
+    2> "$work/sb16.log" || { cat "$work/sb16.log"; fail "module object"; }
+"$corc" link "$work/sb16.o" --kernel "$k/kernel" -o "$work/sb16.ko" 2> "$work/module.log" || { cat "$work/module.log"; fail "module link"; }
+# A module importing the internal member: refused, the name said.
+sed 's/Tick.Twice(port) - Tick.Twice(port)/Tick.Twice(port) - Tick.Twice(port) + Tick.Hidden(port) - Tick.Hidden(port)/' "$work/Sb16.cor" > "$work/Sb16Hidden.cor"
+grep -q 'Tick.Hidden(port)' "$work/Sb16Hidden.cor" || fail "the module's internal call was not written"
+"$corc" compile --kernel "$k/kernel" --decl-index "$k/kernel.idx" --assembly Kernel --ring 0 "$work/Sb16Hidden.cor" --obj -o "$work/sb16hidden.o" \
+    2> "$work/sb16hidden.log" || { cat "$work/sb16hidden.log"; fail "module object with the internal call"; }
+if "$corc" link "$work/sb16hidden.o" --kernel "$k/kernel" -o "$work/sb16hidden.ko" 2> "$work/module-hidden.log"; then fail "a module importing an internal member linked"; fi
+grep -q 'm_Tick_Hidden_' "$work/module-hidden.log" || { cat "$work/module-hidden.log"; fail "the refusal does not name the internal member"; }
+echo "PASS a kernel exports its public surface, every public member out of line, and a module importing an internal one is refused: $work"

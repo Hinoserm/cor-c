@@ -162,6 +162,7 @@ test "$(answer "$program")" = 30
 # UseG alone.
 sed -i 's/private static int _a, _b = A();/private static int _a = 1, _b = A();/' "$work/Util.cs"
 run_build "$work" > "$work/order1.log" 2>&1
+grep -q '2/9 source units rebuilt' "$work/order1.log"
 sed -i 's/private static int _a = 1, _b = A();/private static int _a = A(), _b = 1;/' "$work/Util.cs"
 run_build "$work" > "$work/order2.log" 2>&1
 grep -q '2/9 source units rebuilt' "$work/order2.log"
@@ -172,6 +173,16 @@ run_build "$work" > "$work/public1.log" 2>&1
 sed -i 's/public static int V, W = 1;/public static int V, W = A();/' "$work/Util.cs"
 run_build "$work" > "$work/public2.log" 2>&1
 grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/public2.log"
+test "$(answer "$program")" = 30
+# A PRIVATE STATIC THAT ENDS THE RUN MOVED PAST A PUBLIC ONE THE LINK MAY
+# MAKE: where it stands among them is what the shape says of it.
+sed -i 's/    private static int _a = A(), _b = 1;/&\n    public static readonly object Pub = new object();/' "$work/Util.cs"
+run_build "$work" > "$work/pub.log" 2>&1
+grep -q 'public static readonly object Pub' "$work/Util.cs"
+sed -i '/    private static int _a = A(), _b = 1;/d' "$work/Util.cs"
+sed -i 's/    public static readonly object Pub = new object();/&\n    private static int _a = A(), _b = 1;/' "$work/Util.cs"
+run_build "$work" > "$work/crossed.log" 2>&1
+grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/crossed.log"
 test "$(answer "$program")" = 30
 # The tree copied elsewhere, times and all: nothing compiled again.
 cp -a "$work" "$work-copy"

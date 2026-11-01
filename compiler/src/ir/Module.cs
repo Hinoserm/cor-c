@@ -270,6 +270,15 @@ public sealed class Module
     public List<(string Export, string Symbol)> NativeExports { get; } = new();
 
     /// <summary>
+    /// A ring unit's methods and statics another assembly can name, and those
+    /// it cannot (Lowering.RecordPublicApi): the object records them
+    /// (.corsac.public), and a kernel's link exports the first and keeps them
+    /// out of line, and withholds the second.
+    /// </summary>
+    public List<string> PublicSymbols { get; } = new();
+    public List<string> WithheldSymbols { get; } = new();
+
+    /// <summary>
     /// What calls each of this unit's [ModuleInitializer] methods, its type
     /// touched first, in the order they were declared: what a shared object's
     /// DT_INIT calls after __corsac_init (Lowering.ModuleInitializers,

@@ -232,6 +232,11 @@ public static class Driver
                                    links and is loaded against, and its link's identity. The
                                    kernel is then not closed: modules call into it and derive
                                    from its classes
+              --exports=public     --exports with the kernel's public surface alone: every
+                                   method and static C# lets another assembly name
+                                   (public, in public types) kept out of line and
+                                   exported, however the kernel inlined it; internal and
+                                   private ones pruned and inlined freely, and withheld
               --keep <names>       with --exports: keep only what the kernel and these, its
                                    modules' imports, reach
               --kernel <kernel>    link a module of that kernel: a shared object with no
@@ -1630,6 +1635,8 @@ public static class Driver
         NativeLibraries.Attach(obj, module.NativeLibraries);
         // And what a DLL exports, for its link's export directory.
         NativeExports.Attach(obj, module.NativeExports);
+        // And a ring unit's public surface, for a kernel's export table.
+        PublicApi.Attach(obj, module.PublicSymbols, module.WithheldSymbols);
         ManagedLayoutContract.Attach(obj, layouts);
         // A UNIT FOR A RING -- a kernel's, a module's -- says its layouts by
         // name (LayoutNames): those of the types it defines, for other images

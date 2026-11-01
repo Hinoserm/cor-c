@@ -36,7 +36,7 @@ public static class ObjectLinkCommand
         // THE KERNEL AS A LIBRARY (KernelExports): --exports puts the
         // kernel's export table in its own file, a section nothing loads.
         // --kernel FILE links a module against such a kernel (Linker.LinkModule).
-        bool exports = false;
+        bool exports = false, publicOnly = false;
         string? kernelPath = null, keepPath = null;
         List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
@@ -60,6 +60,9 @@ public static class ObjectLinkCommand
             // The program's dead code (UnusedReport), into a file ("-": the
             // error stream), from the notes units compiled with the same flag left.
             if (arg == "--exports") { exports = true; continue; }
+            // THE KERNEL'S PUBLIC SURFACE ONLY (PublicApi): what C# lets another
+            // assembly name is exported and kept out of line; nothing else.
+            if (arg == "--exports=public") { exports = publicOnly = true; continue; }
             if (arg is "--kernel" or "--keep")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
@@ -130,7 +133,7 @@ public static class ObjectLinkCommand
         }
         if (output is null || paths.Count == 0)
             return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings] [--unused-report file]"
-                + " [--exports [--keep names]] [--kernel kernel]");
+                + " [--exports[=public] [--keep names]] [--kernel kernel]");
         if (unusedReport is not null && shared) return Fail("--unused-report is for an image with an entry, not a shared object");
         if (exports)
         {
@@ -260,6 +263,22 @@ public static class ObjectLinkCommand
         // the overrides the image itself holds -- a module's driver overrides
         // the kernel's Driver.Bind. NOR A MODULE: its units' calls reach the
         // kernel's overrides too, and other modules'.
+        // THE PUBLIC SURFACE, its own roots (PublicApi): every public method
+        // and static of the kernel's own types out of line and exported,
+        // however the kernel's callers inlined it; the rest of its own pruned
+        // to what is reached, and withheld from the table below. What --keep
+        // names besides is kept too: library code a module of the build calls.
+        HashSet<string> offered = new(StringComparer.Ordinal), withheld = new(StringComparer.Ordinal);
+        if (publicOnly)
+        {
+            foreach (var input in inputs)
+            {
+                (List<string> on, List<string> off) = PublicApi.Read(input.Item2);
+                offered.UnionWith(on);
+                withheld.UnionWith(off);
+            }
+            keep = (keep ?? Array.Empty<string>()).Concat(offered).Distinct(StringComparer.Ordinal).ToArray();
+        }
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && !exports ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
             // Only the types the image makes, where nothing outside it makes
@@ -359,6 +378,16 @@ public static class ObjectLinkCommand
             try
             {
                 List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
+                if (publicOnly)
+                {
+                    // Withheld: internal and private are the kernel's own. And
+                    // every public one there, or the kernel is not what it says.
+                    globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name));
+                    HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
+                    List<string> lost = offered.Where(name => !exported.Contains(name)).Order(StringComparer.Ordinal).ToList();
+                    if (lost.Count > 0)
+                        throw new ElfFormatException(output + ": public members of the kernel without a body to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
+                }
                 // ONE LAYOUT A TYPE: two of a key's names (LayoutNames) -- two
                 // units' differing records of one instantiation, or of any
                 // type two units define -- would bind a module built against

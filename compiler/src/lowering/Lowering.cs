@@ -877,6 +877,8 @@ public sealed partial class Lowering
             });
         }
         }
+        // A RING UNIT'S PUBLIC SURFACE, once everything it defines is known.
+        if (Freestanding) RecordPublicApi();
     }
 
     /// <summary>
