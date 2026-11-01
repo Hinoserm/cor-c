@@ -387,7 +387,10 @@ public static class ObjectLinkCommand
             if (lost.Count > 0)
                 return Fail(output + ": public members not in the image to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
         }
-        if (noUndefined && kernel is null && (shared || sharedLibraries.Count > 0))
+        // AN EXECUTABLE'S IMPORT NO LIBRARY EXPORTS IS A REFUSED LINK, as ld
+        // refuses one's undefined reference; a shared object's only with
+        // --no-undefined, its imports another image's to answer.
+        if ((noUndefined || !shared) && kernel is null && (shared || sharedLibraries.Count > 0))
         {
             HashSet<string> provided = new(sharedLibraries.SelectMany(path => ElfReader.ExportsOf(File.ReadAllBytes(path))), StringComparer.Ordinal);
             string[] missing = ElfReader.ImportsOf(image).Where(name => !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();

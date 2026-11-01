@@ -1173,9 +1173,11 @@ public static class Driver
         Corsac.Lang.Lower.Lowering.SplitLibrary = shared && !freestanding && !windows && ownLibrary.Count > 0;
         Corsac.Lang.Lower.Lowering.OwnLibrarySources = ownLibrary;
         // A program's or a module's compile over images that provide the
-        // class library: it reads the library's code to give it away, and
-        // lays down none of its state (Lowering.NotePreinitCandidate).
-        Corsac.Lang.Lower.Lowering.LibraryProvided = (sharedLibs.Count > 0 || kernel is not null) && ownLibrary.Count == 0;
+        // class library -- not one of the class library's own images, whose
+        // library compile owns its sources: a program's has them among its
+        // files too -- reads the library's code to give it away, and lays
+        // down none of its state (Lowering.NotePreinitCandidate).
+        Corsac.Lang.Lower.Lowering.LibraryProvided = (sharedLibs.Count > 0 || kernel is not null) && !(library && kernel is null && ownLibrary.Count > 0);
         Binder.NamesGenericCode = Corsac.Lang.Lower.Lowering.ExportingImage;
         // The runtime DLL is lowered as the library's own objects are (--obj),
         // which is how the class library has always been compiled whole.
@@ -1970,7 +1972,16 @@ public static class Driver
         // A static image goes to its file a chunk at a time (Linker.LinkTo),
         // never as one array of its whole size.
         if (sharedLibs.Count > 0)
-            File.WriteAllBytes(output, Linker.Link(new[] { (name, obj) }, entry, Needed(obj, sharedLibs, exports), Value(args, "--runpath"), program: program));
+        {
+            byte[] linked = Linker.Link(new[] { (name, obj) }, entry, Needed(obj, sharedLibs, exports), Value(args, "--runpath"), program: program);
+            // AN IMPORT NO LIBRARY EXPORTS IS A REFUSED LINK, as ld refuses an
+            // executable's undefined reference: the loader would refuse the
+            // program at its start, naming one, and only one.
+            HashSet<string> exported = new(exports.Values.SelectMany(names => names), StringComparer.Ordinal);
+            string[] missing = ElfReader.ImportsOf(linked).Where(import => !exported.Contains(import)).Order(StringComparer.Ordinal).ToArray();
+            if (missing.Length != 0) return Fail("imported, and no library linked against exports it: " + string.Join(", ", missing.Take(12)) + (missing.Length > 12 ? " and " + (missing.Length - 12) + " more" : ""));
+            File.WriteAllBytes(output, linked);
+        }
         else Linker.LinkTo(output, link, entry, loadBase ?? Linker.DefaultLoadAddress, physicalBase, program);
         long exeLength = new FileInfo(output).Length;
         if (!OperatingSystem.IsWindows())
