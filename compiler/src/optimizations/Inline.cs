@@ -1231,6 +1231,7 @@ public sealed class Inline : IParallelModulePass
         // exports for modules nobody has built yet, kept here as at its link.
         // Kept, not pinned: a call to one may still become its body.
         foreach (string name in m.PublicSymbols) Reach(name);
+        foreach (string name in m.OptionalSymbols) Reach(name);
         foreach (string name in forLink) Reach(name);
         if (coroutines) { Reach(AsyncTransform.CardMarkObject); Reach(AsyncTransform.ShadeObject); }
         if (sequences)

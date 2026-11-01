@@ -276,6 +276,7 @@ public sealed class Module
     /// out of line, and withholds the second.
     /// </summary>
     public List<string> PublicSymbols { get; } = new();
+    public List<string> OptionalSymbols { get; } = new();
     public List<string> WithheldSymbols { get; } = new();
 
     /// <summary>

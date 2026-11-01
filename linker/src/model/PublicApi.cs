@@ -5,14 +5,17 @@ namespace Corsac.Lang.Ir;
 
 /// <summary>
 /// WHAT A RING UNIT OFFERS OTHER IMAGES, AS C# SAYS: the symbol of each method
-/// and static of its own types that is public all the way out -- `public` (or
+/// and static it defines that is public all the way out -- `public` (or
 /// `protected`, for a module's class deriving from one) in a type that is
-/// public, and its type's too (Lowering.RecordPublicApi) -- and of each that
-/// is not: `internal` is the kernel's assembly's alone, `private` its type's.
-/// A section of its own (`.corsac.public`), each entry `+` or `-` and the
-/// symbol, NUL-terminated.
+/// public, and its type's too (Lowering.RecordPublicApi) -- and, of the
+/// program's own types, of each that is not: `internal` is the kernel's
+/// assembly's alone, `private` its type's.
+/// A section of its own (`.corsac.public`), each entry `+` (offered, its body
+/// there to export), `~` (offered where the link keeps it: a static the link
+/// may lay down or fold, the class library's surface) or `-` (withheld) and
+/// the symbol, NUL-terminated.
 ///
-/// A kernel linked with --exports keeps every public one out of line and in
+/// A kernel linked with --exports=public keeps every public one out of line and in
 /// its export table, however its own callers inlined it, and leaves every
 /// other one out of the table, free to be inlined and pruned
 /// (ObjectLinkCommand): the module ABI is the kernel's public surface, as a
@@ -22,7 +25,7 @@ public static class PublicApi
 {
     public const string SectionName = ".corsac.public";
 
-    public static void Attach(ObjectFile obj, IEnumerable<string> offered, IEnumerable<string> withheld)
+    public static void Attach(ObjectFile obj, IEnumerable<string> offered, IEnumerable<string> optional, IEnumerable<string> withheld)
     {
         Section? s = null;
         void Add(char mark, string symbol)
@@ -33,13 +36,14 @@ public static class PublicApi
             s.Bytes.Add(0);
         }
         foreach (string symbol in offered) Add('+', symbol);
+        foreach (string symbol in optional) Add('~', symbol);
         foreach (string symbol in withheld) Add('-', symbol);
     }
 
-    /// <summary>The symbols an object offers and those it withholds.</summary>
-    public static (List<string> Offered, List<string> Withheld) Read(ObjectFile obj)
+    /// <summary>The symbols an object offers, those it offers where they are kept, and those it withholds.</summary>
+    public static (List<string> Offered, List<string> Optional, List<string> Withheld) Read(ObjectFile obj)
     {
-        List<string> offered = new(), withheld = new();
+        List<string> offered = new(), optional = new(), withheld = new();
         foreach (Section s in obj.Sections)
         {
             if (s.Name != SectionName) continue;
@@ -50,11 +54,11 @@ public static class PublicApi
                 if (i > start)
                 {
                     string symbol = Encoding.UTF8.GetString(s.Bytes.Slice(start + 1, i - start - 1));
-                    (s.Bytes[start] == (byte)'+' ? offered : withheld).Add(symbol);
+                    (s.Bytes[start] switch { (byte)'+' => offered, (byte)'~' => optional, _ => withheld }).Add(symbol);
                 }
                 start = i + 1;
             }
         }
-        return (offered, withheld);
+        return (offered, optional, withheld);
     }
 }

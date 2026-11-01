@@ -14,10 +14,13 @@ public sealed partial class Lowering
     /// touching the type's statics runs it; a packed method's copy that runs
     /// inside its caller's state ($inside) with the method. Of the program's
     /// own types every other one is withheld: `internal` is the kernel's
-    /// assembly's alone. Of the class library's, none is: what a module's
-    /// compiled code calls of the runtime and the library is not all public,
-    /// and is exported where the link keeps it, as it was. Every generic
-    /// instantiation is left as it was.
+    /// assembly's alone. Of the class library's the public surface is offered
+    /// as a shared library's is -- a module built later may call what the
+    /// kernel never did -- and nothing withheld: what a module's compiled code
+    /// calls of the runtime and the library is not all public, and is exported
+    /// where the link keeps it. A static, and all of the library's, is offered
+    /// where the link keeps it (OptionalSymbols): the link may lay one down or
+    /// fold it. Every generic instantiation is left as it was.
     /// </summary>
     private void RecordPublicApi()
     {
@@ -35,17 +38,19 @@ public sealed partial class Lowering
                     continue;
                 bool offered = open && (method.Name == "StaticInit$" || Binder.ShownOutside(d, method));
                 if (library && !offered) continue;
-                List<string> into = offered ? _m.PublicSymbols : _m.WithheldSymbols;
+                List<string> into = !offered ? _m.WithheldSymbols : library ? _m.OptionalSymbols : _m.PublicSymbols;
                 into.Add(CallLabel(m));
                 if (CopiesInside(m)) into.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
             }
             foreach (FieldSymbol f in t.Fields)
             {
-                // A [ThreadStatic] is reached through its number (ThreadStaticIndex), never its own symbol.
-                if (!f.Static || !_statics.Contains(f) || FieldDeclOf(f) is FieldDecl declared && Binder.IsThreadStatic(declared)) continue;
+                // Laid down here, as the statics' rounds do (Run): another
+                // unit's type's is that unit's. A [ThreadStatic] is reached
+                // through its number (ThreadStaticIndex), never its own symbol.
+                if (!f.Static || !_statics.Contains(f) || d.Elsewhere || FieldDeclOf(f) is FieldDecl declared && Binder.IsThreadStatic(declared)) continue;
                 bool offered = open && (f.Name == BindResult.ReadyField || FieldDeclOf(f) is MemberDecl field && Binder.ShownOutside(d, field));
                 if (library && !offered) continue;
-                (offered ? _m.PublicSymbols : _m.WithheldSymbols).Add(StaticSymbol(f));
+                (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(StaticSymbol(f));
             }
         }
     }

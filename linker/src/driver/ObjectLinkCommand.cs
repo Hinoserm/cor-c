@@ -264,20 +264,23 @@ public static class ObjectLinkCommand
         // the kernel's Driver.Bind. NOR A MODULE: its units' calls reach the
         // kernel's overrides too, and other modules'.
         // THE PUBLIC SURFACE, its own roots (PublicApi): every public method
-        // and static of the kernel's own types out of line and exported,
-        // however the kernel's callers inlined it; the rest of its own pruned
-        // to what is reached, and withheld from the table below. What --keep
-        // names besides is kept too: library code a module of the build calls.
-        HashSet<string> offered = new(StringComparer.Ordinal), withheld = new(StringComparer.Ordinal);
+        // and static out of line and exported, however the kernel's callers
+        // inlined it -- the class library's public surface too, as a shared
+        // library's is; the rest of the kernel's own pruned to what is
+        // reached, and withheld from the table below. What --keep names
+        // besides is kept too: the runtime's and the library's non-public
+        // code a module of the build calls.
+        HashSet<string> offered = new(StringComparer.Ordinal), optional = new(StringComparer.Ordinal), withheld = new(StringComparer.Ordinal);
         if (publicOnly)
         {
             foreach (var input in inputs)
             {
-                (List<string> on, List<string> off) = PublicApi.Read(input.Item2);
+                (List<string> on, List<string> maybe, List<string> off) = PublicApi.Read(input.Item2);
                 offered.UnionWith(on);
+                optional.UnionWith(maybe);
                 withheld.UnionWith(off);
             }
-            keep = (keep ?? Array.Empty<string>()).Concat(offered).Distinct(StringComparer.Ordinal).ToArray();
+            keep = (keep ?? Array.Empty<string>()).Concat(offered).Concat(optional).Distinct(StringComparer.Ordinal).ToArray();
         }
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && !exports ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
@@ -382,7 +385,7 @@ public static class ObjectLinkCommand
                 {
                     // Withheld: internal and private are the kernel's own. And
                     // every public one there, or the kernel is not what it says.
-                    globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name));
+                    globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name) && !optional.Contains(export.Name));
                     HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
                     List<string> lost = offered.Where(name => !exported.Contains(name)).Order(StringComparer.Ordinal).ToList();
                     if (lost.Count > 0)

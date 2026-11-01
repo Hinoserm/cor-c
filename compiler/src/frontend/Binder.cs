@@ -4566,17 +4566,6 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// C#'S INCONSISTENT ACCESSIBILITY (CS0050-CS0061), for the class
-    /// library's public types: a public or protected member may not show a
-    /// type the library keeps internal -- its return, a parameter's, a
-    /// field's or a property's type, or the type's base or an interface. A
-    /// program reaches the member and cannot name what it hands back; C#
-    /// refuses the library. `Os.Exit(ExitCode)` and `Os.Console`'s IConsole
-    /// were two, and a kernel naming them broke when the types were hidden.
-    /// Only where this unit compiles the type's code: a program reading the
-    /// library's declarations is not told of the library's faults.
-    /// </summary>
-    /// <summary>
     /// A member another assembly can name, of a type it can: public or
     /// protected, and not `private protected`, whose domain is the type's own
     /// assembly; an interface's member is public unless it says not
@@ -4587,6 +4576,17 @@ public sealed partial class Binder
             ? (m.Mods & (Mods.Private | Mods.Internal | Mods.Protected)) == 0
             : (m.Mods & (Mods.Public | Mods.Protected)) != 0 && (m.Mods & Mods.Private) == 0;
 
+    /// <summary>
+    /// C#'S INCONSISTENT ACCESSIBILITY (CS0050-CS0061), for the class
+    /// library's public types: a public or protected member may not show a
+    /// type the library keeps internal -- its return, a parameter's, a
+    /// field's or a property's type, or the type's base or an interface. A
+    /// program reaches the member and cannot name what it hands back; C#
+    /// refuses the library. `Os.Exit(ExitCode)` and `Os.Console`'s IConsole
+    /// were two, and a kernel naming them broke when the types were hidden.
+    /// Only where this unit compiles the type's code: a program reading the
+    /// library's declarations is not told of the library's faults.
+    /// </summary>
     private void CheckExposedAccessibility(TypeDecl d, TypeSymbol sym)
     {
         if (d.Specialised || d.Elsewhere || d.SignatureOnly || !ClassLibrarySide(d)

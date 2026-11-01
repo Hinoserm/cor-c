@@ -15,7 +15,11 @@ cp tests/integration/modules/Host.cor tests/integration/modules/Kernel.cor tests
 # An internal member of a public type, and an internal type, both used by the kernel.
 sed -i 's/    public static int Twice(int value) => value \* 2 + Log.Lines;/&\n    internal static int Hidden(int value) => value + 1;/' "$work/Kernel.cor"
 printf '\nstatic class Secret\n{\n    public static int Value() => 7;\n}\n' >> "$work/Kernel.cor"
-sed -i 's/        Host.Start(32 \* 1024 \* 1024);/&\n        Log.Lines += Tick.Hidden(0) + Secret.Value() - 8;/' "$work/Kernel.cor"
+# Nested types: public in public, public in internal; and a public type with startup work.
+printf '\npublic static class Shelf\n{\n    public static class Rack\n    {\n        public static int Count() => 3;\n    }\n}\n' >> "$work/Kernel.cor"
+printf '\nstatic class Vault\n{\n    public static class Inner\n    {\n        public static int Value() => 9;\n    }\n}\n' >> "$work/Kernel.cor"
+printf '\npublic static class Counter\n{\n    static int _made = Make();\n    public static int Made => _made;\n    static int Make() => Log.Lines + 1;\n}\n' >> "$work/Kernel.cor"
+sed -i 's/        Host.Start(32 \* 1024 \* 1024);/&\n        Log.Lines += Tick.Hidden(0) + Secret.Value() + Vault.Inner.Value() - 17;/' "$work/Kernel.cor"
 grep -q 'internal static int Hidden' "$work/Kernel.cor" || fail "the internal member was not written"
 grep -q 'Tick.Hidden(0)' "$work/Kernel.cor" || fail "the kernel's call was not written"
 k=$work/k
@@ -42,6 +46,11 @@ exported 'm_Kernel\$Tick_Twice_' || fail "a public method the module calls is no
 exported 'm_Kernel\$Log_Write_' || fail "a public method the kernel calls is not exported"
 if exported 'm_Kernel\$Tick_Hidden_'; then fail "an internal member of a public type is exported"; fi
 if exported 'm_Kernel\$Secret_Value_'; then fail "a public member of an internal type is exported"; fi
+exported 'm_Kernel\$Shelf\$Rack_Count_' || fail "a public member of a public type nested in a public one is not exported"
+if exported 'm_Kernel\$Vault\$Inner_Value_'; then fail "a public member of a public type nested in an internal one is exported"; fi
+exported 'm_Kernel\$Counter_StaticInit\$_' || fail "a public type's startup work is not exported"
+exported 'm_Kernel\$Counter_get_Made_' || fail "a public property's accessor is not exported"
+if exported 'm_Kernel\$Counter_Make_'; then fail "a private method is exported"; fi
 # The module, which imports public members alone: linked.
 "$corc" compile --kernel "$k/kernel" --decl-index "$k/kernel.idx" --assembly Kernel --ring 0 "$work/Sb16.cor" --obj -o "$work/sb16.o" \
     2> "$work/sb16.log" || { cat "$work/sb16.log"; fail "module object"; }

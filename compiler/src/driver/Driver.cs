@@ -1636,7 +1636,7 @@ public static class Driver
         // And what a DLL exports, for its link's export directory.
         NativeExports.Attach(obj, module.NativeExports);
         // And a ring unit's public surface, for a kernel's export table.
-        PublicApi.Attach(obj, module.PublicSymbols, module.WithheldSymbols);
+        PublicApi.Attach(obj, module.PublicSymbols, module.OptionalSymbols, module.WithheldSymbols);
         ManagedLayoutContract.Attach(obj, layouts);
         // A UNIT FOR A RING -- a kernel's, a module's -- says its layouts by
         // name (LayoutNames): those of the types it defines, for other images
