@@ -170,8 +170,11 @@ public sealed partial class Lowering
     /// library's (--shared, with its initialiser or without it), a kernel
     /// module's (--kernel, which is --shared), or a kernel's, whose units are
     /// freestanding objects (--freestanding --obj) its link (--exports) puts
-    /// together. Not a whole program's, flat or hosted, nor a Windows image's,
-    /// whose exports are the native ones it declares (Lowering.Windows).
+    /// together. Not a whole program's, flat or hosted. A Windows DLL of the
+    /// class library (--windows --shared) records its surface as an ELF
+    /// library does, though its link exports every global today: a CORSAC
+    /// library of either format exports its C# public surface
+    /// (docs/NATIVE-CALLS.md, "Later: both formats").
     /// </summary>
     public static bool ExportingImage { get; set; }
 

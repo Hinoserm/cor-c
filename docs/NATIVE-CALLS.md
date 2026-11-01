@@ -96,6 +96,56 @@ When a C library is loaded:
 The runtime finds these (and `malloc` for `Marshal`) in the loaded images by
 their GNU or SysV hash tables (`Runtime.NativeSymbol`).
 
+## Later: both formats in one CORSAC program
+
+NOT BUILT YET. On a CORSAC machine a native program may be an ELF image or a
+PE image, and either may import ELF shared objects, PE DLLs, or both at once:
+its container says nothing about what it may call. Today only a PE image
+imports a DLL (`--windows`, docs/WIN32-TARGET.md); an ELF image's
+`[DllImport("user32.dll")]` is refused at its link, the name looked for as a
+C library in the build host's directories (`Linker.ResolveNative`).
+
+What it takes:
+
+- ONE CORSAC NATIVE TARGET, TWO CONTAINERS. The same runtime, the same code,
+  the same system calls; ELF or PE is only the file written. A pure ELF
+  image stays a Linux program; one naming a DLL is CORSAC's alone.
+- AN IMPORT'S ABI IS ITS LIBRARY'S, never the program's. A call into a
+  `.dll` is Windows's -- stdcall, fastcall or thiscall on i386, rcx, rdx,
+  r8, r9 and 32 bytes of shadow space on x86-64 -- and a call into a `.so`
+  the System V ABI's, chosen per `[DllImport]` by the library it names.
+  The two differ where data silently goes wrong: `long` is 32 bits on 64-bit
+  Windows and 64 on Linux, `wchar_t` 2 bytes and 4, a `double` in a struct
+  8-aligned and 4-aligned on i386, `long double` 8 bytes and 12 or 16. The
+  marshalling follows the library too.
+- FOREIGN IMPORTS IN EITHER CONTAINER: an ELF image's DT_NEEDED naming a
+  DLL, a PE image's import directory naming a shared object, neither
+  needing the library on the build host. COR-C#'s own libraries alike: a
+  PE program may link libcorsacrt.so and the libSystem images, and a
+  library's exports are its C# public surface in either format
+  (docs/SEPARATE-COMPILATION.md, "Exports").
+- NOTHING UNWINDS ACROSS. A COR-C# exception never unwinds through a DLL's
+  frames or a C library's, as it does not through a C callback's now; what
+  `malloc` gave goes back to `free`, what `HeapAlloc` gave to `HeapFree`.
+- THE LOADER (the CORSAC kernel's): both formats mapped into one process,
+  each import bound by its library's format, every image's initialisers --
+  DllMain, DT_INIT -- run in the order they need each other, and both
+  thread blocks set up: the TEB at FS and thread storage at GS on i386,
+  swapped on x86-64.
+
+The order: the per-import ABI; foreign imports in both linkers; a contract
+for the loader; then a test program for each combination -- ELF calling a
+DLL, PE calling a shared object, one calling both -- run on CORSAC.
+
+Already shaped for it: a library's exports are read by its own format, not
+the program's (Driver, the providers' exports); an executable's link judges
+the imports a COR-C# library must answer, and leaves every [DllImport] name
+-- a C library's or a DLL's, the object says which it calls
+(`.corsac.nativesymbols`) -- to the loader (Linker.ExportsAtStart).
+
+Open: what a CORSAC machine's libc is (glibc, musl or its own), which says
+what the loader must give a C library a PE image imports.
+
 ## Tests
 
 `tests/language/700_native_calls.cor`, `701_native_callbacks.cor` and

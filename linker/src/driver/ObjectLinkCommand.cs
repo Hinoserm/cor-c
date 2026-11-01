@@ -295,6 +295,8 @@ public static class ObjectLinkCommand
             optional.UnionWith(reached);
             if (exports) keep = (keep ?? Array.Empty<string>()).Concat(offered).Concat(optional).Distinct(StringComparer.Ordinal).ToArray();
         }
+        // The native names the units call, read before the link takes their notes.
+        HashSet<string> native = NativeLibraries.ReadSymbols(inputs.Select(input => input.Item2));
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && !exports ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
             // Only the types the image makes, where nothing outside it makes
@@ -392,11 +394,11 @@ public static class ObjectLinkCommand
         // --no-undefined, its imports another image's to answer.
         if ((noUndefined || !shared) && kernel is null && (shared || sharedLibraries.Count > 0))
         {
-            // What the image's loader finds: its DT_NEEDED and theirs, a
-            // [DllImport]'s C library among them (Linker.ExportsAtStart).
-            HashSet<string>? provided = Linker.ExportsAtStart(image, sharedLibraries, longMode);
-            string[] missing = provided is null ? Array.Empty<string>()
-                : ElfReader.ImportsOf(image).Where(name => !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();
+            // What the image's loader finds: its DT_NEEDED and theirs
+            // (Linker.ExportsAtStart). Not a [DllImport]'s name, a C library's
+            // or a DLL's: the loader's to find (NativeLibraries.ReadSymbols).
+            HashSet<string> provided = Linker.ExportsAtStart(image, sharedLibraries, longMode);
+            string[] missing = ElfReader.ImportsOf(image).Where(name => !native.Contains(name) && !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();
             if (missing.Length != 0) return Fail("unresolved shared-library imports: " + string.Join(", ", missing));
         }
         if (!streamed) File.WriteAllBytes(output, image);

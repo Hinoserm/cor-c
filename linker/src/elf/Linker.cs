@@ -730,8 +730,9 @@ public static partial class Linker
                 // A CHECKED CONTRACT STAYS BEHIND (ConsumedContract): passed
                 // over, not taken out, so the input is as fit to be validated
                 // and linked again as it was before this link.
-                // And a unit's public surface, read by whoever links it (PublicApi).
-                if (s.Kind == SectionKind.Note && (ConsumedContract(s.Name) || s.Name == PublicApi.SectionName))
+                // And a unit's public surface, read by whoever links it (PublicApi),
+                // and the native names it calls (NativeLibraries.ReadSymbols).
+                if (s.Kind == SectionKind.Note && (ConsumedContract(s.Name) || s.Name is PublicApi.SectionName or NativeLibraries.SymbolsSectionName))
                 {
                     continue;
                 }

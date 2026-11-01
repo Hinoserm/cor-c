@@ -1163,7 +1163,7 @@ public static class Driver
         // shadowing a library one be kept.
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
-        Corsac.Lang.Lower.Lowering.ExportingImage = !windows && (shared || freestanding && args.Contains("--obj"));
+        Corsac.Lang.Lower.Lowering.ExportingImage = shared || freestanding && !windows && args.Contains("--obj");
         // THE CLASS LIBRARY'S SOURCES THIS COMPILE OWNS: named on its command
         // line and not read for their declarations (--ref, or the default
         // library a --shared compile references). A program's or a user's
@@ -1392,7 +1392,11 @@ public static class Driver
                 try
                 {
                     byte[] image = File.ReadAllBytes(lib);
-                    mine = new HashSet<string>(windows ? Corsac.Lang.Pe.PeReader.ExportsOf(image) : ElfReader.ExportsOf(image), StringComparer.Ordinal);
+                    // BY THE LIBRARY'S OWN FORMAT, not the program's: a CORSAC
+                    // program of either may link libraries of either
+                    // (docs/NATIVE-CALLS.md, "Later: both formats").
+                    mine = new HashSet<string>(image.Length >= 2 && image[0] == (byte)'M' && image[1] == (byte)'Z'
+                        ? Corsac.Lang.Pe.PeReader.ExportsOf(image) : ElfReader.ExportsOf(image), StringComparer.Ordinal);
                 }
                 catch (Exception e) when (e is ElfFormatException or InvalidDataException)
                 {
@@ -1670,6 +1674,7 @@ public static class Driver
             storeSequences: module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore)).Attach(obj);
         // The C libraries its [DllImport]s call, for the link to need.
         NativeLibraries.Attach(obj, module.NativeLibraries);
+        NativeLibraries.AttachSymbols(obj, NativeSymbolsOf(module));
         // And what a DLL exports, for its link's export directory.
         NativeExports.Attach(obj, module.NativeExports);
         // And the unit's public surface, for the exports of the image linked of it.
@@ -1974,15 +1979,17 @@ public static class Driver
         if (sharedLibs.Count > 0)
         {
             List<string> needed = Needed(obj, sharedLibs, exports);
+            HashSet<string> native = NativeLibraries.ReadSymbols(new[] { obj });
             byte[] linked = Linker.Link(new[] { (name, obj) }, entry, needed, Value(args, "--runpath"), program: program);
             // AN IMPORT NO LIBRARY EXPORTS IS A REFUSED LINK, as ld refuses an
             // executable's undefined reference: the loader would refuse the
             // program at its start, naming one, and only one. Judged as the
-            // loader finds them: the program's DT_NEEDED and theirs, a
-            // [DllImport]'s C library among them (Linker.ExportsAtStart).
-            HashSet<string>? exported = Linker.ExportsAtStart(linked, needed, longMode);
-            string[] missing = exported is null ? Array.Empty<string>()
-                : ElfReader.ImportsOf(linked).Where(import => !exported.Contains(import)).Order(StringComparer.Ordinal).ToArray();
+            // loader finds them: the program's DT_NEEDED and theirs
+            // (Linker.ExportsAtStart). Not a [DllImport]'s name, a C library's
+            // or a DLL's: the loader's to find, in a library this host may
+            // not have (NativeLibraries.ReadSymbols).
+            HashSet<string> exported = Linker.ExportsAtStart(linked, needed, longMode);
+            string[] missing = ElfReader.ImportsOf(linked).Where(import => !native.Contains(import) && !exported.Contains(import)).Order(StringComparer.Ordinal).ToArray();
             if (missing.Length != 0) return Fail("imported, and no library linked against exports it: " + string.Join(", ", missing.Take(12)) + (missing.Length > 12 ? " and " + (missing.Length - 12) + " more" : ""));
             File.WriteAllBytes(output, linked);
         }
@@ -2086,6 +2093,18 @@ public static class Driver
     /// </summary>
     private static readonly Dictionary<string, bool> librarySources = new(StringComparer.Ordinal);
     private static readonly object librarySourceGate = new();
+
+    /// <summary>The native names the module calls: every [DllImport]'s symbol (NativeCall), a C library's or a DLL's.</summary>
+    private static IEnumerable<string> NativeSymbolsOf(Module module)
+    {
+        HashSet<string> names = new(StringComparer.Ordinal);
+        foreach (Function f in module.Functions)
+            foreach (Corsac.Lang.Ir.Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is { } callee && callee.StartsWith(NativeCall.Prefix, StringComparison.Ordinal))
+                        names.Add(NativeCall.Symbol(callee));
+        return names;
+    }
 
     /// <summary>
     /// Drops what the module read of its libraries' private code and state

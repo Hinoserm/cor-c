@@ -449,7 +449,7 @@ public sealed class UnitBackend : IUnitBackend
                 + "ms, functions and code " + (Environment.TickCount64 - lateDone) + "ms" : ""));
         if (errors.Count > 0) throw new InvalidDataException("IR backend: " + string.Join("; ", errors));
         foreach (Section section in original.Sections.Where(section => section.Name is TargetContract.SectionName or ManagedLayoutContract.SectionName
-                       or ".corsac.tag" or RegistrySchema.SectionName or NativeLibraries.SectionName
+                       or ".corsac.tag" or RegistrySchema.SectionName or NativeLibraries.SectionName or NativeLibraries.SymbolsSectionName
                        // A module's unit: its mark, what it says of itself and its
                        // initialisers, which its link reads after this
                        // (Linker.LinkModule).
