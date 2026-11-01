@@ -3763,7 +3763,20 @@ public sealed partial class Binder
     /// the kernel linked brought the kernel down at entry. Deferring to first
     /// use puts the allocation after Main has started, where the heap is.
     /// </summary>
+    /// <summary>
+    /// QUIETLY for a watched type (MemberWatch): what this makes of a type's
+    /// statics -- whether it has any to make, which the link may lay down, a
+    /// static constructor's body -- is its shape's to say
+    /// (SourceIndexBuilder.MemberName: an initialised static and a static
+    /// constructor are no member's own), not the unit's asking.
+    /// </summary>
     private void StaticInitialisers(TypeDecl d)
+    {
+        if (d.Watch is { } watch) { using (watch.Quietly()) StaticInitialisersOf(d); }
+        else StaticInitialisersOf(d);
+    }
+
+    private void StaticInitialisersOf(TypeDecl d)
     {
         if (d.Kind is TypeKind.Interface or TypeKind.Enum)
         {
@@ -3919,7 +3932,14 @@ public sealed partial class Binder
         _r.StaticInits.Add(d.Name);
     }
 
+    /// <summary>Quietly for a watched type, as StaticInitialisers: an instance field and a constructor are the shape's.</summary>
     private void Initialisers(TypeDecl d)
+    {
+        if (d.Watch is { } watch) { using (watch.Quietly()) InitialisersOf(d); }
+        else InitialisersOf(d);
+    }
+
+    private void InitialisersOf(TypeDecl d)
     {
         // A DEFERRED LIST IS MADE BEFORE THE FLAG IS READ: a copy made per
         // argument once its template's initialisers are placed is made with
@@ -4504,6 +4524,8 @@ public sealed partial class Binder
         TypeSymbol? wasScope = _scope;
         _scope = sym;
 
+        // Its own members read to declare them, not by the unit (MemberWatch).
+        MemberWatch.Quiet? quiet = d.Watch?.Quietly();
         try
         {
             if (bases) DeclareBases(d, sym);
@@ -4523,6 +4545,7 @@ public sealed partial class Binder
         finally
         {
             _scope = wasScope;
+            quiet?.Dispose();
         }
     }
 
@@ -4937,7 +4960,8 @@ public sealed partial class Binder
         {
             return false;
         }
-        foreach (MemberDecl m in d.Members)
+        // Quietly: when its members are declared changes nothing a unit says (above).
+        foreach (MemberDecl m in d.MembersQuietly)
         {
             // No member this unit's: nothing of it is rooted here.
             if (m.OwnedImplementation == true) return false;

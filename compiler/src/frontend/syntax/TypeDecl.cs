@@ -87,10 +87,18 @@ public sealed class TypeDecl : Node
     /// Its members, MADE HERE ON FIRST ASKING when they were deferred
     /// (DeferMembers): every reader sees the whole list, as it always did.
     /// </summary>
+    /// <summary>
+    /// What the unit reads of it, member by member, where it was read from
+    /// the index and its members can be told apart (MemberWatch): every
+    /// reading of this list reads them all.
+    /// </summary>
+    public MemberWatch? Watch { get; set; }
+
     public List<MemberDecl> Members
     {
         get
         {
+            Watch?.ReadAll();
             // Looked at, so no longer the list its record reads back as
             // (ReadableAgain): whoever asked may change it.
             _untouched = false;
@@ -100,6 +108,24 @@ public sealed class TypeDecl : Node
                 _members = make(this);
             }
             return _members!;
+        }
+    }
+
+    /// <summary>
+    /// Its members, made if they wait, read WITHOUT COUNTING AS THE UNIT'S
+    /// READING OF THEM ALL (MemberWatch): for the compiler's own walks whose
+    /// outcome no member the unit did not ask for can change -- declaring
+    /// them, merging a partial type's parts (one watched is not partial),
+    /// asking whether they may wait to be declared, the names they are
+    /// looked up by. Anything a member more or less would change reads
+    /// Members.
+    /// </summary>
+    public List<MemberDecl> MembersQuietly
+    {
+        get
+        {
+            if (Watch is { } watch) { using (watch.Quietly()) return Members; }
+            return Members;
         }
     }
 
@@ -196,7 +222,7 @@ public sealed class TypeDecl : Node
     /// list on the first lookup that asks and kept: most such types are
     /// asked nothing, and a set each was more than the symbols it spares.
     /// </summary>
-    internal HashSet<string> NamesOfMembers() => MemberNames ??= Monomorphiser.MemberNames(Members);
+    internal HashSet<string> NamesOfMembers() => MemberNames ??= Monomorphiser.MemberNames(MembersQuietly);
 
     // Made with the declaration, as it always was; null only while deferred.
     private List<MemberDecl>? _members = new();

@@ -1161,7 +1161,8 @@ public static class Frontend
     {
         Dictionary<string, Lang.MethodDecl>? seen = null;
         List<Lang.MemberDecl>? dropped = null;
-        foreach (Lang.MemberDecl member in type.Members)
+        // Quietly: a watched type is no partial one, and has no partial method to merge (MemberWatch).
+        foreach (Lang.MemberDecl member in type.MembersQuietly)
         {
             if (member is not Lang.MethodDecl method || !method.Mods.HasFlag(Lang.Mods.Partial)) continue;
             string key = method.Name + "`" + method.TypeParams.Count + "(" + string.Join(",", method.Params.Select(p =>

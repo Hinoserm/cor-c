@@ -2962,13 +2962,18 @@ public sealed class Monomorphiser
         if (d.MembersPending)
         {
             made.DeferMembersAs(d);
+            made.Watch = d.Watch;
             return made;
         }
 
         // Asked before the members are read, which clears it.
         bool later = ImportedLater(d, map);
-        RewriteMembers(d, d.Members, map, name, made.Members);
+        // A copy's members are read to copy them, not by the unit: quietly,
+        // and the copy watched as its original was (MemberWatch).
+        if (d.Watch is { } watch) { using (watch.Quietly()) RewriteMembers(d, d.Members, map, name, made.Members); }
+        else RewriteMembers(d, d.Members, map, name, made.Members);
         if (later) DeferImported(made, d.ReadAgain!, name, ScopeOf(d));
+        made.Watch = d.Watch;
         return made;
     }
 

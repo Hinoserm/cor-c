@@ -118,6 +118,55 @@ public static class SourceIndexBuilder
         };
     }
 
+    /// <summary>
+    /// WHETHER A TYPE'S MEMBERS ARE TOLD APART for the units that read it
+    /// (SourceDeclaration.ByMember): one whose private members are left out
+    /// (HidesPrivate), with no base, no interface and no attribute -- nothing
+    /// a unit reads of it in bulk: a [Registry] class's schema is written into
+    /// every unit that loads it -- not an enum, and the program's, not the
+    /// class library's, whose members the compiler asks for by names of its
+    /// own (String.Concat, Gc's fields). The kernel's Arch, Mem and Irq: a
+    /// method more in Arch rebuilt 115 kernel units that never called it.
+    /// </summary>
+    private static bool ByMember(TypeDecl type, bool filtered, bool librarySide)
+        => filtered && !librarySide && type.Bases.Count == 0 && type.Attributes.Count == 0 && type.EnumMembers.Count == 0;
+
+    /// <summary>
+    /// The name a member of a ByMember type is hashed under, or null where
+    /// what it says is the whole type's (its shape): a constructor, an
+    /// operator, a finaliser, a virtual, abstract or overriding member, an
+    /// explicit interface's, an instance field (the layout), an instance
+    /// property or an indexer.
+    /// </summary>
+    private static string? MemberName(MemberDecl member)
+    {
+        if (member.ExplicitInterface is not null || (member.Mods & (Mods.Virtual | Mods.Abstract | Mods.Override)) != 0) return null;
+        bool shared = (member.Mods & (Mods.Static | Mods.Const)) != 0;
+        return member switch
+        {
+            MethodDecl method => method.IsCtor || method.Name.StartsWith("op_", StringComparison.Ordinal) || method.Name.StartsWith('~')
+                || method.Name == "Finalize" ? null : method.Name,
+            // An initialised static is the shape's: what is made of the type's
+            // statics -- a step the link may lay down, a call before first use
+            // -- is read by every unit touching the type (Binder.StaticInitialisers).
+            FieldDecl field => shared && field.FixedSize is null && (field.Init is null || (field.Mods & Mods.Const) != 0) ? field.Name : null,
+            PropertyDecl property => shared && property.Params.Count == 0 && property.Init is null ? property.Name : null,
+            _ => null,
+        };
+    }
+
+    /// <summary>The names a member is looked up by (Monomorphiser.MemberNames): a property's accessors and backing field besides its own.</summary>
+    private static IEnumerable<string> LookedUpBy(MemberDecl member, string name)
+    {
+        yield return name;
+        if (member is PropertyDecl)
+        {
+            yield return "<" + name + ">";
+            yield return NameTable.Accessor("get_", name);
+            yield return NameTable.Accessor("set_", name);
+        }
+    }
+
     /// <summary>The key of an assembly's `global using` directives on one side, the library's or the program's.</summary>
     public static string GlobalUsingKey(string identity, bool library) => "U:" + identity + "\n" + (library ? "library" : "program");
 
@@ -133,6 +182,26 @@ public static class SourceIndexBuilder
     /// Every place that makes or checks one calls this.
     /// </summary>
     public static byte[] TextHash(string text) => Corsac.Lang.Ir.FastHash.Of(Encoding.UTF8.GetBytes(text));
+
+    /// <summary>
+    /// Shown text hashed as DeclarationHash is -- its tokens' kinds and
+    /// spellings, no position -- with the file's usings where a scope is
+    /// given (the shape's: a using names its types), cut to `bytes`.
+    /// </summary>
+    private static byte[] Hashed(string shown, string path, FileScope? scope, int bytes)
+    {
+        using MemoryStream canonical = new();
+        using (BinaryWriter writer = new(canonical, Encoding.UTF8, leaveOpen: true))
+        {
+            foreach (Token token in Lexer.Tokenize(shown, path)) { writer.Write((byte)token.Kind); writer.Write(token.Text); }
+            if (scope is not null)
+            {
+                foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
+                foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
+            }
+        }
+        return SHA256.HashData(canonical.ToArray())[..bytes];
+    }
 
     public static void Write(string output, IEnumerable<string> paths, string assembly,
         IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024,
@@ -266,6 +335,14 @@ public static class SourceIndexBuilder
                     int memberIndex = 0;
                     PrivateMember hiding = PrivateMember.Shown;
                     bool markedCtor = false, markedStatics = false;
+                    // AND EACH MEMBER APART, where they can be told apart
+                    // (ByMember): what a token shows goes to its member's text
+                    // or to the type's shape, a nested type's to neither -- it
+                    // is a key of its own.
+                    bool byMember = ByMember(type, filtered, librarySide);
+                    StringBuilder shapeText = new();
+                    Dictionary<string, (MemberDecl Member, StringBuilder Text)> memberTexts = new(StringComparer.Ordinal);
+                    StringBuilder? routed = null;
                     void Place(Token at)
                     {
                         if (at.Line > line) { declaration.Append('\n', at.Line - line); line = at.Line; column = 1; }
@@ -293,7 +370,20 @@ public static class SourceIndexBuilder
                         { memberIndex++; markedCtor = false; }
                         hiding = memberIndex < members.Length && token.Pos >= members[memberIndex].From
                             ? Hiding(members[memberIndex].Member) : PrivateMember.Shown;
-                        if (hiding == PrivateMember.Constructor && !markedCtor) { visible.Append("ctor ; "); markedCtor = true; }
+                        routed = null;
+                        if (byMember && !nested.Any(n => token.Pos >= n.SourceFrom && token.Pos < n.SourceTo))
+                        {
+                            routed = shapeText;
+                            // A private member's tokens show nothing of their own
+                            // (Hiding): no name is made for one.
+                            if (memberIndex < members.Length && token.Pos >= members[memberIndex].From && hiding == PrivateMember.Shown
+                                && MemberName(members[memberIndex].Member) is string own)
+                            {
+                                if (!memberTexts.TryGetValue(own, out var said)) memberTexts[own] = said = (members[memberIndex].Member, new StringBuilder());
+                                routed = said.Text;
+                            }
+                        }
+                        if (hiding == PrivateMember.Constructor && !markedCtor) { visible.Append("ctor ; "); if (byMember) shapeText.Append("ctor ; "); markedCtor = true; }
                         markedStatics |= hiding == PrivateMember.Initialised;
                         if (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].From)
                         {
@@ -337,8 +427,10 @@ public static class SourceIndexBuilder
                                 }
                                 Place(token);
                                 Write(standIn, 0, standIn.Length);
-                                if (hiding == PrivateMember.Shown) visible.Append(standIn);
+                                if (hiding == PrivateMember.Shown) { visible.Append(standIn); routed?.Append(standIn); }
                                 else if (copies) visible.Append("MemberwiseClone ; ");
+                                // Whether objects are copied by bytes is the type's.
+                                if (copies && byMember) shapeText.Append("MemberwiseClone ; ");
                             }
                             wroteBody = true;
                             if (bodies[bodyIndex].Template)
@@ -350,13 +442,28 @@ public static class SourceIndexBuilder
                         }
                         Place(token);
                         Write(text, token.Pos, ends[tokenIndex] - token.Pos);
-                        if (hiding == PrivateMember.Shown) visible.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                        if (hiding == PrivateMember.Shown)
+                        {
+                            visible.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                            routed?.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                        }
                         else if (hiding == PrivateMember.Field && !parser.FieldInitialisers.Any(i => token.Pos >= i.From && token.Pos < i.To))
-                            visible.Append(parser.FieldNames.Contains(token.Pos) ? "_" : text.Substring(token.Pos, ends[tokenIndex] - token.Pos)).Append(' ');
+                        {
+                            string laid = parser.FieldNames.Contains(token.Pos) ? "_" : text.Substring(token.Pos, ends[tokenIndex] - token.Pos);
+                            visible.Append(laid).Append(' ');
+                            if (byMember) shapeText.Append(laid).Append(' ');
+                        }
                     }
                     shaped.Flush();
                     // Once, wherever they were written.
                     if (markedStatics) visible.Append("static ;");
+                    // WHETHER IT HAS STATICS TO MAKE, whoever's they are: every
+                    // unit touching the type reads that (Lowering.TouchType),
+                    // and a public static with an initialiser is a member's
+                    // text, not the shape's, where a private one was a mark.
+                    if (byMember && type.Members.Any(member => (member.Mods & Mods.Static) != 0
+                            && member is FieldDecl { Init: not null } or PropertyDecl { Init: not null } or MethodDecl { IsCtor: true }))
+                        shapeText.Append("static ;");
                     string syntax = declaration.ToString();
                     FileScope scope = type.Scope ?? new FileScope();
                     using MemoryStream canonical = new();
@@ -383,6 +490,13 @@ public static class SourceIndexBuilder
                         HeaderHash = HeaderHash(tokens, type, scope),
                         MemberNames = Monomorphiser.MemberNames(type.Members).Order(StringComparer.Ordinal).ToArray(),
                         ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
+                        ShapeHash = byMember ? Hashed(shapeText.ToString(), path, scope, 32) : Array.Empty<byte>(),
+                        MemberHashes = byMember
+                            ? memberTexts.SelectMany(member => LookedUpBy(member.Value.Member, member.Key)
+                                    .Select(name => (Name: name, Hash: Hashed(member.Value.Text.ToString(), path, null, 16))))
+                                .GroupBy(member => member.Name, StringComparer.Ordinal).Select(group => group.First())
+                                .OrderBy(member => member.Name, StringComparer.Ordinal).ToArray()
+                            : Array.Empty<(string, byte[])>(),
                     }.Encode();
                     yield return new DeclarationRecord("B:" + identity + "\n" + Binder.TypeKey(type), Encoding.UTF8.GetBytes(key));
                     // AND BY ITS SIMPLE NAME, when its key is qualified -- by a

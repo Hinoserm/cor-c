@@ -27,7 +27,11 @@ public sealed class ProcessRunner
             // currently idle budget and return every slot on all exit paths.
             if (useAvailableWorkers) while (slots.Wait(0)) workers++;
             Directory.CreateDirectory(logs);
-            string prefix = Path.Combine(logs, Interlocked.Increment(ref sequence).ToString("D4") + "-" + label.Replace('/', '_'));
+            // A NAME NEVER USED BEFORE: the step, when it started and which
+            // build ran it. Numbered from 1 each build, every run wrote over
+            // the last one's logs.
+            string prefix = Path.Combine(logs, label.Replace('/', '_') + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss.fff")
+                + "-" + Environment.ProcessId + "-" + Interlocked.Increment(ref sequence).ToString("D4"));
             ProcessStartInfo start = new(executable)
             {
                 WorkingDirectory = directory,
@@ -47,11 +51,13 @@ public sealed class ProcessRunner
             Stopwatch watch = Stopwatch.StartNew();
             process.Start();
             if (!interactive) process.StandardInput.Close();
-            await using FileStream stdout = File.Create(prefix + ".out.log");
-            await using FileStream stderr = File.Create(prefix + ".err.log");
+            await using FileStream stdout = new(prefix + ".out.log", FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            await using FileStream stderr = new(prefix + ".err.log", FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            // Both streams, every line, live (ProgressOutput).
             Task outCopy = interactive ? Task.CompletedTask : ProgressOutput.Copy(process.StandardOutput.BaseStream, stdout,
                 line => Console.WriteLine("/" + label + ": " + line));
-            Task errCopy = interactive ? Task.CompletedTask : process.StandardError.BaseStream.CopyToAsync(stderr);
+            Task errCopy = interactive ? Task.CompletedTask : ProgressOutput.Copy(process.StandardError.BaseStream, stderr,
+                line => Console.WriteLine("/" + label + ": " + line));
             using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancel);
             deadline.CancelAfter(timeout);
             bool timedOut = false;

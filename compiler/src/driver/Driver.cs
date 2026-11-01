@@ -750,7 +750,10 @@ public static class Driver
         HashSet<string> definedLayouts = new(StringComparer.Ordinal), readLayouts = new(StringComparer.Ordinal);
         // A unit for a ring's closed instantiations too, to say by name.
         List<ManagedTypeLayout>? instanceLayouts = Parser.Ring >= 0 ? new() : null;
-        List<ManagedTypeLayout> layouts = ManagedLayouts.Capture(front.Value.bound, library, definedLayouts, readLayouts, instanceLayouts);
+        // Layouts are what a type's shape says, not what the unit asked of
+        // its members (MemberWatch).
+        List<ManagedTypeLayout> layouts;
+        using (MemberWatch.ShapesOnly()) layouts = ManagedLayouts.Capture(front.Value.bound, library, definedLayouts, readLayouts, instanceLayouts);
         // AND WHICH TYPES IT NAMED AND NEVER ASKED THE MEMBERS OF, now that
         // nothing more will (Dependence.Header).
         if (declarations is not null)

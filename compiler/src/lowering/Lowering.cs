@@ -635,9 +635,10 @@ public sealed partial class Lowering
         foreach (TypeSymbol t in _b.Types.Values)
         {
             if (t.MembersPending) continue;
-            foreach (MethodSymbol m in t.Methods)
+            // By name (MemberWatch): a type that has no Main says nothing else here.
+            foreach (MethodSymbol m in t.FindMethods("Main"))
             {
-                if (m.Name == "Main" && m.Static && Emits(m) && (StartupObject is null || TypeDecl.Unaside(t.Key) == StartupObject))
+                if (ReferenceEquals(m.Owner, t) && m.Static && Emits(m) && (StartupObject is null || TypeDecl.Unaside(t.Key) == StartupObject))
                 {
                     entry = m;
                 }
@@ -720,7 +721,10 @@ public sealed partial class Lowering
                 // one only another library's signature named, (BigInteger,
                 // BigInteger), rooted here had the runtime's library call that
                 // library's BigInteger.ToString, a name from above.
-                if ((t.Decl?.Elsewhere == true && !t.Methods.Any(method => method.Decl?.OwnedImplementation == true))
+                // Quietly (MemberWatch): a watched type is no partial one, and no
+                // member of it is ever this unit's to root.
+                if ((t.Decl?.Elsewhere == true && t.Decl.Watch is null && !t.Methods.Any(method => method.Decl?.OwnedImplementation == true))
+                    || t.Decl?.Watch is not null
                     || (PartOfALibrary && (t.Decl?.Specialised == true || IsTupleShape(t))))
                 {
                     continue;

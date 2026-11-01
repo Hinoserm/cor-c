@@ -30,6 +30,8 @@ public sealed class IndexedDeclarations : IDisposable
     private readonly Dictionary<string, IReadOnlyCollection<string>> membersUnread = new(StringComparer.Ordinal);
     /// <summary>The keys of the templates the kept pass copied a body of (PassKept, WriteDependencies).</summary>
     private readonly HashSet<string> bodiesUsed = new(StringComparer.Ordinal);
+    /// <summary>What the unit read of each type whose members can be told apart, by its key (MemberWatch, Dependence.Members).</summary>
+    private readonly Dictionary<string, MemberWatch> watches = new(StringComparer.Ordinal);
     // WHAT THIS UNIT ASKED THE INDEX, by kind and name: spelled out as the
     // index spells a query ("B:" and this assembly's identity before the
     // name) only when the receipt is written. Kept spelled, every name the
@@ -853,6 +855,14 @@ public sealed class IndexedDeclarations : IDisposable
                 // LAST, once nothing here reads its members again: from now on
                 // a reader of them clears the mark (TypeDecl.ReadableAgain).
                 if (signatures && ReadLater(root)) root.ReadableAgain(ReadAgain(source, displayFile));
+                // AND FROM NOW ON WATCHED, member by member, where they can be
+                // told apart: what the unit reads of it (MemberWatch), one
+                // watch a key however often it is read.
+                if (signatures && source.ByMember)
+                {
+                    if (!watches.TryGetValue(key, out MemberWatch? watch)) watches[key] = watch = new MemberWatch(key);
+                    root.Watch = watch;
+                }
             }
         }
     }
@@ -1012,6 +1022,7 @@ public sealed class IndexedDeclarations : IDisposable
     public void Dispose()
     {
         loaded.Clear();
+        watches.Clear();
         // A session owns its catalog and its lexed headers; the whole point is
         // that the next source in the project finds them still there.
         if (session is null) { Tokens.Clear(); catalog.Dispose(); }
@@ -1049,7 +1060,8 @@ public sealed class IndexedDeclarations : IDisposable
     {
         string identity = SourceIndexBuilder.AssemblyIdentity(assembly);
         UnitDependencies.Write(path, catalog, loaded, implementations, bodiesUsed,
-            queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name), taken, kept, membersUnread);
+            queries.Select(asked => asked.Kind + ":" + identity + "\n" + asked.Name), taken, kept, membersUnread,
+            watches.Where(watched => !watched.Value.Whole).ToDictionary(watched => watched.Key, watched => (IReadOnlyCollection<string>)watched.Value.Names, StringComparer.Ordinal));
     }
 
     /// <summary>

@@ -16,7 +16,7 @@ public static class ProjectCommand
         string path = assembly.Location;
         if (path.Length == 0)
             path = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate the native compiler image");
-        return ProjectState.FileIdentity(path);
+        return ProjectState.WriteIdentity(path);
     }
 
     public static int Run(string[] arguments)
@@ -201,8 +201,8 @@ public static class ProjectCommand
             runtimeArgs.AddRange(cpuArguments);
             runtimeArgs.AddRange(factsArguments);
             if (unusedReport is not null) { runtimeArgs.Add("--unused-report"); runtimeArgs.Add("-"); }
-            string runtimeSignature = ProjectState.Digest(toolchain + "\n" + string.Join("\n", runtimeSources.Select(ProjectState.FileIdentity))
-                + "\n" + string.Join("\n", runtimeArgs));
+            string runtimeSignature = ProjectState.Digest(toolchain + "\n" + string.Join("\n", runtimeSources.Select(ProjectState.WriteIdentity))
+                + "\n" + string.Join("\n", runtimeArgs.Select(ProjectState.Unplaced)));
             if (linkOnly && !runtimeOnly)
             {
                 if (!File.Exists(runtime)) throw new InvalidDataException("--link-only: the runtime object was never compiled: " + runtime);
@@ -220,7 +220,7 @@ public static class ProjectCommand
             List<(string Source, string Object)> units = new();
             foreach (string library in librarySources)
             {
-                string destination = Path.Combine(work, "rt-" + ProjectState.Digest(library)[..24] + ".o");
+                string destination = Path.Combine(work, "rt-" + ProjectState.Digest(ProjectState.Placed(library, directory))[..24] + ".o");
                 units.Add((library, destination));
                 objects.Add(destination);
             }
@@ -230,7 +230,9 @@ public static class ProjectCommand
         {
             string source = owned.Key; EvaluatedProject owner = owned.Value;
             if (ProjectState.FileIdentity(source) != generation[source]) throw new InvalidDataException("Source changed during project compilation: " + source);
-            string destination = Path.Combine(work, ProjectState.Digest(source)[..24] + ".o");
+            // Named by where it is in the project, not on the disc: the
+            // project copied elsewhere names its objects as it did.
+            string destination = Path.Combine(work, ProjectState.Digest(ProjectState.Placed(source, directory))[..24] + ".o");
             bool entry = source == entries[0].Path;
             List<string> options = new() { "--nostdlib", "--obj", "--decl-index", index, "--assembly", project.AssemblyName };
             options.AddRange(cpuArguments);
@@ -287,8 +289,8 @@ public static class ProjectCommand
             if (ProjectState.FileIdentity(source.Key) != source.Value) throw new InvalidDataException("Source changed during project compilation: " + source.Key);
         if (ProjectState.Digest(string.Join("\n", libraries.Select(ProjectState.FileIdentity))) != libraryState)
             throw new InvalidDataException("Runtime sources changed during project compilation");
-        string linkSignature = ProjectState.Digest(toolchain + "\n" + string.Join("\n", objects.Select(ProjectState.FileIdentity))
-            + "\n" + string.Join("\n", linkArguments));
+        string linkSignature = ProjectState.Digest(toolchain + "\n" + string.Join("\n", objects.Select(ProjectState.WriteIdentity))
+            + "\n" + string.Join("\n", linkArguments.Select(ProjectState.Unplaced)));
         string linkState = Path.Combine(work, "link.state");
         if (!ProjectState.Current(linkState, linkSignature, output))
         {

@@ -35,6 +35,22 @@ public sealed class SourceDeclaration
     /// (TypeSymbol.ProbedNames) is checked against these (Dependence.Header).
     /// </summary>
     public IReadOnlyList<string> MemberNames { get; init; } = Array.Empty<string>();
+    /// <summary>
+    /// WHAT A UNIT READS OF THE TYPE WHATEVER IT ASKS, where its members can be
+    /// told apart (SourceIndexBuilder.ByMember): its header, its layout, its
+    /// virtual methods, its constructors, its operators, that it has statics
+    /// to make -- everything that is no single member's to say. Empty for
+    /// any other type, which is read whole (Dependence.Declaration).
+    /// </summary>
+    public byte[] ShapeHash { get; init; } = Array.Empty<byte>();
+    /// <summary>
+    /// Each member name's declarations hashed, overloads together, sorted by
+    /// name: what a unit that asked for that name and no other depends on of
+    /// it (Dependence.Members). Empty where ShapeHash is.
+    /// </summary>
+    public IReadOnlyList<(string Name, byte[] Hash)> MemberHashes { get; init; } = Array.Empty<(string, byte[])>();
+    /// <summary>Whether the type's members are told apart (ShapeHash).</summary>
+    public bool ByMember => ShapeHash.Length == 32;
     public int From { get; init; }
     public int To { get; init; }
     public int Line { get; init; }
@@ -75,7 +91,7 @@ public sealed class SourceDeclaration
             byte[] bytes = DeclarationIndex.Utf8.GetBytes(value);
             writer.Write(bytes.Length); writer.Write(bytes);
         }
-        writer.Write(0x43454443u); writer.Write(0u); // CDEC
+        writer.Write(0x43454443u); writer.Write(1u); // CDEC
         String(Path); String(Text); String(Namespace); String(Outer);
         writer.Write(From); writer.Write(To); writer.Write(Line); writer.Write(Column);
         if (SourceHash.Length != 32 || DeclarationHash.Length != 32 || TemplateHash.Length != 32 || HeaderHash.Length != 32)
@@ -89,6 +105,14 @@ public sealed class SourceDeclaration
         foreach (string symbol in ConditionalSymbols) String(symbol);
         writer.Write(MemberNames.Count);
         foreach (string name in MemberNames) String(name);
+        if (ShapeHash.Length is not (0 or 32)) throw new InvalidDataException("Invalid declaration shape");
+        writer.Write(ShapeHash.Length); writer.Write(ShapeHash);
+        writer.Write(MemberHashes.Count);
+        foreach ((string name, byte[] hash) in MemberHashes)
+        {
+            if (hash.Length != 16) throw new InvalidDataException("Invalid member fingerprint");
+            String(name); writer.Write(hash);
+        }
         return new DeclarationRecord(Key, stream.ToArray());
     }
 
@@ -106,7 +130,7 @@ public sealed class SourceDeclaration
         string Shared() => DeclarationIndex.Shared(String());
         try
         {
-            if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 0)
+            if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 1)
                 throw new InvalidDataException("Unsupported source declaration");
             // ONE COPY OF WHAT DECLARATIONS SHARE: a file's path, its namespace,
             // its usings and the project's symbols were decoded afresh for every
@@ -127,10 +151,17 @@ public sealed class SourceDeclaration
             count = Count();
             string[] members = new string[count];
             for (int i = 0; i < count; i++) members[i] = Shared();
+            count = Count();
+            if (count is not (0 or 32)) throw new InvalidDataException("Invalid declaration shape");
+            byte[] shapeHash = DeclarationIndex.ReadBytes(reader, count);
+            count = Count();
+            var memberHashes = new (string, byte[])[count];
+            for (int i = 0; i < count; i++) memberHashes[i] = (Shared(), DeclarationIndex.ReadBytes(reader, 16));
             if (stream.Position != stream.Length) throw new InvalidDataException("Trailing source declaration data");
             return new SourceDeclaration { Key = record.Key, Path = path, Text = text, Namespace = ns, Outer = outer,
                 From = from, To = to, Line = line, Column = column, Scope = scope,
-                SourceHash = sourceHash, DeclarationHash = declarationHash, TemplateHash = templateHash, HeaderHash = headerHash, ConditionalSymbols = symbols.AsReadOnly(), MemberNames = members };
+                SourceHash = sourceHash, DeclarationHash = declarationHash, TemplateHash = templateHash, HeaderHash = headerHash, ConditionalSymbols = symbols.AsReadOnly(), MemberNames = members,
+                ShapeHash = shapeHash, MemberHashes = memberHashes };
         }
         catch (EndOfStreamException error) { throw new InvalidDataException("Truncated source declaration", error); }
     }

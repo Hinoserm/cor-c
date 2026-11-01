@@ -139,10 +139,19 @@ public static class ProjectCompile
         // rather than compiled (in its receipt too); the options keep only
         // the kernel units' native contract, processor and mode, which every
         // unit's code is made to.
+        //
+        // AND NOTHING OF WHERE THE TREE IS. A path in the options -- the index's,
+        // a library's, the kernel's -- says where a file is, not what it holds:
+        // what it holds is the receipts' and the references' (below) to
+        // answer. So every path among them stands as `<path>`, and a build
+        // tree copied elsewhere with its sources finds its units current; with
+        // the paths in, a copy of a kernel's build compiled all 245 again.
         StringBuilder references = new();
         for (int i = 0; i + 1 < args.Length; i++)
         {
-            if (args[i] == "--ref") references.Append('\t').Append(Corsac.Projects.ProjectState.FileIdentity(args[i + 1]));
+            // A library by its bytes: a library linked again the same is the
+            // same library, wherever it is.
+            if (args[i] == "--ref") references.Append('\t').Append(Hash(File.ReadAllBytes(args[i + 1])));
             else if (args[i] == "--kernel") references.Append('\t').Append(KernelIdentity(args[i + 1]));
         }
         // What a module's units take from or compile beside (UnitDependencies.Stale):
@@ -152,7 +161,7 @@ public static class ProjectCompile
         if (exported is not null)
             foreach (string under in Driver.Values(args, "--link-shared"))
                 exported.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(under)));
-        string optionsText = "0\t" + CompilerIdentity() + "\t" + string.Join('\t', common) + references;
+        string optionsText = "0\t" + CompilerIdentity() + "\t" + string.Join('\t', common.Select(Corsac.Projects.ProjectState.Unplaced)) + references;
         // HASHED ONCE, an entry unit's options and a library unit's: the text
         // names every library by path, time and length, and was encoded
         // afresh for every stamp of every unit.
@@ -799,13 +808,14 @@ public static class ProjectCompile
         string assembly = typeof(ProjectCompile).Assembly.Location;
         if (assembly.Length > 0 && File.Exists(assembly)) parts.Add(assembly);
         if (parts.Count == 0) return _compilerIdentity = "unknown";
-        // EACH FILE BY WHICH WRITE OF IT IT IS (ProjectState.FileIdentity):
-        // its path, write time and length. Hashing the native compiler's
+        // EACH FILE BY WHICH WRITE OF IT IT IS (ProjectState.WriteIdentity):
+        // its name, write time and length. Hashing the native compiler's
         // tens of megabytes in every process a build started was most of
         // the SHA-256 a unit compile ran; a rebuilt compiler is written
-        // again, and that is what changes its identity.
+        // again, and that is what changes its identity. Not its directory:
+        // a toolchain copied with its times is the same compiler.
         using SHA256 sha = SHA256.Create();
-        byte[] described = Encoding.UTF8.GetBytes(string.Join("\n", parts.Distinct(StringComparer.Ordinal).Select(Corsac.Projects.ProjectState.FileIdentity)));
+        byte[] described = Encoding.UTF8.GetBytes(string.Join("\n", parts.Distinct(StringComparer.Ordinal).Select(Corsac.Projects.ProjectState.WriteIdentity)));
         return _compilerIdentity = Convert.ToHexString(sha.ComputeHash(described));
     }
 }

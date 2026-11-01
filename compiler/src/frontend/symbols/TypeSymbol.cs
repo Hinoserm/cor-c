@@ -147,6 +147,7 @@ public sealed class TypeSymbol
         get
         {
             EnsureMembers();
+            Decl?.Watch?.ReadAll();
             return _fields ?? NoFields;
         }
     }
@@ -168,6 +169,7 @@ public sealed class TypeSymbol
         get
         {
             EnsureMembers();
+            Decl?.Watch?.ReadAll();
             return _methods ?? NoMethods;
         }
     }
@@ -242,7 +244,9 @@ public sealed class TypeSymbol
         if (_declareMembers is { } declare)
         {
             _declareMembers = null;
-            declare(this);
+            // Its own members read to declare them, not by the unit (MemberWatch).
+            if (Decl?.Watch is { } watch) { using (watch.Quietly()) declare(this); }
+            else declare(this);
             DeferredDeclared++;
             DeferredMembersDeclared += (_fields?.Count ?? 0) + (_methods?.Count ?? 0);
         }
@@ -275,6 +279,7 @@ public sealed class TypeSymbol
     /// </summary>
     public bool MayHave(string name)
     {
+        Decl?.Watch?.Asked(name);
         // A declaration whose members are all here has its names made from
         // them on this first asking (TypeDecl.NamesOfMembers).
         if (_declareMembers is null || Decl is null
@@ -482,7 +487,7 @@ public sealed class TypeSymbol
             // A NAME NONE OF ITS OWN MEMBERS HAS is looked for on its base
             // without declaring it (MayHave): the walk goes on up either way.
             if (!t.MayHave(name)) continue;
-            foreach (FieldSymbol f in t.Fields)
+            foreach (FieldSymbol f in t.FieldsNamed(name))
             {
                 if (f.Name == name)
                 {
@@ -491,6 +496,26 @@ public sealed class TypeSymbol
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// The fields, read for one name: the name asked recorded where the
+    /// unit's reads of the type are watched (MemberWatch), the list read
+    /// without counting as the whole of it.
+    /// </summary>
+    private List<FieldSymbol> FieldsNamed(string name)
+    {
+        EnsureMembers();
+        Decl?.Watch?.Asked(name);
+        return _fields ?? NoFields;
+    }
+
+    /// <summary>The methods, read for one name (FieldsNamed).</summary>
+    private List<MethodSymbol> MethodsNamed(string name)
+    {
+        EnsureMembers();
+        Decl?.Watch?.Asked(name);
+        return _methods ?? NoMethods;
     }
 
     /// <summary>
@@ -503,7 +528,7 @@ public sealed class TypeSymbol
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
             if (!t.MayHave("<", name, ">")) continue;
-            foreach (FieldSymbol f in t.Fields)
+            foreach (FieldSymbol f in t.FieldsNamed("<" + name + ">"))
             {
                 if (IsBackingName(f.Name, name))
                 {
@@ -525,7 +550,7 @@ public sealed class TypeSymbol
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
             if (!t.MayHave(prefix, name, "")) continue;
-            foreach (MethodSymbol m in t.Methods)
+            foreach (MethodSymbol m in t.Decl?.Watch is null ? t.Methods : t.MethodsNamed(prefix + name))
                 if (IsJoined(m.Name, prefix, name)) found.Add(m);
         }
         return found;
@@ -549,7 +574,7 @@ public sealed class TypeSymbol
         for (TypeSymbol? t = this; t != null; t = t.Base)
         {
             if (!t.MayHave(name)) continue;
-            foreach (MethodSymbol m in t.Methods)
+            foreach (MethodSymbol m in t.MethodsNamed(name))
                 if (m.Name == name) found.Add(m);
         }
         return found;

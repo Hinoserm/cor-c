@@ -80,8 +80,8 @@ public sealed partial class Lowering
 
         MethodSymbol? start = owner.FindMethods("StaticInit$")
             .FirstOrDefault(m => m.Static && m.Params.Count == 0);
-        FieldSymbol? ready = owner.Fields
-            .FirstOrDefault(f => f.Static && f.Name == BindResult.ReadyField);
+        // By name (MemberWatch): its presence is the type's shape's to say.
+        FieldSymbol? ready = owner.FindField(BindResult.ReadyField) is { Static: true } readyField && ReferenceEquals(readyField.Owner, owner) ? readyField : null;
 
         if (start is null || ready is null)
         {

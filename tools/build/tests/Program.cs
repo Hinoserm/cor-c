@@ -12,18 +12,23 @@ public static class Program
     public static async Task<int> Main()
     {
         Directory.CreateDirectory(Work);
-        await CheckAsync("live progress preserves raw logs and handles chunk boundaries", async () =>
+        await CheckAsync("every line is said live, the raw log kept whole, chunk boundaries and all", async () =>
         {
             byte[] bytes = System.Text.Encoding.UTF8.GetBytes(new string('x', 8190) + "\n"
                 + "build-progress: ready=1/2 remaining=1 file=über.cor\r\n"
                 + "binary\0noise\n" + "build-progress: " + new string('x', 10000) + "\n"
+                + "unit 1/2 a.cor rebuilt: source changed\n"
+                + new string('y', 70000) + "\n"
                 + "build-progress: ready=2/2 remaining=0");
             using MemoryStream input = new(bytes), log = new();
             List<string> records = new();
             await ProgressOutput.Copy(input, log, records.Add);
             Require(log.ToArray().SequenceEqual(bytes));
-            Require(records.Count == 2 && records[0] == "ready=1/2 remaining=1 file=über.cor"
-                && records[1] == "ready=2/2 remaining=0");
+            Require(records.Count == 7 && records[0] == new string('x', 8190) && records[1] == "ready=1/2 remaining=1 file=über.cor"
+                && records[2] == "binary\0noise" && records[3] == new string('x', 10000)
+                && records[4] == "unit 1/2 a.cor rebuilt: source changed"
+                && records[5] == new string('y', 64 * 1024) + " ... (" + (70000 - 64 * 1024) + " more bytes in the log)"
+                && records[6] == "ready=2/2 remaining=0");
         });
         Check("native AOT is the default with an explicit managed exclusion", () =>
         {

@@ -336,7 +336,11 @@ public sealed class DeclarationCatalog : IDisposable
             else foreach (DeclarationRecord record in interfacePlan ? index.WithPrefix(key) : index.Find(key))
             {
                 if (interfacePlan) writer.Write(record.Key);
-                writer.Write(record.Payload.Length); writer.Write(record.Payload);
+                // A type's record by its declaration, not its payload, which
+                // carries the file's path: a lookup answers the same in a tree
+                // copied elsewhere.
+                byte[] said = record.Key.StartsWith("T:", StringComparison.Ordinal) ? SourceDeclaration.Decode(record).DeclarationHash : record.Payload;
+                writer.Write(said.Length); writer.Write(said);
             }
             return System.Security.Cryptography.SHA256.HashData(stream.ToArray());
         }

@@ -32,6 +32,17 @@ public enum Dependence : byte
     /// key's. Recorded in the declaration's place, alone.
     /// </summary>
     Header = 3,
+
+    /// <summary>
+    /// Its shape and the members it asked for by name, each by its own hash
+    /// (SourceDeclaration.ShapeHash, MemberHashes): the unit bound against a
+    /// type whose members can be told apart and read them only by name
+    /// (MemberWatch). A method more in Arch rebuilds the units that call one
+    /// of that name, not every unit that calls Arch. Recorded in the
+    /// declaration's place: the shape's fingerprint, then each name asked
+    /// with the hash it had, or nothing's where the type had none of it.
+    /// </summary>
+    Members = 4,
 }
 
 /// <summary>Consumed declaration families, not a project-wide declaration graph.</summary>
@@ -45,19 +56,20 @@ public static class UnitDependencies
     /// behind a template rebuild the same units for different reasons, and
     /// the build log should not leave the difference to be worked out by hand.
     /// </summary>
+    /// NOTHING OF WHERE THE FILES ARE: the records by what they hold, in the
+    /// order of that, so a tree copied elsewhere reads as current. With each
+    /// record's path in, a copy of a kernel's build rebuilt every unit.
     private static byte[] Fingerprint(IReadOnlyList<SourceDeclaration> records, Dependence part)
     {
+        byte[] Part(SourceDeclaration record) => part switch
+        {
+            Dependence.Source => record.SourceHash, Dependence.Template => record.TemplateHash,
+            Dependence.Header => record.HeaderHash, _ => record.DeclarationHash,
+        };
         using MemoryStream buffer = new();
         using BinaryWriter writer = new(buffer, Encoding.UTF8, leaveOpen: true);
-        foreach (SourceDeclaration record in records.OrderBy(record => record.Path, StringComparer.Ordinal).ThenBy(record => record.From))
-        {
-            writer.Write(record.Path);
-            writer.Write(part switch
-            {
-                Dependence.Source => record.SourceHash, Dependence.Template => record.TemplateHash,
-                Dependence.Header => record.HeaderHash, _ => record.DeclarationHash,
-            });
-        }
+        foreach (byte[] said in records.Select(Part).OrderBy(Convert.ToHexString, StringComparer.Ordinal))
+            writer.Write(said);
         return SHA256.HashData(buffer.ToArray());
     }
 
@@ -77,7 +89,8 @@ public static class UnitDependencies
     /// </summary>
     public static void Write(string path, DeclarationCatalog catalog, IEnumerable<string> keys, IReadOnlySet<string> templates,
         IReadOnlySet<string> copied, IEnumerable<string> queries, IEnumerable<string>? taken = null, IEnumerable<string>? kept = null,
-        IReadOnlyDictionary<string, IReadOnlyCollection<string>>? named = null)
+        IReadOnlyDictionary<string, IReadOnlyCollection<string>>? named = null,
+        IReadOnlyDictionary<string, IReadOnlyCollection<string>>? asked = null)
     {
         using FileStream stream = new(path, FileMode.Create, FileAccess.Write, FileShare.None);
         using BinaryWriter writer = new(stream, Encoding.UTF8);
@@ -88,10 +101,23 @@ public static class UnitDependencies
             using DeclarationLease lease = catalog.AcquireKey(key) ?? throw new InvalidDataException("Missing dependency " + key);
             Dependence dependence = copied.Contains(key) ? Dependence.Source
                 : templates.Contains(key) ? Dependence.Template
-                : named?.ContainsKey(key) == true ? Dependence.Header : Dependence.Declaration;
+                : named?.ContainsKey(key) == true ? Dependence.Header
+                : asked?.ContainsKey(key) == true && lease.Records.Count > 0 && lease.Records.All(record => record.ByMember) ? Dependence.Members
+                : Dependence.Declaration;
             byte[] encoded = Encoding.UTF8.GetBytes(key);
             if (encoded.Length > 4096) throw new InvalidDataException("Dependency key exceeds format limit");
             writer.Write(encoded.Length); writer.Write(encoded); writer.Write((byte)dependence);
+            if (Corsac.Switches.TraceReceipt && !key.StartsWith("T:System", StringComparison.Ordinal))
+                Console.Error.WriteLine("receipt: " + Named(key) + " " + dependence + (dependence == Dependence.Members ? " " + string.Join(",", asked![key].Order(StringComparer.Ordinal)) : "")
+                    + (asked?.ContainsKey(key) == true || dependence != Dependence.Declaration ? "" : lease.Records.All(record => record.ByMember) ? " (read whole)" : " (not by member)"));
+            if (dependence == Dependence.Members)
+            {
+                writer.Write(Shape(lease.Records));
+                string[] names = asked![key].Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+                writer.Write(names.Length);
+                foreach (string name in names) { writer.Write(name); writer.Write(MemberHash(lease.Records, name)); }
+                continue;
+            }
             writer.Write(Fingerprint(lease.Records, dependence == Dependence.Header ? Dependence.Header : Dependence.Declaration));
             if (dependence is Dependence.Source or Dependence.Template) writer.Write(Fingerprint(lease.Records, dependence));
             // And the names it was told the type has no member of, which it
@@ -156,6 +182,26 @@ public static class UnitDependencies
                 if (length < 1 || length > 4096 || length > stream.Length - stream.Position - 33) return unreadable;
                 string key = Encoding.UTF8.GetString(reader.ReadBytes(length));
                 Dependence dependence = (Dependence)reader.ReadByte(); if (!Enum.IsDefined(dependence)) return unreadable;
+                if (dependence == Dependence.Members)
+                {
+                    byte[] shape = reader.ReadBytes(32);
+                    int names = reader.ReadInt32();
+                    if (shape.Length != 32 || names < 0 || names > 100000) return unreadable;
+                    using DeclarationLease? members = catalog.AcquireKey(key);
+                    if (members is null) return Named(key) + " is no longer declared";
+                    bool byMember = members.Records.Count > 0 && members.Records.All(record => record.ByMember);
+                    if (!byMember) return "declaration of " + Named(key) + " changed (its members are no longer told apart)";
+                    if (!shape.SequenceEqual(Shape(members.Records))) return "shape of " + Named(key) + " changed";
+                    for (int k = 0; k < names; k++)
+                    {
+                        string name = reader.ReadString();
+                        byte[] had = reader.ReadBytes(DeclarationFingerprint.HashBytes);
+                        if (had.Length != DeclarationFingerprint.HashBytes) return unreadable;
+                        if (!had.SequenceEqual(MemberHash(members.Records, name)))
+                            return "member " + name + " of " + Named(key) + (had.SequenceEqual(DeclarationFingerprint.Empty) ? " appeared" : " changed");
+                    }
+                    continue;
+                }
                 byte[] declaration = reader.ReadBytes(32);
                 byte[]? more = dependence is Dependence.Source or Dependence.Template ? reader.ReadBytes(32) : null;
                 if (declaration.Length != 32 || more is { Length: not 32 }) return unreadable;
@@ -212,6 +258,40 @@ public static class UnitDependencies
         // an index that is not there.
         catch (IOException failure) { return unreadable + " (" + failure.Message + ")"; }
         catch (InvalidDataException failure) { return unreadable + " (" + failure.Message + ")"; }
+    }
+
+    /// <summary>A ByMember type's shape: its records' shapes, in the order of what they hold.</summary>
+    private static byte[] Shape(IReadOnlyList<SourceDeclaration> records)
+    {
+        using MemoryStream buffer = new();
+        foreach (byte[] shape in records.Select(record => record.ShapeHash).OrderBy(Convert.ToHexString, StringComparer.Ordinal)) buffer.Write(shape);
+        return SHA256.HashData(buffer.ToArray());
+    }
+
+    /// <summary>
+    /// One member name's hash of a ByMember type's records, or nothing's
+    /// (DeclarationFingerprint.Empty) where none of them has it -- a member
+    /// whose text is the shape's (a constructor, an operator) has no hash of
+    /// its own, and moves the shape instead.
+    /// </summary>
+    private static byte[] MemberHash(IReadOnlyList<SourceDeclaration> records, string name)
+    {
+        List<byte[]> found = new();
+        foreach (SourceDeclaration record in records)
+        {
+            int low = 0, high = record.MemberHashes.Count - 1;
+            while (low <= high)
+            {
+                int mid = (low + high) / 2, order = string.CompareOrdinal(record.MemberHashes[mid].Name, name);
+                if (order == 0) { found.Add(record.MemberHashes[mid].Hash); break; }
+                if (order < 0) low = mid + 1; else high = mid - 1;
+            }
+        }
+        if (found.Count == 0) return DeclarationFingerprint.Empty;
+        if (found.Count == 1) return found[0];
+        using MemoryStream buffer = new();
+        foreach (byte[] hash in found.OrderBy(Convert.ToHexString, StringComparer.Ordinal)) buffer.Write(hash);
+        return SHA256.HashData(buffer.ToArray())[..DeclarationFingerprint.HashBytes];
     }
 
     /// <summary>

@@ -140,6 +140,8 @@ public static class Switches
 
     /// <summary>--trace-virtuals: the link's descriptor index, and what each virtual call reaches.</summary>
     public static bool TraceVirtuals;
+    /// <summary>--receipt-trace: each type read from the index whose members can be told apart, said where it is first read whole (MemberWatch).</summary>
+    public static bool TraceReceipt;
 
     /// <summary>
     /// --region-engine escape|andersen: which analysis finds the link's
@@ -218,6 +220,7 @@ public static class Switches
         TraceJoin |= Switch(taken, "--trace-join");
         CompilerIdentity = Valued(taken, "--compiler-identity") ?? CompilerIdentity;
         TraceVirtuals |= Switch(taken, "--trace-virtuals");
+        TraceReceipt |= Switch(taken, "--receipt-trace");
         // Kept when absent, as --region-engine is.
         if (Switch(taken, "--no-rta")) NoRta = true;
         // Kept when absent: a hosted project link takes the switches again
