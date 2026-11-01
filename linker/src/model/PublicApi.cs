@@ -40,6 +40,25 @@ public static class PublicApi
         foreach (string symbol in withheld) Add('-', symbol);
     }
 
+    /// <summary>
+    /// What a set of units withholds from the image linked of them: a name
+    /// one unit withholds and none offers (`+` or `~`) -- the same name is
+    /// one symbol, and a unit that offers it shows it.
+    /// </summary>
+    public static IReadOnlySet<string> Withheld(IEnumerable<ObjectFile> objects)
+    {
+        HashSet<string> shown = new(StringComparer.Ordinal), hidden = new(StringComparer.Ordinal);
+        foreach (ObjectFile obj in objects)
+        {
+            (List<string> offered, List<string> optional, List<string> withheld) = Read(obj);
+            shown.UnionWith(offered);
+            shown.UnionWith(optional);
+            hidden.UnionWith(withheld);
+        }
+        hidden.ExceptWith(shown);
+        return hidden;
+    }
+
     /// <summary>The symbols an object offers, those it offers where they are kept, and those it withholds.</summary>
     public static (List<string> Offered, List<string> Optional, List<string> Withheld) Read(ObjectFile obj)
     {

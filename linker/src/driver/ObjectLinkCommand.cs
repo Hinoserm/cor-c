@@ -271,7 +271,9 @@ public static class ObjectLinkCommand
         // besides is kept too: the runtime's and the library's non-public
         // code a module of the build calls.
         HashSet<string> offered = new(StringComparer.Ordinal), optional = new(StringComparer.Ordinal), withheld = new(StringComparer.Ordinal);
-        if (exports)
+        // A SHARED LIBRARY'S AND A MODULE'S THE SAME (shared): their exports
+        // their public surface, the rest withheld from .dynsym (Dyn.Withheld).
+        if (exports || shared)
         {
             foreach (var input in inputs)
             {
@@ -282,7 +284,7 @@ public static class ObjectLinkCommand
                 optional.UnionWith(maybe);
                 withheld.UnionWith(off);
             }
-            keep = (keep ?? Array.Empty<string>()).Concat(offered).Concat(optional).Distinct(StringComparer.Ordinal).ToArray();
+            if (exports) keep = (keep ?? Array.Empty<string>()).Concat(offered).Concat(optional).Distinct(StringComparer.Ordinal).ToArray();
         }
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && !exports ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
@@ -357,6 +359,15 @@ public static class ObjectLinkCommand
             List<string> needed = sharedLibraries.Distinct(StringComparer.Ordinal).Where(path => ElfReader.ExportsOf(File.ReadAllBytes(path)).Any(unresolved.Contains)).ToList();
             image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0, sharedLibraries, longMode: longMode)
                 : Linker.Link(inputs, entry, needed, runpath, libraries: sharedLibraries, longMode: longMode);
+        }
+        // EVERY PUBLIC METHOD OF ITS OWN IN A SHARED OBJECT'S .dynsym, as in a
+        // kernel's table, or the image is not what its units say.
+        if (shared && image is not null)
+        {
+            HashSet<string> dynamic = new(ElfReader.ExportsOf(image), StringComparer.Ordinal);
+            List<string> lost = offered.Where(name => !dynamic.Contains(name)).Order(StringComparer.Ordinal).ToList();
+            if (lost.Count > 0)
+                return Fail(output + ": public members not in the image to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
         }
         else
         {

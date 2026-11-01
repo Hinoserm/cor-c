@@ -54,7 +54,10 @@ public static partial class Linker
     {
         ArgumentNullException.ThrowIfNull(objects);
         ArgumentNullException.ThrowIfNull(soname);
-        Dyn dyn = new() { Shared = true, Soname = soname };
+        List<(string Name, ObjectFile Object)> inputs = objects.ToList();
+        // ITS EXPORTS ITS PUBLIC SURFACE, as its units say (PublicApi), and no
+        // caller's to widen.
+        Dyn dyn = new() { Shared = true, Soname = soname, Withheld = PublicApi.Withheld(inputs.Select(i => i.Object)) };
         if (needed is not null)
         {
             // A LIBRARY NEEDS ITS OWN RUNPATH. DT_RUNPATH is used for the
@@ -83,7 +86,6 @@ public static partial class Linker
         // it as before, by the difference. What Windows does with a base
         // address and prelink did on Linux.
         dyn.Libraries.AddRange(libraries ?? needed ?? Array.Empty<string>());
-        List<(string Name, ObjectFile Object)> inputs = objects.ToList();
         InsideOrItself(inputs.Select(i => i.Object), ExportedBy(dyn.Libraries));
         return LinkDynamic(inputs, dyn, null, loadAddress, longMode);
     }
@@ -217,6 +219,7 @@ public static partial class Linker
         {
             throw new LinkException(errors);
         }
+        OrderForGnuHash(dyn);
         Prebind(dyn);
         Arrange(layout, dyn);
         Place(layout, AssignAddresses);
@@ -267,6 +270,15 @@ public static partial class Linker
         public string? Soname { get; init; }
 
         /// <summary>
+        /// WHAT THE IMAGE'S UNITS WITHHOLD (PublicApi.Withheld, read from the
+        /// units themselves): what C# lets no other assembly name -- internal,
+        /// private -- defined here and never in .dynsym, as a kernel's table
+        /// leaves it out. A shared library's exports are its public surface,
+        /// as a kernel's are, and nothing asks for more.
+        /// </summary>
+        public IReadOnlySet<string> Withheld { get; init; } = EmptyNames;
+
+        /// <summary>
         /// What DT_INIT names: the compiler's __corsac_init, or for a module
         /// with initialisers of its own the function its link makes to call
         /// that and then them (LinkModule).
@@ -301,6 +313,15 @@ public static partial class Linker
 
         public OutputSection Interp { get; } = new(".interp", SectionKind.ReadOnlyData) { Align = 1 };
         public OutputSection Hash { get; } = new(".hash", SectionKind.ReadOnlyData) { Align = 4, EntSize = 4, TypeOverride = Elf.ShtHash, LinkTo = ".dynsym" };
+        /// <summary>
+        /// A SHARED IMAGE'S EXPORTS FOUND AS A KERNEL'S ARE (SymbolHashes): the
+        /// GNU hash over them, and beside each its name's 64-bit hash and its
+        /// value (DT_CORSAC_NAMES64), through which a loader binds a name
+        /// reading neither a symbol nor a string -- a module's to the modules
+        /// that import from it, a library's to its programs.
+        /// </summary>
+        public OutputSection GnuHash { get; } = new(".gnu.hash", SectionKind.ReadOnlyData) { Align = 8, TypeOverride = Elf.ShtGnuHash, LinkTo = ".dynsym" };
+        public OutputSection Names64 { get; } = new(".corsac.names64", SectionKind.ReadOnlyData) { Align = 8 };
         public OutputSection DynSym { get; } = new(".dynsym", SectionKind.ReadOnlyData) { Align = 4, EntSize = (uint)Elf.SymbolSize, TypeOverride = Elf.ShtDynSym, LinkTo = ".dynstr" };
         public OutputSection DynStr { get; } = new(".dynstr", SectionKind.ReadOnlyData) { Align = 1, TypeOverride = Elf.ShtStrTab };
         public OutputSection RelDyn { get; } = new(".rel.dyn", SectionKind.ReadOnlyData) { Align = 4, EntSize = (uint)Elf.RelSize, TypeOverride = Elf.ShtRel, LinkTo = ".dynsym" };
@@ -312,6 +333,9 @@ public static partial class Linker
         /// <summary>Dynamic symbols in table order; index 0 is the null entry.</summary>
         public List<DynSymbol> Symbols { get; } = new() { new DynSymbol("", null) };
         public Dictionary<string, int> SymbolIndex { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>A shared image's first export in .dynsym: its imports before, its exports from here in the GNU hash's order (OrderForGnuHash).</summary>
+        public int FirstExport { get; set; } = 1;
 
         /// <summary>Symbols with a GOT slot, in slot order after the reserved words.</summary>
         public List<string> GotOrder { get; } = new();
@@ -356,6 +380,27 @@ public static partial class Linker
         public bool Imports(string name) => SymbolIndex.TryGetValue(name, out int i) && Symbols[i].Definition is null;
     }
 
+    private static readonly IReadOnlySet<string> EmptyNames = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A SHARED IMAGE'S .dynsym IN THE GNU HASH'S ORDER: its imports first,
+    /// then its exports by bucket (SymbolHashes.GnuOrder), as a kernel's table
+    /// lies; numbered so before any relocation takes a symbol's number.
+    /// </summary>
+    private static void OrderForGnuHash(Dyn dyn)
+    {
+        if (!dyn.Shared) return;
+        List<DynSymbol> imports = dyn.Symbols.Skip(1).Where(s => s.Definition is null).ToList();
+        List<DynSymbol> exports = dyn.Symbols.Skip(1).Where(s => s.Definition is not null).ToList();
+        int[] order = SymbolHashes.GnuOrder(exports.Select(s => s.Name).ToList());
+        dyn.Symbols.RemoveRange(1, dyn.Symbols.Count - 1);
+        dyn.Symbols.AddRange(imports);
+        dyn.Symbols.AddRange(order.Select(i => exports[i]));
+        dyn.SymbolIndex.Clear();
+        for (int i = 1; i < dyn.Symbols.Count; i++) dyn.SymbolIndex[dyn.Symbols[i].Name] = i;
+        dyn.FirstExport = 1 + imports.Count;
+    }
+
     /// <summary>A name an image defines for itself alone (ScanDynamic).</summary>
     private static bool OwnAndUnbound(string name)
         => name.StartsWith("str_", StringComparison.Ordinal) || name.StartsWith("__corsac_unit", StringComparison.Ordinal)
@@ -392,7 +437,7 @@ public static partial class Linker
                 // each was a name in .dynstr and an entry in .dynsym and
                 // .hash for nothing. (Its initialisers stay: DT_INIT names
                 // one.)
-                if (layout.NotExported.Contains(name) || OwnAndUnbound(name))
+                if (layout.NotExported.Contains(name) || OwnAndUnbound(name) || dyn.Withheld.Contains(name))
                 {
                     continue;
                 }
@@ -749,6 +794,12 @@ public static partial class Linker
         dyn.DynSym.Size = (uint)(syms * dyn.SymbolSize);
         int buckets = Math.Max(1, syms | 1);
         dyn.Hash.Size = (uint)((2 + buckets + syms) * 4);
+        if (dyn.Shared)
+        {
+            int exports = syms - dyn.FirstExport;
+            dyn.GnuHash.Size = (uint)SymbolHashes.GnuSize(exports, dyn.LongMode);
+            dyn.Names64.Size = (uint)(16 * exports);
+        }
 
         int plt = 0;
         int rel = 0;
@@ -781,6 +832,11 @@ public static partial class Linker
             layout.Text.Align = Math.Max(layout.Text.Align, 4096);
         }
         layout.ReadOnly.Add(dyn.Hash);
+        if (dyn.Shared)
+        {
+            layout.ReadOnly.Add(dyn.GnuHash);
+            layout.ReadOnly.Add(dyn.Names64);
+        }
         layout.ReadOnly.Add(dyn.DynSym);
         layout.ReadOnly.Add(dyn.DynStr);
         layout.ReadOnly.Add(dyn.RelDyn);
@@ -954,6 +1010,12 @@ public static partial class Linker
         dyn.Checksum = ExportChecksum(dyn.Symbols);
 
         dyn.Hash.Content = Hash(dyn);
+        if (dyn.Shared)
+        {
+            List<DynSymbol> exported = dyn.Symbols.Skip(dyn.FirstExport).ToList();
+            dyn.GnuHash.Content = SymbolHashes.Gnu(exported.Select(s => s.Name).ToList(), dyn.FirstExport, dyn.LongMode);
+            dyn.Names64.Content = SymbolHashes.Names64(exported.Select(s => (s.Name, (ulong)(s.Definition?.Address ?? 0))).ToList());
+        }
 
         // The GOT: the reserved words, then one slot per symbol, holding
         // this object's own definition where there is one and zero where
@@ -1155,6 +1217,11 @@ public static partial class Linker
             d.Add((Elf.DtInit, init.Address));
         }
         d.Add((Elf.DtHash, dyn.Hash.Addr));
+        if (dyn.Shared)
+        {
+            d.Add((Elf.DtGnuHash, dyn.GnuHash.Addr));
+            d.Add((Elf.DtCorsacNames64, dyn.Names64.Addr));
+        }
         d.Add((Elf.DtStrTab, dyn.DynStr.Addr));
         d.Add((Elf.DtSymTab, dyn.DynSym.Addr));
         d.Add((Elf.DtStrSz, dyn.DynStr.Size));

@@ -240,26 +240,12 @@ public sealed class KernelExports
         // of the table, and a chain holds each symbol's hash, so a name is
         // compared only where its hash is the same. Its symbols lie in order
         // of their buckets, the first one after the null symbol; the SysV
-        // hash, by symbol number, does not mind the order.
-        int gnuBuckets = Math.Max(1, symbols.Count / 4) | 1;
-        uint[] gnuHash = symbols.Select(s => Elf.GnuHashName(s.Name)).ToArray();
-        int[] order = Enumerable.Range(0, symbols.Count).OrderBy(i => gnuHash[i] % (uint)gnuBuckets).ThenBy(i => i).ToArray();
+        // hash, by symbol number, does not mind the order (SymbolHashes, as a
+        // shared library's are made).
+        int[] order = SymbolHashes.GnuOrder(symbols.Select(s => s.Name).ToList());
         symbols = order.Select(i => symbols[i]).ToList();
-        gnuHash = order.Select(i => gnuHash[i]).ToArray();
-        int bloomBits = word * 8, bloomShift = wide ? 6 : 5;
-        int bloomWords = 1;
-        while (bloomWords * bloomBits < symbols.Count * 12) bloomWords <<= 1;
-        ulong[] bloom = new ulong[bloomWords];
-        uint[] gnuBucket = new uint[gnuBuckets], gnuChain = new uint[symbols.Count];
-        for (int i = 0; i < symbols.Count; i++)
-        {
-            uint h = gnuHash[i];
-            bloom[(h / (uint)bloomBits) % (uint)bloomWords] |= (1UL << (int)(h % (uint)bloomBits)) | (1UL << (int)((h >> bloomShift) % (uint)bloomBits));
-            uint b = h % (uint)gnuBuckets;
-            if (gnuBucket[b] == 0) gnuBucket[b] = (uint)(i + 1);
-            bool last = i + 1 == symbols.Count || gnuHash[i + 1] % (uint)gnuBuckets != b;
-            gnuChain[i] = last ? h | 1 : h & ~1u;
-        }
+        byte[] gnu = SymbolHashes.Gnu(symbols.Select(s => s.Name).ToList(), 1, wide);
+        byte[] names64 = SymbolHashes.Names64(symbols.Select(s => (s.Name, s.Value)).ToList());
 
         StringTable dynstr = new();
         uint[] nameAt = symbols.Select(s => dynstr.Add(s.Name)).ToArray();
@@ -281,7 +267,7 @@ public sealed class KernelExports
         int tagCount = 9 + (abi is null ? 0 : 2) + (cpu is null ? 0 : 2);
         long hashAt = Align(tagCount * 2L * word, 8);
         long gnuHashAt = Align(hashAt + (2L + buckets + count) * 4, word);
-        long names64At = Align(gnuHashAt + 16 + (long)bloomWords * word + (gnuBuckets + (long)symbols.Count) * 4, 8);
+        long names64At = Align(gnuHashAt + gnu.Length, 8);
         long dynsymAt = Align(names64At + 16L * symbols.Count, word);
         long dynstrAt = dynsymAt + (long)count * symbolSize;
         long abiAt = Align(dynstrAt + strings.Length, 4);
@@ -308,28 +294,11 @@ public sealed class KernelExports
         w.Write((uint)buckets); w.Write((uint)count);
         foreach (uint b in bucket) w.Write(b);
         foreach (uint c in chain) w.Write(c);
-        // The GNU hash: its buckets, the first symbol it covers, the bloom's
-        // words and shift; the words, the buckets, each symbol's hash.
+        // The GNU hash, then each symbol's name as a number and its value.
         Pad(gnuHashAt);
-        w.Write((uint)gnuBuckets); w.Write(1u); w.Write((uint)bloomWords); w.Write((uint)bloomShift);
-        foreach (ulong bits in bloom) Word(bits);
-        foreach (uint b in gnuBucket) w.Write(b);
-        foreach (uint c in gnuChain) w.Write(c);
-        // Each symbol's name as a number, and its value.
+        w.Write(gnu);
         Pad(names64At);
-        // TWO NAMES THE SAME AS NUMBERS, both hashes alike, would bind one for
-        // the other: refused, the link naming them, not left to chance.
-        // A loader matches the GNU hash but its lowest bit (the chain's end),
-        // so the pair is taken as a loader takes it.
-        Dictionary<(uint, ulong), string> numbered = new();
-        for (int i = 0; i < symbols.Count; i++)
-        {
-            ulong strong = Elf.FnvName(symbols[i].Name);
-            (uint, ulong) key = (gnuHash[i] | 1, strong);
-            if (!numbered.TryAdd(key, symbols[i].Name))
-                throw new LinkException(new[] { "two exports are one name to a loader (the same GNU and FNV-1a 64 hashes): '" + numbered[key] + "' and '" + symbols[i].Name + "'" });
-            w.Write(strong); w.Write(symbols[i].Value);
-        }
+        w.Write(names64);
         Pad(dynsymAt);
         w.Write(new byte[symbolSize]);
         for (int i = 0; i < symbols.Count; i++)

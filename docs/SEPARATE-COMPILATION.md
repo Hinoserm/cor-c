@@ -100,7 +100,7 @@ hand-maintained header is introduced.
 | .corsac.generics | Indexed template and instantiation records | Specified, pending integration |
 | .corsac.ir | Independently addressable optimized IR function bodies | First indexed implementation; see IR-LINK-OPTIMIZATION.md |
 | .corsac.roots | Explicit retention and deferred-resolution contracts | Specified, pending |
-| .corsac.public | A ring unit's public surface: `+` its own public methods, `~` its public statics and the class library's public surface, `-` what another assembly cannot name | Implemented (kernel exports) |
+| .corsac.public | A unit's public surface: `+` its public methods, `~` its public statics and descriptors, `-` what another assembly cannot name | Implemented (every exporting image) |
 
 GIR is the existing generic syntax representation, not serialized optimization
 IR. Its version is 0. The generic index must identify GIR version per
@@ -344,29 +344,38 @@ its handlers walk into -- run whether or not the image is current. A link
 asked for a region report always links; one asked for a map links when the
 map is missing. A failed link leaves no receipt.
 
-## A kernel's exports: its public surface
+## Exports: an image's public surface
 
 A kernel is a library its modules link against, as a program links against a
-shared object, and what it exports is what C# lets another assembly name: a
-method or static that is `public` (or `protected`, for a module's class
-deriving from one) in a type that is public all the way out. Each ring unit
-records its own types' members, offered or withheld, in `.corsac.public`
-(Lowering.RecordPublicApi): `+` a public method of the kernel's own, `~` a
-public static (the link may lay one down or fold it) and the class library's
-public surface, as a shared library's, `-` everything else of the kernel's own.
-Nothing of the library is withheld -- a module's compiled code calls the
-runtime's and the library's internals -- and generic instantiations are left
-as they were.
+shared object, and every image that exports -- a kernel (`corc link
+--exports`), a shared library (`--shared`), a module other modules link
+against -- exports the same thing: what C# lets another assembly name. A
+method or static that is `public` (or `protected`, for a deriving class) in a
+type public all the way out. Each unit records its own types' members in
+`.corsac.public` (Lowering.RecordPublicApi): `+` a public method, `~` a public
+static (the link may lay one down or fold it) and a public type's descriptor,
+`-` everything else of its own -- `internal` is its assembly's alone,
+`private` its type's. The class library's no differently: what a program's or
+a module's compiled code calls of the runtime and the library is public.
+Generic instantiations are left as they were. There is no switch: an image's
+exports are its public surface.
 
-`corc link --exports` keeps every offered member out of line and in
-`.corsac.exports` however the kernel's own callers inlined it -- a public
-method nothing in the kernel calls included -- and needs no `--keep` to prune:
-everything else of the kernel's own is reached from the entry and the public
-surface, inlined and pruned freely, and withheld from the table. `internal`
-is the kernel's assembly's alone. A public member left with no body is a
-refused link, naming it (a `~` one is exported where the link kept it); a
-module that imports a withheld name is a refused link, naming it. `--keep` still adds roots: library code the build's modules
-call. There is no other export mode: a member a module calls is public.
+A kernel's link keeps every offered member out of line however the kernel's
+own callers inlined it -- a public method nothing in the kernel calls
+included -- prunes the rest from the entry and that surface, and withholds
+what is not public from its table; `--keep` adds roots (the build's modules'
+imports) and never narrows the surface. A shared library's or a module's link
+leaves withheld names out of `.dynsym`, reading them from its own units
+(PublicApi.Withheld) whoever calls it. A public method left with no body is a
+refused link, naming it; an image importing a withheld name is a refused
+link, naming it.
+
+The tables are one format. A kernel's `.corsac.exports` -- a section of its
+file no segment loads -- and a shared image's loaded dynamic section hold the
+same: `.hash`, `.gnu.hash` and `names64` (each export's FNV-1a 64-bit name
+hash and value, DT_CORSAC_NAMES64) beside `.dynsym` and `.dynstr`, the
+exports in the GNU hash's order after the imports (SymbolHashes), so a loader
+binds a kernel's names, a module's and a library's the same way.
 
 ## Acceptance and migration
 

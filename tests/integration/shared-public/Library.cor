@@ -1,0 +1,15 @@
+// A shared library's exports are its public surface: Api's public members,
+// and not Api.Inner (internal), Helper (an internal class) or Api.Seed
+// (private), which Api's own code calls.
+public static class Api
+{
+    public static int Answer() => Helper.Half() * 2 + Seed() - Inner();
+    public static int Never() => 1234;
+    internal static int Inner() => 7;
+    private static int Seed() => 7;
+}
+
+static class Helper
+{
+    public static int Half() => 21;
+}

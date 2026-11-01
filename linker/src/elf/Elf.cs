@@ -50,6 +50,7 @@ internal static class Elf
     public const uint ShtHash = 5;
     public const uint ShtDynamic = 6;
     public const uint ShtDynSym = 11;
+    public const uint ShtGnuHash = 0x6ffffff6;
 
     public const uint ShfWrite = 1;
     public const uint ShfAlloc = 2;

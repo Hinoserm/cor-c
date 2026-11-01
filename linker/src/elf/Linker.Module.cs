@@ -99,6 +99,9 @@ public static partial class Linker
         bool relocatedText = false)
     {
         List<(string Name, ObjectFile Object)> inputs = objects.ToList();
+        // Its exports its public surface, as its units say, read before the
+        // notes are taken out (PublicApi).
+        IReadOnlySet<string> withheld = PublicApi.Withheld(inputs.Select(input => input.Object));
         AgreeWithKernel(inputs, kernel);
         // A MODULE'S UNIT SAYS SO (KernelExports.ModuleUnitSection), for its
         // making again; the module is held to the kernel by the names it
@@ -141,7 +144,8 @@ public static partial class Linker
         ObjectFile own = new();
         own.Sections.Add(ModuleInfo.Note(ModuleInfo.SectionName, entries));
 
-        Dyn dyn = new() { Shared = true, Soname = Path.GetFileName(fileName), DirectCalls = relocatedText, PageRelocations = true };
+        // Its exports its public surface, as a kernel's and a library's are.
+        Dyn dyn = new() { Shared = true, Soname = Path.GetFileName(fileName), DirectCalls = relocatedText, PageRelocations = true, Withheld = withheld };
         foreach (string dependency in needed) dyn.Needed.Add(SoName(dependency));
         inputs.Add(("the module's link", own));
 

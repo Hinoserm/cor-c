@@ -1,0 +1,5 @@
+// Calls what the library keeps to its own assembly: refused at the link.
+static class Program
+{
+    static int Main() => Api.Answer() + Helper.Half() - 21;
+}

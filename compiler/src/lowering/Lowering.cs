@@ -877,8 +877,9 @@ public sealed partial class Lowering
             });
         }
         }
-        // A RING UNIT'S PUBLIC SURFACE, once everything it defines is known.
-        if (Freestanding) RecordPublicApi();
+        // THE UNIT'S PUBLIC SURFACE, once everything it defines is known: a
+        // kernel's and a shared library's alike.
+        RecordPublicApi();
     }
 
     /// <summary>

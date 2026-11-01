@@ -115,9 +115,9 @@ public static class Tick
     public static int Twice(int value) => value * 2 + Log.Lines;
 }
 
-// NOTHING CALLS IT, neither the kernel nor the module: an open kernel keeps
-// it for modules nobody has built, and one linked with --keep, pruned to
-// what it and its build's modules reach, does not.
+// NOTHING CALLS IT, neither the kernel nor the module: public, on the
+// kernel's public surface, kept and exported for modules nobody has built,
+// --keep or not.
 public static class Unused
 {
     public static string Never() { return "never " + Log.Lines; }
