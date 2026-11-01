@@ -7,6 +7,9 @@
 // value 10
 // ask 10
 // fresh 5 6
+// count 1 0 | 1 0
+// ints 1 0 | 1 0
+// down 1 0 | 1 0, 2
 //
 // AN ITERATOR'S OR AN ASYNC METHOD'S MACHINE KEEPS A COPY of a struct it is
 // handed, and of the struct whose method it is, as C# makes one when the
@@ -15,9 +18,14 @@
 // saw its variable changed after the call, and a struct the caller's frame
 // held -- a call's by-value struct may be one (Instr.PassedByValue) -- was
 // read by MoveNext after that frame was gone.
+//
+// AND AN ENUMERABLE ENUMERATED AGAIN STARTS FROM THE ARGUMENTS AS GIVEN, and
+// from its struct as it was: a body that counts a parameter down, or a
+// struct's field, counts it down again the second time, as C#'s does.
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 
 struct Span3
@@ -27,6 +35,15 @@ struct Span3
     public IEnumerable<int> Up(int n)
     {
         for (int i = 0; i < n; i++) yield return From + i;
+    }
+
+    public IEnumerable<int> Down()
+    {
+        while (From > 0)
+        {
+            From--;
+            yield return From;
+        }
     }
 
     public async Task<int> Ask()
@@ -42,6 +59,24 @@ static class Program
     {
         yield return s.From;
         yield return s.From + 1;
+    }
+
+    static IEnumerable<int> Count(Span3 s)
+    {
+        while (s.From > 0)
+        {
+            s.From--;
+            yield return s.From;
+        }
+    }
+
+    static IEnumerable<int> CountInt(int n)
+    {
+        while (n > 0)
+        {
+            n--;
+            yield return n;
+        }
     }
 
     static async Task<int> Later(Span3 s)
@@ -64,6 +99,7 @@ static class Program
     }
 
     // Made in a frame that is gone before it is walked.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static IEnumerable<int> Fresh() => Walk(new Span3 { From = 5 });
 
     // A deep frame over where Fresh's was.
@@ -86,5 +122,12 @@ static class Program
         IEnumerable<int> fresh = Fresh();
         if (Dirty(40, 1, 2, 3, 4) < 0) return;
         Console.WriteLine("fresh" + Join(fresh));
+        IEnumerable<int> count = Count(new Span3 { From = 2 });
+        Console.WriteLine("count" + Join(count) + " |" + Join(count));
+        IEnumerable<int> ints = CountInt(2);
+        Console.WriteLine("ints" + Join(ints) + " |" + Join(ints));
+        Span3 c = new Span3 { From = 2 };
+        IEnumerable<int> down = c.Down();
+        Console.WriteLine("down" + Join(down) + " |" + Join(down) + ", " + c.From);
     }
 }
