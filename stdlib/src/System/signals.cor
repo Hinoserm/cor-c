@@ -6,12 +6,16 @@
 // argument; a static COR-C# method has exactly that shape, so Dispatch
 // below is what the kernel is told to call, through Sys.AddressOf. It
 // runs at any instruction of the program, so it does the minimum: it
-// remembers which signal arrived and returns; the program's handlers are
-// run on the next PosixSignalRegistration.Deliver, which the console, the
-// scheduler, the waits (Os.Poll, Os.Pause, a thread's sleep) and the GUI
-// seat (Seat.Next) call at their quiet moments. That is the discipline .NET
-// itself keeps (its handlers run on a thread pool thread, not in the
-// signal frame).
+// remembers which signal arrived, wakes the thread that delivers them, and
+// returns. That thread, started with the first handler, runs the program's
+// handlers (Deliver) whatever the others are doing -- as .NET's do, on a
+// thread of their own, not in the signal frame. Waited for only at its
+// quiet moments, a program busy in a loop never ran them: `ping -f`,
+// sending back to back, let Ctrl+C and `kill -INT` go by, and SIGKILL alone
+// stopped it. The console, the scheduler, the waits (Os.Poll, Os.Pause, a
+// thread's sleep) and the GUI seat (Seat.Next) still call Deliver at theirs,
+// so a handler often runs there first; whichever takes a signal runs it,
+// once.
 
 public enum PosixSignal
 {
@@ -52,6 +56,9 @@ public class PosixSignalRegistration : IDisposable
     // Signals 1 to 31: one 32-bit word, which a 486 swaps whole; the or is
     // Interlocked's compare-and-swap loop, retried if a signal lands inside it.
     static int _pending;
+    // Whether the thread that delivers has been started: once, by the first
+    // Create (StartDelivering).
+    static int _delivering;
 
     PosixSignal _signal;
 
@@ -68,8 +75,36 @@ public class PosixSignalRegistration : IDisposable
         }
         int n = (int)signal;
         _handlers[n] = handler;
+        StartDelivering();
         Install(n, Sys.AddressOf(PosixSignalRegistration.Dispatch));
         return new PosixSignalRegistration(signal);
+    }
+
+    /// The thread that runs the handlers, started before the first is
+    /// installed so no signal lands with nothing to wake. A background one:
+    /// it never keeps the process alive.
+    static void StartDelivering()
+    {
+        if (System.Threading.Interlocked.CompareExchange(ref _delivering, 1, 0) != 0)
+        {
+            return;
+        }
+        System.Threading.Thread delivering = new System.Threading.Thread(DeliverLoop);
+        delivering.IsBackground = true;
+        delivering.Start();
+    }
+
+    /// Asleep on the pending word until a signal sets a bit in it, then the
+    /// handlers. A wait on a word already not 0 returns at once, so a signal
+    /// that lands between Deliver and the wait is not slept through.
+    static void DeliverLoop()
+    {
+        nuint at = Sys.AddressOf(ref _pending);
+        while (true)
+        {
+            Native.Wait(at, 0);
+            Deliver();
+        }
     }
 
     /// The default action again for this signal.
@@ -91,12 +126,14 @@ public class PosixSignalRegistration : IDisposable
         Install((int)signal, 1);
     }
 
-    /// Called from the kernel's signal frame. Only a bit is set.
+    /// Called from the kernel's signal frame: a bit is set and the thread
+    /// that delivers woken (a futex wake, one system call), nothing more.
     public static void Dispatch(int signal)
     {
         if (signal > 0 && signal < MaxSignal)
         {
             System.Threading.Interlocked.Or(ref _pending, 1 << signal);
+            Native.Wake(Sys.AddressOf(ref _pending), 1);
         }
     }
 
