@@ -456,7 +456,12 @@ public sealed class UnitBackend : IUnitBackend
                        or KernelExports.ModuleUnitSection or ModuleInfo.SectionName or ModuleInfo.InitializerSection
                        // And what its static initialisers and constructors do, for the
                        // link to lay statics down made (Preinit).
-                       or Corsac.Lang.Lto.Preinit.SectionName))
+                       or Corsac.Lang.Lto.Preinit.SectionName
+                       // And its public surface: regenerated, it defines what it
+                       // did, and a shared image's link reads what it withholds
+                       // from it after this (PublicApi.Withheld); without it the
+                       // unit's internals went into .dynsym unsaid.
+                       or PublicApi.SectionName))
         {
             Section copy = new(section.Name, section.Kind) { Align = section.Align };
             // A layout a link left in its file (ElfReader.LeftInFile) stays

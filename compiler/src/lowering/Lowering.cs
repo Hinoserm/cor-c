@@ -880,6 +880,7 @@ public sealed partial class Lowering
         // THE UNIT'S PUBLIC SURFACE, once everything it defines is known: a
         // kernel's and a shared library's alike.
         RecordPublicApi();
+        _m.ExportsSurface = Freestanding || SharedObject;
     }
 
     /// <summary>

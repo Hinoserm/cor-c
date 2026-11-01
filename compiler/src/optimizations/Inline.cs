@@ -1227,11 +1227,16 @@ public sealed class Inline : IParallelModulePass
         }
         Reach(m.Entry);
         foreach (string name in pinned) Reach(name);
-        // A RING UNIT'S PUBLIC SURFACE (Module.PublicSymbols, OptionalSymbols): what a kernel
-        // exports for modules nobody has built yet, kept here as at its link.
-        // Kept, not pinned: a call to one may still become its body.
-        foreach (string name in m.PublicSymbols) Reach(name);
-        foreach (string name in m.OptionalSymbols) Reach(name);
+        // AN EXPORTING IMAGE'S UNIT'S PUBLIC SURFACE (Module.PublicSymbols,
+        // OptionalSymbols): what a kernel or a library exports for images
+        // nobody has built yet, kept here as at its link. Kept, not pinned: a
+        // call to one may still become its body. Not a program's: what its
+        // entry unit makes public nobody else can call.
+        if (m.ExportsSurface)
+        {
+            foreach (string name in m.PublicSymbols) Reach(name);
+            foreach (string name in m.OptionalSymbols) Reach(name);
+        }
         foreach (string name in forLink) Reach(name);
         if (coroutines) { Reach(AsyncTransform.CardMarkObject); Reach(AsyncTransform.ShadeObject); }
         if (sequences)

@@ -23,6 +23,9 @@ if grep -q '^m_Helper_Half_' "$work/exported"; then fail "an internal type's pub
 readelf -d "$work/libApi.so" > "$work/dynamic"
 grep -q 'GNU_HASH' "$work/dynamic" || fail "the library has no GNU hash"
 grep -qi '0x60000c08' "$work/dynamic" || fail "the library has no names64 (DT_CORSAC_NAMES64)"
+# Every export found as a loader finds it, through those tables.
+python3 -I $here/lookup.py "$work/libApi.so" > "$work/lookup.out" 2>&1 || { cat "$work/lookup.out"; fail "an export is not found through the GNU hash and names64"; }
+grep -q '^lookup ok [1-9]' "$work/lookup.out" || { cat "$work/lookup.out"; fail "the lookup found no export"; }
 # A program calling the public surface: linked, and runs.
 "$corc" compile --nostdlib --obj $here/Caller.cor --ref $here/Library.cor --link-shared "$work/libApi.so" -o "$work/caller.o" 2> "$work/caller.log" \
     || { cat "$work/caller.log"; fail "caller object"; }

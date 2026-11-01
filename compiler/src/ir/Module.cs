@@ -270,16 +270,24 @@ public sealed class Module
     public List<(string Export, string Symbol)> NativeExports { get; } = new();
 
     /// <summary>
-    /// A ring unit's methods and statics another assembly can name, and those
-    /// it cannot (Lowering.RecordPublicApi): the object records them
-    /// (.corsac.public), and a kernel's link exports the first, its own public
-    /// methods, keeping them out of line; exports the second -- statics and
-    /// the class library's surface -- where it keeps them; and withholds the
-    /// third.
+    /// A unit's methods and statics another assembly can name, and those it
+    /// cannot (Lowering.RecordPublicApi): the object records them
+    /// (.corsac.public), and the image linked of it -- a kernel, a shared
+    /// library, a module -- exports the first, its public methods, kept out
+    /// of line; exports the second -- statics and descriptors -- where it
+    /// keeps them; and withholds the third.
     /// </summary>
     public List<string> PublicSymbols { get; } = new();
     public List<string> OptionalSymbols { get; } = new();
     public List<string> WithheldSymbols { get; } = new();
+
+    /// <summary>
+    /// Whether the unit is for an image that exports (a kernel's or a
+    /// module's, freestanding, or a shared library's): its public surface
+    /// then roots what its own sweep keeps (Inline.RemoveDeadFunctions). A
+    /// program's entry unit is not: its public methods nobody calls go.
+    /// </summary>
+    public bool ExportsSurface { get; set; }
 
     /// <summary>
     /// What calls each of this unit's [ModuleInitializer] methods, its type

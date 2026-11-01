@@ -4,22 +4,22 @@ using System.Text;
 namespace Corsac.Lang.Ir;
 
 /// <summary>
-/// WHAT A RING UNIT OFFERS OTHER IMAGES, AS C# SAYS: the symbol of each method
-/// and static it defines that is public all the way out -- `public` (or
-/// `protected`, for a module's class deriving from one) in a type that is
-/// public, and its type's too (Lowering.RecordPublicApi) -- and, of the
-/// program's own types, of each that is not: `internal` is the kernel's
-/// assembly's alone, `private` its type's.
-/// A section of its own (`.corsac.public`), each entry `+` (offered, its body
-/// there to export), `~` (offered where the link keeps it: a static the link
-/// may lay down or fold, the class library's surface) or `-` (withheld) and
-/// the symbol, NUL-terminated.
+/// WHAT A UNIT OFFERS OTHER IMAGES, AS C# SAYS: the symbol of each method and
+/// static it defines that is public all the way out -- `public` (or
+/// `protected`, for a deriving class) in a type that is public, and its
+/// type's too (Lowering.RecordPublicApi) -- and of each that is not:
+/// `internal` is its assembly's alone, `private` its type's. The class
+/// library's no differently from a program's. A section of its own
+/// (`.corsac.public`), each entry `+` (offered, its body there to export),
+/// `~` (offered where the link keeps it: a static the link may lay down or
+/// fold, a descriptor) or `-` (withheld) and the symbol, NUL-terminated.
 ///
-/// A kernel linked with --exports keeps every public one out of line and in
-/// its export table, however its own callers inlined it, and leaves every
-/// other one out of the table, free to be inlined and pruned
-/// (ObjectLinkCommand): the module ABI is the kernel's public surface, as a
-/// .NET library's is, not what the build's own modules happened to import.
+/// Every image that exports reads it: a kernel's link (--exports) keeps every
+/// public one out of line and in its table, however its own callers inlined
+/// it; a shared library's and a module's leave every withheld one out of
+/// .dynsym (Withheld, from their own units). An image's exports are its
+/// public surface, as a .NET library's are, not what the build's other images
+/// happened to import, and nothing widens them.
 /// </summary>
 public static class PublicApi
 {
