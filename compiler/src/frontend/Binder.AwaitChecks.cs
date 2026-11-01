@@ -1482,8 +1482,9 @@ public sealed partial class Binder
            || (callee.Static && callee.Name == "StaticInit$" && BeforeFieldInit(callee.Owner));
 
     /// <summary>Whether a type is beforefieldinit: no static constructor written, so .NET may make it before its first touch.</summary>
+    /// Read quietly (MemberWatch): a static constructor is the type's shape.
     private static bool BeforeFieldInit(TypeSymbol t)
-        => t.Decl is TypeDecl d && !d.Members.OfType<MethodDecl>().Any(m => (m.IsCtor && m.Mods.HasFlag(Mods.Static)) || m.Name == "StaticConstructorBody$");
+        => t.Decl is TypeDecl d && !d.MembersQuietly.OfType<MethodDecl>().Any(m => (m.IsCtor && m.Mods.HasFlag(Mods.Static)) || m.Name == "StaticConstructorBody$");
 
     /// <summary>
     /// Every method a body runs that it names exactly -- static, or not

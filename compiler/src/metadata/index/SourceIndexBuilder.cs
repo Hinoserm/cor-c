@@ -402,10 +402,10 @@ public static class SourceIndexBuilder
                     }
                     for (int i = 0; i < members.Length; i++) spanStatics[i] = declarators[i].Any(Statics);
                     int memberIndex = 0, braces = 0, brackets = 0;
-                    // The last private static marked in the shape, and where it
-                    // ended: one like it right after says nothing more.
-                    int markedMember = -1, markEnd = -1;
-                    string? lastMark = null;
+                    // The span marked in the shape last, and whether the run of
+                    // statics the link may make has been marked ended.
+                    int markedMember = -1;
+                    bool runEnded = false;
                     // Each `[` open: a length or an index (true), or a collection expression's.
                     Stack<bool> squares = new();
                     PrivateMember hiding = PrivateMember.Shown;
@@ -543,11 +543,15 @@ public static class SourceIndexBuilder
                     }
                     // A PRIVATE STATIC'S INITIALISER, to the shape: what every
                     // unit touching the type reads of it (Binder.StaticInitialisers,
-                    // Lowering.TouchType) and no more. Each initialised
-                    // declarator's class in order (Binder.InitialiserClasses),
-                    // once for a run of them alike: a static more or less among
-                    // others of its class -- Ide's shutdown list removed --
-                    // changes nothing another unit compiles. An array made,
+                    // Lowering.TouchType) and no more -- whether the type has
+                    // startup work, the type's own mark (`static ;`), and where
+                    // the run of statics the link may make ends, which decides
+                    // whether a public one after it is one: the first
+                    // declarator of the class "code" (Binder.InitialiserClasses),
+                    // marked where it is among the public ones, and nothing
+                    // else. A private static more or less, or in another order
+                    // -- Ide's shutdown list removed -- changes nothing another
+                    // unit compiles. An array made,
                     // which may be a table laid down as data, by its tokens:
                     // a literal without
                     // its value -- a table's bytes are its own unit's -- but a
@@ -560,12 +564,10 @@ public static class SourceIndexBuilder
                         {
                             if (markedMember == memberIndex) return;
                             markedMember = memberIndex;
-                            foreach (string mark in marks)
+                            if (!runEnded && marks.Contains("code"))
                             {
-                                if (mark == lastMark && shapeText.Length == markEnd) continue;
-                                shapeText.Append("static static ").Append(mark).Append(" ; ");
-                                lastMark = mark;
-                                markEnd = shapeText.Length;
+                                runEnded = true;
+                                shapeText.Append("static static code ; ");
                             }
                             return;
                         }

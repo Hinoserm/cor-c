@@ -7,9 +7,10 @@
 # Other.X, which names Util.R: UseK, asking for K alone, is compiled again
 # for R. UseX calls an extension method of another class, which once read
 # every static class in reach whole, Util among them. Util's private statics
-# are in its shape by class: one more of a class beside another of it changes
-# nothing; an array's length, `?` and all, changes it; so does the class of
-# a declaration's second declarator.
+# are in its shape only by where the first that ends the run the link may
+# make stands: one more or less, or two in another order, changes nothing; a
+# declaration's second declarator that ends the run where none did changes
+# it, as do an array's length (`?` and all) and a public declaration's text.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
@@ -136,11 +137,14 @@ sed -i 's/public const int R = 5;/public const int R = 6;/' "$work/Util.cs"
 run_build "$work" > "$work/chain.log" 2>&1
 grep -q 'UseK.cs unit-allocated=[0-9]* rebuilt' "$work/chain.log"
 test "$(answer "$program")" = 30
-# A PRIVATE STATIC MORE BESIDE ONE OF ITS CLASS: Util, and UseG, which copied
-# a body of it; no unit that reads Util by member.
+# A PRIVATE STATIC MORE, AND ONE TAKEN AWAY (Ide's shutdown list): Util, and
+# UseG, which copied a body of it; no unit that reads Util by member.
 sed -i 's/    private static object _o = new object();/    private static object _o = new object();\n    private static object _p = new object();/' "$work/Util.cs"
 run_build "$work" > "$work/private.log" 2>&1
 grep -q '2/9 source units rebuilt' "$work/private.log"
+sed -i '/    private static object _p = new object();/d' "$work/Util.cs"
+run_build "$work" > "$work/removed.log" 2>&1
+grep -q '2/9 source units rebuilt' "$work/removed.log"
 # AN ARRAY'S LENGTH: 8000 strings are a zeroed table, 9000 code, and every
 # unit touching Util reads which.
 sed -i 's/new string?\[8000\]/new string?[9000]/' "$work/Util.cs"
@@ -153,13 +157,14 @@ sed -i 's/private static int _a, _b = 1;/private static int _a, _b = A();/' "$wo
 run_build "$work" > "$work/declarators.log" 2>&1
 grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/declarators.log"
 test "$(answer "$program")" = 30
-# THE SAME TWO IN THE OTHER ORDER: the run the link may make ends at the
-# first, so `_a = A(), _b = 1` is not `_a = 1, _b = A()`.
+# THE SAME TWO IN THE OTHER ORDER: the run the link may make ends in this
+# declaration either way, and no public static stands between them: Util and
+# UseG alone.
 sed -i 's/private static int _a, _b = A();/private static int _a = 1, _b = A();/' "$work/Util.cs"
 run_build "$work" > "$work/order1.log" 2>&1
 sed -i 's/private static int _a = 1, _b = A();/private static int _a = A(), _b = 1;/' "$work/Util.cs"
 run_build "$work" > "$work/order2.log" 2>&1
-grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/order2.log"
+grep -q '2/9 source units rebuilt' "$work/order2.log"
 # A PUBLIC ONE, its first declarator without an initialiser: the whole
 # declaration is the shape's, not the first name's text.
 sed -i 's/    public const int R = 6;/    public const int R = 6;\n    public static int V, W = 1;/' "$work/Util.cs"
