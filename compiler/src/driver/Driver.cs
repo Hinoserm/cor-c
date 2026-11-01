@@ -1973,12 +1973,18 @@ public static class Driver
         // never as one array of its whole size.
         if (sharedLibs.Count > 0)
         {
-            byte[] linked = Linker.Link(new[] { (name, obj) }, entry, Needed(obj, sharedLibs, exports), Value(args, "--runpath"), program: program);
+            List<string> needed = Needed(obj, sharedLibs, exports);
+            byte[] linked = Linker.Link(new[] { (name, obj) }, entry, needed, Value(args, "--runpath"), program: program);
             // AN IMPORT NO LIBRARY EXPORTS IS A REFUSED LINK, as ld refuses an
             // executable's undefined reference: the loader would refuse the
-            // program at its start, naming one, and only one.
-            HashSet<string> exported = new(exports.Values.SelectMany(names => names), StringComparer.Ordinal);
-            string[] missing = ElfReader.ImportsOf(linked).Where(import => !exported.Contains(import)).Order(StringComparer.Ordinal).ToArray();
+            // program at its start, naming one, and only one. Of the names a
+            // COR-C# image defines (Linker.ManagedName): a C library's a
+            // [DllImport] names are the loader's to find in libraries no link
+            // was told of.
+            // Of the libraries the program needs (DT_NEEDED) and theirs: one
+            // offered and not needed is not loaded.
+            HashSet<string> exported = Linker.ExportsInScope(needed);
+            string[] missing = ElfReader.ImportsOf(linked).Where(import => Linker.ManagedName(import) && !exported.Contains(import)).Order(StringComparer.Ordinal).ToArray();
             if (missing.Length != 0) return Fail("imported, and no library linked against exports it: " + string.Join(", ", missing.Take(12)) + (missing.Length > 12 ? " and " + (missing.Length - 12) + " more" : ""));
             File.WriteAllBytes(output, linked);
         }

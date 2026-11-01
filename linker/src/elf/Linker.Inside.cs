@@ -12,6 +12,47 @@ public static partial class Linker
     /// </summary>
     public const string InsideSuffix = "$inside";
 
+    private static readonly string[] ManagedPrefixes =
+        { "m_", "mx_", "s_", "ts_", "t_", "i_", "b_", "k_", "q_", "vr_", "vf_", "tk_", "z_", "__corsac", "__object_", "__array_" };
+
+    /// <summary>
+    /// A name a COR-C# image defines -- a member's, a static's, a type's, the
+    /// runtime's own -- as against a C library's, which a [DllImport] names
+    /// and the loader finds in a library no link was told of (NativeNeeded).
+    /// What an executable imports of these, a library it links against must
+    /// export (ObjectLinkCommand, Driver).
+    /// </summary>
+    public static bool ManagedName(string name)
+    {
+        foreach (string prefix in ManagedPrefixes)
+            if (name.StartsWith(prefix, StringComparison.Ordinal)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// What an executable linked against `libraries` finds at its start: their
+    /// exports, and those of every library they need (DT_NEEDED), found beside
+    /// the one needing it, as the loader takes the whole scope -- a program
+    /// told only of libSystem.IO.so reaches libcorsacrt.so through it. A
+    /// needed library not beside it (a C library) answers no COR-C# name.
+    /// </summary>
+    public static HashSet<string> ExportsInScope(IEnumerable<string> libraries)
+    {
+        HashSet<string> exported = new(StringComparer.Ordinal), read = new(StringComparer.Ordinal);
+        Queue<string> pending = new(libraries.Select(Path.GetFullPath));
+        while (pending.Count > 0)
+        {
+            string path = pending.Dequeue();
+            if (!read.Add(path) || !File.Exists(path)) continue;
+            ElfReader.SharedImageInfo image = ElfReader.ReadSharedImage(File.ReadAllBytes(path));
+            exported.UnionWith(image.Exports.Keys);
+            string beside = Path.GetDirectoryName(path) ?? ".";
+            foreach (string needed in image.Needed)
+                if (!needed.Contains('/')) pending.Enqueue(Path.Combine(beside, needed));
+        }
+        return exported;
+    }
+
     /// <summary>
     /// A CALL INTO ANOTHER IMAGE MADE INSIDE A KEPT STATE names the callee's
     /// $inside copy where the images the unit was compiled against exported

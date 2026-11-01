@@ -392,8 +392,11 @@ public static class ObjectLinkCommand
         // --no-undefined, its imports another image's to answer.
         if ((noUndefined || !shared) && kernel is null && (shared || sharedLibraries.Count > 0))
         {
-            HashSet<string> provided = new(sharedLibraries.SelectMany(path => ElfReader.ExportsOf(File.ReadAllBytes(path))), StringComparer.Ordinal);
-            string[] missing = ElfReader.ImportsOf(image).Where(name => !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();
+            HashSet<string> provided = Linker.ExportsInScope(sharedLibraries);
+            // A C library's names a [DllImport] imports are the loader's to
+            // find, in a library no link was told of: not an executable's.
+            string[] missing = ElfReader.ImportsOf(image).Where(name => !provided.Contains(name) && (noUndefined || Linker.ManagedName(name)))
+                .Order(StringComparer.Ordinal).ToArray();
             if (missing.Length != 0) return Fail("unresolved shared-library imports: " + string.Join(", ", missing));
         }
         if (!streamed) File.WriteAllBytes(output, image);
