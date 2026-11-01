@@ -659,7 +659,8 @@ public sealed partial class Lowering
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
             FreshCell(fe, named, cell);
-            // A lambda keeps a copy of the element, not where it is in the array.
+            // In the block, in place; else into its new cell, where a lambda
+            // keeps a copy of the element, not where it is in the array.
             if (_env is { } env && env.Syms.ContainsKey(named))
                 _e.Store(RegOperand.Of(cell), RegOperand.Of(value), 0, LoadSize(element));
             else
