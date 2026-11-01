@@ -80,11 +80,13 @@ run_build "$work" > "$work/declarator.log" 2>&1
 grep -qE 'UseB.cs unit-allocated=[0-9]* rebuilt: member [PQ] of Util changed$' "$work/declarator.log"
 test "$(answer "$program")" = 17
 grep -q '3/5 source units rebuilt' "$work/declarator.log"
-# The generic method's body: UseG, which copied it, and the units that
-# read Util and not that body (its shape), never compiled for nothing more.
+# The generic method's body: UseG, which copied it, from the file's text; the
+# units that read Util and not that body, from its shape, which holds what the
+# template bodies name (SourceDeclaration.TemplateHash).
 sed -i 's/public static T First<T>(T a, T b) => a;/public static T First<T>(T a, T b) => b;/' "$work/Util.cs"
 run_build "$work" > "$work/template.log" 2>&1
-grep -q 'UseG.cs unit-allocated=[0-9]* rebuilt' "$work/template.log"
+grep -q "UseG.cs unit-allocated=[0-9]* rebuilt: text of Util's file changed" "$work/template.log"
+grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/template.log"
 test "$(answer "$program")" = 18
 # A CONSTANT ANOTHER NAMES: S = C - 3 is UseA's, C UseB's; C changed is both
 # units' to compile again, though UseA never asked for C.

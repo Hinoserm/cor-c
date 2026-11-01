@@ -166,6 +166,19 @@ public static class SourceIndexBuilder
         };
     }
 
+    /// <summary>Every identifier-shaped word of a text: what an interpolated string's holes may name.</summary>
+    private static IEnumerable<string> Words(string text)
+    {
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (!(char.IsLetter(text[i]) || text[i] == '_') || i > 0 && (char.IsLetterOrDigit(text[i - 1]) || text[i - 1] == '_')) continue;
+            int end = i;
+            while (end < text.Length && (char.IsLetterOrDigit(text[end]) || text[end] == '_')) end++;
+            yield return text[i..end];
+            i = end;
+        }
+    }
+
     /// <summary>The names a member is looked up by (Monomorphiser.MemberNames): a property's accessors and backing field besides its own.</summary>
     private static IEnumerable<string> LookedUpBy(MemberDecl member, string name)
     {
@@ -344,7 +357,7 @@ public static class SourceIndexBuilder
                         ? parser.MemberSpans.Where(m => m.From >= type.SourceFrom && m.To <= type.SourceTo
                             && !nested.Any(n => m.From >= n.SourceFrom && m.To <= n.SourceTo)).OrderBy(m => m.From).ToArray()
                         : Array.Empty<(int From, int To, MemberDecl Member)>();
-                    int memberIndex = 0, braces = 0;
+                    int memberIndex = 0, braces = 0, brackets = 0;
                     PrivateMember hiding = PrivateMember.Shown;
                     bool markedCtor = false, markedStatics = false;
                     // AND EACH MEMBER APART, where they can be told apart
@@ -378,7 +391,7 @@ public static class SourceIndexBuilder
                         while (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].To)
                         { bodyIndex++; wroteBody = false; }
                         while (memberIndex < members.Length && token.Pos >= members[memberIndex].To)
-                        { memberIndex++; markedCtor = false; braces = 0; }
+                        { memberIndex++; markedCtor = false; braces = 0; brackets = 0; }
                         hiding = filtered && memberIndex < members.Length && token.Pos >= members[memberIndex].From
                             ? Hiding(members[memberIndex].Member) : PrivateMember.Shown;
                         routed = null;
@@ -474,16 +487,20 @@ public static class SourceIndexBuilder
                         // A PRIVATE STATIC'S INITIALISER, to the shape: a table
                         // laid down as data makes no StaticInit$, a computed one
                         // does, and every unit touching the type reads which
-                        // (Binder.StaticInitialisers, Lowering.TouchType). An
-                        // element's value inside `{ }` without its value -- the
-                        // table's bytes are its own unit's -- but a length's
-                        // with it: `new byte[60000]` is a zeroed table and
-                        // `new byte[70000]` code (Binder.ZeroedArrayOf).
+                        // (Binder.StaticInitialisers, Lowering.TouchType). A
+                        // literal without its value -- a table's bytes, a
+                        // starting count, are its own unit's -- but a length's
+                        // with it, in `[ ]` outside any `{ }`: `new byte[60000]`
+                        // is a zeroed table and `new byte[70000]` code
+                        // (Binder.ZeroedArrayOf).
                         else if (hiding == PrivateMember.Initialised && byMember)
                         {
                             if (token.Kind == Tok.LBrace) braces++;
                             else if (token.Kind == Tok.RBrace && braces > 0) braces--;
-                            if (braces > 0 && token.Kind is Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str) shapeText.Append(token.Kind.ToString());
+                            else if (token.Kind == Tok.LBracket) brackets++;
+                            else if (token.Kind == Tok.RBracket && brackets > 0) brackets--;
+                            bool length = brackets > 0 && braces == 0;
+                            if (!length && token.Kind is Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str or Tok.InterpStr) shapeText.Append(token.Kind.ToString());
                             else shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos);
                             shapeText.Append(' ');
                         }
@@ -544,13 +561,18 @@ public static class SourceIndexBuilder
                                 constantHolders.TryAdd(name, held.Key);
                     string WithConstants(string text, string? own)
                     {
+                        if (constantHolders.Count == 0) return text;
                         SortedSet<string> named = new(StringComparer.Ordinal);
                         Queue<string> reading = new();
                         reading.Enqueue(text);
                         while (reading.Count > 0)
                             foreach (Token word in Lexer.Tokenize(reading.Dequeue(), path))
-                                if (word.Kind == Tok.Ident && constantHolders.TryGetValue(word.Text, out string? holder) && holder != own && named.Add(holder))
-                                    reading.Enqueue(memberTexts[holder].Text.ToString());
+                                // An interpolated string's holes are expressions in its
+                                // text: every word of it a name it may hold.
+                                foreach (string name in word.Kind == Tok.Ident ? new[] { word.Text }
+                                    : word.Kind == Tok.InterpStr ? Words(word.Text) : Array.Empty<string>())
+                                    if (constantHolders.TryGetValue(name, out string? holder) && holder != own && named.Add(holder))
+                                        reading.Enqueue(memberTexts[holder].Text.ToString());
                         StringBuilder said = new(text);
                         foreach (string holder in named) said.Append("\n").Append(holder).Append(" : ").Append(memberTexts[holder].Text);
                         return said.ToString();

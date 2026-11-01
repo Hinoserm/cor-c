@@ -245,8 +245,7 @@ public sealed class TypeSymbol
         {
             _declareMembers = null;
             // Its own members read to declare them, not by the unit (MemberWatch).
-            if (Decl?.Watch is { } watch) { using (watch.Quietly()) declare(this); }
-            else declare(this);
+            using (MemberWatch.Within(Decl?.Watch)) declare(this);
             DeferredDeclared++;
             DeferredMembersDeclared += (_fields?.Count ?? 0) + (_methods?.Count ?? 0);
         }

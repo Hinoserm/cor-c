@@ -759,6 +759,13 @@ public static class ProjectCompile
             }
             if (round == 4)
             {
+                // The facts as they are, as when settled.
+                try { WriteFacts(factsFile, facts); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    Console.Error.WriteLine("corc: the units' facts cannot be written to " + factsFile + ": " + e.Message);
+                    return 1;
+                }
                 Console.Error.WriteLine("corc: the units' calls into each other's packed methods still move after four rounds ("
                     + string.Join(", ", moved.Take(6).Select(unit => Path.GetFileName(unit.Source))) + "); the build is right, and those units' calls are as the round before left them");
                 return 0;

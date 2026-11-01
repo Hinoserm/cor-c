@@ -156,7 +156,7 @@ public static class LinkReceipt
             // A value follows its flag, and is no flag itself (Switches.HandOn).
             string? value = i + 1 < flags.Count && !flags[i + 1].StartsWith("--", StringComparison.Ordinal) ? flags[++i] : null;
             if (Diagnostic(flag)) continue;
-            said.Add(value is null ? flag : flag + " " + (value.Contains('/') ? "<path>/" + Path.GetFileName(value) : value));
+            said.Add(value is null ? flag : flag + " " + (value.Contains('/') || value.Contains('\\') ? "<path>/" + Path.GetFileName(value) : value));
         }
         said.Sort(StringComparer.Ordinal);
         return said;
@@ -166,7 +166,9 @@ public static class LinkReceipt
     private static bool Diagnostic(string flag)
         => flag.StartsWith("--trace-", StringComparison.Ordinal) || flag.StartsWith("--report-", StringComparison.Ordinal)
            || flag.StartsWith("--dump-", StringComparison.Ordinal) || flag.StartsWith("--verify-", StringComparison.Ordinal)
-           || flag is "--receipt-trace" or "--alloc-report" or "--irq-locks-report" or "--preinit-report" or "--lto-jobs" or "--gc-workers";
+           || flag is "--receipt-trace" or "--alloc-report" or "--irq-locks-report" or "--preinit-report" or "--lto-jobs" or "--gc-workers"
+           // The compiler's own collector watched (Driver): not the image's.
+           || flag is "--gc-census" or "--gc-dead-census" or "--gc-parent-census" or "--alloc-sample" or "--gc-stats";
 
     /// <summary>
     /// The linker's own files by name, time and length: a linker built again

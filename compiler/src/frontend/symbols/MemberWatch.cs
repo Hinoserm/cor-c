@@ -25,8 +25,19 @@ public sealed class MemberWatch
     /// <summary>The names asked of it.</summary>
     public HashSet<string> Names { get; } = new(StringComparer.Ordinal);
 
-    /// <summary>Its own reads under way that are not the unit's (its declaring, its copying): neither bulk reads nor names asked count.</summary>
-    private int _quiet;
+    /// <summary>
+    /// WHOSE OWN WORK IS UNDER WAY, innermost last (Within): a type's
+    /// declaring, its copying, its layout, the working out of its constants.
+    /// What that work reads of the type itself is not the unit's (neither
+    /// bulk reads nor names asked count); what another type's work started
+    /// inside it reads is: T's constant naming S.X, whose value names T.P,
+    /// asks P of T, and a scope counted per type -- quiet for T throughout --
+    /// lost it. Null for a type with no watch, which ends the quiet the same.
+    /// </summary>
+    [ThreadStatic] private static List<MemberWatch?>? _within;
+
+    /// <summary>Its own work innermost, or every type's shape read: what is read of it now is not the unit's.</summary>
+    private bool Quiet => _shape > 0 || _within is { Count: > 0 } within && ReferenceEquals(within[within.Count - 1], this);
 
     /// <summary>Reads that are the shape's, of every type (a unit's layouts captured).</summary>
     [ThreadStatic] private static int _shape;
@@ -44,7 +55,7 @@ public sealed class MemberWatch
     {
         // Not while its own reads are under way, nor its shape's, as for a
         // read whole: working out its own constants asks each by its name.
-        if (_quiet > 0 || _shape > 0) return;
+        if (Quiet) return;
         // Traced, where each name is first asked, as for a read whole.
         if (Names.Add(name) && Trace) Say(name + " asked by ");
     }
@@ -52,7 +63,7 @@ public sealed class MemberWatch
     /// <summary>The member lists read: in bulk, unless quietly.</summary>
     public void ReadAll()
     {
-        if (_quiet > 0 || _shape > 0) return;
+        if (Quiet) return;
         // Traced, every place that reads one whole is said once, not only the first.
         if (Trace) Say("read whole by ");
         Whole = true;
@@ -71,17 +82,22 @@ public sealed class MemberWatch
 
     private static readonly HashSet<string> Said = new(StringComparer.Ordinal);
 
-    /// <summary>Its own members read for its own declaring or copying, not by the unit: `using (watch?.Quietly())`.</summary>
-    public Quiet Quietly() { _quiet++; return new Quiet(this); }
+    /// <summary>Its own members read for its own declaring or copying, not by the unit: `using (watch.Quietly())`.</summary>
+    public Scope Quietly() => Within(this);
+
+    /// <summary>A type's own work begun, watched or not (null): `using (MemberWatch.Within(d.Watch))`.</summary>
+    public static Scope Within(MemberWatch? owner)
+    {
+        (_within ??= new()).Add(owner);
+        return new Scope();
+    }
 
     /// <summary>Every type's members read for what is their shape's to say (ManagedLayouts.Capture).</summary>
     public static ShapeRead ShapesOnly() { _shape++; return new ShapeRead(); }
 
-    public readonly struct Quiet : IDisposable
+    public readonly struct Scope : IDisposable
     {
-        private readonly MemberWatch _watch;
-        internal Quiet(MemberWatch watch) => _watch = watch;
-        public void Dispose() => _watch._quiet--;
+        public void Dispose() => _within!.RemoveAt(_within.Count - 1);
     }
 
     public readonly struct ShapeRead : IDisposable

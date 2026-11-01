@@ -1039,7 +1039,9 @@ public sealed class IndexedDeclarations : IDisposable
     /// body-only edit to Arch.cor, whose Arch has two, rebuilt nine kernel
     /// units of fourteen, every object coming out byte for byte what it was.
     /// A template imported and never copied is a dependence of its
-    /// declaration and of its template bodies' shape (Dependence.Template):
+    /// declaration and of its template bodies' shape (Dependence.Template),
+    /// or, a type told apart by member (SourceDeclaration.ByMember), of the
+    /// members it asked for and a shape holding the bodies' (Dependence.Members):
     ///  - a template none of whose bodies was copied put no code in the unit:
     ///    a template's bodies are never checked or emitted as themselves,
     ///    only as a specialisation or a generic method's copy, and every one

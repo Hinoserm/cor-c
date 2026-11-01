@@ -2248,12 +2248,10 @@ public sealed partial class Binder
     private readonly Dictionary<(TypeSymbol Owner, string Name), ConstantState>
         _constantStates = new();
 
-    /// <summary>A constant worked out because its type has it, not because the unit named it: quietly for its type (Run).</summary>
+    /// <summary>A constant worked out because its type has it, not because the unit named it: its name asked quietly (Run).</summary>
     private void EvaluateOwnConstant(TypeSymbol owner, string name)
     {
-        MemberWatch.Quiet? quiet = owner.Decl?.Watch?.Quietly();
-        try { EvaluateConstant(owner, name); }
-        finally { quiet?.Dispose(); }
+        using (MemberWatch.Within(owner.Decl?.Watch)) EvaluateConstant(owner, name);
     }
 
     private void EvaluateConstant(TypeSymbol owner, string name)
@@ -2265,6 +2263,14 @@ public sealed partial class Binder
         // base, outer type and imported type it passes, and each would have
         // been declared to find nothing.
         if (!owner.MayHave(name)) return;
+        // ITS OWN WORK from here: what its value names of its own type is in
+        // the constant's hash (SourceIndexBuilder, WithConstants); what it
+        // names of another is asked of that one, whoever began this.
+        using (MemberWatch.Within(owner.Decl?.Watch)) EvaluateConstantOf(owner, name);
+    }
+
+    private void EvaluateConstantOf(TypeSymbol owner, string name)
+    {
         owner.EnsureMembers();
         var key = (owner, name);
         if (!_constantDeclarations.TryGetValue(key, out var declaration)) return;
@@ -3764,8 +3770,7 @@ public sealed partial class Binder
     /// </summary>
     private void StaticInitialisers(TypeDecl d)
     {
-        if (d.Watch is { } watch) { using (watch.Quietly()) StaticInitialisersOf(d); }
-        else StaticInitialisersOf(d);
+        using (MemberWatch.Within(d.Watch)) StaticInitialisersOf(d);
     }
 
     /// <summary>
@@ -3947,8 +3952,7 @@ public sealed partial class Binder
     /// <summary>Quietly for a watched type, as StaticInitialisers: an instance field and a constructor are the shape's.</summary>
     private void Initialisers(TypeDecl d)
     {
-        if (d.Watch is { } watch) { using (watch.Quietly()) InitialisersOf(d); }
-        else InitialisersOf(d);
+        using (MemberWatch.Within(d.Watch)) InitialisersOf(d);
     }
 
     private void InitialisersOf(TypeDecl d)
@@ -4537,7 +4541,7 @@ public sealed partial class Binder
         _scope = sym;
 
         // Its own members read to declare them, not by the unit (MemberWatch).
-        MemberWatch.Quiet? quiet = d.Watch?.Quietly();
+        MemberWatch.Scope quiet = MemberWatch.Within(d.Watch);
         try
         {
             if (bases) DeclareBases(d, sym);
@@ -4557,7 +4561,7 @@ public sealed partial class Binder
         finally
         {
             _scope = wasScope;
-            quiet?.Dispose();
+            quiet.Dispose();
         }
     }
 
@@ -5678,9 +5682,7 @@ public sealed partial class Binder
     /// </summary>
     private void LayOut(TypeSymbol sym)
     {
-        MemberWatch.Quiet? quiet = sym.Decl?.Watch?.Quietly();
-        try { LayOutNow(sym); }
-        finally { quiet?.Dispose(); }
+        using (MemberWatch.Within(sym.Decl?.Watch)) LayOutNow(sym);
     }
 
     /// <summary>Assigns field offsets and vtable slots.</summary>
