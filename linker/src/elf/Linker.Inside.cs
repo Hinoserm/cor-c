@@ -12,43 +12,33 @@ public static partial class Linker
     /// </summary>
     public const string InsideSuffix = "$inside";
 
-    private static readonly string[] ManagedPrefixes =
-        { "m_", "mx_", "s_", "ts_", "t_", "i_", "b_", "k_", "q_", "vr_", "vf_", "tk_", "z_", "__corsac", "__object_", "__array_" };
 
     /// <summary>
-    /// A name a COR-C# image defines -- a member's, a static's, a type's, the
-    /// runtime's own -- as against a C library's, which a [DllImport] names
-    /// and the loader finds in a library no link was told of (NativeNeeded).
-    /// What an executable imports of these, a library it links against must
-    /// export (ObjectLinkCommand, Driver).
+    /// WHAT AN IMAGE FINDS AT ITS START, as its loader finds it: the exports
+    /// of every library the image needs (DT_NEEDED) and every library those
+    /// need, each found beside the libraries the link was given -- the COR-C#
+    /// ones, where the image's RUNPATH points -- or else in the system's
+    /// library directories, where a [DllImport]'s C library is (NativeNeeded).
+    /// A needed library found nowhere answers nothing; one that is no ELF
+    /// file is passed over, as the loader would refuse it in its own words.
     /// </summary>
-    public static bool ManagedName(string name)
+    public static HashSet<string> ExportsAtStart(byte[] image, IEnumerable<string> libraries, bool longMode)
     {
-        foreach (string prefix in ManagedPrefixes)
-            if (name.StartsWith(prefix, StringComparison.Ordinal)) return true;
-        return false;
-    }
-
-    /// <summary>
-    /// What an executable linked against `libraries` finds at its start: their
-    /// exports, and those of every library they need (DT_NEEDED), found beside
-    /// the one needing it, as the loader takes the whole scope -- a program
-    /// told only of libSystem.IO.so reaches libcorsacrt.so through it. A
-    /// needed library not beside it (a C library) answers no COR-C# name.
-    /// </summary>
-    public static HashSet<string> ExportsInScope(IEnumerable<string> libraries)
-    {
+        List<string> beside = libraries.Select(path => Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".").Distinct(StringComparer.Ordinal).ToList();
+        string[] system = longMode ? LibraryDirectories64 : LibraryDirectories32;
         HashSet<string> exported = new(StringComparer.Ordinal), read = new(StringComparer.Ordinal);
-        Queue<string> pending = new(libraries.Select(Path.GetFullPath));
+        Queue<string> pending = new(ElfReader.ReadSharedImage(image).Needed);
         while (pending.Count > 0)
         {
-            string path = pending.Dequeue();
-            if (!read.Add(path) || !File.Exists(path)) continue;
-            ElfReader.SharedImageInfo image = ElfReader.ReadSharedImage(File.ReadAllBytes(path));
-            exported.UnionWith(image.Exports.Keys);
-            string beside = Path.GetDirectoryName(path) ?? ".";
-            foreach (string needed in image.Needed)
-                if (!needed.Contains('/')) pending.Enqueue(Path.Combine(beside, needed));
+            string needed = pending.Dequeue();
+            string? path = needed.Contains('/') ? (File.Exists(needed) ? needed : null)
+                : beside.Concat(system).Select(dir => Path.Combine(dir, needed)).FirstOrDefault(File.Exists);
+            if (path is null || !read.Add(Path.GetFullPath(path))) continue;
+            ElfReader.SharedImageInfo library;
+            try { library = ElfReader.ReadSharedImage(File.ReadAllBytes(path)); }
+            catch (Exception e) when (e is ElfFormatException or IOException or InvalidDataException) { continue; }
+            exported.UnionWith(library.Exports.Keys);
+            foreach (string next in library.Needed) pending.Enqueue(next);
         }
         return exported;
     }
