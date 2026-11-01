@@ -58,7 +58,8 @@ public sealed partial class Binder
                 Dictionary<string, List<TypeRef>> declared = new(StringComparer.Ordinal);
                 Metadata.BodyTypeNames.Walk(d, found: _ => { }, members: generic, declared: (name, type) =>
                 {
-                    if (type.Name == "var") return;
+                    // Not `var`'s, nor a lambda's parameter given no type.
+                    if (type.Name is "var" or "") return;
                     if (!declared.TryGetValue(name, out List<TypeRef>? types)) declared[name] = types = new();
                     types.Add(type);
                 });
@@ -126,7 +127,7 @@ public sealed partial class Binder
         // capital first, or the compiler's own two underscores; a keyword's
         // type by its own (`string.Concat`, `char.IsDigit`).
         if (NamesPath(member.Target) is not string qualifier) return;
-        if (Alias(qualifier) is string keyword) qualifier = keyword;
+        if (char.IsLower(qualifier[0]) && Alias(qualifier) is string keyword) qualifier = keyword;
         else if (!(char.IsUpper(qualifier[0]) || qualifier.StartsWith("__", StringComparison.Ordinal))) return;
         if (OrdinaryNamed(new TypeRef { Name = qualifier, Line = member.Line, Col = member.Col }, scope) is TypeSymbol named) NamedOf(named, member.Name);
     }

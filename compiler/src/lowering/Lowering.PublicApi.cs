@@ -85,11 +85,11 @@ public sealed partial class Lowering
                 // Laid down here, as the statics' rounds do (Run): another
                 // unit's type's is that unit's. A [ThreadStatic] is reached
                 // through its number (ThreadStaticIndex), never its own symbol.
-                if (!f.Static || !_statics.Contains(f) || d.Elsewhere || FieldDeclOf(f) is FieldDecl declared && Binder.IsThreadStatic(declared)) continue;
+                if (!f.Static || !_statics.Contains(f) || d.Elsewhere) continue;
                 MemberDecl? field = FieldDeclOf(f);
                 bool offered = f.Name == BindResult.ReadyField ? open || wide
                     : field is not null && (open && Binder.ShownOutside(d, field) || wide && Binder.SeenInAssembly(d, field));
-                (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(StaticSymbol(f));
+                (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(f.ThreadStatic ? ThreadStaticIndex(f) : StaticSymbol(f));
             }
             // ITS DESCRIPTOR, where this unit made it: a module making one of
             // its objects, testing for the type or deriving from it binds to
@@ -174,7 +174,7 @@ public sealed partial class Lowering
         }
         foreach (FieldSymbol f in _b.GenericNamedFields)
         {
-            named.Add(StaticSymbol(f));
+            named.Add(f.ThreadStatic ? ThreadStaticIndex(f) : StaticSymbol(f));
             Startup(f.Owner);
         }
         foreach (TypeSymbol t in _b.GenericNamedTypes)

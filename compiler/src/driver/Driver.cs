@@ -2087,8 +2087,6 @@ public static class Driver
             if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
         foreach (DataItem d in module.Data)
             if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || d.Coalescible || d.GenericCode) && live.Add(d.Name)) work.Push(d.Name);
-        // And what the backend will call, which no instruction names yet.
-        foreach (string helper in module.RuntimeHelpers.Order(StringComparer.Ordinal)) From("the code generator", helper);
         while (work.Count > 0)
         {
             string name = work.Pop();

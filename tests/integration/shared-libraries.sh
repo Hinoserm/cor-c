@@ -123,15 +123,15 @@ expected_output() {
     ' "$1"
 }
 
-# WHAT THE LIBRARIES DEFINE AND WITHHOLD: every global method and static of
-# theirs in .symtab and not in .dynsym (a local one is each image's own: a
+# WHAT THE LIBRARIES DEFINE AND WITHHOLD: every global method, static and
+# thread static's number of theirs in .symtab and not in .dynsym (a local one is each image's own: a
 # state machine's, a closure's). A program defining one of these has its own
 # copy of the library's private code or state -- its own collector's statics.
 for lib in "$libdir"/*.so; do
-    readelf -sW "$lib" | awk '/Symbol table .\.symtab/ { s = 1 } s && $5 == "GLOBAL" && $7 != "UND" && $8 ~ /^(m|mx|s)_/ { print $8 }'
+    readelf -sW "$lib" | awk '/Symbol table .\.symtab/ { s = 1 } s && $5 == "GLOBAL" && $7 != "UND" && $8 ~ /^(m|mx|s|ts)_/ { print $8 }'
 done | sort -u > "$work/libraries.defined"
 for lib in "$libdir"/*.so; do
-    readelf --dyn-syms -W "$lib" | awk '$7 != "UND" && $8 ~ /^(m|mx|s)_/ { print $8 }'
+    readelf --dyn-syms -W "$lib" | awk '$7 != "UND" && $8 ~ /^(m|mx|s|ts)_/ { print $8 }'
 done | sort -u > "$work/libraries.exported"
 comm -23 "$work/libraries.defined" "$work/libraries.exported" > "$work/libraries.withheld"
 # Read, or the check below would hold of anything: libraries with no symbol
@@ -173,7 +173,7 @@ for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor "$root/tests/langu
     fi
     # NOR ANY OF THE LIBRARIES' PRIVATE CODE OR STATE: nothing they withhold
     # defined here (Inline.CrossesImage, Driver.LibraryPrivateKept).
-    readelf -sW "$exe" | awk '/Symbol table .\.symtab/ { s = 1 } s && $7 != "UND" && $8 ~ /^(m|mx|s)_/ { print $8 }' | sort -u \
+    readelf -sW "$exe" | awk '/Symbol table .\.symtab/ { s = 1 } s && $7 != "UND" && $8 ~ /^(m|mx|s|ts)_/ { print $8 }' | sort -u \
         | comm -12 - "$work/libraries.withheld" > "$work/$name.private"
     if [ -s "$work/$name.private" ]; then
         sed 's/^/    /' "$work/$name.private" | head -10

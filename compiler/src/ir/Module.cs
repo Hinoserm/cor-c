@@ -279,9 +279,10 @@ public sealed class Module
     /// <summary>
     /// THE LIBRARY'S OWN THAT NO IMAGE EXPORTS, of what this compile read of
     /// the class library (SystemCode: written in its sources): a method's
-    /// body, a static, a thread static's number or a type's descriptor of a
-    /// library type, no copy of generic code (Coalescible, GenericCode), and
-    /// nothing a provider exports. Not FromLibrary, which a module's and a
+    /// body, a static or a thread static's number of a library type, no copy
+    /// of generic code (Coalescible, GenericCode), and nothing a provider
+    /// exports. Not a descriptor: one the provider never made is the image's
+    /// to make, its receipt saying so (Driver, keptFromLibrary). Not FromLibrary, which a module's and a
     /// library's compiles say of their own code too. Kept here, a static is
     /// a second one of the library's -- a second collector's state -- and a
     /// body a second copy of code its library withholds, where its library's
@@ -299,7 +300,7 @@ public sealed class Module
                 found.Add(f.Name);
         foreach (DataItem d in Data)
             if (d.SystemCode && !d.Coalescible && !d.GenericCode && !provided.Contains(d.Name)
-                && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("ts_", StringComparison.Ordinal) || d.Name.StartsWith("t_", StringComparison.Ordinal)))
+                && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("ts_", StringComparison.Ordinal)))
                 found.Add(d.Name);
         return found;
     }
