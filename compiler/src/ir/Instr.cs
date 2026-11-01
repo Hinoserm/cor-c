@@ -128,12 +128,15 @@ public sealed class Instr : OperandList
     /// <summary>
     /// A call's operands that are structs passed by value, or a struct
     /// method's receiver (Lowering.CallDirect): bit k for operand k. C# hands
-    /// the callee a copy, and every body copies again what it keeps of one
-    /// -- a field, a closure's cell, a box, a returned value (EvalAs,
-    /// HeapStruct) -- so no callee holds the block past its return, its
-    /// summary seen or not: another image's operator on a struct took a heap
-    /// block a call (Escape). Read with the operand count it was made for,
-    /// so a pass that changes the operands drops it rather than misreads it.
+    /// the callee a copy, and lowering copies again whatever a body keeps of
+    /// one -- a field, a closure's cell, a box, a returned value (EvalAs,
+    /// HeapStruct), an iterator's or an async method's machine
+    /// (MachineArgument, MachineReceiver) -- so the callee holds the block no
+    /// longer than the call. What lets Escape keep it in the caller's frame
+    /// where the callee has no summary here, another image's: a kernel's
+    /// operator on a struct, called from a module, took a heap block a call.
+    /// Read with the operand count it was made for, so a pass that changes
+    /// the operands drops it rather than misreads it.
     /// </summary>
     public ulong PassedByValue
     {
