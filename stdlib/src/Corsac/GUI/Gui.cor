@@ -2807,14 +2807,14 @@ public class Seat : IDrawingTarget, IFontStore, ISystemTheme, IPathTarget, IPage
         while (got < 16)
         {
             // A SIGNAL NOTED OUTSIDE THE READ -- during the flush, or while
-            // another's handlers ran -- is delivered before the read blocks,
-            // as Os.Poll and Os.Pause look first: else its handlers waited
-            // for the seat's next event, which might never come.
+            // another's handlers ran -- is seen before the read blocks, as
+            // Os.Poll and Os.Pause look first; its handlers run on the thread
+            // that delivers them (PosixSignalRegistration), whatever this does.
             if (PosixSignalRegistration.Pending) PosixSignalRegistration.Deliver();
             int n = Read(_event, got, 16 - got);
-            // A SIGNAL IS NOT THE SEAT'S END: its handlers run (this is a
-            // quiet moment) and the read is made again. Taken for the end,
-            // it ended Application.Run, and the program with code 0.
+            // A SIGNAL IS NOT THE SEAT'S END: it is seen, its handlers run on
+            // their own thread, and the read is made again. Taken for the
+            // end, it ended Application.Run, and the program with code 0.
             if (n == -Err.Intr) { PosixSignalRegistration.Deliver(); continue; }
             // Anything else does end it, and says why: ended with nothing
             // said, the volume control a session starts was simply not there

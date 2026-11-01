@@ -21,9 +21,11 @@
 // AND OS.PAUSE STILL SEES IT. A signal the thread has already run, which no
 // wait has seen, ends Pause at once, as it did -- Deliver first sees the
 // earlier ones (a signal a program sends itself is dispatched before kill
-// returns), so it is this one Pause answers. And Pause returns only when
-// the handlers have run (Settle): it waits for a slow one the thread has
-// started, whose own sleep inside it neither sees the signal nor waits.
+// returns -- every other thread blocks signals -- so it is this one Pause
+// answers. And Pause returns only when the handlers have run (Settle): it
+// waits for a slow one the thread has started. That one's own sleep must
+// not see the signal (Inside): seen there, Pause found it seen already and
+// slept for ever, and the run times out.
 
 using System;
 using System.Diagnostics;
