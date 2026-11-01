@@ -1129,6 +1129,13 @@ public static class Frontend
             }
 
             into.Members.AddRange(part.Members);
+            // WHERE EACH PART WAS WRITTEN, full paths: the split class
+            // library's parts of one type in two images (Lowering.SpansImages).
+            if (part.SourcePath is string partPath)
+            {
+                into.PartSources ??= into.SourcePath is string intoPath ? new(StringComparer.Ordinal) { intoPath } : new(StringComparer.Ordinal);
+                into.PartSources.Add(partPath);
+            }
             into.Mods |= part.Mods;
             into.FromLibrary |= part.FromLibrary;
             into.MemberwiseCopied |= part.MemberwiseCopied;

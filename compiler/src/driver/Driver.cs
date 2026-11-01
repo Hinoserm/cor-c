@@ -2098,28 +2098,34 @@ public static class Driver
             if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
         foreach (DataItem d in module.Data)
             if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || d.Coalescible || d.GenericCode) && live.Add(d.Name)) work.Push(d.Name);
+        void Walk()
+        {
+            while (work.Count > 0)
+            {
+                string name = work.Pop();
+                if (functions.TryGetValue(name, out Function? f))
+                    foreach (Corsac.Lang.Ir.Block b in f.Blocks)
+                        foreach (Instr i in b.Instrs)
+                        {
+                            if (i.Callee is { } callee) From(f.Display ?? f.Name, callee);
+                            foreach (Operand o in i.Operands)
+                                if (o is SymOperand symbol) From(f.Display ?? f.Name, symbol.Name);
+                        }
+                if (data.TryGetValue(name, out DataItem? d))
+                    foreach (DataReloc r in d.Relocs) From(d.Name, r.Symbol);
+            }
+        }
+        Walk();
         // AND WHERE NO SWEEP RAN, what the sweep roots besides: the image's
         // initialisers, its public surface and what its generic code reaches,
-        // what preinitialisation and the objects it laid down name.
+        // what preinitialisation and the objects it laid down name. After
+        // the code's own walk, so a refusal names the code that calls it.
         if (!swept)
         {
             IEnumerable<string> roots = module.Initializers.Concat(module.PreinitNames).Concat(module.ObjectNames);
             if (module.ExportsSurface) roots = roots.Concat(module.PublicSymbols).Concat(module.OptionalSymbols).Concat(module.ReachedSymbols);
             foreach (string root in roots.Order(StringComparer.Ordinal)) From("the image's roots", root);
-        }
-        while (work.Count > 0)
-        {
-            string name = work.Pop();
-            if (functions.TryGetValue(name, out Function? f))
-                foreach (Corsac.Lang.Ir.Block b in f.Blocks)
-                    foreach (Instr i in b.Instrs)
-                    {
-                        if (i.Callee is { } callee) From(f.Display ?? f.Name, callee);
-                        foreach (Operand o in i.Operands)
-                            if (o is SymOperand symbol) From(f.Display ?? f.Name, symbol.Name);
-                    }
-            if (data.TryGetValue(name, out DataItem? d))
-                foreach (DataReloc r in d.Relocs) From(d.Name, r.Symbol);
+            Walk();
         }
         if (named.Count > 0)
             return "this image would keep its own copy of what its library withholds -- "

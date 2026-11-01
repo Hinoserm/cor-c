@@ -92,7 +92,9 @@ public sealed partial class Lowering
                 // to C#'s names and reached through the interface from anywhere:
                 // another image's descriptor of the type -- a program's box of a
                 // library struct -- names it in its table.
-                bool dispatched = (open || wide) && method.ExplicitInterface is not null;
+                // The symbol's: an explicit property's or indexer's accessor
+                // carries it there, never in its made declaration.
+                bool dispatched = (open || wide) && m.ExplicitInterface is not null;
                 List<string> into = offered ? _m.PublicSymbols
                     : dispatched || wide && (startup || parts || Binder.SeenInAssembly(d, method)) ? _m.OptionalSymbols
                     : _m.WithheldSymbols;
@@ -226,10 +228,13 @@ public sealed partial class Lowering
 
     /// <summary>
     /// A partial type with a part in another image of the split class
-    /// library: a member read from a source this compile does not own.
+    /// library: a part written in a source this compile does not own, by
+    /// the full paths the parts were merged from (TypeDecl.PartSources) --
+    /// a member's File is its file's bare name, the same for threading.cor
+    /// under every platform.
     /// </summary>
     private static bool SpansImages(TypeDecl d)
-        => d.Members.Any(m => m.File.Length > 0 && !OwnLibrarySources.Contains(Path.GetFullPath(m.File)));
+        => d.PartSources is { } parts && parts.Any(path => !OwnLibrarySources.Contains(path));
 
     /// <summary>
     /// A type the rest of its assembly can name: any at the top, and one

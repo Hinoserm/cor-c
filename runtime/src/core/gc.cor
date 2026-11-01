@@ -754,8 +754,8 @@ public static class Gc
         while (GcRoots.ExtraTable() != 0 && i < GcRoots.ExtraCount())
         {
             nuint slot = GcRoots.ExtraTable() + i * (2 * WordSize.Bytes);
-            nuint start = Sys.ReadAddress(slot);
-            if (start != 0 && start != GcRoots.ClaimMark() && !PassedOver(start)) said = VerifyRootRange(start, Sys.ReadAddress(slot + WordSize.Bytes), said);
+            nuint start = GcRoots.Pair(slot, out nuint end);
+            if (start != 0 && !PassedOver(start)) said = VerifyRootRange(start, end, said);
             i = i + 1;
         }
     }
@@ -10282,8 +10282,8 @@ public static class Gc
         while (GcRoots.ExtraTable() != 0 && i < GcRoots.ExtraCount())
         {
             nuint slot = GcRoots.ExtraTable() + i * (2 * WordSize.Bytes);
-            nuint start = Sys.ReadAddress(slot);
-            if (start != 0 && start != GcRoots.ClaimMark()) found = ReferencesInRange(start, Sys.ReadAddress(slot + WordSize.Bytes), low, high, max, found, "gc refs: root range word at ");
+            nuint start = GcRoots.Pair(slot, out nuint end);
+            if (start != 0) found = ReferencesInRange(start, end, low, high, max, found, "gc refs: root range word at ");
             i = i + 1;
         }
         _heapCheckTable = GcThreads.Sized(_heapCheckTable, ref _heapCheckTableFor);
@@ -16889,12 +16889,10 @@ static class GcRoots
 
         while (_extra != 0 && i < ExtraMax)
         {
-            nuint start = Sys.ReadAddress(_extra + i * (2 * WordSize.Bytes));
-            // A slot whose start is the claim mark is one a thread is filling
-            // in: its end is not written yet and there is nothing to scan.
-            if (start != 0 && start != Claiming && !Gc.PassedOver(start))
+            nuint start = Pair(_extra + i * (2 * WordSize.Bytes), out nuint end);
+            if (start != 0 && !Gc.PassedOver(start))
             {
-                Gc.ScanRootsAttributed(start, Sys.ReadAddress(_extra + i * (2 * WordSize.Bytes) + WordSize.Bytes), 3, false);
+                Gc.ScanRootsAttributed(start, end, 3, false);
             }
             i = i + 1;
         }
@@ -16924,6 +16922,29 @@ static class GcRoots
 
     /// The registered root ranges, for the collector's checks (Gc.VerifyStaticRoots).
     public static nuint ExtraTable() => _extra;
+
+    /// <summary>
+    /// A SLOT'S RANGE, READ AS ONE: its start, its end, and its start again,
+    /// zero for a slot free, being filled in (Claiming) or let go, or taken
+    /// over while it was read. Read as two loads and never looked at again,
+    /// a scan that read one range's start, while Unregister let the slot go
+    /// and another Register filled it, took the newcomer's end: a range from
+    /// one stack to another, and whatever lay between them read as roots.
+    /// The same start read twice is one registration's pair -- or another's
+    /// of the same start, whose end is its own.
+    /// </summary>
+    public static nuint Pair(nuint slot, out nuint end)
+    {
+        end = 0;
+        nuint start = Sys.ReadAddress(slot);
+        if (start == 0 || start == Claiming) return 0;
+        Sys.Fence();
+        nuint at = Sys.ReadAddress(slot + WordSize.Bytes);
+        Sys.Fence();
+        if (Sys.ReadAddress(slot) != start) return 0;
+        end = at;
+        return start;
+    }
     public static nuint ExtraCount() => ExtraMax;
     public static nuint ClaimMark() => Claiming;
     const int ExtraBytes = ExtraMax * (2 * WordSize.Bytes);
@@ -16985,7 +17006,8 @@ static class GcRoots
         return false;
     }
 
-    // The caller serializes root registration/removal against collection.
+    // THE CALLER HAS STOPPED USING THE RANGE: a scan running beside this may
+    // still read it once more (Pair), or pass it over already.
     public static bool Unregister(nuint start, nuint end)
     {
         for (nuint i = 0; _extra != 0 && i < ExtraMax; i++)

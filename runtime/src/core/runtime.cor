@@ -5056,6 +5056,8 @@ public static partial class Runtime
     /// The refusal, out of line as ArrayStoreRefused is: the element's type
     /// named by its descriptor.
     [MethodImpl(MethodImplOptions.NoInlining)]
+    // PUBLIC: the half every image's compiled code calls, its front inlined
+    // there, a program's or a module's (Inline.CrossesImage).
     public static void ArrayCopyRefused(nuint value, nuint element)
     {
         object o = Sys.ObjectAt(value)!;
@@ -5641,8 +5643,8 @@ public static partial class Runtime
 
     /// (u1:u0) / v and its remainder, for u1 < v and v nonzero: the quotient
     /// fits 32 bits. Hacker's Delight, divlu.
-    // PUBLIC: the half every image's compiled code calls, its front inlined
-    // there, a program's or a module's (Inline.CrossesImage).
+    // PUBLIC, as the division routines that call it: their fronts are
+    // inlined into every image's compiled code (Inline.CrossesImage).
     public static uint DivLU(uint u1, uint u0, uint v, out uint remainder)
     {
         uint b = 65536;
@@ -5674,6 +5676,8 @@ public static partial class Runtime
     }
 
     /// a / b and a % b for a divisor below 2^32.
+    // PUBLIC: the half every image's compiled code calls, its front inlined
+    // there, a program's or a module's (Inline.CrossesImage).
     public static ulong UDivShort(ulong a, uint b, out ulong remainder)
     {
         uint hi = (uint)(a >> 32), lo = (uint)a;
@@ -5725,6 +5729,8 @@ public static partial class Runtime
     /// Unsigned remainder: the same walk, keeping what is left instead of the
     /// bits taken. Written out rather than as a - b * UDiv(a, b) to save the
     /// multiply, which on a 486 is not free either.
+    // PUBLIC: the half every image's compiled code calls, its front inlined
+    // there, a program's or a module's (Inline.CrossesImage).
     public static ulong URem(ulong a, ulong b)
     {
         if (b == (ulong)0)
