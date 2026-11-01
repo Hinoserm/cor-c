@@ -56,11 +56,10 @@ public sealed class MemberWatch
         // Not while its own reads are under way, nor its shape's, as for a
         // read whole: working out its own constants asks each by its name.
         if (Quiet) return;
-        // Traced, where each name is first asked, as for a read whole. Under
-        // its lock: a read from another thread than the unit's is recorded.
-        bool added;
-        lock (Names) added = Names.Add(name);
-        if (added && Trace) Say(name + " asked by ");
+        // Traced, where each name is first asked, as for a read whole. One
+        // thread binds a unit (ProjectCompile), so the set needs no lock; a
+        // read from another would find no scope of its own and be recorded.
+        if (Names.Add(name) && Trace) Say(name + " asked by ");
     }
 
     /// <summary>The member lists read: in bulk, unless quietly.</summary>
@@ -103,12 +102,25 @@ public sealed class MemberWatch
         private readonly MemberWatch? _owner;
         internal Scope(MemberWatch? owner) => _owner = owner;
 
-        /// <summary>Its own scope closed, innermost: one closed out of turn would leave another type quiet.</summary>
+        /// <summary>
+        /// Its own scope closed, innermost. One closed out of turn would leave
+        /// another type quiet: the stack is put back to below its own entry
+        /// first, and then it is said, so a throw while unwinding leaves no
+        /// scope open behind it.
+        /// </summary>
         public void Dispose()
         {
-            if (_within is not { Count: > 0 } within || !ReferenceEquals(within[within.Count - 1], _owner))
-                throw new InvalidOperationException("a member watch's scope closed out of turn");
-            within.RemoveAt(within.Count - 1);
+            if (_within is { Count: > 0 } within && ReferenceEquals(within[within.Count - 1], _owner))
+            {
+                within.RemoveAt(within.Count - 1);
+                return;
+            }
+            if (_within is { } open)
+            {
+                int at = open.FindLastIndex(entry => ReferenceEquals(entry, _owner));
+                if (at >= 0) open.RemoveRange(at, open.Count - at);
+            }
+            throw new InvalidOperationException("a member watch's scope closed out of turn");
         }
     }
 

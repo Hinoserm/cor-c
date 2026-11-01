@@ -61,10 +61,10 @@ public static class LinkReceipt
             if (args[i] is "-o" or "--kernel" or "--keep" or "--link-shared" or "--map" or "--lto-backend" or "--region-report" or "--unused-report"
                 && i + 1 < args.Count)
             {
-                Say(args[i] + " <path>/" + Path.GetFileName(args[i + 1]));
+                Say(args[i] + " <path>/" + NameOf(args[i + 1]));
                 i++;
             }
-            else if (args[i].Length > 0 && args[i][0] != '-' && (i == 0 || !Valued(args[i - 1]))) Say("<object>/" + Path.GetFileName(args[i]));
+            else if (args[i].Length > 0 && args[i][0] != '-' && (i == 0 || !Valued(args[i - 1]))) Say("<object>/" + NameOf(args[i]));
             else Say(args[i]);
         }
         foreach (string objectHash in objectHashes) Say(objectHash);
@@ -95,8 +95,8 @@ public static class LinkReceipt
             foreach (string path in sharedLibraries.Distinct(StringComparer.Ordinal))
             {
                 byte[] bytes = File.ReadAllBytes(path);
-                theirs.Add((Path.GetFileName(path), new HashSet<string>(ElfReader.ExportsOf(bytes), StringComparer.Ordinal)));
-                Say("library " + Path.GetFileName(path) + " " + (kernel is null ? Convert.ToHexString(SHA256.HashData(bytes)) : (ElfReader.SoNameOf(bytes) ?? Path.GetFileName(path))));
+                theirs.Add((NameOf(path), new HashSet<string>(ElfReader.ExportsOf(bytes), StringComparer.Ordinal)));
+                Say("library " + NameOf(path) + " " + (kernel is null ? Convert.ToHexString(SHA256.HashData(bytes)) : (ElfReader.SoNameOf(bytes) ?? NameOf(path))));
             }
             foreach (string name in asked)
             {
@@ -156,11 +156,14 @@ public static class LinkReceipt
             // A value follows its flag, and is no flag itself (Switches.HandOn).
             string? value = i + 1 < flags.Count && !flags[i + 1].StartsWith("--", StringComparison.Ordinal) ? flags[++i] : null;
             if (Diagnostic(flag)) continue;
-            said.Add(value is null ? flag : flag + " " + (value.Contains('/') || value.Contains('\\') ? "<path>/" + value[(value.LastIndexOfAny(new[] { '/', '\\' }) + 1)..] : value));
+            said.Add(value is null ? flag : flag + " " + (value.Contains('/') || value.Contains('\\') ? "<path>/" + NameOf(value) : value));
         }
         said.Sort(StringComparer.Ordinal);
         return said;
     }
+
+    /// <summary>A path's file name, cut at its last `/` or `\\` whatever the host: a path written for another system is still a path.</summary>
+    private static string NameOf(string path) => path[(path.LastIndexOfAny(new[] { '/', '\\' }) + 1)..];
 
     /// <summary>A switch that traces, reports, dumps or checks, or sets how many threads do the same work: the image is the same with it or without.</summary>
     private static bool Diagnostic(string flag)

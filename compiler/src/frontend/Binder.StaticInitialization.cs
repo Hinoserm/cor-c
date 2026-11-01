@@ -112,15 +112,24 @@ public sealed partial class Binder
     /// one is read. "init" where it does not (a recipe the link may make, a
     /// constant), "code" where it does; null where it may be a table laid
     /// down as data (an array made), whose tokens decide (StaticArrayOf,
-    /// ZeroedArrayOf). By its syntax alone, as the binder judges it.
+    /// ZeroedArrayOf). By its syntax alone, as the binder judges it. Of one
+    /// declaration's declarators (`static int a = 1, b = F();`), each a
+    /// static of its own to the binder, the class that ends the run if any
+    /// does.
     /// </summary>
-    internal static string? InitialiserClass(MemberDecl member)
+    internal static string? InitialiserClass(IEnumerable<MemberDecl> declarators)
     {
-        Expr? initial = member switch { FieldDecl { Init: { } i } => i, PropertyDecl { Init: { } i } => i, _ => null };
-        if (initial is null) return null;
-        if (member is FieldDecl && initial is NewExpr { } made && (made.Elements is not null || made.ArraySize is not null || made.Utf8Bytes is not null)) return null;
-        bool candidate = member is FieldDecl { Attributes.Count: 0 } field && field.Type.PointerDepth == 0;
-        return candidate && PreinitShape(initial) || PreinitConstant(initial) ? "init" : "code";
+        string? said = null;
+        foreach (MemberDecl member in declarators)
+        {
+            Expr? initial = member switch { FieldDecl { Init: { } i } => i, PropertyDecl { Init: { } i } => i, _ => null };
+            if (initial is null) continue;
+            if (member is FieldDecl && initial is NewExpr { } made && (made.Elements is not null || made.ArraySize is not null || made.Utf8Bytes is not null)) return null;
+            bool candidate = member is FieldDecl { Attributes.Count: 0 } field && field.Type.PointerDepth == 0;
+            if (!(candidate && PreinitShape(initial) || PreinitConstant(initial))) said = "code";
+            else said ??= "init";
+        }
+        return said;
     }
 
     /// <summary>The most bytes of elements a zeroed static array is laid down with (ZeroedArrayOf).</summary>

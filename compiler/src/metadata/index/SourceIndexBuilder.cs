@@ -357,6 +357,37 @@ public static class SourceIndexBuilder
                         ? parser.MemberSpans.Where(m => m.From >= type.SourceFrom && m.To <= type.SourceTo
                             && !nested.Any(n => m.From >= n.SourceFrom && m.To <= n.SourceTo)).OrderBy(m => m.From).ToArray()
                         : Array.Empty<(int From, int To, MemberDecl Member)>();
+                    // EACH SPAN'S DECLARATORS: `static int a = 1, b = F();` is one
+                    // span, its b a member of its own with none (the parser's
+                    // More), found by where it is written. A span is an
+                    // initialised static where any of them is one.
+                    List<MemberDecl>[] declarators = new List<MemberDecl>[members.Length];
+                    PrivateMember[] spanHiding = new PrivateMember[members.Length];
+                    for (int i = 0; i < members.Length; i++)
+                    {
+                        declarators[i] = new List<MemberDecl> { members[i].Member };
+                        spanHiding[i] = Hiding(members[i].Member);
+                    }
+                    if (byMember && members.Length > 0)
+                    {
+                        HashSet<MemberDecl> spannedOnce = new(members.Select(member => member.Member), ReferenceEqualityComparer.Instance);
+                        Dictionary<(int Line, int Col), int>? where = null;
+                        foreach (MemberDecl extra in type.Members)
+                        {
+                            if (extra is not FieldDecl || spannedOnce.Contains(extra)) continue;
+                            if (where is null)
+                            {
+                                where = new();
+                                foreach (Token placed in tokens)
+                                    if (placed.Pos >= type.SourceFrom && placed.Pos < type.SourceTo) where.TryAdd((placed.Line, placed.Col), placed.Pos);
+                            }
+                            if (!where.TryGetValue((extra.Line, extra.Col), out int pos)) continue;
+                            int holder = Array.FindIndex(members, member => pos >= member.From && pos < member.To);
+                            if (holder < 0) continue;
+                            declarators[holder].Add(extra);
+                            if (spanHiding[holder] == PrivateMember.Left && Hiding(extra) == PrivateMember.Initialised) spanHiding[holder] = PrivateMember.Initialised;
+                        }
+                    }
                     int memberIndex = 0, braces = 0, brackets = 0;
                     // The last private static marked in the shape, and where it
                     // ended: one like it right after says nothing more.
@@ -399,7 +430,7 @@ public static class SourceIndexBuilder
                         while (memberIndex < members.Length && token.Pos >= members[memberIndex].To)
                         { memberIndex++; markedCtor = false; braces = 0; brackets = 0; squares.Clear(); }
                         PrivateMember ownHiding = memberIndex < members.Length && token.Pos >= members[memberIndex].From
-                            ? Hiding(members[memberIndex].Member) : PrivateMember.Shown;
+                            ? spanHiding[memberIndex] : PrivateMember.Shown;
                         hiding = filtered ? ownHiding : PrivateMember.Shown;
                         routed = null;
                         if (byMember && !nested.Any(n => token.Pos >= n.SourceFrom && token.Pos < n.SourceTo))
@@ -511,7 +542,7 @@ public static class SourceIndexBuilder
                     // code (Binder.ZeroedArrayOf).
                     void InitialiserToShape(Token token, int tokenIndex)
                     {
-                        if (Binder.InitialiserClass(members[memberIndex].Member) is string mark)
+                        if (Binder.InitialiserClass(declarators[memberIndex]) is string mark)
                         {
                             if (markedMember == memberIndex) return;
                             markedMember = memberIndex;
@@ -530,7 +561,8 @@ public static class SourceIndexBuilder
                             else if (token.Kind == Tok.LBracket)
                             {
                                 Tok before = tokenIndex > 0 ? tokens[tokenIndex - 1].Kind : Tok.End;
-                                bool sized = before is Tok.Ident or Tok.RBracket or Tok.RParen or Tok.Gt || before.ToString().StartsWith("Kw", StringComparison.Ordinal);
+                                // `?` too: `new string?[8000]`'s length is one.
+                                bool sized = before is Tok.Ident or Tok.RBracket or Tok.RParen or Tok.Gt or Tok.Question || before.ToString().StartsWith("Kw", StringComparison.Ordinal);
                                 squares.Push(sized);
                                 if (sized) brackets++; else braces++;
                             }

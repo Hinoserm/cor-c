@@ -316,7 +316,8 @@ calling convention or remove required memory ordering.
 
 A project build compiles a unit again only when something it compiled against
 changed. Each object has a stamp beside it (`.o.deps.stamp`: the source's hash
-and the options') and a receipt (`.o.deps`): every declaration key the unit
+and the options'; `corc project` keeps the same in its `.state`) and a receipt
+(`.o.deps`): every declaration key the unit
 loaded with what of it the unit depends on, and that part's fingerprint (see
 DECLARATION-INDEX.md, Member receipts). The build log says why each unit was
 compiled again: "member B of Util changed", "shape of Ide changed", "text of

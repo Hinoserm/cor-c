@@ -5,7 +5,10 @@
 # Util has a generic method: UseG, which calls it and so copies its body,
 # depends on the whole file; the others still by member. Util.K names
 # Other.X, which names Util.R: UseK, asking for K alone, is compiled again
-# for R.
+# for R. UseX calls an extension method of another class, which once read
+# every static class in reach whole, Util among them. Util's private statics
+# are in its shape by class: one more of a class beside another of it changes
+# nothing; an array's length, `?` and all, changes it.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
@@ -22,7 +25,7 @@ cat > "$work/Receipts.csproj" <<'XML'
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <StartupObject>Program</StartupObject>
   </PropertyGroup>
-  <ItemGroup><Compile Include="Program.cs" /><Compile Include="Util.cs" /><Compile Include="UseA.cs" /><Compile Include="UseB.cs" /><Compile Include="UseG.cs" /><Compile Include="Other.cs" /><Compile Include="UseK.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="Program.cs" /><Compile Include="Util.cs" /><Compile Include="UseA.cs" /><Compile Include="UseB.cs" /><Compile Include="UseG.cs" /><Compile Include="Other.cs" /><Compile Include="UseK.cs" /><Compile Include="Ext.cs" /><Compile Include="UseX.cs" /></ItemGroup>
 </Project>
 XML
 cat > "$work/Util.cs" <<'CS'
@@ -36,6 +39,20 @@ static class Util
     public static T First<T>(T a, T b) => a;
     public const int R = 5;
     public const int K = Other.X + 1;
+    private static object _o = new object();
+    private static string?[] _s = new string?[8000];
+}
+CS
+cat > "$work/Ext.cs" <<'CS'
+static class Ext
+{
+    public static int Twice(this int x) => x * 2;
+}
+CS
+cat > "$work/UseX.cs" <<'CS'
+static class UseX
+{
+    public static int Go() => Util.A() - 1 + 0.Twice();
 }
 CS
 cat > "$work/Other.cs" <<'CS'
@@ -71,7 +88,7 @@ CS
 cat > "$work/Program.cs" <<'CS'
 static class Program
 {
-    static int Main() => UseA.Go() * 10 + UseB.Go() + UseG.Go() + UseK.Go();
+    static int Main() => UseA.Go() * 10 + UseB.Go() + UseG.Go() + UseK.Go() + UseX.Go();
 }
 CS
 program="$work/bin/cor-c/Release/net10.0/Receipts"
@@ -81,12 +98,12 @@ test "$(answer "$program")" = 15
 # A member more in Util: Util, and UseG, which copied a body of it.
 sed -i 's/    public const int C = 3;/    public const int C = 3;\n    public static int D() => 4;/' "$work/Util.cs"
 run_build "$work" > "$work/added.log" 2>&1
-grep -q '2/7 source units rebuilt' "$work/added.log"
+grep -q '2/9 source units rebuilt' "$work/added.log"
 grep -q 'Util.cs unit-allocated=[0-9]* rebuilt: source changed$' "$work/added.log"
 # B's signature: UseB, which calls it, and not UseA, which does not.
 sed -i 's/    public static int B() => 2;/    public static int B(int k = 1) => 2 + k;/' "$work/Util.cs"
 run_build "$work" > "$work/signature.log" 2>&1
-grep -q '3/7 source units rebuilt' "$work/signature.log"
+grep -q '3/9 source units rebuilt' "$work/signature.log"
 grep -q 'UseB.cs unit-allocated=[0-9]* rebuilt: member B of Util changed$' "$work/signature.log"
 test "$(answer "$program")" = 16
 # A SECOND NAME OF ONE DECLARATION: Q, written after P in one line (one text, both names), is UseB's
@@ -95,7 +112,7 @@ sed -i 's/public const int P = 5, Q = 6;/public const int P = 5, Q = 7;/' "$work
 run_build "$work" > "$work/declarator.log" 2>&1
 grep -qE 'UseB.cs unit-allocated=[0-9]* rebuilt: member [PQ] of Util changed$' "$work/declarator.log"
 test "$(answer "$program")" = 17
-grep -q '3/7 source units rebuilt' "$work/declarator.log"
+grep -q '3/9 source units rebuilt' "$work/declarator.log"
 # The generic method's body: UseG, which copied it, from the file's text; the
 # units that read Util and not that body, from its shape, which holds what the
 # template bodies name (SourceDeclaration.TemplateHash).
@@ -117,9 +134,20 @@ sed -i 's/public const int R = 5;/public const int R = 6;/' "$work/Util.cs"
 run_build "$work" > "$work/chain.log" 2>&1
 grep -q 'UseK.cs unit-allocated=[0-9]* rebuilt' "$work/chain.log"
 test "$(answer "$program")" = 30
+# A PRIVATE STATIC MORE BESIDE ONE OF ITS CLASS: Util, and UseG, which copied
+# a body of it; no unit that reads Util by member.
+sed -i 's/    private static object _o = new object();/    private static object _o = new object();\n    private static object _p = new object();/' "$work/Util.cs"
+run_build "$work" > "$work/private.log" 2>&1
+grep -q '2/9 source units rebuilt' "$work/private.log"
+# AN ARRAY'S LENGTH: 8000 strings are a zeroed table, 9000 code, and every
+# unit touching Util reads which.
+sed -i 's/new string?\[8000\]/new string?[9000]/' "$work/Util.cs"
+run_build "$work" > "$work/length.log" 2>&1
+grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/length.log"
+test "$(answer "$program")" = 30
 # The tree copied elsewhere, times and all: nothing compiled again.
 cp -a "$work" "$work-copy"
 run_build "$work-copy" > "$work-copy/copied.log" 2>&1
-grep -q '0/7 source units rebuilt, 0/[0-9]* class library units' "$work-copy/copied.log"
+grep -q '0/9 source units rebuilt, 0/[0-9]* class library units' "$work-copy/copied.log"
 test "$(answer "$work-copy/bin/cor-c/Release/net10.0/Receipts")" = 30
 echo "PASS a member added rebuilds its own unit, a signature its callers', a copied tree nothing: $work"
