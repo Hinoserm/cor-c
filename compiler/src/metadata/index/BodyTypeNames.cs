@@ -45,8 +45,16 @@ public static class BodyTypeNames
     /// With a qualifier callback a generic type on the left of a member
     /// access, `Pool&lt;Node&gt;.Shared`, also comes to <paramref name="found"/>,
     /// as a reference made for the purpose rather than a node of the tree.
+    ///
+    /// AND FOR WHAT GENERIC CODE NAMES (Binder.GenericNames): every member
+    /// access to <paramref name="access"/>, every bare name to
+    /// <paramref name="bare"/>, every type made with `new` to
+    /// <paramref name="made"/>; only the members <paramref name="members"/>
+    /// takes, and the declaration's own bases and constraints only where it
+    /// takes them all.
     /// </summary>
-    public static void Walk(TypeDecl declaration, Action<TypeRef> found, Action<string>? qualifier = null)
+    public static void Walk(TypeDecl declaration, Action<TypeRef> found, Action<string>? qualifier = null,
+        Action<MemberExpr>? access = null, Action<NameExpr>? bare = null, Action<TypeRef>? made = null, Func<MemberDecl, bool>? members = null)
     {
         void Type(TypeRef? reference)
         {
@@ -99,6 +107,7 @@ public static class BodyTypeNames
                     Expression(e.Body); Statement(e.BlockBody);
                     return;
                 case MemberExpr e:
+                    access?.Invoke(e);
                     if (qualifier is not null)
                     {
                         if (e.Target is NameExpr name)
@@ -128,8 +137,9 @@ public static class BodyTypeNames
                     }
                     Expression(e.Target); Types(e.TypeArgs);
                     return;
-                case NameExpr e: Types(e.TypeArgs); return;
+                case NameExpr e: bare?.Invoke(e); Types(e.TypeArgs); return;
                 case NewExpr e:
+                    made?.Invoke(e.Type);
                     Type(e.Type);
                     foreach (Expr argument in e.Args) Expression(argument);
                     Expression(e.ArraySize);
@@ -236,10 +246,13 @@ public static class BodyTypeNames
             ? Spelt(member.Target) + "." + member.Name
             : ((NameExpr)expression).Name;
 
-        Types(declaration.Bases);
-        Types(declaration.TemplateArgs);
-        foreach (Expr argument in declaration.BaseArgs) Expression(argument);
-        foreach (TypeParam parameter in declaration.TypeParams) Types(parameter.Constraints);
+        if (members is null)
+        {
+            Types(declaration.Bases);
+            Types(declaration.TemplateArgs);
+            foreach (Expr argument in declaration.BaseArgs) Expression(argument);
+            foreach (TypeParam parameter in declaration.TypeParams) Types(parameter.Constraints);
+        }
         // AN INITIALISER IS BOUND WHERE IT IS COMPILED: in the unit that owns
         // the declaration, and in every unit that specialises a generic one.
         // Another unit's part of an ordinary type is only its declaration
@@ -250,6 +263,7 @@ public static class BodyTypeNames
         bool initialisers = !declaration.Elsewhere || declaration.TypeParams.Count > 0;
         foreach (MemberDecl member in declaration.Members)
         {
+            if (members is not null && !members(member)) continue;
             switch (member)
             {
                 case FieldDecl field:

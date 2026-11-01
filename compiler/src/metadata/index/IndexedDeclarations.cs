@@ -550,7 +550,7 @@ public sealed class IndexedDeclarations : IDisposable
         "TypeInitializationException",
         // What `+=`, `-=` and `==` on delegates become, under a name no
         // program writes (Binder.DelegatesHelper).
-        "__Delegates",
+        CompilerAbi.Delegates,
     };
 
     public void AddHeaders(CompilationUnit unit)

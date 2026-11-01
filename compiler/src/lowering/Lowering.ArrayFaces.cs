@@ -215,7 +215,7 @@ public sealed partial class Lowering
         // THE NON-GENERIC ONES, System.Array's: an element in and out as an
         // object -- boxed by its own type, so each element type has its own
         // read and write, every reference sharing one -- and the rest
-        // Array's own (Core.cor, Array.Face*) over them.
+        // the runtime's (runtime.cor, Runtime.ArrayFace*) over them.
         (Type exact, string exactKey) = ReferenceElements(element) || element.ParamName is not null ? (Type.Any, "ref") : (element, key);
         Fill("ICollection", 0, member => member switch
         {
@@ -251,12 +251,11 @@ public sealed partial class Lowering
     private string ArraySelf()
         => ArrayRoutine("__array_self", Type.Any, Array.Empty<Type>(), (f, self, args, buffer) => _e.Ret(R(self)));
 
-    /// <summary>One of System.Array's own (Core.cor, Array.Face*), called with the array and the member's arguments.</summary>
+    /// <summary>One of the runtime's array statics (runtime.cor, Runtime.ArrayFace*), called with the array and the member's arguments.</summary>
     private string ArrayOfLibrary(string name, string method, Type returns, params Type[] parameters)
         => ArrayRoutine(name, returns, parameters, (f, self, args, buffer) =>
         {
-            if (_b.Types.TryGetValue("Array", out TypeSymbol? array)
-                && array.FindMethods(method).FirstOrDefault(m => m.Static && m.Params.Count == parameters.Length + 1) is MethodSymbol answer)
+            if (RuntimeMethod("Array" + method, parameters.Length + 1) is MethodSymbol answer)
             {
                 Require(answer);
                 Operand[] passed = new Operand[parameters.Length + 1];
@@ -266,7 +265,7 @@ public sealed partial class Lowering
                 _e.Ret(result is null ? null : R(result));
                 return;
             }
-            Fail(ArrayAt(name), $"System.Array has no {method} for an array's {name}");
+            Fail(ArrayAt(name), $"{RuntimeType} has no Array{method} for an array's {name}");
             _e.Ret(returns.Prim == Prim.Void && returns.Symbol is null ? null : Imm(0, IrTypes.Of(returns)));
         });
 
@@ -357,18 +356,17 @@ public sealed partial class Lowering
             _ => null,
         };
 
-    /// <summary>One of System.Array's own statics (Core.cor) called from an array's routine: its result.</summary>
+    /// <summary>One of the runtime's array statics (Runtime.ArrayFace*, runtime.cor) called from an array's routine: its result.</summary>
     private VReg CallArrayLibrary(string method, Type returns, string routine, params VReg[] args)
     {
-        if (_b.Types.TryGetValue("Array", out TypeSymbol? array)
-            && array.FindMethods(method).FirstOrDefault(m => m.Static && m.Params.Count == args.Length) is MethodSymbol answer)
+        if (RuntimeMethod("Array" + method, args.Length) is MethodSymbol answer)
         {
             Require(answer);
             Operand[] passed = new Operand[args.Length];
             for (int i = 0; i < args.Length; i++) passed[i] = R(AsParam(args[i], answer.Params[i].Type));
             return _e.Call(CallLabel(answer), IrTypes.Of(returns), passed)!;
         }
-        return Fail(ArrayAt(routine), $"System.Array has no {method} for an array's {routine}");
+        return Fail(ArrayAt(routine), $"{RuntimeType} has no Array{method} for an array's {routine}");
     }
 
     /// <summary>An element's default: a zeroed struct, else zero of its machine type.</summary>
@@ -384,7 +382,7 @@ public sealed partial class Lowering
     /// ICollection.CopyTo(Array, int): into an array of the same type as
     /// ICollection&lt;T&gt;'s CopyTo copies (ArrayCopyTo); into any other
     /// element by element through each one's GetValue and SetValue, as
-    /// System.Array's CopyTo has it (Array.FaceCopyTo).
+    /// System.Array's CopyTo has it (Runtime.ArrayFaceCopyTo).
     /// </summary>
     private string ArrayCopyToAny(Type code, string key)
     {

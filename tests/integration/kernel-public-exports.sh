@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # A KERNEL'S EXPORTS ARE ITS PUBLIC SURFACE (--exports, PublicApi): a
 # public method of a public type is exported and kept out of line though
-# nothing in the kernel calls it; an internal type's members and an internal
-# member of a public type are not, and a module importing one is refused,
-# naming it.
+# nothing in the kernel calls it -- Unused.Never, in the kernel's entry unit,
+# whose own sweep keeps it (Module.ExportsSurface); an internal type's members
+# and an internal member of a public type are not, and a module importing one
+# is refused, naming it. What the kernel's generic code names is exported
+# too, for a module's copy of it.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
@@ -26,6 +28,15 @@ sed -i 's/        Host.Start(32 \* 1024 \* 1024);/&\n        Log.Lines += new Cr
 sed -i 's/Log.Write("sb16 at " + port + ", " + Sb16Module.Greeting);/Log.Write("sb16 at " + port + ", " + Sb16Module.Greeting + new Kernel.Packet().Size);/' "$work/Sb16.cor"
 grep -q 'new Kernel.Packet().Size' "$work/Sb16.cor" || fail "the module's use of Packet was not written"
 sed -i 's/        Host.Start(32 \* 1024 \* 1024);/&\n        Log.Lines += Tick.Hidden(0) + Secret.Value() + Vault.Inner.Value() - 17;/' "$work/Kernel.cor"
+# GENERIC CODE THE KERNEL NEVER INSTANTIATES, naming a private method, a
+# private static and an internal type's member: the module's copy of it for
+# its own struct calls them, the kernel's code as it is, and the kernel
+# exports them for it (Binder.GenericNames, `^`) -- and nothing else of them.
+printf '\npublic static class Bag\n{\n    static int _seen;\n    static int Bump() => ++_seen;\n    public static T Pick<T>(T a, T b) => Bump() %% 2 == 1 && Rules.First(_seen) ? a : b;\n}\n' >> "$work/Kernel.cor"
+printf '\nstatic class Rules\n{\n    public static bool First(int n) => n > 0;\n    public static bool Never(int n) => n < 0;\n}\n' >> "$work/Kernel.cor"
+printf '\nstruct Spot\n{\n    public int X;\n}\n' >> "$work/Sb16.cor"
+sed -i 's/        _base = port;/&\n        Spot spot = Bag.Pick(new Spot { X = 1 }, new Spot { X = 2 });\n        _base += spot.X - 1;/' "$work/Sb16.cor"
+grep -q 'Bag.Pick(new Spot' "$work/Sb16.cor" || fail "the module's generic call was not written"
 grep -q 'internal static int Hidden' "$work/Kernel.cor" || fail "the internal member was not written"
 grep -q 'Tick.Hidden(0)' "$work/Kernel.cor" || fail "the kernel's call was not written"
 k=$work/k
@@ -60,10 +71,20 @@ exported 's_Kernel\$002eCounter_StaticReady\$_' || fail "a public type's ready w
 exported 't_Kernel\$002ePacket' || fail "a public class's descriptor is not exported, though only a module makes one"
 if exported 't_Kernel\$002eCrate'; then fail "an internal class's descriptor is exported"; fi
 if exported 'm_Kernel\$Counter_Make_'; then fail "a private method is exported"; fi
-# The module, which imports public members alone: linked.
+exported 'm_Kernel\$Bag_Bump_' || fail "a private method the kernel's generic code names is not exported for a module's copy"
+exported 's_Kernel\$002eBag__seen_' || fail "a private static the kernel's generic code names is not exported for a module's copy"
+exported 'm_Kernel\$Rules_First_' || fail "an internal type's member the kernel's generic code names is not exported"
+if exported 'm_Kernel\$Rules_Never_'; then fail "an internal type's member no generic code names is exported"; fi
+if exported 'm_Kernel\$Bag_Pick'; then fail "the kernel exported a copy of generic code it never made"; fi
+# The module, which imports public members and what its copy of Bag.Pick
+# calls: linked, and its copy its own.
 "$corc" compile --kernel "$k/kernel" --decl-index "$k/kernel.idx" --assembly Kernel --ring 0 "$work/Sb16.cor" --obj -o "$work/sb16.o" \
     2> "$work/sb16.log" || { cat "$work/sb16.log"; fail "module object"; }
 "$corc" link "$work/sb16.o" --kernel "$k/kernel" -o "$work/sb16.ko" 2> "$work/module.log" || { cat "$work/module.log"; fail "module link"; }
+readelf --dyn-syms -W "$work/sb16.ko" | awk '$7 == "UND" { print $8 }' > "$work/sb16.imports"
+grep -q '^m_Kernel\$Bag_Bump_' "$work/sb16.imports" || { cat "$work/sb16.imports"; fail "the module's copy of Bag.Pick does not call the kernel's Bag.Bump"; }
+grep -q '^s_Kernel\$002eBag__seen_' "$work/sb16.imports" || { cat "$work/sb16.imports"; fail "the module's copy of Bag.Pick does not read the kernel's Bag._seen"; }
+readelf -sW "$work/sb16.ko" | awk '$7 != "UND" { print $8 }' | grep -q '^m_Kernel\$Bag_Pick' || fail "the module has no copy of Bag.Pick of its own"
 # A module importing the internal member: refused, the name said.
 sed 's/Tick.Twice(port) - Tick.Twice(port)/Tick.Twice(port) - Tick.Twice(port) + Tick.Hidden(port) - Tick.Hidden(port)/' "$work/Sb16.cor" > "$work/Sb16Hidden.cor"
 grep -q 'Tick.Hidden(port)' "$work/Sb16Hidden.cor" || fail "the module's internal call was not written"

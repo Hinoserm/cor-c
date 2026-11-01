@@ -52,7 +52,7 @@ public sealed class ConstantSpecialize : IModulePass
             if (call.Op != Opcode.Call || call.Callee is null
                 || !originals.TryGetValue(call.Callee, out Function? target)
                 || recursive.Contains(target) || keeping.Contains(target.Name) || !Inline.Inlineable(target, addressed)
-                || (module.LibraryCodeIsShared && target.FromLibrary)
+                || (module.LibraryCodeIsShared && target.FromLibrary) || module.GoesElsewhere(target)
                 || call.Operands.Count != target.Params.Count
                 || target.Blocks.Sum(b => b.Instrs.Count) > BodyLimit
                 || !Inline.ConstantControlsBranch(target, call)) continue;

@@ -2,8 +2,23 @@ using Corsac.Lang.Ir;
 
 namespace Corsac.Lang.Lower;
 
+using Block = Corsac.Lang.Ir.Block;
+
 public sealed partial class Lowering
 {
+    /// <summary>
+    /// The class library compiled into one of the several images it ships as
+    /// (--shared, and not freestanding: libcorsacrt.so and the libSystem.*.so
+    /// above it), every image of it a part of ONE assembly to C#. What its
+    /// `internal` means is the assembly's, so another image of it naming an
+    /// internal member of this one -- System.Runtime.Numerics formatting
+    /// through Core's NumberFormat -- is C#, and this image exports it
+    /// (RecordPublicApi). A program is another assembly, and names none of
+    /// them (Binder: CS0122). Not a kernel's: the class library is a part of
+    /// the kernel's one image there, and its internals the kernel's own.
+    /// </summary>
+    public static bool SplitLibrary { get; set; }
+
     /// <summary>
     /// WHAT THIS UNIT OFFERS OTHER IMAGES (PublicApi, `.corsac.public`): of
     /// each method and static it defines, whether C# lets another assembly
@@ -19,6 +34,14 @@ public sealed partial class Lowering
     /// runs inside its caller's state ($inside) with the method. A static is
     /// offered where the link keeps it (OptionalSymbols): the link may lay one
     /// down or fold it. Every generic instantiation is left as it was.
+    ///
+    /// AND WHAT C# LETS ANOTHER IMAGE NAME THOUGH NO OTHER ASSEMBLY CAN, all
+    /// optional (OptionalSymbols):
+    ///   the compiler's own contract with the library (CompilerAbi): what a
+    ///     program's or a module's compiled code calls of it, though its
+    ///     source never named it;
+    ///   the class library's assembly-wide members, where it is split over
+    ///     several images (SplitLibrary).
     /// </summary>
     private void RecordPublicApi()
     {
@@ -26,7 +49,13 @@ public sealed partial class Lowering
         {
             if (t.MembersPending || t.Decl is not TypeDecl d || d.LocalOnly || d.Specialised || d.Canon is not null || d.TypeParams.Count > 0)
                 continue;
-            bool open = Offered(d);
+            // Its public surface (open), and where more of it is another
+            // image's to call: the compiler's contract (abi), or the split
+            // class library's assembly (wide), each to what the rest of its
+            // assembly sees.
+            bool abi = CompilerAbi.Is(d);
+            bool open = Offered(d) || abi;
+            bool wide = abi || SplitLibrary && Binder.ClassLibrarySide(d) && WithinAssembly(d);
             // ITS MEMBERS READ IN ITS OWN SCOPE (MemberWatch): every type of the
             // unit is walked, and an imported one -- the kernel's Arch, in
             // every unit -- lists nothing here: none of its methods is emitted
@@ -42,8 +71,11 @@ public sealed partial class Lowering
                 // unit's is this unit's code (Elsewhere, OwnedImplementation).
                 if (!ReferenceEquals(m.Owner, t) || !_required.Contains(m) || !Emits(m) || m.Decl is not MethodDecl method || method.LocalCopy)
                     continue;
-                bool offered = open && (method.Name == "StaticInit$" || Binder.ShownOutside(d, method));
-                List<string> into = offered ? _m.PublicSymbols : _m.WithheldSymbols;
+                bool startup = method.Name == "StaticInit$";
+                bool offered = open && (startup || Binder.ShownOutside(d, method));
+                List<string> into = offered ? _m.PublicSymbols
+                    : wide && (startup || Binder.SeenInAssembly(d, method)) ? _m.OptionalSymbols
+                    : _m.WithheldSymbols;
                 into.Add(CallLabel(m));
                 if (CopiesInside(m)) into.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
             }
@@ -53,7 +85,9 @@ public sealed partial class Lowering
                 // unit's type's is that unit's. A [ThreadStatic] is reached
                 // through its number (ThreadStaticIndex), never its own symbol.
                 if (!f.Static || !_statics.Contains(f) || d.Elsewhere || FieldDeclOf(f) is FieldDecl declared && Binder.IsThreadStatic(declared)) continue;
-                bool offered = open && (f.Name == BindResult.ReadyField || FieldDeclOf(f) is MemberDecl field && Binder.ShownOutside(d, field));
+                MemberDecl? field = FieldDeclOf(f);
+                bool offered = f.Name == BindResult.ReadyField ? open || wide
+                    : field is not null && (open && Binder.ShownOutside(d, field) || wide && Binder.SeenInAssembly(d, field));
                 (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(StaticSymbol(f));
             }
             // ITS DESCRIPTOR, where this unit made it: a module making one of
@@ -72,8 +106,82 @@ public sealed partial class Lowering
                 _ => _descriptors.GetValueOrDefault(t),
             };
             if (descriptor is not null && !d.Elsewhere)
-                (open ? _m.OptionalSymbols : t.Kind == TypeKind.Interface ? null : _m.WithheldSymbols)?.Add(descriptor);
+                (open || wide ? _m.OptionalSymbols : t.Kind == TypeKind.Interface ? null : _m.WithheldSymbols)?.Add(descriptor);
         }
+    }
+
+    /// <summary>
+    /// Generic code: a copy of a generic method (MemberDecl.LocalCopy), a
+    /// member of a generic type's copy (Specialised), or of a lambda's closure
+    /// made in either (TypeDecl.InGenericCode). Every image compiles its own
+    /// of it for its own type arguments.
+    /// </summary>
+    private static bool GenericCode(MethodSymbol m)
+        => m.Decl is MemberDecl { LocalCopy: true } || m.Owner.Decl is { Specialised: true } or { InGenericCode: true };
+
+    /// <summary>
+    /// WHAT THIS UNIT'S GENERIC CODE NAMES (ReachedSymbols, `^`), in an
+    /// image that exports: every symbol a body lowered from generic code
+    /// calls or takes, and every one a copy's own data names (its
+    /// descriptor's table). Another image's copy of the same code for its own
+    /// type arguments -- List&lt;T&gt; for a program's struct -- calls what
+    /// this one calls, the library's code as it is, which C# lets it name
+    /// whatever its accessibility; the image linked of this unit exports
+    /// what of it a unit withholds (PublicApi). Exact for each body this unit
+    /// lowered: a canonical copy's, every instantiation and generic method's
+    /// copy it made; and what its generic code names as written, of every
+    /// template, a copy of it made here or not (Binder.GenericNames). A
+    /// copy's own definitions are its own to every image.
+    /// </summary>
+    private void RecordReached()
+    {
+        HashSet<string> copies = new(StringComparer.Ordinal), named = new(StringComparer.Ordinal);
+        foreach (Function f in _m.Functions)
+        {
+            if (!f.GenericCode && !f.Coalescible) continue;
+            copies.Add(f.Name);
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Callee is { } callee) named.Add(callee);
+                    foreach (Operand o in i.Operands)
+                        if (o is SymOperand symbol) named.Add(symbol.Name);
+                }
+        }
+        foreach (DataItem d in _m.Data)
+        {
+            if (!d.Coalescible) continue;
+            copies.Add(d.Name);
+            foreach (DataReloc r in d.Relocs) named.Add(r.Symbol);
+        }
+        // AND WHAT THE UNIT'S GENERIC CODE NAMES AS WRITTEN (Binder.
+        // GenericNames): of a template no copy here was made of too. A
+        // method by the label its callers call it by (and its copy run inside
+        // a packed caller); a static by its symbol, with its type's startup
+        // (its ready word and StaticInit$), which a copy touching the static
+        // runs; a type by its descriptor, or its box's.
+        foreach (MethodSymbol m in _b.GenericNamedMethods)
+        {
+            named.Add(CallLabel(m));
+            if (CopiesInside(m)) named.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
+        }
+        foreach (FieldSymbol f in _b.GenericNamedFields)
+        {
+            named.Add(StaticSymbol(f));
+            if (f.Owner.FindField(BindResult.ReadyField) is { } ready) named.Add(StaticSymbol(ready));
+            foreach (MethodSymbol init in f.Owner.FindMethods("StaticInit$")) named.Add(CallLabel(init));
+        }
+        foreach (TypeSymbol t in _b.GenericNamedTypes)
+        {
+            if (t.Kind == TypeKind.Interface) continue;
+            named.Add(t.Kind is TypeKind.Struct or TypeKind.Enum
+                ? "b_" + Safe(BoxKey(Type.Plain(t, t.Kind == TypeKind.Enum ? t.EnumUnderlying : Prim.Void)))
+                : "t_" + TypeKey(t));
+        }
+        named.ExceptWith(copies);
+        named.ExceptWith(_m.PublicSymbols);
+        named.ExceptWith(_m.OptionalSymbols);
+        _m.ReachedSymbols.AddRange(named.OrderBy(name => name, StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -87,6 +195,21 @@ public sealed partial class Lowering
         {
             if ((at.Mods & Mods.Public) == 0) return false;
             if (at.Outer is null || at.Outer == at.Namespace) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// A type the rest of its assembly can name: any at the top, and one
+    /// nested in it only where it and every type it is declared in say more
+    /// than private -- a nested type that says nothing is private, as C# has it.
+    /// </summary>
+    private bool WithinAssembly(TypeDecl d)
+    {
+        for (TypeDecl? at = d; at is not null; at = _b.Types.TryGetValue(at.Outer!, out TypeSymbol? holder) ? holder.Decl : null)
+        {
+            if (at.Outer is null || at.Outer == at.Namespace) return true;
+            if ((at.Mods & (Mods.Public | Mods.Internal | Mods.Protected)) == 0) return false;
         }
         return false;
     }

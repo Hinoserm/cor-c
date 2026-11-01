@@ -21,6 +21,16 @@ public sealed class Function
     public bool Coalescible { get; init; }
 
     /// <summary>
+    /// Lowered from generic code: a copy of a generic type's or method's,
+    /// its lambdas' and its state machines' (Lowering.GenericCode). What an
+    /// image compiles of its library's generics for its own type arguments;
+    /// what it names of the library the library exports for it
+    /// (Lowering.RecordReached), and it is never the library's private code
+    /// (Module.LibraryPrivate).
+    /// </summary>
+    public bool GenericCode { get; init; }
+
+    /// <summary>
     /// Whether this came out of the class library's sources rather than the
     /// program's. What a shared object may supply in this one's place: a
     /// program that declares a type of its own shadowing a library type

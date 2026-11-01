@@ -358,7 +358,40 @@ static (the link may lay one down or fold it) and a public type's descriptor,
 `private` its type's. The class library's no differently: what a program's or
 a module's compiled code calls of the runtime and the library is public.
 Generic instantiations are left as they were. There is no switch: an image's
-exports are its public surface.
+exports are its public surface, and what C# lets another image name beside it:
+
+- **What its generic code names** (`^`). Another image compiles its own copy
+  of a library's generic code for its own type arguments -- `List<T>` for a
+  program's struct -- and the copy calls what the code names, private and
+  internal alike, as the library's own code it is. Each unit lists what its
+  copies call (Lowering.RecordReached: every body it lowered from generic
+  code, exactly) and what its generic code names as written, of templates it
+  made no copy of too (Binder.GenericNames: `Type.Member`, a bare name
+  against the types around the code, `new Type(...)`, resolved in the code's
+  own scope). The link exports what of it a unit withholds, kept out of line
+  in a kernel. No attribute: C#'s generic code calls its assembly's
+  internals, and the compiler finds which.
+- **The compiler's contract with the library** (CompilerAbi): `__Delegates`,
+  `AsyncRuntime`, `CollectionExpressionBuilder`, `__Rectangular`,
+  `RuntimeType`, `SystemType`, which compiled code calls and tests for though
+  its source never named them, as it calls Runtime's public helpers. Kept from
+  C#'s sight, offered by the image that defines them.
+- **The class library's assembly, split over images** (Lowering.SplitLibrary).
+  libcorsacrt.so and the libSystem.*.so above it are one C# assembly, and
+  `internal` is the assembly's: what an image of it names of another's is
+  exported. A program is another assembly, and names none of it (CS0122).
+  Not in a kernel, where the class library is a part of one image.
+
+AND NO IMAGE CARRIES ITS LIBRARY'S PRIVATE CODE OR STATE. A program's or a
+module's compile reads the class library it links against, and gives away
+what the libraries export (Module.Provided); what is left of the library's
+is its own copy of it. The passes put no library body into code the image
+keeps when the body names what its library withholds (Inline.CrossesImage,
+ConstantSpecialize): called, it runs in its library with its own. What the
+library withholds that the image's own code or its copies still name is a
+refused compile, naming it (Driver.LibraryPrivateKept) -- a static there would
+be a second one of the library's, a second collector's state -- and the
+library's code nothing it keeps reaches is dropped.
 
 A kernel's link keeps every offered member out of line however the kernel's
 own callers inlined it -- a public method nothing in the kernel calls

@@ -294,7 +294,7 @@ public sealed partial class Lowering
         _f = new Function((TakesContext(m) ? BodyLabel(m) : Label(m)) + (_insideCopy ? "$inside" : fromC ? FromCBody : ""), ReturnIr(m))
         {
             SourceFile = _in, Line = decl.Line, Display = Display(m) + (_insideCopy ? " (inside)" : ""), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
-            Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true,
+            Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, GenericCode = GenericCode(m),
             // A body C's thunk calls is the thunk's alone: nothing else reaches it, past the way in (EmitFromCThunk).
             Exported = m.Owner.Decl?.LocalOnly != true && !fromC,
             // A TYPE'S INITIALISER BODY STAYS A ROUTINE OF ITS OWN: the link

@@ -4886,7 +4886,7 @@ public sealed class Parser
 
     private static TypeRef Rectangular(TypeRef element, int rank, int line, int col)
     {
-        TypeRef made = new() { Name = "__Rectangular" + rank, Line = line, Col = col };
+        TypeRef made = new() { Name = CompilerAbi.Rectangular + rank, Line = line, Col = col };
         made.Arguments.Add(element);
         return made;
     }
@@ -4938,7 +4938,7 @@ public sealed class Parser
         {
             Target = new MemberExpr
             {
-                Target = new NameExpr { Name = "__Rectangular", Line = at.Line, Col = at.Col },
+                Target = new NameExpr { Name = CompilerAbi.Rectangular, Line = at.Line, Col = at.Col },
                 Name = "Of" + rank, Line = at.Line, Col = at.Col,
             },
             Line = at.Line, Col = at.Col,

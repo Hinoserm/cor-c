@@ -453,6 +453,13 @@ public sealed class TypeDecl : Node
     /// </summary>
     public bool Specialised { get; set; }
 
+    /// <summary>
+    /// A lambda's closure made in generic code -- a copy's body (Specialised,
+    /// MemberDecl.LocalCopy), or another closure made there: its Invoke is the
+    /// generic code's, compiled wherever the copy is (Lowering.GenericCode).
+    /// </summary>
+    public bool InGenericCode { get; set; }
+
 
     /// <summary>
     /// The template this was made from, and with what.

@@ -125,6 +125,15 @@ public sealed partial class BindResult
     public Dictionary<Expr, Type> BoxedAs { get; } = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
+    /// What the unit's generic code names as written, of ordinary types
+    /// (Binder.GenericNames): the members and types a copy of it, made in
+    /// another image, calls and makes (Lowering.RecordReached).
+    /// </summary>
+    public HashSet<MethodSymbol> GenericNamedMethods { get; } = new(ReferenceEqualityComparer.Instance);
+    public HashSet<FieldSymbol> GenericNamedFields { get; } = new(ReferenceEqualityComparer.Instance);
+    public HashSet<TypeSymbol> GenericNamedTypes { get; } = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// The class each lambda became, and what it captured.
     ///
     /// The code generator makes one of these where the lambda was written: a

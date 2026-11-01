@@ -620,7 +620,7 @@ public sealed partial class Lowering
     /// is held as one (Runtime.TypeObject). Null for any other written type.
     /// </summary>
     private TypeSymbol? SystemTypeTested(TypeRef? written)
-        => written is { Name: "Type" or "System.Type", Args.Count: 0, ArrayRank: 0 } && _b.Types.TryGetValue("RuntimeType", out TypeSymbol? runtimeType)
+        => written is { Name: "Type" or "System.Type", Args.Count: 0, ArrayRank: 0 } && _b.Types.TryGetValue(CompilerAbi.TypeObject, out TypeSymbol? runtimeType)
             ? runtimeType : null;
 
     /// <summary>The Type a RuntimeType is, or null for null (Runtime.TypeOfObject).</summary>

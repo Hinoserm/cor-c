@@ -256,6 +256,53 @@ public sealed class Module
     public bool LibraryCodeIsShared { get; set; }
 
     /// <summary>
+    /// WHAT THE IMAGES THIS ONE IS LINKED AGAINST EXPORT -- its shared
+    /// libraries' (--link-shared), the kernel's (--kernel) -- known before the
+    /// passes. A library definition named here goes to them (Provided); every
+    /// other one the compile read and keeps is this image's own copy of it.
+    /// Null where nothing provides.
+    /// </summary>
+    public IReadOnlySet<string>? ProvidedElsewhere { get; set; }
+
+    /// <summary>Whether `f` is library code an image this one is linked against supplies: read here, given to it (Provided).</summary>
+    public bool GoesElsewhere(Function f)
+        => ProvidedElsewhere is { } provided && f.FromLibrary && f.Name != Entry && provided.Contains(f.Name);
+
+    /// <summary>
+    /// The compile is the class library's own -- one of its images, its
+    /// sources among this compile's -- whose code is its own wherever
+    /// another image provides the rest: none of it is read here to be given
+    /// away (LibraryPrivate).
+    /// </summary>
+    public bool CompilesLibrary { get; set; }
+
+    /// <summary>
+    /// THE LIBRARY'S OWN THAT NO IMAGE EXPORTS, of what this compile read of
+    /// the class library (SystemCode: written in its sources): a method's body
+    /// or a static of a library type, no copy of a generic (Coalescible,
+    /// Function.GenericCode), and nothing a provider exports. A module's own
+    /// code and a library's are not it, which their compiles mark FromLibrary. Kept here, a static is
+    /// a second one of the library's -- a second collector's state -- and a
+    /// body a second copy of code its library withholds, where its library's
+    /// fixes never reach. What the passes may not put into code this image
+    /// keeps (Inline.CrossesImage), and what the compile refuses to keep
+    /// (LibraryPrivateKept). Empty where nothing provides.
+    /// </summary>
+    public HashSet<string> LibraryPrivate()
+    {
+        HashSet<string> found = new(StringComparer.Ordinal);
+        if (ProvidedElsewhere is not { } provided || CompilesLibrary) return found;
+        foreach (Function f in Functions)
+            if (f.SystemCode && !f.Coalescible && !f.GenericCode && f.Name != Entry && !provided.Contains(f.Name)
+                && (f.Name.StartsWith("m_", StringComparison.Ordinal) || f.Name.StartsWith("mx_", StringComparison.Ordinal)))
+                found.Add(f.Name);
+        foreach (DataItem d in Data)
+            if (d.SystemCode && !d.Coalescible && !provided.Contains(d.Name) && d.Name.StartsWith("s_", StringComparison.Ordinal))
+                found.Add(d.Name);
+        return found;
+    }
+
+    /// <summary>
     /// The C libraries this module's [DllImport] methods call into, by the
     /// name the declaration gave. The object records them (.corsac.native)
     /// and the link makes the program a dynamic one that needs them.
@@ -275,17 +322,21 @@ public sealed class Module
     /// (.corsac.public), and the image linked of it -- a kernel, a shared
     /// library, a module -- exports the first, its public methods, kept out
     /// of line; exports the second -- statics and descriptors -- where it
-    /// keeps them; and withholds the third.
+    /// keeps them; and withholds the third -- but what the fourth names:
+    /// what the unit's copies of generic code call and name, which another
+    /// image's copy of the same code calls too (RecordReached).
     /// </summary>
     public List<string> PublicSymbols { get; } = new();
     public List<string> OptionalSymbols { get; } = new();
     public List<string> WithheldSymbols { get; } = new();
+    public List<string> ReachedSymbols { get; } = new();
 
     /// <summary>
-    /// Whether the unit is for an image that exports (a kernel's or a
-    /// module's, freestanding, or a shared library's): its public surface
-    /// then roots what its own sweep keeps (Inline.RemoveDeadFunctions). A
-    /// program's entry unit is not: its public methods nobody calls go.
+    /// Whether the unit is for an image that exports (Lowering.ExportingImage:
+    /// a shared library's, a kernel module's, a kernel's freestanding object):
+    /// its public surface then roots what its own sweep keeps (Inline.
+    /// RemoveDeadFunctions). A program's entry unit is not, flat or hosted:
+    /// its public methods nobody calls go.
     /// </summary>
     public bool ExportsSurface { get; set; }
 

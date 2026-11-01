@@ -267,23 +267,32 @@ public static class ObjectLinkCommand
         // and static out of line and exported, however the kernel's callers
         // inlined it -- the class library's public surface too, as a shared
         // library's is; the rest of the kernel's own pruned to what is
-        // reached, and withheld from the table below. What --keep names
-        // besides is kept too: the runtime's and the library's non-public
-        // code a module of the build calls.
+        // reached, and withheld from the table below. AND WHAT ITS GENERIC
+        // CODE CALLS (`^`): a module's copy of List<T> for its own struct calls
+        // what the kernel's List calls, kept and exported as the public
+        // surface is, wherever a unit of the kernel withholds it. What --keep
+        // names besides is kept too.
         HashSet<string> offered = new(StringComparer.Ordinal), optional = new(StringComparer.Ordinal), withheld = new(StringComparer.Ordinal);
         // A SHARED LIBRARY'S AND A MODULE'S THE SAME (shared): their exports
         // their public surface, the rest withheld from .dynsym (Dyn.Withheld).
         if (exports || shared)
         {
+            HashSet<string> reached = new(StringComparer.Ordinal);
             foreach (var input in inputs)
             {
-                List<string> on, maybe, off;
-                try { (on, maybe, off) = PublicApi.Read(input.Item2); }
+                List<string> on, maybe, off, copies;
+                try { (on, maybe, off, copies) = PublicApi.Read(input.Item2); }
                 catch (ElfFormatException error) { return Fail(input.Item1 + ": " + error.Message); }
                 offered.UnionWith(on);
                 optional.UnionWith(maybe);
                 withheld.UnionWith(off);
+                reached.UnionWith(copies);
             }
+            // Of what the copies reach, what a unit here defines and withholds:
+            // shown where kept, as a static is (`~`); the rest is shown already,
+            // or another image's.
+            reached.IntersectWith(withheld);
+            optional.UnionWith(reached);
             if (exports) keep = (keep ?? Array.Empty<string>()).Concat(offered).Concat(optional).Distinct(StringComparer.Ordinal).ToArray();
         }
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,

@@ -165,6 +165,16 @@ public sealed partial class Lowering
     /// </summary>
     public static bool SharedObject { get; set; }
 
+    /// <summary>
+    /// The unit is for an image that exports its public surface: a shared
+    /// library's (--shared, with its initialiser or without it), a kernel
+    /// module's (--kernel, which is --shared), or a kernel's, whose units are
+    /// freestanding objects (--freestanding --obj) its link (--exports) puts
+    /// together. Not a whole program's, flat or hosted, nor a Windows image's,
+    /// whose exports are the native ones it declares (Lowering.Windows).
+    /// </summary>
+    public static bool ExportingImage { get; set; }
+
     /// <summary>What DT_INIT points at in a COR-C# shared object.</summary>
     public const string SharedInitName = Corsac.Lang.Elf.Linker.SharedInitName;
 
@@ -880,7 +890,8 @@ public sealed partial class Lowering
         // THE UNIT'S PUBLIC SURFACE, once everything it defines is known: a
         // kernel's and a shared library's alike.
         RecordPublicApi();
-        _m.ExportsSurface = Freestanding || SharedObject;
+        if (ExportingImage) RecordReached();
+        _m.ExportsSurface = ExportingImage;
     }
 
     /// <summary>

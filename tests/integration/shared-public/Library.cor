@@ -1,12 +1,18 @@
 // A shared library's exports are its public surface: Api's public members,
 // and not Api.Inner (internal), Helper (an internal class) or Api.Seed
-// (private), which Api's own code calls.
+// (private), which Api's own code calls. And what its generic code names:
+// a program's copy of Api.Pick for the program's own struct calls Picked
+// and counts in _picks, private as they are, and they are exported for it.
 public static class Api
 {
     public static int Answer() => Helper.Half() * 2 + Seed() - Inner();
     public static int Never() => 1234;
     internal static int Inner() => 7;
     private static int Seed() => 7;
+
+    static int _picks;
+    static int Picked() => ++_picks;
+    public static T Pick<T>(T a, T b) => Picked() % 2 == 1 ? a : b;
 }
 
 static class Helper

@@ -2,7 +2,8 @@
 # A SHARED LIBRARY'S EXPORTS ARE ITS PUBLIC SURFACE (PublicApi), as a kernel's
 # are: a public member of a public type in .dynsym, kept though nothing in
 # the library calls it; an internal member, an internal type's public one and
-# a private one not; a program importing one refused at its link, naming it.
+# a private one not, but what its generic code names, which a program's copy
+# of that code calls; a program importing one refused at its link, naming it.
 # Its exports are found as a kernel's are: DT_GNU_HASH and DT_CORSAC_NAMES64.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -20,6 +21,9 @@ grep -q '^m_Api_Never_' "$work/exported" || fail "a public method nothing calls 
 if grep -q '^m_Api_Inner_' "$work/exported"; then fail "an internal method is exported"; fi
 if grep -q '^m_Api_Seed_' "$work/exported"; then fail "a private method is exported"; fi
 if grep -q '^m_Helper_Half_' "$work/exported"; then fail "an internal type's public method is exported"; fi
+grep -q '^m_Api_Picked_' "$work/exported" || fail "a private method the library's generic code names is not exported for a program's copy"
+grep -q '^s_Api__picks_' "$work/exported" || fail "a private static the library's generic code names is not exported for a program's copy"
+if grep -q '^m_Api_Pick' "$work/exported"; then fail "the library exported a copy of generic code it never made"; fi
 readelf -d "$work/libApi.so" > "$work/dynamic"
 grep -q 'GNU_HASH' "$work/dynamic" || fail "the library has no GNU hash"
 grep -qi '0x60000c08' "$work/dynamic" || fail "the library has no names64 (DT_CORSAC_NAMES64)"
@@ -33,6 +37,9 @@ grep -q '^lookup ok [1-9]' "$work/lookup.out" || { cat "$work/lookup.out"; fail 
     || { cat "$work/caller-link.log"; fail "caller link"; }
 status=0; "$work/caller" || status=$?
 test "$status" = 42 || fail "the caller answered $status, not 42"
+# Its copy of Pick its own, calling what the library exported for it.
+readelf -sW "$work/caller" | awk '$7 != "UND" { print $8 }' | grep -q '^m_Api_Pick' || fail "the caller has no copy of Api.Pick of its own"
+readelf --dyn-syms -W "$work/caller" | awk '$7 == "UND" { print $8 }' | grep -q '^m_Api_Picked_' || fail "the caller's copy of Pick does not call the library's Picked"
 # A program reaching the library's internal type: refused, the name said --
 # by its compile, which C# says may not name it (CS0122), or by its link,
 # which finds it not exported.

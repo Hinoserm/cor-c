@@ -1163,6 +1163,9 @@ public static class Driver
         // shadowing a library one be kept.
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
+        Corsac.Lang.Lower.Lowering.ExportingImage = shared || freestanding && !windows && args.Contains("--obj");
+        Corsac.Lang.Lower.Lowering.SplitLibrary = shared && !freestanding;
+        Binder.NamesGenericCode = Corsac.Lang.Lower.Lowering.ExportingImage;
         // The runtime DLL is lowered as the library's own objects are (--obj),
         // which is how the class library has always been compiled whole.
         Corsac.Lang.Lower.Lowering.PartOfALibrary = references.Count > 0 || args.Contains("--decl-index") || args.Contains("--obj") || runtimeDll;
@@ -1356,6 +1359,38 @@ public static class Driver
         module.SafepointPolls = !freestanding && !module.NoCollector;
         module.LeavesLinkHints = (args.Contains("--obj") || library) && !args.Contains("--no-lto") && !args.Contains("--no-opt")
             && sharedLibs.Count == 0 && (moduleUnit || !(shared || args.Contains("--pic")));
+        // WHAT THE IMAGES THIS ONE LINKS AGAINST EXPORT, read before the
+        // passes (Module.ProvidedElsewhere): a library body one of them
+        // supplies may not bring what its library withholds into code this
+        // image keeps (Inline.CrossesImage). Given away after them (Provided).
+        Dictionary<string, HashSet<string>> exports = new(StringComparer.Ordinal);
+        if (sharedLibs.Count > 0 || kernel is not null)
+        {
+            // A module's first library is the kernel, which it never needs by
+            // name: the kernel is always there.
+            HashSet<string> providers = new(kernel?.Names ?? new HashSet<string>(StringComparer.Ordinal), StringComparer.Ordinal);
+            foreach (string lib in sharedLibs)
+            {
+                if (!File.Exists(lib))
+                {
+                    return Fail($"--link-shared '{lib}' does not exist");
+                }
+                HashSet<string> mine;
+                try
+                {
+                    byte[] image = File.ReadAllBytes(lib);
+                    mine = new HashSet<string>(windows ? Corsac.Lang.Pe.PeReader.ExportsOf(image) : ElfReader.ExportsOf(image), StringComparer.Ordinal);
+                }
+                catch (Exception e) when (e is ElfFormatException or InvalidDataException)
+                {
+                    return Fail($"--link-shared '{lib}': {e.Message}");
+                }
+                exports[lib] = mine;
+                providers.UnionWith(mine);
+            }
+            module.ProvidedElsewhere = providers;
+            module.CompilesLibrary = files.Any(IsLibrarySource);
+        }
         if (!args.Contains("--no-opt"))
         {
 #if COR_SELFHOST_BENCHMARK
@@ -1448,7 +1483,6 @@ public static class Driver
         // code, and a generic instantiation no library was ever asked for --
         // is compiled here as before.
         HashSet<string> imported = new(StringComparer.Ordinal);
-        Dictionary<string, HashSet<string>> exports = new(StringComparer.Ordinal);
         // WHAT THIS UNIT TOOK FROM THE EXPORTS rather than compiled -- a
         // library function or static the kernel, or a module under it,
         // defines already -- AND WHAT IT COMPILED, nothing exporting it: both
@@ -1458,41 +1492,14 @@ public static class Driver
         // having one descriptor (UnitDependencies.Stale). No declaration says
         // what is exported.
         List<string> takenFromKernel = new(), keptFromLibrary = new();
-        if (sharedLibs.Count > 0 || kernel is not null)
+        if (module.ProvidedElsewhere is HashSet<string> provided)
         {
-            // A module's first library is the kernel, which it never needs by
-            // name: the kernel is always there.
-            HashSet<string> provided = new(kernel?.Names ?? new HashSet<string>(StringComparer.Ordinal), StringComparer.Ordinal);
-            foreach (string lib in sharedLibs)
-            {
-                if (!File.Exists(lib))
-                {
-                    return Fail($"--link-shared '{lib}' does not exist");
-                }
-                HashSet<string> mine;
-                try
-                {
-                    byte[] image = File.ReadAllBytes(lib);
-                    mine = new HashSet<string>(windows ? Corsac.Lang.Pe.PeReader.ExportsOf(image) : ElfReader.ExportsOf(image), StringComparer.Ordinal);
-                }
-                catch (Exception e) when (e is ElfFormatException or InvalidDataException)
-                {
-                    return Fail($"--link-shared '{lib}': {e.Message}");
-                }
-                exports[lib] = mine;
-                provided.UnionWith(mine);
-            }
             if (kernel is not null)
             {
                 takenFromKernel.AddRange(module.Functions.Where(f => f.FromLibrary && f.Name != module.Entry && provided.Contains(f.Name)).Select(f => f.Name));
                 takenFromKernel.AddRange(module.Data.Where(d => d.FromLibrary && provided.Contains(d.Name)).Select(d => d.Name));
             }
             module.Provided(provided);
-            if (kernel is not null)
-            {
-                keptFromLibrary.AddRange(module.Functions.Where(f => f.FromLibrary && f.Name != module.Entry).Select(f => f.Name));
-                keptFromLibrary.AddRange(module.Data.Where(d => d.FromLibrary).Select(d => d.Name));
-            }
             // WHAT ONLY THE LIBRARY'S CODE CALLED goes with it. A library body
             // the optimiser worked on here -- a copy of one of its callees
             // specialised for a constant argument -- has a name the shared
@@ -1506,6 +1513,19 @@ public static class Driver
             if (module.Entry is not null)
             {
                 Corsac.Lang.Opt.Inline.RemoveDeadFunctions(module, new HashSet<string>(StringComparer.Ordinal));
+            }
+            // NONE OF ITS LIBRARY'S PRIVATE CODE OR STATE IN THIS IMAGE
+            // (Module.LibraryPrivate): what only the library's own code named,
+            // gone to its library, goes too; what this image's own code names
+            // -- a body, a static, from code or a descriptor's table -- would
+            // be its own second copy of the library's, and is refused, naming
+            // it. A generic copy names its library's members through what the
+            // library exports for it (Lowering.RecordPublicApi).
+            if (LibraryPrivateKept(module) is { } kept) return Fail(kept);
+            if (kernel is not null)
+            {
+                keptFromLibrary.AddRange(module.Functions.Where(f => f.FromLibrary && f.Name != module.Entry).Select(f => f.Name));
+                keptFromLibrary.AddRange(module.Data.Where(d => d.FromLibrary).Select(d => d.Name));
             }
             HashSet<string> defined = new(
                 module.Functions.Select(f => f.Name).Concat(module.Data.Select(d => d.Name)),
@@ -1636,7 +1656,7 @@ public static class Driver
         // And what a DLL exports, for its link's export directory.
         NativeExports.Attach(obj, module.NativeExports);
         // And the unit's public surface, for the exports of the image linked of it.
-        PublicApi.Attach(obj, module.PublicSymbols, module.OptionalSymbols, module.WithheldSymbols);
+        PublicApi.Attach(obj, module.PublicSymbols, module.OptionalSymbols, module.WithheldSymbols, module.ReachedSymbols);
         ManagedLayoutContract.Attach(obj, layouts);
         // A UNIT FOR A RING -- a kernel's, a module's -- says its layouts by
         // name (LayoutNames): those of the types it defines, for other images
@@ -2036,6 +2056,61 @@ public static class Driver
     /// </summary>
     private static readonly Dictionary<string, bool> librarySources = new(StringComparer.Ordinal);
     private static readonly object librarySourceGate = new();
+
+    /// <summary>
+    /// Drops what the module read of its libraries' private code and state
+    /// that nothing it keeps reaches (Module.LibraryPrivate), and answers the
+    /// refusal where something does: each such name, and what names it. What
+    /// it keeps: a program's whole module, its sweep done (RemoveDeadFunctions);
+    /// a module's or a library's own code and its copies of generic code, and
+    /// what they reach -- where no sweep ran, the library's code it read and
+    /// nothing reaches goes too, being its library's.
+    /// </summary>
+    private static string? LibraryPrivateKept(Module module)
+    {
+        HashSet<string> hidden = module.LibraryPrivate();
+        if (hidden.Count == 0) return null;
+        bool swept = module.Entry is not null;
+        Dictionary<string, Function> functions = new(StringComparer.Ordinal);
+        foreach (Function f in module.Functions) functions.TryAdd(f.Name, f);
+        Dictionary<string, DataItem> data = new(StringComparer.Ordinal);
+        foreach (DataItem d in module.Data) data.TryAdd(d.Name, d);
+        HashSet<string> live = new(StringComparer.Ordinal);
+        Stack<string> work = new();
+        SortedDictionary<string, string> named = new(StringComparer.Ordinal);
+        void From(string user, string target)
+        {
+            if (hidden.Contains(target)) named.TryAdd(target, user);
+            else if (live.Add(target)) work.Push(target);
+        }
+        foreach (Function f in module.Functions)
+            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
+        foreach (DataItem d in module.Data)
+            if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || d.Coalescible) && live.Add(d.Name)) work.Push(d.Name);
+        while (work.Count > 0)
+        {
+            string name = work.Pop();
+            if (functions.TryGetValue(name, out Function? f))
+                foreach (Corsac.Lang.Ir.Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                    {
+                        if (i.Callee is { } callee) From(f.Display ?? f.Name, callee);
+                        foreach (Operand o in i.Operands)
+                            if (o is SymOperand symbol) From(f.Display ?? f.Name, symbol.Name);
+                    }
+            if (data.TryGetValue(name, out DataItem? d))
+                foreach (DataReloc r in d.Relocs) From(d.Name, r.Symbol);
+        }
+        if (named.Count > 0)
+            return "this image would keep its own copy of what its library withholds -- "
+                + string.Join("; ", named.Take(12).Select(n => n.Key + " (named by " + n.Value + ")"))
+                + (named.Count > 12 ? "; and " + (named.Count - 12) + " more" : "")
+                + ": the library's own code and state are its library's, and a generic copy names them through what the library exports";
+        module.Functions.RemoveAll(f => hidden.Contains(f.Name) || f.SystemCode && !f.GenericCode && !f.Coalescible && !live.Contains(f.Name));
+        module.Data.RemoveAll(d => hidden.Contains(d.Name) || !swept && d.SystemCode && !d.Coalescible && !live.Contains(d.Name)
+            && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("t_", StringComparison.Ordinal)));
+        return null;
+    }
 
     internal static bool IsLibrarySource(string path)
     {

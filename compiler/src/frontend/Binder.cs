@@ -651,7 +651,7 @@ public sealed partial class Binder
     /// </summary>
     private void AsyncNeeds()
     {
-        FindMadeType("AsyncRuntime", out _);
+        FindMadeType(CompilerAbi.AsyncRuntime, out _);
         FindMadeType("Action", out _);
     }
 
@@ -1703,6 +1703,7 @@ public sealed partial class Binder
         // of every one, the original then dropped, was a unit's whole binding
         // made twice for the collector.
         b.CheckBodyWork();
+        b.GenericNames();
         b.DeclareUsed();
         // No await under a lock, nothing awaited or allocated in an interrupt
         // handler: across the unit, now that every body is bound
@@ -4575,6 +4576,18 @@ public sealed partial class Binder
         => d.Kind == TypeKind.Interface
             ? (m.Mods & (Mods.Private | Mods.Internal | Mods.Protected)) == 0
             : (m.Mods & (Mods.Public | Mods.Protected)) != 0 && (m.Mods & Mods.Private) == 0;
+
+    /// <summary>
+    /// A member the rest of its own assembly can name, of a type it can:
+    /// anything but private -- internal, public, protected (a derived type
+    /// of the assembly's), `private protected` with them -- and an
+    /// interface's member unless it says private. What C#'s `internal` is:
+    /// the assembly's, wherever the assembly's code is (Lowering.RecordPublicApi).
+    /// </summary>
+    internal static bool SeenInAssembly(TypeDecl d, MemberDecl m)
+        => d.Kind == TypeKind.Interface
+            ? (m.Mods & Mods.Private) == 0 || (m.Mods & Mods.Protected) != 0
+            : (m.Mods & (Mods.Public | Mods.Internal | Mods.Protected)) != 0;
 
     /// <summary>
     /// C#'S INCONSISTENT ACCESSIBILITY (CS0050-CS0061), for the class
@@ -10265,6 +10278,7 @@ public sealed partial class Binder
         {
             Name = name2, Kind = TypeKind.Class, LocalOnly = true, File = _in, Line = lam.Line, Col = lam.Col,
             FromLibrary = _thisType?.Decl?.FromLibrary == true, SourcePath = _thisType?.Decl?.SourcePath,
+            InGenericCode = _thisType?.Decl is { Specialised: true } or { InGenericCode: true } || _member is { LocalCopy: true },
         };
 
         // KEYED UNDER THE TYPE THE LAMBDA WAS WRITTEN IN, so that names inside
@@ -11213,7 +11227,7 @@ public sealed partial class Binder
     /// the class library's own, which a program's code does not see
     /// (HiddenFromProgram), and the compiler writes it into that code.
     /// </summary>
-    private const string DelegatesHelper = "__Delegates";
+    private const string DelegatesHelper = CompilerAbi.Delegates;
 
     /// <summary>
     /// The runtime's Delegate, which every delegate type has for its base
@@ -15304,7 +15318,7 @@ public sealed partial class Binder
             {
                 // The class library's own, by the compiler's spelling (LibraryType):
                 // a program's code does not see it (HiddenFromProgram).
-                Target = new NameExpr { Name = LibraryType("CollectionExpressionBuilder"), Line = at.Line, Col = at.Col },
+                Target = new NameExpr { Name = LibraryType(CompilerAbi.CollectionBuilder), Line = at.Line, Col = at.Col },
                 Name = method, Line = at.Line, Col = at.Col,
             };
             if (into is not null) step.WritableTypeArgs.Add(into);
@@ -21621,7 +21635,7 @@ public sealed partial class Binder
         // not answer itself (Name, FullName and the Is* flags it reads from
         // the descriptor): GetTypeFromProgID, GetTypeFromCLSID, Missing,
         // InvokeMember, as String's are String's.
-        "Type"   => "SystemType",
+        "Type"   => CompilerAbi.SystemType,
         _        => null,
     };
 

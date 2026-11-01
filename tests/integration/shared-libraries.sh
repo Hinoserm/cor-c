@@ -123,6 +123,18 @@ expected_output() {
     ' "$1"
 }
 
+# WHAT THE LIBRARIES DEFINE AND WITHHOLD: every global method and static of
+# theirs in .symtab and not in .dynsym (a local one is each image's own: a
+# state machine's, a closure's). A program defining one of these has its own
+# copy of the library's private code or state -- its own collector's statics.
+for lib in "$libdir"/*.so; do
+    readelf -sW "$lib" | awk '/Symbol table .\.symtab/ { s = 1 } s && $5 == "GLOBAL" && $7 != "UND" && $8 ~ /^(m|mx|s)_/ { print $8 }'
+done | sort -u > "$work/libraries.defined"
+for lib in "$libdir"/*.so; do
+    readelf --dyn-syms -W "$lib" | awk '$7 != "UND" && $8 ~ /^(m|mx|s)_/ { print $8 }'
+done | sort -u > "$work/libraries.exported"
+comm -23 "$work/libraries.defined" "$work/libraries.exported" > "$work/libraries.withheld"
+
 first=1
 for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor "$root/tests/language/514_stack_traces.cor"; do
     [ -e "$source" ] || continue
@@ -152,6 +164,16 @@ for source in "$root"/tests/language/6[2-9][0-9]_shared_*.cor "$root/tests/langu
         ok "$name carries no collector and imports $theirs names"
     else
         bad "$name" "$mine of the collector's functions are compiled into it"
+    fi
+    # NOR ANY OF THE LIBRARIES' PRIVATE CODE OR STATE: nothing they withhold
+    # defined here (Inline.CrossesImage, Driver.LibraryPrivateKept).
+    readelf -sW "$exe" | awk '/Symbol table .\.symtab/ { s = 1 } s && $7 != "UND" && $8 ~ /^(m|mx|s)_/ { print $8 }' | sort -u \
+        | comm -12 - "$work/libraries.withheld" > "$work/$name.private"
+    if [ -s "$work/$name.private" ]; then
+        sed 's/^/    /' "$work/$name.private" | head -10
+        bad "$name" "$(wc -l < "$work/$name.private") of the libraries' withheld methods and statics are compiled into it"
+    else
+        ok "$name carries none of the libraries' withheld code or state"
     fi
 
     expected_output "$source" > "$work/$name.want"

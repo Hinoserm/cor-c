@@ -251,6 +251,9 @@ public sealed class Inline : IParallelModulePass
         if (!PlacesAllocations) pinned.Add(AllocatorFastPaths.Fast);
         addressTaken.UnionWith(pinned);
         _keepCalls = m.KeepCalls;
+        _module = m;
+        _private = m.LibraryPrivate();
+        _namesPrivate.Clear();
 
         // Bottom-up over the call graph: callees before callers, so a leaf
         // reaches its caller's caller already folded in. Functions in a
@@ -271,6 +274,44 @@ public sealed class Inline : IParallelModulePass
     }
 
     private HashSet<Instr> _keepCalls = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The module run over, and what of its library code no image exports (Module.LibraryPrivate).</summary>
+    private Module? _module;
+    private HashSet<string> _private = new(StringComparer.Ordinal);
+
+    /// <summary>Each body's answer to whether it names one of them, as of this run: callees are done before their callers.</summary>
+    private readonly Dictionary<Function, bool> _namesPrivate = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// NOT ACROSS AN IMAGE'S EDGE WITH ITS LIBRARY'S PRIVATE CODE IN IT. A
+    /// library body another image supplies (Module.GoesElsewhere) put into
+    /// code this one keeps, where it names what its library withholds
+    /// (Module.LibraryPrivate): the image would carry its own copy of each
+    /// -- of a static, a second one of the library's -- or name what the
+    /// library never exports. Called, the body runs in its library with its
+    /// own. A body naming only what the libraries export comes in as before.
+    /// </summary>
+    internal bool CrossesImage(Function caller, Function callee)
+    {
+        if (_private.Count == 0 || _module is not { } m || m.GoesElsewhere(caller) || !m.GoesElsewhere(callee)) return false;
+        if (_namesPrivate.TryGetValue(callee, out bool known)) return known;
+        bool names = NamesAny(callee, _private);
+        _namesPrivate[callee] = names;
+        return names;
+    }
+
+    /// <summary>Whether a body calls, or takes the address of, any of `names`.</summary>
+    internal static bool NamesAny(Function f, IReadOnlySet<string> names)
+    {
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Callee is { } callee && names.Contains(callee)) return true;
+                foreach (Operand o in i.Operands)
+                    if (o is SymOperand symbol && names.Contains(symbol.Name)) return true;
+            }
+        return false;
+    }
 
     private readonly Dictionary<Function, bool> _storesField = new(ReferenceEqualityComparer.Instance);
 
@@ -361,7 +402,8 @@ public sealed class Inline : IParallelModulePass
                     // Join over one -- or everywhere, with InlineHandlers.
                     bool handlers = caller.Async is null && (InlineHandlers
                         || !Inlineable(callee, pinned) && Size(callee) <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh));
-                    if (!Inlineable(callee, pinned, handlers) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name))
+                    if (!Inlineable(callee, pinned, handlers) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name)
+                        || CrossesImage(caller, callee))
                     {
                         continue;
                     }

@@ -19930,7 +19930,7 @@ public abstract class Array : IList, ICollection {
     }
     public static int IndexOf(Array array, object? value) {
         if (array == null) throw new ArgumentNullException("array");
-        return FaceIndexOf(array, value);
+        return Runtime.ArrayFaceIndexOf(array, value);
     }
     public static void Reverse(Array array) {
         if (array == null) throw new ArgumentNullException("array");
@@ -19939,72 +19939,6 @@ public abstract class Array : IList, ICollection {
             array.SetValue(array.GetValue(j), i);
             array.SetValue(held, j);
         }
-    }
-
-    // WHAT AN ARRAY ANSWERS THROUGH IList AND ICollection that is not its
-    // element's to say (Lowering.ArrayFaces): written once, over the boxed
-    // GetValue and SetValue its descriptor answers. A null written to an
-    // element of a value type is its default, as .NET's SetValue has it.
-    internal static int FaceIndexOf(Array array, object? value) {
-        int n = array.Length;
-        for (int i = 0; i < n; i++) {
-            object? held = array.GetValue(i);
-            if (held == null ? value == null : held.Equals(value)) return i;
-        }
-        return -1;
-    }
-    internal static bool FaceContains(Array array, object? value) { return FaceIndexOf(array, value) >= 0; }
-
-    // A BOXED PRIMITIVE WRITTEN INTO AN ARRAY OF A WIDER ONE, as .NET's
-    // SetValue widens it (its InvokeUtil table): `longs.SetValue(5, 0)`,
-    // a char into an int[], an int into a double[]. `to` and each source
-    // are kinds: 0 char, 1 sbyte, 2 byte, 3 short, 4 ushort, 5 int, 6 uint,
-    // 7 long, 8 ulong, 9 float, 10 double, 11 bool; a primitive that does
-    // not widen is ArgumentException, anything else InvalidCastException.
-    private static int FaceKind(object value, out long whole, out double real) {
-        whole = 0;
-        real = 0;
-        switch (value) {
-            case char c: whole = c; real = c; return 0;
-            case sbyte v: whole = v; real = v; return 1;
-            case byte v: whole = v; real = v; return 2;
-            case short v: whole = v; real = v; return 3;
-            case ushort v: whole = v; real = v; return 4;
-            case int v: whole = v; real = v; return 5;
-            case uint v: whole = v; real = v; return 6;
-            case long v: whole = v; real = v; return 7;
-            case ulong v: whole = (long)v; real = v; return 8;
-            case float v: real = v; return 9;
-            case double v: real = v; return 10;
-            case bool v: whole = v ? 1 : 0; return 11;
-            default: return -1;
-        }
-    }
-
-    private static int Widening(int from) => from switch {
-        0 => 2033, 1 => 1706, 2 => 2045, 3 => 1704, 4 => 2033, 5 => 1696,
-        6 => 1984, 7 => 1664, 8 => 1792, 9 => 1536, 10 => 1024, _ => 2048,
-    };
-
-    private static int Widened(object value, int to, out long whole, out double real) {
-        int from = FaceKind(value, out whole, out real);
-        if (from < 0) throw new InvalidCastException("Object cannot be stored in an array of this type.");
-        if ((Widening(from) & (1 << to)) == 0) throw new ArgumentException("Cannot widen from source type to target type either because the source type is a not a primitive type or the conversion cannot be accomplished.");
-        return from;
-    }
-
-    internal static long FaceWidenedWhole(object value, int to) { Widened(value, to, out long whole, out double real); return whole; }
-    internal static double FaceWidenedReal(object value, int to) { Widened(value, to, out long whole, out double real); return real; }
-    internal static void FaceClear(Array array) {
-        int n = array.Length;
-        for (int i = 0; i < n; i++) array.SetValue(null, i);
-    }
-    internal static void FaceCopyTo(Array source, Array destination, int index) {
-        if (destination == null) throw new ArgumentNullException("destinationArray");
-        if (index < 0) throw new ArgumentOutOfRangeException("destinationIndex", "Number was less than the array's lower bound in the first dimension.");
-        int n = source.Length;
-        if (destination.Length - index < n) throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
-        for (int i = 0; i < n; i++) destination.SetValue(source.GetValue(i), index + i);
     }
 
     int ICollection.Count => ((ICollection)(object)this).Count;
