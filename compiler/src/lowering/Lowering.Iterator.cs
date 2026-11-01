@@ -35,7 +35,8 @@ public sealed partial class Lowering
     /// <summary>One iterator's pieces.</summary>
     private sealed record IteratorMethod(
         MethodSymbol Method, MethodDecl Decl, TypeSymbol Machine, MethodSymbol MoveNext,
-        string SizeSymbol, int[] ParamOffsets, Type Element, bool Enumerable, int[] HiddenOffsets);
+        string SizeSymbol, int[] ParamOffsets, Type Element, bool Enumerable, int[] HiddenOffsets,
+        int[] OriginalOffsets, int OriginalReceiver);
 
     private readonly Dictionary<MethodSymbol, IteratorMethod> _iterators = new();
 
@@ -119,6 +120,15 @@ public sealed partial class Lowering
             offsets[i] = at;
             at += 8;
         }
+        // AN ENUMERABLE'S ARGUMENTS AS GIVEN, beside the ones its body works
+        // on, and of a struct's method the struct as it was: what a second
+        // GetEnumerator starts from, as C#'s does -- started from the first
+        // enumerator's, a body that counted a parameter down left the second
+        // nothing to count.
+        int[] originals = enumerable ? new int[m.Params.Count] : Array.Empty<int>();
+        for (int i = 0; i < originals.Length; i++) { originals[i] = at; at += 8; }
+        int originalReceiver = -1;
+        if (enumerable && !m.Static && m.Owner.Kind == TypeKind.Struct) { originalReceiver = at; at += 8; }
         // A SHARED METHOD COPY'S HIDDEN TYPE ARGUMENTS AND DICTIONARY
         // (Monomorphiser.CopyName), kept as its parameters are: what its body
         // asks of them runs in MoveNext.
@@ -139,7 +149,7 @@ public sealed partial class Lowering
         WriteWord(initial, 0, at);
         _m.Data.Add(new DataItem(size, initial) { Align = _t.WordSize, Exported = false });
 
-        IteratorMethod made = new(m, decl, machine, body, size, offsets, element, enumerable, hiddenAt);
+        IteratorMethod made = new(m, decl, machine, body, size, offsets, element, enumerable, hiddenAt, originals, originalReceiver);
         _iterators[body] = made;
         return made;
     }
@@ -153,10 +163,6 @@ public sealed partial class Lowering
         return dot < 0 ? bare : bare[(dot + 1)..];
     }
 
-    /// <summary>
-    /// The method as callers see it: the iterator object, with the receiver
-    /// and the arguments in it, and nothing of the body run.
-    /// </summary>
     /// <summary>
     /// A struct argument an iterator's or an async method's machine keeps: a
     /// copy of its own, made as the method starts. C# gives the method a
@@ -174,6 +180,10 @@ public sealed partial class Lowering
     private VReg MachineReceiver(Node at, MethodSymbol m, VReg self)
         => !m.Static && m.Owner.Kind == TypeKind.Struct ? CopyStruct(at, self, m.Owner) : self;
 
+    /// <summary>
+    /// The method as callers see it: the iterator object, with the receiver
+    /// and the arguments in it, and nothing of the body run.
+    /// </summary>
     private void EmitIteratorKickoff(MethodSymbol m, MethodDecl decl)
     {
         if (IteratorPieces(m, decl) is not IteratorMethod it)
@@ -230,6 +240,7 @@ public sealed partial class Lowering
         if (self is not null)
         {
             StoreNewReference(machine, MachineReceiver(decl, m, self), IterReceiverField);
+            if (it.OriginalReceiver >= 0) StoreNewReference(machine, MachineReceiver(decl, m, self), it.OriginalReceiver);
         }
         for (int i = 0; i < args.Count; i++)
         {
@@ -237,6 +248,13 @@ public sealed partial class Lowering
             if (args[i].Type == IrTypes.Word)
             {
                 CardMarkAt(R(machine), it.ParamOffsets[i]);
+            }
+            if (it.OriginalOffsets.Length == 0) continue;
+            // A copy of its own: the body may write the working one.
+            _e.Store(R(machine), R(MachineArgument(decl, args[i], m.Params[i])), it.OriginalOffsets[i], args[i].Type.Bytes());
+            if (args[i].Type == IrTypes.Word)
+            {
+                CardMarkAt(R(machine), it.OriginalOffsets[i]);
             }
         }
         // Descriptors and tables: static data, no card to mark.
@@ -370,8 +388,35 @@ public sealed partial class Lowering
                         e.StoreDescribed(copy, VtableOf(it.Machine), e.Load(IrTypes.Word, self, 0), _t.WordSize);
                     else
                         e.Store(R(copy), VtableOf(it.Machine), 0, _t.WordSize);
-                    e.Store(R(copy), R(e.Load(IrTypes.Word, self, IterReceiverField)), IterReceiverField, _t.WordSize);
-                    foreach (int offset in it.ParamOffsets.Concat(it.HiddenOffsets))
+                    // The receiver and the arguments AS GIVEN (OriginalOffsets),
+                    // not as the first enumerator's body left them: a struct a
+                    // copy of its own to work on, the original shared, since
+                    // nothing writes it.
+                    if (it.OriginalReceiver >= 0)
+                    {
+                        VReg given = e.Load(IrTypes.Word, self, it.OriginalReceiver);
+                        e.Store(R(copy), R(CopyStruct(it.Decl, given, it.Method.Owner)), IterReceiverField, _t.WordSize);
+                        e.Store(R(copy), R(given), it.OriginalReceiver, _t.WordSize);
+                    }
+                    else
+                    {
+                        e.Store(R(copy), R(e.Load(IrTypes.Word, self, IterReceiverField)), IterReceiverField, _t.WordSize);
+                    }
+                    for (int i = 0; i < it.ParamOffsets.Length; i++)
+                    {
+                        ParamSymbol p = it.Method.Params[i];
+                        if (!p.ByRef && IsStructValue(p.Type))
+                        {
+                            VReg given = e.Load(IrTypes.Word, self, it.OriginalOffsets[i]);
+                            e.Store(R(copy), R(CopyStruct(it.Decl, given, StructOf(p.Type))), it.ParamOffsets[i], _t.WordSize);
+                            e.Store(R(copy), R(given), it.OriginalOffsets[i], _t.WordSize);
+                            continue;
+                        }
+                        VReg word = e.Load(IrType.I64, self, it.OriginalOffsets[i], 8);
+                        e.Store(R(copy), R(word), it.ParamOffsets[i], 8);
+                        e.Store(R(copy), R(word), it.OriginalOffsets[i], 8);
+                    }
+                    foreach (int offset in it.HiddenOffsets)
                     {
                         e.Store(R(copy), R(e.Load(IrType.I64, self, offset, 8)), offset, 8);
                     }
