@@ -82,8 +82,8 @@ public static class Clock
 
         if (result == 0 - Err.Intr || PosixSignalRegistration.Pending)
         {
-            // A signal ended the sleep, or came just before it: the program's handlers run now, at
-            // the same quiet moment Os.Poll and Os.Sleep give them.
+            // A signal ended the sleep, or came just before it: its handlers have run when Deliver
+            // returns, here or on the thread that delivers them, as at Os.Poll's and Os.Sleep's.
             PosixSignalRegistration.Deliver();
         }
     }

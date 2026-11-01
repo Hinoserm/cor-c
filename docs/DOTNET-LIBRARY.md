@@ -67,10 +67,12 @@ the same list.
 - Console.Out is line-buffered on a terminal and fully buffered when
   redirected, as in .NET; it is flushed when Main returns and by
   Environment.Exit.
-- Signals: the kernel's handler only records which signal arrived. The
-  program's PosixSignalRegistration handlers run at the next quiet
-  moment -- a poll interrupted by the signal, a console read -- which is
-  the discipline .NET keeps (its handlers run off the signal frame). A
+- Signals: the kernel's handler only records which signal arrived and
+  wakes a thread of the program's, started with its first
+  PosixSignalRegistration, which runs the handlers whatever the rest of
+  the program is doing -- as .NET's run, on a thread, off the signal
+  frame. A wait the signal interrupts (a poll, a sleep, a console read,
+  Os.Pause) returns with its handlers run, there or on that thread. A
   handler that does not set Cancel gets the default action afterwards.
 - Dns resolves numeric addresses, localhost and /etc/hosts. A resolver
   that asks a server is the day the network stack grows one.

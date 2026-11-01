@@ -1594,10 +1594,10 @@ public static partial class Os
             if (r == -Err.Intr || PosixSignalRegistration.Pending)
             {
                 // A signal arrived while waiting -- or just before, with
-                // nothing blocked for it to interrupt: this is the quiet
-                // moment at which the program's handlers run. The caller
-                // sees the interruption and decides whether it still wants
-                // to wait.
+                // nothing blocked for it to interrupt: its handlers have run
+                // when Deliver returns, here or on the thread that delivers
+                // them. The caller sees the interruption and decides whether
+                // it still wants to wait.
                 PosixSignalRegistration.Deliver();
             }
             return (int)r;
@@ -1605,8 +1605,10 @@ public static partial class Os
     }
 
     /// pause(2): asleep until a signal, whose handlers have run by the time
-    /// this returns. Spelt poll(2) of nothing, for ever, which is the same
-    /// wait on every kernel that has poll.
+    /// this returns -- or not asleep at all for one that arrived before and
+    /// no wait has seen (PosixSignalRegistration.Pending), though the thread
+    /// that delivers may have run it already. Spelt poll(2) of nothing, for
+    /// ever, which is the same wait on every kernel that has poll.
     public static void Pause()
     {
         if (!PosixSignalRegistration.Pending)

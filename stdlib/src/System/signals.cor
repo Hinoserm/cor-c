@@ -8,14 +8,14 @@
 // runs at any instruction of the program, so it does the minimum: it
 // remembers which signal arrived, wakes the thread that delivers them, and
 // returns. That thread, started with the first handler, runs the program's
-// handlers (Deliver) whatever the others are doing -- as .NET's do, on a
-// thread of their own, not in the signal frame. Waited for only at its
-// quiet moments, a program busy in a loop never ran them: `ping -f`,
-// sending back to back, let Ctrl+C and `kill -INT` go by, and SIGKILL alone
-// stopped it. The console, the scheduler, the waits (Os.Poll, Os.Pause, a
-// thread's sleep) and the GUI seat (Seat.Next) still call Deliver at theirs,
-// so a handler often runs there first; whichever takes a signal runs it,
-// once.
+// handlers whatever the others are doing -- as .NET's do, on a thread of
+// their own, not in the signal frame. Run only at the program's quiet
+// moments, a program busy in a loop never ran them: `ping -f`, sending back
+// to back, let Ctrl+C and `kill -INT` go by, and SIGKILL alone stopped it.
+// The console, the scheduler, the waits (Os.Poll, Os.Pause, a thread's
+// sleep) and the GUI seat (Seat.Next) still call Deliver at theirs: it runs
+// what the thread has not taken, waits for what it is running, and so
+// returns with the handlers for every signal it saw run, once each.
 
 public enum PosixSignal
 {
@@ -56,9 +56,24 @@ public class PosixSignalRegistration : IDisposable
     // Signals 1 to 31: one 32-bit word, which a 486 swaps whole; the or is
     // Interlocked's compare-and-swap loop, retried if a signal lands inside it.
     static int _pending;
-    // Whether the thread that delivers has been started: once, by the first
-    // Create (StartDelivering).
-    static int _delivering;
+    // WHAT THE PROGRAM'S WAITS HAVE NOT YET SEEN: a bit per signal, set
+    // after _pending's and taken only by Deliver, the quiet moments' call --
+    // what Pending answers. The thread that delivers takes _pending within
+    // microseconds of a signal; asked of that, Os.Pause after a signal the
+    // program sent itself found nothing and slept for ever, where it had
+    // returned.
+    static int _unseen;
+    // ONE DELIVERY AT A TIME (Run), with the managed id of the thread making
+    // it: a wait that promises its caller the handlers have run waits for
+    // one in flight on another thread, rather than returning while it
+    // runs; a handler that waits, on the thread running it, is not made to
+    // wait for itself. A handler that waits for a thread which is itself
+    // waiting for the handlers is the one way to hang this.
+    static int _running;
+    static int _runner;
+    // The process the thread that delivers was started in, 0 before: a
+    // fork's child has none and starts its own (StartDelivering).
+    static int _deliveringIn;
 
     PosixSignal _signal;
 
@@ -85,7 +100,9 @@ public class PosixSignalRegistration : IDisposable
     /// it never keeps the process alive.
     static void StartDelivering()
     {
-        if (System.Threading.Interlocked.CompareExchange(ref _delivering, 1, 0) != 0)
+        int here = Environment.ProcessId;
+        int had = _deliveringIn;
+        if (had == here || System.Threading.Interlocked.CompareExchange(ref _deliveringIn, here, had) != had)
         {
             return;
         }
@@ -96,14 +113,18 @@ public class PosixSignalRegistration : IDisposable
 
     /// Asleep on the pending word until a signal sets a bit in it, then the
     /// handlers. A wait on a word already not 0 returns at once, so a signal
-    /// that lands between Deliver and the wait is not slept through.
+    /// that lands between Run and the wait is not slept through; a wait that
+    /// ends with nothing there (Windows parks a second at most) runs nothing.
     static void DeliverLoop()
     {
         nuint at = Sys.AddressOf(ref _pending);
         while (true)
         {
             Native.Wait(at, 0);
-            Deliver();
+            if (_pending != 0)
+            {
+                Run();
+            }
         }
     }
 
@@ -126,27 +147,72 @@ public class PosixSignalRegistration : IDisposable
         Install((int)signal, 1);
     }
 
-    /// Called from the kernel's signal frame: a bit is set and the thread
+    /// Called from the kernel's signal frame: two bits set and the thread
     /// that delivers woken (a futex wake, one system call), nothing more.
+    /// _pending first: a wait that sees _unseen then finds the signal to
+    /// run, or the delivery running it.
     public static void Dispatch(int signal)
     {
         if (signal > 0 && signal < MaxSignal)
         {
             System.Threading.Interlocked.Or(ref _pending, 1 << signal);
+            System.Threading.Interlocked.Or(ref _unseen, 1 << signal);
             Native.Wake(Sys.AddressOf(ref _pending), 1);
         }
     }
 
-    /// Whether any registered signal has arrived and not been delivered.
+    /// Whether a signal has arrived that the program's waits have not yet
+    /// seen (Deliver), its handlers run or not.
     public static bool Pending
     {
-        get { return _pending != 0; }
+        get { return _unseen != 0; }
+    }
+
+    /// The quiet moments' call -- a wait a signal interrupted, the console,
+    /// Os.Pause: what arrived is seen, and by the time this returns its
+    /// handlers have run, here or on the thread that delivers.
+    public static void Deliver()
+    {
+        if (_unseen == 0)
+        {
+            return;
+        }
+        System.Threading.Interlocked.Exchange(ref _unseen, 0);
+        Run();
+    }
+
+    /// The handlers for what is pending, one delivery at a time (_running):
+    /// after one in flight on another thread has finished. Nothing on the
+    /// thread already running them -- a handler's own wait.
+    static void Run()
+    {
+        int me = Environment.CurrentManagedThreadId;
+        if (_runner == me)
+        {
+            return;
+        }
+        nuint gate = Sys.AddressOf(ref _running);
+        while (System.Threading.Interlocked.CompareExchange(ref _running, 1, 0) != 0)
+        {
+            Native.Wait(gate, 1);
+        }
+        _runner = me;
+        try
+        {
+            RunPending();
+        }
+        finally
+        {
+            _runner = 0;
+            System.Threading.Interlocked.Exchange(ref _running, 0);
+            Native.Wake(gate, Native.WakeAll);
+        }
     }
 
     /// Runs the handlers for what arrived; a handler that does not set
     /// Cancel gets the signal's default action afterwards: the process
     /// ends, as .NET's does.
-    public static void Deliver()
+    static void RunPending()
     {
         if (_pending == 0)
         {

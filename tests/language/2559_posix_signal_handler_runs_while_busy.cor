@@ -5,6 +5,8 @@
 // on another thread True
 // handled 2 SIGINT
 // still running
+// paused 3
+// slow True
 //
 // A SIGNAL HANDLER RUNS WHATEVER THE PROGRAM IS DOING, as .NET's do: on a
 // thread of its own, which the signal wakes (PosixSignalRegistration's
@@ -15,11 +17,28 @@
 // default action, so the process goes on, and a second signal is handled
 // the same way. The thread is a background one: Main returning ends the
 // program.
+//
+// AND A WAIT STILL SEES IT. A signal the thread has already run, which no
+// wait has seen, ends Os.Pause at once, as it did; and a wait returns only
+// when the handlers have run -- Pause waits for a slow one still running
+// on the other thread, whose own sleep inside it does not wait for itself.
 
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
+
+sealed class Slow : PosixSignalHandler
+{
+    public static int Done;
+
+    public void Invoke(PosixSignalContext context)
+    {
+        Thread.Sleep(200);
+        context.Cancel = true;
+        Interlocked.Exchange(ref Done, 1);
+    }
+}
 
 sealed class Counting : PosixSignalHandler
 {
@@ -61,5 +80,18 @@ static class Program
         Console.WriteLine("handled " + Counting.Ran + " " + Counting.Last);
         registration.Dispose();
         Console.WriteLine("still running");
+
+        PosixSignalRegistration again = PosixSignalRegistration.Create(PosixSignal.SIGINT, new Counting());
+        Os.Kill(Os.Getpid(), (int)PosixSignal.SIGINT);
+        if (!Await(3)) { Console.WriteLine("never ran a third time"); return; }
+        Os.Pause();
+        Console.WriteLine("paused " + Counting.Ran);
+        again.Dispose();
+
+        PosixSignalRegistration slow = PosixSignalRegistration.Create(PosixSignal.SIGINT, new Slow());
+        Os.Kill(Os.Getpid(), (int)PosixSignal.SIGINT);
+        Os.Pause();
+        Console.WriteLine("slow " + (Interlocked.CompareExchange(ref Slow.Done, 0, 0) == 1));
+        slow.Dispose();
     }
 }
