@@ -61,8 +61,8 @@ public class PosixSignalRegistration : IDisposable
     // Interlocked's compare-and-swap loop, retried if a signal lands inside it.
     static int _pending;
     // WHAT THE PROGRAM'S WAITS HAVE NOT YET SEEN (Pending): a bit per
-    // signal, set after _pending's and taken by Deliver alone, the quiet
-    // moments' call. The thread that delivers takes _pending within
+    // signal, set after _pending's and taken by Deliver alone, a wait's
+    // call when a signal ends it. The thread that delivers takes _pending within
     // microseconds of a signal; asked of that, Os.Pause after a signal the
     // program sent itself found nothing and slept for ever, where it had
     // returned. A signal the thread ran that no wait has seen ends the next
@@ -177,8 +177,8 @@ public class PosixSignalRegistration : IDisposable
         get { return _unseen != 0 && !Inside(); }
     }
 
-    /// The quiet moments' call -- a wait a signal interrupted, the console,
-    /// the scheduler: what arrived is seen. Its handlers are the thread's
+    /// A wait's call when a signal ends it (the header lists them): what
+    /// arrived is seen. Its handlers are the thread's
     /// that delivers, running or about to; this neither runs nor waits for
     /// them. Nothing from a handler's own wait, which would take what the
     /// program's next wait is owed.
