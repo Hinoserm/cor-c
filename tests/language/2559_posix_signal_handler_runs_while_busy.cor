@@ -18,10 +18,11 @@
 // the same way. The thread is a background one: Main returning ends the
 // program.
 //
-// AND A WAIT STILL SEES IT. A signal the thread has already run, which no
-// wait has seen, ends Os.Pause at once, as it did; and a wait returns only
-// when the handlers have run -- Pause waits for a slow one still running
-// on the other thread, whose own sleep inside it does not wait for itself.
+// AND OS.PAUSE STILL SEES IT. A signal the thread has already run, which no
+// wait has seen, ends Pause at once, as it did -- a short sleep first sees
+// the earlier ones, so it is this one Pause answers. And Pause returns only
+// when the handlers have run (Settle): it waits for a slow one the thread
+// has started, whose own sleep inside it does not wait for itself.
 
 using System;
 using System.Diagnostics;
@@ -30,10 +31,12 @@ using System.Threading;
 
 sealed class Slow : PosixSignalHandler
 {
+    public static int Started;
     public static int Done;
 
     public void Invoke(PosixSignalContext context)
     {
+        Interlocked.Exchange(ref Started, 1);
         Thread.Sleep(200);
         context.Cancel = true;
         Interlocked.Exchange(ref Done, 1);
@@ -81,6 +84,7 @@ static class Program
         registration.Dispose();
         Console.WriteLine("still running");
 
+        Thread.Sleep(1);
         PosixSignalRegistration again = PosixSignalRegistration.Create(PosixSignal.SIGINT, new Counting());
         Os.Kill(Os.Getpid(), (int)PosixSignal.SIGINT);
         if (!Await(3)) { Console.WriteLine("never ran a third time"); return; }
@@ -88,8 +92,11 @@ static class Program
         Console.WriteLine("paused " + Counting.Ran);
         again.Dispose();
 
+        Thread.Sleep(1);
         PosixSignalRegistration slow = PosixSignalRegistration.Create(PosixSignal.SIGINT, new Slow());
         Os.Kill(Os.Getpid(), (int)PosixSignal.SIGINT);
+        long until = Stopwatch.GetTimestamp() + 5 * Stopwatch.Frequency;
+        while (Interlocked.CompareExchange(ref Slow.Started, 0, 0) == 0 && Stopwatch.GetTimestamp() < until) { }
         Os.Pause();
         Console.WriteLine("slow " + (Interlocked.CompareExchange(ref Slow.Done, 0, 0) == 1));
         slow.Dispose();
