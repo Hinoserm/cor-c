@@ -4576,16 +4576,22 @@ public sealed partial class Binder
     /// Only where this unit compiles the type's code: a program reading the
     /// library's declarations is not told of the library's faults.
     /// </summary>
+    /// <summary>
+    /// A member another assembly can name, of a type it can: public or
+    /// protected, and not `private protected`, whose domain is the type's own
+    /// assembly; an interface's member is public unless it says not
+    /// (CheckExposedAccessibility, Lowering.RecordPublicApi).
+    /// </summary>
+    internal static bool ShownOutside(TypeDecl d, MemberDecl m)
+        => d.Kind == TypeKind.Interface
+            ? (m.Mods & (Mods.Private | Mods.Internal | Mods.Protected)) == 0
+            : (m.Mods & (Mods.Public | Mods.Protected)) != 0 && (m.Mods & Mods.Private) == 0;
+
     private void CheckExposedAccessibility(TypeDecl d, TypeSymbol sym)
     {
         if (d.Specialised || d.Elsewhere || d.SignatureOnly || !ClassLibrarySide(d)
             || (d.Mods & Mods.Public) == 0 || !(d.Outer is null || d.Outer == d.Namespace)) return;
-        // Public or protected, and not `private protected`, whose domain is the
-        // library's own; an interface's member is public unless it says not.
-        bool Shown(MemberDecl m)
-            => d.Kind == TypeKind.Interface
-                ? (m.Mods & (Mods.Private | Mods.Internal | Mods.Protected)) == 0
-                : (m.Mods & (Mods.Public | Mods.Protected)) != 0 && (m.Mods & Mods.Private) == 0;
+        bool Shown(MemberDecl m) => ShownOutside(d, m);
         HashSet<MethodSymbol> accessorsChecked = new(ReferenceEqualityComparer.Instance);
 
         if (sym.Base is { } baseType && LibraryInternal(baseType))

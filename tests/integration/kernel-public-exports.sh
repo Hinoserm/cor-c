@@ -32,12 +32,16 @@ done
     2> "$k/units.log" || { cat "$k/units.log"; fail "kernel units"; }
 # shellcheck disable=SC2086
 "$corc" link $(cut -f2 "$k/units.tsv" | tr '\n' ' ') -o "$k/kernel" --exports=public 2> "$work/kernel.log" || { cat "$work/kernel.log"; fail "kernel link"; }
-objcopy --dump-section .corsac.exports="$work/exports.bin" "$k/kernel"
-exported() { grep -aq "$1" "$work/exports.bin"; }
-exported 'm_Unused_Never_' || fail "a public method nothing calls is not exported"
-exported 'm_Tick_Twice_' || fail "a public method the module calls is not exported"
-if exported 'm_Tick_Hidden_'; then fail "an internal member of a public type is exported"; fi
-if exported 'm_Secret_Value_'; then fail "a public member of an internal type is exported"; fi
+# The table as the module tests read it (exports.py): one name a line, first.
+python3 -I "$root/tests/integration/modules/exports.py" "$k/kernel" | awk '{ print $1 }' > "$work/exports.syms"
+exported() { grep -q "^$1" "$work/exports.syms"; }
+# Every name by its namespace's key (Kernel$Tick): a name without it would
+# make the checks below that one is absent pass for nothing.
+exported 'm_Kernel\$Unused_Never_' || fail "a public method nothing calls is not exported"
+exported 'm_Kernel\$Tick_Twice_' || fail "a public method the module calls is not exported"
+exported 'm_Kernel\$Log_Write_' || fail "a public method the kernel calls is not exported"
+if exported 'm_Kernel\$Tick_Hidden_'; then fail "an internal member of a public type is exported"; fi
+if exported 'm_Kernel\$Secret_Value_'; then fail "a public member of an internal type is exported"; fi
 # The module, which imports public members alone: linked.
 "$corc" compile --kernel "$k/kernel" --decl-index "$k/kernel.idx" --assembly Kernel --ring 0 "$work/Sb16.cor" --obj -o "$work/sb16.o" \
     2> "$work/sb16.log" || { cat "$work/sb16.log"; fail "module object"; }
@@ -48,5 +52,5 @@ grep -q 'Tick.Hidden(port)' "$work/Sb16Hidden.cor" || fail "the module's interna
 "$corc" compile --kernel "$k/kernel" --decl-index "$k/kernel.idx" --assembly Kernel --ring 0 "$work/Sb16Hidden.cor" --obj -o "$work/sb16hidden.o" \
     2> "$work/sb16hidden.log" || { cat "$work/sb16hidden.log"; fail "module object with the internal call"; }
 if "$corc" link "$work/sb16hidden.o" --kernel "$k/kernel" -o "$work/sb16hidden.ko" 2> "$work/module-hidden.log"; then fail "a module importing an internal member linked"; fi
-grep -q 'm_Tick_Hidden_' "$work/module-hidden.log" || { cat "$work/module-hidden.log"; fail "the refusal does not name the internal member"; }
+grep -q 'm_Kernel\$Tick_Hidden_' "$work/module-hidden.log" || { cat "$work/module-hidden.log"; fail "the refusal does not name the internal member"; }
 echo "PASS a kernel exports its public surface, every public member out of line, and a module importing an internal one is refused: $work"

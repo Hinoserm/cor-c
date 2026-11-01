@@ -120,7 +120,9 @@ public static class LinkTimeOptimizer
     public static void StripLinkNotes(IEnumerable<ObjectFile> objects)
     {
         foreach (ObjectFile obj in objects) obj.Sections.RemoveAll(s => s.Name == OptimizationSummary.SectionName || s.Name == IrArchive.SectionName
-            || s.Name == LifetimeHints.SectionName || s.Name == RegionHints.SectionName || s.Name == HeapRecords.SectionName);
+            || s.Name == LifetimeHints.SectionName || s.Name == RegionHints.SectionName || s.Name == HeapRecords.SectionName
+            // A ring unit's public surface: the kernel's link has read it (ObjectLinkCommand).
+            || s.Name == PublicApi.SectionName);
     }
 
     /// <summary>An object's defined symbols by name, each name's in the order the table holds them.</summary>

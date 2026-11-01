@@ -386,7 +386,7 @@ public static class ObjectLinkCommand
                     HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
                     List<string> lost = offered.Where(name => !exported.Contains(name)).Order(StringComparer.Ordinal).ToList();
                     if (lost.Count > 0)
-                        throw new ElfFormatException(output + ": public members of the kernel without a body to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
+                        throw new ElfFormatException(output + ": public members of the kernel not in the image to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
                 }
                 // ONE LAYOUT A TYPE: two of a key's names (LayoutNames) -- two
                 // units' differing records of one instantiation, or of any
