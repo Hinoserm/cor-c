@@ -269,10 +269,11 @@ public sealed class Module
         => ProvidedElsewhere is { } provided && f.FromLibrary && f.Name != Entry && provided.Contains(f.Name);
 
     /// <summary>
-    /// The compile is the class library's own -- one of its images, its
-    /// sources among this compile's -- whose code is its own wherever
-    /// another image provides the rest: none of it is read here to be given
-    /// away (LibraryPrivate).
+    /// The compile is the class library's own -- one of its images, a
+    /// library's compile of its sources, not a program's, which has them
+    /// among its files too -- whose code is its own wherever another image
+    /// provides the rest: none of it is read here to be given away
+    /// (LibraryPrivate).
     /// </summary>
     public bool CompilesLibrary { get; set; }
 

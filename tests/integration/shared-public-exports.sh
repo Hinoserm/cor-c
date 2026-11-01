@@ -23,6 +23,7 @@ if grep -q '^m_Api_Seed_' "$work/exported"; then fail "a private method is expor
 if grep -q '^m_Helper_Half_' "$work/exported"; then fail "an internal type's public method is exported"; fi
 grep -q '^m_Api_Picked_' "$work/exported" || fail "a private method the library's generic code names is not exported for a program's copy"
 grep -q '^s_Api__picks_' "$work/exported" || fail "a private static the library's generic code names is not exported for a program's copy"
+if grep -q '^s_Api__calls_' "$work/exported"; then fail "a private static only the library's own code reads is exported"; fi
 # Pick's own copies, never Picked: a copy's name goes on past Pick otherwise than `ed`.
 if grep -q '^m_Api_Pick[^e]' "$work/exported"; then fail "the library exported a copy of generic code it never made"; fi
 readelf -d "$work/libApi.so" > "$work/dynamic"
@@ -39,8 +40,11 @@ grep -q '^lookup ok [1-9]' "$work/lookup.out" || { cat "$work/lookup.out"; fail 
 status=0; "$work/caller" || status=$?
 test "$status" = 42 || fail "the caller answered $status, not 42"
 # Its copy of Pick its own, calling what the library exported for it.
-readelf -sW "$work/caller" | awk '$7 != "UND" { print $8 }' | grep -q '^m_Api_Pick[^e]' || fail "the caller has no copy of Api.Pick of its own"
-readelf --dyn-syms -W "$work/caller" | awk '$7 == "UND" { print $8 }' | grep -q '^m_Api_Picked_' || fail "the caller's copy of Pick does not call the library's Picked"
+readelf -sW "$work/caller" | awk '$7 != "UND" { print $8 }' > "$work/caller.defined"
+readelf --dyn-syms -W "$work/caller" | awk '$7 == "UND" { print $8 }' > "$work/caller.imports"
+grep -q '^m_Api_Pick[^e]' "$work/caller.defined" || fail "the caller has no copy of Api.Pick of its own"
+grep -q '^m_Api_Picked_' "$work/caller.imports" || fail "the caller's copy of Pick does not call the library's Picked"
+grep -q '^s_Api__picks_' "$work/caller.imports" || fail "the caller's copy of Pick does not read the library's _picks"
 # A program reaching the library's internal type: refused, the name said --
 # by its compile, which C# says may not name it (CS0122), or by its link,
 # which finds it not exported.

@@ -2,7 +2,8 @@
 // and not Api.Inner (internal), Helper (an internal class) or Api.Seed
 // (private), which Api's own code calls. And what its generic code names:
 // a program's copy of Api.Pick for the program's own struct calls Picked
-// and counts in _picks, private as they are, and they are exported for it.
+// and reads _picks, private as they are, and they are exported for it; a
+// static only Picked reads, _calls, is not.
 public static class Api
 {
     public static int Answer() => Helper.Half() * 2 + Seed() - Inner();
@@ -10,9 +11,9 @@ public static class Api
     internal static int Inner() => 7;
     private static int Seed() => 7;
 
-    static int _picks;
-    static int Picked() => ++_picks;
-    public static T Pick<T>(T a, T b) => Picked() % 2 == 1 ? a : b;
+    static int _picks, _calls;
+    static int Picked() { _calls++; return ++_picks; }
+    public static T Pick<T>(T a, T b) => (Picked() + _picks) % 2 == 0 ? a : b;
 }
 
 static class Helper

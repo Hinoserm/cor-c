@@ -57,6 +57,11 @@ public sealed partial class Lowering
             bool abi = CompilerAbi.Is(d);
             bool open = Offered(d) || abi;
             bool wide = abi || SplitLibrary && Binder.ClassLibrarySide(d) && WithinAssembly(d);
+            // A PARTIAL TYPE'S PRIVATE MEMBERS ARE EVERY PART'S, and the split
+            // class library writes parts of one type into two images:
+            // Utf8Formatter's TryFormat in libSystem.Runtime.Extensions calls
+            // the private Text of its part in libcorsacrt.
+            bool parts = wide && !abi && (d.Mods & Mods.Partial) != 0;
             // ITS MEMBERS READ IN ITS OWN SCOPE (MemberWatch): every type of the
             // unit is walked, and an imported one -- the kernel's Arch, in
             // every unit -- lists nothing here: none of its methods is emitted
@@ -75,7 +80,7 @@ public sealed partial class Lowering
                 bool startup = method.Name == "StaticInit$";
                 bool offered = open && (startup || Binder.ShownOutside(d, method));
                 List<string> into = offered ? _m.PublicSymbols
-                    : wide && (startup || Binder.SeenInAssembly(d, method)) ? _m.OptionalSymbols
+                    : wide && (startup || parts || Binder.SeenInAssembly(d, method)) ? _m.OptionalSymbols
                     : _m.WithheldSymbols;
                 into.Add(CallLabel(m));
                 if (CopiesInside(m)) into.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
@@ -88,7 +93,7 @@ public sealed partial class Lowering
                 if (!f.Static || !_statics.Contains(f) || d.Elsewhere) continue;
                 MemberDecl? field = FieldDeclOf(f);
                 bool offered = f.Name == BindResult.ReadyField ? open || wide
-                    : field is not null && (open && Binder.ShownOutside(d, field) || wide && Binder.SeenInAssembly(d, field));
+                    : field is not null && (open && Binder.ShownOutside(d, field) || wide && (parts || Binder.SeenInAssembly(d, field)));
                 (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(f.ThreadStatic ? ThreadStaticIndex(f) : StaticSymbol(f));
             }
             // ITS DESCRIPTOR, where this unit made it: a module making one of

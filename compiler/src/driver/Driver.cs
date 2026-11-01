@@ -1389,7 +1389,10 @@ public static class Driver
                 providers.UnionWith(mine);
             }
             module.ProvidedElsewhere = providers;
-            module.CompilesLibrary = files.Any(IsLibrarySource);
+            // ONE OF THE CLASS LIBRARY'S IMAGES: a library's compile, not a
+            // module's, of the class library's sources. A program's compile
+            // has them among its files too, and reads them all to give away.
+            module.CompilesLibrary = library && kernel is null && files.Any(IsLibrarySource);
         }
         if (!args.Contains("--no-opt"))
         {
