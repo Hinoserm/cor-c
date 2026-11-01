@@ -221,14 +221,20 @@ public static class ManagedLayouts
                 if (own) defined?.Add("type:" + type.Key);
                 if (indexed) read?.Add("type:" + type.Key);
                 yield return new ManagedTypeLayout("type:" + type.Key, SHA256.HashData(Shape(type, hidden)));
-                foreach (FieldSymbol field in type.Fields.Where(field => field.Static && !hidden.Contains(field.Name)))
+                // A TYPE READ MEMBER BY MEMBER (MemberWatch) says of its members
+                // only those the unit asked for: a unit kept for not asking
+                // after Arch.X holds no record of X for the link to find
+                // differing from Arch's own unit's once X changed.
+                MemberWatch? watch = type.Decl?.Watch is { Whole: false } watched ? watched : null;
+                bool Asked(string name) => watch is null || watch.Names.Contains(name);
+                foreach (FieldSymbol field in type.Fields.Where(field => field.Static && !hidden.Contains(field.Name) && Asked(field.Name)))
                 {
                     stream.SetLength(0); stream.Position = 0;
                     TypeName(writer, field.Type); writer.Write(field.Volatile); writer.Write(field.Required);
                     writer.Flush();
                     yield return new ManagedTypeLayout("field:" + type.Key + "." + field.Name, SHA256.HashData(stream.ToArray()));
                 }
-                foreach (MethodSymbol method in type.Methods.Where(method => method.Decl?.LocalCopy != true && method.TypeParams.Count == 0 && !Private(method)))
+                foreach (MethodSymbol method in type.Methods.Where(method => method.Decl?.LocalCopy != true && method.TypeParams.Count == 0 && !Private(method) && Asked(method.Name)))
                 {
                     stream.SetLength(0); stream.Position = 0;
                     TypeName(writer, method.Returns); writer.Write(method.Static); writer.Write(method.IsCtor);

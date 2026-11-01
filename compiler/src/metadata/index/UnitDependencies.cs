@@ -56,11 +56,13 @@ public static class UnitDependencies
     /// behind a template rebuild the same units for different reasons, and
     /// the build log should not leave the difference to be worked out by hand.
     /// </summary>
-    /// NOTHING OF WHERE THE FILES ARE: the records by what they hold, in the
-    /// order of that, so a tree copied elsewhere reads as current. With each
-    /// record's path in, a copy of a kernel's build rebuilt every unit.
     private static byte[] Fingerprint(IReadOnlyList<SourceDeclaration> records, Dependence part)
     {
+        // NOTHING OF WHERE THE FILES ARE, so a tree copied elsewhere reads as
+        // current: with each record's path in, a copy of a kernel's build
+        // rebuilt every unit. BUT THEIR ORDER STILL: a partial type's parts
+        // merge in the order of their paths and places (Frontend.MergePartialTypes),
+        // and that order lays its fields out -- the same in any directory.
         byte[] Part(SourceDeclaration record) => part switch
         {
             Dependence.Source => record.SourceHash, Dependence.Template => record.TemplateHash,
@@ -68,8 +70,8 @@ public static class UnitDependencies
         };
         using MemoryStream buffer = new();
         using BinaryWriter writer = new(buffer, Encoding.UTF8, leaveOpen: true);
-        foreach (byte[] said in records.Select(Part).OrderBy(Convert.ToHexString, StringComparer.Ordinal))
-            writer.Write(said);
+        foreach (SourceDeclaration record in records.OrderBy(record => record.Path, StringComparer.Ordinal).ThenBy(record => record.From))
+            writer.Write(Part(record));
         return SHA256.HashData(buffer.ToArray());
     }
 

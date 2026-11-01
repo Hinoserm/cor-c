@@ -7,17 +7,6 @@ public static class ProjectState
 {
     public static string Digest(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     /// <summary>
-    /// WHICH FILE, AND WHICH WRITE OF IT: its path, when it was last written
-    /// and its length. What a build compares between runs and across a build,
-    /// as make does. It also hashed every byte with SHA-256, and it is asked
-    /// of every library source in every unit compiler process (ProjectCompile's
-    /// references), of every object and the image at the link, of the native
-    /// compiler itself (ToolIdentity) -- tens of megabytes of SHA-256 a build
-    /// step, a fifth of a native unit compile's time, to learn what the
-    /// write time already says. A file written again with the same bytes is
-    /// taken as changed, which costs a rebuild and never a stale object.
-    /// </summary>
-    /// <summary>
     /// WHICH WRITE OF A FILE, WHEREVER IT IS: its name, when it was last
     /// written and its length -- FileIdentity without the directory. What a
     /// stamp kept in a build tree records of a file, so that the tree copied
@@ -55,6 +44,17 @@ public static class ProjectState
         => option.Length > 0 && option[0] != '-'
            && (Path.IsPathRooted(option) || option.Contains('/') && (File.Exists(option) || Directory.Exists(option))) ? "<path>" : option;
 
+    /// <summary>
+    /// WHICH FILE, AND WHICH WRITE OF IT: its path, when it was last written
+    /// and its length. What a build compares between runs and across a build,
+    /// as make does. It also hashed every byte with SHA-256, and it is asked
+    /// of every library source in every unit compiler process (ProjectCompile's
+    /// references), of every object and the image at the link, of the native
+    /// compiler itself (ToolIdentity) -- tens of megabytes of SHA-256 a build
+    /// step, a fifth of a native unit compile's time, to learn what the
+    /// write time already says. A file written again with the same bytes is
+    /// taken as changed, which costs a rebuild and never a stale object.
+    /// </summary>
     public static string FileIdentity(string path)
     {
         FileInfo file = new(path);

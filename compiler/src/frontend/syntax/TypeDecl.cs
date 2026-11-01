@@ -84,16 +84,16 @@ public sealed class TypeDecl : Node
     /// <summary>The text <see cref="BaseSpans"/> index.</summary>
     public string? BaseSource { get; set; }
     /// <summary>
-    /// Its members, MADE HERE ON FIRST ASKING when they were deferred
-    /// (DeferMembers): every reader sees the whole list, as it always did.
-    /// </summary>
-    /// <summary>
     /// What the unit reads of it, member by member, where it was read from
     /// the index and its members can be told apart (MemberWatch): every
     /// reading of this list reads them all.
     /// </summary>
     public MemberWatch? Watch { get; set; }
 
+    /// <summary>
+    /// Its members, MADE HERE ON FIRST ASKING when they were deferred
+    /// (DeferMembers): every reader sees the whole list, as it always did.
+    /// </summary>
     public List<MemberDecl> Members
     {
         get

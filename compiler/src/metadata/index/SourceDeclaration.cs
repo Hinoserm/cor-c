@@ -131,7 +131,7 @@ public sealed class SourceDeclaration
         try
         {
             if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 1)
-                throw new InvalidDataException("Unsupported source declaration");
+                throw new InvalidDataException("Unsupported source declaration: the index was made by another compiler; make it again");
             // ONE COPY OF WHAT DECLARATIONS SHARE: a file's path, its namespace,
             // its usings and the project's symbols were decoded afresh for every
             // declaration, and tens of thousands of copies of each sat live.

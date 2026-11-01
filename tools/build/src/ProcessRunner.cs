@@ -47,12 +47,14 @@ public sealed class ProcessRunner
             start.Environment["CORSAC_BUILD_JOBS"] = workers.ToString();
             start.Environment["DOTNET_PROCESSOR_COUNT"] = workers.ToString();
             Console.WriteLine("run /" + label + ": " + executable + " (workers=" + workers + ")");
+            // The logs made before the process starts: one that cannot be made
+            // leaves no process behind with nobody reading its pipes.
+            await using FileStream stdout = new(prefix + ".out.log", FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            await using FileStream stderr = new(prefix + ".err.log", FileMode.CreateNew, FileAccess.Write, FileShare.Read);
             using Process process = new() { StartInfo = start };
             Stopwatch watch = Stopwatch.StartNew();
             process.Start();
             if (!interactive) process.StandardInput.Close();
-            await using FileStream stdout = new(prefix + ".out.log", FileMode.CreateNew, FileAccess.Write, FileShare.Read);
-            await using FileStream stderr = new(prefix + ".err.log", FileMode.CreateNew, FileAccess.Write, FileShare.Read);
             // Both streams, every line, live (ProgressOutput).
             Task outCopy = interactive ? Task.CompletedTask : ProgressOutput.Copy(process.StandardOutput.BaseStream, stdout,
                 line => Console.WriteLine("/" + label + ": " + line));

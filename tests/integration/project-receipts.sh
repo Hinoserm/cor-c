@@ -27,6 +27,7 @@ static class Util
     public static int A() => 1;
     public static int B() => 2;
     public const int C = 3;
+    public const int P = 5, Q = 6;
 }
 CS
 cat > "$work/UseA.cs" <<'CS'
@@ -38,7 +39,7 @@ CS
 cat > "$work/UseB.cs" <<'CS'
 static class UseB
 {
-    public static int Go() => Util.B() + Util.C;
+    public static int Go() => Util.B() + Util.C + Util.Q - 6;
 }
 CS
 cat > "$work/Program.cs" <<'CS'
@@ -62,9 +63,15 @@ run_build "$work" > "$work/signature.log" 2>&1
 grep -q '2/4 source units rebuilt' "$work/signature.log"
 grep -q 'UseB.cs unit-allocated=[0-9]* rebuilt: member B of Util changed$' "$work/signature.log"
 test "$(answer "$program")" = 16
+# A SECOND NAME OF ONE DECLARATION: Q, written after P in one line (one text, both names), is UseB's
+# to read, and its value changed is UseB's to compile again.
+sed -i 's/public const int P = 5, Q = 6;/public const int P = 5, Q = 7;/' "$work/Util.cs"
+run_build "$work" > "$work/declarator.log" 2>&1
+grep -qE 'UseB.cs unit-allocated=[0-9]* rebuilt: member [PQ] of Util changed$' "$work/declarator.log"
+test "$(answer "$program")" = 17
 # The tree copied elsewhere, times and all: nothing compiled again.
 cp -a "$work" "$work-copy"
 run_build "$work-copy" > "$work-copy/copied.log" 2>&1
 grep -q '0/4 source units rebuilt, 0/[0-9]* class library units' "$work-copy/copied.log"
-test "$(answer "$work-copy/bin/cor-c/Release/net10.0/Receipts")" = 16
+test "$(answer "$work-copy/bin/cor-c/Release/net10.0/Receipts")" = 17
 echo "PASS a member added rebuilds its own unit, a signature its callers', a copied tree nothing: $work"

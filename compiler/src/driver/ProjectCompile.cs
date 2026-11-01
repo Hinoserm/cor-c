@@ -120,8 +120,7 @@ public static class ProjectCompile
         // library's missing export stayed missing across rebuilds until the
         // objects were deleted by hand.
         //
-        // AND THE LIBRARIES IT REFERENCES, by which write of them they are
-        // (ProjectState.FileIdentity: path, write time, length). A unit copies
+        // AND THE LIBRARIES IT REFERENCES, by their bytes (below). A unit copies
         // the bodies of the library generics it uses into itself, so a changed
         // library is a changed unit whatever its own source says: stamped by
         // the libraries' names alone, a unit kept its copy of an old
@@ -161,10 +160,11 @@ public static class ProjectCompile
         if (exported is not null)
             foreach (string under in Driver.Values(args, "--link-shared"))
                 exported.UnionWith(ElfReader.ExportsOf(File.ReadAllBytes(under)));
-        string optionsText = "0\t" + CompilerIdentity() + "\t" + string.Join('\t', common.Select(Corsac.Projects.ProjectState.Unplaced)) + references;
+        // --receipt-trace says what a unit reads; it changes nothing compiled.
+        string optionsText = "0\t" + CompilerIdentity() + "\t" + string.Join('\t', common.Where(option => option != "--receipt-trace").Select(Corsac.Projects.ProjectState.Unplaced)) + references;
         // HASHED ONCE, an entry unit's options and a library unit's: the text
-        // names every library by path, time and length, and was encoded
-        // afresh for every stamp of every unit.
+        // holds every library's hash, and was encoded afresh for every stamp
+        // of every unit.
         static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
         string entryOptions = Hash(Encoding.UTF8.GetBytes(optionsText + "\tentry"));
         string libraryOptions = Hash(Encoding.UTF8.GetBytes(optionsText + "\tlib"));
@@ -815,7 +815,10 @@ public static class ProjectCompile
         // again, and that is what changes its identity. Not its directory:
         // a toolchain copied with its times is the same compiler.
         using SHA256 sha = SHA256.Create();
-        byte[] described = Encoding.UTF8.GetBytes(string.Join("\n", parts.Distinct(StringComparer.Ordinal).Select(Corsac.Projects.ProjectState.WriteIdentity)));
+        // AND THE ASSEMBLY'S OWN BUILD (its module version id): two toolchains
+        // whose files' times were made alike, in an archive, are still two.
+        byte[] described = Encoding.UTF8.GetBytes(string.Join("\n", parts.Distinct(StringComparer.Ordinal).Select(Corsac.Projects.ProjectState.WriteIdentity))
+            + "\n" + typeof(ProjectCompile).Assembly.ManifestModule.ModuleVersionId);
         return _compilerIdentity = Convert.ToHexString(sha.ComputeHash(described));
     }
 }

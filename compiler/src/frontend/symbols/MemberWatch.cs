@@ -49,9 +49,10 @@ public sealed class MemberWatch
         // Traced, every place that reads one whole is said once, not only the first.
         if (Trace)
         {
-            System.Diagnostics.StackTrace stack = new(1, false);
-            string frames = string.Join(" < ", stack.GetFrames().Take(6).Select(frame => frame.GetMethod() is { } method
-                ? method.DeclaringType?.Name + "." + method.Name : "?"));
+            // The stack's text, not its frames' methods, which a native
+            // compiler's trimming cannot promise.
+            string frames = string.Join(" < ", Environment.StackTrace.Split('\n').Skip(2).Take(6)
+                .Select(line => line.Trim().StartsWith("at ", StringComparison.Ordinal) ? line.Trim()[3..].Split('(')[0] : line.Trim()));
             lock (Said) if (Said.Add(frames)) Console.Error.WriteLine("receipt: " + Key[(Key.IndexOf('\n') + 1)..] + " read whole by " + frames);
         }
         Whole = true;

@@ -453,10 +453,44 @@ public static class SourceIndexBuilder
                             visible.Append(laid).Append(' ');
                             if (byMember) shapeText.Append(laid).Append(' ');
                         }
+                        // A PRIVATE STATIC'S INITIALISER WHOLE, to the shape: a
+                        // table laid down as data makes no StaticInit$, a
+                        // computed one does, and every unit touching the type
+                        // reads which (Binder.StaticInitialisers, Lowering.TouchType).
+                        else if (hiding == PrivateMember.Initialised && byMember)
+                            shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
                     }
                     shaped.Flush();
                     // Once, wherever they were written.
                     if (markedStatics) visible.Append("static ;");
+                    // EVERY NAME ANOTHER UNIT CAN ASK, ITS OWN HASH OR THE SHAPE'S.
+                    // A member with no span of its own -- `const int A = 1, B = 2`'s
+                    // B, an event's hoisted remove_ -- was written inside another's,
+                    // and its names are that one's text's (or the shape's, where
+                    // that one is the shape's). One found inside none: the type's
+                    // members are not told apart.
+                    Dictionary<string, HashSet<string>> alsoNamed = new(StringComparer.Ordinal);
+                    if (byMember)
+                    {
+                        HashSet<MemberDecl> spanned = new(members.Select(member => member.Member), ReferenceEqualityComparer.Instance);
+                        Dictionary<(int Line, int Col), int> at = new();
+                        foreach (Token placed in tokens)
+                            if (placed.Pos >= type.SourceFrom && placed.Pos < type.SourceTo) at.TryAdd((placed.Line, placed.Col), placed.Pos);
+                        foreach (MemberDecl unspanned in type.Members)
+                        {
+                            if (spanned.Contains(unspanned) || Hiding(unspanned) != PrivateMember.Shown) continue;
+                            int inside = at.TryGetValue((unspanned.Line, unspanned.Col), out int pos)
+                                ? Array.FindIndex(members, member => pos >= member.From && pos < member.To) : -1;
+                            if (inside < 0) { byMember = false; break; }
+                            if (Hiding(members[inside].Member) == PrivateMember.Shown && MemberName(members[inside].Member) is string holder
+                                && memberTexts.ContainsKey(holder))
+                            {
+                                if (!alsoNamed.TryGetValue(holder, out HashSet<string>? names)) alsoNamed[holder] = names = new(StringComparer.Ordinal);
+                                names.UnionWith(Monomorphiser.MemberNames(new List<MemberDecl> { unspanned }));
+                                names.Add(unspanned.Name);
+                            }
+                        }
+                    }
                     // WHETHER IT HAS STATICS TO MAKE, whoever's they are: every
                     // unit touching the type reads that (Lowering.TouchType),
                     // and a public static with an initialiser is a member's
@@ -492,9 +526,17 @@ public static class SourceIndexBuilder
                         ConditionalSymbols = (activeSymbols ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
                         ShapeHash = byMember ? Hashed(shapeText.ToString(), path, scope, 32) : Array.Empty<byte>(),
                         MemberHashes = byMember
-                            ? memberTexts.SelectMany(member => LookedUpBy(member.Value.Member, member.Key)
-                                    .Select(name => (Name: name, Hash: Hashed(member.Value.Text.ToString(), path, null, 16))))
-                                .GroupBy(member => member.Name, StringComparer.Ordinal).Select(group => group.First())
+                            ? memberTexts.SelectMany(member =>
+                                {
+                                    byte[] said = Hashed(member.Value.Text.ToString(), path, null, 16);
+                                    return LookedUpBy(member.Value.Member, member.Key)
+                                        .Concat(alsoNamed.GetValueOrDefault(member.Key) ?? Enumerable.Empty<string>())
+                                        .Select(name => (Name: name, Hash: said));
+                                })
+                                // A name under two texts takes both: none is left out.
+                                .GroupBy(member => member.Name, StringComparer.Ordinal)
+                                .Select(group => group.Count() == 1 ? group.First() : (Name: group.Key, Hash: SHA256.HashData(group
+                                    .Select(member => member.Hash).OrderBy(Convert.ToHexString, StringComparer.Ordinal).SelectMany(bytes => bytes).ToArray())[..16]))
                                 .OrderBy(member => member.Name, StringComparer.Ordinal).ToArray()
                             : Array.Empty<(string, byte[])>(),
                     }.Encode();

@@ -3744,6 +3744,19 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// QUIETLY for a watched type (MemberWatch): what this makes of a type's
+    /// statics -- whether it has any to make, which the link may lay down, a
+    /// static constructor's body -- is its shape's to say
+    /// (SourceIndexBuilder.MemberName: an initialised static and a static
+    /// constructor are no member's own), not the unit's asking.
+    /// </summary>
+    private void StaticInitialisers(TypeDecl d)
+    {
+        if (d.Watch is { } watch) { using (watch.Quietly()) StaticInitialisersOf(d); }
+        else StaticInitialisersOf(d);
+    }
+
+    /// <summary>
     /// Moves a type's STATIC field initialisers into a method that runs before
     /// the program does.
     ///
@@ -3763,19 +3776,6 @@ public sealed partial class Binder
     /// the kernel linked brought the kernel down at entry. Deferring to first
     /// use puts the allocation after Main has started, where the heap is.
     /// </summary>
-    /// <summary>
-    /// QUIETLY for a watched type (MemberWatch): what this makes of a type's
-    /// statics -- whether it has any to make, which the link may lay down, a
-    /// static constructor's body -- is its shape's to say
-    /// (SourceIndexBuilder.MemberName: an initialised static and a static
-    /// constructor are no member's own), not the unit's asking.
-    /// </summary>
-    private void StaticInitialisers(TypeDecl d)
-    {
-        if (d.Watch is { } watch) { using (watch.Quietly()) StaticInitialisersOf(d); }
-        else StaticInitialisersOf(d);
-    }
-
     private void StaticInitialisersOf(TypeDecl d)
     {
         if (d.Kind is TypeKind.Interface or TypeKind.Enum)

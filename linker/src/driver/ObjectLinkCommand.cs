@@ -174,6 +174,8 @@ public static class ObjectLinkCommand
             // a link holds the objects' code and tables, never their IR.
             try { inputs.Add((path, ElfReader.ReadObjectFile(full))); }
             catch (ElfFormatException error) { return Fail(path + ": " + error.Message); }
+            // EACH INPUT SAID as it is read (Hino: a line for every file built or linked).
+            Console.Error.WriteLine("link input: " + path + " (" + new FileInfo(full).Length + " bytes)");
         }
         // Resolve every input and relocation before writing the destination.
         // LinkException is rendered by Driver, just as for compile-and-link.
@@ -226,6 +228,22 @@ public static class ObjectLinkCommand
         if (exports || kernel is not null) InterruptNotes.WriteBeside(destination, inputs.Select(input => input.Item2));
         // And a shared object's: what links against it calls into it too.
         if (exports || kernel is not null || shared) X87Notes.WriteBeside(destination, inputs.Select(input => input.Item2));
+        // WHAT THE IMAGE IS MADE FROM, the checks above made whatever it says
+        // (LinkReceipt): where nothing it is made from moved, the image is
+        // what this link would write, and is left as it is. Not where a
+        // report of the optimiser's own was asked for, which only a link makes.
+        string? digest = null;
+        if (regionReport is null)
+        {
+            try { digest = LinkReceipt.Digest(args, paths, inputs.Select(input => input.Item2).ToList(), keepPath, kernel, sharedLibraries); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { digest = null; }
+        }
+        if (digest is not null && LinkReceipt.Current(output, digest))
+        {
+            Console.Error.WriteLine("link current: " + output + " (" + inputs.Count + " objects; nothing it is made from, nor any name it imports, changed)");
+            return 0;
+        }
+        LinkReceipt.Forget(output);
         // A KERNEL WITH EXPORTS IS NOT CLOSED, whatever its address says:
         // what a module calls, subclasses or stores into is outside it, so
         // nothing the link proves about the whole program holds (closed
@@ -354,6 +372,8 @@ public static class ObjectLinkCommand
             File.SetUnixFileMode(output, File.GetUnixFileMode(output)
                 | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
         Console.Error.WriteLine($"{output}: {inputs.Count} objects, {(streamed ? new FileInfo(output).Length : image.Length)} bytes; LTO calls folded={folded}; IR units regenerated={regenerated}");
+        Console.Error.WriteLine("link output: " + output + " (" + new FileInfo(output).Length + " bytes)");
+        if (digest is not null) LinkReceipt.Record(output, digest);
         return 0;
     }
 

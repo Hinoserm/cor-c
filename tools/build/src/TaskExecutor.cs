@@ -172,10 +172,10 @@ public sealed class TaskExecutor
     /// <summary>
     /// Prints what a failed step said, rather than only where to find it.
     ///
-    /// Standard output is echoed as it arrives, but standard error is only
-    /// copied to its file -- and standard error is where a tool says why it
-    /// gave up. So a failure showed a path and nothing else, and the reason
-    /// was one cat away in a directory named after a timestamp.
+    /// Both streams are echoed as they arrive (ProgressOutput), but in a long
+    /// build the reason a step gave up has scrolled away by the time it is
+    /// said to have failed: so the end of what it said is said again beside
+    /// its failure, rather than only the path of its logs.
     ///
     /// The tail is bounded because a compiler that fails on every file of a
     /// large project should not push the reason off the top of the screen.
