@@ -117,7 +117,8 @@ public sealed class MemberWatch
             }
             if (_within is { } open)
             {
-                int at = open.FindLastIndex(entry => ReferenceEquals(entry, _owner));
+                int at = open.Count - 1;
+                while (at >= 0 && !ReferenceEquals(open[at], _owner)) at--;
                 if (at >= 0) open.RemoveRange(at, open.Count - at);
             }
             throw new InvalidOperationException("a member watch's scope closed out of turn");
