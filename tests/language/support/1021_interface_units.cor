@@ -2,6 +2,7 @@
 // this side, one of them on an exception that derives from the library's.
 
 using System;
+using System.Collections.Generic;
 
 namespace CodeUnits;
 

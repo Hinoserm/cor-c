@@ -14,6 +14,8 @@
 // inherited. A constructor parameter with a default need not be passed, here
 // as anywhere else. And a property's getter may be an iterator.
 
+using System.Collections.Generic;
+
 abstract record Place(int Width);
 
 sealed record RegPlace(int Reg, int Width) : Place(Width);

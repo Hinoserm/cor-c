@@ -14,6 +14,8 @@
 // overload that is not chosen until the arguments are read, so it is settled
 // afterwards -- the same two steps `out var` takes.
 
+using System.Collections.Generic;
+
 struct Entry
 {
     public int A;

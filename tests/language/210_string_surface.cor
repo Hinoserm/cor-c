@@ -26,6 +26,7 @@
 // without regard to case, trimming particular characters, cutting and
 // splicing, and the character predicates that go with them.
 
+using System.Collections.Generic;
 using System.Linq;
 using System;
 

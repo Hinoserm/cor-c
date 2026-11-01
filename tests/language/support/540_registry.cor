@@ -8,6 +8,8 @@
 // registry rather than out of a field, and that a member nobody has set
 // still comes back as the initialiser written beside it.
 
+using System.Collections.Generic;
+
 enum RegistryScope
 {
     User = 0,

@@ -12,6 +12,8 @@
 // findable, growth past the first table), Queue<T> ordering, a set of
 // strings, and foreach over a set.
 
+using System.Collections.Generic;
+
 static class Program
 {
     static void Line(string s)

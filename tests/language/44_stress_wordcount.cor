@@ -11,6 +11,7 @@
 // second count over a split sentence.
 
 using System;
+using System.Collections.Generic;
 
 static class Program
 {

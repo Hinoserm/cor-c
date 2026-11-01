@@ -11,6 +11,7 @@
 // String.Split, integer parsing and formatting in several bases, and
 // StringBuilder including growth past its first buffer.
 
+using System.Collections.Generic;
 using System.Text;
 using System;
 

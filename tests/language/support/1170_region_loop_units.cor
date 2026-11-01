@@ -3,6 +3,7 @@
 // grown by one link, entries a cache keeps, and a check that throws.
 
 using System;
+using System.Collections.Generic;
 
 namespace LoopUnits;
 

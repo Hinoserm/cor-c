@@ -18,6 +18,7 @@
 // program drops its own copy in favour of the one the library exports.
 
 using System;
+using System.Collections.Generic;
 
 class Node
 {

@@ -19,6 +19,7 @@
 // Regex.Replace with an evaluator; Process's environment and timed waits;
 // GC.GetGCMemoryInfo.
 
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;

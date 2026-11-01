@@ -2,6 +2,8 @@
 // expect-exit: 0
 // expect-output:
 // local defaults passed
+using System;
+
 static class Program
 {
     static int trace;

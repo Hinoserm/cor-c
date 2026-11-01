@@ -17,6 +17,8 @@
 // into new locals with and without `var`, held in a List, taken apart by a
 // foreach, and holding two longs.
 
+using System.Collections.Generic;
+
 static class Program
 {
     static void Line(string s)

@@ -23,6 +23,9 @@
 // thing that can say what a `null` in it is. And the right side of `??` is told
 // what the left side is, which is what gives a lambda there a type at all.
 
+using System;
+using System.Collections.Generic;
+
 abstract class Operand { public abstract int Size(); }
 sealed class RegOperand : Operand { public int R; public override int Size() => 1; }
 sealed class ImmOperand : Operand { public long V; public override int Size() => 4; }

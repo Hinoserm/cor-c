@@ -15,6 +15,8 @@
 // struct is more than one register wide. KeyValuePair is the standard
 // library's struct.
 
+using System.Collections.Generic;
+
 struct Vec
 {
     public long X;

@@ -37,6 +37,7 @@
 // is made of, largest first, in value order.
 
 using System;
+using System.Collections.Generic;
 
 enum Colour
 {

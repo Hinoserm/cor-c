@@ -13,6 +13,8 @@
 // List and Dictionary; a property setter with a body runs during an
 // initialiser.
 
+using System.Collections.Generic;
+
 class Card
 {
     public long Slot;

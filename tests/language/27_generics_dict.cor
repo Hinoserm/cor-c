@@ -16,6 +16,8 @@
 // deconstruction, growth past the initial table, and a collection
 // initialiser.
 
+using System.Collections.Generic;
+
 static class Program
 {
     static void Line(string s)

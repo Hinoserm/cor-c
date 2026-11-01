@@ -16,6 +16,9 @@
 // capture of `this`; a lambda returning a lambda; a captured long; and a
 // block-bodied lambda with its own locals.
 
+using System;
+using System.Collections.Generic;
+
 class Counter
 {
     int n;

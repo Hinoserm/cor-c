@@ -1,6 +1,8 @@
 // The other unit of 971_region_static_cache_across_units: a table of names
 // that keeps the first spelling of each word it is shown, and a splitter
 // whose words and list are the caller's to drop.
+using System.Collections.Generic;
+
 namespace RegionCache;
 
 public static class Names

@@ -1,5 +1,7 @@
 // The other unit of 1020_interface_across_units: an interface, and the
 // classes that implement it.
+using System.Collections.Generic;
+
 namespace ShapeUnits;
 
 public interface IShape

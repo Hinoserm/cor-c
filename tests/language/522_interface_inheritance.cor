@@ -26,6 +26,7 @@
 // through the class finds the field first and loads it with no call at all.
 
 using System;
+using System.Collections.Generic;
 
 interface ICounted
 {

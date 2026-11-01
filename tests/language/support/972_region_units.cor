@@ -1,6 +1,7 @@
 // The other unit of 972_region_virtual_maker_across_units: a runner that
 // asks a maker it is handed for shapes and adds up their areas, keeping
 // none of them -- and a shelf that keeps what it is given.
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
 namespace RegionMakers;

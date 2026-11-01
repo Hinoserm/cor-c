@@ -25,6 +25,7 @@
 // about its members and nothing about null, because a struct is always there.
 
 using System;
+using System.Collections.Generic;
 
 namespace Corsac.Test;
 

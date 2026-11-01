@@ -1,0 +1,18 @@
+// test: generic_library_type_without_using_refused
+// expect-compile-error: CS0246: The type or namespace name 'ReadOnlySpan<byte>' could not be found (it is System.ReadOnlySpan<>: add `using System;`)
+//
+// ReadOnlySpan<T> is System's, and a file with no `using System;` names it
+// only as System.ReadOnlySpan<byte> -- as a type (CS0246) as well as in an
+// expression (CS0103), as C# has it. Written as a type, a generic's copy
+// was a name the compiler had made, and seen from anywhere, while
+// `ReadOnlySpan<byte>.Empty` in the same file was refused.
+
+static class Program
+{
+    static int Length(ReadOnlySpan<byte> bytes) => bytes.Length;
+
+    static int Main()
+    {
+        return Length(new ReadOnlySpan<byte>(new byte[] { 1, 2 })) == 2 ? 0 : 1;
+    }
+}

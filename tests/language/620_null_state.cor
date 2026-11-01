@@ -22,6 +22,8 @@
 // New();` returns an MReg: the variable holds one after the write, whatever
 // its declaration allows.
 
+using System.Collections.Generic;
+
 sealed class Block { public int Id; }
 
 sealed class Reg { public int N; }

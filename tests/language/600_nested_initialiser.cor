@@ -15,6 +15,8 @@
 // kinds of brace contents are tried -- elements, which call Add, and further
 // assignments, which reach further in -- and so is a nested `[key] = value`.
 
+using System.Collections.Generic;
+
 class Instr
 {
     public int Op { get; set; }

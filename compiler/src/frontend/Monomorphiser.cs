@@ -2738,6 +2738,11 @@ public sealed class Monomorphiser
             ElementNullable = r.ElementNullable,
             InnerNullable = r.InnerNullable,
             PointerDepth = r.PointerDepth,
+            // STILL THE PROGRAM'S, made into a copy's name (TypeRef.Written):
+            // dropped, `ReadOnlySpan<byte> x` was a name the compiler wrote,
+            // seen without `using System;` where `ReadOnlySpan<byte>.Empty`,
+            // bound as an expression, was refused as C# refuses both.
+            Written = r.Written,
             Line = r.Line, Col = r.Col,
         };
         made.MadeFor = r.MadeFor;

@@ -16,6 +16,8 @@
 // Reverse, ToArray, foreach, growth well past the initial capacity, and a
 // collection initialiser.
 
+using System.Collections.Generic;
+
 class Node
 {
     public int Value;

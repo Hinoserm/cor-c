@@ -23,6 +23,7 @@
 // which is what object.ToString answers for everything else here.
 
 using System;
+using System.Collections.Generic;
 
 struct Vec
 {

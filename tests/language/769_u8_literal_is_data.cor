@@ -9,6 +9,8 @@
 // builds no array at any evaluation. A copy of the expression made on the way
 // (a generic body instantiated, a method specialised) keeps it data too.
 
+using System;
+
 static class Out
 {
     public static void Put(ReadOnlySpan<byte> text) { Sys.Print(text); }

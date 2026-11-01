@@ -685,11 +685,19 @@ public static class Frontend
         return System.Text.Encoding.UTF8.GetString(bytes, skip, bytes.Length - skip);
     }
 
+    /// <summary>
+    /// The errors, each said once: a type both read for a local and asked
+    /// again for its `default` -- `Span<int> y = default;` -- was refused
+    /// twice in the same words at the same place. Kept twice in the list,
+    /// whose count tells a binding's tries whether one failed.
+    /// </summary>
     private static bool Report(IReadOnlyList<CompileError> errors)
     {
+        HashSet<string> said = new(StringComparer.Ordinal);
         foreach (CompileError e in errors)
         {
-            Console.Error.WriteLine(e.ToString());
+            string line = e.ToString();
+            if (said.Add(line)) Console.Error.WriteLine(line);
         }
         return errors.Count > 0;
     }

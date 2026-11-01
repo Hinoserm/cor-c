@@ -27,6 +27,8 @@
 // And a pattern over a type in a namespace is tested for the type the CHECKER
 // resolved, not the name as written.
 
+using System.Collections.Generic;
+
 namespace Corsac.Shapes;
 
 abstract class MemberDecl { public abstract string Name(); }
