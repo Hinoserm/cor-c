@@ -1242,16 +1242,42 @@ public sealed partial class Binder
         if (LibraryNamespaces.Of(key) is not string space || !BindingProgramCode()) return true;
         // NAMED THROUGH ITS OWN NAMESPACE, `System.Collections.Generic.List<int>`,
         // whose copy's name has lost it (TypeRef.Qualifier): seen with no using.
-        if (_qualified is { } named && named.Name == sym.Key && named.Space == space) return true;
+        // Or through the rest of it from inside the namespace that begins it,
+        // `Collections.Generic.List<int>` written in namespace System.
+        if (_qualified is { } named && named.Name == sym.Key
+            && (named.Space == space || space.EndsWith("." + named.Space, StringComparison.Ordinal)
+                && Encloses(space[..(space.Length - named.Space.Length - 1)], WrittenIn())))
+        {
+            return true;
+        }
         return NamespaceInScope(space);
     }
 
     /// <summary>
-    /// The copy being resolved and the namespace it was written with
-    /// (TypeRef.Qualifier), while ResolveCore looks it up: LibraryGlobalVisible
+    /// The copy being looked up and the namespace it was written with
+    /// (TypeRef.Qualifier), while FindWritten asks for it: LibraryGlobalVisible
     /// sees that one through its namespace, and nothing else it is asked.
     /// </summary>
     private (string Name, string Space)? _qualified;
+
+    /// <summary>
+    /// A written type's copy by its name, seen through the namespace it was
+    /// written with (TypeRef.Qualifier) -- a local's or a base's alike. Its
+    /// arguments are the caller's to ask after, as written.
+    /// </summary>
+    private bool FindWritten(TypeRef r, out TypeSymbol? sym)
+    {
+        _qualified = r.Written && r.Qualifier is string space && r.Args.Count == 0 ? (r.Name, space) : null;
+        try { return FindType(r.Name, out sym); }
+        finally { _qualified = null; }
+    }
+
+    /// <summary>The namespace the name being bound was written in.</summary>
+    private string WrittenIn()
+    {
+        TypeDecl? written = (_scope ?? _thisType)?.Decl;
+        return _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
+    }
 
     /// <summary>
     /// A CLASS LIBRARY TYPE THE PROGRAM CANNOT SEE: one written at the top of
@@ -4702,7 +4728,7 @@ public sealed partial class Binder
         }
         if (b.Args.Count > 0
                 ? FindType(Arity(b.Name, b.Args.Count), out based) || FindType(b.Name, out based)
-                : FindType(b.Name, out based))
+                : FindWritten(b, out based))
         {
             return true;
         }
@@ -6538,14 +6564,7 @@ public sealed partial class Binder
             };
         }
 
-        // A COPY NAMED THROUGH ITS NAMESPACE (TypeRef.Qualifier) is looked up
-        // so, and only it: its arguments are asked after, as written.
-        TypeSymbol? path;
-        _qualified = r.Written && r.Qualifier is string space
-            ? (r.Name, space.StartsWith("global::", StringComparison.Ordinal) ? space["global::".Length..] : space) : null;
-        try { if (!FindType(r.Name, out path)) path = null; }
-        finally { _qualified = null; }
-        if (path is not null)
+        if (FindWritten(r, out TypeSymbol? path) && path is not null)
         {
             return NamedType(path, ResolveAll(r.Args, context), r.UseArgs is null ? null : ResolveAll(r.UseArgs, context));
         }

@@ -2314,14 +2314,34 @@ public sealed class Monomorphiser
         if (a.Args.Count == 0 || a.Name == TypeRef.Tuple || AnyMentionsMethodParameter(a.Args)) return a;
         string name = Instantiate(a.Name, a.Args, at);
         if (name == a.Name) return a;
-        int qualified = a.Name.LastIndexOf('.');
         return new TypeRef
         {
             Name = name, ArrayRank = a.ArrayRank, Nullable = a.Nullable, UseArgs = QualifyAll(a.Args),
             ElementNullable = a.ElementNullable, InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth,
-            Written = a.Written, Qualifier = a.Written && qualified > 0 ? a.Name[..qualified] : null,
+            Written = a.Written, Qualifier = a.Written ? QualifierOf(a.Name) : null,
             Line = a.Line, Col = a.Col,
         };
+    }
+
+    /// <summary>
+    /// What a generic was written qualified with, before its last name, for
+    /// its copy's reference (TypeRef.Qualifier); null for a bare name. A
+    /// namespace alias in scope at its front is the namespace it stands for:
+    /// `G.List<int>` under `using G = System.Collections.Generic;`.
+    /// </summary>
+    private string? QualifierOf(string written)
+    {
+        int cut = written.LastIndexOf('.');
+        if (cut <= 0) return null;
+        string qualifier = written[..cut];
+        int first = qualifier.IndexOf('.');
+        string head = first < 0 ? qualifier : qualifier[..first];
+        if (_usings is not null)
+            foreach ((string In, string Alias, string Target) alias in _usings.Aliases)
+                if (alias.Alias == head && !_paths.Contains(alias.Target)
+                    && (alias.In.Length == 0 || alias.In == _inNamespace || _inNamespace.StartsWith(alias.In + ".", StringComparison.Ordinal)))
+                    return alias.Target + qualifier[head.Length..];
+        return qualifier;
     }
 
     /// <summary>Records that a specialisation is needed and returns its name.</summary>
@@ -2750,11 +2770,10 @@ public sealed class Monomorphiser
             Line = r.Line, Col = r.Col,
         };
         made.MadeFor = r.MadeFor;
-        // AND THE NAMESPACE IT WAS NAMED THROUGH, which the copy's name drops
-        // (GenericPath): `System.Collections.Generic.List<int>` is C#'s with
-        // no using, and the binder is told so (TypeRef.Qualifier).
-        int qualified = r.Name.LastIndexOf('.');
-        if (r.Written && qualified > 0 && name != r.Name) made.Qualifier = r.Name[..qualified];
+        // AND WHAT IT WAS QUALIFIED WITH, which the copy's name drops
+        // (GenericPath): `System.Collections.Generic.List<int>` needs no
+        // using in C#, and the binder is told so (TypeRef.Qualifier).
+        if (r.Written && name != r.Name) made.Qualifier = QualifierOf(r.Name);
 
         // A specialised name carries its arguments in the name, so the argument
         // list must not survive or the binder will look for a generic again.

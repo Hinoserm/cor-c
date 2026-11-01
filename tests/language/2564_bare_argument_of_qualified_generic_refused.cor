@@ -1,0 +1,16 @@
+// test: bare_argument_of_qualified_generic_refused
+// expect-compile-error: CS0246: The type or namespace name 'ReadOnlySpan<byte>' could not be found (it is System.ReadOnlySpan<>: add `using System;`)
+//
+// A generic named through its namespace needs no using (2563), and what it
+// is written over still does: `ReadOnlySpan<byte>` inside
+// System.Collections.Generic.List<...> is refused in a file with no
+// `using System;`, as C# refuses it.
+
+static class Program
+{
+    static int Main()
+    {
+        System.Collections.Generic.List<ReadOnlySpan<byte>[]> spans = new();
+        return spans.Count;
+    }
+}
