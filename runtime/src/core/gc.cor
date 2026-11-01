@@ -16916,8 +16916,8 @@ static class GcRoots
     // A KERNEL HOLDS ONE A THREAD PARKED IN A CALL, one a callback still
     // out, and its modules' statics: some 66 live on the K8WE with three
     // programs open, where 128 left no room once they came and went. 512
-    // pairs of words are one page on i386, which Platform.Map gives the
-    // table whole whatever it asks for.
+    // pairs of words are one page on i386 and two on x86-64, whole pages
+    // as Platform.Map gives them.
     const int ExtraMax = 512;
 
     /// The registered root ranges, for the collector's checks (Gc.VerifyStaticRoots).
@@ -16930,8 +16930,9 @@ static class GcRoots
     /// a scan that read one range's start, while Unregister let the slot go
     /// and another Register filled it, took the newcomer's end: a range from
     /// one stack to another, and whatever lay between them read as roots.
-    /// The same start read twice is one registration's pair -- or another's
-    /// of the same start, whose end is its own.
+    /// The same start read twice is one registration's pair, short of the
+    /// slot let go and filled twice within these three loads, the second
+    /// time with the same start -- a stack reused at once by the same thread.
     /// </summary>
     public static nuint Pair(nuint slot, out nuint end)
     {
@@ -17006,8 +17007,10 @@ static class GcRoots
         return false;
     }
 
-    // THE CALLER HAS STOPPED USING THE RANGE: a scan running beside this may
-    // still read it once more (Pair), or pass it over already.
+    // THE CALLER HAS STOPPED USING THE RANGE, AND KEEPS IT MAPPED until the
+    // collection under way, if any, is over: this returns at once, and a
+    // scan that read the slot's pair already (Pair) reads the range once
+    // more. A kernel giving a parked stack's pages back waits that long.
     public static bool Unregister(nuint start, nuint end)
     {
         for (nuint i = 0; _extra != 0 && i < ExtraMax; i++)
