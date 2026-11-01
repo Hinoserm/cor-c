@@ -161,7 +161,7 @@ public static partial class Linker
             errors.Add(LayoutNames.Describe(s.Name) is string layout
                 ? "compiled against " + layout + " as '" + s.Name + "', which neither " + kernel.Name + " nor a module this one depends on has now: compile the module again"
                 : "'" + s.Name + "' is imported, and neither " + kernel.Name + " nor a module this one depends on exports it"
-                    // A kernel linked --exports=public withholds what is not public.
+                    // A kernel linked --exports withholds what is not public.
                     + " (a kernel exports its public surface: a public member of a public type)");
         }
         if (errors.Count != 0) throw new LinkException(errors);

@@ -15,7 +15,7 @@ namespace Corsac.Lang.Ir;
 /// may lay down or fold, the class library's surface) or `-` (withheld) and
 /// the symbol, NUL-terminated.
 ///
-/// A kernel linked with --exports=public keeps every public one out of line and in
+/// A kernel linked with --exports keeps every public one out of line and in
 /// its export table, however its own callers inlined it, and leaves every
 /// other one out of the table, free to be inlined and pruned
 /// (ObjectLinkCommand): the module ABI is the kernel's public surface, as a

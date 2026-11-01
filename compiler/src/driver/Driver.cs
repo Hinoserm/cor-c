@@ -227,16 +227,15 @@ public static class Driver
             + "[--base address] [--paddr address] [--shared] [--cpu name] [--no-lto] [--region-engine escape|andersen] [--no-rta] [--region-report names] [--unused-report file] [--timings]");
         Console.WriteLine("""
 
-              --exports            a kernel as a library: its globals in .corsac.exports, a
-                                   section of its own file no segment loads, which a module
-                                   links and is loaded against, and its link's identity. The
-                                   kernel is then not closed: modules call into it and derive
-                                   from its classes
-              --exports=public     --exports with the kernel's public surface alone: every
-                                   method and static C# lets another assembly name
-                                   (public, in public types) kept out of line and
-                                   exported, however the kernel inlined it; internal and
-                                   private ones pruned and inlined freely, and withheld
+              --exports            a kernel as a library: its public surface -- every method
+                                   and static C# lets another assembly name (public, in
+                                   public types) -- kept out of line, however the kernel
+                                   inlined it, and in .corsac.exports, a section of its own
+                                   file no segment loads, which a module links and is loaded
+                                   against, with its link's identity; internal and private
+                                   ones pruned and inlined freely, and withheld. The kernel
+                                   is not closed: modules call into it and derive from its
+                                   classes
               --keep <names>       with --exports: keep only what the kernel and these, its
                                    modules' imports, reach
               --kernel <kernel>    link a module of that kernel: a shared object with no

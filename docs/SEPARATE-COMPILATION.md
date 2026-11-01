@@ -358,7 +358,7 @@ Nothing of the library is withheld -- a module's compiled code calls the
 runtime's and the library's internals -- and generic instantiations are left
 as they were.
 
-`corc link --exports=public` keeps every offered member out of line and in
+`corc link --exports` keeps every offered member out of line and in
 `.corsac.exports` however the kernel's own callers inlined it -- a public
 method nothing in the kernel calls included -- and needs no `--keep` to prune:
 everything else of the kernel's own is reached from the entry and the public
@@ -366,7 +366,7 @@ surface, inlined and pruned freely, and withheld from the table. `internal`
 is the kernel's assembly's alone. A public member left with no body is a
 refused link, naming it (a `~` one is exported where the link kept it); a
 module that imports a withheld name is a refused link, naming it. `--keep` still adds roots: library code the build's modules
-call. Plain `--exports` exports every global the link keeps, as before.
+call. There is no other export mode: a member a module calls is public.
 
 ## Acceptance and migration
 

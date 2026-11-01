@@ -36,7 +36,7 @@ public static class ObjectLinkCommand
         // THE KERNEL AS A LIBRARY (KernelExports): --exports puts the
         // kernel's export table in its own file, a section nothing loads.
         // --kernel FILE links a module against such a kernel (Linker.LinkModule).
-        bool exports = false, publicOnly = false;
+        bool exports = false;
         string? kernelPath = null, keepPath = null;
         List<string> cpuArguments = new();
         for (int i = 0; i < args.Length; i++)
@@ -59,10 +59,10 @@ public static class ObjectLinkCommand
             }
             // The program's dead code (UnusedReport), into a file ("-": the
             // error stream), from the notes units compiled with the same flag left.
+            // THE KERNEL AS A LIBRARY, ITS PUBLIC SURFACE ITS EXPORTS (PublicApi):
+            // what C# lets another assembly name is exported and kept out of
+            // line; nothing else of the kernel's own.
             if (arg == "--exports") { exports = true; continue; }
-            // THE KERNEL'S PUBLIC SURFACE ONLY (PublicApi): what C# lets another
-            // assembly name is exported and kept out of line; nothing else.
-            if (arg == "--exports=public") { exports = publicOnly = true; continue; }
             if (arg is "--kernel" or "--keep")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
@@ -133,7 +133,7 @@ public static class ObjectLinkCommand
         }
         if (output is null || paths.Count == 0)
             return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings] [--unused-report file]"
-                + " [--exports[=public] [--keep names]] [--kernel kernel]");
+                + "" [--exports [--keep names]] [--kernel kernel]");
         if (unusedReport is not null && shared) return Fail("--unused-report is for an image with an entry, not a shared object");
         if (exports)
         {
@@ -271,7 +271,7 @@ public static class ObjectLinkCommand
         // besides is kept too: the runtime's and the library's non-public
         // code a module of the build calls.
         HashSet<string> offered = new(StringComparer.Ordinal), optional = new(StringComparer.Ordinal), withheld = new(StringComparer.Ordinal);
-        if (publicOnly)
+        if (exports)
         {
             foreach (var input in inputs)
             {
@@ -383,7 +383,6 @@ public static class ObjectLinkCommand
             try
             {
                 List<KernelExports.Export> globals = KernelExports.GlobalsOf(output);
-                if (publicOnly)
                 {
                     // Withheld: internal and private are the kernel's own. And
                     // every public method of its own there (+), or the kernel is

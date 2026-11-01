@@ -8,7 +8,7 @@ public sealed partial class Lowering
     /// WHAT THIS RING UNIT OFFERS OTHER IMAGES (PublicApi, `.corsac.public`):
     /// of each method and static this unit defines, whether C# lets another
     /// assembly name it -- shown (Binder.ShownOutside) in a type public all
-    /// the way out -- and so whether a kernel linked with --exports=public
+    /// the way out -- and so whether a kernel linked with --exports
     /// keeps it out of line and in its export table. A public type's startup
     /// work (StaticInit$ and its ready word) is offered with it: a module
     /// touching the type's statics runs it; a packed method's copy that runs
@@ -50,6 +50,8 @@ public sealed partial class Lowering
                 List<string> into = !offered ? _m.WithheldSymbols : library ? _m.OptionalSymbols : _m.PublicSymbols;
                 into.Add(CallLabel(m));
                 if (CopiesInside(m)) into.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
+                // AND THE BODY A CONTEXT'S CALLER ENTERS (BodyLabel), where it has one.
+                if (TakesContext(m)) (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(BodyLabel(m));
             }
             foreach (FieldSymbol f in t.Fields)
             {
@@ -61,6 +63,20 @@ public sealed partial class Lowering
                 if (library && !offered) continue;
                 (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(StaticSymbol(f));
             }
+            // ITS DESCRIPTOR, where this unit made it: a module making one of
+            // its objects, testing for the type or deriving from it binds to
+            // that, and the kernel need never make one itself (Unused types,
+            // a class only a module instantiates). By the name the unit gave
+            // it, never one made here for the asking: a box for a struct or
+            // an enum (BoxDescriptor), an interface's own, a class's.
+            string? descriptor = t.Kind switch
+            {
+                TypeKind.Interface => _interfaceDescriptors.GetValueOrDefault(t),
+                TypeKind.Struct or TypeKind.Enum => _boxes.GetValueOrDefault(BoxKey(Type.Plain(t, t.Kind == TypeKind.Enum ? t.EnumUnderlying : Prim.Void))),
+                _ => _descriptors.GetValueOrDefault(t),
+            };
+            if (descriptor is not null && !d.Elsewhere)
+                (open ? _m.OptionalSymbols : library ? null : _m.WithheldSymbols)?.Add(descriptor);
         }
     }
 
