@@ -133,7 +133,7 @@ public static class ObjectLinkCommand
         }
         if (output is null || paths.Count == 0)
             return Fail("usage: corlink <file.o> ... -o <output> [--entry symbol] [--flat] [--closed] [--base address] [--paddr address] [--no-lto] [--timings] [--unused-report file]"
-                + "" [--exports [--keep names]] [--kernel kernel]");
+                + " [--exports [--keep names]] [--kernel kernel]");
         if (unusedReport is not null && shared) return Fail("--unused-report is for an image with an entry, not a shared object");
         if (exports)
         {
