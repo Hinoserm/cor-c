@@ -3,6 +3,7 @@
 // expect-output:
 // collection references released
 
+using System.Collections.Generic;
 using System.Threading;
 
 static class Program

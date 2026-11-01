@@ -25,6 +25,8 @@
 // types make when each initialiser reads the other: the flag is set before the
 // body runs, so the second one to be entered sees the first half-built rather
 // than calling it for ever. That is C#'s answer too.
+using System;
+
 static class Log
 {
     public static string Text = "";

@@ -1,5 +1,7 @@
 // The other unit of 970_region_boundary_across_units: a lexer making a token
 // for every word, a list of them, and the substrings they hold.
+using System.Collections.Generic;
+
 namespace RegionUnits;
 
 public sealed class Token

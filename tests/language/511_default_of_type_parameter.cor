@@ -19,6 +19,8 @@
 //
 // The last two lines are the null-forgiving '!' where it was not being
 // exercised: on the result of a call, and twice over on a chain of them.
+using System.Collections.Generic;
+
 static class Program
 {
     static void Line(string text)

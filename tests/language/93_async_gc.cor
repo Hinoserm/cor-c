@@ -18,6 +18,7 @@
 // suspended state machine may be freed or moved without its reference
 // being updated, and the kept arrays must still hold their patterns.
 
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 static class Program

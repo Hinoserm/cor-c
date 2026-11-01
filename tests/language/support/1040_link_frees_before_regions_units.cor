@@ -3,6 +3,7 @@
 // and one deriving from it that keeps every object it disposes.
 
 using System;
+using System.Collections.Generic;
 
 namespace LinkFreesUnits;
 

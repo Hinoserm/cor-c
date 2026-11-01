@@ -8,6 +8,8 @@
 // hands to a lazy value, and reads the counter itself afterwards: the lazy
 // value letting go of its factory must not take the counter with it.
 
+using System;
+
 class Counter { public int Calls; }
 
 class Answer : Func<int>

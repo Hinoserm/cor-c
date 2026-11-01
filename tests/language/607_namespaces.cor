@@ -23,6 +23,7 @@
 namespace App.Opt;
 
 using App.Ir;
+using System.Collections.Generic;
 using Block = App.Ir.Block;
 
 public class Pass

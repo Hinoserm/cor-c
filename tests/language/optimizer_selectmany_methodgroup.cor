@@ -2,6 +2,8 @@
 // expect-exit: 0
 // expect-output:
 // selectmany passed
+using System.Collections.Generic;
+
 class FlattenGroup {
     public List<int> Values = new() { 2, 3 };
 }

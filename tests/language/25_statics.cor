@@ -12,6 +12,8 @@
 // const and static readonly, a static counter, a static field holding an
 // object built by its initialiser, and an instance field initialiser.
 
+using System.Collections.Generic;
+
 static class Config
 {
     public static int A = 5;

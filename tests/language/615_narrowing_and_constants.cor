@@ -16,6 +16,8 @@
 // var` -- gets a cell like any other, and a nullable tuple answers .Value and
 // .HasValue, which is how C#'s Nullable<ValueTuple<…>> is opened.
 
+using System.Collections.Generic;
+
 class Decl
 {
     public string? Template;

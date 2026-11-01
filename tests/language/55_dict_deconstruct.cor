@@ -9,6 +9,8 @@
 // each entry apart into two locals, with explicit types and with `var`, and
 // a deconstruction declaration from a single KeyValuePair.
 
+using System.Collections.Generic;
+
 static class Program
 {
     static void Line(string s)

@@ -1,4 +1,6 @@
 // The other unit of 861_generic_methods_across_units: generic methods, used with value types elsewhere.
+using System;
+
 namespace GenericUnits;
 
 public struct Pair

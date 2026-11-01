@@ -4786,7 +4786,7 @@ public sealed partial class Binder
             // `List<T> : IReadOnlyList<T>` names IReadOnlyList`1 (FindBase).
             if (!FindBase(b, out TypeSymbol? based))
             {
-                Error(b, Inaccessible(b.Name) ?? $"CS0246: The type or namespace name '{b.Name}' could not be found{WhereItIs(b.Args.Count > 0 ? Arity(b.Name, b.Args.Count) : b.Name)}");
+                Error(b, Inaccessible(b.Name) ?? $"CS0246: The type or namespace name '{AsWritten(b.Name)}' could not be found{WhereItIs(b.Args.Count > 0 ? Arity(b.Name, b.Args.Count) : b.Name)}");
                 continue;
             }
 
@@ -6600,7 +6600,7 @@ public sealed partial class Binder
             }
         }
 
-        Error(r, Inaccessible(r.Name) ?? $"CS0246: The type or namespace name '{r.Name}' could not be found{WhereItIs(r.Args.Count > 0 ? Arity(r.Name, r.Args.Count) : r.Name)}");
+        Error(r, Inaccessible(r.Name) ?? $"CS0246: The type or namespace name '{AsWritten(r.Name)}' could not be found{WhereItIs(r.Args.Count > 0 ? Arity(r.Name, r.Args.Count) : r.Name)}");
         return Type.Error;
     }
 

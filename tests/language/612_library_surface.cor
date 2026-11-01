@@ -19,6 +19,7 @@
 // IndexOf, and the exception constructors that carry a parameter name.
 
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.IO;
 

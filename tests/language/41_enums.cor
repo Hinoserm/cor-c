@@ -11,6 +11,8 @@
 // Enums: implicit and explicit member values, comparison, switch on an
 // enum, casting from an int, enums in a List, and an enum-typed field.
 
+using System.Collections.Generic;
+
 // NOT CALLED COLOR, deliberately. The standard library is compiled
 // from source alongside every test, and System.Drawing declares a
 // Color of its own. A type of that name in the GLOBAL namespace is found

@@ -12,6 +12,8 @@
 // (long, long) -- both fields are register pairs -- and over (int, long);
 // a generic stack that grows; and generic methods with inferred arguments.
 
+using System.Collections.Generic;
+
 class Box<T>
 {
     T value;

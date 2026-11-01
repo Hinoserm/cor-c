@@ -18,6 +18,7 @@
 // unsigned Math pair, and a hex literal takes the first type that can hold it.
 
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 
 static class Program

@@ -18,6 +18,7 @@
 // handed one, which is why the declared type is `string?` and the ordinary call
 // still needs no cast.
 
+using System.Collections.Generic;
 using System.IO;
 
 static class Program

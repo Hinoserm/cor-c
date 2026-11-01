@@ -13,6 +13,8 @@
 // and a span over a slice of an array, all kept across collections forced
 // by churning garbage, and then read back.
 
+using System;
+
 static class Program
 {
     static nuint staticInterior;

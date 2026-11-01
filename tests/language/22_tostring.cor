@@ -13,6 +13,8 @@
 // through a base-typed reference, null renders as nothing, and string.Join
 // renders each element through it.
 
+using System.Collections.Generic;
+
 class Bare
 {
     public int n;

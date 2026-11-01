@@ -12,6 +12,9 @@
 // returning longs and strings; and the standard library's LINQ-style
 // extension methods driven by lambdas.
 
+using System;
+using System.Collections.Generic;
+
 class Holder
 {
     public Func<int, int> Op;
