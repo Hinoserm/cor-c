@@ -384,7 +384,9 @@ public static class ObjectLinkCommand
                 if (publicOnly)
                 {
                     // Withheld: internal and private are the kernel's own. And
-                    // every public one there, or the kernel is not what it says.
+                    // every public method of its own there (+), or the kernel is
+                    // not what it says; a static or the library's surface (~)
+                    // where the link kept it.
                     globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name) && !optional.Contains(export.Name));
                     HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
                     List<string> lost = offered.Where(name => !exported.Contains(name)).Order(StringComparer.Ordinal).ToList();

@@ -631,6 +631,14 @@ public sealed partial class Lowering
         }
 
         ScanAddressTaken(decl.Body!);
+        // THE CELLS OF ITS CAPTURED VARIABLES NO STATEMENT DECLARES -- a
+        // foreach's cursor, an `out var`, a pattern's binding -- made as a
+        // method's are (EmitMethod), once, when it starts: the registers
+        // holding them are kept across every suspension, as a declared
+        // local's cell is. Made nowhere, a lambda or local function naming one
+        // in an iterator was "'path' has no declaration" -- the compiler's own
+        // SourceIndexBuilder, built by itself.
+        MakeCapturedCells(decl.Body!);
         MakeParamCells(decl.Body!);
         for (int i = 0; i < m.Params.Count; i++)
         {

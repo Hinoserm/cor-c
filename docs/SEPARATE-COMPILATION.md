@@ -100,7 +100,7 @@ hand-maintained header is introduced.
 | .corsac.generics | Indexed template and instantiation records | Specified, pending integration |
 | .corsac.ir | Independently addressable optimized IR function bodies | First indexed implementation; see IR-LINK-OPTIMIZATION.md |
 | .corsac.roots | Explicit retention and deferred-resolution contracts | Specified, pending |
-| .corsac.public | A ring unit's public surface: each method and static another assembly can name, and each it cannot | Implemented (kernel exports) |
+| .corsac.public | A ring unit's public surface: `+` its own public methods, `~` its public statics and the class library's public surface, `-` what another assembly cannot name | Implemented (kernel exports) |
 
 GIR is the existing generic syntax representation, not serialized optimization
 IR. Its version is 0. The generic index must identify GIR version per
@@ -351,8 +351,12 @@ shared object, and what it exports is what C# lets another assembly name: a
 method or static that is `public` (or `protected`, for a module's class
 deriving from one) in a type that is public all the way out. Each ring unit
 records its own types' members, offered or withheld, in `.corsac.public`
-(Lowering.RecordPublicApi); the library's types and generic instantiations are
-not the kernel's API and are left as they were.
+(Lowering.RecordPublicApi): `+` a public method of the kernel's own, `~` a
+public static (the link may lay one down or fold it) and the class library's
+public surface, as a shared library's, `-` everything else of the kernel's own.
+Nothing of the library is withheld -- a module's compiled code calls the
+runtime's and the library's internals -- and generic instantiations are left
+as they were.
 
 `corc link --exports=public` keeps every offered member out of line and in
 `.corsac.exports` however the kernel's own callers inlined it -- a public
@@ -360,8 +364,8 @@ method nothing in the kernel calls included -- and needs no `--keep` to prune:
 everything else of the kernel's own is reached from the entry and the public
 surface, inlined and pruned freely, and withheld from the table. `internal`
 is the kernel's assembly's alone. A public member left with no body is a
-refused link, naming it; a module that imports a withheld name is a refused
-link, naming it. `--keep` still adds roots: library code the build's modules
+refused link, naming it (a `~` one is exported where the link kept it); a
+module that imports a withheld name is a refused link, naming it. `--keep` still adds roots: library code the build's modules
 call. Plain `--exports` exports every global the link keeps, as before.
 
 ## Acceptance and migration

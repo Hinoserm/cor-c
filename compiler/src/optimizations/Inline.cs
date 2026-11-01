@@ -1227,7 +1227,7 @@ public sealed class Inline : IParallelModulePass
         }
         Reach(m.Entry);
         foreach (string name in pinned) Reach(name);
-        // A RING UNIT'S PUBLIC SURFACE (Module.PublicSymbols): what a kernel
+        // A RING UNIT'S PUBLIC SURFACE (Module.PublicSymbols, OptionalSymbols): what a kernel
         // exports for modules nobody has built yet, kept here as at its link.
         // Kept, not pinned: a call to one may still become its body.
         foreach (string name in m.PublicSymbols) Reach(name);

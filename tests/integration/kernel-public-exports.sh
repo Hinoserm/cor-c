@@ -50,6 +50,7 @@ exported 'm_Kernel\$Shelf\$Rack_Count_' || fail "a public member of a public typ
 if exported 'm_Kernel\$Vault\$Inner_Value_'; then fail "a public member of a public type nested in an internal one is exported"; fi
 exported 'm_Kernel\$Counter_StaticInit\$_' || fail "a public type's startup work is not exported"
 exported 'm_Kernel\$Counter_get_Made_' || fail "a public property's accessor is not exported"
+exported 's_Kernel\$002eCounter_StaticReady\$_' || fail "a public type's ready word is not exported"
 if exported 'm_Kernel\$Counter_Make_'; then fail "a private method is exported"; fi
 # The module, which imports public members alone: linked.
 "$corc" compile --kernel "$k/kernel" --decl-index "$k/kernel.idx" --assembly Kernel --ring 0 "$work/Sb16.cor" --obj -o "$work/sb16.o" \

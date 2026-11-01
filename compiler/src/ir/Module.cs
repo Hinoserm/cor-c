@@ -272,8 +272,10 @@ public sealed class Module
     /// <summary>
     /// A ring unit's methods and statics another assembly can name, and those
     /// it cannot (Lowering.RecordPublicApi): the object records them
-    /// (.corsac.public), and a kernel's link exports the first and keeps them
-    /// out of line, and withholds the second.
+    /// (.corsac.public), and a kernel's link exports the first, its own public
+    /// methods, keeping them out of line; exports the second -- statics and
+    /// the class library's surface -- where it keeps them; and withholds the
+    /// third.
     /// </summary>
     public List<string> PublicSymbols { get; } = new();
     public List<string> OptionalSymbols { get; } = new();

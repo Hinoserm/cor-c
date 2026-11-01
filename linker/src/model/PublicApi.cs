@@ -54,7 +54,14 @@ public static class PublicApi
                 if (i > start)
                 {
                     string symbol = Encoding.UTF8.GetString(s.Bytes.Slice(start + 1, i - start - 1));
-                    (s.Bytes[start] switch { (byte)'+' => offered, (byte)'~' => optional, _ => withheld }).Add(symbol);
+                    (s.Bytes[start] switch
+                    {
+                        (byte)'+' => offered,
+                        (byte)'~' => optional,
+                        (byte)'-' => withheld,
+                        // Never a name taken for withheld unsaid: an object this reader cannot read.
+                        byte other => throw new Corsac.Lang.Elf.ElfFormatException(SectionName + ": an entry marked '" + (char)other + "', which is none of + ~ -"),
+                    }).Add(symbol);
                 }
                 start = i + 1;
             }

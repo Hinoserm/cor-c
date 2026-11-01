@@ -648,11 +648,16 @@ public sealed partial class Lowering
         // A CURSOR A LAMBDA CAPTURES is read through its cell, so the element
         // goes there -- a new cell each time round, as C# 5 has it, so each
         // lambda keeps its own iteration's value. Written to the slot, the
-        // body and the lambdas read a cell nothing had filled.
+        // body and the lambdas read a cell nothing had filled. NOT ONE IN THE
+        // METHOD'S ENVIRONMENT BLOCK (FreshCell): a call-only local function
+        // in the loop reads its word there, and a cell made anew each lap
+        // left the word empty -- `foreach (string path in files)` with such a
+        // function naming path read null, and the compiler, built by itself,
+        // said its SourceIndexBuilder's path had no declaration.
         if (_b.PatternSym.TryGetValue(fe, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
-            _e.CopyTo(cell, RegOperand.Of(Allocate(fe, Math.Max(_t.WordSize, Math.Max(1, element.Size)))));
+            FreshCell(fe, named, cell);
             // A lambda keeps a copy of the element, not where it is in the array.
             StoreNew(cell, inline ? CopyStruct(fe, value, StructOf(stored)) : value, 0, element);
         }

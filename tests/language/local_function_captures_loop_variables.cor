@@ -1,0 +1,70 @@
+// test: local_function_captures_loop_variables
+// expect-exit: 0
+// expect-output:
+// 9 5 16
+//
+// A call-only local function declared inside a loop, naming the loop's
+// foreach cursor, keeps the cursor in the method's environment block
+// (Binder.ArrangeLocalFunctionEnvironment): each lap writes the element to
+// its word there, never to a fresh cell the function does not read. And in
+// an iterator, a local function and a lambda naming a foreach cursor and an
+// `out var` find their cells, made when the state machine starts as a
+// method makes them -- the compiler's own SourceIndexBuilder, built by
+// itself, said "'path' has no declaration".
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int Nested()
+    {
+        int total = 0;
+        foreach (string path in new[] { "a", "bb" })
+        {
+            total += path.Length;
+            int Twice() => path.Length * 2;
+            total += Twice();
+        }
+        return total;
+    }
+
+    static int WithOut()
+    {
+        int total = 0;
+        Dictionary<int, int> at = new() { [1] = 5 };
+        int[] spans = { 3, 5, 7 };
+        foreach (int t in new[] { 1, 2 })
+        {
+            void Note() { total += t; }
+            if (at.TryGetValue(1, out int pos)) total += Array.FindIndex(spans, s => s == pos);
+            Note();
+        }
+        return total;
+    }
+
+    static IEnumerable<int> Walk(string[] files)
+    {
+        Dictionary<int, int> at = new() { [1] = 5 };
+        int[] spans = { 3, 5, 7 };
+        foreach (string path in files)
+        {
+            int count = path.Length;
+            foreach (int t in new[] { 1, 2 })
+            {
+                int Twice() => path.Length * t;
+                count += Twice();
+                if (at.TryGetValue(1, out int pos)) count += Array.FindIndex(spans, s => s == pos);
+            }
+            yield return count;
+        }
+    }
+
+    static int Main()
+    {
+        int walked = 0;
+        foreach (int n in Walk(new[] { "a", "bb" })) walked += n;
+        Console.WriteLine(Nested() + " " + WithOut() + " " + walked);
+        return 0;
+    }
+}
