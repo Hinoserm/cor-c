@@ -2,11 +2,17 @@
 
 ## Hosted managed components without MSBuild
 
-Subprocesses can emit `build-progress: ` records on stdout. The build runner
-prints those lines immediately, prefixed by the target name, while preserving
-the complete stdout log byte-for-byte. Other output stays in its log; oversized
-progress records are logged but not displayed. CORSAC image compilation emits
-the current source, active worker count and ready/remaining unit counts. Ready
+Every line a subprocess writes, on stdout and stderr, is printed as it comes,
+prefixed by the target name, and kept byte for byte in the target's logs: a
+compiler's "unit N/M ... rebuilt: why" lines and a link's "link input:" /
+"link output:" / "link current:" lines show in the build as they happen. A
+line longer than 64 KiB is printed that far, with how much more is in the log.
+A `build-progress: ` prefix, which once marked the only lines printed, is taken
+off. Each process's logs are named for the target, the time it started, the
+build's process id and a sequence number
+(`<target>-<yyyyMMdd-HHmmss.fff>-<pid>-<n>.out.log`, `.err.log`), created new,
+so no run's logs are ever overwritten. CORSAC image compilation emits the
+current source, active worker count and ready/remaining unit counts. Ready
 counts include valid cached objects, not just newly compiled files.
 
 `<Compile Project="..." Toolchain="managed" />` uses the same owned SDK-project

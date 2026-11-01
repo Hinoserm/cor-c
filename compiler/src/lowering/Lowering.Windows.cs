@@ -47,7 +47,11 @@ public sealed partial class Lowering
         foreach (TypeSymbol t in _b.Types.Values.ToList())
         {
             if (t.MembersPending) continue;
-            foreach (MethodSymbol m in t.Methods)
+            // The list read in its own scope, as AnyNativeImports: an export
+            // is emitted, and of a type read from the index only a copy is.
+            List<MethodSymbol> methods;
+            using (MemberWatch.Within(t.Decl?.Watch)) methods = t.Methods;
+            foreach (MethodSymbol m in methods)
             {
                 if (ExportName(m) is not string export || !Emits(m)) continue;
                 Node at = (Node?)m.Decl ?? new Block();

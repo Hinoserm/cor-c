@@ -312,6 +312,36 @@ No LTO pass may infer pure behavior from a missing summary. It must not merge
 address-significant descriptors, discard vector tables, change an interrupt
 calling convention or remove required memory ordering.
 
+## Incremental builds: unit and link receipts
+
+A project build compiles a unit again only when something it compiled against
+changed. Each object has a stamp beside it (`.o.deps.stamp`: the source's hash
+and the options') and a receipt (`.o.deps`): every declaration key the unit
+loaded with what of it the unit depends on, and that part's fingerprint (see
+DECLARATION-INDEX.md, Member receipts). The build log says why each unit was
+compiled again: "member B of Util changed", "shape of Ide changed", "text of
+Arch's file changed". Neither stamps nor receipts hold a path: an option naming
+a file is kept as `<path>`, a `--ref` by its content, the compiler by its
+files' names, lengths and write times. A tree copied elsewhere with its times
+compiles nothing again.
+
+A link writes `<output>.linked` beside the image: the digest of what the
+image is made from -- the linker's and compiler's own files, the backend it
+starts, the switches that change an image (those that only trace, report,
+dump or check are left out), the options with each path by its file name,
+every object by its bytes, the keep list by its bytes, a program's shared
+libraries by their bytes, and, for an image linked against a kernel or shared
+objects, the kernel's ABI, CPU and mode and, for every name the objects leave
+undefined, which of the kernel and the libraries define it now. Where the
+digest is unchanged and the image is as the last link left it, the link writes
+nothing and says "link current". A module is held to its kernel by the names
+it imports, never by the kernel's addresses (Linker.LinkModule), so a kernel
+linked again leaves its modules as they are unless a name one imports came or
+went. The checks a link makes against the kernel -- the wait and float facts
+its handlers walk into -- run whether or not the image is current. A link
+asked for a region report always links; one asked for a map links when the
+map is missing. A failed link leaves no receipt.
+
 ## Acceptance and migration
 
 First tests cover ELF metadata round trips, bad versions/lengths/hashes,

@@ -358,6 +358,12 @@ public static class SourceIndexBuilder
                             && !nested.Any(n => m.From >= n.SourceFrom && m.To <= n.SourceTo)).OrderBy(m => m.From).ToArray()
                         : Array.Empty<(int From, int To, MemberDecl Member)>();
                     int memberIndex = 0, braces = 0, brackets = 0;
+                    // The last private static marked in the shape, and where it
+                    // ended: one like it right after says nothing more.
+                    int markedMember = -1, markEnd = -1;
+                    string? lastMark = null;
+                    // Each `[` open: a length or an index (true), or a collection expression's.
+                    Stack<bool> squares = new();
                     PrivateMember hiding = PrivateMember.Shown;
                     bool markedCtor = false, markedStatics = false;
                     // AND EACH MEMBER APART, where they can be told apart
@@ -391,9 +397,10 @@ public static class SourceIndexBuilder
                         while (bodyIndex < bodies.Length && token.Pos >= bodies[bodyIndex].To)
                         { bodyIndex++; wroteBody = false; }
                         while (memberIndex < members.Length && token.Pos >= members[memberIndex].To)
-                        { memberIndex++; markedCtor = false; braces = 0; brackets = 0; }
-                        hiding = filtered && memberIndex < members.Length && token.Pos >= members[memberIndex].From
+                        { memberIndex++; markedCtor = false; braces = 0; brackets = 0; squares.Clear(); }
+                        PrivateMember ownHiding = memberIndex < members.Length && token.Pos >= members[memberIndex].From
                             ? Hiding(members[memberIndex].Member) : PrivateMember.Shown;
+                        hiding = filtered ? ownHiding : PrivateMember.Shown;
                         routed = null;
                         if (byMember && !nested.Any(n => token.Pos >= n.SourceFrom && token.Pos < n.SourceTo))
                         {
@@ -469,7 +476,11 @@ public static class SourceIndexBuilder
                         if (hiding == PrivateMember.Shown)
                         {
                             visible.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
-                            routed?.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
+                            // A private static's initialiser written out (a type
+                            // whose private members are shown): to its shape as
+                            // below, not as written.
+                            if (byMember && ownHiding == PrivateMember.Initialised && ReferenceEquals(routed, shapeText)) InitialiserToShape(token, tokenIndex);
+                            else routed?.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
                         }
                         else if (hiding == PrivateMember.Field && !parser.FieldInitialisers.Any(i => token.Pos >= i.From && token.Pos < i.To))
                         {
@@ -484,21 +495,49 @@ public static class SourceIndexBuilder
                                 if (byMember) shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos).Append(' ');
                             }
                         }
-                        // A PRIVATE STATIC'S INITIALISER, to the shape: a table
-                        // laid down as data makes no StaticInit$, a computed one
-                        // does, and every unit touching the type reads which
-                        // (Binder.StaticInitialisers, Lowering.TouchType). A
-                        // literal without its value -- a table's bytes, a
-                        // starting count, are its own unit's -- but a length's
-                        // with it, in `[ ]` outside any `{ }`: `new byte[60000]`
-                        // is a zeroed table and `new byte[70000]` code
-                        // (Binder.ZeroedArrayOf).
-                        else if (hiding == PrivateMember.Initialised && byMember)
+                        else if (hiding == PrivateMember.Initialised && byMember) InitialiserToShape(token, tokenIndex);
+                    }
+                    // A PRIVATE STATIC'S INITIALISER, to the shape: what every
+                    // unit touching the type reads of it (Binder.StaticInitialisers,
+                    // Lowering.TouchType) and no more. Its class
+                    // (Binder.InitialiserClass), once, and once for a run of
+                    // them alike: a static more or less among others of its
+                    // class -- Ide's shutdown list removed -- changes nothing
+                    // another unit compiles. An array made, which may be a
+                    // table laid down as data, by its tokens: a literal without
+                    // its value -- a table's bytes are its own unit's -- but a
+                    // length's with it, in `[ ]` outside any `{ }`:
+                    // `new byte[60000]` is a zeroed table and `new byte[70000]`
+                    // code (Binder.ZeroedArrayOf).
+                    void InitialiserToShape(Token token, int tokenIndex)
+                    {
+                        if (Binder.InitialiserClass(members[memberIndex].Member) is string mark)
+                        {
+                            if (markedMember == memberIndex) return;
+                            markedMember = memberIndex;
+                            if (mark == lastMark && shapeText.Length == markEnd) return;
+                            shapeText.Append("static static ").Append(mark).Append(" ; ");
+                            lastMark = mark;
+                            markEnd = shapeText.Length;
+                            return;
+                        }
                         {
                             if (token.Kind == Tok.LBrace) braces++;
                             else if (token.Kind == Tok.RBrace && braces > 0) braces--;
-                            else if (token.Kind == Tok.LBracket) brackets++;
-                            else if (token.Kind == Tok.RBracket && brackets > 0) brackets--;
+                            // A `[` after a type, a name, `)` or `]` holds a length
+                            // or an index; any other begins a collection
+                            // expression, whose elements are a table's as in `{ }`.
+                            else if (token.Kind == Tok.LBracket)
+                            {
+                                Tok before = tokenIndex > 0 ? tokens[tokenIndex - 1].Kind : Tok.End;
+                                bool sized = before is Tok.Ident or Tok.RBracket or Tok.RParen or Tok.Gt || before.ToString().StartsWith("Kw", StringComparison.Ordinal);
+                                squares.Push(sized);
+                                if (sized) brackets++; else braces++;
+                            }
+                            else if (token.Kind == Tok.RBracket && squares.Count > 0)
+                            {
+                                if (squares.Pop()) brackets--; else braces--;
+                            }
                             bool length = brackets > 0 && braces == 0;
                             if (!length && token.Kind is Tok.Int or Tok.Real or Tok.Str or Tok.Char or Tok.Utf8Str or Tok.InterpStr) shapeText.Append(token.Kind.ToString());
                             else shapeText.Append(text, token.Pos, ends[tokenIndex] - token.Pos);

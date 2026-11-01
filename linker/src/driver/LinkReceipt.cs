@@ -40,7 +40,7 @@ public static class LinkReceipt
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         void Say(string text) { byte[] bytes = Encoding.UTF8.GetBytes(text + "\n"); hash.AppendData(bytes); }
-        Say("link receipt 2");
+        Say("link receipt");
         foreach (string file in LinkerFiles()) Say(file);
         // THE BACKEND IT STARTS, named or not: under dotnet, the native corc
         // beside the assemblies, built again on its own (ProcessUnitBackend).
@@ -156,7 +156,7 @@ public static class LinkReceipt
             // A value follows its flag, and is no flag itself (Switches.HandOn).
             string? value = i + 1 < flags.Count && !flags[i + 1].StartsWith("--", StringComparison.Ordinal) ? flags[++i] : null;
             if (Diagnostic(flag)) continue;
-            said.Add(value is null ? flag : flag + " " + (value.Contains('/') || value.Contains('\\') ? "<path>/" + Path.GetFileName(value) : value));
+            said.Add(value is null ? flag : flag + " " + (value.Contains('/') || value.Contains('\\') ? "<path>/" + value[(value.LastIndexOfAny(new[] { '/', '\\' }) + 1)..] : value));
         }
         said.Sort(StringComparer.Ordinal);
         return said;

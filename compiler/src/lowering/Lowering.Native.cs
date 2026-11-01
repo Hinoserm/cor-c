@@ -74,11 +74,18 @@ public sealed partial class Lowering
         {
             // Never asked for, a word-shaped copy emits nothing (Lowering.Run).
             if (t.MembersPending) continue;
-            foreach (MethodSymbol m in t.Methods)
+            // In its own scope (MemberWatch): of a type read from the index
+            // only a generic method's copy emits, and a unit that copied one
+            // depends on the whole of it already; every class of the unit
+            // read whole here made each unit depend on all of every one.
+            using (MemberWatch.Within(t.Decl?.Watch))
             {
-                if (NativeImportOf(m) is not null && Emits(m))
+                foreach (MethodSymbol m in t.Methods)
                 {
-                    return true;
+                    if (NativeImportOf(m) is not null && Emits(m))
+                    {
+                        return true;
+                    }
                 }
             }
         }

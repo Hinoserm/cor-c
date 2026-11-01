@@ -104,6 +104,25 @@ public sealed partial class Binder
         _ => false,
     };
 
+    /// <summary>
+    /// WHAT ANOTHER UNIT READS OF A PRIVATE STATIC'S INITIALISER
+    /// (SourceIndexBuilder, the shape): that the type has startup work, and
+    /// whether this one ends the run of statics the link may lay down
+    /// (StaticInitialisers: `candidates`), which decides how a later public
+    /// one is read. "init" where it does not (a recipe the link may make, a
+    /// constant), "code" where it does; null where it may be a table laid
+    /// down as data (an array made), whose tokens decide (StaticArrayOf,
+    /// ZeroedArrayOf). By its syntax alone, as the binder judges it.
+    /// </summary>
+    internal static string? InitialiserClass(MemberDecl member)
+    {
+        Expr? initial = member switch { FieldDecl { Init: { } i } => i, PropertyDecl { Init: { } i } => i, _ => null };
+        if (initial is null) return null;
+        if (member is FieldDecl && initial is NewExpr { } made && (made.Elements is not null || made.ArraySize is not null || made.Utf8Bytes is not null)) return null;
+        bool candidate = member is FieldDecl { Attributes.Count: 0 } field && field.Type.PointerDepth == 0;
+        return candidate && PreinitShape(initial) || PreinitConstant(initial) ? "init" : "code";
+    }
+
     /// <summary>The most bytes of elements a zeroed static array is laid down with (ZeroedArrayOf).</summary>
     public const int ZeroedLimit = 65536;
 

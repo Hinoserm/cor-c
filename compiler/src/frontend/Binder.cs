@@ -9940,7 +9940,10 @@ public sealed partial class Binder
                 // Clone, Contains, CopyTo: public in .NET, reached here by
                 // these, and still no name a program can write.
                 if (HiddenFromProgram(holder) && !holder.Name.StartsWith("__", StringComparison.Ordinal)) continue;
-                foreach (MethodSymbol m in holder.Methods)
+                // BY THE NAME LOOKED FOR (MemberWatch): every static class of
+                // the namespace is asked, and the kernel's Arch read whole
+                // for one extension call made 22 units depend on all of it.
+                foreach (MethodSymbol m in holder.MethodsNamed(name))
                 {
                     if (m.Name != name) continue;
                     if (m.Static && m.Params.Count > 0 && m.Decl?.Params.FirstOrDefault()?.IsThis == true)
@@ -26062,7 +26065,8 @@ public sealed partial class Binder
                 // ITS OWN override, declared here: a class that inherits one
                 // is matched by the class it inherits it from, further down
                 // the list.
-                own = !t.MayHave(best.Name) ? null : t.Methods.FirstOrDefault(m => ReferenceEquals(m.Owner, t) && m.Name == best.Name && !m.Abstract
+                // By the name (MemberWatch): every class of the unit is walked.
+                own = !t.MayHave(best.Name) ? null : t.MethodsNamed(best.Name).FirstOrDefault(m => ReferenceEquals(m.Owner, t) && m.Name == best.Name && !m.Abstract
                     && (m.Override || ReferenceEquals(m, wanted)) && MethodSignatures.Implements(m, wanted));
             }
 
@@ -26131,10 +26135,17 @@ public sealed partial class Binder
         {
             // By what it declares first: a class whose members were never
             // asked for is looked into only for one of these.
-            if (holder.Decl is not { Kind: TypeKind.Class } declared || !declared.Mods.HasFlag(Mods.Static)
-                || !declared.Members.Any(d => d is MethodDecl { StaticExtensionOf: not null } && (d.Name == m.Name || TypeSymbol.IsJoined(d.Name, "get_", m.Name))))
+            if (holder.Decl is not { Kind: TypeKind.Class } declared || !declared.Mods.HasFlag(Mods.Static)) continue;
+            // BY THE TWO NAMES LOOKED FOR (MemberWatch), the lists read
+            // quietly: every static class is asked, and read whole for it,
+            // each unit would depend on all of every one.
+            declared.Watch?.Asked(m.Name);
+            declared.Watch?.Asked(NameTable.Accessor("get_", m.Name));
+            if (!declared.MembersQuietly.Any(d => d is MethodDecl { StaticExtensionOf: not null } && (d.Name == m.Name || TypeSymbol.IsJoined(d.Name, "get_", m.Name))))
                 continue;
-            foreach (MethodSymbol x in holder.Methods)
+            List<MethodSymbol> held;
+            using (MemberWatch.Within(declared.Watch)) held = holder.Methods;
+            foreach (MethodSymbol x in held)
             {
                 if (x.Decl is not MethodDecl { StaticExtensionOf: TypeRef of } || !x.Static) continue;
                 bool named = x.Name == m.Name, read = TypeSymbol.IsJoined(x.Name, "get_", m.Name);

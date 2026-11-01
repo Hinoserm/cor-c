@@ -713,6 +713,17 @@ public static class ProjectCompile
     private static void WriteFacts(string path, IEnumerable<string> copies)
         => File.WriteAllLines(path, copies.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
 
+    /// <summary>The facts written for the units to read, or said why not: the build then fails.</summary>
+    private static bool FactsWritten(string factsFile, IEnumerable<string> facts)
+    {
+        try { WriteFacts(factsFile, facts); return true; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine("corc: the units' facts cannot be written to " + factsFile + ": " + e.Message);
+            return false;
+        }
+    }
+
     /// <summary>A unit's answers under `facts`: which of the methods it calls in other units have a copy.</summary>
     private static string Answers(UnitCalls read, HashSet<string> facts)
         => string.Join('\n', read.Calls.Where(name => facts.Contains(name + Corsac.Lang.Elf.Linker.InsideSuffix)).Order(StringComparer.Ordinal));
@@ -749,33 +760,18 @@ public static class ProjectCompile
             // longer has among them, and differed from a clean build's.
             if (moved.Count == 0)
             {
-                try { WriteFacts(factsFile, facts); }
-                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-                {
-                    Console.Error.WriteLine("corc: the units' facts cannot be written to " + factsFile + ": " + e.Message);
-                    return 1;
-                }
+                if (!FactsWritten(factsFile, facts)) return 1;
                 return 0;
             }
             if (round == 4)
             {
                 // The facts as they are, as when settled.
-                try { WriteFacts(factsFile, facts); }
-                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-                {
-                    Console.Error.WriteLine("corc: the units' facts cannot be written to " + factsFile + ": " + e.Message);
-                    return 1;
-                }
+                if (!FactsWritten(factsFile, facts)) return 1;
                 Console.Error.WriteLine("corc: the units' calls into each other's packed methods still move after four rounds ("
                     + string.Join(", ", moved.Take(6).Select(unit => Path.GetFileName(unit.Source))) + "); the build is right, and those units' calls are as the round before left them");
                 return 0;
             }
-            try { WriteFacts(factsFile, facts); }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                Console.Error.WriteLine("corc: the units' facts cannot be written to " + factsFile + ": " + e.Message);
-                return 1;
-            }
+            if (!FactsWritten(factsFile, facts)) return 1;
             Console.Error.WriteLine("inside facts round " + (round + 1) + ": " + moved.Count + " unit(s) call into other units' packed methods as they now are");
             force("its calls into other units' packed methods moved");
             try

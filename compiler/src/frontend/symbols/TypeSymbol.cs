@@ -509,8 +509,8 @@ public sealed class TypeSymbol
         return _fields ?? NoFields;
     }
 
-    /// <summary>The methods, read for one name (FieldsNamed).</summary>
-    private List<MethodSymbol> MethodsNamed(string name)
+    /// <summary>The methods, read for one name (FieldsNamed): the caller looks at those of that name only.</summary>
+    internal List<MethodSymbol> MethodsNamed(string name)
     {
         EnsureMembers();
         Decl?.Watch?.Asked(name);

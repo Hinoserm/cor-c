@@ -100,18 +100,56 @@ template and copies none of its bodies still reads them for the names they
 mention, and depends on that and nothing more of them. A unit's receipt flags
 each key it loaded with what of it the unit depends on
 (UnitDependencies.Dependence): the declaration alone; the declaration and the
-whole file's text, where the unit copied one of the key's bodies; or the
-declaration and the template shape.
+whole file's text, where the unit copied one of the key's bodies; the
+declaration and the template shape; the header alone, where the unit only named
+the type; or the type's shape and the members it asked for.
+
+### Member receipts
+
+A change to a type rebuilds the units that use what changed, not every unit
+that names the type. For a type whose members can be told apart
+(SourceIndexBuilder.ByMember: a class or struct of the program, not generic,
+partial or a record, with no base, interface, attribute or primary
+constructor; generic methods allowed), the index keeps:
+
+- a shape fingerprint: everything another unit reads of the type as a whole --
+  its header, instance fields and constructors (its layout), virtual members,
+  whether it has static work to run, and the template bodies' shape; a private
+  static's initialiser only by its class (Binder.InitialiserClass: startup work
+  that does or does not end the run of statics the link may lay down), an
+  array made by its tokens with an element's literal value left out and a
+  length's kept, which decide a table laid down as data or code;
+- one 16-byte fingerprint per member name a unit can ask for: a method, a
+  static field or property, a constant, a property's accessors and backing
+  field. Names declared in one text (`const int P = 5, Q = 6`) share it. A
+  member's text is hashed with the text of every constant of the same type it
+  names, transitively, so `C = P + 1` and `B(int k = P)` change with P; the
+  shape likewise.
+
+The binder records what a unit reads of such a type (MemberWatch): a member
+looked up by name records the name; reading the member lists in bulk records
+the whole declaration, and the unit depends on it as before. What the compiler
+reads of a type for the type's own sake -- declaring its members, copying it,
+laying it out, its initialisers, working out its constants -- is not the
+unit's: that work runs in the type's scope (MemberWatch.Within), and a type's
+reads are quiet only while its own scope is the innermost, so a name another
+type's work asks of it (T.C naming S.X, which names T.P) is still recorded.
+A unit that copies a generic method's body depends on the whole file
+(Dependence.Source). `--receipt-trace` prints, for each watched type, where it
+was read whole and where each name was first asked.
 
 The CDEC payload starts with uint32 magic CDEC and version 0. Four int32-length
 strict UTF-8 strings follow: source path, declaration spelling, namespace and
 outer type path. Next are four int32 fields (source start, end, line, column),
-32-byte source, declaration and template-shape SHA-256 fingerprints, an int32
-import count with pairs of scope/namespace strings, and an int32 alias count
-with triples of scope/alias/target strings, then an int32 count and strings for
-command-line conditional-compilation symbols. Lengths and source spans are
-validated; trailing data is rejected. The payload key is supplied by its
-containing index record.
+32-byte source, declaration, template-shape and header SHA-256 fingerprints, an
+int32 import count with pairs of scope/namespace strings, an int32 alias count
+with triples of scope/alias/target strings, an int32 count and strings for
+command-line conditional-compilation symbols, and an int32 count and strings for
+the member names. Last come the shape fingerprint (an int32 length, 0 or 32,
+and its bytes; 0 where the type's members are not told apart) and an int32
+count of member fingerprints, each a name string and 16 bytes. Lengths and
+source spans are validated; trailing data is rejected. The payload key is
+supplied by its containing index record.
 
 Implementation fetching verifies the source fingerprint before returning the
 recorded type fragment. A stale source is an error, not permission to combine a
