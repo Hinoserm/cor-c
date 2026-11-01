@@ -394,8 +394,9 @@ public static class ObjectLinkCommand
         {
             // What the image's loader finds: its DT_NEEDED and theirs, a
             // [DllImport]'s C library among them (Linker.ExportsAtStart).
-            HashSet<string> provided = Linker.ExportsAtStart(image, sharedLibraries, longMode);
-            string[] missing = ElfReader.ImportsOf(image).Where(name => !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();
+            HashSet<string>? provided = Linker.ExportsAtStart(image, sharedLibraries, longMode);
+            string[] missing = provided is null ? Array.Empty<string>()
+                : ElfReader.ImportsOf(image).Where(name => !provided.Contains(name)).Order(StringComparer.Ordinal).ToArray();
             if (missing.Length != 0) return Fail("unresolved shared-library imports: " + string.Join(", ", missing));
         }
         if (!streamed) File.WriteAllBytes(output, image);

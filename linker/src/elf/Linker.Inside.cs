@@ -16,29 +16,56 @@ public static partial class Linker
     /// <summary>
     /// WHAT AN IMAGE FINDS AT ITS START, as its loader finds it: the exports
     /// of every library the image needs (DT_NEEDED) and every library those
-    /// need, each found beside the libraries the link was given -- the COR-C#
-    /// ones, where the image's RUNPATH points -- or else in the system's
-    /// library directories, where a [DllImport]'s C library is (NativeNeeded).
-    /// A needed library found nowhere answers nothing; one that is no ELF
-    /// file is passed over, as the loader would refuse it in its own words.
+    /// need -- a library the link was given by its soname, else one beside
+    /// them (the COR-C# ones, where the image's RUNPATH points), else one in
+    /// the system's library directories (a [DllImport]'s C library,
+    /// NativeNeeded), each of the image's own class (Elf32 or Elf64). NULL
+    /// WHERE A NEEDED LIBRARY IS NOT HERE TO READ -- a C library only the
+    /// target has: what it would answer cannot be told, and nothing is judged.
     /// </summary>
-    public static HashSet<string> ExportsAtStart(byte[] image, IEnumerable<string> libraries, bool longMode)
+    public static HashSet<string>? ExportsAtStart(byte[] image, IEnumerable<string> libraries, bool longMode)
     {
-        List<string> beside = libraries.Select(path => Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".").Distinct(StringComparer.Ordinal).ToList();
+        byte elfClass = longMode ? (byte)2 : (byte)1;
+        Dictionary<string, string> given = new(StringComparer.Ordinal);
+        List<string> beside = new();
+        foreach (string library in libraries)
+        {
+            string full = Path.GetFullPath(library);
+            string dir = Path.GetDirectoryName(full) ?? ".";
+            if (!beside.Contains(dir)) beside.Add(dir);
+            given.TryAdd(Path.GetFileName(full), full);
+            try { if (ElfReader.ReadSharedImage(File.ReadAllBytes(full)).Soname is string soname) given.TryAdd(soname, full); }
+            catch (Exception e) when (e is ElfFormatException or IOException or InvalidDataException) { }
+        }
         string[] system = longMode ? LibraryDirectories64 : LibraryDirectories32;
         HashSet<string> exported = new(StringComparer.Ordinal), read = new(StringComparer.Ordinal);
         Queue<string> pending = new(ElfReader.ReadSharedImage(image).Needed);
         while (pending.Count > 0)
         {
             string needed = pending.Dequeue();
-            string? path = needed.Contains('/') ? (File.Exists(needed) ? needed : null)
-                : beside.Concat(system).Select(dir => Path.Combine(dir, needed)).FirstOrDefault(File.Exists);
-            if (path is null || !read.Add(Path.GetFullPath(path))) continue;
-            ElfReader.SharedImageInfo library;
-            try { library = ElfReader.ReadSharedImage(File.ReadAllBytes(path)); }
-            catch (Exception e) when (e is ElfFormatException or IOException or InvalidDataException) { continue; }
-            exported.UnionWith(library.Exports.Keys);
-            foreach (string next in library.Needed) pending.Enqueue(next);
+            IEnumerable<string> candidates = needed.Contains('/') ? new[] { needed }
+                : (given.TryGetValue(needed, out string? named) ? new[] { named } : Array.Empty<string>())
+                    .Concat(beside.Concat(system).Select(dir => Path.Combine(dir, needed)));
+            byte[]? bytes = null;
+            string? path = null;
+            foreach (string candidate in candidates)
+            {
+                if (!File.Exists(candidate)) continue;
+                byte[] read1 = File.ReadAllBytes(candidate);
+                // Of the image's own class: a usrmerge host's /usr/lib holds the
+                // 64-bit libc an i386 image is never given.
+                if (read1.Length < 5 || read1[4] != elfClass) continue;
+                (bytes, path) = (read1, Path.GetFullPath(candidate));
+                break;
+            }
+            if (bytes is null || path is null) return null;
+            if (!read.Add(path)) continue;
+            try
+            {
+                exported.UnionWith(ElfReader.ExportsOf(bytes));
+                foreach (string next in ElfReader.ReadSharedImage(bytes).Needed) pending.Enqueue(next);
+            }
+            catch (Exception e) when (e is ElfFormatException or IOException or InvalidDataException) { return null; }
         }
         return exported;
     }

@@ -1980,8 +1980,9 @@ public static class Driver
             // program at its start, naming one, and only one. Judged as the
             // loader finds them: the program's DT_NEEDED and theirs, a
             // [DllImport]'s C library among them (Linker.ExportsAtStart).
-            HashSet<string> exported = Linker.ExportsAtStart(linked, needed, longMode);
-            string[] missing = ElfReader.ImportsOf(linked).Where(import => !exported.Contains(import)).Order(StringComparer.Ordinal).ToArray();
+            HashSet<string>? exported = Linker.ExportsAtStart(linked, needed, longMode);
+            string[] missing = exported is null ? Array.Empty<string>()
+                : ElfReader.ImportsOf(linked).Where(import => !exported.Contains(import)).Order(StringComparer.Ordinal).ToArray();
             if (missing.Length != 0) return Fail("imported, and no library linked against exports it: " + string.Join(", ", missing.Take(12)) + (missing.Length > 12 ? " and " + (missing.Length - 12) + " more" : ""));
             File.WriteAllBytes(output, linked);
         }
