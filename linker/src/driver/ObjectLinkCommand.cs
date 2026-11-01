@@ -360,15 +360,6 @@ public static class ObjectLinkCommand
             image = shared ? Linker.LinkShared(inputs, Path.GetFileName(output), needed, runpath, baseAddress ?? 0, sharedLibraries, longMode: longMode)
                 : Linker.Link(inputs, entry, needed, runpath, libraries: sharedLibraries, longMode: longMode);
         }
-        // EVERY PUBLIC METHOD OF ITS OWN IN A SHARED OBJECT'S .dynsym, as in a
-        // kernel's table, or the image is not what its units say.
-        if (shared && image is not null)
-        {
-            HashSet<string> dynamic = new(ElfReader.ExportsOf(image), StringComparer.Ordinal);
-            List<string> lost = offered.Where(name => !dynamic.Contains(name)).Order(StringComparer.Ordinal).ToList();
-            if (lost.Count > 0)
-                return Fail(output + ": public members not in the image to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
-        }
         else
         {
             // Straight to the file, a chunk at a time (Linker.LinkTo), the
@@ -377,6 +368,15 @@ public static class ObjectLinkCommand
             Linker.LinkTo(output, inputs, entry, baseAddress ?? Linker.DefaultLoadAddress, physicalAddress, longMode: longMode);
             image = Array.Empty<byte>();
             streamed = true;
+        }
+        // EVERY PUBLIC METHOD OF ITS OWN IN A SHARED OBJECT'S .dynsym, as in a
+        // kernel's table, or the image is not what its units say.
+        if (shared && !streamed)
+        {
+            HashSet<string> dynamic = new(ElfReader.ExportsOf(image), StringComparer.Ordinal);
+            List<string> lost = offered.Where(name => !dynamic.Contains(name)).Order(StringComparer.Ordinal).ToList();
+            if (lost.Count > 0)
+                return Fail(output + ": public members not in the image to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));
         }
         if (noUndefined && kernel is null && (shared || sharedLibraries.Count > 0))
         {
