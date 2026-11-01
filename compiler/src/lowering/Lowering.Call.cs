@@ -213,6 +213,7 @@ public sealed partial class Lowering
     private VReg? CallDirect(MethodSymbol m, IrType returns, List<Operand> args)
     {
         Require(m);
+        ulong byValue = ByValueOperands(m, args.Count);
         VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
         if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
         // A SHARED METHOD COPY'S HIDDEN TYPE ARGUMENTS, after the buffer as
@@ -277,6 +278,7 @@ public sealed partial class Lowering
                 : R(_e.Address(ContextToken(canonical.Owner)));
             args = new List<Operand>(args);
             args.Insert(0, context);
+            byValue <<= 1;
             label = BodyLabel(canonical);
         }
         label = InsideLabel(m, label);
@@ -285,6 +287,8 @@ public sealed partial class Lowering
         // One that calls a plain native runs on the thread's own state
         // (BindResult.PackedNatives), given back around it.
         VReg? made = _b.PackedNatives.Contains(m) ? OnOwnState(() => _e.Call(called, returns, passed)) : _e.Call(called, returns, passed);
+        if (byValue != 0 && !_b.PackedNatives.Contains(m) && !called.StartsWith(NativeCall.Prefix, StringComparison.Ordinal))
+            _e.Block.Instrs[^1].PassedByValue = byValue;
         // A CALL THAT NEVER COMES BACK ENDS ITS BLOCK: a method proved never
         // to return (Binder.CallNeverReturns) -- ThrowHelper's, which only
         // throw, Environment.Exit, whose calls end in a loop round exit(2) --
@@ -317,6 +321,24 @@ public sealed partial class Lowering
         // made for this caller.
         if (!Buffered(m) && !m.RefReturn && IsStructValue(m.Returns) && m.Decl is { File: not "<prelude>" }) _e.Block.Instrs[^1].Field = Instr.FreshStruct;
         return made;
+    }
+
+    /// <summary>
+    /// The operands of a direct call to `m`, `given` of them, that are structs
+    /// passed by value, and a struct method's receiver (Instr.PassedByValue):
+    /// what the callee reads or copies and never keeps, whichever image's it
+    /// is. None where the operands are not the receiver and the parameters
+    /// one for one, nor for a method that answers by reference, which may
+    /// answer a place inside its receiver.
+    /// </summary>
+    private static ulong ByValueOperands(MethodSymbol m, int given)
+    {
+        int first = m.Static ? 0 : 1;
+        if (m.RefReturn || given != first + m.Params.Count || given > 63) return 0;
+        ulong mask = !m.Static && m.Owner.Kind == TypeKind.Struct ? 1UL : 0;
+        for (int k = 0; k < m.Params.Count; k++)
+            if (!m.Params[k].ByRef && IsStructValue(m.Params[k].Type)) mask |= 1UL << (first + k);
+        return mask;
     }
 
     /// <summary>Whether a type is, extends or implements another.</summary>

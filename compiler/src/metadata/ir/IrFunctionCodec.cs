@@ -12,7 +12,8 @@ public static class IrFunctionCodec
     /// the analyses mark on the IR -- a load's or a copy's Number (never an
     /// address), a parameter's Number, a site the link chose for a region
     /// (RegionSite), a loop header it gave one (RegionLoop, RegionLoopBytes),
-    /// the field a load or a store names (Instr.Family) -- so that whatever
+    /// the field a load or a store names (Instr.Family), a call's structs
+    /// passed by value (Instr.PassedByValue) -- so that whatever
     /// the link rebuilds from archived IR (its late passes, its lifetime runs,
     /// the copy a refused run is taken back from, UnitBackend) reads them as
     /// the compile left them; and the bytes a stdcall function pops
@@ -25,7 +26,7 @@ public static class IrFunctionCodec
     private const int Version = 0;
 
     // An instruction's marks (Instr): one byte.
-    private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4, DeviceMark = 8;
+    private const byte NumberMark = 1, RegionSiteMark = 2, FamilyMark = 4, DeviceMark = 8, PassedMark = 16;
 
     /// <summary>
     /// What Read charges for the function's record, `payloadBytes` long:
@@ -65,7 +66,8 @@ public static class IrFunctionCodec
             foreach (Instr instruction in block.Instrs)
             {
                 bytes = checked(bytes + InstructionBytes + OperandArrayBytes(instruction.Operands.Count) + TargetArrayBytes(instruction.Targets.Count));
-                if (Extra(instruction.Size, instruction.Offset, instruction.DispatchType) || instruction.Default is not null) bytes = checked(bytes + ExtraBytes);
+                if (Extra(instruction.Size, instruction.Offset, instruction.DispatchType) || instruction.Default is not null || instruction.PassedByValue != 0)
+                    bytes = checked(bytes + ExtraBytes);
                 Name(instruction.Callee);
                 Name(instruction.DispatchType);
                 Name(instruction.Field);
@@ -200,8 +202,9 @@ public static class IrFunctionCodec
                 writer.Write(instruction.Size); writer.Write(instruction.Signed); writer.Write(instruction.Offset);
                 IrBinary.Text(writer, instruction.Callee); IrBinary.Text(writer, instruction.DispatchType); IrBinary.Text(writer, instruction.Field); writer.Write(instruction.Line);
                 writer.Write((byte)((instruction.Number ? NumberMark : 0) | (instruction.RegionSite ? RegionSiteMark : 0) | (instruction.Family is not null ? FamilyMark : 0)
-                    | (instruction.Device ? DeviceMark : 0)));
+                    | (instruction.Device ? DeviceMark : 0) | (instruction.PassedByValue != 0 ? PassedMark : 0)));
                 if (instruction.Family is not null) IrBinary.Text(writer, instruction.Family);
+                if (instruction.PassedByValue != 0) writer.Write(instruction.PassedByValue);
                 writer.Write(instruction.Operands.Count);
                 foreach (Operand operand in instruction.Operands)
                     switch (operand)
@@ -349,12 +352,14 @@ public static class IrFunctionCodec
                         Callee = callee, DispatchType = dispatchType, Field = field, Line = reader.ReadInt32(),
                     };
                     byte marks = reader.ReadByte();
-                    if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark | DeviceMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
+                    if ((marks & ~(NumberMark | RegionSiteMark | FamilyMark | DeviceMark | PassedMark)) != 0) throw new InvalidDataException("Invalid IR instruction marks");
                     instruction.Number = (marks & NumberMark) != 0;
                     instruction.RegionSite = (marks & RegionSiteMark) != 0;
                     instruction.Device = (marks & DeviceMark) != 0;
                     if ((marks & FamilyMark) != 0)
                         instruction.Family = IrBinary.NameOrNull(reader, budget) ?? throw new InvalidDataException("Invalid IR instruction field");
+                    ulong passed = (marks & PassedMark) != 0 ? reader.ReadUInt64() : 0;
+                    if (passed != 0 && !extra) budget.Charge(1, ExtraBytes, "instructions");
                     // MADE AT ONCE, operands and targets: added one at a time,
                     // each was a copy of all before it (OperandList, TargetList).
                     int operands = IrBinary.Count(reader);
@@ -382,6 +387,8 @@ public static class IrFunctionCodec
                         else instruction.Operands.Add(read);
                     }
                     if (all is not null) instruction.Operands.SetAll(all);
+                    // Set once the operands are in: it is read against their count.
+                    instruction.PassedByValue = passed;
                     int targets = IrBinary.Count(reader);
                     if (targets > 0)
                     {
@@ -394,7 +401,7 @@ public static class IrFunctionCodec
                     if (otherwise < -1) throw new InvalidDataException("Invalid IR default target");
                     if (otherwise >= 0)
                     {
-                        if (!extra) budget.Charge(1, ExtraBytes, "instructions");
+                        if (!extra && passed == 0) budget.Charge(1, ExtraBytes, "instructions");
                         instruction.Default = At(blocks, otherwise);
                     }
                     block.Instrs.Add(instruction);

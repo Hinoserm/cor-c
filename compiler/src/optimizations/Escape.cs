@@ -3571,6 +3571,10 @@ continue;
                             {
                                 if (i.Operands[a] is not RegOperand arg || !flow.Derived.Contains(arg.Reg)) continue;
                                 if (summary is not null && a < summary.Length && !summary[a]) continue;
+                                // A STRUCT PASSED BY VALUE (Instr.PassedByValue):
+                                // read or copied by any callee, kept by none --
+                                // another image's, with no summary here, too.
+                                if (i.PassesByValue(a)) continue;
                                 // THE OBJECT ITSELF, OF THE TYPE STAMPED INTO IT HERE,
                                 // handed to another unit's function the link read for
                                 // that type (LinkTyped): kept by nothing there.
@@ -5955,11 +5959,13 @@ continue;
     /// <summary>
     /// Whether a call may keep what it is handed as operand `a` past its
     /// return -- in the object it hands back (Held), anywhere else, or as
-    /// that object itself (ReturnsFirst): a callee with no summary keeps all,
-    /// and a virtual call keeps what any override it reaches keeps.
+    /// that object itself (ReturnsFirst): a callee with no summary keeps all
+    /// but a struct passed by value (Instr.PassedByValue), and a virtual call
+    /// keeps what any override it reaches keeps.
     /// </summary>
     private static bool KeepsArgument(Instr call, int a, Dictionary<string, bool[]> summaries)
     {
+        if (call.PassesByValue(a)) return false;
         static bool Keeps(Dictionary<string, bool[]> summaries, string callee, int p)
             => p == 0 && ReturnsFirst(callee) || !summaries.TryGetValue(callee, out bool[]? summary) || p >= summary.Length || summary[p];
         if (call.Op == Opcode.Call) return call.Callee is not { } callee || Keeps(summaries, callee, a);
