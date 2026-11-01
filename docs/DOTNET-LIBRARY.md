@@ -71,9 +71,11 @@ the same list.
   wakes a thread of the program's, started with its first
   PosixSignalRegistration, which runs the handlers whatever the rest of
   the program is doing -- as .NET's run, on a thread, off the signal
-  frame. A wait the signal interrupts (a poll, a sleep, a console read,
-  Os.Pause) returns with its handlers run, there or on that thread. A
-  handler that does not set Cancel gets the default action afterwards.
+  frame. A wait the signal interrupts (a poll, a sleep, a console read)
+  runs them itself if that thread has not, and does not wait for one
+  running there, as no .NET wait does; Os.Pause does, and returns with
+  them run. A handler that does not set Cancel gets the default action
+  afterwards.
 - Dns resolves numeric addresses, localhost and /etc/hosts. A resolver
   that asks a server is the day the network stack grows one.
 - Local time is UTC: the machine keeps no zone.

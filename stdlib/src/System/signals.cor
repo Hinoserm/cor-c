@@ -12,10 +12,11 @@
 // their own, not in the signal frame. Run only at the program's quiet
 // moments, a program busy in a loop never ran them: `ping -f`, sending back
 // to back, let Ctrl+C and `kill -INT` go by, and SIGKILL alone stopped it.
-// The console, the scheduler, the waits (Os.Poll, Os.Pause, a thread's
-// sleep) and the GUI seat (Seat.Next) still call Deliver at theirs: it runs
-// what the thread has not taken, waits for what it is running, and so
-// returns with the handlers for every signal it saw run, once each.
+// The console, the scheduler, the waits (Os.Poll, a thread's sleep) and the
+// GUI seat (Seat.Next) still call Deliver at theirs, which runs what the
+// thread has not taken and never waits for it, as no .NET wait does; each
+// signal's handler runs once, on one thread or the other. Os.Pause, whose
+// promise is that the handlers have run, waits for them (Settle).
 
 public enum PosixSignal
 {
@@ -63,17 +64,22 @@ public class PosixSignalRegistration : IDisposable
     // program sent itself found nothing and slept for ever, where it had
     // returned.
     static int _unseen;
-    // ONE DELIVERY AT A TIME (Run), with the managed id of the thread making
-    // it: a wait that promises its caller the handlers have run waits for
-    // one in flight on another thread, rather than returning while it
-    // runs; a handler that waits, on the thread running it, is not made to
-    // wait for itself. A handler that waits for a thread which is itself
-    // waiting for the handlers is the one way to hang this.
+    // ONE DELIVERY AT A TIME (_running, a lock): the thread that delivers
+    // waits its turn; a quiet moment only tries it, and goes on if a
+    // delivery is running -- as a .NET wait does, never held up by a
+    // handler on another thread. Made to wait there, a scheduler pass
+    // waited for a handler that waited for a task only that pass would
+    // run. Os.Pause alone waits for one in flight (Settle), its promise
+    // being that the handlers have run.
     static int _running;
-    static int _runner;
-    // The process the thread that delivers was started in, 0 before: a
-    // fork's child has none and starts its own (StartDelivering).
-    static int _deliveringIn;
+    // Whether this thread is inside a delivery: Settle from a handler does
+    // not wait for itself.
+    [ThreadStatic] static bool _inside;
+    // Whether the thread that delivers has been started: once, by the first
+    // Create (StartDelivering). A fork's child -- which this library only
+    // ever execs -- has the word and not the thread: a handler it registers
+    // runs at its quiet moments alone.
+    static int _delivering;
 
     PosixSignal _signal;
 
@@ -100,9 +106,7 @@ public class PosixSignalRegistration : IDisposable
     /// it never keeps the process alive.
     static void StartDelivering()
     {
-        int here = Environment.ProcessId;
-        int had = _deliveringIn;
-        if (had == here || System.Threading.Interlocked.CompareExchange(ref _deliveringIn, here, had) != had)
+        if (System.Threading.Interlocked.CompareExchange(ref _delivering, 1, 0) != 0)
         {
             return;
         }
@@ -123,6 +127,7 @@ public class PosixSignalRegistration : IDisposable
             Native.Wait(at, 0);
             if (_pending != 0)
             {
+                Enter();
                 Run();
             }
         }
@@ -169,43 +174,79 @@ public class PosixSignalRegistration : IDisposable
     }
 
     /// The quiet moments' call -- a wait a signal interrupted, the console,
-    /// Os.Pause: what arrived is seen, and by the time this returns its
-    /// handlers have run, here or on the thread that delivers.
+    /// the scheduler: what arrived is seen, and its handlers run here
+    /// unless a delivery is running already, on the thread that delivers,
+    /// which takes what is pending next. Never waits. Nothing from inside a
+    /// handler, which leaves what no wait has seen to the program's waits:
+    /// a handler's own sleep took it, and Os.Pause then slept on.
     public static void Deliver()
     {
-        if (_unseen == 0)
+        if (_unseen == 0 || _inside)
         {
             return;
         }
         System.Threading.Interlocked.Exchange(ref _unseen, 0);
-        Run();
-    }
-
-    /// The handlers for what is pending, one delivery at a time (_running):
-    /// after one in flight on another thread has finished. Nothing on the
-    /// thread already running them -- a handler's own wait.
-    static void Run()
-    {
-        int me = Environment.CurrentManagedThreadId;
-        if (_runner == me)
+        if (System.Threading.Interlocked.CompareExchange(ref _running, 1, 0) != 0)
         {
             return;
         }
+        Run();
+    }
+
+    /// Os.Pause's: Deliver, and then -- but inside a handler -- wait until no
+    /// delivery runs and nothing is pending, running what is, so the
+    /// handlers for what it saw have run when it returns, here or on the
+    /// thread that delivers.
+    public static void Settle()
+    {
+        Deliver();
+        if (_inside)
+        {
+            return;
+        }
+        nuint gate = Sys.AddressOf(ref _running);
+        while (true)
+        {
+            if (_running != 0)
+            {
+                Native.Wait(gate, 1);
+                continue;
+            }
+            if (_pending == 0)
+            {
+                return;
+            }
+            if (System.Threading.Interlocked.CompareExchange(ref _running, 1, 0) == 0)
+            {
+                Run();
+            }
+        }
+    }
+
+    /// The lock (_running), waited for: the thread that delivers.
+    static void Enter()
+    {
         nuint gate = Sys.AddressOf(ref _running);
         while (System.Threading.Interlocked.CompareExchange(ref _running, 1, 0) != 0)
         {
             Native.Wait(gate, 1);
         }
-        _runner = me;
+    }
+
+    /// What is pending run, the lock held, and the lock given back.
+    static void Run()
+    {
+        bool was = _inside;
+        _inside = true;
         try
         {
             RunPending();
         }
         finally
         {
-            _runner = 0;
+            _inside = was;
             System.Threading.Interlocked.Exchange(ref _running, 0);
-            Native.Wake(gate, Native.WakeAll);
+            Native.Wake(Sys.AddressOf(ref _running), Native.WakeAll);
         }
     }
 
@@ -249,7 +290,9 @@ public class PosixSignalRegistration : IDisposable
         {
             if (left != 0)
             {
+                // And the thread that delivers told: it runs them next.
                 System.Threading.Interlocked.Or(ref _pending, left);
+                Native.Wake(Sys.AddressOf(ref _pending), 1);
             }
         }
     }
