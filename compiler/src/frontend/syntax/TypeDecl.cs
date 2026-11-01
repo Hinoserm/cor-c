@@ -460,12 +460,6 @@ public sealed class TypeDecl : Node
     /// </summary>
     public bool InGenericCode { get; set; }
 
-    /// <summary>
-    /// The full paths of a partial type's parts, where parts were merged
-    /// (Frontend); null for a type written once, whose SourcePath is all.
-    /// </summary>
-    public HashSet<string>? PartSources { get; set; }
-
 
     /// <summary>
     /// The template this was made from, and with what.

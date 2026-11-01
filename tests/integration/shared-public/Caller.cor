@@ -1,11 +1,7 @@
-// The library's public surface, and its generic code copied for a struct
-// of the program's own: Pick's first call answers its first argument.
-struct Point
-{
-    public int X;
-}
-
+// The library's public surface, and its generic code copied for a type
+// argument of no machine word: a long, on i386, is no __canon, and the
+// program makes its own copy of Pick. Pick's first call answers its first.
 static class Program
 {
-    static int Main() => Api.Answer() + Api.Pick(new Point { X = 1 }, new Point { X = 2 }).X - 1;
+    static int Main() => Api.Answer() + (int)Api.Pick(1L, 2L) - 1;
 }

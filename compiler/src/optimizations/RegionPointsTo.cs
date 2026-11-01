@@ -784,6 +784,12 @@ public sealed class RegionPointsTo : IModulePass
         }
 
         List<Version> versions = Versions(chosen, Decide, out int alike);
+        // NO VERSION OF A BODY ANOTHER IMAGE SUPPLIES THAT NAMES WHAT ITS
+        // LIBRARY WITHHOLDS (Inline.CrossesImage): the version would be this
+        // image's own copy of it. A call of a version not made runs the
+        // function itself, in its library.
+        HashSet<string> hidden = _m.LibraryPrivate();
+        if (hidden.Count > 0) versions.RemoveAll(v => _m.GoesElsewhere(v.F) && Inline.NamesAny(v.F, hidden));
 
         // The versions' bodies, from the functions as they are before any
         // is rewritten. A call of a version not made -- one alike its
@@ -1046,7 +1052,7 @@ public sealed class RegionPointsTo : IModulePass
         Function made = new(name, f.Returns)
         {
             Exported = false, SourceFile = f.SourceFile, Line = f.Line, Display = f.Display, FromLibrary = f.FromLibrary, SystemCode = f.SystemCode,
-            NoInlining = f.NoInlining, CalleePops = f.CalleePops, Dispatched = f.Dispatched, InsideState = f.InsideState, Unjudged = f.Unjudged, SourcePath = f.SourcePath,
+            GenericCode = f.GenericCode, Version = true, NoInlining = f.NoInlining, CalleePops = f.CalleePops, Dispatched = f.Dispatched, InsideState = f.InsideState, Unjudged = f.Unjudged, SourcePath = f.SourcePath,
             KeepsCallerRegisters = f.KeepsCallerRegisters,
         };
         Dictionary<VReg, VReg> regs = new();

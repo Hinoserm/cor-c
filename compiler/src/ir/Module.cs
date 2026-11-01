@@ -297,7 +297,7 @@ public sealed class Module
         HashSet<string> found = new(StringComparer.Ordinal);
         if (ProvidedElsewhere is not { } provided || CompilesLibrary) return found;
         foreach (Function f in Functions)
-            if (f.SystemCode && !f.Coalescible && !f.GenericCode && f.Name != Entry && !provided.Contains(f.Name)
+            if (f.SystemCode && !f.Coalescible && !f.GenericCode && !f.Version && f.Name != Entry && !provided.Contains(f.Name)
                 && (f.Name.StartsWith("m_", StringComparison.Ordinal) || f.Name.StartsWith("mx_", StringComparison.Ordinal)))
                 found.Add(f.Name);
         foreach (DataItem d in Data)

@@ -1172,6 +1172,10 @@ public static class Driver
         HashSet<string> ownLibrary = new(files.Where(IsLibrarySource).Select(f => Path.GetFullPath(f)).Where(f => !referenced.Contains(f)), StringComparer.Ordinal);
         Corsac.Lang.Lower.Lowering.SplitLibrary = shared && !freestanding && !windows && ownLibrary.Count > 0;
         Corsac.Lang.Lower.Lowering.OwnLibrarySources = ownLibrary;
+        // A program's or a module's compile over images that provide the
+        // class library: it reads the library's code to give it away, and
+        // lays down none of its state (Lowering.NotePreinitCandidate).
+        Corsac.Lang.Lower.Lowering.LibraryProvided = (sharedLibs.Count > 0 || kernel is not null) && ownLibrary.Count == 0;
         Binder.NamesGenericCode = Corsac.Lang.Lower.Lowering.ExportingImage;
         // The runtime DLL is lowered as the library's own objects are (--obj),
         // which is how the class library has always been compiled whole.
@@ -2095,7 +2099,7 @@ public static class Driver
             else if (live.Add(target)) work.Push(target);
         }
         foreach (Function f in module.Functions)
-            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
+            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible || f.Version) && live.Add(f.Name)) work.Push(f.Name);
         foreach (DataItem d in module.Data)
             if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || d.Coalescible || d.GenericCode) && live.Add(d.Name)) work.Push(d.Name);
         void Walk()
@@ -2132,7 +2136,7 @@ public static class Driver
                 + string.Join("; ", named.Take(12).Select(n => n.Key + " (named by " + n.Value + ")"))
                 + (named.Count > 12 ? "; and " + (named.Count - 12) + " more" : "")
                 + ": the library's own code and state are its library's, and a generic copy names them through what the library exports";
-        module.Functions.RemoveAll(f => hidden.Contains(f.Name) || f.SystemCode && !f.GenericCode && !f.Coalescible && !live.Contains(f.Name));
+        module.Functions.RemoveAll(f => hidden.Contains(f.Name) || f.SystemCode && !f.GenericCode && !f.Coalescible && !f.Version && !live.Contains(f.Name));
         module.Data.RemoveAll(d => hidden.Contains(d.Name) || !swept && d.SystemCode && !d.Coalescible && !live.Contains(d.Name)
             && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("ts_", StringComparison.Ordinal) || d.Name.StartsWith("t_", StringComparison.Ordinal)));
         return null;

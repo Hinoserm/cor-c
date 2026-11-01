@@ -28,6 +28,14 @@ public sealed partial class Lowering
     public static IReadOnlySet<string> OwnLibrarySources { get; set; } = new HashSet<string>(StringComparer.Ordinal);
 
     /// <summary>
+    /// A program's or a module's compile over images that provide the class
+    /// library (--link-shared, --dynamic, --kernel), owning none of its
+    /// sources: the library's code is read here to be given away, and none
+    /// of its state is laid down here (NotePreinitCandidate).
+    /// </summary>
+    public static bool LibraryProvided { get; set; }
+
+    /// <summary>
     /// WHAT THIS UNIT OFFERS OTHER IMAGES (PublicApi, `.corsac.public`): of
     /// each method and static it defines, whether C# lets another assembly
     /// name it -- shown (Binder.ShownOutside) in a type public all the way
@@ -67,10 +75,13 @@ public sealed partial class Lowering
             // A PARTIAL TYPE'S PRIVATE MEMBERS ARE EVERY PART'S, and the split
             // class library writes parts of one type into two images:
             // Utf8Formatter's TryFormat in libSystem.Runtime.Extensions calls
-            // the private Text of its part in libcorsacrt. Only where a part
-            // is another image's: a member read from a source this compile
-            // does not own. Runtime's parts are all libcorsacrt's.
-            bool parts = wide && !abi && (d.Mods & Mods.Partial) != 0 && SpansImages(d);
+            // the private Text of its part in libcorsacrt. Every partial type's,
+            // its parts in one image or several: a compile reads another
+            // image's part only when something asks for it, and so cannot
+            // tell. What it costs is names in the export table -- Runtime's
+            // privates among them -- never a second copy of anything: an
+            // image naming one imports it.
+            bool parts = wide && !abi && (d.Mods & Mods.Partial) != 0;
             // ITS MEMBERS READ IN ITS OWN SCOPE (MemberWatch): every type of the
             // unit is walked, and an imported one -- the kernel's Arch, in
             // every unit -- lists nothing here: none of its methods is emitted
@@ -225,16 +236,6 @@ public sealed partial class Lowering
         }
         return false;
     }
-
-    /// <summary>
-    /// A partial type with a part in another image of the split class
-    /// library: a part written in a source this compile does not own, by
-    /// the full paths the parts were merged from (TypeDecl.PartSources) --
-    /// a member's File is its file's bare name, the same for threading.cor
-    /// under every platform.
-    /// </summary>
-    private static bool SpansImages(TypeDecl d)
-        => d.PartSources is { } parts && parts.Any(path => !OwnLibrarySources.Contains(path));
 
     /// <summary>
     /// A type the rest of its assembly can name: any at the top, and one

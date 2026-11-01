@@ -31,6 +31,15 @@ public sealed class Function
     public bool GenericCode { get; init; }
 
     /// <summary>
+    /// A version a pass made of another function for this image's own
+    /// callers -- its allocations placed in their region (RegionPointsTo) --
+    /// this image's code, as an inlined body is: never its library's private
+    /// code (Module.LibraryPrivate), made of a library body only where that
+    /// body names nothing its library withholds.
+    /// </summary>
+    public bool Version { get; init; }
+
+    /// <summary>
     /// Whether this came out of the class library's sources rather than the
     /// program's. What a shared object may supply in this one's place: a
     /// program that declares a type of its own shadowing a library type
