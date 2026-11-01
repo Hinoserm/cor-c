@@ -171,11 +171,13 @@ public sealed class TypeRef : Node
     }
 
     /// <summary>
-    /// THE NAMESPACE A GENERIC WAS WRITTEN WITH, where the copy's name lost
+    /// WHAT A GENERIC WAS WRITTEN QUALIFIED WITH, where the copy's name lost
     /// it: `System.Collections.Generic.List<int>` is the reference List$int,
-    /// and the namespace it was named through is kept here, so a file with no
-    /// using of it still names the type (Binder.LibraryGlobalVisible), as C#
-    /// has a qualified name. Null for every other reference.
+    /// and `System.Collections.Generic` is kept here -- a namespace alias at
+    /// its front as the namespace it stands for (Monomorphiser.QualifierOf).
+    /// Asked only of a class library type: one named through its .NET
+    /// namespace is seen with no using of it (Binder.LibraryGlobalVisible),
+    /// as C# has a qualified name. Null for a bare name.
     /// </summary>
     public string? Qualifier
     {

@@ -2,14 +2,33 @@
 // expect-exit: 0
 // expect-output:
 // 1 1 2 0
+// 2 1 3 True
 //
 // A generic library type named through its own namespace needs no using,
 // as C# has a qualified name: `System.Collections.Generic.List<int>`,
-// `global::` before it, a using alias of one, and one inside another. The
-// copy's name, List$int, has lost the namespace it was written with, which
-// the binder is told (TypeRef.Qualifier); an argument written bare inside
-// it is still the file's to bring in.
+// `global::` before it, a using alias of one, one inside another, a generic
+// class's base, the namespace through an alias of it, and the rest of the
+// namespace from inside the one that begins it. The copy's name, List$int,
+// has lost what it was written with, which the binder is told
+// (TypeRef.Qualifier); an argument written bare inside it is still the
+// file's to bring in (2564).
 using Map = System.Collections.Generic.Dictionary<string, int>;
+using G = System.Collections.Generic;
+
+class Box<T> : System.Collections.Generic.List<T> { }
+
+class Same<T> : System.IEquatable<Same<T>>
+{
+    public bool Equals(Same<T>? other) => other is not null;
+}
+
+namespace System.Mine
+{
+    static class Inner
+    {
+        public static int Count(Collections.Generic.List<int> list) => list.Count;
+    }
+}
 
 static class Program
 {
@@ -25,6 +44,13 @@ static class Program
         object o = g;
         System.ReadOnlySpan<byte> none = default;
         System.Console.WriteLine(g.Count + " " + m["a"] + " " + nested.Count + " " + (o is System.Collections.Generic.List<int> ? none.Length : 9));
+        Box<int> box = new Box<int>();
+        box.Add(1);
+        box.Add(2);
+        G.List<int> through = new G.List<int>();
+        through.Add(3);
+        Same<int> same = new Same<int>();
+        System.Console.WriteLine(box.Count + " " + through.Count + " " + System.Mine.Inner.Count(through) * 3 + " " + same.Equals(same));
         return 0;
     }
 }

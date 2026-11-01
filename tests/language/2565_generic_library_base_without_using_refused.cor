@@ -1,0 +1,18 @@
+// test: generic_library_base_without_using_refused
+// expect-compile-error: CS0246: The type or namespace name 'List<int>' could not be found (it is System.Collections.Generic.List<>: add `using System.Collections.Generic;`)
+//
+// A generic class's base is named as any other type: List<T> with no
+// `using System.Collections.Generic;` is refused in the copy made for
+// Box<int>, as C# refuses it -- and seen when written through its
+// namespace (2563).
+
+class Box<T> : List<T> { }
+
+static class Program
+{
+    static int Main()
+    {
+        Box<int> box = new Box<int>();
+        return 0;
+    }
+}
