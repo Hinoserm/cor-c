@@ -1,0 +1,65 @@
+// test: posix_signal_handler_runs_while_busy
+// expect-exit: 0
+// expect-output:
+// handled 1 SIGINT
+// on another thread True
+// handled 2 SIGINT
+// still running
+//
+// A SIGNAL HANDLER RUNS WHATEVER THE PROGRAM IS DOING, as .NET's do: on a
+// thread of its own, which the signal wakes (PosixSignalRegistration's
+// DeliverLoop). The program sends itself SIGINT and then spins on a word,
+// with no wait, sleep or console call in the loop -- none of the quiet
+// moments that used to be the only places a handler ran. Run there alone,
+// `ping -f` sending back to back let Ctrl+C go by. The handler cancels the
+// default action, so the process goes on, and a second signal is handled
+// the same way. The thread is a background one: Main returning ends the
+// program.
+
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+sealed class Counting : PosixSignalHandler
+{
+    public static int Ran;
+    public static int Thread;
+    public static PosixSignal Last;
+
+    public void Invoke(PosixSignalContext context)
+    {
+        Last = context.Signal;
+        Thread = Environment.CurrentManagedThreadId;
+        context.Cancel = true;
+        Interlocked.Increment(ref Ran);
+    }
+}
+
+static class Program
+{
+    // Spins until the handler has run `count` times, five seconds at most.
+    static bool Await(int count)
+    {
+        long until = Stopwatch.GetTimestamp() + 5 * Stopwatch.Frequency;
+        while (Interlocked.CompareExchange(ref Counting.Ran, 0, 0) < count)
+        {
+            if (Stopwatch.GetTimestamp() > until) return false;
+        }
+        return true;
+    }
+
+    static void Main()
+    {
+        PosixSignalRegistration registration = PosixSignalRegistration.Create(PosixSignal.SIGINT, new Counting());
+        Os.Kill(Os.Getpid(), (int)PosixSignal.SIGINT);
+        if (!Await(1)) { Console.WriteLine("never ran"); return; }
+        Console.WriteLine("handled " + Counting.Ran + " " + Counting.Last);
+        Console.WriteLine("on another thread " + (Counting.Thread != Environment.CurrentManagedThreadId));
+        Os.Kill(Os.Getpid(), (int)PosixSignal.SIGINT);
+        if (!Await(2)) { Console.WriteLine("never ran again"); return; }
+        Console.WriteLine("handled " + Counting.Ran + " " + Counting.Last);
+        registration.Dispose();
+        Console.WriteLine("still running");
+    }
+}
