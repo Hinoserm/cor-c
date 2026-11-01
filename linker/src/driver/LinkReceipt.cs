@@ -45,7 +45,7 @@ public static class LinkReceipt
         // THE BACKEND IT STARTS, named or not: under dotnet, the native corc
         // beside the assemblies, built again on its own (ProcessUnitBackend).
         string backend = Corsac.Lang.Lto.ProcessUnitBackend.PathOf(backendPath);
-        if (File.Exists(backend)) Say("backend " + Path.GetFileName(backend) + " " + Written(backend));
+        if (File.Exists(backend)) Say("backend " + NameOf(backend) + " " + Written(backend));
         // THE SWITCHES THIS PROCESS WAS GIVEN, taken off the command line before
         // the link saw it (Switches.Take) and handed to every backend it starts:
         // --no-rta, --region-engine and --skip-passes change the image. In

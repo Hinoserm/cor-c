@@ -179,6 +179,10 @@ public static class SourceIndexBuilder
         }
     }
 
+    /// <summary>A static with an initialiser, a constant's aside: startup work the type has (Binder.StaticInitialisers).</summary>
+    private static bool Statics(MemberDecl member)
+        => (member.Mods & Mods.Static) != 0 && (member.Mods & Mods.Const) == 0 && member is FieldDecl { Init: not null } or PropertyDecl { Init: not null };
+
     /// <summary>The names a member is looked up by (Monomorphiser.MemberNames): a property's accessors and backing field besides its own.</summary>
     private static IEnumerable<string> LookedUpBy(MemberDecl member, string name)
     {
@@ -360,15 +364,20 @@ public static class SourceIndexBuilder
                     // EACH SPAN'S DECLARATORS: `static int a = 1, b = F();` is one
                     // span, its b a member of its own with none (the parser's
                     // More), found by where it is written. A span is an
-                    // initialised static where any of them is one.
+                    // initialised static where any of them is one, and where
+                    // any is a static with an initialiser, private or not,
+                    // the span is the shape's (Statics): what another unit
+                    // reads of it is whether the type has startup work and
+                    // where the run of statics the link may make ends.
                     List<MemberDecl>[] declarators = new List<MemberDecl>[members.Length];
                     PrivateMember[] spanHiding = new PrivateMember[members.Length];
+                    bool[] spanStatics = new bool[members.Length];
                     for (int i = 0; i < members.Length; i++)
                     {
                         declarators[i] = new List<MemberDecl> { members[i].Member };
                         spanHiding[i] = Hiding(members[i].Member);
                     }
-                    if (byMember && members.Length > 0)
+                    if (members.Length > 0)
                     {
                         HashSet<MemberDecl> spannedOnce = new(members.Select(member => member.Member), ReferenceEqualityComparer.Instance);
                         Dictionary<(int Line, int Col), int>? where = null;
@@ -388,6 +397,7 @@ public static class SourceIndexBuilder
                             if (spanHiding[holder] == PrivateMember.Left && Hiding(extra) == PrivateMember.Initialised) spanHiding[holder] = PrivateMember.Initialised;
                         }
                     }
+                    for (int i = 0; i < members.Length; i++) spanStatics[i] = declarators[i].Any(Statics);
                     int memberIndex = 0, braces = 0, brackets = 0;
                     // The last private static marked in the shape, and where it
                     // ended: one like it right after says nothing more.
@@ -439,7 +449,7 @@ public static class SourceIndexBuilder
                             // A private member's tokens show nothing of their own
                             // (Hiding): no name is made for one.
                             if (memberIndex < members.Length && token.Pos >= members[memberIndex].From && hiding == PrivateMember.Shown
-                                && MemberName(members[memberIndex].Member) is string own)
+                                && !spanStatics[memberIndex] && MemberName(members[memberIndex].Member) is string own)
                             {
                                 if (!memberTexts.TryGetValue(own, out var said)) memberTexts[own] = said = (members[memberIndex].Member, new StringBuilder());
                                 routed = said.Text;
@@ -542,14 +552,17 @@ public static class SourceIndexBuilder
                     // code (Binder.ZeroedArrayOf).
                     void InitialiserToShape(Token token, int tokenIndex)
                     {
-                        if (Binder.InitialiserClass(declarators[memberIndex]) is string mark)
+                        if (Binder.InitialiserClasses(declarators[memberIndex]) is { } marks)
                         {
                             if (markedMember == memberIndex) return;
                             markedMember = memberIndex;
-                            if (mark == lastMark && shapeText.Length == markEnd) return;
-                            shapeText.Append("static static ").Append(mark).Append(" ; ");
-                            lastMark = mark;
-                            markEnd = shapeText.Length;
+                            foreach (string mark in marks)
+                            {
+                                if (mark == lastMark && shapeText.Length == markEnd) continue;
+                                shapeText.Append("static static ").Append(mark).Append(" ; ");
+                                lastMark = mark;
+                                markEnd = shapeText.Length;
+                            }
                             return;
                         }
                         {

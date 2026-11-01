@@ -8,7 +8,8 @@
 # for R. UseX calls an extension method of another class, which once read
 # every static class in reach whole, Util among them. Util's private statics
 # are in its shape by class: one more of a class beside another of it changes
-# nothing; an array's length, `?` and all, changes it.
+# nothing; an array's length, `?` and all, changes it; so does the class of
+# a declaration's second declarator.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
@@ -41,6 +42,7 @@ static class Util
     public const int K = Other.X + 1;
     private static object _o = new object();
     private static string?[] _s = new string?[8000];
+    private static int _a, _b = 1;
 }
 CS
 cat > "$work/Ext.cs" <<'CS'
@@ -144,6 +146,12 @@ grep -q '2/9 source units rebuilt' "$work/private.log"
 sed -i 's/new string?\[8000\]/new string?[9000]/' "$work/Util.cs"
 run_build "$work" > "$work/length.log" 2>&1
 grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/length.log"
+test "$(answer "$program")" = 30
+# A SECOND DECLARATOR'S INITIALISER, its first without one: `_b = A()` is
+# startup work that ends the run the link may make, `_b = 1` not.
+sed -i 's/private static int _a, _b = 1;/private static int _a, _b = A();/' "$work/Util.cs"
+run_build "$work" > "$work/declarators.log" 2>&1
+grep -q 'UseA.cs unit-allocated=[0-9]* rebuilt: shape of Util changed$' "$work/declarators.log"
 test "$(answer "$program")" = 30
 # The tree copied elsewhere, times and all: nothing compiled again.
 cp -a "$work" "$work-copy"

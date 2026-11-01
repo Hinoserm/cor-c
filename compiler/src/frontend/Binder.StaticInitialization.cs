@@ -112,22 +112,20 @@ public sealed partial class Binder
     /// one is read. "init" where it does not (a recipe the link may make, a
     /// constant), "code" where it does; null where it may be a table laid
     /// down as data (an array made), whose tokens decide (StaticArrayOf,
-    /// ZeroedArrayOf). By its syntax alone, as the binder judges it. Of one
-    /// declaration's declarators (`static int a = 1, b = F();`), each a
-    /// static of its own to the binder, the class that ends the run if any
-    /// does.
+    /// ZeroedArrayOf). By its syntax alone, as the binder judges it. One
+    /// declaration's declarators (`static int a, b = F();`) are each a static
+    /// of their own to the binder, in order: a class for each initialised one.
     /// </summary>
-    internal static string? InitialiserClass(IEnumerable<MemberDecl> declarators)
+    internal static List<string>? InitialiserClasses(IEnumerable<MemberDecl> declarators)
     {
-        string? said = null;
+        List<string> said = new();
         foreach (MemberDecl member in declarators)
         {
             Expr? initial = member switch { FieldDecl { Init: { } i } => i, PropertyDecl { Init: { } i } => i, _ => null };
             if (initial is null) continue;
             if (member is FieldDecl && initial is NewExpr { } made && (made.Elements is not null || made.ArraySize is not null || made.Utf8Bytes is not null)) return null;
             bool candidate = member is FieldDecl { Attributes.Count: 0 } field && field.Type.PointerDepth == 0;
-            if (!(candidate && PreinitShape(initial) || PreinitConstant(initial))) said = "code";
-            else said ??= "init";
+            said.Add(candidate && PreinitShape(initial) || PreinitConstant(initial) ? "init" : "code");
         }
         return said;
     }
