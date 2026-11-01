@@ -84,7 +84,10 @@ if exported 'm_Kernel\$Bag_Pick'; then fail "the kernel exported a copy of gener
 readelf --dyn-syms -W "$work/sb16.ko" | awk '$7 == "UND" { print $8 }' > "$work/sb16.imports"
 grep -q '^m_Kernel\$Bag_Bump_' "$work/sb16.imports" || { cat "$work/sb16.imports"; fail "the module's copy of Bag.Pick does not call the kernel's Bag.Bump"; }
 grep -q '^s_Kernel\$002eBag__seen_' "$work/sb16.imports" || { cat "$work/sb16.imports"; fail "the module's copy of Bag.Pick does not read the kernel's Bag._seen"; }
-readelf -sW "$work/sb16.ko" | awk '$7 != "UND" { print $8 }' | grep -q '^m_Kernel\$Bag_Pick' || fail "the module has no copy of Bag.Pick of its own"
+# Through a file: under pipefail a grep -q that stops at its first match
+# leaves readelf writing into a closed pipe, and the pipeline fails.
+readelf -sW "$work/sb16.ko" | awk '$7 != "UND" { print $8 }' > "$work/sb16.defined"
+grep -q '^m_Kernel\$Bag_Pick' "$work/sb16.defined" || fail "the module has no copy of Bag.Pick of its own"
 # A module importing the internal member: refused, the name said.
 sed 's/Tick.Twice(port) - Tick.Twice(port)/Tick.Twice(port) - Tick.Twice(port) + Tick.Hidden(port) - Tick.Hidden(port)/' "$work/Sb16.cor" > "$work/Sb16Hidden.cor"
 grep -q 'Tick.Hidden(port)' "$work/Sb16Hidden.cor" || fail "the module's internal call was not written"
