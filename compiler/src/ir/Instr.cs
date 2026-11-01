@@ -126,6 +126,29 @@ public sealed class Instr : OperandList
     }
 
     /// <summary>
+    /// A call's operands that are structs passed by value, or a struct
+    /// method's receiver (Lowering.CallDirect): bit k for operand k. C# hands
+    /// the callee a copy, and every body copies again what it keeps of one
+    /// -- a field, a closure's cell, a box, a returned value (EvalAs,
+    /// HeapStruct) -- so no callee holds the block past its return, its
+    /// summary seen or not: another image's operator on a struct took a heap
+    /// block a call (Escape). Read with the operand count it was made for,
+    /// so a pass that changes the operands drops it rather than misreads it.
+    /// </summary>
+    public ulong PassedByValue
+    {
+        get => _rare is { } rare && rare.PassedCount == Operands.Count ? rare.PassedByValue : 0;
+        set
+        {
+            if (value != 0) { Rare.PassedByValue = value; Rare.PassedCount = Operands.Count; }
+            else if (_rare is not null) { _rare.PassedByValue = 0; _rare.PassedCount = 0; }
+        }
+    }
+
+    /// <summary>Whether operand `a` is one PassedByValue names.</summary>
+    public bool PassesByValue(int a) => (uint)a < 64 && (PassedByValue >> a & 1) != 0;
+
+    /// <summary>
     /// Load or Store of a field: which one ("Type::name"). What lets a whole
     /// program's every store into a field, and every read of it, be found
     /// (the owned-field rules).
@@ -239,6 +262,7 @@ public sealed class Instr : OperandList
             RegionSite = RegionSite, Device = Device, Line = Line, Default = Default,
         };
         foreach (Operand o in Operands) made.Operands.Add(o);
+        made.PassedByValue = PassedByValue;
         made.SetTargets(TargetsCopy());
         return made;
     }
@@ -314,8 +338,8 @@ public sealed class Instr : OperandList
 
 /// <summary>
 /// What few instructions carry (Instr): a virtual call's declaring type or a
-/// catch's, a switch's default, and an Offset or a Size that does not fit
-/// the instruction's own narrow field.
+/// catch's, a switch's default, a call's structs passed by value, and an
+/// Offset or a Size that does not fit the instruction's own narrow field.
 /// </summary>
 internal sealed class InstrRare
 {
@@ -323,6 +347,8 @@ internal sealed class InstrRare
     public Block? Default;
     public long Offset;
     public int Size;
+    public ulong PassedByValue;
+    public int PassedCount;
 }
 
 /// <summary>

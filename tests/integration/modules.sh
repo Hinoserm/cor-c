@@ -145,7 +145,8 @@ done
 cp "$work/linked/sb16.ko" "$a/module.ko"
 (cd "$a" && ./kernel) > "$work/run.out" 2>&1 || { cat "$work/run.out"; fail "the kernel did not load the module"; }
 printf '%s\n' 'kernel 0' 'registered sb16' 'modinfo name=sb16' 'modinfo ring=0' 'modinfo alias=pnp:CTL0031' \
-    'modinfo alias=isa:sb16@220,240,260,280' 'modinfo depends=mpu401' 'drivers 1' 'sb16 at 544, loaded 1 time' 'bind 1' \
+    'modinfo alias=isa:sb16@220,240,260,280' 'modinfo depends=mpu401' 'drivers 1' 'sb16 at 544, loaded 1 time' \
+    'kept sb544=544 0, sb544=544, 1 3' 'bind 1' \
     | cmp -s - "$work/run.out" || { cat "$work/run.out"; fail "the module ran other than it should"; }
 
 # RELOCATED TEXT (--relocated-text): the same module without position-

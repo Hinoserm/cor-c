@@ -92,6 +92,30 @@ public struct IoPort
     public int Irq;
 }
 
+// A STRUCT A MODULE HANDS OVER BY VALUE, which may be in the module's frame
+// (Instr.PassedByValue): what the kernel keeps of it is a copy of its own,
+// and what it writes to its parameter is its own.
+public struct Lease
+{
+    public int Base;
+    public string Owner;
+}
+
+public static class Leases
+{
+    static Lease _held;
+
+    public static void Keep(Lease lease) { _held = lease; }
+
+    public static string Held => _held.Owner + "=" + _held.Base;
+
+    public static Lease Plus(Lease lease, int by)
+    {
+        lease.Base += by;
+        return lease;
+    }
+}
+
 public static class Ports
 {
     public static Fifo<IoPort> All = new Fifo<IoPort>(4);

@@ -23,7 +23,23 @@ public sealed class Sb16 : Driver
         Fifo<int> seen = new Fifo<int>(2);
         seen.Put(port);
         Log.Write("sb16 at " + port + ", " + Sb16Module.Greeting);
+        string handed = Hand(port);
+        Lease mine = new Lease { Base = 1, Owner = "mine" };
+        Lease plus = Leases.Plus(mine, 2);
+        Log.Write("kept " + handed + ", " + Leases.Held + ", " + mine.Base + " " + plus.Base);
         return Sb16Module.Loads + Tick.Twice(port) - Tick.Twice(port) + seen.Count + Ports.All.Count - 2;
+    }
+
+    // Handed to the kernel, which keeps it, then changed here, and its frame
+    // let go: what the kernel kept is its own copy, before and after.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Hand(int port)
+    {
+        Lease lease = new Lease { Base = port, Owner = "sb" + port };
+        Leases.Keep(lease);
+        lease.Base = 0;
+        lease.Owner = "gone";
+        return Leases.Held + " " + lease.Base;
     }
 }
 
