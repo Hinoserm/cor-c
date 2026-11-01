@@ -1,12 +1,13 @@
 // test: local_function_captures_across_yield
 // expect-exit: 0
 // expect-output:
-// 10 10
+// 17 17
 //
 // The cells a state machine makes when it starts (MakeCapturedCells) are
 // kept across every suspension: a foreach cursor and an `out var` a lambda
 // captured, read again after a `yield return` in an iterator and after an
-// `await` in an async method, each lap its own.
+// `await` in an async method, each lap its own: the lambdas kept, called
+// again after the loop, read the laps that made them (1 and 2, not 2 twice).
 
 using System;
 using System.Collections.Generic;
@@ -17,6 +18,7 @@ static class Program
     static IEnumerable<int> Walk(string[] files)
     {
         Dictionary<int, int> at = new() { [1] = 2 };
+        List<Func<int>> kept = new();
         foreach (string p in files)
         {
             Func<int> length = () => p.Length;
@@ -25,14 +27,20 @@ static class Program
                 Func<int> more = () => extra;
                 yield return 0;
                 yield return length() + p.Length + more();
+                kept.Add(length);
+                kept.Add(more);
             }
         }
+        int after = 0;
+        foreach (Func<int> f in kept) after += f();
+        yield return after;
     }
 
     static async Task<int> Gather(string[] files)
     {
         int total = 0;
         Dictionary<int, int> at = new() { [1] = 2 };
+        List<Func<int>> kept = new();
         foreach (string p in files)
         {
             Func<int> length = () => p.Length;
@@ -41,8 +49,11 @@ static class Program
                 Func<int> more = () => extra;
                 await Task.Yield();
                 total += length() + p.Length + more();
+                kept.Add(length);
+                kept.Add(more);
             }
         }
+        foreach (Func<int> f in kept) total += f();
         return total;
     }
 
