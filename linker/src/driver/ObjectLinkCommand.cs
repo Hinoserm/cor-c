@@ -275,7 +275,9 @@ public static class ObjectLinkCommand
         {
             foreach (var input in inputs)
             {
-                (List<string> on, List<string> maybe, List<string> off) = PublicApi.Read(input.Item2);
+                List<string> on, maybe, off;
+                try { (on, maybe, off) = PublicApi.Read(input.Item2); }
+                catch (ElfFormatException error) { return Fail(input.Item1 + ": " + error.Message); }
                 offered.UnionWith(on);
                 optional.UnionWith(maybe);
                 withheld.UnionWith(off);

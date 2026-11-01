@@ -1,0 +1,57 @@
+// test: local_function_captures_across_yield
+// expect-exit: 0
+// expect-output:
+// 10 10
+//
+// The cells a state machine makes when it starts (MakeCapturedCells) are
+// kept across every suspension: a foreach cursor and an `out var` a lambda
+// captured, read again after a `yield return` in an iterator and after an
+// `await` in an async method, each lap its own.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static IEnumerable<int> Walk(string[] files)
+    {
+        Dictionary<int, int> at = new() { [1] = 2 };
+        foreach (string p in files)
+        {
+            Func<int> length = () => p.Length;
+            if (at.TryGetValue(1, out int extra))
+            {
+                Func<int> more = () => extra;
+                yield return 0;
+                yield return length() + p.Length + more();
+            }
+        }
+    }
+
+    static async Task<int> Gather(string[] files)
+    {
+        int total = 0;
+        Dictionary<int, int> at = new() { [1] = 2 };
+        foreach (string p in files)
+        {
+            Func<int> length = () => p.Length;
+            if (at.TryGetValue(1, out int extra))
+            {
+                Func<int> more = () => extra;
+                await Task.Yield();
+                total += length() + p.Length + more();
+            }
+        }
+        return total;
+    }
+
+    static int Main()
+    {
+        int walked = 0;
+        foreach (int n in Walk(new[] { "a", "bb" })) walked += n;
+        int gathered = Gather(new[] { "a", "bb" }).GetAwaiter().GetResult();
+        Console.WriteLine(walked + " " + gathered);
+        return 0;
+    }
+}

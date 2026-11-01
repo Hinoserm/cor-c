@@ -652,14 +652,17 @@ public sealed partial class Lowering
         // METHOD'S ENVIRONMENT BLOCK (FreshCell): a call-only local function
         // in the loop reads its word there, and a cell made anew each lap
         // left the word empty -- `foreach (string path in files)` with such a
-        // function naming path read null, and the compiler, built by itself,
-        // said its SourceIndexBuilder's path had no declaration.
+        // function naming path read null. The word is the frame's, written
+        // in place as a pattern's binding there is (BindPattern), never
+        // stored as into a block just made.
         if (_b.PatternSym.TryGetValue(fe, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
             FreshCell(fe, named, cell);
+            if (_env is { } env && env.Syms.ContainsKey(named))
+                _e.Store(RegOperand.Of(cell), RegOperand.Of(value), 0, LoadSize(element));
             // A lambda keeps a copy of the element, not where it is in the array.
-            StoreNew(cell, inline ? CopyStruct(fe, value, StructOf(stored)) : value, 0, element);
+            else StoreNew(cell, inline ? CopyStruct(fe, value, StructOf(stored)) : value, 0, element);
         }
         else
         {
