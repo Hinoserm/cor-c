@@ -33,6 +33,9 @@ using AstBlock = Corsac.Lang.Block;
 public sealed partial class Lowering
 {
     /// <summary>One iterator's pieces.</summary>
+    // OriginalOffsets: of an enumerable, where each argument's struct as given
+    // is kept, -1 for an argument that is no struct (IteratorPieces); empty
+    // otherwise. OriginalReceiver: the struct receiver's, or -1.
     private sealed record IteratorMethod(
         MethodSymbol Method, MethodDecl Decl, TypeSymbol Machine, MethodSymbol MoveNext,
         string SizeSymbol, int[] ParamOffsets, Type Element, bool Enumerable, int[] HiddenOffsets,
@@ -394,10 +397,9 @@ public sealed partial class Lowering
                     // not as the first enumerator's body left them: a copy of
                     // each to work on, the original shared, since nothing
                     // writes it. MADE BEFORE THE MACHINE, so nothing allocates
-                    // between the machine and its stores below, which then
-                    // need no card: made after, a collection inside a copy's
-                    // allocation could make the machine old, and the young
-                    // copies stored into it unmarked went with the next one.
+                    // between the machine and its stores below: they are a
+                    // fresh object's initialising writes, with no card, as
+                    // every other's are, and no collection falls among them.
                     VReg? givenReceiver = null, receiverCopy = null;
                     if (it.OriginalReceiver >= 0)
                     {
