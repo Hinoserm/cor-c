@@ -43,6 +43,17 @@ namespace Corsac.Lang.Lower;
 /// </summary>
 public sealed partial class Lowering
 {
+    /// <summary>
+    /// The callee of a call into C or a DLL, and the name kept with the unit
+    /// (Module.NativeSymbols): every native call is made here, in lowering,
+    /// and read off no body after -- the backend lets bodies go as it goes.
+    /// </summary>
+    private string Native(string symbol)
+    {
+        _m.NativeSymbols.Add(symbol);
+        return NativeCall.Of(symbol);
+    }
+
     /// <summary>What a [DllImport] extern names: the library, the C symbol, and its options.</summary>
     internal sealed record NativeImport(string Library, string Symbol, bool SetLastError, bool Transition, bool ByteBool, string? Strings);
 
@@ -203,7 +214,7 @@ public sealed partial class Lowering
         // ON WINDOWS THROUGH THE IMPORT DIRECTORY: the DLL's function by the
         // symbol that names both (Lowering.Windows).
         string symbol = Windows ? WindowsImport(import.Library, import.Symbol) : import.Symbol;
-        VReg? result = _e.Call(NativeCall.Of(symbol), returns, args.ToArray());
+        VReg? result = _e.Call(Native(symbol), returns, args.ToArray());
 
         // errno is the C library's, per thread, behind its thread pointer:
         // read while GS is still the C library's on i386. Windows' is the
@@ -211,12 +222,12 @@ public sealed partial class Lowering
         VReg? errno = null;
         if (import.SetLastError && Windows)
         {
-            errno = _e.Call(NativeCall.Of(WindowsImport("kernel32", "GetLastError")), IrType.I32);
+            errno = _e.Call(Native(WindowsImport("kernel32", "GetLastError")), IrType.I32);
         }
         else if (import.SetLastError)
         {
             _m.NativeLibraries.Add("libc.so.6");
-            VReg? location = _e.Call(NativeCall.Of("__errno_location"), IrTypes.Word);
+            VReg? location = _e.Call(Native("__errno_location"), IrTypes.Word);
             errno = Numbered(_e, _e.Load(IrType.I32, RegOperand.Of(location!), 0));
         }
 

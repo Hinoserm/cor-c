@@ -315,6 +315,13 @@ public sealed class Module
     public HashSet<string> NativeLibraries { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// The native names the unit calls, as each call binds it -- a C symbol,
+    /// a DLL's `dll!export` on a Windows image -- recorded where lowering
+    /// makes the call (`.corsac.nativesymbols`, NativeLibraries.AttachSymbols).
+    /// </summary>
+    public HashSet<string> NativeSymbols { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// What a DLL offers C: each export's name and the function's symbol
     /// (Lowering.RootExports). The object records them (.corsac.unmanaged) and
     /// the link makes them the export directory.

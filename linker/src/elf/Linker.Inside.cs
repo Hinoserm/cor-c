@@ -50,7 +50,9 @@ public static partial class Linker
                     .Concat(beside.Concat(system).Select(dir => Path.Combine(dir, needed)));
             foreach (string candidate in candidates)
             {
-                if (!read.Add(Path.GetFullPath(candidate)) || Readable(candidate, elfClass) is not { } bytes) continue;
+                // One read already, under another name: answered.
+                if (!read.Add(Path.GetFullPath(candidate))) break;
+                if (Readable(candidate, elfClass) is not { } bytes) continue;
                 try
                 {
                     List<string> exports = ElfReader.ExportsOf(bytes);
@@ -59,7 +61,7 @@ public static partial class Linker
                     foreach (string more in next) pending.Enqueue(more);
                     break;
                 }
-                catch (Exception e) when (e is ElfFormatException or InvalidDataException) { }
+                catch (Exception e) when (e is ElfFormatException or InvalidDataException or IndexOutOfRangeException or ArgumentOutOfRangeException) { }
             }
         }
         return exported;

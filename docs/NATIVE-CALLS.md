@@ -140,8 +140,10 @@ DLL, PE calling a shared object, one calling both -- run on CORSAC.
 Already shaped for it: a library's exports are read by its own format, not
 the program's (Driver, the providers' exports); an executable's link judges
 the imports a COR-C# library must answer, and leaves every [DllImport] name
--- a C library's or a DLL's, the object says which it calls
-(`.corsac.nativesymbols`) -- to the loader (Linker.ExportsAtStart).
+-- a C library's or a DLL's, each object lists the names it calls as each
+call binds it, a symbol or a Windows image's `dll!export`, recorded where
+lowering makes the call (`.corsac.nativesymbols`) -- to the loader
+(Linker.ExportsAtStart).
 
 Open: what a CORSAC machine's libc is (glibc, musl or its own), which says
 what the loader must give a C library a PE image imports.

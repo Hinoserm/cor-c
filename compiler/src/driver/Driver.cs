@@ -1674,7 +1674,7 @@ public static class Driver
             storeSequences: module.RuntimeHelpers.Contains(Corsac.Lang.Lto.RuntimeAbi.RefStore)).Attach(obj);
         // The C libraries its [DllImport]s call, for the link to need.
         NativeLibraries.Attach(obj, module.NativeLibraries);
-        NativeLibraries.AttachSymbols(obj, NativeSymbolsOf(module));
+        NativeLibraries.AttachSymbols(obj, module.NativeSymbols);
         // And what a DLL exports, for its link's export directory.
         NativeExports.Attach(obj, module.NativeExports);
         // And the unit's public surface, for the exports of the image linked of it.
@@ -2093,18 +2093,6 @@ public static class Driver
     /// </summary>
     private static readonly Dictionary<string, bool> librarySources = new(StringComparer.Ordinal);
     private static readonly object librarySourceGate = new();
-
-    /// <summary>The native names the module calls: every [DllImport]'s symbol (NativeCall), a C library's or a DLL's.</summary>
-    private static IEnumerable<string> NativeSymbolsOf(Module module)
-    {
-        HashSet<string> names = new(StringComparer.Ordinal);
-        foreach (Function f in module.Functions)
-            foreach (Corsac.Lang.Ir.Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                    if (i.Op == Opcode.Call && i.Callee is { } callee && callee.StartsWith(NativeCall.Prefix, StringComparison.Ordinal))
-                        names.Add(NativeCall.Symbol(callee));
-        return names;
-    }
 
     /// <summary>
     /// Drops what the module read of its libraries' private code and state
