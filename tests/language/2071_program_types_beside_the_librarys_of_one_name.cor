@@ -17,7 +17,6 @@
 // object gave them (the program's are the ones set aside).
 
 using System;
-using System.Collections.Generic;
 
 readonly record struct Path(string Where, int Depth);
 

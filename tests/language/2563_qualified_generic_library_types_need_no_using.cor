@@ -1,0 +1,30 @@
+// test: qualified_generic_library_types_need_no_using
+// expect-exit: 0
+// expect-output:
+// 1 1 2 0
+//
+// A generic library type named through its own namespace needs no using,
+// as C# has a qualified name: `System.Collections.Generic.List<int>`,
+// `global::` before it, a using alias of one, and one inside another. The
+// copy's name, List$int, has lost the namespace it was written with, which
+// the binder is told (TypeRef.Qualifier); an argument written bare inside
+// it is still the file's to bring in.
+using Map = System.Collections.Generic.Dictionary<string, int>;
+
+static class Program
+{
+    static int Main()
+    {
+        global::System.Collections.Generic.List<int> g = new global::System.Collections.Generic.List<int>();
+        g.Add(4);
+        Map m = new Map();
+        m["a"] = 1;
+        System.Collections.Generic.List<System.Collections.Generic.List<int>> nested = new();
+        nested.Add(g);
+        nested.Add(new System.Collections.Generic.List<int>());
+        object o = g;
+        System.ReadOnlySpan<byte> none = default;
+        System.Console.WriteLine(g.Count + " " + m["a"] + " " + nested.Count + " " + (o is System.Collections.Generic.List<int> ? none.Length : 9));
+        return 0;
+    }
+}

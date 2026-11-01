@@ -470,6 +470,7 @@ public sealed class Monomorphiser
             TupleNames = r.TupleNames,
             UseArgs = useArgs,
             Written = r.Written,
+            Qualifier = r.Qualifier,
             Line = r.Line,
             Col = r.Col,
         };
@@ -2267,7 +2268,7 @@ public sealed class Monomorphiser
             Name = a.Name, Arguments = args, UseArgs = a.UseArgs, ArrayRank = a.ArrayRank,
             Nullable = a.Nullable && !reference, ElementNullable = a.ElementNullable && !referenceElements,
             InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
-            Written = a.Written,
+            Written = a.Written, Qualifier = a.Qualifier,
             Line = a.Line, Col = a.Col,
         };
     }
@@ -2297,7 +2298,7 @@ public sealed class Monomorphiser
             Name = bare ? "object" : a.Name, Arguments = args, UseArgs = a.UseArgs, ArrayRank = a.ArrayRank,
             Nullable = a.Nullable, ElementNullable = a.ElementNullable,
             InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth, TupleNames = a.TupleNames,
-            Written = a.Written,
+            Written = a.Written, Qualifier = a.Qualifier,
             Line = a.Line, Col = a.Col,
         };
     }
@@ -2313,11 +2314,12 @@ public sealed class Monomorphiser
         if (a.Args.Count == 0 || a.Name == TypeRef.Tuple || AnyMentionsMethodParameter(a.Args)) return a;
         string name = Instantiate(a.Name, a.Args, at);
         if (name == a.Name) return a;
+        int qualified = a.Name.LastIndexOf('.');
         return new TypeRef
         {
             Name = name, ArrayRank = a.ArrayRank, Nullable = a.Nullable, UseArgs = QualifyAll(a.Args),
             ElementNullable = a.ElementNullable, InnerNullable = a.InnerNullable, PointerDepth = a.PointerDepth,
-            Written = a.Written,
+            Written = a.Written, Qualifier = a.Written && qualified > 0 ? a.Name[..qualified] : null,
             Line = a.Line, Col = a.Col,
         };
     }
@@ -2620,7 +2622,7 @@ public sealed class Monomorphiser
                 ElementNullable = r.ElementNullable, InnerNullable = r.InnerNullable,
                 PointerDepth = r.PointerDepth,
                 TupleNames = r.TupleNames is null ? null : new List<string>(r.TupleNames),
-                Written = r.Written,
+                Written = r.Written, Qualifier = r.Qualifier,
                 Line = r.Line, Col = r.Col,
             };
 
@@ -2665,7 +2667,7 @@ public sealed class Monomorphiser
                 InnerNullable = r.InnerNullable,
                 PointerDepth = r.PointerDepth,
                 CanonIndex = r.CanonIndex,
-                Written = r.Written,
+                Written = r.Written, Qualifier = r.Qualifier,
                 Line = r.Line, Col = r.Col,
             };
         }
@@ -2739,13 +2741,20 @@ public sealed class Monomorphiser
             InnerNullable = r.InnerNullable,
             PointerDepth = r.PointerDepth,
             // STILL THE PROGRAM'S, made into a copy's name (TypeRef.Written):
-            // dropped, `ReadOnlySpan<byte> x` was a name the compiler wrote,
-            // seen without `using System;` where `ReadOnlySpan<byte>.Empty`,
-            // bound as an expression, was refused as C# refuses both.
-            Written = r.Written,
+            // dropped, the binder took `ReadOnlySpan<byte> x` for a name the
+            // compiler wrote and saw it in a file with no `using System;`,
+            // where `ReadOnlySpan<byte>.Empty`, bound as an expression, was
+            // refused. C# refuses both. A copy of a library template's own
+            // body is the library's code, whatever this says (BindingProgramCode).
+            Written = r.Written, Qualifier = r.Qualifier,
             Line = r.Line, Col = r.Col,
         };
         made.MadeFor = r.MadeFor;
+        // AND THE NAMESPACE IT WAS NAMED THROUGH, which the copy's name drops
+        // (GenericPath): `System.Collections.Generic.List<int>` is C#'s with
+        // no using, and the binder is told so (TypeRef.Qualifier).
+        int qualified = r.Name.LastIndexOf('.');
+        if (r.Written && qualified > 0 && name != r.Name) made.Qualifier = r.Name[..qualified];
 
         // A specialised name carries its arguments in the name, so the argument
         // list must not survive or the binder will look for a generic again.
