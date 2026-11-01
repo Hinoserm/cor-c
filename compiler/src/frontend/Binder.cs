@@ -1240,8 +1240,18 @@ public sealed partial class Binder
         // the time it is bound, and is System.Collections.Generic's as List is.
         string key = d.Template is string template ? Arity(template, d.TemplateArgs.Count) : sym.Key;
         if (LibraryNamespaces.Of(key) is not string space || !BindingProgramCode()) return true;
+        // NAMED THROUGH ITS OWN NAMESPACE, `System.Collections.Generic.List<int>`,
+        // whose copy's name has lost it (TypeRef.Qualifier): seen with no using.
+        if (_qualified is { } named && named.Name == sym.Key && named.Space == space) return true;
         return NamespaceInScope(space);
     }
+
+    /// <summary>
+    /// The copy being resolved and the namespace it was written with
+    /// (TypeRef.Qualifier), while ResolveCore looks it up: LibraryGlobalVisible
+    /// sees that one through its namespace, and nothing else it is asked.
+    /// </summary>
+    private (string Name, string Space)? _qualified;
 
     /// <summary>
     /// A CLASS LIBRARY TYPE THE PROGRAM CANNOT SEE: one written at the top of
@@ -6599,7 +6609,14 @@ public sealed partial class Binder
             };
         }
 
-        if (FindType(r.Name, out TypeSymbol? path) && path is not null)
+        // A COPY NAMED THROUGH ITS NAMESPACE (TypeRef.Qualifier) is looked up
+        // so, and only it: its arguments are asked after, as written.
+        TypeSymbol? path;
+        _qualified = r.Written && r.Qualifier is string space
+            ? (r.Name, space.StartsWith("global::", StringComparison.Ordinal) ? space["global::".Length..] : space) : null;
+        try { if (!FindType(r.Name, out path)) path = null; }
+        finally { _qualified = null; }
+        if (path is not null)
         {
             return NamedType(path, ResolveAll(r.Args, context), r.UseArgs is null ? null : ResolveAll(r.UseArgs, context));
         }

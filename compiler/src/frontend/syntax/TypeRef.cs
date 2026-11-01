@@ -170,6 +170,19 @@ public sealed class TypeRef : Node
         set { if (value is not null) Rare.MadeFor = value; else if (_rare is not null) _rare.MadeFor = null; }
     }
 
+    /// <summary>
+    /// THE NAMESPACE A GENERIC WAS WRITTEN WITH, where the copy's name lost
+    /// it: `System.Collections.Generic.List<int>` is the reference List$int,
+    /// and the namespace it was named through is kept here, so a file with no
+    /// using of it still names the type (Binder.LibraryGlobalVisible), as C#
+    /// has a qualified name. Null for every other reference.
+    /// </summary>
+    public string? Qualifier
+    {
+        get => _rare?.Qualifier;
+        set { if (value is not null) Rare.Qualifier = value; else if (_rare is not null) _rare.Qualifier = null; }
+    }
+
     /// <summary>How many stars follow the name: <c>byte*</c> is one.</summary>
     public int PointerDepth { get => GetByte(8, true); init => SetByte(8, true, value); }
 
@@ -289,4 +302,5 @@ internal sealed class TypeRefRare
     public int CanonIndex;
     public int CanonWhole;
     public string? MadeFor;
+    public string? Qualifier;
 }
