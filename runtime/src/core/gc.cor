@@ -16915,7 +16915,12 @@ static class GcRoots
     // before the heap is up, and a heap block would also be a block the
     // collector has to keep alive forever.
 
-    const int ExtraMax = 128;
+    // A KERNEL HOLDS A RANGE FOR EVERY THREAD PARKED IN A CALL and every
+    // call out to a program not back yet, beside its modules' statics: a
+    // K8WE with SimTower, Explorer and a task manager had some sixty-six at
+    // once (11-01). 512 is one page of 32-bit words, which the table took
+    // whole at 128.
+    const int ExtraMax = 512;
 
     /// The registered root ranges, for the collector's checks (Gc.VerifyStaticRoots).
     public static nuint ExtraTable() => _extra;
@@ -16987,11 +16992,21 @@ static class GcRoots
         {
             nuint at = _extra + i * (2 * WordSize.Bytes);
             if (start == 0 || Sys.ReadAddress(at) != start || Sys.ReadAddress(at + WordSize.Bytes) != end) continue;
-            // The start goes first, and atomically: a slot whose start is
-            // zero is free, and it must not become free while its end still
-            // names this stack.
-            Sys.AtomicSwap(at, 0);
+            // THE END GOES FIRST, THE START LAST, and atomically: the start
+            // is who owns the slot (Register claims it with a compare and
+            // swap), and once it is zero another thread may take the slot and
+            // write its own end. The start cleared first and the end second,
+            // that second store landed on the other thread's registration:
+            // its slot said its start and an end of 0 -- scanned as nothing,
+            // so its parked stack was never read, and matched by no
+            // Unregister, so the slot was gone for good. A K8WE's table was
+            // half such slots after ten minutes of four processors parking
+            // kernel calls, and every park after was refused (11-01). Between
+            // the two stores the slot says this start and an end of 0, which
+            // scans as nothing: this range is being let go.
             Sys.WriteAddress(at + WordSize.Bytes, 0);
+            Sys.Fence();
+            Sys.AtomicSwap(at, 0);
             return true;
         }
         return false;
