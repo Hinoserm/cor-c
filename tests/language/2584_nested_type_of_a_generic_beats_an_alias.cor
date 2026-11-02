@@ -1,0 +1,34 @@
+// test: nested_type_of_a_generic_beats_an_alias
+// expect-exit: 0
+// expect-output:
+// 5 1
+//
+// Inside Box<T>, `G` is Box's own nested class, not the file's
+// `using G = System.Collections.Generic`: C# looks in the types around a
+// use before the aliases. Box's nested types are keyed under `Box`, its
+// name plain, not under `Box`1` (Binder.TypePath); outside it, the alias.
+using G = System.Collections.Generic;
+
+class Box<T>
+{
+    public class G
+    {
+        public class List<U>
+        {
+            public int Mine = 5;
+        }
+    }
+
+    public int Use() => new G.List<int>().Mine;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        G.List<int> library = new G.List<int>();
+        library.Add(9);
+        System.Console.WriteLine(new Box<long>().Use() + " " + library.Count);
+        return 0;
+    }
+}

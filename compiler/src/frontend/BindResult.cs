@@ -1030,6 +1030,13 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
 
     private bool _scopesStale;
 
+    /// <summary>
+    /// Every write through this table's own Add, indexer and Remove, counted:
+    /// what a set made from the table is kept by (Binder.ProgramScopes), as
+    /// an overwrite or a removal and an add leave its count as it was.
+    /// </summary>
+    public int Writes { get; private set; }
+
     private void Reindex()
     {
         _scopesStale = false;
@@ -1059,6 +1066,7 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
         set
         {
             bool fresh = _split.Count == _indexed && Count == _counted;
+            Writes++;
             base[key] = value;
             if (Split(key) is { } at) { _split[at] = value; NoteScopes(at.Item1); }
             if (fresh) Seen();
@@ -1068,6 +1076,7 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     public new void Add(string key, TypeSymbol value)
     {
         bool fresh = _split.Count == _indexed && Count == _counted;
+        Writes++;
         base.Add(key, value);
         if (Split(key) is { } at) { _split[at] = value; NoteScopes(at.Item1); }
         if (fresh) Seen();
@@ -1077,6 +1086,7 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     {
         bool fresh = _split.Count == _indexed && Count == _counted;
         if (!base.Remove(key)) return false;
+        Writes++;
         // A scope it was in may now have nothing in it: the scopes are made
         // again when next asked (IsScope), not taken from a type gone.
         if (Split(key) is { } at) { _split.Remove(at); _scopesStale = true; }

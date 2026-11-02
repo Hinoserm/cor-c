@@ -88,6 +88,18 @@ internal static class LibraryNamespaces
         return null;
     }
 
+    /// <summary>
+    /// A declared type's path and every namespace or type it is inside, into
+    /// `scopes`: what a program's declarations put nearer than an alias of
+    /// the name (Namespace's `declared`; Binder.ProgramScopes,
+    /// Monomorphiser._programScopes). Stops at a scope already there, whose
+    /// own are then there too.
+    /// </summary>
+    public static void AddScopes(HashSet<string> scopes, string path)
+    {
+        for (int cut = path.Length; cut > 0 && scopes.Add(path[..cut]); cut = path.LastIndexOf('.', cut - 1)) { }
+    }
+
     private static Dictionary<string, string> Build()
     {
         Dictionary<string, string> table = new(StringComparer.Ordinal);

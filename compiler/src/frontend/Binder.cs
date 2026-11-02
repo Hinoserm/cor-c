@@ -1358,7 +1358,7 @@ public sealed partial class Binder
         // its types, and every namespace or type one of them is in.
         TypeDecl? around = (_scope ?? _thisType)?.Decl;
         string? space = LibraryNamespaces.Namespace(name[..dot], WrittenIn(), around is null ? "" : TypePath(around),
-            file?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>(), ProgramScopes().Contains);
+            file?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>(), path => ProgramScopes().Contains(path));
         return space is null ? name : space + name[dot..];
     }
 
@@ -1366,35 +1366,33 @@ public sealed partial class Binder
     /// The program's types by key, and every namespace or type one is in:
     /// what may stand nearer than an alias of its name (LibraryQualified).
     /// Not the class library's, whose global types .NET keeps inside System,
-    /// nor a scope only they are in. Made again when the table has grown or
-    /// shrunk; asked only where an alias matched.
+    /// nor a scope only they are in. Made again after any write to the table
+    /// (TypeTable.Writes) or a new LibrarySource era; asked only where an
+    /// alias matched (the predicate LibraryQualified hands on).
     /// </summary>
     private HashSet<string> ProgramScopes()
     {
-        if (_programScopes is { } known && _programScopesFrom == _r.Types.Count) return known;
+        (int, int, int) now = (_r.Types.Writes, _r.Types.Count, Volatile.Read(ref _librarySideEra));
+        if (_programScopes is { } known && _programScopesFrom == now) return known;
         HashSet<string> scopes = new(StringComparer.Ordinal);
         foreach ((string key, TypeSymbol type) in _r.Types)
-        {
-            if (type.Decl is not { } d || ClassLibrarySide(d)) continue;
-            for (int cut = key.Length; cut > 0 && scopes.Add(key[..cut]); cut = key.LastIndexOf('.', cut - 1)) { }
-        }
-        _programScopesFrom = _r.Types.Count;
+            if (type.Decl is { } d && !ClassLibrarySide(d)) LibraryNamespaces.AddScopes(scopes, key);
+        _programScopesFrom = now;
         return _programScopes = scopes;
     }
     private HashSet<string>? _programScopes;
-    private int _programScopesFrom;
+    private (int, int, int) _programScopesFrom;
 
     /// <summary>
-    /// A type's path as the table keys it (TypeKey): a specialised copy's as
-    /// its template's, `Outer.Box`1` for Box$int, whose own name is no step
-    /// of a path a nested type is under.
+    /// The path a type's nested types are keyed under (Parser: their Outer):
+    /// its own name plain, with no arity -- `Ns.Box` for Box<T>, whose own
+    /// key is `Ns.Box`1` (TypeKey) and whose nested G is `Ns.Box.G` -- and a
+    /// specialised copy's as its template's (Template, `Ns.Box` for Box$int,
+    /// a copy having no Outer).
     /// </summary>
     private static string TypePath(TypeDecl d)
-    {
-        string simple = d.Template is string template && d.TemplateArgs.Count > 0 ? Arity(template, d.TemplateArgs.Count)
-            : d.TypeParams.Count > 0 ? Arity(d.Name, d.TypeParams.Count) : d.Name;
-        return d.Outer is null ? simple : d.Outer + "." + simple;
-    }
+        => d.Template is string template && d.TemplateArgs.Count > 0 ? template
+            : d.Outer is null ? d.Name : d.Outer + "." + d.Name;
 
     /// <summary>
     /// A CLASS LIBRARY TYPE THE PROGRAM CANNOT SEE: one written at the top of

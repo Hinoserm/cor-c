@@ -129,10 +129,7 @@ public sealed class Monomorphiser
     /// </summary>
     private readonly HashSet<string> _programScopes = new(StringComparer.Ordinal);
 
-    private void AddProgramScopes(string path)
-    {
-        for (int cut = path.Length; cut > 0 && _programScopes.Add(path[..cut]); cut = path.LastIndexOf('.', cut - 1)) { }
-    }
+    private void AddProgramScopes(string path) => LibraryNamespaces.AddScopes(_programScopes, path);
 
     /// <summary>
     /// The class library's top-level types not declared public, by path: what
