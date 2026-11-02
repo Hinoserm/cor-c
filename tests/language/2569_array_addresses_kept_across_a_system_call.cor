@@ -1,0 +1,57 @@
+// test: array_addresses_kept_across_a_system_call
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// vm -3 7
+//
+// Each Sys.ArrayData keeps its array alive to the end of its block, in a
+// register of its own set where the address is taken (Lowering.Addressed).
+// Five of them and a system call -- whose number and arguments hold every
+// register the allocator hands out from the first load to the trap -- left
+// the register scheduler free to move a keep's copy in among those loads,
+// and the allocator had no register for it: "no register for v42". A
+// stretch's values keep their side of each machine register's window
+// (Schedule). VmRead is kept out of line, as in the program it came from
+// (linuxcheck), where its body was the stretch. process_vm_readv of pid 0x7fffffff is ESRCH; the reads and
+// writes on fd -1 fail, as they may.
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    static long Call(int number, long a = 0, long b = 0, long c = 0, long d = 0, long e = 0, long f = 0)
+    {
+        return Platform.Result(Sys.Syscall(number, (SyscallWord)(nuint)a, (SyscallWord)(nuint)b, (SyscallWord)(nuint)c,
+            (SyscallWord)(nuint)d, (SyscallWord)(nuint)e, (SyscallWord)(nuint)f));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int VmRead(int pid, int[] word, int readyFd, int doneFd)
+    {
+        byte[] go = new byte[1];
+        Call(3, readyFd, (long)Sys.ArrayData(go), 1);
+        int[] mine = new int[1];
+        int mineAt = (int)Sys.ArrayData(mine);
+        int wordAt = (int)Sys.ArrayData(word);
+        int[] vecs = new int[4];
+        vecs[0] = mineAt;
+        vecs[1] = 4;
+        vecs[2] = wordAt;
+        vecs[3] = 4;
+        int local = (int)Sys.ArrayData(vecs);
+        long got = VmCall(pid, local, local + 8);
+        Call(4, doneFd, (long)Sys.ArrayData(go), 1);
+        return got == 4 ? mine[0] : (int)got;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long VmCall(int pid, int local, int remote) => Call(347, pid, local, 1, remote, 1, 0);
+
+    static int Main()
+    {
+        int[] word = new int[] { 7 };
+        Console.WriteLine("vm " + VmRead(0x7fffffff, word, -1, -1) + " " + word[0]);
+        return 0;
+    }
+}
