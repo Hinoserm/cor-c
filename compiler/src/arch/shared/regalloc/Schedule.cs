@@ -220,6 +220,27 @@ public static class Schedule
     }
 
     /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
+    /// <summary>
+    /// Whether machine register `reg` is read from `at` on in the block --
+    /// by the barrier there or after it -- before anything writes it.
+    /// </summary>
+    private static bool ReadPast(List<AInstr> instrs, int at, int reg)
+    {
+        for (int x = at; x < instrs.Count; x++)
+        {
+            bool read = false, wrote = false;
+            foreach (Named r in instrs[x].Regs)
+            {
+                if (r.Reg != reg) continue;
+                if ((r.Role & Role.Use) != 0) read = true;
+                if ((r.Role & Role.Def) != 0) wrote = true;
+            }
+            if (read) return true;
+            if (wrote) return false;
+        }
+        return false;
+    }
+
     private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, BitSet liveOut, Dictionary<int, int> index, HashSet<int> padRead, Dictionary<int, int> lastIn, int k)
     {
         int n = to - from;
@@ -351,34 +372,45 @@ public static class Schedule
         }
 
         // MACHINE REGISTERS HELD: from a write of one the allocator hands out
-        // (the first class's) to its last read -- or to the stretch's end,
-        // where the reader is the barrier after it -- a window the pressure
+        // (the first class's) to its last read -- from the stretch's start for
+        // one written before it, to the stretch's end for one the barrier
+        // after it, or the rest of the block, reads -- a window the pressure
         // count does not see: a system call's six, loaded one by one before
-        // the trap. An instruction naming a value of the first class keeps
-        // its side of each window, and one the selector placed inside stays
-        // inside: moved in, a copy that set an array's keep (Lowering.Addressed)
+        // the trap. An instruction naming a value of the first class does not
+        // move into a window it was outside of; out of one is only fewer held.
+        // Moved in, a copy that set an array's keep (Lowering.Addressed)
         // landed between the loads and the trap with every register held, and
         // the allocator had none for it ("no register for v42").
         {
             HashSet<int> handed = new(rf.Classes[0].Preference);
             List<(int Def, int Last)> windows = new();
             Dictionary<int, (int Def, int Last)> open = new();
+            HashSet<int> written = new();
             for (int x = 0; x < n; x++)
             {
                 foreach (Named r in instrs[from + x].Regs)
                 {
-                    if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg)) continue;
-                    if ((r.Role & Role.Use) != 0 && open.TryGetValue(r.Reg, out var w)) open[r.Reg] = (w.Def, x);
+                    if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg) || (r.Role & Role.Use) == 0) continue;
+                    if (open.TryGetValue(r.Reg, out var w)) open[r.Reg] = (w.Def, x);
+                    else if (!written.Contains(r.Reg)) open[r.Reg] = (-1, x);
                 }
                 foreach (Named r in instrs[from + x].Regs)
                 {
                     if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg) || (r.Role & Role.Def) == 0) continue;
                     if (open.TryGetValue(r.Reg, out var w) && w.Last > w.Def) windows.Add(w);
                     open[r.Reg] = (x, x);
+                    written.Add(r.Reg);
                 }
             }
-            // Still held at the end: read by the barrier, or past it.
-            foreach ((int Def, int Last) w in open.Values) windows.Add((w.Def, n));
+            // Still held at the end where it is read past it: by the barrier,
+            // or later in the block before anything writes it. A write nothing
+            // reads -- the edx of a `mul` whose high half is dropped -- holds
+            // nothing.
+            foreach ((int reg, (int Def, int Last) w) in open)
+            {
+                if (w.Last > w.Def && w.Last > -1) windows.Add(w);
+                if (w.Def >= 0 && ReadPast(instrs, from + n, reg)) windows.Add((w.Def, n));
+            }
             if (windows.Count > 0)
             {
                 for (int z = 0; z < n; z++)
@@ -390,12 +422,7 @@ public static class Schedule
                     foreach ((int d, int last) in windows)
                     {
                         if (z < d) Edge(z, d);
-                        else if (z > last) Edge(last, z);
-                        else if (z != d && z != last)
-                        {
-                            Edge(d, z);
-                            if (last < n) Edge(z, last);
-                        }
+                        else if (z > last && last < n) Edge(last, z);
                     }
                 }
             }
