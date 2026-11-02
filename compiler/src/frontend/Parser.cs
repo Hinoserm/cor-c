@@ -3686,9 +3686,12 @@ public sealed class Parser
         _catchDepth = 0;
         _tryYields = null;
         // WHAT IT ENUMERATES, when it is an iterator: the T of IEnumerable<T> or
-        // IEnumerator<T>, object for the non-generic two.
+        // IEnumerator<T>, object for the non-generic two -- named bare or
+        // through their namespace, `System.Collections.Generic.IEnumerable<int>`,
+        // which C# needs no using for.
         _iteratorElement = produces is { Args.Count: 1 } sequence
                          && sequence.Name is "IEnumerable" or "IEnumerable`1" or "IEnumerator" or "IEnumerator`1"
+                             or "System.Collections.Generic.IEnumerable" or "System.Collections.Generic.IEnumerator"
                          ? sequence.Args[0]
                          : produces is { Args.Count: 0, Name: "IEnumerable" or "IEnumerator" or "System.Collections.IEnumerable" or "System.Collections.IEnumerator" }
                          ? new TypeRef { Name = "object", Line = line, Col = col }
