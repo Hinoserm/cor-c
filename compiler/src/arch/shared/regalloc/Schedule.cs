@@ -26,7 +26,10 @@ namespace Corsac.Lang.RegAlloc;
 /// read, with its readers, a stretch no other writer enters -- writers before
 /// it stay before its writer, writers after it after its last reader, the
 /// last writer of a stretch counting as read past its end. A writer whose
-/// flags nothing reads moves freely between those stretches.
+/// flags nothing reads moves freely between those stretches. And the
+/// machine registers the allocator hands out, from a write to the last
+/// read: an instruction naming a value does not move into one's hold it
+/// was outside of (a system call's loads held every register to the trap).
 /// </summary>
 public static class Schedule
 {
@@ -219,10 +222,10 @@ public static class Schedule
         return false;
     }
 
-    /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
     /// <summary>
     /// Whether machine register `reg` is read from `at` on in the block --
-    /// by the barrier there or after it -- before anything writes it.
+    /// by the barrier there or after it -- before anything writes it; at the
+    /// block's end, as it may be by the next block, taken as read.
     /// </summary>
     private static bool ReadPast(List<AInstr> instrs, int at, int reg)
     {
@@ -238,9 +241,10 @@ public static class Schedule
             if (read) return true;
             if (wrote) return false;
         }
-        return false;
+        return true;
     }
 
+    /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
     private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, BitSet liveOut, Dictionary<int, int> index, HashSet<int> padRead, Dictionary<int, int> lastIn, int k)
     {
         int n = to - from;
@@ -376,8 +380,9 @@ public static class Schedule
         // one written before it, to the stretch's end for one the barrier
         // after it, or the rest of the block, reads -- a window the pressure
         // count does not see: a system call's six, loaded one by one before
-        // the trap. An instruction naming a value of the first class does not
-        // move into a window it was outside of; out of one is only fewer held.
+        // the trap. Where they leave a value too few, an instruction naming a
+        // value of the first class does not move into a window it was outside
+        // of; out of one is only fewer held.
         // Moved in, a copy that set an array's keep (Lowering.Addressed)
         // landed between the loads and the trap with every register held, and
         // the allocator had none for it ("no register for v42").
@@ -385,32 +390,43 @@ public static class Schedule
             HashSet<int> handed = new(rf.Classes[0].Preference);
             List<(int Def, int Last)> windows = new();
             Dictionary<int, (int Def, int Last)> open = new();
-            HashSet<int> written = new();
             for (int x = 0; x < n; x++)
             {
                 foreach (Named r in instrs[from + x].Regs)
                 {
                     if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg) || (r.Role & Role.Use) == 0) continue;
-                    if (open.TryGetValue(r.Reg, out var w)) open[r.Reg] = (w.Def, x);
-                    else if (!written.Contains(r.Reg)) open[r.Reg] = (-1, x);
+                    open[r.Reg] = open.TryGetValue(r.Reg, out var w) ? (w.Def, x) : (-1, x);
                 }
                 foreach (Named r in instrs[from + x].Regs)
                 {
                     if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg) || (r.Role & Role.Def) == 0) continue;
                     if (open.TryGetValue(r.Reg, out var w) && w.Last > w.Def) windows.Add(w);
                     open[r.Reg] = (x, x);
-                    written.Add(r.Reg);
                 }
             }
-            // Still held at the end where it is read past it: by the barrier,
-            // or later in the block before anything writes it. A write nothing
-            // reads -- the edx of a `mul` whose high half is dropped -- holds
-            // nothing.
+            // Still held at the end where it is read past it -- by the barrier,
+            // later in the block before anything writes it, or by the block
+            // after (ReadPast) -- to the end; otherwise to its last read here.
+            // A write nothing reads, the edx of a `mul` whose high half is
+            // dropped, holds nothing.
             foreach ((int reg, (int Def, int Last) w) in open)
             {
-                if (w.Last > w.Def && w.Last > -1) windows.Add(w);
                 if (w.Def >= 0 && ReadPast(instrs, from + n, reg)) windows.Add((w.Def, n));
+                else if (w.Last > w.Def) windows.Add(w);
             }
+            // ONLY WHERE THEY CROWD THE MACHINE: a window inside which, at some
+            // point, all but two of the registers are held -- two, as many as
+            // one instruction's values may need at once. A multiply's eax and
+            // edx are two of six, and keeping values out of them cost
+            // Field25519's products a sixth more spill traffic.
+            int[] held = new int[n + 1];
+            foreach ((int d, int last) in windows)
+                for (int p = d + 1; p <= Math.Min(last, n); p++) held[p]++;
+            windows.RemoveAll(w =>
+            {
+                for (int p = w.Def + 1; p <= Math.Min(w.Last, n); p++) if (held[p] >= k - 2) return false;
+                return true;
+            });
             if (windows.Count > 0)
             {
                 for (int z = 0; z < n; z++)
