@@ -424,10 +424,11 @@ public static class Schedule
         int HoldEnd((int Def, List<int> Reads, bool ToEnd) h) => h.ToEnd ? n : h.Reads[^1];
         // ONLY WHERE THEY CROWD THE MACHINE: a hold inside which, at some
         // point of the selector's order, all but two of the registers are
-        // held -- three left, as many as a store's base, index and value
-        // need. A multiply's eax and edx are two of six, and keeping values
+        // held. A multiply's eax and edx are two of six, and keeping values
         // out of them cost Field25519's products a sixth more spill traffic.
-        // The order made is checked again below, holds and all.
+        // The order made is checked again below, holds and all: none leaves
+        // a value fewer than three free -- a store's base, index and value --
+        // where the selector's order left it more.
         int[] heldBefore = new int[n + 1];
         foreach (var h in holds)
             for (int p = h.Def + 1; p <= HoldEnd(h); p++) heldBefore[p]++;
@@ -484,16 +485,24 @@ public static class Schedule
         {
             int[] pos = new int[n];
             for (int x = 0; x < n; x++) pos[order[x]] = x;
+            // Each hold's span in the order made: from its write to its last
+            // read there, which may not be the selector's last.
+            (int First, int End)[] span = new (int, int)[holds.Count];
+            for (int hi = 0; hi < holds.Count; hi++)
+            {
+                var h = holds[hi];
+                int end = h.ToEnd ? n : -1;
+                if (!h.ToEnd) foreach (int r in h.Reads) end = Math.Max(end, pos[r]);
+                span[hi] = (h.Def < 0 ? -1 : pos[h.Def], end);
+            }
             for (int z = 0; z < n; z++)
             {
                 if (!valued[z]) continue;
                 int was = 0, would = 0;
-                foreach (var h in holds)
+                for (int hi = 0; hi < holds.Count; hi++)
                 {
-                    if (h.Def < z && z <= HoldEnd(h)) was++;
-                    int first = h.Def < 0 ? -1 : pos[h.Def], end = h.ToEnd ? n : -1;
-                    if (!h.ToEnd) foreach (int r in h.Reads) end = Math.Max(end, pos[r]);
-                    if (first < pos[z] && pos[z] <= end) would++;
+                    if (holds[hi].Def < z && z <= HoldEnd(holds[hi])) was++;
+                    if (span[hi].First < pos[z] && pos[z] <= span[hi].End) would++;
                 }
                 if (would > Math.Max(was, k - 3)) return;
             }
