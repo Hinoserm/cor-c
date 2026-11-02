@@ -42,7 +42,7 @@ public sealed partial class Binder
     /// Whether a source file belongs to the compiler's own libraries. Set by
     /// the driver; when unset every declaration counts as library, which is
     /// the numbering every image used before projects could add interfaces.
-    /// A new one makes every declaration's kept answer old (LibrarySideEra,
+    /// A new one makes every declaration's kept answer old (_librarySideEra,
     /// ClassLibrarySide).
     /// </summary>
     public static Func<string, bool>? LibrarySource
@@ -1354,9 +1354,15 @@ public sealed partial class Binder
         int dot = name.LastIndexOf('.');
         if (dot <= 0) return name;
         FileScope? file = _member?.Scope ?? (_scope ?? _thisType)?.Decl?.Scope;
-        string? space = LibraryNamespaces.Namespace(name[..dot], WrittenIn(),
-            file?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>(),
-            path => _r.Types.ContainsKey(path) || _r.Types.IsScope(path));
+        // The program's alone (LibraryNamespaces.Namespace): a type of the
+        // path or a scope one is in, not a class library type nor a scope
+        // only the library's nested types are in.
+        bool Declared(string path)
+            => _r.Types.TryGetValue(path, out TypeSymbol? type)
+                ? type.Decl is { } d && !ClassLibrarySide(d)
+                : _r.Types.IsScope(path);
+        string? space = LibraryNamespaces.Namespace(name[..dot], WrittenIn(), (_scope ?? _thisType)?.Key ?? "",
+            file?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>(), Declared);
         return space is null ? name : space + name[dot..];
     }
 

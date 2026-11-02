@@ -37,14 +37,19 @@ internal static class LibraryNamespaces
     /// else -- a type's name, a program's namespace.
     ///
     /// AN ALIAS ONLY WHERE NOTHING NEARER HAS ITS NAME: C# looks a name up
-    /// from the innermost namespace out, each one's own declarations before
-    /// the aliases written in it, so a namespace or type `G` declared at or
-    /// inside the alias's namespace is what `G.` means (`declared`, asked
-    /// of a whole path: whether the program or the library declares a
-    /// namespace or a type there).
+    /// from the innermost scope out -- the types the use is written in
+    /// (`typeScope`, its path, and each type around it), then each
+    /// namespace, its own declarations before the aliases written in it --
+    /// so a nested type, namespace or type `G` declared inside the alias's
+    /// namespace is what `G.` means. `declared` is asked of a whole path:
+    /// whether the PROGRAM declares a namespace or a type there. The class
+    /// library's types are at the top of no namespace here (Interop, Math,
+    /// Win32), where .NET has them inside System, so they shadow nothing; and
+    /// at the alias's own level a declaration of its name is C#'s error
+    /// CS0576, the alias kept.
     /// </summary>
-    public static string? Namespace(string qualifier, string within, IEnumerable<(string In, string Alias, string Target)> aliases,
-                                    Func<string, bool> declared)
+    public static string? Namespace(string qualifier, string within, string typeScope,
+                                    IEnumerable<(string In, string Alias, string Target)> aliases, Func<string, bool> declared)
     {
         int dot = qualifier.IndexOf('.');
         string head = dot < 0 ? qualifier : qualifier[..dot];
@@ -59,12 +64,18 @@ internal static class LibraryNamespaces
                 depth = alias.In.Length;
             }
         }
-        // Anything of the name at the alias's own namespace or inside it, on
-        // the way out from where it is written.
-        for (string at = within; target is not null && at.Length >= depth;)
+        // Anything of the name nearer, on the way out from where it is
+        // written: in the types around it, then in each namespace inside the
+        // alias's own.
+        for (string at = typeScope; target is not null && at.Length > within.Length;)
         {
-            if (declared(at.Length > 0 ? at + "." + head : head)) target = null;
-            if (at.Length == 0) break;
+            if (declared(at + "." + head)) target = null;
+            int up = at.LastIndexOf('.');
+            at = up > 0 ? at[..up] : "";
+        }
+        for (string at = within; target is not null && at.Length > depth;)
+        {
+            if (declared(at + "." + head)) target = null;
             int up = at.LastIndexOf('.');
             at = up > 0 ? at[..up] : "";
         }

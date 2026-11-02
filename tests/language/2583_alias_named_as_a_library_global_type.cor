@@ -1,0 +1,19 @@
+// test: alias_named_as_a_library_global_type
+// expect-exit: 0
+// expect-output:
+// 4 8
+//
+// An alias named as one of the class library's own global types -- Interop,
+// which .NET keeps inside System, not at the top -- still names its
+// namespace: only a program's declaration nearer than the alias shadows it
+// (LibraryNamespaces.Namespace), and the library's are at the top of none.
+using Interop = System.Runtime.InteropServices;
+
+static class Program
+{
+    static int Main()
+    {
+        System.Console.WriteLine(Interop.Marshal.SizeOf<int>() + " " + Interop.Marshal.SizeOf<long>());
+        return 0;
+    }
+}

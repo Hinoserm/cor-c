@@ -466,7 +466,8 @@ public sealed class Inline : IParallelModulePass
                     {
                         ordinaryCost = HotSize(callee);
                     }
-                    ordinaryCost += BranchCost(callee);
+                    int calleeBranches = BranchCost(callee);
+                    ordinaryCost += calleeBranches;
                     // One caller makes a body free to move only if it then goes:
                     // one whose address is taken stays, and would be twice.
                     bool single = callers.GetValueOrDefault(callee.Name) == 1 && !addressTaken.Contains(callee.Name)
@@ -505,8 +506,8 @@ public sealed class Inline : IParallelModulePass
                     // weighs only its hot path.
                     if (single && ordinaryCost > smallBody && !specializesBranch && !exposesChildren
                         && callers.GetValueOrDefault(caller.Name) >= 2 && !addressTaken.Contains(caller.Name)
-                        && size + BranchCost(caller) <= SmallLimit(caller)
-                        && size + calleeSize + BranchCost(caller) + BranchCost(callee) > SmallLimit(caller) && Inlineable(caller, pinned))
+                        && size + BranchCost(caller) is int grown && grown <= SmallLimit(caller)
+                        && grown + calleeSize + calleeBranches > SmallLimit(caller) && Inlineable(caller, pinned))
                     {
                         TraceDecision?.Invoke(caller, callee, $"keep: one caller, but caller={size}+{calleeSize} would pass its own small-limit={SmallLimit(caller)} at its {callers.GetValueOrDefault(caller.Name)} sites");
                         continue;

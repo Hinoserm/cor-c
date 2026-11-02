@@ -119,15 +119,20 @@ public sealed class Monomorphiser
         if (!_paths.Add(path)) return;
         int dot = path.LastIndexOf('.');
         if (dot > 0) _pathParts.Add((path[..dot], path[(dot + 1)..]));
-        for (int cut = dot; cut > 0; cut = path.LastIndexOf('.', cut - 1)) _scopePaths.Add(path[..cut]);
     }
 
     /// <summary>
-    /// Every namespace or type a declared type is inside, by path: what a
-    /// name at the front of a qualifier may be before an alias of that name
-    /// is (QualifierOf).
+    /// The program's declared types by path, and every namespace or type
+    /// one is inside: what a name at the front of a qualifier may be before
+    /// an alias of that name is (QualifierOf). Not the class library's,
+    /// whose global types .NET keeps inside System.
     /// </summary>
-    private readonly HashSet<string> _scopePaths = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _programScopes = new(StringComparer.Ordinal);
+
+    private void AddProgramScopes(string path)
+    {
+        for (int cut = path.Length; cut > 0 && _programScopes.Add(path[..cut]); cut = path.LastIndexOf('.', cut - 1)) { }
+    }
 
     /// <summary>
     /// The class library's top-level types not declared public, by path: what
@@ -799,6 +804,7 @@ public sealed class Monomorphiser
             string path = t.Outer is null ? t.Name : Interned.Name(t.Outer + "." + t.Name);
 
             AddPath(path);
+            if (!Binder.ClassLibrarySide(t)) AddProgramScopes(path);
             if ((t.Outer is null || t.Outer == t.Namespace) && (t.Mods & Mods.Public) == 0 && Binder.ClassLibrarySide(t))
                 _libraryInternal.Add(path);
 
@@ -2363,9 +2369,9 @@ public sealed class Monomorphiser
         int cut = written.LastIndexOf('.');
         if (cut <= 0) return null;
         string qualifier = written[..cut];
-        return LibraryNamespaces.Namespace(qualifier, _inNamespace,
+        return LibraryNamespaces.Namespace(qualifier, _inNamespace, _scope,
             _usings?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>(),
-            path => _paths.Contains(path) || _scopePaths.Contains(path)) ?? qualifier;
+            _programScopes.Contains) ?? qualifier;
     }
 
     /// <summary>A call's target while it is rewritten: a member with type arguments there is a generic method, not a type.</summary>

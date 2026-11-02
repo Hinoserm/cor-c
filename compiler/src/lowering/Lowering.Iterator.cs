@@ -285,7 +285,7 @@ public sealed partial class Lowering
         if (!_machinesLowered.Add(it.Machine)) return;
         Require(it.MoveNext);
         (string wasIn, string? wasPath) = (_in, _inPath);
-        if (it.Method.Owner.Decl is { } owner) (_in, _inPath) = (owner.File, owner.SourcePath);
+        if (it.Method.Owner.Decl is { } owner) (_in, _inPath) = (owner.File, owner.SourcePath ?? _inPath);
         EmitIteratorMembers(it);
         (_in, _inPath) = (wasIn, wasPath);
     }
