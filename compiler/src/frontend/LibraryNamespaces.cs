@@ -21,6 +21,37 @@ internal static class LibraryNamespaces
 
     private static readonly Dictionary<string, string> Table = Build();
 
+    /// <summary>Every namespace of the table's.</summary>
+    private static readonly HashSet<string> Spaces = new(Table.Values, StringComparer.Ordinal);
+
+    /// <summary>
+    /// THE NAMESPACE OF THE TABLE'S A WRITTEN QUALIFIER NAMES, as C# reads
+    /// one: a namespace alias in scope at its front is the namespace it
+    /// stands for (`G` under `using G = System.Collections.Generic;`), and
+    /// the rest of a namespace is the one an enclosing namespace begins
+    /// (`Collections.Generic` in namespace System.Mine). Null for anything
+    /// else -- a type's name, a program's namespace.
+    /// </summary>
+    public static string? Namespace(string qualifier, string within, IEnumerable<(string In, string Alias, string Target)> aliases)
+    {
+        int dot = qualifier.IndexOf('.');
+        string head = dot < 0 ? qualifier : qualifier[..dot];
+        foreach ((string In, string Alias, string Target) alias in aliases)
+        {
+            if (alias.Alias == head && (alias.In.Length == 0 || within == alias.In || within.StartsWith(alias.In + ".", StringComparison.Ordinal)))
+            {
+                qualifier = alias.Target + qualifier[head.Length..];
+                break;
+            }
+        }
+        if (Spaces.Contains(qualifier)) return qualifier;
+        for (string at = within; at.Length > 0; at = at.LastIndexOf('.') is int cut && cut > 0 ? at[..cut] : "")
+        {
+            if (Spaces.Contains(at + "." + qualifier)) return at + "." + qualifier;
+        }
+        return null;
+    }
+
     private static Dictionary<string, string> Build()
     {
         Dictionary<string, string> table = new(StringComparer.Ordinal);
