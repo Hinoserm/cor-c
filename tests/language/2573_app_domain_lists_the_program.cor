@@ -1,0 +1,22 @@
+// test: app_domain_lists_the_program
+// expect-exit: 0
+// expect-output:
+// 1 [] True True
+//
+// System.AppDomain, as .NET has it: CurrentDomain, and its assemblies --
+// here the one, the program's image, whose Location is "" (no file of its
+// own). The linker lists the toolchain's files by them (LinkReceipt), and a
+// compiler built by itself had no AppDomain to compile that with.
+using System;
+using System.Reflection;
+
+static class Program
+{
+    static int Main()
+    {
+        Assembly[] all = AppDomain.CurrentDomain.GetAssemblies();
+        Console.WriteLine(all.Length + " [" + all[0].Location + "] " + (AppDomain.CurrentDomain.FriendlyName.Length > 0)
+            + " " + (AppDomain.CurrentDomain.BaseDirectory == AppContext.BaseDirectory));
+        return 0;
+    }
+}

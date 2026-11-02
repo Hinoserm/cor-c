@@ -63,7 +63,7 @@ internal static class LibraryNamespaces
         Dictionary<string, string> table = new(StringComparer.Ordinal);
         void In(string space, params string[] keys) { foreach (string key in keys) table.Add(key, space); }
         In("System", "Action", "Action`1", "Action`2", "Action`3", "Action`4", "Action`5", "Action`6", "Action`7",
-            "Action`8", "Activator", "AppContext", "ApplicationException", "ArgumentException",
+            "Action`8", "Activator", "AppContext", "AppDomain", "ApplicationException", "ArgumentException",
             "ArgumentNullException", "ArgumentOutOfRangeException", "ArithmeticException", "Array", "ArraySegment`1",
             "ArrayTypeMismatchException", "Attribute", "AttributeTargets", "AttributeUsageAttribute",
             "Base64FormattingOptions", "BitConverter", "Boolean", "Byte", "Char", "Comparison`1", "Console",
