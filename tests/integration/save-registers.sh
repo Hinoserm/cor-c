@@ -37,10 +37,11 @@ for f in m_Platform_SafePoint_ $entry; do
         grep -q "push *%$r" "$work/$f.s" || { cat "$work/$f.s"; fail "$f does not push $r"; }
     done
 done
-# And it is the frame that runs the collection: CollectInner called from it,
-# below those pushes -- not a copy of EnterCollection no collection goes by.
+# And it is the frame that runs the collection, below those pushes --
+# CollectInner called from it, or put in place in it and the roots' scan
+# called -- not a copy of EnterCollection no collection goes by.
 code "$entry" > "$work/entry.s"
-grep -q 'call.*m_Gc_CollectInner_' "$work/entry.s" || { cat "$work/entry.s"; fail "$entry does not call Gc.CollectInner"; }
+grep -qE 'call.*m_(Gc_CollectInner|GcRoots_ScanAll)_' "$work/entry.s" || { cat "$work/entry.s"; fail "$entry runs no collection"; }
 code m_Platform_SafePoint_ > "$work/safepoint.s"
 if grep -q 'int  *\$0x80' "$work/safepoint.s"; then cat "$work/safepoint.s"; fail "Platform.SafePoint makes a system call"; fi
 # Each of the three read as the caller left it -- from its save slot, or the
