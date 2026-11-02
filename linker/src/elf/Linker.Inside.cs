@@ -39,7 +39,13 @@ public static partial class Linker
             if (Readable(full, elfClass) is { } bytes && Soname(bytes) is string soname) given.TryAdd(soname, full);
         }
         string[] system = longMode ? LibraryDirectories64 : LibraryDirectories32;
-        HashSet<string> exported = new(StringComparer.Ordinal), asked = new(StringComparer.Ordinal), read = new(StringComparer.Ordinal);
+        // A path read and answered, and one that would not read: the first
+        // stops the search for a name (one read already, under another name),
+        // the second is passed over for the next candidate -- marked before its
+        // read, a file that failed was taken for one answered, and a name it
+        // came up for again found nothing though a later candidate had it.
+        HashSet<string> exported = new(StringComparer.Ordinal), asked = new(StringComparer.Ordinal),
+            answered = new(StringComparer.Ordinal), unreadable = new(StringComparer.Ordinal);
         Queue<string> pending = new(ElfReader.ReadSharedImage(image).Needed);
         while (pending.Count > 0)
         {
@@ -50,18 +56,21 @@ public static partial class Linker
                     .Concat(beside.Concat(system).Select(dir => Path.Combine(dir, needed)));
             foreach (string candidate in candidates)
             {
+                string full = Path.GetFullPath(candidate);
                 // One read already, under another name: answered.
-                if (!read.Add(Path.GetFullPath(candidate))) break;
-                if (Readable(candidate, elfClass) is not { } bytes) continue;
+                if (answered.Contains(full)) break;
+                if (unreadable.Contains(full)) continue;
+                if (Readable(candidate, elfClass) is not { } bytes) { unreadable.Add(full); continue; }
                 try
                 {
                     List<string> exports = ElfReader.ExportsOf(bytes);
                     List<string> next = ElfReader.ReadSharedImage(bytes).Needed;
                     exported.UnionWith(exports);
                     foreach (string more in next) pending.Enqueue(more);
+                    answered.Add(full);
                     break;
                 }
-                catch (Exception e) when (e is ElfFormatException or InvalidDataException or IndexOutOfRangeException or ArgumentOutOfRangeException) { }
+                catch (Exception e) when (e is ElfFormatException or InvalidDataException) { unreadable.Add(full); }
             }
         }
         return exported;

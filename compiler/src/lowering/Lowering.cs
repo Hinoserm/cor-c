@@ -304,6 +304,16 @@ public sealed partial class Lowering
     /// <summary>The file the method being lowered came from, for diagnostics.</summary>
     private string _in = "";
 
+    /// <summary>
+    /// The full path of that file, where one is known (FileScope.Path): _in
+    /// is its bare name, which LibraryPath took for one in the working
+    /// directory.
+    /// </summary>
+    private string? _inPath;
+
+    /// <summary>The full path of the file a method is written in: its own part's, else its type's.</summary>
+    private static string? PathOf(MethodSymbol m) => m.Decl?.Scope?.Path ?? m.Owner.Decl?.SourcePath;
+
     // ---- names ---------------------------------------------------------------
 
     /// <summary>
@@ -512,7 +522,7 @@ public sealed partial class Lowering
         // A TYPE WITH NO PATH OF ITS OWN -- a lambda's closure, made where its
         // lambda is -- is its file's alone: its declaration's FromLibrary is
         // the compiler's making, and took a program's lambda for the library's.
-        => t?.Decl is { SourcePath: null } && _in.Length > 0 ? LibraryPath(_in) : SystemCode(t) || _in.Length > 0 && LibraryPath(_in);
+        => t?.Decl is { SourcePath: null } && _inPath is { } path ? LibraryPath(path) : SystemCode(t) || _inPath is { } own && LibraryPath(own);
 
     /// <summary>The full path of the file a type is declared in (Function.SourcePath).</summary>
     private static string? SourcePathOf(TypeSymbol? t) => t?.Decl?.SourcePath;

@@ -152,11 +152,13 @@ public static class Frontend
                 {
                     decl.File = file;
                     decl.SourcePath = sourceIndex == 1 ? null : Path.GetFullPath(paths[sourceIndex - 2]);
+                    if (decl.Scope is { } typeScope) typeScope.Path = decl.SourcePath;
                     decl.FromLibrary = isLibrary;
                     decl.Elsewhere = isElsewhere;
                     foreach (MemberDecl member in decl.Members)
                     {
                         member.File = file;
+                        if (member.Scope is { } memberScope) memberScope.Path = decl.SourcePath;
                         // WHOSE IMPLEMENTATION, said by the member itself: a
                         // type can be two declarations merged -- the prelude's
                         // intrinsic Math and the library's Math -- and the

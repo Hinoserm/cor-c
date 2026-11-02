@@ -119,7 +119,9 @@ public static class ElfReader
     /// library answers null and the caller falls back to the file name,
     /// which is what the loader would have looked for anyway.
     /// </summary>
-    public static string? SoNameOf(byte[] bytes)
+    public static string? SoNameOf(byte[] bytes) => Whole(() => SoNameIn(bytes));
+
+    private static string? SoNameIn(byte[] bytes)
     {
         DynamicView view = DynamicView.Read(bytes);
         foreach ((long tag, ulong value) in view.Entries)
@@ -134,10 +136,26 @@ public static class ElfReader
     /// consumer must not compile a second copy of, and what it may leave
     /// for the loader to supply.
     /// </summary>
-    public static List<string> ExportsOf(byte[] bytes) => DynamicNames(bytes, defined: true);
+    public static List<string> ExportsOf(byte[] bytes) => Whole(() => DynamicNames(bytes, defined: true));
 
     /// <summary>Names the dynamic loader must resolve from other images.</summary>
-    public static List<string> ImportsOf(byte[] bytes) => DynamicNames(bytes, defined: false);
+    public static List<string> ImportsOf(byte[] bytes) => Whole(() => DynamicNames(bytes, defined: false));
+
+    /// <summary>
+    /// A shared object's dynamic parts read whole, or ElfFormatException: a
+    /// file cut short ran the reader off the end of its bytes, an index or a
+    /// slice out of range, and every caller caught those two as well as the
+    /// reader's own (Linker.ExportsAtStart) -- and with them any such fault
+    /// of its own the reader might have, taken for a bad file.
+    /// </summary>
+    private static T Whole<T>(Func<T> read)
+    {
+        try { return read(); }
+        catch (Exception e) when (e is IndexOutOfRangeException or ArgumentOutOfRangeException)
+        {
+            throw new ElfFormatException("ELF image cut short: " + e.Message);
+        }
+    }
 
     /// <summary>
     /// What a linked shared object says about itself, for prebinding: its
@@ -146,7 +164,9 @@ public static class ElfReader
     /// </summary>
     public sealed record SharedImageInfo(string? Soname, List<string> Needed, uint Checksum, uint LowAddress, Dictionary<string, uint> Exports);
 
-    public static SharedImageInfo ReadSharedImage(byte[] bytes)
+    public static SharedImageInfo ReadSharedImage(byte[] bytes) => Whole(() => SharedImageIn(bytes));
+
+    private static SharedImageInfo SharedImageIn(byte[] bytes)
     {
         DynamicView view = DynamicView.Read(bytes);
         Dictionary<string, uint> exports = new(StringComparer.Ordinal);

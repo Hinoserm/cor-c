@@ -678,6 +678,7 @@ public static class SourceIndexBuilder
                         { writer.Write((byte)token.Kind); writer.Write(token.Text); }
                         foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
                         foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
+                        foreach (var import in scope.StaticImports) { writer.Write(import.In); writer.Write(import.Type); }
                     }
                     string key = "T:" + identity + "\n" + TypeName(type);
                     if (under is not null && under.Find(key).Any())

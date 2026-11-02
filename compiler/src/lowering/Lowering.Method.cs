@@ -263,6 +263,7 @@ public sealed partial class Lowering
         _decl = decl;
         // The method's own file first: a partial class's methods are in several.
         _in = m.Decl is { File.Length: > 0 } own ? own.File : m.Owner.Decl?.File ?? "";
+        _inPath = PathOf(m);
 
         if (_moveNext.TryGetValue(m, out AsyncMethod? running))
         {

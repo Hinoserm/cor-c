@@ -797,6 +797,7 @@ public sealed class IndexedDeclarations : IDisposable
                 root.Namespace = source.Namespace;
                 root.Outer = source.Outer.Length == 0 ? null : source.Outer;
                 root.Scope = source.Scope;
+                source.Scope.Path ??= source.Path;
                 root.File = displayFile;
                 root.SourcePath = source.Path;
                 // WHERE IT IS IN ITS FILE, not in the slice it was parsed from:

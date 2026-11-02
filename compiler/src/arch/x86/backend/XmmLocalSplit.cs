@@ -21,15 +21,22 @@ namespace Corsac.Lang.X86;
 /// MOVUPS, XORPS of itself and the packed operations, never a scalar one.
 ///
 /// Not in a block with a jump before its end -- a value read where it goes
-/// would be read under its old name -- nor in a function with a handler,
-/// which may read a variable from the middle of a block.
+/// would be read under its old name. A HANDLER is no such jump: a throw
+/// from the middle of a block lands where the registers are the thrower's,
+/// so every value a pad reads lives in the frame (LandingPadHomes, before
+/// selection): stored after each definition, the store reading the value
+/// under the name it has there, and reloaded at the pad's top into the
+/// variable's own. A variable a pad still reads before it writes it -- no
+/// reload made it -- keeps its one name, as it did when no function with a
+/// handler was split at all.
 /// </summary>
 internal static class XmmLocalSplit
 {
     public static void Run(MFunction m)
     {
-        if (m.XmmRegs.Count == 0 || m.Blocks.Any(b => b.Source is { IsLandingPad: true })) return;
+        if (m.XmmRegs.Count == 0) return;
         List<int> whole = new();
+        HashSet<int> padRead = PadRead(m, whole);
         Dictionary<int, int> lastWhole = new(), current = new();
         foreach (MBlock b in m.Blocks)
         {
@@ -43,13 +50,14 @@ internal static class XmmLocalSplit
             for (int k = 0; k < instrs.Count; k++)
             {
                 WrittenWhole(m, instrs[k], whole);
-                foreach (int v in whole) lastWhole[v] = k;
+                foreach (int v in whole) if (!padRead.Contains(v)) lastWhole[v] = k;
             }
             if (lastWhole.Count == 0) continue;
             for (int k = 0; k < instrs.Count; k++)
             {
                 MInstr i = instrs[k];
                 WrittenWhole(m, i, whole);
+                whole.RemoveAll(padRead.Contains);
                 bool zeroing = Zeroing(i);
                 // Reads first, under the name the value read has now.
                 for (int o = 0; o < i.Operands.Count; o++)
@@ -74,6 +82,31 @@ internal static class XmmLocalSplit
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// The XMM variables a landing pad reads before it writes them: values
+    /// it takes from the registers of whatever threw, not from a reload.
+    /// </summary>
+    private static HashSet<int> PadRead(MFunction m, List<int> whole)
+    {
+        HashSet<int> read = new();
+        foreach (MBlock b in m.Blocks)
+        {
+            if (b.Source is not { IsLandingPad: true }) continue;
+            HashSet<int> written = new();
+            foreach (MInstr i in b.Instrs)
+            {
+                if (!Zeroing(i))
+                    for (int o = 0; o < i.Operands.Count; o++)
+                        if (i.Operands[o] is MReg { } r && r.Id >= MReg.FirstVirtual && m.XmmRegs.Contains(r.Id)
+                            && (Roles.Of(i.Op, o) & Roles.Role.Use) != 0 && !written.Contains(r.Id))
+                            read.Add(r.Id);
+                WrittenWhole(m, i, whole);
+                written.UnionWith(whole);
+            }
+        }
+        return read;
     }
 
     /// <summary>XORPS of a register with itself: a write of all of it that reads nothing.</summary>

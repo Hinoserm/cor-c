@@ -101,6 +101,8 @@ public sealed class SourceDeclaration
         foreach (var import in Scope.Imports) { String(import.In); String(import.Namespace); }
         writer.Write(Scope.Aliases.Count);
         foreach (var alias in Scope.Aliases) { String(alias.In); String(alias.Alias); String(alias.Target); }
+        writer.Write(Scope.StaticImports.Count);
+        foreach (var import in Scope.StaticImports) { String(import.In); String(import.Type); }
         writer.Write(ConditionalSymbols.Count);
         foreach (string symbol in ConditionalSymbols) String(symbol);
         writer.Write(MemberNames.Count);
@@ -145,6 +147,9 @@ public sealed class SourceDeclaration
             for (int i = 0; i < count; i++) scope.Imports.Add((Shared(), Shared()));
             count = Count();
             for (int i = 0; i < count; i++) scope.Aliases.Add((Shared(), Shared(), Shared()));
+            // `using static`: a template body read from here names its members bare.
+            count = Count();
+            for (int i = 0; i < count; i++) scope.StaticImports.Add((Shared(), Shared()));
             count = Count();
             List<string> symbols = new(count);
             for (int i = 0; i < count; i++) symbols.Add(Shared());

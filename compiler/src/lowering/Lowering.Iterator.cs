@@ -284,10 +284,11 @@ public sealed partial class Lowering
     {
         if (!_machinesLowered.Add(it.Machine)) return;
         Require(it.MoveNext);
-        string wasIn = _in;
+        (string wasIn, string? wasPath) = (_in, _inPath);
         _in = it.Method.Owner.Decl?.File ?? _in;
+        _inPath = PathOf(it.Method);
         EmitIteratorMembers(it);
-        _in = wasIn;
+        (_in, _inPath) = (wasIn, wasPath);
     }
 
     /// <summary>The vtable an entry's descriptor gives (its methods, DescriptorBytes on), `own` where the entry is 0.</summary>
@@ -521,6 +522,7 @@ public sealed partial class Lowering
         _method = m;
         _decl = decl;
         _in = m.Owner.Decl?.File ?? decl.File ?? "";
+        _inPath = PathOf(m);
 
         // Yield points numbered from zero in each body, for the reason the
         // await points are (EmitMoveNext).

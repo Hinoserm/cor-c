@@ -23,12 +23,20 @@ public sealed class FileScope
     /// <summary>A namespace block's scope: everything this one has, and what the block will add, apart.</summary>
     public FileScope Inside()
     {
-        FileScope inner = new();
+        FileScope inner = new() { Path = Path };
         inner.Imports.AddRange(Imports);
         inner.Aliases.AddRange(Aliases);
         inner.StaticImports.AddRange(StaticImports);
         return inner;
     }
+
+    /// <summary>
+    /// The full path of the file, where one is known (Frontend, the index):
+    /// what a member says of where it was written. Its File is the bare name
+    /// diagnostics print, which names no file outside the working directory,
+    /// and a type merged of two declarations has one path for both.
+    /// </summary>
+    public string? Path { get; set; }
 
     /// <summary>`using Corsac.Lang.Ir;`, and the namespace it was written in.</summary>
     public List<(string In, string Namespace)> Imports { get; } = new();

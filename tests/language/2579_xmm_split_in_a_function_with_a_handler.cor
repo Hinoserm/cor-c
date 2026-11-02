@@ -1,0 +1,49 @@
+// test: xmm_split_in_a_function_with_a_handler
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// caught 4.5
+// caught 10.5
+// done 15
+//
+// A float written whole twice in one block becomes two registers there
+// (XmmLocalSplit), now in a function with a handler as well: the catch
+// reads the value the throw found, from its home in the frame
+// (LandingPadHomes), not the register the block's last write keeps.
+using System;
+
+static class Program
+{
+    static float Check(float x, int limit)
+    {
+        if (x > limit) throw new InvalidOperationException("over");
+        return x;
+    }
+
+    static float Run(float a, float b, int limit)
+    {
+        float v = a * 1.5f;
+        try
+        {
+            v = a + b;
+            Check(v, limit);
+            v = a * b + 0.5f;
+            Check(v, limit);
+            v = v * 2f;
+        }
+        catch (InvalidOperationException)
+        {
+            Console.WriteLine("caught " + v);
+        }
+        return v;
+    }
+
+    static int Main()
+    {
+        Run(2f, 2.5f, 1);
+        Run(2f, 5f, 8);
+        Console.WriteLine("done " + Run(1f, 7f, 100));
+        return 0;
+    }
+}
