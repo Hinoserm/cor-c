@@ -1104,12 +1104,13 @@ public sealed class Parser
     /// C# also finds before an enclosing scope, is not looked for.
     ///
     /// IN A TYPE POSITION AND ON THE LEFT OF A MEMBER ACCESS alike:
-    /// `G.List&lt;int&gt;.Create()` and `Inner&lt;int&gt;.Shared` too, where a name
-    /// with type arguments followed by a dot is a type and nothing else. The
-    /// expression keeps its nodes: its head name becomes the path to the
-    /// type and the outer parameters go before the written arguments, the
-    /// dotted generic the monomorphiser reads from the left of a member
-    /// access as it reads System.Collections.Generic.X&lt;int&gt;.Member.
+    /// `G.List&lt;int&gt;.Create()`, `Inner&lt;int&gt;.Shared`, `Box&lt;T&gt;.Inner&lt;int&gt;.Shared`
+    /// too, where a chain with type arguments followed by a dot is a type
+    /// and nothing else. The expression keeps its nodes: its leftmost name
+    /// becomes the path up to it, every argument goes on its last name led
+    /// by the outer parameters not written, the dotted generic the
+    /// monomorphiser reads from the left of a member access as it reads
+    /// System.Collections.Generic.X&lt;int&gt;.Member.
     /// </summary>
     private static void FinishFamily(TypeDecl top, List<TypeDecl> nested)
     {
@@ -1132,13 +1133,21 @@ public sealed class Parser
             }
             return declared.Contains(head) ? name : null;
         }
-        // `A.B` written as names and dots, and its innermost name.
-        static (string, NameExpr)? Dotted(Expr e) => e switch
+        // A chain of names and member accesses, its leftmost name first.
+        static List<Expr>? Links(Expr e)
         {
-            NameExpr { TypeArgs.Count: 0, Global: false } n => (n.Name, n),
-            MemberExpr { TypeArgs.Count: 0, NullConditional: false } m when Dotted(m.Target) is (string outer, NameExpr first) => (outer + "." + m.Name, first),
-            _ => null,
-        };
+            List<Expr> links = new();
+            for (Expr at = e; ; )
+            {
+                if (at is NameExpr) { links.Add(at); links.Reverse(); return links; }
+                if (at is not MemberExpr { NullConditional: false } m) return null;
+                links.Add(m);
+                at = m.Target;
+            }
+        }
+        static List<TypeRef> ArgsOf(Expr e) => e is NameExpr n ? n.TypeArgs : ((MemberExpr)e).TypeArgs;
+        static List<TypeRef> WritableArgsOf(Expr e) => e is NameExpr n ? n.WritableTypeArgs : ((MemberExpr)e).WritableTypeArgs;
+        static string NameOf(Expr e) => e is NameExpr n ? n.Name : ((MemberExpr)e).Name;
         foreach (TypeDecl inner in family)
         {
             if (inner.OuterParams == 0 || inner.Outer is null) continue;
@@ -1171,22 +1180,27 @@ public sealed class Parser
                     reference.Name = path;
                 }, access: member =>
                 {
-                    // `Inner<int>.Shared`: the head itself, renamed.
-                    if (member.Target is NameExpr { TypeArgs.Count: > 0 } bare)
-                    {
-                        if (bare.TypeArgs.Count != own || !Names(bare.Name)) return;
-                        LeadWithOuter(bare.WritableTypeArgs, bare);
-                        bare.Name = path;
-                    }
-                    // `G.List<int>.Create()`: the innermost name made the path
-                    // up to it, the generic's own arguments led by the outer.
-                    else if (member.Target is MemberExpr { TypeArgs.Count: > 0 } generic && generic.TypeArgs.Count == own
-                             && Dotted(generic.Target) is (string written, NameExpr head)
-                             && Through(at, written + "." + generic.Name) == path)
-                    {
-                        LeadWithOuter(generic.WritableTypeArgs, generic);
-                        head.Name = path[..(path.Length - (written.Length - head.Name.Length) - generic.Name.Length - 1)];
-                    }
+                    // A GENERIC CHAIN ON THE LEFT, however its arguments are
+                    // spread -- `Inner<int>`, `G.List<int>`, `Box<T>.Inner<int>`,
+                    // `G.List<int>.Node<int>` -- is one type: every argument on
+                    // its last name, led by the outer parameters not written,
+                    // the names before it bare, the leftmost made the path up
+                    // to it. A chain of names alone may be a value's, and is
+                    // left as it is; `global::` names no type of the family.
+                    if (Links(member.Target) is not { } links || links[0] is not NameExpr { Global: false } head) return;
+                    List<TypeRef> written = new();
+                    foreach (Expr link in links) written.AddRange(ArgsOf(link));
+                    if (written.Count == 0 || ArgsOf(links[^1]).Count != own) return;
+                    int implicitOuter = inner.TypeParams.Count - written.Count;
+                    if (implicitOuter < 0 || implicitOuter == 0 && written.Count == ArgsOf(links[^1]).Count) return;
+                    string spelt = string.Join(".", links.Select(NameOf));
+                    if (!Names(spelt)) return;
+                    foreach (Expr link in links) WritableArgsOf(link).Clear();
+                    List<TypeRef> last = WritableArgsOf(links[^1]);
+                    for (int k = 0; k < implicitOuter; k++)
+                        last.Add(new TypeRef { Name = inner.TypeParams[k].Name, Line = head.Line, Col = head.Col });
+                    last.AddRange(written);
+                    head.Name = path[..(path.Length - (spelt.Length - head.Name.Length))];
                 });
             }
         }

@@ -1,17 +1,20 @@
 // test: nested_type_of_a_generic_beats_an_alias
 // expect-exit: 0
 // expect-output:
-// 5 6 7 8 9 10 11
+// 5 6 7 8 10 11
 // 3 1
+// 6 11 12
 //
 // Inside Box<T>, `G` is Box's own nested class, not the file's
 // `using G = System.Collections.Generic`: C# looks in the types around a
 // use before the aliases. A type nested in a generic one takes the outer
 // parameters (Parser.FinishFamily) however it is named from inside the
 // family -- through the nearest type around the use that declares its
-// head, by its whole path, bare, on the left of a member access -- and,
-// written from outside with the outer's arguments already, is left as it
-// is. Box's nested types are keyed under `Box`, its name plain, not under
+// head, by its whole path, bare, on the left of a member access, with the
+// outer's arguments written (Box<T>.Inner<int>.Shared) -- and, from outside
+// with the outer's arguments, is that type in an expression too
+// (Monomorphiser: Box<int>.G.List<string>.Made(), once 'Box$int' had no
+// member 'G'). Box's nested types are keyed under `Box`, its name plain, not under
 // `Box`1` (Binder.TypePath); outside Box, `G` is the alias.
 using G = System.Collections.Generic;
 
@@ -32,11 +35,6 @@ class Box<T>
         }
     }
 
-    public class Plain
-    {
-        public static int Shared = 9;
-    }
-
     public class Inner<V>
     {
         public static int Shared = 11;
@@ -47,9 +45,9 @@ class Box<T>
     public int Made() => G.List<int>.Made();
     public int Deep() => new G.Deeper().Through();
     public int Whole() => new Box<T>.G.List<int>().Mine + 3;
-    public int Bare() => Plain.Shared;
     public int Own() => new Inner<int>().Own;
     public int Static() => Inner<int>.Shared;
+    public int Spelt() => Box<T>.Inner<int>.Shared + 1;
 }
 
 static class Program
@@ -58,10 +56,11 @@ static class Program
     {
         Box<long> box = new Box<long>();
         System.Console.WriteLine(box.Use() + " " + box.Made() + " " + box.Deep() + " " + box.Whole()
-            + " " + box.Bare() + " " + box.Own() + " " + box.Static());
+            + " " + box.Own() + " " + box.Static());
         G.List<int> library = new G.List<int>();
         library.Add(9);
         System.Console.WriteLine(new Box<int>.G.List<string>().Mine / 2 + 1 + " " + library.Count);
+        System.Console.WriteLine(Box<int>.G.List<string>.Made() + " " + Box<long>.Inner<int>.Shared + " " + box.Spelt());
         return 0;
     }
 }

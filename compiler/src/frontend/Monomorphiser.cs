@@ -2374,6 +2374,21 @@ public sealed class Monomorphiser
     /// <summary>A call's target while it is rewritten: a member with type arguments there is a generic method, not a type.</summary>
     private Node? _callTarget;
 
+    /// <summary>A chain of names and member accesses, its leftmost name first (null for anything else).</summary>
+    private static List<Expr>? ChainLinks(Expr e)
+    {
+        List<Expr> links = new();
+        for (Expr at = e; ; )
+        {
+            if (at is NameExpr) { links.Add(at); links.Reverse(); return links; }
+            if (at is not MemberExpr { NullConditional: false } m) return null;
+            links.Add(m);
+            at = m.Target;
+        }
+    }
+    private static List<TypeRef> ChainArgs(Expr e) => e is NameExpr n ? n.TypeArgs : ((MemberExpr)e).TypeArgs;
+    private static string ChainName(Expr e) => e is NameExpr n ? n.Name : ((MemberExpr)e).Name;
+
     /// <summary>`A.B.C` as written, when it is names and dots and nothing else.</summary>
     private static string? DottedPath(Expr e) => e switch
     {
@@ -3920,6 +3935,25 @@ public sealed class Monomorphiser
                     && instance is NameExpr { TypeArgs.Count: 0 } madeName && madeName.Name.IndexOf('.') < 0)
                     madeName.Name = Binder.LibrarySpelling + "." + madeName.Name;
                 return instance;
+            }
+
+            // A GENERIC CHAIN WITH ARGUMENTS BEFORE ITS LAST NAME, not called:
+            // `Box<int>.G.List<string>` of `….Made()`, `Box<long>.Inner<int>` of
+            // `….Shared` -- a type nested in a generic one, named from outside
+            // with the outer's arguments, as a type position joins them
+            // (Parser.ParseTypeRef: Box.G.List<int, string>). Its names and
+            // every argument along them, when they name a template; read link
+            // by link, `Box<int>` had no member G.
+            case MemberExpr chained when !ReferenceEquals(chained, _callTarget)
+                && ChainLinks(chained) is { Count: > 1 } links && links[0] is NameExpr { Global: false }
+                && links.Take(links.Count - 1).Any(link => ChainArgs(link).Count > 0)
+                && string.Join(".", links.Select(ChainName)) is string spelt
+                && links.Sum(link => ChainArgs(link).Count) is int arity
+                && GenericPath(spelt, arity, chained) is not null:
+            {
+                NameExpr named = new() { Name = spelt, Line = chained.Line, Col = chained.Col };
+                foreach (Expr link in links) named.WritableTypeArgs.AddRange(ChainArgs(link));
+                return Rewrite(named, map);
             }
 
             case MemberExpr m:
