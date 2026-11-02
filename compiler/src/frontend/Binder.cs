@@ -27217,6 +27217,25 @@ public sealed partial class Binder
                         }
                         return r.Nullable ? l : left;
                     }
+                    // AN ARRAY ON THE LEFT OF A SPAN is the span: `a ?? span`
+                    // is the right's type, and the array is made one by C#'s
+                    // implicit operator -- `a is T[] t ? t : span`, a read once
+                    // and the span read only where it is null, the arm wrapped
+                    // as a conditional's is (ArrayArmOfSpan). Taken as it was,
+                    // the array's own words were the span's pointer and length.
+                    if (left.IsArray && ArrayArmOfSpan(left, right) && RefOf(left) is TypeRef arrayRef)
+                    {
+                        string held = "co$" + b.Line + "$" + b.Col + "$" + _asNullables++;
+                        ConditionalExpr instead = new()
+                        {
+                            Cond = new IsExpr { Operand = b.Left, Type = arrayRef, Binding = held, Line = b.Line, Col = b.Col },
+                            Then = new NameExpr { Name = held, Line = b.Left.Line, Col = b.Left.Col },
+                            Else = b.Right,
+                            Line = b.Line, Col = b.Col,
+                        };
+                        _r.Rewrites[b] = instead;
+                        return CheckExpr(instead);
+                    }
                 }
 
                 return r.Nullable ? r : r.AsNonNullable();

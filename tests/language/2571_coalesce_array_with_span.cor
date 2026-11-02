@@ -1,0 +1,53 @@
+// test: coalesce_array_with_span
+// expect-exit: 0
+// expect-output:
+// 17 30 1
+// 3 5 1
+// 6 2 1
+//
+// `a ?? span` with an array on the left is the span's type, the array made
+// a span by C#'s implicit operator where it is not null, and the right
+// read only where it is: rewritten `a is T[] t ? t : span`, the arm
+// wrapped as a conditional's is (2570). Taken as it was, the array's own
+// words were the span's pointer and length -- 248 for 17.
+using System;
+
+static class Program
+{
+    static int _fallbacks;
+
+    static byte[]? Maybe(bool given) => given ? new byte[] { 9, 8 } : null;
+    static int[]? Ints(bool given) => given ? new int[] { 1, 2 } : null;
+
+    static ReadOnlySpan<byte> Fallback()
+    {
+        _fallbacks++;
+        return new ReadOnlySpan<byte>(new byte[] { 10, 20 });
+    }
+
+    static int Sum(ReadOnlySpan<byte> s)
+    {
+        int total = 0;
+        foreach (byte b in s) total += b;
+        return total;
+    }
+
+    static int Count(byte[]? left, ReadOnlySpan<byte> right) => (left ?? right).Length;
+
+    static int Main()
+    {
+        ReadOnlySpan<byte> got = Maybe(true) ?? Fallback();
+        ReadOnlySpan<byte> missed = Maybe(false) ?? Fallback();
+        Console.WriteLine(Sum(got) + " " + Sum(missed) + " " + _fallbacks);
+
+        Span<int> mine = new Span<int>(new int[] { 5 });
+        Span<int> ints = Ints(true) ?? mine;
+        Span<int> none = Ints(false) ?? mine;
+        Console.WriteLine((ints[0] + ints[1]) + " " + none[0] + " " + none.Length);
+
+        byte[] three = new byte[] { 1, 2, 3 };
+        ReadOnlySpan<byte> nested = Maybe(false) ?? (three.Length > 1 ? three : Fallback());
+        Console.WriteLine(Sum(nested) + " " + Count(new byte[2], default) + " " + _fallbacks);
+        return 0;
+    }
+}
