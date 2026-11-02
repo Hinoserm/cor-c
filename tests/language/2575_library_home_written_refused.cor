@@ -1,9 +1,10 @@
 // test: library_home_written_refused
-// expect-compile-error: CS0246
+// expect-compile-error: CS0122: 'DecimalFormat' is inaccessible due to its protection level
 //
 // `__library.DecimalFormat` names nothing a program can see: the library's
 // own spelling is no identifier now (2574), and DecimalFormat is internal to
-// the library.
+// the library -- refused as the library's internal type it names
+// (Binder.Inaccessible), where `__library.` reached it before.
 
 static class Program
 {

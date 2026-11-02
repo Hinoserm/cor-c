@@ -997,7 +997,32 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
 {
     private readonly Dictionary<(string Within, string Name), TypeSymbol> _split = new();
 
+    /// <summary>Every scope a type is within, and each scope those are within: `a.b` for `a.b.C`, and `a`.</summary>
+    private readonly HashSet<string> _scopes = new(StringComparer.Ordinal);
+
     public TypeTable() : base(StringComparer.Ordinal) { }
+
+    private void NoteScopes(string within)
+    {
+        for (string at = within; at.Length > 0 && _scopes.Add(at); )
+        {
+            int dot = at.LastIndexOf('.');
+            at = dot < 0 ? "" : at[..dot];
+        }
+    }
+
+    /// <summary>
+    /// Whether `name` is a scope some type is within -- a namespace, or a
+    /// type with nested ones: `libx` for `libx.Mine`. The binder's test of
+    /// whether a lowercase name in an expression may be a namespace
+    /// (Binder.NamespaceOnly), a program's `namespace libx` being as good a
+    /// namespace as one capitalised.
+    /// </summary>
+    public bool IsScope(string name)
+    {
+        if (_split.Count != _indexed || Count != _counted) Reindex();
+        return _scopes.Contains(name);
+    }
 
     // How many split entries the index holds, and the table's count, as of
     // the last write it saw.
@@ -1006,8 +1031,13 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     private void Reindex()
     {
         _split.Clear();
+        _scopes.Clear();
         foreach (var (key, value) in this)
-            if (Split(key) is { } at) _split[at] = value;
+            if (Split(key) is { } at)
+            {
+                _split[at] = value;
+                NoteScopes(at.Item1);
+            }
         _indexed = _split.Count;
         _counted = Count;
     }
@@ -1027,7 +1057,7 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
         {
             bool fresh = _split.Count == _indexed && Count == _counted;
             base[key] = value;
-            if (Split(key) is { } at) _split[at] = value;
+            if (Split(key) is { } at) { _split[at] = value; NoteScopes(at.Item1); }
             if (fresh) Seen();
         }
     }
@@ -1036,7 +1066,7 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     {
         bool fresh = _split.Count == _indexed && Count == _counted;
         base.Add(key, value);
-        if (Split(key) is { } at) _split[at] = value;
+        if (Split(key) is { } at) { _split[at] = value; NoteScopes(at.Item1); }
         if (fresh) Seen();
     }
 

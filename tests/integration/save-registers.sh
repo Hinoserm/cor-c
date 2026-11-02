@@ -24,15 +24,23 @@ code() {
     test -n "$at" || { printf 'FAIL no %s\n' "$1" >&2; exit 1; }
     objdump -d --no-show-raw-insn "$work/701" --start-address=0x$at | awk 'NR > 7 && /^[0-9a-f]+ </ { exit } NR > 7'
 }
-# The pushes in the prologue, its first six instructions. EnterCollection is
-# put in place in GcRoots.Enter, its pushes with it, and the collection with
-# them, whose system calls are its own.
-for f in m_Platform_SafePoint_ m_GcRoots_Enter_; do
+# The pushes in the prologue, its first six instructions. EnterCollection's
+# pushes are its own prologue's where it is a function of its own, else they
+# came with its body into GcRoots.Enter (the inliner's choice: a one-caller
+# body is kept out of a caller that is put in place at sites of its own),
+# and the collection with them, whose system calls are its own.
+entry=m_Platform_EnterCollection_
+nm "$work/701" | awk -v name="$entry" 'index($3, name) == 1 { found = 1 } END { exit !found }' || entry=m_GcRoots_Enter_
+for f in m_Platform_SafePoint_ $entry; do
     code "$f" | head -6 > "$work/$f.s"
     for r in ebx esi edi; do
         grep -q "push *%$r" "$work/$f.s" || { cat "$work/$f.s"; fail "$f does not push $r"; }
     done
 done
+# And it is the frame that runs the collection: CollectInner called from it,
+# below those pushes -- not a copy of EnterCollection no collection goes by.
+code "$entry" > "$work/entry.s"
+grep -q 'call.*m_Gc_CollectInner_' "$work/entry.s" || { cat "$work/entry.s"; fail "$entry does not call Gc.CollectInner"; }
 code m_Platform_SafePoint_ > "$work/safepoint.s"
 if grep -q 'int  *\$0x80' "$work/safepoint.s"; then cat "$work/safepoint.s"; fail "Platform.SafePoint makes a system call"; fi
 # Each of the three read as the caller left it -- from its save slot, or the

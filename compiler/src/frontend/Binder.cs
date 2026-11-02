@@ -21984,7 +21984,12 @@ public sealed partial class Binder
             // `global::` SAYS NO VALUE IS MEANT: `global::Corsac.Lang.X86`
             // inside a class with a static member called Corsac is the
             // namespace, which is the whole reason the qualifier is written.
-            NameExpr n => (n.Global || n.Name.Length > 0 && char.IsUpper(n.Name[0]) && !NamesAValue(n.Name))
+            // AND A NAME THAT IS A SCOPE TYPES ARE WITHIN, however it is
+            // spelt (TypeTable.IsScope): `namespace libx` is a namespace C#
+            // reads as one. A captured local not yet made a field is no value
+            // to NamesAValue, so one named as a lowercase scope is would be
+            // read as that scope -- as a capitalised one always was.
+            NameExpr n => (n.Global || n.Name.Length > 0 && (char.IsUpper(n.Name[0]) || _r.Types.IsScope(n.Name)) && !NamesAValue(n.Name))
                        && !IsTypeName(n.Name),
             // A SEGMENT MAY SHARE A NAME WITH A TYPE and still be a namespace.
             // `System.Runtime.InteropServices.CollectionsMarshal` walks through
