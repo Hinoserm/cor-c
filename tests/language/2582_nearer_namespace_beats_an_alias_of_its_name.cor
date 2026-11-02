@@ -1,0 +1,38 @@
+// test: nearer_namespace_beats_an_alias_of_its_name
+// expect-exit: 0
+// expect-output:
+// 7 2
+//
+// C# looks a name up from the innermost namespace out, each one's own
+// declarations before the aliases written in it: inside Outer, `G` is the
+// namespace Outer.G, not the file's `using G = System.Collections.Generic`
+// (LibraryNamespaces.Namespace, its `declared`); outside it, the alias.
+using G = System.Collections.Generic;
+
+namespace Outer
+{
+    namespace G
+    {
+        class List<T>
+        {
+            public int Mine = 7;
+        }
+    }
+
+    static class Use
+    {
+        public static int Mine() => new G.List<int>().Mine;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        G.List<int> library = new G.List<int>();
+        library.Add(1);
+        library.Add(2);
+        System.Console.WriteLine(Outer.Use.Mine() + " " + library.Count);
+        return 0;
+    }
+}

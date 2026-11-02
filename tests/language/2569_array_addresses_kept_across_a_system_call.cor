@@ -13,8 +13,8 @@
 // and the allocator had no register for it: "no register for v42". A
 // stretch's values keep their side of each machine register's window
 // (Schedule). VmRead is kept out of line, as in the program it came from
-// (linuxcheck), where its body was the stretch. process_vm_readv of pid 0x7fffffff is ESRCH; the reads and
-// writes on fd -1 fail, as they may.
+// (linuxcheck), where its body was the stretch. process_vm_readv of pid
+// 0x7fffffff is ESRCH; the reads and writes on fd -1 fail, as they may.
 using System;
 using System.Runtime.CompilerServices;
 

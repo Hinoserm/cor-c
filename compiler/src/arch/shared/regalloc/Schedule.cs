@@ -74,13 +74,15 @@ public static class Schedule
                 foreach (Named r in instrs[x].Regs)
                     if (r.Reg >= rf.FirstVirtual) lastIn[r.Reg] = x;
             int start = 0;
+            HeldRegisters? held = null;
             for (int at = 0; at <= instrs.Count; at++)
             {
                 if (at < instrs.Count && (instrs[at].Effects & Effect.Barrier) == 0) continue;
                 if (at - start >= 3 && at - start <= Longest && NamesMore(f, instrs, start, at, k, named))
                 {
                     if (liveOut is null) liveOut = LiveOut(f, home, Cyclic(f), out index);
-                    Stretch(f, instrs, start, at, liveOut[b], index!, padRead, lastIn, k);
+                    held ??= new HeldRegisters(instrs, rf.Classes[0].Preference);
+                    Stretch(f, instrs, start, at, liveOut[b], index!, padRead, lastIn, k, held);
                 }
                 start = at + 1;
             }
@@ -225,38 +227,60 @@ public static class Schedule
     }
 
     /// <summary>
-    /// Whether machine register `reg` is read from `at` on in the block --
-    /// by the barrier there or after it -- before anything writes it; at the
-    /// block's end, as it may be by the next block, taken as read.
+    /// WHAT A BLOCK DOES WITH EACH MACHINE REGISTER THE ALLOCATOR HANDS OUT,
+    /// worked out once for the block: asked of every stretch it reorders,
+    /// each walk to the block's end or its start was the block again for
+    /// every register of every stretch. A stretch's reorder keeps a
+    /// register's reads before its next write, so what the walks would see
+    /// past a stretch, or before it, is the same after the stretches before
+    /// it are reordered.
     /// </summary>
-    private static bool ReadPast(List<AInstr> instrs, int at, int reg, bool endReads = true)
+    private sealed class HeldRegisters
     {
-        for (int x = at; x < instrs.Count; x++)
-        {
-            bool read = false, wrote = false;
-            foreach (Named r in instrs[x].Regs)
-            {
-                if (r.Reg != reg) continue;
-                if ((r.Role & Role.Use) != 0) read = true;
-                if ((r.Role & Role.Def) != 0) wrote = true;
-            }
-            if (read) return true;
-            if (wrote) return false;
-        }
-        return endReads;
-    }
+        // Per register, from each place on: 1 read before anything writes it,
+        // 0 written first, 2 neither to the block's end.
+        private readonly Dictionary<int, byte[]> _from = new();
+        // Per register, the first place that names it (Count: none).
+        private readonly Dictionary<int, int> _first = new();
 
-    /// <summary>Whether machine register `reg` is named in the block before `at`: written there, or read, so holding a value there.</summary>
-    private static bool NamedBefore(List<AInstr> instrs, int at, int reg)
-    {
-        for (int x = at - 1; x >= 0; x--)
-            foreach (Named r in instrs[x].Regs)
-                if (r.Reg == reg) return true;
-        return false;
+        public HeldRegisters(List<AInstr> instrs, int[] handed)
+        {
+            foreach (int reg in handed)
+            {
+                byte[] from = new byte[instrs.Count + 1];
+                from[instrs.Count] = 2;
+                int first = instrs.Count;
+                for (int x = instrs.Count - 1; x >= 0; x--)
+                {
+                    bool read = false, wrote = false;
+                    foreach (Named r in instrs[x].Regs)
+                    {
+                        if (r.Reg != reg) continue;
+                        if ((r.Role & Role.Use) != 0) read = true;
+                        if ((r.Role & Role.Def) != 0) wrote = true;
+                    }
+                    from[x] = read ? (byte)1 : wrote ? (byte)0 : from[x + 1];
+                    if (read || wrote) first = x;
+                }
+                _from[reg] = from;
+                _first[reg] = first;
+            }
+        }
+
+        /// <summary>
+        /// Whether `reg` is read from `at` on in the block -- by the barrier
+        /// there or after it -- before anything writes it; at the block's end,
+        /// as it may be by the next block, taken as read where `endReads`.
+        /// </summary>
+        public bool ReadPast(int at, int reg, bool endReads = true)
+            => _from.TryGetValue(reg, out byte[]? from) && (from[at] == 1 || from[at] == 2 && endReads);
+
+        /// <summary>Whether `reg` is named in the block before `at`: written there, or read, so holding a value there.</summary>
+        public bool NamedBefore(int at, int reg) => _first.TryGetValue(reg, out int first) && first < at;
     }
 
     /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
-    private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, BitSet liveOut, Dictionary<int, int> index, HashSet<int> padRead, Dictionary<int, int> lastIn, int k)
+    private static void Stretch(AFunction f, List<AInstr> instrs, int from, int to, BitSet liveOut, Dictionary<int, int> index, HashSet<int> padRead, Dictionary<int, int> lastIn, int k, HeldRegisters held)
     {
         int n = to - from;
         RegisterFile rf = f.Registers;
@@ -289,9 +313,13 @@ public static class Schedule
         List<int>[] succ = new List<int>[n];
         int[] preds = new int[n];
         for (int x = 0; x < n; x++) succ[x] = new();
+        // EACH ORDER ONCE: the rules below say many of the same -- every
+        // crowded hold an edge from each value before it -- and kept twice
+        // an edge was twice the work of every walk over the graph.
+        HashSet<long> ordered = new();
         void Edge(int a, int c)
         {
-            if (a == c) return;
+            if (a == c || !ordered.Add((long)a << 32 | (uint)c)) return;
             succ[a].Add(c);
             preds[c]++;
         }
@@ -426,7 +454,7 @@ public static class Schedule
             // half is dropped, holds nothing.
             foreach ((int reg, (int Def, List<int> Reads) w) in open)
             {
-                if (ReadPast(instrs, from + n, reg)) holds.Add((w.Def, w.Reads, true));
+                if (held.ReadPast(from + n, reg)) holds.Add((w.Def, w.Reads, true));
                 else if (w.Reads.Count > 0) holds.Add((w.Def, w.Reads, false));
             }
             // AND ONE HELD THROUGH THE STRETCH, named nowhere in it: written or
@@ -439,7 +467,7 @@ public static class Schedule
             // held. Found by a read past the stretch, not the block's end:
             // taken as read there, every register would hold everywhere.
             foreach (int reg in handed)
-                if (!open.ContainsKey(reg) && NamedBefore(instrs, from, reg) && ReadPast(instrs, from + n, reg, endReads: false))
+                if (!open.ContainsKey(reg) && held.NamedBefore(from, reg) && held.ReadPast(from + n, reg, endReads: false))
                     holds.Add((-1, new List<int>(), true));
         }
         int HoldEnd((int Def, List<int> Reads, bool ToEnd) h) => h.ToEnd ? n : h.Reads[^1];

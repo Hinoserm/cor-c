@@ -2,7 +2,7 @@
 // expect-exit: 0
 // expect-output:
 // 1 [] True True
-// True True
+// True True True
 //
 // System.AppDomain, as .NET has it: CurrentDomain, and its assemblies --
 // here the one, the program's image, whose Location is "" (no file of its
@@ -20,7 +20,9 @@ static class Program
             + " " + (AppDomain.CurrentDomain.BaseDirectory == AppContext.BaseDirectory));
         // Named as the program's assembly, extension and all taken off.
         Console.WriteLine((AppDomain.CurrentDomain.FriendlyName == Assembly.GetExecutingAssembly().GetName().Name)
-            + " " + AppDomain.CurrentDomain.ToString().StartsWith("Name:" + AppDomain.CurrentDomain.FriendlyName));
+            + " " + AppDomain.CurrentDomain.ToString().StartsWith("Name:" + AppDomain.CurrentDomain.FriendlyName)
+            // A new array each call, as .NET's: one caller's changes are not the next one's.
+            + " " + !ReferenceEquals(AppDomain.CurrentDomain.GetAssemblies(), AppDomain.CurrentDomain.GetAssemblies()));
         return 0;
     }
 }

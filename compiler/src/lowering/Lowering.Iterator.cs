@@ -285,8 +285,7 @@ public sealed partial class Lowering
         if (!_machinesLowered.Add(it.Machine)) return;
         Require(it.MoveNext);
         (string wasIn, string? wasPath) = (_in, _inPath);
-        _in = it.Method.Owner.Decl?.File ?? _in;
-        _inPath = PathOf(it.Method) ?? _inPath;
+        if (it.Method.Owner.Decl is { } owner) (_in, _inPath) = (owner.File, owner.SourcePath);
         EmitIteratorMembers(it);
         (_in, _inPath) = (wasIn, wasPath);
     }
@@ -521,8 +520,7 @@ public sealed partial class Lowering
         MethodDecl decl = it.Decl;
         _method = m;
         _decl = decl;
-        _in = m.Owner.Decl?.File ?? decl.File ?? "";
-        _inPath = PathOf(m);
+        (_in, _inPath) = FileOf(m, decl, own: false);
 
         // Yield points numbered from zero in each body, for the reason the
         // await points are (EmitMoveNext).

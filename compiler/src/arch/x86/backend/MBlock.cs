@@ -17,6 +17,13 @@ public sealed class MBlock
     /// <summary>The IR block this heads, if any; null for a block the selector split off.</summary>
     public Block? Source { get; init; }
 
+    /// <summary>
+    /// For a block made of a stored edge (X86Target, IPlacement.StoredEdges),
+    /// the block that edge leaves: whether its jump is a loop's way back is
+    /// that block's (Encoder's loop heads), wherever the edge is laid.
+    /// </summary>
+    public MBlock? EdgeFrom { get; init; }
+
     /// <summary>Byte offset from the function start, once encoded.</summary>
     public int Offset { get; set; }
 

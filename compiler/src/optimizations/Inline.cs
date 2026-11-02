@@ -466,9 +466,7 @@ public sealed class Inline : IParallelModulePass
                     {
                         ordinaryCost = HotSize(callee);
                     }
-                    if (ConditionalBranchCost != 0)
-                        ordinaryCost += ConditionalBranchCost * callee.Blocks.Sum(block =>
-                            block.Instrs.Count(instruction => instruction.Op is Opcode.Branch or Opcode.Switch));
+                    ordinaryCost += BranchCost(callee);
                     // One caller makes a body free to move only if it then goes:
                     // one whose address is taken stays, and would be twice.
                     bool single = callers.GetValueOrDefault(callee.Name) == 1 && !addressTaken.Contains(callee.Name)
@@ -502,11 +500,13 @@ public sealed class Inline : IParallelModulePass
                     // units against Has's limit of 40, and every call of Has
                     // stayed one. Bottom-up, the callee's single call is the
                     // caller's to weigh; the caller's many are worth more.
-                    // Weighed by the caller's whole size, as its sites outside
-                    // a loop weigh it -- one in a loop weighs only its hot path.
+                    // Weighed as its sites outside a loop will weigh it, by its
+                    // whole size and its branches (BranchCost) -- one in a loop
+                    // weighs only its hot path.
                     if (single && ordinaryCost > smallBody && !specializesBranch && !exposesChildren
                         && callers.GetValueOrDefault(caller.Name) >= 2 && !addressTaken.Contains(caller.Name)
-                        && size <= SmallLimit(caller) && size + calleeSize > SmallLimit(caller) && Inlineable(caller, pinned))
+                        && size + BranchCost(caller) <= SmallLimit(caller)
+                        && size + calleeSize + BranchCost(caller) + BranchCost(callee) > SmallLimit(caller) && Inlineable(caller, pinned))
                     {
                         TraceDecision?.Invoke(caller, callee, $"keep: one caller, but caller={size}+{calleeSize} would pass its own small-limit={SmallLimit(caller)} at its {callers.GetValueOrDefault(caller.Name)} sites");
                         continue;
@@ -770,6 +770,11 @@ public sealed class Inline : IParallelModulePass
         return false;
     }
 
+    /// <summary>What a body's conditional branches add to its cost as a callee (ConditionalBranchCost each).</summary>
+    private int BranchCost(Function f)
+        => ConditionalBranchCost == 0 ? 0
+            : ConditionalBranchCost * f.Blocks.Sum(block => block.Instrs.Count(instruction => instruction.Op is Opcode.Branch or Opcode.Switch));
+
     /// <summary>A function's small-body limit as a callee: SmallBody and its arguments' credit, as InlineInto weighs each call.</summary>
     private int SmallLimit(Function f)
     {
@@ -784,6 +789,10 @@ public sealed class Inline : IParallelModulePass
     /// block that returns, one in a loop (LoopBlocks; a server's endless loop
     /// returns never and runs always), one with no ending known, and any with
     /// a way on to a warm one; the rest are cold.
+    ///
+    /// A FUNCTION WITH NO RETURN AND NO LOOP IS COLD THROUGHOUT, and rightly:
+    /// it runs once for each call, which never comes back -- a throw helper,
+    /// or a Main that ends in Environment.Exit, which runs once in all.
     /// </summary>
     private static HashSet<Block> ColdBlocks(Function f, HashSet<Block> loops)
     {

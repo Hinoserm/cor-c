@@ -74,8 +74,10 @@ public static class SourceIndexBuilder
 
     /// <summary>
     /// A file's usings as each hash counts them -- the header's, the shape's
-    /// and the declaration's alike: a `using static` names members and nested
-    /// types bare, so changing it changes what a type's text means.
+    /// and the declaration's alike. The parser puts a `using static X` in
+    /// Imports too, so adding or dropping one changed every hash already; the
+    /// static list tells it apart from `using X`, which names X's namespace
+    /// members where the static one names X's own members and nested types.
     /// </summary>
     private static void WriteScope(BinaryWriter writer, FileScope scope)
     {

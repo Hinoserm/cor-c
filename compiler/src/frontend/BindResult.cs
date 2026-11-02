@@ -1020,7 +1020,7 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     /// </summary>
     public bool IsScope(string name)
     {
-        if (_split.Count != _indexed || Count != _counted) Reindex();
+        if (_scopesStale || _split.Count != _indexed || Count != _counted) Reindex();
         return _scopes.Contains(name);
     }
 
@@ -1028,8 +1028,11 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     // the last write it saw.
     private int _indexed, _counted;
 
+    private bool _scopesStale;
+
     private void Reindex()
     {
+        _scopesStale = false;
         _split.Clear();
         _scopes.Clear();
         foreach (var (key, value) in this)
@@ -1074,7 +1077,9 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     {
         bool fresh = _split.Count == _indexed && Count == _counted;
         if (!base.Remove(key)) return false;
-        if (Split(key) is { } at) _split.Remove(at);
+        // A scope it was in may now have nothing in it: the scopes are made
+        // again when next asked (IsScope), not taken from a type gone.
+        if (Split(key) is { } at) { _split.Remove(at); _scopesStale = true; }
         if (fresh) Seen();
         return true;
     }

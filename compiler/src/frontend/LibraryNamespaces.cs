@@ -32,12 +32,19 @@ internal static class LibraryNamespaces
     /// one: a namespace alias in scope at its front is the namespace it
     /// stands for (`G` under `using G = System.Collections.Generic;`) -- the
     /// one written in the innermost namespace around it, as C# takes it --
-    /// and
-    /// the rest of a namespace is the one an enclosing namespace begins
+    /// and the rest of a namespace is the one an enclosing namespace begins
     /// (`Collections.Generic` in namespace System.Mine). Null for anything
     /// else -- a type's name, a program's namespace.
+    ///
+    /// AN ALIAS ONLY WHERE NOTHING NEARER HAS ITS NAME: C# looks a name up
+    /// from the innermost namespace out, each one's own declarations before
+    /// the aliases written in it, so a namespace or type `G` declared at or
+    /// inside the alias's namespace is what `G.` means (`declared`, asked
+    /// of a whole path: whether the program or the library declares a
+    /// namespace or a type there).
     /// </summary>
-    public static string? Namespace(string qualifier, string within, IEnumerable<(string In, string Alias, string Target)> aliases)
+    public static string? Namespace(string qualifier, string within, IEnumerable<(string In, string Alias, string Target)> aliases,
+                                    Func<string, bool> declared)
     {
         int dot = qualifier.IndexOf('.');
         string head = dot < 0 ? qualifier : qualifier[..dot];
@@ -51,6 +58,15 @@ internal static class LibraryNamespaces
                 target = alias.Target;
                 depth = alias.In.Length;
             }
+        }
+        // Anything of the name at the alias's own namespace or inside it, on
+        // the way out from where it is written.
+        for (string at = within; target is not null && at.Length >= depth;)
+        {
+            if (declared(at.Length > 0 ? at + "." + head : head)) target = null;
+            if (at.Length == 0) break;
+            int up = at.LastIndexOf('.');
+            at = up > 0 ? at[..up] : "";
         }
         if (target is not null) qualifier = target + qualifier[head.Length..];
         if (Spaces.Contains(qualifier)) return qualifier;

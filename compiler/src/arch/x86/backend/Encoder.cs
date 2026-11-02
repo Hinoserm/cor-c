@@ -79,14 +79,19 @@ internal sealed class Encoder
         if (CpuModel.Athlon && !OptimizeSize)
         {
             // A JUMP TO ITS OWN BLOCK OR ONE BEFORE IT: a loop's latch, and its
-            // target the head every lap starts at.
+            // target the head every lap starts at. A stored edge's block, laid
+            // at the function's end, jumps back from wherever its source is:
+            // from the end, every target it had was taken for a loop's head.
             Dictionary<MBlock, int> at = new(ReferenceEqualityComparer.Instance);
             for (int k = 0; k < m.Blocks.Count; k++) at[m.Blocks[k]] = k;
             for (int k = 0; k < m.Blocks.Count; k++)
+            {
+                int from = m.Blocks[k].EdgeFrom is { } source && at.TryGetValue(source, out int left) ? left : k;
                 foreach (MInstr i in m.Blocks[k].Instrs)
                     if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands.Count > 0 && i.Operands[0] is MLabel label
-                        && at.TryGetValue(label.Target, out int to) && to <= k && to > 0)
+                        && at.TryGetValue(label.Target, out int to) && to <= from && to > 0)
                         _loopHeads.Add(label.Target);
+            }
         }
 
         // Layout passes until no jump needs widening. A forward jump reads

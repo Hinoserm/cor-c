@@ -1,0 +1,62 @@
+// test: span_coalesce_as_an_argument_and_null_string_arms
+// expect-exit: 0
+// expect-output:
+// 17 30 1
+// 0 0 4
+// 7 7 30 2
+//
+// `a ?? span` passed straight to a method, whose argument is checked more
+// than once: one test of `a` (Binder, the `??` rewrite reused), `a` read
+// once and the span made only where it is null. A null string arm of a
+// ReadOnlySpan<char> is the empty span, as C#'s implicit operator makes
+// it. An operand declaring a variable -- a pattern's, an `out` one's -- or
+// a lambda's call is read once on the left of `??` all the same (2571,
+// 2572).
+using System;
+
+static class Program
+{
+    static int _fallbacks;
+
+    static byte[]? Maybe(bool given) => given ? new byte[] { 9, 8 } : null;
+
+    static ReadOnlySpan<byte> Fallback()
+    {
+        _fallbacks++;
+        return new ReadOnlySpan<byte>(new byte[] { 10, 20 });
+    }
+
+    static int Sum(ReadOnlySpan<byte> s)
+    {
+        int total = 0;
+        foreach (byte b in s) total += b;
+        return total;
+    }
+
+    static bool Get(bool given, out byte[]? got)
+    {
+        got = given ? new byte[] { 3, 4 } : null;
+        return given;
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Sum(Maybe(true) ?? Fallback()) + " " + Sum(Maybe(false) ?? Fallback()) + " " + _fallbacks);
+
+        string? nothing = null;
+        bool flag = true;
+        ReadOnlySpan<char> chars = "wxyz".AsSpan();
+        ReadOnlySpan<char> c1 = flag ? nothing : chars;
+        ReadOnlySpan<char> c2 = nothing ?? "";
+        ReadOnlySpan<char> c3 = !flag ? nothing : chars;
+        Console.WriteLine(c1.Length + " " + c2.Length + " " + c3.Length);
+
+        object boxed = new byte[] { 7 };
+        int pattern = Sum((boxed is byte[] seen ? seen : null) ?? Fallback());
+        int viaOut = Sum((Get(true, out byte[]? got) ? got : null) ?? Fallback());
+        Func<byte[]?> none = () => null;
+        int lambda = Sum(none() ?? Fallback());
+        Console.WriteLine(pattern + " " + viaOut + " " + lambda + " " + _fallbacks);
+        return 0;
+    }
+}

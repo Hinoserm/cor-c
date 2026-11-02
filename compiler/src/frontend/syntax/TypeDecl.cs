@@ -282,10 +282,12 @@ public sealed class TypeDecl : Node
 
     /// <summary>
     /// Whether the declaration is the class library's (Binder.ClassLibrarySide),
-    /// kept once asked: 0 not yet, 1 the program's, 2 the library's. A word,
-    /// so a binder on another thread reads the answer whole or none.
+    /// kept once asked: 0 not yet; else in the low two bits 1 the program's, 2
+    /// the library's, above them the era of Binder.LibrarySource it was asked
+    /// under. A word, so a binder on another thread reads the answer whole or
+    /// none. Binder's alone to write, and this type's to clear.
     /// </summary>
-    public int LibrarySide { get; set; }
+    public int LibrarySide { get; internal set; }
 
     /// <summary>The file it was written in (Node.File): a declaration's is its own field.</summary>
     public override string File { get => _file; set => _file = value; }

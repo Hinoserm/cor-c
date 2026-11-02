@@ -42,8 +42,16 @@ public sealed partial class Binder
     /// Whether a source file belongs to the compiler's own libraries. Set by
     /// the driver; when unset every declaration counts as library, which is
     /// the numbering every image used before projects could add interfaces.
+    /// A new one makes every declaration's kept answer old (LibrarySideEra,
+    /// ClassLibrarySide).
     /// </summary>
-    public static Func<string, bool>? LibrarySource { get; set; }
+    public static Func<string, bool>? LibrarySource
+    {
+        get => _librarySource;
+        set { _librarySource = value; Interlocked.Increment(ref _librarySideEra); }
+    }
+    private static Func<string, bool>? _librarySource;
+    private static int _librarySideEra;
 
     /// <summary>
     /// Whether a method another image defines keeps the processor's state
@@ -1347,7 +1355,8 @@ public sealed partial class Binder
         if (dot <= 0) return name;
         FileScope? file = _member?.Scope ?? (_scope ?? _thisType)?.Decl?.Scope;
         string? space = LibraryNamespaces.Namespace(name[..dot], WrittenIn(),
-            file?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>());
+            file?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>(),
+            path => _r.Types.ContainsKey(path) || _r.Types.IsScope(path));
         return space is null ? name : space + name[dot..];
     }
 
@@ -4825,9 +4834,12 @@ public sealed partial class Binder
         // ASKED ONCE A DECLARATION (TypeDecl.LibrarySide): the path's answer
         // takes the driver's lock and hashes the whole path, and binding asks
         // it for every name a body mentions at every level (Imported).
-        if (d.LibrarySide != 0) return d.LibrarySide == 2;
+        // Kept with the era of LibrarySource it was asked under: an answer
+        // from before the driver set its own is no answer.
+        int era = Volatile.Read(ref _librarySideEra), kept = d.LibrarySide;
+        if (kept != 0 && kept >> 2 == era) return (kept & 3) == 2;
         bool library = d.SourcePath is string path && LibrarySource is { } isLibrary ? isLibrary(path) : d.FromLibrary;
-        d.LibrarySide = library ? 2 : 1;
+        d.LibrarySide = era << 2 | (library ? 2 : 1);
         return library;
     }
 
@@ -21986,9 +21998,11 @@ public sealed partial class Binder
             // namespace, which is the whole reason the qualifier is written.
             // AND A NAME THAT IS A SCOPE TYPES ARE WITHIN, however it is
             // spelt (TypeTable.IsScope): `namespace libx` is a namespace C#
-            // reads as one. A captured local not yet made a field is no value
-            // to NamesAValue, so one named as a lowercase scope is would be
-            // read as that scope -- as a capitalised one always was.
+            // reads as one. A captured local is a value to NamesAValue where
+            // the lambda is first bound (Lookup reaches below its floor) and
+            // in its closure (a field of it); one not yet either, named as a
+            // lowercase scope is, would be read as that scope -- as one
+            // named as a capitalised scope always was.
             NameExpr n => (n.Global || n.Name.Length > 0 && (char.IsUpper(n.Name[0]) || _r.Types.IsScope(n.Name)) && !NamesAValue(n.Name))
                        && !IsTypeName(n.Name),
             // A SEGMENT MAY SHARE A NAME WITH A TYPE and still be a namespace.
@@ -27391,6 +27405,12 @@ public sealed partial class Binder
                     // and length.
                     if (SpanArm(left, right))
                     {
+                        // ONE TEST FOR THE NODE, checked again where the node is:
+                        // an argument's operand is checked more than once, and a
+                        // new test each time declared another hidden local.
+                        if (_r.Rewrites.TryGetValue(b, out Expr? made) && made is ConditionalExpr { Cond: IsExpr { Operand: var tested } } again
+                            && ReferenceEquals(tested, b.Left) && ReferenceEquals(again.Else, b.Right))
+                            return CheckExpr(again);
                         string held = "co$" + b.Line + "$" + b.Col + "$" + _asNullables++;
                         ConditionalExpr instead = new()
                         {

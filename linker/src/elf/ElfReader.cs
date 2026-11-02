@@ -143,11 +143,14 @@ public static class ElfReader
 
     /// <summary>
     /// A shared object's dynamic parts read whole, or ElfFormatException: a
-    /// file cut short ran the reader off the end of its bytes, an index or a
-    /// slice out of range, and an offset past what a word holds overflowed a
-    /// checked conversion; every caller caught the first two as well as the
-    /// reader's own (Linker.ExportsAtStart) -- and with them any such fault
-    /// of its own the reader might have, taken for a bad file.
+    /// file cut short runs the reader off the end of its bytes (an index or a
+    /// slice out of range), and an offset past what a word holds overflows a
+    /// checked conversion. Callers catch the reader's own exception alone;
+    /// they once caught the first two as well, and with them any fault of
+    /// any code they called, taken for a bad file. What is wrapped here is
+    /// only this reader's parsing of bytes -- though the image the linker has
+    /// just written is read through it too (ObjectLinkCommand), so a bad
+    /// offset of its own making is reported as a bad ELF, naming the fault.
     /// </summary>
     private static T Whole<T>(Func<T> read)
     {

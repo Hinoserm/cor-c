@@ -700,10 +700,11 @@ public static class Frontend
     }
 
     /// <summary>
-    /// The errors, each said once: a type both read for a local and asked
-    /// again for its `default` -- `Span<int> y = default;` -- was refused
-    /// twice in the same words at the same place. Kept twice in the list,
-    /// whose count tells a binding's tries whether one failed.
+    /// The errors, each said once: an error the binder reaches twice -- a
+    /// type both read for a local and asked again for its `default`, as in
+    /// `Span<int> y = default;`, or an operand a rewrite checks again -- was
+    /// said twice in the same words at the same place. Kept twice in the
+    /// list, whose count tells a binding's tries whether one failed.
     /// </summary>
     private static bool Report(IReadOnlyList<CompileError> errors)
     {

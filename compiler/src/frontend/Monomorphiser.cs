@@ -119,7 +119,15 @@ public sealed class Monomorphiser
         if (!_paths.Add(path)) return;
         int dot = path.LastIndexOf('.');
         if (dot > 0) _pathParts.Add((path[..dot], path[(dot + 1)..]));
+        for (int cut = dot; cut > 0; cut = path.LastIndexOf('.', cut - 1)) _scopePaths.Add(path[..cut]);
     }
+
+    /// <summary>
+    /// Every namespace or type a declared type is inside, by path: what a
+    /// name at the front of a qualifier may be before an alias of that name
+    /// is (QualifierOf).
+    /// </summary>
+    private readonly HashSet<string> _scopePaths = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The class library's top-level types not declared public, by path: what
@@ -2356,10 +2364,10 @@ public sealed class Monomorphiser
         if (cut <= 0) return null;
         string qualifier = written[..cut];
         return LibraryNamespaces.Namespace(qualifier, _inNamespace,
-            _usings?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>()) ?? qualifier;
+            _usings?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>(),
+            path => _paths.Contains(path) || _scopePaths.Contains(path)) ?? qualifier;
     }
 
-    /// <summary>Records that a specialisation is needed and returns its name.</summary>
     /// <summary>A call's target while it is rewritten: a member with type arguments there is a generic method, not a type.</summary>
     private Node? _callTarget;
 
@@ -2371,6 +2379,7 @@ public sealed class Monomorphiser
         _ => null,
     };
 
+    /// <summary>Records that a specialisation is needed and returns its name.</summary>
     private string Instantiate(string name, List<TypeRef> args, Node at)
     {
         // A TYPE ARGUMENT IS SPLICED INTO A COPY OF THE TEMPLATE, and the copy
@@ -2779,8 +2788,10 @@ public sealed class Monomorphiser
             // dropped, the binder took `ReadOnlySpan<byte> x` for a name the
             // compiler wrote and saw it in a file with no `using System;`,
             // where `ReadOnlySpan<byte>.Empty`, bound as an expression, was
-            // refused. C# refuses both. A copy of a library template's own
-            // body is the library's code, whatever this says (BindingProgramCode).
+            // refused. C# refuses both, written bare with no using; written
+            // qualified, neither (Qualifier, below). A copy of a library
+            // template's own body is the library's code, whatever this says
+            // (BindingProgramCode).
             Written = r.Written, Qualifier = r.Qualifier,
             Line = r.Line, Col = r.Col,
         };

@@ -311,8 +311,24 @@ public sealed partial class Lowering
     /// </summary>
     private string? _inPath;
 
-    /// <summary>The full path of the file a method is written in: its own part's, else its type's.</summary>
-    private static string? PathOf(MethodSymbol m) => m.Decl?.Scope?.Path ?? m.Owner.Decl?.SourcePath;
+    /// <summary>
+    /// The file a method is written in, by name and by full path, from ONE
+    /// declaration: its own part's where `own` and it has a file (a partial
+    /// type's methods are in several), else its type's, else its own -- a
+    /// name from one and a path from the other named two files. A part's
+    /// path is its scope's (FileScope.Path); one with no scope, which only a
+    /// made member can be, has its type's, made from the same file.
+    ///
+    /// A method with neither has no file: not the last method's, which is
+    /// another's. Only the iterator's members (MachineMembers) keep the outer
+    /// one, being lowered inside the method that made them.
+    /// </summary>
+    private static (string Name, string? Path) FileOf(MethodSymbol m, MethodDecl? decl, bool own)
+    {
+        if (own && decl is { File.Length: > 0 }) return (decl.File, decl.Scope?.Path ?? m.Owner.Decl?.SourcePath);
+        if (m.Owner.Decl is { } type) return (type.File, type.SourcePath);
+        return (decl?.File ?? "", decl?.Scope?.Path);
+    }
 
     // ---- names ---------------------------------------------------------------
 

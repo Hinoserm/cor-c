@@ -578,8 +578,7 @@ public sealed partial class Lowering
         MethodDecl decl = am.Decl;
         _method = m;
         _decl = decl;
-        _in = m.Owner.Decl?.File ?? decl.File ?? "";
-        _inPath = PathOf(m);
+        (_in, _inPath) = FileOf(m, decl, own: false);
 
         // SUSPENSION POINTS ARE NUMBERED PER FUNCTION, from zero: the markers'
         // numbers are in the IR a shared copy is certified by (Definition-

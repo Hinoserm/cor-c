@@ -1,0 +1,15 @@
+// test: app_domain_made_by_no_program
+// expect-compile-error: CS0122
+//
+// AppDomain has no public constructor, as in .NET: the one domain is
+// CurrentDomain (2573), and a program cannot make another.
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        AppDomain mine = new AppDomain();
+        return mine.FriendlyName.Length;
+    }
+}

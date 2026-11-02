@@ -456,7 +456,7 @@ internal sealed class X86Target : ITarget
             foreach ((int from, int to) in p.StoredEdges)
             {
                 MBlock source = blocks[f.Blocks[from]], target = blocks[f.Blocks[to]];
-                MBlock edge = new(source.Name + "_to_" + target.Name);
+                MBlock edge = new(source.Name + "_to_" + target.Name) { EdgeFrom = source };
                 int line = source.Instrs.Count > 0 ? source.Instrs[^1].Line : 0;
                 foreach ((int reg, int slot) in p.EdgeStores(from, to)) edge.Instrs.Add(Move(Slot(slot), Out(reg), line));
                 foreach (MInstr branch in source.Instrs)
@@ -471,8 +471,8 @@ internal sealed class X86Target : ITarget
                 {
                     edge.Instrs.Add(new MInstr(MOp.Jmp, new MLabel(target)) { Line = line });
                     // Beside its source where nothing falls from that into the
-                    // next block, else at the end: a jump back from the end
-                    // made its target look a loop's head (Encoder's padding).
+                    // next block, else at the end -- whose jump back is a
+                    // loop's only where its source's would be (EdgeFrom).
                     if (source.EndsUnconditionally)
                     {
                         if (!fallingInto.TryGetValue(from, out List<MBlock>? after)) fallingInto[from] = after = new();

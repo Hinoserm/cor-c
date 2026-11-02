@@ -118,6 +118,10 @@ public sealed class SourceDeclaration
         return new DeclarationRecord(Key, stream.ToArray());
     }
 
+    private static InvalidDataException Unreadable(DeclarationRecord record, string why, Exception inner)
+        => new("Source declaration " + record.Key + " does not read (" + why
+            + "): the index was most likely made by another compiler; make it again", inner);
+
     public static SourceDeclaration Decode(DeclarationRecord record)
     {
         using MemoryStream stream = new(record.Payload, writable: false);
@@ -168,6 +172,12 @@ public sealed class SourceDeclaration
                 SourceHash = sourceHash, DeclarationHash = declarationHash, TemplateHash = templateHash, HeaderHash = headerHash, ConditionalSymbols = symbols.AsReadOnly(), MemberNames = members,
                 ShapeHash = shapeHash, MemberHashes = memberHashes };
         }
-        catch (EndOfStreamException error) { throw new InvalidDataException("Truncated source declaration", error); }
+        // ONE FORMAT, NOT VERSIONED BEFORE RELEASE 0: a record that does not
+        // read is most likely one an earlier compiler laid out otherwise.
+        catch (EndOfStreamException error) { throw Unreadable(record, "truncated", error); }
+        catch (InvalidDataException error) when (!error.Message.StartsWith("Unsupported", StringComparison.Ordinal))
+        {
+            throw Unreadable(record, error.Message, error);
+        }
     }
 }

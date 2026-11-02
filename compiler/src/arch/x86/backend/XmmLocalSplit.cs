@@ -26,9 +26,9 @@ namespace Corsac.Lang.X86;
 /// so every value a pad reads lives in the frame (LandingPadHomes, before
 /// selection): stored after each definition, the store reading the value
 /// under the name it has there, and reloaded at the pad's top into the
-/// variable's own. A variable a pad still reads before it writes it -- no
-/// reload made it -- keeps its one name, as it did when no function with a
-/// handler was split at all.
+/// variable's own. A variable live into a pad -- one it or a block after it
+/// reads before writing, no reload made it -- keeps its one name, as it did
+/// when no function with a handler was split at all.
 /// </summary>
 internal static class XmmLocalSplit
 {
@@ -85,27 +85,55 @@ internal static class XmmLocalSplit
     }
 
     /// <summary>
-    /// The XMM variables a landing pad reads before it writes them: values
-    /// it takes from the registers of whatever threw, not from a reload.
+    /// The XMM variables live into a landing pad: read, before a whole write,
+    /// in the pad or in a block it reaches -- values taken from the registers
+    /// of whatever threw, not from a reload. Liveness over the machine blocks
+    /// (each block's reads before its whole writes, carried back along its
+    /// successors until nothing changes), asked only where there is a pad. A
+    /// computed jump goes by no edge: then every variable read anywhere.
     /// </summary>
     private static HashSet<int> PadRead(MFunction m, List<int> whole)
     {
         HashSet<int> read = new();
-        foreach (MBlock b in m.Blocks)
+        if (!m.Blocks.Any(b => b.Source is { IsLandingPad: true })) return read;
+        bool anywhere = m.Blocks.Any(b => b.Instrs.Exists(i => i.Op == MOp.JmpInd));
+        int count = m.Blocks.Count;
+        HashSet<int>[] uses = new HashSet<int>[count], kills = new HashSet<int>[count], liveIn = new HashSet<int>[count];
+        for (int b = 0; b < count; b++)
         {
-            if (b.Source is not { IsLandingPad: true }) continue;
-            HashSet<int> written = new();
-            foreach (MInstr i in b.Instrs)
+            HashSet<int> use = new(), kill = new();
+            foreach (MInstr i in m.Blocks[b].Instrs)
             {
                 if (!Zeroing(i))
                     for (int o = 0; o < i.Operands.Count; o++)
                         if (i.Operands[o] is MReg { } r && r.Id >= MReg.FirstVirtual && m.XmmRegs.Contains(r.Id)
-                            && (Roles.Of(i.Op, o) & Roles.Role.Use) != 0 && !written.Contains(r.Id))
-                            read.Add(r.Id);
+                            && (Roles.Of(i.Op, o) & Roles.Role.Use) != 0 && !kill.Contains(r.Id))
+                            use.Add(r.Id);
                 WrittenWhole(m, i, whole);
-                written.UnionWith(whole);
+                kill.UnionWith(whole);
+            }
+            (uses[b], kills[b], liveIn[b]) = (use, kill, new HashSet<int>(use));
+            if (anywhere) read.UnionWith(use);
+        }
+        if (anywhere) return read;
+        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+        for (int b = 0; b < count; b++) index[m.Blocks[b]] = b;
+        List<MBlock> successors = new();
+        HashSet<int> liveOut = new();
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            for (int b = count - 1; b >= 0; b--)
+            {
+                m.SuccessorsInto(b, successors);
+                liveOut.Clear();
+                foreach (MBlock s in successors) liveOut.UnionWith(liveIn[index[s]]);
+                foreach (int v in liveOut)
+                    if (!kills[b].Contains(v) && liveIn[b].Add(v)) changed = true;
             }
         }
+        for (int b = 0; b < count; b++)
+            if (m.Blocks[b].Source is { IsLandingPad: true }) read.UnionWith(liveIn[b]);
         return read;
     }
 
