@@ -12,9 +12,13 @@
 // reads the value the throw found, from its home in the frame
 // (LandingPadHomes), not the register the block's last write keeps.
 using System;
+using System.Runtime.CompilerServices;
 
 static class Program
 {
+    // Kept a call: inlined, its branch would end the block between the
+    // writes, and no block would be split.
+    [MethodImpl(MethodImplOptions.NoInlining)]
     static float Check(float x, int limit)
     {
         if (x > limit) throw new InvalidOperationException("over");

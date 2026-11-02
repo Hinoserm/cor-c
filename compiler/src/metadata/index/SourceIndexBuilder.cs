@@ -67,10 +67,21 @@ public static class SourceIndexBuilder
                 else if (token.Kind is Tok.RParen or Tok.RBracket) depth--;
                 writer.Write((byte)token.Kind); writer.Write(token.Text);
             }
-            foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
-            foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
+            WriteScope(writer, scope);
         }
         return SHA256.HashData(stream.ToArray());
+    }
+
+    /// <summary>
+    /// A file's usings as each hash counts them -- the header's, the shape's
+    /// and the declaration's alike: a `using static` names members and nested
+    /// types bare, so changing it changes what a type's text means.
+    /// </summary>
+    private static void WriteScope(BinaryWriter writer, FileScope scope)
+    {
+        foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
+        foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
+        foreach (var import in scope.StaticImports) { writer.Write(import.In); writer.Write(import.Type); }
     }
 
     /// <summary>How a member counts toward its type's DeclarationHash.</summary>
@@ -226,11 +237,7 @@ public static class SourceIndexBuilder
         using (BinaryWriter writer = new(canonical, Encoding.UTF8, leaveOpen: true))
         {
             foreach (Token token in Lexer.Tokenize(shown, path)) { writer.Write((byte)token.Kind); writer.Write(token.Text); }
-            if (scope is not null)
-            {
-                foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
-                foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
-            }
+            if (scope is not null) WriteScope(writer, scope);
         }
         return SHA256.HashData(canonical.ToArray())[..bytes];
     }
@@ -676,9 +683,7 @@ public static class SourceIndexBuilder
                         // determines declaration invalidation.
                         foreach (Token token in Lexer.Tokenize(visible.ToString(), path))
                         { writer.Write((byte)token.Kind); writer.Write(token.Text); }
-                        foreach (var import in scope.Imports) { writer.Write(import.In); writer.Write(import.Namespace); }
-                        foreach (var alias in scope.Aliases) { writer.Write(alias.In); writer.Write(alias.Alias); writer.Write(alias.Target); }
-                        foreach (var import in scope.StaticImports) { writer.Write(import.In); writer.Write(import.Type); }
+                        WriteScope(writer, scope);
                     }
                     string key = "T:" + identity + "\n" + TypeName(type);
                     if (under is not null && under.Find(key).Any())

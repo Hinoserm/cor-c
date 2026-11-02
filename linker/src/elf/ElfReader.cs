@@ -144,16 +144,17 @@ public static class ElfReader
     /// <summary>
     /// A shared object's dynamic parts read whole, or ElfFormatException: a
     /// file cut short ran the reader off the end of its bytes, an index or a
-    /// slice out of range, and every caller caught those two as well as the
+    /// slice out of range, and an offset past what a word holds overflowed a
+    /// checked conversion; every caller caught the first two as well as the
     /// reader's own (Linker.ExportsAtStart) -- and with them any such fault
     /// of its own the reader might have, taken for a bad file.
     /// </summary>
     private static T Whole<T>(Func<T> read)
     {
         try { return read(); }
-        catch (Exception e) when (e is IndexOutOfRangeException or ArgumentOutOfRangeException)
+        catch (Exception e) when (e is IndexOutOfRangeException or ArgumentOutOfRangeException or OverflowException)
         {
-            throw new ElfFormatException("ELF image cut short: " + e.Message);
+            throw new ElfFormatException("ELF image cut short or out of range: " + e.Message);
         }
     }
 

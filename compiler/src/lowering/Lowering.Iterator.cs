@@ -286,7 +286,7 @@ public sealed partial class Lowering
         Require(it.MoveNext);
         (string wasIn, string? wasPath) = (_in, _inPath);
         _in = it.Method.Owner.Decl?.File ?? _in;
-        _inPath = PathOf(it.Method);
+        _inPath = PathOf(it.Method) ?? _inPath;
         EmitIteratorMembers(it);
         (_in, _inPath) = (wasIn, wasPath);
     }
