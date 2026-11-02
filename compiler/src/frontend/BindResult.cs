@@ -1030,12 +1030,49 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
 
     private bool _scopesStale;
 
+    // THE PROGRAM'S SCOPES (ProgramScopes), kept as the table is written:
+    // made once, then each program type's added as it comes; made again after
+    // a removal or an overwrite (a type gone may have been the only one in a
+    // scope), a write past this table's own methods -- the dictionary's Clear,
+    // which the count shows -- or a new LibrarySource era.
+    private HashSet<string>? _program;
+    private bool _programStale;
+    private int _programEra, _programCount;
+    private Func<TypeDecl, bool>? _libraryOf;
+    private Func<TypeDecl, string>? _pathOf;
+
     /// <summary>
-    /// Every write through this table's own Add, indexer and Remove, counted:
-    /// what a set made from the table is kept by (Binder.ProgramScopes), as
-    /// an overwrite or a removal and an add leave its count as it was.
+    /// The program's types and every namespace or type one is in, each by
+    /// `pathOf` (Binder.TypePath, the plain path its nested types are under,
+    /// as the monomorphiser keeps them): what may stand nearer than an alias
+    /// of its name (Binder.LibraryQualified). Not a type `library` says is
+    /// the class library's.
     /// </summary>
-    public int Writes { get; private set; }
+    public HashSet<string> ProgramScopes(int era, Func<TypeDecl, bool> library, Func<TypeDecl, string> pathOf)
+    {
+        (_libraryOf, _pathOf) = (library, pathOf);
+        if (_program is null || _programStale || era != _programEra || Count != _programCount)
+        {
+            _program = new(StringComparer.Ordinal);
+            foreach (TypeSymbol type in Values) ProgramAdded(type);
+            (_programStale, _programEra, _programCount) = (false, era, Count);
+        }
+        return _program;
+    }
+
+    private void ProgramAdded(TypeSymbol type)
+    {
+        if (_program is not null && type.Decl is { } d && !_libraryOf!(d)) LibraryNamespaces.AddScopes(_program, _pathOf!(d));
+    }
+
+    /// <summary>After a write through this table's own methods: a fresh set stays fresh, the count it was made at moved on.</summary>
+    private void ProgramWritten(bool keeps, TypeSymbol? added)
+    {
+        if (_program is null || _programStale) return;
+        if (!keeps) { _programStale = true; return; }
+        if (added is not null) ProgramAdded(added);
+        _programCount = Count;
+    }
 
     private void Reindex()
     {
@@ -1066,27 +1103,28 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
         set
         {
             bool fresh = _split.Count == _indexed && Count == _counted;
-            Writes++;
+            bool overwrites = ContainsKey(key);
             base[key] = value;
             if (Split(key) is { } at) { _split[at] = value; NoteScopes(at.Item1); }
             if (fresh) Seen();
+            ProgramWritten(keeps: !overwrites, value);
         }
     }
 
     public new void Add(string key, TypeSymbol value)
     {
         bool fresh = _split.Count == _indexed && Count == _counted;
-        Writes++;
         base.Add(key, value);
         if (Split(key) is { } at) { _split[at] = value; NoteScopes(at.Item1); }
         if (fresh) Seen();
+        ProgramWritten(keeps: true, value);
     }
 
     public new bool Remove(string key)
     {
         bool fresh = _split.Count == _indexed && Count == _counted;
         if (!base.Remove(key)) return false;
-        Writes++;
+        ProgramWritten(keeps: false, null);
         // A scope it was in may now have nothing in it: the scopes are made
         // again when next asked (IsScope), not taken from a type gone.
         if (Split(key) is { } at) { _split.Remove(at); _scopesStale = true; }

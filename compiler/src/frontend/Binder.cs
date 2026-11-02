@@ -1363,25 +1363,15 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// The program's types by key, and every namespace or type one is in:
-    /// what may stand nearer than an alias of its name (LibraryQualified).
-    /// Not the class library's, whose global types .NET keeps inside System,
-    /// nor a scope only they are in. Made again after any write to the table
-    /// (TypeTable.Writes) or a new LibrarySource era; asked only where an
-    /// alias matched (the predicate LibraryQualified hands on).
+    /// The program's types by their plain paths, and every namespace or type
+    /// one is in (TypeTable.ProgramScopes): what may stand nearer than an
+    /// alias of its name (LibraryQualified). Not the class library's, whose
+    /// global types .NET keeps inside System, nor a scope only they are in.
+    /// Asked only where an alias matched (the predicate LibraryQualified
+    /// hands on); kept by the table as it is written.
     /// </summary>
     private HashSet<string> ProgramScopes()
-    {
-        (int, int, int) now = (_r.Types.Writes, _r.Types.Count, Volatile.Read(ref _librarySideEra));
-        if (_programScopes is { } known && _programScopesFrom == now) return known;
-        HashSet<string> scopes = new(StringComparer.Ordinal);
-        foreach ((string key, TypeSymbol type) in _r.Types)
-            if (type.Decl is { } d && !ClassLibrarySide(d)) LibraryNamespaces.AddScopes(scopes, key);
-        _programScopesFrom = now;
-        return _programScopes = scopes;
-    }
-    private HashSet<string>? _programScopes;
-    private (int, int, int) _programScopesFrom;
+        => _r.Types.ProgramScopes(Volatile.Read(ref _librarySideEra), ClassLibrarySide, TypePath);
 
     /// <summary>
     /// The path a type's nested types are keyed under (Parser: their Outer):

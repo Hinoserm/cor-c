@@ -91,9 +91,10 @@ internal static class LibraryNamespaces
     /// <summary>
     /// A declared type's path and every namespace or type it is inside, into
     /// `scopes`: what a program's declarations put nearer than an alias of
-    /// the name (Namespace's `declared`; Binder.ProgramScopes,
-    /// Monomorphiser._programScopes). Stops at a scope already there, whose
-    /// own are then there too.
+    /// the name (Namespace's `declared`; TypeTable.ProgramScopes,
+    /// Monomorphiser._programScopes, both by the plain path `Ns.Box` a
+    /// generic's nested types are under, not its key `Ns.Box`1`). Stops at a
+    /// scope already there, whose own are then there too.
     /// </summary>
     public static void AddScopes(HashSet<string> scopes, string path)
     {
