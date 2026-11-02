@@ -1,16 +1,28 @@
 // test: iterator_returning_a_qualified_sequence
 // expect-exit: 0
 // expect-output:
-// 3 2 6
+// 3 2 6 2 1
 //
 // An iterator whose return type is named through its namespace,
 // `System.Collections.Generic.IEnumerable<int>` and IEnumerator<int>, with
-// no using -- a method's and a local function's -- is an iterator as the
+// no using -- a method's and a local function's -- or through an alias of
+// it, or the rest of it inside namespace System, is an iterator as the
 // bare name's is. It was refused: a method using 'yield return' must
 // return IEnumerable<T>.
+using G = System.Collections.Generic;
+
+namespace System.Mine
+{
+    static class Part
+    {
+        public static Collections.Generic.IEnumerable<int> One() { yield return 1; }
+    }
+}
 
 static class Program
 {
+    static G.IEnumerable<int> Aliased() { yield return 1; yield return 1; }
+
     static System.Collections.Generic.IEnumerable<int> Up(int n)
     {
         for (int i = 1; i <= n; i++) yield return i;
@@ -32,7 +44,11 @@ static class Program
         while (two.MoveNext()) seen += two.Current;
         int local = 0;
         foreach (int x in Local()) local += x;
-        System.Console.WriteLine(count + " " + seen + " " + local);
+        int aliased = 0;
+        foreach (int x in Aliased()) aliased += x;
+        int part = 0;
+        foreach (int x in System.Mine.Part.One()) part += x;
+        System.Console.WriteLine(count + " " + seen + " " + local + " " + aliased + " " + part);
         return 0;
     }
 }
