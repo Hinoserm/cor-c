@@ -1,0 +1,50 @@
+// test: open_generics_through_an_alias_or_part_of_their_namespace
+// expect-exit: 0
+// expect-output:
+// 1 2 2 0
+//
+// A generic library type over a type parameter -- a template's base, a
+// generic method's parameter -- named through an alias of its namespace
+// (`G.List<T>`) or the rest of it from inside the namespace that begins it
+// (`Collections.Generic.List<T>` in namespace System.Mine), with no using
+// of it, as C# reads both; and a closed one so qualified, handed to a
+// template of another namespace, keeps the namespace it was named through
+// where it was written (LibraryNamespaces.Namespace).
+using G = System.Collections.Generic;
+
+class Box<T> : G.List<T> { }
+
+namespace Other
+{
+    class Wrap<T>
+    {
+        public T? Item;
+    }
+}
+
+namespace System.Mine
+{
+    class Part<T> : Collections.Generic.List<T> { }
+
+    static class Use
+    {
+        public static int Open<T>(Collections.Generic.List<T> list) => list.Count;
+        public static Other.Wrap<Collections.Generic.List<int>> Wrapped = new Other.Wrap<Collections.Generic.List<int>>();
+    }
+}
+
+static class Program
+{
+    static int Open<T>(G.List<T> list) => list.Count;
+
+    static int Main()
+    {
+        Box<int> box = new Box<int>();
+        box.Add(1);
+        System.Mine.Part<int> part = new System.Mine.Part<int>();
+        part.Add(2);
+        part.Add(3);
+        System.Console.WriteLine(Open(box) + " " + System.Mine.Use.Open(part) + " " + part.Count + " " + (System.Mine.Use.Wrapped.Item is null ? 0 : 1));
+        return 0;
+    }
+}

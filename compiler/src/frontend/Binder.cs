@@ -1242,14 +1242,7 @@ public sealed partial class Binder
         if (LibraryNamespaces.Of(key) is not string space || !BindingProgramCode()) return true;
         // NAMED THROUGH ITS OWN NAMESPACE, `System.Collections.Generic.List<int>`,
         // whose copy's name has lost it (TypeRef.Qualifier): seen with no using.
-        // Or through the rest of it from inside the namespace that begins it,
-        // `Collections.Generic.List<int>` written in namespace System.
-        if (_qualified is { } named && named.Name == sym.Key
-            && (named.Space == space || space.EndsWith("." + named.Space, StringComparison.Ordinal)
-                && Encloses(space[..(space.Length - named.Space.Length - 1)], WrittenIn())))
-        {
-            return true;
-        }
+        if (_qualified is { } named && named.Name == sym.Key && named.Space == space) return true;
         return NamespaceInScope(space);
     }
 
@@ -1277,6 +1270,22 @@ public sealed partial class Binder
     {
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         return _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
+    }
+
+    /// <summary>
+    /// A dotted name with its qualifier as the library namespace it names
+    /// where it was written (LibraryNamespaces.Namespace) -- `G.List` under
+    /// `using G = System.Collections.Generic;` is
+    /// System.Collections.Generic.List -- or as written.
+    /// </summary>
+    private string LibraryQualified(string name)
+    {
+        int dot = name.LastIndexOf('.');
+        if (dot <= 0) return name;
+        FileScope? file = _member?.Scope ?? (_scope ?? _thisType)?.Decl?.Scope;
+        string? space = LibraryNamespaces.Namespace(name[..dot], WrittenIn(),
+            file?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>());
+        return space is null ? name : space + name[dot..];
     }
 
     /// <summary>
@@ -1338,7 +1347,7 @@ public sealed partial class Binder
     private bool NamespaceInScope(string space)
     {
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
-        string within = _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
+        string within = WrittenIn();
         if (Encloses(space, within)) return true;
         FileScope? file = _member?.Scope ?? written?.Scope;
         if (file is null) return true;
@@ -4801,8 +4810,9 @@ public sealed partial class Binder
             return false;
         }
         string bare = b.Name[(dot + 1)..];
-        if (b.Name.StartsWith(LibraryHome + ".", StringComparison.Ordinal)
-            && LibraryGlobal(b.Args.Count > 0 ? Arity(b.Name, b.Args.Count) : b.Name, out based))
+        string full = LibraryQualified(b.Name);
+        if (full.StartsWith(LibraryHome + ".", StringComparison.Ordinal)
+            && LibraryGlobal(b.Args.Count > 0 ? Arity(full, b.Args.Count) : full, out based))
         {
             return true;
         }
@@ -6658,8 +6668,12 @@ public sealed partial class Binder
         // (Parser.Multicast) -- and `System.Index` are still the library's.
         // Read by its last part from where it was written, it was the
         // program's.
-        if ((r.Name.StartsWith(LibraryHome + ".", StringComparison.Ordinal) || r.Name.StartsWith(LibrarySpelling + ".", StringComparison.Ordinal))
-            && LibraryGlobal(r.Args.Count > 0 ? Arity(r.Name, r.Args.Count) : r.Name, out TypeSymbol? systemGlobal))
+        // And through an alias of its namespace or the rest of it
+        // (LibraryQualified): `G.List<T>`, `Collections.Generic.List<T>` in
+        // namespace System.Mine.
+        string full = r.Name.StartsWith(LibrarySpelling + ".", StringComparison.Ordinal) ? r.Name : LibraryQualified(r.Name);
+        if ((full.StartsWith(LibraryHome + ".", StringComparison.Ordinal) || full.StartsWith(LibrarySpelling + ".", StringComparison.Ordinal))
+            && LibraryGlobal(r.Args.Count > 0 ? Arity(full, r.Args.Count) : full, out TypeSymbol? systemGlobal))
         {
             return NamedType(systemGlobal!, ResolveAll(r.Args, context), null);
         }

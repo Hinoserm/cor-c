@@ -2325,23 +2325,20 @@ public sealed class Monomorphiser
 
     /// <summary>
     /// What a generic was written qualified with, before its last name, for
-    /// its copy's reference (TypeRef.Qualifier); null for a bare name. A
-    /// namespace alias in scope at its front is the namespace it stands for:
-    /// `G.List<int>` under `using G = System.Collections.Generic;`.
+    /// its copy's reference (TypeRef.Qualifier); null for a bare name. The
+    /// library namespace it names where it was written, whole
+    /// (LibraryNamespaces.Namespace): `G.List<int>` under `using G =
+    /// System.Collections.Generic;`, `Collections.Generic.List<int>` in
+    /// namespace System.Mine -- which the copy is not, once it is spliced
+    /// into a template of another namespace. Otherwise as written.
     /// </summary>
     private string? QualifierOf(string written)
     {
         int cut = written.LastIndexOf('.');
         if (cut <= 0) return null;
         string qualifier = written[..cut];
-        int first = qualifier.IndexOf('.');
-        string head = first < 0 ? qualifier : qualifier[..first];
-        if (_usings is not null)
-            foreach ((string In, string Alias, string Target) alias in _usings.Aliases)
-                if (alias.Alias == head && !_paths.Contains(alias.Target)
-                    && (alias.In.Length == 0 || alias.In == _inNamespace || _inNamespace.StartsWith(alias.In + ".", StringComparison.Ordinal)))
-                    return alias.Target + qualifier[head.Length..];
-        return qualifier;
+        return LibraryNamespaces.Namespace(qualifier, _inNamespace,
+            _usings?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>()) ?? qualifier;
     }
 
     /// <summary>Records that a specialisation is needed and returns its name.</summary>
