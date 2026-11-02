@@ -3686,12 +3686,13 @@ public sealed class Parser
         _catchDepth = 0;
         _tryYields = null;
         // WHAT IT ENUMERATES, when it is an iterator: the T of IEnumerable<T> or
-        // IEnumerator<T>, object for the non-generic two -- named bare or
-        // through their namespace, `System.Collections.Generic.IEnumerable<int>`,
-        // which C# needs no using for.
+        // IEnumerator<T>, object for the non-generic two -- by the last part
+        // of the name, as AsyncSequenceElement reads one: bare, through its
+        // namespace (`System.Collections.Generic.IEnumerable<int>`), an alias
+        // of it or the rest of it. Which type it names is the binder's to
+        // check (IteratorElement), as for the bare name.
         _iteratorElement = produces is { Args.Count: 1 } sequence
-                         && sequence.Name is "IEnumerable" or "IEnumerable`1" or "IEnumerator" or "IEnumerator`1"
-                             or "System.Collections.Generic.IEnumerable" or "System.Collections.Generic.IEnumerator"
+                         && LastPart(sequence.Name) is "IEnumerable" or "IEnumerable`1" or "IEnumerator" or "IEnumerator`1"
                          ? sequence.Args[0]
                          : produces is { Args.Count: 0, Name: "IEnumerable" or "IEnumerator" or "System.Collections.IEnumerable" or "System.Collections.IEnumerator" }
                          ? new TypeRef { Name = "object", Line = line, Col = col }
@@ -3746,6 +3747,9 @@ public sealed class Parser
     }
 
     /// <summary>T, when `produces` is IAsyncEnumerable&lt;T&gt; (enumerable) or IAsyncEnumerator&lt;T&gt;, by its name as written.</summary>
+    /// <summary>A dotted name's last part: `System.Collections.Generic.IEnumerable` is IEnumerable.</summary>
+    private static string LastPart(string name) => name.LastIndexOf('.') is int dot and >= 0 ? name[(dot + 1)..] : name;
+
     private static TypeRef? AsyncSequenceElement(TypeRef? produces, out bool enumerable)
     {
         enumerable = false;
