@@ -5,7 +5,7 @@ namespace Corsac.Lang;
 /// library declares List, Console, File and the rest at the top level, and
 /// `System.X` names them (Binder.LibraryGlobal); a program sees one written
 /// bare only where C# would -- inside that namespace or under a using
-/// directive of it (Binder.LibraryNamespaceInScope). A global type of the
+/// directive of it (Binder.NamespaceInScope). A global type of the
 /// library's own that .NET has no type of the name for (Os, Gc, Runtime)
 /// is in no namespace and is seen everywhere.
 ///
@@ -27,7 +27,9 @@ internal static class LibraryNamespaces
     /// <summary>
     /// THE NAMESPACE OF THE TABLE'S A WRITTEN QUALIFIER NAMES, as C# reads
     /// one: a namespace alias in scope at its front is the namespace it
-    /// stands for (`G` under `using G = System.Collections.Generic;`), and
+    /// stands for (`G` under `using G = System.Collections.Generic;`) -- the
+    /// one written in the innermost namespace around it, as C# takes it --
+    /// and
     /// the rest of a namespace is the one an enclosing namespace begins
     /// (`Collections.Generic` in namespace System.Mine). Null for anything
     /// else -- a type's name, a program's namespace.
@@ -36,14 +38,18 @@ internal static class LibraryNamespaces
     {
         int dot = qualifier.IndexOf('.');
         string head = dot < 0 ? qualifier : qualifier[..dot];
+        string? target = null;
+        int depth = -1;
         foreach ((string In, string Alias, string Target) alias in aliases)
         {
-            if (alias.Alias == head && (alias.In.Length == 0 || within == alias.In || within.StartsWith(alias.In + ".", StringComparison.Ordinal)))
+            if (alias.Alias == head && alias.In.Length > depth
+                && (alias.In.Length == 0 || within == alias.In || within.StartsWith(alias.In + ".", StringComparison.Ordinal)))
             {
-                qualifier = alias.Target + qualifier[head.Length..];
-                break;
+                target = alias.Target;
+                depth = alias.In.Length;
             }
         }
+        if (target is not null) qualifier = target + qualifier[head.Length..];
         if (Spaces.Contains(qualifier)) return qualifier;
         for (string at = within; at.Length > 0; at = at.LastIndexOf('.') is int cut && cut > 0 ? at[..cut] : "")
         {
