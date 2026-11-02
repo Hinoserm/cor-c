@@ -1032,9 +1032,12 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
 
     // THE PROGRAM'S SCOPES (ProgramScopes), kept as the table is written:
     // made once, then each program type's added as it comes; made again after
-    // a removal or an overwrite (a type gone may have been the only one in a
-    // scope), a write past this table's own methods -- the dictionary's Clear,
-    // which the count shows -- or a new LibrarySource era.
+    // a removal or an overwrite by another declaration (a type gone may have
+    // been the only one in a scope), a new LibrarySource era or other
+    // predicates, and a write past this table's own methods -- the
+    // dictionary's Clear or TryAdd. Such a write shows in the count: each own
+    // write moves the count it is kept at only from where it was, one on, so
+    // one in between leaves the two apart for good and the set is made again.
     private HashSet<string>? _program;
     private bool _programStale;
     private int _programEra, _programCount;
@@ -1050,8 +1053,9 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     /// </summary>
     public HashSet<string> ProgramScopes(int era, Func<TypeDecl, bool> library, Func<TypeDecl, string> pathOf)
     {
+        bool same = Equals(_libraryOf, library) && Equals(_pathOf, pathOf);
         (_libraryOf, _pathOf) = (library, pathOf);
-        if (_program is null || _programStale || era != _programEra || Count != _programCount)
+        if (_program is null || _programStale || !same || era != _programEra || Count != _programCount)
         {
             _program = new(StringComparer.Ordinal);
             foreach (TypeSymbol type in Values) ProgramAdded(type);
@@ -1065,11 +1069,16 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
         if (_program is not null && type.Decl is { } d && !_libraryOf!(d)) LibraryNamespaces.AddScopes(_program, _pathOf!(d));
     }
 
-    /// <summary>After a write through this table's own methods: a fresh set stays fresh, the count it was made at moved on.</summary>
+    /// <summary>
+    /// After a write through this table's own methods: a set still in step
+    /// takes an added type and moves its count one on; one the write leaves
+    /// out of step -- `keeps` false, or a count not one past the set's, a
+    /// write past these methods in between -- is made again when next asked.
+    /// </summary>
     private void ProgramWritten(bool keeps, TypeSymbol? added)
     {
         if (_program is null || _programStale) return;
-        if (!keeps) { _programStale = true; return; }
+        if (!keeps || added is not null && Count != _programCount + 1) { _programStale = true; return; }
         if (added is not null) ProgramAdded(added);
         _programCount = Count;
     }
@@ -1103,11 +1112,14 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
         set
         {
             bool fresh = _split.Count == _indexed && Count == _counted;
-            bool overwrites = ContainsKey(key);
+            // An overwrite by the same declaration takes no scope away; by
+            // another, it may (ProgramWritten).
+            bool had = TryGetValue(key, out TypeSymbol? was);
             base[key] = value;
             if (Split(key) is { } at) { _split[at] = value; NoteScopes(at.Item1); }
             if (fresh) Seen();
-            ProgramWritten(keeps: !overwrites, value);
+            if (!had) ProgramWritten(keeps: true, value);
+            else if (!ReferenceEquals(was!.Decl, value.Decl)) ProgramWritten(keeps: false, null);
         }
     }
 

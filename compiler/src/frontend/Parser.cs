@@ -1093,6 +1093,12 @@ public sealed class Parser
     /// Outer&lt;T&gt; is Outer.Inner&lt;T&gt;. A use from outside is written with
     /// them already -- `Outer&lt;int&gt;.Inner`, which ParseTypeRef joins into
     /// Outer.Inner&lt;int&gt;.
+    ///
+    /// AND ONE NAMED THROUGH A TYPE AROUND THE USE: `G.List&lt;int&gt;` inside
+    /// Box&lt;T&gt;, whose nested G has a List&lt;U&gt;, is Box.G.List&lt;T, int&gt; --
+    /// C# finds the head G in the types around it, nearest first, before
+    /// any alias or namespace of its name. Left as written, it was the
+    /// file's `using G = System.Collections.Generic` List.
     /// </summary>
     private static void FinishFamily(TypeDecl top, List<TypeDecl> nested)
     {
@@ -1100,6 +1106,21 @@ public sealed class Parser
         family.AddRange(nested);
         static string PathOf(TypeDecl d) => d.Outer is null ? d.Name : d.Outer + "." + d.Name;
         HashSet<string> declared = new(family.Select(PathOf), StringComparer.Ordinal);
+        // A dotted name's whole path from where it is written: its head the
+        // nearest type of the family declared in a scope around `at`.
+        string? Through(string at, string name)
+        {
+            int dot = name.IndexOf('.');
+            if (dot <= 0) return null;
+            string head = name[..dot];
+            for (string scope = at; scope.Length > 0; )
+            {
+                if (declared.Contains(scope + "." + head)) return scope + "." + name;
+                int up = scope.LastIndexOf('.');
+                scope = up > 0 ? scope[..up] : "";
+            }
+            return declared.Contains(head) ? name : null;
+        }
         foreach (TypeDecl inner in family)
         {
             if (inner.OuterParams == 0 || inner.Outer is null) continue;
@@ -1118,10 +1139,11 @@ public sealed class Parser
                     hidden = declared.Contains(scope + "." + inner.Name);
                 Corsac.Lang.Metadata.BodyTypeNames.Walk(within, reference =>
                 {
-                    if ((reference.Name != inner.Name || hidden) && reference.Name != path || reference.Args.Count != own) return;
+                    if ((reference.Name != inner.Name || hidden) && reference.Name != path && Through(at, reference.Name) != path
+                        || reference.Args.Count != own) return;
                     for (int k = inner.OuterParams - 1; k >= 0; k--)
                         reference.Arguments.Insert(0, new TypeRef { Name = inner.TypeParams[k].Name, Line = reference.Line, Col = reference.Col });
-                    if (reference.Name == inner.Name) reference.Name = path;
+                    reference.Name = path;
                 });
             }
         }
