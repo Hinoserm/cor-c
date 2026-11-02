@@ -1,0 +1,26 @@
+// test: library_home_no_program_can_spell
+// expect-exit: 0
+// expect-output:
+// mine 7
+//
+// The compiler names the library's types it makes something of under a
+// home no source can spell (Binder.LibrarySpelling, `#library`). It was
+// `__library`, an identifier: a program writing `__library.DecimalFormat`
+// reached a type the library keeps to itself. `__library` is a program's
+// to use, as any identifier is -- here a namespace of its own.
+namespace __library
+{
+    static class Mine
+    {
+        public static int Seven() => 7;
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        System.Console.WriteLine("mine " + __library.Mine.Seven());
+        return 0;
+    }
+}

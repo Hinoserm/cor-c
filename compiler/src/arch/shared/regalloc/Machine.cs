@@ -247,6 +247,15 @@ public interface IPlacement
     /// comes back to where the register holds the value (Load).
     /// </summary>
     IReadOnlyList<(int Reg, int Slot, bool Load)> MovesBefore(int index);
+    /// <summary>
+    /// The edges, by the index of the block each leaves and the block it
+    /// enters, that carry stores of their own: critical edges a value leaves
+    /// its register by (Allocator.SinkStores). The target makes each a block
+    /// as it rebuilds the function, the edge's branches retargeted to it.
+    /// </summary>
+    IReadOnlyCollection<(int From, int To)> StoredEdges { get; }
+    /// <summary>The stores on the edge from block `from` to `to`: a register to its slot.</summary>
+    IReadOnlyList<(int Reg, int Slot)> EdgeStores(int from, int to);
     /// <summary>What goes after it: a register stored to its slot.</summary>
     IReadOnlyList<(int Reg, int Slot)> After(int index);
     /// <summary>Whether the instruction goes altogether: a spilled constant's definition, a copy whose value is already where it is copied to.</summary>

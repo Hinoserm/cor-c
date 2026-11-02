@@ -229,7 +229,7 @@ public static class Schedule
     /// by the barrier there or after it -- before anything writes it; at the
     /// block's end, as it may be by the next block, taken as read.
     /// </summary>
-    private static bool ReadPast(List<AInstr> instrs, int at, int reg)
+    private static bool ReadPast(List<AInstr> instrs, int at, int reg, bool endReads = true)
     {
         for (int x = at; x < instrs.Count; x++)
         {
@@ -243,7 +243,16 @@ public static class Schedule
             if (read) return true;
             if (wrote) return false;
         }
-        return true;
+        return endReads;
+    }
+
+    /// <summary>Whether machine register `reg` is named in the block before `at`: written there, or read, so holding a value there.</summary>
+    private static bool NamedBefore(List<AInstr> instrs, int at, int reg)
+    {
+        for (int x = at - 1; x >= 0; x--)
+            foreach (Named r in instrs[x].Regs)
+                if (r.Reg == reg) return true;
+        return false;
     }
 
     /// <summary>The stretch [from, to) of a block reordered, where that needs fewer registers.</summary>
@@ -420,6 +429,18 @@ public static class Schedule
                 if (ReadPast(instrs, from + n, reg)) holds.Add((w.Def, w.Reads, true));
                 else if (w.Reads.Count > 0) holds.Add((w.Def, w.Reads, false));
             }
+            // AND ONE HELD THROUGH THE STRETCH, named nowhere in it: written or
+            // read before it in the block and read after it before anything
+            // writes it -- a call's result kept in eax across a stretch of
+            // other work. It holds at every point, as the ones the stretch
+            // names do between their write and read, and counts toward the
+            // crowding (and the check of the order made) though no edge keeps
+            // anything out of it: nothing can be moved out of where it is
+            // held. Found by a read past the stretch, not the block's end:
+            // taken as read there, every register would hold everywhere.
+            foreach (int reg in handed)
+                if (!open.ContainsKey(reg) && NamedBefore(instrs, from, reg) && ReadPast(instrs, from + n, reg, endReads: false))
+                    holds.Add((-1, new List<int>(), true));
         }
         int HoldEnd((int Def, List<int> Reads, bool ToEnd) h) => h.ToEnd ? n : h.Reads[^1];
         // ONLY WHERE THEY CROWD THE MACHINE: a hold inside which, at some
@@ -456,18 +477,51 @@ public static class Schedule
         for (int x = 0; x < n; x++) if (after[x] == 0) ready.Add(x);
         HashSet<int> liveNow = new(outlives);
         int[] order = new int[n];
+        // A BYTE VALUE BESIDE ITS ONE READER: the SETcc whose byte the MOVZX
+        // after it widens is placed next to it whenever it can be, not where
+        // the count would put it. Such a value wants one of the four registers
+        // with a byte half (ByteOnly), and taken far from its reader it held
+        // one across the stretch -- power-divide's SETcc, moved from its
+        // MOVZX, cost 0.8M spill reads. Each byte value's definitions here, to
+        // find the one a reader reads (the last before it).
+        Dictionary<int, List<int>> byteDefs = new();
+        for (int x = 0; x < n; x++)
+            foreach (Named r in instrs[from + x].Regs)
+                if (r.Reg >= rf.FirstVirtual && (r.Role & Role.Def) != 0 && t.ByteOnly(r.Reg))
+                {
+                    if (!byteDefs.TryGetValue(r.Reg, out List<int>? defs)) byteDefs[r.Reg] = defs = new();
+                    if (defs.Count == 0 || defs[^1] != x) defs.Add(x);
+                }
+        int glue = -1;
         for (int slot = n - 1; slot >= 0; slot--)
         {
             int best = -1, bestDelta = int.MaxValue;
-            foreach (int x in ready)
+            if (glue >= 0 && ready.Contains(glue))
             {
-                int delta = Delta(instrs[from + x], liveNow, rf, t);
-                // The fewest values started; the latest of the selector's order among equals.
-                if (delta < bestDelta || delta == bestDelta && x > best) { best = x; bestDelta = delta; }
+                best = glue;
             }
+            else
+            {
+                foreach (int x in ready)
+                {
+                    int delta = Delta(instrs[from + x], liveNow, rf, t);
+                    // The fewest values started; the latest of the selector's order among equals.
+                    if (delta < bestDelta || delta == bestDelta && x > best) { best = x; bestDelta = delta; }
+                }
+            }
+            glue = -1;
             if (best < 0) return;  // a cycle: no order (cannot happen; kept as it was)
             ready.Remove(best);
             order[slot] = best;
+            if (byteDefs.Count > 0)
+                foreach (Named r in instrs[from + best].Regs)
+                    if ((r.Role & Role.Use) != 0 && byteDefs.TryGetValue(r.Reg, out List<int>? defs))
+                    {
+                        // The definition this read reads: the last before it.
+                        int reaching = -1;
+                        foreach (int d in defs) if (d < best) reaching = d;
+                        if (reaching >= 0) glue = reaching;
+                    }
             foreach (Named r in instrs[from + best].Regs)
                 if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0 && (r.Role & Role.Def) != 0 && (r.Role & Role.Use) == 0) liveNow.Remove(r.Reg);
             foreach (Named r in instrs[from + best].Regs)

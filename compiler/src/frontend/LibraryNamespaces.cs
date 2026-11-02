@@ -24,6 +24,9 @@ internal static class LibraryNamespaces
     /// <summary>Every namespace of the table's.</summary>
     private static readonly HashSet<string> Spaces = new(Table.Values, StringComparer.Ordinal);
 
+    /// <summary>Whether `space` is a namespace of the table's: one of the library's global types is in it.</summary>
+    public static bool IsNamespace(string space) => Spaces.Contains(space);
+
     /// <summary>
     /// THE NAMESPACE OF THE TABLE'S A WRITTEN QUALIFIER NAMES, as C# reads
     /// one: a namespace alias in scope at its front is the namespace it

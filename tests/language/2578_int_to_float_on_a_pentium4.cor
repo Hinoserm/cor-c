@@ -1,0 +1,26 @@
+// test: int_to_float_on_a_pentium4
+// only-target: x86
+// flags: --cpu=pentium4
+// expect-exit: 0
+// expect-output:
+// 7 -3.5 1000000000 12
+//
+// CVTSI2SS writes a register's low lane and keeps the rest, so it waits on
+// whatever wrote the register last; on a Pentium 4 the register is zeroed
+// first (XORPS of itself, MInstr.ZeroFirst), which NetBurst takes for a
+// value independent of the old one. The conversions are the same.
+using System;
+
+static class Program
+{
+    static float Half(int n) => n / 2.0f;
+
+    static int Main()
+    {
+        int seven = 7, minus = -7, big = 1000000000;
+        float sum = 0;
+        for (int i = 1; i <= 6; i++) sum += Half(i) + 0.25f;
+        Console.WriteLine((float)seven + " " + Half(minus) + " " + (double)big + " " + sum);
+        return 0;
+    }
+}

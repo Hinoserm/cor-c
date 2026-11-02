@@ -1834,6 +1834,14 @@ public sealed class Allocator
     /// <summary>The values whose store is moved to where they leave their register, and those stores by instruction (SinkStores).</summary>
     private readonly HashSet<int> _sunk = new();
     private readonly Dictionary<int, List<int>> _sunkAt = new();
+    /// <summary>
+    /// The stores on an edge of their own, by the blocks it joins (SinkStores):
+    /// a way out of a value's window from a block with other ways out into a
+    /// block with other ways in -- a critical edge -- where neither block's
+    /// end nor start is the value's alone. The target makes the edge a block
+    /// of its own as it rebuilds the function (IPlacement.EdgeStores).
+    /// </summary>
+    private readonly Dictionary<(int From, int To), List<int>> _sunkOnEdge = new();
     /// <summary>The loads, by instruction, of values that control comes back to before their spill point (SinkStores).</summary>
     private readonly Dictionary<int, List<int>> _reloadAt = new();
 
@@ -1865,16 +1873,18 @@ public sealed class Allocator
     ///
     /// An edge's store goes at the start of the block it enters where every
     /// way in is from the window (once for all of them), else before the
-    /// branches ending the block it leaves where that is its only way out; a
-    /// value with an edge that is neither -- a critical edge -- is stored
-    /// after its definition, as is one live into a landing pad (entered by
-    /// no edge) or leaving the window by a computed jump. Not a split
+    /// branches ending the block it leaves where that is its only way out; on
+    /// an edge that is neither -- a critical edge -- in a block of its own the
+    /// target makes on it (EdgeTakesStore, IPlacement.EdgeStores). A value
+    /// live into a landing pad (entered by no edge), or leaving the window by
+    /// a computed jump or a switch's table, is stored after its definition. Not a split
     /// value's (a copy between its pieces trusts every write to have stored),
     /// a home's or a constant's.
     /// </summary>
     private void SinkStores()
     {
         List<int> places = new(), loads = new();
+        List<(int From, int To)> edges = new();
         bool tabled = false;
         double[]? weight = null;
         for (int v = _fv; v < _n; v++)
@@ -1890,7 +1900,7 @@ public sealed class Allocator
                 Table();
                 tabled = true;
             }
-            SinkOne(v, p, places, loads, ref weight);
+            SinkOne(v, p, places, edges, loads, ref weight);
         }
     }
 
@@ -1926,7 +1936,7 @@ public sealed class Allocator
     }
 
     /// <summary>One spilled value's stores (and, given a second chance, loads) placed, if they can be.</summary>
-    private void SinkOne(int v, int p, List<int> places, List<int> loads, ref double[]? weight)
+    private void SinkOne(int v, int p, List<int> places, List<(int From, int To)> edges, List<int> loads, ref double[]? weight)
     {
         int def = -1, defs = 0, defOperand = -1;
         for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
@@ -1940,13 +1950,17 @@ public sealed class Allocator
             // every way back with a place for its load, and the moves
             // cheaper than the reloads and the store.
             if (_occAll[_occFirst[v]].Instr != def || _folded.Contains((def, defOperand))
-                || !ReentryLoads(v, def, p, loads) || !ExitStores(v, def, p, places))
+                || !ReentryLoads(v, def, p, loads) || !ExitStores(v, def, p, places, edges))
             {
                 return;
             }
             weight ??= BlockWeights();
             double moves = 0, reloads = weight[_blockOfInstr[def]];
             foreach (int at in places) moves += weight[_blockOfInstr[at]];
+            // An edge's store runs as often as the edge, at most as often as
+            // the block it leaves: counted at that block's weight (its jump,
+            // where it has one, is not counted apart).
+            foreach ((int From, int To) edge in edges) moves += weight[edge.From];
             foreach (int at in loads) moves += weight[_blockOfInstr[at]];
             int lastRead = -1;
             for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
@@ -1968,7 +1982,7 @@ public sealed class Allocator
                 list.Add(v);
             }
         }
-        else if (!ExitStores(v, def, p, places))
+        else if (!ExitStores(v, def, p, places, edges))
         {
             return;
         }
@@ -1976,6 +1990,11 @@ public sealed class Allocator
         foreach (int at in places)
         {
             if (!_sunkAt.TryGetValue(at, out List<int>? list)) _sunkAt[at] = list = new();
+            list.Add(v);
+        }
+        foreach ((int From, int To) edge in edges)
+        {
+            if (!_sunkOnEdge.TryGetValue(edge, out List<int>? list)) _sunkOnEdge[edge] = list = new();
             list.Add(v);
         }
     }
@@ -2099,12 +2118,16 @@ public sealed class Allocator
     /// <summary>
     /// Where a value kept in its register from its definition `def` up to
     /// `p` is stored on the way out of that window (SinkStores), into
-    /// `places` as the instructions the stores go before; false where some
-    /// way out has no place of its own.
+    /// `places` as the instructions the stores go before, and `edges` as the
+    /// ways out that are places of their own -- a critical edge, from a block
+    /// with other ways out into one with other ways in, made a block by the
+    /// target (IPlacement.EdgeStores); false where some way out has none of
+    /// these, a switch's table jump or a computed one.
     /// </summary>
-    private bool ExitStores(int v, int def, int p, List<int> places)
+    private bool ExitStores(int v, int def, int p, List<int> places, List<(int From, int To)> edges)
     {
         places.Clear();
+        edges.Clear();
         int defb = _blockOfInstr[def], pb = _blockOfInstr[p];
         // P inside its block: the window runs on to it in that block, and the
         // register holds the value just before it wherever it is live there
@@ -2140,8 +2163,34 @@ public sealed class Allocator
                     if (!places.Contains(_branchesAt[b])) places.Add(_branchesAt[b]);
                     continue;
                 }
+                // ON THE EDGE ITSELF, where neither end is the value's alone:
+                // the exit of a loop whose test is in a block with other ways
+                // out, into a block other blocks reach too. Stored after its
+                // definition instead, the value was written on every lap.
+                if (EdgeTakesStore(b, s))
+                {
+                    if (!edges.Contains((b, s))) edges.Add((b, s));
+                    continue;
+                }
                 return false;
             }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Whether the edge from block `b` to `s` can be made a block of its own:
+    /// every branch of `b` that goes to `s` is a plain one, to `s` alone -- not
+    /// a switch's table jump, whose targets are a table's -- and `s` is no
+    /// landing pad (entered by no edge).
+    /// </summary>
+    private bool EdgeTakesStore(int b, int s)
+    {
+        if (_landingPads.Contains(s)) return false;
+        for (int k = _blockFirst[b], end = _blockFirst[b] + _f.Blocks[b].Instrs.Count; k < end; k++)
+        {
+            if (_lin[k].Targets is not { } targets || !targets.Exists(t => ReferenceEquals(t, _f.Blocks[s]))) continue;
+            if (targets.Count != 1 || _lin[k].JumpsAnywhere) return false;
         }
         return true;
     }
@@ -2224,6 +2273,14 @@ public sealed class Allocator
             return _movesBefore;
         }
         private readonly List<(int Reg, int Slot, bool Load)> _movesBefore = new();
+        public IReadOnlyCollection<(int From, int To)> StoredEdges => _a._sunkOnEdge.Keys;
+        public IReadOnlyList<(int Reg, int Slot)> EdgeStores(int from, int to)
+        {
+            List<(int Reg, int Slot)> stores = new();
+            if (_a._sunkOnEdge.TryGetValue((from, to), out List<int>? values))
+                foreach (int v in values) stores.Add((_a._assigned[v], _a._slot[v]));
+            return stores;
+        }
         public IReadOnlyList<(int Reg, int Slot)> After(int index) { Decide(index); return _after; }
         public bool Dropped(int index) { Decide(index); return _dropped; }
 

@@ -249,7 +249,7 @@ internal sealed partial class Selector
     private void SseConvert(Instr i) => EmitW(MOp.CvtFToF, FWidth(i.Dest!.Type), X(i.Dest!), X(i.Operands[0]));
 
     /// <summary>A signed 32-bit integer to a float or a double: CVTSI2SS, CVTSI2SD, from a register or memory.</summary>
-    private void SseFromInt(Instr i) => EmitW(MOp.CvtIntToF, FWidth(i.Dest!.Type), X(i.Dest!), R(i.Operands[0]));
+    private void SseFromInt(Instr i) => EmitW(MOp.CvtIntToF, FWidth(i.Dest!.Type), X(i.Dest!), R(i.Operands[0])).ZeroFirst = CpuModel.ZeroIdiomXmm;
 
     /// <summary>
     /// A FLOAT TO A SIGNED 32-BIT INTEGER, the way .NET's JIT has it: CVTTSS2SI

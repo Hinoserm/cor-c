@@ -1,0 +1,42 @@
+// test: alias_at_the_head_of_a_dotted_name
+// expect-exit: 0
+// expect-output:
+// library 3 program 1
+//
+// `G.List<int>` inside a namespace block that says `using G =
+// System.Collections.Generic;` is the library's List, though the global
+// namespace has a class G with a List of its own: C# reads a level's
+// members and then its directives before the next level out, and the
+// block's alias comes before the global G. Outside the block, G is the
+// program's class.
+class G
+{
+    public class List<T>
+    {
+        public int Mark => 1;
+    }
+}
+
+namespace Inner
+{
+    using G = System.Collections.Generic;
+
+    static class Use
+    {
+        public static int Count()
+        {
+            G.List<int> list = new G.List<int> { 1, 2, 3 };
+            return list.Count;
+        }
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        G.List<int> mine = new G.List<int>();
+        System.Console.WriteLine("library " + Inner.Use.Count() + " program " + mine.Mark);
+        return 0;
+    }
+}

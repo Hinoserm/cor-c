@@ -59,6 +59,15 @@ internal static class CpuModel
     public static bool Athlon => K7 || K8;
 
     /// <summary>
+    /// The Pentium 4 (NetBurst): XORPS, XORPD and PXOR of a register with
+    /// itself are taken for a value independent of the register's old one, so
+    /// a conversion's merge into it (CVTSI2SS) waits on nothing after one
+    /// (MInstr.ZeroFirst). The K7 and K8 take no such idiom for the XMM
+    /// registers; no other SSE CPU of these profiles is claimed to.
+    /// </summary>
+    public static bool ZeroIdiomXmm => Name == "pentium4";
+
+    /// <summary>
     /// A function's alignment: 16 on the K6 (AMD 21924, "Aligning
     /// subroutines at 0-mod-16 ... optimizes instruction cache-fill
     /// efficiency"), and on the K7 and K8, which fetch and predecode an

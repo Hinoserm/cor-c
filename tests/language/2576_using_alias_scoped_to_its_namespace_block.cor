@@ -1,0 +1,29 @@
+// test: using_alias_scoped_to_its_namespace_block
+// expect-compile-error: CS0246: The type or namespace name 'G.StringBuilder' could not be found
+//
+// A using directive written in a namespace's block is that block's, as C#
+// scopes it: a second block of the same namespace in the file does not see
+// the first's alias G. Each block had every directive the namespace's name
+// had been given anywhere in the file (FileScope.Inside).
+namespace Shared
+{
+    using G = System.Text;
+
+    static class First
+    {
+        public static int Length() => new G.StringBuilder("ab").Length;
+    }
+}
+
+namespace Shared
+{
+    static class Second
+    {
+        public static int Length() => new G.StringBuilder("abc").Length;
+    }
+}
+
+static class Program
+{
+    static int Main() => Shared.First.Length() + Shared.Second.Length();
+}

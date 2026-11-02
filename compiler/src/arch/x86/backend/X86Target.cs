@@ -441,6 +441,55 @@ internal sealed class X86Target : ITarget
             b.Instrs.AddRange(outList);
             laid.Add(b);
         }
+        // THE EDGES THAT CARRY STORES (IPlacement.StoredEdges), each made a
+        // block of its own: a critical edge a value leaves its register by,
+        // from a block with other ways out into one with other ways in. The
+        // stores, then on into the edge's target -- by falling through, laid
+        // right after the block it leaves where that block falls into the
+        // target, else by a jump, laid there too where nothing falls through
+        // from that block, or at the end -- and the block's branches to the
+        // target retargeted to it.
+        if (p.StoredEdges.Count > 0)
+        {
+            Dictionary<int, List<MBlock>> fallingInto = new();
+            List<MBlock> jumpingTo = new();
+            foreach ((int from, int to) in p.StoredEdges)
+            {
+                MBlock source = blocks[f.Blocks[from]], target = blocks[f.Blocks[to]];
+                MBlock edge = new(source.Name + "_to_" + target.Name);
+                int line = source.Instrs.Count > 0 ? source.Instrs[^1].Line : 0;
+                foreach ((int reg, int slot) in p.EdgeStores(from, to)) edge.Instrs.Add(Move(Slot(slot), Out(reg), line));
+                foreach (MInstr branch in source.Instrs)
+                    for (int k = 0; k < branch.Operands.Count; k++)
+                        if (branch.Operands[k] is MLabel label && ReferenceEquals(label.Target, target)) branch.Operands[k] = new MLabel(edge);
+                if (to == from + 1 && !source.EndsUnconditionally)
+                {
+                    if (!fallingInto.TryGetValue(from, out List<MBlock>? after)) fallingInto[from] = after = new();
+                    after.Add(edge);
+                }
+                else
+                {
+                    edge.Instrs.Add(new MInstr(MOp.Jmp, new MLabel(target)) { Line = line });
+                    // Beside its source where nothing falls from that into the
+                    // next block, else at the end: a jump back from the end
+                    // made its target look a loop's head (Encoder's padding).
+                    if (source.EndsUnconditionally)
+                    {
+                        if (!fallingInto.TryGetValue(from, out List<MBlock>? after)) fallingInto[from] = after = new();
+                        after.Add(edge);
+                    }
+                    else jumpingTo.Add(edge);
+                }
+            }
+            List<MBlock> withEdges = new(laid.Count + fallingInto.Count + jumpingTo.Count);
+            for (int i = 0; i < laid.Count; i++)
+            {
+                withEdges.Add(laid[i]);
+                if (fallingInto.TryGetValue(i, out List<MBlock>? after)) withEdges.AddRange(after);
+            }
+            withEdges.AddRange(jumpingTo);
+            laid = withEdges;
+        }
         _m.Blocks.Clear();
         _m.Blocks.AddRange(laid);
         _m.NextVReg = Math.Max(_m.NextVReg, f.NextVReg);
@@ -505,7 +554,7 @@ internal sealed class X86Target : ITarget
         List<MBlock>? table = i.Table;
         if (i.Op == MOp.JmpTable && ai.Targets is { } targets && targets.Where((t, k) => !ReferenceEquals(blocks[t], i.Table![k])).Any())
             table = targets.Select(t => blocks[t]).ToList();
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm };
+        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
         // The registers named, walked in the order Allocator.RegsOf named them.
         int k = 0;
         for (int o = 0; o < i.Operands.Count; o++)

@@ -1111,7 +1111,7 @@ internal sealed partial class Selector
     /// <summary>The same instruction, marked as selected inside the packed block (MInstr.OwnsState).</summary>
     private MInstr Owning(MInstr i)
     {
-        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = (byte)_packedNow, Asm = i.Asm };
+        MInstr n = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = (byte)_packedNow, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
         n.Operands.AddRange(i.Operands);
         return n;
     }

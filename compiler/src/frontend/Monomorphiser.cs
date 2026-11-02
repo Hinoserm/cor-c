@@ -2156,6 +2156,9 @@ public sealed class Monomorphiser
     private readonly HashSet<(string Scope, string Name, int Arity)> _absent = new();
     private int _absentAt = -1;
 
+    /// <summary>The aliases, by scope, GenericPath is reading a name's head through now: one met again names itself (`using A = A.B;`) and stops.</summary>
+    private readonly HashSet<(string Scope, string Alias)> _aliasHeads = new();
+
     private string? GenericPath(string name, int arity, Node location)
     {
         bool Candidate(string candidate)
@@ -2192,6 +2195,21 @@ public sealed class Monomorphiser
             if (_usings is null) return null;
             foreach (var alias in _usings.Aliases)
                 if (alias.In == scope && alias.Alias == name && Candidate(alias.Target)) return alias.Target;
+            // A DOTTED NAME WHOSE HEAD IS AN ALIAS WRITTEN HERE is the alias's
+            // -- `G.List<T>` under `using G = System.Collections.Generic;` in
+            // this block -- before any type of the head's name further out, a
+            // program's class G with a List of its own in the global namespace
+            // included: C# reads a level's members and then its directives
+            // before the next level out. Not through an alias already being
+            // read through, which names itself (`using A = A.B;`).
+            int head = name.IndexOf('.');
+            if (head > 0)
+                foreach (var alias in _usings.Aliases)
+                    if (alias.In == scope && alias.Alias == name[..head] && _aliasHeads.Add((scope, alias.Alias)))
+                    {
+                        try { return GenericPath(alias.Target + name[head..], arity, location); }
+                        finally { _aliasHeads.Remove((scope, alias.Alias)); }
+                    }
             string? found = null;
             foreach (var import in _usings.Imports)
             {

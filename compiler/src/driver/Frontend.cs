@@ -485,10 +485,10 @@ public static class Frontend
     {
         if (program.Count == 0 && library.Count == 0) return;
         HashSet<FileScope> seen = new(ReferenceEqualityComparer.Instance);
-        foreach (TypeDecl type in unit.Types)
+        void Apply(FileScope? scope, bool fromLibrary)
         {
-            if (type.Scope is not FileScope scope || !seen.Add(scope)) continue;
-            foreach (string use in type.FromLibrary ? library : program)
+            if (scope is null || !seen.Add(scope)) return;
+            foreach (string use in fromLibrary ? library : program)
             {
                 int equals = use.IndexOf('=');
                 if (equals > 0)
@@ -498,6 +498,14 @@ public static class Frontend
                 }
                 else if (!scope.Imports.Contains(("", use))) scope.Imports.Add(("", use));
             }
+        }
+        // A TYPE'S SCOPE AND ITS MEMBERS': a namespace block has a scope of its
+        // own (FileScope.Inside), and a partial type's part written in another
+        // block, or file, keeps that one on its members after the parts merge.
+        foreach (TypeDecl type in unit.Types)
+        {
+            Apply(type.Scope, type.FromLibrary);
+            foreach (MemberDecl member in type.Members) Apply(member.Scope, type.FromLibrary);
         }
     }
 

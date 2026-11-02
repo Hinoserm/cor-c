@@ -19,11 +19,18 @@ namespace Corsac.Lang.X86;
 /// arguments, no operand already off ESP -- so ESP is where the prologue left
 /// it at every slot's access: a leaf of packed rounds, like Generate4, whose
 /// only calls are its bounds checks' throws; a function that passes stack
-/// arguments keeps its slots on EBP and MOVUPS. Not in a function with a
-/// handler either, as a precaution: SelectUnwind lands with the ESP the try
-/// recorded, which would be the aligned one, but every way a handler is
-/// entered (the kernel's fault recovery among them) is not proven so. Last
-/// but FrameCompact, which then packs the EBP frame without them, and
+/// arguments keeps its slots on EBP and MOVUPS.
+///
+/// IN A FUNCTION WITH A HANDLER TOO: every way into a landing pad lands with
+/// the aligned ESP. A throw reaches one by the handler chain alone
+/// (SelectUnwind), which sets ESP from the record, and the record's ESP is
+/// read inline where the try opens (Lowering.PushHandler, an iterator's or
+/// async body's on each resume), after the prologue aligned it -- and nothing
+/// moves ESP in such a function. A fault that becomes an exception (the
+/// CORSAC kernel's UserAccessFault) is thrown and goes by the chain the same
+/// way; a fault the kernel answers itself (Arch.Recover, a page mapped)
+/// resumes the instruction with its own ESP. Refused before, as a precaution.
+/// Last but FrameCompact, which then packs the EBP frame without them, and
 /// FramePointerFree, whose functions are left alone.
 /// </summary>
 internal static class AlignedSlots
@@ -41,7 +48,6 @@ internal static class AlignedSlots
         SortedSet<int> slots = new();
         foreach (MBlock b in m.Blocks)
         {
-            if (b.Source is { IsLandingPad: true }) return;
             foreach (MInstr i in b.Instrs)
             {
                 if (i.Op is MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd or MOp.Ret || i.Op == MOp.InlineAsm && i.Asm!.NeedsFrame) return;

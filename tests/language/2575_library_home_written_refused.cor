@@ -1,0 +1,15 @@
+// test: library_home_written_refused
+// expect-compile-error: CS0246
+//
+// `__library.DecimalFormat` names nothing a program can see: the library's
+// own spelling is no identifier now (2574), and DecimalFormat is internal to
+// the library.
+
+static class Program
+{
+    static int Main()
+    {
+        __library.DecimalFormat? hidden = null;
+        return hidden is null ? 0 : 1;
+    }
+}

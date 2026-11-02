@@ -375,6 +375,8 @@ public sealed class Inline : IParallelModulePass
         // expanded into it (LoopBlocks): a walk of the whole function for
         // every call site weighed was minutes on a library's single unit.
         HashSet<Block>? loopBlocks = null;
+        // And those on no way to a return (ColdBlocks), as long.
+        HashSet<Block>? coldBlocks = null;
 
         while (changed)
         {
@@ -385,12 +387,26 @@ public sealed class Inline : IParallelModulePass
                 for (int i = 0; i < b.Instrs.Count; i++)
                 {
                     Instr call = b.Instrs[i];
-                    if (call.Op != Opcode.Call || call.Callee is null || _keepCalls.Contains(call))
+                    if (call.Op != Opcode.Call || call.Callee is null)
                     {
                         continue;
                     }
-                    if (!byName.TryGetValue(call.Callee, out Function? callee) || ReferenceEquals(callee, caller))
+                    // Another unit's, or the runtime's: no body here to weigh.
+                    if (!byName.TryGetValue(call.Callee, out Function? callee))
                     {
+                        continue;
+                    }
+                    // EVERY REFUSAL SAID (TraceDecision), not only the size
+                    // rules': a callee in a call cycle was skipped before any
+                    // trace line, and --trace-opt showed nothing for it.
+                    if (ReferenceEquals(callee, caller))
+                    {
+                        TraceDecision?.Invoke(caller, callee, "keep: calls itself");
+                        continue;
+                    }
+                    if (_keepCalls.Contains(call))
+                    {
+                        TraceDecision?.Invoke(caller, callee, "keep: a call an expansion kept");
                         continue;
                     }
                     // The collector's own notes stay calls: the escape rules
@@ -402,9 +418,13 @@ public sealed class Inline : IParallelModulePass
                     // Join over one -- or everywhere, with InlineHandlers.
                     bool handlers = caller.Async is null && (InlineHandlers
                         || !Inlineable(callee, pinned) && Size(callee) <= FreshArgumentBody && FreshDispatched(caller, call, callee, ref callerFresh, ref staleFresh));
-                    if (!Inlineable(callee, pinned, handlers) || recursive.Contains(callee) || Escape.IsCollectorLeaf(callee.Name)
-                        || CrossesImage(caller, callee))
+                    string? refused = NotInlineable(callee, pinned, handlers)
+                        ?? (recursive.Contains(callee) ? "in a call cycle"
+                            : Escape.IsCollectorLeaf(callee.Name) ? "the collector's leaf"
+                            : CrossesImage(caller, callee) ? "another image's" : null);
+                    if (refused is not null)
                     {
+                        TraceDecision?.Invoke(caller, callee, "keep: " + refused);
                         continue;
                     }
                     // NOT INTO AN ASYNC FUNCTION OR AN ITERATOR, a body that
@@ -416,10 +436,25 @@ public sealed class Inline : IParallelModulePass
                     // collector. Called, the store stays in the callee.
                     if (caller.Async is not null && StoresField(callee))
                     {
+                        TraceDecision?.Invoke(caller, callee, "keep: stores a field, into an async body or iterator");
                         continue;
                     }
 
                     int calleeSize = Size(callee);
+                    // NOT ON A COLD PATH, past what a call costs: a block that
+                    // only throws (no way on from it returns or loops), or a
+                    // static initialiser, run once. Expanded there, a body
+                    // grew its caller for a path taken once or never -- and a
+                    // caller grown past its own small limit stays a call at
+                    // every site of its own (Processor.Has, its Ask a throw-
+                    // and-once initialiser).
+                    if (calleeSize > TinyBody
+                        && (Escape.IsStaticInitialiser(callee.Name)
+                            || (coldBlocks ??= ColdBlocks(caller, loopBlocks ??= LoopBlocks(caller))).Contains(b)))
+                    {
+                        TraceDecision?.Invoke(caller, callee, $"keep: cold path body={calleeSize} tiny-limit={TinyBody}");
+                        continue;
+                    }
                     int argumentWords = ArgumentWordCredit == 0 ? 0
                         : callee.Params.Sum(p => (p.Type.Bytes() + IrTypes.Word.Bytes() - 1) / IrTypes.Word.Bytes());
                     int smallBody = SmallBody + Math.Min(24, argumentWords * ArgumentWordCredit);
@@ -459,6 +494,23 @@ public sealed class Inline : IParallelModulePass
                         TraceDecision?.Invoke(caller, callee, $"keep: body={calleeSize} cost={ordinaryCost} small-limit={smallBody} caller={size} sites={callers.GetValueOrDefault(callee.Name)}");
                         continue;
                     }
+                    // NOR A ONE-CALLER BODY THAT WOULD SPOIL ITS CALLER'S OWN
+                    // EXPANSION: a caller small enough to become each of its
+                    // sites (two or more), put over its small limit by a body
+                    // that only its one call made free, stays a call at all of
+                    // them. Ask went into Features and Features into Has, 66
+                    // units against Has's limit of 40, and every call of Has
+                    // stayed one. Bottom-up, the callee's single call is the
+                    // caller's to weigh; the caller's many are worth more.
+                    // Weighed by the caller's whole size, as its sites outside
+                    // a loop weigh it -- one in a loop weighs only its hot path.
+                    if (single && ordinaryCost > smallBody && !specializesBranch && !exposesChildren
+                        && callers.GetValueOrDefault(caller.Name) >= 2 && !addressTaken.Contains(caller.Name)
+                        && size <= SmallLimit(caller) && size + calleeSize > SmallLimit(caller) && Inlineable(caller, pinned))
+                    {
+                        TraceDecision?.Invoke(caller, callee, $"keep: one caller, but caller={size}+{calleeSize} would pass its own small-limit={SmallLimit(caller)} at its {callers.GetValueOrDefault(caller.Name)} sites");
+                        continue;
+                    }
                     if (size + calleeSize > GrowthLimit && !single && !exposesChildren && calleeSize > TinyBody)
                     {
                         TraceDecision?.Invoke(caller, callee, $"keep: growth caller={size} body={calleeSize} limit={GrowthLimit}");
@@ -473,6 +525,7 @@ public sealed class Inline : IParallelModulePass
                     staleFresh = callerFresh ?? staleFresh;
                     callerFresh = null;
                     loopBlocks = null;
+                    coldBlocks = null;
                     size += calleeSize;
                     callers[callee.Name] = callers.GetValueOrDefault(callee.Name) - 1;
                     foreach (Instr inner in callee.Blocks.SelectMany(x => x.Instrs))
@@ -527,11 +580,18 @@ public sealed class Inline : IParallelModulePass
 
     /// <summary>Whether a body can be moved into a caller at all.</summary>
     internal static bool Inlineable(Function callee, HashSet<string> pinned, bool handlers = false)
+        => NotInlineable(callee, pinned, handlers) is null;
+
+    /// <summary>
+    /// Why a body may not become its callers' (Inlineable), said for the
+    /// trace (TraceDecision) -- or null where it may.
+    /// </summary>
+    internal static string? NotInlineable(Function callee, HashSet<string> pinned, bool handlers = false)
     {
-        if (callee.Blocks.Count == 0 || pinned.Contains(callee.Name) || callee.Async is not null || callee.NoInlining)
-        {
-            return false;
-        }
+        if (callee.Blocks.Count == 0) return "no body here";
+        if (pinned.Contains(callee.Name)) return "pinned";
+        if (callee.Async is not null) return "async";
+        if (callee.NoInlining) return "NoInlining";
 
         // A NOTE TO THE COLLECTOR STAYS A CALL: the write barrier's slow path
         // and what it reports with (Escape.IsCollectorNote). Escape analysis
@@ -542,14 +602,14 @@ public sealed class Inline : IParallelModulePass
         // -- the Marking test -- is already inline at every store.
         if (Escape.IsCollectorNote(callee.Name))
         {
-            return false;
+            return "a note to the collector";
         }
 
         // ITS CALLER'S REGISTERS, read where its own prologue saved them
         // (Sys.CallerRegister): put in place, they would be another's.
         foreach (Block b in callee.Blocks)
             foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Call && i.Callee == Corsac.Lang.X86.MachineIntrinsics.CallerRegister) return false;
+                if (i.Op == Opcode.Call && i.Callee == Corsac.Lang.X86.MachineIntrinsics.CallerRegister) return "reads its caller's registers";
 
         // A TRY IN THE CALLEE comes along whole when the caller asks for it
         // (handlers): its record is a frame slot cloned with the others, its
@@ -558,12 +618,12 @@ public sealed class Inline : IParallelModulePass
         // record links to whatever handler the caller has open, as a call's
         // would. A foreach over a sequence has one, for Dispose, and a List
         // built from an iterator was a call that let the iterator go.
-        if (handlers) return true;
+        if (handlers) return null;
         foreach (Block b in callee.Blocks)
         {
             if (b.IsLandingPad)
             {
-                return false;
+                return "a handler of its own";
             }
             foreach (Instr i in b.Instrs)
             {
@@ -573,13 +633,13 @@ public sealed class Inline : IParallelModulePass
                     case Opcode.LabelAddr:
                     case Opcode.StackPointer:
                     case Opcode.FramePointer:
-                        return false;
+                        return "unwinds, or reads its own frame";
                     case Opcode.Call when i.Callee == "__exception":
-                        return false;
+                        return "a landing pad's exception";
                 }
             }
         }
-        return true;
+        return null;
     }
 
     /// <summary>
@@ -708,6 +768,51 @@ public sealed class Inline : IParallelModulePass
             index = site.Index;
         }
         return false;
+    }
+
+    /// <summary>A function's small-body limit as a callee: SmallBody and its arguments' credit, as InlineInto weighs each call.</summary>
+    private int SmallLimit(Function f)
+    {
+        int words = ArgumentWordCredit == 0 ? 0
+            : f.Params.Sum(p => (p.Type.Bytes() + IrTypes.Word.Bytes() - 1) / IrTypes.Word.Bytes());
+        return SmallBody + Math.Min(24, words * ArgumentWordCredit);
+    }
+
+    /// <summary>
+    /// THE BLOCKS NO WAY RETURNS FROM: every way on from them ends in a throw,
+    /// a trap or an unreachable end, never a return nor a loop. Warm are a
+    /// block that returns, one in a loop (LoopBlocks; a server's endless loop
+    /// returns never and runs always), one with no ending known, and any with
+    /// a way on to a warm one; the rest are cold.
+    /// </summary>
+    private static HashSet<Block> ColdBlocks(Function f, HashSet<Block> loops)
+    {
+        // Back from the warm ones along their ways in, each block once: a
+        // sweep of every block until none changed went one block a sweep
+        // through a function laid out forwards.
+        Dictionary<Block, List<Block>> into = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { } end) continue;
+            void From(Block t)
+            {
+                if (!into.TryGetValue(t, out List<Block>? ways)) into[t] = ways = new();
+                ways.Add(b);
+            }
+            foreach (Block t in end.Targets) From(t);
+            if (end.Default is { } fallback) From(fallback);
+        }
+        HashSet<Block> warm = new(ReferenceEqualityComparer.Instance);
+        Stack<Block> pending = new();
+        foreach (Block b in f.Blocks)
+            if ((b.Terminator is not { } end || end.Op == Opcode.Ret || loops.Contains(b)) && warm.Add(b)) pending.Push(b);
+        while (pending.Count > 0)
+            if (into.TryGetValue(pending.Pop(), out List<Block>? ways))
+                foreach (Block p in ways)
+                    if (warm.Add(p)) pending.Push(p);
+        HashSet<Block> cold = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks) if (!warm.Contains(b)) cold.Add(b);
+        return cold;
     }
 
     /// <summary>

@@ -1058,9 +1058,15 @@ public sealed class Parser
             _namespace = inner;
             _typePath = inner;
             bool block = !Take(Tok.Semi);
+            // A BLOCK'S DIRECTIVES ARE THE BLOCK'S (FileScope.Inside): a
+            // second block of the same namespace in the file does not see an
+            // alias the first wrote, as C# has it. A file-scoped namespace's
+            // are the file's.
+            FileScope enclosing = _fileScope;
             if (block)
             {
                 Expect(Tok.LBrace, "'{' or ';' after namespace");
+                _fileScope = enclosing.Inside();
             }
 
             // A namespace's own using directives scope what follows them --
@@ -1072,6 +1078,7 @@ public sealed class Parser
             if (block)
             {
                 Expect(Tok.RBrace, "'}' to close the namespace");
+                _fileScope = enclosing;
                 ParseUsings(unit);
             }
             _namespace = within;
@@ -2252,7 +2259,7 @@ public sealed class Parser
         string d = name + typeParams;
         System.Text.StringBuilder src = new();
         if (!string.IsNullOrEmpty(_namespace)) src.Append("namespace ").Append(_namespace).Append(";\n");
-        src.Append("public sealed class ").Append(m).Append(" : ").Append(d).Append(", ").Append(Binder.LibrarySpelling).Append(".IMulticastDelegate\n{\n");
+        src.Append("public sealed class ").Append(m).Append(" : ").Append(d).Append("\n{\n");
         src.Append("    public ").Append(d).Append("[] Items;\n");
         src.Append("    public ").Append(ctor).Append("(").Append(d).Append("[] items) { Items = items; }\n");
 
@@ -2347,6 +2354,10 @@ public sealed class Parser
         made.SourceTo = delegateDecl.SourceTo;
         made.File = _file;
         made.Scope = _fileScope;
+        // AND THE LIBRARY'S MULTICAST FACE, named under the home no text can
+        // spell (Binder.LibrarySpelling) -- so added here, after the parse,
+        // not written into the text the lexer reads.
+        made.WritableBases.Add(new TypeRef { Name = Binder.LibrarySpelling + ".IMulticastDelegate", Line = delegateDecl.Line, Col = delegateDecl.Col });
         // A DELEGATE WRITTEN INSIDE A GENERIC TYPE has that type's parameters
         // (`class Box<T> { public delegate T Make(); }`), and so does its
         // multicast: nested beside it, with the same outer parameters first,

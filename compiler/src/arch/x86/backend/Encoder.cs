@@ -929,6 +929,12 @@ internal sealed class Encoder
                 XmmRM(Xmm(i.Operands[0]), i.Operands[1]);
                 break;
             case MOp.CvtIntToF:
+                // Its register zeroed first where that breaks the wait on it (MInstr.ZeroFirst).
+                if (i.ZeroFirst)
+                {
+                    B(0x0F, 0x57);
+                    XmmRM(Xmm(i.Operands[0]), i.Operands[0]);
+                }
                 B(Scalar(i), 0x0F, 0x2A);
                 ModRM(Xmm(i.Operands[0]), i.Operands[1]);
                 break;

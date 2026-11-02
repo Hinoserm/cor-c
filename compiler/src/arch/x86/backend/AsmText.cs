@@ -262,6 +262,7 @@ internal static class AsmText
                 yield return $"{(i.Width == 8 ? "cvtss2sd" : "cvtsd2ss")} {Op(i.Operands[0], 8, false)}, {Op(i.Operands[1], i.Width == 8 ? 4 : 8, true)}";
                 yield break;
             case MOp.CvtIntToF:
+                if (i.ZeroFirst) yield return $"xorps {Op(i.Operands[0], 4, false)}, {Op(i.Operands[0], 4, false)}";
                 yield return $"{(i.Width == 8 ? "cvtsi2sd" : "cvtsi2ss")} {Op(i.Operands[0], 4, false)}, {Op(i.Operands[1], 4, true)}";
                 yield break;
             case MOp.XorPs:

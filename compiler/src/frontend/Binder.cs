@@ -506,14 +506,23 @@ public sealed partial class Binder
 
     /// <summary>
     /// How the checker names a library type it makes something of -- `^1` is
-    /// System.Index, `a..b` System.Range: under a home no program can write
-    /// (two underscores are the compiler's), which only ever means the
-    /// library's global type -- never the program's of that name, and never a
-    /// namespace, as `System.Runtime` in `System.Runtime.InteropServices` is.
+    /// System.Index, `a..b` System.Range: under a home no program can write,
+    /// which only ever means the library's global type -- never the program's
+    /// of that name, and never a namespace, as `System.Runtime` in
+    /// `System.Runtime.InteropServices` is.
     /// </summary>
     private static string LibraryType(string name) => LibrarySpelling + "." + name;
 
-    internal const string LibrarySpelling = "__library";
+    /// <summary>
+    /// THE HOME NO SOURCE CAN SPELL: `#` begins no identifier, so the lexer
+    /// never makes this name of a program's text, and the library's internal
+    /// types it reaches (HiddenFromProgram lets it pass) stay the compiler's.
+    /// It was `__library`, an identifier any program could write -- and with
+    /// it reach every type the library keeps to itself. Only names the
+    /// compiler builds carry it, never text it lexes (Parser.Multicast adds
+    /// its base after the parse).
+    /// </summary>
+    internal const string LibrarySpelling = "#library";
 
     /// <summary>
     /// `System.X`, however deep the qualifier, as the library's global X (a
@@ -524,9 +533,9 @@ public sealed partial class Binder
         string bare = name[(name.LastIndexOf('.') + 1)..];
         // ASKED OF THE INDEX TOO (TypeCandidate), not only the table: a unit
         // of a project has the class library's declarations as it asks for
-        // them, and `__library.CollectionExpressionBuilder` named one no
+        // them, and `#library.CollectionExpressionBuilder` named one no
         // other line of the unit had asked for.
-        sym = TypeCandidate(bare, out TypeSymbol? global) && global?.Decl is { Outer: null } d
+        sym = TypeCandidate(bare, out TypeSymbol? global, use: false) && global?.Decl is { Outer: null } d
               && (d.Namespace.Length == 0 || d.Namespace == LibraryHome) ? global : null;
         // BY ITS OWN NAMESPACE, in a program: `System.Collections.Generic.
         // List<int>` is the library's List and `System.List<int>` names
@@ -542,6 +551,7 @@ public sealed partial class Binder
         {
             sym = null;
         }
+        if (sym is not null) Use(sym);
         return sym is not null;
     }
 
@@ -697,8 +707,9 @@ public sealed partial class Binder
                 // NOT A CLASS LIBRARY TYPE THE PROGRAM CANNOT SEE (HiddenFromProgram):
                 // a program written in Corsac.Lang walks out through Corsac,
                 // and the library's internal Corsac types are not there to it.
-                if (TypeCandidateIn(at, name, out sym) && !HiddenFromProgram(sym))
+                if (TypeCandidateIn(at, name, out sym, use: false) && !HiddenFromProgram(sym))
                 {
+                    Use(sym!);
                     return true;
                 }
 
@@ -737,9 +748,10 @@ public sealed partial class Binder
             sym = mine;
             return true;
         }
-        if (TypeCandidate(name, out sym) && !(libraryOwn && sym?.Decl is { } candidate && IsProgramSource(candidate))
+        if (TypeCandidate(name, out sym, use: false) && !(libraryOwn && sym?.Decl is { } candidate && IsProgramSource(candidate))
             && (sym is null || LibraryGlobalVisible(sym)))
         {
+            if (sym is not null) Use(sym);
             return true;
         }
         sym = null;
@@ -933,12 +945,12 @@ public sealed partial class Binder
     /// unless it is needed: a dotted name, or one not there whose absence a
     /// declaration index must hear of.
     /// </summary>
-    private bool TypeCandidateIn(string within, string name, out TypeSymbol? symbol)
+    private bool TypeCandidateIn(string within, string name, out TypeSymbol? symbol, bool use = true)
     {
         bool plain = name.IndexOf('.') < 0;
         if (plain && _r.Types.TryGetWithin(within, name, out symbol))
         {
-            if (!BindingElsewhere && !_namingOnly) symbol!.Used = true;
+            if (use && !BindingElsewhere && !_namingOnly) symbol!.Used = true;
             return true;
         }
         if (plain && _requireDeclaration is null)
@@ -968,7 +980,7 @@ public sealed partial class Binder
             (string scope, string tail) = DottedParts(within, name);
             if (_r.Types.TryGetWithin(scope, tail, out symbol))
             {
-                if (!BindingElsewhere && !_namingOnly) symbol!.Used = true;
+                if (use && !BindingElsewhere && !_namingOnly) symbol!.Used = true;
                 return true;
             }
         }
@@ -985,7 +997,7 @@ public sealed partial class Binder
             return false;
         }
         bool demandedBefore = _declarationBatch.Any;
-        bool found = TypeCandidate(SpeltKey(within, name), out symbol);
+        bool found = TypeCandidate(SpeltKey(within, name), out symbol, use);
         if (!found && within.Length > 0 && !_namingOnly) _demandedWithin.Add((within, name));
         if (!found && plain && within.Length == 0 && !_namingOnly && (demandedBefore || !_declarationBatch.Any)) Absent(within, name);
         return found;
@@ -1030,7 +1042,18 @@ public sealed partial class Binder
     /// <summary>The names TypeCandidateIn has demanded, by their two parts (TypeCandidate's _demanded).</summary>
     private HashSet<(string Within, string Name)> _demandedWithin = new();
 
-    private bool TypeCandidate(string key, out TypeSymbol? symbol)
+    /// <summary>
+    /// A type taken where it was looked up without being marked (TypeCandidate's
+    /// `use`): asked for, as the managed layout counts it, once the lookup has
+    /// tested it and kept it -- not a library type the program cannot see,
+    /// which it found and refused.
+    /// </summary>
+    private void Use(TypeSymbol symbol)
+    {
+        if (!BindingElsewhere && !_namingOnly) symbol.Used = true;
+    }
+
+    private bool TypeCandidate(string key, out TypeSymbol? symbol, bool use = true)
     {
         if (_r.Types.TryGetValue(key, out symbol))
         {
@@ -1039,8 +1062,10 @@ public sealed partial class Binder
             // by THIS unit's code, that is: binding the declarations of a
             // source given only for them (--ref, TypeDecl.Elsewhere) asks
             // about the types they mention, and a program then described
-            // every library type the library's own signatures name.
-            if (!BindingElsewhere && !_namingOnly) symbol.Used = true;
+            // every library type the library's own signatures name. And not
+            // one asked for only to be refused (`use` false): a lookup that
+            // tests what it found marks it itself when it takes it (Use).
+            if (use && !BindingElsewhere && !_namingOnly) symbol.Used = true;
             return true;
         }
         // A MISSING DECLARATION IS RECORDED, NOT RAISED. Unwinding here threw
@@ -1110,23 +1135,32 @@ public sealed partial class Binder
     /// the answer is kept, and a type found is marked asked for as the lookup
     /// would have marked it. Not while a pass is still demanding, when a miss
     /// may be a declaration on its way.
+    ///
+    /// AND FOR WHICH CODE: a program's or the compiler's (BindingProgramCode).
+    /// The answer is not the same -- an import reaches a library type the
+    /// program cannot see only for the compiler's code (HiddenFromProgram) --
+    /// and one file holds both: a member the compiler made beside the
+    /// program's, a method of the library copied for a program's type. Kept
+    /// for one and read by the other, the compiler's answer let the program's
+    /// code name an internal type, or the program's refused the compiler one.
     /// </summary>
     private bool Imported(FileScope file, string at, string name, out TypeSymbol? sym)
     {
-        if (!_importedSeen.TryGetValue(file, out Dictionary<(string, string), TypeSymbol?>? known))
-            _importedSeen[file] = known = new Dictionary<(string, string), TypeSymbol?>();
-        if (known.TryGetValue((at, name), out sym))
+        if (!_importedSeen.TryGetValue(file, out Dictionary<(string, string, bool), TypeSymbol?>? known))
+            _importedSeen[file] = known = new Dictionary<(string, string, bool), TypeSymbol?>();
+        bool program = BindingProgramCode();
+        if (known.TryGetValue((at, name, program), out sym))
         {
             if (sym is not null && !BindingElsewhere && !_namingOnly) sym.Used = true;
             return sym is not null;
         }
         bool demandedBefore = _declarationBatch.Any;
         bool found = ImportedNow(file, at, name, out sym);
-        if (!_namingOnly && !demandedBefore && !_declarationBatch.Any) known[(at, name)] = found ? sym : null;
+        if (!_namingOnly && !demandedBefore && !_declarationBatch.Any) known[(at, name, program)] = found ? sym : null;
         return found;
     }
 
-    private readonly Dictionary<FileScope, Dictionary<(string, string), TypeSymbol?>> _importedSeen = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<FileScope, Dictionary<(string, string, bool), TypeSymbol?>> _importedSeen = new(ReferenceEqualityComparer.Instance);
 
     private bool ImportedNow(FileScope file, string at, string name, out TypeSymbol? sym)
     {
@@ -1134,9 +1168,35 @@ public sealed partial class Binder
         {
             // An alias reaches no type the program cannot see (HiddenFromProgram).
             if (alias.In == at && alias.Alias == name
-                && TypeCandidate(alias.Target, out sym) && !HiddenFromProgram(sym))
+                && TypeCandidate(alias.Target, out sym, use: false) && !HiddenFromProgram(sym))
             {
+                Use(sym!);
                 return true;
+            }
+        }
+
+        // A DOTTED NAME WHOSE HEAD IS AN ALIAS WRITTEN HERE: `G.List` under
+        // `using G = ...;` in this block is the alias's -- a type the target
+        // names (`using G = Outer;`, Outer.List), or one of a namespace it
+        // names, the library's by its .NET namespace (LibraryGlobal) -- before
+        // any type of the head's name further out: C# reads a level's members
+        // and then its directives before the next level out, and a program's
+        // class G with a nested List in the global namespace came first.
+        int head = name.IndexOf('.');
+        if (head > 0)
+        {
+            foreach ((string In, string Alias, string Target) alias in file.Aliases)
+            {
+                if (alias.In != at || alias.Alias != name[..head]) continue;
+                string through = alias.Target + name[head..];
+                if (TypeCandidate(through, out sym, use: false) && !HiddenFromProgram(sym))
+                {
+                    Use(sym!);
+                    return true;
+                }
+                // The library's by its namespace only: through a type alias,
+                // `Outer.List`, the library's List is no answer.
+                if (LibraryNamespaces.IsNamespace(through[..through.LastIndexOf('.')]) && LibraryGlobal(through, out sym)) return true;
             }
         }
 
@@ -1148,7 +1208,7 @@ public sealed partial class Binder
             // file imports, asked from every mention, spelt to be told no.
             // Not one the program cannot see (HiddenFromProgram).
             if (import.In != at
-                || !TypeCandidateIn(import.Namespace, name, out TypeSymbol? found) || HiddenFromProgram(found))
+                || !TypeCandidateIn(import.Namespace, name, out TypeSymbol? found, use: false) || HiddenFromProgram(found))
             {
                 continue;
             }
@@ -1161,6 +1221,9 @@ public sealed partial class Binder
             sym = found;
         }
 
+        // Asked for once it is the one the imports name (Use): not each of
+        // two an ambiguous name found, nor one hidden from the program.
+        if (sym != null) Use(sym);
         return sym != null;
     }
 
@@ -4758,7 +4821,15 @@ public sealed partial class Binder
     /// front end gave it otherwise.
     /// </summary>
     internal static bool ClassLibrarySide(TypeDecl d)
-        => d.SourcePath is string path && LibrarySource is { } isLibrary ? isLibrary(path) : d.FromLibrary;
+    {
+        // ASKED ONCE A DECLARATION (TypeDecl.LibrarySide): the path's answer
+        // takes the driver's lock and hashes the whole path, and binding asks
+        // it for every name a body mentions at every level (Imported).
+        if (d.LibrarySide != 0) return d.LibrarySide == 2;
+        bool library = d.SourcePath is string path && LibrarySource is { } isLibrary ? isLibrary(path) : d.FromLibrary;
+        d.LibrarySide = library ? 2 : 1;
+        return library;
+    }
 
     /// <summary>Whether a field declaration carries [ThreadStatic], however it is spelt.</summary>
     internal static bool IsThreadStatic(FieldDecl f)

@@ -7,7 +7,13 @@ public sealed class TypeDecl : Node
     public required string Name { get; init; }
     public Mods Mods { get; set; }
     /// <summary>Canonical source identity, separate from diagnostic spelling.</summary>
-    public string? SourcePath { get; set; }
+    public string? SourcePath
+    {
+        get => _sourcePath;
+        // A new path is asked again (LibrarySide).
+        set { _sourcePath = value; LibrarySide = 0; }
+    }
+    private string? _sourcePath;
     /// <summary>An implementation-private generated type, such as a closure.</summary>
     public bool LocalOnly { get; set; }
     public bool IsDelegate { get; set; }
@@ -274,6 +280,13 @@ public sealed class TypeDecl : Node
     /// <summary>The using directives of the file this was written in.</summary>
     public FileScope? Scope { get; set; }
 
+    /// <summary>
+    /// Whether the declaration is the class library's (Binder.ClassLibrarySide),
+    /// kept once asked: 0 not yet, 1 the program's, 2 the library's. A word,
+    /// so a binder on another thread reads the answer whole or none.
+    /// </summary>
+    public int LibrarySide { get; set; }
+
     /// <summary>The file it was written in (Node.File): a declaration's is its own field.</summary>
     public override string File { get => _file; set => _file = value; }
     private string _file = "";
@@ -290,7 +303,13 @@ public sealed class TypeDecl : Node
     /// the driver links by default is the library, and anything the
     /// programmer named is the program.
     /// </summary>
-    public bool FromLibrary { get; set; }
+    public bool FromLibrary
+    {
+        get => _fromLibrary;
+        // And a new mark (LibrarySide).
+        set { _fromLibrary = value; LibrarySide = 0; }
+    }
+    private bool _fromLibrary;
 
     /// <summary>
     /// A PROGRAM'S TYPE MOVED ASIDE because it took a class-library type's

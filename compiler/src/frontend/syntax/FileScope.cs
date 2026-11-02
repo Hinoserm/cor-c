@@ -12,9 +12,24 @@ namespace Corsac.Lang;
 /// merges into one unit, which must not merge those: `using Block =
 /// Corsac.Lang.Ir.Block` is written in thirty-six files of this compiler and
 /// means nothing in the rest.
+///
+/// AND ONE A NAMESPACE BLOCK, as C# scopes a directive written in one to that
+/// block: `namespace A { using G = X; }` then `namespace A { G.Y }` in the
+/// same file -- the second block does not see the first's G. Each block has a
+/// copy of what encloses it (Inside), which its own directives join.
 /// </summary>
 public sealed class FileScope
 {
+    /// <summary>A namespace block's scope: everything this one has, and what the block will add, apart.</summary>
+    public FileScope Inside()
+    {
+        FileScope inner = new();
+        inner.Imports.AddRange(Imports);
+        inner.Aliases.AddRange(Aliases);
+        inner.StaticImports.AddRange(StaticImports);
+        return inner;
+    }
+
     /// <summary>`using Corsac.Lang.Ir;`, and the namespace it was written in.</summary>
     public List<(string In, string Namespace)> Imports { get; } = new();
 
