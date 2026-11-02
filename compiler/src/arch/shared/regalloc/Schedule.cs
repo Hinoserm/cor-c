@@ -350,6 +350,57 @@ public static class Schedule
             }
         }
 
+        // MACHINE REGISTERS HELD: from a write of one the allocator hands out
+        // (the first class's) to its last read -- or to the stretch's end,
+        // where the reader is the barrier after it -- a window the pressure
+        // count does not see: a system call's six, loaded one by one before
+        // the trap. An instruction naming a value of the first class keeps
+        // its side of each window, and one the selector placed inside stays
+        // inside: moved in, a copy that set an array's keep (Lowering.Addressed)
+        // landed between the loads and the trap with every register held, and
+        // the allocator had none for it ("no register for v42").
+        {
+            HashSet<int> handed = new(rf.Classes[0].Preference);
+            List<(int Def, int Last)> windows = new();
+            Dictionary<int, (int Def, int Last)> open = new();
+            for (int x = 0; x < n; x++)
+            {
+                foreach (Named r in instrs[from + x].Regs)
+                {
+                    if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg)) continue;
+                    if ((r.Role & Role.Use) != 0 && open.TryGetValue(r.Reg, out var w)) open[r.Reg] = (w.Def, x);
+                }
+                foreach (Named r in instrs[from + x].Regs)
+                {
+                    if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg) || (r.Role & Role.Def) == 0) continue;
+                    if (open.TryGetValue(r.Reg, out var w) && w.Last > w.Def) windows.Add(w);
+                    open[r.Reg] = (x, x);
+                }
+            }
+            // Still held at the end: read by the barrier, or past it.
+            foreach ((int Def, int Last) w in open.Values) windows.Add((w.Def, n));
+            if (windows.Count > 0)
+            {
+                for (int z = 0; z < n; z++)
+                {
+                    bool value = false;
+                    foreach (Named r in instrs[from + z].Regs)
+                        if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0) { value = true; break; }
+                    if (!value) continue;
+                    foreach ((int d, int last) in windows)
+                    {
+                        if (z < d) Edge(z, d);
+                        else if (z > last) Edge(last, z);
+                        else if (z != d && z != last)
+                        {
+                            Edge(d, z);
+                            if (last < n) Edge(z, last);
+                        }
+                    }
+                }
+            }
+        }
+
         // Bottom-up: a node is ready once everything after it is placed.
         int[] after = new int[n];
         for (int x = 0; x < n; x++) after[x] = succ[x].Count;
