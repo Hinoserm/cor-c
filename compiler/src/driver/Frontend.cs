@@ -430,8 +430,12 @@ public static class Frontend
         // one may not be, a name that is never read -- and a program with a
         // true statement like that in it is not finished. -Wno-error shows
         // them as warnings and goes on, for the build that is fixing them.
+        // Each said once, as an error is (Report): an operand a rewrite binds
+        // again -- `a ?? span`, made a test of `a` -- warned twice.
+        HashSet<string> warned = new(StringComparer.Ordinal);
         foreach (CompileError warning in bound.Warnings)
         {
+            if (!warned.Add(warning.ToString())) continue;
             if (WarningsAreErrors)
             {
                 // Every warning now carries a code -- "): warning CS8602: " --
@@ -452,9 +456,9 @@ public static class Frontend
 
         if (WarningsAreErrors && bound.Warnings.Count > 0)
         {
-            Console.Error.WriteLine(bound.Warnings.Count == 1
+            Console.Error.WriteLine(warned.Count == 1
                 ? "corc: 1 warning, and warnings are errors (-Wno-error to allow them)"
-                : $"corc: {bound.Warnings.Count} warnings, and warnings are errors (-Wno-error to allow them)");
+                : $"corc: {warned.Count} warnings, and warnings are errors (-Wno-error to allow them)");
             return null;
         }
 
