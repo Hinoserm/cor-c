@@ -28,8 +28,10 @@ namespace Corsac.Lang.RegAlloc;
 /// last writer of a stretch counting as read past its end. A writer whose
 /// flags nothing reads moves freely between those stretches. And the
 /// machine registers the allocator hands out, from a write to the last
-/// read: an instruction naming a value does not move into one's hold it
-/// was outside of (a system call's loads held every register to the trap).
+/// read: where those holds crowd the machine, an instruction naming a value
+/// does not move into one it was outside of, and no order made leaves a
+/// value under more of them than the selector's did, below three free (a
+/// system call's loads held every register to the trap).
 /// </summary>
 public static class Schedule
 {
@@ -377,70 +379,69 @@ public static class Schedule
 
         // MACHINE REGISTERS HELD: from a write of one the allocator hands out
         // (the first class's) to its last read -- from the stretch's start for
-        // one written before it, to the stretch's end for one the barrier
-        // after it, or the rest of the block, reads -- a window the pressure
-        // count does not see: a system call's six, loaded one by one before
-        // the trap. Where they leave a value too few, an instruction naming a
-        // value of the first class does not move into a window it was outside
-        // of; out of one is only fewer held.
-        // Moved in, a copy that set an array's keep (Lowering.Addressed)
-        // landed between the loads and the trap with every register held, and
-        // the allocator had none for it ("no register for v42").
+        // one written before it, to the stretch's end for one read past it --
+        // a hold the pressure count does not see: a system call's six, loaded
+        // one by one before the trap. Where holds crowd the machine, an
+        // instruction naming a value of the first class does not move into
+        // one it was outside of; out of one is only fewer held. Moved in, a
+        // copy that set an array's keep (Lowering.Addressed) landed between
+        // the loads and the trap with every register held, and the allocator
+        // had none for it ("no register for v42").
+        List<(int Def, List<int> Reads, bool ToEnd)> holds = new();
+        bool[] valued = new bool[n];
+        for (int z = 0; z < n; z++)
+            foreach (Named r in instrs[from + z].Regs)
+                if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0) { valued[z] = true; break; }
         {
             HashSet<int> handed = new(rf.Classes[0].Preference);
-            List<(int Def, int Last)> windows = new();
-            Dictionary<int, (int Def, int Last)> open = new();
+            Dictionary<int, (int Def, List<int> Reads)> open = new();
             for (int x = 0; x < n; x++)
             {
                 foreach (Named r in instrs[from + x].Regs)
                 {
                     if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg) || (r.Role & Role.Use) == 0) continue;
-                    open[r.Reg] = open.TryGetValue(r.Reg, out var w) ? (w.Def, x) : (-1, x);
+                    if (!open.TryGetValue(r.Reg, out var w)) open[r.Reg] = w = (-1, new List<int>());
+                    if (w.Reads.Count == 0 || w.Reads[^1] != x) w.Reads.Add(x);
                 }
                 foreach (Named r in instrs[from + x].Regs)
                 {
                     if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg) || (r.Role & Role.Def) == 0) continue;
-                    if (open.TryGetValue(r.Reg, out var w) && w.Last > w.Def) windows.Add(w);
-                    open[r.Reg] = (x, x);
+                    if (open.TryGetValue(r.Reg, out var w) && w.Reads.Count > 0) holds.Add((w.Def, w.Reads, false));
+                    open[r.Reg] = (x, new List<int>());
                 }
             }
             // Still held at the end where it is read past it -- by the barrier,
-            // later in the block before anything writes it, or by the block
-            // after (ReadPast) -- to the end; otherwise to its last read here.
-            // A write nothing reads, the edx of a `mul` whose high half is
-            // dropped, holds nothing.
-            foreach ((int reg, (int Def, int Last) w) in open)
+            // later in the block before anything writes it, or (at the block's
+            // end) perhaps by the block after: ReadPast -- to the end. A write
+            // nothing reads before the next, the edx of a `mul` whose high
+            // half is dropped, holds nothing.
+            foreach ((int reg, (int Def, List<int> Reads) w) in open)
             {
-                if (w.Def >= 0 && ReadPast(instrs, from + n, reg)) windows.Add((w.Def, n));
-                else if (w.Last > w.Def) windows.Add(w);
+                if (ReadPast(instrs, from + n, reg)) holds.Add((w.Def, w.Reads, true));
+                else if (w.Reads.Count > 0) holds.Add((w.Def, w.Reads, false));
             }
-            // ONLY WHERE THEY CROWD THE MACHINE: a window inside which, at some
-            // point, all but two of the registers are held -- two, as many as
-            // one instruction's values may need at once. A multiply's eax and
-            // edx are two of six, and keeping values out of them cost
-            // Field25519's products a sixth more spill traffic.
-            int[] held = new int[n + 1];
-            foreach ((int d, int last) in windows)
-                for (int p = d + 1; p <= Math.Min(last, n); p++) held[p]++;
-            windows.RemoveAll(w =>
+        }
+        int HoldEnd((int Def, List<int> Reads, bool ToEnd) h) => h.ToEnd ? n : h.Reads[^1];
+        // ONLY WHERE THEY CROWD THE MACHINE: a hold inside which, at some
+        // point of the selector's order, all but two of the registers are
+        // held -- three left, as many as a store's base, index and value
+        // need. A multiply's eax and edx are two of six, and keeping values
+        // out of them cost Field25519's products a sixth more spill traffic.
+        // The order made is checked again below, holds and all.
+        int[] heldBefore = new int[n + 1];
+        foreach (var h in holds)
+            for (int p = h.Def + 1; p <= HoldEnd(h); p++) heldBefore[p]++;
+        foreach (var h in holds)
+        {
+            int d = h.Def, last = HoldEnd(h);
+            bool crowded = false;
+            for (int p = d + 1; p <= last && !crowded; p++) crowded = heldBefore[p] >= k - 2;
+            if (!crowded) continue;
+            for (int z = 0; z < n; z++)
             {
-                for (int p = w.Def + 1; p <= Math.Min(w.Last, n); p++) if (held[p] >= k - 2) return false;
-                return true;
-            });
-            if (windows.Count > 0)
-            {
-                for (int z = 0; z < n; z++)
-                {
-                    bool value = false;
-                    foreach (Named r in instrs[from + z].Regs)
-                        if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0) { value = true; break; }
-                    if (!value) continue;
-                    foreach ((int d, int last) in windows)
-                    {
-                        if (z < d) Edge(z, d);
-                        else if (z > last && last < n) Edge(last, z);
-                    }
-                }
+                if (!valued[z]) continue;
+                if (z < d) Edge(z, d);
+                else if (z > last && last < n) Edge(last, z);
             }
         }
 
@@ -474,6 +475,29 @@ public static class Schedule
         }
         int now = Peak(instrs, from, order, liveIn, outlives, rf, t);
         if (now >= before) return;
+        // NO VALUE UNDER MORE HELD REGISTERS than it had in the selector's
+        // order, where that leaves it fewer than three: the holds the
+        // crowding test let go move with the instructions that make and read
+        // them, and could close in around one. The selector's order, which
+        // allocates, is kept then.
+        if (holds.Count > 0)
+        {
+            int[] pos = new int[n];
+            for (int x = 0; x < n; x++) pos[order[x]] = x;
+            for (int z = 0; z < n; z++)
+            {
+                if (!valued[z]) continue;
+                int was = 0, would = 0;
+                foreach (var h in holds)
+                {
+                    if (h.Def < z && z <= HoldEnd(h)) was++;
+                    int first = h.Def < 0 ? -1 : pos[h.Def], end = h.ToEnd ? n : -1;
+                    if (!h.ToEnd) foreach (int r in h.Reads) end = Math.Max(end, pos[r]);
+                    if (first < pos[z] && pos[z] <= end) would++;
+                }
+                if (would > Math.Max(was, k - 3)) return;
+            }
+        }
         AInstr[] copy = new AInstr[n];
         for (int x = 0; x < n; x++) copy[x] = instrs[from + order[x]];
         for (int x = 0; x < n; x++) instrs[from + x] = copy[x];
