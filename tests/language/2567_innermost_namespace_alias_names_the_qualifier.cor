@@ -1,0 +1,38 @@
+// test: innermost_namespace_alias_names_the_qualifier
+// expect-exit: 0
+// expect-output:
+// 2 1
+//
+// Two aliases of one name, one at the top of the file and one in a
+// namespace's block: a qualifier written inside the block is the inner
+// one's, as C# takes it -- `G.List<T>` there is System.Collections.Generic's
+// List, open or closed, though the file's own G is System.Text.
+using G = System.Text;
+
+namespace Inner
+{
+    using G = System.Collections.Generic;
+
+    static class Use
+    {
+        public static int Count<T>(G.List<T> list) => list.Count;
+
+        public static G.List<int> Made()
+        {
+            G.List<int> list = new G.List<int>();
+            list.Add(1);
+            list.Add(2);
+            return list;
+        }
+    }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        G.StringBuilder text = new G.StringBuilder("x");
+        System.Console.WriteLine(Inner.Use.Count(Inner.Use.Made()) + " " + text.Length);
+        return 0;
+    }
+}
