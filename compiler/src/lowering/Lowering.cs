@@ -320,8 +320,9 @@ public sealed partial class Lowering
     /// made member can be, has its type's, made from the same file.
     ///
     /// A method with neither has no file: not the last method's, which is
-    /// another's. Only the iterator's members (MachineMembers) keep the outer
-    /// one, being lowered inside the method that made them.
+    /// another's. The iterator's members (MachineMembers) keep the pair they
+    /// were lowered under then, both name and path, as they always kept the
+    /// name.
     /// </summary>
     private static (string Name, string? Path) FileOf(MethodSymbol m, MethodDecl? decl, bool own)
     {

@@ -118,9 +118,6 @@ public sealed class SourceDeclaration
         return new DeclarationRecord(Key, stream.ToArray());
     }
 
-    /// <summary>A record whose stamp says another layout: said as it is, not wrapped (Unreadable).</summary>
-    private sealed class OtherLayout(string message) : InvalidDataException(message);
-
     private static InvalidDataException Unreadable(DeclarationRecord record, string why, Exception inner)
         => new("Source declaration " + record.Key + " does not read (" + why
             + "): the index was most likely made by another compiler; make it again", inner);
@@ -137,10 +134,12 @@ public sealed class SourceDeclaration
         }
         string String() => DeclarationIndex.Utf8.GetString(DeclarationIndex.ReadBytes(reader, Count()));
         string Shared() => DeclarationIndex.Shared(String());
+        // THE STAMP FIRST, apart: one of another layout says so as it is;
+        // whatever fails after it is wrapped (Unreadable).
+        if (stream.Length < 8 || reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 0)
+            throw new InvalidDataException("Unsupported source declaration: the index was made by another compiler; make it again");
         try
         {
-            if (reader.ReadUInt32() != 0x43454443 || reader.ReadUInt32() != 0)
-                throw new OtherLayout("Unsupported source declaration: the index was made by another compiler; make it again");
             // ONE COPY OF WHAT DECLARATIONS SHARE: a file's path, its namespace,
             // its usings and the project's symbols were decoded afresh for every
             // declaration, and tens of thousands of copies of each sat live.
@@ -178,7 +177,7 @@ public sealed class SourceDeclaration
         // ONE FORMAT, NOT VERSIONED BEFORE RELEASE 0: a record that does not
         // read is most likely one an earlier compiler laid out otherwise.
         catch (EndOfStreamException error) { throw Unreadable(record, "truncated", error); }
-        catch (Exception error) when (error is InvalidDataException and not OtherLayout or DecoderFallbackException)
+        catch (Exception error) when (error is InvalidDataException or DecoderFallbackException)
         {
             throw Unreadable(record, error.Message, error);
         }
