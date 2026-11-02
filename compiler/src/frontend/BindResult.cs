@@ -1034,10 +1034,10 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
     // made once, then each program type's added as it comes; made again after
     // a removal or an overwrite by another declaration (a type gone may have
     // been the only one in a scope), a new LibrarySource era or other
-    // predicates, and a write past this table's own methods -- the
-    // dictionary's Clear or TryAdd. Such a write shows in the count: each own
-    // write moves the count it is kept at only from where it was, one on, so
-    // one in between leaves the two apart for good and the set is made again.
+    // predicates, or a Clear. The dictionary's other writes go through this
+    // table's own (Clear, TryAdd, Remove below); one that still came past
+    // them, cast to the dictionary, shows where it moved the count: each own
+    // write moves the count it is kept at only from one before it.
     private HashSet<string>? _program;
     private bool _programStale;
     private int _programEra, _programCount;
@@ -1143,6 +1143,29 @@ public sealed class TypeTable : Dictionary<string, TypeSymbol>
         if (fresh) Seen();
         return true;
     }
+
+    // THE DICTIONARY'S OTHER WRITES, through this table too: a Clear and as
+    // many TryAdds after it left the count where it was, and the indexes
+    // made from the table (the split names, the scopes, the program's) took
+    // themselves for current.
+    public new void Clear()
+    {
+        base.Clear();
+        _split.Clear();
+        _scopes.Clear();
+        Seen();
+        ProgramWritten(keeps: false, null);
+    }
+
+    public new bool TryAdd(string key, TypeSymbol value)
+    {
+        if (ContainsKey(key)) return false;
+        Add(key, value);
+        return true;
+    }
+
+    public new bool Remove(string key, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out TypeSymbol value)
+        => TryGetValue(key, out value) && Remove(key);
 
     /// <summary>The type called `name` directly within `within` (no dot in `name`).</summary>
     public bool TryGetWithin(string within, string name, out TypeSymbol? symbol)

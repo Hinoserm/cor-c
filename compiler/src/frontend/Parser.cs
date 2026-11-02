@@ -1098,7 +1098,18 @@ public sealed class Parser
     /// Box&lt;T&gt;, whose nested G has a List&lt;U&gt;, is Box.G.List&lt;T, int&gt; --
     /// C# finds the head G in the types around it, nearest first, before
     /// any alias or namespace of its name. Left as written, it was the
-    /// file's `using G = System.Collections.Generic` List.
+    /// file's `using G = System.Collections.Generic` List. Only this family's
+    /// own types are heads here: a namespace or a type outside it names no
+    /// type of the family, and a nested type a base class declares, which
+    /// C# also finds before an enclosing scope, is not looked for.
+    ///
+    /// IN A TYPE POSITION AND ON THE LEFT OF A MEMBER ACCESS alike:
+    /// `G.List&lt;int&gt;.Create()` and `Inner&lt;int&gt;.Shared` too, where a name
+    /// with type arguments followed by a dot is a type and nothing else. The
+    /// expression keeps its nodes: its head name becomes the path to the
+    /// type and the outer parameters go before the written arguments, the
+    /// dotted generic the monomorphiser reads from the left of a member
+    /// access as it reads System.Collections.Generic.X&lt;int&gt;.Member.
     /// </summary>
     private static void FinishFamily(TypeDecl top, List<TypeDecl> nested)
     {
@@ -1121,6 +1132,13 @@ public sealed class Parser
             }
             return declared.Contains(head) ? name : null;
         }
+        // `A.B` written as names and dots, and its innermost name.
+        static (string, NameExpr)? Dotted(Expr e) => e switch
+        {
+            NameExpr { TypeArgs.Count: 0, Global: false } n => (n.Name, n),
+            MemberExpr { TypeArgs.Count: 0, NullConditional: false } m when Dotted(m.Target) is (string outer, NameExpr first) => (outer + "." + m.Name, first),
+            _ => null,
+        };
         foreach (TypeDecl inner in family)
         {
             if (inner.OuterParams == 0 || inner.Outer is null) continue;
@@ -1129,7 +1147,10 @@ public sealed class Parser
             foreach (TypeDecl within in family)
             {
                 string at = PathOf(within);
-                if (at != outer && !at.StartsWith(outer + ".", StringComparison.Ordinal)) continue;
+                // THE BARE NAME ONLY INSIDE ITS OUTER TYPE, where it is in
+                // scope; through a type around the use, or by its whole path,
+                // from anywhere in the family -- `G.List` in Box itself.
+                bool inside = at == outer || at.StartsWith(outer + ".", StringComparison.Ordinal);
                 // A NEARER ONE OF THE NAME HIDES IT, as C#'s lookup has it:
                 // `Enumerator` inside Dictionary's KeyCollection is the
                 // collection's own, not Dictionary's -- a type between where
@@ -1137,13 +1158,35 @@ public sealed class Parser
                 bool hidden = false;
                 for (string scope = at; scope != outer && scope.StartsWith(outer + ".", StringComparison.Ordinal) && !hidden; scope = scope[..scope.LastIndexOf('.')])
                     hidden = declared.Contains(scope + "." + inner.Name);
+                bool Names(string written) => inside && written == inner.Name && !hidden || written == path || Through(at, written) == path;
+                void LeadWithOuter(List<TypeRef> arguments, Node written)
+                {
+                    for (int k = inner.OuterParams - 1; k >= 0; k--)
+                        arguments.Insert(0, new TypeRef { Name = inner.TypeParams[k].Name, Line = written.Line, Col = written.Col });
+                }
                 Corsac.Lang.Metadata.BodyTypeNames.Walk(within, reference =>
                 {
-                    if ((reference.Name != inner.Name || hidden) && reference.Name != path && Through(at, reference.Name) != path
-                        || reference.Args.Count != own) return;
-                    for (int k = inner.OuterParams - 1; k >= 0; k--)
-                        reference.Arguments.Insert(0, new TypeRef { Name = inner.TypeParams[k].Name, Line = reference.Line, Col = reference.Col });
+                    if (!Names(reference.Name) || reference.Args.Count != own) return;
+                    LeadWithOuter(reference.Arguments, reference);
                     reference.Name = path;
+                }, access: member =>
+                {
+                    // `Inner<int>.Shared`: the head itself, renamed.
+                    if (member.Target is NameExpr { TypeArgs.Count: > 0 } bare)
+                    {
+                        if (bare.TypeArgs.Count != own || !Names(bare.Name)) return;
+                        LeadWithOuter(bare.WritableTypeArgs, bare);
+                        bare.Name = path;
+                    }
+                    // `G.List<int>.Create()`: the innermost name made the path
+                    // up to it, the generic's own arguments led by the outer.
+                    else if (member.Target is MemberExpr { TypeArgs.Count: > 0 } generic && generic.TypeArgs.Count == own
+                             && Dotted(generic.Target) is (string written, NameExpr head)
+                             && Through(at, written + "." + generic.Name) == path)
+                    {
+                        LeadWithOuter(generic.WritableTypeArgs, generic);
+                        head.Name = path[..(path.Length - (written.Length - head.Name.Length) - generic.Name.Length - 1)];
+                    }
                 });
             }
         }
