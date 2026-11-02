@@ -3694,7 +3694,7 @@ public sealed class Parser
         _iteratorElement = produces is { Args.Count: 1 } sequence
                          && LastPart(sequence.Name) is "IEnumerable" or "IEnumerable`1" or "IEnumerator" or "IEnumerator`1"
                          ? sequence.Args[0]
-                         : produces is { Args.Count: 0, Name: "IEnumerable" or "IEnumerator" or "System.Collections.IEnumerable" or "System.Collections.IEnumerator" }
+                         : produces is { Args.Count: 0 } plain && LastPart(plain.Name) is "IEnumerable" or "IEnumerator"
                          ? new TypeRef { Name = "object", Line = line, Col = col }
                          : null;
         _iteratorSawYield = false;
@@ -3746,10 +3746,10 @@ public sealed class Parser
         return body;
     }
 
-    /// <summary>T, when `produces` is IAsyncEnumerable&lt;T&gt; (enumerable) or IAsyncEnumerator&lt;T&gt;, by its name as written.</summary>
     /// <summary>A dotted name's last part: `System.Collections.Generic.IEnumerable` is IEnumerable.</summary>
     private static string LastPart(string name) => name.LastIndexOf('.') is int dot and >= 0 ? name[(dot + 1)..] : name;
 
+    /// <summary>T, when `produces` is IAsyncEnumerable&lt;T&gt; (enumerable) or IAsyncEnumerator&lt;T&gt;, by its name as written.</summary>
     private static TypeRef? AsyncSequenceElement(TypeRef? produces, out bool enumerable)
     {
         enumerable = false;
