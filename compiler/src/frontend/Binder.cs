@@ -15102,14 +15102,17 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// Whether an arm of type <paramref name="had"/> is an array that a
-    /// conditional's or a switch's whole of type <paramref name="whole"/> -- a
-    /// Span or ReadOnlySpan of its element -- must wrap (CheckAssignable's
-    /// array-to-span), the conversion StandardConvertible lets pass.
+    /// Whether an arm of type <paramref name="had"/> is one a conditional's, a
+    /// switch's or a `??`'s whole of type <paramref name="whole"/> must make a
+    /// span (CheckAssignable): an array of a Span's or ReadOnlySpan's element,
+    /// or a string of a ReadOnlySpan of char -- conversions StandardConvertible
+    /// lets pass, which taken raw read the object's own words as the span's
+    /// pointer and length.
     /// </summary>
-    private bool ArrayArmOfSpan(Type had, Type whole)
+    private bool SpanArm(Type had, Type whole)
     {
-        return had.IsArray && had.Element is Type element && SpanHolds(whole) is { } spanned && spanned.Equals(element);
+        if (had.IsArray) return had.Element is Type element && SpanHolds(whole) is { } spanned && spanned.Equals(element);
+        return had.Prim == Prim.String && SpanHolds(whole) is { Prim: Prim.Char } && ReadOnlySpanned(whole);
     }
 
     private Type? SpanHolds(Type t)
@@ -18487,13 +18490,14 @@ public sealed partial class Binder
                             CheckAssignable(had, whole, arm, "arm");
                         }
                         // AND AN ARRAY ARM OF A SPAN-TYPED WHOLE is wrapped in
-                        // the span, as an assignment wraps it (CheckAssignable):
+                        // the span, as an assignment wraps it (CheckAssignable),
+                        // and a string arm of a ReadOnlySpan<char> too (SpanArm):
                         // StandardConvertible counts the conversion, for overload
                         // resolution, so the test above passes it by, and `at ==
                         // 0 ? bytes : span.Slice(at)` read the array's own words
                         // as the span's pointer and length -- the CORSAC kernel's
                         // link walk walked them.
-                        else if (ArrayArmOfSpan(had, whole))
+                        else if (SpanArm(had, whole))
                         {
                             CheckAssignable(had, whole, arm, "arm");
                         }
@@ -19293,10 +19297,10 @@ public sealed partial class Binder
                 {
                     foreach (SwitchArm arm in sx.Arms)
                     {
-                        // And an array arm of a span-typed switch, wrapped in
-                        // the span as the conditional's is (ArrayArmOfSpan).
+                        // And an array or string arm of a span-typed switch,
+                        // made the span as the conditional's is (SpanArm).
                         if (_r.ExprType.TryGetValue(arm.Result, out Type? had) && !had.IsError
-                            && (TupleRebuilt(had, result) || ArrayArmOfSpan(had, result)))
+                            && (TupleRebuilt(had, result) || SpanArm(had, result)))
                         {
                             CheckAssignable(had, result, arm.Result, "arm");
                         }
@@ -27302,18 +27306,19 @@ public sealed partial class Binder
                         }
                         return r.Nullable ? l : left;
                     }
-                    // AN ARRAY ON THE LEFT OF A SPAN is the span: `a ?? span`
-                    // is the right's type, and the array is made one by C#'s
-                    // implicit operator -- `a is T[] t ? t : span`, a read once
-                    // and the span read only where it is null, the arm wrapped
-                    // as a conditional's is (ArrayArmOfSpan). Taken as it was,
-                    // the array's own words were the span's pointer and length.
-                    if (left.IsArray && ArrayArmOfSpan(left, right) && RefOf(left) is TypeRef arrayRef)
+                    // AN ARRAY (OR STRING) ON THE LEFT OF A SPAN is the span:
+                    // `a ?? span` is the right's type, and a is made one by C#'s
+                    // implicit operator -- `a is { } t ? t : span`, a null test
+                    // as C#'s, a read once and the span only where it is null,
+                    // the arm made a span as a conditional's is (SpanArm).
+                    // Taken as it was, a's own words were the span's pointer
+                    // and length.
+                    if (SpanArm(left, right))
                     {
                         string held = "co$" + b.Line + "$" + b.Col + "$" + _asNullables++;
                         ConditionalExpr instead = new()
                         {
-                            Cond = new IsExpr { Operand = b.Left, Type = arrayRef, Binding = held, Line = b.Line, Col = b.Col },
+                            Cond = new IsExpr { Operand = b.Left, Type = new TypeRef { Name = TypeRef.Same, Line = b.Line, Col = b.Col }, Binding = held, Line = b.Line, Col = b.Col },
                             Then = new NameExpr { Name = held, Line = b.Left.Line, Col = b.Left.Col },
                             Else = b.Right,
                             Line = b.Line, Col = b.Col,

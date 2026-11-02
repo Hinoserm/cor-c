@@ -1,0 +1,38 @@
+// test: string_and_generic_arms_as_spans
+// expect-exit: 0
+// expect-output:
+// abc ab hey wxyz
+// 0 3 2 1
+//
+// A string where a ReadOnlySpan<char> is the whole -- a conditional's arm,
+// a switch's, the left of `??` -- is made the span (AsSpan), as C#'s
+// implicit operator makes it, and an array of a type parameter is one of
+// Span<T> as a byte[] is of ReadOnlySpan<byte> (2570, 2571). Taken raw, the
+// string's own words were the span's pointer and length. A null array arm
+// is the empty span.
+using System;
+
+static class Program
+{
+    static string? Maybe(bool given) => given ? "hey" : null;
+    static int Length<T>(T[]? a, Span<T> s) => (a ?? s).Length;
+    static int Pick<T>(bool first, T[] a, Span<T> s) => (first ? a : s).Length;
+
+    static int Main()
+    {
+        ReadOnlySpan<char> chars = "wxyz".AsSpan();
+        bool flag = true;
+        int k = 0;
+        ReadOnlySpan<char> c1 = flag ? "abc" : chars;
+        ReadOnlySpan<char> c2 = k switch { 0 => "ab", _ => chars };
+        ReadOnlySpan<char> c3 = Maybe(true) ?? chars;
+        ReadOnlySpan<char> c4 = Maybe(false) ?? chars;
+        Console.WriteLine(new string(c1) + " " + new string(c2) + " " + new string(c3) + " " + new string(c4));
+
+        byte[]? none = null;
+        ReadOnlySpan<byte> empty = flag ? none : new ReadOnlySpan<byte>(new byte[] { 1 });
+        Console.WriteLine(empty.Length + " " + Length(new int[3], default) + " " + Length<int>(null, new Span<int>(new int[2]))
+            + " " + Pick(true, new long[1], default));
+        return 0;
+    }
+}
