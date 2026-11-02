@@ -15101,6 +15101,17 @@ public sealed partial class Binder
         return collection;
     }
 
+    /// <summary>
+    /// Whether an arm of type <paramref name="had"/> is an array that a
+    /// conditional's or a switch's whole of type <paramref name="whole"/> -- a
+    /// Span or ReadOnlySpan of its element -- must wrap (CheckAssignable's
+    /// array-to-span), the conversion StandardConvertible lets pass.
+    /// </summary>
+    private bool ArrayArmOfSpan(Type had, Type whole)
+    {
+        return had.IsArray && had.Element is Type element && SpanHolds(whole) is { } spanned && spanned.Equals(element);
+    }
+
     private Type? SpanHolds(Type t)
     {
         if (t.Symbol?.Decl is { Template: "ReadOnlySpan" or "Span", TemplateArgs.Count: 1 } made)
@@ -18475,6 +18486,17 @@ public sealed partial class Binder
                         {
                             CheckAssignable(had, whole, arm, "arm");
                         }
+                        // AND AN ARRAY ARM OF A SPAN-TYPED WHOLE is wrapped in
+                        // the span, as an assignment wraps it (CheckAssignable):
+                        // StandardConvertible counts the conversion, for overload
+                        // resolution, so the test above passes it by, and `at ==
+                        // 0 ? bytes : span.Slice(at)` read the array's own words
+                        // as the span's pointer and length -- the CORSAC kernel's
+                        // link walk walked them.
+                        else if (ArrayArmOfSpan(had, whole))
+                        {
+                            CheckAssignable(had, whole, arm, "arm");
+                        }
                     }
                     return whole;
                 }
@@ -19271,8 +19293,10 @@ public sealed partial class Binder
                 {
                     foreach (SwitchArm arm in sx.Arms)
                     {
+                        // And an array arm of a span-typed switch, wrapped in
+                        // the span as the conditional's is (ArrayArmOfSpan).
                         if (_r.ExprType.TryGetValue(arm.Result, out Type? had) && !had.IsError
-                            && TupleRebuilt(had, result))
+                            && (TupleRebuilt(had, result) || ArrayArmOfSpan(had, result)))
                         {
                             CheckAssignable(had, result, arm.Result, "arm");
                         }

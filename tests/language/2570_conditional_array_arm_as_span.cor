@@ -1,0 +1,151 @@
+// test: an array arm of a conditional or a switch whose whole is a span is wrapped in the span
+// expect-exit: 0
+// expect-output:
+// local True: array
+// local False: /
+// nullable True: array
+// param True: array
+// assign True: array
+// nested 0: array
+// nested 2: ray
+// nested 9: /
+// reversed False: array
+// explicit True: array
+// arrays True: array
+// arrays False: other
+// switch 0: array
+// switch 1: /
+// writable True: array
+// loop: /root/same-rel /root/target-1 /target-2
+//
+// `c ? bytes : span` is a ReadOnlySpan<byte>: C#'s implicit operator makes a
+// span of the array arm. StandardConvertible counts that conversion (overload
+// resolution needs it), so the conditional's join passed the arm by and the
+// array's own words were read as the span's pointer and length. The CORSAC
+// kernel's link walk -- `rest = restAt == 0 ? next : ...Slice(restAt)` over
+// its span parameters, in a loop -- walked them and found nothing. A switch
+// expression's arms the same.
+
+using System;
+
+static class Program
+{
+    static readonly byte[] Root = new byte[] { (byte)'/' };
+
+    static string Text(ReadOnlySpan<byte> s)
+    {
+        string t = "";
+        for (int i = 0; i < s.Length; i++) t += s[i] == 0 ? '.' : (char)s[i];
+        return t;
+    }
+
+    static byte[] Bytes(string t)
+    {
+        byte[] b = new byte[t.Length];
+        for (int i = 0; i < t.Length; i++) b[i] = (byte)t[i];
+        return b;
+    }
+
+    static void Local(bool flag)
+    {
+        byte[] a = Bytes("array");
+        ReadOnlySpan<byte> r = flag ? a : new ReadOnlySpan<byte>(Root);
+        Console.WriteLine("local " + flag + ": " + Text(r));
+    }
+
+    static void LocalNullable(bool flag)
+    {
+        byte[]? a = Bytes("array");
+        ReadOnlySpan<byte> r = flag ? a : new ReadOnlySpan<byte>(Root);
+        Console.WriteLine("nullable " + flag + ": " + Text(r));
+    }
+
+    static void Param(ReadOnlySpan<byte> r, bool flag)
+    {
+        byte[] a = Bytes("array");
+        r = flag ? a : new ReadOnlySpan<byte>(Root);
+        Console.WriteLine("param " + flag + ": " + Text(r));
+    }
+
+    static void Assign(bool flag)
+    {
+        byte[] a = Bytes("array");
+        ReadOnlySpan<byte> r = new ReadOnlySpan<byte>(Root);
+        r = flag ? a : new ReadOnlySpan<byte>(Root);
+        Console.WriteLine("assign " + flag + ": " + Text(r));
+    }
+
+    static void Nested(int at)
+    {
+        byte[] a = Bytes("array");
+        ReadOnlySpan<byte> r = at == 0 ? a : at >= a.Length ? new ReadOnlySpan<byte>(Root) : new ReadOnlySpan<byte>(a).Slice(at);
+        Console.WriteLine("nested " + at + ": " + Text(r));
+    }
+
+    static void Reversed(bool flag)
+    {
+        byte[] a = Bytes("array");
+        ReadOnlySpan<byte> r = flag ? new ReadOnlySpan<byte>(Root) : a;
+        Console.WriteLine("reversed " + flag + ": " + Text(r));
+    }
+
+    static void Explicit(bool flag)
+    {
+        byte[] a = Bytes("array");
+        ReadOnlySpan<byte> r = flag ? (ReadOnlySpan<byte>)a : new ReadOnlySpan<byte>(Root);
+        Console.WriteLine("explicit " + flag + ": " + Text(r));
+    }
+
+    static void TwoArrays(bool flag)
+    {
+        byte[] a = Bytes("array"), b = Bytes("other");
+        ReadOnlySpan<byte> r = flag ? a : b;
+        Console.WriteLine("arrays " + flag + ": " + Text(r));
+    }
+
+    static void Switched(int k)
+    {
+        byte[] a = Bytes("array");
+        ReadOnlySpan<byte> r = k switch { 0 => a, _ => new ReadOnlySpan<byte>(Root) };
+        Console.WriteLine("switch " + k + ": " + Text(r));
+    }
+
+    static void Writable(bool flag)
+    {
+        byte[] a = Bytes("array");
+        Span<byte> w = flag ? a : new Span<byte>(Bytes("x"));
+        Console.WriteLine("writable " + flag + ": " + Text(w));
+    }
+
+    static long Loop(ReadOnlySpan<byte> path, ReadOnlySpan<byte> rest)
+    {
+        string seen = "";
+        for (int hops = 0; hops <= 3; hops++)
+        {
+            seen += (hops > 0 ? " " : "") + Text(rest);
+            if (hops == 2) break;
+            byte[]? next = Bytes(hops == 0 ? "/root/target-1" : "/mnt/target-2");
+            int restAt = hops == 0 ? 0 : 4;
+            path = next;
+            rest = restAt == 0 ? next : restAt >= next.Length ? new ReadOnlySpan<byte>(Root) : new ReadOnlySpan<byte>(next).Slice(restAt);
+        }
+        Console.WriteLine("loop: " + seen);
+        return rest.Length;
+    }
+
+    static int Main()
+    {
+        Local(true); Local(false);
+        LocalNullable(true);
+        Param(new ReadOnlySpan<byte>(Root), true);
+        Assign(true);
+        Nested(0); Nested(2); Nested(9);
+        Reversed(false);
+        Explicit(true);
+        TwoArrays(true); TwoArrays(false);
+        Switched(0); Switched(1);
+        Writable(true);
+        byte[] start = Bytes("/root/same-rel");
+        return Loop(start, start) == 9 ? 0 : 1;
+    }
+}
