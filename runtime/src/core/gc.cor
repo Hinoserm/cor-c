@@ -361,6 +361,15 @@ public static class Gc
     static nuint _barrierWanted;    // the ring a full one asked the next cycle for, or 0
 
     public static long ConcurrentCycles;
+
+    // WHY A CONCURRENT CYCLE WAS GIVEN UP (SayStats), each at its point:
+    // no snapshot to begin with; the stop's block list overflowed; the
+    // chunk walk incomplete; the barrier lost; a report unsigned at the scan.
+    // And under them, what made the walk incomplete and what lost the
+    // barrier. Counted without a lock: figures to read.
+    public static long GaveUpNoSnapshot, GaveUpStopList, GaveUpWalk, GaveUpBarrierLost, GaveUpBarrierAtScan;
+    public static long WalkNoIndex, WalkNoAnchors, WalkPage, WalkBadBlock, WalkTogether;
+    public static long LostStackCopyTable, LostRingFull, LostReportUnsigned, LostNoStackCopies, LostStackCopyMap;
     public static long BarrierTaken;
     public static long BarrierOverflows;
 
@@ -8143,6 +8152,23 @@ public static class Gc
         // full held-block table) and the first; and the ones without
         // generations at all.
         SayNumber("gc: majors asked ", MajorsAsked);
+        SayNumber("gc: concurrent cycles ", ConcurrentCycles);
+        SayNumber("gc: given up ", Aborted);
+        SayNumber("gc: given up, no snapshot ", GaveUpNoSnapshot);
+        SayNumber("gc: given up, stop list overflowed ", GaveUpStopList);
+        SayNumber("gc: given up, walk incomplete ", GaveUpWalk);
+        SayNumber("gc: given up, barrier lost ", GaveUpBarrierLost);
+        SayNumber("gc: given up, barrier at the scan ", GaveUpBarrierAtScan);
+        SayNumber("gc: walk: no index ", WalkNoIndex);
+        SayNumber("gc: walk: no anchors ", WalkNoAnchors);
+        SayNumber("gc: walk: a page ", WalkPage);
+        SayNumber("gc: walk: a bad block ", WalkBadBlock);
+        SayNumber("gc: walk: not together ", WalkTogether);
+        SayNumber("gc: barrier lost: stack copy table ", LostStackCopyTable);
+        SayNumber("gc: barrier lost: ring full ", LostRingFull);
+        SayNumber("gc: barrier lost: report unsigned ", LostReportUnsigned);
+        SayNumber("gc: barrier lost: no stack copies ", LostNoStackCopies);
+        SayNumber("gc: barrier lost: stack copy not mapped ", LostStackCopyMap);
         SayNumber("gc: majors first ", MajorsFirst);
         SayNumber("gc: majors without generations ", MajorsUngenerational);
         SayNumber("gc: pause ms ", PauseMicros / 1000);
@@ -13617,6 +13643,7 @@ public static class Gc
         _stamping = true;
         if (!GcThreads.StartStackCopies())
         {
+            LostStackCopyTable = LostStackCopyTable + 1;
             Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 1);
         }
         RetireClasses(self);
@@ -13642,6 +13669,7 @@ public static class Gc
 
         if (!_snapshots)
         {
+            GaveUpNoSnapshot = GaveUpNoSnapshot + 1;
             _stopOpen = false;
             ResetStopBlocks();
             StopStepTimed();
@@ -13667,6 +13695,8 @@ public static class Gc
         // chain broke has half a start table: no sound cycle, either way.
         if (_stopListLost || !_walkEvery)
         {
+            if (_stopListLost) GaveUpStopList = GaveUpStopList + 1;
+            else GaveUpWalk = GaveUpWalk + 1;
             _snapshots = false;
             _markSlots = 0;
             ResetStopBlocks();
@@ -13687,6 +13717,7 @@ public static class Gc
 
         if (Sys.Read32(ctl + GcLock.BarrierLost) != 0)
         {
+            GaveUpBarrierLost = GaveUpBarrierLost + 1;
             GiveUp(false);
             return;
         }
@@ -13733,6 +13764,7 @@ public static class Gc
 
         if (TakeBarrier(true))
         {
+            GaveUpBarrierAtScan = GaveUpBarrierAtScan + 1;
             GiveUp(true);
             return;
         }
@@ -14560,6 +14592,7 @@ public static class Gc
 
         if (((place - head)) >= count)
         {
+            LostRingFull = LostRingFull + 1;
             Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 1);
             if (_barrierWanted == 0) _barrierWanted = count * (2 * WordSize.Bytes) * 4;
             return;
@@ -14600,6 +14633,7 @@ public static class Gc
                     break;
                 }
 
+                LostReportUnsigned = LostReportUnsigned + 1;
                 Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 1);
             }
             else
@@ -14653,6 +14687,7 @@ public static class Gc
     {
         HeapChunks.SetBlockAnchorsActive(false);
         _walkEvery = HeapChunks.SnapshotIndex();
+        if (!_walkEvery) WalkNoIndex = WalkNoIndex + 1;
         // THE SIZE-CLASS PAGES SNAPSHOTTED TOGETHER, with the world stopped
         // and the workers there: each page's anchors, starts and stamps are
         // its own, and its cards are bytes set to the same value whoever
@@ -14727,6 +14762,7 @@ public static class Gc
         nuint anchors = HeapChunks.PrepareBlockAnchors(chunk);
         if (anchors == 0)
         {
+            WalkNoAnchors = WalkNoAnchors + 1;
             _walkEvery = false;
             return false;
         }
@@ -14750,7 +14786,7 @@ public static class Gc
                 }
                 else
                 {
-                    if (!SnapshotPage(chunk, anchors)) _walkEvery = false;
+                    if (!SnapshotPage(chunk, anchors)) { WalkPage = WalkPage + 1; _walkEvery = false; }
                     work = work + (long)((HeapChunks.End(chunk) - first) / ClassSize(HeapChunks.PageClass(chunk) - 1));
                 }
             }
@@ -14858,7 +14894,7 @@ public static class Gc
             // and never traced. No snapshot, then, and the collection
             // is given up rather than run on half of one.
             if (size < Smallest || Beyond(block, size, end)
-                || Sys.ReadAddress(block + size - FooterBytes) != header) { _walkEvery = false; break; }
+                || Sys.ReadAddress(block + size - FooterBytes) != header) { WalkBadBlock = WalkBadBlock + 1; _walkEvery = false; break; }
             nuint last = (block + size - 1 - chunk) / 4096;
             while (page <= last)
             {
@@ -14887,7 +14923,7 @@ public static class Gc
     /// whether the snapshot is whole.
     static void EndAnchors()
     {
-        if (_snapCount > 0 && !SnapshotTogether()) _walkEvery = false;
+        if (_snapCount > 0 && !SnapshotTogether()) { WalkTogether = WalkTogether + 1; _walkEvery = false; }
         HeapChunks.SetBlockAnchorsActive(true);
         _snapshots = _walkEvery;
         // THE MARKER'S LOOKUP BY THE 4 KB TABLE (MarkWord), where the
@@ -18053,6 +18089,7 @@ public static class GcThreads
         }
         if (_stackCopies == 0)
         {
+            Gc.LostNoStackCopies = Gc.LostNoStackCopies + 1;
             Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 1);
             return;
         }
@@ -18064,6 +18101,7 @@ public static class GcThreads
         nuint copy = slot < _stackCopiesFor ? Platform.Map(mapped) : NoCopy;
         if (copy == 0)
         {
+            Gc.LostStackCopyMap = Gc.LostStackCopyMap + 1;
             Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 1);
             return;
         }
