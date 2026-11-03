@@ -1,0 +1,15 @@
+// A module carrying part of the class library its kernel leaves out: the
+// font engine, as gui.ko does.
+
+using System.Drawing;
+
+namespace Fonts;
+
+public static class FontsModule
+{
+    public static int Probe()
+    {
+        BitmapFontFace? none = BitmapFontFace.FromFnt(new byte[4]);
+        return CodePage1252.Character(0x80) + (none == null ? 1 : 0);
+    }
+}

@@ -61,7 +61,7 @@ public sealed class Function
     /// <summary>What the unused-code report passes over: an auto-property's accessor, whose field is judged (MethodDecl.AutoAccessor).</summary>
     public bool Unjudged { get; init; }
 
-    /// <summary>The full path of the source file, where SourceFile is its name; for the unused-code report, not kept in IR archives.</summary>
+    /// <summary>The full path of the source file, where SourceFile is its name -- the type's, its first part's: for the unused-code report, and which part of the class library an image owns (Module.FixOwnLibrary); not kept in IR archives.</summary>
     public string? SourcePath { get; init; }
 
     /// <summary>

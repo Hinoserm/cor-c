@@ -21,9 +21,11 @@ public sealed partial class Lowering
     public static bool SplitLibrary { get; set; }
 
     /// <summary>
-    /// The class library's sources this compile owns (full paths): named on
-    /// its command line, not read for their declarations. Empty for a
-    /// program's, a user's library's or a module's compile.
+    /// The class library's sources among this compile's files and not read
+    /// for their declarations (full paths): a library image's own, and a
+    /// program's whole default library, read to give away where images
+    /// provide it. What a program or a module keeps of them as its own is
+    /// narrower (Module.FixOwnLibrary).
     /// </summary>
     public static IReadOnlySet<string> OwnLibrarySources { get; set; } = new HashSet<string>(StringComparer.Ordinal);
 

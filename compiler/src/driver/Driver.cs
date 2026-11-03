@@ -1072,10 +1072,14 @@ public static class Driver
         // library's. Found relative to the compiler's own location, which is
         // where the repository keeps stdlib/ and runtime/.
         List<string> classLibrary = DefaultLibraries(target, freestanding, windows);
+        // The default library this compile added itself, by full path: never
+        // a source it owns as its image's own (Module.FixOwnLibrary).
+        HashSet<string> defaultAdded = new(StringComparer.Ordinal);
         if (!args.Contains("--nostdlib") && classLibrary.Count > 0)
         {
             List<string> added = classLibrary.Where(d => !files.Any(f => Path.GetFullPath(f) == Path.GetFullPath(d))).ToList();
             files.InsertRange(0, added);
+            defaultAdded.UnionWith(added.Select(d => Path.GetFullPath(d)));
 
             // A SHARED OBJECT OF ONE'S OWN SOURCES IS A LIBRARY ABOVE THE CLASS
             // LIBRARY: `corc compile --shared mine.cor` is `--shared mine.cor
@@ -1164,10 +1168,12 @@ public static class Driver
         List<string> libraryMark = library ? new List<string>(files) : classLibrary;
         Corsac.Lang.Lower.Lowering.SharedObject = shared && !args.Contains("--no-shared-init");
         Corsac.Lang.Lower.Lowering.ExportingImage = shared || freestanding && !windows && args.Contains("--obj");
-        // THE CLASS LIBRARY'S SOURCES THIS COMPILE OWNS: named on its command
-        // line and not read for their declarations (--ref, or the default
-        // library a --shared compile references). A program's or a user's
-        // library's compile owns none of them.
+        // THE CLASS LIBRARY'S SOURCES THIS COMPILE OWNS: among its files and
+        // not read for their declarations (--ref, or the default library a
+        // --shared compile references) -- for a program's, the whole default
+        // library it added, which it reads to give away to the images that
+        // provide it (LibraryProvided). What an image keeps of them as its own
+        // is narrower (Module.FixOwnLibrary).
         HashSet<string> referenced = new(references.Select(r => Path.GetFullPath(r)), StringComparer.Ordinal);
         HashSet<string> ownLibrary = new(files.Where(IsLibrarySource).Select(f => Path.GetFullPath(f)).Where(f => !referenced.Contains(f)), StringComparer.Ordinal);
         Corsac.Lang.Lower.Lowering.SplitLibrary = shared && !freestanding && !windows && ownLibrary.Count > 0;
@@ -1411,7 +1417,12 @@ public static class Driver
             // them among its files too, and reads them all to give away; a
             // user's library references them.
             module.CompilesLibrary = library && kernel is null && Corsac.Lang.Lower.Lowering.OwnLibrarySources.Count > 0;
-            module.OwnLibrarySources = Corsac.Lang.Lower.Lowering.OwnLibrarySources;
+            // ITS OWN PART OF THE LIBRARY: the sources named on its command
+            // line, not the default library it added, of which no provider
+            // defines a thing -- decided now, from everything lowered, before
+            // a pass drops a provided static or Provided gives the provided
+            // code away, either of which took a file's evidence with it.
+            module.FixOwnLibrary(new HashSet<string>(Corsac.Lang.Lower.Lowering.OwnLibrarySources.Where(p => !defaultAdded.Contains(p)), StringComparer.Ordinal));
         }
         if (!args.Contains("--no-opt"))
         {

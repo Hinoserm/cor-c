@@ -277,42 +277,45 @@ public sealed class Module
     /// </summary>
     public bool CompilesLibrary { get; set; }
 
-    /// <summary>
-    /// The class library's sources on this compile's command line, not read
-    /// for their declarations (Lowering.OwnLibrarySources), by full path.
-    /// One no provider defines anything of is this image's own (OwnsLibraryCode).
-    /// </summary>
-    public IReadOnlySet<string>? OwnLibrarySources { get; set; }
-
-    private HashSet<string>? _owned;
+    private IReadOnlySet<string>? _owned;
 
     /// <summary>
-    /// WHETHER CODE OR STATE FROM `path` IS THIS IMAGE'S OWN though written in
-    /// the class library: a source this compile names (OwnLibrarySources) of
-    /// which no provider defines a thing (ProvidedElsewhere) -- a module that
-    /// carries a part of the library its kernel leaves out, as gui.ko does the
-    /// font engine. Its code and statics are the only ones there are: not
-    /// LibraryPrivate, kept, exported as its public surface. A source of which
-    /// the provider defines something is the provider's, and what it does not
-    /// export stays withheld.
+    /// THIS IMAGE'S OWN PART OF THE CLASS LIBRARY, fixed once, after lowering
+    /// and before any pass (Driver): of `named` -- the library sources on
+    /// the command line, not the default library the compile added -- those
+    /// no provider (ProvidedElsewhere) defines anything of, by what was
+    /// lowered from them. A module that carries a part of the library its
+    /// kernel leaves out, as gui.ko does the font engine. Read later, the
+    /// evidence was gone: a pass had dropped a provided static, or Provided
+    /// had given the provided code away, and every file looked unprovided.
+    ///
+    /// BY THE TYPE'S FILE (SourcePath, its first part's): a partial type is
+    /// one image's whole, so its members stand or fall together. A file the
+    /// provider defines nothing of, though it compiles it -- every member
+    /// withheld -- would read as unprovided; named on a command line it is
+    /// taken as the image's, which is why the default library never is.
     /// </summary>
-    public bool OwnsLibraryCode(string? path)
+    public void FixOwnLibrary(IReadOnlySet<string> named)
     {
-        if (path is null || OwnLibrarySources is not { Count: > 0 } own || !own.Contains(path)) return false;
-        if (_owned is null)
+        HashSet<string> providers = new(StringComparer.Ordinal);
+        if (ProvidedElsewhere is { } provided)
         {
-            HashSet<string> providers = new(StringComparer.Ordinal);
-            if (ProvidedElsewhere is { } provided)
-            {
-                foreach (Function f in Functions)
-                    if (f.SourcePath is { } p && provided.Contains(f.Name)) providers.Add(p);
-                foreach (DataItem d in Data)
-                    if (d.SourcePath is { } p && provided.Contains(d.Name)) providers.Add(p);
-            }
-            _owned = new HashSet<string>(own.Where(p => !providers.Contains(p)), StringComparer.Ordinal);
+            foreach (Function f in Functions)
+                if (f.SourcePath is { } p && provided.Contains(f.Name)) providers.Add(p);
+            foreach (DataItem d in Data)
+                if (d.SourcePath is { } p && provided.Contains(d.Name)) providers.Add(p);
         }
-        return _owned.Contains(path);
+        _owned = new HashSet<string>(named.Where(p => !providers.Contains(p)), StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// Whether code or state from `path` is this image's own though written
+    /// in the class library (FixOwnLibrary): its code and statics the only
+    /// ones there are -- not LibraryPrivate, kept, exported as its public
+    /// surface. A source of which the provider defines something is the
+    /// provider's, and what it does not export stays withheld.
+    /// </summary>
+    public bool OwnsLibraryCode(string? path) => path is not null && _owned is { } owned && owned.Contains(path);
 
     /// <summary>
     /// THE LIBRARY'S OWN THAT NO IMAGE EXPORTS, of what this compile read of

@@ -88,6 +88,21 @@ mkdir -p "$work/linked"
 "$corc" link "$work/sb16.o" --kernel "$a/kernel" -o "$work/linked/sb16.ko" 2> "$work/sb16-link.log" \
     || { cat "$work/sb16-link.log"; fail "module link"; }
 
+# A MODULE CARRYING A PART OF THE CLASS LIBRARY ITS KERNEL LEAVES OUT, as
+# gui.ko carries the font engine: those sources are its own (Module.
+# FixOwnLibrary) -- kept and defined, not refused as the kernel's withheld
+# code -- with the optimiser and without it, which reads the provider's
+# evidence at another point.
+mkdir -p "$work/own"
+for opt in "" --no-opt; do
+    "$corc" compile --kernel "$a/kernel" --decl-index "$a/kernel.idx" --assembly Kernel --ring 0 $opt \
+        $here/Fonts.cor stdlib/src/System/Drawing/FontEngine.cor stdlib/src/System/Drawing/BitmapFont.cor stdlib/src/System/Drawing/TrueType.cor \
+        --obj -o "$work/own/fonts$opt.o" 2> "$work/own/compile$opt.log" || { cat "$work/own/compile$opt.log"; fail "a module owning library sources its kernel lacks ($opt)"; }
+    nm "$work/own/fonts$opt.o" | grep -q ' T m_System\$Drawing\$BitmapFontFace_FromFnt_' || fail "the module does not define the font engine it owns ($opt)"
+    "$corc" link "$work/own/fonts$opt.o" --kernel "$a/kernel" -o "$work/own/fonts$opt.ko" 2> "$work/own/link$opt.log" \
+        || { cat "$work/own/link$opt.log"; fail "the module owning library sources did not link ($opt)"; }
+done
+
 # And as the image builder builds one: its units in one compile-project.
 mkdir -p "$work/project"
 printf '%s\t%s\t%s\tentry\n' "$(realpath $here/Sb16.cor)" "$work/project/sb16.o" "$work/project/sb16.o.deps" > "$work/project/units.tsv"
