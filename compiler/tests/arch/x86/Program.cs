@@ -968,7 +968,7 @@ internal static class Program
         // refuses EBP's value replaced (Bit's guard: a WritesFrame stop
         // leaves it refused too) and forwards ESI across it;
         // ForwardXmmSpillLoads forwards XMM0 across it, not past a store to
-        // a slot within 16 bytes of the one reloaded (a 16-byte slot's
+        // a slot less than 16 bytes from the one reloaded (a 16-byte slot's
         // reach, whatever the store's width), and past one 16 bytes away.
         List<MInstr> refused = new()
         {
