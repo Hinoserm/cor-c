@@ -926,7 +926,8 @@ internal static class Peephole
         // Its effect: a call, an asm block (which may write any memory) or
         // anything moving the frame lets go of everything. EBP's value
         // written is a register written like any other, which no slot here
-        // is held in (only machine registers are): it lets go of nothing.
+        // is held in (holders are ids below 8, and EbpData is 32): it lets
+        // go of nothing.
         if (i.Op is MOp.Call or MOp.CallInd or MOp.InlineAsm) { state.Clear(); return i; }
         Masks(i, out _, out long written);
         if (WritesFrame(i)) { state.Clear(); return i; }

@@ -937,6 +937,29 @@ internal static class Program
         bool forwarded = after.Any(i => i.Op == MOp.Mov && i.Operands[0] is MReg { Id: (int)Gpr.Esi } && i.Operands[1] is MReg { Id: MReg.EbpDataId })
             || after.Any(i => i.Op == MOp.Mov && i.Operands[0] is MMem { Base.Id: MReg.EbpDataId } && i.Operands[1] is MReg { Id: MReg.EbpDataId });
         Check(!forwarded, "a reload is not forwarded from EBP's value across the write that replaced it");
+
+        // AND THE OTHER HALF: EBP's value written is not the frame moved. A
+        // slot stored from ESI is still ESI's across it, in its own block
+        // (ForwardSpillLoads) and in the next (StepHeld): no reload is left.
+        foreach (bool across in new[] { false, true })
+        {
+            MFunction other = new(new Function("ebp-value-keeps-" + (across ? "across" : "within"), IrType.I32)) { FramePointerFree = true };
+            MBlock first = new("entry"); other.Blocks.Add(first);
+            MBlock second = first;
+            if (across) { second = new MBlock("next"); other.Blocks.Add(second); }
+            MReg edx = MReg.Of(Gpr.Edx);
+            first.Instrs.Add(new MInstr(MOp.Mov, esi, new MMem(ecx, 4)));
+            first.Instrs.Add(new MInstr(MOp.Mov, Slot(), esi));
+            second.Instrs.Add(new MInstr(MOp.Mov, value, ecx));
+            second.Instrs.Add(new MInstr(MOp.Mov, edx, Slot()));
+            second.Instrs.Add(new MInstr(MOp.Mov, new MMem(value, 0), edx));
+            second.Instrs.Add(new MInstr(MOp.Mov, MReg.Of(Gpr.Eax), edx));
+            second.Instrs.Add(new MInstr(MOp.Ret));
+            Peephole.Run(other);
+            bool reloaded = other.Blocks.SelectMany(b => b.Instrs).Any(i => i.Op == MOp.Mov && i.Operands[0] is MReg
+                && i.Operands[1] is MMem { Base.Id: (int)Gpr.Ebp, Disp: -16 });
+            Check(!reloaded, "a slot is forwarded across a write of EBP's value " + (across ? "into the next block" : "in its block"));
+        }
     }
 
     /// <summary>Fill a buffer, copy it, read a byte back through narrow loads and stores.</summary>
