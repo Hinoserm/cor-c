@@ -1716,7 +1716,8 @@ public static partial class Os
     /// this one. The collector is readied first and set straight after
     /// (Gc.ReadyFork, Gc.Forked), and the child forgets the program's other
     /// threads (Runtime.ForkedChild): believing the copy had them, a child
-    /// waited for ever at the end of Main, and gave up every collection.
+    /// waited for ever at the end of Main. A fork made outside this -- libc's
+    /// own, through a DllImport -- has none of it.
     public static int Fork()
     {
         bool held = Gc.ReadyFork();
@@ -1724,6 +1725,15 @@ public static partial class Os
         Gc.Forked(pid == 0, held);
         if (pid == 0 && Runtime.ForkedChild != 0) Sys.Call(Runtime.ForkedChild, 0, 0, 0);
         return pid;
+    }
+
+    /// fork(2) for a child that only makes system calls and execs (Process.
+    /// Start, on what PrepareExec made): nothing readied or set straight, as
+    /// nothing of the runtime runs over there, and the parent's other threads
+    /// are not kept from the heap lock while the kernel copies.
+    public static int ForkToExec()
+    {
+        return (int)Platform.Result(Sys.Syscall(LinuxCall.Fork, 0, 0, 0));
     }
 
     public static int Getpid()
@@ -1873,12 +1883,13 @@ public static partial class Os
     }
 
     /// EVERYTHING execve(2) AND chdir(2) ARE HANDED, MADE BEFORE A FORK. The
-    /// child of a process with other threads has only the one that forked:
-    /// a lock another held stays held there, and a collection waits on
-    /// threads that are not there. So the child may not allocate: it calls
-    /// ChdirPlanned, ExecPlanned and ExitNow, which are system calls on what
-    /// this made. Without it, a native link's backends hung between fork and
-    /// exec for good.
+    /// child of a process with other threads has only the one that forked,
+    /// and is forked without the runtime set straight (ForkToExec), as one
+    /// that execs at once needs none of it: a lock another thread held stays
+    /// held there. So the child may not allocate: it calls ChdirPlanned,
+    /// ExecPlanned and ExitNow, which are system calls on what this made.
+    /// Without it, a native link's backends hung between fork and exec for
+    /// good.
     public static ExecPlan PrepareExec(string path, string[] argv, string[]? envp, string? directory)
     {
         ExecPlan plan = new ExecPlan();

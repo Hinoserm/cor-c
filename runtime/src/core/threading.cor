@@ -4025,6 +4025,18 @@ public static partial class Scheduler
     /// How many pool threads are running; 0 is the single-threaded loop.
     public static int WorkerCount => _workers;
 
+    /// IN A FORK'S CHILD (Thread.ForkedChild): none of the pool's workers
+    /// was copied. With none counted the loop runs the queue itself again,
+    /// where it waited for workers that were not there; the queue's gate and
+    /// the workers' wake cell are made afresh, one of them perhaps held at
+    /// the fork. What was queued stays queued, for the loop.
+    internal static void ForkedChild()
+    {
+        _workers = 0;
+        _gate = null;
+        _signal = null;
+    }
+
 
     /// Makes room for `capacity` queued items without further allocation.
     public static void Reserve(int capacity)
@@ -7523,6 +7535,19 @@ static class ThreadStatics
         node.Flows = true;
         Leave();
         return cells;
+    }
+
+    /// IN A FORK'S CHILD (Thread.ForkedChild): the list is this thread's
+    /// table alone, if it has one, and the lock free -- the other threads'
+    /// tables were not copied with them, and one may have held the lock.
+    /// Their cells are the collector's once nothing else holds them.
+    public static void ForkedChild(nuint block)
+    {
+        Sys.AtomicSwap32(Sys.AddressOf(ref _lock), 0);
+        object?[]? cells = Sys.ObjectAt(Sys.ReadAddress(block + Tls.ThreadStatics)) as object?[];
+        ThreadStaticTable? mine = cells is null ? null : (ThreadStaticTable)cells[0]!;
+        if (mine is not null && !mine.Flows) { mine.Next = null; mine.Previous = null; }
+        _tables = mine is not null && !mine.Flows ? mine : null;
     }
 
     static void Enter()

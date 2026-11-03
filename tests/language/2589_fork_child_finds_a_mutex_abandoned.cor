@@ -1,0 +1,46 @@
+// test: fork_child_finds_a_mutex_abandoned
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child: abandoned
+// parent: child 0
+//
+// A Mutex a thread of the parent's held at the fork belongs, in the child,
+// to a thread that was not copied: it is abandoned there (Thread.
+// ForkedChild, Mutex.AbandonHeld), as it would be had that thread ended,
+// and the child's wait for it says so where it waited for ever.
+using System;
+using System.Threading;
+
+static class Program
+{
+    static readonly object _gate = new object();
+    static bool _done, _holding;
+    static readonly Mutex _mutex = new Mutex();
+
+    static int Main()
+    {
+        Thread holder = new Thread(() =>
+        {
+            _mutex.WaitOne();
+            lock (_gate) { _holding = true; Monitor.PulseAll(_gate); while (!_done) Monitor.Wait(_gate); }
+            _mutex.ReleaseMutex();
+        });
+        holder.Start();
+        lock (_gate) { while (!_holding) Monitor.Wait(_gate); }
+        int pid = UnixProcess.Fork();
+        if (pid == 0)
+        {
+            try { _mutex.WaitOne(); Console.WriteLine("child: taken"); }
+            catch (AbandonedMutexException) { Console.WriteLine("child: abandoned"); }
+            return 0;
+        }
+        int status;
+        UnixProcess.WaitPid(pid, out status);
+        Console.WriteLine("parent: child " + UnixProcess.Result(status));
+        lock (_gate) { _done = true; Monitor.PulseAll(_gate); }
+        holder.Join();
+        return 0;
+    }
+}

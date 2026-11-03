@@ -243,7 +243,7 @@ public class Process : IDisposable
         // MADE BEFORE THE FORK, and the child only makes system calls on it:
         // it may not allocate (Os.PrepareExec).
         ExecPlan plan = UnixProcess.PrepareExec(program, args.ToArray(), StartInfo.EnvironmentBlock(), StartInfo.WorkingDirectory);
-        int pid = UnixProcess.Fork();
+        int pid = UnixProcess.ForkToExec();
         if (pid < 0)
         {
             throw new IOException("fork failed");

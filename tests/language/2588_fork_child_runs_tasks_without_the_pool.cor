@@ -1,0 +1,34 @@
+// test: fork_child_runs_tasks_without_the_pool
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child task 42
+// parent: child 0 task 7
+//
+// The scheduler's pool (ThreadPool.SetMinThreads) is not copied by fork(2):
+// in the child it counted workers that were not there, queued a task's work
+// for them, and waited for it for ever. The child is the single-threaded
+// loop again (Scheduler.ForkedChild), which runs its queue itself.
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int Main()
+    {
+        ThreadPool.SetMinThreads(2, 2);
+        int before = Task.Run(() => 7).Result;
+        int pid = UnixProcess.Fork();
+        if (pid == 0)
+        {
+            Console.WriteLine("child task " + Task.Run(() => 40 + 2).Result);
+            return 0;
+        }
+        int status;
+        UnixProcess.WaitPid(pid, out status);
+        Console.WriteLine("parent: child " + UnixProcess.Result(status) + " task " + before);
+        return 0;
+    }
+}

@@ -17,14 +17,15 @@ using System.Threading;
 static class Program
 {
     static readonly object _gate = new object();
-    static bool _done;
+    static bool _done, _parked;
     static int _ran;
 
     static int Main()
     {
-        Thread parked = new Thread(() => { lock (_gate) { while (!_done) Monitor.Wait(_gate); } });
+        // Parked for certain at the fork: it says so under the lock, then waits.
+        Thread parked = new Thread(() => { lock (_gate) { _parked = true; Monitor.PulseAll(_gate); while (!_done) Monitor.Wait(_gate); } });
         parked.Start();
-        Thread.Sleep(20);
+        lock (_gate) { while (!_parked) Monitor.Wait(_gate); }
         int pid = UnixProcess.Fork();
         if (pid == 0)
         {
