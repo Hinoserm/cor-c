@@ -450,11 +450,14 @@ public static class Win32
         {
             // The value compared with is read from memory: the thread
             // block's scratch words (Tls.Scratch), which nothing else of
-            // this platform's uses -- not a local's address, which the heap
-            // would box, and this may be the collector's wait.
+            // this platform's uses -- a word of this thread's own that no
+            // frame below can reuse while WaitOnAddress reads it. Called
+            // without the native handshake (SuppressGCTransition): this
+            // is the collector's own wait, and the handshake's stop would
+            // stir the collector through Unpark again, without end.
             nuint compare = block + Tls.Scratch;
             Sys.Write32(compare, (uint)expect);
-            ((delegate* unmanaged[Stdcall]<nuint, nuint, nuint, uint, int>)_waitOnAddress)(at, compare, 4, (uint)most);
+            ((delegate* unmanaged[Stdcall, SuppressGCTransition]<nuint, nuint, nuint, uint, int>)_waitOnAddress)(at, compare, 4, (uint)most);
             return;
         }
         nuint b = Bucket(at);
@@ -474,8 +477,8 @@ public static class Win32
         // semaphores' half costs a read where nobody waits there.
         if (_waitOnAddress != 0)
         {
-            if (count == 1) ((delegate* unmanaged[Stdcall]<nuint, void>)_wakeOne)(at);
-            else ((delegate* unmanaged[Stdcall]<nuint, void>)_wakeAll)(at);
+            if (count == 1) ((delegate* unmanaged[Stdcall, SuppressGCTransition]<nuint, void>)_wakeOne)(at);
+            else ((delegate* unmanaged[Stdcall, SuppressGCTransition]<nuint, void>)_wakeAll)(at);
         }
         nuint b = Bucket(at);
         uint waiting = Sys.Read32(_parkWaiters + b * 4);

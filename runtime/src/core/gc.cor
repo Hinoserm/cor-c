@@ -19119,6 +19119,11 @@ public static class GcThreads
                 Sys.WriteAddress(block + Tls.StackLimit, limit);
                 Sys.WriteAddress(block + Tls.StackBase, top);
                 Sys.AtomicSwap(block + Tls.State, Stopped);
+                // Whoever waits for it to stop being Busy -- an interrupt's
+                // EndBlocking on top of this thread, on a kernel -- woken,
+                // as the collector wakes them when it lets go (AnswerForStopped):
+                // on a platform whose waits sleep, it slept on to its timeout.
+                Platform.Wake(block + Tls.State, 1);
                 // THE COLLECTOR TOLD, when the thread owes the round: one
                 // that found it Busy here passed it by (AnswerForStopped),
                 // and with nobody else to answer for went to sleep on the
