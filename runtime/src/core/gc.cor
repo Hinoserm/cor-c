@@ -14858,6 +14858,43 @@ public static class Gc
     /// the collector paid for a stop.
     public static long StopWalksOnDemand, LongestWalkOnDemand;
 
+    /// THE FIRST BAD BLOCKS A WALK MEETS, said on standard error with the
+    /// stats asked (Corsac.GC.Stats): where, what its header and footer hold,
+    /// whether the walk was stepping over the threads' buffers and how many
+    /// were captured, and which thread's live buffer -- if any -- holds it,
+    /// with that buffer's base, pointer and limit. The chain breaks where a
+    /// thread's buffer, its tail not laid out as blocks, is not stepped over.
+    static void SayBadBlock(nuint chunk, nuint block, nuint header, nuint size, nuint end, bool stepping, nuint step)
+    {
+        if (_badBlocksSaid >= 8) return;
+        _badBlocksSaid = _badBlocksSaid + 1;
+        SayNumber("gc bad block: chunk ", chunk);
+        SayNumber("gc bad block:   offset ", block - chunk);
+        SayNumber("gc bad block:   chunk end offset ", end - chunk);
+        SayNumber("gc bad block:   header ", header);
+        SayNumber("gc bad block:   size ", size);
+        nuint footerAt = block + size - FooterBytes;
+        SayNumber("gc bad block:   footer ", size >= Smallest && footerAt < end ? Sys.ReadAddress(footerAt) : 0);
+        SayNumber("gc bad block:   word after the header ", Sys.ReadAddress(block + WordSize.Bytes));
+        SayNumber("gc bad block:   stepping ", stepping ? 1 : 0);
+        SayNumber("gc bad block:   buffers captured ", GcThreads.BufferCount());
+        SayNumber("gc bad block:   next captured buffer ", step < GcThreads.BufferCount() ? GcThreads.BufferBase(step) - chunk : 0);
+        SayNumber("gc bad block:   threads ", GcThreads.Count());
+        nuint holder = GcThreads.BufferHolding(block);
+        SayNumber("gc bad block:   in a thread's live buffer ", holder != 0 ? 1 : 0);
+        if (holder != 0)
+        {
+            SayNumber("gc bad block:     buffer base offset ", Sys.ReadAddress(holder + Tls.AllocBase) - chunk);
+            SayNumber("gc bad block:     buffer pointer offset ", Sys.ReadAddress(holder + Tls.AllocPtr) - chunk);
+            SayNumber("gc bad block:     buffer limit ", Sys.ReadAddress(holder + Tls.AllocLimit));
+            SayNumber("gc bad block:     buffer limit kept aside ", Sys.ReadAddress(holder + Tls.AllocSaved));
+            SayNumber("gc bad block:     thread state ", Sys.ReadAddress(holder + Tls.State));
+            SayNumber("gc bad block:     is the collector's ", holder == Sys.ThreadBlock() ? 1 : 0);
+        }
+    }
+
+    static long _badBlocksSaid;
+
     /// A mixed chunk's blocks from _walkBlock: false when the budget ran out
     /// first, with where it was kept; true when the chunk is done.
     static bool WalkMixed(long budget, ref long work)
@@ -14896,7 +14933,13 @@ public static class Gc
             // and never traced. No snapshot, then, and the collection
             // is given up rather than run on half of one.
             if (size < Smallest || Beyond(block, size, end)
-                || Sys.ReadAddress(block + size - FooterBytes) != header) { WalkBadBlock = WalkBadBlock + 1; _walkEvery = false; break; }
+                || Sys.ReadAddress(block + size - FooterBytes) != header)
+            {
+                WalkBadBlock = WalkBadBlock + 1;
+                if (StatsAsked || Platform.GcStats()) SayBadBlock(chunk, block, header, size, end, stepping, step);
+                _walkEvery = false;
+                break;
+            }
             nuint last = (block + size - 1 - chunk) / 4096;
             while (page <= last)
             {
