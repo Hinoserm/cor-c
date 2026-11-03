@@ -53,11 +53,14 @@ public static class BodyTypeNames
     /// field, a property, a parameter, a local, a foreach variable -- to
     /// <paramref name="declared"/>; only the members <paramref name="members"/>
     /// takes, and the declaration's own bases and constraints only where it
-    /// takes them all.
+    /// takes them all. And EVERY NAME DECLARED, typed or not, to
+    /// <paramref name="binds"/>: a member, a parameter, a local (`var` too), a
+    /// foreach or catch variable, a deconstruction's, a pattern's or an
+    /// `out var`'s -- what can hide a type of the same name (Parser.FinishFamily).
     /// </summary>
     public static void Walk(TypeDecl declaration, Action<TypeRef> found, Action<string>? qualifier = null,
         Action<MemberExpr>? access = null, Action<NameExpr>? bare = null, Action<TypeRef>? made = null, Func<MemberDecl, bool>? members = null,
-        Action<string, TypeRef>? declared = null)
+        Action<string, TypeRef>? declared = null, Action<string>? binds = null)
     {
         void Type(TypeRef? reference)
         {
@@ -103,9 +106,9 @@ public static class BodyTypeNames
                 case DefaultExpr e: Type(e.Type); return;
                 case FromEndExpr e: Expression(e.Offset); return;
                 case IndexExpr e: Expression(e.Target); foreach (Expr argument in e.Args) Expression(argument); return;
-                case IsExpr e: Expression(e.Operand); Type(e.Type); return;
+                case IsExpr e: if (e.Binding is string named) binds?.Invoke(named); Expression(e.Operand); Type(e.Type); return;
                 case LambdaExpr e:
-                    foreach (Param parameter in e.Params) { declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
+                    foreach (Param parameter in e.Params) { binds?.Invoke(parameter.Name); declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
                     if (e.Returns is not null) Type(e.Returns);
                     Expression(e.Body); Statement(e.BlockBody);
                     return;
@@ -152,13 +155,14 @@ public static class BodyTypeNames
                 case PatternExpr e: Expression(e.Subject); Expression(e.Test); return;
                 case SequenceExpr e: Statement(e.Effect); Expression(e.Value); return;
                 case RangeExpr e: Expression(e.From); Expression(e.To); return;
-                case RefArgExpr e: Expression(e.Target); Type(e.Declare); return;
+                case RefArgExpr e: if (e.Name is string outVar) binds?.Invoke(outVar); Expression(e.Target); Type(e.Declare); return;
                 case SizeOfExpr e: Type(e.Type); return;
                 case SuppressExpr e: Expression(e.Operand); return;
                 case SwitchExpr e:
                     Expression(e.Subject);
                     foreach (SwitchArm arm in e.Arms)
                     {
+                        if (arm.Binding is string armBound) binds?.Invoke(armBound);
                         Expression(arm.Value); Type(arm.Type); Expression(arm.When); Expression(arm.Result);
                     }
                     return;
@@ -176,6 +180,7 @@ public static class BodyTypeNames
             if (bindings is null) return;
             foreach (Binding binding in bindings)
             {
+                binds?.Invoke(binding.Name);
                 Type(binding.Type); Expression(binding.Target); Bindings(binding.Nested);
             }
         }
@@ -195,12 +200,14 @@ public static class BodyTypeNames
                     Statement(s.Body);
                     return;
                 case ForeachStmt s:
+                    binds?.Invoke(s.Name);
                     if (s.Type is not null) declared?.Invoke(s.Name, s.Type);
                     Type(s.Type); Expression(s.Sequence); Bindings(s.Bindings); Statement(s.Body);
                     return;
                 case GotoCaseStmt s: Expression(s.Value); return;
                 case IfStmt s: Expression(s.Cond); Statement(s.Then); Statement(s.Else); return;
                 case LocalDecl s:
+                    binds?.Invoke(s.Name);
                     if (s.Type is not null) declared?.Invoke(s.Name, s.Type);
                     Type(s.Type); Expression(s.Init);
                     foreach (LocalDecl also in s.Also) Statement(also);
@@ -220,6 +227,7 @@ public static class BodyTypeNames
                     Statement(s.Body);
                     foreach (CatchClause clause in s.Catches)
                     {
+                        if (clause.Name is string caught) binds?.Invoke(caught);
                         Type(clause.Type); Expression(clause.When); Statement(clause.Body);
                     }
                     Statement(s.Finally);
@@ -275,20 +283,23 @@ public static class BodyTypeNames
             {
                 case FieldDecl field:
                     bool bound = initialisers || field.Mods.HasFlag(Mods.Const);
+                    binds?.Invoke(field.Name);
                     declared?.Invoke(field.Name, field.Type);
                     Type(field.Type); if (bound) Expression(field.Init);
-                    foreach (FieldDecl more in field.More) { declared?.Invoke(more.Name, more.Type); Type(more.Type); if (bound) Expression(more.Init); }
+                    foreach (FieldDecl more in field.More) { binds?.Invoke(more.Name); declared?.Invoke(more.Name, more.Type); Type(more.Type); if (bound) Expression(more.Init); }
                     break;
                 case PropertyDecl property:
+                    binds?.Invoke(property.Name);
                     declared?.Invoke(property.Name, property.Type);
                     Type(property.Type); if (initialisers) Expression(property.Init);
-                    foreach (Param parameter in property.Params) { declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
+                    foreach (Param parameter in property.Params) { binds?.Invoke(parameter.Name); declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
                     Statement(property.Getter); Statement(property.Setter);
                     break;
                 case MethodDecl method:
+                    binds?.Invoke(method.Name);
                     Type(method.Returns);
                     foreach (TypeParam parameter in method.TypeParams) Types(parameter.Constraints);
-                    foreach (Param parameter in method.Params) { declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
+                    foreach (Param parameter in method.Params) { binds?.Invoke(parameter.Name); declared?.Invoke(parameter.Name, parameter.Type); Type(parameter.Type); Expression(parameter.Default); }
                     // A CONSTRUCTOR'S `: base(...)` OR `: this(...)` is code
                     // the binder binds like any call, and `: base(Kind.Leaf)`
                     // names a type no statement of the body does.

@@ -6505,7 +6505,8 @@ public sealed partial class Binder
             {
                 Prim = Prim.NInt,
                 Function = new FunctionPointer(r.Args.Take(r.Args.Count - 1).Select(p => Resolve(p, context)).ToList(),
-                    Resolve(r.Args[^1], context), r.Name == TypeRef.UnmanagedFunction),
+                    Resolve(r.Args[^1], context), r.Name is TypeRef.UnmanagedFunction or TypeRef.UnmanagedFunctionNoTransition,
+                    r.Name == TypeRef.UnmanagedFunctionNoTransition),
             }
             // Nullable<T> WRITTEN OUT is T? (C#'s own spelling of it), unless
             // the program declares a generic type of that name. The class

@@ -4,6 +4,8 @@
 // 5 6 7 8 10 11
 // 3 1
 // 6 11 12
+// Int64,Int32 Int32,String Int64,Int32,Int32 Int32,String,Int64
+// 3 Int64 5
 //
 // Inside Box<T>, `G` is Box's own nested class, not the file's
 // `using G = System.Collections.Generic`: C# looks in the types around a
@@ -15,7 +17,12 @@
 // with the outer's arguments, is that type in an expression too
 // (Monomorphiser: Box<int>.G.List<string>.Made(), once 'Box$int' had no
 // member 'G'). Box's nested types are keyed under `Box`, its name plain, not under
-// `Box`1` (Binder.TypePath); outside Box, `G` is the alias.
+// `Box`1` (Binder.TypePath); outside Box, `G` is the alias. The last line
+// names every parameter's argument, so an outer argument put in the wrong
+// place -- or left out of a chain -- prints the wrong names, a type nested
+// two deep (G.List<int>.Node<int>) included. A type taking Box's parameter
+// alone, Plain, named bare in an expression (`Plain.Shared`) is Box.Plain<T>
+// too -- but not where a local of the name hides it, as C# looks there first.
 using G = System.Collections.Generic;
 
 class Box<T>
@@ -26,6 +33,12 @@ class Box<T>
         {
             public int Mine = 5;
             public static int Made() => 6;
+            public static string Names() => typeof(T).Name + "," + typeof(U).Name;
+
+            public class Node<W>
+            {
+                public static string Names() => typeof(T).Name + "," + typeof(U).Name + "," + typeof(W).Name;
+            }
         }
 
         public class Deeper
@@ -33,6 +46,12 @@ class Box<T>
             // G from here is Box.G, the nearest type around that declares one.
             public int Through() => new G.List<int>().Mine + 2;
         }
+    }
+
+    public class Plain
+    {
+        public static int Shared = 3;
+        public static string Names() => typeof(T).Name;
     }
 
     public class Inner<V>
@@ -48,6 +67,15 @@ class Box<T>
     public int Own() => new Inner<int>().Own;
     public int Static() => Inner<int>.Shared;
     public int Spelt() => Box<T>.Inner<int>.Shared + 1;
+    public int Bare() => Plain.Shared;
+    public string BareNames() => Plain.Names();
+    public int Hidden()
+    {
+        int Plain = 4;
+        return Plain + 1;
+    }
+    public string ListNames() => G.List<int>.Names();
+    public string NodeNames() => G.List<int>.Node<int>.Names();
 }
 
 static class Program
@@ -61,6 +89,9 @@ static class Program
         library.Add(9);
         System.Console.WriteLine(new Box<int>.G.List<string>().Mine / 2 + 1 + " " + library.Count);
         System.Console.WriteLine(Box<int>.G.List<string>.Made() + " " + Box<long>.Inner<int>.Shared + " " + box.Spelt());
+        System.Console.WriteLine(box.ListNames() + " " + Box<int>.G.List<string>.Names() + " " + box.NodeNames()
+            + " " + Box<int>.G.List<string>.Node<long>.Names());
+        System.Console.WriteLine(box.Bare() + " " + box.BareNames() + " " + box.Hidden());
         return 0;
     }
 }

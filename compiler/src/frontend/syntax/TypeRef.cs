@@ -49,9 +49,11 @@ public sealed class TypeRef : Node
     /// carries a generic's arguments.
     /// </summary>
     public const string UnmanagedFunction = "__fnptr$unmanaged";
+    /// <summary>`delegate* unmanaged[…, SuppressGCTransition]`: called without the native handshake (FunctionPointer.NoTransition).</summary>
+    public const string UnmanagedFunctionNoTransition = "__fnptr$unmanaged$notransition";
     public const string ManagedFunction = "__fnptr$managed";
 
-    public bool IsFunctionPointer => Name is UnmanagedFunction or ManagedFunction;
+    public bool IsFunctionPointer => Name is UnmanagedFunction or UnmanagedFunctionNoTransition or ManagedFunction;
     // A GENERIC'S ARGUMENTS, made only for a type that has some: a list for
     // every type reference -- the arguments of `int`, `string`, every name --
     // was three and a half million empty lists in a self-hosted compile.

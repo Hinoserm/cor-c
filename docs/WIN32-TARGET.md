@@ -120,8 +120,10 @@ examples/windows-cards is cards.dll in C#: Windows 2000's own sol.exe and
 freecell.exe draw every card through it, and FreeCell's game 1 deals as the
 published one. Four Windows threads at once in a DLL, with collections while
 they all run and each block freed at DLL_THREAD_DETACH, pass five runs in
-five: the collector's stop is cooperative, and a wait gives up the thread's
-time slice (Sleep(0)). A read through null in the DLL is caught as
+five: the collector's stop is cooperative, and a wait on a word sleeps until
+it is woken -- WaitOnAddress where Windows 8 or later has it, one of a few
+semaphores chosen by the word's address everywhere else (Win32.Park) -- with
+a look again each second. A read through null in the DLL is caught as
 NullReferenceException (Wine's trace shows the access violation and the
 handler). It stays loaded once loaded: a FreeLibrary leaves it in place.
 

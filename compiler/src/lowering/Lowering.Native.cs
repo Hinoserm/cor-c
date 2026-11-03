@@ -271,8 +271,9 @@ public sealed partial class Lowering
     /// <summary>
     /// A call through a function pointer: the arguments as its parameters
     /// say, and for an unmanaged one (C's) the same handshake a [DllImport]
-    /// makes. Function pointers carry no marshalling, in .NET or here: what
-    /// goes through one is already what C takes.
+    /// makes -- none for one written `unmanaged[…, SuppressGCTransition]`,
+    /// as none for such an import. Function pointers carry no marshalling, in
+    /// .NET or here: what goes through one is already what C takes.
     /// </summary>
     private VReg EmitPointerCall(CallExpr call, FunctionPointer pointer)
     {
@@ -284,12 +285,13 @@ public sealed partial class Lowering
         }
         Type ret = pointer.Returns;
         IrType returns = ret.IsVoid ? IrType.Void : ret.Prim == Prim.Bool && pointer.Unmanaged ? IrType.I32 : IrTypes.Of(ret);
-        if (pointer.Unmanaged && RequireRuntime(call, "EnterNative", 0, "a call into C") is MethodSymbol enter)
+        bool handshake = pointer.Unmanaged && !pointer.NoTransition;
+        if (handshake && RequireRuntime(call, "EnterNative", 0, "a call into C") is MethodSymbol enter)
         {
             _e.Call(CallLabel(enter), IrType.Void);
         }
         VReg? result = _e.CallIndirect(RegOperand.Of(target), returns, args, pointer.Unmanaged ? NativeCall.Indirect : null);
-        if (pointer.Unmanaged && RequireRuntime(call, "LeaveNative", 0, "a call into C") is MethodSymbol leave)
+        if (handshake && RequireRuntime(call, "LeaveNative", 0, "a call into C") is MethodSymbol leave)
         {
             _e.Call(CallLabel(leave), IrType.Void);
         }

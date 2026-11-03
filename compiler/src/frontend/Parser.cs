@@ -1133,21 +1133,23 @@ public sealed class Parser
             }
             return declared.Contains(head) ? name : null;
         }
-        // A chain of names and member accesses, its leftmost name first.
-        static List<Expr>? Links(Expr e)
-        {
-            List<Expr> links = new();
-            for (Expr at = e; ; )
+        // A chain of names and member accesses, read as the monomorphiser reads one (Chains).
+        static List<Expr>? Links(Expr e) => Chains.Links(e);
+        static List<TypeRef> ArgsOf(Expr e) => Chains.Args(e);
+        static List<TypeRef> WritableArgsOf(Expr e) => Chains.WritableArgs(e);
+        static string NameOf(Expr e) => Chains.Name(e);
+        // Every member's name in the family, which hides a type of the same
+        // name in an expression as C#'s lookup has it (the bare rewrite below).
+        // The members' own names, not their bodies' locals: a local hides the
+        // type only in its own member (bound, below).
+        HashSet<string> memberNames = new(StringComparer.Ordinal);
+        foreach (TypeDecl t in family)
+            foreach (MemberDecl m in t.Members)
             {
-                if (at is NameExpr) { links.Add(at); links.Reverse(); return links; }
-                if (at is not MemberExpr { NullConditional: false } m) return null;
-                links.Add(m);
-                at = m.Target;
+                if (m is FieldDecl f) { memberNames.Add(f.Name); foreach (FieldDecl more in f.More) memberNames.Add(more.Name); }
+                else if (m is PropertyDecl p) memberNames.Add(p.Name);
+                else if (m is MethodDecl md) memberNames.Add(md.Name);
             }
-        }
-        static List<TypeRef> ArgsOf(Expr e) => e is NameExpr n ? n.TypeArgs : ((MemberExpr)e).TypeArgs;
-        static List<TypeRef> WritableArgsOf(Expr e) => e is NameExpr n ? n.WritableTypeArgs : ((MemberExpr)e).WritableTypeArgs;
-        static string NameOf(Expr e) => e is NameExpr n ? n.Name : ((MemberExpr)e).Name;
         foreach (TypeDecl inner in family)
         {
             if (inner.OuterParams == 0 || inner.Outer is null) continue;
@@ -1195,6 +1197,50 @@ public sealed class Parser
                     if (implicitOuter < 0 || implicitOuter == 0 && written.Count == ArgsOf(links[^1]).Count) return;
                     string spelt = string.Join(".", links.Select(NameOf));
                     if (!Names(spelt)) return;
+                    // EVERY LINK ITS OWN ARGUMENTS, from the first that writes
+                    // any, and the ones before it the outer parameters of that
+                    // first one, in scope where the use is: `Box.G<int>.List<string>`
+                    // with G not generic was taken for Box.G.List<int, string>,
+                    // its arguments spread over the wrong types, and a chain
+                    // leaning on outer parameters from outside their type named
+                    // parameters nothing there declares.
+                    string headPath = path[..(path.Length - (spelt.Length - head.Name.Length))];
+                    int first = links.FindIndex(link => ArgsOf(link).Count > 0);
+                    TypeDecl? firstDecl = null;
+                    string linkPath = headPath;
+                    // THE FIRST may carry its outer arguments as well -- a chain
+                    // a nearer type's rewrite reached first: `G.List<int>` made
+                    // Box.G.List<T, int> before `….Node<int>` was looked at --
+                    // and then none are left to supply.
+                    bool firstWhole = false;
+                    for (int j = 0; j < links.Count; j++)
+                    {
+                        if (j > 0) linkPath += "." + NameOf(links[j]);
+                        if (j < first) continue;
+                        TypeDecl? d = family.FirstOrDefault(t => PathOf(t) == linkPath);
+                        if (d is null) return;
+                        int count = ArgsOf(links[j]).Count, ownHere = d.TypeParams.Count - d.OuterParams;
+                        if (j == first && count == d.TypeParams.Count && d.OuterParams > 0) firstWhole = true;
+                        else if (count != ownHere) return;
+                        if (j == first) firstDecl = d;
+                    }
+                    if (firstDecl is null || implicitOuter != (firstWhole ? 0 : firstDecl.OuterParams)) return;
+                    // In scope where they are declared: the type around the
+                    // first link whose own parameters are the last of them --
+                    // Box for `G.List<int>` in Box<T>, G being Box's and not
+                    // generic of its own.
+                    if (implicitOuter > 0)
+                    {
+                        string? declaring = null;
+                        for (string? around = firstDecl.Outer; around is not null; )
+                        {
+                            TypeDecl? d = family.FirstOrDefault(t => PathOf(t) == around);
+                            if (d is null) break;
+                            if (d.OuterParams < implicitOuter && d.TypeParams.Count >= implicitOuter) { declaring = around; break; }
+                            around = d.Outer;
+                        }
+                        if (declaring is null || at != declaring && !at.StartsWith(declaring + ".", StringComparison.Ordinal)) return;
+                    }
                     foreach (Expr link in links) WritableArgsOf(link).Clear();
                     List<TypeRef> last = WritableArgsOf(links[^1]);
                     for (int k = 0; k < implicitOuter; k++)
@@ -1202,6 +1248,36 @@ public sealed class Parser
                     last.AddRange(written);
                     head.Name = path[..(path.Length - (spelt.Length - head.Name.Length))];
                 });
+                // A TYPE TAKING ITS OUTER PARAMETERS ALONE, NAMED BARE IN AN
+                // EXPRESSION inside its outer type: `Plain.Shared` in Box<T>,
+                // whose Plain is Box.Plain<T>. A chain of names alone may be a
+                // value's, so only where nothing of the name hides the type:
+                // no local, parameter or pattern variable of the member it is
+                // written in, and no member of the family (C# finds those
+                // first). Left as written, the name was CS0103 ("it is
+                // Box.Plain`1, a type nested in Box").
+                if (own != 0 || !inside || hidden) continue;
+                foreach (MemberDecl member in within.Members)
+                {
+                    if (memberNames.Contains(inner.Name)) break;
+                    HashSet<string> bound = new(StringComparer.Ordinal);
+                    Corsac.Lang.Metadata.BodyTypeNames.Walk(within, _ => { }, members: m => ReferenceEquals(m, member), binds: name => bound.Add(name));
+                    if (bound.Contains(inner.Name)) continue;
+                    Corsac.Lang.Metadata.BodyTypeNames.Walk(within, _ => { }, members: m => ReferenceEquals(m, member), access: access =>
+                    {
+                        if (Links(access.Target) is not { } links || links[0] is not NameExpr { Global: false } head) return;
+                        if (links.Any(link => ArgsOf(link).Count > 0)) return;
+                        string spelt = string.Join(".", links.Select(NameOf));
+                        if (!Names(spelt)) return;
+                        // A QUALIFIER OF A TYPE NESTED IN IT -- `G` of `G.List<int>`,
+                        // Box's G not generic of its own -- is the generic chain's
+                        // to rewrite, whole (above); given Box's T here as well,
+                        // `Box.G<T>.List.Node<T, int, int>` named nothing.
+                        if (declared.Contains(path + "." + access.Name)) return;
+                        LeadWithOuter(WritableArgsOf(links[^1]), head);
+                        head.Name = path[..(path.Length - (spelt.Length - head.Name.Length))];
+                    });
+                }
             }
         }
     }
@@ -4609,17 +4685,20 @@ public sealed class Parser
         if (At(Tok.KwDelegate) && Ahead().Kind == Tok.Star)
         {
             _i += 2;
-            bool unmanaged = false;
+            bool unmanaged = false, noTransition = false;
             if (At(Tok.Ident) && Cur.Text is "unmanaged" or "managed")
             {
                 unmanaged = Cur.Text == "unmanaged";
                 _i++;
                 // The calling convention in brackets: C's is the only one
-                // either target has, so it is read and not kept.
+                // either target has, so it is read and not kept -- but for
+                // SuppressGCTransition, .NET's word for a call made without
+                // the native handshake (EnterNative/LeaveNative), kept.
                 if (Take(Tok.LBracket))
                 {
                     while (!At(Tok.RBracket) && !At(Tok.End))
                     {
+                        if (At(Tok.Ident) && Cur.Text == "SuppressGCTransition") noTransition = true;
                         _i++;
                     }
                     Expect(Tok.RBracket, "']' to close the calling convention");
@@ -4635,7 +4714,7 @@ public sealed class Parser
             Expect(Tok.Gt, "'>' to close the function pointer's types");
             TypeRef pointer = new()
             {
-                Name = unmanaged ? TypeRef.UnmanagedFunction : TypeRef.ManagedFunction,
+                Name = !unmanaged ? TypeRef.ManagedFunction : noTransition ? TypeRef.UnmanagedFunctionNoTransition : TypeRef.UnmanagedFunction,
                 Line = at.Line, Col = at.Col,
             };
             pointer.Arguments.AddRange(parts);

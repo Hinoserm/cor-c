@@ -11,7 +11,12 @@ namespace Corsac.Lang;
 /// at null has the same bugs as one without the feature, plus the annotations.
 /// </summary>
 /// <summary>A function pointer's signature: its parameters, its result, and whether it is C's (unmanaged).</summary>
-public sealed record FunctionPointer(IReadOnlyList<Type> Params, Type Returns, bool Unmanaged);
+/// <summary>
+/// A function pointer's signature: managed or C's (Unmanaged), and for C's
+/// whether its calls skip the native handshake (`unmanaged[…, SuppressGCTransition]`,
+/// NoTransition), as a [DllImport, SuppressGCTransition] does.
+/// </summary>
+public sealed record FunctionPointer(IReadOnlyList<Type> Params, Type Returns, bool Unmanaged, bool NoTransition = false);
 
 public sealed class Type : IEquatable<Type>
 {

@@ -2374,20 +2374,37 @@ public sealed class Monomorphiser
     /// <summary>A call's target while it is rewritten: a member with type arguments there is a generic method, not a type.</summary>
     private Node? _callTarget;
 
-    /// <summary>A chain of names and member accesses, its leftmost name first (null for anything else).</summary>
-    private static List<Expr>? ChainLinks(Expr e)
+    /// <summary>A chain of names and member accesses, read as the parser reads one (Chains).</summary>
+    private static List<Expr>? ChainLinks(Expr e) => Chains.Links(e);
+    private static List<TypeRef> ChainArgs(Expr e) => Chains.Args(e);
+
+    /// <summary>
+    /// A CHAIN THAT NAMES A TYPE NESTED IN A GENERIC ONE (`Box&lt;int&gt;.G.List&lt;string&gt;`),
+    /// its template's path, or null. The head -- the names up to the first
+    /// with arguments, a namespace's included -- is looked up as any generic
+    /// name is (GenericPath); what follows must then be a template nested in
+    /// it, by its exact name and the arguments of every link, and nothing is
+    /// asked for or guessed. Asked whole of GenericPath, every static member
+    /// of a generic (`Option&lt;int&gt;.None`) was a probe that asked for a
+    /// declaration in every scope, and then for its last name alone: a
+    /// template named None anywhere made the member a type.
+    /// </summary>
+    private string? NestedGenericPath(List<Expr> links, Node location)
     {
-        List<Expr> links = new();
-        for (Expr at = e; ; )
+        int first = links.FindIndex(link => ChainArgs(link).Count > 0);
+        if (first < 0 || first == links.Count - 1) return null;
+        string head = string.Join(".", links.Take(first + 1).Select(ChainName));
+        if (GenericPath(head, ChainArgs(links[first]).Count, location) is not string headPath) return null;
+        string path = headPath;
+        int arity = ChainArgs(links[first]).Count;
+        for (int i = first + 1; i < links.Count; i++)
         {
-            if (at is NameExpr) { links.Add(at); links.Reverse(); return links; }
-            if (at is not MemberExpr { NullConditional: false } m) return null;
-            links.Add(m);
-            at = m.Target;
+            path += "." + ChainName(links[i]);
+            arity += ChainArgs(links[i]).Count;
         }
+        return _generic.ContainsKey(Arity(path, arity)) ? path : null;
     }
-    private static List<TypeRef> ChainArgs(Expr e) => e is NameExpr n ? n.TypeArgs : ((MemberExpr)e).TypeArgs;
-    private static string ChainName(Expr e) => e is NameExpr n ? n.Name : ((MemberExpr)e).Name;
+    private static string ChainName(Expr e) => Chains.Name(e);
 
     /// <summary>`A.B.C` as written, when it is names and dots and nothing else.</summary>
     private static string? DottedPath(Expr e) => e switch
@@ -3947,11 +3964,9 @@ public sealed class Monomorphiser
             case MemberExpr chained when !ReferenceEquals(chained, _callTarget)
                 && ChainLinks(chained) is { Count: > 1 } links && links[0] is NameExpr { Global: false }
                 && links.Take(links.Count - 1).Any(link => ChainArgs(link).Count > 0)
-                && string.Join(".", links.Select(ChainName)) is string spelt
-                && links.Sum(link => ChainArgs(link).Count) is int arity
-                && GenericPath(spelt, arity, chained) is not null:
+                && NestedGenericPath(links, chained) is not null:
             {
-                NameExpr named = new() { Name = spelt, Line = chained.Line, Col = chained.Col };
+                NameExpr named = new() { Name = string.Join(".", links.Select(ChainName)), Line = chained.Line, Col = chained.Col };
                 foreach (Expr link in links) named.WritableTypeArgs.AddRange(ChainArgs(link));
                 return Rewrite(named, map);
             }
