@@ -53,9 +53,10 @@ public sealed partial class Lowering
         if (t.Decl is not TypeDecl declared || declared.Elsewhere || declared.External) return false;
         // NOT THE CLASS LIBRARY'S STATE where an image provides it (LibraryProvided):
         // laid down here by the link, Encoding's default or String's intern
-        // lock was the program's own second one beside the library's. A
-        // library source the image owns (Module.FixOwnLibrary, decided after
-        // lowering) is passed by too: its statics run their initialisers.
+        // lock was the program's own second one beside the library's. Not
+        // told apart here from a library source the image owns: that is
+        // decided after lowering (Module.FixOwnLibrary), so an owned file's
+        // statics are never preinitialised, and run their initialisers.
         if (LibraryProvided && SystemCodeHere(t)) return false;
         if (t.Fields.FirstOrDefault(f => f.Static && f.Name == field) is not FieldSymbol f || FieldDeclOf(f) is not FieldDecl { Preinit: true } written) return false;
         // ONLY A FIELD THAT HOLDS A REFERENCE: the link makes objects. A

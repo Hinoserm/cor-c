@@ -1,0 +1,57 @@
+// test: forks_while_threads_allocate_leave_no_half_made_block
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// children 0
+//
+// Forty forks while two other threads allocate as fast as they can. A
+// thread caught between writing a block's header and its footer when the
+// kernel copied left the child a block half made, which every cycle the
+// child began met and gave up on: the child collected for ever, freeing
+// nothing (Gc.ReadyFork's hold round). Each child allocates, collects and
+// says how many collections it finished.
+using System;
+using System.Threading;
+
+static class Program
+{
+    static volatile bool _stop;
+    static readonly byte[]?[] _a = new byte[]?[64];
+    static readonly byte[]?[] _b = new byte[]?[64];
+
+    static void Churn(byte[]?[] ring, int rounds)
+    {
+        for (int i = 0; i < rounds; i++) ring[i & 63] = new byte[64 + (i & 1023)];
+    }
+
+    static int Main()
+    {
+        Thread one = new Thread(() => { while (!_stop) Churn(_a, 1000); });
+        Thread two = new Thread(() => { while (!_stop) Churn(_b, 1000); });
+        one.IsBackground = true;
+        two.IsBackground = true;
+        one.Start();
+        two.Start();
+        int failures = 0;
+        for (int n = 0; n < 40; n++)
+        {
+            int pid = UnixProcess.Fork();
+            if (pid == 0)
+            {
+                int before = GC.CollectionCount(0);
+                Churn(_a, 20000);
+                GC.Collect();
+                return GC.CollectionCount(0) > before ? 0 : 1;
+            }
+            int status;
+            UnixProcess.WaitPid(pid, out status);
+            if (UnixProcess.Result(status) != 0) failures++;
+        }
+        _stop = true;
+        one.Join();
+        two.Join();
+        Console.WriteLine("children " + failures);
+        return 0;
+    }
+}

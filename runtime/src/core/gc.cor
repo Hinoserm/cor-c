@@ -8162,12 +8162,13 @@ public static class Gc
         SayNumber("gc: walk: not together ", WalkTogether);
         SayNumber("gc: barrier lost: stack copy table ", LostStackCopyTable);
         SayNumber("gc: barrier lost: no segment ", LostNoSegment);
-        SayNumber("gc: barrier segments ", _segsCount);
-        SayNumber("gc: barrier segments most in a cycle ", _segsUsed);
-        SayNumber("gc: barrier waits for a segment ", BarrierWaits);
         SayNumber("gc: barrier lost: report unsigned ", LostReportUnsigned);
         SayNumber("gc: barrier lost: no stack copies ", LostNoStackCopies);
         SayNumber("gc: barrier lost: stack copy not mapped ", LostStackCopyMap);
+        SayNumber("gc: barrier segments ", _segsCount);
+        SayNumber("gc: barrier segments most in a cycle ", _segsUsed);
+        SayNumber("gc: barrier waits for a segment ", BarrierWaits);
+        SayNumber("gc: forks with the other threads held ", ForkHolds);
         SayNumber("gc: majors first ", MajorsFirst);
         SayNumber("gc: majors without generations ", MajorsUngenerational);
         SayNumber("gc: pause ms ", PauseMicros / 1000);
@@ -11811,8 +11812,9 @@ public static class Gc
     // processor scans until there is nothing left; the collecting thread
     // scans most. So a mark is a compare-and-swap on the header -- exactly one
     // thread wins it, and that thread queues the block -- and the queue is a
-    // ring many threads push to and take from with nothing held (the barrier
-    // ring's signature scheme, with a compare-and-swap to take as well).
+    // ring many threads push to and take from with nothing held (places
+    // signed with the number claimed, as the barrier's segments sign theirs,
+    // with a compare-and-swap to take as well).
     //
     // A FULL QUEUE LOSES NOTHING. A block that could not be queued keeps its
     // mark and the Overflow word says so; a rescan pass (RescanMarked) finds
@@ -12947,7 +12949,17 @@ public static class Gc
     // no half-made cycle and no lock another thread holds; and in the child
     // every thread but this one taken out as it would take itself out
     // (GcThreads.ForkedChild), the workers forgotten, and the lock let go
-    // (Forked). The parent only lets the lock go.
+    // (Forked). The parent lets the lock go, and its threads on.
+    //
+    // AND EVERY OTHER THREAD HELD AT A SAFEPOINT while the kernel copies,
+    // as glibc's malloc takes every one of its locks before a fork. An
+    // allocation's bump takes no lock: a thread caught between writing a
+    // block's header and its footer left the child a block half made, which
+    // every cycle the child began met and gave up on, freeing nothing (a
+    // child of test 2586 under load, 7,078 cycles in). A thread holds at the
+    // round's answer (GcThreads.Answer), never inside an allocation or a
+    // barrier; one blocked is answered for and holds as it comes back
+    // (EndBlocking), and so does one starting, which comes in that way.
 
     /// Before fork(2): the heap lock held, no cycle under way. True when it
     /// was taken and Forked must let it go: whenever the thread table has
@@ -12959,19 +12971,38 @@ public static class Gc
     /// straight (Forked).
     ///
     /// THE LOCK IS HELD ACROSS THE SYSTEM CALL, while the kernel copies the
-    /// page tables: another thread wanting it waits that long. And a thread
-    /// running at the fork may be anywhere in code that takes no lock -- an
-    /// allocation's bump, a barrier's card -- which the copy catches half
-    /// done; POSIX leaves a multithreaded fork's child the same hazard. A
-    /// child that execs at once forks without any of this (ForkToExec).
+    /// page tables: another thread wanting it waits that long. And every
+    /// other thread is held at a safepoint (the hold round, below), so none
+    /// is anywhere in code that takes no lock -- an allocation's bump, a
+    /// barrier's card -- for the copy to catch half done. A child that
+    /// execs at once forks without any of this (ForkToExec).
+    ///
+    /// THE HOLD ROUND: an ACK round asked with ForkHold set, each thread
+    /// holding where it answers until Forked lets it go. Marked as a cycle
+    /// (Cycling, _collecting) while it is asked: the round's words are the
+    /// collector's, and a thread that would collect waits it out instead.
     public static bool ReadyFork()
     {
         if (!GcThreads.HasTable()) return false;
         GcLock.Enter();
-        nuint cycling = GcLock.Words() + GcLock.Cycling;
+        nuint ctl = GcLock.Words();
+        nuint cycling = ctl + GcLock.Cycling;
         while (Sys.Read32(cycling) != 0 && WaitOutCycle()) { }
+        if (GcThreads.Count() > 1)
+        {
+            Sys.AtomicSwap32(ctl + GcLock.ForkHold, 1);
+            Sys.AtomicSwap32(cycling, 1);
+            Sys.AtomicSwap(ctl + GcLock.Collector, Sys.ThreadBlock());
+            _collecting = true;
+            GcThreads.Round(GcThreads.Ack, true);
+            GcLock.Enter();
+            ForkHolds = ForkHolds + 1;
+        }
         return true;
     }
+
+    /// Forks made with the other threads held (ReadyFork).
+    public static long ForkHolds;
 
     /// After fork(2), on both sides. In the CHILD the collector has this
     /// thread alone: the others are taken out, and the workers -- none of
@@ -12979,6 +13010,18 @@ public static class Gc
     /// them (StartWorkers).
     public static void Forked(bool child, bool held)
     {
+        // THE HOLD LET GO, on both sides: the parent's threads go on; the
+        // child has none of them, and nothing to wait out.
+        nuint ctl = GcLock.WordsIfMade();
+        if (ctl != 0 && Sys.Read32(ctl + GcLock.ForkHold) != 0)
+        {
+            _collecting = false;
+            Sys.AtomicSwap(ctl + GcLock.Collector, 0);
+            Sys.AtomicSwap32(ctl + GcLock.Cycling, 0);
+            Sys.AtomicSwap32(ctl + GcLock.ForkHold, 0);
+            Platform.Wake(ctl + GcLock.ForkHold, 0x7FFFFFFF);
+            Platform.Wake(ctl + GcLock.Cycling, 0x7FFFFFFF);
+        }
         if (child)
         {
             // A TABLE MADE DURING THE FORK -- the first second thread
@@ -13615,8 +13658,11 @@ public static class Gc
         _collecting = true;
         _sinceAtStop = _since;
         SyncEnd();
-        _cycle = _cycle + 1;
+        // The barrier's pool taken back BEFORE the cycle moves on: a writer
+        // stalled since the last cycle that takes a segment in between makes
+        // it the last cycle's, which this one never reads (InstallSegment).
         ResetBarrier();
+        _cycle = _cycle + 1;
 
         // 1. The barrier logs, then the snapshot of where objects start. The
         //    collector's own buffer is stepped over like everybody's and its
@@ -13761,7 +13807,7 @@ public static class Gc
 
         // 4. Every thread's stack. When it has been answered, every thread
         //    has passed a safepoint since it saw the barrier mark, so every
-        //    report it logged is signed and in the ring.
+        //    report it logged is signed and in its segment.
         GcThreads.Round(GcThreads.Scan);
 
         if (TakeBarrier(true))
@@ -14003,7 +14049,7 @@ public static class Gc
     }
 
     /// A concurrent collection that cannot finish soundly -- a barrier
-    /// report was lost to a full ring -- is given up: every thread is seen out
+    /// report was lost, the barrier's pool empty -- is given up: every thread is seen out
     /// of its barrier, what was marked is unmarked, and nothing is freed. The
     /// next allocation that wants a collection starts a new one. Entered
     /// without the heap lock; left holding it.
@@ -14403,9 +14449,9 @@ public static class Gc
     // WHERE A REPORT WAITS until it can be marked (Marking 1): in a segment
     // its thread holds (Tls.BarrierSegment), as HotSpot's G1 gives every
     // thread an SATB buffer and Go every processor a write-barrier buffer. A
-    // segment that fills stays where it is -- every segment handed out is on
-    // one list (GcLock.BarrierLive), the collector's to read (TakeBarrier) --
-    // and the thread takes the pool's next. Nothing is dropped while the
+    // segment that fills stays where it is -- every segment handed out is
+    // the collector's to read (TakeBarrier) -- and the thread takes the
+    // pool's next. Nothing is dropped while the
     // pool has one, and the collector keeps it stocked (StockBarrier): before
     // marking, from what the last cycle used and how many threads there are,
     // and during it whenever a thread finds it low (KeepBarrierStocked, in
@@ -14422,9 +14468,18 @@ public static class Gc
     //             interrupt on top of it -- counting on past its places;
     //   SegTaken  places the collector has marked;
     //   SegSeq    the number its first place signs with (Signature);
-    //   SegCycle  the cycle it was handed out in: one of an older cycle is
-    //             nobody's, and a thread holding it takes another;
-    //   SegNext   the next on the list of those handed out.
+    //   SegCycle  the cycle it was handed out in -- one of an older cycle is
+    //             nobody's, and a thread holding it takes another -- or
+    //             SegInstalling while its header is written.
+    // The segments handed out this cycle are the table's first
+    // GcLock.BarrierNext: the collector reads them there (TakeBarrier).
+    //
+    // A WRITER STALLED ACROSS A CYCLE'S START -- an interrupt on top of it,
+    // waiting -- may take a segment from the pool in one cycle and write its
+    // header in the next, by when the segment is somebody else's. So the
+    // header is written only by whoever moves its cycle on, from an older
+    // one, by compare-and-swap (InstallSegment): the stalled writer, its
+    // cycle not newer than the segment's, leaves it be.
     //
     // WHY A SIGNATURE AND NOT JUST "NOT ZERO". A writer is never stopped
     // for a collection between claiming and storing (Tls.InAlloc) -- but on
@@ -14434,9 +14489,10 @@ public static class Gc
     // the store comes late, perhaps cycles later, into a place that by then
     // belongs to somebody else's claim. Unsigned, the reader would take the
     // stale value for the new claim and miss the real one. Signed with an
-    // old number, it is nobody's, and is written over. So a segment is
-    // never unmapped, and its numbers are never used twice: a cycle that
-    // hands it out again gives it numbers of its own.
+    // old number, it is nobody's, and is written over: the numbers are read
+    // before the claim (Report), and a segment handed out again is given
+    // numbers of its own. A signature mixes the value in (Signature), for
+    // two writers' stores interleaved. And no segment is ever unmapped.
     //
     // A place found claimed and unsigned at the last read (the world
     // stopped, TakeBarrier(true)) means a report is missing: remembered
@@ -14447,14 +14503,19 @@ public static class Gc
     const int SegTaken = 1 * WordSize.Bytes;
     const int SegSeq = 2 * WordSize.Bytes;
     const int SegCycle = 3 * WordSize.Bytes;
-    const int SegNext = 4 * WordSize.Bytes;
-    // The header is the first three places' room; the rest are places.
-    const int SegFirst = 3;
+    const nuint SegInstalling = ~(nuint)0;
+    // The header is the first two places' room; the rest are places: 254
+    // of them on i386, 126 in long mode.
+    const int SegFirst = 2;
     const int SegPlaces = SegmentBytes / (2 * WordSize.Bytes) - SegFirst;
     // Never fewer in the pool than this at a cycle's start: 32 KB.
     const int StockLeast = 16;
-    // Never more mapped than this, or a 128th of the heap: 512 KB.
-    const int StockMost = 256;
+    // Never more mapped than this, four for every thread, or a 128th of the
+    // heap, whichever is most: 2 MB, as far as the ring it replaced grew.
+    // Mapped only as a cycle needs them: a program that stores little keeps
+    // the 32 KB it began with.
+    const int StockMost = 1024;
+    static bool _stocking;
     // Kept back for the threads that may not wait (WaitForSegment): a
     // thread that may waits while no more than these are left.
     const int StockReserve = 8;
@@ -14465,22 +14526,31 @@ public static class Gc
     /// platform out of memory leaves it short, and says so with 0 mapped.
     static void StockBarrier(nuint want)
     {
+        // NOT TWICE AT ONCE: the collector's own report, from an interrupt
+        // on top of this, would write the table under it (WaitForSegment).
+        if (_stocking) return;
+        _stocking = true;
+        StockBarrierWith(want);
+        _stocking = false;
+    }
+
+    static void StockBarrierWith(nuint want)
+    {
         nuint ctl = GcLock.Words();
         nuint next = Sys.ReadAddress(ctl + GcLock.BarrierNext);
         nuint count = _segsCount;
         nuint left = next < count ? count - next : 0;
         if (left >= want) return;
-        // Whole pages of segments: two to a page.
+        // Whole pages of segments where the budget leaves room: two to a page.
         nuint more = (want - left + 1) & ~(nuint)1;
-        // THE BUDGET: never more segments than StockMost or a 128th of the
-        // heap's bytes, whichever is more -- half a megabyte on a machine of
-        // 64 MB, where most of these programs run. Spent, and threads that
-        // find the pool empty stop waiting for it: the cycle is given up.
-        // A thread that waits for a segment stores nothing meanwhile, so a
-        // pool this size is backpressure, not a ceiling the stores outrun.
+        // THE BUDGET (StockMost). Spent, and threads that find the pool
+        // empty stop waiting for it: the cycle is given up. A thread that
+        // waits for a segment stores nothing meanwhile, so the pool is
+        // backpressure, not a ceiling the stores outrun.
         nuint most = (nuint)(HeapChunks.HeapBytes / 128 / SegmentBytes);
+        if (most < 4 * GcThreads.Count()) most = 4 * GcThreads.Count();
         if (most < StockMost) most = StockMost;
-        if (_segsCount + more > most) more = _segsCount < most ? (most - _segsCount) & ~(nuint)1 : 0;
+        if (_segsCount + more > most) more = _segsCount < most ? most - _segsCount : 0;
         if (more == 0)
         {
             Sys.AtomicSwap32(ctl + GcLock.BarrierSpent, 1);
@@ -14546,7 +14616,6 @@ public static class Gc
         if (used > _segsCount) used = _segsCount;
         if (used > _segsUsed) _segsUsed = used;
         Sys.AtomicSwap(ctl + GcLock.BarrierNext, 0);
-        Sys.AtomicSwap(ctl + GcLock.BarrierLive, 0);
         Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 0);
         Sys.AtomicSwap32(ctl + GcLock.BarrierLow, 0);
         Sys.AtomicSwap32(ctl + GcLock.BarrierSpent, 0);
@@ -14557,9 +14626,14 @@ public static class Gc
         _segsLow = want / 2;
     }
 
-    static nuint Signature(nuint place)
+    /// A place's signature: its number and the value written there, mixed
+    /// (Fibonacci hashing), the top bit set so no signature is 0. With the
+    /// value in it, a late writer's value under the rightful writer's
+    /// signature does not pass for the rightful report: the two words are
+    /// stored one at a time, and the two writers' stores may interleave.
+    static nuint Signature(nuint place, nuint value)
     {
-        return (place & 0x7FFFFFFF) | 0x80000000;
+        return ((place ^ (value >> 3)) * 0x9E3779B1u) | ((nuint)1 << (8 * WordSize.Bytes - 1));
     }
 
     /// What the compiled barrier calls, through Runtime.WriteBarrier, when a
@@ -14570,7 +14644,7 @@ public static class Gc
     ///
     /// TWO WAYS. While the threads are still writing down where their own
     /// buffers' objects start (Marking 1) a pointer cannot yet be resolved,
-    /// so the two words are logged in the ring. Afterwards (Marking 2) they
+    /// so the two words are logged in a segment (Report). Afterwards (Marking 2) they
     /// are marked on the spot: that is what lets a collection end without
     /// stopping anybody, because a mark already made is not made again, and
     /// once everything reachable is marked the barrier finds nothing new.
@@ -14690,30 +14764,42 @@ public static class Gc
 
             if (seg != 0 && Sys.ReadAddress(seg + SegCycle) == _cycle)
             {
+                // Its numbers read before the claim: a writer stalled past
+                // the cycle's end signs with the old ones, which the
+                // collector takes for no report and counts lost.
+                nuint seq = Sys.ReadAddress(seg + SegSeq);
                 nuint place = Sys.AtomicAdd(seg + SegFill, 1u);
 
                 if (place < SegPlaces)
                 {
                     nuint at = seg + (SegFirst + place) * (2 * WordSize.Bytes);
                     Sys.WriteAddress(at + WordSize.Bytes, value);
-                    Sys.AtomicSwap(at, Signature(Sys.ReadAddress(seg + SegSeq) + place));
+                    Sys.AtomicSwap(at, Signature(seq + place, value));
                     return;
                 }
             }
 
             // FULL, OR NONE OF THIS CYCLE'S: the pool's next, made this
-            // cycle's and put on the list before the thread holds it.
-            nuint fresh = TakeSegment(MayWait(tb) ? (nuint)StockReserve : 0);
-            if (fresh == 0 && !WaitForSegment(tb))
+            // cycle's before the thread holds it.
+            nuint cycle = _cycle;
+            nuint fresh = TakeSegment(MayWait(tb) ? (nuint)StockReserve : 0, MayWait(tb));
+            if (fresh == 0)
             {
+                if (WaitForSegment(tb)) continue;
+                // MARKED ON THE SPOT if the mark took the reports meanwhile.
+                if (Runtime.Marking == 2)
+                {
+                    MarkAt(value);
+                    return;
+                }
                 LostNoSegment = LostNoSegment + 1;
                 Sys.AtomicSwap32(GcLock.Words() + GcLock.BarrierLost, 1);
                 return;
             }
-            if (fresh == 0) continue;
-            InstallSegment(fresh);
+            // A segment somebody else made this cycle's first is theirs.
+            if (!InstallSegment(fresh, cycle)) continue;
             // An interrupt on top of this thread that took one first has it
-            // in place: this one stays on the list, empty, and the loop
+            // in place: this one stays handed out, empty, and the loop
             // claims from the one in place.
             Sys.Cas(tb + Tls.BarrierSegment, seg, fresh);
         }
@@ -14723,17 +14809,19 @@ public static class Gc
     /// processor given up meanwhile, as a thread that allocates past its
     /// share helps or waits for the collector (Go's assists). Answers false
     /// where waiting is no answer: the budget spent or the platform out of
-    /// memory (BarrierSpent), the cycle given up, or a thread that may not
-    /// give the processor away (Tls.PreemptCount: a kernel's spin lock or
-    /// interrupt). The collector itself, reporting, stocks the pool there
-    /// and then. A thread waiting here owes the rounds its answer -- it is
-    /// inside its barrier (Tls.InAlloc) -- and the collector waiting on it
-    /// stocks the pool at every turn of its wait (GcThreads.Round).
+    /// memory (BarrierSpent), the reports taken already (Marking 2: the
+    /// caller marks), the cycle given up, or a thread that may not wait
+    /// (MayWait). The collector itself, reporting, stocks the pool there
+    /// and then, unless it is an interrupt on top of the collector. A thread
+    /// waiting here owes the rounds its answer -- it is inside its barrier
+    /// (Tls.InAlloc) -- and the collector waiting on it stocks the pool at
+    /// every turn of its wait (GcThreads.Round) and its stop's steps.
     static bool WaitForSegment(nuint tb)
     {
         nuint ctl = GcLock.Words();
         if (Sys.ReadAddress(ctl + GcLock.Collector) == tb)
         {
+            if (Sys.ReadAddress(tb + Tls.PreemptCount) != 0) return false;
             Sys.AtomicSwap32(ctl + GcLock.BarrierLow, 1);
             KeepBarrierStocked();
             return Sys.Read32(ctl + GcLock.BarrierSpent) == 0 && SegmentsLeft() != 0;
@@ -14768,9 +14856,11 @@ public static class Gc
     /// The pool's next segment, or 0 when no more than `keep` are left (the
     /// reserve, for a thread that may wait: StockReserve). Nothing held: a
     /// compare-and-swap of the index, which only the cycle's start sets back.
-    /// Taking one of the last `_segsLow` wakes the collector to map more,
-    /// once until it has (KeepBarrierStocked).
-    static nuint TakeSegment(nuint keep)
+    /// Taking one of the last `_segsLow` asks the collector for more, once
+    /// until it has (KeepBarrierStocked): woken (`stir`) by a thread that may
+    /// wait, and otherwise left to find the flag at its next turn -- a wake
+    /// is no call for a spin lock's holder or an interrupt.
+    static nuint TakeSegment(nuint keep, bool stir)
     {
         nuint ctl = GcLock.Words();
 
@@ -14785,7 +14875,7 @@ public static class Gc
 
             if (Sys.Cas(ctl + GcLock.BarrierNext, next, next + 1) == next)
             {
-                if (count - next - 1 < _segsLow && Sys.Cas32(ctl + GcLock.BarrierLow, 0, 1) == 0)
+                if (count - next - 1 < _segsLow && Sys.Cas32(ctl + GcLock.BarrierLow, 0, 1) == 0 && stir)
                 {
                     GcThreads.Stir();
                 }
@@ -14794,78 +14884,81 @@ public static class Gc
         }
     }
 
-    /// A segment taken from the pool made this cycle's -- numbers of its
-    /// own, nothing claimed or taken -- and put on the list of those handed
-    /// out, ahead of the others. Many writers, nothing held; the collector
-    /// only reads the list, and sets it to nothing at a cycle's start.
-    static void InstallSegment(nuint seg)
+    /// A segment taken from the pool made `cycle`'s -- numbers of its own,
+    /// nothing claimed or taken -- by whoever moves its cycle on first, from
+    /// an older one. False for anybody else: one stalled since an older
+    /// cycle, or a second taker of it this cycle (an index read before the
+    /// cycle's start and swapped after it), whose segment it is not.
+    static bool InstallSegment(nuint seg, nuint cycle)
     {
-        nuint ctl = GcLock.Words();
-        Sys.WriteAddress(seg + SegSeq, Sys.AtomicAdd(ctl + GcLock.BarrierSeq, (nuint)SegPlaces));
+        nuint was = Sys.ReadAddress(seg + SegCycle);
+        if (was >= cycle || Sys.Cas(seg + SegCycle, was, SegInstalling) != was) return false;
+        Sys.WriteAddress(seg + SegSeq, Sys.AtomicAdd(GcLock.Words() + GcLock.BarrierSeq, (nuint)SegPlaces));
         Sys.WriteAddress(seg + SegTaken, 0);
         Sys.WriteAddress(seg + SegFill, 0);
-        Sys.WriteAddress(seg + SegCycle, _cycle);
-
-        while (true)
-        {
-            nuint head = Sys.ReadAddress(ctl + GcLock.BarrierLive);
-            Sys.WriteAddress(seg + SegNext, head);
-            if (Sys.Cas(ctl + GcLock.BarrierLive, head, seg) == head) return;
-        }
+        // The header before the cycle that says it may be read.
+        Sys.AtomicSwap(seg + SegCycle, cycle);
+        return true;
     }
 
-    /// Marks what has been reported, segment by segment. With the world
-    /// running it stops in a segment at a place claimed and not yet signed,
-    /// and comes back to it; with the world stopped (`all`) there is no such
-    /// place, only ones given up. Answers whether any report was dropped.
+    /// Marks what has been reported, segment by segment: the table's first
+    /// BarrierNext, those this cycle's. With the world running it stops in a
+    /// segment at a place claimed and not yet signed, and comes back to it;
+    /// with the world stopped (`all`) there is no such place, only ones
+    /// given up. Answers whether any report was dropped.
     static bool TakeBarrier(bool all)
     {
         nuint ctl = GcLock.Words();
-        nuint seg = Sys.ReadAddress(ctl + GcLock.BarrierLive);
+        nuint handed = Sys.ReadAddress(ctl + GcLock.BarrierNext);
+        nuint count = _segsCount;
+        if (handed > count) handed = count;
+        nuint table = _segs;
 
-        while (seg != 0)
+        for (nuint i = 0; i < handed; i++)
         {
-            // ONE OF AN OLDER CYCLE, put on the list by a writer blocked
-            // since then: its reports were of a snapshot gone.
-            if (Sys.ReadAddress(seg + SegCycle) == _cycle)
+            nuint seg = Sys.ReadAddress(table + i * WordSize.Bytes);
+
+            // ONE OF AN OLDER CYCLE, or being made this one's: nothing in it
+            // of this cycle's (InstallSegment).
+            if (Sys.ReadAddress(seg + SegCycle) != _cycle)
             {
-                nuint end = Sys.ReadAddress(seg + SegFill);
-                if (end > SegPlaces) end = SegPlaces;
-                nuint taken = Sys.ReadAddress(seg + SegTaken);
-                nuint seq = Sys.ReadAddress(seg + SegSeq);
-
-                while (taken < end)
-                {
-                    nuint at = seg + (SegFirst + taken) * (2 * WordSize.Bytes);
-
-                    if ((Sys.ReadAddress(at)) != Signature(seq + taken))
-                    {
-                        // Claimed, not signed. With the world running its writer
-                        // is a few instructions away: come back. At a stop there
-                        // is no such thing as a moment: the report is missing.
-                        if (!all)
-                        {
-                            break;
-                        }
-
-                        LostReportUnsigned = LostReportUnsigned + 1;
-                        Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 1);
-                    }
-                    else
-                    {
-                        nuint value = Sys.ReadAddress(at + WordSize.Bytes);
-                        Sys.AtomicSwap(at, 0);
-                        BarrierTaken = BarrierTaken + 1;
-                        MarkAt(value);
-                    }
-
-                    taken = taken + 1;
-                }
-
-                Sys.WriteAddress(seg + SegTaken, taken);
+                continue;
             }
 
-            seg = Sys.ReadAddress(seg + SegNext);
+            nuint end = Sys.ReadAddress(seg + SegFill);
+            if (end > SegPlaces) end = SegPlaces;
+            nuint taken = Sys.ReadAddress(seg + SegTaken);
+            nuint seq = Sys.ReadAddress(seg + SegSeq);
+
+            while (taken < end)
+            {
+                nuint at = seg + (SegFirst + taken) * (2 * WordSize.Bytes);
+                nuint value = Sys.ReadAddress(at + WordSize.Bytes);
+
+                if ((Sys.ReadAddress(at)) != Signature(seq + taken, value))
+                {
+                    // Claimed, not signed. With the world running its writer
+                    // is a few instructions away: come back. At a stop there
+                    // is no such thing as a moment: the report is missing.
+                    if (!all)
+                    {
+                        break;
+                    }
+
+                    LostReportUnsigned = LostReportUnsigned + 1;
+                    Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 1);
+                }
+                else
+                {
+                    Sys.AtomicSwap(at, 0);
+                    BarrierTaken = BarrierTaken + 1;
+                    MarkAt(value);
+                }
+
+                taken = taken + 1;
+            }
+
+            Sys.WriteAddress(seg + SegTaken, taken);
         }
 
         return Sys.Read32(ctl + GcLock.BarrierLost) != 0;
@@ -17480,9 +17573,10 @@ public static class GcLock
     // blocking, a thread leaving -- so that a wake sent before the collector
     // went to sleep is never lost (the futex sleeps only while it is unmoved).
     public const int Stirs = 16 * WordSize.Bytes;
-    // The barrier's segments handed out this cycle, a list (Gc.InstallSegment);
-    // and a thread found the pool low, for the collector to map more.
-    public const int BarrierLive = 17 * WordSize.Bytes;
+    // A fork under way holds every other thread at its next safepoint
+    // (Gc.ReadyFork, GcThreads.HoldForFork): 1 while it does.
+    public const int ForkHold = 17 * WordSize.Bytes;
+    // A thread found the barrier's pool low, for the collector to map more.
     public const int BarrierLow = 18 * WordSize.Bytes;
     // The pool cannot be stocked further this cycle: its budget spent, or
     // the platform out of memory (Gc.StockBarrier).
@@ -18506,6 +18600,21 @@ public static class GcThreads
         Settle(block);
         Answered = Answered + 1;
         Sys.WriteAddress(block + Tls.HandshakeArmed, 0);
+        HoldForFork(block);
+    }
+
+    /// A fork under way: this thread held where it stands -- answered, at a
+    /// safepoint, out of the allocator and the barrier, holding no heap lock
+    /// -- until the fork has been made (Gc.ReadyFork, Gc.Forked). Never the
+    /// forking thread, which is the round's collector.
+    static void HoldForFork(nuint block)
+    {
+        nuint ctl = GcLock.WordsIfMade();
+        if (ctl == 0) return;
+        while (Sys.Read32(ctl + GcLock.ForkHold) != 0 && !GcLock.IsCollector(block))
+        {
+            Platform.Wait(ctl + GcLock.ForkHold, 1);
+        }
     }
 
     /// `block` is square with the open round, and the collector is told.
@@ -18683,6 +18792,10 @@ public static class GcThreads
             Platform.Wait(block + Tls.State, Busy);
             Sys.Pause();
         }
+
+        // Back from a wait while a fork holds the others -- answered for
+        // while it waited, or a thread starting: held here, before it runs.
+        HoldForFork(block);
 
         if (Owes(block))
         {
