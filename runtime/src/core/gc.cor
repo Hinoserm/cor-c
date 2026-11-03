@@ -12903,6 +12903,51 @@ public static class Gc
         return waited;
     }
 
+    // ---- a fork ---------------------------------------------------------------
+    //
+    // fork(2) COPIES ONE THREAD: the one that asked. Whatever else the
+    // process ran -- other threads of the program, the collector's workers
+    // -- is in the copy only as what it left in memory: blocks in the thread
+    // table, a count of workers, perhaps the heap lock or a cycle half made.
+    // A child that went on believing in them waited for ever for a thread
+    // that was not there: sshd's connection process, forked by a daemon with
+    // threads of its own, gave up every cycle it began (none of 12,784
+    // finished) and spent 13 s of a 20 s connection in them. So a fork is
+    // made the way POSIX's pthread_atfork has a library make one: the heap
+    // lock taken first, with no cycle under way (ReadyFork), so the copy has
+    // no half-made cycle and no lock another thread holds; and in the child
+    // every thread but this one taken out as it would take itself out
+    // (GcThreads.ForkedChild), the workers forgotten, and the lock let go
+    // (Forked). The parent only lets the lock go.
+
+    /// Before fork(2): the heap lock held, no cycle under way. True when it
+    /// was taken -- there are other threads -- and Forked must let it go.
+    public static bool ReadyFork()
+    {
+        if (!GcThreads.Others()) return false;
+        GcLock.Enter();
+        nuint cycling = GcLock.Words() + GcLock.Cycling;
+        while (Sys.Read32(cycling) != 0 && WaitOutCycle()) { }
+        return true;
+    }
+
+    /// After fork(2), on both sides. In the CHILD the collector has this
+    /// thread alone: the others are taken out, and the workers -- none of
+    /// them copied -- are started again by the next collection that wants
+    /// them (StartWorkers).
+    public static void Forked(bool child, bool held)
+    {
+        if (child)
+        {
+            if (held) GcThreads.ForkedChild(Sys.ThreadBlock());
+            Workers = 0;
+            _workersTried = false;
+            _workWord = 0;
+            _sleepers = 0;
+        }
+        if (held) GcLock.Exit();
+    }
+
     // ---- a collection ---------------------------------------------------------
     //
     // NOBODY IS EVER STOPPED. A collection with one thread simply runs,
@@ -17421,6 +17466,28 @@ public static class GcThreads
         {
             Sys.WriteAddress(_blocks + _count * WordSize.Bytes, block);
             _count = _count + 1;
+        }
+    }
+
+    /// IN A FORK'S CHILD, with the heap lock held and no cycle under way
+    /// (Gc.ReadyFork): every thread but `self` taken out as Deregister takes
+    /// one -- its buffer retired, its classes forgotten, nothing owed -- for
+    /// none of them was copied. Their blocks and stacks stay mapped in the
+    /// copy, read by nothing now.
+    public static void ForkedChild(nuint self)
+    {
+        if (_blocks == 0) return;
+        nuint i = 0;
+        while (i < _count)
+        {
+            nuint block = At(i);
+            if (block == self) { i = i + 1; continue; }
+            Sys.WriteAddress(block + Tls.State, Gone);
+            Gc.Retire(block);
+            Gc.ForgetClasses(block);
+            Settle(block);
+            Sys.WriteAddress(_blocks + i * WordSize.Bytes, At(_count - 1));
+            _count = _count - 1;
         }
     }
 

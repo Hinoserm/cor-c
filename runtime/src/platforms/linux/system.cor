@@ -1712,12 +1712,18 @@ public static partial class Os
     ///
     /// EVERYTHING the process has is duplicated, the heap included, so the
     /// child is running the same program with the same objects and neither
-    /// side can see the other's writes afterwards. Nothing in this runtime
-    /// needs to be told: there is one thread, and the collector's state is as
-    /// valid in the copy as it was in the original.
+    /// side can see the other's writes afterwards -- but of its threads only
+    /// this one. The collector is readied first and set straight after
+    /// (Gc.ReadyFork, Gc.Forked), and the child forgets the program's other
+    /// threads (Runtime.ForkedChild): believing the copy had them, a child
+    /// waited for ever at the end of Main, and gave up every collection.
     public static int Fork()
     {
-        return (int)Platform.Result(Sys.Syscall(LinuxCall.Fork, 0, 0, 0));
+        bool held = Gc.ReadyFork();
+        int pid = (int)Platform.Result(Sys.Syscall(LinuxCall.Fork, 0, 0, 0));
+        Gc.Forked(pid == 0, held);
+        if (pid == 0 && Runtime.ForkedChild != 0) Sys.Call(Runtime.ForkedChild, 0, 0, 0);
+        return pid;
     }
 
     public static int Getpid()

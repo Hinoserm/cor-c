@@ -3487,6 +3487,11 @@ public static partial class Runtime
 
     public static nuint ForegroundWait;
 
+    /// What a fork's child runs to forget the threads it was not copied
+    /// with (Thread.ForkedChild): left here by the first thread started, 0
+    /// in a program that never started one (Platform.Fork).
+    public static nuint ForkedChild;
+
     // ---- what runs when the process ends ---------------------------------
     //
     // The class library buffers console output and has to empty the buffer

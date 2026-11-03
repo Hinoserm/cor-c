@@ -609,6 +609,34 @@ public partial class Thread
         return slot;
     }
 
+    /// IN A FORK'S CHILD (Runtime.ForkedChild, from Platform.Fork): only the
+    /// thread that forked was copied. Every other Thread is finished here --
+    /// a Join on it returns, and the end of Main waits for none of them
+    /// (WaitForForeground waited for ever on the parent's) -- and its slot
+    /// is empty; the counting lock and the registry's gate, which one of
+    /// them may have held at the fork, are free. Nothing is made: the
+    /// collector has this thread alone, and allocating is safe, but there is
+    /// no need.
+    static void ForkedChild()
+    {
+        Thread? self = _current;
+        for (int i = 0; i < _slots; i++)
+        {
+            Thread? t = _all[i];
+            if (t is null || ReferenceEquals(t, self)) continue;
+            Sys.AtomicSwap32(Atom.At(t, Atom.FirstWord), 1);
+            t._counted = false;
+            _all[i] = null;
+        }
+        // The emptied slots are not given back (the list may need growing,
+        // and nothing must be made here): the table grows past them.
+        _freedCount = 0;
+        nuint at = Sys.ArrayData(_foreground);
+        Sys.AtomicSwap32(at, self is not null && self._counted ? 1 : 0);
+        Sys.AtomicSwap32(at + 4, 0);
+        _registry = null;
+    }
+
     /// A thread's slot given back as it ends, still a thread the collector
     /// counts (before Runtime.EndThread): nothing reads the slot after its
     /// entry has, and the Thread is then only what its joiners hold.
@@ -669,6 +697,7 @@ public partial class Thread
             _uiCulture ??= CultureInfo.GivenUICulture;
         }
         _slot = Register(this);
+        Runtime.ForkedChild = Sys.AddressOf(Thread.ForkedChild);
         if (!_background)
         {
             Runtime.ForegroundWait = Sys.AddressOf(Thread.WaitForForeground);
