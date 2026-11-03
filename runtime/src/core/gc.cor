@@ -7078,6 +7078,8 @@ public static class Gc
         Sys.WriteAddress(block + Tls.AllocBase, arena);
         Sys.WriteAddress(block + Tls.AllocPtr, arena);
         Sys.WriteAddress(block + Tls.AllocLimit, arena + size);
+        BufferInstalls = BufferInstalls + 1;
+        if (_stopOpen) BufferInstallsMidStop = BufferInstallsMidStop + 1;
         return true;
     }
 
@@ -7174,6 +7176,8 @@ public static class Gc
         Sys.WriteAddress(block + Tls.AllocBase, arena);
         Sys.WriteAddress(block + Tls.AllocPtr, arena);
         Sys.WriteAddress(block + Tls.AllocLimit, arena + size);
+        BufferInstalls = BufferInstalls + 1;
+        if (_stopOpen) BufferInstallsMidStop = BufferInstallsMidStop + 1;
         return true;
     }
 
@@ -14878,6 +14882,8 @@ public static class Gc
         SayNumber("gc bad block:   buffers captured ", GcThreads.BufferCount());
         SayNumber("gc bad block:   next captured buffer ", step < GcThreads.BufferCount() ? GcThreads.BufferBase(step) - chunk : 0);
         SayNumber("gc bad block:   threads ", GcThreads.Count());
+        SayNumber("gc bad block:   buffers put in place since the capture ", BufferInstalls - GcThreads.InstallsAtCapture);
+        SayNumber("gc bad block:   buffers put in place mid-stop, ever ", BufferInstallsMidStop);
         nuint holder = GcThreads.BufferHolding(block);
         SayNumber("gc bad block:   in a thread's live buffer ", holder != 0 ? 1 : 0);
         if (holder != 0)
@@ -14888,10 +14894,18 @@ public static class Gc
             SayNumber("gc bad block:     buffer limit kept aside ", Sys.ReadAddress(holder + Tls.AllocSaved));
             SayNumber("gc bad block:     thread state ", Sys.ReadAddress(holder + Tls.State));
             SayNumber("gc bad block:     is the collector's ", holder == Sys.ThreadBlock() ? 1 : 0);
+            SayNumber("gc bad block:     heap now ", Sys.ReadAddress(holder + Tls.Heap));
+            GcThreads.SayCaptured(holder, chunk);
         }
     }
 
     static long _badBlocksSaid;
+
+    /// Buffers put in place (Refill, Recycle), and of them while a stop was
+    /// open: for the bad-block report, with the count at the last capture
+    /// (GcThreads.CaptureBuffers) -- a buffer the walk does not step over is
+    /// one put in place after the capture, or one the capture did not see.
+    public static long BufferInstalls, BufferInstallsMidStop;
 
     /// A mixed chunk's blocks from _walkBlock: false when the budget ran out
     /// first, with where it was kept; true when the chunk is done.
@@ -18528,10 +18542,49 @@ public static class GcThreads
     static nuint _buffersFor;
     static nuint _bufferCount;
 
+    // WHAT THE LAST CAPTURE SAW of each thread, the first sixteen: its block,
+    // base, limit, limit kept aside, heap -- for the bad-block report.
+    public static long InstallsAtCapture;
+    static int _seenCount;
+    static nuint _seen;
+
+    static void Seen(nuint block, nuint from, nuint limit, nuint saved)
+    {
+        if (_seen == 0) _seen = Platform.Map(16 * 5 * WordSize.Bytes);
+        if (_seen == 0 || _seenCount >= 16) return;
+        nuint at = _seen + (nuint)_seenCount * 5 * WordSize.Bytes;
+        Sys.WriteAddress(at, block);
+        Sys.WriteAddress(at + WordSize.Bytes, from);
+        Sys.WriteAddress(at + 2 * WordSize.Bytes, limit);
+        Sys.WriteAddress(at + 3 * WordSize.Bytes, saved);
+        Sys.WriteAddress(at + 4 * WordSize.Bytes, Sys.ReadAddress(block + Tls.Heap));
+        _seenCount = _seenCount + 1;
+    }
+
+    /// What the last capture saw of thread `block`, said (Gc.SayBadBlock).
+    public static void SayCaptured(nuint block, nuint chunk)
+    {
+        for (int k = 0; k < _seenCount; k++)
+        {
+            nuint at = _seen + (nuint)k * 5 * WordSize.Bytes;
+            if (Sys.ReadAddress(at) != block) continue;
+            nuint from = Sys.ReadAddress(at + WordSize.Bytes);
+            Gc.SayNumber("gc bad block:     captured base ", from);
+            Gc.SayNumber("gc bad block:     captured base offset in this chunk ", from >= chunk ? from - chunk : 0);
+            Gc.SayNumber("gc bad block:     captured limit ", Sys.ReadAddress(at + 2 * WordSize.Bytes));
+            Gc.SayNumber("gc bad block:     captured limit kept aside ", Sys.ReadAddress(at + 3 * WordSize.Bytes));
+            Gc.SayNumber("gc bad block:     captured heap ", Sys.ReadAddress(at + 4 * WordSize.Bytes));
+            return;
+        }
+        Gc.SayNumber("gc bad block:     not in the last capture, threads seen ", (long)_seenCount);
+    }
+
     /// Every registered thread's allocation buffer as it stands, sorted by
     /// where it begins. The heap lock is held, so none is being replaced.
     public static void CaptureBuffers()
     {
+        InstallsAtCapture = Gc.BufferInstalls;
+        _seenCount = 0;
         _bufferCount = 0;
         _buffers = Sized(_buffers, ref _buffersFor);
         if (_buffers == 0)
@@ -18556,6 +18609,7 @@ public static class GcThreads
             nuint block = _blocks == 0 ? _first : At(i);
             nuint from = Sys.ReadAddress(block + Tls.AllocBase);
             nuint limit = Sys.ReadAddress(block + Tls.AllocLimit);
+            Seen(block, from, limit, Sys.ReadAddress(block + Tls.AllocSaved));
 
             if (limit == 0)
             {
