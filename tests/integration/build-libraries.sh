@@ -76,7 +76,7 @@ SOURCES="$("$corc" library-sources | sed "s|^$root/||" | tr '\n' ' ')"
 LIBRARIES="
 libcorsacrt.so|stdlib/src/System/Core.cor stdlib/src/System/Runtime/ExceptionServices/ExceptionDispatchInfo.cor runtime/src/core/runtime.cor runtime/src/core/unicode.cor runtime/src/core/gc.cor stdlib/src/System/GC.cor runtime/src/core/threading.cor runtime/src/platforms/threads.cor runtime/src/platforms/linux/threading.cor runtime/src/platforms/linux/system.cor runtime/src/platforms/linux/abi.cor runtime/src/platforms/linux/files.cor stdlib/src/System/signals.cor stdlib/src/System/Threading/interlocked.cor
 libSystem.Runtime.InteropServices.so|stdlib/src/System/interop.cor
-libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor stdlib/src/System/Reflection/Assembly.cor
+libSystem.Runtime.Extensions.so|stdlib/src/System/time.cor stdlib/src/System/values.cor stdlib/src/System/environment.cor stdlib/src/System/Reflection/Assembly.cor stdlib/src/System/AppDomain.cor
 libSystem.Runtime.Numerics.so|stdlib/src/System/numerics.cor
 libSystem.Collections.so|stdlib/src/System/Collections/Collections.cor
 libSystem.Text.RegularExpressions.so|stdlib/src/System/Text/RegularExpressions.cor

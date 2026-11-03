@@ -456,7 +456,7 @@ threads, the system-call layer and what .NET calls
 | `libcorsacrt.so` | `std.cor`, `rt/runtime.cor`, `rt/gc.cor`, `threading.cor`, `threading-linux.cor`, `sys/linux.cor`, `signals.cor` | -- |
 | `libSystem.Runtime.InteropServices.so` | `interop.cor` | rt |
 | `libSystem.Security.Cryptography.so` | `security.cor` | rt |
-| `libSystem.Runtime.Extensions.so` | `time.cor`, `values.cor`, `environment.cor` | rt, Cryptography |
+| `libSystem.Runtime.Extensions.so` | `time.cor`, `values.cor`, `environment.cor`, `Reflection/Assembly.cor`, `AppDomain.cor` | rt, Cryptography |
 | `libSystem.Runtime.Numerics.so` | `numerics.cor` | rt |
 | `libSystem.Collections.so` | `collections.cor` | rt |
 | `libSystem.Text.RegularExpressions.so` | `regex.cor` | rt |
