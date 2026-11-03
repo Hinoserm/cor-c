@@ -624,7 +624,9 @@ public partial class Thread
     }
 
     /// IN A FORK'S CHILD (Runtime.ForkedChild, from Platform.Fork): only the
-    /// thread that forked was copied. Every other Thread is finished here --
+    /// thread that forked was copied. Every other Thread -- the registered
+    /// ones, and the first thread's when a pool worker forked -- is finished
+    /// here --
     /// a Join on it returns, and the end of Main waits for none of them
     /// (WaitForForeground waited for ever on the parent's) -- its slot empty
     /// and its mutexes abandoned; the scheduler's pool, whose workers were
@@ -655,12 +657,13 @@ public partial class Thread
         // FIRST every such thread's wait off the queues, its thread-statics
         // off the list: abandoning a mutex hands it to the oldest waiter,
         // which must not be one of them.
+        // THE FIRST THREAD, when it is not this one: its thread-statics by its
+        // block, which it has whether or not it ever asked for its Thread;
+        // its wait and its mutexes through that Thread, which it has asked
+        // for whenever it waits on a handle or holds a mutex (both name it).
         Thread? main = _main is not null && _main._block != here ? _main : null;
-        if (main is not null)
-        {
-            System.Threading.WaitHandle.Forget(main);
-            ThreadStatics.Forget(main._block);
-        }
+        if (Sys.MainThreadBlock() != here) ThreadStatics.Forget(Sys.MainThreadBlock());
+        if (main is not null) System.Threading.WaitHandle.Forget(main);
         for (int i = 0; i < _slots; i++)
         {
             Thread? t = _all[i];
@@ -668,7 +671,12 @@ public partial class Thread
             System.Threading.WaitHandle.Forget(t);
             ThreadStatics.Forget(t._block);
         }
-        if (main is not null) System.Threading.Mutex.AbandonHeld(main);
+        if (main is not null)
+        {
+            System.Threading.Mutex.AbandonHeld(main);
+            // Finished as the others are: a Join on it returns.
+            Sys.AtomicSwap32(Atom.At(main, Atom.FirstWord), 1);
+        }
         for (int i = 0; i < _slots; i++)
         {
             Thread? t = _all[i];

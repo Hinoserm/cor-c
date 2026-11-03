@@ -23,8 +23,11 @@ static class Program
     {
         Thread waiter = new Thread(() => { _waiting = true; _permits.WaitOne(); });
         waiter.Start();
+        // A thread's queued wait cannot be seen from here: the sleep gives it
+        // the time to queue. One not yet queued at the fork passes without
+        // the case tested; one caught queueing is the copy's half-done case.
         while (!_waiting) Thread.Sleep(1);
-        Thread.Sleep(20);
+        Thread.Sleep(100);
         int pid = UnixProcess.Fork();
         if (pid == 0)
         {
