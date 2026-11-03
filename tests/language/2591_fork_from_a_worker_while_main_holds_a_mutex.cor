@@ -40,7 +40,7 @@ static class Program
             return forked;
         }).Result;
         int status;
-        UnixProcess.WaitPid(pid, out status);
+        if (UnixProcess.WaitPid(pid, out status) != pid) { Console.WriteLine("parent: no child"); return 1; }
         Console.WriteLine("parent: child " + UnixProcess.Result(status));
         _mutex.ReleaseMutex();
         return 0;
