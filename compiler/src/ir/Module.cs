@@ -278,6 +278,43 @@ public sealed class Module
     public bool CompilesLibrary { get; set; }
 
     /// <summary>
+    /// The class library's sources on this compile's command line, not read
+    /// for their declarations (Lowering.OwnLibrarySources), by full path.
+    /// One no provider defines anything of is this image's own (OwnsLibraryCode).
+    /// </summary>
+    public IReadOnlySet<string>? OwnLibrarySources { get; set; }
+
+    private HashSet<string>? _owned;
+
+    /// <summary>
+    /// WHETHER CODE OR STATE FROM `path` IS THIS IMAGE'S OWN though written in
+    /// the class library: a source this compile names (OwnLibrarySources) of
+    /// which no provider defines a thing (ProvidedElsewhere) -- a module that
+    /// carries a part of the library its kernel leaves out, as gui.ko does the
+    /// font engine. Its code and statics are the only ones there are: not
+    /// LibraryPrivate, kept, exported as its public surface. A source of which
+    /// the provider defines something is the provider's, and what it does not
+    /// export stays withheld.
+    /// </summary>
+    public bool OwnsLibraryCode(string? path)
+    {
+        if (path is null || OwnLibrarySources is not { Count: > 0 } own || !own.Contains(path)) return false;
+        if (_owned is null)
+        {
+            HashSet<string> providers = new(StringComparer.Ordinal);
+            if (ProvidedElsewhere is { } provided)
+            {
+                foreach (Function f in Functions)
+                    if (f.SourcePath is { } p && provided.Contains(f.Name)) providers.Add(p);
+                foreach (DataItem d in Data)
+                    if (d.SourcePath is { } p && provided.Contains(d.Name)) providers.Add(p);
+            }
+            _owned = new HashSet<string>(own.Where(p => !providers.Contains(p)), StringComparer.Ordinal);
+        }
+        return _owned.Contains(path);
+    }
+
+    /// <summary>
     /// THE LIBRARY'S OWN THAT NO IMAGE EXPORTS, of what this compile read of
     /// the class library (SystemCode: written in its sources): a method's
     /// body, a static or a thread static's number of a library type, no copy
@@ -290,18 +327,19 @@ public sealed class Module
     /// body a second copy of code its library withholds, where its library's
     /// fixes never reach. What the passes may not put into code this image
     /// keeps (Inline.CrossesImage), and what the compile refuses to keep
-    /// (LibraryPrivateKept). Empty where nothing provides.
+    /// (LibraryPrivateKept). Empty where nothing provides; never what the
+    /// image owns of the library (OwnsLibraryCode).
     /// </summary>
     public HashSet<string> LibraryPrivate()
     {
         HashSet<string> found = new(StringComparer.Ordinal);
         if (ProvidedElsewhere is not { } provided || CompilesLibrary) return found;
         foreach (Function f in Functions)
-            if (f.SystemCode && !f.Coalescible && !f.GenericCode && !f.Version && f.Name != Entry && !provided.Contains(f.Name)
+            if (f.SystemCode && !f.Coalescible && !f.GenericCode && !f.Version && f.Name != Entry && !provided.Contains(f.Name) && !OwnsLibraryCode(f.SourcePath)
                 && (f.Name.StartsWith("m_", StringComparison.Ordinal) || f.Name.StartsWith("mx_", StringComparison.Ordinal)))
                 found.Add(f.Name);
         foreach (DataItem d in Data)
-            if (d.SystemCode && !d.Coalescible && !d.GenericCode && !provided.Contains(d.Name)
+            if (d.SystemCode && !d.Coalescible && !d.GenericCode && !provided.Contains(d.Name) && !OwnsLibraryCode(d.SourcePath)
                 && (d.Name.StartsWith("s_", StringComparison.Ordinal) || d.Name.StartsWith("ts_", StringComparison.Ordinal)))
                 found.Add(d.Name);
         return found;

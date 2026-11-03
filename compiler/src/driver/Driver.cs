@@ -1411,6 +1411,7 @@ public static class Driver
             // them among its files too, and reads them all to give away; a
             // user's library references them.
             module.CompilesLibrary = library && kernel is null && Corsac.Lang.Lower.Lowering.OwnLibrarySources.Count > 0;
+            module.OwnLibrarySources = Corsac.Lang.Lower.Lowering.OwnLibrarySources;
         }
         if (!args.Contains("--no-opt"))
         {
@@ -2099,9 +2100,10 @@ public static class Driver
     /// that nothing it keeps reaches (Module.LibraryPrivate), and answers the
     /// refusal where something does: each such name, and what names it. What
     /// it keeps: a program's whole module, its sweep done (RemoveDeadFunctions);
-    /// a module's or a library's own code and its copies of generic code, and
-    /// what they reach -- where no sweep ran, the library's code it read and
-    /// nothing reaches goes too, being its library's.
+    /// a module's or a library's own code -- the library sources it owns that
+    /// no provider defines among it (Module.OwnsLibraryCode) -- and its copies
+    /// of generic code, and what they reach; where no sweep ran, the library's
+    /// code it read and nothing reaches goes too, being its library's.
     /// </summary>
     private static string? LibraryPrivateKept(Module module)
     {
@@ -2121,9 +2123,9 @@ public static class Driver
             else if (live.Add(target)) work.Push(target);
         }
         foreach (Function f in module.Functions)
-            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
+            if (!hidden.Contains(f.Name) && (swept || !f.SystemCode || module.OwnsLibraryCode(f.SourcePath) || f.GenericCode || f.Coalescible) && live.Add(f.Name)) work.Push(f.Name);
         foreach (DataItem d in module.Data)
-            if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || d.Coalescible || d.GenericCode) && live.Add(d.Name)) work.Push(d.Name);
+            if (!hidden.Contains(d.Name) && (swept || !d.SystemCode || module.OwnsLibraryCode(d.SourcePath) || d.Coalescible || d.GenericCode) && live.Add(d.Name)) work.Push(d.Name);
         void Walk()
         {
             while (work.Count > 0)

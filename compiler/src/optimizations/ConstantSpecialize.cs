@@ -74,7 +74,7 @@ public sealed class ConstantSpecialize : IModulePass
                     // check that float code runs in a kept state asks it
                     // (Selector.X87Fact). And whether it runs inside its
                     // caller's (a $inside copy's, Function.InsideState).
-                    FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, InsideState = target.InsideState,
+                    FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, SourcePath = target.SourcePath, InsideState = target.InsideState,
                 };
                 foreach (VReg parameter in target.Params)
                 {
