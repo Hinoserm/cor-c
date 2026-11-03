@@ -1,8 +1,10 @@
 // System.AppDomain, in a file of its own beside System.Reflection's Assembly,
 // which it hands out. environment.cor is compiled where Assembly.cor is not --
 // the CORSAC kernel's library for its modules, the Windows platform's set --
-// and with AppDomain in it those images named a type they did not have. Every
-// library that has Assembly.cor has this file beside it.
+// and with AppDomain in it those images named a type they did not have. So
+// wherever Assembly.cor is listed this file is listed with it: Driver.cs's
+// hosted set, build-libraries.sh's libSystem.Runtime.Extensions, and
+// corsac86's LibraryBuild.
 
 /// System.AppDomain -- the one domain a program runs in, as .NET Core has
 /// only the one: CurrentDomain, and the assemblies loaded into it, which here
