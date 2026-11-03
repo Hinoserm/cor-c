@@ -486,7 +486,21 @@ internal static class Peephole
         foreach (Gpr g in Roles.ImplicitDefs(i)) writes |= Bit(MReg.Of(g).Id);
     }
 
-    private static long Bit(int id) => 1L << (id & 63);
+    /// <summary>
+    /// A register's bit in this file's masks. EBP HOLDING A VALUE
+    /// (MReg.EbpData, a frame-pointer-free leaf's) IS EBP'S BIT: until
+    /// FramePointerFree, an operand based on EBP is the frame and the value
+    /// in EBP is that id, past every machine register's. Given a bit of its
+    /// own past the int masks, a write of it went unseen where they are
+    /// narrowed (ForwardSpillLoads' clobbered set, `1 << 32` being `1 << 0`
+    /// to C#), and a reload was forwarded from EBP across the write that
+    /// replaced its value: GcThreads.CaptureBuffersInto, PIC in libcorsacrt
+    /// (its GOT pointer the register too few), stored each buffer's table
+    /// slot's own address as the buffer's base -- the walk met every live
+    /// buffer as a broken chain, and every concurrent cycle was given up.
+    /// One bit for the frame and the value only makes a rule more careful.
+    /// </summary>
+    private static long Bit(int id) => 1L << (id == MReg.EbpDataId ? (int)Gpr.Ebp : id & 63);
 
     // ---- store, then reload from the same slot ----------------------------------
 
@@ -727,7 +741,7 @@ internal static class Peephole
                     if (!PrivateSpill(memory)) break;
                     if (SameMem(memory, slot))
                     {
-                        if ((clobbered & (1 << value!.Id)) == 0)
+                        if ((clobbered & (int)Bit(value!.Id)) == 0)
                             instrs[k] = new MInstr(MOp.Mov, MReg.Of(dest.Id), MReg.Of(value.Id)) { Line = load.Line };
                         break;
                     }
