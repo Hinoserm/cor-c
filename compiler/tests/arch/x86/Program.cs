@@ -967,8 +967,9 @@ internal static class Program
         // StepHeld would already have rewritten the reload: ForwardSpillLoads
         // refuses EBP's value replaced (Bit's guard: a WritesFrame stop
         // leaves it refused too) and forwards ESI across it;
-        // ForwardXmmSpillLoads forwards XMM0 across it, and not past a store
-        // to a slot overlapping the one reloaded.
+        // ForwardXmmSpillLoads forwards XMM0 across it, not past a store to
+        // a slot within 16 bytes of the one reloaded (a 16-byte slot's
+        // reach, whatever the store's width), and past one 16 bytes away.
         List<MInstr> refused = new()
         {
             new MInstr(MOp.Mov, Slot(), value),
@@ -1002,6 +1003,9 @@ internal static class Program
         };
         Peephole.ForwardXmmSpillLoads(overlapped);
         Check(overlapped[3].Operands[1] is MMem, "ForwardXmmSpillLoads: no forward past a store to an overlapping slot");
+        overlapped[2] = new MInstr(MOp.MovF, new MMem(ebp, -24) { IsSpill = true }, MReg.Xmm(2)) { Width = 8 };
+        Peephole.ForwardXmmSpillLoads(overlapped);
+        Check(overlapped[3].Operands[1] is MMem, "ForwardXmmSpillLoads: no forward past a store to a slot 8 bytes away");
         overlapped[2] = new MInstr(MOp.MovF, new MMem(ebp, -32) { IsSpill = true }, MReg.Xmm(2)) { Width = 8 };
         overlapped[3] = new MInstr(MOp.MovF, MReg.Xmm(1), Slot()) { Width = 8 };
         Peephole.ForwardXmmSpillLoads(overlapped);
