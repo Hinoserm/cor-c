@@ -1,0 +1,30 @@
+// System.AppDomain, in a file of its own beside System.Reflection's Assembly,
+// which it hands out. environment.cor is compiled where Assembly.cor is not --
+// the CORSAC kernel's library for its modules, the Windows platform's set --
+// and with AppDomain in it those images named a type they did not have. Every
+// library that has Assembly.cor has this file beside it.
+
+/// System.AppDomain -- the one domain a program runs in, as .NET Core has
+/// only the one: CurrentDomain, and the assemblies loaded into it, which here
+/// are the one, the program's image (Assembly.GetExecutingAssembly), whose
+/// Location is "" -- inside the image, no file of its own; the process's path
+/// stands for it. The linker's receipt lists the toolchain's files by them.
+public sealed class AppDomain
+{
+    static readonly AppDomain _current = new AppDomain();
+
+    AppDomain() { }
+
+    public static AppDomain CurrentDomain => _current;
+
+    /// The entry assembly's name, as .NET's default domain is named: "corc",
+    /// not "corc.exe".
+    public string FriendlyName => System.Reflection.Assembly.GetExecutingAssembly().GetName().Name ?? "";
+
+    public string BaseDirectory => AppContext.BaseDirectory;
+
+    public System.Reflection.Assembly[] GetAssemblies() => new System.Reflection.Assembly[] { System.Reflection.Assembly.GetExecutingAssembly() };
+
+    /// As .NET says it: the name, and that there are no context policies.
+    public override string ToString() => "Name:" + FriendlyName + Environment.NewLine + "There are no context policies.";
+}
