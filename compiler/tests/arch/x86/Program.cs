@@ -940,8 +940,9 @@ internal static class Program
 
         // AND THE OTHER HALF: EBP's value written is not the frame moved. A
         // slot stored from ESI is still ESI's across it, in its own block and
-        // in the next: no reload is left. Both run through StepHeld, which
-        // Run calls first and which forwards within a block as well.
+        // in the next: no reload is left. Both run through StepHeld
+        // (ForwardSpillLoadsAcrossBlocks, which Run calls before the
+        // block-local passes), which forwards within a block as well.
         foreach (bool across in new[] { false, true })
         {
             MFunction other = new(new Function("ebp-value-keeps-" + (across ? "across" : "within"), IrType.I32)) { FramePointerFree = true };
@@ -962,9 +963,12 @@ internal static class Program
             Check(!reloaded, "a slot is forwarded across a write of EBP's value " + (across ? "into the next block" : "in its block"));
         }
 
-        // THE BLOCK-LOCAL PASSES ON THEIR OWN, which StepHeld leaves nothing
-        // to: ForwardSpillLoads refuses EBP's value replaced and forwards
-        // ESI across it, ForwardXmmSpillLoads forwards XMM0 across it.
+        // THE BLOCK-LOCAL PASSES ON THEIR OWN, called directly where Run's
+        // StepHeld would already have rewritten the reload: ForwardSpillLoads
+        // refuses EBP's value replaced (Bit's guard: a WritesFrame stop
+        // leaves it refused too) and forwards ESI across it;
+        // ForwardXmmSpillLoads forwards XMM0 across it, and not past a store
+        // to a slot overlapping the one reloaded.
         List<MInstr> refused = new()
         {
             new MInstr(MOp.Mov, Slot(), value),
@@ -989,6 +993,15 @@ internal static class Program
         };
         Peephole.ForwardXmmSpillLoads(xmm);
         Check(xmm[2].Operands[1] is MReg { IsXmm: true }, "ForwardXmmSpillLoads: a slot forwarded across EBP's value written");
+        List<MInstr> overlapped = new()
+        {
+            new MInstr(MOp.MovF, Slot(), MReg.Xmm(0)) { Width = 8 },
+            new MInstr(MOp.Mov, value, ecx),
+            new MInstr(MOp.MovF, new MMem(ebp, -12) { IsSpill = true }, MReg.Xmm(2)) { Width = 8 },
+            new MInstr(MOp.MovF, MReg.Xmm(1), Slot()) { Width = 8 },
+        };
+        Peephole.ForwardXmmSpillLoads(overlapped);
+        Check(overlapped[3].Operands[1] is MMem, "ForwardXmmSpillLoads: no forward past a store to an overlapping slot");
     }
 
     /// <summary>Fill a buffer, copy it, read a byte back through narrow loads and stores.</summary>
