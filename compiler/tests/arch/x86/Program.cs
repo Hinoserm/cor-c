@@ -1002,6 +1002,10 @@ internal static class Program
         };
         Peephole.ForwardXmmSpillLoads(overlapped);
         Check(overlapped[3].Operands[1] is MMem, "ForwardXmmSpillLoads: no forward past a store to an overlapping slot");
+        overlapped[2] = new MInstr(MOp.MovF, new MMem(ebp, -32) { IsSpill = true }, MReg.Xmm(2)) { Width = 8 };
+        overlapped[3] = new MInstr(MOp.MovF, MReg.Xmm(1), Slot()) { Width = 8 };
+        Peephole.ForwardXmmSpillLoads(overlapped);
+        Check(overlapped[3].Operands[1] is MReg { IsXmm: true }, "ForwardXmmSpillLoads: a forward past a store to a slot 16 bytes away");
     }
 
     /// <summary>Fill a buffer, copy it, read a byte back through narrow loads and stores.</summary>
