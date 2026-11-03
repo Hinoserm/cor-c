@@ -29,7 +29,7 @@ public static class Win32
     const int ContinueExecution = 0;
     const int ContinueSearch = 1;
     const int PageReadWrite = 0x04;
-    const int StdErrorHandle = -12;
+    const int StdInputHandle = -10, StdOutputHandle = -11, StdErrorHandle = -12;
     const int TlsOutOfIndexes = -1;
     const nuint InvalidHandle = 0xFFFFFFFF;
 
@@ -137,9 +137,16 @@ public static class Win32
         Platform.ExitHook = Sys.AddressOf(Exit);
         Platform.WriteHook = Sys.AddressOf(Write);
         Platform.ProcessorCountHook = Sys.AddressOf(Processors);
-        Platform.WaitHook = Sys.AddressOf(Yield);
         Platform.YieldHook = Sys.AddressOf(Yield);
         if (!MakeParking()) return false;
+        // THE RUNTIME'S OWN WAITS ON A WORD (Platform.Wait and Wake: the heap
+        // lock, the collector's rounds, a fork's hold, the pacer) park as a
+        // program's threads do (Park), not a turn given up at a time: a
+        // thread waiting out a cycle looked again every time slice, a
+        // processor's worth of looking while the collector needed it.
+        Platform.WaitHook = Sys.AddressOf(WaitWord);
+        Platform.WakeHook = Sys.AddressOf(WakeWord);
+        FindWaitOnAddress();
         int slot = TlsAlloc();
         if (slot == TlsOutOfIndexes) return false;
         bool nt = (GetVersion() & NotNt) == 0;
@@ -343,7 +350,11 @@ public static class Win32
 
     // ---- a wait on a word ------------------------------------------------
     //
-    // Windows 2000 has no WaitOnAddress. A wait parks on one of ParkBuckets
+    // WaitOnAddress where Windows has it (8 and later, in KernelBase): the
+    // kernel's own wait on a word, Linux's futex. Found at Attach by name,
+    // never imported -- an import of it would keep the image from loading on
+    // anything older. Where it is not, as on Windows 2000, which is the
+    // floor, and on CORSAC's NT layer today: a wait parks on one of ParkBuckets
     // semaphores, chosen by the word's address, after counting itself among
     // its bucket's waiters and reading the word once more; a wake releases as
     // many as wait there. A waiter counted before its last read cannot miss a
@@ -373,21 +384,99 @@ public static class Win32
 
     static nuint Bucket(nuint at) => ((at >> 2) * 0x9E3779B1 >> 26) & (ParkBuckets - 1);
 
+    // WaitOnAddress and the two wakes, or 0 (FindWaitOnAddress).
+    static nuint _waitOnAddress, _wakeOne, _wakeAll;
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern nuint GetModuleHandleA(nuint name);
+
+    [DllImport("kernel32"), SuppressGCTransition]
+    static extern nuint GetProcAddress(nuint module, nuint name);
+
+    /// KernelBase's WaitOnAddress, WakeByAddressSingle and WakeByAddressAll,
+    /// all three or none. KernelBase is loaded in every process of Windows 7
+    /// and later, and only asked for, not loaded: before 7 there is none,
+    /// and nothing to look for. The names written into a page of their own,
+    /// given back after: nothing here asks the heap (MakeParking's reason).
+    static void FindWaitOnAddress()
+    {
+        nuint names = VirtualAlloc(0, 4096, MemCommit | MemReserve, PageReadWrite);
+        if (names == 0) return;
+        nuint module = GetModuleHandleA(Ascii(names, "kernelbase.dll"));
+        if (module != 0)
+        {
+            nuint wait = GetProcAddress(module, Ascii(names + 64, "WaitOnAddress"));
+            nuint one = GetProcAddress(module, Ascii(names + 128, "WakeByAddressSingle"));
+            nuint all = GetProcAddress(module, Ascii(names + 192, "WakeByAddressAll"));
+            if (wait != 0 && one != 0 && all != 0)
+            {
+                _wakeOne = one;
+                _wakeAll = all;
+                _waitOnAddress = wait;
+            }
+        }
+        VirtualFree(names, 0, MemRelease);
+    }
+
+    /// `text`, an ASCII name, written at `at` with its zero: `at`.
+    static nuint Ascii(nuint at, string text)
+    {
+        for (int i = 0; i < text.Length; i++) Sys.Write8(at + (nuint)i, (byte)text[i]);
+        Sys.Write8(at + (nuint)text.Length, 0);
+        return at;
+    }
+
+    /// Platform.WaitHook: Park, for as long as it takes.
+    static nuint WaitWord(nuint at, nuint value, nuint c)
+    {
+        Park(at, (int)value, -1);
+        return 0;
+    }
+
+    /// Platform.WakeHook: Unpark.
+    static nuint WakeWord(nuint at, nuint count, nuint c)
+    {
+        Unpark(at, (int)count);
+        return 0;
+    }
+
     /// Waits while the word at `at` is `expect`, for at most `milliseconds`
     /// (-1, none -- looked at again each second all the same).
     public static void Park(nuint at, int expect, int milliseconds)
     {
+        int most = milliseconds < 0 || milliseconds > 1000 ? 1000 : milliseconds;
+        nuint block = Sys.ThreadBlock();
+        if (_waitOnAddress != 0 && block != 0)
+        {
+            // The value compared with is read from memory: the thread
+            // block's scratch words (Tls.Scratch), which nothing else of
+            // this platform's uses -- not a local's address, which the heap
+            // would box, and this may be the collector's wait.
+            nuint compare = block + Tls.Scratch;
+            Sys.Write32(compare, (uint)expect);
+            ((delegate* unmanaged[Stdcall]<nuint, nuint, nuint, uint, int>)_waitOnAddress)(at, compare, 4, (uint)most);
+            return;
+        }
         nuint b = Bucket(at);
         nuint waiters = _parkWaiters + b * 4;
         Sys.AtomicAdd32(waiters, 1);
         if (Sys.Read32(at) == (uint)expect)
-            WaitForSingleObject(Sys.Read32(_parkSemaphores + b * 4), milliseconds < 0 || milliseconds > 1000 ? 1000 : milliseconds);
+            WaitForSingleObject(Sys.Read32(_parkSemaphores + b * 4), most);
         Sys.AtomicAdd32(waiters, -1);
     }
 
     /// Wakes up to `count` of what waits on the word at `at`.
     public static void Unpark(nuint at, int count)
     {
+        // THE TWO WAITS BOTH WOKEN: a thread with no block yet parks on the
+        // semaphores even where WaitOnAddress is had (Park), and a wake by
+        // address alone left it to its next look, a second later. The
+        // semaphores' half costs a read where nobody waits there.
+        if (_waitOnAddress != 0)
+        {
+            if (count == 1) ((delegate* unmanaged[Stdcall]<nuint, void>)_wakeOne)(at);
+            else ((delegate* unmanaged[Stdcall]<nuint, void>)_wakeAll)(at);
+        }
         nuint b = Bucket(at);
         uint waiting = Sys.Read32(_parkWaiters + b * 4);
         if (waiting == 0) return;
@@ -540,11 +629,8 @@ public static class Win32
         return seconds * 1000000000 + (_count - seconds * _frequency) * 1000000000 / _frequency;
     }
 
-    /// A TURN OF A WAIT (Platform.WaitHook), and a spin's offer to the others
-    /// (Platform.YieldHook): the word waited for is another thread's to
-    /// change, so this one gives up the rest of its time slice.
-    /// Sleep(0), which every Windows has; nothing wakes a sleeper, which
-    /// looks again on its next turn.
+    /// A spin's offer to the others (Platform.YieldHook): the rest of this
+    /// thread's time slice given up. Sleep(0), which every Windows has.
     static nuint Yield(nuint at, nuint value, nuint c)
     {
         Sleep(0);
@@ -567,13 +653,23 @@ public static class Win32
         return 0;
     }
 
-    /// What the runtime prints -- an unhandled exception's report -- goes to
-    /// the process's standard error, when it has one (Platform.WriteHook).
+    /// What the runtime prints (Platform.WriteHook): to the descriptor it
+    /// names -- the standard three by their handles, any other through the
+    /// descriptor table (Os.Write) -- dropped where there is no such handle.
+    /// EVERY DESCRIPTOR WAS STANDARD ERROR, a program's Console.WriteLine
+    /// (Runtime.WriteBytes(StdOut, ...)) as much as an exception's report:
+    /// on a console the two look alike, and a program whose error output was
+    /// sent elsewhere printed nothing on its standard output at all.
     static nuint Write(int fd, nuint address, nuint count)
     {
-        nuint handle = GetStdHandle(StdErrorHandle);
+        if (fd > 2)
+        {
+            Os.Write(fd, address, count);
+            return count;
+        }
+        nuint handle = GetStdHandle(fd == 1 ? StdOutputHandle : fd == 0 ? StdInputHandle : StdErrorHandle);
         if (handle == 0 || handle == InvalidHandle) return 0;
-        long written = 0;
+        int written = 0;
         WriteFile(handle, address, (int)count, Sys.AddressOf(ref written), 0);
         return count;
     }

@@ -7541,6 +7541,11 @@ public static class Gc
     static long _runway;
     // Marked() when the barrier began to mark (Marking 2).
     static nuint _markedAtOpen;
+    // What the last minor and the last major cycle marked (FinishCycle): the
+    // work an assist's schedule expects of a cycle of that kind. The live
+    // blocks of whatever cycle ran last were a major's for the next minor,
+    // and its assists did a whole heap's marking.
+    static long _markedMinor, _markedMajor;
     // THE LEAST ROOM PACING DEFENDS: under it a cycle's overshoot is let be.
     // A program keeping a megabyte and allocating hundreds a second had a
     // goal a cycle could not keep, and its threads waited at every one --
@@ -7567,7 +7572,9 @@ public static class Gc
 
     /// The pacing of an allocation that comes to the slow path while a cycle
     /// is under way (the steps above). Without the heap lock: the figures are
-    /// read as they stand, a little stale at worst.
+    /// read as they stand -- stale, or on i386 a 64-bit one torn across a
+    /// carry -- which paces one request wrongly at worst; and the counters
+    /// below are figures to read, added to without a lock.
     static void Pace(nuint tb)
     {
         if (tb == 0 || Sys.ReadAddress(tb + Tls.InAlloc) != 0 || GcLock.IsCollector(tb))
@@ -7603,7 +7610,12 @@ public static class Gc
             }
             else
             {
-                long due = _liveBlocks * used / room;
+                // The expected work times the room's fraction used, the two
+                // halved together until the product cannot overflow.
+                long expected = _minor ? _markedMinor : _markedMajor;
+                long u = used, r = room;
+                while (r > 0x7FFFFFFF) { u = u >> 1; r = r >> 1; }
+                long due = expected * u / r;
                 long done = (long)(Marked(ctl) - _markedAtOpen);
                 if (due - done > work) work = due - done;
             }
@@ -7621,14 +7633,18 @@ public static class Gc
     }
 
     /// Whether this thread may wait for the collector: the platform's word
-    /// (YieldHook, asked with 1), as WaitForCollector asks it.
+    /// (YieldHook, asked with 1), as WaitForCollector asks it -- which on a
+    /// kernel also gives the processor to whatever is ready, the collector
+    /// among them: asked at every turn of a wait, as WaitForCollector does,
+    /// or on one processor a waiter that only slept on the word could keep
+    /// the collector from ever running again.
     static bool MayWaitForCollector()
     {
         return YieldHook == 0 || Sys.Call(YieldHook, 1, 0, 0) == 0;
     }
 
     /// Waits, blocked, until the mark opens or the cycle ends (PaceGate,
-    /// moved on and woken at each: OpenPace).
+    /// moved on and woken at each: OpenPace), or the platform says no more.
     static void WaitForMark()
     {
         nuint ctl = GcLock.Words();
@@ -7637,19 +7653,24 @@ public static class Gc
         {
             uint gate = Sys.Read32(ctl + GcLock.PaceGate);
             if (Runtime.Marking != 1 || Sys.Read32(ctl + GcLock.Cycling) == 0) break;
+            if (!MayWaitForCollector()) break;
             Platform.Wait(ctl + GcLock.PaceGate, (int)gate);
         }
         GcThreads.EndBlocking();
     }
 
-    /// Waits, blocked, until the cycle under way has ended.
+    /// Waits, blocked, until the cycle under way has ended, or the platform
+    /// says no more. A FORK'S HOLD says Cycling as well: a cycle's waiter
+    /// woken at its end that finds the next fork's hold up is not kept
+    /// through it -- in a program forking in a loop, through every one.
     static void WaitCycleOut()
     {
-        nuint cycling = GcLock.Words() + GcLock.Cycling;
+        nuint ctl = GcLock.Words();
         GcThreads.BeginBlocking();
-        while (Sys.Read32(cycling) != 0)
+        while (Sys.Read32(ctl + GcLock.Cycling) != 0 && Sys.Read32(ctl + GcLock.ForkHold) == 0)
         {
-            Platform.Wait(cycling, 1);
+            if (!MayWaitForCollector()) break;
+            Platform.Wait(ctl + GcLock.Cycling, 1);
         }
         GcThreads.EndBlocking();
     }
@@ -7703,6 +7724,13 @@ public static class Gc
         {
             GcThreads.Park();
             Pace(tb);
+        }
+        else
+        {
+            // THE SWEEP, which says Cycling and no longer Collecting: paced
+            // too (Pace's last step), or the heap passed its goal there unasked.
+            nuint words = GcLock.WordsIfMade();
+            if (words != 0 && Sys.Read32(words + GcLock.Cycling) != 0) Pace(tb);
         }
 
         GcLock.Enter();
@@ -7762,7 +7790,6 @@ public static class Gc
                 if (MemoryShort()) DrainPool();
             }
         }
-
 
         nuint small = (bytes + ClassRounding) & SizeMask;
         if (small <= ClassMax && _classSize != 0)
@@ -13200,7 +13227,8 @@ public static class Gc
             Sys.AtomicSwap(ctl + GcLock.Collector, 0);
             Sys.AtomicSwap32(ctl + GcLock.Cycling, 0);
             Sys.AtomicSwap32(ctl + GcLock.ForkHold, 0);
-            Platform.Wake(ctl + GcLock.ForkHold, 0x7FFFFFFF);
+            Sys.AtomicAdd32(ctl + GcLock.HoldGate, 1);
+            Platform.Wake(ctl + GcLock.HoldGate, 0x7FFFFFFF);
             Platform.Wake(ctl + GcLock.Cycling, 0x7FFFFFFF);
         }
         if (child)
@@ -14321,6 +14349,13 @@ public static class Gc
     static void FinishCycle()
     {
         _liveBlocks = _sweepLive;
+        // What this cycle marked, for the next one of its kind (Pace): a
+        // concurrent cycle's, the only kind that opens a mark (_markedAtOpen).
+        if (_concurrent)
+        {
+            long marked = (long)(Marked(GcLock.Words()) - _markedAtOpen);
+            if (_minor) _markedMinor = marked; else _markedMajor = marked;
+        }
         _liveBytes = _sweepLiveBytes;
         if (_census && !_minor && _censusAt != 0)
         {
@@ -17789,6 +17824,9 @@ public static class GcLock
     // Moved on, and its waiters woken, when the mark opens and when a cycle
     // ends (Gc.OpenPace): what a thread pacing before the mark waits on.
     public const int PaceGate = 20 * WordSize.Bytes;
+    // Moved on, and its sleepers woken, when a fork's round is asked and when
+    // its hold ends (GcThreads.HoldForFork): what a held thread sleeps on.
+    public const int HoldGate = 21 * WordSize.Bytes;
 
     static nuint _words;
 
@@ -18331,8 +18369,12 @@ public static class GcThreads
         Sys.WriteAddress(self + Tls.Epoch, epoch);
         // A FORK'S ROUND: a thread already asleep on the hold -- come back
         // from a wait after the hold went up and before this round was
-        // asked -- owes it, and is woken to answer (HoldForFork).
-        if (Sys.Read32(ctl + GcLock.ForkHold) != 0) Platform.Wake(ctl + GcLock.ForkHold, 0x7FFFFFFF);
+        // asked -- owes it, and is woken to answer (HoldForFork's gate).
+        if (Sys.Read32(ctl + GcLock.ForkHold) != 0)
+        {
+            Sys.AtomicAdd32(ctl + GcLock.HoldGate, 1);
+            Platform.Wake(ctl + GcLock.HoldGate, 0x7FFFFFFF);
+        }
         GcLock.Exit();
         Gc.HandshakeRounds = Gc.HandshakeRounds + 1;
 
@@ -18835,20 +18877,27 @@ public static class GcThreads
         // two forks and owed the second an answer it could not give: the
         // fork waited for it, and it for the fork (test 2592, forty forks).
         if (ctl == 0 || hold == 0 || GcLock.IsCollector(block)) return;
-        while (Sys.Read32(ctl + GcLock.ForkHold) == hold)
+        while (true)
         {
+            // THE GATE READ FIRST, then the hold and the round: the round's
+            // asking and the hold's end each move it on and wake it (Round,
+            // Forked), so whatever changes after these reads wakes the wait
+            // below. Slept on the hold word, which the round does not
+            // change, a wake between this thread's look and its sleep was
+            // lost, and the fork and the thread waited on each other.
+            uint gate = Sys.Read32(ctl + GcLock.HoldGate);
+            if (Sys.Read32(ctl + GcLock.ForkHold) != hold) return;
             // OWING THE HOLD'S ROUND, it answers it, and holds there (Answer).
             // A thread back from a wait between the hold going up and its
             // round being asked found nothing owed, slept on the hold, and
             // was then counted by the round as running: the fork waited for
-            // its answer, it for the fork. The round wakes the hold's
-            // sleepers when it is asked (Round).
+            // its answer, it for the fork.
             if (Owes(block))
             {
                 Platform.SafePoint(Running);
                 return;
             }
-            Platform.Wait(ctl + GcLock.ForkHold, (int)hold);
+            Platform.Wait(ctl + GcLock.HoldGate, (int)gate);
         }
     }
 
