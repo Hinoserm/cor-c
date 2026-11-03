@@ -69,8 +69,16 @@ internal static class Program
         if (args.Contains("--benchmark-packed")) return PackedMemoryBenchmarks.Run(args.FirstOrDefault(argument => argument.StartsWith("--benchmark-filter="))?.Substring(19));
         Target.Current = Target.X86;
         Target.X86.X86Profile = X86Cpu.Parse(args);
+        // ONE CHECK ALONE, the one a change is about, without the rest.
+        if (args.Contains("--only=ebp-value-forward"))
+        {
+            EbpValueNotForwardedAcrossItsWrite();
+            Console.WriteLine(_failures == 0 ? "ALL CHECKS PASSED" : $"{_failures} CHECK(S) FAILED");
+            return _failures;
+        }
         EmittedInstructionAudit.Run(Check);
         PruneArithmetic();
+        EbpValueNotForwardedAcrossItsWrite();
         RepeatingMemoryRegions();
         DeferredFunctions();
         PicExceptionEntry();
@@ -897,6 +905,38 @@ internal static class Program
         VReg both = b.Binary(Opcode.And, ok, isF);
         VReg res = b.Binary(Opcode.Mul, r, both);
         b.Ret(R(res));
+    }
+
+    /// <summary>
+    /// A FRAME-POINTER-FREE LEAF'S EBP holding a value (MReg.EbpData): a slot
+    /// stored from it, EBP's value replaced, the slot reloaded and stored
+    /// through the new value. The reload is not forwarded from EBP across
+    /// the write that replaced it -- `mov [ebp], ebp` was GcThreads.
+    /// CaptureBuffersInto in the PIC libcorsacrt, every buffer's base its
+    /// table slot's own address (Peephole.Bit).
+    /// </summary>
+    private static void EbpValueNotForwardedAcrossItsWrite()
+    {
+        MFunction machine = new(new Function("ebp-value-forward", IrType.I32)) { FramePointerFree = true };
+        MBlock block = new("entry"); machine.Blocks.Add(block);
+        MReg ebp = MReg.Of(Gpr.Ebp), ecx = MReg.Of(Gpr.Ecx), esi = MReg.Of(Gpr.Esi), value = MReg.EbpData;
+        MMem Slot() => new(ebp, -16) { IsSpill = true };
+        block.Instrs.Add(new MInstr(MOp.Mov, value, new MMem(ecx, 0)));
+        block.Instrs.Add(new MInstr(MOp.Mov, Slot(), value));
+        block.Instrs.Add(new MInstr(MOp.Mov, value, ecx));
+        block.Instrs.Add(new MInstr(MOp.Add, value, esi));
+        block.Instrs.Add(new MInstr(MOp.Mov, esi, Slot()));
+        block.Instrs.Add(new MInstr(MOp.Mov, new MMem(value, 0), esi));
+        block.Instrs.Add(new MInstr(MOp.Mov, MReg.Of(Gpr.Eax), esi));
+        block.Instrs.Add(new MInstr(MOp.Ret));
+        Peephole.Run(machine);
+        // What reaches the store through EBP's new value is the slot's, not
+        // EBP's: neither the reload made a move from EBP's value nor the
+        // store made one of EBP's value through itself.
+        List<MInstr> after = machine.Blocks.SelectMany(b => b.Instrs).ToList();
+        bool forwarded = after.Any(i => i.Op == MOp.Mov && i.Operands[0] is MReg { Id: (int)Gpr.Esi } && i.Operands[1] is MReg { Id: MReg.EbpDataId })
+            || after.Any(i => i.Op == MOp.Mov && i.Operands[0] is MMem { Base.Id: MReg.EbpDataId } && i.Operands[1] is MReg { Id: MReg.EbpDataId });
+        Check(!forwarded, "a reload is not forwarded from EBP's value across the write that replaced it");
     }
 
     /// <summary>Fill a buffer, copy it, read a byte back through narrow loads and stores.</summary>

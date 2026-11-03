@@ -452,7 +452,7 @@ internal static class Peephole
     /// An instruction's explicit and implicit register reads and writes as two masks, bit per register number, in a loop: the
     /// iterators were two objects for every instruction asked about. A
     /// register numbered past 63 shares a bit, which only ever makes an
-    /// answer more cautious.
+    /// answer more cautious; EBP holding a value has EBP's (Bit).
     /// </summary>
     private static void Masks(MInstr i, out long reads, out long writes)
     {
@@ -498,9 +498,25 @@ internal static class Peephole
     /// (its GOT pointer the register too few), stored each buffer's table
     /// slot's own address as the buffer's base -- the walk met every live
     /// buffer as a broken chain, and every concurrent cycle was given up.
-    /// One bit for the frame and the value only makes a rule more careful.
+    /// One bit for the frame and the value only makes a rule more careful;
+    /// what must tell them apart -- a frame moved, every slot let go -- asks
+    /// WritesFrame.
     /// </summary>
     private static long Bit(int id) => 1L << (id == MReg.EbpDataId ? (int)Gpr.Ebp : id & 63);
+
+    /// <summary>
+    /// Whether an instruction moves the frame: writes EBP AS THE FRAME'S
+    /// BASE, the machine register, explicitly or implicitly. Not EBP holding
+    /// a value (MReg.EbpData), which shares its bit (Bit) but leaves every
+    /// slot where it was.
+    /// </summary>
+    private static bool WritesFrame(MInstr i)
+    {
+        for (int k = 0; k < i.Operands.Count; k++)
+            if (i.Operands[k] is MReg { Id: (int)Gpr.Ebp } && (Roles.Of(i.Op, k) & Roles.Role.Def) != 0) return true;
+        foreach (Gpr g in Roles.ImplicitDefs(i)) if (g == Gpr.Ebp) return true;
+        return false;
+    }
 
     // ---- store, then reload from the same slot ----------------------------------
 
@@ -751,7 +767,10 @@ internal static class Peephole
                 else if (prev.Operands.Any(o => o is MMem) || !SpillTransparent(prev.Op)) break;
                 Masks(prev, out _, out long written);
                 clobbered |= (int)written;
-                if ((clobbered & (1 << (int)Gpr.Ebp)) != 0) break;
+                // THE FRAME MOVED: no slot is where it was. EBP's value
+                // written is only one register clobbered (its bit, Bit), a
+                // reload from it refused, a reload from any other still not.
+                if (WritesFrame(prev)) break;
             }
         }
     }
@@ -905,10 +924,12 @@ internal static class Peephole
             }
         }
         // Its effect: a call, an asm block (which may write any memory) or
-        // anything writing EBP lets go of everything.
+        // anything moving the frame lets go of everything. EBP's value
+        // written is a register written like any other, which no slot here
+        // is held in (only machine registers are): it lets go of nothing.
         if (i.Op is MOp.Call or MOp.CallInd or MOp.InlineAsm) { state.Clear(); return i; }
         Masks(i, out _, out long written);
-        if ((written & Bit((int)Gpr.Ebp)) != 0) { state.Clear(); return i; }
+        if (WritesFrame(i)) { state.Clear(); return i; }
         // A write to an allocator slot: what held it holds it no more.
         for (int k = 0; k < i.Operands.Count; k++)
         {
@@ -992,7 +1013,8 @@ internal static class Peephole
                 if (near) break;
                 Masks(prev, out _, out long written);
                 clobbered |= written;
-                if ((clobbered & Bit((int)Gpr.Ebp)) != 0) break;
+                // The frame moved (WritesFrame); EBP's value written moves no slot.
+                if (WritesFrame(prev)) break;
             }
         }
     }
@@ -1183,9 +1205,11 @@ internal static class Peephole
             // Writes first, then reads: a register both read and written
             // here (an indirect call through EAX, which the call then
             // clobbers) is live before this instruction.
-            // A machine register only: EBP holding a value (MReg.EbpData) is
-            // in no liveness here, a jump's target's needs included, so a
-            // write of it is never taken for dead.
+            // A machine register only, and never EBP: EBP holding a value
+            // (MReg.EbpData, an id past the machine registers) never enters
+            // `dead`, which starts without EBP and takes only ids below 8,
+            // so a write of it is never taken for dead -- though the
+            // liveness has it, in EBP's bit (Bit).
             foreach ((MReg r, bool isDef) in Regs(i))
             {
                 if (isDef && r.Id < 8)
