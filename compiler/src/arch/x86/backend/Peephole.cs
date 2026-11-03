@@ -733,7 +733,7 @@ internal static class Peephole
         && m.Base?.Id == (int)Gpr.Ebp && m.Index is null
         && m.Symbol is null && m.Label is null;
 
-    private static void ForwardSpillLoads(List<MInstr> instrs)
+    internal static void ForwardSpillLoads(List<MInstr> instrs)
     {
         for (int k = 0; k < instrs.Count; k++)
         {
@@ -976,7 +976,7 @@ internal static class Peephole
     /// register's top lanes the source's, not zero, as SseCopy's move does:
     /// nothing reads a scalar's top lanes.
     /// </summary>
-    private static void ForwardXmmSpillLoads(List<MInstr> instrs)
+    internal static void ForwardXmmSpillLoads(List<MInstr> instrs)
     {
         for (int k = 0; k < instrs.Count; k++)
         {

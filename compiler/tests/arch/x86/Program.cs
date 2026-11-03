@@ -939,8 +939,9 @@ internal static class Program
         Check(!forwarded, "a reload is not forwarded from EBP's value across the write that replaced it");
 
         // AND THE OTHER HALF: EBP's value written is not the frame moved. A
-        // slot stored from ESI is still ESI's across it, in its own block
-        // (ForwardSpillLoads) and in the next (StepHeld): no reload is left.
+        // slot stored from ESI is still ESI's across it, in its own block and
+        // in the next: no reload is left. Both run through StepHeld, which
+        // Run calls first and which forwards within a block as well.
         foreach (bool across in new[] { false, true })
         {
             MFunction other = new(new Function("ebp-value-keeps-" + (across ? "across" : "within"), IrType.I32)) { FramePointerFree = true };
@@ -960,6 +961,34 @@ internal static class Program
                 && i.Operands[1] is MMem { Base.Id: (int)Gpr.Ebp, Disp: -16 });
             Check(!reloaded, "a slot is forwarded across a write of EBP's value " + (across ? "into the next block" : "in its block"));
         }
+
+        // THE BLOCK-LOCAL PASSES ON THEIR OWN, which StepHeld leaves nothing
+        // to: ForwardSpillLoads refuses EBP's value replaced and forwards
+        // ESI across it, ForwardXmmSpillLoads forwards XMM0 across it.
+        List<MInstr> refused = new()
+        {
+            new MInstr(MOp.Mov, Slot(), value),
+            new MInstr(MOp.Mov, value, ecx),
+            new MInstr(MOp.Mov, esi, Slot()),
+        };
+        Peephole.ForwardSpillLoads(refused);
+        Check(refused[2].Operands[1] is MMem, "ForwardSpillLoads: no reload forwarded from EBP's value across its write");
+        List<MInstr> kept = new()
+        {
+            new MInstr(MOp.Mov, Slot(), esi),
+            new MInstr(MOp.Mov, value, ecx),
+            new MInstr(MOp.Mov, MReg.Of(Gpr.Edx), Slot()),
+        };
+        Peephole.ForwardSpillLoads(kept);
+        Check(kept[2].Operands[1] is MReg { Id: (int)Gpr.Esi }, "ForwardSpillLoads: a slot forwarded across EBP's value written");
+        List<MInstr> xmm = new()
+        {
+            new MInstr(MOp.MovF, Slot(), MReg.Xmm(0)) { Width = 8 },
+            new MInstr(MOp.Mov, value, ecx),
+            new MInstr(MOp.MovF, MReg.Xmm(1), Slot()) { Width = 8 },
+        };
+        Peephole.ForwardXmmSpillLoads(xmm);
+        Check(xmm[2].Operands[1] is MReg { IsXmm: true }, "ForwardXmmSpillLoads: a slot forwarded across EBP's value written");
     }
 
     /// <summary>Fill a buffer, copy it, read a byte back through narrow loads and stores.</summary>
