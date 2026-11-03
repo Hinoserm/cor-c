@@ -7575,6 +7575,12 @@ public static class Gc
             Assist(AssistBudget);
             return;
         }
+        // NO CYCLE TO PACE TO: a fork's hold says Collecting too (ReadyFork),
+        // and a thread held there comes on here after the hold is let go;
+        // _sinceAtStop is the last cycle's then, and the room it measures
+        // nobody's.
+        nuint ctl = GcLock.Words();
+        if (!_collecting || Sys.Read32(ctl + GcLock.ForkHold) != 0 || Sys.Read32(ctl + GcLock.Cycling) == 0) return;
 
         long start = _sinceAtStop;
         long room = _threshold - start;
@@ -7598,7 +7604,7 @@ public static class Gc
             else
             {
                 long due = _liveBlocks * used / room;
-                long done = (long)(Marked(GcLock.Words()) - _markedAtOpen);
+                long done = (long)(Marked(ctl) - _markedAtOpen);
                 if (due - done > work) work = due - done;
             }
             // One go at a time, as the background mark yields between them
@@ -18323,6 +18329,10 @@ public static class GcThreads
         // many owe it.
         Sys.AtomicSwap(ctl + GcLock.Epoch, epoch);
         Sys.WriteAddress(self + Tls.Epoch, epoch);
+        // A FORK'S ROUND: a thread already asleep on the hold -- come back
+        // from a wait after the hold went up and before this round was
+        // asked -- owes it, and is woken to answer (HoldForFork).
+        if (Sys.Read32(ctl + GcLock.ForkHold) != 0) Platform.Wake(ctl + GcLock.ForkHold, 0x7FFFFFFF);
         GcLock.Exit();
         Gc.HandshakeRounds = Gc.HandshakeRounds + 1;
 
@@ -18827,6 +18837,17 @@ public static class GcThreads
         if (ctl == 0 || hold == 0 || GcLock.IsCollector(block)) return;
         while (Sys.Read32(ctl + GcLock.ForkHold) == hold)
         {
+            // OWING THE HOLD'S ROUND, it answers it, and holds there (Answer).
+            // A thread back from a wait between the hold going up and its
+            // round being asked found nothing owed, slept on the hold, and
+            // was then counted by the round as running: the fork waited for
+            // its answer, it for the fork. The round wakes the hold's
+            // sleepers when it is asked (Round).
+            if (Owes(block))
+            {
+                Platform.SafePoint(Running);
+                return;
+            }
             Platform.Wait(ctl + GcLock.ForkHold, (int)hold);
         }
     }
