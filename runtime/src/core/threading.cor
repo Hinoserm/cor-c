@@ -4039,6 +4039,10 @@ public static partial class Scheduler
     internal static void ForkedChild()
     {
         _workers = 0;
+        // A GATE PUBLISHED AND ITS RING NOT YET MADE at the fork (Gate) is
+        // dropped: the child made none, and waited for ever for a ring only
+        // the thread not copied would have made. Nothing was queued without it.
+        if (_gate is not null && _gateReady == 0) _gate = null;
         if (_gate is { } gate) Sys.AtomicSwap32(Atom.At(gate, Atom.SecondWord), 0);
         if (_signal is { } signal) Sys.AtomicSwap32(Atom.At(signal, Atom.SecondWord), 0);
     }

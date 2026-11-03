@@ -1,0 +1,42 @@
+// test: fork_child_signals_without_a_thread_it_lacks
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child: taken
+// parent: child 0 taken
+//
+// A thread of the parent's waiting on a semaphore at the fork is not in the
+// child, but its wait was still queued there: the child's Release went to
+// it, and the child's own WaitOne waited for ever. Its wait is taken off the
+// queues in the child (Thread.Waiting, WaitHandle.Forget), and the permit is
+// the child's.
+using System;
+using System.Threading;
+
+static class Program
+{
+    static readonly Semaphore _permits = new Semaphore(0, 2);
+    static volatile bool _waiting;
+
+    static int Main()
+    {
+        Thread waiter = new Thread(() => { _waiting = true; _permits.WaitOne(); });
+        waiter.Start();
+        while (!_waiting) Thread.Sleep(1);
+        Thread.Sleep(20);
+        int pid = UnixProcess.Fork();
+        if (pid == 0)
+        {
+            _permits.Release();
+            Console.WriteLine(_permits.WaitOne(5000) ? "child: taken" : "child: lost");
+            return 0;
+        }
+        int status;
+        UnixProcess.WaitPid(pid, out status);
+        _permits.Release();
+        waiter.Join();
+        Console.WriteLine("parent: child " + UnixProcess.Result(status) + " taken");
+        return 0;
+    }
+}

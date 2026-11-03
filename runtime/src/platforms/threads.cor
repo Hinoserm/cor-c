@@ -268,6 +268,13 @@ public partial class Thread
     /// How many Threads have been made, for ManagedThreadId.
     static int _made;
 
+    /// The program's first thread's Thread, once it has asked for itself
+    /// (CurrentThread): adopted, never in the registry (_all), so what a
+    /// fork's child forgets of a thread it was not copied with -- its wait,
+    /// its mutexes, its thread-statics -- is forgotten of it apart, when a
+    /// pool worker forked (ForkedChild).
+    static Thread? _main;
+
     /// How many foreground threads are running, as a futex word the end of
     /// Main waits on (WaitForForeground); and a spin lock over the counting.
     // Two ints a CAS and a futex work on: the count, and its lock.
@@ -445,6 +452,7 @@ public partial class Thread
             {
                 current = new Thread(Native.CurrentThreadId(), Sys.ThreadBlock() == Sys.MainThreadBlock());
                 _current = current;
+                if (Sys.ThreadBlock() == Sys.MainThreadBlock()) _main = current;
             }
             return current;
         }
@@ -647,6 +655,12 @@ public partial class Thread
         // FIRST every such thread's wait off the queues, its thread-statics
         // off the list: abandoning a mutex hands it to the oldest waiter,
         // which must not be one of them.
+        Thread? main = _main is not null && _main._block != here ? _main : null;
+        if (main is not null)
+        {
+            System.Threading.WaitHandle.Forget(main);
+            ThreadStatics.Forget(main._block);
+        }
         for (int i = 0; i < _slots; i++)
         {
             Thread? t = _all[i];
@@ -654,6 +668,7 @@ public partial class Thread
             System.Threading.WaitHandle.Forget(t);
             ThreadStatics.Forget(t._block);
         }
+        if (main is not null) System.Threading.Mutex.AbandonHeld(main);
         for (int i = 0; i < _slots; i++)
         {
             Thread? t = _all[i];

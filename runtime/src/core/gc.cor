@@ -12928,7 +12928,9 @@ public static class Gc
     /// been made (GcThreads.HasTable), which is for good once a second thread
     /// registered. Not by a count of the threads read without the lock, which
     /// a thread starting meanwhile made wrong, and left it in the child's
-    /// table. Without a table there has only ever been this thread.
+    /// table. Without a table, no other thread had registered when it was
+    /// read; one that registers while the kernel copies is the child's to set
+    /// straight (Forked).
     ///
     /// THE LOCK IS HELD ACROSS THE SYSTEM CALL, while the kernel copies the
     /// page tables: another thread wanting it waits that long. And a thread
@@ -17212,19 +17214,20 @@ public static class GcLock
         return Sys.Read32(at + Collecting) != 0;
     }
 
-    /// Whether THIS thread holds the heap lock. On a kernel an interrupt
-    /// lands on top of the holder -- the collector sweeping a chunk, an
-    /// allocation refilling its buffer -- and anything it then does that
-    /// might allocate would wait for a lock its own thread holds, for ever.
-    /// What can be put off, asks this first.
-    /// IN A FORK'S CHILD, where this thread runs alone: the heap lock this
-    /// thread's whoever held it at the fork, as Enter would take it free.
+    /// IN A FORK'S CHILD, where this thread runs alone: the heap lock taken
+    /// by this thread whoever held it at the fork, as Enter takes it when it
+    /// is free. Let go by Exit.
     public static void TakeOver()
     {
         Runtime.PreemptOff();
         Sys.AtomicSwap(Words() + Held, Sys.ThreadBlock());
     }
 
+    /// Whether THIS thread holds the heap lock. On a kernel an interrupt
+    /// lands on top of the holder -- the collector sweeping a chunk, an
+    /// allocation refilling its buffer -- and anything it then does that
+    /// might allocate would wait for a lock its own thread holds, for ever.
+    /// What can be put off, asks this first.
     public static bool HeldByMe()
     {
         nuint at = _words;
@@ -17522,7 +17525,8 @@ public static class GcThreads
             Gc.ForgetClasses(block);
             Settle(block);
             // And its arena, as its own end gives it back (Runtime.EndThread;
-            // its thread-statics are ThreadStatics.ForkedChild's).
+            // its thread-statics are forgotten by Thread.ForkedChild,
+            // ThreadStatics.Forget).
             Gc.ReleaseRegion(block);
             Sys.WriteAddress(_blocks + i * WordSize.Bytes, At(_count - 1));
             _count = _count - 1;

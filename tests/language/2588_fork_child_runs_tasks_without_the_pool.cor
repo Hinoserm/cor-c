@@ -3,7 +3,7 @@
 // flags: --cpu=athlon64 --disable-3dnow
 // expect-exit: 0
 // expect-output:
-// child task 42
+// child task 42 queued 1 timer ok
 // parent: child 0 queued 1
 //
 // The scheduler's pool (ThreadPool.SetMinThreads) is not copied by fork(2):
@@ -32,7 +32,11 @@ static class Program
         int pid = UnixProcess.Fork();
         if (pid == 0)
         {
-            Console.WriteLine("child task " + Task.Run(() => 40 + 2).Result);
+            // Its own task, which runs the queued one first; and a timer, on
+            // the heap the pending one is still in.
+            int own = Task.Run(() => 40 + 2).Result;
+            Task.Delay(10).Wait();
+            Console.WriteLine("child task " + own + " queued " + _queued + " timer ok");
             return 0;
         }
         int status;
