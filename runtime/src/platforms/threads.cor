@@ -255,12 +255,25 @@ public partial class Thread
     /// holding any. Changed only with the wait handles' gate held.
     internal System.Threading.Mutex? HeldMutexes;
 
+    /// The wait this thread is queued on a handle for (WaitHandle's
+    /// HandleWait), while it is: what a fork's child takes off the queues of
+    /// a thread it was not copied with (WaitHandle.Forget). Changed only
+    /// with the wait handles' gate held.
+    internal object? Waiting;
+
     // The Thread each thread is, made the first time one asks that this
     // class did not start.
     [ThreadStatic] static Thread? _current;
 
     /// How many Threads have been made, for ManagedThreadId.
     static int _made;
+
+    /// The program's first thread's Thread, once it has asked for itself
+    /// (CurrentThread): adopted, never in the registry (_all), so what a
+    /// fork's child forgets of a thread it was not copied with -- its wait,
+    /// its mutexes, its thread-statics -- is forgotten of it apart, when a
+    /// pool worker forked (ForkedChild).
+    static Thread? _main;
 
     /// How many foreground threads are running, as a futex word the end of
     /// Main waits on (WaitForForeground); and a spin lock over the counting.
@@ -439,6 +452,7 @@ public partial class Thread
             {
                 current = new Thread(Native.CurrentThreadId(), Sys.ThreadBlock() == Sys.MainThreadBlock());
                 _current = current;
+                if (Sys.ThreadBlock() == Sys.MainThreadBlock()) _main = current;
             }
             return current;
         }
@@ -609,6 +623,81 @@ public partial class Thread
         return slot;
     }
 
+    /// IN A FORK'S CHILD (Runtime.ForkedChild, from Platform.Fork): only the
+    /// thread that forked was copied. Every other Thread -- the registered
+    /// ones, and the first thread's when a pool worker forked -- is finished
+    /// here: a Join on it returns, and the end of Main waits for none of
+    /// them (WaitForForeground waited for ever on the parent's); its slot is
+    /// empty and its mutexes abandoned; the scheduler's pool, whose workers were
+    /// not copied, is the single-threaded loop again (Scheduler.ForkedChild);
+    /// the counting lock, the registry's gate and the other locks one of them
+    /// may have held at the fork are free.
+    ///
+    /// NOT SET STRAIGHT: a Monitor one of them held at the fork stays held by
+    /// a thread block nobody runs on, and one it waited on keeps it among its
+    /// waiters, which a Pulse may pick (Monitor's waiters are the object's,
+    /// with no way back from a thread to them, as a handle wait has --
+    /// Waiting); a thread's kernel id read before the fork names the
+    /// parent's thread. A child that needs those forks before it starts
+    /// threads, as POSIX's own advice is.
+    static void ForkedChild()
+    {
+        // THIS THREAD BY ITS BLOCK, not by _current: a thread-static read may
+        // make the thread's table, and take ThreadStatics' lock, which a
+        // thread not copied may have held.
+        nuint here = Sys.ThreadBlock();
+        Thread? self = null;
+        // The locks a thread not copied may have held, free first: the wait
+        // handles' gate (abandoning its mutexes takes it), the thread-statics
+        // list's, the scheduler's.
+        System.Threading.WaitHandle.ForkedChild();
+        ThreadStatics.ForkedChild();
+        Scheduler.ForkedChild();
+        // FIRST every such thread's wait off the queues, its thread-statics
+        // off the list: abandoning a mutex hands it to the oldest waiter,
+        // which must not be one of them.
+        // THE FIRST THREAD, when it is not this one: its thread-statics by its
+        // block, which it has whether or not it ever asked for its Thread;
+        // its wait and its mutexes through that Thread, which it has asked
+        // for whenever it waits on a handle or holds a mutex (both name it).
+        Thread? main = _main is not null && _main._block != here ? _main : null;
+        nuint first = Sys.MainThreadBlock();
+        if (first != here) ThreadStatics.Forget(first);
+        if (main is not null) System.Threading.WaitHandle.Forget(main);
+        for (int i = 0; i < _slots; i++)
+        {
+            Thread? t = _all[i];
+            if (t is null || t._block == here) continue;
+            System.Threading.WaitHandle.Forget(t);
+            ThreadStatics.Forget(t._block);
+        }
+        if (main is not null)
+        {
+            System.Threading.Mutex.AbandonHeld(main);
+            // Finished as the others are: a Join on it returns.
+            Sys.AtomicSwap32(Atom.At(main, Atom.FirstWord), 1);
+        }
+        for (int i = 0; i < _slots; i++)
+        {
+            Thread? t = _all[i];
+            if (t is null) continue;
+            if (t._block == here) { self = t; continue; }
+            // Its mutexes abandoned, as its end would leave them (Body): the
+            // next wait to take one says so, where it waited for ever.
+            System.Threading.Mutex.AbandonHeld(t);
+            Sys.AtomicSwap32(Atom.At(t, Atom.FirstWord), 1);
+            t._counted = false;
+            _all[i] = null;
+            // Given back where the list has room; past it the table grows
+            // instead (nothing is made here).
+            if (_freedCount < _freed.Length) { _freed[_freedCount] = i; _freedCount = _freedCount + 1; }
+        }
+        nuint at = Sys.ArrayData(_foreground);
+        Sys.AtomicSwap32(at, self is not null && self._counted ? 1 : 0);
+        Sys.AtomicSwap32(at + 4, 0);
+        _registry = null;
+    }
+
     /// A thread's slot given back as it ends, still a thread the collector
     /// counts (before Runtime.EndThread): nothing reads the slot after its
     /// entry has, and the Thread is then only what its joiners hold.
@@ -669,6 +758,7 @@ public partial class Thread
             _uiCulture ??= CultureInfo.GivenUICulture;
         }
         _slot = Register(this);
+        Runtime.ForkedChild = Sys.AddressOf(Thread.ForkedChild);
         if (!_background)
         {
             Runtime.ForegroundWait = Sys.AddressOf(Thread.WaitForForeground);
@@ -1544,6 +1634,25 @@ namespace System.Threading
 
         // ---- the gate --------------------------------------------------------
 
+        /// IN A FORK'S CHILD (Thread.ForkedChild): the gate free, a thread
+        /// not copied perhaps holding it at the fork.
+        internal static void ForkedChild()
+        {
+            Sys.AtomicSwap32(Sys.AddressOf(ref _gate), 0);
+        }
+
+        /// IN A FORK'S CHILD: the wait of a thread not copied off every queue
+        /// it was on, unfinished -- a signal, a release or an abandoned
+        /// mutex handed to it would go to a thread that is not there, and a
+        /// thread of the child wait for it for ever.
+        internal static void Forget(Thread thread)
+        {
+            EnterGate();
+            if (thread.Waiting is HandleWait wait) wait.Unqueue();
+            thread.Waiting = null;
+            ExitGate();
+        }
+
         internal static void EnterGate()
         {
             nuint at = Sys.AddressOf(ref _gate);
@@ -1625,6 +1734,7 @@ namespace System.Threading
         /// With the gate held: on the queue of every handle it names.
         public void Queue()
         {
+            Waiter.Waiting = this;
             if (One != null)
             {
                 One.Enqueue(_links[0]);
@@ -1659,6 +1769,7 @@ namespace System.Threading
         /// With the gate held: off every queue.
         public void Unqueue()
         {
+            if (ReferenceEquals(Waiter.Waiting, this)) Waiter.Waiting = null;
             for (int i = 0; i < _queued; i++)
             {
                 HandleWaitLink link = _links[i];

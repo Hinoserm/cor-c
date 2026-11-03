@@ -1,0 +1,58 @@
+// test: fork_while_another_thread_allocates
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child done
+// parent: child 0
+//
+// A fork made while another thread of the parent allocates -- and may be
+// collecting, or between a collection's rounds: the heap lock is taken
+// with no cycle under way first (Gc.ReadyFork), so the copy has no cycle
+// half made and no lock a thread it lacks holds, and in the child every
+// thread but the one that forked is taken out of the collector's table
+// (GcThreads.ForkedChild). Before, a child forked from a daemon with
+// threads gave up every collection it began.
+using System;
+using System.Threading;
+
+static class Program
+{
+    static volatile bool _stop;
+    static readonly byte[]?[] _ring = new byte[]?[64];
+    static readonly byte[]?[] _mine = new byte[]?[64];
+
+    static void Churn(byte[]?[] ring, int rounds)
+    {
+        for (int i = 0; i < rounds; i++) ring[i & 63] = new byte[64 + (i & 1023)];
+    }
+
+    static int Main()
+    {
+        Thread busy = new Thread(() => { while (!_stop) Churn(_ring, 1000); });
+        busy.IsBackground = true;
+        busy.Start();
+        Churn(_mine, 50000);
+        int failures = 0;
+        for (int n = 0; n < 4; n++)
+        {
+            int pid = UnixProcess.Fork();
+            if (pid == 0)
+            {
+                Thread helper = new Thread(() => Churn(_ring, 100000));
+                helper.Start();
+                Churn(_mine, 200000);
+                helper.Join();
+                if (n == 3) Console.WriteLine("child done");
+                return 0;
+            }
+            int status;
+            UnixProcess.WaitPid(pid, out status);
+            if (UnixProcess.Result(status) != 0) failures++;
+        }
+        _stop = true;
+        busy.Join();
+        Console.WriteLine("parent: child " + failures);
+        return 0;
+    }
+}

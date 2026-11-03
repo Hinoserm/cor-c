@@ -1,0 +1,53 @@
+// test: fork_child_forgets_a_parked_thread
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child done
+// parent: child 0
+//
+// fork(2) copies only the thread that calls it. A foreground thread of the
+// parent's, parked in Monitor.Wait at the fork, was still counted in the
+// child, whose Main then waited for it at its end for ever (Thread.
+// WaitForForeground); the child forgets it now (Platform.Fork, Thread.
+// ForkedChild), and collects with its own threads alone (Gc.ReadyFork,
+// Gc.Forked).
+using System;
+using System.Threading;
+
+static class Program
+{
+    static readonly object _gate = new object();
+    static bool _done, _parked;
+    static readonly byte[]?[] _ring = new byte[]?[64];
+
+    static void Churn(int rounds)
+    {
+        for (int i = 0; i < rounds; i++) _ring[i & 63] = new byte[64 + (i & 1023)];
+    }
+
+    static int Main()
+    {
+        Churn(50000);
+        // Parked for certain at the fork: it says so under the lock, then waits.
+        Thread parked = new Thread(() => { lock (_gate) { _parked = true; Monitor.PulseAll(_gate); while (!_done) Monitor.Wait(_gate); } });
+        parked.Start();
+        lock (_gate) { while (!_parked) Monitor.Wait(_gate); }
+        int pid = UnixProcess.Fork();
+        if (pid == 0)
+        {
+            Thread helper = new Thread(() => Churn(100000));
+            helper.Start();
+            Churn(300000);
+            helper.Join();
+            Console.WriteLine("child done");
+            return 0;
+        }
+        int status;
+        UnixProcess.WaitPid(pid, out status);
+        Console.WriteLine("parent: child " + UnixProcess.Result(status));
+        lock (_gate) { _done = true; Monitor.PulseAll(_gate); }
+        parked.Join();
+        return 0;
+    }
+}

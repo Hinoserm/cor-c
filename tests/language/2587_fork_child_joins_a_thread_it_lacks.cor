@@ -1,0 +1,47 @@
+// test: fork_child_joins_a_thread_it_lacks
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child joined
+// child threads 3
+// parent: child 0
+//
+// In a fork's child a Thread of the parent's is finished (Thread.
+// ForkedChild): a Join on it returns, as there is no such thread to wait
+// for. The child's own threads, started after, count and are waited for as
+// any are.
+using System;
+using System.Threading;
+
+static class Program
+{
+    static readonly object _gate = new object();
+    static bool _done, _parked;
+    static int _ran;
+
+    static int Main()
+    {
+        // Parked for certain at the fork: it says so under the lock, then waits.
+        Thread parked = new Thread(() => { lock (_gate) { _parked = true; Monitor.PulseAll(_gate); while (!_done) Monitor.Wait(_gate); } });
+        parked.Start();
+        lock (_gate) { while (!_parked) Monitor.Wait(_gate); }
+        int pid = UnixProcess.Fork();
+        if (pid == 0)
+        {
+            parked.Join();
+            Console.WriteLine("child joined");
+            Thread[] own = new Thread[3];
+            for (int i = 0; i < own.Length; i++) { own[i] = new Thread(() => Interlocked.Increment(ref _ran)); own[i].Start(); }
+            foreach (Thread t in own) t.Join();
+            Console.WriteLine("child threads " + _ran);
+            return 0;
+        }
+        int status;
+        UnixProcess.WaitPid(pid, out status);
+        Console.WriteLine("parent: child " + UnixProcess.Result(status));
+        lock (_gate) { _done = true; Monitor.PulseAll(_gate); }
+        parked.Join();
+        return 0;
+    }
+}

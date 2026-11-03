@@ -4025,6 +4025,28 @@ public static partial class Scheduler
     /// How many pool threads are running; 0 is the single-threaded loop.
     public static int WorkerCount => _workers;
 
+    /// IN A FORK'S CHILD (Thread.ForkedChild): none of the pool's workers
+    /// was copied. With none counted the loop runs the queue itself again,
+    /// where it waited for workers that were not there. The queue's gate and
+    /// the workers' wake cell are freed IN PLACE, one of them perhaps held at
+    /// the fork: made afresh, the gate's making (Gate) laid down a new ring
+    /// and timer heap under the old counts, and queued work and timers read
+    /// nulls. What was queued stays queued, for the loop.
+    ///
+    /// A FORK MADE FROM A POOL WORKER leaves the child that worker alone: its
+    /// task done, it goes back to the worker's loop and waits there, with no
+    /// Main to end the process. Such a child execs or exits from the task.
+    internal static void ForkedChild()
+    {
+        _workers = 0;
+        // A GATE PUBLISHED AND ITS RING NOT YET MADE at the fork (Gate) is
+        // dropped: the child made none, and waited for ever for a ring only
+        // the thread not copied would have made. Nothing was queued without it.
+        if (_gate is not null && _gateReady == 0) _gate = null;
+        if (_gate is { } gate) Sys.AtomicSwap32(Atom.At(gate, Atom.SecondWord), 0);
+        if (_signal is { } signal) Sys.AtomicSwap32(Atom.At(signal, Atom.SecondWord), 0);
+    }
+
 
     /// Makes room for `capacity` queued items without further allocation.
     public static void Reserve(int capacity)
@@ -7450,6 +7472,7 @@ static class ThreadStatics
         if (old is null)
         {
             node = new ThreadStaticTable();
+            node.Home = home;
             Enter();
             node.Next = _tables;
             if (_tables is not null) _tables.Previous = node;
@@ -7488,8 +7511,11 @@ static class ThreadStatics
         Sys.WriteAddress(home, 0);
         ThreadStaticTable node = (ThreadStaticTable)cells[0]!;
         Enter();
+        // Only the list's head is replaced by its next: a table off the list
+        // (a fork's child forgot it, ThreadStatics.Forget) has no Previous
+        // either, and took the whole list with it.
         if (node.Previous is not null) node.Previous.Next = node.Next;
-        else _tables = node.Next;
+        else if (_tables == node) _tables = node.Next;
         if (node.Next is not null) node.Next.Previous = node.Previous;
         Leave();
         node.Cells = null;
@@ -7525,6 +7551,35 @@ static class ThreadStatics
         return cells;
     }
 
+    /// IN A FORK'S CHILD (Thread.ForkedChild): the lock free, one of the
+    /// threads not copied perhaps holding it at the fork.
+    public static void ForkedChild()
+    {
+        Sys.AtomicSwap32(Sys.AddressOf(ref _lock), 0);
+    }
+
+    /// IN A FORK'S CHILD: the table of a thread not copied off the list, by
+    /// whose block it was made for (ThreadStaticTable.Home). Its cells are
+    /// the collector's once nothing else holds them. By owner, not by
+    /// keeping this thread's alone: a thread in a flow has the flow's table
+    /// in its block, and its own one only on the list.
+    public static void Forget(nuint block)
+    {
+        nuint home = block + Tls.ThreadStatics;
+        Enter();
+        for (ThreadStaticTable? node = _tables; node is not null; node = node.Next)
+        {
+            if (node.Home != home) continue;
+            if (node.Previous is not null) node.Previous.Next = node.Next;
+            else if (_tables == node) _tables = node.Next;
+            if (node.Next is not null) node.Next.Previous = node.Previous;
+            node.Next = null;
+            node.Previous = null;
+            break;
+        }
+        Leave();
+    }
+
     static void Enter()
     {
         while (Sys.Cas32(Sys.AddressOf(ref _lock), 0, 1) != 0)
@@ -7548,4 +7603,8 @@ sealed class ThreadStaticTable
     /// A flow's table (AsyncContext), off the list: what keeps it is the
     /// context that carries it, not the list of threads' tables.
     public bool Flows;
+    /// The word its thread names it in (ThreadStatics.Grow): a thread block's
+    /// Tls.ThreadStatics, by which a fork's child forgets the tables of the
+    /// threads it was not copied with (ThreadStatics.Forget).
+    public nuint Home;
 }

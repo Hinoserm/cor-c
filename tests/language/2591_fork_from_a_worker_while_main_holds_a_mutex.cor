@@ -1,0 +1,48 @@
+// test: fork_from_a_worker_while_main_holds_a_mutex
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child: abandoned joined
+// parent: child 0
+//
+// A fork made from a pool worker while the program's first thread holds a
+// mutex: that thread is adopted, never in the registry, and the child --
+// which has the worker alone -- left its mutex held and its Thread running.
+// It is forgotten apart (Thread._main): the mutex abandoned, a Join on it
+// returning. The child execs nothing, so it ends with an exit of its own.
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static readonly Mutex _mutex = new Mutex();
+
+    static int Main()
+    {
+        ThreadPool.SetMinThreads(1, 1);
+        Thread main = Thread.CurrentThread;
+        _mutex.WaitOne();
+        int pid = Task.Run(() =>
+        {
+            int forked = UnixProcess.Fork();
+            if (forked == 0)
+            {
+                string taken;
+                try { _mutex.WaitOne(); taken = "taken"; }
+                catch (AbandonedMutexException) { taken = "abandoned"; }
+                main.Join();
+                Console.WriteLine("child: " + taken + " joined");
+                Console.Out.Flush();
+                UnixProcess.ExitNow(0);
+            }
+            return forked;
+        }).Result;
+        int status;
+        if (UnixProcess.WaitPid(pid, out status) != pid) { Console.WriteLine("parent: no child"); return 1; }
+        Console.WriteLine("parent: child " + UnixProcess.Result(status));
+        _mutex.ReleaseMutex();
+        return 0;
+    }
+}

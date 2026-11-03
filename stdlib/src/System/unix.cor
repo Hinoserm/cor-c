@@ -126,6 +126,16 @@ public static class UnixProcess
         return Os.Fork();
     }
 
+    /// fork(2) for a child that execs at once, making only system calls on
+    /// what PrepareExec made before (Process.Start): the runtime is not set
+    /// straight in it (Os.ForkToExec), nor the parent's threads kept from the
+    /// heap meanwhile.
+    public static int ForkToExec()
+    {
+        Console.Flush();
+        return Os.ForkToExec();
+    }
+
     /// execve(2): this process becomes the named program, keeping its pid,
     /// its descriptors, its process group and its terminal. It does not
     /// return on success; on failure it answers a negative errno.

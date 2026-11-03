@@ -12905,6 +12905,76 @@ public static class Gc
         return waited;
     }
 
+    // ---- a fork ---------------------------------------------------------------
+    //
+    // fork(2) COPIES ONE THREAD: the one that asked. Whatever else the
+    // process ran -- other threads of the program, the collector's workers
+    // -- is in the copy only as what it left in memory: blocks in the thread
+    // table, a count of workers, perhaps the heap lock or a cycle half made.
+    // A child that went on believing in them waited for ever for a thread
+    // that was not there: at the end of Main, for a foreground thread of the
+    // parent's (test 2585). sshd's connection process, forked by a daemon
+    // with threads of its own, gave up every cycle it began (none of 12,784
+    // finished) -- what a cycle half made, or a table of threads that are
+    // not there, makes of a child, though which of them it was there was not
+    // pinned down. So a fork is
+    // made the way POSIX's pthread_atfork has a library make one: the heap
+    // lock taken first, with no cycle under way (ReadyFork), so the copy has
+    // no half-made cycle and no lock another thread holds; and in the child
+    // every thread but this one taken out as it would take itself out
+    // (GcThreads.ForkedChild), the workers forgotten, and the lock let go
+    // (Forked). The parent only lets the lock go.
+
+    /// Before fork(2): the heap lock held, no cycle under way. True when it
+    /// was taken and Forked must let it go: whenever the thread table has
+    /// been made (GcThreads.HasTable), which is for good once a second thread
+    /// registered. Not by a count of the threads read without the lock, which
+    /// a thread starting meanwhile made wrong, and left it in the child's
+    /// table. Without a table, no other thread had registered when it was
+    /// read; one that registers while the kernel copies is the child's to set
+    /// straight (Forked).
+    ///
+    /// THE LOCK IS HELD ACROSS THE SYSTEM CALL, while the kernel copies the
+    /// page tables: another thread wanting it waits that long. And a thread
+    /// running at the fork may be anywhere in code that takes no lock -- an
+    /// allocation's bump, a barrier's card -- which the copy catches half
+    /// done; POSIX leaves a multithreaded fork's child the same hazard. A
+    /// child that execs at once forks without any of this (ForkToExec).
+    public static bool ReadyFork()
+    {
+        if (!GcThreads.HasTable()) return false;
+        GcLock.Enter();
+        nuint cycling = GcLock.Words() + GcLock.Cycling;
+        while (Sys.Read32(cycling) != 0 && WaitOutCycle()) { }
+        return true;
+    }
+
+    /// After fork(2), on both sides. In the CHILD the collector has this
+    /// thread alone: the others are taken out, and the workers -- none of
+    /// them copied -- are started again by the next collection that wants
+    /// them (StartWorkers).
+    public static void Forked(bool child, bool held)
+    {
+        if (child)
+        {
+            // A TABLE MADE DURING THE FORK -- the first second thread
+            // registering while the kernel copied, after ReadyFork found
+            // none -- is set straight too. Its lock, perhaps that thread's,
+            // is taken over: nothing else runs here to hold it.
+            if (!held && GcThreads.HasTable())
+            {
+                GcLock.TakeOver();
+                held = true;
+            }
+            if (held) GcThreads.ForkedChild(Sys.ThreadBlock());
+            Workers = 0;
+            _workersTried = false;
+            _workWord = 0;
+            _sleepers = 0;
+        }
+        if (held) GcLock.Exit();
+    }
+
     // ---- a collection ---------------------------------------------------------
     //
     // NOBODY IS EVER STOPPED. A collection with one thread simply runs,
@@ -17146,6 +17216,15 @@ public static class GcLock
         return Sys.Read32(at + Collecting) != 0;
     }
 
+    /// IN A FORK'S CHILD, where this thread runs alone: the heap lock taken
+    /// by this thread whoever held it at the fork, as Enter takes it when it
+    /// is free. Let go by Exit.
+    public static void TakeOver()
+    {
+        Runtime.PreemptOff();
+        Sys.AtomicSwap(Words() + Held, Sys.ThreadBlock());
+    }
+
     /// Whether THIS thread holds the heap lock. On a kernel an interrupt
     /// lands on top of the holder -- the collector sweeping a chunk, an
     /// allocation refilling its buffer -- and anything it then does that
@@ -17237,6 +17316,10 @@ public static class GcThreads
     {
         return _count;
     }
+
+    /// Whether the table has been made: a second thread has registered at
+    /// some time. Never undone, so it is read without the lock (Gc.ReadyFork).
+    public static bool HasTable() => _blocks != 0;
 
     /// Whether any thread but this one is registered: whether there is
     /// anybody for a collection to let run.
@@ -17423,6 +17506,32 @@ public static class GcThreads
         {
             Sys.WriteAddress(_blocks + _count * WordSize.Bytes, block);
             _count = _count + 1;
+        }
+    }
+
+    /// IN A FORK'S CHILD, with the heap lock held and no cycle under way
+    /// (Gc.ReadyFork): every thread but `self` taken out as a thread's own
+    /// end takes it -- its buffer retired, its classes forgotten, nothing
+    /// owed, its arena given back -- for none of them was copied. Their
+    /// blocks and stacks stay mapped in the copy, read by nothing now.
+    public static void ForkedChild(nuint self)
+    {
+        if (_blocks == 0) return;
+        nuint i = 0;
+        while (i < _count)
+        {
+            nuint block = At(i);
+            if (block == self) { i = i + 1; continue; }
+            Sys.WriteAddress(block + Tls.State, Gone);
+            Gc.Retire(block);
+            Gc.ForgetClasses(block);
+            Settle(block);
+            // And its arena, as its own end gives it back (Runtime.EndThread;
+            // its thread-statics are forgotten by Thread.ForkedChild,
+            // ThreadStatics.Forget).
+            Gc.ReleaseRegion(block);
+            Sys.WriteAddress(_blocks + i * WordSize.Bytes, At(_count - 1));
+            _count = _count - 1;
         }
     }
 

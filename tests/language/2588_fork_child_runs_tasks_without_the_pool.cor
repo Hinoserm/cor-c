@@ -1,0 +1,50 @@
+// test: fork_child_runs_tasks_without_the_pool
+// only-target: x86
+// flags: --cpu=athlon64 --disable-3dnow
+// expect-exit: 0
+// expect-output:
+// child task 42 queued 1 timer ok
+// parent: child 0 queued 1
+//
+// The scheduler's pool (ThreadPool.SetMinThreads) is not copied by fork(2):
+// in the child it counted workers that were not there, queued a task's work
+// for them, and waited for it for ever. The child is the single-threaded
+// loop again (Scheduler.ForkedChild), which runs its queue itself -- with
+// what was queued and the timers pending at the fork still there: the one
+// worker busy, a task queued behind it, a long delay pending.
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static readonly ManualResetEventSlim _release = new ManualResetEventSlim(false);
+    static volatile bool _busy;
+    static int _queued;
+
+    static int Main()
+    {
+        ThreadPool.SetMinThreads(1, 1);
+        Task busy = Task.Run(() => { _busy = true; _release.Wait(); });
+        while (!_busy) Thread.Sleep(1);
+        Task queued = Task.Run(() => Interlocked.Increment(ref _queued));
+        Task pending = Task.Delay(60000);
+        int pid = UnixProcess.Fork();
+        if (pid == 0)
+        {
+            // Its own task, which runs the queued one first; and a timer, on
+            // the heap the pending one is still in.
+            int own = Task.Run(() => 40 + 2).Result;
+            Task.Delay(10).Wait();
+            Console.WriteLine("child task " + own + " queued " + _queued + " timer ok");
+            return 0;
+        }
+        int status;
+        UnixProcess.WaitPid(pid, out status);
+        _release.Set();
+        busy.Wait();
+        queued.Wait();
+        Console.WriteLine("parent: child " + UnixProcess.Result(status) + " queued " + _queued);
+        return 0;
+    }
+}
