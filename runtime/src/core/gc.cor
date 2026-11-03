@@ -12953,6 +12953,15 @@ public static class Gc
     {
         if (child)
         {
+            // A TABLE MADE DURING THE FORK -- the first second thread
+            // registering while the kernel copied, after ReadyFork found
+            // none -- is set straight too. Its lock, perhaps that thread's,
+            // is taken over: nothing else runs here to hold it.
+            if (!held && GcThreads.HasTable())
+            {
+                GcLock.TakeOver();
+                held = true;
+            }
             if (held) GcThreads.ForkedChild(Sys.ThreadBlock());
             Workers = 0;
             _workersTried = false;
@@ -17208,6 +17217,14 @@ public static class GcLock
     /// allocation refilling its buffer -- and anything it then does that
     /// might allocate would wait for a lock its own thread holds, for ever.
     /// What can be put off, asks this first.
+    /// IN A FORK'S CHILD, where this thread runs alone: the heap lock this
+    /// thread's whoever held it at the fork, as Enter would take it free.
+    public static void TakeOver()
+    {
+        Runtime.PreemptOff();
+        Sys.AtomicSwap(Words() + Held, Sys.ThreadBlock());
+    }
+
     public static bool HeldByMe()
     {
         nuint at = _words;
