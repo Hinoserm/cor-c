@@ -8364,6 +8364,8 @@ public static class Gc
         SayNumber("gc: walk: not together ", WalkTogether);
         SayNumber("gc: barrier lost: stack copy table ", LostStackCopyTable);
         SayNumber("gc: barrier lost: no segment ", LostNoSegment);
+        SayNumber("gc: barrier reports without room ", ReportsWithoutRoom);
+        SayNumber("gc: barrier stock high-water ", _segsHigh);
         SayNumber("gc: barrier lost: report unsigned ", LostReportUnsigned);
         SayNumber("gc: barrier lost: no stack copies ", LostNoStackCopies);
         SayNumber("gc: barrier lost: stack copy not mapped ", LostStackCopyMap);
@@ -14914,16 +14916,35 @@ public static class Gc
         StockBarrier(_segsLow * 2);
     }
 
+    /// Reports that found no room: lost, or made once their cycle had lost
+    /// one (Report). What a cycle needed beyond the segments it took, and so
+    /// part of what the next one is stocked for. Counted without a lock: a
+    /// figure to size by, not to reckon with.
+    public static long ReportsWithoutRoom;
+    static long _withoutRoomAtStart;
+    // The stock a cycle starts with: the most any recent cycle needed,
+    // twice over, let down by a quarter each cycle (ResetBarrier).
+    static nuint _segsHigh;
+
     /// A cycle's start, before Marking 1: every segment back in the pool --
     /// none is read again; a thread still holding one finds it of an older
-    /// cycle -- and the pool stocked for what the last cycle used, twice
-    /// over, and a segment for every thread, twice over.
+    /// cycle -- and the pool stocked for what recent cycles needed: the
+    /// segments the last one took and the reports that found no room, twice
+    /// over, and a segment for every thread, twice over -- or, if more, the
+    /// most a recent cycle needed (a high-water mark let down by a quarter a
+    /// cycle). A WRITER THAT NEVER WAITS -- a ring-0 kernel's, whose platform
+    /// refuses every wait inside a barrier -- lives on what is stocked ahead:
+    /// sized by the last cycle alone, a quiet one left a burst's (a network
+    /// receive's) cycle short, its reports lost and the cycle given up.
     static void ResetBarrier()
     {
         nuint ctl = GcLock.Words();
         nuint used = Sys.ReadAddress(ctl + GcLock.BarrierNext);
         if (used > _segsCount) used = _segsCount;
         if (used > _segsUsed) _segsUsed = used;
+        long short_ = ReportsWithoutRoom - _withoutRoomAtStart;
+        _withoutRoomAtStart = ReportsWithoutRoom;
+        if (short_ > 0) used = used + (nuint)((short_ + SegPlaces - 1) / SegPlaces);
         Sys.AtomicSwap(ctl + GcLock.BarrierNext, 0);
         Sys.AtomicSwap32(ctl + GcLock.BarrierLost, 0);
         Sys.AtomicSwap32(ctl + GcLock.BarrierLow, 0);
@@ -14931,6 +14952,9 @@ public static class Gc
         nuint want = 2 * used;
         if (want < 2 * GcThreads.Count()) want = 2 * GcThreads.Count();
         if (want < StockLeast) want = StockLeast;
+        _segsHigh = _segsHigh - _segsHigh / 4;
+        if (want > _segsHigh) _segsHigh = want;
+        else want = _segsHigh;
         StockBarrier(want);
         _segsLow = want / 2;
     }
@@ -15096,7 +15120,15 @@ public static class Gc
             }
 
             // FULL, OR NONE OF THIS CYCLE'S: the pool's next, made this
-            // cycle's before the thread holds it.
+            // cycle's before the thread holds it -- unless the cycle has lost
+            // a report already and will be given up whatever is reported
+            // now: nothing more taken from the pool, the report counted as
+            // one that wanted room, which the next cycle's stock is sized by.
+            if (Sys.Read32(GcLock.Words() + GcLock.BarrierLost) != 0)
+            {
+                ReportsWithoutRoom = ReportsWithoutRoom + 1;
+                return;
+            }
             nuint cycle = _cycle;
             nuint fresh = TakeSegment(MayWait(tb) ? (nuint)StockReserve : 0, MayWait(tb));
             if (fresh == 0)
@@ -15121,6 +15153,7 @@ public static class Gc
                     return;
                 }
                 LostNoSegment = LostNoSegment + 1;
+                ReportsWithoutRoom = ReportsWithoutRoom + 1;
                 Sys.AtomicSwap32(GcLock.Words() + GcLock.BarrierLost, 1);
                 return;
             }
