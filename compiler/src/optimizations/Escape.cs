@@ -471,7 +471,8 @@ public sealed partial class Escape : IModulePass
     /// the heap -- with what it owns (Runtime.FreeHeld): an object at its
     /// last use in the block that made it (FreeAtLastUse), an owned
     /// variable's where a lap with a region ends (PlaceLapFrees), and one
-    /// whose site runs once a call at its returns and throws (OnceFreer).
+    /// whose site runs once a call at its returns and throws (OnceFreer) --
+    /// each where the runtime provides it (_heldFreer), else Runtime.Free.
     /// </summary>
     public const string HeldFreer = Corsac.Lang.Lto.RuntimeAbi.FreeHeld;
     private bool _heldFreer;

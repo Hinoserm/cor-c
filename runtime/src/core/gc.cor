@@ -12203,8 +12203,9 @@ public static class Gc
     /// for ever (a kernel's thread with its preemption count raised,
     /// interrupts off, inside an allocation or a barrier, holding the heap
     /// lock, or on no process's stack). The barrier's thread then lives on
-    /// the pool's reserve, or its report is lost and the cycle given up
-    /// (BarrierLost); a waiter for a collection does without that cycle's end: an allocation takes its last try at once,
+    /// the pool's reserve, and only with that spent is its report lost and
+    /// the cycle given up (BarrierLost); a waiter for a collection does
+    /// without that cycle's end: an allocation takes its last try at once,
     /// with the cap lifted for it (HeapChunks.PastCap); a collection asked
     /// for is not made, and what needed one says so (CollectMade). 0
     /// answers otherwise. 0: none.
@@ -15108,6 +15109,8 @@ public static class Gc
                 // ended by the mark taking the reports (Marking 2) marks on
                 // the spot below, never into a segment nobody reads again.
                 if (waited < 0) fresh = TakeSegment(0, false);
+                // NO CYCLE ANY MORE: the report is nobody's, and nothing lost.
+                else if (Runtime.Marking == 0) return;
             }
             if (fresh == 0)
             {
@@ -15133,15 +15136,16 @@ public static class Gc
     /// THE POOL EMPTY: the thread waits for the collector to stock it, the
     /// processor given up meanwhile, as a thread that allocates past its
     /// share helps or waits for the collector (Go's assists). Answers 1 when
-    /// the pool has room again, -1 when the platform refused this thread the
-    /// wait (the caller lives on the reserve), and 0 where waiting is no
-    /// answer: the budget spent or the platform out of
-    /// memory (BarrierSpent), the reports taken already (Marking 2: the
-    /// caller marks), the cycle given up, a thread that may not wait
-    /// (MayWait), or one its platform says may not give its processor away
-    /// (YieldHook with 1, asked at every turn as WaitForCollector asks it):
-    /// a kernel's thread inside its barrier (Tls.InAlloc), with interrupts
-    /// off or its preemption off. Two such spinning on the only processors
+    /// the pool has room again, -1 when no more is coming -- the platform
+    /// refused this thread the wait, or the budget is spent -- and the caller
+    /// lives on the reserve, and 0 where waiting is no answer: the reports
+    /// taken already (Marking 2: the caller marks), the cycle over (nothing
+    /// to report), or a thread that may not wait (MayWait) and finds the pool
+    /// still empty. The budget spent or the platform out of memory
+    /// (BarrierSpent) is -1, as is a thread its platform says may not give
+    /// its processor away (YieldHook with 1, asked at every turn as
+    /// WaitForCollector asks it): a kernel's thread inside its barrier
+    /// (Tls.InAlloc), with interrupts off or its preemption off. Two such spinning on the only processors
     /// there were kept the collector from ever running to stock the pool.
     /// The collector itself, reporting, stocks the pool there and then,
     /// unless it is an interrupt on top of the collector. A thread
@@ -15158,11 +15162,17 @@ public static class Gc
             KeepBarrierStocked();
             return Sys.Read32(ctl + GcLock.BarrierSpent) == 0 && SegmentsLeft() != 0 ? 1 : 0;
         }
-        if (!MayWait(tb)) return 0;
+        // One that may not wait looks once more: the collector may have
+        // stocked the pool since its first look.
+        if (!MayWait(tb)) return SegmentsLeft() != 0 ? 1 : 0;
         bool counted = false;
         while (SegmentsLeft() <= (nuint)StockReserve)
         {
-            if (Sys.Read32(ctl + GcLock.BarrierSpent) != 0 || Runtime.Marking != 1) return 0;
+            // THE BUDGET SPENT or the platform out of memory: no more is
+            // coming, and the reserve is the last there is -- spent here
+            // before a report is lost (-1, as a refusal).
+            if (Sys.Read32(ctl + GcLock.BarrierSpent) != 0) return -1;
+            if (Runtime.Marking != 1) return 0;
             if (Sys.Cas32(ctl + GcLock.BarrierLow, 0, 1) == 0) GcThreads.Stir();
             // The platform's hook gives the processor to what is ready, the
             // collector among them, or says this thread may not; with none

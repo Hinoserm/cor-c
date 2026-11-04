@@ -2210,18 +2210,12 @@ namespace System.Threading.Tasks
 /// The makers an initialiser of one is written as: its lengths, and its
 /// elements row by row as an array whose element type they infer --
 /// `new[,] { {1, 2}, {3, 4} }` names none.
-///
-/// PUBLIC, all three, though no program writes their names: the parser
-/// writes them into the program's own code (Parser.RectangularInit, a
-/// `T[,]` is __Rectangular2<T>), so they are bound as the program's and are
-/// part of the surface a program or a module is compiled against -- the
-/// kernel exports them. Internal, every rectangular array was CS0122 (2251).
-public static class __Rectangular {
+static class __Rectangular {
     public static __Rectangular2<T> Of2<T>(int rows, int columns, T[] values) => new __Rectangular2<T>(rows, columns, values);
     public static __Rectangular3<T> Of3<T>(int planes, int rows, int columns, T[] values) => new __Rectangular3<T>(planes, rows, columns, values);
 }
 
-public sealed class __Rectangular2<T> : IEnumerable<T> {
+sealed class __Rectangular2<T> : IEnumerable<T> {
     private readonly T[] items;
     private readonly int rows;
     private readonly int columns;
@@ -2274,7 +2268,7 @@ public sealed class __Rectangular2<T> : IEnumerable<T> {
     public override string ToString() => typeof(T).FullName + "[,]";
 }
 
-public sealed class __Rectangular3<T> : IEnumerable<T> {
+sealed class __Rectangular3<T> : IEnumerable<T> {
     private readonly T[] items;
     private readonly int planes;
     private readonly int rows;

@@ -5068,13 +5068,20 @@ public sealed class Parser
 
     private static TypeRef Rectangular(TypeRef element, int rank, int line, int col)
     {
-        TypeRef made = new() { Name = CompilerAbi.Rectangular + rank, Line = line, Col = col };
+        // UNDER THE LIBRARY'S HOME NO TEXT CAN SPELL (Binder.LibrarySpelling),
+        // as every name the compiler writes for the program is: the types are
+        // the class library's internals, and bound as the program's own names
+        // they were CS0122 -- every rectangular array (2251).
+        TypeRef made = new() { Name = RectangularName + rank, Line = line, Col = col };
         made.Arguments.Add(element);
         return made;
     }
 
     private static int RectangularRank(TypeRef type)
-        => type.ArrayRank == 0 && type.Args.Count == 1 && type.Name is "__Rectangular2" or "__Rectangular3" ? type.Name[^1] - '0' : 0;
+        => type.ArrayRank == 0 && type.Args.Count == 1 && type.Name is RectangularName + "2" or RectangularName + "3" ? type.Name[^1] - '0' : 0;
+
+    /// <summary>The rectangular arrays' types as the parser writes them: the library's, by its home (Binder.LibrarySpelling).</summary>
+    private const string RectangularName = Binder.LibrarySpelling + "." + CompilerAbi.Rectangular;
 
     /// <summary>
     /// A RECTANGULAR ARRAY'S INITIALISER, `{ {1, 2}, {3, 4} }`: its elements
@@ -5120,7 +5127,7 @@ public sealed class Parser
         {
             Target = new MemberExpr
             {
-                Target = new NameExpr { Name = CompilerAbi.Rectangular, Line = at.Line, Col = at.Col },
+                Target = new NameExpr { Name = RectangularName, Line = at.Line, Col = at.Col },
                 Name = "Of" + rank, Line = at.Line, Col = at.Col,
             },
             Line = at.Line, Col = at.Col,
