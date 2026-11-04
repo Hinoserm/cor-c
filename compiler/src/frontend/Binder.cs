@@ -2436,12 +2436,12 @@ public sealed partial class Binder
         _constantStates[key] = ConstantState.Evaluating;
         TypeSymbol? previousScope = _scope;
         string previous = _in;
-        // ITS OWN TYPE'S CODE, checked as that type's: not under the
-        // default being spelt that asked for it (_defaultSpelt).
-        int previousSpelt = _defaultSpelt;
+        // ITS OWN TYPE'S CODE, checked as that type's: not as the default
+        // being spelt that asked for it (_accessFrom).
+        TypeSymbol? previousFrom = _accessFrom;
         _scope = owner;
         _in = declaration.File;
-        _defaultSpelt = 0;
+        _accessFrom = null;
         try
         {
             FieldDecl field = declaration.Field;
@@ -2499,7 +2499,7 @@ public sealed partial class Binder
         {
             _scope = previousScope;
             _in = previous;
-            _defaultSpelt = previousSpelt;
+            _accessFrom = previousFrom;
         }
     }
 
@@ -5781,7 +5781,7 @@ public sealed partial class Binder
     private static Expr Deeper(Expr e) => e switch
     {
         SubjectExpr s => new SubjectExpr { Outer = s.Outer + 1, Line = s.Line, Col = s.Col, File = s.File },
-        MemberExpr { Target: var inner } m when Reads(inner) => new MemberExpr { Target = Deeper(inner), Name = m.Name, Guarded = m.Guarded, DefaultSpelt = m.DefaultSpelt, Line = m.Line, Col = m.Col, File = m.File },
+        MemberExpr { Target: var inner } m when Reads(inner) => new MemberExpr { Target = Deeper(inner), Name = m.Name, Guarded = m.Guarded, DefaultIn = m.DefaultIn, Line = m.Line, Col = m.Col, File = m.File },
         _ => e,
     };
 
@@ -16162,10 +16162,15 @@ public sealed partial class Binder
     {
         NameExpr n => Full(n),
 
-        // `= Sized.Size` as `= Size`: the declaring type's own (DefaultSpelt),
-        // read through it, a type it is in or one it derives from. `= B.Hidden`
-        // of another type is not, and is checked at the call as written.
-        MemberExpr m => SpeltMember(m, Spell(m.Target)),
+        // Every member read of it checked as the declaring type's (DefaultIn):
+        // `= Sized.Size`, `= Outer.Inner.K`, `= Helper.K` as that type reaches
+        // them, and `= B.Hidden` of another type refused as there.
+        MemberExpr m => new MemberExpr
+        {
+            Target = Spell(m.Target), Name = m.Name, Guarded = m.Guarded,
+            NullConditional = m.NullConditional, DefaultIn = _scope?.Key,
+            Line = m.Line, Col = m.Col, File = m.File,
+        },
 
         UnaryExpr u => new UnaryExpr
         {
@@ -16186,24 +16191,6 @@ public sealed partial class Binder
 
         _ => e,
     };
-
-    /// <summary>
-    /// A default's member read rebuilt over its spelt target: the declaring
-    /// type's own (DefaultSpelt) where the target names that type, one it is
-    /// nested in or one it derives from -- what the declaring type reaches.
-    /// </summary>
-    private MemberExpr SpeltMember(MemberExpr m, Expr target)
-    {
-        bool own = _scope is { } declaring && target is NameExpr named
-            && _r.Types.TryGetValue(named.Name, out TypeSymbol? through)
-            && (Within(declaring, through) || DerivesFromType(declaring, through));
-        return new MemberExpr
-        {
-            Target = target, Name = m.Name, Guarded = m.Guarded,
-            NullConditional = m.NullConditional, DefaultSpelt = own,
-            Line = m.Line, Col = m.Col, File = m.File,
-        };
-    }
 
     /// <summary>
     /// One name, written out in full: a type by its whole key, a const or a
@@ -16232,14 +16219,14 @@ public sealed partial class Binder
 
             if (has)
             {
-                // THE DECLARING TYPE'S NAME, read at the call as the
-                // compiler's own (DefaultSpelt): a default is evaluated where
-                // it was declared, so `M(int x = Size)` over a private Size
-                // is every caller's (C# 15.6.2).
+                // THE DECLARING TYPE'S NAME, read at the call with the
+                // declaring type's access (DefaultIn): a default is evaluated
+                // where it was declared, so `M(int x = Size)` over a private
+                // Size is every caller's (C# 15.6.2).
                 return new MemberExpr
                 {
                     Target = new NameExpr { Name = at.Key, Line = n.Line, Col = n.Col, File = n.File },
-                    Name = n.Name, Line = n.Line, Col = n.Col, File = n.File, DefaultSpelt = true,
+                    Name = n.Name, Line = n.Line, Col = n.Col, File = n.File, DefaultIn = _scope?.Key,
                 };
             }
         }
@@ -21975,10 +21962,11 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckMember(MemberExpr m)
     {
-        if (!m.DefaultSpelt) return CheckMemberReached(m);
-        _defaultSpelt++;
+        if (m.DefaultIn is not string declaredIn || !_r.Types.TryGetValue(declaredIn, out TypeSymbol? from)) return CheckMemberReached(m);
+        TypeSymbol? previousFrom = _accessFrom;
+        _accessFrom = from;
         try { return CheckMemberReached(m); }
-        finally { _defaultSpelt--; }
+        finally { _accessFrom = previousFrom; }
     }
 
     private Type CheckMemberReached(MemberExpr m)

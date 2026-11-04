@@ -7,10 +7,11 @@ public sealed partial class Binder
 
     /// <summary>
     /// Inside a default spelt out at a call from the type that declared it
-    /// (MemberExpr.DefaultSpelt): its access is that type's, not asked here;
-    /// nothing else of the binding changes, as it would under _made.
+    /// (MemberExpr.DefaultIn): its access is judged from that type, as C#
+    /// evaluates a default where it was declared; nothing else of the binding
+    /// changes, as it would under _made.
     /// </summary>
-    private int _defaultSpelt;
+    private TypeSymbol? _accessFrom;
 
     /// <summary>The places being bound that are only written, `x.N = v` and `out x.N` (CheckExpr).</summary>
     private readonly HashSet<Expr> _onlyWritten = new(ReferenceEqualityComparer.Instance);
@@ -30,7 +31,7 @@ public sealed partial class Binder
     /// </summary>
     private bool ChecksAccess()
     {
-        if (_made > 0 || _defaultSpelt > 0) return false;
+        if (_made > 0) return false;
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         return written is not null && written.File != "<prelude>" && _member is not ({ LocalCopy: true } or { Made: true });
     }
@@ -43,6 +44,7 @@ public sealed partial class Binder
     /// </summary>
     private TypeSymbol? AccessHere()
     {
+        if (_accessFrom is not null) return _accessFrom;
         // A DECLARATION BEING READ is its own type's, whatever body asked
         // for it: a constant's initialiser evaluated on demand (_scope, as
         // EvaluateConstantOf sets it) names its own type's private ones.

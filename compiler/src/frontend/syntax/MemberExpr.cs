@@ -44,11 +44,13 @@ public sealed class MemberExpr : Expr
     public bool ThroughTypeParameter { get; init; }
 
     /// <summary>
-    /// A default's name spelt out from the type it was declared in
-    /// (Binder.Full): read at the call as code the compiler wrote, its
-    /// declaring type's private constant every caller's (C# 15.6.2).
+    /// A default's member read spelt out at a call from the method's
+    /// declaration (Binder.Spell, Full): the key of the type that declared it,
+    /// whose access the read is checked by -- a default is evaluated where it
+    /// was declared (C# 15.6.2), so `M(int x = Size)` over the type's private
+    /// Size is every caller's. Null for anything written where it is read.
     /// </summary>
-    public bool DefaultSpelt { get; init; }
+    public string? DefaultIn { get; init; }
 
     /// <summary>
     /// The member read instead when the type has none called Name: a list

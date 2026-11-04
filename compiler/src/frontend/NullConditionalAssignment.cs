@@ -49,7 +49,7 @@ internal static class NullConditionalAssignment
                     MemberExpr kept = new()
                     {
                         Target = inner, Name = m.Name, NullConditional = m.NullConditional, Guarded = m.Guarded,
-                        Else = m.Else, ThroughTypeParameter = m.ThroughTypeParameter, DefaultSpelt = m.DefaultSpelt, Line = m.Line, Col = m.Col,
+                        Else = m.Else, ThroughTypeParameter = m.ThroughTypeParameter, DefaultIn = m.DefaultIn, Line = m.Line, Col = m.Col,
                     };
                     kept.WritableTypeArgs.AddRange(m.TypeArgs);
                     return (receiver, kept);
@@ -58,7 +58,7 @@ internal static class NullConditionalAssignment
                 MemberExpr through = new()
                 {
                     Target = holder(m), Name = m.Name, Guarded = m.Guarded, Else = m.Else, ThroughTypeParameter = m.ThroughTypeParameter,
-                    DefaultSpelt = m.DefaultSpelt, Line = m.Line, Col = m.Col,
+                    DefaultIn = m.DefaultIn, Line = m.Line, Col = m.Col,
                 };
                 through.WritableTypeArgs.AddRange(m.TypeArgs);
                 return (m.Target, through);

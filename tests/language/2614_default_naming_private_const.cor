@@ -2,13 +2,16 @@
 // expect-exit: 0
 // expect-output:
 // 3 7 3 3
+// 1 2 5 6
 //
-// A DEFAULT IS EVALUATED WHERE IT WAS DECLARED (C# 15.6.2): `int x = Size`
-// over the method's own type's private constant is every caller's, though
-// the caller may not name Size itself -- bare, or written `Sized.Size`, and
-// called from a generic type's copy as from a plain one. The compiler spells
-// it out at the call (Binder.Full, MemberExpr.DefaultSpelt) and its access is
-// the declaring type's.
+// A DEFAULT IS EVALUATED WHERE IT WAS DECLARED (C# 15.6.2): what it names is
+// judged from the declaring type, not from the caller. `int x = Size` over the
+// type's private constant is every caller's -- bare, or written `Sized.Size`,
+// and called from a generic type's copy as from a plain one; so is an
+// enclosing type's private one through `Outer.Inner.K`, a private nested
+// type's public one, a base's protected one, and a generic declaring type's.
+// The compiler spells the default out at the call (Binder.Spell, Full) with
+// the declaring type's key on each member read (MemberExpr.DefaultIn).
 using System;
 
 class Sized
@@ -26,12 +29,47 @@ class Box<T>
     public int Through() => new Sized().Pick();
 }
 
+class Outer
+{
+    public class Inner
+    {
+        private const int K = 1;
+
+        public class Deep
+        {
+            public int F(int x = Outer.Inner.K) => x;
+        }
+    }
+}
+
+class Holder
+{
+    private static class Helper { public const int K = 2; }
+
+    public int F(int x = Helper.K) => x;
+}
+
+class Floor { protected const int Level = 5; }
+
+class Room : Floor
+{
+    public int F(int x = Floor.Level) => x;
+}
+
+class Shelf<T>
+{
+    private const int Slots = 6;
+
+    public int F(int x = Slots) => x;
+}
+
 static class Program
 {
     static int Main()
     {
         Sized s = new Sized();
         Console.WriteLine(s.Pick() + " " + s.Y + " " + s.Dotted() + " " + new Box<int>().Through());
+        Console.WriteLine(new Outer.Inner.Deep().F() + " " + new Holder().F() + " " + new Room().F() + " " + new Shelf<string>().F());
         return 0;
     }
 }

@@ -3985,7 +3985,7 @@ public sealed class Monomorphiser
 
                     // A default's name spelt from its declaring type stays
                     // the compiler's own in every copy (Binder.Full).
-                    DefaultSpelt = m.DefaultSpelt,
+                    DefaultIn = m.DefaultIn,
 
                     // `T.Zero`, whose T this copy names its type: a static
                     // abstract member of T's constraint, found on the type
