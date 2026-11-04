@@ -575,17 +575,85 @@ public sealed partial class Lowering
         if (place is null) return null;
         VReg size = EvalAs(call.Args[1], target.Params[1].Type);
         VReg old = LoadPlace(place);
+        // A FLAT ELEMENT'S ARRAY -- numbers, no reference, no struct, no type
+        // parameter -- RESIZED HERE, as the library's Resize does it: a new
+        // array of the size, the old one's first elements copied in, the new
+        // one stored. The old is only read and the new is fresh, which the
+        // lifetime rules see -- through the library's call they saw the old
+        // array leave by the place's address, and a payload's buffer grown in
+        // a loop was never given back (the sshd case). A size below zero is
+        // the library's to refuse, as .NET's.
+        if (target.Params[0].Type.Element is { } element && FlatElement(element) && target.Params[0].Type.ArrayRank == 1)
+        {
+            int stride = ElementStride(element);
+            Block refused = _f.NewBlock("resizeneg"), grown = _f.NewBlock("resizegrow"), copying = _f.NewBlock("resizecopy"),
+                stored = _f.NewBlock("resizestore"), done = _f.NewBlock("resizedone");
+            _e.Branch(_e.Binary(Opcode.LtS, R(size), new ImmOperand(0, IrType.I32), IrType.I32), refused, grown);
+
+            // The library's Resize refuses a size below zero with its
+            // ArgumentOutOfRangeException, and never comes back: nothing
+            // follows it here -- a store of what it left would be a store of
+            // no fresh object, and the field owned by nobody.
+            _e.SetBlock(refused);
+            ResizeThroughLibrary(call, target, place, old, size, returns: false);
+
+            _e.SetBlock(grown);
+            VReg made = AllocateArray(call, size, element);
+            _e.Branch(old, copying, stored);
+
+            _e.SetBlock(copying);
+            VReg had = _e.Unary(Opcode.ArrayLength, R(old), IrType.I32);
+            VReg count = _f.NewReg(IrType.I32, "kept");
+            Block fewer = _f.NewBlock("resizefewer"), all = _f.NewBlock("resizeall"), copy = _f.NewBlock("resizedo");
+            _e.Branch(_e.Binary(Opcode.LtS, R(had), R(size), IrType.I32), fewer, all);
+            _e.SetBlock(fewer); _e.CopyTo(count, R(had)); _e.Jump(copy);
+            _e.SetBlock(all); _e.CopyTo(count, R(size)); _e.Jump(copy);
+            _e.SetBlock(copy);
+            VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
+            _e.Emit(Opcode.MemCopy, null, R(_e.Binary(Opcode.Add, made, _t.ArrayHeaderBytes)), R(_e.Binary(Opcode.Add, old, _t.ArrayHeaderBytes)), R(WordOf(bytes)));
+            _e.Jump(stored);
+
+            _e.SetBlock(stored);
+            StorePlace(place, made);
+            _e.Jump(done);
+
+            _e.SetBlock(done);
+            return Void();
+        }
+        ResizeThroughLibrary(call, target, place, old, size);
+        return Void();
+    }
+
+    /// <summary>A flat array element: a number, a bool or a char -- no reference, no struct, no type parameter.</summary>
+    private static bool FlatElement(Type element)
+        => element.Symbol is null && element.Element is null && !element.IsArray && element.PointerDepth == 0 && element.ParamName is null
+            && !element.IsNullableValue && element.Prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.U8 or Prim.U16
+                or Prim.U32 or Prim.U64 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64 or Prim.Char;
+
+    /// <summary>
+    /// Array.Resize called as the library has it, over a frame word holding
+    /// the place's array (ResizeInPlace): what it leaves there is stored.
+    /// </summary>
+    private void ResizeThroughLibrary(CallExpr call, MethodSymbol target, Place place, VReg old, VReg size, bool returns = true)
+    {
         FrameSlot word = _f.NewSlot(_t.WordSize, _t.WordSize, "resized");
         VReg at = _e.SlotAddress(word);
-        _e.Store(R(at), R(old), 0, _t.WordSize);
+        // Where it never returns -- a size below zero, refused before the
+        // array is looked at -- it is handed none: the place's array goes
+        // nowhere on that way, and the same exception is thrown.
+        _e.Store(R(at), returns ? R(old) : new ImmOperand(0, IrTypes.Word), 0, _t.WordSize);
         // A SHARED COPY'S HIDDEN TYPE ARGUMENTS and context, as every call
         // gives them (EmitCall): read as zero, a copy over object made the
         // grown array of the wrong element type.
         PendHiddenArguments(call, target);
         CallDirect(target, IrType.Void, new List<Operand> { R(at), R(size) });
+        if (!returns)
+        {
+            _e.Unreachable();
+            return;
+        }
         VReg made = _e.Load(IrTypes.Word, at, 0, _t.WordSize);
         StorePlace(place, made);
-        return Void();
     }
 
     /// <summary>
