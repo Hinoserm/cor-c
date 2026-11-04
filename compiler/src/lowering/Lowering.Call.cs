@@ -605,14 +605,18 @@ public sealed partial class Lowering
             _e.SetBlock(sized);
             _e.Branch(old, asked, grown);
             _e.SetBlock(asked);
-            VReg had = _e.Unary(Opcode.ArrayLength, R(old), IrType.I32);
-            _e.Branch(_e.Binary(Opcode.Eq, R(had), R(size), IrType.I32), done, grown);
+            VReg length = _e.Unary(Opcode.ArrayLength, R(old), IrType.I32);
+            _e.Branch(_e.Binary(Opcode.Eq, R(length), R(size), IrType.I32), done, grown);
 
             _e.SetBlock(grown);
             VReg made = AllocateArray(call, size, element);
             _e.Branch(old, copying, stored);
 
+            // Its length read again here: `grown` is reached without `asked`
+            // too (no array yet), and a register of `asked`'s would be read
+            // where its block does not lead.
             _e.SetBlock(copying);
+            VReg had = _e.Unary(Opcode.ArrayLength, R(old), IrType.I32);
             VReg count = _f.NewReg(IrType.I32, "kept");
             Block fewer = _f.NewBlock("resizefewer"), all = _f.NewBlock("resizeall"), copy = _f.NewBlock("resizedo");
             _e.Branch(_e.Binary(Opcode.LtS, R(had), R(size), IrType.I32), fewer, all);

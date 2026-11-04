@@ -275,7 +275,8 @@ public static class SourceIndexBuilder
                 if (token.Kind == Tok.LBracket) { brackets++; continue; }
                 if (token.Kind == Tok.RBracket) { brackets--; continue; }
                 if (brackets > 0) continue;
-                if (token.Kind == Tok.LBrace) return false;
+                // Up to its body or a record's parameters, as Kind reads it.
+                if (token.Kind is Tok.LBrace or Tok.LParen) return false;
                 if (token.Kind == Tok.Ident && token.Text == "partial") return true;
             }
             return false;

@@ -9,9 +9,14 @@
 // long 3 -5 9000000000 0
 // nint 2 7 0
 // enum 3 Blue Green Red
+// wide 2 Far 0 Near
 // field 12 1 99
 // static 4 3
+// field same True 99
+// static same True
 // element 6 4
+// element same True
+// null zero 0
 // loop 64 63
 //
 // ARRAY.RESIZE AS .NET HAS IT, lowered where it is called for a flat
@@ -26,6 +31,8 @@
 using System;
 
 enum Shade { Red, Green, Blue }
+enum Reach : long { Near = 0, Far = 5000000000 }
+enum Bit : byte { Zero, One }
 
 sealed class Holder
 {
@@ -81,6 +88,12 @@ static class P
         Array.Resize(ref e3, 3);
         Console.WriteLine("enum " + e3.Length + " " + e3[0] + " " + e3[1] + " " + e3[2]);
 
+        Reach[] r = new Reach[] { Reach.Far };
+        Array.Resize(ref r, 2);
+        Bit[] bits = new Bit[] { Bit.One };
+        Array.Resize(ref bits, 3);
+        Console.WriteLine("wide " + r.Length + " " + r[0] + " " + (int)bits[2] + " " + r[1]);
+
         Holder h = new Holder();
         h.Bytes[0] = 1;
         h.Bytes[3] = 99;
@@ -90,9 +103,24 @@ static class P
         Array.Resize(ref _kept, 4);
         Console.WriteLine("static " + _kept.Length + " " + _kept[2]);
 
+        // OF THAT SIZE ALREADY, every place keeps the very array.
+        byte[] held = h.Bytes;
+        h.Grow(12);
+        Console.WriteLine("field same " + ReferenceEquals(held, h.Bytes) + " " + h.Bytes[3]);
+        int[] stat = _kept;
+        Array.Resize(ref _kept, 4);
+        Console.WriteLine("static same " + ReferenceEquals(stat, _kept));
+
         int[][] rows = new int[][] { new int[] { 4, 5 } };
         Array.Resize(ref rows[0], 6);
         Console.WriteLine("element " + rows[0].Length + " " + rows[0][0]);
+        int[] row = rows[0];
+        Array.Resize(ref rows[0], 6);
+        Console.WriteLine("element same " + ReferenceEquals(row, rows[0]));
+
+        byte[]? none = null;
+        Array.Resize(ref none, 0);
+        Console.WriteLine("null zero " + none.Length);
 
         byte[] buffer = new byte[1];
         for (int i = 0; i < 64; i++)

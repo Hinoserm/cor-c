@@ -20261,10 +20261,10 @@ public abstract class Array : IList, ICollection {
     /// parameter is `ref`: an array cannot change its own length, so what
     /// really happens is a new one and an assignment over the caller's
     /// variable. .NET's signature says so and this one says the same.
-    // The size is refused before the array is looked at: the compiler hands
-    // a size below zero an array of none and expects no return
-    // (Lowering.ResizeInPlace).
     public static void Resize<T>([NotNull] ref T[]? items, int size) {
+        // THE SIZE REFUSED BEFORE THE ARRAY IS LOOKED AT: the compiler hands
+        // a size below zero an array of none and expects no return
+        // (Lowering.ResizeInPlace).
         if (size < 0) { throw new ArgumentOutOfRangeException("newSize", "Non-negative number required."); }
         // NO ARRAY YET is an empty one, as .NET has it: one of the size asked.
         if (items is null) { items = new T[size]; return; }
