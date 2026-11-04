@@ -1,0 +1,105 @@
+// test: array_resize_as_dotnet
+// expect-exit: 0
+// expect-output:
+// same True 7
+// grown 16 1 2 3 0
+// shrunk 2 1 2
+// null 5 0
+// negative ArgumentOutOfRangeException newSize
+// long 3 -5 9000000000 0
+// nint 2 7 0
+// enum 3 Blue Green Red
+// field 12 1 99
+// static 4 3
+// element 6 4
+// loop 64 63
+//
+// ARRAY.RESIZE AS .NET HAS IT, lowered where it is called for a flat
+// element's array (Lowering.ResizeInPlace): an array of the size asked
+// already is kept, the same object every alias holds; a larger one has the
+// old elements and zeros after them, a smaller one the first of them; a null
+// one is a new one of the size; a size below zero is the library's
+// ArgumentOutOfRangeException. For every place a ref can name -- a local, a
+// field, a static, an array's element -- and for longs, nints and enums, and
+// a buffer grown in a loop as a payload's is.
+
+using System;
+
+enum Shade { Red, Green, Blue }
+
+sealed class Holder
+{
+    public byte[] Bytes = new byte[4];
+
+    public void Grow(int to) { Array.Resize(ref Bytes, to); }
+}
+
+static class P
+{
+    static int[] _kept = new int[] { 1, 2, 3 };
+
+    static void Main()
+    {
+        byte[] a = new byte[8];
+        byte[] alias = a;
+        Array.Resize(ref a, 8);
+        a[0] = 7;
+        Console.WriteLine("same " + ReferenceEquals(a, alias) + " " + alias[0]);
+
+        int[] g = new int[] { 1, 2, 3 };
+        Array.Resize(ref g, 16);
+        Console.WriteLine("grown " + g.Length + " " + g[0] + " " + g[1] + " " + g[2] + " " + g[3]);
+
+        int[] s = new int[] { 1, 2, 3, 4 };
+        Array.Resize(ref s, 2);
+        Console.WriteLine("shrunk " + s.Length + " " + s[0] + " " + s[1]);
+
+        char[]? n = null;
+        Array.Resize(ref n, 5);
+        Console.WriteLine("null " + n.Length + " " + (int)n[4]);
+
+        try
+        {
+            int[] bad = new int[2];
+            Array.Resize(ref bad, -1);
+            Console.WriteLine("negative none");
+        }
+        catch (ArgumentOutOfRangeException e)
+        {
+            Console.WriteLine("negative " + e.GetType().Name + " " + e.ParamName);
+        }
+
+        long[] l = new long[] { -5, 9000000000 };
+        Array.Resize(ref l, 3);
+        Console.WriteLine("long " + l.Length + " " + l[0] + " " + l[1] + " " + l[2]);
+
+        nint[] w = new nint[] { 7 };
+        Array.Resize(ref w, 2);
+        Console.WriteLine("nint " + w.Length + " " + w[0] + " " + w[1]);
+
+        Shade[] e3 = new Shade[] { Shade.Blue, Shade.Green };
+        Array.Resize(ref e3, 3);
+        Console.WriteLine("enum " + e3.Length + " " + e3[0] + " " + e3[1] + " " + e3[2]);
+
+        Holder h = new Holder();
+        h.Bytes[0] = 1;
+        h.Bytes[3] = 99;
+        h.Grow(12);
+        Console.WriteLine("field " + h.Bytes.Length + " " + h.Bytes[0] + " " + h.Bytes[3]);
+
+        Array.Resize(ref _kept, 4);
+        Console.WriteLine("static " + _kept.Length + " " + _kept[2]);
+
+        int[][] rows = new int[][] { new int[] { 4, 5 } };
+        Array.Resize(ref rows[0], 6);
+        Console.WriteLine("element " + rows[0].Length + " " + rows[0][0]);
+
+        byte[] buffer = new byte[1];
+        for (int i = 0; i < 64; i++)
+        {
+            if (buffer.Length <= i) Array.Resize(ref buffer, buffer.Length * 2);
+            buffer[i] = (byte)i;
+        }
+        Console.WriteLine("loop " + buffer.Length + " " + buffer[63]);
+    }
+}

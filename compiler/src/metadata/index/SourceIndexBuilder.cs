@@ -265,11 +265,17 @@ public static class SourceIndexBuilder
     private static void KernelPart(string path, string name, TypeDecl type, List<DeclarationRecord> kernels, string onPath)
     {
         string where = path + ": " + name + " is declared by the index this one is made on (" + onPath + ")";
+        // Its header's, past its attributes' brackets, as Kind reads it below.
         bool Partial(string text)
         {
+            int brackets = 0;
             foreach (Token token in Lexer.Tokenize(text, path))
             {
-                if (token.Kind is Tok.LBrace or Tok.End) return false;
+                if (token.Kind == Tok.End) return false;
+                if (token.Kind == Tok.LBracket) { brackets++; continue; }
+                if (token.Kind == Tok.RBracket) { brackets--; continue; }
+                if (brackets > 0) continue;
+                if (token.Kind == Tok.LBrace) return false;
                 if (token.Kind == Tok.Ident && token.Text == "partial") return true;
             }
             return false;

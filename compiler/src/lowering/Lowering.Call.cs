@@ -550,17 +550,20 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// ARRAY.RESIZE OF A VARIABLE OR A FIELD, as .NET defines it: a new array,
-    /// the old one's elements copied in, and an assignment over the caller's
-    /// variable -- made here an assignment the lowering sees as one. The
-    /// array goes through a frame word Resize is handed instead, and comes
-    /// back into the variable or the field by an ordinary store, which the
-    /// lifetime rules read as any other: an owned field's old value freed
-    /// where the new one is stored (Escape, ApplyOwnedFields). Written
-    /// through the `ref`, the store was nobody's field's, and every array a
-    /// buffer outgrew was the collector's -- 131,000 mmaps and munmaps in
-    /// sshd's packet path. The variable's place is taken first, then the
-    /// size, then its value, in the order the call reads them.
+    /// ARRAY.RESIZE OF A VARIABLE OR A FIELD, as .NET defines it: nothing for
+    /// an array of that size already, else a new array, the old one's
+    /// elements copied in, and an assignment over the caller's variable --
+    /// made here an assignment the lowering sees as one, the variable's or
+    /// field's new value an ordinary store the lifetime rules read as any
+    /// other: an owned field's old value freed where the new one is stored
+    /// (Escape, ApplyOwnedFields). Written through the `ref`, the store was
+    /// nobody's field's, and every array a buffer outgrew was the
+    /// collector's -- 131,000 mmaps and munmaps in sshd's packet path. A FLAT
+    /// ELEMENT'S array (a number, bool, char or enum) is resized right here
+    /// (below); any other's goes through a frame word the library's Resize
+    /// is handed, and comes back by the same store. The variable's place is
+    /// taken first, then the size, then its value, in the order the call
+    /// reads them.
     /// </summary>
     private VReg? ResizeInPlace(CallExpr call, MethodSymbol target)
     {
@@ -587,8 +590,8 @@ public sealed partial class Lowering
         {
             int stride = ElementStride(element);
             Block refused = _f.NewBlock("resizeneg"), grown = _f.NewBlock("resizegrow"), copying = _f.NewBlock("resizecopy"),
-                stored = _f.NewBlock("resizestore"), done = _f.NewBlock("resizedone");
-            _e.Branch(_e.Binary(Opcode.LtS, R(size), new ImmOperand(0, IrType.I32), IrType.I32), refused, grown);
+                stored = _f.NewBlock("resizestore"), done = _f.NewBlock("resizedone"), sized = _f.NewBlock("resizesized"), asked = _f.NewBlock("resizeasked");
+            _e.Branch(_e.Binary(Opcode.LtS, R(size), new ImmOperand(0, IrType.I32), IrType.I32), refused, sized);
 
             // The library's Resize refuses a size below zero with its
             // ArgumentOutOfRangeException, and never comes back: nothing
@@ -597,12 +600,19 @@ public sealed partial class Lowering
             _e.SetBlock(refused);
             ResizeThroughLibrary(call, target, place, old, size, returns: false);
 
+            // OF THAT SIZE ALREADY, NOTHING, as .NET's: the array kept, and
+            // every alias of it still the caller's.
+            _e.SetBlock(sized);
+            _e.Branch(old, asked, grown);
+            _e.SetBlock(asked);
+            VReg had = _e.Unary(Opcode.ArrayLength, R(old), IrType.I32);
+            _e.Branch(_e.Binary(Opcode.Eq, R(had), R(size), IrType.I32), done, grown);
+
             _e.SetBlock(grown);
             VReg made = AllocateArray(call, size, element);
             _e.Branch(old, copying, stored);
 
             _e.SetBlock(copying);
-            VReg had = _e.Unary(Opcode.ArrayLength, R(old), IrType.I32);
             VReg count = _f.NewReg(IrType.I32, "kept");
             Block fewer = _f.NewBlock("resizefewer"), all = _f.NewBlock("resizeall"), copy = _f.NewBlock("resizedo");
             _e.Branch(_e.Binary(Opcode.LtS, R(had), R(size), IrType.I32), fewer, all);
@@ -611,6 +621,9 @@ public sealed partial class Lowering
             _e.SetBlock(copy);
             VReg bytes = stride == 1 ? count : _e.Binary(Opcode.Mul, count, stride);
             _e.Emit(Opcode.MemCopy, null, R(_e.Binary(Opcode.Add, made, _t.ArrayHeaderBytes)), R(_e.Binary(Opcode.Add, old, _t.ArrayHeaderBytes)), R(WordOf(bytes)));
+            // Numbers, never addresses, where the element can hold none
+            // (MoveBytes): a long or an nint the runtime keeps addresses in.
+            if (NeverAddress(element)) _e.Block.Instrs[^1].Number = true;
             _e.Jump(stored);
 
             _e.SetBlock(stored);
@@ -624,9 +637,10 @@ public sealed partial class Lowering
         return Void();
     }
 
-    /// <summary>A flat array element: a number, a bool or a char -- no reference, no struct, no type parameter.</summary>
+    /// <summary>A flat array element: a number, a bool, a char or an enum -- no reference, no struct, no type parameter.</summary>
     private static bool FlatElement(Type element)
-        => element.Symbol is null && element.Element is null && !element.IsArray && element.PointerDepth == 0 && element.ParamName is null
+        => element.IsEnumValue
+            || element.Symbol is null && element.Element is null && !element.IsArray && element.PointerDepth == 0 && element.ParamName is null
             && !element.IsNullableValue && element.Prim is Prim.Bool or Prim.I8 or Prim.I16 or Prim.I32 or Prim.I64 or Prim.U8 or Prim.U16
                 or Prim.U32 or Prim.U64 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64 or Prim.Char;
 
