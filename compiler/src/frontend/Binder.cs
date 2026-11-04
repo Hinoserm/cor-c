@@ -16211,10 +16211,14 @@ public sealed partial class Binder
 
             if (has)
             {
+                // THE DECLARING TYPE'S NAME, read at the call as the
+                // compiler's own (DefaultSpelt): a default is evaluated where
+                // it was declared, so `M(int x = Size)` over a private Size
+                // is every caller's (C# 15.6.2).
                 return new MemberExpr
                 {
                     Target = new NameExpr { Name = at.Key, Line = n.Line, Col = n.Col, File = n.File },
-                    Name = n.Name, Line = n.Line, Col = n.Col, File = n.File,
+                    Name = n.Name, Line = n.Line, Col = n.Col, File = n.File, DefaultSpelt = true,
                 };
             }
         }
@@ -21950,6 +21954,14 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckMember(MemberExpr m)
     {
+        if (!m.DefaultSpelt) return CheckMemberReached(m);
+        _made++;
+        try { return CheckMemberReached(m); }
+        finally { _made--; }
+    }
+
+    private Type CheckMemberReached(MemberExpr m)
+    {
         _passedConstant = null;
         // A `?.` further back than this member (ThroughFirstLink).
         if (!m.NullConditional && HasConditionalMember(m.Target) && ThroughFirstLink(m) is Expr firstLink)
@@ -22888,7 +22900,7 @@ public sealed partial class Binder
             return Type.Error;
         }
 
-        Error(m, PassedConstant(m.Name) ?? $"'{owner.Name}' has no member '{m.Name}'");
+        Error(m, PassedConstant(m.Name, owner) ?? $"'{owner.Name}' has no member '{m.Name}'");
         return Type.Error;
     }
 

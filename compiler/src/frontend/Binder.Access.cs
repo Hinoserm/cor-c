@@ -95,9 +95,13 @@ public sealed partial class Binder
     /// <summary>The constant last passed over by the lookup under way (CheckName, CheckMember clear it).</summary>
     private (TypeSymbol Owner, string Name)? _passedConstant;
 
-    /// <summary>CS0122 for a name that found nothing but a constant out of reach, or null.</summary>
-    private string? PassedConstant(string name)
-        => _passedConstant is { } passed && passed.Name == name
+    /// <summary>
+    /// CS0122 for a name that found nothing but a constant out of reach, or null.
+    /// For a member, `on` is the type asked: a constant passed over while
+    /// its target was bound is not the one meant.
+    /// </summary>
+    private string? PassedConstant(string name, TypeSymbol? on = null)
+        => _passedConstant is { } passed && passed.Name == name && (on is null || DerivesFromType(on, passed.Owner))
             ? $"CS0122: '{passed.Owner.Name}.{name}' is inaccessible due to its protection level"
             : null;
 

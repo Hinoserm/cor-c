@@ -44,6 +44,13 @@ public sealed class MemberExpr : Expr
     public bool ThroughTypeParameter { get; init; }
 
     /// <summary>
+    /// A default's name spelt out from the type it was declared in
+    /// (Binder.Full): read at the call as code the compiler wrote, its
+    /// declaring type's private constant every caller's (C# 15.6.2).
+    /// </summary>
+    public bool DefaultSpelt { get; init; }
+
+    /// <summary>
     /// The member read instead when the type has none called Name: a list
     /// pattern asks for `Length`, else `Count` (C# 11.2.11's countable type),
     /// and only the binder knows which of the two the subject has.
