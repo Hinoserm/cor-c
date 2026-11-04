@@ -14,7 +14,10 @@ namespace Corsac.Lang.Ir;
 /// `~` (offered where the link keeps it: a static the link may lay down or
 /// fold, a descriptor), `-` (withheld) or `^` (reached: named by the unit's
 /// copies of generic code, which another image compiles its own of, and so
-/// shown wherever a unit of the image withholds it) and the symbol,
+/// shown wherever a unit of the image withholds it) or `?` (the class
+/// library's in a kernel that splits it with its modules, --library-modules:
+/// kept only where the kernel's own code or the runtime reaches it, and
+/// exported where kept -- a library module owns the rest) and the symbol,
 /// NUL-terminated.
 ///
 /// Every image that exports reads it: a kernel's link (--exports) keeps every
@@ -30,7 +33,7 @@ public static class PublicApi
 {
     public const string SectionName = ".corsac.public";
 
-    public static void Attach(ObjectFile obj, IEnumerable<string> offered, IEnumerable<string> optional, IEnumerable<string> withheld, IEnumerable<string> reached)
+    public static void Attach(ObjectFile obj, IEnumerable<string> offered, IEnumerable<string> optional, IEnumerable<string> withheld, IEnumerable<string> reached, IEnumerable<string>? kept = null)
     {
         Section? s = null;
         void Add(char mark, string symbol)
@@ -44,6 +47,7 @@ public static class PublicApi
         foreach (string symbol in optional) Add('~', symbol);
         foreach (string symbol in withheld) Add('-', symbol);
         foreach (string symbol in reached) Add('^', symbol);
+        foreach (string symbol in kept ?? Enumerable.Empty<string>()) Add('?', symbol);
     }
 
     /// <summary>
@@ -57,7 +61,8 @@ public static class PublicApi
         HashSet<string> shown = new(StringComparer.Ordinal), hidden = new(StringComparer.Ordinal);
         foreach (ObjectFile obj in objects)
         {
-            (List<string> offered, List<string> optional, List<string> withheld, List<string> reached) = Read(obj);
+            (List<string> offered, List<string> optional, List<string> withheld, List<string> reached, List<string> kept) = Read(obj);
+            shown.UnionWith(kept);
             shown.UnionWith(offered);
             shown.UnionWith(optional);
             shown.UnionWith(reached);
@@ -67,10 +72,10 @@ public static class PublicApi
         return hidden;
     }
 
-    /// <summary>The symbols an object offers, those it offers where they are kept, those it withholds, and those its copies of generic code reach.</summary>
-    public static (List<string> Offered, List<string> Optional, List<string> Withheld, List<string> Reached) Read(ObjectFile obj)
+    /// <summary>The symbols an object offers, those it offers where they are kept, those it withholds, those its copies of generic code reach, and the split library's kept where reached.</summary>
+    public static (List<string> Offered, List<string> Optional, List<string> Withheld, List<string> Reached, List<string> Kept) Read(ObjectFile obj)
     {
-        List<string> offered = new(), optional = new(), withheld = new(), reached = new();
+        List<string> offered = new(), optional = new(), withheld = new(), reached = new(), kept = new();
         foreach (Section s in obj.Sections)
         {
             if (s.Name != SectionName) continue;
@@ -87,13 +92,14 @@ public static class PublicApi
                         (byte)'~' => optional,
                         (byte)'-' => withheld,
                         (byte)'^' => reached,
+                        (byte)'?' => kept,
                         // Never a name taken for withheld unsaid: an object this reader cannot read.
-                        byte other => throw new Corsac.Lang.Elf.ElfFormatException(SectionName + ": an entry marked '" + (char)other + "', which is none of + ~ - ^"),
+                        byte other => throw new Corsac.Lang.Elf.ElfFormatException(SectionName + ": an entry marked '" + (char)other + "', which is none of + ~ - ^ ?"),
                     }).Add(symbol);
                 }
                 start = i + 1;
             }
         }
-        return (offered, optional, withheld, reached);
+        return (offered, optional, withheld, reached, kept);
     }
 }

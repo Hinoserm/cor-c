@@ -1,0 +1,15 @@
+// A library module's user of a class library member its kernel never
+// reaches (tests/integration/library-modules.sh): Math.Clamp, which the
+// kernel compiled with --library-modules leaves out, and the module that
+// names Core.cor owns, member by member.
+
+using Kernel;
+
+namespace Sound;
+
+public sealed class Clamps : Driver
+{
+    public override string Name => "clamps";
+
+    public override int Bind(int port) => System.Math.Clamp(port, 0, 10);
+}

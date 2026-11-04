@@ -202,7 +202,7 @@ public sealed partial class Lowering
             return;
         }
 
-        _f = new Function(ContextStatic(m) ? BodyLabel(m) : Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
+        _f = new Function(ContextStatic(m) ? BodyLabel(m) : Label(m), IrTypes.Of(m.Returns)) { SourceFile = _in, Line = decl.Line, Display = Display(m), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, GenericCode = GenericCode(m), Exported = m.Owner.Decl?.LocalOnly != true };
         _e = new Builder(_f, _f.NewBlock("entry"));
 
@@ -527,7 +527,7 @@ public sealed partial class Lowering
         int outsideYields = _yieldPoints;
         _yieldPoints = 0;
         _f = new Function(Label(it.MoveNext), IrType.I32) { SourceFile = _in, Line = decl.Line, Display = Display(it.MoveNext),
-            FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner), Coalescible = true, GenericCode = GenericCode(m), Exported = false };
+            FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m), Coalescible = true, GenericCode = GenericCode(m), Exported = false };
         Block entry = _f.NewBlock("entry");
         _e = new Builder(_f, entry);
 

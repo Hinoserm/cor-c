@@ -293,7 +293,7 @@ public sealed partial class Lowering
         if (fromC && TakesContext(m)) Error(decl, $"'{m.Name}': a method C calls is static and takes no generic context");
         _f = new Function((TakesContext(m) ? BodyLabel(m) : Label(m)) + (_insideCopy ? "$inside" : fromC ? FromCBody : ""), ReturnIr(m))
         {
-            SourceFile = _in, Line = decl.Line, Display = Display(m) + (_insideCopy ? " (inside)" : ""), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m.Owner),
+            SourceFile = _in, Line = decl.Line, Display = Display(m) + (_insideCopy ? " (inside)" : ""), FromLibrary = IsLibrary(m.Owner), SystemCode = SystemCodeHere(m.Owner), SourcePath = SourcePathOf(m),
             Coalescible = decl.LocalCopy || m.Owner.Decl?.Specialised == true, GenericCode = GenericCode(m),
             // A body C's thunk calls is the thunk's alone: nothing else reaches it, past the way in (EmitFromCThunk).
             Exported = m.Owner.Decl?.LocalOnly != true && !fromC,

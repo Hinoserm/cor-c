@@ -1,0 +1,8 @@
+// A module's part of a kernel type the kernel did not declare partial.
+
+namespace Kernel;
+
+public static partial class Gate
+{
+    public static int Four() => 4;
+}

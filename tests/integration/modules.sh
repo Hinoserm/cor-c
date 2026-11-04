@@ -294,11 +294,12 @@ fi
 readelf -S -W "$rt/mixer.ko" | sed 's/\[ */[/' | awk '$2 == ".rel.dyn" || $2 == ".text" { if (strtonum("0x" $4) % 4096 != 0) bad = 1; n++ } END { exit bad || n != 2 }' \
     || fail "the relocated module's relocations do not have pages of their own"
 
-# A module may not declare a type of its kernel's: its index is refused.
+# A module may not declare a type of its kernel's -- only add a part to one
+# the kernel declared partial (module-partial.sh): its index is refused.
 if "$corc" index --assembly Kernel --ring 0 --on "$a/kernel.idx" $here/KernelType.cor -o "$m/wrong.idx" 2> "$m/wrong-index.log"; then
     fail "a module's index declared a type of its kernel's"
 fi
-grep -q 'a module may not declare a type of its kernel' "$m/wrong-index.log" || { cat "$m/wrong-index.log"; fail "the wrong index said otherwise"; }
+grep -q "a module may add to a kernel's type only as a part of a partial type" "$m/wrong-index.log" || { cat "$m/wrong-index.log"; fail "the wrong index said otherwise"; }
 
 # A MODULE ON A MODULE: Chorus's index made on the mixer's, itself made on
 # the kernel's (a chain), its units compiled against the chain, and linked

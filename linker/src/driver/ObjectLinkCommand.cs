@@ -281,7 +281,8 @@ public static class ObjectLinkCommand
             foreach (var input in inputs)
             {
                 List<string> on, maybe, off, copies;
-                try { (on, maybe, off, copies) = PublicApi.Read(input.Item2); }
+                // The split library's (`?`): no root, shown where the link kept it.
+                try { (on, maybe, off, copies, _) = PublicApi.Read(input.Item2); }
                 catch (ElfFormatException error) { return Fail(input.Item1 + ": " + error.Message); }
                 offered.UnionWith(on);
                 optional.UnionWith(maybe);

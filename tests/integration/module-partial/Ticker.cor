@@ -1,0 +1,12 @@
+// A module whose driver calls what its own part of the kernel's Uptime adds.
+
+using Kernel;
+
+namespace Sound;
+
+public sealed class Ticker : Driver
+{
+    public override string Name => "ticker";
+
+    public override int Bind(int port) => Uptime.Twice() + port;
+}

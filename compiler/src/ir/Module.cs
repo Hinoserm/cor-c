@@ -295,8 +295,19 @@ public sealed class Module
     /// withheld -- would read as unprovided; named on a command line it is
     /// taken as the image's, which is why the default library never is.
     /// </summary>
-    public void FixOwnLibrary(IReadOnlySet<string> named)
+    /// BY MEMBER (byMember: a library module over a kernel whose library is
+    /// split with its modules, --library-modules): every named source is the
+    /// module's, member by member -- what the kernel exports goes to it by
+    /// name (Provided), and that kernel exports everything of the library it
+    /// keeps (PublicApi `?`), so no second copy of a static it still uses is
+    /// made here; the rest is the module's own.
+    public void FixOwnLibrary(IReadOnlySet<string> named, bool byMember = false)
     {
+        if (byMember)
+        {
+            _owned = new HashSet<string>(named, StringComparer.Ordinal);
+            return;
+        }
         HashSet<string> providers = new(StringComparer.Ordinal);
         if (ProvidedElsewhere is { } provided)
         {
@@ -381,6 +392,14 @@ public sealed class Module
     /// </summary>
     public List<string> PublicSymbols { get; } = new();
     public List<string> OptionalSymbols { get; } = new();
+
+    /// <summary>
+    /// THE CLASS LIBRARY'S, IN A KERNEL WHOSE LIBRARY IS SPLIT WITH ITS
+    /// MODULES (--library-modules, PublicApi `?`): kept by the kernel's link
+    /// only where its own code or the runtime reaches them, and exported
+    /// where kept -- the rest is a library module's to own (FixOwnLibrary).
+    /// </summary>
+    public List<string> KeptSymbols { get; } = new();
     public List<string> WithheldSymbols { get; } = new();
     public List<string> ReachedSymbols { get; } = new();
 

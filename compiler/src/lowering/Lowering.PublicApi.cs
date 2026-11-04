@@ -21,6 +21,17 @@ public sealed partial class Lowering
     public static bool SplitLibrary { get; set; }
 
     /// <summary>
+    /// A KERNEL WHOSE CLASS LIBRARY IS SPLIT WITH ITS MODULES
+    /// (--library-modules): of the library, the kernel keeps what its own
+    /// code and the runtime reach and exports all it keeps, privates too
+    /// (KeptSymbols, PublicApi `?`), and a library module built from the same
+    /// sources owns the rest, member by member (Module.FixOwnLibrary). The
+    /// compiler's contract with the library (CompilerAbi) stays the kernel's
+    /// surface whatever reaches it.
+    /// </summary>
+    public static bool LibraryModules { get; set; }
+
+    /// <summary>
     /// The class library's sources among this compile's files and not read
     /// for their declarations (full paths): a library image's own, and a
     /// program's whole default library, read to give away where images
@@ -75,7 +86,9 @@ public sealed partial class Lowering
             bool open = Offered(d) || abi;
             bool wide = abi || SplitLibrary && Binder.ClassLibrarySide(d) && WithinAssembly(d);
             // A PARTIAL TYPE'S PRIVATE MEMBERS ARE EVERY PART'S, and the split
-            // class library writes parts of one type into two images:
+            // class library writes parts of one type into two images -- as a
+            // kernel module's part of its kernel's partial type does
+            // (SourceIndexBuilder.KernelPart):
             // Utf8Formatter's TryFormat in libSystem.Runtime.Extensions calls
             // the private Text of its part in libcorsacrt. Every partial type's,
             // its parts in one image or several: a compile reads another
@@ -83,7 +96,14 @@ public sealed partial class Lowering
             // tell. What it costs is names in the export table -- Runtime's
             // privates among them -- never a second copy of anything: an
             // image naming one imports it.
-            bool parts = wide && !abi && (d.Mods & Mods.Partial) != 0;
+            bool parts = !abi && (d.Mods & Mods.Partial) != 0;
+            // THE SPLIT LIBRARY'S, in a kernel that splits it (LibraryModules):
+            // every member kept where reached and exported where kept. The
+            // compiler's contract (abi) is the kernel's surface whatever
+            // reaches it -- and in a library module over that kernel
+            // (LibraryProvided) is given to the kernel like the rest, never
+            // promised as its own.
+            bool split = LibraryModules && Binder.ClassLibrarySide(d) && (!abi || LibraryProvided);
             // ITS MEMBERS READ IN ITS OWN SCOPE (MemberWatch): every type of the
             // unit is walked, and an imported one -- the kernel's Arch, in
             // every unit -- lists nothing here: none of its methods is emitted
@@ -108,8 +128,9 @@ public sealed partial class Lowering
                 // The symbol's: an explicit property's or indexer's accessor
                 // carries it there, never in its made declaration.
                 bool dispatched = (open || wide) && m.ExplicitInterface is not null;
-                List<string> into = offered ? _m.PublicSymbols
-                    : dispatched || wide && (startup || parts || Binder.SeenInAssembly(d, method)) ? _m.OptionalSymbols
+                List<string> into = split ? _m.KeptSymbols
+                    : offered ? _m.PublicSymbols
+                    : dispatched || parts || wide && (startup || Binder.SeenInAssembly(d, method)) ? _m.OptionalSymbols
                     : _m.WithheldSymbols;
                 into.Add(CallLabel(m));
                 if (CopiesInside(m)) into.Add((TakesContext(m) ? BodyLabel(m) : Label(m)) + "$inside");
@@ -122,8 +143,8 @@ public sealed partial class Lowering
                 if (!f.Static || !_statics.Contains(f) || d.Elsewhere) continue;
                 MemberDecl? field = FieldDeclOf(f);
                 bool offered = f.Name == BindResult.ReadyField ? open || wide
-                    : field is not null && (open && Binder.ShownOutside(d, field) || wide && (parts || Binder.SeenInAssembly(d, field)));
-                (offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(f.ThreadStatic ? ThreadStaticIndex(f) : StaticSymbol(f));
+                    : field is not null && (open && Binder.ShownOutside(d, field) || parts || wide && Binder.SeenInAssembly(d, field));
+                (split ? _m.KeptSymbols : offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(f.ThreadStatic ? ThreadStaticIndex(f) : StaticSymbol(f));
             }
             // ITS DESCRIPTOR, where this unit made it: a module making one of
             // its objects, testing for the type or deriving from it binds to
@@ -141,7 +162,7 @@ public sealed partial class Lowering
                 _ => _descriptors.GetValueOrDefault(t),
             };
             if (descriptor is not null && !d.Elsewhere)
-                (open || wide ? _m.OptionalSymbols : t.Kind == TypeKind.Interface ? null : _m.WithheldSymbols)?.Add(descriptor);
+                (split ? _m.KeptSymbols : open || wide ? _m.OptionalSymbols : t.Kind == TypeKind.Interface ? null : _m.WithheldSymbols)?.Add(descriptor);
         }
     }
 
@@ -221,6 +242,7 @@ public sealed partial class Lowering
         named.ExceptWith(copies);
         named.ExceptWith(_m.PublicSymbols);
         named.ExceptWith(_m.OptionalSymbols);
+        named.ExceptWith(_m.KeptSymbols);
         _m.ReachedSymbols.AddRange(named.OrderBy(name => name, StringComparer.Ordinal));
     }
 

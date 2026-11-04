@@ -244,6 +244,63 @@ public static class SourceIndexBuilder
         return SHA256.HashData(canonical.ToArray())[..bytes];
     }
 
+    /// <summary>
+    /// A MODULE'S PART OF ITS KERNEL'S TYPE: a type the index under this one
+    /// declares, declared here again. Only as one more part of a partial type
+    /// -- every declaration of it partial, the kernel's and this -- and only
+    /// with what leaves the kernel's image of the type as it is: members the
+    /// module's code is and the kernel's never reads, static or not virtual,
+    /// holding nothing in an instance and starting nothing. A file of the
+    /// class library a module is built from adds to a kernel's type that way
+    /// (io.cor's DateTime.Now, files.cor's Os), as a split library's image
+    /// adds to another's (Lowering.SplitLibrary). Anything else is refused,
+    /// with why: a module redefining the kernel's type would not be the
+    /// kernel's, an instance field or a virtual member would change a layout
+    /// or a table the kernel's image has fixed, and a static's initialiser
+    /// would wait for a start the kernel's StaticInit$ never makes.
+    /// </summary>
+    private static void KernelPart(string path, string name, TypeDecl type, List<DeclarationRecord> kernels, string onPath)
+    {
+        string where = path + ": " + name + " is declared by the index this one is made on (" + onPath + ")";
+        bool Partial(string text)
+        {
+            foreach (Token token in Lexer.Tokenize(text, path))
+            {
+                if (token.Kind is Tok.LBrace or Tok.End) return false;
+                if (token.Kind == Tok.Ident && token.Text == "partial") return true;
+            }
+            return false;
+        }
+        if ((type.Mods & Mods.Partial) == 0 || !kernels.All(record => Partial(SourceDeclaration.Decode(record).Text)))
+            throw new InvalidDataException(where + "; a module may add to a kernel's type only as a part of a partial type, both declared partial");
+        if (type.Bases.Count > 0)
+            throw new InvalidDataException(where + "; a module's part of a kernel's type may name no base or interface: the kernel's image has fixed its tables");
+        foreach (MemberDecl member in type.Members)
+        {
+            bool shared = (member.Mods & Mods.Static) != 0 || (member.Mods & Mods.Const) != 0;
+            string? refused = member switch
+            {
+                _ when (member.Mods & (Mods.Virtual | Mods.Override | Mods.Abstract)) != 0
+                    => "a virtual, abstract or override member, which would change the kernel's table of the type",
+                FieldDecl { Mods: var m } when (m & (Mods.Static | Mods.Const)) == 0
+                    => "an instance field, which would change the kernel's layout of the type",
+                PropertyDecl { Auto: true } when !shared
+                    => "an instance auto-property, a field of the kernel's layout",
+                FieldDecl { Init: not null } when (member.Mods & Mods.Const) == 0
+                    => "a static field with an initialiser, which only the kernel's StaticInit$ would run",
+                PropertyDecl { Init: not null }
+                    => "a property with an initialiser, which only the kernel's StaticInit$ would run",
+                MethodDecl { IsCtor: true } when shared
+                    => "a static constructor, which only the kernel's StaticInit$ would run",
+                MethodDecl { IsCtor: true }
+                    => "a constructor, which the kernel's image of the type does not have",
+                _ => null,
+            };
+            if (refused is not null)
+                throw new InvalidDataException(where + "; a module's part of it may not declare " + refused + " (line " + member.Line + ")");
+        }
+    }
+
     public static void Write(string output, IEnumerable<string> paths, string assembly,
         IReadOnlyCollection<string>? symbols = null, int memoryBytes = 1024 * 1024,
         IReadOnlyDictionary<string, IReadOnlyCollection<string>>? fileSymbols = null,
@@ -688,9 +745,8 @@ public static class SourceIndexBuilder
                         WriteScope(writer, scope);
                     }
                     string key = "T:" + identity + "\n" + TypeName(type);
-                    if (under is not null && under.Find(key).Any())
-                        throw new InvalidDataException(path + ": " + TypeName(type) + " is declared by the index this one is made on ("
-                            + onPath + "); a module may not declare a type of its kernel's");
+                    if (under is not null && under.Find(key).ToList() is { Count: > 0 } kernels)
+                        KernelPart(path, TypeName(type), type, kernels, onPath!);
                     yield return new SourceDeclaration
                     {
                         Key = key, Path = path, Text = syntax,

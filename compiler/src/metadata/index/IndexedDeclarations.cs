@@ -723,6 +723,11 @@ public sealed class IndexedDeclarations : IDisposable
             // records pinned as well prevents eviction without helping binding.
             using DeclarationLease lease = catalog.AcquireKey(key)
                 ?? throw new InvalidDataException("Missing discovered declaration: " + key);
+            // WHAT EACH KEY BROUGHT (--trace-demand): its records and their
+            // files -- a partial type's parts, a module's beside its kernel's.
+            if (Corsac.Switches.TraceDemand)
+                Console.Error.WriteLine("index " + key.Replace('\n', ' ') + ": " + lease.Records.Count + " record(s) "
+                    + string.Join(", ", lease.Records.Select(r => Path.GetFileName(r.Path) + (owned.Contains(r.Path) ? " (own)" : ""))));
             foreach (SourceDeclaration source in lease.Records)
             {
                 if (owned.Contains(source.Path)) { _ = catalog.ReadSource(source); continue; }

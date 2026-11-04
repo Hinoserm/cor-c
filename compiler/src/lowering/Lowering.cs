@@ -544,6 +544,18 @@ public sealed partial class Lowering
     /// <summary>The full path of the file a type is declared in (Function.SourcePath).</summary>
     private static string? SourcePathOf(TypeSymbol? t) => t?.Decl?.SourcePath;
 
+    /// <summary>
+    /// THE FILE A MEMBER IS WRITTEN IN, its type's where it says none: a
+    /// partial type's member is its own part's -- the library split with a
+    /// kernel's modules owns members by their files (Module.OwnsLibraryCode),
+    /// and Math, whose first part is the prelude's, gave every member of
+    /// Core.cor's part no file of Core.cor's.
+    /// </summary>
+    private static string? SourcePathOf(MethodSymbol m) => m.Decl is MemberDecl { Scope.Path: string own } ? own : SourcePathOf(m.Owner);
+
+    /// <summary>A static's file, as a method's (SourcePathOf(MethodSymbol)).</summary>
+    private static string? SourcePathOf(FieldSymbol f) => FieldDeclOf(f) is { Scope.Path: string own } ? own : SourcePathOf(f.Owner);
+
     /// <summary>object's descriptor, the declaring type of a call to one of object's own virtuals.</summary>
     internal const string ObjectDispatch = "t_object";
 
@@ -879,7 +891,7 @@ public sealed partial class Lowering
             {
                 _m.Data.Add(new DataItem(ThreadStaticIndex(f), new byte[_t.WordSize])
                 {
-                    Zero = true, Align = _t.WordSize, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
+                    Zero = true, Align = _t.WordSize, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f),
                     Coalescible = f.Owner.Decl?.Specialised == true,
                     SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
                 });
@@ -901,7 +913,7 @@ public sealed partial class Lowering
                                                                      || m.Name == "StaticConstructorBody$");
                 DataItem holder = new(StaticSymbol(f), new byte[size])
                 {
-                    Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner), ReadOnly = fixedField,
+                    Align = AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f), ReadOnly = fixedField,
                     Coalescible = f.Owner.Decl?.Specialised == true,
                     SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
                 };
@@ -912,7 +924,7 @@ public sealed partial class Lowering
             NoteStatic(StaticSymbol(f), f, ReadOnlyStatic(f));
             _m.Data.Add(new DataItem(StaticSymbol(f), new byte[size])
             {
-                Zero = true, Align = heldInline ? Math.Max(1, StructOf(f.Type).InlineAlign) : AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner),
+                Zero = true, Align = heldInline ? Math.Max(1, StructOf(f.Type).InlineAlign) : AlignFor(size, _t.Align64), FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f),
                 Coalescible = f.Owner.Decl?.Specialised == true, Volatile = f.Volatile,
                 SourceFile = FieldDeclOf(f)?.File, Line = FieldDeclOf(f)?.Line ?? 0, Display = f.Owner.Name + "." + f.Name,
             });
@@ -1022,7 +1034,7 @@ public sealed partial class Lowering
         string sym = "sa_" + StaticSymbol(f);
         DataItem item = new(sym, block)
         {
-            Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f.Owner), Exported = false,
+            Align = _t.Align64, FromLibrary = IsLibrary(f.Owner), SystemCode = SystemCode(f.Owner), SourcePath = SourcePathOf(f), Exported = false,
             NoReferences = table.Element != "string" && !MayHoldReference(element),
         };
         item.Relocs.Add(new DataReloc(0, SequenceDescriptor(ElementKey(element), stride, isString: false, elementType: element), _t.DescriptorBytes));

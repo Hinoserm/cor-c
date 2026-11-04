@@ -1,0 +1,25 @@
+// What a module's part of a kernel's type may not declare, one at a time
+// (REFUSED selects which): each changes what the kernel's image fixed or
+// waits for a start only the kernel makes.
+
+namespace Kernel;
+
+public static partial class Uptime
+{
+#if FIELD
+    public int Count;
+#endif
+#if VIRTUAL
+    public virtual int Spin() => 1;
+#endif
+#if INIT
+    static int _more = 3;
+#endif
+#if CCTOR
+    static Uptime() { }
+#endif
+#if AUTO
+    public int Rate { get; set; }
+#endif
+    public static int Three() => 3;
+}

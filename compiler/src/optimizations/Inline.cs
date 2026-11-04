@@ -1396,6 +1396,8 @@ public sealed class Inline : IParallelModulePass
             foreach (string name in m.OptionalSymbols) Reach(name);
             // And what another image's copy of its generic code calls (`^`).
             foreach (string name in m.ReachedSymbols) Reach(name);
+            // And the split library's, kept where the kernel's link reaches them.
+            foreach (string name in m.KeptSymbols) Reach(name);
         }
         foreach (string name in forLink) Reach(name);
         if (coroutines) { Reach(AsyncTransform.CardMarkObject); Reach(AsyncTransform.ShadeObject); }

@@ -1177,6 +1177,11 @@ public static class Driver
         HashSet<string> referenced = new(references.Select(r => Path.GetFullPath(r)), StringComparer.Ordinal);
         HashSet<string> ownLibrary = new(files.Where(IsLibrarySource).Select(f => Path.GetFullPath(f)).Where(f => !referenced.Contains(f)), StringComparer.Ordinal);
         Corsac.Lang.Lower.Lowering.SplitLibrary = shared && !freestanding && !windows && ownLibrary.Count > 0;
+        // A KERNEL'S CLASS LIBRARY SPLIT WITH ITS MODULES (--library-modules):
+        // the kernel keeps of the library what its own code and the runtime
+        // reach (PublicApi `?`), a library module the rest, member by member
+        // (Module.FixOwnLibrary).
+        Corsac.Lang.Lower.Lowering.LibraryModules = args.Contains("--library-modules");
         Corsac.Lang.Lower.Lowering.OwnLibrarySources = ownLibrary;
         // A program's or a module's compile over images that provide the
         // class library -- not one of the class library's own images, whose
@@ -1422,7 +1427,8 @@ public static class Driver
             // defines a thing -- decided now, from everything lowered, before
             // a pass drops a provided static or Provided gives the provided
             // code away, either of which took a file's evidence with it.
-            module.FixOwnLibrary(new HashSet<string>(Corsac.Lang.Lower.Lowering.OwnLibrarySources.Where(p => !defaultAdded.Contains(p)), StringComparer.Ordinal));
+            module.FixOwnLibrary(new HashSet<string>(Corsac.Lang.Lower.Lowering.OwnLibrarySources.Where(p => !defaultAdded.Contains(p)), StringComparer.Ordinal),
+                byMember: kernel is not null && Corsac.Lang.Lower.Lowering.LibraryModules);
         }
         if (!args.Contains("--no-opt"))
         {
@@ -1690,7 +1696,7 @@ public static class Driver
         // And what a DLL exports, for its link's export directory.
         NativeExports.Attach(obj, module.NativeExports);
         // And the unit's public surface, for the exports of the image linked of it.
-        PublicApi.Attach(obj, module.PublicSymbols, module.OptionalSymbols, module.WithheldSymbols, module.ReachedSymbols);
+        PublicApi.Attach(obj, module.PublicSymbols, module.OptionalSymbols, module.WithheldSymbols, module.ReachedSymbols, module.KeptSymbols);
         ManagedLayoutContract.Attach(obj, layouts);
         // A UNIT FOR A RING -- a kernel's, a module's -- says its layouts by
         // name (LayoutNames): those of the types it defines, for other images
@@ -2162,7 +2168,9 @@ public static class Driver
         if (!swept)
         {
             IEnumerable<string> roots = module.Initializers.Concat(module.PreinitNames).Concat(module.ObjectNames);
-            if (module.ExportsSurface) roots = roots.Concat(module.PublicSymbols).Concat(module.OptionalSymbols).Concat(module.ReachedSymbols);
+            // The split library's (KeptSymbols) too: in the unit's object for
+            // the kernel's link to keep where reached.
+            if (module.ExportsSurface) roots = roots.Concat(module.PublicSymbols).Concat(module.OptionalSymbols).Concat(module.ReachedSymbols).Concat(module.KeptSymbols);
             foreach (string root in roots.Order(StringComparer.Ordinal)) From("the image's roots", root);
             Walk();
         }

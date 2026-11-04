@@ -1,0 +1,21 @@
+// The kernel's part of a partial type a module adds to
+// (tests/integration/module-partial.sh): a static, a public method and a
+// private one the module's part calls, as files.cor's Os is in the kernel
+// and io.cor adds to it in a library module.
+
+namespace Kernel;
+
+public static partial class Uptime
+{
+    static int _ticks = 40;
+
+    public static int Ticks() { _ticks = _ticks + 1; return _ticks; }
+
+    static int Seed() => 2;
+}
+
+// Not partial: a module may not add to it at all.
+public static class Gate
+{
+    public static int Two() => 2;
+}
