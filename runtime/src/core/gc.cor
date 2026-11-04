@@ -5516,12 +5516,13 @@ public static class Gc
         return given;
     }
 
-    /// Every pooled page given back to the operating system: the room a cap
-    /// leaves is wanted for something else. Never while a collection runs --
-    /// the marker's snapshot names these chunks. The heap lock is held.
+    /// Every spare (HeapChunks.DrainSpares) and pooled page given back to the
+    /// operating system: the room a cap leaves is wanted for something else.
+    /// The spares always, on no list a collection walks; the pool never while
+    /// a collection runs -- the marker's snapshot names its chunks. The heap
+    /// lock is held.
     public static bool DrainPool()
     {
-        // The spares are on no list a collection walks; they go at once.
         bool drained = HeapChunks.DrainSpares();
         if (_collecting || Runtime.Marking != 0)
         {
@@ -17439,7 +17440,8 @@ public static class HeapChunks
         return Sys.ReadAddress(chunk + ChunkEnd);
     }
 
-    /// Chunks taken from the operating system and given back (unmapped), and
+    /// Chunks taken from the operating system and given back (unmapped, or
+    /// guarded under Corsac.GC.GuardReleases), and
     /// of those the ones not of the usual size -- a large array's own: what
     /// says whether a program's heap is churning its mappings. And the
     /// chunks taken back from the spares instead of mapped.
@@ -17450,7 +17452,8 @@ public static class HeapChunks
     // outgrown and freed every time round a loop was an mmap and an munmap
     // each (131,000 of them in sshd's packet path), and the next one's pages
     // each faulted in again. Four at most, none above a usual chunk's most
-    // (a spare is cleared under the heap lock), and together no more than
+    // (a spare is cleared under the heap lock: an array of more than a
+    // megabyte is mapped and unmapped each time still), and together no more than
     // the larger of that and an eighth of the heap; taken back by a request
     // of a size it fits within a quarter (Take). Memory the heap does not
     // count, so it is given back whenever memory is wanted: by a collection,
@@ -17493,7 +17496,7 @@ public static class HeapChunks
     }
 
     /// A spare of at least `ask` bytes, not a quarter more and not past the
-    /// cap (0: none), taken out of the spares, or 0; its size and start
+    /// cap (0: none) or the ceiling at its own size, taken out of the spares, or 0; its size and start
     /// table in `size` and `anchors`.
     static nuint TakeSpare(nuint ask, long cap, out nuint size, out nuint anchors)
     {
@@ -17504,7 +17507,7 @@ public static class HeapChunks
             nuint at = SpareAt(i);
             nuint has = SpareSizeAt(i);
             if (at == 0 || has < ask || has > ask + ask / 4) continue;
-            if (cap != 0 && _heapBytes + (long)has > cap) continue;
+            if (cap != 0 && _heapBytes + (long)has > cap || Gc.GrowthWaits(has)) continue;
             anchors = SpareAnchorsAt(i);
             SetSpare(i, 0, 0, 0);
             _spareBytes = _spareBytes - has;
@@ -17728,13 +17731,14 @@ public static class HeapChunks
             // THE POOL OF EMPTY PAGES GOES FIRST, AND THE SPARES: kept to
             // spare the mapping, they are no reason to refuse a large array
             // its room, and are memory the heap's count does not hold.
-            if (cap != 0 && _heapBytes + (long)_spareBytes + (long)ask > cap)
+            if (cap != 0 && _heapBytes + (long)_spareBytes + (long)ask > cap && DrainSpares()
+                && _heapBytes + (long)ask > cap)
             {
-                bool drained = DrainSpares();
-                if (Gc.DrainPool() || drained)
-                {
-                    if (_heapBytes + (long)ask > cap) ask = minimum;
-                }
+                ask = minimum;
+            }
+            if (cap != 0 && _heapBytes + (long)ask > cap && Gc.DrainPool())
+            {
+                if (_heapBytes + (long)ask > cap) ask = minimum;
             }
 
             // Refused at the cap, silently: the request that ends out of
