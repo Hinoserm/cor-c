@@ -821,12 +821,27 @@ public static class Platform
     /// interrupted context. Reports once, then dies of the signal.
     public static void Fault(int signal, nuint si, nuint uc)
     {
+#if !SYSCALL64
+        // ON i386 A FAULT IN C ARRIVES WITH C's GS, which is not a block of
+        // the runtime's: the handler takes the runtime's for its own work,
+        // and the kernel puts the interrupted one back on the way out
+        // (sigreturn restores GS from the context).
+        bool inC = Runtime.NativeGs != 0 && uc != 0 && (int)(Sys.ReadAddress(uc + 20) & 0xFFFF) != Runtime.ManagedGs;
+        if (Runtime.NativeGs != 0)
+        {
+            Sys.SetGs(Runtime.ManagedGs);
+        }
+#else
+        bool inC = false;
+#endif
         // A NULL DEREFERENCE IS AN EXCEPTION, as it is in .NET: the thread is
         // sent on, when the handler returns, into Runtime.NullFault as if the
         // faulting instruction had called it -- its return address that
         // instruction, its arguments the frame and the instruction -- and it
         // throws NullReferenceException from there to whatever catches it.
-        if (_faulting == 0 && signal == SignalSegv && si != 0 && uc != 0 && _faultReturn != 0)
+        // Not one in C, which ends the process as .NET's access violation in
+        // native code does: no throw unwinds through C's frames.
+        if (_faulting == 0 && !inC && signal == SignalSegv && si != 0 && uc != 0 && _faultReturn != 0)
         {
 #if SYSCALL64
             nuint nullAt = Sys.ReadAddress(si + 16);

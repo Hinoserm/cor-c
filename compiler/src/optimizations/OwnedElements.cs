@@ -3269,10 +3269,12 @@ public sealed partial class Escape
     }
 
     /// <summary>
-    /// A `??=` OF A FIELD -- `f ??= new T()`, lowered `nc = o.f; if (nc ==
-    /// null) nc = new T(); o.f = nc` -- what is stored is, on every path, the
-    /// field's own value read from the same object (put back as it was), or
-    /// an object made where that read was found null. Null for any other store.
+    /// A `??=` OF A FIELD -- `f ??= new T()`, lowered `had = o.f; if (had)
+    /// nc = had; else { nc = new T(); o.f = nc; }` (EmitCoalescingAssign),
+    /// the store made only where the field was empty -- what is stored is,
+    /// on every path into the variable, the field's own value read from the
+    /// same object, or an object made where that read was found null. Null
+    /// for any other store.
     /// </summary>
     internal static Fill? FillStoreShape(Function f, Defs defs, RegisterWrites writes, Instr st)
     {

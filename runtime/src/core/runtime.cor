@@ -2428,7 +2428,17 @@ public static partial class Runtime
         }
         // In a region: given back with it, and not a block LiveObject's lock
         // need be taken to ask about. Only a collector's heap has regions.
-        if (CollectorLinked() && Gc.InOwnRegion(at)) return;
+        // BUT WHAT IT OWNS GOES NOW: its storage and its owned fields may be
+        // on the heap, and the region gives back its own blocks and nothing
+        // they point to. Returned at once, a Named a loop's region held kept
+        // the name it owned to the collector -- a hundred thousand of them in
+        // 1529 -- ever since loops were given regions of their own.
+        if (CollectorLinked() && Gc.InOwnRegion(at))
+        {
+            FreeStorageOf(at);
+            FreeOwnedFields(at);
+            return;
+        }
         // A collection's storage before its owned fields: a collection that
         // owns its elements (IOwnsElements.OwnElements) reads them out of
         // its arrays as it gives them back, and an array that is an owned
@@ -3075,6 +3085,30 @@ public static partial class Runtime
         }
 #endif
         EndBlocking();
+    }
+
+    /// A call into C made without the handshake ([SuppressGCTransition]):
+    /// the thread stays running as far as a collection is concerned, but C
+    /// still finds its thread through GS on i386, so GS is C's for the call.
+    public static void ToCGs()
+    {
+#if !TARGET_64BIT
+        if (NativeGs != 0)
+        {
+            Sys.SetGs(NativeGs);
+        }
+#endif
+    }
+
+    /// And back to the runtime's after it.
+    public static void FromCGs()
+    {
+#if !TARGET_64BIT
+        if (NativeGs != 0)
+        {
+            Sys.SetGs(ManagedGs);
+        }
+#endif
     }
 
     /// THE PROGRAM, ENTERED THROUGH THE C LIBRARY when one is loaded (see

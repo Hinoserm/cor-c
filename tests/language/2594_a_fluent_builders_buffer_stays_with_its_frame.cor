@@ -1,0 +1,48 @@
+// test: a_fluent_builders_buffer_stays_with_its_frame
+// expect-exit: 0
+// expect-output:
+// 5050 260 3
+//
+// A builder whose methods hand back the builder (`return this`): the
+// payload made, filled through the chain and read here never leaves the
+// method, and neither does the array it holds. Taken at the callee's
+// return for the receiver's fields leaving, every builder's buffer was the
+// collector's (OwnedFieldEscape.WithReturnedOwner). Each lap's buffer is
+// read after the chain -- the result is the builder again -- so a free of
+// it too early, or of a buffer another builder holds, prints wrong sums.
+sealed class Builder
+{
+    readonly byte[] _bytes = new byte[300];
+    int _length;
+
+    public Builder Put(int value) { _bytes[_length++] = (byte)value; return this; }
+    public Builder Twice(int value) { return Put(value).Put(value); }
+    public int Length => _length;
+    public int Sum() { int s = 0; for (int i = 0; i < _length; i++) s += _bytes[i]; return s; }
+}
+
+static class Program
+{
+    static int Lap(int n)
+    {
+        Builder b = new Builder();
+        for (int i = 1; i <= n; i++) b.Put(i);
+        return b.Sum();
+    }
+
+    static int Chained()
+    {
+        Builder kept = new Builder().Put(1).Twice(2).Put(3);
+        Builder other = new Builder().Twice(7).Put(9);
+        return kept.Length + other.Length + kept.Sum() - other.Sum() + 8 + 3;
+    }
+
+    static int Main()
+    {
+        int sum = 0;
+        for (int lap = 0; lap < 1000; lap++) sum = Lap(100);
+        Builder last = new Builder().Put(200).Twice(30);
+        System.Console.WriteLine(sum + " " + last.Sum() + " " + Chained());
+        return 0;
+    }
+}

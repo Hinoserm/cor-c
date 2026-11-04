@@ -6,6 +6,7 @@
 // 6 11 12
 // Int64,Int32 Int32,String Int64,Int32,Int32 Int32,String,Int64
 // 3 Int64 5
+// 9 4 Int64 6
 //
 // Inside Box<T>, `G` is Box's own nested class, not the file's
 // `using G = System.Collections.Generic`: C# looks in the types around a
@@ -22,7 +23,9 @@
 // place -- or left out of a chain -- prints the wrong names, a type nested
 // two deep (G.List<int>.Node<int>) included. A type taking Box's parameter
 // alone, Plain, named bare in an expression (`Plain.Shared`) is Box.Plain<T>
-// too -- but not where a local of the name hides it, as C# looks there first.
+// too -- but not where a local of the name hides it, as C# looks there first;
+// so is `G.Quiet.Shared` for one nested in Box's G, and a nested type's field
+// of a type's name hides that type in its own methods.
 using G = System.Collections.Generic;
 
 class Box<T>
@@ -41,11 +44,34 @@ class Box<T>
             }
         }
 
+        public class Quiet
+        {
+            public static int Shared = 4;
+            public static string Names() => typeof(T).Name;
+        }
+
         public class Deeper
         {
             // G from here is Box.G, the nearest type around that declares one.
             public int Through() => new G.List<int>().Mine + 2;
         }
+    }
+
+    public class Shadow
+    {
+        public int Shared = 9;
+        public int Value = 6;
+    }
+
+    public class Other
+    {
+        public static int Value = 5;
+    }
+
+    public class Holder
+    {
+        public Shadow Other = new Shadow();
+        public int Read() => Other.Value;
     }
 
     public class Plain
@@ -74,6 +100,12 @@ class Box<T>
         int Plain = 4;
         return Plain + 1;
     }
+    public int HiddenAccess()
+    {
+        Shadow Plain = new Shadow();
+        return Plain.Shared;
+    }
+    public string Quietly() => G.Quiet.Shared + " " + G.Quiet.Names();
     public string ListNames() => G.List<int>.Names();
     public string NodeNames() => G.List<int>.Node<int>.Names();
 }
@@ -92,6 +124,7 @@ static class Program
         System.Console.WriteLine(box.ListNames() + " " + Box<int>.G.List<string>.Names() + " " + box.NodeNames()
             + " " + Box<int>.G.List<string>.Node<long>.Names());
         System.Console.WriteLine(box.Bare() + " " + box.BareNames() + " " + box.Hidden());
+        System.Console.WriteLine(box.HiddenAccess() + " " + box.Quietly() + " " + new Box<long>.Holder().Read());
         return 0;
     }
 }

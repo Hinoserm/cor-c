@@ -4542,8 +4542,13 @@ public sealed partial class Lowering
         {
             Type targetType = _b.TypeOf(a.Target);
             VReg value = InlineValue(place, coalesce.Right, targetType.IsError ? place.Type : targetType);
-            StorePlace(place, value);
+            // THE JOIN IS WHAT IS STORED, written before the store: one
+            // variable holding the read where it had a value and what was
+            // made where it had none, as the optimiser's rules for a `??=`
+            // of a field read it (OwnedElements.FillStoreShape) -- the store
+            // itself still made only on the empty path.
             _e.CopyTo(dest, R(value));
+            StorePlace(place, dest);
         }
         else
         {

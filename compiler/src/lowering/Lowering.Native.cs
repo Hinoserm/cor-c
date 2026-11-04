@@ -202,6 +202,10 @@ public sealed partial class Lowering
         {
             _e.Call(CallLabel(enter), IrType.Void);
         }
+        else if (!import.Transition)
+        {
+            SwapGs(at, "ToCGs");
+        }
 
         Type ret = m.Returns;
         IrType returns = ret.IsVoid ? IrType.Void
@@ -234,6 +238,10 @@ public sealed partial class Lowering
         if (import.Transition && RequireRuntime(at, "LeaveNative", 0, "a call into C") is MethodSymbol leave)
         {
             _e.Call(CallLabel(leave), IrType.Void);
+        }
+        else if (!import.Transition)
+        {
+            SwapGs(at, "FromCGs");
         }
 
         if (errno is not null && RequireRuntime(at, "SetNativeError", 1, "SetLastError") is MethodSymbol setError)
@@ -290,10 +298,18 @@ public sealed partial class Lowering
         {
             _e.Call(CallLabel(enter), IrType.Void);
         }
+        else if (pointer.Unmanaged)
+        {
+            SwapGs(call, "ToCGs");
+        }
         VReg? result = _e.CallIndirect(RegOperand.Of(target), returns, args, pointer.Unmanaged ? NativeCall.Indirect : null);
         if (handshake && RequireRuntime(call, "LeaveNative", 0, "a call into C") is MethodSymbol leave)
         {
             _e.Call(CallLabel(leave), IrType.Void);
+        }
+        else if (pointer.Unmanaged)
+        {
+            SwapGs(call, "FromCGs");
         }
         if (result is null)
         {
@@ -308,6 +324,20 @@ public sealed partial class Lowering
             return Narrow(_e, result, ret, ret);
         }
         return result;
+    }
+
+    /// <summary>
+    /// A call into C without the handshake still runs C on C's GS on i386
+    /// (Runtime.ToCGs / FromCGs): the C library finds its thread, errno and
+    /// locale through it, and the runtime's block is not that. Nothing to do
+    /// on x86-64, where C's is FS, or on Windows, whose GS no one uses.
+    /// </summary>
+    private void SwapGs(Node at, string name)
+    {
+        if (_t.WordSize == 4 && !Windows && RequireRuntime(at, name, 0, "a call into C") is MethodSymbol swap)
+        {
+            _e.Call(CallLabel(swap), IrType.Void);
+        }
     }
 
     /// <summary>Whether C calls this method: [UnmanagedCallersOnly].</summary>

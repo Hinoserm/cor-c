@@ -2374,9 +2374,6 @@ public sealed class Monomorphiser
     /// <summary>A call's target while it is rewritten: a member with type arguments there is a generic method, not a type.</summary>
     private Node? _callTarget;
 
-    /// <summary>A chain of names and member accesses, read as the parser reads one (Chains).</summary>
-    private static List<Expr>? ChainLinks(Expr e) => Chains.Links(e);
-    private static List<TypeRef> ChainArgs(Expr e) => Chains.Args(e);
 
     /// <summary>
     /// A CHAIN THAT NAMES A TYPE NESTED IN A GENERIC ONE (`Box&lt;int&gt;.G.List&lt;string&gt;`),
@@ -2391,20 +2388,19 @@ public sealed class Monomorphiser
     /// </summary>
     private string? NestedGenericPath(List<Expr> links, Node location)
     {
-        int first = links.FindIndex(link => ChainArgs(link).Count > 0);
+        int first = links.FindIndex(link => Chains.Args(link).Count > 0);
         if (first < 0 || first == links.Count - 1) return null;
-        string head = string.Join(".", links.Take(first + 1).Select(ChainName));
-        if (GenericPath(head, ChainArgs(links[first]).Count, location) is not string headPath) return null;
+        string head = string.Join(".", links.Take(first + 1).Select(Chains.Name));
+        if (GenericPath(head, Chains.Args(links[first]).Count, location) is not string headPath) return null;
         string path = headPath;
-        int arity = ChainArgs(links[first]).Count;
+        int arity = Chains.Args(links[first]).Count;
         for (int i = first + 1; i < links.Count; i++)
         {
-            path += "." + ChainName(links[i]);
-            arity += ChainArgs(links[i]).Count;
+            path += "." + Chains.Name(links[i]);
+            arity += Chains.Args(links[i]).Count;
         }
         return _generic.ContainsKey(Arity(path, arity)) ? path : null;
     }
-    private static string ChainName(Expr e) => Chains.Name(e);
 
     /// <summary>`A.B.C` as written, when it is names and dots and nothing else.</summary>
     private static string? DottedPath(Expr e) => e switch
@@ -3962,12 +3958,12 @@ public sealed class Monomorphiser
             // every argument along them, when they name a template; read link
             // by link, `Box<int>` had no member G.
             case MemberExpr chained when !ReferenceEquals(chained, _callTarget)
-                && ChainLinks(chained) is { Count: > 1 } links && links[0] is NameExpr { Global: false }
-                && links.Take(links.Count - 1).Any(link => ChainArgs(link).Count > 0)
+                && Chains.Links(chained) is { Count: > 1 } links && links[0] is NameExpr { Global: false }
+                && links.Take(links.Count - 1).Any(link => Chains.Args(link).Count > 0)
                 && NestedGenericPath(links, chained) is not null:
             {
-                NameExpr named = new() { Name = string.Join(".", links.Select(ChainName)), Line = chained.Line, Col = chained.Col };
-                foreach (Expr link in links) named.WritableTypeArgs.AddRange(ChainArgs(link));
+                NameExpr named = new() { Name = string.Join(".", links.Select(Chains.Name)), Line = chained.Line, Col = chained.Col };
+                foreach (Expr link in links) named.WritableTypeArgs.AddRange(Chains.Args(link));
                 return Rewrite(named, map);
             }
 

@@ -9535,6 +9535,16 @@ public sealed partial class Binder
             return true;
         }
 
+        // A FUNCTION POINTER'S KIND -- managed, C's, or C's called without the
+        // native handshake (`unmanaged[…, SuppressGCTransition]`) -- is part
+        // of its type, as in C#: between kinds, a cast. Converted silently, a
+        // pointer to a function that may block was called as one that never
+        // does, with the collector told the thread was still running.
+        if (from.Function is { } fromKind && to.Function is { } toKind
+            && (fromKind.Unmanaged != toKind.Unmanaged || fromKind.NoTransition != toKind.NoTransition))
+        {
+            return false;
+        }
 
         // A null literal converts to every reference type and Nullable<T>.
         // Reference annotations do not change conversion/overload membership

@@ -549,6 +549,37 @@ public sealed partial class Lowering
         return CallMethod(target, receiver, args, viaBase) ?? _e.Const(0, IrTypes.Word);
     }
 
+    /// <summary>
+    /// ARRAY.RESIZE OF A VARIABLE OR A FIELD, as .NET defines it: a new array,
+    /// the old one's elements copied in, and an assignment over the caller's
+    /// variable -- made here an assignment the lowering sees as one. The
+    /// array goes through a frame word Resize is handed instead, and comes
+    /// back into the variable or the field by an ordinary store, which the
+    /// lifetime rules read as any other: an owned field's old value freed
+    /// where the new one is stored (Escape, ApplyOwnedFields). Written
+    /// through the `ref`, the store was nobody's field's, and every array a
+    /// buffer outgrew was the collector's -- 131,000 mmaps and munmaps in
+    /// sshd's packet path. The variable's place is taken first, then the
+    /// size, then its value, in the order the call reads them.
+    /// </summary>
+    private VReg? ResizeInPlace(CallExpr call, MethodSymbol target)
+    {
+        if (!target.Static || target.Name != "Resize" || target.Owner.Name != "Array" || call.Args.Count != 2
+            || call.Args[0] is not RefArgExpr { IsOut: false, Name: null, Declare: null } referred
+            || target.Params.Count != 2) return null;
+        Place? place = PlaceOf(referred.Target);
+        if (place is null) return null;
+        VReg size = EvalAs(call.Args[1], target.Params[1].Type);
+        VReg old = LoadPlace(place);
+        FrameSlot word = _f.NewSlot(_t.WordSize, _t.WordSize, "resized");
+        VReg at = _e.SlotAddress(word);
+        _e.Store(R(at), R(old), 0, _t.WordSize);
+        CallDirect(target, IrType.Void, new List<Operand> { R(at), R(size) });
+        VReg made = _e.Load(IrTypes.Word, at, 0, _t.WordSize);
+        StorePlace(place, made);
+        return Void();
+    }
+
     private VReg EmitCall(CallExpr call)
     {
         if (_b.PointerCalls.TryGetValue(call, out FunctionPointer? pointer))
@@ -662,6 +693,11 @@ public sealed partial class Lowering
                 return _e.Address(CallLabel(named));
             }
             return Fail(call, "this call did not resolve to a method");
+        }
+
+        if (ResizeInPlace(call, target) is VReg resized)
+        {
+            return resized;
         }
 
         if (target.Owner.Name is Prelude.TypeName or Prelude.MathType

@@ -1,0 +1,35 @@
+// test: unmanaged_pointer_calls_without_the_gc_transition
+// only-target: x86
+// expect-exit: 0
+// expect-output:
+// llabs 77
+// digit True letter False
+// upper 65
+// plain 42
+//
+// A C function called through `delegate* unmanaged[Cdecl, SuppressGCTransition]`
+// is called without the native handshake (Runtime.EnterNative/LeaveNative),
+// as a [DllImport, SuppressGCTransition] is -- what the Windows runtime's
+// own waits on a word use (Win32.Park). Its result is C's all the same: a
+// bool from an int any non-zero, a byte the low eight bits. A pointer of
+// the plain kind is called with the handshake, as before.
+using System;
+using System.Runtime.InteropServices;
+
+static unsafe class Program
+{
+    [DllImport("libc.so.6")] static extern nint dlsym(nint handle, string name);
+
+    static int Main()
+    {
+        delegate* unmanaged[Cdecl, SuppressGCTransition]<long, long> llabs = (delegate* unmanaged[Cdecl, SuppressGCTransition]<long, long>)dlsym(0, "llabs");
+        Console.WriteLine("llabs " + llabs(-77));
+        delegate* unmanaged[Cdecl, SuppressGCTransition]<int, bool> isdigit = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, bool>)dlsym(0, "isdigit");
+        Console.WriteLine("digit " + isdigit('7') + " letter " + isdigit('x'));
+        delegate* unmanaged[Cdecl, SuppressGCTransition]<int, byte> toupper = (delegate* unmanaged[Cdecl, SuppressGCTransition]<int, byte>)dlsym(0, "toupper");
+        Console.WriteLine("upper " + toupper('a'));
+        delegate* unmanaged<int, int> abs = (delegate* unmanaged<int, int>)dlsym(0, "abs");
+        Console.WriteLine("plain " + abs(-42));
+        return 0;
+    }
+}

@@ -394,9 +394,9 @@ public static class Win32
     static extern nuint GetProcAddress(nuint module, nuint name);
 
     /// KernelBase's WaitOnAddress, WakeByAddressSingle and WakeByAddressAll,
-    /// all three or none. KernelBase is loaded in every process of Windows 7
-    /// and later, and only asked for, not loaded: before 7 there is none,
-    /// and nothing to look for. The names written into a page of their own,
+    /// all three or none: Windows 8's and later. KernelBase is loaded in every
+    /// process from Windows 7 on, and only asked for here, not loaded: on 7
+    /// it has none of the three, and before 7 there is no KernelBase at all. The names written into a page of their own,
     /// given back after: nothing here asks the heap (MakeParking's reason).
     static void FindWaitOnAddress()
     {

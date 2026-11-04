@@ -1133,11 +1133,23 @@ public sealed class Parser
             }
             return declared.Contains(head) ? name : null;
         }
-        // A chain of names and member accesses, read as the monomorphiser reads one (Chains).
-        static List<Expr>? Links(Expr e) => Chains.Links(e);
-        static List<TypeRef> ArgsOf(Expr e) => Chains.Args(e);
-        static List<TypeRef> WritableArgsOf(Expr e) => Chains.WritableArgs(e);
-        static string NameOf(Expr e) => Chains.Name(e);
+        // The type whose own parameters are the last of a nested type's first
+        // `count`, outer ones included: where they are declared, and in scope
+        // (InScopeOf) -- Box for Box.G.List's T, G being Box's and not generic
+        // of its own.
+        string? Declaring(TypeDecl nestedType, int count)
+        {
+            for (string? around = nestedType.Outer; around is not null; )
+            {
+                TypeDecl? d = family.FirstOrDefault(t => PathOf(t) == around);
+                if (d is null) return null;
+                if (d.OuterParams < count && d.TypeParams.Count >= count) return around;
+                around = d.Outer;
+            }
+            return null;
+        }
+        static bool InScopeOf(string? declaring, string at)
+            => declaring is not null && (at == declaring || at.StartsWith(declaring + ".", StringComparison.Ordinal));
         // Every member's name in the family, which hides a type of the same
         // name in an expression as C#'s lookup has it (the bare rewrite below).
         // The members' own names, not their bodies' locals: a local hides the
@@ -1188,14 +1200,15 @@ public sealed class Parser
                     // its last name, led by the outer parameters not written,
                     // the names before it bare, the leftmost made the path up
                     // to it. A chain of names alone may be a value's, and is
-                    // left as it is; `global::` names no type of the family.
-                    if (Links(member.Target) is not { } links || links[0] is not NameExpr { Global: false } head) return;
+                    // left to the bare rewrite below, which looks for what
+                    // hides it; `global::` names no type of the family.
+                    if (Chains.Links(member.Target) is not { } links || links[0] is not NameExpr { Global: false } head) return;
                     List<TypeRef> written = new();
-                    foreach (Expr link in links) written.AddRange(ArgsOf(link));
-                    if (written.Count == 0 || ArgsOf(links[^1]).Count != own) return;
+                    foreach (Expr link in links) written.AddRange(Chains.Args(link));
+                    if (written.Count == 0 || Chains.Args(links[^1]).Count != own) return;
                     int implicitOuter = inner.TypeParams.Count - written.Count;
-                    if (implicitOuter < 0 || implicitOuter == 0 && written.Count == ArgsOf(links[^1]).Count) return;
-                    string spelt = string.Join(".", links.Select(NameOf));
+                    if (implicitOuter < 0 || implicitOuter == 0 && written.Count == Chains.Args(links[^1]).Count) return;
+                    string spelt = string.Join(".", links.Select(Chains.Name));
                     if (!Names(spelt)) return;
                     // EVERY LINK ITS OWN ARGUMENTS, from the first that writes
                     // any, and the ones before it the outer parameters of that
@@ -1205,7 +1218,7 @@ public sealed class Parser
                     // leaning on outer parameters from outside their type named
                     // parameters nothing there declares.
                     string headPath = path[..(path.Length - (spelt.Length - head.Name.Length))];
-                    int first = links.FindIndex(link => ArgsOf(link).Count > 0);
+                    int first = links.FindIndex(link => Chains.Args(link).Count > 0);
                     TypeDecl? firstDecl = null;
                     string linkPath = headPath;
                     // THE FIRST may carry its outer arguments as well -- a chain
@@ -1215,11 +1228,11 @@ public sealed class Parser
                     bool firstWhole = false;
                     for (int j = 0; j < links.Count; j++)
                     {
-                        if (j > 0) linkPath += "." + NameOf(links[j]);
+                        if (j > 0) linkPath += "." + Chains.Name(links[j]);
                         if (j < first) continue;
                         TypeDecl? d = family.FirstOrDefault(t => PathOf(t) == linkPath);
                         if (d is null) return;
-                        int count = ArgsOf(links[j]).Count, ownHere = d.TypeParams.Count - d.OuterParams;
+                        int count = Chains.Args(links[j]).Count, ownHere = d.TypeParams.Count - d.OuterParams;
                         if (j == first && count == d.TypeParams.Count && d.OuterParams > 0) firstWhole = true;
                         else if (count != ownHere) return;
                         if (j == first) firstDecl = d;
@@ -1229,52 +1242,45 @@ public sealed class Parser
                     // first link whose own parameters are the last of them --
                     // Box for `G.List<int>` in Box<T>, G being Box's and not
                     // generic of its own.
-                    if (implicitOuter > 0)
-                    {
-                        string? declaring = null;
-                        for (string? around = firstDecl.Outer; around is not null; )
-                        {
-                            TypeDecl? d = family.FirstOrDefault(t => PathOf(t) == around);
-                            if (d is null) break;
-                            if (d.OuterParams < implicitOuter && d.TypeParams.Count >= implicitOuter) { declaring = around; break; }
-                            around = d.Outer;
-                        }
-                        if (declaring is null || at != declaring && !at.StartsWith(declaring + ".", StringComparison.Ordinal)) return;
-                    }
-                    foreach (Expr link in links) WritableArgsOf(link).Clear();
-                    List<TypeRef> last = WritableArgsOf(links[^1]);
+                    if (implicitOuter > 0 && !InScopeOf(Declaring(firstDecl, implicitOuter), at)) return;
+                    foreach (Expr link in links) Chains.WritableArgs(link).Clear();
+                    List<TypeRef> last = Chains.WritableArgs(links[^1]);
                     for (int k = 0; k < implicitOuter; k++)
                         last.Add(new TypeRef { Name = inner.TypeParams[k].Name, Line = head.Line, Col = head.Col });
                     last.AddRange(written);
                     head.Name = path[..(path.Length - (spelt.Length - head.Name.Length))];
                 });
-                // A TYPE TAKING ITS OUTER PARAMETERS ALONE, NAMED BARE IN AN
-                // EXPRESSION inside its outer type: `Plain.Shared` in Box<T>,
-                // whose Plain is Box.Plain<T>. A chain of names alone may be a
-                // value's, so only where nothing of the name hides the type:
-                // no local, parameter or pattern variable of the member it is
-                // written in, and no member of the family (C# finds those
-                // first). Left as written, the name was CS0103 ("it is
-                // Box.Plain`1, a type nested in Box").
-                if (own != 0 || !inside || hidden) continue;
+                // A TYPE TAKING ITS OUTER PARAMETERS ALONE, NAMED BY NAMES ALONE
+                // IN AN EXPRESSION where those parameters are in scope:
+                // `Plain.Shared` in Box<T>, whose Plain is Box.Plain<T>, and
+                // `G.Plain.Shared` there for one nested in Box's G. A chain of
+                // names alone may be a value's, so only where nothing hides its
+                // head: no local, parameter or pattern variable of the member it
+                // is written in, and no member of the family (C# finds those
+                // first). NOT SEEN HERE: a member of a base class, or of a part
+                // of a partial type written in another file, of the head's name
+                // -- C# finds those first too, and this rewrite would take the
+                // type; the parser has neither. Left as written, the name was
+                // CS0103 ("it is Box.Plain`1, a type nested in Box").
+                if (own != 0 || !InScopeOf(Declaring(inner, inner.OuterParams), at)) continue;
                 foreach (MemberDecl member in within.Members)
                 {
-                    if (memberNames.Contains(inner.Name)) break;
                     HashSet<string> bound = new(StringComparer.Ordinal);
                     Corsac.Lang.Metadata.BodyTypeNames.Walk(within, _ => { }, members: m => ReferenceEquals(m, member), binds: name => bound.Add(name));
-                    if (bound.Contains(inner.Name)) continue;
                     Corsac.Lang.Metadata.BodyTypeNames.Walk(within, _ => { }, members: m => ReferenceEquals(m, member), access: access =>
                     {
-                        if (Links(access.Target) is not { } links || links[0] is not NameExpr { Global: false } head) return;
-                        if (links.Any(link => ArgsOf(link).Count > 0)) return;
-                        string spelt = string.Join(".", links.Select(NameOf));
+                        if (Chains.Links(access.Target) is not { } links || links[0] is not NameExpr { Global: false } head) return;
+                        if (links.Any(link => Chains.Args(link).Count > 0)) return;
+                        // Its head hidden by a local or a member of its name.
+                        if (bound.Contains(head.Name) || memberNames.Contains(head.Name)) return;
+                        string spelt = string.Join(".", links.Select(Chains.Name));
                         if (!Names(spelt)) return;
                         // A QUALIFIER OF A TYPE NESTED IN IT -- `G` of `G.List<int>`,
                         // Box's G not generic of its own -- is the generic chain's
                         // to rewrite, whole (above); given Box's T here as well,
                         // `Box.G<T>.List.Node<T, int, int>` named nothing.
                         if (declared.Contains(path + "." + access.Name)) return;
-                        LeadWithOuter(WritableArgsOf(links[^1]), head);
+                        LeadWithOuter(Chains.WritableArgs(links[^1]), head);
                         head.Name = path[..(path.Length - (spelt.Length - head.Name.Length))];
                     });
                 }

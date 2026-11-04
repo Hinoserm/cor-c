@@ -1197,6 +1197,48 @@ public sealed partial class Escape : IModulePass
     /// dynamic type's, so a subclass's own fields go too. Instance fields of
     /// classes only (lowering tags no other): a struct is copied byte for byte.
     /// </summary>
+    /// <summary>
+    /// Whether a free this run inserted (_inserted) gives back `value` in `f`,
+    /// or a copy of it: the object has an owner of its own here. An owned
+    /// variable (Own, OwnAfter) counts too, though its frees read the object
+    /// back out of its slot and name no register of it: the allocation or
+    /// call `value` comes from, through copies written once, is one this run
+    /// owns (_owned, _ownedCalls) -- a loop's `h.Current = Make()` freed each
+    /// lap by the variable and again by the field it was stored in (1230).
+    /// </summary>
+    private bool FreedByThisRun(Function f, VReg value)
+    {
+        if (_inserted is null) return false;
+        {
+            Dictionary<VReg, Instr?> defined = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Dest is { } d) defined[d] = defined.ContainsKey(d) ? null : i;
+            VReg at = value;
+            for (int hops = 0; hops < 8 && defined.TryGetValue(at, out Instr? def) && def is not null; hops++)
+            {
+                if (_owned.Contains(def) || _ownedCalls.Contains(def)) return true;
+                if (def.Op is not (Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64) || def.Operands is not [RegOperand { Reg: var from }]) break;
+                at = from;
+            }
+        }
+        HashSet<VReg> same = new() { value };
+        bool grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op is Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64 && i.Dest is { } d && i.Operands.Count == 1
+                        && i.Operands[0] is RegOperand { Reg: var from } && same.Contains(from) && same.Add(d)) grew = true;
+        }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee is Freer && _inserted.Contains(i) && i.Operands.Count == 1
+                    && i.Operands[0] is RegOperand { Reg: var freed } && same.Contains(freed)) return true;
+        return false;
+    }
+
     private void OwnedFields(Module m, Dictionary<string, Function> byName, Dictionary<string, bool[]> summaries)
     {
         if (m.PreserveExports || m.Entry is null || !byName.ContainsKey(OwnedReplacedFreer) && !m.RuntimeHelpers.Contains(OwnedReplacedFreer)) return;
@@ -1596,6 +1638,18 @@ public sealed partial class Escape : IModulePass
             // refused, for every object of the type, the fields of a List
             // whose Add was spliced into one iterator's MoveNext.
             if (st.Operands.Count < 2) { Refuse(st.Field!, "odd store", f, st); continue; }
+            // A VALUE THIS RUN FREES ITSELF, stored into the field: the free
+            // a call result got for not escaping (PromoteIn) -- a store into
+            // a field of an object promoted to the frame is no escape -- and
+            // the field's own frees, at the next store into it and with its
+            // owner, gave back the same object twice (1230's worker, held
+            // in a frame Holder's owned field and freed at the end of every
+            // lap as well). A field cannot own what is given back elsewhere.
+            if (st.Operands[1] is RegOperand storedValue && FreedByThisRun(f, storedValue.Reg))
+            {
+                Refuse(st.Field!, "a value stored into it is freed here as well", f, st);
+                continue;
+            }
             if (fills.TryGetValue(st, out Fill? filling))
             {
                 // What it made held by the field from the store on; the

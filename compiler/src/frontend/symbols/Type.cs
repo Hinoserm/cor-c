@@ -2,6 +2,14 @@
 namespace Corsac.Lang;
 
 /// <summary>
+/// A function pointer's signature: its parameters, its result, managed or
+/// C's (Unmanaged), and for C's whether its calls skip the native handshake
+/// (`unmanaged[…, SuppressGCTransition]`, NoTransition), as a [DllImport,
+/// SuppressGCTransition] does.
+/// </summary>
+public sealed record FunctionPointer(IReadOnlyList<Type> Params, Type Returns, bool Unmanaged, bool NoTransition = false);
+
+/// <summary>
 /// A bound type.
 ///
 /// NULLABILITY IS PART OF THE TYPE AND ALWAYS EXPLICIT. A reference type is
@@ -10,14 +18,6 @@ namespace Corsac.Lang;
 /// suppression operator and no "unknown" state: a language that lets you shrug
 /// at null has the same bugs as one without the feature, plus the annotations.
 /// </summary>
-/// <summary>A function pointer's signature: its parameters, its result, and whether it is C's (unmanaged).</summary>
-/// <summary>
-/// A function pointer's signature: managed or C's (Unmanaged), and for C's
-/// whether its calls skip the native handshake (`unmanaged[…, SuppressGCTransition]`,
-/// NoTransition), as a [DllImport, SuppressGCTransition] does.
-/// </summary>
-public sealed record FunctionPointer(IReadOnlyList<Type> Params, Type Returns, bool Unmanaged, bool NoTransition = false);
-
 public sealed class Type : IEquatable<Type>
 {
     // THE FIELDS, IN THE ORDER THEY ARE LAID OUT: every word first, then the

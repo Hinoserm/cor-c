@@ -107,6 +107,60 @@ internal sealed class OwnedFieldEscape
     internal static Dictionary<VReg, long> Addresses(Function f, VReg root)
         => Addresses(f, new[] { root });
 
+    /// <summary>
+    /// Whether every return of `callee` hands back its parameter `a` as it
+    /// came, and it returns at all: its result is that argument.
+    /// </summary>
+    internal static bool ReturnsParameter(Function callee, int a)
+    {
+        if (a >= callee.Params.Count) return false;
+        VReg parameter = callee.Params[a];
+        bool any = false;
+        foreach (var b in callee.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Op != Opcode.Ret) continue;
+                if (i.Operands.Count != 1 || i.Operands[0] is not RegOperand { Reg: var r } || !ReferenceEquals(r, parameter)) return false;
+                any = true;
+            }
+        return any;
+    }
+
+    /// <summary>
+    /// `addresses` with the results of the calls here that hand the owner
+    /// back as it was passed, at its start, and what follows from them: the
+    /// owner again, to every rule of the walk. Each result's only definition
+    /// is its call.
+    /// </summary>
+    private Dictionary<VReg, long> WithReturnedOwner(Function f, Defs defs, Dictionary<VReg, long> addresses)
+    {
+        Dictionary<VReg, long>? grown = null;
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            Dictionary<VReg, long> now = grown ?? addresses;
+            List<VReg> roots = new();
+            foreach (var b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Call || i.Callee is null || i.Dest is not { } result || now.ContainsKey(result) || !defs.IsSingle(result)) continue;
+                    if (!TryFunction(i.Callee, out Function? callee) || callee is null) continue;
+                    for (int a = 0; a < i.Operands.Count; a++)
+                        if (i.Operands[a] is RegOperand arg && now.TryGetValue(arg.Reg, out long at) && at == 0 && ReturnsParameter(callee, a))
+                        {
+                            roots.Add(result);
+                            break;
+                        }
+                }
+            if (roots.Count == 0) break;
+            grown = new Dictionary<VReg, long>(now);
+            foreach (var kv in Addresses(f, roots)) grown.TryAdd(kv.Key, kv.Value);
+            changed = true;
+        }
+        return grown ?? addresses;
+    }
+
     internal static Dictionary<VReg, long> Addresses(Function f, IEnumerable<VReg> roots)
     {
         AddressScan scan = ReferenceEquals(_cacheFor, f) ? _cached ??= ScanOf(f) : ScanOf(f);
@@ -353,12 +407,18 @@ internal sealed class OwnedFieldEscape
 
     /// <summary>Collect leaf references along a field path, including direct callee traversals.</summary>
     private bool Reads(Function f, Dictionary<VReg, long> addresses, IReadOnlyList<Field> path, HashSet<VReg> loaded,
-        HashSet<Instr>? receiverStores = null, (string Name, long Offset)? stamp = null)
+        HashSet<Instr>? receiverStores = null, (string Name, long Offset)? stamp = null, bool mayReturn = false)
     {
         if (path.Count == 0 || path.Count > 4) return false;
         long field = path[0].Offset;
         int width = path[0].Width;
         Defs defs = new(f, buildCfg: false);
+        // A CALL THAT HANDS THE OWNER BACK -- a fluent builder's `return this`,
+        // `new Payload(t).UInt32(c).String(…)` -- names the owner again by its
+        // result: read here under the same rules, and the callee may return it
+        // (Safe, mayReturn). Taken for an escape at the callee's `ret`, every
+        // builder's buffer went to the collector.
+        addresses = WithReturnedOwner(f, defs, addresses);
         // COPIES OF THE OWNER'S BYTES, whole field and all: a struct that holds
         // the reference -- a foreach's enumerator, returned by value and copied
         // into the frame slot the loop walks -- is the owner again wherever it
@@ -432,9 +492,12 @@ internal sealed class OwnedFieldEscape
                             continue;
                         }
                         LastRefusal = null;
+                        // HANDED BACK AS IT CAME, the result names the owner here
+                        // (WithReturnedOwner): the callee's return of it is no escape.
+                        bool handedBack = offset == 0 && ReturnsParameter(callee, a) && (i.Dest is null || addresses.ContainsKey(i.Dest));
                         // The innermost refusal is the one worth naming (--trace-escape).
                         // The owner itself, not a place inside it, keeps its stamp.
-                        if (!Safe(callee, a, relativePath, offset == 0 ? stamp : null)) { LastRefusal ??= i; return false; }
+                        if (!Safe(callee, a, relativePath, offset == 0 ? stamp : null, handedBack)) { LastRefusal ??= i; return false; }
                     }
                 continue;
             }
@@ -484,6 +547,10 @@ internal sealed class OwnedFieldEscape
                 && !i.Operands.Skip(1).OfType<RegOperand>().Any(r => addresses.ContainsKey(r.Reg))) continue;
             if (i.Op == Opcode.MemCopy && CopyIsFollowed(i, addresses, slots, field, width)) continue;
             if (IrInfo.IsIntCompare(i.Op)) continue;
+            // THE OWNER ITSELF RETURNED, from a callee whose caller takes the
+            // result for the owner again (Reads' call, WithReturnedOwner).
+            if (mayReturn && i.Op == Opcode.Ret && i.Operands.Count == 1 && i.Operands[0] is RegOperand returned
+                && addresses.TryGetValue(returned.Reg, out long returnedAt) && returnedAt == 0) continue;
             // No copies of the owner's bytes, indirect calls, syscalls,
             // variable field addresses, returns or unknown operations.
             LastRefusal = i;
@@ -627,16 +694,16 @@ internal sealed class OwnedFieldEscape
         return Escape.StampMethod(stamp.Name, stamp.Offset + slotLoad.Offset);
     }
 
-    private bool Safe(Function f, int parameter, IReadOnlyList<Field> path, (string Name, long Offset)? stamp = null)
+    private bool Safe(Function f, int parameter, IReadOnlyList<Field> path, (string Name, long Offset)? stamp = null, bool mayReturn = false)
     {
-        var key = (f.Name, parameter, string.Join(";", path.Select(p => p.Offset + ":" + p.Width)), stamp is { } named ? named.Name + "+" + named.Offset : null);
+        var key = (f.Name, parameter, string.Join(";", path.Select(p => p.Offset + ":" + p.Width)) + (mayReturn ? ";ret" : ""), stamp is { } named ? named.Name + "+" + named.Offset : null);
         if (_memo.TryGetValue(key, out bool answer)) return answer;
         // Cycles and an excessive query graph remain pessimistic.
         if (_memo.Count >= 1024 || parameter >= f.Params.Count || f.Async is not null) return false;
         _memo[key] = false;
         HashSet<VReg> loaded = new();
         var addresses = Addresses(f, f.Params[parameter]);
-        bool safe = Reads(f, addresses, path, loaded, null, stamp);
+        bool safe = Reads(f, addresses, path, loaded, null, stamp, mayReturn);
         if (safe && Escape.Analyse(f, loaded, _summaries, null) is { Escapes: true } lost) { safe = false; LastRefusal = lost.Why; }
         _memo[key] = safe;
         return safe;
