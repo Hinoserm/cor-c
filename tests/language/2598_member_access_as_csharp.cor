@@ -14,16 +14,22 @@
 // set only 5
 // tuple 8
 // own over base 9
+// passed over 2 4 1
 //
 // WHAT C# LETS A BODY REACH (Binder.Access): a type nested in another reaches
 // its private members, a generic type's copies reach each other's, a derived
 // class the protected ones through itself, `this`, `base` and its own kind, a
 // static protected one by the type; a lambda what the type it is written in
-// does; a `private set` property is set inside its type; a private overload
-// is no candidate where a public one fits, nor a private constructor where a
-// public one does; protected internal and private protected inside their
-// assembly.
+// does; a `private set` property is set inside its type, a `private get`
+// one from anywhere, by `=` and by a deconstruction's place; a private
+// overload is no candidate where a public one fits, nor a private
+// constructor where a public one does; protected internal and private
+// protected inside their assembly. A constant out of reach is passed over as
+// C#'s lookup passes it: for the type's own member of the name, a later
+// `using static`'s, an outer type's, a base's public one.
 using System;
+using static Hidden1;
+using static Shown2;
 
 class Outer
 {
@@ -86,6 +92,24 @@ class Uncapped : Capped
     public int Read() => Max;
 }
 
+class Hidden1 { private const int Two = 1; }
+class Shown2 { public const int Two = 2; }
+
+class Sealed { private const int Size = 3; }
+
+class Holder
+{
+    const int Size = 4;
+
+    public class Inside : Sealed
+    {
+        public int Read() => Size;
+    }
+}
+
+class Wide { public const int K = 1; }
+class Narrow : Wide { private const int K = 2; }
+
 class Picks
 {
     private string Take(int x) => "int";
@@ -122,6 +146,7 @@ static class Program
         (hidden.N, x) = (7, 1);
         Console.WriteLine("tuple " + (hidden.Peek() + x));
         Console.WriteLine("own over base " + new Uncapped().Read());
+        Console.WriteLine("passed over " + Two + " " + new Holder.Inside().Read() + " " + Narrow.K);
         return 0;
     }
 }

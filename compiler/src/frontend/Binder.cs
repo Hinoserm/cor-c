@@ -2928,6 +2928,7 @@ public sealed partial class Binder
         for (TypeSymbol? t = owner; t != null; t = t.Base)
         {
             EvaluateConstant(t, name);
+            if (ConstantOutOfReach(t, name)) continue;
             if (_r.TextConstants.TryGetValue((t, name), out string? text))
             {
                 return text;
@@ -2969,6 +2970,7 @@ public sealed partial class Binder
         for (TypeSymbol? t = owner; t != null; t = t.Base)
         {
             EvaluateConstant(t, name);
+            if (ConstantOutOfReach(t, name)) continue;
             if (_r.Constants.TryGetValue((t, name), out long value))
             {
                 return (value, _r.ConstantTypes.TryGetValue((t, name), out Type? was) ? was : Type.I64);
@@ -21282,6 +21284,7 @@ public sealed partial class Binder
 
     private Type CheckName(NameExpr n)
     {
+        _passedConstant = null;
         // A static method group retained as the target of a compiler-generated
         // delegate wrapper keeps meaning the same methods inside the wrapper's
         // synthetic closure. There is no instance receiver to rebind and the
@@ -21398,18 +21401,18 @@ public sealed partial class Binder
                 return Type.Plain(_thisType, Prim.Void);
             }
 
-            if (FindConstant(_thisType, n.Name) is (long value, Type ctype) && ConstantReached(n, _thisType, n.Name))
+            if (FindConstant(_thisType, n.Name) is (long value, Type ctype))
             {
                 _r.Resolved[n] = new ConstSym(value, ctype);
                 return ctype;
             }
 
-            if (FindDecimal(_thisType, n.Name) is decimal ownMoney && ConstantReached(n, _thisType, n.Name))
+            if (FindDecimal(_thisType, n.Name) is decimal ownMoney)
             {
                 return ReadDecimalConstant(n, ownMoney);
             }
 
-            if (FindText(_thisType, n.Name) is string spelt && ConstantReached(n, _thisType, n.Name))
+            if (FindText(_thisType, n.Name) is string spelt)
             {
                 _r.Rewrites[n] = new LiteralExpr
                 {
@@ -21519,18 +21522,18 @@ public sealed partial class Binder
                 return Type.Plain(_lexicalType, Prim.Void);
             }
 
-            if (FindConstant(_lexicalType, n.Name) is (long value, Type ctype) && ConstantReached(n, _lexicalType, n.Name))
+            if (FindConstant(_lexicalType, n.Name) is (long value, Type ctype))
             {
                 _r.Resolved[n] = new ConstSym(value, ctype);
                 return ctype;
             }
 
-            if (FindDecimal(_lexicalType, n.Name) is decimal lexicalMoney && ConstantReached(n, _lexicalType, n.Name))
+            if (FindDecimal(_lexicalType, n.Name) is decimal lexicalMoney)
             {
                 return ReadDecimalConstant(n, lexicalMoney);
             }
 
-            if (FindText(_lexicalType, n.Name) is string spelt && ConstantReached(n, _lexicalType, n.Name))
+            if (FindText(_lexicalType, n.Name) is string spelt)
             {
                 _r.Rewrites[n] = new LiteralExpr
                 {
@@ -21667,18 +21670,18 @@ public sealed partial class Binder
                 continue;
             }
 
-            if (FindConstant(outer, n.Name) is (long outerValue, Type outerConstType) && ConstantReached(n, outer, n.Name))
+            if (FindConstant(outer, n.Name) is (long outerValue, Type outerConstType))
             {
                 _r.Resolved[n] = new ConstSym(outerValue, outerConstType);
                 return outerConstType;
             }
 
-            if (FindDecimal(outer, n.Name) is decimal outerMoney && ConstantReached(n, outer, n.Name))
+            if (FindDecimal(outer, n.Name) is decimal outerMoney)
             {
                 return ReadDecimalConstant(n, outerMoney);
             }
 
-            if (FindText(outer, n.Name) is string outerText && ConstantReached(n, outer, n.Name))
+            if (FindText(outer, n.Name) is string outerText)
             {
                 _r.Rewrites[n] = new LiteralExpr
                 {
@@ -21775,7 +21778,7 @@ public sealed partial class Binder
             return imported;
         }
 
-        Error(n, Inaccessible(n.Name) ?? $"CS0103: The name '{AsWritten(n.Name)}' does not exist in the current context{WhereItIs(n.Name, orAsk: false)}");
+        Error(n, PassedConstant(n.Name) ?? Inaccessible(n.Name) ?? $"CS0103: The name '{AsWritten(n.Name)}' does not exist in the current context{WhereItIs(n.Name, orAsk: false)}");
         return Type.Error;
     }
 
@@ -21795,7 +21798,7 @@ public sealed partial class Binder
                 _r.Resolved[n] = new MethodGroupSym(methods);
                 return Type.Void;
             }
-            if (FindConstant(from, n.Name) is (long value, Type constantType) && ConstantReached(n, from, n.Name))
+            if (FindConstant(from, n.Name) is (long value, Type constantType))
             {
                 _r.Resolved[n] = new ConstSym(value, constantType);
                 return constantType;
@@ -21947,6 +21950,7 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckMember(MemberExpr m)
     {
+        _passedConstant = null;
         // A `?.` further back than this member (ThroughFirstLink).
         if (!m.NullConditional && HasConditionalMember(m.Target) && ThroughFirstLink(m) is Expr firstLink)
         {
@@ -22666,12 +22670,12 @@ public sealed partial class Binder
             return Type.Error;
         }
 
-        if (FindDecimal(owner, m.Name) is decimal memberMoney && ConstantReached(m, owner, m.Name))
+        if (FindDecimal(owner, m.Name) is decimal memberMoney)
         {
             return ReadDecimalConstant(m, memberMoney);
         }
 
-        if (FindText(owner, m.Name) is string constantText && ConstantReached(m, owner, m.Name))
+        if (FindText(owner, m.Name) is string constantText)
         {
             _r.Rewrites[m] = new LiteralExpr
             {
@@ -22680,7 +22684,7 @@ public sealed partial class Binder
             return Type.String;
         }
 
-        if (FindConstant(owner, m.Name) is (long cvalue, Type ctype2) && ConstantReached(m, owner, m.Name))
+        if (FindConstant(owner, m.Name) is (long cvalue, Type ctype2))
         {
             _r.Resolved[m] = new ConstSym(cvalue, ctype2);
             return ctype2;
@@ -22884,7 +22888,7 @@ public sealed partial class Binder
             return Type.Error;
         }
 
-        Error(m, $"'{owner.Name}' has no member '{m.Name}'");
+        Error(m, PassedConstant(m.Name) ?? $"'{owner.Name}' has no member '{m.Name}'");
         return Type.Error;
     }
 

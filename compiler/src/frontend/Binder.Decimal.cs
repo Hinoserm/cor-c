@@ -131,6 +131,7 @@ public sealed partial class Binder
         for (TypeSymbol? t = owner; t != null; t = t.Base)
         {
             EvaluateConstant(t, name);
+            if (ConstantOutOfReach(t, name)) continue;
             if (_decimalConstants.TryGetValue((t, name), out decimal value)) return value;
             if (_constantDeclarations.ContainsKey((t, name))) return null;
         }

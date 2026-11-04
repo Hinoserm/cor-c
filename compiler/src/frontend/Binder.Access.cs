@@ -36,7 +36,10 @@ public sealed partial class Binder
     /// </summary>
     private TypeSymbol? AccessHere()
     {
-        TypeSymbol? here = _thisType is not null && IsClosure(_thisType) ? _lexicalType ?? _capturedThisType : _thisType ?? _scope;
+        // A DECLARATION BEING READ is its own type's, whatever body asked
+        // for it: a constant's initialiser evaluated on demand (_scope, as
+        // EvaluateConstantOf sets it) names its own type's private ones.
+        TypeSymbol? here = _scope ?? (_thisType is not null && IsClosure(_thisType) ? _lexicalType ?? _capturedThisType : _thisType);
         return here is not null && IsClosure(here) ? null : here;
     }
 
@@ -74,26 +77,29 @@ public sealed partial class Binder
             || Inaccessible(m.Owner, d.Mods, m.Static, receiver, made) is null;
 
     /// <summary>
-    /// A constant found by its name, alone or through its type -- a value,
-    /// with no symbol, so its access is its declaration's (on the type or one
-    /// it derives from). Out of reach where a field, property or method of
-    /// that name is not, it is passed over and that is found, as C#'s lookup
-    /// passes over what it may not reach; otherwise it is refused (CS0122).
-    /// Asked only once a constant was found: every simple name comes here.
+    /// A constant this code may not reach, passed over by the lookups
+    /// (FindConstant, FindText, FindDecimal) as C#'s member lookup passes
+    /// over what it may not reach: a base's accessible one of the name, an
+    /// outer type's, a later `using static`'s, or a field, property or method
+    /// of the name is found instead. Noted (_passedConstant), and said as
+    /// CS0122 only where the name then finds nothing (PassedConstant).
     /// </summary>
-    private bool ConstantReached(Expr site, TypeSymbol? owner, string name)
+    private bool ConstantOutOfReach(TypeSymbol t, string name)
     {
-        if (owner is null || !ChecksAccess()) return true;
-        for (TypeSymbol? t = owner; t is not null; t = t.Base)
-        {
-            if (!_constantDeclarations.TryGetValue((t, name), out var declared)) continue;
-            if (Inaccessible(t, declared.Field.Mods, isStatic: true, null, made: false) is null) return true;
-            if (owner.FindField(name) is not null || owner.FindMethods(name).Count > 0 || owner.FindMethods("get_", name).Count > 0) return false;
-            Refuse(site, t, name, declared.Field.Mods, isStatic: true, null, made: false);
-            return true;
-        }
+        if (!_constantDeclarations.TryGetValue((t, name), out var declared) || !ChecksAccess()) return false;
+        if (Inaccessible(t, declared.Field.Mods, isStatic: true, null, made: false) is null) return false;
+        _passedConstant = (t, name);
         return true;
     }
+
+    /// <summary>The constant last passed over by the lookup under way (CheckName, CheckMember clear it).</summary>
+    private (TypeSymbol Owner, string Name)? _passedConstant;
+
+    /// <summary>CS0122 for a name that found nothing but a constant out of reach, or null.</summary>
+    private string? PassedConstant(string name)
+        => _passedConstant is { } passed && passed.Name == name
+            ? $"CS0122: '{passed.Owner.Name}.{name}' is inaccessible due to its protection level"
+            : null;
 
     /// <summary>A field as its code names it: an auto property's `<N>` is N.</summary>
     private static string Spelt(FieldSymbol f) => f.Name.Length > 2 && f.Name[0] == '<' && f.Name[^1] == '>' ? f.Name[1..^1] : f.Name;
