@@ -74,37 +74,25 @@ public sealed partial class Binder
             || Inaccessible(m.Owner, d.Mods, m.Static, receiver, made) is null;
 
     /// <summary>
-    /// A constant named through its type, `A.K`: a value, no storage nor
-    /// symbol, so its access is its declaration's, found on the type or a
-    /// type it derives from.
+    /// A constant found by its name, alone or through its type -- a value,
+    /// with no symbol, so its access is its declaration's (on the type or one
+    /// it derives from). Out of reach where a field, property or method of
+    /// that name is not, it is passed over and that is found, as C#'s lookup
+    /// passes over what it may not reach; otherwise it is refused (CS0122).
+    /// Asked only once a constant was found: every simple name comes here.
     /// </summary>
-    private void CheckConstAccess(Expr site, TypeSymbol? owner, string name)
+    private bool ConstantReached(Expr site, TypeSymbol? owner, string name)
     {
-        if (owner is null || !ChecksAccess()) return;
+        if (owner is null || !ChecksAccess()) return true;
         for (TypeSymbol? t = owner; t is not null; t = t.Base)
         {
-            // Registered as FindConstant finds it: a type's constants are
-            // declared when one is first asked of it (EvaluateConstant).
-            EvaluateConstant(t, name);
             if (!_constantDeclarations.TryGetValue((t, name), out var declared)) continue;
+            if (Inaccessible(t, declared.Field.Mods, isStatic: true, null, made: false) is null) return true;
+            if (owner.FindField(name) is not null || owner.FindMethods(name).Count > 0 || owner.FindMethods("get_", name).Count > 0) return false;
             Refuse(site, t, name, declared.Field.Mods, isStatic: true, null, made: false);
-            return;
+            return true;
         }
-    }
-
-    /// <summary>A place only written, or a tuple's places each, in or out of _onlyWritten.</summary>
-    private void Places(Expr place, bool add)
-    {
-        if (place is TupleExpr tuple) { foreach (Expr item in tuple.Items) Places(item, add); return; }
-        if (add) _onlyWritten.Add(place);
-        else _onlyWritten.Remove(place);
-    }
-
-    /// <summary>A place written, or a tuple's places each, checked by its writer's access.</summary>
-    private void WrittenPlaces(Expr place)
-    {
-        if (place is TupleExpr tuple) { foreach (Expr item in tuple.Items) WrittenPlaces(item); return; }
-        CheckWriteAccess(place);
+        return true;
     }
 
     /// <summary>A field as its code names it: an auto property's `<N>` is N.</summary>

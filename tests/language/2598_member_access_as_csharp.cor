@@ -13,6 +13,7 @@
 // private protected 6
 // set only 5
 // tuple 8
+// own over base 9
 //
 // WHAT C# LETS A BODY REACH (Binder.Access): a type nested in another reaches
 // its private members, a generic type's copies reach each other's, a derived
@@ -74,6 +75,17 @@ class Hidden
     public int Peek() => N;
 }
 
+class Capped
+{
+    private const int Max = 1;
+}
+
+class Uncapped : Capped
+{
+    int Max = 9;
+    public int Read() => Max;
+}
+
 class Picks
 {
     private string Take(int x) => "int";
@@ -109,6 +121,7 @@ static class Program
         int x;
         (hidden.N, x) = (7, 1);
         Console.WriteLine("tuple " + (hidden.Peek() + x));
+        Console.WriteLine("own over base " + new Uncapped().Read());
         return 0;
     }
 }

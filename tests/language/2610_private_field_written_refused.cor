@@ -1,7 +1,7 @@
 // test: private_field_written_refused
 // expect-compile-error: CS0122: 'Account._balance' is inaccessible due to its protection level
 // Written, not read: another type's private field is out of reach by `=`
-// and by `out` as by a read.
+// as by a read.
 class Account
 {
     int _balance;
@@ -9,8 +9,6 @@ class Account
 
 static class Program
 {
-    static void Fill(out int into) { into = 5; }
-
     static int Main()
     {
         Account a = new Account();

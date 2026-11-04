@@ -16358,20 +16358,20 @@ public sealed partial class Binder
 
     private Type CheckExpr(Expr e)
     {
-        // ONLY WRITTEN, by `=` or `out` -- a tuple's places each: its
-        // reader's access is not asked (CheckAccess), its writer's is
-        // (CheckWriteAccess) -- `public int N { private get; set; }` is set
-        // from anywhere.
+        // ONLY WRITTEN, by `=` or `out` -- a deconstruction's places are each
+        // a plain assignment of their own (Deconstruct): its reader's access
+        // is not asked (CheckAccess), its writer's is (CheckWriteAccess) --
+        // `public int N { private get; set; }` is set from anywhere.
         Expr? onlyWritten = e switch
         {
             AssignExpr { Op: null, Coalescing: false } a => a.Target,
             RefArgExpr { IsOut: true } r => r.Target,
             _ => null,
         };
-        if (onlyWritten is not null) Places(onlyWritten, add: true);
+        if (onlyWritten is not null) _onlyWritten.Add(onlyWritten);
         Type t;
         try { t = CheckExprCore(e); }
-        finally { if (onlyWritten is not null) Places(onlyWritten, add: false); }
+        finally { if (onlyWritten is not null) _onlyWritten.Remove(onlyWritten); }
         // WHAT IS WRITTEN is checked by its setter's access as well
         // (CheckWriteAccess): `public int N { get; private set; }`.
         Expr? written = e switch
@@ -16381,7 +16381,7 @@ public sealed partial class Binder
             RefArgExpr r => r.Target,
             _ => null,
         };
-        if (written is not null) WrittenPlaces(written);
+        if (written is not null) CheckWriteAccess(written);
         if (!t.IsError && e is CallExpr pinnedCall && _r.Calls.Pinned(pinnedCall) is { } pinnedOp)
         {
             _r.Calls[pinnedCall] = pinnedOp;
@@ -21398,21 +21398,18 @@ public sealed partial class Binder
                 return Type.Plain(_thisType, Prim.Void);
             }
 
-            // A CONSTANT BY ITS NAME ALONE is a member as `Type.K` is: a
-            // base's private one is not this type's (CheckConstAccess).
-            CheckConstAccess(n, _thisType, n.Name);
-            if (FindConstant(_thisType, n.Name) is (long value, Type ctype))
+            if (FindConstant(_thisType, n.Name) is (long value, Type ctype) && ConstantReached(n, _thisType, n.Name))
             {
                 _r.Resolved[n] = new ConstSym(value, ctype);
                 return ctype;
             }
 
-            if (FindDecimal(_thisType, n.Name) is decimal ownMoney)
+            if (FindDecimal(_thisType, n.Name) is decimal ownMoney && ConstantReached(n, _thisType, n.Name))
             {
                 return ReadDecimalConstant(n, ownMoney);
             }
 
-            if (FindText(_thisType, n.Name) is string spelt)
+            if (FindText(_thisType, n.Name) is string spelt && ConstantReached(n, _thisType, n.Name))
             {
                 _r.Rewrites[n] = new LiteralExpr
                 {
@@ -21522,21 +21519,18 @@ public sealed partial class Binder
                 return Type.Plain(_lexicalType, Prim.Void);
             }
 
-            // A CONSTANT BY ITS NAME ALONE is a member as `Type.K` is: a
-            // base's private one is not this type's (CheckConstAccess).
-            CheckConstAccess(n, _lexicalType, n.Name);
-            if (FindConstant(_lexicalType, n.Name) is (long value, Type ctype))
+            if (FindConstant(_lexicalType, n.Name) is (long value, Type ctype) && ConstantReached(n, _lexicalType, n.Name))
             {
                 _r.Resolved[n] = new ConstSym(value, ctype);
                 return ctype;
             }
 
-            if (FindDecimal(_lexicalType, n.Name) is decimal lexicalMoney)
+            if (FindDecimal(_lexicalType, n.Name) is decimal lexicalMoney && ConstantReached(n, _lexicalType, n.Name))
             {
                 return ReadDecimalConstant(n, lexicalMoney);
             }
 
-            if (FindText(_lexicalType, n.Name) is string spelt)
+            if (FindText(_lexicalType, n.Name) is string spelt && ConstantReached(n, _lexicalType, n.Name))
             {
                 _r.Rewrites[n] = new LiteralExpr
                 {
@@ -21673,21 +21667,18 @@ public sealed partial class Binder
                 continue;
             }
 
-            // A CONSTANT BY ITS NAME ALONE is a member as `Type.K` is: a
-            // base's private one is not this type's (CheckConstAccess).
-            CheckConstAccess(n, outer, n.Name);
-            if (FindConstant(outer, n.Name) is (long outerValue, Type outerConstType))
+            if (FindConstant(outer, n.Name) is (long outerValue, Type outerConstType) && ConstantReached(n, outer, n.Name))
             {
                 _r.Resolved[n] = new ConstSym(outerValue, outerConstType);
                 return outerConstType;
             }
 
-            if (FindDecimal(outer, n.Name) is decimal outerMoney)
+            if (FindDecimal(outer, n.Name) is decimal outerMoney && ConstantReached(n, outer, n.Name))
             {
                 return ReadDecimalConstant(n, outerMoney);
             }
 
-            if (FindText(outer, n.Name) is string outerText)
+            if (FindText(outer, n.Name) is string outerText && ConstantReached(n, outer, n.Name))
             {
                 _r.Rewrites[n] = new LiteralExpr
                 {
@@ -21804,7 +21795,7 @@ public sealed partial class Binder
                 _r.Resolved[n] = new MethodGroupSym(methods);
                 return Type.Void;
             }
-            if (FindConstant(from, n.Name) is (long value, Type constantType))
+            if (FindConstant(from, n.Name) is (long value, Type constantType) && ConstantReached(n, from, n.Name))
             {
                 _r.Resolved[n] = new ConstSym(value, constantType);
                 return constantType;
@@ -22675,13 +22666,12 @@ public sealed partial class Binder
             return Type.Error;
         }
 
-        CheckConstAccess(m, owner, m.Name);
-        if (FindDecimal(owner, m.Name) is decimal memberMoney)
+        if (FindDecimal(owner, m.Name) is decimal memberMoney && ConstantReached(m, owner, m.Name))
         {
             return ReadDecimalConstant(m, memberMoney);
         }
 
-        if (FindText(owner, m.Name) is string constantText)
+        if (FindText(owner, m.Name) is string constantText && ConstantReached(m, owner, m.Name))
         {
             _r.Rewrites[m] = new LiteralExpr
             {
@@ -22690,7 +22680,7 @@ public sealed partial class Binder
             return Type.String;
         }
 
-        if (FindConstant(owner, m.Name) is (long cvalue, Type ctype2))
+        if (FindConstant(owner, m.Name) is (long cvalue, Type ctype2) && ConstantReached(m, owner, m.Name))
         {
             _r.Resolved[m] = new ConstSym(cvalue, ctype2);
             return ctype2;

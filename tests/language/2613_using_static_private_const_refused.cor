@@ -1,0 +1,15 @@
+// test: using_static_private_const_refused
+// expect-compile-error: CS0122: 'Limits.Most' is inaccessible due to its protection level
+// `using static` brings a type's members into scope, not its private ones:
+// a private constant named alone through it is refused.
+using static Limits;
+
+class Limits
+{
+    private const int Most = 10;
+}
+
+static class Program
+{
+    static int Main() => Most;
+}
