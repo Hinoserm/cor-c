@@ -8372,6 +8372,9 @@ public static class Gc
         SayNumber("gc: barrier segments ", _segsCount);
         SayNumber("gc: barrier segments most in a cycle ", _segsUsed);
         SayNumber("gc: barrier waits for a segment ", BarrierWaits);
+        SayNumber("gc: chunks mapped ", HeapChunks.Maps);
+        SayNumber("gc: chunks released ", HeapChunks.Releases);
+        SayNumber("gc: chunks taken back from the spares ", HeapChunks.Reuses);
         SayNumber("gc: forks with the other threads held ", ForkHolds);
         SayNumber("gc: pace: waits for the mark to open ", PaceWaits);
         SayNumber("gc: pace: cycles waited out past the goal ", AllocStalls);
@@ -17431,7 +17434,64 @@ public static class HeapChunks
     /// Chunks taken from the operating system and given back, and of those
     /// given back the ones not of the usual size -- a large array's own:
     /// what says whether a program's heap is churning its mappings.
-    public static long Maps, Releases, BigReleases;
+    public static long Maps, Releases, BigReleases, Reuses;
+
+    // SPARE MAPPINGS: a large array's own chunk given back by a free, kept
+    // instead of unmapped -- a packet's buffer outgrown and freed every time
+    // round a loop was an mmap and an munmap each (131,000 of them in sshd's
+    // packet path), and the next one's pages each faulted in again. A few, a
+    // megabyte or an eighth of the heap at most; taken back by a request of
+    // a size it fits closely (Take), cleared as a new mapping is.
+    const int SpareSlots = 4;
+    static nuint _spare0, _spare1, _spare2, _spare3;
+    static nuint _spareSize0, _spareSize1, _spareSize2, _spareSize3;
+    static nuint _spareBytes;
+
+    static nuint SpareAt(int i) => i == 0 ? _spare0 : i == 1 ? _spare1 : i == 2 ? _spare2 : _spare3;
+    static nuint SpareSizeAt(int i) => i == 0 ? _spareSize0 : i == 1 ? _spareSize1 : i == 2 ? _spareSize2 : _spareSize3;
+
+    static void SetSpare(int i, nuint at, nuint size)
+    {
+        if (i == 0) { _spare0 = at; _spareSize0 = size; }
+        else if (i == 1) { _spare1 = at; _spareSize1 = size; }
+        else if (i == 2) { _spare2 = at; _spareSize2 = size; }
+        else { _spare3 = at; _spareSize3 = size; }
+    }
+
+    /// Kept as a spare (SpareSlots) if there is room for it, under the heap
+    /// lock as every chunk's coming and going is.
+    static bool KeepSpare(nuint chunk, nuint size)
+    {
+        nuint most = (nuint)(_heapBytes / 8);
+        if (most < ChunkMost) most = ChunkMost;
+        if (_spareBytes + size > most) return false;
+        for (int i = 0; i < SpareSlots; i++)
+        {
+            if (SpareAt(i) != 0) continue;
+            SetSpare(i, chunk, size);
+            _spareBytes = _spareBytes + size;
+            return true;
+        }
+        return false;
+    }
+
+    /// A spare of at least `ask` bytes and not a quarter more, taken out of
+    /// the spares, or 0; its size in `size`.
+    static nuint TakeSpare(nuint ask, out nuint size)
+    {
+        size = 0;
+        for (int i = 0; i < SpareSlots; i++)
+        {
+            nuint at = SpareAt(i);
+            nuint has = SpareSizeAt(i);
+            if (at == 0 || has < ask || has > ask + ask / 4) continue;
+            SetSpare(i, 0, 0);
+            _spareBytes = _spareBytes - has;
+            size = has;
+            return at;
+        }
+        return 0;
+    }
 
     public static void Release(nuint chunk, bool guard = false)
     {
@@ -17469,6 +17529,8 @@ public static class HeapChunks
             Platform.Guard(chunk, size);
             return;
         }
+        // A large array's own, kept for the next of its size (SpareSlots).
+        if (size > ChunkMost / 16 && KeepSpare(chunk, size)) return;
         Platform.Unmap(chunk, size);
     }
 
@@ -17601,19 +17663,34 @@ public static class HeapChunks
             return 0;
         }
 
-        nuint raw = Platform.Map(ask);
-        if (raw == 0 && ask > minimum)
+        // A SPARE OF ITS SIZE FIRST, for a large array's own (SpareSlots):
+        // cleared, as the operating system hands a new mapping over.
+        nuint raw = 0;
+        nuint spared = 0;
+        nuint spare = dedicated ? TakeSpare(ask, out spared) : 0;
+        if (spare != 0)
         {
-            ask = minimum;
+            Sys.MemorySet(spare, 0, spared);
+            raw = spare;
+            ask = spared;
+            Reuses = Reuses + 1;
+        }
+        else
+        {
             raw = Platform.Map(ask);
-        }
+            if (raw == 0 && ask > minimum)
+            {
+                ask = minimum;
+                raw = Platform.Map(ask);
+            }
 
-        if (raw == 0)
-        {
-            return 0;
-        }
+            if (raw == 0)
+            {
+                return 0;
+            }
 
-        Maps = Maps + 1;
+            Maps = Maps + 1;
+        }
         Sys.WriteAddress(raw + ChunkNext, _chunks);
         Sys.WriteAddress(raw + ChunkEnd, raw + ChunkBytes);
         Sys.WriteAddress(raw + ChunkLimit, raw + ask);
@@ -17625,7 +17702,7 @@ public static class HeapChunks
         if (PrepareBlockAnchors(raw) == 0)
         {
             Platform.Unmap(raw, ask);
-            Maps = Maps - 1;
+            if (spare != 0) Reuses = Reuses - 1; else Maps = Maps - 1;
             return 0;
         }
         Sys.WriteAddress(raw + ChunkPrevious, 0);
