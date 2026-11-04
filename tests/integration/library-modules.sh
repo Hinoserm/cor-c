@@ -42,7 +42,9 @@ python3 -I "$root/tests/integration/modules/exports.py" "$k/kernel" | awk '{ pri
 # the library; what it does not reach is neither. And the mark a library
 # module asks for.
 grep -q '^m_String_' "$k/exports" || fail "the kernel exports none of the library it keeps"
-grep -q '^s_' "$k/exports" || fail "the kernel exports none of the library's statics"
+# A table of the date reader's nothing in the kernel touches: every static
+# of the library stays the kernel's, reached or not.
+grep -qxF 's_FreeDateReader_Kinds_t$A$1$V$I32' "$k/exports" || fail "the kernel does not export a library static it does not reach"
 grep -qx '__corsac_library_modules' "$k/exports" || fail "the kernel does not say it splits its library"
 if grep -qxF "$clamp" "$k/exports"; then fail "the kernel exports Math.Clamp, which nothing in it reaches"; fi
 nm "$k/kernel" > "$k/symbols" || fail "nm could not read the kernel"
@@ -73,7 +75,7 @@ test ! -s "$m/twice" || { head "$m/twice"; fail "the library module defines what
 # that kernel keeps what it withholds, and owning by member would copy it.
 w=$work/whole
 mkdir -p "$w"
-sed "s|$k/|$w/|" "$k/units.tsv" > "$w/units.tsv"
+sed "s|$k/|$w/|g" "$k/units.tsv" > "$w/units.tsv"
 "$corc" compile-project --units "$w/units.tsv" --nostdlib --obj --freestanding --ring 0 \
     --decl-index "$k/kernel.idx" --assembly Kernel 2> "$w/units.log" || { cat "$w/units.log"; fail "the whole kernel's units"; }
 # shellcheck disable=SC2086

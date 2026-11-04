@@ -379,12 +379,13 @@ public sealed class TypeDecl : Node
     public bool Elsewhere { get; set; }
 
     /// <summary>
-    /// A part read from the index under this compile's (a kernel's, compiling
-    /// a module): sorted before every part of this image's, so the merged type
-    /// is the kernel's -- its statics, descriptor and start the kernel's --
-    /// however the module's own part's path sorts (Frontend, MergePartialTypes).
+    /// How far under this compile's index its part was read from (0 its own;
+    /// 1 a kernel's, compiling a module; more for a module on a module): the
+    /// deepest sorted first, after the prelude, so the merged type is the
+    /// image beneath's -- its statics, descriptor and start -- however the
+    /// others' parts' paths sort (Frontend, MergePartialTypes).
     /// </summary>
-    public bool Below { get; set; }
+    public int Below { get; set; }
     /// <summary>Indexed signatures, not executable bodies. Never lower their declaration markers.</summary>
     public bool SignatureOnly { get; set; }
 

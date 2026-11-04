@@ -4,10 +4,12 @@ namespace Corsac.Lang.Metadata;
 public sealed record DeclarationRecord(string Key, byte[] Payload)
 {
     /// <summary>
-    /// Read from an index under the one asked (DeclarationIndex.Under): a
-    /// kernel's, under a module's. Its part of a type is the image's beneath,
-    /// which owns the type however the module's own part sorts
-    /// (TypeDecl.Below, Frontend's sort before MergePartialTypes).
+    /// How many indexes under the one asked it was read from
+    /// (DeclarationIndex.Under): 0 its own, 1 the index under it -- a
+    /// kernel's, under a module's -- 2 the one under that (a kernel's, under
+    /// nt's on gui's). Its part of a type is the image's beneath, the deepest
+    /// owning the type however the others' parts sort (TypeDecl.Below,
+    /// Frontend's sort before MergePartialTypes).
     /// </summary>
-    public bool Below { get; init; }
+    public int Below { get; init; }
 }

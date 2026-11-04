@@ -4,7 +4,14 @@
 
 namespace Kernel;
 
+#if KIND
+public partial struct Uptime
+#elif ATTR
+[System.Obsolete]
 public static partial class Uptime
+#else
+public static partial class Uptime
+#endif
 {
 #if FIELD
     public int Count;
@@ -23,6 +30,18 @@ public static partial class Uptime
 #endif
 #if AUTO
     public int Rate { get; set; }
+#endif
+#if SAUTO
+    public static int Rate { get; set; }
+#endif
+#if SEVENT
+    public static event System.Action Fired;
+#endif
+#if EXPLICIT
+    int System.IComparable.CompareTo(object other) => 0;
+#endif
+#if PARTIALM
+    static partial void Hook();
 #endif
     public static int Three() => 3;
 }

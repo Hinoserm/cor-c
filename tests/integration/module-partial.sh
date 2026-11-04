@@ -74,13 +74,19 @@ if "$corc" index --assembly Kernel --ring 0 --on "$k/kernel.idx" "$here/NotParti
     fail "a part of the kernel's Gate, which is not partial, was indexed"
 fi
 grep -q "only as a part of a partial type" "$m/not.log" || { cat "$m/not.log"; fail "the refusal of Gate does not say why"; }
-for shape in FIELD:"an instance field" VIRTUAL:"a virtual" INIT:"a static field" STATIC:"a static field" CCTOR:"a static constructor" AUTO:"an instance auto-property"; do
+for shape in FIELD:"an instance field" VIRTUAL:"a virtual" INIT:"a static field" STATIC:"a static field" CCTOR:"a static constructor" AUTO:"an instance auto-property" \
+        SAUTO:"a static auto-property" SEVENT:"a static field" EXPLICIT:"an interface's member implemented explicitly" PARTIALM:"a partial method" \
+        KIND:"must be of its kind" ATTR:"may carry no attribute"; do
     symbol=${shape%%:*}; said=${shape#*:}
     if "$corc" index --assembly Kernel --ring 0 -D "$symbol" --on "$k/kernel.idx" "$here/Refused.cor" -o "$m/$symbol.idx" 2> "$m/$symbol.log"; then
         fail "a part declaring $said ($symbol) was indexed"
     fi
     grep -q "$said" "$m/$symbol.log" || { cat "$m/$symbol.log"; fail "the $symbol refusal does not say why"; }
 done
+if "$corc" index --assembly Kernel --ring 0 --on "$k/kernel.idx" "$here/Generic.cor" -o "$m/generic.idx" 2> "$m/generic.log"; then
+    fail "a part of the kernel's generic Pool<T> was indexed"
+fi
+grep -q "a module may not add to a kernel's generic type" "$m/generic.log" || { cat "$m/generic.log"; fail "the generic refusal does not say why"; }
 # And the part with none of those is indexed.
 "$corc" index --assembly Kernel --ring 0 --on "$k/kernel.idx" "$here/Refused.cor" -o "$m/plain.idx" 2> "$m/plain.log" \
     || { cat "$m/plain.log"; fail "a plain part was refused"; }

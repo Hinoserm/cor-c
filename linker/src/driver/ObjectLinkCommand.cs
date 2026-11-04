@@ -281,7 +281,8 @@ public static class ObjectLinkCommand
             foreach (var input in inputs)
             {
                 List<string> on, maybe, off, copies, mine;
-                // The split library's (`?`): no root, shown where the link kept it.
+                // The split library's (`?`): no root but what a copy of generic
+                // code reaches (below), shown where the link kept it.
                 try { (on, maybe, off, copies, mine) = PublicApi.Read(input.Item2); }
                 catch (ElfFormatException error) { return Fail(input.Item1 + ": " + error.Message); }
                 offered.UnionWith(on);
@@ -295,7 +296,7 @@ public static class ObjectLinkCommand
             // or another image's.
             // And of the split library's (`?`), what those copies reach: a
             // module's List<T> copy calls it whether the kernel's code does or not.
-            reached.IntersectWith(withheld.Concat(kept));
+            reached.IntersectWith(exports ? withheld.Concat(kept) : withheld);
             optional.UnionWith(reached);
             if (exports) keep = (keep ?? Array.Empty<string>()).Concat(offered).Concat(optional).Distinct(StringComparer.Ordinal).ToArray();
         }

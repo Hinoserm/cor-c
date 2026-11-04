@@ -29,8 +29,8 @@ public sealed class SourceDeclaration
     public required byte[] HeaderHash { get; init; }
     public required FileScope Scope { get; init; }
 
-    /// <summary>From an index under the one read: a kernel's part (DeclarationRecord.Below).</summary>
-    public bool Below { get; set; }
+    /// <summary>How far under the index read it came from: a kernel's part (DeclarationRecord.Below).</summary>
+    public int Below { get; set; }
     public IReadOnlyList<string> ConditionalSymbols { get; init; } = Array.Empty<string>();
     /// <summary>
     /// The names its members are looked up by (Monomorphiser.MemberNames),

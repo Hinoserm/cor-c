@@ -259,8 +259,8 @@ public static class SourceIndexBuilder
     /// adds to another's (Lowering.SplitLibrary). Anything else is refused,
     /// with why: a module redefining the kernel's type would not be the
     /// kernel's, an instance field or a virtual member would change a layout
-    /// or a table the kernel's image has fixed, and a static's initialiser
-    /// would wait for a start the kernel's StaticInit$ never makes.
+    /// or a table the kernel's image has fixed, and a static would be storage
+    /// nobody lays down -- or begins, the kernel's StaticInit$ knowing it not.
     /// </summary>
     private static void KernelPart(string path, string name, TypeDecl type, List<DeclarationRecord> kernels, string onPath)
     {
@@ -279,19 +279,28 @@ public static class SourceIndexBuilder
         // THE SAME KIND, as the parts of one type are: a struct's part over a
         // class's merged into nothing (Frontend.MergePartialTypes) and was a
         // second type of the kernel's name.
+        // Its header's, up to the body: a record a class, a record struct a struct.
         Tok Kind(string text)
         {
+            bool record = false;
             foreach (Token token in Lexer.Tokenize(text, path))
-                if (token.Kind is Tok.KwClass or Tok.KwStruct or Tok.KwInterface or Tok.End) return token.Kind;
-            return Tok.End;
+            {
+                if (token.Kind is Tok.KwClass or Tok.KwStruct or Tok.KwInterface) return token.Kind;
+                if (token.Kind == Tok.Ident && token.Text == "record") record = true;
+                if (token.Kind is Tok.LBrace or Tok.LParen or Tok.End) break;
+            }
+            return record ? Tok.KwClass : Tok.End;
         }
         Tok mine = type.Kind switch { TypeKind.Struct => Tok.KwStruct, TypeKind.Interface => Tok.KwInterface, _ => Tok.KwClass };
+        if (type.Kind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Interface))
+            throw new InvalidDataException(where + "; a module may add only to a kernel's class, struct or interface");
         if (kernels.Any(record => Kind(SourceDeclaration.Decode(record).Text) != mine))
             throw new InvalidDataException(where + "; a module's part of it must be of its kind (class, struct or interface)");
         // NOT A GENERIC'S: every image makes its own copies of a generic
         // type's members, and a module's part would be in its own alone.
-        if (type.TypeParams.Count > 0)
-            throw new InvalidDataException(where + "; a module may not add to a kernel's generic type: every image copies its members for itself");
+        // Nor a type written in one (Outer`1+Inner): its members copied per image too.
+        if (type.TypeParams.Count > 0 || name.Contains('`'))
+            throw new InvalidDataException(where + "; a module may not add to a kernel's generic type, or one inside a generic: every image copies its members for itself");
         if (type.Attributes.Count > 0)
             throw new InvalidDataException(where + "; a module's part of it may carry no attribute: the kernel's image fixed the type's layout and what it says");
         if (type.Bases.Count > 0)

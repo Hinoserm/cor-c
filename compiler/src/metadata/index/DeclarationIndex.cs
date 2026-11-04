@@ -132,7 +132,7 @@ public sealed class DeclarationIndex : IDisposable
     private IEnumerable<DeclarationRecord> Both(string key, bool prefix)
     {
         foreach (DeclarationRecord record in prefix ? Under!.WithPrefix(key) : Under!.Find(key))
-            if (record.Key != OnKey) yield return record.Below ? record : record with { Below = true };
+            if (record.Key != OnKey) yield return record with { Below = record.Below + 1 };
         foreach (DeclarationRecord record in Range(key, prefix))
             if (record.Key != OnKey) yield return record;
     }

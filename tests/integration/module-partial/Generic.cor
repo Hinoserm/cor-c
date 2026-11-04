@@ -1,0 +1,9 @@
+// A module's part of the kernel's generic Pool<T>: refused, as each image
+// makes its own copies of a generic type's members.
+
+namespace Kernel;
+
+public partial class Pool<T>
+{
+    public static int Made() => 1;
+}

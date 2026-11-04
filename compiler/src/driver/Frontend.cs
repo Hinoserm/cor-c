@@ -240,11 +240,13 @@ public static class Frontend
         if (declarations is not null)
             unit.Types.Sort((left, right) =>
             {
-                // THE KERNEL'S PARTS FIRST (TypeDecl.Below): the first part
-                // decides whose the merged type is, and a module's own part,
-                // its path sorting first, took the kernel's statics, descriptor
-                // and start for its own.
-                if (left.Below != right.Below) return left.Below ? -1 : 1;
+                // THE PRELUDE FIRST, as always (no path); then THE DEEPEST
+                // IMAGE'S PARTS (TypeDecl.Below): the first part decides whose
+                // the merged type is, and a module's own part, its path sorting
+                // first, took the kernel's statics, descriptor and start for its
+                // own -- as gui's part, under nt, would the kernel's.
+                if ((left.SourcePath is null) != (right.SourcePath is null)) return left.SourcePath is null ? -1 : 1;
+                if (left.Below != right.Below) return right.Below.CompareTo(left.Below);
                 int path = StringComparer.Ordinal.Compare(left.SourcePath, right.SourcePath);
                 return path != 0 ? path : left.SourceFrom.CompareTo(right.SourceFrom);
             });
