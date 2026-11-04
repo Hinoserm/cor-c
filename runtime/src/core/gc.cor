@@ -4545,7 +4545,9 @@ public static class Gc
     /// it outgrew was given back as it grew (OutgrownStorage.Release, an
     /// owned field's old value), marked below the one that replaced it.
     ///
-    /// ONLY FOR A BLOCK READ FROM A FIELD OF AN OBJECT STILL ALIVE (FreeHeld):
+    /// ONLY FOR A POINTER STILL ITS OBJECT'S (FreeHeld): read from a field of
+    /// an object still alive, freed at its last use in the block that made
+    /// it, or read out of an owned variable's slot before its lap ends --
     /// such a pointer is the block itself. One kept in a register may name
     /// memory a loop's lap has given back and the next lap has made again --
     /// Runtime.Free and FreeReplaced do nothing for a region's block.
@@ -9880,10 +9882,18 @@ public static class Gc
             FreedBytes = FreedBytes - (long)size;
             return;
         }
+        // The chunk ends as the bump pointers have them, as Free has them
+        // before it looks a block up.
+        SyncEnd();
         nuint owning = HeapChunks.Of(block);
         if (owning != 0 && HeapChunks.PageClass(owning) != 0)
         {
-            ClassFree(owning, block, size, Sys.ThreadBlock());
+            // A page not this thread's takes the block off the pressure
+            // counter itself (ClassFree's Uncount), and VerifyFree took it
+            // off already: back on first, so it is counted off once.
+            nuint tb = Sys.ThreadBlock();
+            if (HeapChunks.Owner(owning) != tb) _since = _since + (long)size;
+            ClassFree(owning, block, size, tb);
             return;
         }
         if (owning != 0 && !IsCurrentChunk(owning) && block == HeapChunks.First(owning) && block + size == HeapChunks.Limit(owning))
@@ -15074,6 +15084,13 @@ public static class Gc
             if (fresh == 0)
             {
                 if (WaitForSegment(tb)) continue;
+                // REFUSED THE WAIT by its platform -- a kernel's thread that
+                // cannot give its processor away -- it lives on the reserve,
+                // as a thread that may never wait does.
+                fresh = TakeSegment(0, false);
+            }
+            if (fresh == 0)
+            {
                 // MARKED ON THE SPOT if the mark took the reports meanwhile.
                 if (Runtime.Marking == 2)
                 {
@@ -15098,8 +15115,12 @@ public static class Gc
     /// share helps or waits for the collector (Go's assists). Answers false
     /// where waiting is no answer: the budget spent or the platform out of
     /// memory (BarrierSpent), the reports taken already (Marking 2: the
-    /// caller marks), the cycle given up, or a thread that may not wait
-    /// (MayWait). The collector itself, reporting, stocks the pool there
+    /// caller marks), the cycle given up, a thread that may not wait
+    /// (MayWait), or one its platform says may not give its processor away
+    /// (YieldHook with 1, asked at every turn as WaitForCollector asks it):
+    /// a kernel's thread inside its barrier (Tls.InAlloc), with interrupts
+    /// off or its preemption off. Two such spinning on the only processors
+    /// there were kept the collector from ever running to stock the pool. The collector itself, reporting, stocks the pool there
     /// and then, unless it is an interrupt on top of the collector. A thread
     /// waiting here owes the rounds its answer -- it is inside its barrier
     /// (Tls.InAlloc) -- and the collector waiting on it stocks the pool at
@@ -15120,7 +15141,21 @@ public static class Gc
         {
             if (Sys.Read32(ctl + GcLock.BarrierSpent) != 0 || Runtime.Marking != 1) return false;
             if (Sys.Cas32(ctl + GcLock.BarrierLow, 0, 1) == 0) GcThreads.Stir();
-            Platform.Yield();
+            // The platform's hook gives the processor to what is ready, the
+            // collector among them, or says this thread may not; with none
+            // (Linux, whose threads are preempted) a yield.
+            if (YieldHook != 0)
+            {
+                if (Sys.Call(YieldHook, 1, 0, 0) != 0)
+                {
+                    RefusedWaits = RefusedWaits + 1;
+                    return false;
+                }
+            }
+            else
+            {
+                Platform.Yield();
+            }
         }
         return true;
     }

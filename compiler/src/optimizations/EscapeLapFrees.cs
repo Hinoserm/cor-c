@@ -55,10 +55,6 @@ public sealed partial class Escape
     /// </summary>
     private static readonly object _lapFrees = new();
 
-    /// <summary>Whether a loop of `f` has a lap region: marked by the link (MarkLoops), or opened (RegionLoop).</summary>
-    internal static bool LapRegions(Function f)
-        => f.Blocks.Any(b => b.RegionLoop || b.Instrs.Any(i => i.Op == Opcode.Call && i.Callee == RegionPointsTo.LoopTop));
-
     private static void NoteLapFree(Function f, LapFree free)
     {
         lock (_lapFrees)

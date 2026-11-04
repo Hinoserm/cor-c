@@ -143,12 +143,17 @@ a frame above the opener, or in a loop function's own frame. Test 1315.
 pointer may name memory a loop's earlier lap gave back and a later lap made
 again.
 
-A free of what a field of a live object held is different: the pointer is
-the block itself. `Runtime.FreeHeld` (reached from `FreeField`,
+A free of a pointer known to be the block itself is different: what a field
+of a live object held, an object freed at its last use in the block that
+made it (`Escape.FreeAtLastUse`), and an owned variable's object read out of
+its slot where a lap ends, before the region gives the lap back
+(`LapFree.Held`), or at a return where its site runs once a call.
+`Runtime.FreeHeld` (reached from those, and from `FreeField`,
 `FreeOwnedFields` and `FreeOwnedReplaced`), given a region block:
-- frees what it owns, if it is an object (`Gc.RegionObject`): its owned
-  fields and its storage (`FreeOwnedFields`, `FreeStorageOf`). A block of no
-  type, such as a captured variable's cell, owns nothing;
+- frees what it owns, if it is an object (`Gc.RegionObject`): its storage
+  and its owned fields, in that order as `Runtime.Free` has them
+  (`FreeStorageOf`, `FreeOwnedFields`). A block of no type, such as a
+  captured variable's cell, owns nothing;
 - then gives the block itself back (`Gc.RegionFree`).
 
 The order matters: what the object owns was made after it, above it, and is

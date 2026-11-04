@@ -2620,12 +2620,17 @@ public static partial class Runtime
         return (bits & (1u << (int)(word % 32))) != 0;
     }
 
-    /// WHAT AN OWNED FIELD HELD, given back. One made in this thread's region
-    /// goes with the region, but what it owns may be the heap's -- a parser's
-    /// token wrapper made in a region, its list and tokens on the heap -- and
-    /// only it leads there: its owned fields and storage go now. Read from a
-    /// field of an object still alive, it is no region memory a loop's lap
-    /// has given back already, as a pointer kept in a register might be.
+    /// WHAT AN OWNED FIELD HELD, given back -- or any pointer the compiler
+    /// knows is still its object's: one read from a field of an object still
+    /// alive, one freed at its last use in the block that made it, one read
+    /// out of an owned variable's slot where a lap ends, before the region
+    /// gives the lap back (Escape.FreeAtLastUse, LapFree.Held). One made in
+    /// this thread's region goes with the region, but what it owns may be
+    /// the heap's -- a parser's token wrapper made in a region, its list and
+    /// tokens on the heap -- and only it leads there: its storage and owned
+    /// fields go now, in Free's order. Such a pointer is no region memory a
+    /// loop's lap has given back already, as one kept in a register across
+    /// a lap might be (Runtime.Free ignores those).
     /// Only an object has fields it owns: a captured variable's cell, made in
     /// the region and owned by its closure's frame, holds a word and no
     /// type, and read as an object it took what that word points at for a
@@ -2637,13 +2642,17 @@ public static partial class Runtime
     {
         if (CollectorLinked() && Gc.IgnoredFrees != 'p' && Gc.InOwnRegion(held))
         {
+            // Its storage before its owned fields, as Free has it: a
+            // collection that owns its elements reads them out of its
+            // arrays, and an array that is an owned field as well, freed
+            // first, left every element to the collector.
             if (Gc.RegionObject(held))
             {
-                FreeOwnedFields(held);
                 FreeStorageOf(held);
+                FreeOwnedFields(held);
             }
             // AND THE BLOCK ITSELF, where it is the region's top (Gc.RegionFree):
-            // read from a field, it is the block, not memory a lap gave back.
+            // a pointer still its object's is the block, not memory a lap gave back.
             Gc.RegionFree(held);
             return;
         }

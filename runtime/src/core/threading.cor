@@ -5338,7 +5338,6 @@ public static class Monitor
         Release(word);
 
         nuint flag = Atom.At(waiter, Atom.FirstWord);
-        long deadline = millisecondsTimeout < 0 ? -1 : Clock.Now() + (long)millisecondsTimeout * 1000000;
 
         // THROWN OUT OF THE SLEEP -- a kernel's forced unload ends a parked
         // call with ModuleRevokedException -- the waiter still leaves the
@@ -5350,6 +5349,10 @@ public static class Monitor
         bool pulsed = false;
         try
         {
+            // The deadline inside: a clock that throws leaves the waiter out
+            // of the list as well. Read once enrolled, the first look at the
+            // clock may already see a pulse.
+            long deadline = millisecondsTimeout < 0 ? -1 : Clock.Now() + (long)millisecondsTimeout * 1000000;
             while (Sys.Read32(flag) == 0)
             {
                 if (deadline < 0)

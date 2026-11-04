@@ -76,7 +76,7 @@ public sealed partial class Escape : IModulePass
         _repeating = new(ReferenceEqualityComparer.Instance);
         AnalysisCache.Open();
         try { RunCore(m); }
-        finally { AnalysisCache.Close(); _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
+        finally { AnalysisCache.Close(); _freedFacts = null; _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
     }
 
     /// <summary>
@@ -5790,7 +5790,7 @@ continue;
                 new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { RegOperand.Of(a) }, Line = exitLine },
             };
             AppendElementFree(f, releaseExit, alloc, p, exitLine);
-            record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine), p));
+            record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine, OnceFreer(record)), p));
             b.Instrs.InsertRange(r, releaseExit);
             _bookkeeping.UnionWith(releaseExit);
         }
@@ -5857,7 +5857,7 @@ continue;
                 new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { RegOperand.Of(a) }, Line = line },
             };
             AppendElementFree(f, release, made, p, line);
-            record.Frees.Add((b, AppendFree(f, release, p, line), p));
+            record.Frees.Add((b, AppendFree(f, release, p, line, OnceFreer(record)), p));
             release.Add(new Instr { Op = Opcode.Store, Size = word, Operands = { RegOperand.Of(a), new ImmOperand(0, IrTypes.Word) }, Line = line });
             b.Instrs.InsertRange(last, release);
             _bookkeeping.UnionWith(release);
@@ -6161,7 +6161,7 @@ continue;
                 new Instr { Op = Opcode.Load, Size = word, Dest = p, Operands = { RegOperand.Of(a) }, Line = exitLine },
             };
             AppendElementFree(f, releaseExit, call, p, exitLine);
-            record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine), p));
+            record.Frees.Add((b, AppendFree(f, releaseExit, p, exitLine, OnceFreer(record)), p));
             b.Instrs.InsertRange(r, releaseExit);
             _bookkeeping.UnionWith(releaseExit);
         }
@@ -6374,6 +6374,18 @@ continue;
             Operands = { RegOperand.Of(r) }, Line = line });
         return word;
     }
+
+    /// <summary>
+    /// The free of an owned variable's object at a return or a throw: one
+    /// whose site runs once a call (no renewal) was made outside every lap,
+    /// so no lap's region can have given it back and made something else
+    /// there -- its pointer is still its object's, and a region's object is
+    /// given back with what it owns (Runtime.FreeHeld). One made round a loop
+    /// may be last lap's, read after the header gave that lap back: Free,
+    /// which leaves a region's block alone; its lap's end gave it back
+    /// (LapFree.Held).
+    /// </summary>
+    private string OnceFreer(OwnedRecord record) => record.Renew is null && _heldFreer ? HeldFreer : Freer;
 
     private static Instr AppendFree(Function f, List<Instr> output, VReg pointer, int line, string callee = Freer)
     {
