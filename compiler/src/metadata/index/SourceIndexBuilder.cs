@@ -250,7 +250,10 @@ public static class SourceIndexBuilder
     /// -- every declaration of it partial, the kernel's and this -- and only
     /// with what leaves the kernel's image of the type as it is: members the
     /// module's code is and the kernel's never reads, static or not virtual,
-    /// holding nothing in an instance and starting nothing. A file of the
+    /// holding no storage -- in an instance or a static -- and starting
+    /// nothing. The type is the kernel's (TypeDecl.Below): its statics, its
+    /// descriptor and its start; a static of the module's part would be
+    /// nobody's to lay down or begin. A file of the
     /// class library a module is built from adds to a kernel's type that way
     /// (io.cor's DateTime.Now, files.cor's Os), as a split library's image
     /// adds to another's (Lowering.SplitLibrary). Anything else is refused,
@@ -273,6 +276,24 @@ public static class SourceIndexBuilder
         }
         if ((type.Mods & Mods.Partial) == 0 || !kernels.All(record => Partial(SourceDeclaration.Decode(record).Text)))
             throw new InvalidDataException(where + "; a module may add to a kernel's type only as a part of a partial type, both declared partial");
+        // THE SAME KIND, as the parts of one type are: a struct's part over a
+        // class's merged into nothing (Frontend.MergePartialTypes) and was a
+        // second type of the kernel's name.
+        Tok Kind(string text)
+        {
+            foreach (Token token in Lexer.Tokenize(text, path))
+                if (token.Kind is Tok.KwClass or Tok.KwStruct or Tok.KwInterface or Tok.End) return token.Kind;
+            return Tok.End;
+        }
+        Tok mine = type.Kind switch { TypeKind.Struct => Tok.KwStruct, TypeKind.Interface => Tok.KwInterface, _ => Tok.KwClass };
+        if (kernels.Any(record => Kind(SourceDeclaration.Decode(record).Text) != mine))
+            throw new InvalidDataException(where + "; a module's part of it must be of its kind (class, struct or interface)");
+        // NOT A GENERIC'S: every image makes its own copies of a generic
+        // type's members, and a module's part would be in its own alone.
+        if (type.TypeParams.Count > 0)
+            throw new InvalidDataException(where + "; a module may not add to a kernel's generic type: every image copies its members for itself");
+        if (type.Attributes.Count > 0)
+            throw new InvalidDataException(where + "; a module's part of it may carry no attribute: the kernel's image fixed the type's layout and what it says");
         if (type.Bases.Count > 0)
             throw new InvalidDataException(where + "; a module's part of a kernel's type may name no base or interface: the kernel's image has fixed its tables");
         foreach (MemberDecl member in type.Members)
@@ -282,12 +303,18 @@ public static class SourceIndexBuilder
             {
                 _ when (member.Mods & (Mods.Virtual | Mods.Override | Mods.Abstract)) != 0
                     => "a virtual, abstract or override member, which would change the kernel's table of the type",
+                _ when member.ExplicitInterface is not null
+                    => "an interface's member implemented explicitly, which the kernel's table of the type does not hold",
+                _ when (member.Mods & Mods.Partial) != 0
+                    => "a partial method, whose callers are the kernel's and were compiled without it",
+                FieldDecl when (member.Mods & Mods.Const) == 0 && (member.Mods & Mods.Static) != 0
+                    => "a static field, storage the kernel's type does not have and nobody would lay down",
+                PropertyDecl { Auto: true } when (member.Mods & Mods.Static) != 0
+                    => "a static auto-property, storage the kernel's type does not have and nobody would lay down",
                 FieldDecl { Mods: var m } when (m & (Mods.Static | Mods.Const)) == 0
                     => "an instance field, which would change the kernel's layout of the type",
                 PropertyDecl { Auto: true } when !shared
                     => "an instance auto-property, a field of the kernel's layout",
-                FieldDecl { Init: not null } when (member.Mods & Mods.Const) == 0
-                    => "a static field with an initialiser, which only the kernel's StaticInit$ would run",
                 PropertyDecl { Init: not null }
                     => "a property with an initialiser, which only the kernel's StaticInit$ would run",
                 MethodDecl { IsCtor: true } when shared

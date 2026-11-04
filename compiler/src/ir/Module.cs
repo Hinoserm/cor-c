@@ -289,18 +289,20 @@ public sealed class Module
     /// evidence was gone: a pass had dropped a provided static, or Provided
     /// had given the provided code away, and every file looked unprovided.
     ///
-    /// BY THE TYPE'S FILE (SourcePath, its first part's): a partial type is
-    /// one image's whole, so its members stand or fall together. A file the
-    /// provider defines nothing of, though it compiles it -- every member
-    /// withheld -- would read as unprovided; named on a command line it is
-    /// taken as the image's, which is why the default library never is.
-    /// </summary>
+    /// BY THE FILE EACH MEMBER IS WRITTEN IN (SourcePath: Lowering.
+    /// SourcePathOf by member, a lambda's its member's): a file the provider
+    /// defines anything of is the provider's. A file the provider defines
+    /// nothing of, though it compiles it -- every member withheld -- would
+    /// read as unprovided; named on a command line it is taken as the
+    /// image's, which is why the default library never is.
+    ///
     /// BY MEMBER (byMember: a library module over a kernel whose library is
     /// split with its modules, --library-modules): every named source is the
     /// module's, member by member -- what the kernel exports goes to it by
     /// name (Provided), and that kernel exports everything of the library it
-    /// keeps (PublicApi `?`), so no second copy of a static it still uses is
-    /// made here; the rest is the module's own.
+    /// keeps (PublicApi `?`) and every static of it (`~`), so no second copy
+    /// of a static is made here; the rest is the module's own.
+    /// </summary>
     public void FixOwnLibrary(IReadOnlySet<string> named, bool byMember = false)
     {
         if (byMember)

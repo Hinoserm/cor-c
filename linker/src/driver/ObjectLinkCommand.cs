@@ -272,7 +272,7 @@ public static class ObjectLinkCommand
         // what the kernel's List calls, kept and exported as the public
         // surface is, wherever a unit of the kernel withholds it. What --keep
         // names besides is kept too.
-        HashSet<string> offered = new(StringComparer.Ordinal), optional = new(StringComparer.Ordinal), withheld = new(StringComparer.Ordinal);
+        HashSet<string> offered = new(StringComparer.Ordinal), optional = new(StringComparer.Ordinal), withheld = new(StringComparer.Ordinal), kept = new(StringComparer.Ordinal);
         // A SHARED LIBRARY'S AND A MODULE'S THE SAME (shared): their exports
         // their public surface, the rest withheld from .dynsym (Dyn.Withheld).
         if (exports || shared)
@@ -280,19 +280,22 @@ public static class ObjectLinkCommand
             HashSet<string> reached = new(StringComparer.Ordinal);
             foreach (var input in inputs)
             {
-                List<string> on, maybe, off, copies;
+                List<string> on, maybe, off, copies, mine;
                 // The split library's (`?`): no root, shown where the link kept it.
-                try { (on, maybe, off, copies, _) = PublicApi.Read(input.Item2); }
+                try { (on, maybe, off, copies, mine) = PublicApi.Read(input.Item2); }
                 catch (ElfFormatException error) { return Fail(input.Item1 + ": " + error.Message); }
                 offered.UnionWith(on);
                 optional.UnionWith(maybe);
                 withheld.UnionWith(off);
                 reached.UnionWith(copies);
+                kept.UnionWith(mine);
             }
             // Of what the copies reach, what a unit here defines and withholds:
             // shown where kept, as a static is (`~`); the rest is shown already,
             // or another image's.
-            reached.IntersectWith(withheld);
+            // And of the split library's (`?`), what those copies reach: a
+            // module's List<T> copy calls it whether the kernel's code does or not.
+            reached.IntersectWith(withheld.Concat(kept));
             optional.UnionWith(reached);
             if (exports) keep = (keep ?? Array.Empty<string>()).Concat(offered).Concat(optional).Distinct(StringComparer.Ordinal).ToArray();
         }

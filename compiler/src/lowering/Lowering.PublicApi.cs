@@ -32,6 +32,14 @@ public sealed partial class Lowering
     public static bool LibraryModules { get; set; }
 
     /// <summary>
+    /// An image that exports for kernel modules (freestanding, --obj): the
+    /// kernel, whose partial types a module may add a part to
+    /// (SourceIndexBuilder.KernelPart), and so whose partial types' private
+    /// members and statics it exports, as every part reads every other's.
+    /// </summary>
+    public static bool ExportsForModules { get; set; }
+
+    /// <summary>
     /// The class library's sources among this compile's files and not read
     /// for their declarations (full paths): a library image's own, and a
     /// program's whole default library, read to give away where images
@@ -96,7 +104,7 @@ public sealed partial class Lowering
             // tell. What it costs is names in the export table -- Runtime's
             // privates among them -- never a second copy of anything: an
             // image naming one imports it.
-            bool parts = !abi && (d.Mods & Mods.Partial) != 0;
+            bool parts = !abi && (d.Mods & Mods.Partial) != 0 && (wide || ExportsForModules);
             // THE SPLIT LIBRARY'S, in a kernel that splits it (LibraryModules):
             // every member kept where reached and exported where kept. The
             // compiler's contract (abi) is the kernel's surface whatever
@@ -144,7 +152,13 @@ public sealed partial class Lowering
                 MemberDecl? field = FieldDeclOf(f);
                 bool offered = f.Name == BindResult.ReadyField ? open || wide
                     : field is not null && (open && Binder.ShownOutside(d, field) || parts || wide && Binder.SeenInAssembly(d, field));
-                (split ? _m.KeptSymbols : offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(f.ThreadStatic ? ThreadStaticIndex(f) : StaticSymbol(f));
+                // A STATIC OF THE SPLIT LIBRARY STAYS THE KERNEL'S, reached or
+                // not (`~`, a root at its link): its value may be laid down as
+                // data by preinitialisation (NotePreinitCandidate), with no store
+                // in its type's start, and a library module's copy of a static
+                // the kernel dropped was never given it. Data, not code: the
+                // kernel's saving is in its code.
+                (split || offered ? _m.OptionalSymbols : _m.WithheldSymbols).Add(f.ThreadStatic ? ThreadStaticIndex(f) : StaticSymbol(f));
             }
             // ITS DESCRIPTOR, where this unit made it: a module making one of
             // its objects, testing for the type or deriving from it binds to
@@ -242,7 +256,9 @@ public sealed partial class Lowering
         named.ExceptWith(copies);
         named.ExceptWith(_m.PublicSymbols);
         named.ExceptWith(_m.OptionalSymbols);
-        named.ExceptWith(_m.KeptSymbols);
+        // Not the split library's kept (`?`): a module's copy of generic code
+        // calls them whether or not the kernel's own code reaches them, and
+        // `^` is what roots them at the kernel's link (ObjectLinkCommand).
         _m.ReachedSymbols.AddRange(named.OrderBy(name => name, StringComparer.Ordinal));
     }
 

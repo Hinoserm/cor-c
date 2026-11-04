@@ -375,7 +375,9 @@ public sealed class DeclarationCatalog : IDisposable
                     // index record is additional transient reader workspace.
                     long needed = checked(record.Payload.LongLength * 4 + 512);
                     MakeRoom(checked(bytes + needed));
-                    records.Add(SourceDeclaration.Decode(record));
+                    SourceDeclaration decoded = SourceDeclaration.Decode(record);
+                    decoded.Below = record.Below;
+                    records.Add(decoded);
                     bytes += needed;
                     loads++;
                 }

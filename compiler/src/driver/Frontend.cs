@@ -240,6 +240,11 @@ public static class Frontend
         if (declarations is not null)
             unit.Types.Sort((left, right) =>
             {
+                // THE KERNEL'S PARTS FIRST (TypeDecl.Below): the first part
+                // decides whose the merged type is, and a module's own part,
+                // its path sorting first, took the kernel's statics, descriptor
+                // and start for its own.
+                if (left.Below != right.Below) return left.Below ? -1 : 1;
                 int path = StringComparer.Ordinal.Compare(left.SourcePath, right.SourcePath);
                 return path != 0 ? path : left.SourceFrom.CompareTo(right.SourceFrom);
             });

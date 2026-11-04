@@ -15,6 +15,9 @@ public static partial class Uptime
 #if INIT
     static int _more = 3;
 #endif
+#if STATIC
+    static int _plain;
+#endif
 #if CCTOR
     static Uptime() { }
 #endif

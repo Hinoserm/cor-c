@@ -377,6 +377,14 @@ public sealed class TypeDecl : Node
     /// library boundary. Only the emission is skipped.
     /// </summary>
     public bool Elsewhere { get; set; }
+
+    /// <summary>
+    /// A part read from the index under this compile's (a kernel's, compiling
+    /// a module): sorted before every part of this image's, so the merged type
+    /// is the kernel's -- its statics, descriptor and start the kernel's --
+    /// however the module's own part's path sorts (Frontend, MergePartialTypes).
+    /// </summary>
+    public bool Below { get; set; }
     /// <summary>Indexed signatures, not executable bodies. Never lower their declaration markers.</summary>
     public bool SignatureOnly { get; set; }
 

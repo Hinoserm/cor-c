@@ -38,10 +38,15 @@ done
     || { cat "$k/link.log"; fail "kernel link"; }
 python3 -I "$root/tests/integration/modules/exports.py" "$k/kernel" | awk '{ print $1 }' > "$k/exports"
 
-# The library the kernel reaches is in it and exported; what it does not reach is neither.
+# The library the kernel reaches is in it and exported, and every static of
+# the library; what it does not reach is neither. And the mark a library
+# module asks for.
 grep -q '^m_String_' "$k/exports" || fail "the kernel exports none of the library it keeps"
+grep -q '^s_' "$k/exports" || fail "the kernel exports none of the library's statics"
+grep -qx '__corsac_library_modules' "$k/exports" || fail "the kernel does not say it splits its library"
 if grep -qxF "$clamp" "$k/exports"; then fail "the kernel exports Math.Clamp, which nothing in it reaches"; fi
-if nm "$k/kernel" 2>/dev/null | awk '{ print $NF }' | grep -qxF "$clamp"; then fail "the kernel carries Math.Clamp, which nothing in it reaches"; fi
+nm "$k/kernel" > "$k/symbols" || fail "nm could not read the kernel"
+if awk '{ print $NF }' "$k/symbols" | grep -qxF "$clamp"; then fail "the kernel carries Math.Clamp, which nothing in it reaches"; fi
 
 # The library module, as libcore is built: every source of the kernel's
 # library named, so each member is the module's where the kernel exports
@@ -63,5 +68,22 @@ sort "$k/exports" | comm -12 - "$m/defined" > "$m/twice"
 test ! -s "$m/twice" || { head "$m/twice"; fail "the library module defines what the kernel exports"; }
 "$corc" link "$m/clamps.o" --kernel "$k/kernel" -o "$m/clamps.ko" 2> "$m/link.log" \
     || { cat "$m/link.log"; fail "the library module's link"; }
+
+# A library module over a kernel that does not split its library is refused:
+# that kernel keeps what it withholds, and owning by member would copy it.
+w=$work/whole
+mkdir -p "$w"
+sed "s|$k/|$w/|" "$k/units.tsv" > "$w/units.tsv"
+"$corc" compile-project --units "$w/units.tsv" --nostdlib --obj --freestanding --ring 0 \
+    --decl-index "$k/kernel.idx" --assembly Kernel 2> "$w/units.log" || { cat "$w/units.log"; fail "the whole kernel's units"; }
+# shellcheck disable=SC2086
+"$corc" link $(cut -f2 "$w/units.tsv" | tr '\n' ' ') -o "$w/kernel" --exports 2> "$w/link.log" \
+    || { cat "$w/link.log"; fail "the whole kernel's link"; }
+# shellcheck disable=SC2086
+if "$corc" compile --kernel "$w/kernel" --decl-index "$k/kernel.idx" --assembly Kernel --ring 0 --library-modules \
+    $here/Clamps.cor $runtime --obj -o "$w/clamps.o" 2> "$w/refused.log"; then
+    fail "a library module was built over a kernel that does not split its library"
+fi
+grep -q "was not built with --library-modules" "$w/refused.log" || { cat "$w/refused.log"; fail "the refusal does not say why"; }
 
 echo "PASS library-modules"

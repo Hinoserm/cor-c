@@ -1,6 +1,7 @@
 // A module's part of the kernel's Uptime: static members only, reading the
 // kernel's public and private members, as one part of a partial type reads
-// another's.
+// another's. Its file named to sort BEFORE the kernel's Uptime.cor: the
+// kernel's part must still decide whose the type is (TypeDecl.Below).
 
 namespace Kernel;
 

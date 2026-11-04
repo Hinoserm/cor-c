@@ -815,6 +815,7 @@ public sealed class IndexedDeclarations : IDisposable
                 root.SourceFrom = source.From;
                 root.SourceTo = source.To;
                 root.Elsewhere = true;
+                root.Below = source.Below;
                 root.SignatureOnly = true;
                 // ON THE SIDE ITS FILE WOULD BE ON HAD IT BEEN NAMED HERE. A
                 // unit compiled with --lib is library code, its own files and

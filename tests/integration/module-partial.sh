@@ -6,8 +6,8 @@
 # linked against the kernel's exports -- the kernel's public and private
 # members of the type read by the module's part, as one part reads another's.
 # And refused, each with why: a part of a type the kernel did not declare
-# partial, and in a part an instance field, a virtual member, a static's
-# initialiser, a static constructor or an instance auto-property.
+# partial, and in a part an instance field, a virtual member, a static field,
+# a static constructor or an instance auto-property.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
@@ -41,7 +41,7 @@ done
 # The module: its index on the kernel's, holding its part of Uptime.
 m=$work/module
 mkdir -p "$m"
-module_files="$here/UptimeMore.cor $here/Ticker.cor"
+module_files="$here/AUptimeMore.cor $here/Ticker.cor"
 # shellcheck disable=SC2086
 "$corc" index --assembly Kernel --ring 0 --on "$k/kernel.idx" $module_files -o "$m/module.idx" 2> "$m/index.log" \
     || { cat "$m/index.log"; fail "the module's index refused its part of the kernel's partial Uptime"; }
@@ -62,13 +62,19 @@ readelf -s -W "$m/ticker.ko" | awk '$8 ~ /^m_Kernel\$Uptime_Twice_/ && $7 != "UN
 if readelf -s -W "$m/ticker.ko" | awk '$8 ~ /^m_Kernel\$Uptime_Ticks_/ && $7 != "UND" { found = 1 } END { exit !found }'; then
     fail "the module defines the kernel's Ticks again"
 fi
+# THE TYPE IS THE KERNEL'S though the module's part's file sorts first: its
+# static, its descriptor and its start are defined by the kernel alone.
+if readelf -s -W "$m/ticker.ko" | awk '$7 != "UND" && $8 ~ /Uptime/ && $8 ~ /^(s_|t_|m_Kernel\$Uptime_StaticInit)/ { found = 1 } END { exit !found }'; then
+    readelf -s -W "$m/ticker.ko" | awk '$7 != "UND" && $8 ~ /Uptime/'
+    fail "the module defines the kernel's Uptime statics, descriptor or start"
+fi
 
 # Refused: a kernel type not declared partial, and each shape a part may not have.
 if "$corc" index --assembly Kernel --ring 0 --on "$k/kernel.idx" "$here/NotPartial.cor" -o "$m/not.idx" 2> "$m/not.log"; then
     fail "a part of the kernel's Gate, which is not partial, was indexed"
 fi
 grep -q "only as a part of a partial type" "$m/not.log" || { cat "$m/not.log"; fail "the refusal of Gate does not say why"; }
-for shape in FIELD:"an instance field" VIRTUAL:"a virtual" INIT:"a static field with an initialiser" CCTOR:"a static constructor" AUTO:"an instance auto-property"; do
+for shape in FIELD:"an instance field" VIRTUAL:"a virtual" INIT:"a static field" STATIC:"a static field" CCTOR:"a static constructor" AUTO:"an instance auto-property"; do
     symbol=${shape%%:*}; said=${shape#*:}
     if "$corc" index --assembly Kernel --ring 0 -D "$symbol" --on "$k/kernel.idx" "$here/Refused.cor" -o "$m/$symbol.idx" 2> "$m/$symbol.log"; then
         fail "a part declaring $said ($symbol) was indexed"

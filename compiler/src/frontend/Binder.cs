@@ -10445,7 +10445,10 @@ public sealed partial class Binder
         TypeDecl decl = new()
         {
             Name = name2, Kind = TypeKind.Class, LocalOnly = true, File = _in, Line = lam.Line, Col = lam.Col,
-            FromLibrary = _thisType?.Decl?.FromLibrary == true, SourcePath = _thisType?.Decl?.SourcePath,
+            // ITS FILE THE MEMBER'S IT IS WRITTEN IN, where that says one: a
+            // lambda in Core.cor's part of Math is Core.cor's, not its type's
+            // first part's, the prelude (Lowering.SourcePathOf, by member).
+            FromLibrary = _thisType?.Decl?.FromLibrary == true, SourcePath = _member?.Scope?.Path ?? _thisType?.Decl?.SourcePath,
             InGenericCode = _thisType?.Decl is { Specialised: true } or { InGenericCode: true } || _member is { LocalCopy: true },
         };
 

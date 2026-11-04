@@ -1182,6 +1182,7 @@ public static class Driver
         // reach (PublicApi `?`), a library module the rest, member by member
         // (Module.FixOwnLibrary).
         Corsac.Lang.Lower.Lowering.LibraryModules = args.Contains("--library-modules");
+        Corsac.Lang.Lower.Lowering.ExportsForModules = freestanding && !windows && args.Contains("--obj");
         Corsac.Lang.Lower.Lowering.OwnLibrarySources = ownLibrary;
         // A program's or a module's compile over images that provide the
         // class library -- not one of the class library's own images, whose
@@ -1427,8 +1428,22 @@ public static class Driver
             // defines a thing -- decided now, from everything lowered, before
             // a pass drops a provided static or Provided gives the provided
             // code away, either of which took a file's evidence with it.
+            // A LIBRARY MODULE OVER A KERNEL THAT DOES NOT SPLIT ITS LIBRARY
+            // would own by member what that kernel withholds but keeps -- a
+            // second copy of its statics and code: refused, by the mark such
+            // a kernel exports (LibraryModulesMark).
+            if (kernel is not null && Corsac.Lang.Lower.Lowering.LibraryModules && !providers.Contains(LibraryModulesMark))
+                return Fail($"--library-modules: the kernel {kernelPath} was not built with --library-modules, and keeps the library's code it withholds; build it with the switch");
             module.FixOwnLibrary(new HashSet<string>(Corsac.Lang.Lower.Lowering.OwnLibrarySources.Where(p => !defaultAdded.Contains(p)), StringComparer.Ordinal),
                 byMember: kernel is not null && Corsac.Lang.Lower.Lowering.LibraryModules);
+        }
+        // THE MARK OF A KERNEL THAT SPLITS ITS LIBRARY WITH ITS MODULES, laid
+        // down by its entry unit alone and exported: a library module asks
+        // its provider for it before owning anything by member.
+        if (Corsac.Lang.Lower.Lowering.LibraryModules && Corsac.Lang.Lower.Lowering.ExportsForModules && kernelPath is null && module.Entry is not null)
+        {
+            module.Data.Add(new DataItem(LibraryModulesMark, new byte[4]) { ReadOnly = true, Align = 4 });
+            module.OptionalSymbols.Add(LibraryModulesMark);
         }
         if (!args.Contains("--no-opt"))
         {
@@ -2110,6 +2125,9 @@ public static class Driver
     /// a path's answer changes while the compiler runs.
     /// </summary>
     private static readonly Dictionary<string, bool> librarySources = new(StringComparer.Ordinal);
+
+    /// <summary>What a kernel built with --library-modules exports to say so (a library module refuses a kernel without it).</summary>
+    public const string LibraryModulesMark = "__corsac_library_modules";
     private static readonly object librarySourceGate = new();
 
     /// <summary>
