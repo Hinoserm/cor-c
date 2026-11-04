@@ -1,0 +1,13 @@
+// test: private_const_refused
+// expect-compile-error: CS0122: 'Limits.Most' is inaccessible due to its protection level
+// A constant is a member like any other: another type's private one is not
+// read through its type's name, though it is a value and no storage.
+class Limits
+{
+    private const int Most = 10;
+}
+
+static class Program
+{
+    static int Main() => Limits.Most;
+}

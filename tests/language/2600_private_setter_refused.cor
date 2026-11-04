@@ -1,5 +1,5 @@
 // test: private_setter_refused
-// expect-compile-error: CS0122: 'Counter.N' is inaccessible due to its protection level
+// expect-compile-error: CS0272: the property or indexer 'Counter.N' cannot be used in this context because the set accessor is inaccessible
 // `public int N { get; private set; }`: read anywhere, set only inside
 // Counter (C# 15.7.6) -- the auto property's field, read in place of get_N,
 // is written with set_N's access.

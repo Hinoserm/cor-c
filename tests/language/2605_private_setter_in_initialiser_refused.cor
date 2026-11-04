@@ -1,5 +1,5 @@
 // test: private_setter_in_initialiser_refused
-// expect-compile-error: CS0122: 'Counter.N' is inaccessible due to its protection level
+// expect-compile-error: CS0272: the property or indexer 'Counter.N' cannot be used in this context because the set accessor is inaccessible
 // An object initialiser sets a member as an assignment does: a `private set`
 // property is not set by another type's `new Counter { N = 3 }`.
 class Counter

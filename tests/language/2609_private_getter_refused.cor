@@ -1,0 +1,18 @@
+// test: private_getter_refused
+// expect-compile-error: CS0271: the property or indexer 'Sink.N' cannot be used in this context because the get accessor is inaccessible
+// `public int N { private get; set; }`: set from anywhere, read only inside
+// Sink -- C#'s CS0271 names the accessor, the property itself is public.
+class Sink
+{
+    public int N { private get; set; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Sink s = new Sink();
+        s.N = 1;
+        return s.N;
+    }
+}

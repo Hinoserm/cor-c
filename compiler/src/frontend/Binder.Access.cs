@@ -5,6 +5,9 @@ public sealed partial class Binder
 {
     private const Mods AccessBits = Mods.Public | Mods.Private | Mods.Protected | Mods.Internal;
 
+    /// <summary>The places being bound that are only written, `x.N = v` and `out x.N` (CheckExpr).</summary>
+    private readonly HashSet<Expr> _onlyWritten = new(ReferenceEqualityComparer.Instance);
+
     /// <summary>
     /// An accessor's modifiers: the property's, with the accessor's own access
     /// in place of the property's when it writes one -- `public int N { get;
@@ -45,10 +48,13 @@ public sealed partial class Binder
     private void CheckAccess(Expr site, object used)
     {
         if (!ChecksAccess()) return;
+        // A place only written is bound as a read first: what it reads by
+        // is no matter (CheckExpr's _onlyWritten).
+        if (used is FieldSym or PropertyGetSym && _onlyWritten.Contains(site)) return;
         switch (used)
         {
             case FieldSym { Field: { Declared: true } f }:
-                Refuse(site, f.Owner, Spelt(f), f.Mods, f.Static, Receiver(site), made: false);
+                Refuse(site, f.Owner, Spelt(f), f.Mods, f.Static, Receiver(site), made: false, Sibling(f, write: false), write: false);
                 break;
             case PropertyGetSym { Getter: var getter }:
                 CheckMethod(site, getter);
@@ -67,6 +73,22 @@ public sealed partial class Binder
         => m.Decl is not { Made: false } d || m.ExplicitInterface is not null
             || Inaccessible(m.Owner, d.Mods, m.Static, receiver, made) is null;
 
+    /// <summary>
+    /// A constant named through its type, `A.K`: a value, no storage nor
+    /// symbol, so its access is its declaration's, found on the type or a
+    /// type it derives from.
+    /// </summary>
+    private void CheckConstAccess(Expr site, TypeSymbol owner, string name)
+    {
+        if (!ChecksAccess()) return;
+        for (TypeSymbol? t = owner; t is not null; t = t.Base)
+        {
+            if (t.Decl?.Members.Find(member => member is FieldDecl { } f && f.Name == name && (f.Mods & Mods.Const) != 0) is not FieldDecl declared) continue;
+            Refuse(site, t, name, declared.Mods, isStatic: true, null, made: false);
+            return;
+        }
+    }
+
     /// <summary>A field as its code names it: an auto property's `<N>` is N.</summary>
     private static string Spelt(FieldSymbol f) => f.Name.Length > 2 && f.Name[0] == '<' && f.Name[^1] == '>' ? f.Name[1..^1] : f.Name;
 
@@ -81,15 +103,10 @@ public sealed partial class Binder
         if (!ChecksAccess() || !_r.Resolved.TryGetValue(target, out Sym? sym)) return;
         if (sym is FieldSym { Field: { Declared: true } f } && f.WriteMods != f.Mods)
         {
-            Refuse(target, f.Owner, Spelt(f), f.WriteMods, f.Static, Receiver(target), made: false);
+            Refuse(target, f.Owner, Spelt(f), f.WriteMods, f.Static, Receiver(target), made: false, f.Mods, write: true);
         }
     }
 
-    /// <summary>
-    /// A method's access checked: a constructor by `new` (`byNew`, a `new`
-    /// node's by default) only where its type's code is, protected or not --
-    /// a `: base(...)` reaches a protected one.
-    /// </summary>
     /// <summary>
     /// An object initialiser's or a `with`'s member, `new C { N = 1 }`: a
     /// field or property set (written, by its setter's access) or, `N = { ...
@@ -99,15 +116,48 @@ public sealed partial class Binder
     {
         if (!ChecksAccess()) return;
         if (field is { Declared: true })
-            Refuse(init, field.Owner, name, write ? field.WriteMods : field.Mods, field.Static, null, made: false);
+            Refuse(init, field.Owner, name, write ? field.WriteMods : field.Mods, field.Static, null, made: false, Sibling(field, write), write);
         else if (method is { Decl: { Made: false } d, ExplicitInterface: null })
-            Refuse(init, method.Owner, name, d.Mods, method.Static, null, made: false);
+            Refuse(init, method.Owner, Accessor(method, out Mods? other, out bool writes) ?? name, d.Mods, method.Static, null, made: false, other, writes);
     }
 
+    /// <summary>
+    /// A method's access checked: a constructor by `new` (`byNew`, a `new`
+    /// node's by default) only where its type's code is, protected or not --
+    /// a `: base(...)` reaches a protected one.
+    /// </summary>
     private void CheckMethod(Expr site, MethodSymbol m, bool? byNew = null)
     {
         if (!ChecksAccess() || m.Decl is not { Made: false } d || m.ExplicitInterface is not null) return;
-        Refuse(site, m.Owner, m.IsCtor ? m.Owner.Name : m.Name, d.Mods, m.Static, Receiver(site), made: m.IsCtor && (byNew ?? site is NewExpr));
+        Mods? other = null;
+        bool writes = false;
+        string name = m.IsCtor ? m.Owner.Name : Accessor(m, out other, out writes) ?? m.Name;
+        Refuse(site, m.Owner, name, d.Mods, m.Static, Receiver(site), made: m.IsCtor && (byNew ?? site is NewExpr), other, writes);
+    }
+
+    /// <summary>
+    /// An auto property's field's other accessor's access, where the two
+    /// differ: what says whether the property or only one accessor is out
+    /// of reach (Refuse's CS0271 and CS0272).
+    /// </summary>
+    private static Mods? Sibling(FieldSymbol f, bool write) => f.Mods == f.WriteMods ? null : write ? f.Mods : f.WriteMods;
+
+    /// <summary>
+    /// A property's accessor, get_N or set_N, as the property's name, its
+    /// other accessor's access in `other` (none if it has no other) and
+    /// whether it is the setter in `writes`; null for any other method.
+    /// </summary>
+    private static string? Accessor(MethodSymbol m, out Mods? other, out bool writes)
+    {
+        other = null;
+        writes = false;
+        bool getter = m.Name.StartsWith("get_", StringComparison.Ordinal), setter = m.Name.StartsWith("set_", StringComparison.Ordinal);
+        if (!getter && !setter || m.Owner.Decl?.Members.Find(member => member is PropertyDecl p && (p.Params.Count > 0 ? "Item" : p.Name) == m.Name[4..]) is not PropertyDecl property)
+            return null;
+        writes = setter;
+        if (getter ? property.HasSetter : property.Getter is not null || property.Auto)
+            other = AccessorMods(property.Mods, getter ? property.SetMods : property.GetMods);
+        return property.Params.Count > 0 ? "this[]" : property.Name;
     }
 
     /// <summary>
@@ -127,15 +177,27 @@ public sealed partial class Binder
         return through is ThisExpr or BaseExpr ? null : through;
     }
 
-    private void Refuse(Node site, TypeSymbol owner, string name, Mods mods, bool isStatic, Expr? receiver, bool made)
+    /// <summary>
+    /// Refused as C# says it: CS1540 through the wrong receiver; for a
+    /// property one of whose accessors is out of reach while the other
+    /// (`other`) is not, CS0272 for its setter (`write`) or CS0271 for its
+    /// getter; otherwise CS0122. Said once a place.
+    /// </summary>
+    private void Refuse(Node site, TypeSymbol owner, string name, Mods mods, bool isStatic, Expr? receiver, bool made,
+                        Mods? other = null, bool write = false)
     {
         string? why = Inaccessible(owner, mods, isStatic, receiver, made);
         if (why is null) return;
-        string message = why.Length == 0
-            ? $"CS0122: '{owner.Name}.{name}' is inaccessible due to its protection level"
-            : why.Replace("{member}", $"{owner.Name}.{name}");
+        string message = why.Length != 0 ? why.Replace("{member}", $"{owner.Name}.{name}")
+            : other is { } otherMods && Inaccessible(owner, otherMods, isStatic, receiver, made) is null
+                ? $"CS{(write ? "0272" : "0271")}: the property or indexer '{owner.Name}.{name}' cannot be used in this context because the {(write ? "set" : "get")} accessor is inaccessible"
+                : $"CS0122: '{owner.Name}.{name}' is inaccessible due to its protection level";
+        if (_quiet == 0 && !_accessSaid.Add((site, message))) return;
         Error(site, message);
     }
+
+    /// <summary>Each refusal said once at its place, however often the place is bound again.</summary>
+    private readonly HashSet<(Node, string)> _accessSaid = new();
 
     /// <summary>
     /// Null where the code being bound may reach a member of `owner` declared
@@ -201,10 +263,11 @@ public sealed partial class Binder
     /// </summary>
     private bool Within(TypeSymbol here, TypeSymbol owner)
     {
+        for (TypeSymbol? at = here; at is not null; at = at.Decl is { } atDecl ? OuterOf(atDecl) : null)
+            if (ReferenceEquals(at, owner)) return true;
         string? ownerPath = owner.Decl is { } ownerDecl ? TypePath(ownerDecl) : null;
         for (TypeSymbol? at = here; at is not null; at = at.Decl is { } atDecl ? OuterOf(atDecl) : null)
         {
-            if (ReferenceEquals(at, owner)) return true;
             // A NESTED TYPE'S COPY has no Outer, only its template's path
             // (List.Enumerator): the types it is inside are that path's.
             if (ownerPath is null || at.Decl is not { } d) continue;

@@ -28,12 +28,15 @@ namespace Corsac.Lang;
 /// slots and the static-slot count travel with the tree.
 ///
 /// The format is little-endian and self-describing, and it begins with its
-/// version, 0. A reader refuses any other rather than guessing.
+/// version, 1. A reader refuses any other rather than guessing.
 /// </summary>
 public static class Gir
 {
-    /// <summary>The one layout there is. A reader refuses any other.</summary>
-    public const int Version = 0;
+    /// <summary>
+    /// The one layout there is. A reader refuses any other. 1: a property's
+    /// accessors' own access after its interface (`private set`).
+    /// </summary>
+    public const int Version = 1;
 
     private static ReadOnlySpan<byte> Magic => "GIR0"u8;
 
@@ -488,6 +491,8 @@ public static class Gir
                     Stmt(p2.Setter);
                     Expr(p2.Init);
                     Str(p2.ExplicitInterface ?? "");
+                    I32((int)p2.GetMods);
+                    I32((int)p2.SetMods);
                     I32(p2.Params.Count);
 
                     foreach (Param ip in p2.Params)
@@ -1404,10 +1409,13 @@ public static class Gir
                     Block? setter = Stmt() as Block;
                     Expr? init = Expr();
                     string propertyInterface = Str();
+                    Mods getMods = (Mods)I32();
+                    Mods setMods = (Mods)I32();
 
                     PropertyDecl p = new()
                     {
                         Name = name, Mods = mods, Type = type, Auto = auto, HasSetter = hasSetter,
+                        GetMods = getMods, SetMods = setMods,
                         Getter = getter, Setter = setter, Init = init, TemplateIndex = index,
                         ExplicitInterface = propertyInterface.Length == 0 ? null : propertyInterface,
                     };

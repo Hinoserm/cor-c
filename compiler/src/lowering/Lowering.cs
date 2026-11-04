@@ -266,6 +266,10 @@ public sealed partial class Lowering
                                Dictionary<string, string>? entries = null)
     {
         Lowering l = new(bound, file, library);
+        // What binding said before lowering: a body bound late, for lowering
+        // (BodyWantedLate), says its errors after the binder's were reported,
+        // and they are this unit's as much as any.
+        int saidBefore = bound.Errors.Count;
         // THE STREAMING COPY AND FILL, in i386 code that owns its FPU state
         // (OwnsFpuState): the backend calls them for a block of 256 KB and
         // more (Select.SelectMemCopy), and no IR does, so they are lowered
@@ -287,6 +291,7 @@ public sealed partial class Lowering
                                                        ("AllocFast", 2), ("AllocFastSized", 4), ("AllocRegionSized", 4) })
             if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));
         if (l.MakesStoreSequences) l._m.RuntimeHelpers.Add(Corsac.Lang.Lto.RuntimeAbi.RefStore);
+        errors.AddRange(bound.Errors.Skip(saidBefore));
         errors.AddRange(l.Errors);
         if (entries is not null)
         {

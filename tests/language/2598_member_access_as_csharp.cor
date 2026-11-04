@@ -11,6 +11,7 @@
 // made public
 // either 4
 // private protected 6
+// set only 5
 //
 // WHAT C# LETS A BODY REACH (Binder.Access): a type nested in another reaches
 // its private members, a generic type's copies reach each other's, a derived
@@ -66,6 +67,12 @@ class Counter
     public void Bump() { N++; N = N + 0; N += 1; }
 }
 
+class Hidden
+{
+    public int N { private get; set; }
+    public int Peek() => N;
+}
+
 class Picks
 {
     private string Take(int x) => "int";
@@ -95,6 +102,9 @@ static class Program
         Console.WriteLine("made " + new Made(1).Said);
         Console.WriteLine("either " + new Derived().Both());
         Console.WriteLine("private protected " + new Derived().Close());
+        Hidden hidden = new Hidden();
+        hidden.N = 5;
+        Console.WriteLine("set only " + hidden.Peek());
         return 0;
     }
 }

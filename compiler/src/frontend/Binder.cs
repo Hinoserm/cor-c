@@ -6905,14 +6905,6 @@ public sealed partial class Binder
         return true;
     }
 
-    /// <summary>
-    /// A method something now uses: its body, if it was left unchecked, checked
-    /// -- with the body work while there is any, and once it is over NEVER IN
-    /// THE MIDDLE OF ANOTHER: a node binds to it while some body is being
-    /// checked, and checked there and then it took that body's type, member
-    /// and method for its own. Queued instead (_lateWanted), and checked once
-    /// the check under way is done (DrainLateBodies).
-    /// </summary>
     /// <summary>A body lowering asks for, checked as binding checks one: its members' access too.</summary>
     private void WantBodyLate(MethodSymbol m)
     {
@@ -6921,6 +6913,14 @@ public sealed partial class Binder
         finally { _r.OnMemberBound(null); }
     }
 
+    /// <summary>
+    /// A method something now uses: its body, if it was left unchecked, checked
+    /// -- with the body work while there is any, and once it is over NEVER IN
+    /// THE MIDDLE OF ANOTHER: a node binds to it while some body is being
+    /// checked, and checked there and then it took that body's type, member
+    /// and method for its own. Queued instead (_lateWanted), and checked once
+    /// the check under way is done (DrainLateBodies).
+    /// </summary>
     private void WantBody(MethodSymbol m)
     {
         // A WORD-SHAPED COPY'S METHOD RUNS ITS CANONICAL COPY'S BODY (Canon):
@@ -16358,7 +16358,19 @@ public sealed partial class Binder
 
     private Type CheckExpr(Expr e)
     {
-        Type t = CheckExprCore(e);
+        // ONLY WRITTEN, by `=` or `out`: its reader's access is not asked
+        // (CheckAccess), its writer's is (CheckWriteAccess) --
+        // `public int N { private get; set; }` is set from anywhere.
+        Expr? onlyWritten = e switch
+        {
+            AssignExpr { Op: null, Coalescing: false } a => a.Target,
+            RefArgExpr { IsOut: true } r => r.Target,
+            _ => null,
+        };
+        if (onlyWritten is not null) _onlyWritten.Add(onlyWritten);
+        Type t;
+        try { t = CheckExprCore(e); }
+        finally { if (onlyWritten is not null) _onlyWritten.Remove(onlyWritten); }
         // WHAT IS WRITTEN is checked by its setter's access as well
         // (CheckWriteAccess): `public int N { get; private set; }`.
         Expr? written = e switch
@@ -22653,6 +22665,7 @@ public sealed partial class Binder
             return Type.Error;
         }
 
+        CheckConstAccess(m, owner, m.Name);
         if (FindDecimal(owner, m.Name) is decimal memberMoney)
         {
             return ReadDecimalConstant(m, memberMoney);
