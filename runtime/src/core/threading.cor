@@ -5389,10 +5389,6 @@ public static class Monitor
         {
             throw new ArgumentNullException("obj");
         }
-        if (obj == null)
-        {
-            throw new ArgumentNullException("obj");
-        }
         nuint word = Sys.SyncWord(obj);
         nuint me = Owner();
 

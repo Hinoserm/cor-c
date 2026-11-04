@@ -11612,7 +11612,19 @@ public static class Gc
         RecordFreeSite(at);
         Quarantine(at);
         VerifiedFrees = VerifiedFrees + 1;
+        // GIVEN BACK BY THE PROGRAM, as an unchecked free counts it: off the
+        // pressure counter and into the freed bytes. Kept poisoned instead,
+        // it still counted as allocated and not come back, and a program
+        // that frees everything was collected in the checked mode only
+        // (671, 1529, 1531, 1533 printed their collections).
+        nuint size = SizeOfBlock(block);
+        _since = _since - (long)size;
+        if (_since < 0)
+        {
+            _since = 0;
+        }
         Frees = Frees + 1;
+        FreedBytes = FreedBytes + (long)size;
     }
 
     /// The header of an exact, live allocation, or zero for anything foreign,
@@ -14862,7 +14874,8 @@ public static class Gc
     static nuint Signature(nuint place, nuint value)
     {
 #if TARGET_64BIT
-        return ((place ^ (value >> 3)) * 0x9E3779B97F4A7C15ul) | ((nuint)1 << 63);
+        // In ulong, as C# has a nuint times a ulong: the word back after.
+        return (nuint)(((ulong)(place ^ (value >> 3)) * 0x9E3779B97F4A7C15ul) | (1ul << 63));
 #else
         return ((place ^ (value >> 3)) * 0x9E3779B1u) | ((nuint)1 << 31);
 #endif

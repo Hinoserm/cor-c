@@ -507,6 +507,31 @@ public static class Platform
         }
     }
 
+    /// A SLEEP IN THE KERNEL, for a thread that may sleep: a Monitor.Wait
+    /// and a pool worker with nothing to do (Native.Wait, WaitFor); a
+    /// contended lock has a hook of its own (LockParkHook). The kernel parks the thread on `at` while it
+    /// still holds `value`, until a Wake of that address (WakeHook) or the
+    /// deadline -- the address of a long, Clock.Now's absolute nanoseconds,
+    /// or 0 for none -- and answers nonzero: parked, or found the word
+    /// changed, or the deadline gone. Zero where it may not park (interrupts
+    /// off, in an allocation, the heap lock held, preemption off, no
+    /// process stack), and the caller waits as it would with no hook. The
+    /// collector's own Wait (WaitHook, the stop handshake) never parks.
+    // ParkHook(at, value, deadlineAt)
+    public static nuint ParkHook;
+
+    public static bool Park(nuint at, int value, nuint deadlineAt)
+    {
+        return ParkHook != 0 && Sys.Call(ParkHook, at, (nuint)value, deadlineAt) != 0;
+    }
+
+    /// A contended lock's sleep (MonitorBlock), as ParkHook's but a hook of
+    /// its own: a lock never let go is a deadlock the kernel's hang check
+    /// reports, where a Monitor.Wait or an idle pool worker may wait for
+    /// good -- and (at, value) cannot tell the two apart.
+    // LockParkHook(at, value, 0)
+    public static nuint LockParkHook;
+
     /// THE TIME, from a kernel that keeps it: called with no arguments and
     /// answering nanoseconds since it started. A kernel's own threads may
     /// not latch the 8254 behind it -- a ring-1 kernel's view of time is
@@ -860,19 +885,27 @@ public static class Platform
         return Sys.ThreadBlock();
     }
 
-    /// Nobody to sleep on: a contended lock is waited for by looking again,
-    /// yielding between looks (YieldHook) and then pausing. Ring 1 may not
-    /// HLT, and its yield lets another thread run -- the holder among them;
-    /// ring 0's answers the TLB shootdown a holder may be waiting on.
+    /// A contended lock sleeps in the kernel where it may (LockParkHook),
+    /// until the holder's release wakes it (MonitorWake). Where it may not --
+    /// or with no kernel to sleep in -- it is waited for by looking again,
+    /// yielding between looks (YieldHook) and then pausing. Ring 1 may not HLT, and
+    /// its yield lets another thread run -- the holder among them; ring 0's
+    /// answers the TLB shootdown a holder may be waiting on.
     public static void MonitorBlock(nuint at, int value)
     {
+        if (LockParkHook != 0 && Sys.Call(LockParkHook, at, (nuint)value, 0) != 0)
+        {
+            return;
+        }
         Yield();
         Sys.Pause();
     }
 
-    /// Nobody asleep to wake: the waiter looks again (MonitorBlock).
+    /// The release of a word a sleeper marked (Asleep): one sleeper woken,
+    /// where the kernel parked it (MonitorBlock). Never reached uncontended.
     public static void MonitorWake(nuint at)
     {
+        Wake(at, 1);
     }
 
     /// Asks every thread still running to stop for a collection: nothing
@@ -1428,6 +1461,13 @@ public static class Native
 {
     public static void Wait(nuint at, int expect)
     {
+        // ASLEEP IN THE KERNEL where it may (Platform.Park): woken by the
+        // Wake that follows every change of the word, and every caller
+        // re-reads it, as after a futex wait.
+        if (Platform.Park(at, expect, 0))
+        {
+            return;
+        }
         // The word is 32 bits; the expected value its low half, whatever
         // sign the caller's word gave it.
         for (int i = 0; i < 1000000 && Sys.Read32(at) == (uint)expect; i++)
@@ -1441,8 +1481,16 @@ public static class Native
     /// looks the same; every caller re-reads its word and its clock.
     public static void WaitFor(nuint at, int expect, long nanoseconds)
     {
-        long deadline = Clock.Now() + nanoseconds;
+        // SATURATED, not wrapped: a timeout near long.MaxValue added to the
+        // clock went negative, a deadline already passed.
+        long now = Clock.Now();
+        long deadline = nanoseconds > long.MaxValue - now ? long.MaxValue : now + nanoseconds;
 
+        // No long fits a word on i386: the kernel is handed its address.
+        if (Platform.Park(at, expect, Sys.AddressOf(ref deadline)))
+        {
+            return;
+        }
         while (Sys.Read32(at) == (uint)expect && Clock.Now() < deadline)
         {
             Idle();
