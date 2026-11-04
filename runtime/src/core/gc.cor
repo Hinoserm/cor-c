@@ -5937,6 +5937,20 @@ public static class Gc
         }
     }
 
+    /// The class slot a block of `page` freed by `tb` goes onto, the
+    /// thread's own list -- the page its own and the one its slot names --
+    /// or 0 where it goes onto the page's, off the thread's count as well
+    /// (ClassFree's two ways, and ReleaseQuarantined's count by the same).
+    static nuint OwnListSlot(nuint page, nuint tb)
+    {
+        nuint owner = HeapChunks.Owner(page);
+        nuint cache = tb != 0 ? Sys.ReadAddress(tb + Tls.Classes) : 0;
+        if (cache == 0 && tb != 0) cache = Sys.ReadAddress(tb + Tls.ClassesSaved);
+        if (owner == 0 || owner != tb || cache == 0) return 0;
+        nuint slot = cache + (HeapChunks.PageClass(page) - 1) * (2 * WordSize.Bytes);
+        return Sys.ReadAddress(slot) == page ? slot : 0;
+    }
+
     /// A block of a page freed by hand: cleared, marked free, and onto the
     /// freeing thread's own list when the page is its own, else onto the
     /// page's. The heap lock is held and no collection is under way.
@@ -5946,13 +5960,11 @@ public static class Gc
         if (_heapCheck) Forget(block);
         ZeroWords(block + HeaderBytes, block + size);
         StampClass(block, size, FlagFree);
+        nuint slot = OwnListSlot(page, tb);
         nuint owner = HeapChunks.Owner(page);
-        nuint cache = tb != 0 ? Sys.ReadAddress(tb + Tls.Classes) : 0;
-        if (cache == 0 && tb != 0) cache = Sys.ReadAddress(tb + Tls.ClassesSaved);
-        nuint slot = cache + (HeapChunks.PageClass(page) - 1) * (2 * WordSize.Bytes);
         // ONTO THE THREAD'S OWN LIST, a list it was charged for (Charge):
         // a block made and freed in a loop is no pressure past that once.
-        if (owner != 0 && owner == tb && cache != 0 && Sys.ReadAddress(slot) == page)
+        if (slot != 0)
         {
             Sys.WriteAddress(block + KindAt, Sys.ReadAddress(slot + WordSize.Bytes));
             Sys.WriteAddress(slot + WordSize.Bytes, block);
@@ -9888,11 +9900,11 @@ public static class Gc
         nuint owning = HeapChunks.Of(block);
         if (owning != 0 && HeapChunks.PageClass(owning) != 0)
         {
-            // A page not this thread's takes the block off the pressure
-            // counter itself (ClassFree's Uncount), and VerifyFree took it
-            // off already: back on first, so it is counted off once.
+            // Onto the page's list, ClassFree takes the block off the
+            // pressure counter itself (Uncount), and VerifyFree took it off
+            // already: back on first, so it is counted off once.
             nuint tb = Sys.ThreadBlock();
-            if (HeapChunks.Owner(owning) != tb) _since = _since + (long)size;
+            if (OwnListSlot(owning, tb) == 0) _since = _since + (long)size;
             ClassFree(owning, block, size, tb);
             return;
         }
@@ -12180,15 +12192,19 @@ public static class Gc
     /// nor where the thread's preempt count is raised (Tls.PreemptCount):
     /// the platform must refuse there itself, as every caller but
     /// OwnListBytes, which leaves the call out, asks regardless. Called with 1
-    /// by a thread about to wait for another's collection to end, with the
-    /// heap lock not held -- blocked (WaitForCollector), or still counted
-    /// running and answering rounds as it waits (WaitOutAnyCycle, for
-    /// ReleaseHeap and ReferencesIntoReport): it should give the processor
-    /// to a thread that is ready whether or not one is due, since the
-    /// collector may be one of them -- and answer nonzero when this thread
-    /// may not give it away and may wait for ever (a kernel's thread with
-    /// its preemption count raised, or interrupts off), which then does
-    /// without that cycle's end: an allocation takes its last try at once,
+    /// by a thread about to wait for another's collection to end --
+    /// blocked (WaitForCollector), or still counted running and answering
+    /// rounds as it waits (WaitOutAnyCycle, for ReleaseHeap and
+    /// ReferencesIntoReport) -- or for the barrier's pool to be stocked
+    /// (WaitForSegment, inside its barrier: Tls.InAlloc set, the heap lock
+    /// perhaps held): it should give the processor to a thread that is ready
+    /// whether or not one is due, since the collector may be one of them --
+    /// and answer nonzero when this thread may not give it away and may wait
+    /// for ever (a kernel's thread with its preemption count raised,
+    /// interrupts off, inside an allocation or a barrier, holding the heap
+    /// lock, or on no process's stack). The barrier's thread then lives on
+    /// the pool's reserve, or its report is lost and the cycle given up
+    /// (BarrierLost); a waiter for a collection does without that cycle's end: an allocation takes its last try at once,
     /// with the cap lifted for it (HeapChunks.PastCap); a collection asked
     /// for is not made, and what needed one says so (CollectMade). 0
     /// answers otherwise. 0: none.
@@ -13098,9 +13114,10 @@ public static class Gc
         }
     }
 
-    /// Waits for another thread's collection the platform refused
-    /// (WaitForCollector false), and of them the allocations that went
-    /// without it, taking their last try at once. Counted without a lock:
+    /// Waits the platform refused -- for another thread's collection
+    /// (WaitForCollector false), or for the barrier's pool (WaitForSegment) --
+    /// and of them the allocations that went without the collection, taking
+    /// their last try at once. Counted without a lock:
     /// a figure to read, not to reckon with.
     public static long RefusedWaits, RefusedAllocations;
 
@@ -15083,11 +15100,14 @@ public static class Gc
             nuint fresh = TakeSegment(MayWait(tb) ? (nuint)StockReserve : 0, MayWait(tb));
             if (fresh == 0)
             {
-                if (WaitForSegment(tb)) continue;
+                int waited = WaitForSegment(tb);
+                if (waited > 0) continue;
                 // REFUSED THE WAIT by its platform -- a kernel's thread that
                 // cannot give its processor away -- it lives on the reserve,
-                // as a thread that may never wait does.
-                fresh = TakeSegment(0, false);
+                // as a thread that may never wait does. Only then: a wait
+                // ended by the mark taking the reports (Marking 2) marks on
+                // the spot below, never into a segment nobody reads again.
+                if (waited < 0) fresh = TakeSegment(0, false);
             }
             if (fresh == 0)
             {
@@ -15112,34 +15132,37 @@ public static class Gc
 
     /// THE POOL EMPTY: the thread waits for the collector to stock it, the
     /// processor given up meanwhile, as a thread that allocates past its
-    /// share helps or waits for the collector (Go's assists). Answers false
-    /// where waiting is no answer: the budget spent or the platform out of
+    /// share helps or waits for the collector (Go's assists). Answers 1 when
+    /// the pool has room again, -1 when the platform refused this thread the
+    /// wait (the caller lives on the reserve), and 0 where waiting is no
+    /// answer: the budget spent or the platform out of
     /// memory (BarrierSpent), the reports taken already (Marking 2: the
     /// caller marks), the cycle given up, a thread that may not wait
     /// (MayWait), or one its platform says may not give its processor away
     /// (YieldHook with 1, asked at every turn as WaitForCollector asks it):
     /// a kernel's thread inside its barrier (Tls.InAlloc), with interrupts
     /// off or its preemption off. Two such spinning on the only processors
-    /// there were kept the collector from ever running to stock the pool. The collector itself, reporting, stocks the pool there
-    /// and then, unless it is an interrupt on top of the collector. A thread
+    /// there were kept the collector from ever running to stock the pool.
+    /// The collector itself, reporting, stocks the pool there and then,
+    /// unless it is an interrupt on top of the collector. A thread
     /// waiting here owes the rounds its answer -- it is inside its barrier
     /// (Tls.InAlloc) -- and the collector waiting on it stocks the pool at
     /// every turn of its wait (GcThreads.Round) and its stop's steps.
-    static bool WaitForSegment(nuint tb)
+    static int WaitForSegment(nuint tb)
     {
         nuint ctl = GcLock.Words();
         if (Sys.ReadAddress(ctl + GcLock.Collector) == tb)
         {
-            if (Sys.ReadAddress(tb + Tls.PreemptCount) != 0) return false;
+            if (Sys.ReadAddress(tb + Tls.PreemptCount) != 0) return 0;
             Sys.AtomicSwap32(ctl + GcLock.BarrierLow, 1);
             KeepBarrierStocked();
-            return Sys.Read32(ctl + GcLock.BarrierSpent) == 0 && SegmentsLeft() != 0;
+            return Sys.Read32(ctl + GcLock.BarrierSpent) == 0 && SegmentsLeft() != 0 ? 1 : 0;
         }
-        if (!MayWait(tb)) return false;
-        BarrierWaits = BarrierWaits + 1;
+        if (!MayWait(tb)) return 0;
+        bool counted = false;
         while (SegmentsLeft() <= (nuint)StockReserve)
         {
-            if (Sys.Read32(ctl + GcLock.BarrierSpent) != 0 || Runtime.Marking != 1) return false;
+            if (Sys.Read32(ctl + GcLock.BarrierSpent) != 0 || Runtime.Marking != 1) return 0;
             if (Sys.Cas32(ctl + GcLock.BarrierLow, 0, 1) == 0) GcThreads.Stir();
             // The platform's hook gives the processor to what is ready, the
             // collector among them, or says this thread may not; with none
@@ -15149,15 +15172,21 @@ public static class Gc
                 if (Sys.Call(YieldHook, 1, 0, 0) != 0)
                 {
                     RefusedWaits = RefusedWaits + 1;
-                    return false;
+                    return -1;
                 }
             }
             else
             {
                 Platform.Yield();
             }
+            // A wait counted once it has been one: a refusal is not.
+            if (!counted)
+            {
+                BarrierWaits = BarrierWaits + 1;
+                counted = true;
+            }
         }
-        return true;
+        return 1;
     }
 
     /// Whether the thread may wait for a segment: not the collector, whose

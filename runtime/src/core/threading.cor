@@ -5350,8 +5350,7 @@ public static class Monitor
         try
         {
             // The deadline inside: a clock that throws leaves the waiter out
-            // of the list as well. Read once enrolled, the first look at the
-            // clock may already see a pulse.
+            // of the list as well.
             long deadline = millisecondsTimeout < 0 ? -1 : Clock.Now() + (long)millisecondsTimeout * 1000000;
             while (Sys.Read32(flag) == 0)
             {

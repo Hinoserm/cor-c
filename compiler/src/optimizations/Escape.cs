@@ -468,8 +468,10 @@ public sealed partial class Escape : IModulePass
 
     /// <summary>
     /// Giving back a pointer that is still its object's -- in a region or on
-    /// the heap -- with what it owns (Runtime.FreeHeld): an owned variable's
-    /// object where a lap with a region ends (PlaceLapFrees).
+    /// the heap -- with what it owns (Runtime.FreeHeld): an object at its
+    /// last use in the block that made it (FreeAtLastUse), an owned
+    /// variable's where a lap with a region ends (PlaceLapFrees), and one
+    /// whose site runs once a call at its returns and throws (OnceFreer).
     /// </summary>
     public const string HeldFreer = Corsac.Lang.Lto.RuntimeAbi.FreeHeld;
     private bool _heldFreer;
