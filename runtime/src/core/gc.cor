@@ -5521,11 +5521,12 @@ public static class Gc
     /// the marker's snapshot names these chunks. The heap lock is held.
     public static bool DrainPool()
     {
+        // The spares are on no list a collection walks; they go at once.
+        bool drained = HeapChunks.DrainSpares();
         if (_collecting || Runtime.Marking != 0)
         {
-            return false;
+            return drained;
         }
-        bool drained = false;
         for (nuint h = _heap0; h != 0; h = Sys.ReadAddress(h + HeapNextAt))
         {
             while (Sys.ReadAddress(h + HeapPoolAt) != 0)
@@ -9411,7 +9412,7 @@ public static class Gc
             // Not a chunk the recycling walk may still step onto.
             if (whole == _recycleNext) _recycleNext = HeapChunks.Next(whole);
             if (whole == _recycle) _recycle = 0;
-            HeapChunks.Release(whole, GuardReleases);
+            HeapChunks.Release(whole, GuardReleases, true);
             GcLock.Exit();
             return;
         }
@@ -9917,7 +9918,7 @@ public static class Gc
         {
             if (owning == _recycleNext) _recycleNext = HeapChunks.Next(owning);
             if (owning == _recycle) _recycle = 0;
-            HeapChunks.Release(owning, GuardReleases);
+            HeapChunks.Release(owning, GuardReleases, true);
             return;
         }
         if (GcThreads.BufferHolding(block) != 0 && GcThreads.Others())
@@ -13397,6 +13398,8 @@ public static class Gc
         {
             return;
         }
+        // A COLLECTION IS MEMORY WANTED: the spares a free kept go back first.
+        HeapChunks.DrainSpares();
         if (_heapCheck)
         {
             CheckHeap(0);
@@ -16523,7 +16526,15 @@ public static class HeapChunks
 
     static nuint AnchorBytes(nuint chunk)
     {
-        return (BlockAnchorCount(chunk) * WordSize.Bytes + WordSize.Bytes + StartWords(chunk) * WordSize.Bytes + 4095) & ~(nuint)4095;
+        return AnchorBytesOf(Limit(chunk) - chunk);
+    }
+
+    /// A start table's bytes for a chunk of `size` (a spare's, its header cleared).
+    static nuint AnchorBytesOf(nuint size)
+    {
+        nuint count = (size + 4095) / 4096;
+        nuint words = (size / 8 + StartBits - 1) / StartBits;
+        return (count * WordSize.Bytes + WordSize.Bytes + words * WordSize.Bytes + 4095) & ~(nuint)4095;
     }
 
     /// Where a chunk's start bits are (after its anchors), or 0 for a chunk without them.
@@ -17428,64 +17439,74 @@ public static class HeapChunks
         return Sys.ReadAddress(chunk + ChunkEnd);
     }
 
-    /// Takes a chunk out of the list and gives its memory back. The floor and
-    /// ceiling are left as they were: an address inside a gone chunk still
-    /// fails the lookup that follows the envelope test.
-    /// Chunks taken from the operating system and given back, and of those
-    /// given back the ones not of the usual size -- a large array's own:
-    /// what says whether a program's heap is churning its mappings.
+    /// Chunks taken from the operating system and given back (unmapped), and
+    /// of those the ones not of the usual size -- a large array's own: what
+    /// says whether a program's heap is churning its mappings. And the
+    /// chunks taken back from the spares instead of mapped.
     public static long Maps, Releases, BigReleases, Reuses;
 
     // SPARE MAPPINGS: a large array's own chunk given back by a free, kept
-    // instead of unmapped -- a packet's buffer outgrown and freed every time
-    // round a loop was an mmap and an munmap each (131,000 of them in sshd's
-    // packet path), and the next one's pages each faulted in again. A few, a
-    // megabyte or an eighth of the heap at most; taken back by a request of
-    // a size it fits closely (Take), cleared as a new mapping is.
+    // instead of unmapped, its start table with it -- a packet's buffer
+    // outgrown and freed every time round a loop was an mmap and an munmap
+    // each (131,000 of them in sshd's packet path), and the next one's pages
+    // each faulted in again. Four at most, none above a usual chunk's most
+    // (a spare is cleared under the heap lock), and together no more than
+    // the larger of that and an eighth of the heap; taken back by a request
+    // of a size it fits within a quarter (Take). Memory the heap does not
+    // count, so it is given back whenever memory is wanted: by a collection,
+    // a drained pool, the cap, and a mapping refused (DrainSpares).
     const int SpareSlots = 4;
     static nuint _spare0, _spare1, _spare2, _spare3;
     static nuint _spareSize0, _spareSize1, _spareSize2, _spareSize3;
+    static nuint _spareAnchors0, _spareAnchors1, _spareAnchors2, _spareAnchors3;
     static nuint _spareBytes;
 
     static nuint SpareAt(int i) => i == 0 ? _spare0 : i == 1 ? _spare1 : i == 2 ? _spare2 : _spare3;
     static nuint SpareSizeAt(int i) => i == 0 ? _spareSize0 : i == 1 ? _spareSize1 : i == 2 ? _spareSize2 : _spareSize3;
+    static nuint SpareAnchorsAt(int i) => i == 0 ? _spareAnchors0 : i == 1 ? _spareAnchors1 : i == 2 ? _spareAnchors2 : _spareAnchors3;
 
-    static void SetSpare(int i, nuint at, nuint size)
+    static void SetSpare(int i, nuint at, nuint size, nuint anchors)
     {
-        if (i == 0) { _spare0 = at; _spareSize0 = size; }
-        else if (i == 1) { _spare1 = at; _spareSize1 = size; }
-        else if (i == 2) { _spare2 = at; _spareSize2 = size; }
-        else { _spare3 = at; _spareSize3 = size; }
+        if (i == 0) { _spare0 = at; _spareSize0 = size; _spareAnchors0 = anchors; }
+        else if (i == 1) { _spare1 = at; _spareSize1 = size; _spareAnchors1 = anchors; }
+        else if (i == 2) { _spare2 = at; _spareSize2 = size; _spareAnchors2 = anchors; }
+        else { _spare3 = at; _spareSize3 = size; _spareAnchors3 = anchors; }
     }
 
     /// Kept as a spare (SpareSlots) if there is room for it, under the heap
-    /// lock as every chunk's coming and going is.
-    static bool KeepSpare(nuint chunk, nuint size)
+    /// lock as every chunk's coming and going is. `anchors` is its start
+    /// table outside it, or 0.
+    static bool KeepSpare(nuint chunk, nuint size, nuint anchors)
     {
+        if (size > ChunkMost) return false;
         nuint most = (nuint)(_heapBytes / 8);
         if (most < ChunkMost) most = ChunkMost;
         if (_spareBytes + size > most) return false;
         for (int i = 0; i < SpareSlots; i++)
         {
             if (SpareAt(i) != 0) continue;
-            SetSpare(i, chunk, size);
+            SetSpare(i, chunk, size, anchors);
             _spareBytes = _spareBytes + size;
             return true;
         }
         return false;
     }
 
-    /// A spare of at least `ask` bytes and not a quarter more, taken out of
-    /// the spares, or 0; its size in `size`.
-    static nuint TakeSpare(nuint ask, out nuint size)
+    /// A spare of at least `ask` bytes, not a quarter more and not past the
+    /// cap (0: none), taken out of the spares, or 0; its size and start
+    /// table in `size` and `anchors`.
+    static nuint TakeSpare(nuint ask, long cap, out nuint size, out nuint anchors)
     {
         size = 0;
+        anchors = 0;
         for (int i = 0; i < SpareSlots; i++)
         {
             nuint at = SpareAt(i);
             nuint has = SpareSizeAt(i);
             if (at == 0 || has < ask || has > ask + ask / 4) continue;
-            SetSpare(i, 0, 0);
+            if (cap != 0 && _heapBytes + (long)has > cap) continue;
+            anchors = SpareAnchorsAt(i);
+            SetSpare(i, 0, 0, 0);
             _spareBytes = _spareBytes - has;
             size = has;
             return at;
@@ -17493,7 +17514,44 @@ public static class HeapChunks
         return 0;
     }
 
-    public static void Release(nuint chunk, bool guard = false)
+    /// Every spare given back to the operating system, its start table with
+    /// it; whether there was one. The heap lock is held.
+    public static bool DrainSpares()
+    {
+        bool any = false;
+        for (int i = 0; i < SpareSlots; i++)
+        {
+            nuint at = SpareAt(i);
+            if (at == 0) continue;
+            nuint size = SpareSizeAt(i);
+            nuint anchors = SpareAnchorsAt(i);
+            SetSpare(i, 0, 0, 0);
+            _spareBytes = _spareBytes - size;
+            Unmapped(at, size, anchors);
+            any = true;
+        }
+        return any;
+    }
+
+    /// A chunk's memory and its start table outside it, if any, unmapped.
+    static void Unmapped(nuint chunk, nuint size, nuint anchors)
+    {
+        if (anchors != 0)
+        {
+            nuint bytes = AnchorBytesOf(size);
+            Platform.Unmap(anchors, bytes);
+            _anchorBytes = _anchorBytes - (long)bytes;
+        }
+        Platform.Unmap(chunk, size);
+        Releases = Releases + 1;
+        if (size > ChunkMost) BigReleases = BigReleases + 1;
+    }
+
+    /// Takes a chunk out of the list and gives its memory back -- or, for a
+    /// dedicated chunk a free gives back (`spare`), keeps it as a spare. The
+    /// floor and ceiling are left as they were: an address inside a gone
+    /// chunk still fails the lookup that follows the envelope test.
+    public static void Release(nuint chunk, bool guard = false, bool spare = false)
     {
         nuint size = Sys.ReadAddress(chunk + ChunkLimit) - chunk;
         IndexRemove(chunk);
@@ -17511,27 +17569,28 @@ public static class HeapChunks
 
         _heapBytes = _heapBytes - (long)size;
         Gc.HeapShrank(Sys.ReadAddress(chunk + ChunkHeap), size);
-        Releases = Releases + 1;
-        if (size > ChunkMost) BigReleases = BigReleases + 1;
         nuint anchors = Sys.ReadAddress(chunk + ChunkAnchors);
         // A PAGE'S START TABLE IS INSIDE IT, and goes with it.
-        if (anchors != 0 && (anchors < chunk || anchors >= chunk + size))
-        {
-            nuint bytes = AnchorBytes(chunk);
-            Platform.Unmap(anchors, bytes);
-            _anchorBytes = _anchorBytes - (long)bytes;
-        }
+        if (anchors >= chunk && anchors < chunk + size) anchors = 0;
         // Only a dedicated chunk a free gives back is guarded: the sweep's
         // empty chunks, guarded too, used up the address space of a 32-bit
         // process in minutes, and a free is what the guard is for.
         if (guard)
         {
+            if (anchors != 0)
+            {
+                nuint bytes = AnchorBytes(chunk);
+                Platform.Unmap(anchors, bytes);
+                _anchorBytes = _anchorBytes - (long)bytes;
+            }
             Platform.Guard(chunk, size);
+            Releases = Releases + 1;
+            if (size > ChunkMost) BigReleases = BigReleases + 1;
             return;
         }
         // A large array's own, kept for the next of its size (SpareSlots).
-        if (size > ChunkMost / 16 && KeepSpare(chunk, size)) return;
-        Platform.Unmap(chunk, size);
+        if (spare && size > ChunkMost / 16 && KeepSpare(chunk, size, anchors)) return;
+        Unmapped(chunk, size, anchors);
     }
 
     public static void SetEnd(nuint chunk, nuint end)
@@ -17645,39 +17704,54 @@ public static class HeapChunks
         // INTO THE RESERVE, ONLY WHAT IS ASKED: a usual chunk taken there
         // for a small request spent a megabyte of it on a few bytes.
         long cap = CapNow();
-        long soft = SoftCap;
-        if (soft != 0 && _heapBytes + (long)ask > soft) ask = minimum;
-
-        // THE POOL OF EMPTY PAGES GOES FIRST: kept to spare the mapping, it
-        // is no reason to refuse a large array its room.
-        if (cap != 0 && _heapBytes + (long)ask > cap && Gc.DrainPool())
-        {
-            if (_heapBytes + (long)ask > cap) ask = minimum;
-        }
-
-        // Refused at the cap, silently: the request that ends out of memory
-        // is caught or not, and the heap's report is said only if it is not
-        // (Gc.ThrowOutOfMemory).
-        if (cap != 0 && _heapBytes + (long)ask > cap)
-        {
-            return 0;
-        }
 
         // A SPARE OF ITS SIZE FIRST, for a large array's own (SpareSlots):
-        // cleared, as the operating system hands a new mapping over.
-        nuint raw = 0;
+        // memory already the program's, so neither the pool nor the spares
+        // need go for it; within the cap at its own size, a quarter over the
+        // request at most. Cleared, as the operating system hands a new
+        // mapping over, and its start table with it.
         nuint spared = 0;
-        nuint spare = dedicated ? TakeSpare(ask, out spared) : 0;
+        nuint spareAnchors = 0;
+        nuint spare = dedicated ? TakeSpare(ask, cap, out spared, out spareAnchors) : 0;
+        nuint raw = spare;
         if (spare != 0)
         {
             Sys.MemorySet(spare, 0, spared);
-            raw = spare;
             ask = spared;
             Reuses = Reuses + 1;
         }
         else
         {
+            long soft = SoftCap;
+            if (soft != 0 && _heapBytes + (long)ask > soft) ask = minimum;
+
+            // THE POOL OF EMPTY PAGES GOES FIRST, AND THE SPARES: kept to
+            // spare the mapping, they are no reason to refuse a large array
+            // its room, and are memory the heap's count does not hold.
+            if (cap != 0 && _heapBytes + (long)_spareBytes + (long)ask > cap)
+            {
+                bool drained = DrainSpares();
+                if (Gc.DrainPool() || drained)
+                {
+                    if (_heapBytes + (long)ask > cap) ask = minimum;
+                }
+            }
+
+            // Refused at the cap, silently: the request that ends out of
+            // memory is caught or not, and the heap's report is said only if
+            // it is not (Gc.ThrowOutOfMemory).
+            if (cap != 0 && _heapBytes + (long)ask > cap)
+            {
+                return 0;
+            }
+
             raw = Platform.Map(ask);
+            // THE SPARES HOLD ADDRESS SPACE: a bare machine's region list or
+            // a 32-bit process may have room for the request only without them.
+            if (raw == 0 && DrainSpares())
+            {
+                raw = Platform.Map(ask);
+            }
             if (raw == 0 && ask > minimum)
             {
                 ask = minimum;
@@ -17699,6 +17773,11 @@ public static class HeapChunks
         // collection that needs to is the one the address space ran out for.
         // Taken lazily, at the first collection, it was refused exactly then,
         // the snapshot was given up, and nothing could be freed at all.
+        if (spareAnchors != 0)
+        {
+            Sys.MemorySet(spareAnchors, 0, AnchorBytes(raw));
+            Sys.WriteAddress(raw + ChunkAnchors, spareAnchors);
+        }
         if (PrepareBlockAnchors(raw) == 0)
         {
             Platform.Unmap(raw, ask);
