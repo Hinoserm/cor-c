@@ -1,0 +1,19 @@
+// test: default_naming_other_private_const_refused
+// expect-compile-error: CS0122: 'Vault.Code' is inaccessible due to its protection level
+// A default is evaluated where it was declared, with that type's access:
+// another type's private constant is no default of Door's, however it is
+// spelt for the call.
+class Vault
+{
+    private const int Code = 7;
+}
+
+class Door
+{
+    public int Open(int code = Vault.Code) => code;
+}
+
+static class Program
+{
+    static int Main() => new Door().Open();
+}

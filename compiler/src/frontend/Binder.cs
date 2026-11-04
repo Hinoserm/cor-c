@@ -2436,8 +2436,12 @@ public sealed partial class Binder
         _constantStates[key] = ConstantState.Evaluating;
         TypeSymbol? previousScope = _scope;
         string previous = _in;
+        // ITS OWN TYPE'S CODE, checked as that type's: not under the
+        // default being spelt that asked for it (_defaultSpelt).
+        int previousSpelt = _defaultSpelt;
         _scope = owner;
         _in = declaration.File;
+        _defaultSpelt = 0;
         try
         {
             FieldDecl field = declaration.Field;
@@ -2495,6 +2499,7 @@ public sealed partial class Binder
         {
             _scope = previousScope;
             _in = previous;
+            _defaultSpelt = previousSpelt;
         }
     }
 
@@ -16157,13 +16162,10 @@ public sealed partial class Binder
     {
         NameExpr n => Full(n),
 
-        // `= Sized.Size` as `= Size`: the declaring type's own (DefaultSpelt).
-        MemberExpr m => new MemberExpr
-        {
-            Target = Spell(m.Target), Name = m.Name, Guarded = m.Guarded,
-            NullConditional = m.NullConditional, DefaultSpelt = true,
-            Line = m.Line, Col = m.Col, File = m.File,
-        },
+        // `= Sized.Size` as `= Size`: the declaring type's own (DefaultSpelt),
+        // read through it, a type it is in or one it derives from. `= B.Hidden`
+        // of another type is not, and is checked at the call as written.
+        MemberExpr m => SpeltMember(m, Spell(m.Target)),
 
         UnaryExpr u => new UnaryExpr
         {
@@ -16184,6 +16186,24 @@ public sealed partial class Binder
 
         _ => e,
     };
+
+    /// <summary>
+    /// A default's member read rebuilt over its spelt target: the declaring
+    /// type's own (DefaultSpelt) where the target names that type, one it is
+    /// nested in or one it derives from -- what the declaring type reaches.
+    /// </summary>
+    private MemberExpr SpeltMember(MemberExpr m, Expr target)
+    {
+        bool own = _scope is { } declaring && target is NameExpr named
+            && _r.Types.TryGetValue(named.Name, out TypeSymbol? through)
+            && (Within(declaring, through) || DerivesFromType(declaring, through));
+        return new MemberExpr
+        {
+            Target = target, Name = m.Name, Guarded = m.Guarded,
+            NullConditional = m.NullConditional, DefaultSpelt = own,
+            Line = m.Line, Col = m.Col, File = m.File,
+        };
+    }
 
     /// <summary>
     /// One name, written out in full: a type by its whole key, a const or a
