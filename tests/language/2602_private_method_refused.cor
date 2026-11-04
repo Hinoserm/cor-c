@@ -1,0 +1,13 @@
+// test: private_method_refused
+// expect-compile-error: CS0122: 'Vault.Open' is inaccessible due to its protection level
+// A private method with no public overload to take its place is refused,
+// not called.
+class Vault
+{
+    private int Open() => 1;
+}
+
+static class Program
+{
+    static int Main() => new Vault().Open();
+}

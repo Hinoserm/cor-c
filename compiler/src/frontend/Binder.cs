@@ -1837,7 +1837,8 @@ public sealed partial class Binder
         // Every method a node binds to, and every one lowering reaches: a
         // copy's body left unchecked until used is checked then (WantBody).
         b._r.OnMethodReferenced(b.WantBody);
-        b._r.BodyWantedLate = b.WantBody;
+        b._r.OnMemberBound(b.CheckAccess);
+        b._r.BodyWantedLate = b.WantBodyLate;
         b._r.NeverReturns = b.CallNeverReturns;
         b.Run(unit);
         // The declarations' tables carry straight on into the bodies': a copy
@@ -1850,6 +1851,9 @@ public sealed partial class Binder
         // handler: across the unit, now that every body is bound
         // (Binder.AwaitChecks).
         b.CheckAsyncSafety();
+        // WHAT LOWERING BINDS IS ITS OWN, not a body someone wrote: only a
+        // body it asks for (WantBodyLate) has its members' access checked.
+        b._r.OnMemberBound(null);
         b._r.StaticBytes = b._staticNext;
         b.Retire();
         return b._r;
@@ -5279,6 +5283,7 @@ public sealed partial class Binder
                     {
                         Name = f.Name, Type = Resolve(f.Type, sym), Owner = sym,
                         Static = f.Mods.HasFlag(Mods.Static),
+                        Mods = f.Mods, WriteMods = f.Mods, Declared = true,
                         Volatile = f.Mods.HasFlag(Mods.Volatile),
                         IsEvent = f.IsEvent, FixedLength = fixedLength,
                         ThreadStatic = f.Mods.HasFlag(Mods.Static) && IsThreadStatic(f),
@@ -5338,6 +5343,7 @@ public sealed partial class Binder
                         {
                             Name = "<" + p.Name + ">", Type = propType, Owner = sym,
                             Static = p.Mods.HasFlag(Mods.Static),
+                            Mods = AccessorMods(p.Mods, p.GetMods), WriteMods = AccessorMods(p.Mods, p.SetMods), Declared = true,
                             Required = p.Mods.HasFlag(Mods.Required),
                         });
 
@@ -5413,7 +5419,7 @@ public sealed partial class Binder
                         // canonical copy and the property had not.
                         MethodDecl getter = new()
                         {
-                            Name = NameTable.Accessor("get_", p.Name), Mods = p.Mods, Returns = p.Type,
+                            Name = NameTable.Accessor("get_", p.Name), Mods = AccessorMods(p.Mods, p.GetMods), Returns = p.Type,
                             Body = getBody, Line = p.Line, Col = p.Col,
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
@@ -5448,7 +5454,7 @@ public sealed partial class Binder
                     {
                         MethodDecl setter = new()
                         {
-                            Name = NameTable.Accessor("set_", p.Name), Mods = p.Mods, Returns = null,
+                            Name = NameTable.Accessor("set_", p.Name), Mods = AccessorMods(p.Mods, p.SetMods), Returns = null,
                             Body = setBody, Line = p.Line, Col = p.Col,
                             TemplateIndex = p.TemplateIndex,
                             VtableSlotHint = p.VtableSlotHint,
@@ -6907,6 +6913,14 @@ public sealed partial class Binder
     /// and method for its own. Queued instead (_lateWanted), and checked once
     /// the check under way is done (DrainLateBodies).
     /// </summary>
+    /// <summary>A body lowering asks for, checked as binding checks one: its members' access too.</summary>
+    private void WantBodyLate(MethodSymbol m)
+    {
+        _r.OnMemberBound(CheckAccess);
+        try { WantBody(m); }
+        finally { _r.OnMemberBound(null); }
+    }
+
     private void WantBody(MethodSymbol m)
     {
         // A WORD-SHAPED COPY'S METHOD RUNS ITS CANONICAL COPY'S BODY (Canon):
@@ -7146,9 +7160,10 @@ public sealed partial class Binder
                 {
                     Error(md.Init, $"'{sym.Name}' has no base class to chain to");
                 }
-                else if (ResolveConstructor(chained, target, given, md.Init.IsThis ? md : null) is MethodSymbol runs)
+                else if (ResolveConstructor(chained, target, given, md.Init.IsThis ? md : null, chain: true) is MethodSymbol runs)
                 {
                     _r.Chained[md] = runs;
+                    CheckMethod(chained, runs, byNew: false);
                 }
 
                 md.Init.Args.Clear();
@@ -15804,6 +15819,7 @@ public sealed partial class Binder
                 if (field != null)
                 {
                     _r.InitField[init] = field;
+                    CheckInitAccess(init, init.Name, field, null, write: false);
                     CheckInitBody(field.Type, nested);
                     continue;
                 }
@@ -15814,6 +15830,7 @@ public sealed partial class Binder
                 if (getter != null)
                 {
                     _r.InitGetter[init] = getter;
+                    CheckInitAccess(init, init.Name, null, getter, write: false);
                     CheckInitBody(getter.Returns, nested);
                     continue;
                 }
@@ -15854,6 +15871,7 @@ public sealed partial class Binder
             {
                 _r.InitSetter[init] = setter!;
             }
+            CheckInitAccess(init, init.Name, field, setter, write: true);
 
             CheckAssignable(value, wants, init.Value!, What.Quoted(init.Name));
         }
@@ -15942,6 +15960,7 @@ public sealed partial class Binder
             }
 
             _r.InitAdder[add] = chosen;
+            CheckInitAccess(add, "Add", null, chosen, write: false);
         }
 
         // `[key] = value`, which is a call to the INDEXER -- C#'s rule, and the
@@ -16024,6 +16043,7 @@ public sealed partial class Binder
             value = Settle(one.Value, stored!, value);
             CheckAssignable(value, stored!, one.Value, "the value");
             _r.InitIndexer[one] = setter;
+            CheckInitAccess(one, "this[]", null, setter, write: true);
         }
     }
 
@@ -16339,6 +16359,16 @@ public sealed partial class Binder
     private Type CheckExpr(Expr e)
     {
         Type t = CheckExprCore(e);
+        // WHAT IS WRITTEN is checked by its setter's access as well
+        // (CheckWriteAccess): `public int N { get; private set; }`.
+        Expr? written = e switch
+        {
+            AssignExpr a => a.Target,
+            UnaryExpr { Op: UnOp.PreInc or UnOp.PreDec or UnOp.PostInc or UnOp.PostDec } u => u.Operand,
+            RefArgExpr r => r.Target,
+            _ => null,
+        };
+        if (written is not null) CheckWriteAccess(written);
         if (!t.IsError && e is CallExpr pinnedCall && _r.Calls.Pinned(pinnedCall) is { } pinnedOp)
         {
             _r.Calls[pinnedCall] = pinnedOp;
@@ -19877,6 +19907,7 @@ public sealed partial class Binder
 
                     if (field is not null) _r.InitField[init] = field;
                     else _r.InitSetter[init] = setter!;
+                    CheckInitAccess(init, init.Name, field, setter, write: true);
                     CheckAssignable(value, wants, given, What.Quoted(init.Name));
                 }
 
@@ -22845,38 +22876,6 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// Whether the code being checked can see member `m` as C# lets it: a
-    /// public or internal one anywhere; a private one -- written so, or by
-    /// default in a class or struct -- only inside its own type or a type
-    /// nested in it; a protected one there or in a type derived from it.
-    /// </summary>
-    private bool Visible(MethodSymbol m)
-    {
-        if (m.Decl is not MethodDecl d || m.Owner is not TypeSymbol owner || owner.Kind == TypeKind.Interface) return true;
-        Mods mods = d.Mods;
-        if ((mods & (Mods.Public | Mods.Internal)) != 0) return true;
-        TypeSymbol? here = _thisType is not null && IsClosure(_thisType) ? _capturedThisType ?? _lexicalType : _thisType;
-        if (here is null) return true;
-        if (Inside(here, owner)) return true;
-        if ((mods & Mods.Protected) == 0 || !here.DerivesFrom(owner)) return false;
-        // PRIVATE PROTECTED is protected inside its own assembly only (C#
-        // 7.2): a program's class derived from the library's sees none of the
-        // library's -- Random(bool), Random.Shared's own constructor.
-        return (mods & Mods.Private) == 0 || owner.Decl is not { } ownerDecl || here.Decl is not { } hereDecl
-            || ClassLibrarySide(ownerDecl) == ClassLibrarySide(hereDecl);
-
-        // Within: the type itself, or one written inside it, however deep.
-        bool Inside(TypeSymbol t, TypeSymbol of)
-        {
-            if (ReferenceEquals(t, of)) return true;
-            string ofPath = of.Decl is { Outer: string o } ? o + "." + of.Decl.Name : of.Decl?.Name ?? of.Name;
-            for (string? at = t.Decl?.Outer; at is not null; at = at.Contains('.') ? at[..at.LastIndexOf('.')] : null)
-                if (at == ofPath || at.EndsWith("." + ofPath, StringComparison.Ordinal)) return true;
-            return false;
-        }
-    }
-
-    /// <summary>
     /// Whether one `params` constructor's expanded form is more specific than
     /// another's for `count` arguments (C# 12.6.4.3): each parameter the
     /// argument lands on the same type as the other's or converting to it
@@ -22973,17 +22972,20 @@ public sealed partial class Binder
         return inner is LiteralExpr { Kind: Lit.Null } ? Type.Null : checkedType;
     }
 
-    private MethodSymbol? ResolveConstructor(NewExpr nw, TypeSymbol constructed, List<Type> constructorArgs, MethodDecl? except = null, Type? made = null)
+    private MethodSymbol? ResolveConstructor(NewExpr nw, TypeSymbol constructed, List<Type> constructorArgs, MethodDecl? except = null, Type? made = null, bool chain = false)
     {
         List<MethodSymbol> methods = except is null ? constructed.Methods
             : constructed.Methods.Where(m => !ReferenceEquals(m.Decl, except)).ToList();
-        // ONLY THE CONSTRUCTORS THIS CODE CAN SEE are candidates (C#
+        // ONLY THE CONSTRUCTORS THIS CODE MAY REACH are candidates (C#
         // 12.6.4.2): Thread's own `Thread(Action body, int slot)` took
         // `new Thread(() => ..., 64 * 1024 * 1024)` from a program, a slot
-        // number for a stack size. Where none can be seen the set stands, for
-        // library code that has always reached what it should not.
-        List<MethodSymbol> visible = methods.Where(m => !m.IsCtor || Visible(m)).ToList();
-        if (visible.Any(m => m.IsCtor)) methods = visible;
+        // number for a stack size. Where it may reach none the set stands,
+        // and the one chosen is refused for its access (CheckAccess).
+        if (ChecksAccess())
+        {
+            List<MethodSymbol> visible = methods.Where(m => !m.IsCtor || Reachable(m, null, made: !chain)).ToList();
+            if (visible.Any(m => m.IsCtor)) methods = visible;
+        }
         NormalizeConstructorArguments(nw, methods, constructorArgs);
         // A `params` CONSTRUCTOR HAS TWO FORMS, exactly as a
         // `params` method does: an array supplied in the final
@@ -24112,6 +24114,15 @@ public sealed partial class Binder
             group = new MethodGroupSym(capturedGroup.Methods);
             _r.CapturedReceivers[c] = capturedGroup.Holder;
         }
+        // ONLY THE OVERLOADS THIS CODE MAY REACH are candidates (C#
+        // 12.6.4.1); where it may reach none they stand, and the one chosen
+        // is refused for its access (CheckAccess).
+        if (group is { Methods.Count: > 1 } && ChecksAccess())
+        {
+            Expr? reachedThrough = Receiver(c);
+            List<MethodSymbol> reachable = group.Methods.Where(m => Reachable(m, reachedThrough, made: false)).ToList();
+            if (reachable.Count > 0 && reachable.Count < group.Methods.Count) group = new MethodGroupSym(reachable);
+        }
 
         if (group is null)
         {
@@ -24873,14 +24884,6 @@ public sealed partial class Binder
             }
         }
         if (fitting is not null) byArity = fitting;
-
-        // ONLY WHAT THIS CODE CAN SEE, as for a constructor (Visible): a
-        // private overload of another type is no candidate where a visible
-        // one fits.
-        if (byArity.Count > 1 && byArity.Any(Visible) && !byArity.All(Visible))
-        {
-            byArity = byArity.Where(Visible).ToList();
-        }
 
         if (byArity.Count == 0)
         {

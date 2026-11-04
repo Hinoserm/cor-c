@@ -1,0 +1,14 @@
+// test: library_internal_member_refused
+// expect-compile-error: CS0122: 'String.OrdinalFolded' is inaccessible due to its protection level
+// What the class library writes `internal` is its assembly's alone, as
+// System.Private.CoreLib's internals are: a program's code may not call it.
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        int at = 0;
+        return String.OrdinalFolded("abc", ref at);
+    }
+}

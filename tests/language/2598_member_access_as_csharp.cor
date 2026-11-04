@@ -1,0 +1,100 @@
+// test: member_access_as_csharp
+// expect-exit: 0
+// expect-output:
+// nested 7
+// copies 3
+// protected 11 12 13
+// static 5
+// closure 8
+// own set 2
+// overload long
+// made public
+// either 4
+// private protected 6
+//
+// WHAT C# LETS A BODY REACH (Binder.Access): a type nested in another reaches
+// its private members, a generic type's copies reach each other's, a derived
+// class the protected ones through itself, `this`, `base` and its own kind, a
+// static protected one by the type; a lambda what the type it is written in
+// does; a `private set` property is set inside its type; a private overload
+// is no candidate where a public one fits, nor a private constructor where a
+// public one does; protected internal and private protected inside their
+// assembly.
+using System;
+
+class Outer
+{
+    private int _secret = 7;
+
+    public class Inner
+    {
+        public int Read(Outer o) => o._secret;
+    }
+}
+
+class Box<T>
+{
+    private int _count;
+
+    public Box(int count) { _count = count; }
+    public int Other(Box<string> b) => b._count;
+}
+
+class Base
+{
+    protected int Level = 11;
+    protected static int Shared = 5;
+    protected int Up() => Level + 1;
+    protected internal int Either = 4;
+    private protected int Narrow = 6;
+}
+
+class Derived : Base
+{
+    public string Show(Derived other) => Level + " " + base.Up() + " " + (other.Up() + 1);
+    public static int Static() => Shared;
+    public int Both() => Either;
+    public int Close() => Narrow;
+}
+
+class Counter
+{
+    private int _step = 8;
+    public int N { get; private set; }
+
+    public Func<int> Reader() => () => _step;
+    public void Bump() { N++; N = N + 0; N += 1; }
+}
+
+class Picks
+{
+    private string Take(int x) => "int";
+    public string Take(long x) => "long";
+}
+
+class Made
+{
+    private Made(int x) { Said = "private"; }
+    public Made(long x) { Said = "public"; }
+    public string Said;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("nested " + new Outer.Inner().Read(new Outer()));
+        Console.WriteLine("copies " + new Box<int>(1).Other(new Box<string>(3)));
+        Console.WriteLine("protected " + new Derived().Show(new Derived()));
+        Console.WriteLine("static " + Derived.Static());
+        Counter c = new Counter();
+        Console.WriteLine("closure " + c.Reader()());
+        c.Bump();
+        Console.WriteLine("own set " + c.N);
+        Console.WriteLine("overload " + new Picks().Take(1));
+        Console.WriteLine("made " + new Made(1).Said);
+        Console.WriteLine("either " + new Derived().Both());
+        Console.WriteLine("private protected " + new Derived().Close());
+        return 0;
+    }
+}

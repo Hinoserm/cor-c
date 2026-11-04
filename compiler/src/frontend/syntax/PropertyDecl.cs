@@ -21,6 +21,9 @@ public sealed class PropertyDecl : MemberDecl
     /// <summary>True for <c>{ get; set; }</c> with no bodies.</summary>
     public bool Auto { get; init; }
     public bool HasSetter { get; init; }
+    /// <summary>The getter's and the setter's own access, `private set` (none: the property's).</summary>
+    public Mods GetMods { get; init; }
+    public Mods SetMods { get; init; }
     public Expr? Init { get; set; }
 
     /// <summary>

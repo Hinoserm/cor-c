@@ -1,0 +1,30 @@
+// test: switch_arm_type_with_guard
+// expect-exit: 0
+// expect-output:
+// field two|four|auto|none|one
+//
+// A SWITCH EXPRESSION'S ARM `Type when condition` is a type pattern with a
+// guard, as C# reads it -- not the type's name read as a constant, which
+// refused it as "not a storage location" (SourceIndexBuilder.KernelPart).
+abstract class Member { public int Mods; }
+sealed class FieldDecl : Member { }
+sealed class PropertyDecl : Member { public bool Auto; }
+
+static class Program
+{
+    static string Why(Member member) => member switch
+    {
+        _ when member.Mods == 1 => "one",
+        FieldDecl when member.Mods == 2 => "field two",
+        PropertyDecl { Auto: true } when member.Mods == 3 => "auto",
+        FieldDecl { Mods: var m } when m == 4 => "four",
+        _ => "none",
+    };
+
+    static int Main()
+    {
+        System.Console.WriteLine(Why(new FieldDecl { Mods = 2 }) + "|" + Why(new FieldDecl { Mods = 4 }) + "|"
+            + Why(new PropertyDecl { Mods = 3, Auto = true }) + "|" + Why(new PropertyDecl { Mods = 2 }) + "|" + Why(new FieldDecl { Mods = 1 }));
+        return 0;
+    }
+}

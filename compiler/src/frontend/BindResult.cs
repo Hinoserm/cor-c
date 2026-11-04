@@ -158,6 +158,13 @@ public sealed partial class BindResult
         Resolved.Referenced = heard;
     }
 
+    /// <summary>The binder's check of every member a node binds to (Binder.CheckAccess), or none.</summary>
+    internal void OnMemberBound(Action<Expr, object>? check)
+    {
+        _binding.Checked = check;
+        Resolved.Checked = check;
+    }
+
     /// <summary>
     /// A method lowering is about to lower whose body was left unchecked until
     /// something used it, checked now (Binder.WantBody), when the binder that
@@ -1219,6 +1226,9 @@ public sealed class ExprSyms
     /// <summary>Told of every method a resolved name stands for (NodeBinding.Referenced).</summary>
     internal Action<MethodSymbol>? Referenced;
 
+    /// <summary>Told of every member a name is bound to (NodeBinding.Checked).</summary>
+    internal Action<Expr, object>? Checked;
+
     private static int _generations;
     private int _generation = Interlocked.Increment(ref _generations);
 
@@ -1229,6 +1239,7 @@ public sealed class ExprSyms
         {
             e.BoundSym = value;
             e.BoundSymBy = _generation;
+            Checked?.Invoke(e, value);
             // A METHOD NAMED, not called: a group made a delegate, a property
             // read or written -- each a method a body now uses (Referenced).
             if (Referenced is { } told)
@@ -1291,6 +1302,12 @@ public sealed class NodeBinding
     /// left until something used it (Binder.WantBody) is checked then.
     /// </summary>
     internal Action<MethodSymbol>? Referenced;
+
+    /// <summary>
+    /// Told of every member a node is bound to, with the node: what the
+    /// binder checks the access of (Binder.CheckAccess).
+    /// </summary>
+    internal Action<Expr, object>? Checked;
 }
 
 /// <summary>
@@ -1361,7 +1378,7 @@ public sealed class CallTargets
     public MethodSymbol this[CallExpr c]
     {
         get => TryGetValue(c, out MethodSymbol? m) ? m : throw new KeyNotFoundException("a call this binding has not bound");
-        set { c.BoundCall = value; c.BoundCallBy = _binding.Current; _binding.Referenced?.Invoke(value); }
+        set { c.BoundCall = value; c.BoundCallBy = _binding.Current; _binding.Referenced?.Invoke(value); _binding.Checked?.Invoke(c, value); }
     }
 
     public bool TryGetValue(CallExpr c, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out MethodSymbol method)
@@ -1419,7 +1436,7 @@ public sealed class NewTargets
     public MethodSymbol this[NewExpr n]
     {
         get => TryGetValue(n, out MethodSymbol? m) ? m : throw new KeyNotFoundException("a new this binding has not bound");
-        set { n.BoundCtor = value; n.BoundCtorBy = _binding.Current; _binding.Referenced?.Invoke(value); }
+        set { n.BoundCtor = value; n.BoundCtorBy = _binding.Current; _binding.Referenced?.Invoke(value); _binding.Checked?.Invoke(n, value); }
     }
 
     public bool TryGetValue(NewExpr n, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out MethodSymbol ctor)
@@ -1469,6 +1486,7 @@ public sealed class IndexTargets
         if (_setters) ix.BoundSetter = value;
         else ix.BoundGetter = value;
         _binding.Referenced?.Invoke(value);
+        if (value is not null) _binding.Checked?.Invoke(ix, value);
     }
 
     public MethodSymbol this[IndexExpr ix]
@@ -1601,6 +1619,7 @@ public sealed class ExprMethods
             if (_invokes) facts.Invoke = value;
             else facts.Setter = value;
             _binding.Referenced?.Invoke(value);
+            if (!_invokes) _binding.Checked?.Invoke(e, value);
         }
     }
 

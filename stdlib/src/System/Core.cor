@@ -4339,7 +4339,7 @@ static class NumberFormat {
         return nfi._numberDecimalDigits;
     }
 
-    static string Standard(char kind, int width, bool negative, string plain, NumberFormatInfo? nfi = null) {
+    internal static string Standard(char kind, int width, bool negative, string plain, NumberFormatInfo? nfi = null) {
         // "G" and "R" without a precision are "D" without one: every digit.
         bool general = kind == 'g' || kind == 'G' || kind == 'r' || kind == 'R';
         if (kind == 'd' || kind == 'D' || (general && width < 1)) {

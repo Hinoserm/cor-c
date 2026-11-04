@@ -4399,14 +4399,19 @@ public sealed class Parser
 
         Block? getter = null, setter = null;
         bool auto = true, hasSetter = false, hasGetter = false;
+        // AN ACCESSOR'S OWN ACCESS, `private set`, narrower than the
+        // property's (C# 15.7.6); the binder gives each accessor its own.
+        Mods getMods = Mods.None, setMods = Mods.None;
+        const Mods Access = Mods.Public | Mods.Private | Mods.Protected | Mods.Internal;
 
         while (!At(Tok.RBrace) && !At(Tok.End))
         {
-            ParseMods();
+            Mods accessorMods = ParseMods() & Access;
 
             if (TakeContextual("get"))
             {
                 hasGetter = true;
+                getMods = accessorMods;
                 if (At(Tok.LBrace))
                 {
                     auto = false;
@@ -4464,6 +4469,7 @@ public sealed class Parser
             if (TakeContextual("set") || TakeContextual("init"))
             {
                 hasSetter = true;
+                setMods = accessorMods;
 
                 if (At(Tok.LBrace))
                 {
@@ -4531,6 +4537,7 @@ public sealed class Parser
         {
             Name = name, Mods = mods, Type = type, Getter = getter, Setter = setter,
             Auto = auto, HasSetter = hasSetter, Init = init, Line = start.Line, Col = start.Col,
+            GetMods = getMods, SetMods = setMods,
         };
     }
 
@@ -6621,8 +6628,11 @@ public sealed class Parser
                     {
                         // `Foo => ...` -- a type with nothing bound. Only when
                         // an arrow really follows, or it is a constant whose
-                        // name happens to parse as a type.
-                        if (At(Tok.FatArrow))
+                        // name happens to parse as a type. AND `Foo when ...`,
+                        // a type guarded, as C# reads it: taken as a constant,
+                        // `FieldDecl when (m & Mods.Static) != 0` was the
+                        // type's name read as a value (SourceIndexBuilder).
+                        if (At(Tok.FatArrow) || Cur.Text == "when" && !WhenNames(_i))
                         {
                             type = parsed;
                             matched = true;

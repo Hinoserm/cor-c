@@ -10,6 +10,16 @@ public sealed class FieldSymbol
     public required Type Type { get; init; }
     public required TypeSymbol Owner { get; init; }
     public bool Static { get; init; }
+    /// <summary>
+    /// Its declared access (Binder.Accessible): a field's own modifiers; an
+    /// auto property's field read as its getter and written as its setter
+    /// (WriteMods), `public int N { get; private set; }`. None for a field
+    /// the compiler made, which only its own code names.
+    /// </summary>
+    public Mods Mods { get; init; }
+    public Mods WriteMods { get; init; }
+    /// <summary>Whether Mods says anything: a field the compiler made says nothing.</summary>
+    public bool Declared { get; init; }
     public bool Volatile { get; init; }
 
     /// <summary>

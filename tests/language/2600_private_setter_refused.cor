@@ -1,0 +1,19 @@
+// test: private_setter_refused
+// expect-compile-error: CS0122: 'Counter.N' is inaccessible due to its protection level
+// `public int N { get; private set; }`: read anywhere, set only inside
+// Counter (C# 15.7.6) -- the auto property's field, read in place of get_N,
+// is written with set_N's access.
+class Counter
+{
+    public int N { get; private set; }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Counter c = new Counter();
+        c.N = 3;
+        return c.N;
+    }
+}

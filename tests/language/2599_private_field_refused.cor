@@ -1,0 +1,13 @@
+// test: private_field_refused
+// expect-compile-error: CS0122: 'Account._balance' is inaccessible due to its protection level
+// A private field -- written so or by default -- is its type's alone (C#
+// CS0122): another class's code may not read it.
+class Account
+{
+    int _balance = 10;
+}
+
+static class Program
+{
+    static int Main() => new Account()._balance;
+}

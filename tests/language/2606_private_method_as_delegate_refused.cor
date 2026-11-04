@@ -1,0 +1,19 @@
+// test: private_method_as_delegate_refused
+// expect-compile-error: CS0122: 'Vault.Open' is inaccessible due to its protection level
+// A method group made a delegate names its method as a call does: another
+// type's private method is no Func of a program's.
+using System;
+
+class Vault
+{
+    private int Open() => 1;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Func<int> f = new Vault().Open;
+        return f();
+    }
+}

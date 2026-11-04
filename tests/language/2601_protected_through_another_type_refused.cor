@@ -1,0 +1,18 @@
+// test: protected_through_another_type_refused
+// expect-compile-error: CS1540
+// A derived class reaches a protected member through itself or its own kind,
+// not through the base or a sibling: Left may not read Right's Level.
+class Base
+{
+    protected int Level = 1;
+}
+
+class Left : Base
+{
+    public int Peek(Base other) => other.Level;
+}
+
+static class Program
+{
+    static int Main() => new Left().Peek(new Base());
+}

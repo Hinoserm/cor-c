@@ -3366,7 +3366,7 @@ public sealed class Monomorphiser
                     Name = p.Name, Mods = p.Mods, Type = Sub(p.Type, map),
                     Getter = Body(p.Getter, map),
                     Setter = Body(p.Setter, map),
-                    Auto = p.Auto, HasSetter = p.HasSetter,
+                    Auto = p.Auto, HasSetter = p.HasSetter, GetMods = p.GetMods, SetMods = p.SetMods,
                     Init = p.Init is null ? null : Rewrite(p.Init, map),
                     VtableSlotHint = p.VtableSlotHint,
                     ExplicitInterface = p.ExplicitInterface,

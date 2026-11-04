@@ -1,0 +1,13 @@
+// test: private_setter_in_initialiser_refused
+// expect-compile-error: CS0122: 'Counter.N' is inaccessible due to its protection level
+// An object initialiser sets a member as an assignment does: a `private set`
+// property is not set by another type's `new Counter { N = 3 }`.
+class Counter
+{
+    public int N { get; private set; }
+}
+
+static class Program
+{
+    static int Main() => new Counter { N = 3 }.N;
+}

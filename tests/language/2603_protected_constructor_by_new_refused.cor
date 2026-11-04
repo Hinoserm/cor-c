@@ -1,0 +1,17 @@
+// test: protected_constructor_by_new_refused
+// expect-compile-error: CS0122
+// A protected constructor is a derived class's `: base(...)`, never its `new`.
+class Base
+{
+    protected Base() { }
+}
+
+class Derived : Base
+{
+    public static Base Make() => new Base();
+}
+
+static class Program
+{
+    static int Main() => Derived.Make() is null ? 1 : 0;
+}
