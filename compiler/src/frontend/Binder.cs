@@ -5776,7 +5776,7 @@ public sealed partial class Binder
     private static Expr Deeper(Expr e) => e switch
     {
         SubjectExpr s => new SubjectExpr { Outer = s.Outer + 1, Line = s.Line, Col = s.Col, File = s.File },
-        MemberExpr { Target: var inner } m when Reads(inner) => new MemberExpr { Target = Deeper(inner), Name = m.Name, Guarded = m.Guarded, Line = m.Line, Col = m.Col, File = m.File },
+        MemberExpr { Target: var inner } m when Reads(inner) => new MemberExpr { Target = Deeper(inner), Name = m.Name, Guarded = m.Guarded, DefaultSpelt = m.DefaultSpelt, Line = m.Line, Col = m.Col, File = m.File },
         _ => e,
     };
 
@@ -16157,10 +16157,11 @@ public sealed partial class Binder
     {
         NameExpr n => Full(n),
 
+        // `= Sized.Size` as `= Size`: the declaring type's own (DefaultSpelt).
         MemberExpr m => new MemberExpr
         {
             Target = Spell(m.Target), Name = m.Name, Guarded = m.Guarded,
-            NullConditional = m.NullConditional,
+            NullConditional = m.NullConditional, DefaultSpelt = true,
             Line = m.Line, Col = m.Col, File = m.File,
         },
 
@@ -21955,9 +21956,9 @@ public sealed partial class Binder
     private Type CheckMember(MemberExpr m)
     {
         if (!m.DefaultSpelt) return CheckMemberReached(m);
-        _made++;
+        _defaultSpelt++;
         try { return CheckMemberReached(m); }
-        finally { _made--; }
+        finally { _defaultSpelt--; }
     }
 
     private Type CheckMemberReached(MemberExpr m)

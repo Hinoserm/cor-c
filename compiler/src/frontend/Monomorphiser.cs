@@ -3983,6 +3983,10 @@ public sealed class Monomorphiser
                     // working because a local is narrowed by the test instead.
                     Guarded = m.Guarded,
 
+                    // A default's name spelt from its declaring type stays
+                    // the compiler's own in every copy (Binder.Full).
+                    DefaultSpelt = m.DefaultSpelt,
+
                     // `T.Zero`, whose T this copy names its type: a static
                     // abstract member of T's constraint, found on the type
                     // as only a type parameter finds it.

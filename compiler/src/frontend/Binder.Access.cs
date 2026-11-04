@@ -5,6 +5,13 @@ public sealed partial class Binder
 {
     private const Mods AccessBits = Mods.Public | Mods.Private | Mods.Protected | Mods.Internal;
 
+    /// <summary>
+    /// Inside a default spelt out at a call from the type that declared it
+    /// (MemberExpr.DefaultSpelt): its access is that type's, not asked here;
+    /// nothing else of the binding changes, as it would under _made.
+    /// </summary>
+    private int _defaultSpelt;
+
     /// <summary>The places being bound that are only written, `x.N = v` and `out x.N` (CheckExpr).</summary>
     private readonly HashSet<Expr> _onlyWritten = new(ReferenceEqualityComparer.Instance);
 
@@ -23,7 +30,7 @@ public sealed partial class Binder
     /// </summary>
     private bool ChecksAccess()
     {
-        if (_made > 0) return false;
+        if (_made > 0 || _defaultSpelt > 0) return false;
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         return written is not null && written.File != "<prelude>" && _member is not ({ LocalCopy: true } or { Made: true });
     }

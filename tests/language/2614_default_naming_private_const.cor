@@ -1,12 +1,14 @@
 // test: default_naming_private_const
 // expect-exit: 0
 // expect-output:
-// 3 7
+// 3 7 3 3
 //
 // A DEFAULT IS EVALUATED WHERE IT WAS DECLARED (C# 15.6.2): `int x = Size`
 // over the method's own type's private constant is every caller's, though
-// the caller may not name Size itself; the compiler spells it out at the
-// call (Binder.Full) and reads it as its own.
+// the caller may not name Size itself -- bare, or written `Sized.Size`, and
+// called from a generic type's copy as from a plain one. The compiler spells
+// it out at the call (Binder.Full, MemberExpr.DefaultSpelt) and its access is
+// the declaring type's.
 using System;
 
 class Sized
@@ -14,8 +16,14 @@ class Sized
     private const int Size = 3;
 
     public int Pick(int x = Size) => x;
+    public int Dotted(int x = Sized.Size) => x;
     public Sized(int y = Size + 4) { Y = y; }
     public int Y;
+}
+
+class Box<T>
+{
+    public int Through() => new Sized().Pick();
 }
 
 static class Program
@@ -23,7 +31,7 @@ static class Program
     static int Main()
     {
         Sized s = new Sized();
-        Console.WriteLine(s.Pick() + " " + s.Y);
+        Console.WriteLine(s.Pick() + " " + s.Y + " " + s.Dotted() + " " + new Box<int>().Through());
         return 0;
     }
 }
