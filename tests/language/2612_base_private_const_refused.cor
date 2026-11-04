@@ -1,0 +1,18 @@
+// test: base_private_const_refused
+// expect-compile-error: CS0122: 'Base.Most' is inaccessible due to its protection level
+// A base class's private constant is its own: a derived class naming it
+// alone, as its own members are named, is refused as C# refuses it.
+class Base
+{
+    private const int Most = 3;
+}
+
+class Derived : Base
+{
+    public int Get() => Most;
+}
+
+static class Program
+{
+    static int Main() => new Derived().Get();
+}

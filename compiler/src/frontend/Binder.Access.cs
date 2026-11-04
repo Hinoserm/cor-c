@@ -78,15 +78,33 @@ public sealed partial class Binder
     /// symbol, so its access is its declaration's, found on the type or a
     /// type it derives from.
     /// </summary>
-    private void CheckConstAccess(Expr site, TypeSymbol owner, string name)
+    private void CheckConstAccess(Expr site, TypeSymbol? owner, string name)
     {
-        if (!ChecksAccess()) return;
+        if (owner is null || !ChecksAccess()) return;
         for (TypeSymbol? t = owner; t is not null; t = t.Base)
         {
-            if (t.Decl?.Members.Find(member => member is FieldDecl { } f && f.Name == name && (f.Mods & Mods.Const) != 0) is not FieldDecl declared) continue;
-            Refuse(site, t, name, declared.Mods, isStatic: true, null, made: false);
+            // Registered as FindConstant finds it: a type's constants are
+            // declared when one is first asked of it (EvaluateConstant).
+            EvaluateConstant(t, name);
+            if (!_constantDeclarations.TryGetValue((t, name), out var declared)) continue;
+            Refuse(site, t, name, declared.Field.Mods, isStatic: true, null, made: false);
             return;
         }
+    }
+
+    /// <summary>A place only written, or a tuple's places each, in or out of _onlyWritten.</summary>
+    private void Places(Expr place, bool add)
+    {
+        if (place is TupleExpr tuple) { foreach (Expr item in tuple.Items) Places(item, add); return; }
+        if (add) _onlyWritten.Add(place);
+        else _onlyWritten.Remove(place);
+    }
+
+    /// <summary>A place written, or a tuple's places each, checked by its writer's access.</summary>
+    private void WrittenPlaces(Expr place)
+    {
+        if (place is TupleExpr tuple) { foreach (Expr item in tuple.Items) WrittenPlaces(item); return; }
+        CheckWriteAccess(place);
     }
 
     /// <summary>A field as its code names it: an auto property's `<N>` is N.</summary>
@@ -94,14 +112,15 @@ public sealed partial class Binder
 
     /// <summary>
     /// A place written -- assigned, incremented, passed by ref or out --
-    /// checked by its writer's access where it differs from its reader's: an
-    /// auto property's field read in place of get_N is written in place of
-    /// set_N, and `private set` makes that private.
+    /// checked by its writer's access: a field's own, and an auto property's
+    /// field, read in place of get_N, written in place of set_N, so that
+    /// `private set` makes it private. A place only written was not checked
+    /// as a read (_onlyWritten), so this is its one check.
     /// </summary>
     private void CheckWriteAccess(Expr target)
     {
         if (!ChecksAccess() || !_r.Resolved.TryGetValue(target, out Sym? sym)) return;
-        if (sym is FieldSym { Field: { Declared: true } f } && f.WriteMods != f.Mods)
+        if (sym is FieldSym { Field: { Declared: true } f })
         {
             Refuse(target, f.Owner, Spelt(f), f.WriteMods, f.Static, Receiver(target), made: false, f.Mods, write: true);
         }
@@ -152,7 +171,9 @@ public sealed partial class Binder
         other = null;
         writes = false;
         bool getter = m.Name.StartsWith("get_", StringComparison.Ordinal), setter = m.Name.StartsWith("set_", StringComparison.Ordinal);
-        if (!getter && !setter || m.Owner.Decl?.Members.Find(member => member is PropertyDecl p && (p.Params.Count > 0 ? "Item" : p.Name) == m.Name[4..]) is not PropertyDecl property)
+        int indices = m.Params.Count - (setter ? 1 : 0);
+        if (!getter && !setter || m.Owner.Decl?.Members.Find(member => member is PropertyDecl { ExplicitInterface: null } p
+                && (p.Params.Count > 0 ? "Item" : p.Name) == m.Name[4..] && p.Params.Count == indices) is not PropertyDecl property)
             return null;
         writes = setter;
         if (getter ? property.HasSetter : property.Getter is not null || property.Auto)
@@ -192,12 +213,12 @@ public sealed partial class Binder
             : other is { } otherMods && Inaccessible(owner, otherMods, isStatic, receiver, made) is null
                 ? $"CS{(write ? "0272" : "0271")}: the property or indexer '{owner.Name}.{name}' cannot be used in this context because the {(write ? "set" : "get")} accessor is inaccessible"
                 : $"CS0122: '{owner.Name}.{name}' is inaccessible due to its protection level";
-        if (_quiet == 0 && !_accessSaid.Add((site, message))) return;
+        // ONCE A PLACE, however often it is bound again: by what the error
+        // list holds, which a trial binding's discarded errors (Peek) leave.
+        string file = Where(site);
+        if (_r.Errors.Exists(said => said.Line == site.Line && said.Col == site.Col && said.Message == message && said.File == file)) return;
         Error(site, message);
     }
-
-    /// <summary>Each refusal said once at its place, however often the place is bound again.</summary>
-    private readonly HashSet<(Node, string)> _accessSaid = new();
 
     /// <summary>
     /// Null where the code being bound may reach a member of `owner` declared

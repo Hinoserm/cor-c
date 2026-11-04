@@ -16358,19 +16358,20 @@ public sealed partial class Binder
 
     private Type CheckExpr(Expr e)
     {
-        // ONLY WRITTEN, by `=` or `out`: its reader's access is not asked
-        // (CheckAccess), its writer's is (CheckWriteAccess) --
-        // `public int N { private get; set; }` is set from anywhere.
+        // ONLY WRITTEN, by `=` or `out` -- a tuple's places each: its
+        // reader's access is not asked (CheckAccess), its writer's is
+        // (CheckWriteAccess) -- `public int N { private get; set; }` is set
+        // from anywhere.
         Expr? onlyWritten = e switch
         {
             AssignExpr { Op: null, Coalescing: false } a => a.Target,
             RefArgExpr { IsOut: true } r => r.Target,
             _ => null,
         };
-        if (onlyWritten is not null) _onlyWritten.Add(onlyWritten);
+        if (onlyWritten is not null) Places(onlyWritten, add: true);
         Type t;
         try { t = CheckExprCore(e); }
-        finally { if (onlyWritten is not null) _onlyWritten.Remove(onlyWritten); }
+        finally { if (onlyWritten is not null) Places(onlyWritten, add: false); }
         // WHAT IS WRITTEN is checked by its setter's access as well
         // (CheckWriteAccess): `public int N { get; private set; }`.
         Expr? written = e switch
@@ -16380,7 +16381,7 @@ public sealed partial class Binder
             RefArgExpr r => r.Target,
             _ => null,
         };
-        if (written is not null) CheckWriteAccess(written);
+        if (written is not null) WrittenPlaces(written);
         if (!t.IsError && e is CallExpr pinnedCall && _r.Calls.Pinned(pinnedCall) is { } pinnedOp)
         {
             _r.Calls[pinnedCall] = pinnedOp;
@@ -21397,6 +21398,9 @@ public sealed partial class Binder
                 return Type.Plain(_thisType, Prim.Void);
             }
 
+            // A CONSTANT BY ITS NAME ALONE is a member as `Type.K` is: a
+            // base's private one is not this type's (CheckConstAccess).
+            CheckConstAccess(n, _thisType, n.Name);
             if (FindConstant(_thisType, n.Name) is (long value, Type ctype))
             {
                 _r.Resolved[n] = new ConstSym(value, ctype);
@@ -21518,6 +21522,9 @@ public sealed partial class Binder
                 return Type.Plain(_lexicalType, Prim.Void);
             }
 
+            // A CONSTANT BY ITS NAME ALONE is a member as `Type.K` is: a
+            // base's private one is not this type's (CheckConstAccess).
+            CheckConstAccess(n, _lexicalType, n.Name);
             if (FindConstant(_lexicalType, n.Name) is (long value, Type ctype))
             {
                 _r.Resolved[n] = new ConstSym(value, ctype);
@@ -21666,6 +21673,9 @@ public sealed partial class Binder
                 continue;
             }
 
+            // A CONSTANT BY ITS NAME ALONE is a member as `Type.K` is: a
+            // base's private one is not this type's (CheckConstAccess).
+            CheckConstAccess(n, outer, n.Name);
             if (FindConstant(outer, n.Name) is (long outerValue, Type outerConstType))
             {
                 _r.Resolved[n] = new ConstSym(outerValue, outerConstType);

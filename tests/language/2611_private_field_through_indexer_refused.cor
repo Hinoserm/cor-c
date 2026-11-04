@@ -1,0 +1,14 @@
+// test: private_field_through_indexer_refused
+// expect-compile-error: CS0122: 'Store._items' is inaccessible due to its protection level
+// Reached through an element or a member of it -- the target is looked at
+// first (Peek), its errors set aside -- another type's private field is
+// refused all the same.
+class Store
+{
+    int[] _items = new int[4];
+}
+
+static class Program
+{
+    static int Main() => new Store()._items[0] + new Store()._items.Length;
+}
