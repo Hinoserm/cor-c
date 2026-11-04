@@ -29,7 +29,7 @@ public sealed class DeadFrees : IPass
 
     private static readonly HashSet<string> FreesOfNull = new(StringComparer.Ordinal)
     {
-        Escape.Freer, Escape.CollectorFreer, Escape.StorageFreer,
+        Escape.Freer, Escape.HeldFreer, Escape.CollectorFreer, Escape.StorageFreer,
     };
 
     public void Run(Function f)

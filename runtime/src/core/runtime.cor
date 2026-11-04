@@ -2428,17 +2428,13 @@ public static partial class Runtime
         }
         // In a region: given back with it, and not a block LiveObject's lock
         // need be taken to ask about. Only a collector's heap has regions.
-        // BUT WHAT IT OWNS GOES NOW: its storage and its owned fields may be
-        // on the heap, and the region gives back its own blocks and nothing
-        // they point to. Returned at once, a Named a loop's region held kept
-        // the name it owned to the collector -- a hundred thousand of them in
-        // 1529 -- ever since loops were given regions of their own.
-        if (CollectorLinked() && Gc.InOwnRegion(at))
-        {
-            FreeStorageOf(at);
-            FreeOwnedFields(at);
-            return;
-        }
+        // NOTHING OF IT IS READ: a pointer handed here comes out of a
+        // register or an owned variable's slot, and may name memory a loop's
+        // lap has given back and the next lap made again (Gc.RegionFree) --
+        // its owned fields freed would be another object's. What a lap's
+        // object owns goes where the lap ends, while the region still holds
+        // it (Escape.PlaceLapFrees, an owned variable's FreeHeld).
+        if (CollectorLinked() && Gc.InOwnRegion(at)) return;
         // A collection's storage before its owned fields: a collection that
         // owns its elements (IOwnsElements.OwnElements) reads them out of
         // its arrays as it gives them back, and an array that is an owned

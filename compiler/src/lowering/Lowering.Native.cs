@@ -298,7 +298,7 @@ public sealed partial class Lowering
         {
             _e.Call(CallLabel(enter), IrType.Void);
         }
-        else if (pointer.Unmanaged)
+        else if (pointer.Unmanaged && pointer.NoTransition)
         {
             SwapGs(call, "ToCGs");
         }
@@ -307,7 +307,7 @@ public sealed partial class Lowering
         {
             _e.Call(CallLabel(leave), IrType.Void);
         }
-        else if (pointer.Unmanaged)
+        else if (pointer.Unmanaged && pointer.NoTransition)
         {
             SwapGs(call, "FromCGs");
         }

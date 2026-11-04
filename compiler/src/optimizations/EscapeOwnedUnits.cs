@@ -33,6 +33,7 @@ public sealed partial class Escape
     /// <summary>The unit's side of OwnedFields: hints at a unit compile, the link's answer when regenerated.</summary>
     private void OwnedFieldsInUnit(Module m, Dictionary<string, Function> byName, Dictionary<string, bool[]> summaries)
     {
+        _freedFacts = null;
         if (!m.PreserveExports || !byName.ContainsKey(OwnedReplacedFreer) && !m.RuntimeHelpers.Contains(OwnedReplacedFreer)) return;
         if (m.OwnedFields is OwnedFieldFacts decided)
         {
@@ -910,6 +911,9 @@ public sealed partial class Escape
             if (st.Operands.Count < 2) { Refuse(record, field, "odd store", f, st); continue; }
             if (st.Operands[1] is ImmOperand { Value: 0 } or SymOperand) continue;
             if (st.Operands[1] is not RegOperand v) { Refuse(record, field, "stores an odd operand", f, st); continue; }
+            // An object something else here gives back -- an owned variable's,
+            // a fresh result's -- is no field's to own, as OwnedFields has it.
+            if (FreedByThisRun(f, v.Reg)) { Refuse(record, field, "a value stored into it is freed here as well", f, st); continue; }
             if (fills.TryGetValue(st, out Fill? filling))
             {
                 // Its calls past the bound the unit keeps over every function: refused outright.

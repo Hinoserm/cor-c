@@ -564,9 +564,13 @@ public sealed partial class Lowering
     /// </summary>
     private VReg? ResizeInPlace(CallExpr call, MethodSymbol target)
     {
-        if (!target.Static || target.Name != "Resize" || target.Owner.Name != "Array" || call.Args.Count != 2
+        // Array.Resize<T>(ref T[], int) by its shape: a copy of the generic
+        // method is named for its arguments (Resize$byte$76), not Resize.
+        if (!target.Static || target.Name != "Resize" && !target.Name.StartsWith("Resize$", StringComparison.Ordinal)
+            || target.Owner.Name != "Array" || call.Args.Count != 2
             || call.Args[0] is not RefArgExpr { IsOut: false, Name: null, Declare: null } referred
-            || target.Params.Count != 2) return null;
+            || target.Params.Count != 2 || !target.Params[0].ByRef || target.Params[0].Type is not { IsArray: true }
+            || target.Params[1].Type.Prim != Prim.I32) return null;
         Place? place = PlaceOf(referred.Target);
         if (place is null) return null;
         VReg size = EvalAs(call.Args[1], target.Params[1].Type);
@@ -574,10 +578,28 @@ public sealed partial class Lowering
         FrameSlot word = _f.NewSlot(_t.WordSize, _t.WordSize, "resized");
         VReg at = _e.SlotAddress(word);
         _e.Store(R(at), R(old), 0, _t.WordSize);
+        // A SHARED COPY'S HIDDEN TYPE ARGUMENTS and context, as every call
+        // gives them (EmitCall): read as zero, a copy over object made the
+        // grown array of the wrong element type.
+        PendHiddenArguments(call, target);
         CallDirect(target, IrType.Void, new List<Operand> { R(at), R(size) });
         VReg made = _e.Load(IrTypes.Word, at, 0, _t.WordSize);
         StorePlace(place, made);
         return Void();
+    }
+
+    /// <summary>
+    /// What a call of a shared copy is handed besides its arguments, for
+    /// CallDirect to take: the hidden type arguments, and another shared
+    /// class's static's context from this code's (Monomorphiser.CanonContextCall).
+    /// </summary>
+    private void PendHiddenArguments(CallExpr call, MethodSymbol target)
+    {
+        int hiddenCount = Monomorphiser.SharedMethodCopy(target.Name);
+        _pendingTypeArgs = hiddenCount > 0 ? (target, HiddenTypeArguments(call, hiddenCount)) : null;
+        _pendingContext = call.ContextSlot >= 0 && call.CanonSelf is { } contextSelf && _b.TypeOf(contextSelf).Symbol is { } contextOwner
+            && SharedContext(contextOwner) ? (target, ContextEntryOrZero(Eval(contextSelf), contextOwner, call.ContextSlot))
+            : call.ContextNeed >= 0 && _needDictionary is not null ? (target, NeedEntry(call.ContextNeed)) : null;
     }
 
     private VReg EmitCall(CallExpr call)
@@ -786,13 +808,7 @@ public sealed partial class Lowering
 
         TypeSymbol? through = call.Target is MemberExpr { Target: var throughExpr } && _b.TypeOf(throughExpr) is { IsArray: false, PointerDepth: 0, Symbol: TypeSymbol { Kind: TypeKind.Class or TypeKind.Interface } st } ? st : null;
         // Read after the arguments, which may make calls of their own.
-        int hiddenCount = Monomorphiser.SharedMethodCopy(target.Name);
-        _pendingTypeArgs = hiddenCount > 0 ? (target, HiddenTypeArguments(call, hiddenCount)) : null;
-        // ANOTHER SHARED CLASS'S STATIC'S CONTEXT, from this code's type context
-        // (Monomorphiser.CanonContextCall).
-        _pendingContext = call.ContextSlot >= 0 && call.CanonSelf is { } contextSelf && _b.TypeOf(contextSelf).Symbol is { } contextOwner
-            && SharedContext(contextOwner) ? (target, ContextEntryOrZero(Eval(contextSelf), contextOwner, call.ContextSlot))
-            : call.ContextNeed >= 0 && _needDictionary is not null ? (target, NeedEntry(call.ContextNeed)) : null;
+        PendHiddenArguments(call, target);
         if (call.Target is MemberExpr { Target: var structOn })
         {
             HintStruct(target, _b.TypeOf(structOn));

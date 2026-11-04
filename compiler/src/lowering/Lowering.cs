@@ -282,7 +282,7 @@ public sealed partial class Lowering
         l._m.Preinit = l.PreinitNotes();
         // The frees the lifetime passes may add (Escape), by the label they
         // call: declared is enough, the body may be another unit's.
-        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("ShadeObject", 1), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
+        foreach ((string helper, int arity) in new[] { ("Free", 1), ("FreeField", 2), ("FreeHeld", 1), ("FreeReplaced", 2), ("FreeOwnedReplaced", 2), ("KeepField", 2), ("CardMarkObject", 1), ("ShadeObject", 1), ("FreeOwnedElements", 1), ("FreeArrayElements", 1), ("OwnElements", 1), ("FreeStorageInFrame", 1),
                                                        ("RegionEnter", 2), ("RegionLeave", 1), ("RegionLoop", 3), ("AllocRegion", 3), ("AllocNear", 4), ("RegionCatch", 1),
                                                        ("AllocFast", 2), ("AllocFastSized", 4), ("AllocRegionSized", 4) })
             if (l.RuntimeMethod(helper, arity) is MethodSymbol provided) l._m.RuntimeHelpers.Add(Label(provided));

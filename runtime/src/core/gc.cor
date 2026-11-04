@@ -9854,12 +9854,51 @@ public static class Gc
             _quarantineBytes = _quarantineBytes - (Sys.ReadAddress(held - HeaderBytes) & SizeMask);
             _quarantineHead = (_quarantineHead + 1) % _quarantineEntries;
             _quarantineCount = _quarantineCount - 1;
+            ReleaseQuarantined(held);
         }
         nuint slot = (_quarantineHead + _quarantineCount) % _quarantineEntries;
         Sys.WriteAddress(_quarantine + WordSize.Bytes + slot * WordSize.Bytes, at);
         _quarantineCount = _quarantineCount + 1;
         _quarantineBytes = _quarantineBytes + size;
         Sys.WriteAddress(_quarantine, Sys.ReadAddress(_quarantine) + 1);
+    }
+
+    /// A BLOCK OUT OF THE QUARANTINE, its free kept long enough to catch a
+    /// second: given back now as the unchecked free would have, the heap lock
+    /// held -- the free counted it as given back already (VerifyFree), and
+    /// forgotten instead it waited, dead, for a collection the program's
+    /// frees never asked for. While a collection is under way it is the
+    /// collector's, as an unchecked free's is then, and counted as gone out
+    /// again: the sweep takes it back.
+    static void ReleaseQuarantined(nuint at)
+    {
+        nuint block = at - HeaderBytes;
+        nuint size = SizeOfBlock(block);
+        if (Runtime.Marking != 0 || _sweeping || _collecting)
+        {
+            _since = _since + (long)size;
+            FreedBytes = FreedBytes - (long)size;
+            return;
+        }
+        nuint owning = HeapChunks.Of(block);
+        if (owning != 0 && HeapChunks.PageClass(owning) != 0)
+        {
+            ClassFree(owning, block, size, Sys.ThreadBlock());
+            return;
+        }
+        if (owning != 0 && !IsCurrentChunk(owning) && block == HeapChunks.First(owning) && block + size == HeapChunks.Limit(owning))
+        {
+            if (owning == _recycleNext) _recycleNext = HeapChunks.Next(owning);
+            if (owning == _recycle) _recycle = 0;
+            HeapChunks.Release(owning, GuardReleases);
+            return;
+        }
+        if (GcThreads.BufferHolding(block) != 0 && GcThreads.Others())
+        {
+            FreeInPlace(block, size);
+            return;
+        }
+        Merge(block);
     }
 
     /// In the checked mode, a field free (Runtime.FreeField) whose OWNER has
@@ -11612,11 +11651,13 @@ public static class Gc
         RecordFreeSite(at);
         Quarantine(at);
         VerifiedFrees = VerifiedFrees + 1;
-        // GIVEN BACK BY THE PROGRAM, as an unchecked free counts it: off the
-        // pressure counter and into the freed bytes. Kept poisoned instead,
-        // it still counted as allocated and not come back, and a program
-        // that frees everything was collected in the checked mode only
-        // (671, 1529, 1531, 1533 printed their collections).
+        // GIVEN BACK BY THE PROGRAM: off the pressure counter and into the
+        // freed bytes. Kept poisoned, it is rooted by the quarantine and no
+        // collection could take it back anyway; it goes back to the heap
+        // when the quarantine lets it go (ReleaseQuarantined). Counted as
+        // allocated until then, a program that frees everything was
+        // collected in the checked mode only (671, 1529, 1531, 1533 printed
+        // their collections).
         nuint size = SizeOfBlock(block);
         _since = _since - (long)size;
         if (_since < 0)

@@ -50,6 +50,8 @@ public static class RuntimeAbi
     public const string FreeReplaced = "m_Runtime_FreeReplaced_2_" + Word + "_" + Word + "_r$V$Void";
     public const string FreeOwnedReplaced = "m_Runtime_FreeOwnedReplaced_2_" + Word + "_" + Word + "_r$V$Void";
     public const string FreeField = "m_Runtime_FreeField_2_" + Word + "_" + Word + "_r$V$Void";
+    /// <summary>A pointer that is still its object's, in a region or not: what it owns, its storage and itself (Runtime.FreeHeld).</summary>
+    public const string FreeHeld = "m_Runtime_FreeHeld_1_" + Word + "_r$V$Void";
     public const string KeepField = "m_Runtime_KeepField_2_" + Word + "_" + Word + "_r$V$Void";
     public const string WriteBarrier = "m_Runtime_WriteBarrier_2_" + Word + "_" + Word + "_r$V$Void";
     public const string WriteBarrierValues = "m_Runtime_WriteBarrierValues_2_" + Word + "_" + Word + "_r$V$Void";
@@ -133,7 +135,7 @@ public static class RuntimeAbi
     public static readonly string[] Helpers =
     {
         Alloc, AllocLeaf, AllocObject, AllocFastSized, AllocFast, AllocMissed, Poll, AllocManual, AllocManualObject,
-        FreeManual, ManualObject, Free, FreeReplaced, FreeOwnedReplaced, FreeField, KeepField,
+        FreeManual, ManualObject, Free, FreeReplaced, FreeOwnedReplaced, FreeField, FreeHeld, KeepField,
         WriteBarrier, WriteBarrierValues, WriteBarrierStore, WriteBarrierExchange, WriteBarrierCompareExchange,
         CardMark, CardMarkObject, ShadeObject, GrowInPlace,
         RefStore, CardStore, RefExchange, RefCompareExchange, SequencesStart, SequencesEnd,

@@ -260,7 +260,7 @@ public sealed partial class Escape
     internal static RegOperand? StorageFreed(Instr call, Func<VReg, Instr?> origin)
     {
         if (call.Op != Opcode.Call) return null;
-        if (call.Callee == Freer) return call.Operands is [RegOperand only] ? only : null;
+        if (call.Callee is Freer or HeldFreer) return call.Operands is [RegOperand only] ? only : null;
         if (call.Callee == OwnedReplacedFreer && call.Operands is [RegOperand old, var current] && IsZeroWord(current, origin)) return old;
         return null;
     }
@@ -273,7 +273,7 @@ public sealed partial class Escape
     internal static RegOperand? StorageFreed(Instr call, RegisterWrites writes)
     {
         if (call.Op != Opcode.Call) return null;
-        if (call.Callee == Freer) return call.Operands is [RegOperand only] ? only : null;
+        if (call.Callee is Freer or HeldFreer) return call.Operands is [RegOperand only] ? only : null;
         if (call.Callee == OwnedReplacedFreer && call.Operands is [RegOperand old, var current] && IsZeroWord(current, writes)) return old;
         return null;
     }

@@ -195,6 +195,7 @@ public sealed class Inline : IParallelModulePass
         if (KeepFreeHelper)
         {
             pinned.Add(Escape.Freer);
+            pinned.Add(Escape.HeldFreer);
             pinned.Add(Escape.FieldFreer);
             pinned.Add(Escape.ReplacedFreer);
             pinned.Add(Escape.OwnedReplacedFreer);

@@ -1,0 +1,58 @@
+// test: array_resize_in_a_shared_generic_keeps_its_element_type
+// expect-exit: 0
+// expect-output:
+// strings 40 s0 s39 True
+// pairs 40 7 True
+// ints 40 740
+//
+// ARRAY.RESIZE OF A FIELD IN A GENERIC CLASS, made over reference types:
+// one copy of the class serves every reference T, and the copy of Resize it
+// calls is handed T as a hidden argument. Lowered as an assignment of its
+// place (a frame word handed to Resize, the field stored from it after), the
+// call is still given that argument -- read as zero, the grown array was an
+// object[] whatever T was. And over a value type, its own copy.
+
+using System;
+
+sealed class Pile<T>
+{
+    T[] _items = new T[2];
+    int _count;
+
+    public void Push(T item)
+    {
+        if (_count == _items.Length) Array.Resize(ref _items, _items.Length * 2);
+        _items[_count++] = item;
+    }
+
+    public int Count => _count;
+    public T At(int i) => _items[i];
+    public bool Typed => _items is T[];
+    public Type ArrayType => _items.GetType();
+}
+
+sealed class Pair
+{
+    public int A;
+    public Pair(int a) { A = a; }
+}
+
+static class P
+{
+    static void Main()
+    {
+        Pile<string> strings = new();
+        for (int i = 0; i < 40; i++) strings.Push("s" + i);
+        Console.WriteLine("strings " + strings.Count + " " + strings.At(0) + " " + strings.At(39) + " " + (strings.ArrayType == typeof(string[])));
+
+        Pile<Pair> pairs = new();
+        for (int i = 0; i < 40; i++) pairs.Push(new Pair(i));
+        Console.WriteLine("pairs " + pairs.Count + " " + pairs.At(7).A + " " + (pairs.ArrayType == typeof(Pair[])));
+
+        Pile<int> ints = new();
+        long sum = 0;
+        for (int i = 0; i < 40; i++) ints.Push(i - 1);
+        for (int i = 0; i < ints.Count; i++) sum += ints.At(i);
+        Console.WriteLine("ints " + ints.Count + " " + sum);
+    }
+}

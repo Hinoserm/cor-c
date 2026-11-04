@@ -808,7 +808,10 @@ public sealed class RegionPointsTo : IModulePass
         HashSet<Function> opened = new();
         foreach (int c in boundaries)
             if (opened.Add(_copies[c].F)) Open(_copies[c].F, loopRegions.ContainsKey(_copies[c].F));
-        foreach ((Function f, List<int> headers) in loopRegions) OpenLoops(f, headers);
+        // And each lap's frees where it ends, as the link's answer has them
+        // (ApplyFacts): the renewal's, past the header, read what the lap
+        // gave back.
+        foreach ((Function f, List<int> headers) in loopRegions) { OpenLoops(f, headers); Escape.PlaceLapFrees(f); }
 
         int versionSites = 0;
         foreach (Version v in versions)

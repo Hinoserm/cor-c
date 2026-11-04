@@ -220,6 +220,7 @@ public sealed partial class Escape : IModulePass
         bool Provided(string helper) => byName.ContainsKey(helper) || m.RuntimeHelpers.Contains(helper);
         bool canFree = Provided(Freer);
         _storageFreer = Provided(StorageFreer);
+        _heldFreer = Provided(HeldFreer);
         _descriptors = _items ??= m.Data.ToDictionary(d => d.Name, StringComparer.Ordinal);
         _stampItems = _descriptors;
         bool canFreeFields = canFree && Provided(FieldFreer);
@@ -464,6 +465,14 @@ public sealed partial class Escape : IModulePass
     /// payload of a live block, so freeing a zero is a no-op.
     /// </summary>
     public const string Freer = Corsac.Lang.Lto.RuntimeAbi.Free;
+
+    /// <summary>
+    /// Giving back a pointer that is still its object's -- in a region or on
+    /// the heap -- with what it owns (Runtime.FreeHeld): an owned variable's
+    /// object where a lap with a region ends (PlaceLapFrees).
+    /// </summary>
+    public const string HeldFreer = Corsac.Lang.Lto.RuntimeAbi.FreeHeld;
+    private bool _heldFreer;
 
     /// <summary>How many allocations this pass gave an explicit free rather than a frame slot.</summary>
     public int Owned { get; private set; }
@@ -1184,6 +1193,69 @@ public sealed partial class Escape : IModulePass
     private readonly HashSet<Instr> _fieldOwned = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
+    /// Whether a free this run inserted (_inserted) gives back `value` in `f`,
+    /// or a copy of it: the object has an owner of its own here. An owned
+    /// variable (Own, OwnAfter) counts too, though its frees read the object
+    /// back out of its slot and name no register of it: the allocation or
+    /// call `value` comes from, through copies written once, is one this run
+    /// owns (_owned, _ownedCalls) -- a loop's `h.Current = Make()` freed each
+    /// lap by the variable and again by the field it was stored in (1230).
+    /// </summary>
+    private bool FreedByThisRun(Function f, VReg value)
+    {
+        if (_inserted is null) return false;
+        FreedFacts facts = FreedFactsOf(f);
+        VReg at = value;
+        for (int hops = 0; hops < 8 && facts.Defined.TryGetValue(at, out Instr? def) && def is not null; hops++)
+        {
+            if (_owned.Contains(def) || _ownedCalls.Contains(def)) return true;
+            if (def.Op is not (Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64) || def.Operands is not [RegOperand { Reg: var from }]) break;
+            at = from;
+        }
+        return facts.Freed.Contains(value);
+    }
+
+    /// <summary>
+    /// A function's facts for FreedByThisRun, made once per OwnedFields run:
+    /// each register's one definition (null where written more than once),
+    /// and every register a free this run inserted gives back -- the freed
+    /// register and, back through every copy that writes it, what it was
+    /// copied from, a variable's every write followed.
+    /// </summary>
+    private sealed record FreedFacts(Dictionary<VReg, Instr?> Defined, HashSet<VReg> Freed);
+
+    private Dictionary<Function, FreedFacts>? _freedFacts;
+
+    private FreedFacts FreedFactsOf(Function f)
+    {
+        _freedFacts ??= new();
+        if (_freedFacts.TryGetValue(f, out FreedFacts? known)) return known;
+        Dictionary<VReg, Instr?> defined = new();
+        Dictionary<VReg, List<Instr>> writes = new();
+        Stack<VReg> work = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+            {
+                if (i.Dest is { } d)
+                {
+                    defined[d] = defined.ContainsKey(d) ? null : i;
+                    if (!writes.TryGetValue(d, out List<Instr>? ws)) writes[d] = ws = new();
+                    ws.Add(i);
+                }
+                if (i.Op == Opcode.Call && i.Callee is Freer or HeldFreer && _inserted!.Contains(i) && i.Operands is [RegOperand { Reg: var freed }])
+                    work.Push(freed);
+            }
+        HashSet<VReg> reached = new();
+        while (work.TryPop(out VReg? r))
+        {
+            if (!reached.Add(r) || !writes.TryGetValue(r, out List<Instr>? ws)) continue;
+            foreach (Instr w in ws)
+                if (w.Op is Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64 && w.Operands is [RegOperand { Reg: var from }]) work.Push(from);
+        }
+        return _freedFacts[f] = new FreedFacts(defined, reached);
+    }
+
+    /// <summary>
     /// A FIELD THAT OWNS WHAT IT HOLDS, over the whole program: every store
     /// into it, anywhere, stores an object made for it -- a fresh allocation or
     /// a fresh function's result that nothing else keeps -- or null or static
@@ -1197,50 +1269,10 @@ public sealed partial class Escape : IModulePass
     /// dynamic type's, so a subclass's own fields go too. Instance fields of
     /// classes only (lowering tags no other): a struct is copied byte for byte.
     /// </summary>
-    /// <summary>
-    /// Whether a free this run inserted (_inserted) gives back `value` in `f`,
-    /// or a copy of it: the object has an owner of its own here. An owned
-    /// variable (Own, OwnAfter) counts too, though its frees read the object
-    /// back out of its slot and name no register of it: the allocation or
-    /// call `value` comes from, through copies written once, is one this run
-    /// owns (_owned, _ownedCalls) -- a loop's `h.Current = Make()` freed each
-    /// lap by the variable and again by the field it was stored in (1230).
-    /// </summary>
-    private bool FreedByThisRun(Function f, VReg value)
-    {
-        if (_inserted is null) return false;
-        {
-            Dictionary<VReg, Instr?> defined = new();
-            foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                    if (i.Dest is { } d) defined[d] = defined.ContainsKey(d) ? null : i;
-            VReg at = value;
-            for (int hops = 0; hops < 8 && defined.TryGetValue(at, out Instr? def) && def is not null; hops++)
-            {
-                if (_owned.Contains(def) || _ownedCalls.Contains(def)) return true;
-                if (def.Op is not (Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64) || def.Operands is not [RegOperand { Reg: var from }]) break;
-                at = from;
-            }
-        }
-        HashSet<VReg> same = new() { value };
-        bool grew = true;
-        while (grew)
-        {
-            grew = false;
-            foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                    if (i.Op is Opcode.Copy or Opcode.ZExt32 or Opcode.Trunc64 && i.Dest is { } d && i.Operands.Count == 1
-                        && i.Operands[0] is RegOperand { Reg: var from } && same.Contains(from) && same.Add(d)) grew = true;
-        }
-        foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Call && i.Callee is Freer && _inserted.Contains(i) && i.Operands.Count == 1
-                    && i.Operands[0] is RegOperand { Reg: var freed } && same.Contains(freed)) return true;
-        return false;
-    }
 
     private void OwnedFields(Module m, Dictionary<string, Function> byName, Dictionary<string, bool[]> summaries)
     {
+        _freedFacts = null;
         if (m.PreserveExports || m.Entry is null || !byName.ContainsKey(OwnedReplacedFreer) && !m.RuntimeHelpers.Contains(OwnedReplacedFreer)) return;
 
         List<(Function F, Block B, Instr I)> stores = new(), loads = new(), fieldAddresses = new();
@@ -4390,7 +4422,7 @@ continue;
                     if (PromoteTrace is { } pt && f.Name.Contains(pt, StringComparison.Ordinal)) Console.Error.WriteLine($"holder {f.Name}: {i} operand {o} not a box's base ({root} +{delta})");
                     return false;
                 }
-                if (i.Op == Opcode.Call && i.Callee == Freer && i.Operands.Count == 1) continue;
+                if (i.Op == Opcode.Call && i.Callee is Freer or HeldFreer && i.Operands.Count == 1) continue;
                 // Or the library's spelling of that free, as an owned field's
                 // old value (StorageFreed): the box alone, given back as by
                 // Runtime.Free, and at once where it is its region's top.
@@ -5459,9 +5491,10 @@ continue;
                         b.Instrs.InsertRange(renewAt, before); OwnedFieldEscape.Changed(); f.Edited();
                         _bookkeeping.UnionWith(before);
                         k += before.Count;
-                        // Where the link gave the loop a region, again where each lap ends (PlaceLapFrees).
-                        if (LapRegions(f))
-                            NoteLapFree(f, new LapFree { Slot = slot, Renew = replacement[1], Roots = new HashSet<VReg>(flow.Derived) { i.Dest, addr },
+                        // Again where each lap ends, where the loop has a region (PlaceLapFrees):
+                        // noted whatever is known yet -- on one image's compile the region pass
+                        // decides after this one -- and placed only where a loop is opened.
+                        NoteLapFree(f, new LapFree { Slot = slot, Renew = replacement[1], Roots = new HashSet<VReg>(flow.Derived) { i.Dest, addr },
                                 ElementFreer = i.Field == Instr.OwnsElements ? (_arrayOwners.Contains(i) ? OwnedElements.ArrayFreer : OwnedElements.Freer) : null,
                                 Storage = storage });
                     }
@@ -5762,9 +5795,27 @@ continue;
             _bookkeeping.UnionWith(releaseExit);
         }
         ReleaseAtThrows(f, slot, alloc, record);
+        NoteHeldLapFree(f, slot, alloc, made, repeats);
 
         Record(f, record);
         return true;
+    }
+
+    /// <summary>
+    /// AN OWNED VARIABLE IN A LOOP THE LINK GAVE A REGION: its renewal frees
+    /// last lap's object after the header has given that lap's region back,
+    /// through a pointer that may name what this lap made in the same place
+    /// -- which Runtime.Free ignores, so what such an object owned on the
+    /// heap went to the collector every lap (1529). Given back where each
+    /// lap ends instead (PlaceLapFrees, Held), while the region holds it.
+    /// </summary>
+    private void NoteHeldLapFree(Function f, FrameSlot slot, Instr origin, VReg made, bool repeats)
+    {
+        // Noted whatever is known of regions yet (the region pass may decide
+        // after this one); placed only where a loop is opened.
+        if (!repeats || !_heldFreer) return;
+        NoteLapFree(f, new LapFree { Slot = slot, Renew = origin, Roots = new HashSet<VReg> { origin.Dest!, made }, Held = true,
+            ElementFreer = origin.Field == Instr.OwnsElements ? (_arrayOwners.Contains(origin) ? OwnedElements.ArrayFreer : OwnedElements.Freer) : null });
     }
 
     /// <summary>
@@ -6115,6 +6166,7 @@ continue;
             _bookkeeping.UnionWith(releaseExit);
         }
         ReleaseAtThrows(f, slot, call, record);
+        NoteHeldLapFree(f, slot, call, made, repeats);
         Record(f, record);
         return true;
     }
@@ -6183,7 +6235,12 @@ continue;
         if (last is not null && ReferenceEquals(last, b.Terminator)) return false;
         List<Instr> free = new();
         AppendElementFree(f, free, made, made.Dest, b.Instrs[lastAt].Line);
-        Instr call = AppendFree(f, free, made.Dest, b.Instrs[lastAt].Line);
+        // THE POINTER IS STILL ITS OBJECT'S -- made in this block, freed in
+        // it -- so a region's object is given back with what it owns
+        // (Runtime.FreeHeld); Runtime.Free leaves a region's block alone, as
+        // a pointer out of a slot may name what a later lap made there, and
+        // a loop's Named gave its name to the collector every lap (1529).
+        Instr call = AppendFree(f, free, made.Dest, b.Instrs[lastAt].Line, _heldFreer ? HeldFreer : Freer);
         b.Instrs.InsertRange(lastAt + 1, free);
         _bookkeeping.UnionWith(free);
         // The owned field rules see it as dying at that free.
@@ -6318,11 +6375,11 @@ continue;
         return word;
     }
 
-    private static Instr AppendFree(Function f, List<Instr> output, VReg pointer, int line)
+    private static Instr AppendFree(Function f, List<Instr> output, VReg pointer, int line, string callee = Freer)
     {
         // Ownership slots are machine words, and so is Runtime.Free's parameter.
         VReg argument = Word(f, output, pointer, line, "freeAddress");
-        Instr free = new Instr { Op = Opcode.Call, Callee = Freer,
+        Instr free = new Instr { Op = Opcode.Call, Callee = callee,
             Operands = { RegOperand.Of(argument) }, Line = line };
         output.Add(free);
         return free;

@@ -119,6 +119,9 @@ internal sealed class OwnedFieldEscape
         foreach (var b in callee.Blocks)
             foreach (Instr i in b.Instrs)
             {
+                // A parameter written again (`p = Other(); return p;`) hands
+                // back what was written, not what the caller passed.
+                if (ReferenceEquals(i.Dest, parameter)) return false;
                 if (i.Op != Opcode.Ret) continue;
                 if (i.Operands.Count != 1 || i.Operands[0] is not RegOperand { Reg: var r } || !ReferenceEquals(r, parameter)) return false;
                 any = true;

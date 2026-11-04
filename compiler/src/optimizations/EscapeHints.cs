@@ -290,7 +290,7 @@ public sealed partial class Escape
         hints.FieldSites.AddRange(_fieldSiteRecords);
         ThrowHints(m, hints);
         m.KeepCalls.UnionWith(_keep);
-        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer, OwnedElements.Freer, OwnedElements.ArrayFreer, OwnedElements.Marker, StorageFreer })
+        foreach (string helper in new[] { Freer, FieldFreer, ReplacedFreer, FieldKeeper, OwnedReplacedFreer, OwnedElements.Freer, OwnedElements.ArrayFreer, OwnedElements.Marker, StorageFreer, HeldFreer })
             if (provided(helper)) hints.Helpers.Add(helper);
         return hints;
     }
@@ -385,6 +385,7 @@ public sealed partial class Escape
         Dictionary<string, bool[]> summaries = facts.Escapes;
         bool canFree = facts.Helpers.Contains(Freer);
         pass._storageFreer = facts.Helpers.Contains(StorageFreer);
+        pass._heldFreer = facts.Helpers.Contains(HeldFreer);
         pass._descriptors = descriptors;
         Dictionary<string, Function> byName = new(StringComparer.Ordinal) { [f.Name] = f };
         _inserted = pass._bookkeeping;

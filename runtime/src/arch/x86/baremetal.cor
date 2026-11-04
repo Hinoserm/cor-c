@@ -490,7 +490,7 @@ public static class Platform
     {
         if (WaitHook != 0)
         {
-            Sys.Call(WaitHook, at, (nuint)value, 0);
+            Sys.Call(WaitHook, at, (nuint)(uint)value, 0);
         }
     }
 
@@ -509,20 +509,22 @@ public static class Platform
 
     /// A SLEEP IN THE KERNEL, for a thread that may sleep: a Monitor.Wait
     /// and a pool worker with nothing to do (Native.Wait, WaitFor); a
-    /// contended lock has a hook of its own (LockParkHook). The kernel parks the thread on `at` while it
-    /// still holds `value`, until a Wake of that address (WakeHook) or the
-    /// deadline -- the address of a long, Clock.Now's absolute nanoseconds,
-    /// or 0 for none -- and answers nonzero: parked, or found the word
-    /// changed, or the deadline gone. Zero where it may not park (interrupts
-    /// off, in an allocation, the heap lock held, preemption off, no
-    /// process stack), and the caller waits as it would with no hook. The
-    /// collector's own Wait (WaitHook, the stop handshake) never parks.
+    /// contended lock has a hook of its own (LockParkHook). The kernel
+    /// parks the thread on `at` while its 32-bit word still holds `value`
+    /// (zero-extended, so a 64-bit kernel compares the low half), until a
+    /// Wake of that address (WakeHook) or the deadline -- the address of a
+    /// long, Clock.Now's absolute nanoseconds, or 0 for none -- and answers
+    /// nonzero: parked, or found the word changed, or the deadline gone.
+    /// Zero where it may not park (interrupts off, in an allocation, the
+    /// heap lock held, preemption off, no process stack), and the caller
+    /// waits as it would with no hook. The collector's own Wait (WaitHook,
+    /// the stop handshake) never parks.
     // ParkHook(at, value, deadlineAt)
     public static nuint ParkHook;
 
     public static bool Park(nuint at, int value, nuint deadlineAt)
     {
-        return ParkHook != 0 && Sys.Call(ParkHook, at, (nuint)value, deadlineAt) != 0;
+        return ParkHook != 0 && Sys.Call(ParkHook, at, (nuint)(uint)value, deadlineAt) != 0;
     }
 
     /// A contended lock's sleep (MonitorBlock), as ParkHook's but a hook of
@@ -893,7 +895,7 @@ public static class Platform
     /// answers the TLB shootdown a holder may be waiting on.
     public static void MonitorBlock(nuint at, int value)
     {
-        if (LockParkHook != 0 && Sys.Call(LockParkHook, at, (nuint)value, 0) != 0)
+        if (LockParkHook != 0 && Sys.Call(LockParkHook, at, (nuint)(uint)value, 0) != 0)
         {
             return;
         }

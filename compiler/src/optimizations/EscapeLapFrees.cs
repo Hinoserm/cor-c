@@ -39,6 +39,13 @@ public sealed partial class Escape
         public bool Storage;
         /// <summary>The owned fields freed (SlotFieldFrees), by offset and freer.</summary>
         public List<(long Offset, string Callee)> FieldFrees = new();
+        /// <summary>
+        /// The slot is an owned variable's (Own, OwnAfter): it holds a pointer
+        /// to the object, not the object, and the lap's end gives that back
+        /// with all it owns (Runtime.FreeHeld) -- its elements first where it
+        /// owns them (ElementFreer) -- and empties the slot.
+        /// </summary>
+        public bool Held;
     }
 
     /// <summary>
@@ -102,7 +109,7 @@ public sealed partial class Escape
             // only through it, and a name or a long total carried round the
             // loop from another field holds nothing these frees give back.
             HashSet<VReg> names = Derivations(f, mine.SelectMany(r => r.Roots));
-            bool typed = mine.Any(r => r.ElementFreer is not null || r.Storage);
+            bool typed = mine.Any(r => r.ElementFreer is not null || r.Storage || r.Held);
             HashSet<long> freedAt = mine.SelectMany(r => r.FieldFrees).Select(p => p.Offset).ToHashSet();
             HashSet<VReg> exact = new(mine.SelectMany(r => r.Roots));
             for (bool grew = true; grew;)
@@ -158,18 +165,40 @@ public sealed partial class Escape
         List<Instr> made = new();
         VReg addr = f.NewReg(IrTypes.Word, "lapFreed");
         made.Add(new Instr { Op = Opcode.Copy, Dest = addr, Operands = { new SlotOperand(slot) }, Line = line });
+        // AN OWNED VARIABLE'S SLOT holds the object's pointer: read while the
+        // lap's region still holds the object, given back with what it owns,
+        // and the slot emptied, so the renewal's free and the returns' find
+        // nothing -- read after the header gives the region back, the pointer
+        // named whatever the next lap made there (Runtime.Free ignores it).
+        if (frees.Any(r => r.Held))
+        {
+            VReg held = f.NewReg(IrTypes.Word, "lapHeld");
+            made.Add(new Instr { Op = Opcode.Load, Size = IrTypes.Word.Bytes(), Dest = held, Operands = { RegOperand.Of(addr) }, Line = line });
+            foreach (LapFree r in frees)
+                if (r.ElementFreer is { } elements)
+                {
+                    made.Add(new Instr { Op = Opcode.Call, Callee = elements, Operands = { RegOperand.Of(held) }, Line = line });
+                    break;
+                }
+            made.Add(new Instr { Op = Opcode.Call, Callee = HeldFreer, Operands = { RegOperand.Of(held) }, Line = line });
+            made.Add(new Instr { Op = Opcode.Store, Size = IrTypes.Word.Bytes(), Operands = { RegOperand.Of(addr), new ImmOperand(0, IrTypes.Word) }, Line = line });
+            return made;
+        }
         bool typed = false;
         // Each field once: the clean fields' frees and the owned fields' may both name it.
+        // And the elements and the storage once: two notes of one slot name them twice.
         HashSet<long> fieldsFreed = new();
+        bool elementsFreed = false, storageFreed = false;
         foreach (LapFree r in frees)
         {
-            if (r.ElementFreer is { } freer)
+            if (r.ElementFreer is { } freer && !elementsFreed)
             {
+                elementsFreed = true;
                 VReg argument = Word(f, made, addr, line, "elementsOf");
                 made.Add(new Instr { Op = Opcode.Call, Callee = freer, Operands = { RegOperand.Of(argument) }, Line = line });
                 typed = true;
             }
-            if (r.Storage) { AppendStorageFree(f, made, addr, line); typed = true; }
+            if (r.Storage && !storageFreed) { storageFreed = true; AppendStorageFree(f, made, addr, line); typed = true; }
             foreach ((long o, string callee) in r.FieldFrees) if (fieldsFreed.Add(o)) AppendFieldFree(f, made, addr, o, line, callee);
         }
         if (typed)

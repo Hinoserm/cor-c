@@ -4854,8 +4854,9 @@ public static partial class Scheduler
 // picks it or the timeout passes, then takes the lock back at the depth it
 // had. A waiter is enrolled before the lock is let go, so a Pulse made the
 // moment after cannot miss it. Its sleep is the platform's (Native.Wait and
-// WaitFor): a futex under Linux, a look at the word between halts or yields
-// on bare metal, where whoever pulses is another processor or a ring-1
+// WaitFor): a futex under Linux; on bare metal the kernel's park where it
+// can park the thread (Platform.ParkHook), else a look at the word between
+// halts or yields, where whoever pulses is another processor or a ring-1
 // thread.
 public static class Monitor
 {
@@ -5339,35 +5340,55 @@ public static class Monitor
         nuint flag = Atom.At(waiter, Atom.FirstWord);
         long deadline = millisecondsTimeout < 0 ? -1 : Clock.Now() + (long)millisecondsTimeout * 1000000;
 
-        while (Sys.Read32(flag) == 0)
-        {
-            if (deadline < 0)
-            {
-                Native.Wait(flag, 0);
-                continue;
-            }
-            long left = deadline - Clock.Now();
-            if (left <= 0)
-            {
-                break;
-            }
-            Native.WaitFor(flag, 0, left);
-        }
-
-        bool pulsed;
-        EnterGate();
+        // THROWN OUT OF THE SLEEP -- a kernel's forced unload ends a parked
+        // call with ModuleRevokedException -- the waiter still leaves the
+        // list and the lock is still taken back, as .NET's Wait takes it back
+        // before an exception goes on. Left enrolled, it was the next Pulse's
+        // pick: the pulse went to a waiter nobody was, and every live one
+        // behind it missed its turn.
+        bool slept = false;
+        bool pulsed = false;
         try
         {
-            pulsed = Sys.Read32(flag) != 0;
-            _waiters!.Remove(waiter);
+            while (Sys.Read32(flag) == 0)
+            {
+                if (deadline < 0)
+                {
+                    Native.Wait(flag, 0);
+                    continue;
+                }
+                long left = deadline - Clock.Now();
+                if (left <= 0)
+                {
+                    break;
+                }
+                Native.WaitFor(flag, 0, left);
+            }
+            slept = true;
         }
         finally
         {
-            ExitGate();
-        }
+            EnterGate();
+            try
+            {
+                pulsed = Sys.Read32(flag) != 0;
+                _waiters!.Remove(waiter);
+            }
+            finally
+            {
+                ExitGate();
+            }
 
-        Enter(obj);
-        RestoreDepth(word, depth);
+            Enter(obj);
+            RestoreDepth(word, depth);
+            // A PULSE IT WAS HANDED AS IT WAS THROWN OUT is passed on to the
+            // next waiter, the lock held again as Pulse needs: it was meant
+            // for somebody still waiting.
+            if (!slept && pulsed)
+            {
+                Signal(obj, all: false);
+            }
+        }
         return pulsed;
     }
 
