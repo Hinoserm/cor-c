@@ -1,0 +1,9 @@
+// A module's part of the kernel's Stamp, whose header carries an attribute
+// with arguments: indexed as a part of a struct.
+
+namespace Kernel;
+
+public partial struct Stamp
+{
+    public static int Zero() => 0;
+}

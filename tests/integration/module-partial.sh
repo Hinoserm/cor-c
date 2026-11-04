@@ -87,6 +87,9 @@ if "$corc" index --assembly Kernel --ring 0 --on "$k/kernel.idx" "$here/Generic.
     fail "a part of the kernel's generic Pool<T> was indexed"
 fi
 grep -q "a module may not add to a kernel's generic type" "$m/generic.log" || { cat "$m/generic.log"; fail "the generic refusal does not say why"; }
+# A part of a kernel struct whose header's attribute takes arguments is a struct's.
+"$corc" index --assembly Kernel --ring 0 --on "$k/kernel.idx" "$here/StampMore.cor" -o "$m/stamp.idx" 2> "$m/stamp.log" \
+    || { cat "$m/stamp.log"; fail "a part of the kernel's attributed struct Stamp was refused"; }
 # And the part with none of those is indexed.
 "$corc" index --assembly Kernel --ring 0 --on "$k/kernel.idx" "$here/Refused.cor" -o "$m/plain.idx" 2> "$m/plain.log" \
     || { cat "$m/plain.log"; fail "a plain part was refused"; }

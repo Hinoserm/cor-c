@@ -1,5 +1,5 @@
 // What a module's part of a kernel's type may not declare, one at a time
-// (REFUSED selects which): each changes what the kernel's image fixed or
+// (the test defines one symbol, -D NAME, to select it): each changes what the kernel's image fixed or
 // waits for a start only the kernel makes.
 
 namespace Kernel;

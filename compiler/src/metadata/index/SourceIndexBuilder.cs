@@ -253,10 +253,10 @@ public static class SourceIndexBuilder
     /// holding no storage -- in an instance or a static -- and starting
     /// nothing. The type is the kernel's (TypeDecl.Below): its statics, its
     /// descriptor and its start; a static of the module's part would be
-    /// nobody's to lay down or begin. A file of the
-    /// class library a module is built from adds to a kernel's type that way
-    /// (io.cor's DateTime.Now, files.cor's Os), as a split library's image
-    /// adds to another's (Lowering.SplitLibrary). Anything else is refused,
+    /// nobody's to lay down or begin. A file of the class library a module
+    /// is built from adds to a kernel's type that way (io.cor's DateTime.Now,
+    /// files.cor's Os), as a split library's image adds to another's
+    /// (Lowering.SplitLibrary). Anything else is refused,
     /// with why: a module redefining the kernel's type would not be the
     /// kernel's, an instance field or a virtual member would change a layout
     /// or a table the kernel's image has fixed, and a static would be storage
@@ -279,15 +279,23 @@ public static class SourceIndexBuilder
         // THE SAME KIND, as the parts of one type are: a struct's part over a
         // class's merged into nothing (Frontend.MergePartialTypes) and was a
         // second type of the kernel's name.
-        // Its header's, up to the body: a record a class, a record struct a struct.
+        // Its header's, past its attributes and up to its body or a record's
+        // parameters: a record a class, a record struct a struct. An
+        // attribute's arguments -- [StructLayout(LayoutKind.Sequential)] --
+        // are no header's, read inside their brackets.
         Tok Kind(string text)
         {
             bool record = false;
+            int brackets = 0;
             foreach (Token token in Lexer.Tokenize(text, path))
             {
+                if (token.Kind == Tok.End) break;
+                if (token.Kind == Tok.LBracket) { brackets++; continue; }
+                if (token.Kind == Tok.RBracket) { brackets--; continue; }
+                if (brackets > 0) continue;
                 if (token.Kind is Tok.KwClass or Tok.KwStruct or Tok.KwInterface) return token.Kind;
                 if (token.Kind == Tok.Ident && token.Text == "record") record = true;
-                if (token.Kind is Tok.LBrace or Tok.LParen or Tok.End) break;
+                if (token.Kind is Tok.LBrace or Tok.LParen) break;
             }
             return record ? Tok.KwClass : Tok.End;
         }
@@ -298,8 +306,9 @@ public static class SourceIndexBuilder
             throw new InvalidDataException(where + "; a module's part of it must be of its kind (class, struct or interface)");
         // NOT A GENERIC'S: every image makes its own copies of a generic
         // type's members, and a module's part would be in its own alone.
-        // Nor a type written in one (Outer`1+Inner): its members copied per image too.
-        if (type.TypeParams.Count > 0 || name.Contains('`'))
+        // Nor a type written in one (Outer`1+Inner), whose parameters count
+        // its outer one's (TypeDecl.OuterParams): its members copied per image too.
+        if (type.TypeParams.Count > 0)
             throw new InvalidDataException(where + "; a module may not add to a kernel's generic type, or one inside a generic: every image copies its members for itself");
         if (type.Attributes.Count > 0)
             throw new InvalidDataException(where + "; a module's part of it may carry no attribute: the kernel's image fixed the type's layout and what it says");
