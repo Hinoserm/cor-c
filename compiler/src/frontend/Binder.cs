@@ -1288,6 +1288,10 @@ public sealed partial class Binder
     private bool BindingProgramCode()
     {
         if (_made > 0) return false;
+        // A DEFAULT SPELT AT A CALL is its declaring type's code (_accessFrom):
+        // a library default naming the library's internal type, called from
+        // a program, is the library's.
+        if (_accessFrom?.Decl is { } declaring) return declaring.File != "<prelude>" && !ClassLibrarySide(declaring);
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         if (written is null || written.File == "<prelude>" || _member is { LocalCopy: true } or { Made: true }) return false;
         return !ClassLibrarySide(written);
@@ -1442,10 +1446,11 @@ public sealed partial class Binder
     /// </summary>
     private bool NamespaceInScope(string space)
     {
-        TypeDecl? written = (_scope ?? _thisType)?.Decl;
+        TypeDecl? written = (_accessFrom ?? _scope ?? _thisType)?.Decl;
         string within = WrittenIn();
         if (Encloses(space, within)) return true;
-        FileScope? file = _member?.Scope ?? written?.Scope;
+        // A default spelt at a call: its declaring type's file's usings.
+        FileScope? file = _accessFrom is not null ? written?.Scope : _member?.Scope ?? written?.Scope;
         if (file is null) return true;
         foreach ((string at, string imported) in file.Imports)
         {
@@ -2565,7 +2570,7 @@ public sealed partial class Binder
                 return IsReal(named.Type) ? BitConverter.Int64BitsToDouble(named.Value) : named.Value;
             case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return IsReal(here.Type) ? BitConverter.Int64BitsToDouble(here.Value) : here.Value;
-            case MemberExpr m when ConstantOwner(m.Target) is { } named && FindConstant(named, m.Name) is { } there:
+            case MemberExpr m when ConstantOwner(m.Target) is { } named && (m.DefaultIn is null ? FindConstant(named, m.Name) : FromDefault(m, () => FindConstant(named, m.Name))) is { } there:
                 return IsReal(there.Type) ? BitConverter.Int64BitsToDouble(there.Value) : there.Value;
             default:
                 return ConstantValue(e, owner) is long value ? value : null;
@@ -2672,7 +2677,7 @@ public sealed partial class Binder
                         return (member, named.EnumUnderlying);
                     }
 
-                    if (FindConstant(named, m.Name) is { } elsewhere)
+                    if ((m.DefaultIn is null ? FindConstant(named, m.Name) : FromDefault(m, () => FindConstant(named, m.Name))) is { } elsewhere)
                     {
                         return (elsewhere.Value, Fold.Whole(elsewhere.Type));
                     }
@@ -21962,11 +21967,7 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckMember(MemberExpr m)
     {
-        if (m.DefaultIn is not string declaredIn || !_r.Types.TryGetValue(declaredIn, out TypeSymbol? from)) return CheckMemberReached(m);
-        TypeSymbol? previousFrom = _accessFrom;
-        _accessFrom = from;
-        try { return CheckMemberReached(m); }
-        finally { _accessFrom = previousFrom; }
+        return m.DefaultIn is null ? CheckMemberReached(m) : FromDefault(m, () => CheckMemberReached(m));
     }
 
     private Type CheckMemberReached(MemberExpr m)

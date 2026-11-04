@@ -6,12 +6,24 @@ public sealed partial class Binder
     private const Mods AccessBits = Mods.Public | Mods.Private | Mods.Protected | Mods.Internal;
 
     /// <summary>
-    /// Inside a default spelt out at a call from the type that declared it
-    /// (MemberExpr.DefaultIn): its access is judged from that type, as C#
-    /// evaluates a default where it was declared; nothing else of the binding
-    /// changes, as it would under _made.
+    /// While a member read of a default spelt out at a call is bound or
+    /// folded (MemberExpr.DefaultIn: CheckMember, FromDefault), the type that
+    /// declared the default: its access, assembly and usings are the read's,
+    /// as C# evaluates a default where it was declared; nothing else of the
+    /// binding changes, as it would under _made. Cleared while a constant's
+    /// own initialiser is evaluated (EvaluateConstantOf).
     /// </summary>
     private TypeSymbol? _accessFrom;
+
+    /// <summary>A lookup made for a member read, from its default's declaring type if it is one's.</summary>
+    private T FromDefault<T>(MemberExpr m, Func<T> lookup)
+    {
+        if (m.DefaultIn is not string declaredIn || !_r.Types.TryGetValue(declaredIn, out TypeSymbol? from)) return lookup();
+        TypeSymbol? previous = _accessFrom;
+        _accessFrom = from;
+        try { return lookup(); }
+        finally { _accessFrom = previous; }
+    }
 
     /// <summary>The places being bound that are only written, `x.N = v` and `out x.N` (CheckExpr).</summary>
     private readonly HashSet<Expr> _onlyWritten = new(ReferenceEqualityComparer.Instance);
