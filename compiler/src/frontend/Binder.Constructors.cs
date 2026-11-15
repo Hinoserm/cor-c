@@ -37,6 +37,10 @@ public sealed partial class Binder
             for (int i = 0; i < used.Length && fits; i++)
                 if (!used[i] && !Omittable(candidate, i, candidate.Params[i].Type))
                     fits = false;
+            // ONLY ITS PARAMS LEFT OUT is the expanded form the caller chooses
+            // among the others (ExpandedMoreSpecific), not a completion.
+            if (fits && types.Count == candidate.Params.Count - 1 && !used[^1] && candidate.Decl?.Params[^1] is { IsParams: true, Default: null })
+                fits = false;
             int defaults = candidate.Params.Count - types.Count;
             if (!fits || exact < bestExact || (exact == bestExact && defaults >= bestDefaults)) continue;
             best = candidate;

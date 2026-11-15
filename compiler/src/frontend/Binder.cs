@@ -15225,13 +15225,6 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// The arguments a `params` parameter gathers, made into what it is, its
-    /// type written out -- so a later round, and a generic method's
-    /// inference, read it as that: a new array of them, which an interface
-    /// (IEnumerable<T>, IReadOnlyList<T> and the rest) takes as it is; a span
-    /// over that array; a collection class filled by its initialiser.
-    /// </summary>
-    /// <summary>
     /// Whether parameter `i` of `m`, of type `wanted` at this call, may be
     /// left out of it: it has a default, or it is the last, a params
     /// collection left empty (C# 12.6.2.2) -- of an element this call knows,
@@ -15239,14 +15232,22 @@ public sealed partial class Binder
     /// </summary>
     private bool Omittable(MethodSymbol m, int i, Type wanted)
         => m.Decl?.Params.ElementAtOrDefault(i) is { } p
-        && (p.Default is not null || p.IsParams && p.Default is null && i == m.Params.Count - 1 && EmptyParams(m, wanted, p) is not null);
+        && (p.Default is not null || p.IsParams && i == m.Params.Count - 1 && EmptyParams(m, wanted, p) is not null);
 
     /// <summary>The empty collection an omitted params parameter takes, or null where it cannot be made here.</summary>
     private NewExpr? EmptyParams(MethodSymbol m, Type wanted, Node at)
-        => ParamsElement(wanted) is { } element && !m.TypeParams.Any(t => Mentions(element, t)) && RefOf(element) is { } elementRef
+        => ParamsElement(wanted) is { } element && !m.TypeParams.Any(t => Mentions(element, t)) && !IsTemplate(m.Owner)
+            && RefOf(element) is { } elementRef
             ? Gathered(Enumerable.Empty<Expr>(), wanted, elementRef, at)
             : null;
 
+    /// <summary>
+    /// The arguments a `params` parameter gathers, made into what it is, its
+    /// type written out -- so a later round, and a generic method's
+    /// inference, read it as that: a new array of them, which an interface
+    /// (IEnumerable<T>, IReadOnlyList<T> and the rest) takes as it is; a span
+    /// over that array; a collection class filled by its initialiser.
+    /// </summary>
     private static NewExpr Gathered(IEnumerable<Expr> items, Type parameter, TypeRef element, Node at)
     {
         List<Expr> written = items.ToList();
