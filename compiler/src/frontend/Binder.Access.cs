@@ -28,7 +28,16 @@ public sealed partial class Binder
     }
 
     // A CONSTANT FOLDED FROM A MEMBER READ, from its default's declaring type
-    // when it is one's: no lambda, so an ordinary read allocates nothing.
+    // when it is one's -- the type it is read through as well as the constant
+    // -- with no lambda, so an ordinary read allocates nothing.
+    private TypeSymbol? ReadThrough(MemberExpr m)
+    {
+        if (m.DefaultIn is null) return ConstantOwner(m.Target);
+        TypeSymbol? previous = EnterDefault(m);
+        try { return ConstantOwner(m.Target); }
+        finally { _accessFrom = previous; }
+    }
+
     private (long Value, Type Type)? FindConstant(MemberExpr m, TypeSymbol owner)
     {
         if (m.DefaultIn is null) return FindConstant(owner, m.Name);

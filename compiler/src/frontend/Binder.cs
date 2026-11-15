@@ -1359,10 +1359,12 @@ public sealed partial class Binder
     {
         int dot = name.LastIndexOf('.');
         if (dot <= 0) return name;
-        FileScope? file = _member?.Scope ?? (_scope ?? _thisType)?.Decl?.Scope;
+        // A default spelt at a call reads as its declaring type's file
+        // (_accessFrom): its aliases, and the type it is in, as WrittenIn.
+        FileScope? file = _accessFrom?.Decl is { } declaring ? declaring.Scope : _member?.Scope ?? (_scope ?? _thisType)?.Decl?.Scope;
         // The program's alone (LibraryNamespaces.Namespace, ProgramScopes):
         // its types, and every namespace or type one of them is in.
-        TypeDecl? around = (_scope ?? _thisType)?.Decl;
+        TypeDecl? around = (_accessFrom ?? _scope ?? _thisType)?.Decl;
         string? space = LibraryNamespaces.Namespace(name[..dot], WrittenIn(), around is null ? "" : TypePath(around),
             file?.Aliases ?? (IEnumerable<(string, string, string)>)Array.Empty<(string, string, string)>(), path => ProgramScopes().Contains(path));
         return space is null ? name : space + name[dot..];
@@ -2572,7 +2574,7 @@ public sealed partial class Binder
                 return IsReal(named.Type) ? BitConverter.Int64BitsToDouble(named.Value) : named.Value;
             case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return IsReal(here.Type) ? BitConverter.Int64BitsToDouble(here.Value) : here.Value;
-            case MemberExpr m when ConstantOwner(m.Target) is { } named && FindConstant(m, named) is { } there:
+            case MemberExpr m when ReadThrough(m) is { } named && FindConstant(m, named) is { } there:
                 return IsReal(there.Type) ? BitConverter.Int64BitsToDouble(there.Value) : there.Value;
             default:
                 return ConstantValue(e, owner) is long value ? value : null;
@@ -2610,7 +2612,7 @@ public sealed partial class Binder
         NameExpr local when Lookup(local.Name) is ConstSym { Text: not null } named => named.Text,
 
         NameExpr name => owner is null ? null : FindTextOutward(owner, name.Name),
-        MemberExpr member when ConstantOwner(member.Target) is { } named => FindText(member, named),
+        MemberExpr member when ReadThrough(member) is { } named => FindText(member, named),
         BinaryExpr { Op: BinOp.Add } add => JoinedText(add, owner),
         _ => null,
     };
@@ -2672,7 +2674,7 @@ public sealed partial class Binder
 
             case MemberExpr m:
             {
-                if (ConstantOwner(m.Target) is { } named)
+                if (ReadThrough(m) is { } named)
                 {
                     if (named.EnumValues.TryGetValue(m.Name, out long member))
                     {
