@@ -15231,6 +15231,22 @@ public sealed partial class Binder
     /// (IEnumerable<T>, IReadOnlyList<T> and the rest) takes as it is; a span
     /// over that array; a collection class filled by its initialiser.
     /// </summary>
+    /// <summary>
+    /// Whether parameter `i` of `m`, of type `wanted` at this call, may be
+    /// left out of it: it has a default, or it is the last, a params
+    /// collection left empty (C# 12.6.2.2) -- of an element this call knows,
+    /// not a method type parameter still to be inferred.
+    /// </summary>
+    private bool Omittable(MethodSymbol m, int i, Type wanted)
+        => m.Decl?.Params.ElementAtOrDefault(i) is { } p
+        && (p.Default is not null || p.IsParams && p.Default is null && i == m.Params.Count - 1 && EmptyParams(m, wanted, p) is not null);
+
+    /// <summary>The empty collection an omitted params parameter takes, or null where it cannot be made here.</summary>
+    private NewExpr? EmptyParams(MethodSymbol m, Type wanted, Node at)
+        => ParamsElement(wanted) is { } element && !m.TypeParams.Any(t => Mentions(element, t)) && RefOf(element) is { } elementRef
+            ? Gathered(Enumerable.Empty<Expr>(), wanted, elementRef, at)
+            : null;
+
     private static NewExpr Gathered(IEnumerable<Expr> items, Type parameter, TypeRef element, Node at)
     {
         List<Expr> written = items.ToList();
@@ -24716,7 +24732,7 @@ public sealed partial class Binder
         {
             bool NeedsDefaults(MethodSymbol m)
                 => m.TypeParams.Count == 0 && m.Params.Count > args.Count
-                && Enumerable.Range(args.Count, m.Params.Count - args.Count).All(i => m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null)
+                && Enumerable.Range(args.Count, m.Params.Count - args.Count).All(i => Omittable(m, i, Wants(m, i)))
                 && Enumerable.Range(0, args.Count).All(i => WordFits(m, i) && WrittenFits(args[i], Wants(m, i), c.Args[i]));
             List<MethodSymbol> written = byArity.Where(m => AllWritten(m, 0)).ToList();
             if (written.Count > 0 && group.Methods.Where(NeedsDefaults).Any(d => written.All(w => BetterThan(d, w))))
@@ -24737,9 +24753,7 @@ public sealed partial class Binder
             // int b = 5, params int[] rest)` takes `Sum(1)`, b its default.
             bool Completable(MethodSymbol m)
                 => m.Params.Count > args.Count
-                && Enumerable.Range(args.Count, m.Params.Count - args.Count)
-                             .All(i => m.Decl?.Params.ElementAtOrDefault(i) is { } p
-                                    && (p.Default is not null || p.IsParams && i == m.Params.Count - 1));
+                && Enumerable.Range(args.Count, m.Params.Count - args.Count).All(i => Omittable(m, i, Wants(m, i)));
 
             //
             // AND OF THOSE, THE BETTER MEMBER by the arguments written, as C#
@@ -24772,10 +24786,8 @@ public sealed partial class Binder
                     // counted after the variables a generic local function
                     // captured, which come first and were never written.
                     Param omitted = shorter.Decl!.Params[i];
-                    Expr fallback = omitted is { IsParams: true, Default: null }
-                                        && ParamsElement(Wants(shorter, i)) is { } emptyOf && RefOf(emptyOf) is { } emptyRef
-                                    ? Gathered(Enumerable.Empty<Expr>(), Wants(shorter, i), emptyRef, c)
-                                    : CallerValue(omitted, shorter.Decl.Params, CallLine(c),
+                    Expr fallback = (omitted is { IsParams: true, Default: null } ? EmptyParams(shorter, Wants(shorter, i), c) : null)
+                                    ?? CallerValue(omitted, shorter.Decl.Params, CallLine(c),
                                         k => k >= writtenCount || k < hidden ? null
                                            : SpanText(c.Spans, c.Source, (c.ReceiverAdded ? k : k + 1) - hidden))
                                     ?? Written(shorter, omitted);

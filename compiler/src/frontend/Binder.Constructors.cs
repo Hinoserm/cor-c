@@ -35,7 +35,7 @@ public sealed partial class Binder
                 if (types[i].Equals(candidate.Params[slot].Type)) exact++;
             }
             for (int i = 0; i < used.Length && fits; i++)
-                if (!used[i] && candidate.Decl?.Params.ElementAtOrDefault(i)?.Default is null)
+                if (!used[i] && !Omittable(candidate, i, candidate.Params[i].Type))
                     fits = false;
             int defaults = candidate.Params.Count - types.Count;
             if (!fits || exact < bestExact || (exact == bestExact && defaults >= bestDefaults)) continue;
@@ -62,9 +62,12 @@ public sealed partial class Binder
         for (int i = 0; i < ordered.Length; i++)
         {
             if (ordered[i] is not null) continue;
-            Expr value = CallerValue(best.Decl!.Params[i], best.Decl.Params, expression.Line,
+            // A params collection left out is empty (Omittable), as a method's.
+            Param omitted = best.Decl!.Params[i];
+            Expr value = (omitted is { IsParams: true, Default: null } ? EmptyParams(best, best.Params[i].Type, expression) : null)
+                         ?? CallerValue(omitted, best.Decl.Params, expression.Line,
                              k => from[k] < 0 ? null : SpanText(expression.Spans, expression.Source, from[k] + 1))
-                         ?? Written(best, best.Decl.Params[i]);
+                         ?? Written(best, omitted);
             ordered[i] = value;
             orderedTypes[i] = CheckExpr(value);
             evaluation.Add(i);

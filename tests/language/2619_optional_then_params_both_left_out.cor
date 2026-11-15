@@ -2,11 +2,15 @@
 // expect-exit: 0
 // expect-output:
 // 6 3 7 0
+// ctor 9 0
+// better int 6
 //
 // A PARAMS ARRAY LEFT OUT IS EMPTY (C# 12.6.2.2), after optional parameters
 // left out too: `Sum(1)` over `Sum(int a, int b = 5, params int[] rest)` is
 // a = 1, b = 5 and no rest -- it was "no overload of 'Sum' takes 1
-// argument". Passed, it is packed as ever.
+// argument". Passed, it is packed as ever. A constructor's likewise; and
+// such an overload competes as one needing its defaults does: F(1) beside
+// F(long) is the int one, an int being better served by an int.
 using System;
 
 static class Spread
@@ -21,11 +25,28 @@ static class Spread
     public static int Count(params string[] names) => names.Length;
 }
 
+class Made
+{
+    public int Total;
+    public int Rest;
+
+    public Made(int a, int b = 8, params int[] rest) { Total = a + b; Rest = rest.Length; }
+}
+
+static class Pick
+{
+    public static string F(long x) => "long";
+    public static string F(int a, int b = 5, params int[] rest) => "better int " + (a + b);
+}
+
 static class Program
 {
     static int Main()
     {
         Console.WriteLine(Spread.Sum(1) + " " + Spread.Sum(1, 2) + " " + Spread.Sum(1, 2, 3, 1) + " " + Spread.Count());
+        Made made = new Made(1);
+        Console.WriteLine("ctor " + made.Total + " " + made.Rest);
+        Console.WriteLine(Pick.F(1));
         return 0;
     }
 }
