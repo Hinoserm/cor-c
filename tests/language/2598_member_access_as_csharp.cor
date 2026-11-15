@@ -14,6 +14,7 @@
 // set only 5
 // tuple 8
 // own over base 9
+// optional then params 6
 // passed over 2 4 1
 //
 // WHAT C# LETS A BODY REACH (Binder.Access): a type nested in another reaches
@@ -110,6 +111,12 @@ class Holder
 class Wide { public const int K = 1; }
 class Narrow : Wide { private const int K = 2; }
 
+class Spread
+{
+    private static int Sum(string s) => -1;
+    public static int Sum(int a, int b = 5, params int[] rest) => a + b + rest.Length;
+}
+
 class Picks
 {
     private string Take(int x) => "int";
@@ -146,6 +153,7 @@ static class Program
         (hidden.N, x) = (7, 1);
         Console.WriteLine("tuple " + (hidden.Peek() + x));
         Console.WriteLine("own over base " + new Uncapped().Read());
+        Console.WriteLine("optional then params " + Spread.Sum(1));
         Console.WriteLine("passed over " + Two + " " + new Holder.Inside().Read() + " " + Narrow.K);
         return 0;
     }

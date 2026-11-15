@@ -24191,7 +24191,7 @@ public sealed partial class Binder
         {
             Expr? reachedThrough = Receiver(c);
             List<MethodSymbol> reachable = group.Methods.Where(m => Reachable(m, reachedThrough, made: false)).ToList();
-            int written = c.Args.Count;
+            int written = WrittenArgs(c);
             if (reachable.Count > 0 && reachable.Count < group.Methods.Count
                 && reachable.Any(m => TakesCount(m, written) || m.Static && TakesCount(m, written + 1)))
                 group = new MethodGroupSym(reachable);
@@ -24733,10 +24733,13 @@ public sealed partial class Binder
             // of five, and taking the first meant a VReg was handed to the
             // overload that wants an Operand -- and then reported as an
             // argument list nothing accepts.
+            // A PARAMS ARRAY LEFT OUT IS EMPTY (C# 12.6.2.2): `Sum(int a,
+            // int b = 5, params int[] rest)` takes `Sum(1)`, b its default.
             bool Completable(MethodSymbol m)
                 => m.Params.Count > args.Count
                 && Enumerable.Range(args.Count, m.Params.Count - args.Count)
-                             .All(i => m.Decl?.Params.ElementAtOrDefault(i)?.Default is not null);
+                             .All(i => m.Decl?.Params.ElementAtOrDefault(i) is { } p
+                                    && (p.Default is not null || p.IsParams && i == m.Params.Count - 1));
 
             //
             // AND OF THOSE, THE BETTER MEMBER by the arguments written, as C#
@@ -24768,10 +24771,15 @@ public sealed partial class Binder
                     // receiver has become argument 0 (pair 0 is the receiver),
                     // counted after the variables a generic local function
                     // captured, which come first and were never written.
-                    Expr fallback = CallerValue(shorter.Decl!.Params[i], shorter.Decl.Params, CallLine(c),
+                    Param omitted = shorter.Decl!.Params[i];
+                    Expr fallback = omitted is { IsParams: true, Default: null }
+                                        && ParamsElement(Wants(shorter, i)) is { } emptyOf && RefOf(emptyOf) is { } emptyRef
+                                    ? Gathered(Enumerable.Empty<Expr>(), Wants(shorter, i), emptyRef, c)
+                                    : CallerValue(omitted, shorter.Decl.Params, CallLine(c),
                                         k => k >= writtenCount || k < hidden ? null
                                            : SpanText(c.Spans, c.Source, (c.ReceiverAdded ? k : k + 1) - hidden))
-                                    ?? Written(shorter, shorter.Decl.Params[i]);
+                                    ?? Written(shorter, omitted);
+                    if (omitted.IsParams) c.ParamsPacked = true;
 
                     c.Args.Add(fallback);
                     // AS ITS PARAMETER'S TYPE, not the call's surroundings':

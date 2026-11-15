@@ -144,10 +144,15 @@ public sealed partial class Binder
     {
         int has = m.Params.Count;
         List<Param>? declared = m.Decl?.Params;
-        if (declared is { Count: > 0 } && declared.Count == has && declared[^1].IsParams && count >= has - 1) return true;
+        // Nothing declared to say which may be left out: any number up to
+        // its own, so that one the compiler made never hides the rest.
+        if (declared is null || declared.Count != has) return count <= has;
+        bool variadic = has > 0 && declared[^1].IsParams;
+        if (variadic && count >= has - 1) return true;
         if (count > has) return false;
+        // Those not passed each have a default, or are the params array.
         for (int i = count; i < has; i++)
-            if (declared is null || i >= declared.Count || declared[i].Default is null) return false;
+            if (declared[i].Default is null && !(variadic && i == has - 1)) return false;
         return true;
     }
 

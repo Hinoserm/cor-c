@@ -1,0 +1,31 @@
+// test: optional_then_params_both_left_out
+// expect-exit: 0
+// expect-output:
+// 6 3 7 0
+//
+// A PARAMS ARRAY LEFT OUT IS EMPTY (C# 12.6.2.2), after optional parameters
+// left out too: `Sum(1)` over `Sum(int a, int b = 5, params int[] rest)` is
+// a = 1, b = 5 and no rest -- it was "no overload of 'Sum' takes 1
+// argument". Passed, it is packed as ever.
+using System;
+
+static class Spread
+{
+    public static int Sum(int a, int b = 5, params int[] rest)
+    {
+        int total = a + b;
+        foreach (int r in rest) total += r;
+        return total;
+    }
+
+    public static int Count(params string[] names) => names.Length;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine(Spread.Sum(1) + " " + Spread.Sum(1, 2) + " " + Spread.Sum(1, 2, 3, 1) + " " + Spread.Count());
+        return 0;
+    }
+}
