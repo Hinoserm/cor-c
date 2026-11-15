@@ -24169,14 +24169,32 @@ public sealed partial class Binder
             group = new MethodGroupSym(capturedGroup.Methods);
             _r.CapturedReceivers[c] = capturedGroup.Holder;
         }
+        // THROUGH A TYPE, ONLY ITS STATIC OVERLOADS (C# 7.3's improved
+        // candidates): with no instance to call one on, an instance method is
+        // no candidate where a static one of the name is -- Thread.Start(w)
+        // is the static Start(Action), never the instance Start(object).
+        if (group is { Methods.Count: > 1 } && c.Target is MemberExpr { Target: var typeThrough }
+            && _r.Resolved.TryGetValue(typeThrough, out Sym? throughSym) && throughSym is TypeNameSym
+            && group.Methods.Any(m => m.Static) && group.Methods.Any(m => !m.Static))
+        {
+            group = new MethodGroupSym(group.Methods.Where(m => m.Static).ToList());
+        }
+
         // ONLY THE OVERLOADS THIS CODE MAY REACH are candidates (C#
-        // 12.6.4.1); where it may reach none they stand, and the one chosen
-        // is refused for its access (CheckAccess).
+        // 12.6.4.1); where none it may reach takes as many arguments as are
+        // written they stand, and the one chosen is refused for its access
+        // (CheckAccess) -- as Roslyn says CS0122 of the inaccessible one that
+        // fits: `Thread.Start(worker)` over an internal static Start(Action)
+        // beside the public Start() was judged against Start() and refused as
+        // "not a storage location".
         if (group is { Methods.Count: > 1 } && ChecksAccess())
         {
             Expr? reachedThrough = Receiver(c);
             List<MethodSymbol> reachable = group.Methods.Where(m => Reachable(m, reachedThrough, made: false)).ToList();
-            if (reachable.Count > 0 && reachable.Count < group.Methods.Count) group = new MethodGroupSym(reachable);
+            int written = c.Args.Count;
+            if (reachable.Count > 0 && reachable.Count < group.Methods.Count
+                && reachable.Any(m => TakesCount(m, written) || m.Static && TakesCount(m, written + 1)))
+                group = new MethodGroupSym(reachable);
         }
 
         if (group is null)
@@ -25797,6 +25815,16 @@ public sealed partial class Binder
                     if (_member is MethodDecl body) _r.Wanting.Add((_thisType, body));
                 }
             }
+        }
+
+        // AN INSTANCE METHOD THROUGH ITS TYPE has no object to run on (C#'s
+        // CS0120): bound, it reached lowering as a receiver loaded from a
+        // type's name -- "this name is not a storage location".
+        if (!called.Static && !called.IsCtor && !c.ReceiverAdded && c.Target is MemberExpr { Target: var instanceThrough }
+            && _r.Resolved.TryGetValue(instanceThrough, out Sym? instanceSym) && instanceSym is TypeNameSym)
+        {
+            Error(c, $"CS0120: An object reference is required for the non-static field, method, or property '{called.Owner.Name}.{called.Name}'");
+            return Type.Error;
         }
 
         _r.Calls[c] = called;

@@ -1,0 +1,22 @@
+// test: static_overload_through_type_refused_for_access
+// expect-compile-error: CS0122: 'Thread.Start' is inaccessible due to its protection level
+// Through a type only its static overloads are candidates (C# 7.3), and of
+// those the one that fits is refused for its access: Thread.Start(worker)
+// is the runtime's internal static Start(Action), not the public instance
+// Start(object) -- a program starts a thread with new Thread(body).Start().
+using System;
+using System.Threading;
+
+class Worker : Action
+{
+    public void Invoke() { }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Thread.Start(new Worker());
+        return 0;
+    }
+}

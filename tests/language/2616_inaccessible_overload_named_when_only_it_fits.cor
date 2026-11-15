@@ -1,0 +1,17 @@
+// test: inaccessible_overload_named_when_only_it_fits
+// expect-compile-error: CS0122: 'Box.Take' is inaccessible due to its protection level
+// Where no overload the code may reach takes the arguments written, the one
+// that would is refused for its access, as Roslyn says it -- not judged
+// against a reachable one of another arity: Thread.Start(worker) over the
+// runtime's internal static Start(Action) beside the public Start() was
+// refused as "not a storage location".
+class Box
+{
+    private static int Take(int x) => x;
+    public int Take() => 0;
+}
+
+static class Program
+{
+    static int Main() => Box.Take(3);
+}

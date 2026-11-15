@@ -134,6 +134,23 @@ public sealed partial class Binder
         }
     }
 
+    /// <summary>
+    /// Whether a method can be called with `count` arguments: as many as it
+    /// has, fewer where the rest have defaults, or any number from its params
+    /// array's place. A static one's `count + 1` is asked as well by the
+    /// caller, for an extension method's receiver.
+    /// </summary>
+    private static bool TakesCount(MethodSymbol m, int count)
+    {
+        int has = m.Params.Count;
+        List<Param>? declared = m.Decl?.Params;
+        if (declared is { Count: > 0 } && declared.Count == has && declared[^1].IsParams && count >= has - 1) return true;
+        if (count > has) return false;
+        for (int i = count; i < has; i++)
+            if (declared is null || i >= declared.Count || declared[i].Default is null) return false;
+        return true;
+    }
+
     /// <summary>Whether the code being bound may reach method `m` through `receiver` (an overload's candidacy).</summary>
     private bool Reachable(MethodSymbol m, Expr? receiver, bool made)
         => m.Decl is not { Made: false } d || m.ExplicitInterface is not null

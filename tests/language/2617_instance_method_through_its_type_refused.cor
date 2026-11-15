@@ -1,0 +1,18 @@
+// test: instance_method_through_its_type_refused
+// expect-compile-error: CS0120: An object reference is required for the non-static field, method, or property 'Box.Take'
+// An instance method called through its type's name has no object to run
+// on, as C# says (CS0120): it reached lowering as a receiver read from the
+// type's name, refused there as "this name is not a storage location".
+class Box
+{
+    public void Take(object x) { }
+}
+
+static class Program
+{
+    static int Main()
+    {
+        Box.Take(3);
+        return 0;
+    }
+}
