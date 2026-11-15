@@ -193,7 +193,7 @@ public sealed partial class Binder
                 money = true;
                 return true;
 
-            case MemberExpr m when ConstantOwner(m.Target) is { } named && (m.DefaultIn is null ? FindDecimal(named, m.Name) : FromDefault(m, () => FindDecimal(named, m.Name))) is decimal member:
+            case MemberExpr m when ConstantOwner(m.Target) is { } named && FindDecimal(m, named) is decimal member:
                 value = member;
                 money = true;
                 return true;

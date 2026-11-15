@@ -3,13 +3,15 @@
 // expect-output:
 // 3 7 3 3
 // 1 2 5 6
+// pre-fix
 //
 // A DEFAULT IS EVALUATED WHERE IT WAS DECLARED (C# 15.6.2): what it names is
 // judged from the declaring type, not from the caller. `int x = Size` over the
 // type's private constant is every caller's -- bare, or written `Sized.Size`,
 // and called from a generic type's copy as from a plain one; so is an
 // enclosing type's private one through `Outer.Inner.K`, a private nested
-// type's public one, a base's protected one, and a generic declaring type's.
+// type's public one, a base's protected one, a generic declaring type's, and a string one
+// folded into its text.
 // The compiler spells the default out at the call (Binder.Spell, Full) with
 // the declaring type's key on each member read (MemberExpr.DefaultIn).
 using System;
@@ -22,6 +24,13 @@ class Sized
     public int Dotted(int x = Sized.Size) => x;
     public Sized(int y = Size + 4) { Y = y; }
     public int Y;
+}
+
+class Named
+{
+    private const string Prefix = "pre-";
+
+    public string Say(string s = Prefix + "fix") => s;
 }
 
 class Box<T>
@@ -70,6 +79,7 @@ static class Program
         Sized s = new Sized();
         Console.WriteLine(s.Pick() + " " + s.Y + " " + s.Dotted() + " " + new Box<int>().Through());
         Console.WriteLine(new Outer.Inner.Deep().F() + " " + new Holder().F() + " " + new Room().F() + " " + new Shelf<string>().F());
+        Console.WriteLine(new Named().Say());
         return 0;
     }
 }

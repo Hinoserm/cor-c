@@ -1343,6 +1343,8 @@ public sealed partial class Binder
     /// <summary>The namespace the name being bound was written in.</summary>
     private string WrittenIn()
     {
+        // A default spelt at a call: its declaring type's (_accessFrom).
+        if (_accessFrom?.Decl is { } declaring) return declaring.Namespace;
         TypeDecl? written = (_scope ?? _thisType)?.Decl;
         return _member?.Scope != null ? _member.Namespace : written?.Namespace ?? "";
     }
@@ -2570,7 +2572,7 @@ public sealed partial class Binder
                 return IsReal(named.Type) ? BitConverter.Int64BitsToDouble(named.Value) : named.Value;
             case NameExpr n when owner != null && FindConstantOutward(owner, n.Name) is { } here:
                 return IsReal(here.Type) ? BitConverter.Int64BitsToDouble(here.Value) : here.Value;
-            case MemberExpr m when ConstantOwner(m.Target) is { } named && (m.DefaultIn is null ? FindConstant(named, m.Name) : FromDefault(m, () => FindConstant(named, m.Name))) is { } there:
+            case MemberExpr m when ConstantOwner(m.Target) is { } named && FindConstant(m, named) is { } there:
                 return IsReal(there.Type) ? BitConverter.Int64BitsToDouble(there.Value) : there.Value;
             default:
                 return ConstantValue(e, owner) is long value ? value : null;
@@ -2608,7 +2610,7 @@ public sealed partial class Binder
         NameExpr local when Lookup(local.Name) is ConstSym { Text: not null } named => named.Text,
 
         NameExpr name => owner is null ? null : FindTextOutward(owner, name.Name),
-        MemberExpr member when ConstantOwner(member.Target) is { } named => FindText(named, member.Name),
+        MemberExpr member when ConstantOwner(member.Target) is { } named => FindText(member, named),
         BinaryExpr { Op: BinOp.Add } add => JoinedText(add, owner),
         _ => null,
     };
@@ -2677,7 +2679,7 @@ public sealed partial class Binder
                         return (member, named.EnumUnderlying);
                     }
 
-                    if ((m.DefaultIn is null ? FindConstant(named, m.Name) : FromDefault(m, () => FindConstant(named, m.Name))) is { } elsewhere)
+                    if (FindConstant(m, named) is { } elsewhere)
                     {
                         return (elsewhere.Value, Fold.Whole(elsewhere.Type));
                     }
@@ -21967,7 +21969,10 @@ public sealed partial class Binder
     /// </summary>
     private Type CheckMember(MemberExpr m)
     {
-        return m.DefaultIn is null ? CheckMemberReached(m) : FromDefault(m, () => CheckMemberReached(m));
+        if (m.DefaultIn is null) return CheckMemberReached(m);
+        TypeSymbol? previous = EnterDefault(m);
+        try { return CheckMemberReached(m); }
+        finally { _accessFrom = previous; }
     }
 
     private Type CheckMemberReached(MemberExpr m)

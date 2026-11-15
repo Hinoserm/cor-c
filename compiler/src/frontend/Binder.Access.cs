@@ -7,7 +7,7 @@ public sealed partial class Binder
 
     /// <summary>
     /// While a member read of a default spelt out at a call is bound or
-    /// folded (MemberExpr.DefaultIn: CheckMember, FromDefault), the type that
+    /// folded (MemberExpr.DefaultIn: CheckMember, EnterDefault), the type that
     /// declared the default: its access, assembly and usings are the read's,
     /// as C# evaluates a default where it was declared; nothing else of the
     /// binding changes, as it would under _made. Cleared while a constant's
@@ -15,13 +15,41 @@ public sealed partial class Binder
     /// </summary>
     private TypeSymbol? _accessFrom;
 
-    /// <summary>A lookup made for a member read, from its default's declaring type if it is one's.</summary>
-    private T FromDefault<T>(MemberExpr m, Func<T> lookup)
+    /// <summary>
+    /// A member read's default's declaring type made the context
+    /// (_accessFrom), if the read is one's; the context it replaced, for the
+    /// caller to put back.
+    /// </summary>
+    private TypeSymbol? EnterDefault(MemberExpr m)
     {
-        if (m.DefaultIn is not string declaredIn || !_r.Types.TryGetValue(declaredIn, out TypeSymbol? from)) return lookup();
         TypeSymbol? previous = _accessFrom;
-        _accessFrom = from;
-        try { return lookup(); }
+        if (m.DefaultIn is string declaredIn && _r.Types.TryGetValue(declaredIn, out TypeSymbol? from)) _accessFrom = from;
+        return previous;
+    }
+
+    // A CONSTANT FOLDED FROM A MEMBER READ, from its default's declaring type
+    // when it is one's: no lambda, so an ordinary read allocates nothing.
+    private (long Value, Type Type)? FindConstant(MemberExpr m, TypeSymbol owner)
+    {
+        if (m.DefaultIn is null) return FindConstant(owner, m.Name);
+        TypeSymbol? previous = EnterDefault(m);
+        try { return FindConstant(owner, m.Name); }
+        finally { _accessFrom = previous; }
+    }
+
+    private string? FindText(MemberExpr m, TypeSymbol owner)
+    {
+        if (m.DefaultIn is null) return FindText(owner, m.Name);
+        TypeSymbol? previous = EnterDefault(m);
+        try { return FindText(owner, m.Name); }
+        finally { _accessFrom = previous; }
+    }
+
+    private decimal? FindDecimal(MemberExpr m, TypeSymbol owner)
+    {
+        if (m.DefaultIn is null) return FindDecimal(owner, m.Name);
+        TypeSymbol? previous = EnterDefault(m);
+        try { return FindDecimal(owner, m.Name); }
         finally { _accessFrom = previous; }
     }
 
