@@ -4,6 +4,7 @@
 // 3 7 3 3
 // 1 2 5 6
 // pre-fix
+// own type 8
 //
 // A DEFAULT IS EVALUATED WHERE IT WAS DECLARED (C# 15.6.2): what it names is
 // judged from the declaring type, not from the caller. `int x = Size` over the
@@ -11,10 +12,12 @@
 // and called from a generic type's copy as from a plain one; so is an
 // enclosing type's private one through `Outer.Inner.K`, a private nested
 // type's public one, a base's protected one, a generic declaring type's, and a string one
-// folded into its text.
+// folded into its text. Its types are read by their whole key, not as the
+// caller's usings would find a type of the name.
 // The compiler spells the default out at the call (Binder.Spell, Full) with
 // the declaring type's key on each member read (MemberExpr.DefaultIn).
 using System;
+using Elsewhere;
 
 class Sized
 {
@@ -31,6 +34,13 @@ class Named
     private const string Prefix = "pre-";
 
     public string Say(string s = Prefix + "fix") => s;
+}
+
+class Limits
+{
+    private const int Max = 8;
+
+    public int F(int x = Limits.Max) => x;
 }
 
 class Box<T>
@@ -80,6 +90,14 @@ static class Program
         Console.WriteLine(s.Pick() + " " + s.Y + " " + s.Dotted() + " " + new Box<int>().Through());
         Console.WriteLine(new Outer.Inner.Deep().F() + " " + new Holder().F() + " " + new Room().F() + " " + new Shelf<string>().F());
         Console.WriteLine(new Named().Say());
+        Console.WriteLine("own type " + new Limits().F());
         return 0;
     }
+}
+
+namespace Elsewhere
+{
+    // The caller's using finds this Limits first by name; the default's is
+    // the global one it was declared on.
+    class Limits { public const int Max = 99; }
 }

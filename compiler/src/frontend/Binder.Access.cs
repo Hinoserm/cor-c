@@ -27,17 +27,22 @@ public sealed partial class Binder
         return previous;
     }
 
-    // A CONSTANT FOLDED FROM A MEMBER READ, from its default's declaring type
-    // when it is one's -- the type it is read through as well as the constant
-    // -- with no lambda, so an ordinary read allocates nothing.
+    /// <summary>
+    /// The type a member read is through, for a constant fold: a spelt
+    /// default's by its whole key, or resolved in its declaring type's context.
+    /// </summary>
     private TypeSymbol? ReadThrough(MemberExpr m)
     {
         if (m.DefaultIn is null) return ConstantOwner(m.Target);
+        // Its type by whole key, as CheckName reads a spelt default's (Full).
+        if (m.Target is NameExpr keyed && _r.Types.TryGetValue(keyed.Name, out TypeSymbol? byKey)) return byKey;
         TypeSymbol? previous = EnterDefault(m);
         try { return ConstantOwner(m.Target); }
         finally { _accessFrom = previous; }
     }
 
+    // A CONSTANT FOLDED FROM A MEMBER READ, from its default's declaring type
+    // when it is one's, with no lambda, so an ordinary read allocates nothing.
     private (long Value, Type Type)? FindConstant(MemberExpr m, TypeSymbol owner)
     {
         if (m.DefaultIn is null) return FindConstant(owner, m.Name);

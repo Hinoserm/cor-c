@@ -21317,6 +21317,15 @@ public sealed partial class Binder
             return Type.Void;
         }
 
+        // A DEFAULT SPELT AT A CALL names its types by whole key (Full,
+        // _accessFrom): that type, not one the caller's namespaces, usings,
+        // locals or members find first under the same name.
+        if (_accessFrom is not null && _r.Types.TryGetValue(n.Name, out TypeSymbol? keyed))
+        {
+            _r.Resolved[n] = new TypeNameSym(keyed);
+            return Type.Plain(keyed, Prim.Void);
+        }
+
         // `global::Name`: a type, whatever a local or a member of the
         // enclosing types is called. Not a type, it goes on as any name does
         // -- the first part of a namespace-qualified one.
