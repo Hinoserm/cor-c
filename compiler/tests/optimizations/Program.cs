@@ -1584,7 +1584,7 @@ public static partial class Program
             Function f = new(name, IrType.I32);
             VReg p = f.NewReg(IrTypes.Word);
             f.Params.Add(p);
-            if (marked) (f.ValueParams ??= new()).Add(p);
+            if (marked) (f.ValueParams ??= new())[p] = 8;
             Builder fb = new(f, f.NewBlock("entry"));
             if (escaped) fb.Store(new SymOperand("seen"), RegOperand.Of(p));
             FrameSlot copy = f.NewSlot(8, 4, "value");

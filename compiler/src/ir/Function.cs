@@ -175,13 +175,14 @@ public sealed class Function
     internal Dictionary<VReg, string[]>? ParamClasses { get; set; }
 
     /// <summary>
-    /// The struct parameters passed by value (Lowering: a struct the
-    /// caller copied for this call, or a fresh value of its own): storage
-    /// nothing but this call names while it runs. A hint the compile that
+    /// The struct parameters passed by value, each with its struct's size
+    /// in bytes (Lowering: a struct the caller copied for this call, or a
+    /// fresh value of its own): storage nothing but this call names while
+    /// it runs, at least that many bytes of it. A hint the compile that
     /// lowered the body keeps in memory, not in an archive -- where it is
     /// gone (a copy of the body, the link's), ArgumentCopies only does less.
     /// </summary>
-    internal HashSet<VReg>? ValueParams { get; set; }
+    internal Dictionary<VReg, int>? ValueParams { get; set; }
 
     /// <summary>
     /// AND THE INTERFACES THAT CLASS IMPLEMENTS, itself or through an

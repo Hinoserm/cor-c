@@ -26,8 +26,14 @@ using Block = Corsac.Lang.Ir.Block;
 ///   - THE ORIGINAL IS A SLOT OF THIS FRAME WHOSE ADDRESS GOES NOWHERE ELSE
 ///     (Private): loaded, stored, filled and copied here, and handed only to
 ///     read-only parameters. Nothing the callee can reach writes it during
-///     the call. A parameter or a pointer into the heap is not such a slot:
-///     another path to its bytes may write them while the callee reads them.
+///     the call. A pointer into the heap is not such an original: another
+///     path to its bytes may write them while the callee reads them.
+///   - OR THIS FUNCTION'S OWN STRUCT PARAMETER PASSED BY VALUE
+///     (Function.ValueParams): its caller's copy made for this call, or a
+///     fresh value of the caller's own, nothing writes while this call
+///     runs -- never rewritten as a register, its storage only read,
+///     written, filled or copied here or handed to parameters only read
+///     (ParamPrivate), and at least as large as the copy.
 ///   - NOTHING BETWEEN THE COPY AND THE CALL WRITES MEMORY OR CALLS, and no
 ///     other operand of the call is the original's address (`F(acc, ref
 ///     acc)` must still copy).
@@ -259,6 +265,7 @@ public static class ArgumentCopies
         }
 
         int dropped = 0;
+        Dictionary<VReg, (HashSet<VReg> Derived, bool Fine)> paramVerdicts = new();
         foreach (Block b in f.Blocks)
         {
             for (int at = 0; at < b.Instrs.Count; at++)
@@ -274,7 +281,11 @@ public static class ArgumentCopies
                 // caller's copy for this call, or a value of the caller's own
                 // nothing writes while this call runs.
                 (FrameSlot Slot, long At)? fromSlot = SlotOf(copy.Operands[1]);
-                VReg? fromParam = copy.Operands[1] is RegOperand { Reg: var pr } && f.ValueParams?.Contains(pr) == true ? pr : null;
+                // At least as many bytes of it as the copy reads and the
+                // callee was handed (a struct of a byte or two in a heap
+                // block of its own size, the callee's slot a word).
+                VReg? fromParam = copy.Operands[1] is RegOperand { Reg: var pr } && f.ValueParams?.TryGetValue(pr, out int bytes) == true
+                    && copy.Operands[2] is ImmOperand { Value: var copied } && copied <= bytes && to.Slot.Bytes <= bytes ? pr : null;
                 if (fromSlot is not { At: 0 } && fromParam is null) continue;
                 if (fromSlot is { } fs && ReferenceEquals(to.Slot, fs.Slot)) continue;
                 // The call it was made for: the next one, with nothing that
@@ -315,8 +326,16 @@ public static class ArgumentCopies
                     // copied here, or handed to a parameter only read; never
                     // written as a register; no other operand of the call
                     // made of it.
-                    HashSet<VReg> derived = Derived(f, fromParam!, writes, out bool rewritten);
-                    if (rewritten || !ParamPrivate(f, derived, byName, readOnly)) continue;
+                    // Judged once a parameter: handing it to a parameter only
+                    // read leaves the verdict as it was.
+                    if (!paramVerdicts.TryGetValue(fromParam!, out var verdict))
+                    {
+                        HashSet<VReg> d = Derived(f, fromParam!, writes, out bool rewritten);
+                        verdict = (d, !rewritten && ParamPrivate(f, d, byName, readOnly));
+                        paramVerdicts[fromParam!] = verdict;
+                    }
+                    if (!verdict.Fine) continue;
+                    HashSet<VReg> derived = verdict.Derived;
                     bool other = false;
                     for (int k = 0; k < call.Operands.Count; k++)
                         if (k != argument && call.Operands[k] is RegOperand { Reg: var or } && derived.Contains(or)) other = true;
