@@ -345,6 +345,10 @@ public sealed partial class Lowering
                         : _resultBuffer is not null && _openHandlers.Count == 0
                         ? InlineValue(new MemPlace(R(_resultBuffer), 0, wanted, Inline: true), r.Value, wanted)
                         : EvalAs(r.Value, wanted);
+                    // A STRUCT ANSWERED WITH NO BUFFER (Buffered: a struct
+                    // not held in line) is the caller's to keep: a block of
+                    // the heap, never this frame's (HeapStruct).
+                    if (_resultBuffer is null && !_method.RefReturn && IsStructValue(wanted)) v = HeapStruct(r, v, wanted);
                     _e.CopyTo(_returnValue, RegOperand.Of(v));
                 }
                 // `return Os.Syscall(..., Sys.ArrayData(path))`: the value is
@@ -682,6 +686,10 @@ public sealed partial class Lowering
         else
         {
             VReg cursor = SlotReg(elem, IrTypes.Of(element));
+            // A struct element's cursor is a copy, as C#'s is: not where the
+            // element is in the array, which the body may write.
+            if (IsStructValue(element) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
+                value = CopyStruct(fe, value, StructOf(element), frame: true);
             _e.CopyTo(cursor, RegOperand.Of(value));
         }
 

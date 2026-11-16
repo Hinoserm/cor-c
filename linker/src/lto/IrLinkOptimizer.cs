@@ -417,9 +417,7 @@ public static class IrLinkOptimizer
                     foreach (string call in imports[at].Body.Calls)
                     {
                         if (taken.Contains(call) || defined.Contains(call) || !Provider(call, out IrArchive? provider, out IrArchiveEntry? body)
-                            // (Or nothing but the allocator for its result's block: a
-                            // struct's operator, as the unit backend takes one in.)
-                            || !body.Importable || body.Instructions > ForwarderBody || body.Calls.Any(callee => callee is not (RuntimeAbi.Alloc or RuntimeAbi.AllocLeaf))
+                            || !body.Importable || body.Instructions > ForwarderBody || body.Calls.Count > 0
                             || body.Length > importBytes - used || imports.Count >= BackendProtocol.MostImports - 2) continue;
                         if (noCollector && body.Calls.Any(callee => callee is RuntimeAbi.Alloc or RuntimeAbi.AllocLeaf or RuntimeAbi.AllocObject)) continue;
                         imports.Add((call, provider, body)); used += body.Length;

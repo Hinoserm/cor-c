@@ -782,6 +782,8 @@ public sealed partial class Lowering
         }
         _e.Ret();
 
+        // A ValueTask body's frame holds struct values (FrameHoldsValues): none kept past it.
+        if (_valueShape is not null) FrameValuesKept(_f, _decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 });
         _m.Functions.Add(_f);
         _stateMachine = null;
         _valueShape = null;

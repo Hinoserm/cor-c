@@ -791,9 +791,9 @@ public static class DynamicDeclarations
         }
     }
 
-    /// <summary>A written type made one of the unit's, in the scope given -- the library's for an adapter, the program's for its provider.</summary>
     /// <summary>
-    /// A type written here, beside `beside`: in its namespace, its file's
+    /// A written type made one of the unit's, beside `beside` -- the
+    /// library's for an adapter, the program's for its provider: in its namespace, its file's
     /// scope -- and ITS SIDE, the class library's or the program's
     /// (Binder.ClassLibrarySide, as ComDeclarations' are): an adapter of a
     /// library class reads that class's internal members, and judged as the

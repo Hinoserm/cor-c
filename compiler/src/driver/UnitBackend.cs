@@ -166,8 +166,7 @@ public sealed class UnitBackend : IUnitBackend
         // WHAT EACH IMPORT CALLS, read once before the workers start: a
         // function takes the imports its own calls name, and the forwarders
         // those bodies call -- a body no bigger than its call that calls
-        // nothing, or nothing but the allocator for its result (below;
-        // IrLinkOptimizer.ForwarderBody), which the link brought in
+        // nothing (below; IrLinkOptimizer.ForwarderBody), which the link brought in
         // for them -- so a body inlined here brings a one-line wrapper of an
         // intrinsic along. Only those: offered every import the unit had,
         // through its imports, a function took in bodies it never called and
@@ -182,18 +181,10 @@ public sealed class UnitBackend : IUnitBackend
             string[] calls = instructions.Where(instruction => instruction.Op == Opcode.Call && instruction.Callee is not null)
                 .Select(instruction => instruction.Callee!).Distinct(StringComparer.Ordinal).ToArray();
             forwarders[import.Symbol] = calls;
-            // OR NOTHING BUT THE ALLOCATOR: a struct's operator is its result's
-            // block asked for and two words stored -- `a + offset` of a
-            // two-word address -- and the block is kept in the frame once the
-            // body is where its caller is (Escape). Left out, such a body
-            // was taken where the unit's compile had the call (a method its
-            // compile inlined) and stayed a call where the link's own
-            // inlining brought the call in: forcedeth's Recycle added inline,
-            // its Receive through the kernel's operator twice a frame. (A
-            // program made without a collector is given no body that
-            // allocates: IrLinkOptimizer.)
-            if (instructions.Length <= IrLinkOptimizer.ForwarderBody
-                && calls.All(callee => callee is Corsac.Lang.Lto.RuntimeAbi.Alloc or Corsac.Lang.Lto.RuntimeAbi.AllocLeaf)) forwarding.Add(import.Symbol);
+            // A struct's operator -- `a + offset` of a two-word address -- is
+            // one: its result is made in the frame (Lowering.StructInFrame),
+            // no block asked of the allocator, so it calls nothing.
+            if (calls.Length == 0 && instructions.Length <= IrLinkOptimizer.ForwarderBody) forwarding.Add(import.Symbol);
         }
         IrImport[] Selected(int index)
         {

@@ -1694,6 +1694,12 @@ public sealed partial class Lowering
     /// </summary>
     private void BindPattern(Node at, int slot, Type held, VReg value)
     {
+        // A STRUCT BOUND BY A PATTERN IS A COPY, as C# makes it: the operand
+        // may be a variable's own storage (StructHome), written over in place
+        // by the variable's next assignment -- `if (x is var v) { x = y; }`
+        // left v with y.
+        if (IsStructValue(held) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
+            value = CopyStruct(at, value, StructOf(held), frame: true);
         if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
