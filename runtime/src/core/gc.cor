@@ -12229,6 +12229,36 @@ public static class Gc
     /// a block is in its hands.
     static long DrainSome(long budget)
     {
+        // AN ASSISTING THREAD ON A PLATFORM THAT PREEMPTS ITS OWN THREADS (a
+        // kernel: Runtime.PreemptHook) DRAINS A FEW BLOCKS AT A TIME AND LETS
+        // EVERYTHING GO BETWEEN: a drain is not preempted (DrainRun), and an
+        // allocation with no room left asks for MarkBetweenYields blocks --
+        // four thousand scans with the count raised, a clock's tick found
+        // tens of milliseconds late. After each AssistChunk the stack goes
+        // back on the queue, the thread says it is idle, and the count comes
+        // down, which is the platform's preemption point (Runtime.PreemptOn).
+        // A hosted program's threads are its host's to preempt, the count
+        // only a word there: it drains its budget in one run as before.
+        if (budget > AssistChunk && Runtime.PreemptHook != 0 && !GcLock.IsCollector(Sys.ThreadBlock()))
+        {
+            long all = 0;
+            while (all < budget)
+            {
+                long want = budget - all < AssistChunk ? budget - all : AssistChunk;
+                long got = DrainRun(want);
+                all = all + got;
+                if (got < want) break;              // nothing more ready, or the mark given up
+            }
+            return all;
+        }
+        return DrainRun(budget);
+    }
+
+    /// The blocks an assisting thread scans between preemption points (DrainSome).
+    const int AssistChunk = 64;
+
+    static long DrainRun(long budget)
+    {
         nuint ctl = GcLock.Words();
         long done = 0;
 
