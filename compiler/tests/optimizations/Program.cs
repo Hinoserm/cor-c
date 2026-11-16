@@ -1568,6 +1568,39 @@ public static partial class Program
         foreach (Function f in built.Functions) Verifier.Check(f, "forwarded");
         Assert(!Copies(inPlace) && inPlace.Slots.Count == 1, "k: built in its home, one slot:\n" + Dump(inPlace));
         foreach (Function f in apart) Assert(Copies(f), $"{f.Name}: built apart and copied:\n" + Dump(f));
+
+        // A STRUCT PARAMETER PASSED BY VALUE (ValueParams) handed on to a
+        // callee that only reads it: no copy; kept where the parameter's
+        // address went elsewhere, or where it is not marked by value.
+        Module handed = new("handed");
+        Function readsP = new("readsP", IrType.I32);
+        VReg rp = readsP.NewReg(IrTypes.Word);
+        readsP.Params.Add(rp);
+        Builder rb = new(readsP, readsP.NewBlock("entry"));
+        rb.Ret(RegOperand.Of(rb.Load(IrType.I32, rp)));
+        handed.Functions.Add(readsP);
+        Function Hands(string name, bool marked = true, bool escaped = false)
+        {
+            Function f = new(name, IrType.I32);
+            VReg p = f.NewReg(IrTypes.Word);
+            f.Params.Add(p);
+            if (marked) (f.ValueParams ??= new()).Add(p);
+            Builder fb = new(f, f.NewBlock("entry"));
+            if (escaped) fb.Store(new SymOperand("seen"), RegOperand.Of(p));
+            FrameSlot copy = f.NewSlot(8, 4, "value");
+            VReg c = fb.SlotAddress(copy);
+            fb.Emit(Opcode.MemCopy, null, RegOperand.Of(c), RegOperand.Of(p), new ImmOperand(8, IrTypes.Word));
+            fb.Ret(RegOperand.Of(fb.Call("readsP", IrType.I32, RegOperand.Of(c))!));
+            handed.Functions.Add(f);
+            return f;
+        }
+        Function passedOn = Hands("n");
+        Function[] stillCopied = { Hands("o", escaped: true), Hands("q", marked: false) };
+        handed.Entry = "n";
+        ArgumentCopies.Run(handed);
+        foreach (Function f in handed.Functions) Verifier.Check(f, "parameter handed on");
+        Assert(!Copies(passedOn), "n: its parameter handed on, no copy:\n" + Dump(passedOn));
+        foreach (Function f in stillCopied) Assert(Copies(f), $"{f.Name}: copied:\n" + Dump(f));
     }
 
     // ---- Dead code -----------------------------------------------------

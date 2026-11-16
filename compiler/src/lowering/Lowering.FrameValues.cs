@@ -7,7 +7,7 @@ using Block = Corsac.Lang.Ir.Block;
 public sealed partial class Lowering
 {
     /// <summary>The name a struct value's storage in the frame carries (StructInFrame): what FrameValuesKept follows.</summary>
-    private const string FrameValueSlot = "value";
+    internal const string FrameValueSlot = "value";
 
     /// <summary>
     /// A STRUCT VALUE'S FRAME STORAGE NEVER KEPT PAST THE FRAME: the address

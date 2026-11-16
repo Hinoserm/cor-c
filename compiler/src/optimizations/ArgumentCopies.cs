@@ -86,6 +86,33 @@ public static class ArgumentCopies
         return answer;
     }
 
+    /// <summary>
+    /// Whether a struct parameter's storage (its register and those made of
+    /// it, `derived`) is this function's alone: loaded, stored, filled or
+    /// copied through, or handed to a parameter only read -- never kept,
+    /// returned or given where it could be written from elsewhere.
+    /// </summary>
+    private static bool ParamPrivate(Function f, HashSet<VReg> derived, Dictionary<string, Function> byName, Dictionary<Function, bool[]> readOnly)
+    {
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not RegOperand { Reg: var r } || !derived.Contains(r)) continue;
+                    bool fine = i.Op switch
+                    {
+                        Opcode.Load or Opcode.Store or Opcode.MemSet => k == 0,
+                        Opcode.MemCopy => k is 0 or 1,
+                        Opcode.Copy or Opcode.Add => i.Dest is { } d && derived.Contains(d),
+                        Opcode.Call => i.Callee is { } name && byName.TryGetValue(name, out Function? callee)
+                                       && readOnly.TryGetValue(callee, out bool[]? ro) && k < ro.Length && ro[k],
+                        _ => false,
+                    };
+                    if (!fine) return false;
+                }
+        return true;
+    }
+
     /// <summary>Whether a function's register `root` -- a parameter, never written again -- is only read through.</summary>
     private static bool OnlyRead(Function f, VReg root, Dictionary<VReg, int> writes, Dictionary<string, Function> byName, Dictionary<Function, bool[]> readOnly)
     {
@@ -167,7 +194,7 @@ public static class ArgumentCopies
 
     private static int Drop(Function f, Dictionary<string, Function> byName, Dictionary<Function, bool[]> readOnly)
     {
-        if (f.Async is not null || f.Slots.Count < 2) return 0;
+        if (f.Async is not null || f.Slots.Count == 0) return 0;
         // Registers that are a slot's address, or that address and a
         // constant, each written once (as SlotScalars reads them).
         Dictionary<VReg, int> writes = new();
@@ -238,11 +265,18 @@ public static class ArgumentCopies
             {
                 Instr copy = b.Instrs[at];
                 if (copy.Op != Opcode.MemCopy || copy.Offset != 0 || copy.Operands.Count != 3
-                    || SlotOf(copy.Operands[0]) is not { At: 0 } to || SlotOf(copy.Operands[1]) is not { At: 0 } from
-                    || ReferenceEquals(to.Slot, from.Slot))
+                    || SlotOf(copy.Operands[0]) is not { At: 0 } to)
                 {
                     continue;
                 }
+                // THE ORIGINAL: a slot of this frame, or this function's own
+                // struct parameter passed by value (ValueParams) -- its
+                // caller's copy for this call, or a value of the caller's own
+                // nothing writes while this call runs.
+                (FrameSlot Slot, long At)? fromSlot = SlotOf(copy.Operands[1]);
+                VReg? fromParam = copy.Operands[1] is RegOperand { Reg: var pr } && f.ValueParams?.Contains(pr) == true ? pr : null;
+                if (fromSlot is not { At: 0 } && fromParam is null) continue;
+                if (fromSlot is { } fs && ReferenceEquals(to.Slot, fs.Slot)) continue;
                 // The call it was made for: the next one, with nothing that
                 // writes memory or calls in between.
                 int c = at + 1;
@@ -263,15 +297,31 @@ public static class ArgumentCopies
                 {
                     continue;
                 }
-                // The callee was made for the copy's alignment (an aligned
-                // slot's MOVAPS): the original at least as aligned.
-                if (from.Slot.Align < to.Slot.Align || from.Slot.Bytes < to.Slot.Bytes) continue;
-                if (!Private(from.Slot)) continue;
-                // No other operand of the call reaches the original.
-                bool other = false;
-                for (int k = 0; k < call.Operands.Count; k++)
-                    if (k != argument && SlotOf(call.Operands[k]) is { } o && ReferenceEquals(o.Slot, from.Slot)) other = true;
-                if (other) continue;
+                if (fromSlot is { } from)
+                {
+                    // The callee was made for the copy's alignment (an aligned
+                    // slot's MOVAPS): the original at least as aligned.
+                    if (from.Slot.Align < to.Slot.Align || from.Slot.Bytes < to.Slot.Bytes) continue;
+                    if (!Private(from.Slot)) continue;
+                    // No other operand of the call reaches the original.
+                    bool other = false;
+                    for (int k = 0; k < call.Operands.Count; k++)
+                        if (k != argument && SlotOf(call.Operands[k]) is { } o && ReferenceEquals(o.Slot, from.Slot)) other = true;
+                    if (other) continue;
+                }
+                else
+                {
+                    // A parameter's storage: only read, written, filled or
+                    // copied here, or handed to a parameter only read; never
+                    // written as a register; no other operand of the call
+                    // made of it.
+                    HashSet<VReg> derived = Derived(f, fromParam!, writes, out bool rewritten);
+                    if (rewritten || !ParamPrivate(f, derived, byName, readOnly)) continue;
+                    bool other = false;
+                    for (int k = 0; k < call.Operands.Count; k++)
+                        if (k != argument && call.Operands[k] is RegOperand { Reg: var or } && derived.Contains(or)) other = true;
+                    if (other) continue;
+                }
 
                 call.Operands[argument] = copy.Operands[1];
                 b.Instrs.RemoveAt(at);
@@ -280,9 +330,12 @@ public static class ArgumentCopies
                 // The uses changed: the copy's slot is gone from them, the
                 // original has one more (still a read-only operand).
                 uses.Remove(to.Slot);
-                if (!uses.TryGetValue(from.Slot, out var fromUses)) uses[from.Slot] = fromUses = new();
-                fromUses.RemoveAll(u => ReferenceEquals(u.I, copy));
-                fromUses.Add((call, argument));
+                if (fromSlot is { } kept)
+                {
+                    if (!uses.TryGetValue(kept.Slot, out var fromUses)) uses[kept.Slot] = fromUses = new();
+                    fromUses.RemoveAll(u => ReferenceEquals(u.I, copy));
+                    fromUses.Add((call, argument));
+                }
             }
         }
         // Before the call slots, which hand a destination to a callee as its
@@ -378,20 +431,20 @@ public static class ArgumentCopies
     /// <summary>
     /// A VALUE BUILT WHERE IT GOES: `P p = new P(a, b)`, `p = default`, a
     /// struct built up in a temporary of the frame (StructInFrame: zeroed,
-    /// its constructor run on it) and then copied whole into the variable's
-    /// own storage. The temporary is the destination instead, and the copy
+    /// its constructor inlined into it -- a constructor still called is
+    /// handed the temporary, a parameter it writes, and the temporary is
+    /// then not private) and then copied whole into the variable's own
+    /// storage. The temporary is the destination instead, and the copy
     /// is not made, where
     ///   - the temporary is a frame value (Lowering.FrameValueSlot) whose
     ///     address goes nowhere else (Private), every use of it in one
     ///     block before the copy (its aliases' too), so nothing reads it
-    ///     after;
+    ///     after, and the first of them a fill or copy of all its bytes;
     ///   - the destination is a slot of this frame whose address goes
-    ///     nowhere else (Private), of the temporary's size (what the
-    ///     temporary's fills write, the copy would have) and no less
-    ///     aligned, and
-    ///     nothing from the temporary's first use to the copy names it but
-    ///     the making of an alias -- its old value is not read in between,
-    ///     and a constructor handed the temporary cannot reach it;
+    ///     nowhere else (Private), of the temporary's size, copied over all
+    ///     of it, and no less aligned, and nothing from the temporary's
+    ///     first use to the copy names it but the making of an alias -- its
+    ///     old value is not read in between;
     ///   - the function has no handler: a constructor that throws after
     ///     writing part of the value would have changed a variable C#
     ///     leaves alone.
@@ -406,6 +459,10 @@ public static class ArgumentCopies
             RegOperand { Reg: var r } when alias.TryGetValue(r, out var at) => at,
             _ => null,
         };
+        // Nothing to look at unless some copy is out of a temporary.
+        if (!f.Blocks.Any(b => b.Instrs.Any(i => i.Op == Opcode.MemCopy && i.Operands.Count == 3
+                && SlotOf(i.Operands[1]) is { Slot.Name: Corsac.Lang.Lower.Lowering.FrameValueSlot })))
+            return 0;
         // Every instruction that reads an alias register: an alias of the
         // temporary used anywhere but the window keeps it.
         Dictionary<VReg, List<Instr>> readers = new();
@@ -425,15 +482,14 @@ public static class ArgumentCopies
                 Instr copy = b.Instrs[at];
                 if (copy.Op != Opcode.MemCopy || copy.Offset != 0 || copy.Operands.Count != 3
                     || SlotOf(copy.Operands[0]) is not { At: 0 } into || SlotOf(copy.Operands[1]) is not { At: 0 } from
-                    || ReferenceEquals(into.Slot, from.Slot) || from.Slot.Name != "value"
+                    || ReferenceEquals(into.Slot, from.Slot) || from.Slot.Name != Corsac.Lang.Lower.Lowering.FrameValueSlot
                     || copy.Operands[2] is not ImmOperand { Value: var length }
-                    || into.Slot.Bytes != from.Slot.Bytes || into.Slot.Align < from.Slot.Align || length > into.Slot.Bytes)
+                    || into.Slot.Bytes != from.Slot.Bytes || into.Slot.Align < from.Slot.Align || length != into.Slot.Bytes)
                 {
                     continue;
                 }
                 if (!uses.TryGetValue(from.Slot, out var fromUses)) continue;
                 // Every use of the temporary in this block, before the copy.
-                HashSet<Instr> window = new(ReferenceEqualityComparer.Instance);
                 int first = at;
                 bool here = true;
                 foreach ((Instr i, int _) in fromUses)
@@ -443,6 +499,17 @@ public static class ArgumentCopies
                     first = Math.Min(first, position);
                 }
                 if (!here) continue;
+                // A TEMPORARY, MADE WHOLE AT ITS FIRST USE: zeroed or copied
+                // into over all its bytes -- not a variable's own storage
+                // (StructHome, of the same name) whose old value a read
+                // before it is written would want.
+                Instr made = b.Instrs[first];
+                if (made.Op is not (Opcode.MemSet or Opcode.MemCopy) || made.Operands.Count != 3
+                    || SlotOf(made.Operands[0]) is not { At: 0 } madeInto || !ReferenceEquals(madeInto.Slot, from.Slot)
+                    || made.Operands[2] is not ImmOperand { Value: var madeLength } || madeLength != from.Slot.Bytes)
+                {
+                    continue;
+                }
                 // The temporary's alias registers read only in that span.
                 bool aliasesHere = true;
                 foreach ((VReg r, var target) in alias)

@@ -390,6 +390,7 @@ public sealed partial class Lowering
             _params[i] = _f.NewReg(p.ByRef ? IrTypes.Word : IrTypes.Of(p.Type), p.Name);
             _params[i].Number = !p.ByRef && NeverAddress(p.Type);
             _f.Params.Add(_params[i]);
+            if (!p.ByRef && HomedStruct(p.Type)) (_f.ValueParams ??= new()).Add(_params[i]);
             if (!p.ByRef && ParamClass(m, p.Type) is string[] classOf)
             {
                 (_f.ParamClasses ??= new())[_params[i]] = classOf;
