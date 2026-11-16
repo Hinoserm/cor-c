@@ -488,7 +488,15 @@ public sealed class UnitBackend : IUnitBackend
         foreach (Section section in original.Sections.Where(section => section.Name is LayoutNames.DefinedSection or LayoutNames.ImportedSection))
         {
             Section copy = new(section.Name, section.Kind) { Align = section.Align };
-            copy.Bytes.AddRange(section.Bytes);
+            // LEFT IN ITS FILE BY A LINK (ElfReader.LeftInFile), as the notes
+            // above may be: its bytes are there, not in the section. Copied
+            // as held, a module's unit made again by its link had no words
+            // for its layout names to be relocated in, and the module
+            // imported none of them -- bound to any kernel, whatever its
+            // layouts. (No module's unit was made again until its link had
+            // bodies of the kernel's to give it: KernelAssumptions.)
+            if (section.FileBacked is not null) copy.LeftInFileAs(section);
+            else copy.Bytes.AddRange(section.Bytes);
             copy.Relocs.AddRange(section.Relocs);
             result.Sections.Add(copy);
             foreach (Symbol symbol in original.Symbols.Where(symbol => ReferenceEquals(symbol.Section, section)))

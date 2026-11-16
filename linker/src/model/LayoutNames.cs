@@ -42,6 +42,9 @@ public static class LayoutNames
 
     public const string Prefix = "z_";
 
+    /// <summary>Whether a section is one of the two a unit's layout names are in: carried whole wherever the unit goes.</summary>
+    public static bool IsSection(string name) => name is DefinedSection or ImportedSection;
+
     /// <summary>Each type's name, by its key, from its "type:" record; the others are said by their own symbols.</summary>
     public static Dictionary<string, string> Of(IEnumerable<ManagedTypeLayout> layouts)
     {

@@ -90,6 +90,14 @@ public sealed class KernelExports
     public HashSet<string> Names { get; }
 
     /// <summary>
+    /// The state words of the types the kernel's link initialised, as it
+    /// says them (Lto.KernelAssumptions: `y_init$` + the word's symbol). A
+    /// module's code need not test such a word, and says that it did not
+    /// (Lowering.TouchType).
+    /// </summary>
+    public HashSet<string> Initialised { get; }
+
+    /// <summary>
     /// The kernel units' code-generation contract, read from Cpu: their
     /// --cpu, which a module's units must not exceed and whose SSE a
     /// module's save must cover to call the kernel's $inside copies. Null
@@ -111,6 +119,40 @@ public sealed class KernelExports
     private KernelExports(string path, string name, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names)
     {
         Path = path; Name = name; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names;
+        Initialised = new(StringComparer.Ordinal);
+        foreach (string exported in names)
+            if (exported.StartsWith(Corsac.Lang.Lto.KernelAssumptions.InitPrefix, StringComparison.Ordinal))
+                Initialised.Add(exported[Corsac.Lang.Lto.KernelAssumptions.InitPrefix.Length..]);
+    }
+
+    /// <summary>
+    /// The word a linked image holds at a virtual address, through its
+    /// loaded segments; null where no segment has it in the file (a
+    /// segment's zeroed tail, or no such address).
+    /// </summary>
+    public static long? LoadedWord(byte[] bytes, ulong address)
+    {
+        bool wide = bytes[4] == Elf.Class64;
+        int word = wide ? 8 : 4;
+        long table = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(32)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28));
+        int size = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 54 : 42));
+        int count = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 56 : 44));
+        if (table <= 0 || size < (wide ? 56 : 32)) return null;
+        for (int i = 0; i < count; i++)
+        {
+            long at = table + (long)i * size;
+            if (at < 0 || at + size > bytes.Length) return null;
+            ReadOnlySpan<byte> header = bytes.AsSpan((int)at, size);
+            if (BinaryPrimitives.ReadUInt32LittleEndian(header) != 1) continue;      // PT_LOAD
+            ulong offset = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[8..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[4..]);
+            ulong start = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[16..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[8..]);
+            ulong held = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[32..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[16..]);
+            if (address < start || address - start + (ulong)word > held) continue;
+            ulong file = offset + (address - start);
+            if (file + (ulong)word > (ulong)bytes.Length) return null;
+            return wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan((int)file)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan((int)file));
+        }
+        return null;
     }
 
     /// <summary>One global of a linked image: what a .dynsym entry of it says.</summary>

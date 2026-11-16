@@ -84,6 +84,13 @@ public sealed partial class Lowering
     public static bool KernelSyscalls { get; set; }
 
     /// <summary>
+    /// A module's compile: the state words of the types its kernel's link
+    /// initialised (KernelExports.Initialised), which TouchType does not
+    /// test -- and says so (Module.KernelNeeds). Null in every other compile.
+    /// </summary>
+    public static HashSet<string>? KernelInitialised { get; set; }
+
+    /// <summary>
     /// The width, 32 or 64, of a system call's registers (--syscall-abi):
     /// SyscallWord is a uint or a ulong by it, and Sys.Syscall is Linux's
     /// i386 interface or its x86-64 one.

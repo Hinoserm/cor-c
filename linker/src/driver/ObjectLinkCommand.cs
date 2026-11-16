@@ -148,6 +148,28 @@ public static class ObjectLinkCommand
         // library's code those modules call. It never narrows the surface.
         string[]? keep = keepPath is null ? null
             : File.ReadAllLines(keepPath).Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith('#')).ToArray();
+        // WHAT THE MODULES ASSUMED OF THE KERNEL THEY WERE BUILT AGAINST comes
+        // in with their imports (KernelAssumptions): a type initialised by
+        // the link keeps its state word, and is laid down made whether or not
+        // the pruned kernel's own code names it (Preinit.AlsoNamed); a body a
+        // module inlined keeps its function, so that this link says the
+        // body's name again. The names themselves are no symbols.
+        if (keep is not null)
+        {
+            HashSet<string> made = new(StringComparer.Ordinal);
+            keep = keep.Select(name =>
+            {
+                if (name.StartsWith(KernelAssumptions.InitPrefix, StringComparison.Ordinal))
+                {
+                    string word = name[KernelAssumptions.InitPrefix.Length..];
+                    made.Add(word);
+                    return word;
+                }
+                int digits = KernelAssumptions.BodyPrefix.Length + 16 + 1;
+                return name.StartsWith(KernelAssumptions.BodyPrefix, StringComparison.Ordinal) && name.Length > digits ? name[digits..] : name;
+            }).Distinct(StringComparer.Ordinal).ToArray();
+            Preinit.AlsoNamed = made.Count > 0 ? made : null;
+        }
         KernelExports? kernel = null;
         if (kernelPath is not null)
         {
@@ -302,6 +324,31 @@ public static class ObjectLinkCommand
         }
         // The native names the units call, read before the link takes their notes.
         HashSet<string> native = NativeLibraries.ReadSymbols(inputs.Select(input => input.Item2));
+        // A KERNEL'S SMALL BODIES OFFERED ITS MODULES, taken from the units as
+        // compiled; and a module's side of it: the kernel's bodies it may
+        // inline, each only where this kernel says its name, and the names
+        // its units relied on (KernelAssumptions).
+        List<KernelAssumptions.Offer>? offers = exports && lto ? KernelAssumptions.Offered(inputs.Select(input => input.Item2)) : null;
+        // WHAT AN OFFERED BODY CALLS IS KEPT AND SHOWN, private or not: an
+        // operator's body is its struct's constructor called, and a module's
+        // link that inlines the one must find the other -- its body, offered
+        // too, or failing that its name to call. No source can name it: the
+        // index still says it private.
+        if (offers is not null)
+        {
+            string[] inner = offers.SelectMany(offer => offer.Record.Calls).Distinct(StringComparer.Ordinal).ToArray();
+            optional.UnionWith(inner);
+            keep = (keep ?? Array.Empty<string>()).Concat(inner).Distinct(StringComparer.Ordinal).ToArray();
+        }
+        // (Read here and taken out only after the units are made again: a
+        // unit's IR archive is checked against its sections as compiled.)
+        SortedSet<string> needs = new(ModuleInfo.Peek(inputs, KernelAssumptions.NeedsSection), StringComparer.Ordinal);
+        IrArchive? kernelBodies = null;
+        if (kernel is not null && lto)
+        {
+            try { kernelBodies = KernelAssumptions.ReadBodies(kernelPath!); }
+            catch (ElfFormatException error) { return Fail(kernelPath + KernelAssumptions.BodiesSuffix + ": " + error.Message); }
+        }
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && !exports ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
             // Only the types the image makes, where nothing outside it makes
@@ -309,7 +356,15 @@ public static class ObjectLinkCommand
             // derives from (VirtualTargets.Made).
             madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && !exports && kernel is null,
             openTypes: exports || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
-            moduleOfKernel: kernel is not null);
+            moduleOfKernel: kernel is not null, kernelBodies: kernelBodies, kernelNames: kernel?.Names, kernelBodiesTaken: needs);
+        ModuleInfo.Take(inputs, KernelAssumptions.NeedsSection);
+        if (kernel is not null && needs.Count > 0)
+        {
+            // Each a name this kernel says, or the module was compiled against another.
+            string[] unsaid = needs.Where(name => !kernel.Names.Contains(name)).Take(4).ToArray();
+            if (unsaid.Length > 0) return Fail("the module's units assume of the kernel what " + kernelPath + " does not say: " + string.Join(", ", unsaid));
+            inputs.Add(("the module's assumptions of its kernel", KernelAssumptions.NeedsObject(needs.ToList(), kernel.LongMode)));
+        }
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         // The archives' last reader done: their pool goes, not held through layout.
         foreach ((string _, ObjectFile obj) in inputs) obj.ArchivePool = null;
@@ -422,6 +477,25 @@ public static class ObjectLinkCommand
                 // where the link kept it.
                 globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name) && !optional.Contains(export.Name));
                 HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
+                // WHAT A MODULE MAY ASSUME, SAID AS NAMES (KernelAssumptions):
+                // each type whose state word the image holds at "completed"
+                // -- its initialiser run by this link -- and each small body
+                // offered, written beside the image. At the address of what
+                // each is about; nothing reads through them.
+                {
+                    byte[] written = File.ReadAllBytes(output);
+                    Dictionary<string, KernelExports.Export> byName = new(StringComparer.Ordinal);
+                    foreach (KernelExports.Export export in globals) byName.TryAdd(export.Name, export);
+                    List<KernelExports.Export> said = new();
+                    foreach (KernelExports.Export export in globals)
+                        if (export.Name.EndsWith(KernelAssumptions.ReadyWord, StringComparison.Ordinal) && KernelExports.LoadedWord(written, export.Value) == 1)
+                            said.Add(new KernelExports.Export(KernelAssumptions.InitName(export.Name), export.Value, 0, export.Type));
+                    int initialised = said.Count;
+                    foreach ((string function, string name) in KernelAssumptions.Write(output, offers ?? new(), exported))
+                        said.Add(new KernelExports.Export(name, byName[function].Value, 0, byName[function].Type));
+                    globals.AddRange(said);
+                    Console.Error.WriteLine($"{output}: says {initialised} types initialised by the link and {said.Count - initialised} bodies a module may inline");
+                }
                 List<string> lost = offered.Where(name => !exported.Contains(name)).Order(StringComparer.Ordinal).ToList();
                 if (lost.Count > 0)
                     throw new ElfFormatException(output + ": public members of the kernel not in the image to export: " + string.Join(", ", lost.Take(8)) + (lost.Count > 8 ? " and " + (lost.Count - 8) + " more" : ""));

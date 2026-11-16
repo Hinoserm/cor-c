@@ -1,0 +1,20 @@
+// A KERNEL'S SMALL STRUCT a module uses in a loop, for
+// tests/integration/module-assumptions.sh: a static of its own, which the
+// kernel's link lays down made, an operator and two getters of a few
+// instructions each.
+
+namespace Kernel;
+
+public readonly struct Addr
+{
+    readonly ulong _bits;
+
+    Addr(ulong bits) { _bits = bits; }
+
+    public static readonly Addr Zero = new Addr(0);
+
+    public static Addr Of(ulong bits) { return new Addr(bits); }
+    public uint Low32 { get { return (uint)_bits; } }
+    public uint High32 { get { return (uint)(_bits >> 32); } }
+    public static Addr operator +(Addr a, uint offset) { return new Addr(a._bits + offset); }
+}

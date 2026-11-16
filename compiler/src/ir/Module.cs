@@ -422,6 +422,14 @@ public sealed class Module
     /// </summary>
     public List<string> Initializers { get; } = new();
 
+    /// <summary>
+    /// The names of the kernel's this unit relied on without calling
+    /// anything (Lto.KernelAssumptions): a type its link initialised, whose
+    /// state word this unit's code does not test. Written as a note the
+    /// module's link makes references of.
+    /// </summary>
+    public SortedSet<string> KernelNeeds { get; } = new(StringComparer.Ordinal);
+
     public int Provided(IReadOnlySet<string> provided)
     {
         ArgumentNullException.ThrowIfNull(provided);

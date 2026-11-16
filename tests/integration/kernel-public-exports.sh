@@ -82,7 +82,9 @@ if exported 'm_Kernel\$Bag_Pick'; then fail "the kernel exported a copy of gener
     2> "$work/sb16.log" || { cat "$work/sb16.log"; fail "module object"; }
 "$corc" link "$work/sb16.o" --kernel "$k/kernel" -o "$work/sb16.ko" 2> "$work/module.log" || { cat "$work/module.log"; fail "module link"; }
 readelf --dyn-syms -W "$work/sb16.ko" | awk '$7 == "UND" { print $8 }' > "$work/sb16.imports"
-grep -q '^m_Kernel\$Bag_Bump_' "$work/sb16.imports" || { cat "$work/sb16.imports"; fail "the module's copy of Bag.Pick does not call the kernel's Bag.Bump"; }
+# (Called, or its body taken by the module's link under the name the kernel
+# says for it -- KernelAssumptions: Bump is a few instructions.)
+grep -q '^m_Kernel\$Bag_Bump_\|^y_body\$[0-9a-f]*\$m_Kernel\$Bag_Bump_' "$work/sb16.imports" || { cat "$work/sb16.imports"; fail "the module's copy of Bag.Pick neither calls the kernel's Bag.Bump nor names its body"; }
 grep -q '^s_Kernel\$002eBag__seen_' "$work/sb16.imports" || { cat "$work/sb16.imports"; fail "the module's copy of Bag.Pick does not read the kernel's Bag._seen"; }
 # Through a file: under pipefail a grep -q that stops at its first match
 # leaves readelf writing into a closed pipe, and the pipeline fails.

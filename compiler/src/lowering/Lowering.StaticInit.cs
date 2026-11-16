@@ -88,8 +88,22 @@ public sealed partial class Lowering
             return;
         }
 
-        Require(start);
         ready = SharedStatic(ready);
+        // INITIALISED BY THE KERNEL'S LINK, in a module built against that
+        // kernel (KernelExports.Initialised): the word is "completed" in the
+        // image before any module's code runs, and never anything else
+        // after. Nothing to test, nothing to call -- and the module says
+        // that it relied on it (KernelAssumptions): a kernel of another
+        // build whose link does not run this initialiser does not export
+        // the name, and refuses the module instead of letting it read the
+        // type's statics unwritten.
+        if (KernelInitialised is { } initialised && initialised.Contains(StaticSymbol(ready)))
+        {
+            _m.KernelNeeds.Add(Corsac.Lang.Lto.KernelAssumptions.InitName(StaticSymbol(ready)));
+            return;
+        }
+
+        Require(start);
         _statics.Add(ready);
 
         Block run = _f.NewBlock("ctorun");

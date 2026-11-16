@@ -497,7 +497,7 @@ public static class ElfReader
                 // reads it a record at a time (IrArchive). So do the notes a
                 // link reads and drops, and its code and data until they are
                 // laid out (LeftInFile). A read for metadata keeps no bytes.
-                if (MetadataOnly && kind.Value != SectionKind.Note)
+                if (MetadataOnly && kind.Value != SectionKind.Note && !LayoutNames.IsSection(names[i]))
                 {
                     // Its size and no bytes, for the symbols in it.
                     src.Check(h.Offset, h.Size, $"section '{names[i]}'");
@@ -640,10 +640,15 @@ public static class ElfReader
                 throw new ElfFormatException($"'{names[i]}' relocates section {h.Info}, which does not exist");
             }
             Section? target = bySh[h.Info];
-            if (target is null || MetadataOnly && target.Kind != SectionKind.Note)
+            if (target is null || MetadataOnly && target.Kind != SectionKind.Note && !LayoutNames.IsSection(target.Name))
             {
                 // Relocations for a section we dropped (a .group, say) go with
-                // it, and a metadata read's code and data have none.
+                // it, and a metadata read's code and data have none -- but
+                // for a unit's layout names (LayoutNames), which are data the
+                // backend does not make again: it hands them on as they are,
+                // the words a module's unit imports its kernel's layouts by
+                // and their relocations with them. Read without, a module's
+                // unit made again by its link imported no layout at all.
                 continue;
             }
             if ((int)h.Link != symtabIndex)

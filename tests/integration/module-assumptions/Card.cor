@@ -1,0 +1,37 @@
+// A MODULE that posts buffers as a network card's driver does: an address
+// of the kernel's added to and split into a descriptor's two words, in a
+// method inlined into its callers.
+
+using Kernel;
+
+public sealed class Card
+{
+    Addr _physical;
+    nuint _memory;
+    int _armed;
+
+    void Arm(uint index)
+    {
+        nuint d = _memory + index * 16;
+        Addr buffer = _physical + (8192u + index * 2048u);
+        Sys.Write32(d, buffer.High32);
+        Sys.Write32(d + 4, buffer.Low32);
+    }
+
+    public void Recycle(uint index) { Arm(index); _armed++; }
+
+    public bool Empty() { return _physical.Low32 == Addr.Zero.Low32; }
+}
+
+static class CardEntry
+{
+    static Card? _card;
+
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Load()
+    {
+        Card card = new Card();
+        _card = card;
+        if (!card.Empty()) card.Recycle(3);
+    }
+}

@@ -341,6 +341,13 @@ public static class Preinit
 
     private static Solution? _last;
 
+    /// <summary>
+    /// The state words of the types the build's modules assume this link
+    /// initialises (KernelAssumptions, through the kernel's --keep): named
+    /// as far as Lay is concerned, whatever the image's own code names.
+    /// </summary>
+    public static HashSet<string>? AlsoNamed { get; set; }
+
     private static Solution? Solve(List<ObjectFile> inputs, List<Notes> notes, bool longMode)
     {
         if (notes.Count == 0 || notes.All(n => n.Candidates.Count == 0 && n.Types.Count == 0)) return null;
@@ -374,6 +381,10 @@ public static class Preinit
         // kept code touches is laid down by nobody, and its unit's own data
         // stays as it was.
         HashSet<string> referenced = Referenced(inputs);
+        // AND WHAT A MODULE WAS BUILT TO FIND MADE (AlsoNamed): a type whose
+        // state word a module's code does not test is named by nothing of
+        // that module's, and must be laid down here all the same.
+        if (AlsoNamed is { } assumed) referenced.UnionWith(assumed);
         var (data, overrides, aliases, said) = made.Emit(name => referenced.Contains(name));
         if (Switches.PreinitReport) foreach (string line in said) Console.Error.WriteLine("preinit: " + line);
         if (overrides.Count > 0)
