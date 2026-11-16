@@ -102,13 +102,15 @@ public sealed class ConstantSpecialize : IModulePass
             }
             // The same call to another copy: what it was marked keeps -- a
             // struct made for it (FreshStruct), a site the link chose for a
-            // region, a catch's type.
+            // region, a catch's type, which arguments are structs passed by
+            // value (the copy takes the same arguments in the same places).
             Instr replacement = new()
             {
                 Op = Opcode.Call, Dest = call.Dest, Callee = version.Name, Line = call.Line,
                 Field = call.Field, RegionSite = call.RegionSite, DispatchType = call.DispatchType, Number = call.Number, Family = call.Family,
             };
             replacement.Operands.AddRange(call.Operands);
+            replacement.PassedByValue = call.PassedByValue;
             block.Instrs[at] = replacement;
         }
     }
