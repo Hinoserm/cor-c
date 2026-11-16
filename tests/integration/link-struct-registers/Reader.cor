@@ -1,0 +1,9 @@
+public static class Program
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static bool Readable(nuint va)
+    {
+        PageWord directory = PageWord.At(0xFFFFF000 + (va >> 22) * PageWord.Bytes);
+        return directory.Present;
+    }
+}

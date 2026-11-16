@@ -12246,6 +12246,9 @@ public static class Gc
         bool bounded = budget >= 0 && !GcLock.IsCollector(Sys.ThreadBlock());
         if (bounded) Runtime.PreemptOff();
         Sys.AtomicAdd32(ctl + GcLock.Active, 1);
+        // Both given back however the drain ends (as Answer's are).
+        try
+        {
 
         // ITS OWN STACK FOR WHAT IT MARKS (ClaimLocal), taken from before its
         // own pops: the shared queue's compare-and-swap and locked exchange
@@ -12294,9 +12297,12 @@ public static class Gc
             if (!aborted) ShareLocal(local, 0);
             ReleaseLocal(local);
         }
-
-        Sys.AtomicAdd32(ctl + GcLock.Active, -1);
-        if (bounded) Runtime.PreemptOn();
+        }
+        finally
+        {
+            Sys.AtomicAdd32(ctl + GcLock.Active, -1);
+            if (bounded) Runtime.PreemptOn();
+        }
         return done;
     }
 

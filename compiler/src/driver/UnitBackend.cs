@@ -409,15 +409,7 @@ public sealed class UnitBackend : IUnitBackend
             // PageEntry, its PhysicalAddress) was zeroed, stored and read
             // back at every use. After every pass here that reads a slot as
             // it was made; the copies it leaves propagated and the dead gone.
-            if (SlotScalars.Apply(function))
-            {
-                new ConstantAndCopyPropagation().Run(function);
-                new LocalCopies().Run(function);
-                new NullCheckFold().Run(function);
-                new LoadReuse().Run(function);
-                new ConstantAndCopyPropagation().Run(function);
-                new DeadCodeElimination().Run(function);
-            }
+            SlotScalars.ApplyAndClean(function);
             local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
             LandingPadHomes.Run(local);
             if (dumping) { System.Text.StringBuilder regenerated = new(); function.Dump(regenerated); Console.Error.WriteLine("== regenerated\n" + regenerated); }

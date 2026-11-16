@@ -21,8 +21,9 @@ using Block = Corsac.Lang.Ir.Block;
 /// Such a slot becomes one register a FIELD: the parts its loads and stores
 /// read and write it in -- a byte, a halfword, a word, or a 64-bit quadword
 /// -- each always at the same offset and width; the bytes none of them
-/// touches fields of their own, so that a copy of the whole slot misses
-/// nothing. A load of a field is its register, extended as the load says
+/// touches, up to the slot's extent (as far as anything reads, writes, fills
+/// or copies it, which may be short of the slot's own size), fields of their
+/// own, so that a copy of the whole slot misses nothing. A load of a field is its register, extended as the load says
 /// where it is narrow; a store a copy to it; a fill a copy of the byte
 /// pattern to each; a copy between two such slots of one shape a copy field
 /// by field; and a copy of the whole slot from or to other memory a load or
@@ -35,10 +36,30 @@ using Block = Corsac.Lang.Ir.Block;
 /// body, whose frame may be a block of the heap.
 ///
 /// Run last (Pipeline.RunLate, after the final cleanup), when the lifetime
-/// passes have finished reading slots and buffers as they were made.
+/// passes have finished reading slots and buffers as they were made; and at
+/// the link again (UnitBackend), over what its inliners brought in -- both
+/// through ApplyAndClean.
 /// </summary>
 public static class SlotScalars
 {
+    /// <summary>
+    /// Apply, and where it made any slot registers the cleanup after it: the
+    /// copies it leaves propagated, an inlined method's null check and the
+    /// field read after it met (NullCheckFold), loads of one field across
+    /// what were stores to the frame made one (LoadReuse), the dead gone.
+    /// </summary>
+    public static bool ApplyAndClean(Function f)
+    {
+        if (!Apply(f)) return false;
+        new ConstantAndCopyPropagation().Run(f);
+        new LocalCopies().Run(f);
+        new NullCheckFold().Run(f);
+        new LoadReuse().Run(f);
+        new ConstantAndCopyPropagation().Run(f);
+        new DeadCodeElimination().Run(f);
+        return true;
+    }
+
     /// <summary>Whether any slot of the function was made registers.</summary>
     public static bool Apply(Function f)
     {

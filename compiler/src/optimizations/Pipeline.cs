@@ -315,19 +315,7 @@ public sealed class Pipeline
             // (SlotScalars): after everything, when no pass reads a slot as
             // it was made and the cleanup has left each slot's address named
             // plainly; the copies it leaves propagated and the dead ones gone.
-            foreach (Function f in m.Functions)
-            {
-                if (!SlotScalars.Apply(f)) continue;
-                new ConstantAndCopyPropagation().Run(f);
-                new LocalCopies().Run(f);
-                // With the slot's stores gone, an inlined method's null check
-                // and the field read after it meet, and loads of the same
-                // field across what were stores to the frame are one.
-                new NullCheckFold().Run(f);
-                new LoadReuse().Run(f);
-                new ConstantAndCopyPropagation().Run(f);
-                new DeadCodeElimination().Run(f);
-            }
+            foreach (Function f in m.Functions) SlotScalars.ApplyAndClean(f);
             SweepLate(m);
         }
     }

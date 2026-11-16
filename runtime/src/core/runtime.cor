@@ -1651,7 +1651,11 @@ public static partial class Runtime
     {
         nuint block = Sys.ThreadBlock();
         if (block == 0) return;
-        nuint now = Sys.ReadAddress(block + Tls.PreemptCount) - 1;
+        // AT NOUGHT IT STAYS, as the kernel's own lowering does (Lowered):
+        // a count the kernel reset under a level still held (a module's
+        // fault) wrapped to the top, and the thread was never preempted again.
+        nuint was = Sys.ReadAddress(block + Tls.PreemptCount);
+        nuint now = was == 0 ? 0 : was - 1;
         Sys.WriteAddress(block + Tls.PreemptCount, now);
         nuint hook = PreemptHook;
         if (now == 0 && hook != 0) Sys.Call(hook, 0, 0, 0);

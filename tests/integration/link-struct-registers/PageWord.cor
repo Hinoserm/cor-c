@@ -1,0 +1,7 @@
+public struct PageWord
+{
+    uint _bits;
+    internal const int Bytes = 4;
+    internal static PageWord At(nuint slot) { PageWord word = default; word._bits = Sys.Read32(slot); return word; }
+    public bool Present { get { return (_bits & 1) != 0; } }
+}
