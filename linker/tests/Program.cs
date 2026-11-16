@@ -27,7 +27,9 @@ public static partial class Program
         // --escape: the region hints and the escape engine alone, no tools
         // needed (RegionTests, RegionEscapeTests).
         bool escapeOnly = args.Contains("--escape");
-        args = args.Where(a => a != "--escape").ToArray();
+        // --exports-at-start: the needed-library search alone.
+        bool exportsOnly = args.Contains("--exports-at-start");
+        args = args.Where(a => a != "--escape" && a != "--exports-at-start").ToArray();
         if (escapeOnly)
         {
             Try("link-time region hints", () => { RegionTests.Run(); Check(true, "region hints"); });
@@ -41,6 +43,12 @@ public static partial class Program
         _dir = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "elf-tests");
         Directory.CreateDirectory(_dir);
         Console.WriteLine($"work directory: {_dir}");
+        if (exportsOnly)
+        {
+            Try("a needed library cut short is passed over for the next", ExportsPassOverACutShortLibrary);
+            Console.WriteLine($"{_passes} passed, {_failures} failed");
+            return _failures == 0 ? 0 : 1;
+        }
 
         Try("object accepted by binutils and ld", ObjectAcceptedByBinutils);
         Try("object round trip is byte-exact", RoundTrip);
@@ -64,6 +72,7 @@ public static partial class Program
         Try("relocated constants stay outside mutable static roots", RelocatedConstantRoots);
         Try("dynamically linked executable runs", DynamicExecutable);
         Try("one shared object importing from another", TwoSharedObjects);
+        Try("a needed library cut short is passed over for the next", ExportsPassOverACutShortLibrary);
         Try("shared object used by a C program", SharedObjectFromC);
         Try("x86-64 objects: ELF64 RELA, accepted by binutils", LongModeObjects);
         Try("x86-64 static link runs under the kernel", LongModeLink);
@@ -645,6 +654,60 @@ public static partial class Program
         (code, output) = Run("ldd", path);
         Check(code == 0 && output.Contains("libanswer3.so") && output.Contains("libbump.so") && !output.Contains("not found"), "both libraries are found", output);
         Check(Exec(path) == 43, "the call across two libraries returns 42 + 1");
+    }
+
+    /// <summary>
+    /// WHAT AN IMAGE FINDS AT ITS START, past a library that will not read
+    /// (Linker.ExportsAtStart): a copy of libbump.so cut short, given first,
+    /// is passed over and the whole one in the next directory answers -- it
+    /// was marked answered before its read, and the name found nothing. And
+    /// the reader says a cut-short image is one (ElfFormatException), not an
+    /// index out of range the linker's catches had to take for one.
+    /// </summary>
+    private static void ExportsPassOverACutShortLibrary()
+    {
+        ObjectFile bump = new();
+        Section text = new(".text", SectionKind.Code) { Align = 16 };
+        text.Bytes.AddRange(new byte[] { 0x8b, 0x44, 0x24, 0x04, 0x40, 0xc3 });
+        bump.Sections.Add(text);
+        bump.Symbols.Add(new Symbol { Name = "bump", Section = text, Offset = 0, Size = 6, IsFunction = true });
+        byte[] whole = Linker.LinkShared(new[] { ("bump.o", bump) }, "libbump.so");
+        byte[] cut = whole[..(whole.Length / 2)];
+
+        // Cut short anywhere, the reader reads it or says it is no ELF
+        // image: never an index or a slice out of its range.
+        string? strayed = null;
+        for (int length = 0; length < whole.Length && strayed is null; length += 7)
+        {
+            byte[] part = whole[..length];
+            foreach (Func<byte[], object?> read in new Func<byte[], object?>[] { b => ElfReader.ExportsOf(b), b => ElfReader.ImportsOf(b), b => ElfReader.ReadSharedImage(b), b => ElfReader.SoNameOf(b) })
+            {
+                try { read(part); }
+                catch (ElfFormatException) { }
+                catch (InvalidDataException) { }
+                catch (Exception e) { strayed = $"{length} bytes: {e.GetType().Name}: {e.Message}"; break; }
+            }
+        }
+        Check(strayed is null, "a library cut short is an ElfFormatException", strayed);
+
+        string first = Path.Combine(_dir, "cut-first"), second = Path.Combine(_dir, "whole-second");
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+        string cutPath = Path.Combine(first, "libbump.so"), wholePath = Path.Combine(second, "libbump.so");
+        File.WriteAllBytes(cutPath, cut);
+        File.WriteAllBytes(wholePath, whole);
+
+        ObjectFile main = new();
+        Section mt = new(".text", SectionKind.Code) { Align = 16 };
+        mt.Bytes.AddRange(new byte[] { 0xe8, 0, 0, 0, 0, 0x89, 0xc3, 0xb8, 1, 0, 0, 0, 0xcd, 0x80 });
+        mt.Relocs.Add(new Relocation(1, "bump", -4, RelocKind.Plt32));
+        main.Sections.Add(mt);
+        main.Symbols.Add(new Symbol { Name = "_start", Section = mt, Offset = 0, Size = 14, IsFunction = true });
+        main.Symbols.Add(new Symbol { Name = "bump", Section = null });
+        byte[] image = Linker.Link(new[] { ("main.o", main) }, "_start", new[] { wholePath });
+
+        HashSet<string> found = Linker.ExportsAtStart(image, new[] { cutPath, wholePath }, longMode: false);
+        Check(found.Contains("bump"), "the whole libbump.so beside the cut one answers", string.Join(" ", found));
     }
 
     private static void SharedObjectFromC()
