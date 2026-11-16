@@ -88,17 +88,8 @@ public sealed partial class Lowering
             return;
         }
 
-        ready = SharedStatic(ready);
-        // INITIALISED BY THE KERNEL'S LINK, in a module built against that
-        // kernel (KernelExports.Initialised): the word is "completed" in the
-        // image the module loads into, before any of the module's code runs,
-        // and never anything else after. Nothing to test, nothing to call.
-        if (KernelInitialised is { } done0 && done0.Contains(StaticSymbol(ready)))
-        {
-            return;
-        }
-
         Require(start);
+        ready = SharedStatic(ready);
         _statics.Add(ready);
 
         Block run = _f.NewBlock("ctorun");
