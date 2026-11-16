@@ -12236,6 +12236,15 @@ public static class Gc
         // to after the last scan the thread holds a block or is about to, and
         // two locked additions a block were a large part of what marking a
         // gigabyte cost.
+        // AN ASSISTING THREAD'S DRAIN IS NOT PREEMPTED (Tls.PreemptCount):
+        // busy and holding one of the pool's stacks, a thread parked in the
+        // middle kept the mark from ending until it was given a turn again
+        // -- the blocks in its stack nobody else's to scan. Its budget keeps
+        // the stretch short. The collector's own drains and its workers'
+        // (whole, or between its yields) may be preempted: the mark's end is
+        // the collector's to decide, and it waits for nobody's turn there.
+        bool bounded = budget >= 0 && !GcLock.IsCollector(Sys.ThreadBlock());
+        if (bounded) Runtime.PreemptOff();
         Sys.AtomicAdd32(ctl + GcLock.Active, 1);
 
         // ITS OWN STACK FOR WHAT IT MARKS (ClaimLocal), taken from before its
@@ -12287,6 +12296,7 @@ public static class Gc
         }
 
         Sys.AtomicAdd32(ctl + GcLock.Active, -1);
+        if (bounded) Runtime.PreemptOn();
         return done;
     }
 
@@ -19178,8 +19188,21 @@ public static class GcThreads
         // thread for the fork (test 2592, the sixteenth fork).
         uint hold = Sys.Read32(ctl + GcLock.ForkHold);
 
-        Work(block, request, stack, false, 0);
-        Settle(block);
+        // NOT PREEMPTED WHILE IT ANSWERS (Tls.PreemptCount). A kernel that
+        // parks a thread anywhere stops it for the collector (BeginBlocking),
+        // which then answers for it and may finish the round: let go again,
+        // it went on with the old round's buffer and stack in hand and
+        // settled whatever round was open by then -- one it had scanned
+        // nothing for, its stack's references left out of that mark. Nothing
+        // here waits: the stamp and the stack copy map memory at most, which
+        // takes no wait.
+        Runtime.PreemptOff();
+        try
+        {
+            Work(block, request, stack, false, 0);
+            Settle(block);
+        }
+        finally { Runtime.PreemptOn(); }
         Answered = Answered + 1;
         Sys.WriteAddress(block + Tls.HandshakeArmed, 0);
         HoldForFork(block, hold);
@@ -19325,8 +19348,11 @@ public static class GcThreads
     /// arguments in a frame of its own until then: an interrupt a kernel
     /// takes on the thread before this is called, waiting itself, writes its
     /// own and leaves these. Between the writes below and SafePoint's
-    /// Stopped such an interrupt's wait would still write over them. What a
-    /// program without a collector drops (Escape.ThreadBlockingWith).
+    /// Stopped such an interrupt's wait wrote over them -- and a kernel that
+    /// parks a thread at any instruction (its preemption) makes one: so the
+    /// writes and the Stopped are one stretch no preemption comes into
+    /// (Tls.PreemptCount). What a program without a collector drops
+    /// (Escape.ThreadBlockingWith).
     public static void BeginBlockingWith(nuint a, nuint b, nuint c, nuint d, nuint e)
     {
         nuint self = Sys.ThreadBlock();
@@ -19336,6 +19362,7 @@ public static class GcThreads
             return;
         }
 
+        Runtime.PreemptOff();
         Sys.WriteAddress(self + Tls.Spill, a);
         Sys.WriteAddress(self + Tls.Spill + WordSize.Bytes, b);
         Sys.WriteAddress(self + Tls.Spill + 2 * WordSize.Bytes, c);
@@ -19347,6 +19374,7 @@ public static class GcThreads
         Sys.WriteAddress(self + Tls.SpillCount, 3);
 #endif
         SafePoint(Stopped);
+        Runtime.PreemptOn();
     }
 
     /// Whether a thread about to wait counts as stopped meanwhile: not the
