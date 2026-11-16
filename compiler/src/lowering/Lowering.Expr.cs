@@ -1985,7 +1985,11 @@ public sealed partial class Lowering
         for (TypeSymbol? made = sym; made is not null; made = made.Base) TouchType(made);
 
         int size = Math.Max(sym.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1, sym.InstanceSize);
-        VReg obj = Allocate(nw, size, described: sym.Kind == TypeKind.Class);
+        // A STRUCT MADE IS A VALUE, in the frame from the start (StructInFrame),
+        // zero as the allocator's block was, its constructor writing it there.
+        VReg obj = sym.Kind == TypeKind.Struct && FrameHoldsValues && !HasStructFields(sym)
+            ? StructInFrame(sym, zero: true)
+            : Allocate(nw, size, described: sym.Kind == TypeKind.Class);
 
         if (sym.Kind == TypeKind.Class && nw.CanonSlot >= 0)
         {

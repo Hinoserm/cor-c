@@ -123,19 +123,28 @@ public sealed partial class Lowering
     private readonly HashSet<VReg> _heapStructs = new();
 
     /// <summary>
-    /// STRUCT LOCALS THAT OWN THEIR STORAGE, a slot of the frame made at the
-    /// declaration (HomedStruct): the register holds that slot's address for
-    /// the local's whole life, and an assignment copies the value's bytes in
-    /// rather than pointing the register elsewhere. Pointed at a value's own
-    /// storage instead -- a conditional's block, a call's result buffer, one
-    /// slot for every time its site runs -- the local was that site's storage,
+    /// A STRUCT LOCAL OWNS ITS STORAGE, a slot of the frame (HomedStruct):
+    /// its place is that slot, held in line -- read as the slot's address,
+    /// written by a copy of the value's bytes into it, with no barrier and no
+    /// card, the frame being a root the collector scans. Bound instead to a
+    /// value's own storage -- a conditional's block, a call's result buffer,
+    /// one slot for every time its site runs -- the local was that site's,
     /// and the site's next run wrote over it while reading it (`text = c ?
-    /// Empty : text[1..]` round a loop). And the registers holding those
-    /// addresses (_frameHomes): a store into one needs no barrier and no
-    /// card, the frame being a root the collector scans.
+    /// Empty : text[1..]` round a loop). A declared local's; a binder-made
+    /// one (a pattern's name, a foreach cursor, an `out var`) is bound
+    /// through its register still.
     /// </summary>
-    private readonly HashSet<LocalDecl> _structHomes = new();
-    private readonly HashSet<VReg> _frameHomes = new();
+    private readonly Dictionary<LocalDecl, FrameSlot> _structHomes = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>A declared struct local's own slot (_structHomes), made the first time it is asked for.</summary>
+    private FrameSlot StructHome(LocalDecl d, Type type)
+    {
+        if (_structHomes.TryGetValue(d, out FrameSlot? home)) return home;
+        TypeSymbol sym = StructOf(type);
+        home = _f.NewSlot(Math.Max(4, sym.InstanceSize), Math.Min(_t.Align64, Math.Max(4, sym.InlineAlign)), FrameValueSlot);
+        _structHomes[d] = home;
+        return home;
+    }
 
     /// <summary>Whether a value of this type, in this body, is a struct a local or parameter holds in its own storage.</summary>
     private bool HomedStruct(Type type) => IsStructValue(type) && FrameHoldsValues && !HasStructFields(StructOf(type));
@@ -199,7 +208,6 @@ public sealed partial class Lowering
         _structQualified = null;
         _heapStructs.Clear();
         _structHomes.Clear();
-        _frameHomes.Clear();
         _returnType = null;
         _boundsFail = null;
         _checkedDepth = 0;
@@ -1212,11 +1220,12 @@ public sealed partial class Lowering
             case RegPlace r:
                 _e.CopyTo(r.Reg, RegOperand.Of(value));
                 break;
-            case MemPlace { Inline: true, Volatile: false, Address: RegOperand home } framed when _frameHomes.Contains(home.Reg):
+            case MemPlace { Inline: true, Volatile: false, Address: SlotOperand home } framed:
             {
-                // Into a local's own storage in the frame: its bytes, with no
-                // barrier and no card (_frameHomes).
-                VReg into = framed.Offset == 0 ? home.Reg : _e.Binary(Opcode.Add, home.Reg, framed.Offset);
+                // Into a struct's storage in the frame (_structHomes): its
+                // bytes, with no barrier and no card.
+                VReg into = RegOf(home);
+                if (framed.Offset != 0) into = _e.Binary(Opcode.Add, into, framed.Offset);
                 if (into != value) _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(Math.Max(1, StructOf(framed.Type).InstanceSize), IrTypes.Word));
                 break;
             }
@@ -1791,9 +1800,9 @@ public sealed partial class Lowering
                     return new MemPlace(new SlotOperand(LocalSlot(d, l.Type)), 0, l.Type);
                 }
                 // Its own storage, written by a copy into it (HomedStruct).
-                if (_structHomes.Contains(d))
+                if (HomedStruct(l.Type))
                 {
-                    return new MemPlace(RegOperand.Of(LocalReg(d)), 0, l.Type, false, true);
+                    return new MemPlace(new SlotOperand(StructHome(d, l.Type)), 0, l.Type, false, true);
                 }
                 return new RegPlace(LocalReg(d), l.Type);
             }
