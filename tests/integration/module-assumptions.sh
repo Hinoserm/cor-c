@@ -12,7 +12,8 @@
 #     of what it relied on among its imports, so a kernel that does not say
 #     them refuses it.
 #   * A kernel whose operator has another body says another name: the
-#     module built against the first imports a name the second has not.
+#     module built against the first imports a name the second has not,
+#     and the second's loader refuses it by that name; the first's binds it.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$root"
@@ -88,4 +89,17 @@ grep -qxF "$low" "$work/b.exports" || fail "kernel b, whose getter is the same, 
 "$corc" link "$work/card.o" --kernel "$b/kernel" -o "$work/card-b.ko" > "$work/card-b-link.log" 2>&1 || { cat "$work/card-b-link.log"; fail "the module's link against kernel b"; }
 imports "$work/card-b.ko" | grep '^y_body.*Addr_op_Addition' > "$work/plus-b.txt" || fail "linked against b, the module names no body of the operator"
 if grep -qxF "$plus" "$work/plus-b.txt"; then fail "linked against b, the module still names a's body"; fi
+# AND THE LOADERS: kernel a's binds the module built against it; kernel
+# b's refuses it by the name of the operator's body it took from a, as it
+# refuses a call of what it no longer has (modules.sh).
+cp "$work/card.ko" "$a/module.ko"
+status=0
+(cd "$a" && ./kernel) > "$work/loaded.out" 2>&1 || status=$?
+test "$status" = 0 && grep -qx 'drivers 0' "$work/loaded.out" \
+    || { echo "status $status"; cat "$work/loaded.out"; fail "kernel a did not load and run the module built against it"; }
+cp "$work/card.ko" "$b/module.ko"
+status=0
+(cd "$b" && ./kernel) > "$work/refused.out" 2>&1 || status=$?
+test "$status" = 3 && grep -qxF "refused: undefined symbol $plus" "$work/refused.out" \
+    || { cat "$work/refused.out"; fail "kernel b loaded a module that took kernel a's body of the operator"; }
 echo "PASS module-assumptions"

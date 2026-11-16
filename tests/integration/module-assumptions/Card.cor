@@ -22,6 +22,8 @@ public sealed class Card
 
     public bool Empty() { return _physical.Low32 == Addr.Zero.Low32; }
 
+    public bool HasMemory => _memory != 0;
+
     /// Arm from a method too large for its unit's compile to take Arm into:
     /// the call of the kernel's operator is this method's only once the
     /// link has inlined Arm here, and is inlined then too.
@@ -50,6 +52,10 @@ static class CardEntry
     {
         Card card = new Card();
         _card = card;
+        // A card with no memory yet arms nothing: loaded by the test
+        // kernel, the module's code is bound and run up to here, and must
+        // not write descriptors at address 0 (module-assumptions.sh).
+        if (!card.HasMemory) return;
         if (!card.Empty()) card.Recycle(3);
         else card.Refill(1, 9, card.Empty());
     }
