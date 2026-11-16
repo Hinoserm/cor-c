@@ -345,9 +345,12 @@ public sealed partial class Lowering
                         : _resultBuffer is not null && _openHandlers.Count == 0
                         ? InlineValue(new MemPlace(R(_resultBuffer), 0, wanted, Inline: true), r.Value, wanted)
                         : EvalAs(r.Value, wanted);
-                    // A STRUCT ANSWERED WITH NO BUFFER (Buffered: a struct
-                    // not held in line) is the caller's to keep: a block of
-                    // the heap, never this frame's (HeapStruct).
+                    // A STRUCT ANSWERED WITH NO BUFFER is the caller's to keep:
+                    // a block of the heap, never this frame's (HeapStruct).
+                    // Buffered says which have none: a struct not held in
+                    // line, a Task-returning async method's, a native
+                    // import's, one C calls, a <prelude> method's. A `ref`
+                    // return answers an address, not a value.
                     if (_resultBuffer is null && !_method.RefReturn && IsStructValue(wanted)) v = HeapStruct(r, v, wanted);
                     _e.CopyTo(_returnValue, RegOperand.Of(v));
                 }
@@ -564,7 +567,7 @@ public sealed partial class Lowering
             {
                 _e.Store(new SlotOperand(LocalSlot(d, type)), RegOperand.Of(value), 0, LoadSize(type));
             }
-            else if (HomedStruct(type))
+            else if (HomedLocal(d, type))
             {
                 // ITS OWN STORAGE, the value copied in (HomedStruct).
                 StorePlace(new MemPlace(new SlotOperand(StructHome(d, type)), 0, type, false, true), value);
@@ -578,9 +581,10 @@ public sealed partial class Lowering
         {
             // A STRUCT LOCAL WITH NO INITIALISER IS A VALUE ALREADY, zero until
             // written, and C# lets it be written a field at a time (`Pair p;
-            // p.A = 1;`): the block its fields live in is made here.
-            // ITS OWN STORAGE, zero (HomedStruct).
-            if (!boxed && !_addressTakenLocals.Contains(d) && HomedStruct(type))
+            // p.A = 1;`): a local held in its own storage (HomedLocal) has
+            // that slot zeroed here; any other has the block its fields live
+            // in made here -- in the frame, or on the heap for a cell.
+            if (!boxed && !_addressTakenLocals.Contains(d) && HomedLocal(d, type))
             {
                 VReg home = RegOf(new SlotOperand(StructHome(d, type)));
                 _e.Emit(Opcode.MemSet, null, R(home), new ImmOperand(0, IrType.I32), Imm(Math.Max(1, StructOf(type).InstanceSize), IrTypes.Word));
@@ -688,7 +692,7 @@ public sealed partial class Lowering
             VReg cursor = SlotReg(elem, IrTypes.Of(element));
             // A struct element's cursor is a copy, as C#'s is: not where the
             // element is in the array, which the body may write.
-            if (IsStructValue(element) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
+            if (IsStructValue(element) && value.Type == IrTypes.Word && !_heapStructs.Contains(value) && !_freshValues.Contains(value))
                 value = CopyStruct(fe, value, StructOf(element), frame: true);
             _e.CopyTo(cursor, RegOperand.Of(value));
         }

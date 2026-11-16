@@ -315,6 +315,10 @@ public sealed class Pipeline
             // (SlotScalars): after everything, when no pass reads a slot as
             // it was made and the cleanup has left each slot's address named
             // plainly; the copies it leaves propagated and the dead ones gone.
+            // A struct argument's copy a read-only callee cannot tell from
+            // the original, not made (ArgumentCopies): before SlotScalars,
+            // whose cleanup takes the copy's slot away.
+            ArgumentCopies.Run(m);
             foreach (Function f in m.Functions) SlotScalars.ApplyAndClean(f);
             SweepLate(m);
         }

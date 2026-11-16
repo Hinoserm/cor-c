@@ -360,7 +360,7 @@ public sealed partial class Lowering
             return deep;
         }
         int size = Math.Max(1, sym.InstanceSize);
-        if (frame && FrameHoldsValues)
+        if (frame && ValueInFrame(sym))
         {
             VReg copy = StructInFrame(sym);
             _e.Emit(Opcode.MemCopy, null, R(copy), R(src), Imm(size, IrTypes.Word));
@@ -384,6 +384,26 @@ public sealed partial class Lowering
     /// </summary>
     private bool FrameHoldsValues => _stateMachine is null || _valueShape is not null;
 
+    /// <summary>At most this many bytes of one struct value in the frame (Escape's ObjectLimit, a kernel stack's sense).</summary>
+    private const int FrameValueLimit = 1024;
+
+    /// <summary>
+    /// Whether a value of this struct is held in this frame: the frame
+    /// holds values (FrameHoldsValues), every field is in line, and it is
+    /// no larger than FrameValueLimit -- a larger one on a kernel stack of a
+    /// few pages, at every site that makes one, is how a stack overflows;
+    /// it is a block of the heap instead, which escape analysis frees where
+    /// its life is proved to end (tier two), as it does any large array.
+    /// </summary>
+    private bool ValueInFrame(TypeSymbol sym) => FrameHoldsValues && !HasStructFields(sym) && sym.InstanceSize <= FrameValueLimit;
+
+    /// <summary>
+    /// The struct values in this frame made here and named by nothing else
+    /// (StructInFrame): already a copy of their own, which a binding need
+    /// not copy again (BindPattern, a foreach cursor).
+    /// </summary>
+    private readonly HashSet<VReg> _freshValues = new();
+
     /// <summary>A struct's storage in this frame (FrameHoldsValues), zeroed where `zero` says.</summary>
     private VReg StructInFrame(TypeSymbol sym, bool zero = false)
     {
@@ -391,6 +411,7 @@ public sealed partial class Lowering
         FrameSlot slot = _f.NewSlot(size, Math.Min(_t.Align64, Math.Max(4, sym.InlineAlign)), FrameValueSlot);
         VReg at = RegOf(new SlotOperand(slot));
         if (zero) _e.Emit(Opcode.MemSet, null, R(at), new ImmOperand(0, IrType.I32), Imm(size, IrTypes.Word));
+        _freshValues.Add(at);
         return at;
     }
 
@@ -413,7 +434,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg NewStruct(Node at, TypeSymbol sym, bool frame = false)
     {
-        if (frame && FrameHoldsValues && !HasStructFields(sym)) return StructInFrame(sym, zero: true);
+        if (frame && ValueInFrame(sym)) return StructInFrame(sym, zero: true);
         VReg made = HasStructFields(sym) ? _e.Call(StructMaker(at, sym), IrTypes.Word)! : Allocate(at, Math.Max(1, sym.InstanceSize));
         _heapStructs.Add(made);
         return made;
@@ -1987,7 +2008,7 @@ public sealed partial class Lowering
         int size = Math.Max(sym.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1, sym.InstanceSize);
         // A STRUCT MADE IS A VALUE, in the frame from the start (StructInFrame),
         // zero as the allocator's block was, its constructor writing it there.
-        VReg obj = sym.Kind == TypeKind.Struct && FrameHoldsValues && !HasStructFields(sym)
+        VReg obj = sym.Kind == TypeKind.Struct && ValueInFrame(sym)
             ? StructInFrame(sym, zero: true)
             : Allocate(nw, size, described: sym.Kind == TypeKind.Class);
 

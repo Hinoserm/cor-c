@@ -42,6 +42,12 @@ public static partial class Program
             return _failures == 0 ? 0 : 1;
         }
         Try("inlining keeps which arguments are structs passed by value", PassedByValueInlined);
+        if (args.Contains("--argument-copies-only"))
+        {
+            Try("argument copies: only into a parameter the callee only reads", ArgumentCopiesDropped);
+            return _failures == 0 ? 0 : 1;
+        }
+        Try("argument copies: only into a parameter the callee only reads", ArgumentCopiesDropped);
         if (args.Contains("--load-reuse-only"))
         {
             Try("load reuse: captured addresses, values and memory barriers", LoadReuseBoundaries);
@@ -1446,6 +1452,57 @@ public static partial class Program
         List<Instr> calls = caller.Blocks.SelectMany(x => x.Instrs).Where(i => i.Op == Opcode.Call).ToList();
         Assert(calls.Count == 1 && calls[0].Callee == "elsewhere", "middle inlined into main:\n" + Dump(caller));
         Assert(calls[0].PassesByValue(0), "the inlined call still passes its argument by value:\n" + Dump(caller));
+    }
+
+    /// <summary>
+    /// A struct argument's copy (ArgumentCopies): dropped into a callee that
+    /// only reads its parameter -- through another that only reads it too --
+    /// and kept where the callee writes it, keeps it, or where another
+    /// operand of the call is the original's address, or the original's
+    /// address went elsewhere.
+    /// </summary>
+    private static void ArgumentCopiesDropped()
+    {
+        Module module = new("copies");
+        Function Callee(string name, Action<Builder, VReg, VReg> body)
+        {
+            Function f = new(name, IrType.I32);
+            VReg p = f.NewReg(IrTypes.Word), q = f.NewReg(IrTypes.Word);
+            f.Params.Add(p); f.Params.Add(q);
+            Builder fb = new(f, f.NewBlock("entry"));
+            body(fb, p, q);
+            module.Functions.Add(f);
+            return f;
+        }
+        Callee("reads", (fb, p, q) => { VReg x = fb.Load(IrType.I32, p, 4); fb.Ret(RegOperand.Of(x)); });
+        Callee("passes", (fb, p, q) => { VReg x = fb.Call("reads", IrType.I32, RegOperand.Of(p), RegOperand.Of(q))!; fb.Ret(RegOperand.Of(x)); });
+        Callee("writes", (fb, p, q) => { fb.Store(p, q); fb.Ret(RegOperand.Of(q)); });
+        Callee("keeps", (fb, p, q) => { fb.Store(new SymOperand("kept"), RegOperand.Of(p)); fb.Ret(RegOperand.Of(q)); });
+        Callee("both", (fb, p, q) => { VReg x = fb.Load(IrType.I32, p); fb.Store(q, x); fb.Ret(RegOperand.Of(x)); });
+
+        Function Caller(string name, string callee, bool other = false, bool escaped = false)
+        {
+            Function f = new(name, IrType.I32);
+            Builder fb = new(f, f.NewBlock("entry"));
+            FrameSlot original = f.NewSlot(8, 4, "value"), copy = f.NewSlot(8, 4, "value");
+            VReg o = fb.SlotAddress(original), c = fb.SlotAddress(copy);
+            fb.Store(o, fb.Const(7, IrType.I32));
+            if (escaped) fb.Store(new SymOperand("seen"), RegOperand.Of(o));
+            fb.Emit(Opcode.MemCopy, null, RegOperand.Of(c), RegOperand.Of(o), new ImmOperand(8, IrTypes.Word));
+            VReg got = fb.Call(callee, IrType.I32, RegOperand.Of(c), other ? RegOperand.Of(o) : new ImmOperand(0, IrTypes.Word))!;
+            fb.Ret(RegOperand.Of(got));
+            module.Functions.Add(f);
+            return f;
+        }
+        Function[] dropped = { Caller("a", "reads"), Caller("b", "passes") };
+        Function[] kept = { Caller("c", "writes"), Caller("d", "keeps"), Caller("e", "both", other: true), Caller("f", "reads", escaped: true) };
+        module.Entry = "a";
+        ArgumentCopies.Run(module);
+        foreach (Function f in module.Functions) Verifier.Check(f, "argument copies");
+        bool Copies(Function f) => f.Blocks.SelectMany(x => x.Instrs).Any(i => i.Op == Opcode.MemCopy);
+        foreach (Function f in dropped) Assert(!Copies(f), $"{f.Name}: the copy into a read-only parameter is dropped:\n" + Dump(f));
+        foreach (Function f in kept) Assert(Copies(f), $"{f.Name}: the copy is kept:\n" + Dump(f));
+        Assert(ArgumentCopies.Dropped == 2, $"two copies dropped, not {ArgumentCopies.Dropped}");
     }
 
     // ---- Dead code -----------------------------------------------------

@@ -419,7 +419,6 @@ public static class IrLinkOptimizer
                         if (taken.Contains(call) || defined.Contains(call) || !Provider(call, out IrArchive? provider, out IrArchiveEntry? body)
                             || !body.Importable || body.Instructions > ForwarderBody || body.Calls.Count > 0
                             || body.Length > importBytes - used || imports.Count >= BackendProtocol.MostImports - 2) continue;
-                        if (noCollector && body.Calls.Any(callee => callee is RuntimeAbi.Alloc or RuntimeAbi.AllocLeaf or RuntimeAbi.AllocObject)) continue;
                         imports.Add((call, provider, body)); used += body.Length;
                         taken.Add(call);
                     }

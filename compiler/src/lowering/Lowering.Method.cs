@@ -135,6 +135,7 @@ public sealed partial class Lowering
     /// through its register still.
     /// </summary>
     private readonly Dictionary<LocalDecl, FrameSlot> _structHomes = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<LocalDecl, bool> _homedLocals = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>A declared struct local's own slot (_structHomes), made the first time it is asked for.</summary>
     private FrameSlot StructHome(LocalDecl d, Type type)
@@ -147,7 +148,24 @@ public sealed partial class Lowering
     }
 
     /// <summary>Whether a value of this type, in this body, is a struct a local or parameter holds in its own storage.</summary>
-    private bool HomedStruct(Type type) => IsStructValue(type) && FrameHoldsValues && !HasStructFields(StructOf(type));
+    private bool HomedStruct(Type type) => IsStructValue(type) && ValueInFrame(StructOf(type));
+
+    /// <summary>
+    /// Whether a declared local is held in its own storage (HomedStruct),
+    /// decided ONCE, by whichever asks first -- its declaration or a read of
+    /// it before (a goto, an earlier switch section) -- and asked the same
+    /// of both after: the declaration judged by the binder's type for it,
+    /// a read by the symbol's, and had the two ever differed, the
+    /// declaration wrote a register every read passed by for a slot no one
+    /// wrote.
+    /// </summary>
+    private bool HomedLocal(LocalDecl d, Type type)
+    {
+        if (_homedLocals.TryGetValue(d, out bool homed)) return homed;
+        homed = HomedStruct(_b.LocalType.TryGetValue(d, out Type? declared) ? declared : type);
+        _homedLocals[d] = homed;
+        return homed;
+    }
 
     /// <summary>What a `return` converts its value to: the method's return type, or an async method's task result.</summary>
     private Type? _returnType;
@@ -207,7 +225,9 @@ public sealed partial class Lowering
         _structReceiver = null;
         _structQualified = null;
         _heapStructs.Clear();
+        _freshValues.Clear();
         _structHomes.Clear();
+        _homedLocals.Clear();
         _returnType = null;
         _boundsFail = null;
         _checkedDepth = 0;
@@ -1698,7 +1718,7 @@ public sealed partial class Lowering
         // may be a variable's own storage (StructHome), written over in place
         // by the variable's next assignment -- `if (x is var v) { x = y; }`
         // left v with y.
-        if (IsStructValue(held) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
+        if (IsStructValue(held) && value.Type == IrTypes.Word && !_heapStructs.Contains(value) && !_freshValues.Contains(value))
             value = CopyStruct(at, value, StructOf(held), frame: true);
         if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
@@ -1806,7 +1826,7 @@ public sealed partial class Lowering
                     return new MemPlace(new SlotOperand(LocalSlot(d, l.Type)), 0, l.Type);
                 }
                 // Its own storage, written by a copy into it (HomedStruct).
-                if (HomedStruct(l.Type))
+                if (HomedLocal(d, l.Type))
                 {
                     return new MemPlace(new SlotOperand(StructHome(d, l.Type)), 0, l.Type, false, true);
                 }
