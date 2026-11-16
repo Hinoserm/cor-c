@@ -96,6 +96,25 @@ public sealed class Interp
                     case Opcode.Store:
                         Write(Value(i.Operands[0], regs) + i.Offset, Value(i.Operands[1], regs), i.Size);
                         break;
+                    case Opcode.MemSet:
+                        {
+                            // A fill: the byte, a count of times.
+                            long at = Value(i.Operands[0], regs) + i.Offset;
+                            byte fill = (byte)Value(i.Operands[1], regs);
+                            long count = Value(i.Operands[2], regs);
+                            for (long k = 0; k < count; k++) _mem[at + k] = fill;
+                            break;
+                        }
+                    case Opcode.MemCopy:
+                        {
+                            // A copy, read whole before any of it is written.
+                            long to = Value(i.Operands[0], regs) + i.Offset;
+                            long from = Value(i.Operands[1], regs) + i.Offset;
+                            byte[] bytes = new byte[Value(i.Operands[2], regs)];
+                            for (int k = 0; k < bytes.Length; k++) bytes[k] = _mem.TryGetValue(from + k, out byte x) ? x : (byte)0;
+                            for (int k = 0; k < bytes.Length; k++) _mem[to + k] = bytes[k];
+                            break;
+                        }
                     case Opcode.Call:
                         {
                             if (!Calls.TryGetValue(i.Callee!, out Func<long[], long>? fn))

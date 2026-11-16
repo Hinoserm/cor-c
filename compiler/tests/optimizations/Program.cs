@@ -30,6 +30,12 @@ public static partial class Program
             return _failures == 0 ? 0 : 1;
         }
         Try("frame addresses: bounds and captured pointer definitions", FrameAddressBoundaries);
+        if (args.Contains("--slot-extent-only"))
+        {
+            Try("slot scalars: a slot larger than what it holds", SlotExtent);
+            return _failures == 0 ? 0 : 1;
+        }
+        Try("slot scalars: a slot larger than what it holds", SlotExtent);
         if (args.Contains("--load-reuse-only"))
         {
             Try("load reuse: captured addresses, values and memory barriers", LoadReuseBoundaries);
@@ -1347,6 +1353,58 @@ public static partial class Program
         Run(f, new ConstantAndCopyPropagation());
         ExpectContains(f, "%2 = add %0 1");
         ExpectContains(f, "ret %1");
+    }
+
+    // ---- Slot scalars: a slot's extent ---------------------------------
+
+    /// <summary>SlotScalars as a pass, for SameResults.</summary>
+    private sealed class SlotScalarsPass : IPass
+    {
+        public string Name => "slot-scalars";
+        public void Run(Function function) => SlotScalars.Apply(function);
+    }
+
+    /// <summary>
+    /// A struct of four bytes in an object the escape analysis put in the
+    /// frame, which keeps its allocation's eight: zeroed by a fill of four,
+    /// stored and read at offset 0 -- the fill is of the struct, not a part
+    /// of the slot (SlotScalars' extent).
+    /// </summary>
+    private static Function SmallStructInLargerSlot()
+    {
+        (Function f, Builder b) = Fn(IrType.I32, IrType.I32);
+        SlotOperand slot = new(f.NewSlot(8, 4, "s"));
+        b.Emit(Opcode.MemSet, null, slot, new ImmOperand(0, IrType.I32), new ImmOperand(4, IrTypes.Word));
+        b.Store(slot, RegOperand.Of(f.Params[0]), 0, 4);
+        VReg held = b.Load(IrType.I32, slot, 0, 4);
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, held, 1)));
+        return f;
+    }
+
+    /// <summary>The same fill of four, and a read of the slot's other four: a part fill, the slot kept.</summary>
+    private static Function PartFillOfASlot()
+    {
+        (Function f, Builder b) = Fn(IrType.I32, IrType.I32);
+        SlotOperand slot = new(f.NewSlot(8, 4, "s"));
+        b.Emit(Opcode.MemSet, null, slot, new ImmOperand(0, IrType.I32), new ImmOperand(4, IrTypes.Word));
+        b.Store(slot, RegOperand.Of(f.Params[0]), 0, 4);
+        VReg low = b.Load(IrType.I32, slot, 0, 4);
+        VReg high = b.Load(IrType.I32, slot, 4, 4);
+        b.Ret(RegOperand.Of(b.Binary(Opcode.Add, low, high)));
+        return f;
+    }
+
+    private static void SlotExtent()
+    {
+        SameResults(SmallStructInLargerSlot, Inputs, new SlotScalarsPass());
+        Function promoted = SmallStructInLargerSlot();
+        Assert(SlotScalars.Apply(promoted), "a four-byte struct in an eight-byte slot is made registers:\n" + Dump(promoted));
+        Assert(!promoted.Blocks.SelectMany(block => block.Instrs).Any(i => i.Operands.Any(o => o is SlotOperand)),
+            "nothing of the slot is left:\n" + Dump(promoted));
+        Function kept = PartFillOfASlot();
+        SlotScalars.Apply(kept);
+        Assert(kept.Blocks.SelectMany(block => block.Instrs).Any(i => i.Op == Opcode.MemSet),
+            "a fill short of what is read stays a fill of the slot:\n" + Dump(kept));
     }
 
     // ---- Dead code -----------------------------------------------------
