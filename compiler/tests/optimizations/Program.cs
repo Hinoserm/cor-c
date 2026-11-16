@@ -36,6 +36,12 @@ public static partial class Program
             return _failures == 0 ? 0 : 1;
         }
         Try("slot scalars: a slot larger than what it holds", SlotExtent);
+        if (args.Contains("--passed-by-value-only"))
+        {
+            Try("inlining keeps which arguments are structs passed by value", PassedByValueInlined);
+            return _failures == 0 ? 0 : 1;
+        }
+        Try("inlining keeps which arguments are structs passed by value", PassedByValueInlined);
         if (args.Contains("--load-reuse-only"))
         {
             Try("load reuse: captured addresses, values and memory barriers", LoadReuseBoundaries);
@@ -1405,6 +1411,41 @@ public static partial class Program
         SlotScalars.Apply(kept);
         Assert(kept.Blocks.SelectMany(block => block.Instrs).Any(i => i.Op == Opcode.MemSet),
             "a fill short of what is read stays a fill of the slot:\n" + Dump(kept));
+    }
+
+    // ---- Inlining keeps PassedByValue ----------------------------------
+
+    /// <summary>
+    /// A call that hands its argument to another image's function as a struct
+    /// passed by value (Instr.PassedByValue), inlined into its caller: the
+    /// copy of the call there says so too. Lost (e34b28a2), Escape had no
+    /// summary of the other image's function and kept the argument's block
+    /// on the heap in every caller the call was inlined into -- a driver's
+    /// receive path took eight bytes of the collector a frame.
+    /// </summary>
+    private static void PassedByValueInlined()
+    {
+        Module module = new("passed");
+        Function middle = new("middle", IrType.I32);
+        VReg held = middle.NewReg(IrTypes.Word);
+        middle.Params.Add(held);
+        Builder mb = new(middle, middle.NewBlock("entry"));
+        VReg far = mb.Call("elsewhere", IrType.I32, RegOperand.Of(held))!;
+        Instr call = middle.Blocks[0].Instrs.Last(i => i.Op == Opcode.Call);
+        call.PassedByValue = 1;
+        mb.Ret(RegOperand.Of(far));
+        Function caller = new("main", IrType.I32);
+        VReg block = caller.NewReg(IrTypes.Word);
+        caller.Params.Add(block);
+        Builder b = new(caller, caller.NewBlock("entry"));
+        VReg got = b.Call("middle", IrType.I32, RegOperand.Of(block))!;
+        b.Ret(RegOperand.Of(got));
+        module.Functions.Add(caller); module.Functions.Add(middle); module.Entry = "main";
+        new Inline { SmallBody = 8, GrowthLimit = 100 }.Run(module);
+        Verifier.Check(caller, "passed by value inline");
+        List<Instr> calls = caller.Blocks.SelectMany(x => x.Instrs).Where(i => i.Op == Opcode.Call).ToList();
+        Assert(calls.Count == 1 && calls[0].Callee == "elsewhere", "middle inlined into main:\n" + Dump(caller));
+        Assert(calls[0].PassesByValue(0), "the inlined call still passes its argument by value:\n" + Dump(caller));
     }
 
     // ---- Dead code -----------------------------------------------------
