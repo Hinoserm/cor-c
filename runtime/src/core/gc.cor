@@ -19167,13 +19167,16 @@ public static class GcThreads
         // round: let go again, it went on with the old round's request,
         // buffer and stack in hand and settled whatever round was open by
         // then -- one it had scanned nothing for, its stack's references
-        // left out of that mark. From before Owes is asked, the round it
-        // finds owed is the one it answers. Nothing here waits: the stamp and
-        // the stack copy map memory at most, which takes no wait. The hold
-        // for a fork, which does wait, comes after (HoldForFork). Owing
-        // nothing -- nearly every poll -- it costs the one look, as before;
-        // owing, the look is made again with the count raised.
-        if (!Owes(block)) return;
+        // left out of that mark. The look is made AGAIN with the count raised
+        // (AnswerOwed), so the round it finds owed then is the one it
+        // answers. Nothing there waits: the stamp and the stack copy map
+        // memory at most, which takes no wait. The hold for a fork, which
+        // does wait, comes after (HoldForFork). The first look, uncounted,
+        // only filters: owing nothing -- nearly every poll -- or unable to
+        // answer from here (the allocator, a thread not running), it costs
+        // what it did.
+        if (!Owes(block) || Sys.ReadAddress(block + Tls.InAlloc) != 0
+            || Sys.ReadAddress(block + Tls.State) != Running) return;
         uint hold;
         Runtime.PreemptOff();
         try
