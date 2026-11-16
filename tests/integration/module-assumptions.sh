@@ -95,6 +95,16 @@ grep -qxF "$low" "$work/b.exports" || fail "kernel b, whose getter is the same, 
 "$corc" link "$work/card.o" --kernel "$b/kernel" -o "$work/card-b.ko" > "$work/card-b-link.log" 2>&1 || { cat "$work/card-b-link.log"; fail "the module's link against kernel b"; }
 imports "$work/card-b.ko" | grep '^y_body.*Addr_op_Addition' > "$work/plus-b.txt" || fail "linked against b, the module names no body of the operator"
 if grep -qxF "$plus" "$work/plus-b.txt"; then fail "linked against b, the module still names a's body"; fi
+# A KERNEL WHOSE BODIES ARE NOT BESIDE IT, though its table offers them:
+# the module's link refuses, rather than take none and say nothing.
+mkdir -p "$work/bare"
+cp "$a/kernel" "$work/bare/kernel"
+for facts in irq x87; do if [ -f "$a/kernel.$facts" ]; then cp "$a/kernel.$facts" "$work/bare/"; fi; done
+if "$corc" link "$work/card.o" --kernel "$work/bare/kernel" -o "$work/card-bare.ko" > "$work/card-bare.log" 2>&1; then
+    fail "the module linked against a kernel whose offered bodies are not beside it"
+fi
+grep -q "offers bodies .* but .*kernel.bodies is not beside it" "$work/card-bare.log" || { cat "$work/card-bare.log"; fail "the refusal does not say the bodies are missing"; }
+
 # AND THE LOADERS: kernel a's binds the module built against it; kernel
 # b's refuses it by the name of the operator's body it took from a, as it
 # refuses a call of what it no longer has (modules.sh).

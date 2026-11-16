@@ -363,6 +363,11 @@ public static class ObjectLinkCommand
         {
             try { kernelBodies = KernelAssumptions.ReadBodies(kernelPath!); }
             catch (ElfFormatException error) { return Fail(kernelPath + KernelAssumptions.BodiesSuffix + ": " + error.Message); }
+            // A KERNEL THAT OFFERS BODIES HAS THEM BESIDE IT: its table names
+            // them (y_body$...), and without the file beside it the module
+            // took none and inlined nothing of the kernel's, saying nothing.
+            if (kernelBodies is null && kernel.Names.FirstOrDefault(name => name.StartsWith(KernelAssumptions.BodyPrefix, StringComparison.Ordinal)) is string promised)
+                return Fail($"{kernelPath} offers bodies ({promised} and others) but {kernelPath + KernelAssumptions.BodiesSuffix} is not beside it: link the module against the kernel's link output together with its .bodies");
         }
         int regenerated = IrLinkOptimizer.Run(inputs, () => backend ?? new ProcessUnitBackend(backendPath), lto, importBytes,
             closedImageEntry: (flat || closed || physicalAddress is not null) && !exports ? entry : null, parallelBackends: backend is null, regionReport: regionReport,
