@@ -181,7 +181,18 @@ public sealed class UnitBackend : IUnitBackend
             string[] calls = instructions.Where(instruction => instruction.Op == Opcode.Call && instruction.Callee is not null)
                 .Select(instruction => instruction.Callee!).Distinct(StringComparer.Ordinal).ToArray();
             forwarders[import.Symbol] = calls;
-            if (calls.Length == 0 && instructions.Length <= IrLinkOptimizer.ForwarderBody) forwarding.Add(import.Symbol);
+            // OR NOTHING BUT THE ALLOCATOR: a struct's operator is its result's
+            // block asked for and two words stored -- `a + offset` of a
+            // two-word address -- and the block is kept in the frame once the
+            // body is where its caller is (Escape). Left out, such a body
+            // was taken where the unit's compile had the call (a method its
+            // compile inlined) and stayed a call where the link's own
+            // inlining brought the call in: forcedeth's Recycle added inline,
+            // its Receive through the kernel's operator twice a frame. (A
+            // program made without a collector is given no body that
+            // allocates: IrLinkOptimizer.)
+            if (instructions.Length <= IrLinkOptimizer.ForwarderBody
+                && calls.All(callee => callee is Corsac.Lang.Lto.RuntimeAbi.Alloc or Corsac.Lang.Lto.RuntimeAbi.AllocLeaf)) forwarding.Add(import.Symbol);
         }
         IrImport[] Selected(int index)
         {

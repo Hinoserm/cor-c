@@ -21,6 +21,24 @@ public sealed class Card
     public void Recycle(uint index) { Arm(index); _armed++; }
 
     public bool Empty() { return _physical.Low32 == Addr.Zero.Low32; }
+
+    /// Arm from a method too large for its unit's compile to take Arm into:
+    /// the call of the kernel's operator is this method's only once the
+    /// link has inlined Arm here, and is inlined then too.
+    public int Refill(uint from, uint to, bool twice)
+    {
+        int done = 0;
+        for (uint i = from; i < to; i++)
+        {
+            if ((i & 1) != 0) { Arm(i); done++; }
+            else if ((i & 2) != 0) { Arm(i + 1); done += 2; }
+            else if (twice) { Arm(i); Arm(i + 2); done += 3; }
+            else { Arm(i + 3); done += 4; }
+            if (done > 1000) { Arm(0); break; }
+        }
+        Arm(to);
+        return done + _armed;
+    }
 }
 
 static class CardEntry
@@ -33,5 +51,6 @@ static class CardEntry
         Card card = new Card();
         _card = card;
         if (!card.Empty()) card.Recycle(3);
+        else card.Refill(1, 9, card.Empty());
     }
 }
