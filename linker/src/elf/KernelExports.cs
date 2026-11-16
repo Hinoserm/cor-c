@@ -90,6 +90,20 @@ public sealed class KernelExports
     public HashSet<string> Names { get; }
 
     /// <summary>
+    /// THE TYPES THE KERNEL'S LINK INITIALISED (Lto.Preinit): the state words
+    /// (`s_T_StaticReady$...`) its image holds already at "completed". Such a
+    /// type's initialiser ran before the kernel did, and initialisation never
+    /// comes undone, so a module built against this image need not test the
+    /// word before touching the type (Lowering.TouchType) -- a load, a
+    /// compare and a branch at every call of PhysicalAddress's operators from
+    /// a driver, for a word that is 1 in the file.
+    /// </summary>
+    public HashSet<string> Initialised { get; }
+
+    /// <summary>What a type's state word's name ends with (BindResult.ReadyField, a native word).</summary>
+    private const string ReadyWord = "_StaticReady$_t$V$NInt";
+
+    /// <summary>
     /// The kernel units' code-generation contract, read from Cpu: their
     /// --cpu, which a module's units must not exceed and whose SSE a
     /// module's save must cover to call the kernel's $inside copies. Null
@@ -108,9 +122,38 @@ public sealed class KernelExports
         }
     }
 
-    private KernelExports(string path, string name, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names)
+    private KernelExports(string path, string name, byte[]? abi, byte[]? cpu, bool longMode, HashSet<string> names, HashSet<string> initialised)
     {
-        Path = path; Name = name; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names;
+        Path = path; Name = name; Abi = abi; Cpu = cpu; LongMode = longMode; Names = names; Initialised = initialised;
+    }
+
+    /// <summary>
+    /// The word an image holds at a virtual address, through its loaded
+    /// segments; null where no segment has it in the file (its zeroed tail,
+    /// or no such address).
+    /// </summary>
+    private static long? LoadedWord(byte[] bytes, bool wide, ulong address)
+    {
+        int word = wide ? 8 : 4;
+        long table = wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(32)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(28));
+        int size = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 54 : 42));
+        int count = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(wide ? 56 : 44));
+        if (table <= 0 || size < (wide ? 56 : 32)) return null;
+        for (int i = 0; i < count; i++)
+        {
+            long at = table + (long)i * size;
+            if (at < 0 || at + size > bytes.Length) return null;
+            ReadOnlySpan<byte> header = bytes.AsSpan((int)at, size);
+            if (BinaryPrimitives.ReadUInt32LittleEndian(header) != 1) continue;      // PT_LOAD
+            ulong offset = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[8..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[4..]);
+            ulong start = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[16..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[8..]);
+            ulong held = wide ? BinaryPrimitives.ReadUInt64LittleEndian(header[32..]) : BinaryPrimitives.ReadUInt32LittleEndian(header[16..]);
+            if (address < start || address - start + (ulong)word > held) continue;
+            ulong file = offset + (address - start);
+            if (file + (ulong)word > (ulong)bytes.Length) return null;
+            return wide ? (long)BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan((int)file)) : BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan((int)file));
+        }
+        return null;
     }
 
     /// <summary>One global of a linked image: what a .dynsym entry of it says.</summary>
@@ -155,8 +198,20 @@ public sealed class KernelExports
         if (symbols < 0 || symbols + count * entry > section.Length) throw new ElfFormatException(path + ": " + SectionName + " is malformed");
         ReadOnlySpan<byte> names = section.AsSpan((int)strings, (int)stringBytes);
         HashSet<string> exported = new(StringComparer.Ordinal);
+        HashSet<string> initialised = new(StringComparer.Ordinal);
         for (long i = 1; i < count; i++)
-            exported.Add(StringTable.Read(names, BinaryPrimitives.ReadUInt32LittleEndian(section.AsSpan((int)(symbols + i * entry))), SectionName));
+        {
+            ReadOnlySpan<byte> symbol = section.AsSpan((int)(symbols + i * entry), (int)entry);
+            string name = StringTable.Read(names, BinaryPrimitives.ReadUInt32LittleEndian(symbol), SectionName);
+            exported.Add(name);
+            // A type's state word the image holds at "completed" (1, as
+            // Lowering.TouchType tests it): Initialised.
+            if (name.EndsWith(ReadyWord, StringComparison.Ordinal))
+            {
+                ulong value = wide ? BinaryPrimitives.ReadUInt64LittleEndian(symbol[8..]) : BinaryPrimitives.ReadUInt32LittleEndian(symbol[4..]);
+                if (LoadedWord(bytes, wide, value) == 1) initialised.Add(name);
+            }
+        }
         byte[]? Bytes(int at, int size)
         {
             if (!tags.TryGetValue(at, out long offset) || !tags.TryGetValue(size, out long length)) return null;
@@ -164,7 +219,7 @@ public sealed class KernelExports
             return section.AsSpan((int)offset, (int)length).ToArray();
         }
         return new KernelExports(path, System.IO.Path.GetFileName(path), Bytes(Elf.DtCorsacAbi, Elf.DtCorsacAbiSz), Bytes(Elf.DtCorsacCpu, Elf.DtCorsacCpuSz),
-            wide, exported);
+            wide, exported, initialised);
     }
 
     /// <summary>

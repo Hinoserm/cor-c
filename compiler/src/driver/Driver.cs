@@ -908,6 +908,8 @@ public static class Driver
         // RING 0'S FILE CALLS, served by the kernel's own function
         // (Lowering.KernelSyscalls): the kernel and its modules.
         Corsac.Lang.Lower.Lowering.KernelSyscalls = (freestanding || Value(args, "--kernel") is not null) && args.Contains("--kernel-syscalls");
+        // The types the kernel's link initialised: none tested by a module built against it (Lowering.TouchType).
+        Corsac.Lang.Lower.Lowering.KernelInitialised = kernel?.Initialised;
         if (args.Contains("--kernel-syscalls") && !Corsac.Lang.Lower.Lowering.KernelSyscalls)
             return Fail("--kernel-syscalls is for ring-0 code: a --freestanding kernel or a --kernel module");
         // ITS THREADS ARE STOPPED AT ANY INSTRUCTION: every reference store is
