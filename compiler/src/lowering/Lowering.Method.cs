@@ -225,7 +225,6 @@ public sealed partial class Lowering
         _structReceiver = null;
         _structQualified = null;
         _heapStructs.Clear();
-        _freshValues.Clear();
         _structHomes.Clear();
         _homedLocals.Clear();
         _returnType = null;
@@ -1718,7 +1717,7 @@ public sealed partial class Lowering
         // may be a variable's own storage (StructHome), written over in place
         // by the variable's next assignment -- `if (x is var v) { x = y; }`
         // left v with y.
-        if (IsStructValue(held) && value.Type == IrTypes.Word && !_heapStructs.Contains(value) && !_freshValues.Contains(value))
+        if (IsStructValue(held) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
             value = CopyStruct(at, value, StructOf(held), frame: true);
         if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
             && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)

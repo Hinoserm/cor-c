@@ -1497,12 +1497,12 @@ public static partial class Program
         Function[] dropped = { Caller("a", "reads"), Caller("b", "passes") };
         Function[] kept = { Caller("c", "writes"), Caller("d", "keeps"), Caller("e", "both", other: true), Caller("f", "reads", escaped: true) };
         module.Entry = "a";
-        ArgumentCopies.Run(module);
+        int count = ArgumentCopies.Run(module);
         foreach (Function f in module.Functions) Verifier.Check(f, "argument copies");
         bool Copies(Function f) => f.Blocks.SelectMany(x => x.Instrs).Any(i => i.Op == Opcode.MemCopy);
         foreach (Function f in dropped) Assert(!Copies(f), $"{f.Name}: the copy into a read-only parameter is dropped:\n" + Dump(f));
         foreach (Function f in kept) Assert(Copies(f), $"{f.Name}: the copy is kept:\n" + Dump(f));
-        Assert(ArgumentCopies.Dropped == 2, $"two copies dropped, not {ArgumentCopies.Dropped}");
+        Assert(count == 2, $"two copies dropped, not {count}");
 
         // THE CALL SLOT: `d = make()` writes d itself as the buffer; not where
         // the callee answers something else, where d is also an argument, or

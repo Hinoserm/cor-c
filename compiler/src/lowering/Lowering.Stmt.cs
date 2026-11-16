@@ -692,7 +692,7 @@ public sealed partial class Lowering
             VReg cursor = SlotReg(elem, IrTypes.Of(element));
             // A struct element's cursor is a copy, as C#'s is: not where the
             // element is in the array, which the body may write.
-            if (IsStructValue(element) && value.Type == IrTypes.Word && !_heapStructs.Contains(value) && !_freshValues.Contains(value))
+            if (IsStructValue(element) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
                 value = CopyStruct(fe, value, StructOf(element), frame: true);
             _e.CopyTo(cursor, RegOperand.Of(value));
         }

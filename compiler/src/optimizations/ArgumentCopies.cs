@@ -37,16 +37,19 @@ using Block = Corsac.Lang.Ir.Block;
 /// </summary>
 public static class ArgumentCopies
 {
-    /// <summary>The copies dropped in the last run, for the tests.</summary>
-    public static int Dropped { get; private set; }
-
-    public static void Run(Module m)
+    /// <summary>The copies dropped (argument copies and call slots both).</summary>
+    public static int Run(Module m)
     {
-        Dropped = 0;
         Dictionary<string, Function> byName = new(StringComparer.Ordinal);
-        foreach (Function f in m.Functions) byName.TryAdd(f.Name, f);
+        HashSet<string> twice = new(StringComparer.Ordinal);
+        foreach (Function f in m.Functions)
+            if (!byName.TryAdd(f.Name, f)) twice.Add(f.Name);
+        // A NAME TWO BODIES HAVE says nothing of which one runs: neither is asked.
+        foreach (string name in twice) byName.Remove(name);
         Dictionary<Function, bool[]> readOnly = ReadOnly(m, byName);
-        foreach (Function f in m.Functions) Dropped += Drop(f, byName, readOnly);
+        int dropped = 0;
+        foreach (Function f in m.Functions) dropped += Drop(f, byName, readOnly);
+        return dropped;
     }
 
     // ---- which parameters a function only reads --------------------------
@@ -57,9 +60,15 @@ public static class ArgumentCopies
         foreach (Function f in m.Functions)
         {
             bool[] r = new bool[f.Params.Count];
-            // An async or iterator body's frame is a block of the heap, and
-            // what it reads may be read after a suspension: never assumed.
-            if (f.Async is null) Array.Fill(r, true);
+            // Never assumed: an async or iterator body, whose frame is a
+            // block of the heap and what it reads may be read after a
+            // suspension; a body this compile does not have (a header); and
+            // a function its provider exports (Module.GoesElsewhere) -- the
+            // provider's body is what runs, and nothing records that this
+            // image took its copy for it, as a body inlined across images is
+            // recorded (KernelAssumptions): a kernel whose copy writes its
+            // parameter would write the caller's original.
+            if (f.Async is null && f.Blocks.Count > 0 && !m.GoesElsewhere(f)) Array.Fill(r, true);
             answer[f] = r;
         }
         for (bool changed = true; changed;)
@@ -68,17 +77,19 @@ public static class ArgumentCopies
             foreach (Function f in m.Functions)
             {
                 bool[] r = answer[f];
+                if (!r.Any(x => x)) continue;
+                Dictionary<VReg, int> writes = Writes(f);
                 for (int p = 0; p < r.Length; p++)
-                    if (r[p] && !OnlyRead(f, f.Params[p], byName, answer)) { r[p] = false; changed = true; }
+                    if (r[p] && !OnlyRead(f, f.Params[p], writes, byName, answer)) { r[p] = false; changed = true; }
             }
         }
         return answer;
     }
 
     /// <summary>Whether a function's register `root` -- a parameter, never written again -- is only read through.</summary>
-    private static bool OnlyRead(Function f, VReg root, Dictionary<string, Function> byName, Dictionary<Function, bool[]> readOnly)
+    private static bool OnlyRead(Function f, VReg root, Dictionary<VReg, int> writes, Dictionary<string, Function> byName, Dictionary<Function, bool[]> readOnly)
     {
-        HashSet<VReg> derived = Derived(f, root, out bool rewritten);
+        HashSet<VReg> derived = Derived(f, root, writes, out bool rewritten);
         if (rewritten) return false;
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
@@ -95,13 +106,18 @@ public static class ArgumentCopies
     /// adds of a constant, each written once. `rewritten` when root, or one
     /// of them, is also written by anything else.
     /// </summary>
-    private static HashSet<VReg> Derived(Function f, VReg root, out bool rewritten)
+    private static Dictionary<VReg, int> Writes(Function f)
     {
-        HashSet<VReg> derived = new() { root };
         Dictionary<VReg, int> writes = new();
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Dest is { } d) writes[d] = writes.GetValueOrDefault(d) + 1;
+        return writes;
+    }
+
+    private static HashSet<VReg> Derived(Function f, VReg root, Dictionary<VReg, int> writes, out bool rewritten)
+    {
+        HashSet<VReg> derived = new() { root };
         rewritten = writes.ContainsKey(root);
         for (bool grew = true; grew;)
         {
@@ -247,6 +263,9 @@ public static class ArgumentCopies
                 {
                     continue;
                 }
+                // The callee was made for the copy's alignment (an aligned
+                // slot's MOVAPS): the original at least as aligned.
+                if (from.Slot.Align < to.Slot.Align || from.Slot.Bytes < to.Slot.Bytes) continue;
                 if (!Private(from.Slot)) continue;
                 // No other operand of the call reaches the original.
                 bool other = false;
@@ -267,9 +286,7 @@ public static class ArgumentCopies
             }
         }
         dropped += CallSlots(f, byName, readOnly, SlotOf, uses, Private);
-        // The copy's slot, named now only by an alias nothing reads, goes
-        // with the cleanup after (SlotScalars.ApplyAndClean's dead code),
-        // and a slot nothing names takes no bytes of the frame.
+        if (dropped > 0) Unnamed(f);
         return dropped;
     }
 
@@ -331,7 +348,7 @@ public static class ArgumentCopies
                 {
                     continue;
                 }
-                if (!privateSlot(into.Slot)) continue;
+                if (!privateSlot(into.Slot) || into.Slot.Align < buffer.Slot.Align) continue;
                 bool other = false;
                 for (int k = 0; k < last; k++)
                     if (slotOf(call.Operands[k]) is { } o && ReferenceEquals(o.Slot, into.Slot)) other = true;
@@ -351,6 +368,34 @@ public static class ArgumentCopies
             }
         }
         return done;
+    }
+
+    /// <summary>
+    /// THE SLOTS NO LONGER NAMED, AND THEIR ALIASES, GONE: a dropped copy's
+    /// slot and a dropped buffer are named after it only by the `r = copy
+    /// &slot` (or offsets of it) nothing reads, which is no cleanup's to
+    /// remove where SlotScalars made no slot registers.
+    /// </summary>
+    private static void Unnamed(Function f)
+    {
+        for (bool more = true; more;)
+        {
+            more = false;
+            Dictionary<VReg, int> reads = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    foreach (Operand o in i.Operands)
+                        if (o is RegOperand { Reg: var r }) reads[r] = reads.GetValueOrDefault(r) + 1;
+            foreach (Block b in f.Blocks)
+                more |= b.Instrs.RemoveAll(i => i.Dest is { } d && !reads.ContainsKey(d) && !f.Params.Contains(d)
+                    && (i.Op == Opcode.Copy && i.Operands is [SlotOperand] || i.Op == Opcode.Add && i.Operands is [RegOperand, ImmOperand])) > 0;
+        }
+        HashSet<FrameSlot> named = new(ReferenceEqualityComparer.Instance);
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                foreach (Operand o in i.Operands)
+                    if (o is SlotOperand { Slot: var s }) named.Add(s);
+        f.Slots.RemoveAll(s => !named.Contains(s));
     }
 
     /// <summary>Whether every `ret` of the function answers its last parameter, the result buffer.</summary>

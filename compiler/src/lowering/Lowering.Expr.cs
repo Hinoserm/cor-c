@@ -397,13 +397,6 @@ public sealed partial class Lowering
     /// </summary>
     private bool ValueInFrame(TypeSymbol sym) => FrameHoldsValues && !HasStructFields(sym) && sym.InstanceSize <= FrameValueLimit;
 
-    /// <summary>
-    /// The struct values in this frame made here and named by nothing else
-    /// (StructInFrame): already a copy of their own, which a binding need
-    /// not copy again (BindPattern, a foreach cursor).
-    /// </summary>
-    private readonly HashSet<VReg> _freshValues = new();
-
     /// <summary>A struct's storage in this frame (FrameHoldsValues), zeroed where `zero` says.</summary>
     private VReg StructInFrame(TypeSymbol sym, bool zero = false)
     {
@@ -411,7 +404,6 @@ public sealed partial class Lowering
         FrameSlot slot = _f.NewSlot(size, Math.Min(_t.Align64, Math.Max(4, sym.InlineAlign)), FrameValueSlot);
         VReg at = RegOf(new SlotOperand(slot));
         if (zero) _e.Emit(Opcode.MemSet, null, R(at), new ImmOperand(0, IrType.I32), Imm(size, IrTypes.Word));
-        _freshValues.Add(at);
         return at;
     }
 
