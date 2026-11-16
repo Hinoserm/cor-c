@@ -1044,6 +1044,14 @@ public sealed class Inline : IParallelModulePass
                 {
                     made.Operands.Add(Op(o));
                 }
+                // WHICH ARGUMENTS ARE STRUCTS PASSED BY VALUE goes with the call
+                // (Instr.Clone carries it too), after the operands it counts:
+                // dropped here, a call to another image's function inlined into
+                // a caller lost what kept its argument's block in the frame
+                // (Escape), and the copy of the struct was allocated from the
+                // heap each time -- a driver adding to a PhysicalAddress through
+                // the kernel's operator, a block every packet.
+                made.PassedByValue = i.PassedByValue;
                 foreach (Block t in i.Targets)
                 {
                     made.WritableTargets.Add(blocks[t]);

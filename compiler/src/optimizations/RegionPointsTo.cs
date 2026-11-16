@@ -1088,6 +1088,7 @@ public sealed class RegionPointsTo : IModulePass
                 };
                 foreach (Operand o in i.Operands)
                     c.Operands.Add(o switch { RegOperand r => RegOperand.Of(Reg(r.Reg)), SlotOperand s => new SlotOperand(slots[s.Slot]), _ => o });
+                c.PassedByValue = i.PassedByValue;   // after the operands it counts (Instr.Clone, Inline)
                 foreach (Block t in i.Targets) c.WritableTargets.Add(blocks[t]);
                 if (keep.Contains(i)) keep.Add(c);
                 blocks[b].Instrs.Add(c);
