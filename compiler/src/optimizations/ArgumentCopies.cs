@@ -285,6 +285,9 @@ public static class ArgumentCopies
                 fromUses.Add((call, argument));
             }
         }
+        // Before the call slots, which hand a destination to a callee as its
+        // buffer: no longer private after, though built in place before.
+        dropped += Forwarded(f, alias, uses, Private);
         dropped += CallSlots(f, byName, readOnly, SlotOf, uses, Private);
         if (dropped > 0) Unnamed(f);
         return dropped;
@@ -366,6 +369,126 @@ public static class ArgumentCopies
                     // Written by the callee now: no longer a read-only use,
                     // so a later copy here does not take it for private.
                     intoUses.Add((call, last));
+                }
+            }
+        }
+        return done;
+    }
+
+    /// <summary>
+    /// A VALUE BUILT WHERE IT GOES: `P p = new P(a, b)`, `p = default`, a
+    /// struct built up in a temporary of the frame (StructInFrame: zeroed,
+    /// its constructor run on it) and then copied whole into the variable's
+    /// own storage. The temporary is the destination instead, and the copy
+    /// is not made, where
+    ///   - the temporary is a frame value (Lowering.FrameValueSlot) whose
+    ///     address goes nowhere else (Private), every use of it in one
+    ///     block before the copy (its aliases' too), so nothing reads it
+    ///     after;
+    ///   - the destination is a slot of this frame whose address goes
+    ///     nowhere else (Private), of the temporary's size (what the
+    ///     temporary's fills write, the copy would have) and no less
+    ///     aligned, and
+    ///     nothing from the temporary's first use to the copy names it but
+    ///     the making of an alias -- its old value is not read in between,
+    ///     and a constructor handed the temporary cannot reach it;
+    ///   - the function has no handler: a constructor that throws after
+    ///     writing part of the value would have changed a variable C#
+    ///     leaves alone.
+    /// </summary>
+    private static int Forwarded(Function f, Dictionary<VReg, (FrameSlot Slot, long At)> alias,
+                                 Dictionary<FrameSlot, List<(Instr I, int K)>> uses, Func<FrameSlot, bool> privateSlot)
+    {
+        if (f.Blocks.Any(b => b.IsLandingPad)) return 0;
+        (FrameSlot Slot, long At)? SlotOf(Operand o) => o switch
+        {
+            SlotOperand { Slot: var s } => (s, 0),
+            RegOperand { Reg: var r } when alias.TryGetValue(r, out var at) => at,
+            _ => null,
+        };
+        // Every instruction that reads an alias register: an alias of the
+        // temporary used anywhere but the window keeps it.
+        Dictionary<VReg, List<Instr>> readers = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                foreach (Operand o in i.Operands)
+                    if (o is RegOperand { Reg: var r } && alias.ContainsKey(r))
+                    {
+                        if (!readers.TryGetValue(r, out var list)) readers[r] = list = new();
+                        list.Add(i);
+                    }
+        int done = 0;
+        foreach (Block b in f.Blocks)
+        {
+            for (int at = 0; at < b.Instrs.Count; at++)
+            {
+                Instr copy = b.Instrs[at];
+                if (copy.Op != Opcode.MemCopy || copy.Offset != 0 || copy.Operands.Count != 3
+                    || SlotOf(copy.Operands[0]) is not { At: 0 } into || SlotOf(copy.Operands[1]) is not { At: 0 } from
+                    || ReferenceEquals(into.Slot, from.Slot) || from.Slot.Name != "value"
+                    || copy.Operands[2] is not ImmOperand { Value: var length }
+                    || into.Slot.Bytes != from.Slot.Bytes || into.Slot.Align < from.Slot.Align || length > into.Slot.Bytes)
+                {
+                    continue;
+                }
+                if (!uses.TryGetValue(from.Slot, out var fromUses)) continue;
+                // Every use of the temporary in this block, before the copy.
+                HashSet<Instr> window = new(ReferenceEqualityComparer.Instance);
+                int first = at;
+                bool here = true;
+                foreach ((Instr i, int _) in fromUses)
+                {
+                    int position = ReferenceEquals(i, copy) ? at : b.Instrs.IndexOf(i);
+                    if (position < 0 || position > at) { here = false; break; }
+                    first = Math.Min(first, position);
+                }
+                if (!here) continue;
+                // The temporary's alias registers read only in that span.
+                bool aliasesHere = true;
+                foreach ((VReg r, var target) in alias)
+                {
+                    if (!ReferenceEquals(target.Slot, from.Slot) || !readers.TryGetValue(r, out var readBy)) continue;
+                    foreach (Instr i in readBy)
+                    {
+                        if (alias.ContainsKey(i.Dest ?? r) && i.Dest is not null && i.Op is Opcode.Copy or Opcode.Add) continue;
+                        int position = b.Instrs.IndexOf(i);
+                        if (position < first || position > at) { aliasesHere = false; break; }
+                    }
+                    if (!aliasesHere) break;
+                }
+                if (!aliasesHere) continue;
+                // The destination: private, and untouched in the span but
+                // for the making of an alias of it.
+                // Both private: a temporary whose address went elsewhere would
+                // leave whoever kept it pointing at the destination.
+                if (!privateSlot(into.Slot) || !privateSlot(from.Slot)) continue;
+                bool touched = false;
+                for (int k = first; k < at && !touched; k++)
+                {
+                    Instr i = b.Instrs[k];
+                    if (i.Dest is { } d && alias.ContainsKey(d)) continue;
+                    foreach (Operand o in i.Operands)
+                        if (SlotOf(o) is { } named && ReferenceEquals(named.Slot, into.Slot)) touched = true;
+                }
+                if (touched) continue;
+
+                // The temporary becomes the destination: every naming of its
+                // slot, and the alias registers made of it, now the other's.
+                foreach (Block c in f.Blocks)
+                    foreach (Instr i in c.Instrs)
+                        for (int k = 0; k < i.Operands.Count; k++)
+                            if (i.Operands[k] is SlotOperand { Slot: var s } && ReferenceEquals(s, from.Slot))
+                                i.Operands[k] = new SlotOperand(into.Slot);
+                foreach (VReg r in alias.Keys.ToList())
+                    if (ReferenceEquals(alias[r].Slot, from.Slot)) alias[r] = (into.Slot, alias[r].At);
+                b.Instrs.RemoveAt(at);
+                at--;
+                done++;
+                uses.Remove(from.Slot);
+                if (uses.TryGetValue(into.Slot, out var intoUses))
+                {
+                    intoUses.RemoveAll(u => ReferenceEquals(u.I, copy));
+                    intoUses.AddRange(fromUses.Where(u => !ReferenceEquals(u.I, copy)));
                 }
             }
         }

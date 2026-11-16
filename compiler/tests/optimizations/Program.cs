@@ -1541,6 +1541,33 @@ public static partial class Program
         foreach (Function f in slots.Functions) Verifier.Check(f, "call slots");
         Assert(!Copies(written), "g: the result written into its destination, no copy:\n" + Dump(written));
         foreach (Function f in copied) Assert(Copies(f), $"{f.Name}: the result copied:\n" + Dump(f));
+
+        // FORWARDED: a temporary built and then copied whole into a private
+        // home is built in the home; not where the home is read while the
+        // temporary is built, nor where the temporary is read after.
+        Module built = new("built");
+        Function Builds(string name, bool readHome = false, bool readAfter = false)
+        {
+            Function f = new(name, IrType.I32);
+            Builder fb = new(f, f.NewBlock("entry"));
+            FrameSlot temp = f.NewSlot(8, 4, "value"), home = f.NewSlot(8, 4, "value");
+            VReg t = fb.SlotAddress(temp), h = fb.SlotAddress(home);
+            fb.Emit(Opcode.MemSet, null, RegOperand.Of(t), new ImmOperand(0, IrType.I32), new ImmOperand(8, IrTypes.Word));
+            VReg seen = readHome ? fb.Load(IrType.I32, h) : fb.Const(5, IrType.I32);
+            fb.Store(t, seen);
+            fb.Emit(Opcode.MemCopy, null, RegOperand.Of(h), RegOperand.Of(t), new ImmOperand(8, IrTypes.Word));
+            VReg x = fb.Load(IrType.I32, readAfter ? t : h, 4);
+            fb.Ret(RegOperand.Of(x));
+            built.Functions.Add(f);
+            return f;
+        }
+        Function inPlace = Builds("k");
+        Function[] apart = { Builds("l", readHome: true), Builds("m", readAfter: true) };
+        built.Entry = "k";
+        ArgumentCopies.Run(built);
+        foreach (Function f in built.Functions) Verifier.Check(f, "forwarded");
+        Assert(!Copies(inPlace) && inPlace.Slots.Count == 1, "k: built in its home, one slot:\n" + Dump(inPlace));
+        foreach (Function f in apart) Assert(Copies(f), $"{f.Name}: built apart and copied:\n" + Dump(f));
     }
 
     // ---- Dead code -----------------------------------------------------
