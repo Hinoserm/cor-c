@@ -266,10 +266,127 @@ public static class ArgumentCopies
                 fromUses.Add((call, argument));
             }
         }
+        dropped += CallSlots(f, byName, readOnly, SlotOf, uses, Private);
         // The copy's slot, named now only by an alias nothing reads, goes
         // with the cleanup after (SlotScalars.ApplyAndClean's dead code),
         // and a slot nothing names takes no bytes of the frame.
         return dropped;
+    }
+
+    /// <summary>
+    /// THE RESULT WRITTEN WHERE IT GOES (LLVM's call slot optimisation): a
+    /// struct a call answers is written into the caller's result buffer and
+    /// then copied to where it goes, `d = F(..)` or `P d = F(..)`; the
+    /// destination's own storage is handed over as the buffer instead, and
+    /// the copy is not made. Only where
+    ///   - the callee answers its buffer (every `ret` is its last parameter),
+    ///     so what the copy read is what the callee wrote;
+    ///   - the destination is a slot of this frame whose address goes
+    ///     nowhere else (Private), and no other operand of the call reaches
+    ///     it -- the callee writes the buffer while it may still read its
+    ///     arguments;
+    ///   - the buffer's slot is named by the call alone, and the call's
+    ///     answer only by the copy;
+    ///   - between the call and the copy nothing writes memory, calls or
+    ///     names the destination;
+    ///   - the function has no handler: a call that throws after writing
+    ///     part of its buffer would have changed a variable C# leaves alone,
+    ///     and a handler may read it.
+    /// </summary>
+    private static int CallSlots(Function f, Dictionary<string, Function> byName, Dictionary<Function, bool[]> readOnly,
+                                 Func<Operand, (FrameSlot Slot, long At)?> slotOf, Dictionary<FrameSlot, List<(Instr I, int K)>> uses,
+                                 Func<FrameSlot, bool> privateSlot)
+    {
+        if (f.Blocks.Any(b => b.IsLandingPad)) return 0;
+        Dictionary<VReg, int> reads = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                foreach (Operand o in i.Operands)
+                    if (o is RegOperand { Reg: var r }) reads[r] = reads.GetValueOrDefault(r) + 1;
+        int done = 0;
+        foreach (Block b in f.Blocks)
+        {
+            for (int at = 0; at < b.Instrs.Count; at++)
+            {
+                Instr call = b.Instrs[at];
+                if (call.Op != Opcode.Call || call.Dest is not { } answer || call.Operands.Count == 0
+                    || call.Callee is not { } name || !byName.TryGetValue(name, out Function? callee)
+                    || callee.Params.Count != call.Operands.Count || !AnswersBuffer(callee))
+                {
+                    continue;
+                }
+                int last = call.Operands.Count - 1;
+                if (slotOf(call.Operands[last]) is not { At: 0 } buffer
+                    || !uses.TryGetValue(buffer.Slot, out var bufferUses) || bufferUses.Count != 1 || reads.GetValueOrDefault(answer) != 1)
+                {
+                    continue;
+                }
+                // The copy out of the answer, after nothing that writes, calls or names a slot.
+                int c = at + 1;
+                while (c < b.Instrs.Count && Quiet(b.Instrs[c]) && !b.Instrs[c].Operands.Any(o => slotOf(o) is not null)) c++;
+                if (c >= b.Instrs.Count || b.Instrs[c] is not { Op: Opcode.MemCopy, Offset: 0 } copy || copy.Operands.Count != 3
+                    || copy.Operands[1] is not RegOperand { Reg: var source } || !ReferenceEquals(source, answer)
+                    || slotOf(copy.Operands[0]) is not { At: 0 } into || ReferenceEquals(into.Slot, buffer.Slot)
+                    || copy.Operands[2] is not ImmOperand { Value: var length } || length > into.Slot.Bytes || length > buffer.Slot.Bytes)
+                {
+                    continue;
+                }
+                if (!privateSlot(into.Slot)) continue;
+                bool other = false;
+                for (int k = 0; k < last; k++)
+                    if (slotOf(call.Operands[k]) is { } o && ReferenceEquals(o.Slot, into.Slot)) other = true;
+                if (other) continue;
+
+                call.Operands[last] = copy.Operands[0];
+                b.Instrs.RemoveAt(c);
+                done++;
+                uses.Remove(buffer.Slot);
+                if (uses.TryGetValue(into.Slot, out var intoUses))
+                {
+                    intoUses.RemoveAll(u => ReferenceEquals(u.I, copy));
+                    // Written by the callee now: no longer a read-only use,
+                    // so a later copy here does not take it for private.
+                    intoUses.Add((call, last));
+                }
+            }
+        }
+        return done;
+    }
+
+    /// <summary>Whether every `ret` of the function answers its last parameter, the result buffer.</summary>
+    private static bool AnswersBuffer(Function f)
+    {
+        if (f.Params.Count == 0 || f.Async is not null) return false;
+        // The buffer itself and plain copies of it, each written once --
+        // not an offset of it, which Derived would follow too.
+        VReg buffer = f.Params[^1];
+        Dictionary<VReg, int> writes = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d) writes[d] = writes.GetValueOrDefault(d) + 1;
+        if (writes.ContainsKey(buffer)) return false;
+        HashSet<VReg> same = new() { buffer };
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Copy && i.Dest is { } d && !same.Contains(d) && writes[d] == 1
+                        && i.Operands is [RegOperand { Reg: var s }] && same.Contains(s))
+                    {
+                        same.Add(d);
+                        grew = true;
+                    }
+        }
+        bool any = false;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Ret)
+                {
+                    if (i.Operands is not [RegOperand { Reg: var r }] || !same.Contains(r)) return false;
+                    any = true;
+                }
+        return any;
     }
 
     /// <summary>An instruction that neither writes memory nor calls: arithmetic, a comparison, a conversion, a copy, a load.</summary>

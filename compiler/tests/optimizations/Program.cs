@@ -1503,6 +1503,44 @@ public static partial class Program
         foreach (Function f in dropped) Assert(!Copies(f), $"{f.Name}: the copy into a read-only parameter is dropped:\n" + Dump(f));
         foreach (Function f in kept) Assert(Copies(f), $"{f.Name}: the copy is kept:\n" + Dump(f));
         Assert(ArgumentCopies.Dropped == 2, $"two copies dropped, not {ArgumentCopies.Dropped}");
+
+        // THE CALL SLOT: `d = make()` writes d itself as the buffer; not where
+        // the callee answers something else, where d is also an argument, or
+        // where a handler could see a half-written d.
+        Module slots = new("slots");
+        Function Maker(string name, bool answersBuffer)
+        {
+            Function f = new(name, IrTypes.Word);
+            VReg p = f.NewReg(IrTypes.Word), buffer = f.NewReg(IrTypes.Word);
+            f.Params.Add(p); f.Params.Add(buffer);
+            Builder fb = new(f, f.NewBlock("entry"));
+            fb.Store(buffer, p);
+            fb.Ret(RegOperand.Of(answersBuffer ? buffer : fb.Binary(Opcode.Add, buffer, 4)));
+            slots.Functions.Add(f);
+            return f;
+        }
+        Maker("make", true); Maker("odd", false);
+        Function Taker(string name, string callee, bool passed = false, bool handler = false)
+        {
+            Function f = new(name, IrType.I32);
+            Builder fb = new(f, f.NewBlock("entry"));
+            FrameSlot into = f.NewSlot(8, 4, "home"), buffer = f.NewSlot(8, 4, "result");
+            VReg d = fb.SlotAddress(into), r = fb.SlotAddress(buffer);
+            VReg got = fb.Call(callee, IrTypes.Word, passed ? RegOperand.Of(d) : new ImmOperand(3, IrTypes.Word), RegOperand.Of(r))!;
+            fb.Emit(Opcode.MemCopy, null, RegOperand.Of(d), RegOperand.Of(got), new ImmOperand(8, IrTypes.Word));
+            VReg x = fb.Load(IrType.I32, d);
+            fb.Ret(RegOperand.Of(x));
+            if (handler) { Block pad = f.NewBlock("pad"); pad.IsLandingPad = true; fb.SetBlock(pad); fb.Ret(RegOperand.Of(fb.Load(IrType.I32, d))); }
+            slots.Functions.Add(f);
+            return f;
+        }
+        Function written = Taker("g", "make");
+        Function[] copied = { Taker("h", "odd"), Taker("i", "make", passed: true), Taker("j", "make", handler: true) };
+        slots.Entry = "g";
+        ArgumentCopies.Run(slots);
+        foreach (Function f in slots.Functions) Verifier.Check(f, "call slots");
+        Assert(!Copies(written), "g: the result written into its destination, no copy:\n" + Dump(written));
+        foreach (Function f in copied) Assert(Copies(f), $"{f.Name}: the result copied:\n" + Dump(f));
     }
 
     // ---- Dead code -----------------------------------------------------

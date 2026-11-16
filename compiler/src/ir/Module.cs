@@ -308,6 +308,7 @@ public sealed class Module
         if (byMember)
         {
             _owned = new HashSet<string>(named, StringComparer.Ordinal);
+            _named = new HashSet<string>(named, StringComparer.Ordinal);
             return;
         }
         HashSet<string> providers = new(StringComparer.Ordinal);
@@ -319,7 +320,30 @@ public sealed class Module
                 if (d.SourcePath is { } p && provided.Contains(d.Name)) providers.Add(p);
         }
         _owned = new HashSet<string>(named.Where(p => !providers.Contains(p)), StringComparer.Ordinal);
+        _named = new HashSet<string>(named, StringComparer.Ordinal);
+        _disowned = new(StringComparer.Ordinal);
+        if (ProvidedElsewhere is { } given)
+        {
+            foreach (Function f in Functions)
+                if (f.SourcePath is { } p && given.Contains(f.Name)) _disowned.TryAdd(p, f.Name);
+            foreach (DataItem d in Data)
+                if (d.SourcePath is { } p && given.Contains(d.Name)) _disowned.TryAdd(p, d.Name);
+        }
     }
+
+    private HashSet<string>? _named;
+    private Dictionary<string, string>? _disowned;
+
+    /// <summary>
+    /// Why a library source's code is not this image's own (a refusal's
+    /// reason, LibraryPrivateKept): never named as one of its sources, or
+    /// named and given up because a provider exports one of its names.
+    /// </summary>
+    public string WhyNotOwned(string? path)
+        => path is null ? "it has no source file"
+         : _named is null || !_named.Contains(path) ? path + " is not one of this image's own sources"
+         : _disowned is not null && _disowned.TryGetValue(path, out string? by) ? path + " is given up: its provider exports " + by
+         : path + " is owned";
 
     /// <summary>
     /// Whether code or state from `path` is this image's own though written
