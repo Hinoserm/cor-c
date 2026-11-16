@@ -154,8 +154,13 @@ public static class ObjectLinkCommand
         // the pruned kernel's own code names it (Preinit.AlsoNamed); a body a
         // module inlined keeps its function, so that this link says the
         // body's name again. The names themselves are no symbols.
+        // (Set by every link, never left from the one before in this process.)
+        Preinit.AlsoNamed = null;
+        HashSet<string>? assumedBodies = null;
         if (keep is not null)
         {
+            assumedBodies = new(StringComparer.Ordinal);
+            HashSet<string> taken = assumedBodies;
             HashSet<string> made = new(StringComparer.Ordinal);
             keep = keep.Select(name =>
             {
@@ -166,7 +171,9 @@ public static class ObjectLinkCommand
                     return word;
                 }
                 int digits = KernelAssumptions.BodyPrefix.Length + 16 + 1;
-                return name.StartsWith(KernelAssumptions.BodyPrefix, StringComparison.Ordinal) && name.Length > digits ? name[digits..] : name;
+                if (!name.StartsWith(KernelAssumptions.BodyPrefix, StringComparison.Ordinal) || name.Length <= digits) return name;
+                taken.Add(name[digits..]);
+                return name[digits..];
             }).Distinct(StringComparer.Ordinal).ToArray();
             Preinit.AlsoNamed = made.Count > 0 ? made : null;
         }
@@ -333,12 +340,20 @@ public static class ObjectLinkCommand
         // operator's body is its struct's constructor called, and a module's
         // link that inlines the one must find the other -- its body, offered
         // too, or failing that its name to call. No source can name it: the
-        // index still says it private.
+        // index still says it private. In a kernel's first link, every
+        // offer's; in its second, pruned to what the modules import, only
+        // those of the bodies they took (--keep's y_body names) -- and what
+        // those bodies name besides, kept: a module's code may have folded
+        // a name of the body away and import it no longer, and the body is
+        // said only while everything it names is exported (Write).
         if (offers is not null)
         {
-            string[] inner = offers.SelectMany(offer => offer.Record.Calls).Distinct(StringComparer.Ordinal).ToArray();
+            IEnumerable<KernelAssumptions.Offer> basis = keepPath is null || assumedBodies is null ? offers : offers.Where(offer => assumedBodies.Contains(offer.Function));
+            string[] inner = basis.SelectMany(offer => offer.Record.Calls).Distinct(StringComparer.Ordinal).ToArray();
             optional.UnionWith(inner);
-            keep = (keep ?? Array.Empty<string>()).Concat(inner).Distinct(StringComparer.Ordinal).ToArray();
+            IEnumerable<string> named = keepPath is null ? Array.Empty<string>()
+                : basis.SelectMany(offer => offer.Record.References!).Select(IrArchiveEntry.Named);
+            keep = (keep ?? Array.Empty<string>()).Concat(inner).Concat(named).Distinct(StringComparer.Ordinal).ToArray();
         }
         // (Read here and taken out only after the units are made again: a
         // unit's IR archive is checked against its sections as compiled.)
@@ -357,14 +372,10 @@ public static class ObjectLinkCommand
             madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && !exports && kernel is null,
             openTypes: exports || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
             moduleOfKernel: kernel is not null, kernelBodies: kernelBodies, kernelNames: kernel?.Names, kernelBodiesTaken: needs);
-        ModuleInfo.Take(inputs, KernelAssumptions.NeedsSection);
-        if (kernel is not null && needs.Count > 0)
-        {
-            // Each a name this kernel says, or the module was compiled against another.
-            string[] unsaid = needs.Where(name => !kernel.Names.Contains(name)).Take(4).ToArray();
-            if (unsaid.Length > 0) return Fail("the module's units assume of the kernel what " + kernelPath + " does not say: " + string.Join(", ", unsaid));
-            inputs.Add(("the module's assumptions of its kernel", KernelAssumptions.NeedsObject(needs.ToList(), kernel.LongMode)));
-        }
+        // The units' notes and the link's own, bound (KernelAssumptions.Bind); a
+        // link that is no module's only drops the notes.
+        if (kernel is not null) { if (KernelAssumptions.Bind(inputs, kernel, needs) is string unsaid) return Fail(unsaid); }
+        else ModuleInfo.Take(inputs, KernelAssumptions.NeedsSection);
         int folded = LinkTimeOptimizer.Run(inputs, lto);
         // The archives' last reader done: their pool goes, not held through layout.
         foreach ((string _, ObjectFile obj) in inputs) obj.ArchivePool = null;

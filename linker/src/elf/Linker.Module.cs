@@ -107,6 +107,10 @@ public static partial class Linker
         // making again; the module is held to the kernel by the names it
         // imports alone, so the mark goes no further.
         foreach ((string _, ObjectFile obj) in inputs) obj.Sections.RemoveAll(section => section.Name == KernelExports.ModuleUnitSection);
+        // WHAT ITS UNITS ASSUMED OF THE KERNEL, bound here if no link before
+        // this did (ObjectLinkCommand, which has the link's own to add): a
+        // module compiled and linked in one step comes straight here.
+        if (Corsac.Lang.Lto.KernelAssumptions.Bind(inputs, kernel) is string unsaid) throw new LinkException(new[] { unsaid });
         List<string> said = ModuleInfo.Take(inputs, ModuleInfo.SectionName);
         // Consumed: what remains of them is the module's modinfo.
         foreach (var input in inputs)

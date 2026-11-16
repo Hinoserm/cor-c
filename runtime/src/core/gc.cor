@@ -12230,34 +12230,36 @@ public static class Gc
     static long DrainSome(long budget)
     {
         // AN ASSISTING THREAD ON A PLATFORM THAT PREEMPTS ITS OWN THREADS (a
-        // kernel: Runtime.PreemptHook) DRAINS A FEW BLOCKS AT A TIME AND LETS
-        // EVERYTHING GO BETWEEN: a drain is not preempted (DrainRun), and an
-        // allocation with no room left asks for MarkBetweenYields blocks --
-        // four thousand scans with the count raised, a clock's tick found
-        // tens of milliseconds late. After each AssistChunk the stack goes
-        // back on the queue, the thread says it is idle, and the count comes
-        // down, which is the platform's preemption point (Runtime.PreemptOn).
-        // A hosted program's threads are its host's to preempt, the count
-        // only a word there: it drains its budget in one run as before.
+        // kernel: Runtime.PreemptHook) STOPS ITS DRAIN WHEN A SWITCH IS
+        // WAITING, AND STARTS AGAIN: a drain is not preempted (DrainRun), and
+        // an allocation with no room left asks for MarkBetweenYields blocks
+        // -- four thousand scans with the count raised. Every AssistChunk
+        // blocks it asks whether the processor is wanted
+        // (Runtime.PreemptWanted); when it is, the run ends as any does --
+        // its stack back on the queue, the thread idle, the count down,
+        // which is the platform's preemption point (Runtime.PreemptOn) --
+        // and the rest of the budget is another run. With nothing waiting it
+        // keeps its stack for the whole budget, as before. A hosted
+        // program's threads are its host's to preempt, the count only a word
+        // there: one run.
         if (budget > AssistChunk && Runtime.PreemptHook != 0 && !GcLock.IsCollector(Sys.ThreadBlock()))
         {
             long all = 0;
             while (all < budget)
             {
-                long want = budget - all < AssistChunk ? budget - all : AssistChunk;
-                long got = DrainRun(want);
+                long got = DrainRun(budget - all, true);
+                if (got == 0) break;                // nothing ready, or the mark given up
                 all = all + got;
-                if (got < want) break;              // nothing more ready, or the mark given up
             }
             return all;
         }
-        return DrainRun(budget);
+        return DrainRun(budget, false);
     }
 
-    /// The blocks an assisting thread scans between preemption points (DrainSome).
+    /// How many blocks an assisting thread scans between asking whether the processor is wanted (DrainSome).
     const int AssistChunk = 64;
 
-    static long DrainRun(long budget)
+    static long DrainRun(long budget, bool interruptible)
     {
         nuint ctl = GcLock.Words();
         long done = 0;
@@ -12315,6 +12317,8 @@ public static class Gc
             }
 
             scanned = scanned + 1;
+            // A switch waiting (DrainSome): the run ends here, what it holds given back below.
+            if (interruptible && (scanned & (AssistChunk - 1)) == 0 && Runtime.PreemptWanted()) break;
         }
         done = (long)scanned;
 

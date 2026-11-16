@@ -24,6 +24,10 @@ using Block = Corsac.Lang.Ir.Block;
 ///   * calling one of its static methods,
 ///   * reading or writing one of its static fields.
 ///
+/// (But for a module, of a type its kernel's link has initialised already:
+/// nothing is tested, and the module says that it relied on it -- TouchType's
+/// own comment, Lto.KernelAssumptions.)
+///
 /// The test is INLINE and the call is behind it -- a load, a branch, and in
 /// an acquire fence, and no call when the state is completed. A call every time would be two more
 /// instructions on a machine where every instruction is interpreted, and the
@@ -91,8 +95,8 @@ public sealed partial class Lowering
         ready = SharedStatic(ready);
         // INITIALISED BY THE KERNEL'S LINK, in a module built against that
         // kernel (KernelExports.Initialised): the word is "completed" in the
-        // image before any module's code runs, and never anything else
-        // after. Nothing to test, nothing to call -- and the module says
+        // image before any module's code runs, and StaticInit$ writes it
+        // only on the way to that. Nothing to test, nothing to call -- and the module says
         // that it relied on it (KernelAssumptions): a kernel of another
         // build whose link does not run this initialiser does not export
         // the name, and refuses the module instead of letting it read the

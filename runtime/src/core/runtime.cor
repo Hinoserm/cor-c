@@ -1668,6 +1668,22 @@ public static partial class Runtime
     /// program's: its threads are the host's to preempt).
     public static nuint PreemptHook;
 
+    /// Whether the platform wants the processor from this thread now: asked
+    /// by a stretch that runs with the preemption count raised and can stop
+    /// part of the way (an assisting thread's drain, Gc.DrainSome), so that
+    /// it gives up what it holds only when a switch is waiting and not on
+    /// every few blocks. Called with (0, 0, 0); nonzero: wanted. It must
+    /// only look -- no switch, no allocation, callable with the count
+    /// raised. 0: none, and such a stretch then assumes one is always wanted.
+    public static nuint PreemptWantedHook;
+
+    /// Whether a switch is waiting for this thread (PreemptWantedHook).
+    public static bool PreemptWanted()
+    {
+        nuint hook = PreemptWantedHook;
+        return hook == 0 || Sys.Call(hook, 0, 0, 0) != 0;
+    }
+
     /// Whether this thread holds the heap lock (see GcLock.HeldByMe).
     public static bool HoldsHeapLock()
     {
