@@ -45,7 +45,10 @@ static class Program
         for (int i = 0; i < 4; i++)
         {
             work[i] = new Counter();
-            threads[i] = Thread.Start(work[i]);
+            // As .NET starts one: the runtime's own Thread.Start(Action) is
+            // internal to the class library (CS0122 from a program).
+            threads[i] = new Thread(work[i].Invoke);
+            threads[i].Start();
         }
 
         int total = 0;

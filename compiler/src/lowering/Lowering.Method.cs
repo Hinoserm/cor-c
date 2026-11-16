@@ -122,6 +122,24 @@ public sealed partial class Lowering
     /// <summary>Struct values known to be blocks of the heap, which a store into the heap may keep as they are.</summary>
     private readonly HashSet<VReg> _heapStructs = new();
 
+    /// <summary>
+    /// STRUCT LOCALS THAT OWN THEIR STORAGE, a slot of the frame made at the
+    /// declaration (HomedStruct): the register holds that slot's address for
+    /// the local's whole life, and an assignment copies the value's bytes in
+    /// rather than pointing the register elsewhere. Pointed at a value's own
+    /// storage instead -- a conditional's block, a call's result buffer, one
+    /// slot for every time its site runs -- the local was that site's storage,
+    /// and the site's next run wrote over it while reading it (`text = c ?
+    /// Empty : text[1..]` round a loop). And the registers holding those
+    /// addresses (_frameHomes): a store into one needs no barrier and no
+    /// card, the frame being a root the collector scans.
+    /// </summary>
+    private readonly HashSet<LocalDecl> _structHomes = new();
+    private readonly HashSet<VReg> _frameHomes = new();
+
+    /// <summary>Whether a value of this type, in this body, is a struct a local or parameter holds in its own storage.</summary>
+    private bool HomedStruct(Type type) => IsStructValue(type) && FrameHoldsValues && !HasStructFields(StructOf(type));
+
     /// <summary>What a `return` converts its value to: the method's return type, or an async method's task result.</summary>
     private Type? _returnType;
     private int _checkedDepth;
@@ -180,6 +198,8 @@ public sealed partial class Lowering
         _structReceiver = null;
         _structQualified = null;
         _heapStructs.Clear();
+        _structHomes.Clear();
+        _frameHomes.Clear();
         _returnType = null;
         _boundsFail = null;
         _checkedDepth = 0;
@@ -509,6 +529,7 @@ public sealed partial class Lowering
             _e.Ret(_returnValue is null ? null : RegOperand.Of(_returnValue));
         }
 
+        FrameValuesKept(_f, decl);
         _m.Functions.Add(_f);
         if (TakesContext(m)) ContextStub(m);
         if (fromC) EmitFromCThunk(m, decl);
@@ -1191,6 +1212,14 @@ public sealed partial class Lowering
             case RegPlace r:
                 _e.CopyTo(r.Reg, RegOperand.Of(value));
                 break;
+            case MemPlace { Inline: true, Volatile: false, Address: RegOperand home } framed when _frameHomes.Contains(home.Reg):
+            {
+                // Into a local's own storage in the frame: its bytes, with no
+                // barrier and no card (_frameHomes).
+                VReg into = framed.Offset == 0 ? home.Reg : _e.Binary(Opcode.Add, home.Reg, framed.Offset);
+                if (into != value) _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(Math.Max(1, StructOf(framed.Type).InstanceSize), IrTypes.Word));
+                break;
+            }
             case MemPlace { Inline: true } held:
             {
                 // Its bytes copied in from the value's: no pointer stored,
@@ -1761,6 +1790,11 @@ public sealed partial class Lowering
                 {
                     return new MemPlace(new SlotOperand(LocalSlot(d, l.Type)), 0, l.Type);
                 }
+                // Its own storage, written by a copy into it (HomedStruct).
+                if (_structHomes.Contains(d))
+                {
+                    return new MemPlace(RegOperand.Of(LocalReg(d)), 0, l.Type, false, true);
+                }
                 return new RegPlace(LocalReg(d), l.Type);
             }
 
@@ -1781,6 +1815,13 @@ public sealed partial class Lowering
                 if (_paramSlots[p.Index] is FrameSlot ps)
                 {
                     return new MemPlace(new SlotOperand(ps), 0, p.Type);
+                }
+                // A STRUCT PARAMETER IS ITS CALLER'S COPY, the callee's own
+                // (EvalAs copies every argument but a fresh one), written by a
+                // copy into it as a struct local's storage is (HomedStruct).
+                if (HomedStruct(p.Type))
+                {
+                    return new MemPlace(RegOperand.Of(_params[p.Index]), 0, p.Type, false, true);
                 }
                 return new RegPlace(_params[p.Index], p.Type);
 

@@ -7,7 +7,11 @@
 // element's word at that residue, not every word of the array: an
 // `(int At, Tok Was)` read back gave a number that held every Tok, and the
 // sum made of it, returned, kept them all past the boundary
-// (RegionPointsTo.Strided).
+// (RegionPointsTo.Strided). What is given back is the Toks and the list's
+// arrays: each tuple copy was a heap block of the region too until a struct
+// value lived in its frame (Lowering.StructInFrame), 24 bytes a mark that is
+// now never asked of the heap at all -- 2,112,000 bytes given back, not
+// 3,072,000; a Tok kept past Work would take it below 1,500,000.
 
 using System;
 using System.Collections.Generic;
@@ -31,6 +35,6 @@ static class P
     {
         long s = 0, before = (Gc.RegionFreedBytes + Gc.RegionTopFreedBytes);
         for (int k = 0; k < 1000; k++) s += W.Work(40);
-        Console.WriteLine(s + " given back " + ((Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - before >= 2800000L));
+        Console.WriteLine(s + " given back " + ((Gc.RegionFreedBytes + Gc.RegionTopFreedBytes) - before >= 2000000L));
     }
 }

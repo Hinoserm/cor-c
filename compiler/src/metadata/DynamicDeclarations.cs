@@ -551,7 +551,8 @@ public static class DynamicDeclarations
         // dynamic's tests took 3.6 GB and twice the time to compile.
         StringBuilder s = new();
         StringBuilder each = new();
-        s.Append("static class __LatePrimitives\n{\n");
+        // Public: the class library's, named by the program's provider (__LateUnit).
+        s.Append("public static class __LatePrimitives\n{\n");
         s.Append("    public static int Call(object self, string name, System.Dynamic.LateCall call, out object? result)\n    {\n");
         s.Append("        result = null;\n");
         bool any = false;
@@ -697,15 +698,16 @@ public static class DynamicDeclarations
             string generic = t.TypeParams.Count == 0 ? "" : "<" + string.Join(", ", t.TypeParams.Select(tp => tp.Name)) + ">";
             string body = Members(scope, t, chain, "", false, me: "__t", spellable: Spellable);
             body = body[(body.IndexOf('{') + 1)..];
-            string text = "sealed class " + name + generic + " : " + Face + "\n{\n    readonly " + self + " __t;\n    public " + name + "(" + self + " t) { __t = t; }\n" + body;
-            if (Adopt(unit, text, "<dynamic:" + t.Name + ">", t.Namespace, t.Scope, t.File, symbols, errors) is not null)
+            // Public: the class library's (Adopt), named by the program's provider.
+            string text = "public sealed class " + name + generic + " : " + Face + "\n{\n    readonly " + self + " __t;\n    public " + name + "(" + self + " t) { __t = t; }\n" + body;
+            if (Adopt(unit, text, "<dynamic:" + t.Name + ">", t, symbols, errors) is not null)
                 adapters[t] = (t.Namespace.Length == 0 ? "" : t.Namespace + ".") + name;
         }
 
         TypeDecl? stringHolder = unit.Types.FirstOrDefault(t => t.Name == "String" && t.FromLibrary && t.Mods.HasFlag(Mods.Static) && t.Outer is null);
         string? primitives = stringHolder is null ? null : PrimitiveText(unit, scope);
         string? primitiveName = null;
-        if (primitives is not null && Adopt(unit, primitives, "<dynamic:primitives>", stringHolder!.Namespace, stringHolder.Scope, stringHolder.File, symbols, errors) is not null)
+        if (primitives is not null && Adopt(unit, primitives, "<dynamic:primitives>", stringHolder!, symbols, errors) is not null)
             primitiveName = (stringHolder.Namespace.Length == 0 ? "" : stringHolder.Namespace + ".") + "__LatePrimitives";
 
         // The provider, in the scope of the program's Main (or its first type).
@@ -740,7 +742,7 @@ public static class DynamicDeclarations
         s.Append("    public int Event(object target, string name, bool add, object? handler) { System.Dynamic.IDynamicMembers? m = Of(target); return m == null ? 1 : m.__DynEvent(name, add, handler); }\n");
         s.Append("    public string? Static(object target, string name) { return null; }\n");
         s.Append("}\n");
-        if (Adopt(unit, s.ToString(), "<dynamic:unit>", home.Namespace, home.Scope, home.File, symbols, errors) is null || main is null) return;
+        if (Adopt(unit, s.ToString(), "<dynamic:unit>", home, symbols, errors) is null || main is null) return;
 
         // Registered as Main's type is first touched: before Main runs.
         CompilationUnit hook;
@@ -790,16 +792,26 @@ public static class DynamicDeclarations
     }
 
     /// <summary>A written type made one of the unit's, in the scope given -- the library's for an adapter, the program's for its provider.</summary>
-    static TypeDecl? Adopt(CompilationUnit unit, string text, string file, string ns, FileScope? fileScope, string? at,
+    /// <summary>
+    /// A type written here, beside `beside`: in its namespace, its file's
+    /// scope -- and ITS SIDE, the class library's or the program's
+    /// (Binder.ClassLibrarySide, as ComDeclarations' are): an adapter of a
+    /// library class reads that class's internal members, and judged as the
+    /// program's code, `__t.version` of a List was CS0122.
+    /// </summary>
+    static TypeDecl? Adopt(CompilationUnit unit, string text, string file, TypeDecl beside,
                            IReadOnlyCollection<string>? symbols, List<CompileError> errors)
     {
         CompilationUnit late;
         try { late = Parser.ParseText(text, file, symbols, written: false); }
         catch (CompileError e) { errors.Add(e); return null; }
         TypeDecl made = late.Types[0];
+        string ns = beside.Namespace;
+        FileScope? fileScope = beside.Scope;
         made.Namespace = ns;
         made.Scope = fileScope;
-        made.File = at ?? file;
+        made.File = beside.File ?? file;
+        made.FromLibrary = beside.FromLibrary;
         foreach (MemberDecl m in made.Members)
         {
             m.Scope = fileScope;

@@ -560,6 +560,15 @@ public sealed partial class Lowering
             {
                 _e.Store(new SlotOperand(LocalSlot(d, type)), RegOperand.Of(value), 0, LoadSize(type));
             }
+            else if (HomedStruct(type))
+            {
+                // ITS OWN STORAGE, the value copied in (HomedStruct).
+                VReg home = StructInFrame(StructOf(type));
+                _e.Emit(Opcode.MemCopy, null, R(home), R(value), Imm(Math.Max(1, StructOf(type).InstanceSize), IrTypes.Word));
+                _e.CopyTo(LocalReg(d), RegOperand.Of(home));
+                _structHomes.Add(d);
+                _frameHomes.Add(LocalReg(d));
+            }
             else
             {
                 _e.CopyTo(LocalReg(d), RegOperand.Of(value));
@@ -570,7 +579,9 @@ public sealed partial class Lowering
             // A STRUCT LOCAL WITH NO INITIALISER IS A VALUE ALREADY, zero until
             // written, and C# lets it be written a field at a time (`Pair p;
             // p.A = 1;`): the block its fields live in is made here.
-            VReg zero = NewStruct(d, StructOf(type));
+            // In the frame unless a cell holds it (boxed): the cell keeps the
+            // pointer as it is, where the frame does not last.
+            VReg zero = NewStruct(d, StructOf(type), frame: !boxed);
             if (boxed)
             {
                 _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(zero), 0, LoadSize(type));
@@ -582,6 +593,12 @@ public sealed partial class Lowering
             else
             {
                 _e.CopyTo(LocalReg(d), RegOperand.Of(zero));
+                // The zero just made in the frame is this local's own (HomedStruct).
+                if (HomedStruct(type) && !_heapStructs.Contains(zero))
+                {
+                    _structHomes.Add(d);
+                    _frameHomes.Add(LocalReg(d));
+                }
             }
         }
         else if (!boxed)

@@ -94,7 +94,7 @@ public sealed partial class Lowering
         // literal it looks like, it was converted to the tuple's class as null.
         if (!byRef && e is DefaultExpr && TupleShapeOf(target) is TypeSymbol tupleShape)
         {
-            return NewStruct(e, tupleShape);
+            return NewStruct(e, tupleShape, frame: true);
         }
 
         if (byRef)
@@ -152,7 +152,7 @@ public sealed partial class Lowering
         if (IsStructValue(target) && IsStructValue(_b.TypeOf(e)) && !IsFreshStruct(e)
             && ReferenceEquals(StructOf(_b.TypeOf(e)), StructOf(target)))
         {
-            v = CopyStruct(e, v, StructOf(target));
+            v = CopyStruct(e, v, StructOf(target), frame: true);
         }
 
         // A USER-DEFINED CONVERSION already produced the operator's result;
@@ -280,7 +280,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg? StructResultBlock(Node at, Type resultType)
         => IsStructValue(resultType) && !resultType.IsNullableValue && !HasStructFields(StructOf(resultType))
-            ? NewStruct(at, StructOf(resultType)) : null;
+            ? NewStruct(at, StructOf(resultType), frame: true) : null;
 
     /// <summary>
     /// An arm's value as the expression's: its bytes copied into
@@ -351,7 +351,7 @@ public sealed partial class Lowering
     /// plain struct is its bytes, moved here in line, where escape analysis
     /// can still put the copy on the stack.
     /// </summary>
-    private VReg CopyStruct(Node at, VReg src, TypeSymbol sym)
+    private VReg CopyStruct(Node at, VReg src, TypeSymbol sym, bool frame = false)
     {
         if (HasStructFields(sym))
         {
@@ -360,10 +360,38 @@ public sealed partial class Lowering
             return deep;
         }
         int size = Math.Max(1, sym.InstanceSize);
+        if (frame && FrameHoldsValues)
+        {
+            VReg copy = StructInFrame(sym);
+            _e.Emit(Opcode.MemCopy, null, R(copy), R(src), Imm(size, IrTypes.Word));
+            return copy;
+        }
         VReg made = Allocate(at, size);
         _e.Emit(Opcode.MemCopy, null, R(made), R(src), Imm(size, IrTypes.Word));
         _heapStructs.Add(made);
         return made;
+    }
+
+    /// <summary>
+    /// WHERE A STRUCT VALUE LIVES: in the frame, from the start -- a
+    /// temporary, a copy at a boundary, a local's zero -- as a call's result
+    /// buffer always has (ResultBuffer). Not in an iterator's or an async
+    /// method's body, whose frame does not outlast a suspension. Kept as a
+    /// pointer anywhere the frame does not last, it is copied to the heap
+    /// first (HeapStruct, StorePlace, StoreNew), as C# keeps a struct on the
+    /// heap only where it says: a box, a captured variable, a field of an
+    /// object, an array's element.
+    /// </summary>
+    private bool FrameHoldsValues => _stateMachine is null || _valueShape is not null;
+
+    /// <summary>A struct's storage in this frame (FrameHoldsValues), zeroed where `zero` says.</summary>
+    private VReg StructInFrame(TypeSymbol sym, bool zero = false)
+    {
+        int size = Math.Max(4, sym.InstanceSize);
+        FrameSlot slot = _f.NewSlot(size, Math.Min(_t.Align64, Math.Max(4, sym.InlineAlign)), FrameValueSlot);
+        VReg at = RegOf(new SlotOperand(slot));
+        if (zero) _e.Emit(Opcode.MemSet, null, R(at), new ImmOperand(0, IrType.I32), Imm(size, IrTypes.Word));
+        return at;
     }
 
     /// <summary>
@@ -383,8 +411,9 @@ public sealed partial class Lowering
     /// through it -- an unassigned one was a null pointer, and reading it
     /// read address 0.
     /// </summary>
-    private VReg NewStruct(Node at, TypeSymbol sym)
+    private VReg NewStruct(Node at, TypeSymbol sym, bool frame = false)
     {
+        if (frame && FrameHoldsValues && !HasStructFields(sym)) return StructInFrame(sym, zero: true);
         VReg made = HasStructFields(sym) ? _e.Call(StructMaker(at, sym), IrTypes.Word)! : Allocate(at, Math.Max(1, sym.InstanceSize));
         _heapStructs.Add(made);
         return made;
@@ -1044,7 +1073,7 @@ public sealed partial class Lowering
                 if (made is not null)
                 {
                     _e.CopyTo(dest, R(made));
-                    _heapStructs.Add(dest);
+                    if (_heapStructs.Contains(made)) _heapStructs.Add(dest);
                 }
                 Block then = _f.NewBlock("qthen");
                 Block els = _f.NewBlock("qelse");
@@ -1369,7 +1398,7 @@ public sealed partial class Lowering
                 return _e.Const(0, IrTypes.Word);
 
             case DefaultExpr df when IsStructValue(_b.TypeOf(df)):
-                return NewStruct(df, StructOf(_b.TypeOf(df)));
+                return NewStruct(df, StructOf(_b.TypeOf(df)), frame: true);
 
             case DefaultExpr df:
             {
@@ -3789,7 +3818,7 @@ public sealed partial class Lowering
         if (made is not null)
         {
             _e.CopyTo(result, R(made));
-            _heapStructs.Add(result);
+            if (_heapStructs.Contains(made)) _heapStructs.Add(result);
         }
         Block end = _f.NewBlock("swxend");
 
@@ -4329,7 +4358,7 @@ public sealed partial class Lowering
         {
             if (IsStructValue(p.Type))
             {
-                return p.ByRef || v != current ? v : CopyStruct(a, v, StructOf(p.Type));
+                return p.ByRef || v != current ? v : CopyStruct(a, v, StructOf(p.Type), frame: true);
             }
             if (!p.ByRef)
             {
