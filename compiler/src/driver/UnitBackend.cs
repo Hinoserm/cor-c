@@ -165,8 +165,9 @@ public sealed class UnitBackend : IUnitBackend
         // nothing imported and costs what a small function does.
         // WHAT EACH IMPORT CALLS, read once before the workers start: a
         // function takes the imports its own calls name, and the forwarders
-        // those bodies call -- a body that calls nothing and is no bigger than
-        // its call (IrLinkOptimizer.ForwarderBody), which the link brought in
+        // those bodies call -- a body no bigger than its call that calls
+        // nothing, or nothing but the allocator for its result (below;
+        // IrLinkOptimizer.ForwarderBody), which the link brought in
         // for them -- so a body inlined here brings a one-line wrapper of an
         // intrinsic along. Only those: offered every import the unit had,
         // through its imports, a function took in bodies it never called and

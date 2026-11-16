@@ -67,6 +67,12 @@ done
 objdump -d "$work/card.ko" | awk '/^[0-9a-f]+ <m_Card_Recycle[^>]*>:$/ { p = 1; next } p && /^$/ { exit } p { print }' > "$work/recycle.txt"
 [ -s "$work/recycle.txt" ] || fail "no Card.Recycle in the module"
 if grep -q "call" "$work/recycle.txt"; then cat "$work/recycle.txt"; fail "Card.Recycle calls something (the struct passed by value allocated, or a member not inlined)"; fi
+# Refill, too large for its unit's compile to take Arm into: the operator's
+# call is its own only once the link has inlined Arm there, and is inlined
+# then too (a body that only asks the allocator for its result is a forwarder).
+objdump -d "$work/card.ko" | awk '/^[0-9a-f]+ <m_Card_Refill[^>]*>:$/ { p = 1; next } p && /^$/ { exit } p { print }' > "$work/refill.txt"
+[ -s "$work/refill.txt" ] || fail "no Card.Refill in the module"
+if grep -q "call" "$work/refill.txt"; then cat "$work/refill.txt"; fail "Card.Refill calls something: Arm, or the kernel's operator brought in with it"; fi
 
 # Every name it assumed is one kernel a says.
 says "$a/kernel" > "$work/a.exports"
