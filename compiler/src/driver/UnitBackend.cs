@@ -398,6 +398,26 @@ public sealed class UnitBackend : IUnitBackend
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
             new CardMarks().Run(local);
+            // AND THE STRUCTS IN THE FRAME WHOSE ADDRESS GOES NOWHERE, IN
+            // REGISTERS (SlotScalars), as the unit's own late passes end
+            // (Pipeline.RunLate) -- here over what the inliners above brought
+            // in. A struct's methods in another unit are calls when its unit's
+            // passes run, its slot's address their argument, so it stays in
+            // the frame there; inlined here, every use of it is a load or a
+            // store of the slot, and nothing made it registers: a one-word
+            // struct returned by a method of another file (the kernel's
+            // PageEntry, its PhysicalAddress) was zeroed, stored and read
+            // back at every use. After every pass here that reads a slot as
+            // it was made; the copies it leaves propagated and the dead gone.
+            if (SlotScalars.Apply(function))
+            {
+                new ConstantAndCopyPropagation().Run(function);
+                new LocalCopies().Run(function);
+                new NullCheckFold().Run(function);
+                new LoadReuse().Run(function);
+                new ConstantAndCopyPropagation().Run(function);
+                new DeadCodeElimination().Run(function);
+            }
             local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
             LandingPadHomes.Run(local);
             if (dumping) { System.Text.StringBuilder regenerated = new(); function.Dump(regenerated); Console.Error.WriteLine("== regenerated\n" + regenerated); }

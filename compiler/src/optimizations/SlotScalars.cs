@@ -73,6 +73,28 @@ public static class SlotScalars
         };
 
         HashSet<FrameSlot> candidates = new(f.Slots.Where(s => s.Bytes > 0 && s.Bytes <= 64), ReferenceEqualityComparer.Instance);
+        // A SLOT'S EXTENT: as far into it as anything reads, writes, fills or
+        // copies. A slot may be larger than what it holds -- an object the
+        // escape analysis put in the frame keeps its allocation's size, a
+        // struct of one word in a block of eight bytes -- and its fills and
+        // copies are then of the struct, not of the slot: taken for part
+        // fills of a larger slot, each such struct stayed in memory, zeroed,
+        // stored and read back where its one word had been a register
+        // (a page-table entry's, the kernel's every entry read). The bytes
+        // past the extent nothing ever touches; "whole" below is the extent.
+        Dictionary<FrameSlot, long> extents = new(ReferenceEqualityComparer.Instance);
+        void Reach(Operand o, long end) { if (SlotOf(o) is { } s && end + s.At > extents.GetValueOrDefault(s.Slot)) extents[s.Slot] = end + s.At; }
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                switch (i.Op)
+                {
+                    case Opcode.Load when i.Operands.Count == 1: Reach(i.Operands[0], i.Offset + i.Size); break;
+                    case Opcode.Store when i.Operands.Count == 2: Reach(i.Operands[0], i.Offset + i.Size); break;
+                    case Opcode.MemSet when i.Operands.Count == 3 && i.Operands[2] is ImmOperand { Value: var filled }: Reach(i.Operands[0], i.Offset + filled); break;
+                    case Opcode.MemCopy when i.Operands.Count == 3 && i.Operands[2] is ImmOperand { Value: var copied }:
+                        Reach(i.Operands[0], i.Offset + copied); Reach(i.Operands[1], i.Offset + copied); break;
+                }
+        long Extent(FrameSlot s) => extents.TryGetValue(s, out long reached) && reached > 0 && reached <= s.Bytes ? reached : s.Bytes;
         // Each candidate's fields as its accesses make them: offset -> width.
         Dictionary<FrameSlot, SortedDictionary<long, int>> shape = new(ReferenceEqualityComparer.Instance);
         List<(FrameSlot Dest, FrameSlot Source)> copies = new();
@@ -105,7 +127,7 @@ public static class SlotScalars
                         Refuse(i.Operands[1]);  // the address stored somewhere: it escapes
                         continue;
                     case Opcode.MemSet when i.Operands.Count == 3 && SlotOf(i.Operands[0]) is { } s:
-                        if (s.At != 0 || i.Offset != 0 || i.Operands[1] is not ImmOperand || i.Operands[2] is not ImmOperand { Value: var n } || n != s.Slot.Bytes)
+                        if (s.At != 0 || i.Offset != 0 || i.Operands[1] is not ImmOperand || i.Operands[2] is not ImmOperand { Value: var n } || n != Extent(s.Slot))
                             candidates.Remove(s.Slot);
                         continue;
                     case Opcode.MemCopy when i.Operands.Count == 3 && (SlotOf(i.Operands[0]) is not null || SlotOf(i.Operands[1]) is not null):
@@ -114,8 +136,8 @@ public static class SlotScalars
                         var from = SlotOf(i.Operands[1]);
                         // WHOLE, at its start: to another slot, or from or to
                         // memory elsewhere, field by field.
-                        bool Whole((FrameSlot Slot, long At)? side) => side is not { } x || x.At == 0 && i.Operands[2] is ImmOperand { Value: var length } && length == x.Slot.Bytes;
-                        if (i.Offset != 0 || !Whole(to) || !Whole(from) || to is { } t && from is { } fr && (ReferenceEquals(t.Slot, fr.Slot) || t.Slot.Bytes != fr.Slot.Bytes))
+                        bool Whole((FrameSlot Slot, long At)? side) => side is not { } x || x.At == 0 && i.Operands[2] is ImmOperand { Value: var length } && length == Extent(x.Slot);
+                        if (i.Offset != 0 || !Whole(to) || !Whole(from) || to is { } t && from is { } fr && (ReferenceEquals(t.Slot, fr.Slot) || Extent(t.Slot) != Extent(fr.Slot)))
                         {
                             if (to is { } x) candidates.Remove(x.Slot);
                             if (from is { } y) candidates.Remove(y.Slot);
@@ -135,7 +157,7 @@ public static class SlotScalars
             if (!shape.TryGetValue(s, out var fields)) shape[s] = fields = new();
             long at = 0;
             List<(long, int)> fill = new();
-            foreach ((long start, int w) in fields.ToList().Append(new KeyValuePair<long, int>(s.Bytes, 0)))
+            foreach ((long start, int w) in fields.ToList().Append(new KeyValuePair<long, int>(Extent(s), 0)))
             {
                 while (at < start)
                 {
