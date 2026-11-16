@@ -19161,6 +19161,34 @@ public static class GcThreads
     public static void Answer(nuint stack)
     {
         nuint block = Sys.ThreadBlock();
+        // NOT PREEMPTED FROM THE LOOK TO THE SETTLE (Tls.PreemptCount). A
+        // kernel that parks a thread anywhere stops it for the collector
+        // (BeginBlocking), which then answers for it and may finish the
+        // round: let go again, it went on with the old round's request,
+        // buffer and stack in hand and settled whatever round was open by
+        // then -- one it had scanned nothing for, its stack's references
+        // left out of that mark. From before Owes is asked, the round it
+        // finds owed is the one it answers. Nothing here waits: the stamp and
+        // the stack copy map memory at most, which takes no wait. The hold
+        // for a fork, which does wait, comes after (HoldForFork). Owing
+        // nothing -- nearly every poll -- it costs the one look, as before;
+        // owing, the look is made again with the count raised.
+        if (!Owes(block)) return;
+        uint hold;
+        Runtime.PreemptOff();
+        try
+        {
+            if (!AnswerOwed(block, stack, out hold)) return;
+        }
+        finally { Runtime.PreemptOn(); }
+        HoldForFork(block, hold);
+    }
+
+    /// Answer's work, its count raised: false when nothing was owed or it
+    /// may not answer from here; `hold` the fork's hold it answered.
+    static bool AnswerOwed(nuint block, nuint stack, out uint hold)
+    {
+        hold = 0;
 
         // Not from inside the allocator (InAlloc), and not while holding the
         // heap lock: an interrupt that lands in the middle of a buffer being
@@ -19174,7 +19202,7 @@ public static class GcThreads
         if (!Owes(block) || Sys.ReadAddress(block + Tls.InAlloc) != 0 || GcLock.HeldByMe()
             || Sys.ReadAddress(block + Tls.State) != Running)
         {
-            return;
+            return false;
         }
 
         nuint ctl = GcLock.Words();
@@ -19186,26 +19214,13 @@ public static class GcThreads
         // in between -- a hold whose round this thread had not answered,
         // waited on all the same: the fork waited for the answer, and the
         // thread for the fork (test 2592, the sixteenth fork).
-        uint hold = Sys.Read32(ctl + GcLock.ForkHold);
+        hold = Sys.Read32(ctl + GcLock.ForkHold);
 
-        // NOT PREEMPTED WHILE IT ANSWERS (Tls.PreemptCount). A kernel that
-        // parks a thread anywhere stops it for the collector (BeginBlocking),
-        // which then answers for it and may finish the round: let go again,
-        // it went on with the old round's buffer and stack in hand and
-        // settled whatever round was open by then -- one it had scanned
-        // nothing for, its stack's references left out of that mark. Nothing
-        // here waits: the stamp and the stack copy map memory at most, which
-        // takes no wait.
-        Runtime.PreemptOff();
-        try
-        {
-            Work(block, request, stack, false, 0);
-            Settle(block);
-        }
-        finally { Runtime.PreemptOn(); }
+        Work(block, request, stack, false, 0);
+        Settle(block);
         Answered = Answered + 1;
         Sys.WriteAddress(block + Tls.HandshakeArmed, 0);
-        HoldForFork(block, hold);
+        return true;
     }
 
     /// A fork under way: this thread held where it stands -- answered, at a

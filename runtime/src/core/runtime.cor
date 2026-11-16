@@ -1643,12 +1643,26 @@ public static partial class Runtime
         if (block != 0) Sys.WriteAddress(block + Tls.PreemptCount, Sys.ReadAddress(block + Tls.PreemptCount) + 1);
     }
 
-    /// One reason fewer not to preempt (PreemptOff).
+    /// One reason fewer not to preempt (PreemptOff). At nought, the
+    /// platform's preemption point (PreemptHook), as a kernel's own
+    /// preempt_enable makes one: a switch wanted while the count was up was
+    /// refused for it, and waited for the next interrupt otherwise.
     public static void PreemptOn()
     {
         nuint block = Sys.ThreadBlock();
-        if (block != 0) Sys.WriteAddress(block + Tls.PreemptCount, Sys.ReadAddress(block + Tls.PreemptCount) - 1);
+        if (block == 0) return;
+        nuint now = Sys.ReadAddress(block + Tls.PreemptCount) - 1;
+        Sys.WriteAddress(block + Tls.PreemptCount, now);
+        nuint hook = PreemptHook;
+        if (now == 0 && hook != 0) Sys.Call(hook, 0, 0, 0);
     }
+
+    /// A kernel's preemption point for PreemptOn's count at nought: called
+    /// with (0, 0, 0), from whatever the count was raised over -- the heap
+    /// lock let go, an answer settled -- so it must never switch from inside
+    /// an interrupt's handler or with interrupts off. 0: none (a hosted
+    /// program's: its threads are the host's to preempt).
+    public static nuint PreemptHook;
 
     /// Whether this thread holds the heap lock (see GcLock.HeldByMe).
     public static bool HoldsHeapLock()
