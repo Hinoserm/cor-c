@@ -309,6 +309,7 @@ public sealed class Module
         {
             _owned = new HashSet<string>(named, StringComparer.Ordinal);
             _named = new HashSet<string>(named, StringComparer.Ordinal);
+            _disowned = null;   // by member: nothing given up by file
             return;
         }
         HashSet<string> providers = new(StringComparer.Ordinal);

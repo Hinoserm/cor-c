@@ -1511,7 +1511,7 @@ public static partial class Program
         Function Maker(string name, bool answersBuffer)
         {
             Function f = new(name, IrTypes.Word);
-            VReg p = f.NewReg(IrTypes.Word), buffer = f.NewReg(IrTypes.Word);
+            VReg p = f.NewReg(IrTypes.Word), buffer = f.NewReg(IrTypes.Word, "retbuf");
             f.Params.Add(p); f.Params.Add(buffer);
             Builder fb = new(f, f.NewBlock("entry"));
             fb.Store(buffer, p);

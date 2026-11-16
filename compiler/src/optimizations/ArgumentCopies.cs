@@ -316,6 +316,7 @@ public static class ArgumentCopies
     {
         if (f.Blocks.Any(b => b.IsLandingPad)) return 0;
         Dictionary<VReg, int> reads = new();
+        Dictionary<VReg, int> written = Writes(f);
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 foreach (Operand o in i.Operands)
@@ -334,7 +335,8 @@ public static class ArgumentCopies
                 }
                 int last = call.Operands.Count - 1;
                 if (slotOf(call.Operands[last]) is not { At: 0 } buffer
-                    || !uses.TryGetValue(buffer.Slot, out var bufferUses) || bufferUses.Count != 1 || reads.GetValueOrDefault(answer) != 1)
+                    || !uses.TryGetValue(buffer.Slot, out var bufferUses) || bufferUses.Count != 1 || reads.GetValueOrDefault(answer) != 1
+                    || written.GetValueOrDefault(answer) != 1)
                 {
                     continue;
                 }
@@ -344,7 +346,7 @@ public static class ArgumentCopies
                 if (c >= b.Instrs.Count || b.Instrs[c] is not { Op: Opcode.MemCopy, Offset: 0 } copy || copy.Operands.Count != 3
                     || copy.Operands[1] is not RegOperand { Reg: var source } || !ReferenceEquals(source, answer)
                     || slotOf(copy.Operands[0]) is not { At: 0 } into || ReferenceEquals(into.Slot, buffer.Slot)
-                    || copy.Operands[2] is not ImmOperand { Value: var length } || length > into.Slot.Bytes || length > buffer.Slot.Bytes)
+                    || copy.Operands[2] is not ImmOperand { Value: var length } || length > into.Slot.Bytes || into.Slot.Bytes < buffer.Slot.Bytes)
                 {
                     continue;
                 }
@@ -382,6 +384,7 @@ public static class ArgumentCopies
         {
             more = false;
             Dictionary<VReg, int> reads = new();
+        Dictionary<VReg, int> written = Writes(f);
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     foreach (Operand o in i.Operands)
@@ -398,10 +401,16 @@ public static class ArgumentCopies
         f.Slots.RemoveAll(s => !named.Contains(s));
     }
 
+    /// <summary>The name lowering gives a method's result buffer parameter.</summary>
+    private const string ResultBufferName = "retbuf";
+
     /// <summary>Whether every `ret` of the function answers its last parameter, the result buffer.</summary>
     private static bool AnswersBuffer(Function f)
     {
-        if (f.Params.Count == 0 || f.Async is not null) return false;
+        // THE RESULT BUFFER LOWERING GAVE IT (Lowering.Method: `retbuf`), not
+        // any last parameter a function happens to answer -- a pointer
+        // passed in and handed back is not a buffer the callee fills.
+        if (f.Params.Count == 0 || f.Async is not null || f.Params[^1].Name != ResultBufferName) return false;
         // The buffer itself and plain copies of it, each written once --
         // not an offset of it, which Derived would follow too.
         VReg buffer = f.Params[^1];

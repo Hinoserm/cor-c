@@ -2200,7 +2200,7 @@ public static class Driver
                 + string.Join("; ", named.Take(12).Select(n => n.Key + " (named by " + n.Value + ")"))
                 + (named.Count > 12 ? "; and " + (named.Count - 12) + " more" : "")
                 + ": the library's own code and state are its library's, and a generic copy names them through what the library exports"
-                + " (" + module.WhyNotOwned(module.Functions.FirstOrDefault(f => named.ContainsKey(f.Name))?.SourcePath) + ")";
+                + " (" + module.WhyNotOwned(module.Functions.FirstOrDefault(f => named.ContainsKey(f.Name))?.SourcePath ?? module.Data.FirstOrDefault(d => named.ContainsKey(d.Name))?.SourcePath) + ")";
         // A version of library code the image's live code does not call goes
         // with the library code it was made of.
         module.Functions.RemoveAll(f => hidden.Contains(f.Name) || f.SystemCode && !f.GenericCode && !f.Coalescible && !live.Contains(f.Name));
