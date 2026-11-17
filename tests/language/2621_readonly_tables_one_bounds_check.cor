@@ -1,0 +1,44 @@
+// test: readonly tables one bounds check
+// expect-exit: 0
+// expect-output:
+// sum 1552
+// caught 32
+// caught -1
+// late 5
+//
+// Readonly static tables of one constant length read by one index are
+// bounds-checked against the constant, once: every in-range index reads
+// each table's own element, and an index out of range -- at the length,
+// negative -- still throws before any element is read.
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class T
+{
+    const int N = 32;
+    static readonly uint[] _a = new uint[N];
+    static readonly uint[] _b = new uint[N];
+    static readonly int[] _c = new int[N];
+    static int _reads;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Sum(int c) { long s = (long)_a[c] + _b[c] + _c[c] + _a.Length; _reads++; return s; }
+
+    static int Main(string[] args)
+    {
+        for (int i = 0; i < N; i++) { _a[i] = (uint)i; _b[i] = 2; _c[i] = -1; }
+        long s = 0;
+        for (int i = 0; i < N; i++) s += Sum(i);
+        Console.WriteLine("sum " + s);
+        foreach (int bad in new[] { 32 + args.Length, -1 - args.Length })
+        {
+            int before = _reads;
+            try { Sum(bad); } catch (IndexOutOfRangeException) { Console.WriteLine("caught " + bad); }
+            if (_reads != before) Console.WriteLine("read past the check");
+        }
+        _b[7] = 5;
+        Console.WriteLine("late " + (Sum(7) - 32 - 7 + 1));
+        return 0;
+    }
+}

@@ -122,6 +122,11 @@ public sealed class Pipeline
         p.Passes.Add(new WideProductSharing());
         p.Passes.Add(new IntegerReassociate());
         p.Passes.Add(new IntegerValueReuse());
+        // Again, over the compares just made one register: a bounds check
+        // of one index against tables of one constant length (Lowering
+        // TableLength) is one compare then, and each branch under the first
+        // a repeat of it.
+        p.Passes.Add(new DominatingBranch());
         p.Passes.Add(new CarryRecognition());
         p.Passes.Add(new DivRemReuse());
         p.Passes.Add(new SignedPowerOfTwo());

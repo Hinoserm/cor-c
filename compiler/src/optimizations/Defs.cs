@@ -163,7 +163,11 @@ public sealed class Defs
             return true;        // a parameter: defined once, on entry, never again
         }
 
-        if (Cfg.IsRoot(s.Block) && !(ReferenceEquals(s.Block, fromBlock) && ReferenceEquals(s.Block, useBlock)))
+        // (The entry is a root too, and no landing pad: it runs once a call,
+        // and what it defines is read below like anything else's -- refused
+        // with the pads, no compare made in a function's first block was
+        // ever a repeat of itself further down (DominatingBranch).)
+        if (Cfg.IsRoot(s.Block) && s.Block.IsLandingPad && !(ReferenceEquals(s.Block, fromBlock) && ReferenceEquals(s.Block, useBlock)))
         {
             // A landing pad runs again on every unwind into it, along an
             // edge the graph does not show, so a value defined there (the

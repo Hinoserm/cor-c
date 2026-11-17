@@ -137,6 +137,37 @@ public sealed partial class Lowering
     private readonly Dictionary<LocalDecl, FrameSlot> _structHomes = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<LocalDecl, bool> _homedLocals = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<int, FrameSlot> _paramTrees = new();
+
+    /// <summary>The registers holding a readonly static table just read, with its length (LoadPlace).</summary>
+    private readonly Dictionary<VReg, int> _knownLengths = new();
+
+    private readonly Dictionary<FieldSymbol, int> _tableLengths = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// A readonly static table's constant length, where the whole array lies within the null page's reach of a null
+    /// pointer -- its every element's address faults as a null array's
+    /// length read does -- or null.
+    /// </summary>
+    private int? TableLength(FieldSymbol f)
+    {
+        if (!_tableLengths.TryGetValue(f, out int length))
+        {
+            length = -1;
+            // As it was WRITTEN (FieldDecl.DeclaredInit: the initialiser
+            // itself has moved to StaticInit$): `static readonly T[] x = new
+            // T[N]`, N a literal or a constant of its own type.
+            if (f.Owner.Decl is TypeDecl { TypeParams.Count: 0 } owner && f.Type.Element is Type element
+                && owner.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name) is { } declared
+                && declared.Mods.HasFlag(Mods.Static) && declared.Mods.HasFlag(Mods.Readonly) && !f.ThreadStatic
+                && declared.Type is { ArrayRank: 1, PointerDepth: 0 }
+                && declared.DeclaredInit is NewExpr { Elements: null, ArraySize: { } size, Utf8Bytes: null, Body.Inits.Count: 0, Body.Adds.Count: 0, Body.Indexes.Count: 0 }
+                && (IntegerConstantOf(size) ?? (size is NameExpr named && _b.Constants.TryGetValue((f.Owner, named.Name), out long constant) ? constant : (long?)null)) is long written
+                && written >= 0 && _t.ArrayHeaderBytes + written * ElementStride(element) <= 4096)
+                length = (int)written;
+            _tableLengths[f] = length;
+        }
+        return length >= 0 ? length : null;
+    }
     private readonly Dictionary<(int, TypeSymbol), FrameSlot> _symHomes = new();
 
     /// <summary>A tree's own bytes being stored, its pointers put back after (StorePlace).</summary>
@@ -297,6 +328,7 @@ public sealed partial class Lowering
         _structHomes.Clear();
         _homedLocals.Clear();
         _paramTrees.Clear();
+        _knownLengths.Clear();
         _symHomes.Clear();
         _returnType = null;
         _boundsFail = null;
@@ -1297,6 +1329,8 @@ public sealed partial class Lowering
                 {
                     _e.Emit(Opcode.Fence, null);
                 }
+                // A readonly static table's value: its length known (BoundsCheck).
+                if (m.Field is FieldSymbol { Static: true } table && TableLength(table) is int tableLength) _knownLengths[v] = tableLength;
                 return v;
             }
             default:
@@ -2281,7 +2315,15 @@ public sealed partial class Lowering
 
     private void BoundsCheck(VReg array, VReg index, Node at, bool managedArray)
     {
-        VReg count = managedArray ? _e.Unary(Opcode.ArrayLength, R(array), IrType.I32) : CountOf(_e, array);
+        // A READONLY STATIC TABLE OF A CONSTANT LENGTH (TableLength): the check is against the constant -- no load of
+        // the length, and one compare of an index decides every table of
+        // that length it reads. TCP's state is parallel arrays by connection:
+        // its segment handler made 502 such checks, a seventh of its
+        // instructions. The field holds that array or, inside its own
+        // type's initialisation, null: the element's read then faults in the
+        // null page as the length's would have (TableLength's bound).
+        VReg count = managedArray && _knownLengths.TryGetValue(array, out int known) ? _e.Const(known, IrType.I32)
+            : managedArray ? _e.Unary(Opcode.ArrayLength, R(array), IrType.I32) : CountOf(_e, array);
         VReg ok = _e.Binary(Opcode.LtU, index, count);
         Block good = _f.NewBlock("inbounds");
         _e.Branch(ok, good, BoundsFail());
