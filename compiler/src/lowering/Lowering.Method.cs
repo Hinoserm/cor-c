@@ -159,10 +159,13 @@ public sealed partial class Lowering
             if (f.Owner.Decl is TypeDecl { TypeParams.Count: 0 } owner && f.Type.Element is Type element
                 && owner.Members.OfType<FieldDecl>().FirstOrDefault(d => d.Name == f.Name) is { } declared
                 && declared.Mods.HasFlag(Mods.Static) && declared.Mods.HasFlag(Mods.Readonly) && !f.ThreadStatic
+                // No static constructor, which may assign a readonly static
+                // again -- another array, of another length.
+                && !owner.Members.OfType<MethodDecl>().Any(m => m.Mods.HasFlag(Mods.Static) && (m.IsCtor || m.Name == "StaticConstructorBody$"))
                 && declared.Type is { ArrayRank: 1, PointerDepth: 0 }
                 && declared.DeclaredInit is NewExpr { Elements: null, ArraySize: { } size, Utf8Bytes: null, Body.Inits.Count: 0, Body.Adds.Count: 0, Body.Indexes.Count: 0 }
                 && (IntegerConstantOf(size) ?? (size is NameExpr named && _b.Constants.TryGetValue((f.Owner, named.Name), out long constant) ? constant : (long?)null)) is long written
-                && written >= 0 && _t.ArrayHeaderBytes + written * ElementStride(element) <= 4096)
+                && written >= 0 && written <= 4096 && _t.ArrayHeaderBytes + written * ElementStride(element) <= 4096)
                 length = (int)written;
             _tableLengths[f] = length;
         }

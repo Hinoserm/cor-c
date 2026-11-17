@@ -54,6 +54,7 @@ internal static class Peephole
             MergePops(block.Instrs);
             RedundantTests(block.Instrs);
             ZeroWithXor(block.Instrs);
+            DeadTests(block.Instrs);
             SwapBack(block.Instrs);
             BeforeTrap(block.Instrs);
             ReadModifyWrite(block.Instrs, liveOut[b], Jumped);
@@ -1542,6 +1543,50 @@ internal static class Peephole
             {
                 instrs.RemoveAt(k);
                 k--;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A TEST WHOSE FLAGS NOTHING READS, GONE -- and a conditional jump right
+    /// after the same jump. `Sys.KeepAlive(x)` is selected as `test x, x`,
+    /// a use of the register that keeps the object alive to that point for
+    /// the allocator and the stack maps; allocation over, it is an
+    /// instruction that does nothing, and every lock's Enter and Leave ran
+    /// one or two (the kernel's IrqSpinLock, on every packet's path). So is
+    /// the compare left when its branch was folded. Only a test or a compare
+    /// of registers and constants -- one that reads memory may be a null
+    /// check's fault -- and only where no reader follows in the block before
+    /// the next write (the selector never carries flags across a block
+    /// boundary, as ZeroWithXor relies on).
+    /// </summary>
+    private static void DeadTests(List<MInstr> instrs)
+    {
+        bool flagsLive = false;
+        for (int k = instrs.Count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            if (ReadsFlags(i) || i.Op == MOp.ReadFlags)
+            {
+                // `jcc L ; jcc L` on one condition: the second never jumps.
+                if (i.Op == MOp.Jcc && k > 0 && instrs[k - 1] is { Op: MOp.Jcc } first && first.Cond == i.Cond
+                    && first.Operands.Count == 1 && i.Operands.Count == 1
+                    && first.Operands[0] is MLabel a && i.Operands[0] is MLabel b && ReferenceEquals(a.Target, b.Target))
+                {
+                    instrs.RemoveAt(k);
+                    continue;
+                }
+                flagsLive = true;
+            }
+            else if (i.Op is MOp.Test or MOp.Cmp && !i.Lock && i.Operands.Count == 2
+                     && i.Operands[0] is MReg && i.Operands[1] is MReg or MImm { IsPlain: true })
+            {
+                if (!flagsLive) instrs.RemoveAt(k);
+                else flagsLive = false;
+            }
+            else if (WritesFlags(i) || i.Op is MOp.Call or MOp.CallInd)
+            {
+                flagsLive = false;
             }
         }
     }

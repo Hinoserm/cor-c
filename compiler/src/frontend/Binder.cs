@@ -20300,6 +20300,36 @@ public sealed partial class Binder
         {
             Error(target, $"{readOnly}, so it cannot {what} it");
         }
+        else if (ReadOnlyField(target) is string refused)
+        {
+            Error(target, refused);
+        }
+    }
+
+    /// <summary>
+    /// A READONLY FIELD IS WRITTEN ONLY WHERE C# SAYS: in a variable
+    /// initialiser or a constructor of its own type -- a static one's in the
+    /// static constructor (CS0198), an instance one's in an instance
+    /// constructor or an init accessor, through `this` (CS0191). Nothing
+    /// said so before, and readonly was a word: what reads a readonly
+    /// static table's length as the constant it was made with
+    /// (Lowering.TableLength) rests on this. The compiler's own methods --
+    /// the initialisers moved into StaticInit$ and its kin, a closure's, a
+    /// record's -- write what they were made to.
+    /// </summary>
+    private string? ReadOnlyField(Expr target)
+    {
+        if (!_r.Resolved.TryGetValue(target, out Sym? sym) || sym is not FieldSym { Field: var field }
+            || !field.Declared || !field.Mods.HasFlag(Mods.Readonly)) return null;
+        if (_method is not { } method || method.Name.Contains('$') || method.Name.Contains('<')) return null;
+        bool own = ReferenceEquals(method.Owner, field.Owner)
+            || method.Owner.Decl is { } a && field.Owner.Decl is { } b && (ReferenceEquals(a, b) || a.Name == b.Name && a.Namespace == b.Namespace);
+        if (field.Static)
+            return own && method.IsCtor && method.Static ? null
+                : $"CS0198: A static readonly field cannot be assigned to (except in a static constructor or a variable initializer): '{field.Name}'";
+        bool onThis = target is NameExpr || target is MemberExpr { Target: ThisExpr };
+        return own && onThis && !method.Static && (method.IsCtor || method.Name.StartsWith("set_", StringComparison.Ordinal)) ? null
+            : $"CS0191: A readonly field cannot be assigned to (except in a constructor or init-only setter of the type in which the field is defined or a variable initializer): '{field.Name}'";
     }
 
     /// <summary>

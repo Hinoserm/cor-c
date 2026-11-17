@@ -5,6 +5,8 @@
 // caught 32
 // caught -1
 // late 5
+// loop 531
+// ctor 4 caught
 //
 // Readonly static tables of one constant length read by one index are
 // bounds-checked against the constant, once: every in-range index reads
@@ -13,6 +15,14 @@
 
 using System;
 using System.Runtime.CompilerServices;
+
+static class Other
+{
+    public static readonly int[] Table = new int[16];
+    static Other() { Table = new int[4]; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Read(int i) { return Table[i]; }
+}
 
 static class T
 {
@@ -39,6 +49,14 @@ static class T
         }
         _b[7] = 5;
         Console.WriteLine("late " + (Sum(7) - 32 - 7 + 1));
+        long all = 0;
+        for (int i = 0; i < _a.Length; i++) all += _a[i] + _b[i] + _c[i];
+        Console.WriteLine("loop " + all);
+        // A static constructor may give a readonly table another length:
+        // its checks are against the array it holds, not the initialiser's.
+        string ctor = "ctor " + Other.Table.Length;
+        try { Other.Read(10 + args.Length); ctor += " read"; } catch (IndexOutOfRangeException) { ctor += " caught"; }
+        Console.WriteLine(ctor);
         return 0;
     }
 }

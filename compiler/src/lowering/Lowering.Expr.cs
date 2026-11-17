@@ -1791,8 +1791,12 @@ public sealed partial class Lowering
                 : _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.And, flags, bits)), Imm(0, IrType.I32), IrType.I32);
             return m.Name == "IsClass" ? _e.Binary(Opcode.Eq, R(masked), Imm(0, IrType.I32), IrType.I32) : masked;
         }
+        // A readonly static table's is the constant it was made with
+        // (TableLength), so a loop to its Length and the checks inside it
+        // ask the same question (InductionBounds).
         if (m.Name == "Length")
-            return target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : CountOf(_e, obj);
+            return target.IsArray && _knownLengths.TryGetValue(obj, out int tableLength) ? _e.Const(tableLength, IrType.I32)
+                : target.IsArray ? _e.Unary(Opcode.ArrayLength, R(obj), IrType.I32) : CountOf(_e, obj);
         if (m.Name == "LongLength")
             return _e.Unary(Opcode.SExt32, R(_e.Unary(Opcode.ArrayLength, R(obj), IrType.I32)), IrType.I64);
         VReg full = FullNameOf(_e, _e.Load(IrTypes.Word, obj, DescName * _t.WordSize));

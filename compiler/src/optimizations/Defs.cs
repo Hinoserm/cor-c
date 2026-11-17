@@ -167,7 +167,7 @@ public sealed class Defs
         // and what it defines is read below like anything else's -- refused
         // with the pads, no compare made in a function's first block was
         // ever a repeat of itself further down (DominatingBranch).)
-        if (Cfg.IsRoot(s.Block) && s.Block.IsLandingPad && !(ReferenceEquals(s.Block, fromBlock) && ReferenceEquals(s.Block, useBlock)))
+        if (Cfg.IsRoot(s.Block) && !ReferenceEquals(s.Block, Cfg.Function.Blocks[0]) && !(ReferenceEquals(s.Block, fromBlock) && ReferenceEquals(s.Block, useBlock)))
         {
             // A landing pad runs again on every unwind into it, along an
             // edge the graph does not show, so a value defined there (the

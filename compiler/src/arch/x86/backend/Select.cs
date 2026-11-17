@@ -2780,10 +2780,17 @@ internal sealed partial class Selector
     /// <summary>Materialise a condition as 0 or 1 in a byte-capable register, widened.</summary>
     private void SetCond(Cond c, VReg dest)
     {
+        // THROUGH A TEMPORARY: with the byte set in `dest` itself, a dest the
+        // allocator kept in the frame was `setcc [slot]; mov r, [slot];
+        // movzx r, r8; mov [slot], r` -- a byte stored and a word loaded from
+        // the same slot at once (a store-forwarding stall where there is
+        // such a thing), four instructions for one. The temporary lives for
+        // two instructions and is a register.
         MReg d = Lo(dest);
-        _m.ByteRegs.Add(d.Id);
-        Emit(new MInstr(MOp.Setcc, d) { Cond = c, Width = 1 });
-        EmitW(MOp.Movzx, 1, d, d);
+        MReg t = Temp();
+        _m.ByteRegs.Add(t.Id);
+        Emit(new MInstr(MOp.Setcc, t) { Cond = c, Width = 1 });
+        EmitW(MOp.Movzx, 1, d, t);
     }
 
     private void SelectCompare(Instr i)
