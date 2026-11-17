@@ -1,0 +1,120 @@
+// test: frame tree struct values
+// expect-exit: 0
+// expect-output:
+// copy 1 2
+// loop 15 5
+// ref 9 2
+// var 1 5
+// box 1 7
+// foreach 1,2,3 21,22,23
+// switch 1 2
+// param 1 11 40
+// nullable 5 none
+// step 10 30 60
+// slot 6 7
+//
+// A struct holding another by pointer -- one whose struct field is not
+// held in line (a nullable inside it) -- is a value: every copy of it has
+// blocks of its own, made in the frame and copied into in place, so a
+// write through one copy never reaches another, whether the copy was made
+// by an assignment, a loop's next value, a write through a ref, a pattern,
+// a foreach cursor, a switch section's local or a parameter.
+
+using System;
+using System.Runtime.CompilerServices;
+
+struct Inner { public int? N; public int K; }
+struct Outer { public Inner In; public int X; }
+struct P { public int X; public int Y; }
+
+static class Program
+{
+    static Outer Next(Outer o) { Outer n = o; n.In.K += 3; n.X += 1; return n; }
+
+    static int Bump(Outer p)
+    {
+        p.In.K += 10;
+        int was = p.In.K;
+        p = new Outer { X = 40 };
+        return was * 100 + p.X;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static P Step(P p, int k) { P q; q.X = p.Y + k; q.Y = p.X + k; return q; }
+
+    static int Main()
+    {
+        Outer a = default;
+        a.In.K = 1;
+        Outer b = a;
+        b.In.K = 2;
+        Console.WriteLine("copy " + a.In.K + " " + b.In.K);
+
+        Outer cur = default;
+        for (int i = 0; i < 5; i++) cur = Next(cur);
+        Console.WriteLine("loop " + cur.In.K + " " + cur.X);
+
+        Outer c = a;
+        ref Outer r = ref c;
+        r = b;
+        r.In.K = 9;
+        Console.WriteLine("ref " + c.In.K + " " + b.In.K);
+
+        if (a is var v) { v.In.K = 5; Console.WriteLine("var " + a.In.K + " " + v.In.K); }
+
+        object boxed = a;
+        if (boxed is Outer unboxed) { unboxed.In.K = 7; Console.WriteLine("box " + ((Outer)boxed).In.K + " " + unboxed.In.K); }
+
+        Outer[] all = new Outer[3];
+        for (int i = 0; i < 3; i++) all[i].In.K = i + 1;
+        string seen = "", changed = "";
+        foreach (Outer each in all)
+        {
+            Outer mine = each;
+            mine.In.K += 20;
+            seen += (seen.Length > 0 ? "," : "") + each.In.K;
+            changed += (changed.Length > 0 ? "," : "") + mine.In.K;
+        }
+        Console.WriteLine("foreach " + seen + " " + changed);
+
+        int first = 0, second = 0;
+        for (int n = 0; n < 2; n++)
+        {
+            switch (n)
+            {
+                case 0:
+                    Outer s = a;
+                    first = s.In.K;
+                    break;
+                case 1:
+                    s = b;
+                    second = s.In.K;
+                    break;
+            }
+        }
+        Console.WriteLine("switch " + first + " " + second);
+
+        int bumped = Bump(a);
+        Console.WriteLine("param " + a.In.K + " " + (bumped / 100) + " " + (bumped % 100));
+
+        Outer withN = a;
+        withN.In.N = 5;
+        Console.WriteLine("nullable " + withN.In.N + " " + (a.In.N.HasValue ? "some" : "none"));
+
+        P acc;
+        acc.X = 0; acc.Y = 0;
+        string steps = "";
+        for (int i = 1; i <= 3; i++)
+        {
+            acc = Step(acc, i * 10 - acc.X - acc.Y + acc.X + acc.Y - (i - 1) * 10 + (i - 1) * 10);
+            steps += (steps.Length > 0 ? " " : "") + (acc.X + acc.Y) / 2;
+        }
+        Console.WriteLine("step " + steps);
+
+        P twice;
+        twice.X = 3; twice.Y = 4;
+        twice = Step(twice, 3);
+        Console.WriteLine("slot " + (twice.X - 1) + " " + (twice.Y + 1));
+        return 0;
+    }
+}
