@@ -31,6 +31,9 @@ namespace Corsac.Lang.Elf;
 /// </summary>
 public static partial class Linker
 {
+    /// <summary>--data-align: where the writable segment may start (its address a multiple of this); 0 for the next page.</summary>
+    public static ulong WritableAlign { get; set; }
+
     /// <summary>Managed shared-library initializer entry point.</summary>
     public const string SharedInitName = Elf.SharedInitName;
     public const uint DefaultLoadAddress = 0x08048000;
@@ -897,7 +900,15 @@ public static partial class Linker
                 align = Math.Max(align, s.Align);
             }
             off = Elf.AlignUp(off, align);
-            ulong addr = checked(Elf.AlignUp(layout.LoadAddress + rxEnd, Elf.PageSize) + off % Elf.PageSize);
+            // --data-align N: the writable segment starts on an N-byte
+            // boundary of the address space, its first byte on it (the
+            // file padded to a page so the offset stays congruent) -- so an
+            // image whose text and read-only data end short of it can be
+            // mapped by large pages, read-only ones and writable ones
+            // sharing none (a kernel's 4 MiB pages, 2 MiB under PAE).
+            if (WritableAlign > Elf.PageSize) off = Elf.AlignUp(off, Elf.PageSize);
+            ulong addr = WritableAlign > Elf.PageSize ? Elf.AlignUp(layout.LoadAddress + rxEnd, WritableAlign)
+                : checked(Elf.AlignUp(layout.LoadAddress + rxEnd, Elf.PageSize) + off % Elf.PageSize);
             uint rwOffset = off;
             ulong rwAddr = addr;
             uint fileEndOfRw = off;

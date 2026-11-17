@@ -32,6 +32,9 @@ public sealed class MBlock
     public override string ToString() => Name;
 
     /// <summary>Whether control cannot fall out of the bottom of this block.</summary>
+    /// <summary>Laid out after the function's other blocks (Layout): its segment ends in a trap.</summary>
+    public bool Cold { get; set; }
+
     public bool EndsUnconditionally
     {
         get

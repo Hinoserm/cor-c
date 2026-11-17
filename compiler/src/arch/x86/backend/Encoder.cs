@@ -86,6 +86,9 @@ internal sealed class Encoder
             for (int k = 0; k < m.Blocks.Count; k++) at[m.Blocks[k]] = k;
             for (int k = 0; k < m.Blocks.Count; k++)
             {
+                // Nor a cold block's jump back into the function (Layout put
+                // it at the end): no loop's latch.
+                if (m.Blocks[k].Cold) continue;
                 int from = m.Blocks[k].EdgeFrom is { } source && at.TryGetValue(source, out int left) ? left : k;
                 foreach (MInstr i in m.Blocks[k].Instrs)
                     if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands.Count > 0 && i.Operands[0] is MLabel label

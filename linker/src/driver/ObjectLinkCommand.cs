@@ -11,6 +11,7 @@ public static class ObjectLinkCommand
 {
     public static int Run(string[] args, IUnitBackend? backend = null)
     {
+        Linker.WritableAlign = 0;   // this link's alone
         string? output = null;
         string entry = "_start";
         ulong? baseAddress = null;
@@ -96,7 +97,7 @@ public static class ObjectLinkCommand
             if (arg.StartsWith("--cpu=") || arg.StartsWith("--fpu=")
                 || Lang.X86.X86Cpu.IsSwitch(arg))
             { cpuArguments.Add(arg); continue; }
-            if (arg is "-o" or "--entry" or "--base" or "--paddr" or "--lto-backend" or "--lto-import-bytes")
+            if (arg is "-o" or "--entry" or "--base" or "--paddr" or "--data-align" or "--lto-backend" or "--lto-import-bytes")
             {
                 if (++i == args.Length) return Fail("missing value for " + arg);
                 if (arg == "-o") output = args[i];
@@ -114,6 +115,12 @@ public static class ObjectLinkCommand
                     if (!ulong.TryParse(hex ? number[2..] : number, hex ? NumberStyles.HexNumber : NumberStyles.None,
                         CultureInfo.InvariantCulture, out ulong address)) return Fail("invalid address " + number);
                     if (arg == "--base") baseAddress = address;
+                    else if (arg == "--data-align")
+                    {
+                        // A power of two of whole pages: a large page's size.
+                        if (address < Elf.PageSize || (address & (address - 1)) != 0 || address > 1UL << 30) return Fail("--data-align takes a power of two from 4096 to 1 GiB");
+                        Linker.WritableAlign = address;
+                    }
                     else physicalAddress = address;
                 }
             }

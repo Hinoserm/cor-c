@@ -23,6 +23,8 @@ namespace Corsac.Lang.X86;
 ///   still to be placed.
 /// - When neither can follow, the earliest segment not yet placed does. The
 ///   entry is always first.
+/// - A segment that ends in a trap (the int3 after a call that never
+///   returns) follows nothing and goes after all the others.
 ///
 /// Deterministic: it reads nothing but the blocks' order and their jumps.
 /// </summary>
@@ -75,12 +77,21 @@ internal static class Layout
         // 64 KB of instruction cache (the Geode LX; a 486's eight) runs the
         // kernel's network path over more code than that, and what it never
         // executes should not share those lines. At the end, the branch to
-        // it is forward and not taken, as every such processor guesses.
+        // it is forward and not taken.
         bool[] cold = new bool[segments];
         for (int s = 1; s < segments; s++)
         {
             int end = (s + 1 < segments ? starts[s + 1] : n) - 1;
-            cold[s] = m.Blocks[end].Instrs.Count > 0 && m.Blocks[end].Instrs[^1].Op == MOp.Int3;
+            // The trap after a call that never returns, not a breakpoint the
+            // program runs on from (`int3` with an operand, Peephole.BeforeTrap).
+            cold[s] = m.Blocks[end].Instrs.Count > 0 && m.Blocks[end].Instrs[^1] is { Op: MOp.Int3, Operands.Count: 0 };
+            if (cold[s])
+            {
+                for (int b = starts[s]; b <= end; b++)
+                {
+                    m.Blocks[b].Cold = true;
+                }
+            }
         }
 
         bool[] placed = new bool[segments];
@@ -108,7 +119,12 @@ internal static class Layout
             current = follow;
         }
         for (int s = 1; s < segments; s++)
-            if (cold[s] && !placed[s]) order.Add(s);
+        {
+            if (cold[s] && !placed[s])
+            {
+                order.Add(s);
+            }
+        }
 
         List<MBlock> laid = new(n);
         foreach (int s in order)

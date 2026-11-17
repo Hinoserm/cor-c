@@ -135,7 +135,7 @@ public static class LinkReceipt
     /// <summary>Whether a link option takes a value after it, which is then no object.</summary>
     private static bool Valued(string option)
         => option is "-o" or "--kernel" or "--keep" or "--link-shared" or "--map" or "--lto-backend" or "--region-report" or "--unused-report"
-            or "--runpath" or "--entry" or "--base" or "--paddr" or "--lto-import-bytes" or "--cpu" or "--fpu"
+            or "--runpath" or "--entry" or "--base" or "--paddr" or "--data-align" or "--lto-import-bytes" or "--cpu" or "--fpu"
             or "--irq-waits" or "--wait-free-roots" or "--wait-free-stop" or "--irq-roots" or "--irq-stop";
 
     /// <summary>Which write of the image it is: its length and time, the image changed by anything else is not current.</summary>
