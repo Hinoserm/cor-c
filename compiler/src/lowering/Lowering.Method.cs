@@ -321,6 +321,7 @@ public sealed partial class Lowering
         _returnBlock = null;
         _returnValue = null;
         _resultBuffer = null;
+        _newInto = null; _bufferReturns = 0; _otherReturns = 0;
         _typeArgs = null;
         _needDictionary = null;
         _pendingTypeArgs = null;
@@ -655,7 +656,9 @@ public sealed partial class Lowering
             // THE RESULT INTO THE CALLER'S BUFFER, and its address answered:
             // bytes only. A buffer is the caller's frame, or a block the caller
             // made for it and marks the cards of itself (ResultBuffer).
-            _e.Emit(Opcode.MemCopy, null, R(_resultBuffer), R(_returnValue), Imm(Math.Max(1, StructOf(m.Returns).InstanceSize), IrTypes.Word));
+            // Not where every return built its value there (NewInto).
+            if (_otherReturns > 0 || _bufferReturns == 0)
+                _e.Emit(Opcode.MemCopy, null, R(_resultBuffer), R(_returnValue), Imm(Math.Max(1, StructOf(m.Returns).InstanceSize), IrTypes.Word));
             _e.Ret(RegOperand.Of(_resultBuffer));
         }
         else

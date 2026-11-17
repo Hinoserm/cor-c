@@ -480,6 +480,23 @@ public sealed partial class Lowering
         }
     }
 
+    /// <summary>
+    /// `return new S(..)` BUILDS S IN THE CALLER'S RESULT BUFFER: the `new`
+    /// this names takes the buffer for its storage, where it made a slot of
+    /// this frame and the return copied it over -- two writes of every
+    /// struct a constructor-returning method answers (List.GetEnumerator's
+    /// enumerator), and a temporary holding what the struct holds: to the
+    /// lifetime rules a second place the list was kept, where the result
+    /// alone says it is only handed back (1908).
+    /// </summary>
+    private (NewExpr Made, VReg At)? _newInto;
+
+    /// <summary>Whether the `new` NewInto was for took it.</summary>
+    private bool _newTaken;
+
+    /// <summary>The returns of this method that built their value in the result buffer, and those that did not (EmitMethod's last copy).</summary>
+    private int _bufferReturns, _otherReturns;
+
     /// <summary>A struct's storage in this frame (FrameHoldsValues), zeroed where `zero` says.</summary>
     private VReg StructInFrame(TypeSymbol sym, bool zero = false)
     {
@@ -2088,9 +2105,22 @@ public sealed partial class Lowering
         // A STRUCT MADE IS A VALUE, in the frame from the start (StructInFrame),
         // zero as the allocator's block was, its constructor writing it there.
         bool inFrame = sym.Kind == TypeKind.Struct && ValueInFrame(sym);
-        VReg obj = inFrame
-            ? FrameTree(sym, zero: true)
-            : Allocate(nw, size, described: sym.Kind == TypeKind.Class);
+        VReg obj;
+        if (inFrame && _newInto is { } into && ReferenceEquals(into.Made, nw) && !HasStructFields(sym))
+        {
+            // BUILT WHERE IT IS RETURNED (NewInto): the caller's result
+            // buffer, zeroed as a slot of this frame would be.
+            _newInto = null;
+            _newTaken = true;
+            obj = into.At;
+            _e.Emit(Opcode.MemSet, null, R(obj), new ImmOperand(0, IrType.I32), Imm(Math.Max(4, sym.InstanceSize), IrTypes.Word));
+        }
+        else
+        {
+            obj = inFrame
+                ? FrameTree(sym, zero: true)
+                : Allocate(nw, size, described: sym.Kind == TypeKind.Class);
+        }
 
         if (sym.Kind == TypeKind.Class && nw.CanonSlot >= 0)
         {

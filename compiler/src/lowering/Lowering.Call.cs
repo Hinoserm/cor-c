@@ -214,7 +214,7 @@ public sealed partial class Lowering
     {
         Require(m);
         ulong byValue = ByValueOperands(m, args.Count);
-        VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
+        VReg? buffer = Buffered(m) ? ResultHome(m) ?? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
         if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
         // A SHARED METHOD COPY'S HIDDEN TYPE ARGUMENTS, after the buffer as
         // its parameters have them (EmitMethod): what the call found for
@@ -428,7 +428,7 @@ public sealed partial class Lowering
             VReg vt = _e.Load(IrTypes.Word, receiver, 0);
             SlotCalled(m.VtableSlot);
             VReg fn = _e.Load(IrTypes.Word, vt, (long)m.VtableSlot * _t.WordSize);
-            VReg? buffer = Buffered(m) ? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
+            VReg? buffer = Buffered(m) ? ResultHome(m) ?? ResultBuffer(_decl ?? (Node)new MethodDecl { Name = m.Name, Line = 0, Col = 0 }, m.Returns) : null;
             if (buffer is not null) args = new List<Operand>(args) { R(buffer) };
             VReg? called = _e.CallIndirect(R(fn), returns, args);
             // THE RECEIVER'S OWN TYPE when it is narrower than the method's:
@@ -689,6 +689,40 @@ public sealed partial class Lowering
     }
 
     private VReg EmitCall(CallExpr call)
+    {
+        _callDepth++;
+        try { return EmitCallBody(call); }
+        finally { _callDepth--; }
+    }
+
+    /// <summary>How many calls deep the expression being lowered is (EmitCall): which call a result's home is for (ResultInto).</summary>
+    private int _callDepth;
+
+    /// <summary>
+    /// WHERE THE NEXT CALL OF THIS METHOD, AT THIS DEPTH, WRITES ITS STRUCT
+    /// RESULT: a local's own storage, handed over as the result buffer, for
+    /// a declaration `P p = F(..)` -- the variable is not assigned yet, so
+    /// nothing F reads can be it. Made in a buffer of its own and copied
+    /// into the local, the result was two slots and a copy; and the copy
+    /// of a struct holding a collection (a foreach's enumerator) was a
+    /// second holder of it to every lifetime rule that asks who reads a
+    /// list (1908: its elements went to the collector).
+    /// </summary>
+    private (VReg Home, MethodSymbol Method, int Depth)? _resultInto;
+
+    /// <summary>Whether the call ResultInto was for took it.</summary>
+    private bool _resultTaken;
+
+    /// <summary>The result buffer of a call of `m`: the home waiting for it (ResultInto), or null.</summary>
+    private VReg? ResultHome(MethodSymbol m)
+    {
+        if (_resultInto is not { } into || into.Depth != _callDepth || !ReferenceEquals(into.Method, m)) return null;
+        _resultInto = null;
+        _resultTaken = true;
+        return into.Home;
+    }
+
+    private VReg EmitCallBody(CallExpr call)
     {
         if (_b.PointerCalls.TryGetValue(call, out FunctionPointer? pointer))
         {

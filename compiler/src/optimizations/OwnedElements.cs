@@ -892,7 +892,8 @@ internal static class OwnedElements
     /// collection and, in its Current, an element -- memory no use of the
     /// collection's registers shows -- so the slot is followed too: only its
     /// address taken, that address (and the answer, the same address) handed
-    /// only to the enumerator's MoveNext, Current and Dispose. Current then
+    /// only to GetEnumerator and to the enumerator's MoveNext, Current and
+    /// Dispose. Current then
     /// answers an element as the indexer does, and those calls are kept from
     /// the inliner with the rest, since inlined MoveNext would copy an element
     /// out of the storage and into the slot unseen. The registers holding
@@ -949,7 +950,17 @@ internal static class OwnedElements
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     if (i.Operands[k] is RegOperand r && walker.Contains(r.Reg)) { at = k; count++; }
-                    if (i.Operands[k] is RegOperand a && address.Contains(a.Reg) || i.Operands[k] is SlotOperand s && s.Slot == slot) { addresses++; if (!ReferenceEquals(i, get) || k != 1) at = -2; }
+                    if (i.Operands[k] is RegOperand a && address.Contains(a.Reg) || i.Operands[k] is SlotOperand s && s.Slot == slot)
+                    {
+                        // THE SLOT'S OWN ADDRESS IS THE ENUMERATOR TOO, to any
+                        // instruction but GetEnumerator, which is handed it to
+                        // fill: a struct local owns its storage (Lowering
+                        // StructHome), and the loop's MoveNext and Current are
+                        // called on that storage's address, not on the address
+                        // GetEnumerator answered -- the same one.
+                        if (ReferenceEquals(i, get) && k == 1) addresses++;
+                        else { at = k; count++; }
+                    }
                 }
                 if (count == 0 && addresses == 0) continue;
                 if (i.Op is Opcode.Copy or Opcode.Trunc64 or Opcode.ZExt32 && i.Dest is not null && (walker.Contains(i.Dest) || address.Contains(i.Dest))) continue;

@@ -341,10 +341,19 @@ public sealed partial class Lowering
                     // it is not copied here as well.
                     Type wanted = _returnType ?? _method.Returns;
                     // `return ref x;` answers the variable's address.
+                    // `return new S(..)`: built in the buffer itself (NewInto).
+                    Expr answered = _b.Rewrites.TryGetValue(r.Value, out Expr? rewrittenValue) ? rewrittenValue : r.Value;
+                    bool direct = _resultBuffer is not null && _openHandlers.Count == 0 && !_method.RefReturn
+                        && answered is NewExpr { ArraySize: null } built && _b.TypeOf(answered) is Type builtType
+                        && IsStructValue(builtType) && IsStructValue(wanted) && !wanted.IsNullableValue && !builtType.IsNullableValue
+                        && ReferenceEquals(StructOf(builtType), StructOf(wanted));
+                    if (direct) { _newInto = ((NewExpr)answered, _resultBuffer!); _newTaken = false; }
                     VReg v = _method.RefReturn && r.Value is RefArgExpr referred ? Reference(referred, wanted)
                         : _resultBuffer is not null && _openHandlers.Count == 0
                         ? InlineValue(new MemPlace(R(_resultBuffer), 0, wanted, Inline: true), r.Value, wanted)
                         : EvalAs(r.Value, wanted);
+                    _newInto = null;
+                    if (_resultBuffer is not null) { if (direct && _newTaken) _bufferReturns++; else _otherReturns++; }
                     // A STRUCT ANSWERED WITH NO BUFFER is the caller's to keep:
                     // a block of the heap, never this frame's (HeapStruct).
                     // Buffered says which have none: a struct not held in
@@ -553,6 +562,22 @@ public sealed partial class Lowering
 
         if (d.Init is not null)
         {
+            // A HOMED STRUCT LOCAL DECLARED WITH A CALL'S RESULT: the call
+            // writes its storage (ResultInto), and there is nothing to copy.
+            if (!boxed && !_addressTakenLocals.Contains(d) && HomedLocal(d, type) && !HasStructFields(StructOf(type))
+                && (_b.Rewrites.TryGetValue(d.Init, out Expr? rewritten) ? rewritten : d.Init) is CallExpr made
+                && _b.Calls.TryGetValue(made, out MethodSymbol? maker) && Buffered(maker) && RefCallee(made) is null
+                && ReferenceEquals(StructOf(maker.Returns), StructOf(type)) && !maker.Returns.IsNullableValue && !type.IsNullableValue)
+            {
+                VReg home = RegOf(new SlotOperand(StructHome(d, type)));
+                _resultInto = (home, maker, _callDepth + 1);
+                _resultTaken = false;
+                VReg answered = EvalAs(d.Init, type);
+                _resultInto = null;
+                if (!_resultTaken) StorePlace(new MemPlace(new SlotOperand(StructHome(d, type)), 0, type, false, true), answered);
+                foreach (LocalDecl also in d.Also) EmitLocalDecl(also);
+                return;
+            }
             VReg value = EvalAs(d.Init, type);
             if (boxed)
             {
