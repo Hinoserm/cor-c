@@ -90,7 +90,8 @@ public sealed class IdentitySelect : IPass
                 else constants.Remove(copy.Dest!);
             }
             if (!constants.TryGetValue(compared, out long value)) continue;
-            bool equal = value == against;
+            // At the width compared: an immediate is a long, the register 32 bits or 64.
+            bool equal = compared.Type == IrType.I64 ? value == against : unchecked((int)value) == unchecked((int)against);
             bool taken = compare.Op == Opcode.Eq ? equal : !equal;
             // J's copies made on P's way too, before it goes on: what they
             // write may be read wherever the branch leads.

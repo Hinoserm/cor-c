@@ -395,6 +395,12 @@ public static class Preinit
         Solution? solved = _last is { } last && last.Signature == Signature(notes) ? last : null;
         _last = null;
         if (solved is null && (solved = Solve(inputs, notes, longMode)) is not null) Report(solved);
+        // THE CODE WAS MADE TO READ THESE WORDS AS COMPLETED (Folded): the
+        // solve laid down here must be one that completes every one of
+        // them, or a guard folded away would leave its type never made.
+        if (Folded is { Count: > 0 } relied && (solved?.Made is not Solver || !relied.IsSubsetOf(solved.CompletedReady)))
+            throw new Corsac.Lang.Elf.LinkException(new[] { "the link's code reads " + relied.Count + " type state words as initialised by the link (Preinit.Folded), and the solve it lays down does not complete all of them: "
+                + string.Join(", ", relied.Where(word => solved is null || !solved.CompletedReady.Contains(word)).Order(StringComparer.Ordinal).Take(8)) });
         if (solved is null || solved.Made is not Solver made) return null;
         // ONLY WHAT THE IMAGE STILL NAMES: a type made at the link that no
         // kept code touches is laid down by nobody, and its unit's own data

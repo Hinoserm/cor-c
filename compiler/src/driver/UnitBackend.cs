@@ -307,14 +307,22 @@ public sealed class UnitBackend : IUnitBackend
                         || local.Functions.Any(g => g.Name == sibling)
                         || !archive.Entries.TryGetValue(IrKey.OfFunction(sibling), out IrArchiveEntry? own)
                         || !own.Importable || own.Instructions > IrLinkOptimizer.ForwarderBody || !own.Calls.All(IrLinkOptimizer.IsIntrinsic)) continue;
-                    local.Functions.Add(IrFunctionCodec.Read(archive.ReadBody(own.Key), new IrReadBudget(own.DecodeBytes)));
+                    Function brought = IrFunctionCodec.Read(archive.ReadBody(own.Key), new IrReadBudget(own.DecodeBytes));
+                    // Prepared as an import is (above).
+                    if (module.LinkHeap == false) Escape.WithoutCollectorNotes(brought);
+                    if (facts?.OwnedFields is { Elements.Count: > 0 } ownedBySibling && ReadsElementField(brought, ownedBySibling)) brought.NoInlining = true;
+                    if (facts?.Regions is { } siblingRegions && siblingRegions.Boundaries.Contains(sibling)) brought.NoInlining = true;
+                    local.Functions.Add(brought);
                 }
             // A GUARD OF A TYPE THE LINK INITIALISED (Preinit.LastCompleted):
             // its state word is "completed" in the image and nothing writes it
             // again, so each read of it is the 1 it is, and the cleanup below
             // folds the test and the call to T.StaticInit$ away.
             if (facts?.CompletedReady is { Count: > 0 } completed)
-                foreach (Corsac.Lang.Ir.Block b in function.Blocks)
+                // In the imports and siblings beside it too: their guards
+                // come in with their bodies.
+                foreach (Function body in local.Functions)
+                foreach (Corsac.Lang.Ir.Block b in body.Blocks)
                     for (int k = 0; k < b.Instrs.Count; k++)
                         if (b.Instrs[k] is { Op: Opcode.Load, Offset: 0, Dest: { } read } load && load.Operands is [SymOperand { Offset: 0 } word]
                             && completed.Contains(word.Name))

@@ -16,16 +16,21 @@ public static class IrLinkOptimizer
     /// imports). Followed further -- the tiny bodies taken at the first
     /// level, or small ones with calls of their own -- the imports pulled
     /// whole chains in behind them and grew the image by a twentieth, and
-    /// by a hundredth at this size with calls.
+    /// by a hundredth at this size with calls. A tiny body's size now
+    /// (TinyBody), its only "calls" machine intrinsics (IsIntrinsic).
     /// </summary>
     public const int ForwarderBody = TinyBody;
 
     /// <summary>
-    /// A machine intrinsic's name (the x86 backend's `__x86.i.` sequences:
-    /// a %gs read, PUSHF, CLI): written out in place by the backend, never
-    /// a call, so a body that "calls" only these calls nothing.
+    /// A machine intrinsic that is the same wherever it stands -- a %gs
+    /// read, PUSHF, CLI, a port read: written out in place by the backend,
+    /// never a call, so a body that "calls" only these calls nothing. Named
+    /// one by one: an asm block, a register save, a segment load or a
+    /// packed state's save reads or changes the function it is written in.
     /// </summary>
-    public static bool IsIntrinsic(string callee) => callee.StartsWith("__x86.i.", StringComparison.Ordinal);
+    public static bool IsIntrinsic(string callee) => callee is "__x86.i.percpuread" or "__x86.i.percpuwrite" or "__x86.i.getgs" or "__x86.i.threadblock"
+        or "__x86.i.readflags" or "__x86.i.cli" or "__x86.i.sti" or "__x86.i.rdtsc" or "__x86.i.bsf" or "__x86.i.bsr" or "__x86.i.keepalive"
+        or "__x86.i.in8" or "__x86.i.in16" or "__x86.i.in32" or "__x86.i.out8" or "__x86.i.out16" or "__x86.i.out32";
 
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
@@ -497,10 +502,26 @@ public static class IrLinkOptimizer
             facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields;
             facts.Regions = regionFacts?.GetValueOrDefault(original);
             // Not in a module: its link lays down no kernel type made.
+            // ONLY THE WORDS THIS UNIT'S KEPT CODE AND ITS IMPORTS NAME: those
+            // the link's walk reached (a guard names its word), so laying
+            // their types down (Preinit.Folded) keeps nothing the walk
+            // pruned -- every completed word, named or not, kept every
+            // type's statics and what they reach.
             if (!moduleOfKernel && Preinit.LastCompleted is { Count: > 0 } completed)
             {
-                facts.CompletedReady = new(completed, StringComparer.Ordinal);
-                lock (solving) (Preinit.Folded ??= new(StringComparer.Ordinal)).UnionWith(completed);
+                HashSet<string> named = new(StringComparer.Ordinal);
+                foreach (IrArchiveEntry record in archives[original].Entries.Values)
+                    if (plan.Retained is null || plan.Retained.Contains(record.Key))
+                        foreach (string reference in record.References)
+                            if (completed.Contains(IrArchiveEntry.Named(reference))) named.Add(IrArchiveEntry.Named(reference));
+                foreach (var import in plan.Imports)
+                    foreach (string reference in import.Body.References)
+                        if (completed.Contains(IrArchiveEntry.Named(reference))) named.Add(IrArchiveEntry.Named(reference));
+                if (named.Count > 0)
+                {
+                    facts.CompletedReady = named;
+                    lock (solving) (Preinit.Folded ??= new(StringComparer.Ordinal)).UnionWith(named);
+                }
             }
             facts.ImageRegions = regionFacts is { Count: > 0 };
             if (noCollector) facts.Heap = false;
