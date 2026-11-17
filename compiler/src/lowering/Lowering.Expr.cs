@@ -345,11 +345,12 @@ public sealed partial class Lowering
 
     /// <summary>
     /// A new block holding the same value: the copy a value type's assignment
-    /// means. A struct with a struct inside it is copied through its type's
-    /// copier (StructCopier), which copies the inner block too rather than
-    /// sharing it -- `b = a; b.Inner.X = 1;` must leave `a.Inner` alone. A
-    /// plain struct is its bytes, moved here in line, where escape analysis
-    /// can still put the copy on the stack.
+    /// means. In the frame (`frame`, where it holds values): a slot, or for
+    /// a struct holding another by pointer a tree of slots copied into in
+    /// place (FrameTree, CopyIntoTree). On the heap: a plain struct's bytes,
+    /// or through its type's copier (StructCopier), which copies the inner
+    /// blocks too rather than sharing them -- `b = a; b.Inner.X = 1;` must
+    /// leave `a.Inner` alone.
     /// </summary>
     private VReg CopyStruct(Node at, VReg src, TypeSymbol sym, bool frame = false)
     {
@@ -395,8 +396,9 @@ public sealed partial class Lowering
 
     /// <summary>
     /// Whether a value of this struct is held in this frame: the frame
-    /// holds values (FrameHoldsValues), every field is in line, and it is
-    /// no larger than FrameValueLimit -- a larger one on a kernel stack of a
+    /// holds values (FrameHoldsValues), and it -- with the blocks of the
+    /// struct fields it holds by pointer (TreeBytes) -- is no larger than
+    /// FrameValueLimit -- a larger one on a kernel stack of a
     /// few pages, at every site that makes one, is how a stack overflows;
     /// it is a block of the heap instead, which escape analysis frees where
     /// its life is proved to end (tier two), as it does any large array.
@@ -1518,7 +1520,7 @@ public sealed partial class Lowering
             case PatternExpr pat when _b.PatternSubject.TryGetValue(pat, out int held):
             {
                 VReg subject = Eval(pat.Subject);
-                _e.CopyTo(SlotReg(held, IrTypes.Of(_b.TypeOf(pat.Subject))), R(subject));
+                WriteSlotLocal(held, _b.TypeOf(pat.Subject), subject);
                 return Eval(pat.Test);
             }
 
@@ -3925,7 +3927,7 @@ public sealed partial class Lowering
         VReg subject = Eval(sx.Subject);
         if (_b.SwitchSlot.TryGetValue(sx, out int held))
         {
-            _e.CopyTo(SlotReg(held, IrTypes.Of(of)), R(subject));
+            WriteSlotLocal(held, of, subject);
         }
 
         int first = ConstantArms(sx, of, subject, resultType, result, made, end);

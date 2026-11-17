@@ -156,14 +156,16 @@ public sealed partial class Lowering
 
     /// <summary>
     /// A home's slot; for a struct holding another by pointer, a tree of
-    /// slots (FrameTree) wired AT THE FUNCTION'S ENTRY -- a switch section
-    /// may write a local another section declares, before its declaration
-    /// has run -- and written after only by copies into it (CopyIntoTree).
+    /// slots (FrameTree) wired AT THE FUNCTION'S ENTRY, before anything can
+    /// write it, and not zeroed there (its declaration does that); its
+    /// blocks are written only in place after -- copies into it
+    /// (CopyIntoTree), a whole field written into the block it holds
+    /// (StorePlace) -- so every block of it is the frame's.
     /// </summary>
     private FrameSlot TreeHome(TypeSymbol sym)
     {
         FrameSlot home = _f.NewSlot(Math.Max(4, sym.InstanceSize), Math.Min(_t.Align64, Math.Max(4, sym.InlineAlign)), FrameValueSlot);
-        if (HasStructFields(sym)) AtEntry(() => Wire(RegOf(new SlotOperand(home)), sym, zero: true));
+        if (HasStructFields(sym)) AtEntry(() => Wire(RegOf(new SlotOperand(home)), sym, zero: false));
         return home;
     }
 
@@ -1405,6 +1407,30 @@ public sealed partial class Lowering
                 {
                     StoreCheck(array, value, m.Type);
                 }
+                // A STRUCT FIELD HELD BY POINTER IS WRITTEN IN ITS OWN BLOCK:
+                // the value's bytes copied into the block the field holds
+                // (a tree of the frame's, an object's), barriered there as
+                // any struct held in line is -- never the field pointed at
+                // another block, which left a frame tree holding a heap block
+                // its in-place copies then wrote with no barrier, and `ref
+                // var r = ref o.In; o.In = v;` with r on the old one. A field
+                // holding no block yet gets a heap copy, as before.
+                if (IsStructValue(m.Type) && value.Type == IrTypes.Word && m.Field is FieldSymbol { Inline: false } && !m.Volatile)
+                {
+                    VReg mine = _e.Load(IrTypes.Word, m.Address, m.Offset, LoadSize(m.Type));
+                    Block copyIn = _f.NewBlock("fieldcopy");
+                    Block fresh = _f.NewBlock("fieldnew");
+                    Block done = _f.NewBlock("fielddone");
+                    _e.Branch(R(mine), copyIn, fresh);
+                    _e.SetBlock(copyIn);
+                    StorePlace(new MemPlace(R(mine), 0, m.Type, false, true), value);
+                    _e.Jump(done);
+                    _e.SetBlock(fresh);
+                    StorePlace(new MemPlace(m.Address, m.Offset, m.Type, false, false) { Field = null }, value);
+                    _e.Jump(done);
+                    _e.SetBlock(done);
+                    break;
+                }
                 // A struct kept as a pointer in memory is a block of the heap,
                 // not a caller's result buffer (HeapStruct).
                 if (IsStructValue(m.Type)) value = HeapStruct(_decl ?? (Node)new MethodDecl { Name = "", Line = 0, Col = 0 }, value, m.Type);
@@ -1812,24 +1838,17 @@ public sealed partial class Lowering
     /// </summary>
     private void BindPattern(Node at, int slot, Type held, VReg value)
     {
-        _b.PatternSym.TryGetValue(at, out LocalSym? bound);
-        // A STRUCT NAME WITH ITS OWN STORAGE (SymHome) is bound by a copy
-        // into it, as a declared local is assigned.
-        if (IsStructValue(held) && value.Type == IrTypes.Word && HomedStruct(held)
-            && bound is not null && !bound.Boxed && !_addressTakenSyms.Contains(bound) && bound.Slot == slot)
-        {
-            StorePlace(new MemPlace(new SlotOperand(SymHome(slot, held)), 0, held, false, true), value);
-            return;
-        }
+        _b.PatternSym.TryGetValue(at, out LocalSym? named);
+        bool structValue = IsStructValue(held) && value.Type == IrTypes.Word;
         // A STRUCT BOUND BY A PATTERN IS A COPY, as C# makes it: the operand
         // may be a variable's own storage (StructHome), written over in place
         // by the variable's next assignment -- `if (x is var v) { x = y; }`
-        // left v with y.
-        if (IsStructValue(held) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
-            value = CopyStruct(at, value, StructOf(held), frame: true);
-        if (_b.PatternSym.TryGetValue(at, out LocalSym? named) && named.Boxed
-            && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
+        // left v with y. Made where the binding keeps a pointer (a cell, a
+        // slot holding the address); a name with its own storage is bound by
+        // a copy into that.
+        if (named is not null && named.Boxed && _symCells.TryGetValue(named, out VReg? cell) && cell is not null)
         {
+            if (structValue && !_heapStructs.Contains(value)) value = CopyStruct(at, value, StructOf(held), frame: true);
             FreshCell(at, named, cell);
             _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, value, held)), 0, LoadSize(held));
             return;
@@ -1843,11 +1862,37 @@ public sealed partial class Lowering
         // The compiler built by itself numbered interface slots so.
         if (named is not null && _addressTakenSyms.Contains(named) && StorageOfSym(named, at) is MemPlace place)
         {
+            if (structValue && !_heapStructs.Contains(value)) value = CopyStruct(at, value, StructOf(held), frame: true);
             StorePlace(place, value);
             return;
         }
 
+        // A STRUCT NAME WITH ITS OWN STORAGE (SymHome), by its slot and
+        // type as every read of it finds it (StorageOfSym): a copy into it.
+        if (structValue && HomedStruct(held))
+        {
+            StorePlace(new MemPlace(new SlotOperand(SymHome(slot, held)), 0, held, false, true), value);
+            return;
+        }
+
+        if (structValue && !_heapStructs.Contains(value)) value = CopyStruct(at, value, StructOf(held), frame: true);
         _e.CopyTo(SlotReg(slot, IrTypes.Of(held)), RegOperand.Of(value));
+    }
+
+    /// <summary>
+    /// A binder-made local written by number -- a pattern's or a switch's
+    /// subject -- where every read of it finds it (StorageOfSym): a struct
+    /// with its own storage (SymHome) by a copy into that, anything else in
+    /// the register its number names.
+    /// </summary>
+    private void WriteSlotLocal(int slot, Type type, VReg value)
+    {
+        if (IsStructValue(type) && value.Type == IrTypes.Word && HomedStruct(type))
+        {
+            StorePlace(new MemPlace(new SlotOperand(SymHome(slot, type)), 0, type, false, true), value);
+            return;
+        }
+        _e.CopyTo(SlotReg(slot, IrTypes.Of(type)), RegOperand.Of(value));
     }
 
     /// <summary>The place a resolved name denotes, or null with an error.</summary>

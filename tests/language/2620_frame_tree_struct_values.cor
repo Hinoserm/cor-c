@@ -9,6 +9,7 @@
 // foreach 1,2,3 21,22,23
 // switch 1 2
 // param 1 11 40
+// field 2 9 31
 // nullable 5 none
 // step 10 30 60
 // slot 6 7
@@ -18,7 +19,8 @@
 // blocks of its own, made in the frame and copied into in place, so a
 // write through one copy never reaches another, whether the copy was made
 // by an assignment, a loop's next value, a write through a ref, a pattern,
-// a foreach cursor, a switch section's local or a parameter.
+// a foreach cursor, a switch section's local, a parameter or a whole field
+// written over.
 
 using System;
 using System.Runtime.CompilerServices;
@@ -87,8 +89,8 @@ static class Program
                     first = s.In.K;
                     break;
                 case 1:
-                    s = b;
-                    second = s.In.K;
+                    Outer t = b;
+                    second = t.In.K;
                     break;
             }
         }
@@ -96,6 +98,12 @@ static class Program
 
         int bumped = Bump(a);
         Console.WriteLine("param " + a.In.K + " " + (bumped / 100) + " " + (bumped % 100));
+
+        Outer whole = a;
+        whole.In = b.In;
+        whole = c;
+        whole.In.K = 31;
+        Console.WriteLine("field " + b.In.K + " " + c.In.K + " " + whole.In.K);
 
         Outer withN = a;
         withN.In.N = 5;

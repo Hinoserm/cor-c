@@ -696,7 +696,7 @@ public sealed partial class Lowering
             if (IsStructValue(element) && value.Type == IrTypes.Word && HomedStruct(element)
                 && (named is null || !_addressTakenSyms.Contains(named)))
             {
-                StorePlace(new MemPlace(new SlotOperand(SymHome(elem, element)), 0, element, false, true), value);
+                WriteSlotLocal(elem, element, value);
             }
             else
             {
@@ -742,8 +742,9 @@ public sealed partial class Lowering
         // SubjectExpr that reads it.
         Type of = _b.TypeOf(sw.Subject);
         VReg subject = Eval(sw.Subject);
-        VReg held = SlotReg(_b.SwitchSubject[sw], IrTypes.Of(of));
-        _e.CopyTo(held, RegOperand.Of(subject));
+        WriteSlotLocal(_b.SwitchSubject[sw], of, subject);
+        // The value its constant cases are dispatched on: never a struct.
+        VReg held = subject;
 
         Block fallback = defaultBlock ?? end;
 

@@ -390,6 +390,12 @@ public static class ArgumentCopies
                                  Func<FrameSlot, bool> privateSlot)
     {
         if (f.Blocks.Any(b => b.IsLandingPad)) return 0;
+        Dictionary<(Function, int), bool> readFirst = new();
+        bool ReadFirst(Function callee, int k)
+        {
+            if (!readFirst.TryGetValue((callee, k), out bool answer)) readFirst[(callee, k)] = answer = ReadBeforeBuffer(callee, k);
+            return answer;
+        }
         Dictionary<VReg, int> reads = new();
         Dictionary<VReg, int> written = Writes(f);
         foreach (Block b in f.Blocks)
@@ -442,7 +448,7 @@ public static class ArgumentCopies
                 bool other = false;
                 for (int k = 0; k < last; k++)
                     if (slotOf(call.Operands[k]) is { } o && ReferenceEquals(o.Slot, into.Slot)
-                        && !(readOnly.TryGetValue(callee, out bool[]? ro) && k < ro.Length && ro[k] && ReadBeforeBuffer(callee, k)))
+                        && !(readOnly.TryGetValue(callee, out bool[]? ro) && k < ro.Length && ro[k] && ReadFirst(callee, k)))
                         other = true;
                 if (other) continue;
 
@@ -656,7 +662,8 @@ public static class ArgumentCopies
                     if (buffer.Contains(r))
                         writesBuffer |= i.Op switch
                         {
-                            Opcode.Store or Opcode.MemSet => o == 0,
+                            Opcode.Store => true,   // into it, or its address kept
+                            Opcode.MemSet => o == 0,
                             Opcode.MemCopy => o == 0,
                             Opcode.Load or Opcode.Ret => false,
                             Opcode.Copy or Opcode.Add => !(i.Dest is { } d2 && buffer.Contains(d2)),
@@ -669,7 +676,20 @@ public static class ArgumentCopies
                 if (reads) lastRead = at;
                 if (writesBuffer) firstWrite = Math.Min(firstWrite, at);
             }
-        return lastRead < firstWrite;
+        if (only is null || lastRead >= firstWrite) return only is null;
+        // NOT A BLOCK THAT RUNS AGAIN: on a second lap of a loop through it,
+        // the reads come after the first lap's writes.
+        HashSet<Block> seen = new(ReferenceEqualityComparer.Instance);
+        Stack<Block> work = new();
+        foreach (Block t in only.Instrs.SelectMany(i => i.Targets)) work.Push(t);
+        while (work.Count > 0)
+        {
+            Block b = work.Pop();
+            if (ReferenceEquals(b, only)) return false;
+            if (!seen.Add(b)) continue;
+            foreach (Block t in b.Instrs.SelectMany(i => i.Targets)) work.Push(t);
+        }
+        return true;
     }
 
     /// <summary>Whether every `ret` of the function answers its last parameter, the result buffer.</summary>
