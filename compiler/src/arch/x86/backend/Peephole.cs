@@ -53,6 +53,7 @@ internal static class Peephole
             ForwardStoreLoad(block.Instrs);
             MergePops(block.Instrs);
             RedundantTests(block.Instrs);
+            if (BranchOnSetFlags(block.Instrs) | ProbeBeforeAccess(block.Instrs)) DeadDefs(block.Instrs, liveOut[b], Jumped);
             ZeroWithXor(block.Instrs);
             DeadTests(block.Instrs);
             SwapBack(block.Instrs);
@@ -1383,7 +1384,7 @@ internal static class Peephole
     /// rule has it (IrInfo.IsPure). A frame's, a spill's or a static's is
     /// memory the program owns, and goes with the register it fills.
     private static bool Removable(MInstr i)
-        => i.Op is MOp.Mov or MOp.Lea or MOp.Movzx or MOp.Movsx or MOp.Cmov
+        => i.Op is MOp.Mov or MOp.Lea or MOp.Movzx or MOp.Movsx or MOp.Cmov or MOp.Setcc
            && i.Operands[0] is MReg { Id: not ((int)Gpr.Esp or (int)Gpr.Ebp) }
            && (i.Op == MOp.Lea || i.Operands.Count < 2 || i.Operands[1] is not MMem m || CannotFault(m));
 
@@ -1563,6 +1564,73 @@ internal static class Peephole
             }
         }
     }
+
+    /// <summary>
+    /// `setcc t ; movzx r, t ; test r, r ; jne L` JUMPS ON THE FLAGS THE
+    /// SETCC READ: neither the setcc nor the widening writes them, so the
+    /// test asks again what is still standing, and the jump is `jcc L`
+    /// (`je`: the opposite). A condition kept as a value and branched on
+    /// at once -- `bool ok = a < b; if (ok)` -- 2,665 times over a kernel.
+    /// Where nothing else reads the value, the setcc and the widening are
+    /// dead and go after (DeadDefs).
+    /// </summary>
+    private static bool BranchOnSetFlags(List<MInstr> instrs)
+    {
+        bool any = false;
+        for (int k = 2; k + 1 < instrs.Count; k++)
+        {
+            if (instrs[k] is not { Op: MOp.Test, Width: 4, Lock: false } test || test.Operands.Count != 2
+                || test.Operands[0] is not MReg r || test.Operands[1] is not MReg r2 || r.Id != r2.Id
+                || instrs[k + 1] is not { Op: MOp.Jcc, Cond: Cond.E or Cond.Ne } jump
+                || instrs[k - 1] is not { Op: MOp.Movzx, Width: 1 } widen || widen.Operands.Count != 2
+                || widen.Operands[0] is not MReg wide || wide.Id != r.Id || widen.Operands[1] is not MReg narrow
+                || instrs[k - 2] is not { Op: MOp.Setcc } set || set.Operands.Count != 1 || set.Operands[0] is not MReg byteReg || byteReg.Id != narrow.Id)
+                continue;
+            // Only this jump reads the test's flags: the selector's shape,
+            // and anything else after it in the block keeps the test.
+            bool alone = true;
+            for (int j = k + 2; j < instrs.Count && alone; j++)
+            {
+                if (ReadsFlags(instrs[j])) alone = false;
+                else if (WritesFlags(instrs[j]) || instrs[j].Op is MOp.Call or MOp.CallInd) break;
+            }
+            if (!alone) continue;
+            instrs[k + 1] = new MInstr(MOp.Jcc, jump.Operands[0]) { Cond = jump.Cond == Cond.Ne ? set.Cond : set.Cond.Negate() };
+            instrs.RemoveAt(k);
+            any = true;
+        }
+        return any;
+    }
+
+    /// <summary>
+    /// A LOAD THAT ONLY PROBES ITS BASE FOR NULL, RIGHT BEFORE AN ACCESS
+    /// THAT DOES: `mov r, [b] ; mov r, [b+0x78]` -- the object's first word
+    /// read so that a null receiver faults, and thrown away by the next
+    /// instruction, which reads the same object within the null page and
+    /// faults as surely. 1,703 over a kernel, each a read of the object's
+    /// header, often on another cache line than the field wanted.
+    /// </summary>
+    private static bool ProbeBeforeAccess(List<MInstr> instrs)
+    {
+        bool any = false;
+        for (int k = 0; k + 1 < instrs.Count; k++)
+        {
+            if (instrs[k] is not { Op: MOp.Mov, Width: 4, Lock: false } probe || probe.Operands.Count != 2
+                || probe.Operands[0] is not MReg dead || probe.Operands[1] is not MMem { Device: false } probed
+                || !NullPage(probed) || probed.Base is not MReg b || b.Id == dead.Id) continue;
+            MInstr next = instrs[k + 1];
+            if (next.Op is not (MOp.Mov or MOp.Movzx or MOp.Movsx) || next.Lock || next.Operands.Count != 2
+                || next.Operands[0] is not MReg written || written.Id != dead.Id
+                || next.Operands[1] is not MMem { Device: false } read || !NullPage(read) || read.Base is not MReg b2 || b2.Id != b.Id) continue;
+            instrs.RemoveAt(k);
+            k--;
+            any = true;
+        }
+        return any;
+    }
+
+    /// <summary>A plain `[base + d]`, d within the page a null base faults in.</summary>
+    private static bool NullPage(MMem m) => m.Base is not null && m.Index is null && m.Label is null && m.Symbol is null && m.Disp >= 0 && m.Disp < 4096 && !m.IsSpill;
 
     /// <summary>
     /// A TEST WHOSE FLAGS NOTHING READS, GONE -- and a conditional jump right
