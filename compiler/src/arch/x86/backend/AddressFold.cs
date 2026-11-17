@@ -141,6 +141,7 @@ internal static class AddressFold
     /// </summary>
     public static void Run(MFunction m, bool absolute = false, bool compareMemory = false)
     {
+        ScaledIndexAcrossBlocks(m);
         int n = m.NextVReg;
         int[] occurrences = new int[n];
         int[] defs = new int[n];
@@ -162,6 +163,90 @@ internal static class AddressFold
             }
             writes.Indexed(b);
         }
+    }
+
+    /// <summary>
+    /// STEP 2 ACROSS BLOCKS: `mov y, Z ; shl y, k` whose y is an index (scale
+    /// 1) of memory operands in OTHER blocks too -- one index into several
+    /// arrays, each element's read behind its own bounds check, which ends a
+    /// block: `c << 2` was made once and kept in a register across every
+    /// check (Tcp's state, parallel arrays by connection), where each read
+    /// is `[a + c*4 + 16]` and the register is free. Only where y is written
+    /// by that pair alone and read nowhere but as such an index, and Z is
+    /// written once in the whole function, so it is the same value at every
+    /// use. Before the block-by-block steps, which count occurrences anew.
+    /// </summary>
+    private static void ScaledIndexAcrossBlocks(MFunction m)
+    {
+        int n = m.NextVReg;
+        int[] occurrences = new int[n], defs = new int[n];
+        WriteSites unused = new() { M = m, Block = new int[n], At = new int[n] };
+        foreach (MBlock block in m.Blocks)
+            foreach (MInstr i in block.Instrs)
+                Count(i, occurrences, defs, unused, 0, 0);
+        bool any = false;
+        foreach (MBlock block in m.Blocks)
+        {
+            List<MInstr> ins = block.Instrs;
+            for (int q = 1; q < ins.Count; q++)
+            {
+                MInstr shl = ins[q], copy = ins[q - 1];
+                if (shl.Op != MOp.Shl || shl.Width != 4 || shl.Operands.Count != 2
+                    || shl.Operands[0] is not MReg { IsPhys: false } y || defs[y.Id] != 2
+                    || shl.Operands[1] is not MImm { Value: >= 1 and <= 3 } amount
+                    || copy.Op != MOp.Mov || copy.Width != 4 || copy.Operands.Count != 2
+                    || copy.Operands[0] is not MReg c0 || c0.Id != y.Id
+                    || copy.Operands[1] is not MReg { IsPhys: false } z || z.Id == y.Id || defs[z.Id] != 1
+                    || !FlagsDead(ins, q))
+                {
+                    continue;
+                }
+                // Every other occurrence of y, anywhere: a scale-1 index.
+                List<(MInstr I, int K)> uses = new();
+                bool ok = true;
+                foreach (MBlock other in m.Blocks)
+                {
+                    foreach (MInstr u in other.Instrs)
+                    {
+                        if (ReferenceEquals(u, shl) || ReferenceEquals(u, copy)) continue;
+                        for (int k = 0; k < u.Operands.Count && ok; k++)
+                        {
+                            switch (u.Operands[k])
+                            {
+                                case MReg r when r.Id == y.Id:
+                                    ok = false;
+                                    break;
+                                case MMem mem when mem.Base?.Id == y.Id:
+                                    ok = false;
+                                    break;
+                                case MMem mem when mem.Index?.Id == y.Id:
+                                    if (!Plain(mem) || mem.Scale != 1) ok = false;
+                                    else uses.Add((u, k));
+                                    break;
+                            }
+                        }
+                        if (!ok) break;
+                    }
+                    if (!ok) break;
+                }
+                // Left to step 2 where they are all in this block.
+                if (!ok || uses.Count == 0 || occurrences[y.Id] != 2 + uses.Count || uses.All(use => ins.Contains(use.I))) continue;
+                foreach ((MInstr u, int k) in uses)
+                {
+                    MMem mem = (MMem)u.Operands[k];
+                    u.Operands[k] = new MMem(mem.Base, mem.Disp) { Index = z, Scale = 1 << (int)amount.Value, Device = mem.Device };
+                }
+                occurrences[z.Id] += uses.Count - 1;
+                occurrences[y.Id] = 0;
+                defs[y.Id] = 0;
+                ins[q - 1] = Gone();
+                ins[q] = Gone();
+                any = true;
+            }
+        }
+        if (any)
+            foreach (MBlock block in m.Blocks)
+                block.Instrs.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
     }
 
     /// <summary>The marker a removed instruction carries until the block is swept.</summary>
