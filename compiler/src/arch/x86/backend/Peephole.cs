@@ -103,6 +103,8 @@ internal static class Peephole
             }
         }
         MInstr? last = null;            // the compare whose flags still stand
+        Cond? fell = null;              // the condition the last jump on those flags fell through on
+        MInstr? fellAfter = null;       // ... and the compare it was of
         for (int b = 0; b < n; b++)
         {
             MBlock block = m.Blocks[b];
@@ -124,7 +126,22 @@ internal static class Peephole
                     continue;
                 }
                 if (last is null) continue;
-                if (i.Op == MOp.Jcc) continue;
+                if (i.Op == MOp.Jcc)
+                {
+                    // A JUMP ON THE CONDITION THE LAST ONE FELL THROUGH ON is
+                    // never taken: the second test of `if (x != 0) F()`
+                    // around an inlined F that begins `if (x == 0) return`,
+                    // its compare gone just above (IrqSpinLock.Leave's
+                    // `je; je`).
+                    if (fell is { } known && ReferenceEquals(fellAfter, last) && known == i.Cond)
+                    {
+                        instrs.RemoveAt(k);
+                        k--;
+                        continue;
+                    }
+                    fell = i.Cond; fellAfter = last;
+                    continue;
+                }
                 // What leaves the flags be, and writes a register or memory
                 // the compare may read, ends it; anything else ends it too.
                 if (i.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Setcc or MOp.Cmov && !i.Lock && i.Operands.Count >= 1)
