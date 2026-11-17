@@ -30,6 +30,22 @@ public sealed partial class Lowering
         // address in its slot).
         HashSet<VReg> framed = new();
         HashSet<FrameSlot> holding = new(ReferenceEqualityComparer.Instance);
+        // A register that is a slot's address (`r = copy &slot`, written
+        // once): a store or load through it is one into or out of the slot.
+        Dictionary<VReg, int> writes = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is VReg d) writes[d] = writes.GetValueOrDefault(d) + 1;
+        Dictionary<VReg, FrameSlot> slotOf = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Copy && i.Dest is VReg d && writes[d] == 1 && i.Operands is [SlotOperand { Slot: var s }]) slotOf[d] = s;
+        FrameSlot? SlotAt(Operand o) => o switch
+        {
+            SlotOperand { Slot: var s } => s,
+            RegOperand { Reg: var r } when slotOf.TryGetValue(r, out FrameSlot? s) => s,
+            _ => null,
+        };
         bool Framed(Operand o) => o switch
         {
             SlotOperand { Slot.Name: FrameValueSlot } => true,
@@ -42,7 +58,7 @@ public sealed partial class Lowering
             foreach (Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
-                    if (i.Op == Opcode.Store && i.Operands is [SlotOperand { Slot: var into }, var stored] && Framed(stored) && holding.Add(into)) grew = true;
+                    if (i.Op == Opcode.Store && i.Operands is [var address, var stored] && SlotAt(address) is { } into && Framed(stored) && holding.Add(into)) grew = true;
                     if (i.Dest is not VReg d || framed.Contains(d)) continue;
                     bool holds = i.Op switch
                     {
@@ -51,7 +67,7 @@ public sealed partial class Lowering
                                                               || Framed(i.Operands[1]) && i.Operands[0] is ImmOperand),
                         Opcode.Sub => i.Operands.Count == 2 && Framed(i.Operands[0]) && i.Operands[1] is ImmOperand,
                         Opcode.Phi => i.Operands.Any(Framed),
-                        Opcode.Load => i.Operands is [SlotOperand { Slot: var from }] && holding.Contains(from),
+                        Opcode.Load => i.Operands is [var from] && SlotAt(from) is { } read && holding.Contains(read),
                         _ => false,
                     };
                     if (holds) { framed.Add(d); grew = true; }

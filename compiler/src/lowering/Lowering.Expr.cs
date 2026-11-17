@@ -353,6 +353,12 @@ public sealed partial class Lowering
     /// </summary>
     private VReg CopyStruct(Node at, VReg src, TypeSymbol sym, bool frame = false)
     {
+        if (frame && HasStructFields(sym) && ValueInFrame(sym))
+        {
+            VReg tree = FrameTree(sym, zero: false);
+            CopyIntoTree(tree, src, sym);
+            return tree;
+        }
         if (HasStructFields(sym))
         {
             VReg deep = _e.Call(StructCopier(at, sym), IrTypes.Word, R(src))!;
@@ -395,7 +401,82 @@ public sealed partial class Lowering
     /// it is a block of the heap instead, which escape analysis frees where
     /// its life is proved to end (tier two), as it does any large array.
     /// </summary>
-    private bool ValueInFrame(TypeSymbol sym) => FrameHoldsValues && !HasStructFields(sym) && sym.InstanceSize <= FrameValueLimit;
+    private bool ValueInFrame(TypeSymbol sym) => FrameHoldsValues && TreeBytes(sym) <= FrameValueLimit;
+
+    /// <summary>
+    /// The bytes of the frame a value of the struct takes: its own, and the
+    /// blocks of each struct field it holds by pointer (a field whose
+    /// struct is not held in line -- a Boxed field's, a nullable's...),
+    /// each a slot of the frame too (FrameTree).
+    /// </summary>
+    private int TreeBytes(TypeSymbol sym)
+    {
+        int bytes = Math.Max(4, sym.InstanceSize);
+        foreach (FieldSymbol f in PointerHeldStructs(sym)) bytes += TreeBytes(StructOf(f.Type));
+        return bytes;
+    }
+
+    /// <summary>The struct fields a struct holds by pointer: each a block of its own.</summary>
+    private IEnumerable<FieldSymbol> PointerHeldStructs(TypeSymbol sym)
+        => sym.Fields.Where(f => !f.Static && !f.Boxed && !f.Inline && IsStructValue(f.Type));
+
+    /// <summary>
+    /// A STRUCT HOLDING ANOTHER BY POINTER, IN THE FRAME: its block a slot,
+    /// and each struct field it holds by pointer a slot of its own whose
+    /// address the field holds -- a tree of slots, wired here, zeroed where
+    /// `zero` says (the pointers kept). What `__struct_new$` made on the heap
+    /// (StructMaker), made where a flat struct's value is (StructInFrame).
+    /// </summary>
+    private VReg FrameTree(TypeSymbol sym, bool zero)
+    {
+        VReg at = StructInFrame(sym, zero);
+        Wire(at, sym, zero);
+        return at;
+    }
+
+    /// <summary>Each pointer-held struct field of the block at `at` given a slot of its own (FrameTree).</summary>
+    private void Wire(VReg at, TypeSymbol sym, bool zero)
+    {
+        foreach (FieldSymbol f in PointerHeldStructs(sym))
+        {
+            VReg inner = FrameTree(StructOf(f.Type), zero);
+            _e.Store(R(at), R(inner), f.Offset, _t.WordSize);
+        }
+    }
+
+    /// <summary>
+    /// A STRUCT COPIED INTO A TREE OF THE FRAME, in place: the bytes of each
+    /// block copied into the tree's own block, the tree's pointers kept --
+    /// `b = a; b.Inner.X = 1;` leaves `a.Inner` alone, as StructCopier's
+    /// new inner blocks did, with nothing made. A flat struct is its bytes.
+    /// The destination is this frame's: no barrier, no card.
+    /// </summary>
+    private void CopyIntoTree(VReg into, VReg from, TypeSymbol sym)
+    {
+        List<(FieldSymbol Field, VReg Mine)> kept = new();
+        foreach (FieldSymbol f in PointerHeldStructs(sym)) kept.Add((f, _e.Load(IrTypes.Word, into, f.Offset)));
+        if (into != from) _e.Emit(Opcode.MemCopy, null, R(into), R(from), Imm(Math.Max(1, sym.InstanceSize), IrTypes.Word));
+        foreach ((FieldSymbol f, VReg mine) in kept)
+        {
+            _e.Store(R(into), R(mine), f.Offset, _t.WordSize);
+            if (into == from) continue;
+            VReg theirs = _e.Load(IrTypes.Word, from, f.Offset);
+            CopyIntoTree(mine, theirs, StructOf(f.Type));
+        }
+    }
+
+    /// <summary>A tree of the frame made zero again, its pointers kept (a struct local's declaration with no initialiser).</summary>
+    private void ZeroTree(VReg at, TypeSymbol sym)
+    {
+        List<(FieldSymbol Field, VReg Mine)> kept = new();
+        foreach (FieldSymbol f in PointerHeldStructs(sym)) kept.Add((f, _e.Load(IrTypes.Word, at, f.Offset)));
+        _e.Emit(Opcode.MemSet, null, R(at), new ImmOperand(0, IrType.I32), Imm(Math.Max(4, sym.InstanceSize), IrTypes.Word));
+        foreach ((FieldSymbol f, VReg mine) in kept)
+        {
+            _e.Store(R(at), R(mine), f.Offset, _t.WordSize);
+            ZeroTree(mine, StructOf(f.Type));
+        }
+    }
 
     /// <summary>A struct's storage in this frame (FrameHoldsValues), zeroed where `zero` says.</summary>
     private VReg StructInFrame(TypeSymbol sym, bool zero = false)
@@ -426,7 +507,7 @@ public sealed partial class Lowering
     /// </summary>
     private VReg NewStruct(Node at, TypeSymbol sym, bool frame = false)
     {
-        if (frame && ValueInFrame(sym)) return StructInFrame(sym, zero: true);
+        if (frame && ValueInFrame(sym)) return FrameTree(sym, zero: true);
         VReg made = HasStructFields(sym) ? _e.Call(StructMaker(at, sym), IrTypes.Word)! : Allocate(at, Math.Max(1, sym.InstanceSize));
         _heapStructs.Add(made);
         return made;
@@ -2000,8 +2081,9 @@ public sealed partial class Lowering
         int size = Math.Max(sym.Kind == TypeKind.Class ? _t.ObjectHeaderBytes : 1, sym.InstanceSize);
         // A STRUCT MADE IS A VALUE, in the frame from the start (StructInFrame),
         // zero as the allocator's block was, its constructor writing it there.
-        VReg obj = sym.Kind == TypeKind.Struct && ValueInFrame(sym)
-            ? StructInFrame(sym, zero: true)
+        bool inFrame = sym.Kind == TypeKind.Struct && ValueInFrame(sym);
+        VReg obj = inFrame
+            ? FrameTree(sym, zero: true)
             : Allocate(nw, size, described: sym.Kind == TypeKind.Class);
 
         if (sym.Kind == TypeKind.Class && nw.CanonSlot >= 0)
@@ -2029,8 +2111,9 @@ public sealed partial class Lowering
 
         // ITS STRUCT FIELDS ARE ZERO VALUES, not null pointers, before the
         // constructor or the initialiser runs: `new XformMatrix { M11 = one }`
-        // left M12 null and Clone read address 0 copying it.
-        InitStructFields(nw, obj, sym);
+        // left M12 null and Clone read address 0 copying it. A tree of the
+        // frame has its own already (FrameTree).
+        if (!inFrame) InitStructFields(nw, obj, sym);
 
         MethodSymbol? ctor = _b.NewConstructors.TryGetValue(nw, out MethodSymbol? selected)
                            ? selected

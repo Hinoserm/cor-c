@@ -587,7 +587,8 @@ public sealed partial class Lowering
             if (!boxed && !_addressTakenLocals.Contains(d) && HomedLocal(d, type))
             {
                 VReg home = RegOf(new SlotOperand(StructHome(d, type)));
-                _e.Emit(Opcode.MemSet, null, R(home), new ImmOperand(0, IrType.I32), Imm(Math.Max(1, StructOf(type).InstanceSize), IrTypes.Word));
+                if (HasStructFields(StructOf(type))) ZeroTree(home, StructOf(type));
+                else _e.Emit(Opcode.MemSet, null, R(home), new ImmOperand(0, IrType.I32), Imm(Math.Max(1, StructOf(type).InstanceSize), IrTypes.Word));
                 foreach (LocalDecl also in d.Also) EmitLocalDecl(also);
                 return;
             }
@@ -689,12 +690,21 @@ public sealed partial class Lowering
         }
         else
         {
-            VReg cursor = SlotReg(elem, IrTypes.Of(element));
             // A struct element's cursor is a copy, as C#'s is: not where the
-            // element is in the array, which the body may write.
-            if (IsStructValue(element) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
-                value = CopyStruct(fe, value, StructOf(element), frame: true);
-            _e.CopyTo(cursor, RegOperand.Of(value));
+            // element is in the array, which the body may write -- into the
+            // cursor's own storage where it has one (SymHome).
+            if (IsStructValue(element) && value.Type == IrTypes.Word && HomedStruct(element)
+                && (named is null || !_addressTakenSyms.Contains(named)))
+            {
+                StorePlace(new MemPlace(new SlotOperand(SymHome(elem, element)), 0, element, false, true), value);
+            }
+            else
+            {
+                VReg cursor = SlotReg(elem, IrTypes.Of(element));
+                if (IsStructValue(element) && value.Type == IrTypes.Word && !_heapStructs.Contains(value))
+                    value = CopyStruct(fe, value, StructOf(element), frame: true);
+                _e.CopyTo(cursor, RegOperand.Of(value));
+            }
         }
 
         _loops.Add((end, step, _openHandlers.Count, _openHandlers.Count));

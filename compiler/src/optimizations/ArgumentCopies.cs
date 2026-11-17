@@ -425,10 +425,25 @@ public static class ArgumentCopies
                 {
                     continue;
                 }
-                if (!privateSlot(into.Slot) || into.Slot.Align < buffer.Slot.Align) continue;
+                // The destination may also be an argument the callee only
+                // reads (handed over as it is, `acc = Step(acc, i)`), where
+                // the callee is done reading it before it first writes its
+                // buffer (ReadBeforeBuffer).
+                bool intoPrivate = privateSlot(into.Slot)
+                    || uses.TryGetValue(into.Slot, out var asArgument)
+                       && asArgument.All(u => u.I.Op != Opcode.Call || ReferenceEquals(u.I, call) && u.K < last)
+                       && asArgument.Where(u => u.I.Op != Opcode.Call).All(u => u.I.Op switch
+                          {
+                              Opcode.Load or Opcode.Store or Opcode.MemSet => u.K == 0,
+                              Opcode.MemCopy => u.K is 0 or 1,
+                              _ => false,
+                          });
+                if (!intoPrivate || into.Slot.Align < buffer.Slot.Align) continue;
                 bool other = false;
                 for (int k = 0; k < last; k++)
-                    if (slotOf(call.Operands[k]) is { } o && ReferenceEquals(o.Slot, into.Slot)) other = true;
+                    if (slotOf(call.Operands[k]) is { } o && ReferenceEquals(o.Slot, into.Slot)
+                        && !(readOnly.TryGetValue(callee, out bool[]? ro) && k < ro.Length && ro[k] && ReadBeforeBuffer(callee, k)))
+                        other = true;
                 if (other) continue;
 
                 call.Operands[last] = copy.Operands[0];
@@ -612,6 +627,50 @@ public static class ArgumentCopies
 
     /// <summary>The name lowering gives a method's result buffer parameter.</summary>
     private const string ResultBufferName = "retbuf";
+
+    /// <summary>
+    /// Whether a callee is done reading parameter `k` before it first writes
+    /// its result buffer: every use of the parameter (and of what is made
+    /// of it) and every write through the buffer (a store, fill, copy into
+    /// it, or the buffer handed to a call) in one block, the last use of
+    /// the parameter before the first write. So the two may be one storage.
+    /// </summary>
+    private static bool ReadBeforeBuffer(Function f, int k)
+    {
+        if (k >= f.Params.Count - 1 || f.Blocks.Count == 0) return false;
+        Dictionary<VReg, int> writes = Writes(f);
+        HashSet<VReg> param = Derived(f, f.Params[k], writes, out bool rewrittenParam);
+        HashSet<VReg> buffer = Derived(f, f.Params[^1], writes, out bool rewrittenBuffer);
+        if (rewrittenParam || rewrittenBuffer) return false;
+        Block? only = null;
+        int lastRead = -1, firstWrite = int.MaxValue;
+        foreach (Block b in f.Blocks)
+            for (int at = 0; at < b.Instrs.Count; at++)
+            {
+                Instr i = b.Instrs[at];
+                bool reads = false, writesBuffer = false;
+                for (int o = 0; o < i.Operands.Count; o++)
+                {
+                    if (i.Operands[o] is not RegOperand { Reg: var r }) continue;
+                    if (param.Contains(r) && !(i.Op is Opcode.Copy or Opcode.Add && i.Dest is { } d && param.Contains(d))) reads = true;
+                    if (buffer.Contains(r))
+                        writesBuffer |= i.Op switch
+                        {
+                            Opcode.Store or Opcode.MemSet => o == 0,
+                            Opcode.MemCopy => o == 0,
+                            Opcode.Load or Opcode.Ret => false,
+                            Opcode.Copy or Opcode.Add => !(i.Dest is { } d2 && buffer.Contains(d2)),
+                            _ => true,
+                        };
+                }
+                if (!reads && !writesBuffer) continue;
+                if (only is not null && !ReferenceEquals(only, b)) return false;
+                only = b;
+                if (reads) lastRead = at;
+                if (writesBuffer) firstWrite = Math.Min(firstWrite, at);
+            }
+        return lastRead < firstWrite;
+    }
 
     /// <summary>Whether every `ret` of the function answers its last parameter, the result buffer.</summary>
     private static bool AnswersBuffer(Function f)

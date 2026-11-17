@@ -136,14 +136,81 @@ public sealed partial class Lowering
     /// </summary>
     private readonly Dictionary<LocalDecl, FrameSlot> _structHomes = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<LocalDecl, bool> _homedLocals = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<int, FrameSlot> _paramTrees = new();
+    private readonly Dictionary<(int, TypeSymbol), FrameSlot> _symHomes = new();
+
+    /// <summary>A tree's own bytes being stored, its pointers put back after (StorePlace).</summary>
+    private bool _storingFlat;
 
     /// <summary>A declared struct local's own slot (_structHomes), made the first time it is asked for.</summary>
     private FrameSlot StructHome(LocalDecl d, Type type)
     {
         if (_structHomes.TryGetValue(d, out FrameSlot? home)) return home;
+        // Sized by the binder's type for the declaration where it has one,
+        // as HomedLocal judges it.
+        TypeSymbol sym = StructOf(_b.LocalType.TryGetValue(d, out Type? declared) ? declared : type);
+        home = TreeHome(sym);
+        _structHomes[d] = home;
+        return home;
+    }
+
+    /// <summary>
+    /// A home's slot; for a struct holding another by pointer, a tree of
+    /// slots (FrameTree) wired AT THE FUNCTION'S ENTRY -- a switch section
+    /// may write a local another section declares, before its declaration
+    /// has run -- and written after only by copies into it (CopyIntoTree).
+    /// </summary>
+    private FrameSlot TreeHome(TypeSymbol sym)
+    {
+        FrameSlot home = _f.NewSlot(Math.Max(4, sym.InstanceSize), Math.Min(_t.Align64, Math.Max(4, sym.InlineAlign)), FrameValueSlot);
+        if (HasStructFields(sym)) AtEntry(() => Wire(RegOf(new SlotOperand(home)), sym, zero: true));
+        return home;
+    }
+
+    /// <summary>
+    /// A binder-made struct local's own storage (a pattern's name, a foreach
+    /// cursor), by its slot number and struct: what a declared local's is
+    /// (StructHome). Bound by a copy into it, so a later lap's binding or
+    /// assignment never writes storage a site handed it.
+    /// </summary>
+    private FrameSlot SymHome(int slot, Type type)
+    {
+        TypeSymbol sym = StructOf(type);
+        if (_symHomes.TryGetValue((slot, sym), out FrameSlot? home)) return home;
+        home = TreeHome(sym);
+        _symHomes[(slot, sym)] = home;
+        return home;
+    }
+
+    /// <summary>Code emitted at the start of the function's entry block, before anything else it does.</summary>
+    private void AtEntry(Action emit)
+    {
+        Builder saved = _e;
+        Block scratch = _f.NewBlock("atentry");
+        _e = new Builder(_f, scratch);
+        try { emit(); }
+        finally { _e = saved; }
+        _f.Blocks.Remove(scratch);
+        _f.Blocks[0].Instrs.InsertRange(0, scratch.Instrs);
+    }
+
+    /// <summary>
+    /// A by-value struct parameter holding another by pointer: a tree home
+    /// of its own, the caller's value copied into it at the entry -- its
+    /// assignments are copies into that, never the parameter's register
+    /// pointed at a site's storage that a loop's next lap writes.
+    /// </summary>
+    private FrameSlot ParamTree(int index, Type type)
+    {
+        if (_paramTrees.TryGetValue(index, out FrameSlot? home)) return home;
         TypeSymbol sym = StructOf(type);
         home = _f.NewSlot(Math.Max(4, sym.InstanceSize), Math.Min(_t.Align64, Math.Max(4, sym.InlineAlign)), FrameValueSlot);
-        _structHomes[d] = home;
+        VReg given = _params[index];
+        // After the wiring TreeHome would emit: both at the entry, the copy
+        // inserted first and so run last.
+        AtEntry(() => CopyIntoTree(RegOf(new SlotOperand(home)), given, sym));
+        AtEntry(() => Wire(RegOf(new SlotOperand(home)), sym, zero: false));
+        _paramTrees[index] = home;
         return home;
     }
 
@@ -227,6 +294,8 @@ public sealed partial class Lowering
         _heapStructs.Clear();
         _structHomes.Clear();
         _homedLocals.Clear();
+        _paramTrees.Clear();
+        _symHomes.Clear();
         _returnType = null;
         _boundsFail = null;
         _checkedDepth = 0;
@@ -1246,7 +1315,36 @@ public sealed partial class Lowering
                 // bytes, with no barrier and no card.
                 VReg into = RegOf(home);
                 if (framed.Offset != 0) into = _e.Binary(Opcode.Add, into, framed.Offset);
-                if (into != value) _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(Math.Max(1, StructOf(framed.Type).InstanceSize), IrTypes.Word));
+                // A tree's blocks each copied into its own (CopyIntoTree).
+                if (HasStructFields(StructOf(framed.Type))) CopyIntoTree(into, value, StructOf(framed.Type));
+                else if (into != value) _e.Emit(Opcode.MemCopy, null, R(into), R(value), Imm(Math.Max(1, StructOf(framed.Type).InstanceSize), IrTypes.Word));
+                break;
+            }
+            case MemPlace { Inline: true } tree when !_storingFlat && HasStructFields(StructOf(tree.Type)):
+            {
+                // A STRUCT HOLDING ANOTHER BY POINTER, written through a
+                // reference to it (a `ref`, a struct's `this`): its bytes as
+                // any inline struct's, its pointers then put back -- the
+                // place keeps its own blocks, written over in turn -- never
+                // the value's blocks shared, so `r = y; r.Inner.X = 1;`
+                // leaves y alone. Barriered: the place may be the heap's.
+                TypeSymbol sym = StructOf(tree.Type);
+                VReg basis = RegOf(tree.Address);
+                VReg into = tree.Offset == 0 ? basis : _e.Binary(Opcode.Add, basis, tree.Offset);
+                List<(FieldSymbol Field, VReg Mine)> kept = new();
+                foreach (FieldSymbol f in PointerHeldStructs(sym)) kept.Add((f, _e.Load(IrTypes.Word, into, f.Offset)));
+                _storingFlat = true;
+                try { StorePlace(new MemPlace(R(into), 0, tree.Type, tree.Volatile, true), value); }
+                finally { _storingFlat = false; }
+                foreach ((FieldSymbol f, VReg mine) in kept)
+                {
+                    MemPlace field = new(R(into), f.Offset, f.Type);
+                    ReferenceBarrier(field, mine);
+                    _e.Store(R(into), R(mine), f.Offset, _t.WordSize);
+                    CardMark(field, mine);
+                    VReg theirs = _e.Load(IrTypes.Word, value, f.Offset);
+                    StorePlace(new MemPlace(R(mine), 0, f.Type, false, true), theirs);
+                }
                 break;
             }
             case MemPlace { Inline: true } held:
@@ -1714,6 +1812,15 @@ public sealed partial class Lowering
     /// </summary>
     private void BindPattern(Node at, int slot, Type held, VReg value)
     {
+        _b.PatternSym.TryGetValue(at, out LocalSym? bound);
+        // A STRUCT NAME WITH ITS OWN STORAGE (SymHome) is bound by a copy
+        // into it, as a declared local is assigned.
+        if (IsStructValue(held) && value.Type == IrTypes.Word && HomedStruct(held)
+            && bound is not null && !bound.Boxed && !_addressTakenSyms.Contains(bound) && bound.Slot == slot)
+        {
+            StorePlace(new MemPlace(new SlotOperand(SymHome(slot, held)), 0, held, false, true), value);
+            return;
+        }
         // A STRUCT BOUND BY A PATTERN IS A COPY, as C# makes it: the operand
         // may be a variable's own storage (StructHome), written over in place
         // by the variable's next assignment -- `if (x is var v) { x = y; }`
@@ -1819,6 +1926,12 @@ public sealed partial class Lowering
                         }
                         return new MemPlace(new SlotOperand(made), 0, l.Type);
                     }
+                    // A struct's: its own storage, as a declared local's
+                    // (SymHome), bound and assigned by copies into it.
+                    if (HomedStruct(l.Type))
+                    {
+                        return new MemPlace(new SlotOperand(SymHome(l.Slot, l.Type)), 0, l.Type, false, true);
+                    }
                     return new RegPlace(SlotReg(l.Slot, IrTypes.Of(l.Type)), l.Type);
                 }
                 if (_addressTakenLocals.Contains(d))
@@ -1854,6 +1967,10 @@ public sealed partial class Lowering
                 // A STRUCT PARAMETER IS ITS CALLER'S COPY, the callee's own
                 // (EvalAs copies every argument but a fresh one), written by a
                 // copy into it as a struct local's storage is (HomedStruct).
+                if (HomedStruct(p.Type) && HasStructFields(StructOf(p.Type)))
+                {
+                    return new MemPlace(new SlotOperand(ParamTree(p.Index, p.Type)), 0, p.Type, false, true);
+                }
                 if (HomedStruct(p.Type))
                 {
                     return new MemPlace(RegOperand.Of(_params[p.Index]), 0, p.Type, false, true);
