@@ -184,7 +184,11 @@ public sealed class UnitBackend : IUnitBackend
             // A struct's operator -- `a + offset` of a two-word address -- is
             // one: its result is made in the frame (Lowering.StructInFrame),
             // no block asked of the allocator, so it calls nothing.
-            if (calls.Length == 0 && instructions.Length <= IrLinkOptimizer.ForwarderBody) forwarding.Add(import.Symbol);
+            // Arch.CpuIndex (a %gs read, a bound) and Arch.InterruptsOn
+            // (PUSHF) are such: refused while an intrinsic counted as a call
+            // and eight instructions were the limit, they stayed calls at
+            // 280 sites each, every gate and lock of the kernel asking.
+            if (calls.All(IrLinkOptimizer.IsIntrinsic) && instructions.Length <= IrLinkOptimizer.ForwarderBody) forwarding.Add(import.Symbol);
         }
         IrImport[] Selected(int index)
         {
@@ -287,9 +291,41 @@ public sealed class UnitBackend : IUnitBackend
                 if (import.RegionSites is { } sites && RegionPointsTo.MarkSites(body, sites) > 0) importedSites = true;
                 local.Functions.Add(body);
             }
+            // ITS OWN UNIT'S TINY BODIES THAT AN IMPORT CALLS: a function is
+            // regenerated with its imports beside it, not its unit's other
+            // functions, so a sibling an imported body calls stayed a call
+            // where that body was inlined -- NetworkInterface.get_Ip, one
+            // field read, in Net.AddressOwner's body inlined into
+            // RawIp.CanSend, five calls in a function the network's every
+            // send goes through. Such a sibling of at most the forwarder's
+            // size that calls nothing but intrinsics comes from the unit's
+            // own archive, to be inlined like any import.
+            foreach (Function imported in local.Functions.Where(g => !ReferenceEquals(g, function)).ToList())
+                foreach (Instr i in imported.Blocks.SelectMany(block => block.Instrs))
+                {
+                    if (i.Op != Opcode.Call || i.Callee is not { } sibling || ReferenceEquals(sibling, function.Name)
+                        || local.Functions.Any(g => g.Name == sibling)
+                        || !archive.Entries.TryGetValue(IrKey.OfFunction(sibling), out IrArchiveEntry? own)
+                        || !own.Importable || own.Instructions > IrLinkOptimizer.ForwarderBody || !own.Calls.All(IrLinkOptimizer.IsIntrinsic)) continue;
+                    local.Functions.Add(IrFunctionCodec.Read(archive.ReadBody(own.Key), new IrReadBudget(own.DecodeBytes)));
+                }
+            // A GUARD OF A TYPE THE LINK INITIALISED (Preinit.LastCompleted):
+            // its state word is "completed" in the image and nothing writes it
+            // again, so each read of it is the 1 it is, and the cleanup below
+            // folds the test and the call to T.StaticInit$ away.
+            if (facts?.CompletedReady is { Count: > 0 } completed)
+                foreach (Corsac.Lang.Ir.Block b in function.Blocks)
+                    for (int k = 0; k < b.Instrs.Count; k++)
+                        if (b.Instrs[k] is { Op: Opcode.Load, Offset: 0, Dest: { } read } load && load.Operands is [SymOperand { Offset: 0 } word]
+                            && completed.Contains(word.Name))
+                        {
+                            Instr one = new() { Op = Opcode.Copy, Dest = read };
+                            one.Operands.Add(new ImmOperand(1, read.Type));
+                            b.Instrs[k] = one;
+                        }
             Pipeline cleanup = new() { Rounds = 3, Workers = 1 };
             cleanup.Passes.Add(new ConstantFold { AcrossFunction = true }); cleanup.Passes.Add(new ConstantAndCopyPropagation());
-            cleanup.Passes.Add(new DeadCodeElimination()); cleanup.Passes.Add(new BranchSimplify());
+            cleanup.Passes.Add(new DeadCodeElimination()); cleanup.Passes.Add(new IdentitySelect()); cleanup.Passes.Add(new BranchSimplify());
             // With the link's lifetime answers the allocator calls stay calls
             // through the first round, so the lifetime rules can tell them
             // (Escape.RunAtLink, one function at a time, as it is loaded);

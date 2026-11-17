@@ -152,6 +152,7 @@ public sealed class Pipeline
         // inliner set String's twice in a row where a list was made and
         // string.Empty read.
         p.Passes.Add(new StaticInitGuards());
+        p.Passes.Add(new IdentitySelect());
         p.Passes.Add(new BranchSimplify());
         if (experimentalBatch) p.Passes.Add(new CommonTailMerge());
         p.ModulePasses.Add(new DeadStatics());

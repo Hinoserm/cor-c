@@ -289,6 +289,9 @@ public static class Preinit
     public sealed record Solution(HashSet<string> FrozenSteps, int Frozen, int Candidates, int TypesRun, List<string> Report, string Signature,
         Dictionary<string, HashSet<string>> Edges)
     {
+        /// <summary>The state words of the types this solve runs whole: "completed" in the image.</summary>
+        public HashSet<string> CompletedReady { get; init; } = new(StringComparer.Ordinal);
+
         /// <summary>The solve itself, which lays its data down when the link knows what it keeps (Lay).</summary>
         internal object? Made { get; init; }
     }
@@ -342,6 +345,22 @@ public static class Preinit
     private static Solution? _last;
 
     /// <summary>
+    /// THE STATE WORDS THE IMAGE HOLDS AT "COMPLETED", for its own code: the
+    /// link's solve (Peek, before its units are made again) runs these
+    /// types' initialisers, so a guard of one in the image's code (Lowering
+    /// StaticInit's `cmp $1, ready; call T.StaticInit$`) never calls --
+    /// UserMode.Current tested two at every one of its 1,216 call sites.
+    /// The link's backends read them as the 1 they are (Folded), and each
+    /// one folded is laid down whatever else names it: a type whose guard
+    /// was its only name would otherwise be left out, and its initialiser's
+    /// writes with it.
+    /// </summary>
+    public static IReadOnlySet<string>? LastCompleted => _last?.CompletedReady;
+
+    /// <summary>The state words the link's code was made to read as completed (LastCompleted): laid down whatever names them.</summary>
+    public static HashSet<string>? Folded { get; set; }
+
+    /// <summary>
     /// The state words of the types the build's modules assume this link
     /// initialises (KernelAssumptions, through the kernel's --keep): named
     /// as far as Lay is concerned, whatever the image's own code names.
@@ -385,6 +404,7 @@ public static class Preinit
         // state word a module's code does not test is named by nothing of
         // that module's, and must be laid down here all the same.
         if (AlsoNamed is { } assumed) referenced.UnionWith(assumed);
+        if (Folded is { } folded) referenced.UnionWith(folded);
         var (data, overrides, aliases, said) = made.Emit(name => referenced.Contains(name));
         if (Switches.PreinitReport) foreach (string line in said) Console.Error.WriteLine("preinit: " + line);
         if (overrides.Count > 0)
@@ -718,7 +738,11 @@ public static class Preinit
                 else
                     foreach (PreinitWorld.Region r in owned) edges[r.Symbol!] = world.Names(new[] { r });
             }
-            return new Solution(frozenSteps, frozen, _byStorage.Count, typesRun, world.Report, Signature(_notes), edges) { Made = this };
+            return new Solution(frozenSteps, frozen, _byStorage.Count, typesRun, world.Report, Signature(_notes), edges)
+            {
+                Made = this,
+                CompletedReady = _frozenTypes.Values.Select(t => t.Note.Ready).ToHashSet(StringComparer.Ordinal),
+            };
         }
 
         /// <summary>

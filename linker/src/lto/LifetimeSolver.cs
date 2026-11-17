@@ -48,6 +48,9 @@ public sealed class LifetimeFacts
     /// its place (Module.LinkHeap). Null: not decided.
     /// </summary>
     public bool? Heap { get; set; }
+
+    /// <summary>The state words the image holds at "completed" (Preinit.LastCompleted): a guard of one is never taken.</summary>
+    public HashSet<string>? CompletedReady { get; set; }
 }
 
 /// <summary>What the whole program does to one object's fields: the owned field rules' summary, solved.</summary>

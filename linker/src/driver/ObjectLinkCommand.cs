@@ -156,6 +156,7 @@ public static class ObjectLinkCommand
         // body's name again. The names themselves are no symbols.
         // (Set by every link, never left from the one before in this process.)
         Preinit.AlsoNamed = null;
+        Preinit.Folded = null;
         HashSet<string>? assumedBodies = null;
         if (keep is not null)
         {

@@ -18,7 +18,14 @@ public static class IrLinkOptimizer
     /// whole chains in behind them and grew the image by a twentieth, and
     /// by a hundredth at this size with calls.
     /// </summary>
-    public const int ForwarderBody = 8;
+    public const int ForwarderBody = TinyBody;
+
+    /// <summary>
+    /// A machine intrinsic's name (the x86 backend's `__x86.i.` sequences:
+    /// a %gs read, PUSHF, CLI): written out in place by the backend, never
+    /// a call, so a body that "calls" only these calls nothing.
+    /// </summary>
+    public static bool IsIntrinsic(string callee) => callee.StartsWith("__x86.i.", StringComparison.Ordinal);
 
     public static int Run(List<(string Name, ObjectFile Object)> inputs, Func<IUnitBackend> backend,
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
@@ -404,8 +411,8 @@ public static class IrLinkOptimizer
                     imports.Add((call, provider, body)); used += body.Length;
                     if (!tiny) counted++;
                 }
-                // AND WHAT THOSE CALL, WHEN IT IS NO BIGGER THAN ITS CALL AND
-                // CALLS NOTHING ITSELF (ForwarderBody): a body
+                // AND WHAT THOSE CALL, WHEN IT IS TINY AND CALLS NOTHING ITSELF
+                // BUT MACHINE INTRINSICS (ForwarderBody, IsIntrinsic): a body
                 // brought in brings its calls with it, and they are this
                 // unit's calls once it is inlined. Taken one level only, a
                 // one-line wrapper of an intrinsic in a third unit
@@ -416,8 +423,9 @@ public static class IrLinkOptimizer
                 for (int at = 0; at < imports.Count; at++)
                     foreach (string call in imports[at].Body.Calls)
                     {
+                        // (Its own unit's: UnitBackend.Load adds those itself.)
                         if (taken.Contains(call) || defined.Contains(call) || !Provider(call, out IrArchive? provider, out IrArchiveEntry? body)
-                            || !body.Importable || body.Instructions > ForwarderBody || body.Calls.Count > 0
+                            || !body.Importable || body.Instructions > ForwarderBody || body.Calls.Any(callee => !IsIntrinsic(callee))
                             || body.Length > importBytes - used || imports.Count >= BackendProtocol.MostImports - 2) continue;
                         imports.Add((call, provider, body)); used += body.Length;
                         taken.Add(call);
@@ -488,6 +496,12 @@ public static class IrLinkOptimizer
                     .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal));
             facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields;
             facts.Regions = regionFacts?.GetValueOrDefault(original);
+            // Not in a module: its link lays down no kernel type made.
+            if (!moduleOfKernel && Preinit.LastCompleted is { Count: > 0 } completed)
+            {
+                facts.CompletedReady = new(completed, StringComparer.Ordinal);
+                lock (solving) (Preinit.Folded ??= new(StringComparer.Ordinal)).UnionWith(completed);
+            }
             facts.ImageRegions = regionFacts is { Count: > 0 };
             if (noCollector) facts.Heap = false;
             return facts;

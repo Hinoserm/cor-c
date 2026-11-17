@@ -108,6 +108,8 @@ public static class BackendProtocol
             }
             // Whether the image needs a collector: 2 undecided, 1 yes, 0 no.
             writer.Write(facts.Heap switch { null => (byte)2, true => (byte)1, false => (byte)0 });
+            writer.Write(facts.CompletedReady?.Count ?? -1);
+            foreach (string ready in facts.CompletedReady ?? Enumerable.Empty<string>()) WriteText(writer, ready);
         }
         writer.Flush();
     }
@@ -293,6 +295,12 @@ public static class BackendProtocol
                 2 => null, 1 => true, 0 => false,
                 _ => throw new InvalidDataException("Invalid backend heap fact"),
             };
+            int completed = reader.ReadInt32();
+            if (completed >= 0)
+            {
+                facts.CompletedReady = new(StringComparer.Ordinal);
+                for (int k = 0; k < completed; k++) facts.CompletedReady.Add(ReadText(reader));
+            }
         }
         return new(input, output, imports, retained, facts);
     }
