@@ -324,7 +324,7 @@ public sealed class UnitBackend : IUnitBackend
                 foreach (Function body in local.Functions)
                 foreach (Corsac.Lang.Ir.Block b in body.Blocks)
                     for (int k = 0; k < b.Instrs.Count; k++)
-                        if (b.Instrs[k] is { Op: Opcode.Load, Offset: 0, Dest: { } read } load && load.Operands is [SymOperand { Offset: 0 } word]
+                        if (b.Instrs[k] is { Op: Opcode.Load, Offset: 0, Dest: { } read } load && load.Size == IrTypes.Word.Bytes() && load.Operands is [SymOperand { Offset: 0 } word]
                             && completed.Contains(word.Name))
                         {
                             Instr one = new() { Op = Opcode.Copy, Dest = read };

@@ -741,6 +741,11 @@ public static partial class Program
             (Function f, Builder b) = Fn(IrType.I64, IrType.I64);
             module.Functions.Add(f); module.Entry = f.Name;
             VReg owner = b.Unary(Opcode.Trunc64, b.Call(Escape.Allocator, IrType.I64, new ImmOperand(16, IrType.I64))!);
+            // An object, its descriptor at word 0: a frame slot holding none
+            // is a struct's bytes (Escape.HeaderlessSlot), whose fields go
+            // by FreeOwnedReplaced, not FreeField -- what this test, older
+            // than that rule, was then refused for.
+            b.Store(RegOperand.Of(owner), new SymOperand("t_Owner"), 0, 4);
             b.Call("fill", IrType.Void, RegOperand.Of(owner), RegOperand.Of(f.Params[0]));
             VReg child = b.Load(IrType.I32, owner, 8, 4, false);
             b.Ret(RegOperand.Of(b.Load(IrType.I64, child, 16, 8)));

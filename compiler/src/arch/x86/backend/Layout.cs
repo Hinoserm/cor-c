@@ -66,6 +66,23 @@ internal static class Layout
             return;
         }
 
+        // A SEGMENT THAT ENDS IN A TRAP -- the `int3` after a call that never
+        // comes back: an index out of range, a throw, a null receiver's --
+        // IS COLD, AND GOES AFTER EVERYTHING ELSE. Laid where its test was
+        // written, each one sat between the lines the function runs every
+        // time: a check's call and its padding in the middle of a packet's
+        // path, the bytes after it on another cache line. A processor of
+        // 64 KB of instruction cache (the Geode LX; a 486's eight) runs the
+        // kernel's network path over more code than that, and what it never
+        // executes should not share those lines. At the end, the branch to
+        // it is forward and not taken, as every such processor guesses.
+        bool[] cold = new bool[segments];
+        for (int s = 1; s < segments; s++)
+        {
+            int end = (s + 1 < segments ? starts[s + 1] : n) - 1;
+            cold[s] = m.Blocks[end].Instrs.Count > 0 && m.Blocks[end].Instrs[^1].Op == MOp.Int3;
+        }
+
         bool[] placed = new bool[segments];
         List<int> order = new(segments);
         int nextUnplaced = 0;
@@ -75,10 +92,10 @@ internal static class Layout
             placed[current] = true;
             order.Add(current);
             int last = (current + 1 < segments ? starts[current + 1] : n) - 1;
-            int follow = Follower(m.Blocks[last], current, index, segmentOf, placed);
+            int follow = Follower(m.Blocks[last], current, index, segmentOf, placed, cold);
             if (follow < 0)
             {
-                while (nextUnplaced < segments && placed[nextUnplaced])
+                while (nextUnplaced < segments && (placed[nextUnplaced] || cold[nextUnplaced]))
                 {
                     nextUnplaced++;
                 }
@@ -90,6 +107,8 @@ internal static class Layout
             }
             current = follow;
         }
+        for (int s = 1; s < segments; s++)
+            if (cold[s] && !placed[s]) order.Add(s);
 
         List<MBlock> laid = new(n);
         foreach (int s in order)
@@ -109,7 +128,7 @@ internal static class Layout
     /// <paramref name="block"/>, or -1. Segments are numbered in the old
     /// order, so one ahead of it has a larger number.
     /// </summary>
-    private static int Follower(MBlock block, int current, Dictionary<MBlock, int> index, int[] segmentOf, bool[] placed)
+    private static int Follower(MBlock block, int current, Dictionary<MBlock, int> index, int[] segmentOf, bool[] placed, bool[] cold)
     {
         List<MInstr> instrs = block.Instrs;
         int k = instrs.Count;
@@ -117,8 +136,8 @@ internal static class Layout
         {
             return -1;
         }
-        int jump = Head(instrs[k - 1], index, segmentOf, placed);
-        int branch = k >= 2 && instrs[k - 2].Op == MOp.Jcc ? Head(instrs[k - 2], index, segmentOf, placed) : -1;
+        int jump = Head(instrs[k - 1], index, segmentOf, placed, cold);
+        int branch = k >= 2 && instrs[k - 2].Op == MOp.Jcc ? Head(instrs[k - 2], index, segmentOf, placed, cold) : -1;
 
         // The nearer one ahead in the old order, when either is ahead.
         int best = -1;
@@ -136,8 +155,8 @@ internal static class Layout
         return jump >= 0 ? jump : branch;
     }
 
-    /// <summary>The unplaced segment a jump's target starts, or -1.</summary>
-    private static int Head(MInstr jump, Dictionary<MBlock, int> index, int[] segmentOf, bool[] placed)
+    /// <summary>The unplaced segment a jump's target starts, or -1 (a cold one is none).</summary>
+    private static int Head(MInstr jump, Dictionary<MBlock, int> index, int[] segmentOf, bool[] placed, bool[] cold)
     {
         MBlock target = ((MLabel)jump.Operands[0]).Target;
         if (!index.TryGetValue(target, out int b))
@@ -145,7 +164,8 @@ internal static class Layout
             return -1;
         }
         int s = segmentOf[b];
-        return s >= 0 && !placed[s] ? s : -1;
+        // Never a cold one: it waits for the end.
+        return s >= 0 && !placed[s] && !cold[s] ? s : -1;
     }
 
     /// <summary>
