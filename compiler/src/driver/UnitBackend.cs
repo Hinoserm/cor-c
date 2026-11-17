@@ -397,6 +397,9 @@ public sealed class UnitBackend : IUnitBackend
             // by that call, the region sites above included.
             // Not in a kernel module's unit: the body reads the collector's
             // tables, which are the kernel's, by name.
+            // --collector-report: what this function leaves to the collector,
+            // before its allocations become fast paths of the allocator.
+            Escape.ReportFunction(function);
             if (!positionIndependent) AllocatorFastPaths.Run(function, local, Callee, cleanup);
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
@@ -413,7 +416,6 @@ public sealed class UnitBackend : IUnitBackend
             // back at every use. After every pass here that reads a slot as
             // it was made; the copies it leaves propagated and the dead gone.
             SlotScalars.ApplyAndClean(function);
-            Escape.ReportFunction(function);
             local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
             LandingPadHomes.Run(local);
             if (dumping) { System.Text.StringBuilder regenerated = new(); function.Dump(regenerated); Console.Error.WriteLine("== regenerated\n" + regenerated); }

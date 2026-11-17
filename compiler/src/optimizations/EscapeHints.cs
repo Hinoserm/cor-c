@@ -411,6 +411,8 @@ public sealed partial class Escape
         pass._linkCallees = callees; pass._linkOwn = facts.Bodies; pass._linkSummaries = summaries;
         _typedFieldsOf = callees is null ? null : pass.LinkTyped;
         _typedKeeps = callees is not null;
+        // Its store sequences read as the stores they are (StoresOfSequences).
+        Dictionary<Instr, Instr> sequences = StoresOfSequences(new[] { f });
         try
         {
             // What it calls, by the body the unit archived or the link brought
@@ -423,6 +425,7 @@ public sealed partial class Escape
         }
         finally
         {
+            SequencesAgain(new[] { f }, sequences);
             _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _stampItems = null;
             _returnsFirst = returnsFirstBefore; _bodies = bodiesBefore;
             _invokeOnly = invokeOnlyBefore; _reachGraphs = null;

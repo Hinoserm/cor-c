@@ -105,7 +105,6 @@ public static class Driver
         if (reportAt >= 0 && reportAt + 1 < taken.Count)
         {
             Corsac.Lang.Opt.Escape.CollectorReport = taken[reportAt + 1];
-            Corsac.Lang.Lto.CollectorReportHook.Archived = Corsac.Lang.Opt.Escape.ReportArchived;
             Switches.HandOn("--collector-report", taken[reportAt + 1]);
             taken.RemoveRange(reportAt, 2);
         }

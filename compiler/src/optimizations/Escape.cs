@@ -61,6 +61,9 @@ public sealed partial class Escape : IModulePass
 
     private static readonly object ReportGate = new();
 
+    /// <summary>An allocation an earlier run placed a free for: not reported.</summary>
+    private static readonly string FreedMark = "freed by the compiler";
+
     /// <summary>
     /// THE ALLOCATIONS LEFT TO THE COLLECTOR, written to CollectorReport: each
     /// allocator call still in the module once every lifetime pass has run
@@ -91,6 +94,7 @@ public sealed partial class Escape : IModulePass
                     if (i.Op != Opcode.Call || !IsAllocator(i.Callee)) continue;
                     string size = i.Operands.Count > 0 && i.Operands[0] is ImmOperand { Value: var n } ? n.ToString() : "?";
                     string why = Escaped.TryGetValue(i, out string? reason) ? reason : "not judged (made after the lifetime passes, or no free point found)";
+                    if (ReferenceEquals(why, FreedMark)) continue;
                     text.Append(f.Name).Append('\t').Append(size).Append('\t').Append(why.Replace('\t', ' ').Replace('\n', ' ')).Append('\n');
                 }
             // THE LAST RUN'S WORD: the link runs a unit's late passes again
@@ -103,15 +107,6 @@ public sealed partial class Escape : IModulePass
     /// <summary>Each function's allocations left to the collector, as its last run of the late passes left them.</summary>
     private static readonly Dictionary<string, string> ReportLines = new(StringComparer.Ordinal);
 
-    /// <summary>Archived bodies that call the allocator, as their units' compiles left them (the link's).</summary>
-    private static readonly HashSet<string> ArchivedSites = new(StringComparer.Ordinal);
-
-    /// <summary>An archived body asking the allocator, reported unless the link regenerates it.</summary>
-    public static void ReportArchived(string function)
-    {
-        lock (ReportGate) ArchivedSites.Add(function);
-    }
-
     /// <summary>The report written, once, as the compile or link ends.</summary>
     public static void WriteReport()
     {
@@ -120,8 +115,6 @@ public sealed partial class Escape : IModulePass
         {
             System.Text.StringBuilder all = new();
             foreach (string name in ReportLines.Keys.Order(StringComparer.Ordinal)) all.Append(ReportLines[name]);
-            foreach (string name in ArchivedSites.Order(StringComparer.Ordinal))
-                if (!ReportLines.ContainsKey(name)) all.Append(name).Append("\t?\tleft by its unit's compile (the link kept that code)\n");
             // Appended: a link's worker processes each add their own.
             File.AppendAllText(path, all.ToString());
         }
@@ -149,8 +142,57 @@ public sealed partial class Escape : IModulePass
         // built (_reachGraphs) hold their functions, so they go too.
         _repeating = new(ReferenceEqualityComparer.Instance);
         AnalysisCache.Open();
+        Dictionary<Instr, Instr>? sequences = m.AtLink ? StoresOfSequences(m.Functions) : null;
         try { RunCore(m); }
-        finally { AnalysisCache.Close(); _freedFacts = null; _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
+        finally { if (sequences is not null) SequencesAgain(m.Functions, sequences); AnalysisCache.Close(); _freedFacts = null; _repeating = null; _reachGraphs = null; _inserted = null; _indirect = null; _held = null; _fieldsOf = null; _heldStamps = null; _copies = null; _typeItems = null; _typedFieldsOf = null; _stampItems = null; }
+    }
+
+    /// <summary>
+    /// A STORE SEQUENCE READ AS THE STORE IT IS, while the rules run at the
+    /// link. A unit built with store sequences (Lowering.StoreSequences, the
+    /// kernel's) ends its late passes with every reference store fused into
+    /// `call refstore(slot, value)` or `call cardstore(slot, value)`
+    /// (CardMarks.FuseStores), and its archived IR is that: to these rules
+    /// a call to a name with no summary, which keeps what it is handed --
+    /// every object a kernel unit stored anywhere, into an object of its own
+    /// frame too, was left to the collector at the link. Each such call is
+    /// a store of a word here, and the call again after (SequencesAgain),
+    /// with whatever operands the rules gave the store.
+    /// </summary>
+    internal static Dictionary<Instr, Instr> StoresOfSequences(IEnumerable<Function> functions)
+    {
+        Dictionary<Instr, Instr> stores = new(ReferenceEqualityComparer.Instance);
+        foreach (Function f in functions)
+            foreach (Block b in f.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                {
+                    Instr call = b.Instrs[k];
+                    if (call.Op != Opcode.Call || call.Dest is not null || call.Operands.Count != 2
+                        || call.Callee is not (CardMarks.RefStore or CardMarks.CardStore)) continue;
+                    Instr store = new() { Op = Opcode.Store, Size = IrTypes.Word.Bytes() };
+                    store.Operands.Add(call.Operands[0]);
+                    store.Operands.Add(call.Operands[1]);
+                    b.Instrs[k] = store;
+                    stores[store] = call;
+                }
+        return stores;
+    }
+
+    /// <summary>Each store a sequence was read as, the sequence's call again, with the store's operands now.</summary>
+    internal static void SequencesAgain(IEnumerable<Function> functions, Dictionary<Instr, Instr> stores)
+    {
+        if (stores.Count == 0) return;
+        foreach (Function f in functions)
+            foreach (Block b in f.Blocks)
+                for (int k = 0; k < b.Instrs.Count; k++)
+                {
+                    if (!stores.TryGetValue(b.Instrs[k], out Instr? call)) continue;
+                    Instr store = b.Instrs[k];
+                    call.Operands.Clear();
+                    call.Operands.Add(store.Operands[0]);
+                    call.Operands.Add(store.Operands.Count > 1 ? store.Operands[1] : new ImmOperand(0, IrTypes.Word));
+                    b.Instrs[k] = call;
+                }
     }
 
     /// <summary>
@@ -5432,7 +5474,13 @@ continue;
                 if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} escapes={flow.Escapes} via {flow.Why}");
                 if (flow.Escapes)
                 {
-                    if (CollectorReport is not null) Escaped.AddOrUpdate(i, "escapes at: " + (flow.Why?.ToString() ?? "(no instruction named)"));
+                    // An escape at a free an earlier run placed for it is its
+                    // free: tier two, not the collector's.
+                    if (CollectorReport is not null)
+                    {
+                        if (flow.Why is { Op: Opcode.Call } freeing && IsFreeCall(freeing.Callee)) Escaped.AddOrUpdate(i, FreedMark);
+                        else Escaped.AddOrUpdate(i, "escapes at: " + (flow.Why?.ToString() ?? "(no instruction named)"));
+                    }
                     if (sweep == 0 && sized && flow.Why is { Op: Opcode.Store }) (anchorLater ??= new(ReferenceEqualityComparer.Instance)).Add(i);
                     // Left to the collector: say why, for the link (EscapeHints).
                     if (_hinting && sweep == 0)

@@ -295,6 +295,9 @@ public sealed class Pipeline
                 Corsac.Program.BenchmarkStage("opt-late-begin " + p.Name);
 #endif
                 Dictionary<Function, MarkVerifier>? marks = VerifyMarks ? MarkVerifier.Snapshot(m) : null;
+                // --collector-report: what is left to the collector, before
+                // the allocations become fast paths of the allocator.
+                if (p is InlineAllocators) Escape.Report(m);
                 p.Run(m);
                 if (marks is not null) MarkVerifier.Report(marks, m, p.Name);
                 TraceModulePass(p.Name, m);
@@ -321,7 +324,6 @@ public sealed class Pipeline
             ArgumentCopies.Run(m);
             foreach (Function f in m.Functions) SlotScalars.ApplyAndClean(f);
             SweepLate(m);
-            Escape.Report(m);
         }
     }
 
