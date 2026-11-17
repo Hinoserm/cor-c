@@ -325,6 +325,14 @@ public static class IrLinkOptimizer
         // every unit's late passes.
         if (regionsPossible) GC.Collect(2, GCCollectionMode.Aggressive, true);
         LinkTimings.Phase("regions");
+        // --collector-report: every archived body that still asks the
+        // allocator, as its unit's compile left it; a body the link
+        // regenerates reports its own code instead (Escape.ReportFunction).
+        if (CollectorReportHook.Archived is { } archivedSite)
+            foreach (IrArchive archived in archives.Values)
+                foreach ((IrKey key, IrArchiveEntry entry) in archived.Entries)
+                    if (key.Kind == IrKey.Function && entry.Calls.Any(CollectorReportHook.IsAllocator))
+                        archivedSite(key.Name);
         int lifetimeUnits = 0;
         // A PROGRAM THAT MAY NEED NO COLLECTOR (HeapDecision): a closed image
         // whose every unit with IR left its records and its lifetime hints,

@@ -53,6 +53,80 @@ public sealed partial class Escape : IModulePass
     /// <summary>Any of the collecting allocators: every pass that follows an allocation follows all three.</summary>
     public static bool IsAllocator(string? callee) => callee == Allocator || callee == LeafAllocator || callee == ObjectAllocator;
 
+    /// <summary>--collector-report FILE: where the allocations left to the collector are written (Report).</summary>
+    public static string? CollectorReport { get; set; }
+
+    /// <summary>What made each allocation escape, as the analysis found it, while a report is wanted.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Instr, string> Escaped = new();
+
+    private static readonly object ReportGate = new();
+
+    /// <summary>
+    /// THE ALLOCATIONS LEFT TO THE COLLECTOR, written to CollectorReport: each
+    /// allocator call still in the module once every lifetime pass has run
+    /// -- not put in the frame, not freed by the compiler, not given to a
+    /// region -- with its function, its size and what made it escape (the
+    /// instruction the analysis stopped at), or why else it was left. What
+    /// the memory tiers' work (tier 1 frame, tier 2 compiler frees, tier 3
+    /// collector) reads to find what still reaches tier 3.
+    /// </summary>
+    public static void Report(Module m)
+    {
+        // At the link, each function's word is its code as the backend
+        // regenerates it (ReportFunction), not a late run whose result a
+        // later run replaced.
+        if (CollectorReport is null || m.AtLink) return;
+        foreach (Function f in m.Functions) ReportFunction(f);
+    }
+
+    /// <summary>One function's allocations left to the collector, as its code now stands.</summary>
+    public static void ReportFunction(Function f)
+    {
+        if (CollectorReport is null) return;
+        {
+            System.Text.StringBuilder text = new();
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                {
+                    if (i.Op != Opcode.Call || !IsAllocator(i.Callee)) continue;
+                    string size = i.Operands.Count > 0 && i.Operands[0] is ImmOperand { Value: var n } ? n.ToString() : "?";
+                    string why = Escaped.TryGetValue(i, out string? reason) ? reason : "not judged (made after the lifetime passes, or no free point found)";
+                    text.Append(f.Name).Append('\t').Append(size).Append('\t').Append(why.Replace('\t', ' ').Replace('\n', ' ')).Append('\n');
+                }
+            // THE LAST RUN'S WORD: the link runs a unit's late passes again
+            // once the whole program has answered its conditions, and what
+            // that run leaves is what is linked.
+            lock (ReportGate) ReportLines[f.Name] = text.ToString();
+        }
+    }
+
+    /// <summary>Each function's allocations left to the collector, as its last run of the late passes left them.</summary>
+    private static readonly Dictionary<string, string> ReportLines = new(StringComparer.Ordinal);
+
+    /// <summary>Archived bodies that call the allocator, as their units' compiles left them (the link's).</summary>
+    private static readonly HashSet<string> ArchivedSites = new(StringComparer.Ordinal);
+
+    /// <summary>An archived body asking the allocator, reported unless the link regenerates it.</summary>
+    public static void ReportArchived(string function)
+    {
+        lock (ReportGate) ArchivedSites.Add(function);
+    }
+
+    /// <summary>The report written, once, as the compile or link ends.</summary>
+    public static void WriteReport()
+    {
+        if (CollectorReport is not { } path) return;
+        lock (ReportGate)
+        {
+            System.Text.StringBuilder all = new();
+            foreach (string name in ReportLines.Keys.Order(StringComparer.Ordinal)) all.Append(ReportLines[name]);
+            foreach (string name in ArchivedSites.Order(StringComparer.Ordinal))
+                if (!ReportLines.ContainsKey(name)) all.Append(name).Append("\t?\tleft by its unit's compile (the link kept that code)\n");
+            // Appended: a link's worker processes each add their own.
+            File.AppendAllText(path, all.ToString());
+        }
+    }
+
     /// <summary>The write barrier compiled code calls with the slot being overwritten.</summary>
     public const string Barrier = Corsac.Lang.Lto.RuntimeAbi.WriteBarrier;
 
@@ -5358,6 +5432,7 @@ continue;
                 if (tracing) Console.Error.WriteLine($"promote {f.Name}: {i} escapes={flow.Escapes} via {flow.Why}");
                 if (flow.Escapes)
                 {
+                    if (CollectorReport is not null) Escaped.AddOrUpdate(i, "escapes at: " + (flow.Why?.ToString() ?? "(no instruction named)"));
                     if (sweep == 0 && sized && flow.Why is { Op: Opcode.Store }) (anchorLater ??= new(ReferenceEqualityComparer.Instance)).Add(i);
                     // Left to the collector: say why, for the link (EscapeHints).
                     if (_hinting && sweep == 0)

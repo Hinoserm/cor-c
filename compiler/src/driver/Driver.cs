@@ -99,6 +99,16 @@ public static class Driver
             Switches.HandOn("--trace-escape", taken[traceAt + 1]);
             taken.RemoveRange(traceAt, 2);
         }
+        // --collector-report FILE: every allocation the lifetime passes left
+        // to the collector, with what made it escape (Escape.CollectorReport).
+        int reportAt = taken.IndexOf("--collector-report");
+        if (reportAt >= 0 && reportAt + 1 < taken.Count)
+        {
+            Corsac.Lang.Opt.Escape.CollectorReport = taken[reportAt + 1];
+            Corsac.Lang.Lto.CollectorReportHook.Archived = Corsac.Lang.Opt.Escape.ReportArchived;
+            Switches.HandOn("--collector-report", taken[reportAt + 1]);
+            taken.RemoveRange(reportAt, 2);
+        }
         int dumpAt = taken.IndexOf("--dump-layout");
         if (dumpAt >= 0 && dumpAt + 1 < taken.Count)
         {

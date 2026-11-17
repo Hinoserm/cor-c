@@ -52,9 +52,13 @@ public static partial class Program
         // -- an array sized by a count gone wrong -- was nowhere to be found.
         try
         {
-            if (!args.Contains("--report-alloc")) return Driver.Run(args);
-            try { return Driver.Run(args); }
-            finally { Console.Error.WriteLine("run-allocated=" + GC.GetTotalAllocatedBytes()); }
+            try
+            {
+                if (!args.Contains("--report-alloc")) return Driver.Run(args);
+                try { return Driver.Run(args); }
+                finally { Console.Error.WriteLine("run-allocated=" + GC.GetTotalAllocatedBytes()); }
+            }
+            finally { Corsac.Lang.Opt.Escape.WriteReport(); }
         }
         catch (OutOfMemoryException failure)
         {

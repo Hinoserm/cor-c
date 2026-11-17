@@ -321,6 +321,7 @@ public sealed class Pipeline
             ArgumentCopies.Run(m);
             foreach (Function f in m.Functions) SlotScalars.ApplyAndClean(f);
             SweepLate(m);
+            Escape.Report(m);
         }
     }
 
