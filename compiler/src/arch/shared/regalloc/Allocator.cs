@@ -261,6 +261,7 @@ public sealed class Allocator
     {
         Schedule.Run(m);
         CopyFold.Run(m);
+        CopyJoin.Run(m);
         LoopSplit? split = LoopSplit.Run(m);
         Allocator a = new(m) { _split = split };
         a.CollectOccurrences();
