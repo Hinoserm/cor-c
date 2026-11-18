@@ -7474,9 +7474,12 @@ static class ThreadStatics
                 // that waits for no collection and asks no platform whether
                 // it may (Gc.Refused) -- the platform's answer may be read
                 // from the very cell this makes.
+                // (Lowered again whatever the allocation does: out of
+                // memory, it throws, and a count left up would be the
+                // thread's for good.)
                 Runtime.PreemptOff();
-                made = Sys.ObjectAt(Runtime.Alloc(bytes));
-                Runtime.PreemptOn();
+                try { made = Sys.ObjectAt(Runtime.Alloc(bytes)); }
+                finally { Runtime.PreemptOn(); }
                 continue;
             }
             // Stored with the count raised as well: the store's barrier, with
@@ -7524,9 +7527,21 @@ static class ThreadStatics
         }
         // The count raised from here to the end, over what it allocates and
         // every store it makes, as Cell's are: no wait, no platform asked.
+        // (An allocation that throws -- out of memory -- lowers it on its
+        // way out; nothing after the two allocations throws.)
         Runtime.PreemptOff();
-        object?[] cells = new object?[size];
-        ThreadStaticTable? fresh = old is null ? new ThreadStaticTable() : null;
+        object?[] cells;
+        ThreadStaticTable? fresh;
+        try
+        {
+            cells = new object?[size];
+            fresh = old is null ? new ThreadStaticTable() : null;
+        }
+        catch
+        {
+            Runtime.PreemptOn();
+            throw;
+        }
         if (Sys.ReadAddress(home) != (old is null ? 0 : Sys.ObjectAddress(old))) { Runtime.PreemptOn(); return; }
         ThreadStaticTable node;
         if (old is null)
@@ -7664,7 +7679,7 @@ static class ThreadStatics
     /// hook was run under the lock: one that read a [ThreadStatic] of its
     /// own came back into Grow for the same thread's first table and span
     /// on the lock its own thread held, every other thread then waiting out
-    /// a cycle that could not end (test 2433, one run in twenty under load);
+    /// a cycle that could not end (test 2433, with every processor busy);
     /// and a thread that waited for the collector under it kept from the
     /// lock the threads the collector was waiting for.
     static void Enter()

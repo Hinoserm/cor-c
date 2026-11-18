@@ -7648,8 +7648,9 @@ public static class Gc
         }
     }
 
-    /// Whether this thread may wait for the collector: the platform's word
-    /// (YieldHook, asked with 1), as WaitForCollector asks it -- which on a
+    /// Whether this thread may wait for the collector: never with its
+    /// preemption count raised, else the platform's word (Refused:
+    /// YieldHook, asked with 1), as WaitForCollector asks it -- which on a
     /// kernel also gives the processor to whatever is ready, the collector
     /// among them: asked at every turn of a wait, as WaitForCollector does,
     /// or on one processor a waiter that only slept on the word could keep
@@ -7671,7 +7672,8 @@ public static class Gc
     /// until it ended (test 2433 under load).
     static bool Refused()
     {
-        if (Sys.ReadAddress(Sys.ThreadBlock() + Tls.PreemptCount) != 0) return true;
+        nuint tb = Sys.ThreadBlock();
+        if (tb != 0 && Sys.ReadAddress(tb + Tls.PreemptCount) != 0) return true;
         return YieldHook != 0 && Sys.Call(YieldHook, 1, 0, 0) != 0;
     }
 
@@ -12213,8 +12215,10 @@ public static class Gc
     /// (CollectAlone), whose marking holds it throughout: there the platform
     /// must not give the processor away (it can tell, Runtime.HoldsHeapLock),
     /// nor where the thread's preempt count is raised (Tls.PreemptCount):
-    /// the platform must refuse there itself, as every caller but
-    /// OwnListBytes, which leaves the call out, asks regardless. Called with 1
+    /// the platform must refuse there itself where it is asked -- the
+    /// collector's own yields ask regardless; OwnListBytes leaves the call
+    /// out, and a thread asking whether it may wait is answered without
+    /// the call when its count is raised (Refused). Called with 1
     /// by a thread about to wait for another's collection to end --
     /// blocked (WaitForCollector), or still counted running and answering
     /// rounds as it waits (WaitOutAnyCycle, for ReleaseHeap and
@@ -13624,7 +13628,11 @@ public static class Gc
     {
         if (RoomHook == 0 || tb == 0 || Sys.ReadAddress(tb + Tls.InAlloc) != 0) return;
         GcLock.Exit();
-        Sys.Call(RoomHook, need, 0, 0);
+        // Not with the count still up once the heap lock's own level is
+        // off: the platform sleeps for memory in its hook, and a thread
+        // that raised the count over its allocation (a [ThreadStatic]'s
+        // cell, ThreadStatics.Cell) may not sleep.
+        if (Sys.ReadAddress(tb + Tls.PreemptCount) == 0) Sys.Call(RoomHook, need, 0, 0);
         GcLock.Enter();
         AnswerBeforeTaking(tb);
     }
