@@ -2019,7 +2019,15 @@ public sealed partial class Binder
                 {
                     // Not bound yet (a walk for the names a body mentions,
                     // Binder's sectionLocals): what it assigns to and from.
-                    foreach (Binding b in ds.Names) if (b.Target is not null) into.Add(b.Target);
+                    void Targets(List<Binding> names)
+                    {
+                        foreach (Binding b in names)
+                        {
+                            if (b.Target is not null) into.Add(b.Target);
+                            if (b.Nested is not null) Targets(b.Nested);
+                        }
+                    }
+                    Targets(ds.Names);
                     into.Add(ds.Value);
                 }
                 break;
