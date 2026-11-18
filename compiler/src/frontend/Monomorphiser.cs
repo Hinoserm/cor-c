@@ -480,7 +480,12 @@ public sealed class Monomorphiser
             TupleNames = r.TupleNames,
             UseArgs = useArgs,
             Written = r.Written,
-            Qualifier = r.Qualifier,
+            // WRITTEN WITH ITS NAMESPACE and trimmed of it (Path):
+            // `List<System.Exception>` with no `using System` -- the checker
+            // sees the bare name through the namespace it was written with,
+            // as it sees a generic copy's (Constructed).
+            Qualifier = r.Qualifier ?? (r.Written && full.Length < r.Name.Length && r.Name.EndsWith("." + full, StringComparison.Ordinal)
+                ? QualifierOf(r.Name) : null),
             Line = r.Line,
             Col = r.Col,
         };

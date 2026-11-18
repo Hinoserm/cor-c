@@ -5948,9 +5948,22 @@ public static class Gc
         nuint owner = HeapChunks.Owner(page);
         nuint cache = tb != 0 ? Sys.ReadAddress(tb + Tls.Classes) : 0;
         if (cache == 0 && tb != 0) cache = Sys.ReadAddress(tb + Tls.ClassesSaved);
-        if (owner == 0 || owner != tb || cache == 0) return 0;
-        nuint slot = cache + (HeapChunks.PageClass(page) - 1) * (2 * WordSize.Bytes);
-        return Sys.ReadAddress(slot) == page ? slot : 0;
+        if (owner == 0 || owner != tb) return 0;
+        nuint at = (HeapChunks.PageClass(page) - 1) * (2 * WordSize.Bytes);
+        if (cache != 0 && Sys.ReadAddress(cache + at) == page) return cache + at;
+        // ITS CACHE ON THE SHELF (SwitchHeap): a gate's temporaries, made in
+        // the module's heap and freed once the thread is back in its own.
+        // Onto the page's list, the shelved cache ran dry and was refilled
+        // by the slow path every few dozen gates -- six times as many slow
+        // ways with the switches as without (test 2410). The shelf is the
+        // thread's, and the lock held here keeps ReleaseHeap from it.
+        nuint shelf = Sys.ReadAddress(tb + Tls.Shelf);
+        if (shelf == 0) return 0;
+        nuint heap = HeapOfChunk(page);
+        nuint number = heap == 0 || heap == _heap0 ? 0 : Sys.ReadAddress(heap + HeapNumberAt);
+        if (number >= ShelfHeaps) return 0;
+        nuint shelved = Sys.ReadAddress(shelf + number * WordSize.Bytes);
+        return shelved != 0 && Sys.ReadAddress(shelved + at) == page ? shelved + at : 0;
     }
 
     /// A block of a page freed by hand: cleared, marked free, and onto the
