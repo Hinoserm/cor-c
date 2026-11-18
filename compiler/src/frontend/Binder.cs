@@ -8446,6 +8446,14 @@ public sealed partial class Binder
                             caseProof.Add(subjectSym);
                     }
 
+                    // ONE SCOPE, THE SWITCH BLOCK'S: a section declaring a local
+                    // an earlier section declared declares it twice (CS0128).
+                    if (sectionLocals is not null)
+                        foreach (Stmt body in c.Body)
+                            if (body is LocalDecl again && !again.IsConst && !_hoistedFunctions.ContainsKey(again))
+                                foreach (LocalDecl one in new[] { again }.Concat(again.Also))
+                                    if (sectionLocals.ContainsKey(one.Name))
+                                        Error(one, $"CS0128: A local variable or function named '{one.Name}' is already defined in this scope");
                     if (sectionLocals is not null && c.Body.Count > 0)
                     {
                         HashSet<string> named = new(StringComparer.Ordinal);

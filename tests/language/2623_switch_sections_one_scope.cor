@@ -1,0 +1,24 @@
+// test: switch sections share one scope
+// expect-compile-error: CS0128
+//
+// The sections of a switch are one block to C#: a local one section declares
+// is the whole switch's, and a second section declaring it again declares
+// it twice. (A later section may assign and read it: test 2620.)
+
+using System;
+
+static class Program
+{
+    static int Main()
+    {
+        int r = 0;
+        for (int n = 0; n < 2; n++)
+            switch (n)
+            {
+                case 0: int s = 1; r += s; break;
+                case 1: int s = 2; r += s; break;
+            }
+        Console.WriteLine(r);
+        return 0;
+    }
+}
