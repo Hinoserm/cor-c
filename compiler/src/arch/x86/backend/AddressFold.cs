@@ -917,7 +917,9 @@ internal static class AddressFold
         for (int q = 1; q < ins.Count; q++)
         {
             MInstr call = ins[q];
-            if (call.Op != MOp.CallInd || call.Operands.Count != 1 || call.Operands[0] is not MReg { IsPhys: false } t
+            // (Its argument registers past the target, where it passes them so
+            // -- RegisterArgs -- stay as they are: only the target is folded.)
+            if (call.Op != MOp.CallInd || call.Operands.Count < 1 || call.Operands[0] is not MReg { IsPhys: false } t
                 || defs[t.Id] != 1 || occurrences[t.Id] != 2)
             {
                 continue;

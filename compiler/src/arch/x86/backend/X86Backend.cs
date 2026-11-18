@@ -542,10 +542,13 @@ public sealed class X86Backend : IBackend
                 text.Bytes.AddRange(reverse);
                 // CALLED BY A NAME OF THIS OBJECT'S OWN, local: copies of one
                 // function in two units may have one this form and the other
-                // the forward stub (an asm block inlined into one of them),
-                // and the link keeps each name from whichever copy it keeps --
-                // through the function's own name, this stub could reach the
-                // other copy's forward stub, which jumps back here.
+                // the forward stub (an asm block inlined into one of them).
+                // The link keeps both names from one copy today (the first
+                // in link order wins every name it defines), but the stub
+                // reaching its body by the function's global name would
+                // depend on that. (The local name sits at the body's start,
+                // which keeps the duplicate cutter from cutting a losing
+                // copy of the body: dead bytes, in the rare function this is.)
                 string own = RegisterArgs.StackBodyName(f.Name);
                 obj.Symbols.Add(new Symbol { Name = own, Section = text, Offset = start, Size = size, IsFunction = true, Global = false });
                 text.Relocs.Add(new Relocation(reverseStart + at, own, -4, RelocKind.Rel32));
