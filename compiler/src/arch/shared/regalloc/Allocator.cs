@@ -161,7 +161,7 @@ public sealed class Allocator
     private int[] _blockOfInstr = Array.Empty<int>();
     private BitRows _liveIn = new();
     private int _seq;
-    /// <summary>The values split at their loops (LoopSplit), or null: their pieces share a slot.</summary>
+    /// <summary>The values split at their loops and cold regions (LoopSplit), or null: their pieces share a slot.</summary>
     private LoopSplit? _split;
     /// <summary>Each split value's shared slot, by its original (LoopSplit.Root).</summary>
     private readonly Dictionary<int, int> _rootSlot = new();
@@ -177,17 +177,21 @@ public sealed class Allocator
     /// <summary>
     /// The values the scan gave to the frame at a cost: not a constant, made
     /// again where it is read, nor one at home in the word it came in, nor
-    /// one whose value (`not`, by root) was split at a cold region already.
-    /// Null where there is none.
+    /// one stored only where it leaves its register (SinkStores, run
+    /// before), nor one whose value (`not`, by root) was offered to a cold
+    /// split already. Null where there is none.
     /// </summary>
     private HashSet<int>? GaveWay(HashSet<int>? not)
     {
         HashSet<int>? gave = null;
         for (int v = _fv; v < _n; v++)
-            if (_spilledFrom[v] != int.MaxValue && _remat[v] is null && HomeOf(v) == 0
+            if (_spilledFrom[v] != int.MaxValue && _remat[v] is null && HomeOf(v) == 0 && !_sunk.Contains(v)
                 && (not is null || !not.Contains(_split is null ? v : _split.RootOf(v)))) (gave ??= new()).Add(v);
         return gave;
     }
+
+    /// <summary>The most instructions a function scanned again for a cold split may have (Run).</summary>
+    private const int RescanMost = 1 << 14;
 
     private Allocator(AFunction m)
     {
@@ -259,16 +263,26 @@ public sealed class Allocator
         a.FindHomes();
         a.ComputeLiveness();
         a.Scan();
-        // AGAIN WHERE A VALUE WENT TO THE FRAME THAT A COLD REGION'S CALLS
-        // SENT THERE (LoopSplit.SplitCold): those values split at the region,
-        // the function scanned again as it then stands. Twice at most: the
-        // second scan has registers the first had not, and may give up a
-        // value the first kept -- that one split too, then no more. A value
-        // split once is not split again (its warm piece in the frame still
-        // is there for another reason).
+        // AGAIN WHERE A VALUE WENT TO THE FRAME AND A COLD REGION MAY BE WHY
+        // (LoopSplit.SplitCold): every value the scan gave up, but for those
+        // whose one store SinkStores then moved off their definition (stored
+        // where they leave their register already, and a split value is
+        // stored at every write again), is split at each cold region it is
+        // live into, and the function scanned again as it then stands. Twice
+        // at most: the second scan has registers the first had not, and may
+        // give up a value the first kept -- that one split too, then no more.
+        // A value offered once is not offered again (split, its warm piece is
+        // in the frame for another reason; not split, it was live into no
+        // region's head, or into a landing pad). Not a function past
+        // RescanMost instructions: each scan is the whole allocator again,
+        // and the split's liveness is tables of its own.
         HashSet<int>? splitCold = null;
-        for (int round = 0; round < 2; round++)
+        bool sunk = false;
+        for (int round = 0; round < 2 && a._lin.Count <= RescanMost; round++)
         {
+            a.HeldBeforeSpill();
+            a.SinkStores();
+            sunk = true;
             if (a.GaveWay(splitCold) is not { } gaveWay || !LoopSplit.SplitCold(m, ref split, gaveWay)) break;
             splitCold ??= new();
             foreach (int v in gaveWay) splitCold.Add(split!.RootOf(v));
@@ -284,9 +298,13 @@ public sealed class Allocator
             a.FindHomes();
             a.ComputeLiveness();
             a.Scan();
+            sunk = false;
         }
-        a.HeldBeforeSpill();
-        a.SinkStores();
+        if (!sunk)
+        {
+            a.HeldBeforeSpill();
+            a.SinkStores();
+        }
         a.Rewrite();
         a.Release();
     }

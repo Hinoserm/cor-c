@@ -152,7 +152,7 @@ public sealed class LoopSplit
         for (ABlock? b = first; b is not null; b = _next[b]) _f.Blocks.Add(b);
     }
 
-    /// <summary>`b` laid out just before `at` (never before the entry: no loop is headed by it).</summary>
+    /// <summary>`b` laid out just before `at` (never before the entry: no loop is headed by it, and no cold region).</summary>
     private void InsertBefore(ABlock at, ABlock b)
     {
         ABlock? p = _prev[at] ?? throw new InvalidOperationException($"{_f.Name}: a block put before the entry ({at.Name})");
@@ -468,12 +468,13 @@ public sealed class LoopSplit
         foreach (ABlock b in body) if (b.LandingPad) return false;
         int fv = _f.Registers.FirstVirtual;
         int width = _f.NextVReg;
-        // What the loop reads or writes.
-        BitSet touched = new(width);
-        foreach (ABlock b in body)
-            foreach (AInstr i in b.Instrs)
-                foreach (Named named in i.Regs)
-                    if (named.Reg >= fv) touched.Set(named.Reg);
+        // What the loop reads or writes (a cold region is not asked).
+        BitSet touched = new(only is null ? width : 0);
+        if (only is null)
+            foreach (ABlock b in body)
+                foreach (AInstr i in b.Instrs)
+                    foreach (Named named in i.Regs)
+                        if (named.Reg >= fv) touched.Set(named.Reg);
         List<int> values = new();
         foreach (int v in live.Globals)
             if (v < width && live.LiveInto(head, v) && (only is not null ? only.Contains(v) : touched.Get(v)) && !live.PadLive.Contains(v) && !(v < _constantWidth && _constant.Get(v))) values.Add(v);
