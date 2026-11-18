@@ -374,9 +374,27 @@ public sealed partial class Lowering
             return copy;
         }
         VReg made = Allocate(at, size);
+        CardMarkCopied(made, sym, 0, ahead: true);
         _e.Emit(Opcode.MemCopy, null, R(made), R(src), Imm(size, IrTypes.Word));
+        CardMarkCopied(made, sym, 0);
         _heapStructs.Add(made);
         return made;
+    }
+
+    /// <summary>
+    /// THE CARDS OF THE REFERENCES A COPY CARRIED INTO A NEW BLOCK, as the
+    /// stores of them would have set (StoreNew): the bytes of a struct moved
+    /// whole into a block made a moment before, which a collection may have
+    /// found and made old meanwhile -- in an image whose threads stop
+    /// anywhere, or where another block is made before the copy is done
+    /// (StructCopier's inner blocks). One mark a word that may hold a
+    /// reference (TracedFields); none for a struct of numbers.
+    /// </summary>
+    private void CardMarkCopied(VReg block, TypeSymbol sym, int at, bool ahead = false)
+    {
+        if (ahead && !CardMarkBefore) return;
+        foreach ((int offset, Type type) in TracedFields(sym, at))
+            if (MayHoldReference(type)) CardMarkAt(R(block), offset);
     }
 
     /// <summary>
@@ -733,7 +751,10 @@ public sealed partial class Lowering
 
         int size = Math.Max(1, sym.InstanceSize);
         VReg made = Allocate(at, size);
+        CardMarkCopied(made, sym, 0, ahead: true);
         _e.Emit(Opcode.MemCopy, null, R(made), R(src), Imm(size, IrTypes.Word));
+        // The inner blocks made below may collect: the copy's references first.
+        CardMarkCopied(made, sym, 0);
         foreach (FieldSymbol field in sym.Fields)
         {
             if (field.Static || field.Boxed || field.Inline || !IsStructValue(field.Type))
@@ -2564,7 +2585,9 @@ public sealed partial class Lowering
                 {
                     VReg from = f.Offset == 0 ? src : _e.Binary(Opcode.Add, src, f.Offset);
                     VReg to = f.Offset == 0 ? obj : _e.Binary(Opcode.Add, obj, f.Offset);
+                    CardMarkCopied(obj, StructOf(f.Type), f.Offset, ahead: true);
                     _e.Emit(Opcode.MemCopy, null, R(to), R(from), Imm(Math.Max(1, StructOf(f.Type).InstanceSize), IrTypes.Word));
+                    CardMarkCopied(obj, StructOf(f.Type), f.Offset);
                     continue;
                 }
                 VReg v = LoadPlace(new MemPlace(R(src), f.Offset, f.Type, Field: f));
@@ -2585,11 +2608,16 @@ public sealed partial class Lowering
                 if (field.Inline) StorePlace(new MemPlace(R(obj), field.Offset, field.Type, false, true), v);
                 else
                 {
+                    // With the card, as the copied fields' stores have it
+                    // (StoreNew): the value's evaluation may have collected
+                    // since the copy was made, and made it old.
+                    CardMarkAhead(new MemPlace(R(obj), field.Offset, field.Type), v);
                     _e.Store(R(obj), R(v), field.Offset, LoadSize(field.Type));
                     // Tagged as every other store to the field is: the field
                     // proof must see what a `with` puts there.
                     if (TagsField(field)) _e.Block.Instrs[^1].Field = FieldKey(field);
                     _e.Block.Instrs[^1].Family = FieldFamily(field, field.Offset);
+                    CardMark(new MemPlace(R(obj), field.Offset, field.Type), v);
                 }
             }
             // Through its own accessor, on the copy (Binder: a property with a body).

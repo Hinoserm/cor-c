@@ -586,7 +586,9 @@ public sealed partial class Lowering
                 // result buffer, and a cell holding that buffer's address held
                 // a frame long gone when the lambda ran (Monomorphiser's
                 // deferred members, natively).
-                _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(HeapStruct(d, value, type)), 0, LoadSize(type));
+                // With the cell's card (StoreIntoCell): the initialiser may
+                // have collected since the cell was made, and made it old.
+                StoreIntoCell(LocalReg(d), HeapStruct(d, value, type), type);
             }
             else if (_addressTakenLocals.Contains(d))
             {
@@ -620,7 +622,7 @@ public sealed partial class Lowering
             VReg zero = NewStruct(d, StructOf(type), frame: !boxed);
             if (boxed)
             {
-                _e.Store(RegOperand.Of(LocalReg(d)), RegOperand.Of(zero), 0, LoadSize(type));
+                StoreIntoCell(LocalReg(d), zero, type);
             }
             else if (_addressTakenLocals.Contains(d))
             {

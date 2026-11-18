@@ -852,7 +852,7 @@ public sealed partial class Lowering
         if (p.Index >= _params.Length || _paramCells.ContainsKey(p.Index)) return;
         VReg cell = CellFor(at, Math.Max(_t.WordSize, Math.Max(1, p.Type.Size)), parameter: p.Index);
         // A struct parameter's bytes are its caller's: the cell holds a copy (HeapStruct).
-        _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, _params[p.Index], p.Type)), 0, LoadSize(p.Type));
+        StoreIntoCell(cell, HeapStruct(at, _params[p.Index], p.Type), p.Type);
         _paramCells[p.Index] = cell;
     }
 
@@ -1706,6 +1706,24 @@ public sealed partial class Lowering
         CardMark(new MemPlace(R(block), offset, type), value);
     }
 
+    /// <summary>
+    /// THE FIRST VALUE INTO A CAPTURED VARIABLE'S CELL, with the cell's card
+    /// as StoreNew has a new block's: what is evaluated, or copied to the
+    /// heap (HeapStruct), between the cell's allocation and this store may
+    /// collect and make the cell old, and the value stored is then an old
+    /// block's pointer to a young one, which the next minor collection hears
+    /// of by the card alone. No barrier: the cell is new and holds nothing.
+    /// A struct's block is a pointer whatever the struct holds, so its card
+    /// is set whatever its type says of references.
+    /// </summary>
+    private void StoreIntoCell(VReg cell, VReg value, Type type)
+    {
+        bool pointer = IsStructValue(type) && value.Type == IrTypes.Word;
+        if (CardMarkBefore) { if (pointer) CardMarkAt(R(cell), 0); else CardMark(new MemPlace(R(cell), 0, type), value); }
+        _e.Store(R(cell), R(value), 0, LoadSize(type));
+        if (pointer) CardMarkAt(R(cell), 0); else CardMark(new MemPlace(R(cell), 0, type), value);
+    }
+
     /// <summary>StoreNew for a word the caller knows is a reference -- a struct's block, an object.</summary>
     private void StoreNewReference(VReg block, VReg value, long offset)
     {
@@ -1890,7 +1908,7 @@ public sealed partial class Lowering
         {
             if (structValue && !_heapStructs.Contains(value)) value = CopyStruct(at, value, StructOf(held), frame: true);
             FreshCell(at, named, cell);
-            _e.Store(RegOperand.Of(cell), RegOperand.Of(HeapStruct(at, value, held)), 0, LoadSize(held));
+            StoreIntoCell(cell, HeapStruct(at, value, held), held);
             return;
         }
 
