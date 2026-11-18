@@ -126,7 +126,7 @@ public static class IrFunctionCodec
         writer.Write(function.Exported); writer.Write(function.Coalescible); writer.Write(function.FromLibrary); writer.Write(function.SystemCode);
         writer.Write(function.NoInlining);
         writer.Write(function.CalleePops);
-        writer.Write(function.Dispatched); writer.Write(function.InsideState); writer.Write(function.KeepsCallerRegisters);
+        writer.Write(function.Dispatched); writer.Write(function.InsideState); writer.Write(function.KeepsCallerRegisters); writer.Write(function.ProgramEntry);
         if (placeless) { IrBinary.Text(writer, null); writer.Write(0); IrBinary.Text(writer, null); }
         else { IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display); }
         // EACH REGISTER'S TYPE BY NUMBER, in an array, every instruction walked
@@ -259,7 +259,7 @@ public static class IrFunctionCodec
             {
                 Exported = IrBinary.Flag(reader), Coalescible = IrBinary.Flag(reader), FromLibrary = IrBinary.Flag(reader), SystemCode = IrBinary.Flag(reader),
                 NoInlining = IrBinary.Flag(reader), CalleePops = reader.ReadInt32(),
-                Dispatched = IrBinary.Flag(reader), InsideState = IrBinary.Flag(reader), KeepsCallerRegisters = IrBinary.Flag(reader),
+                Dispatched = IrBinary.Flag(reader), InsideState = IrBinary.Flag(reader), KeepsCallerRegisters = IrBinary.Flag(reader), ProgramEntry = IrBinary.Flag(reader),
                 SourceFile = IrBinary.NameOrNull(reader, budget), Line = reader.ReadInt32(), Display = IrBinary.Text(reader, budget),
             };
             int count = IrBinary.Count(reader);

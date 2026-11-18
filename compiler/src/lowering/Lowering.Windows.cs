@@ -270,7 +270,7 @@ public sealed partial class Lowering
     /// </summary>
     private void EmitWindowsEntry(MethodSymbol entry)
     {
-        Function f = new(EntryName, IrType.Void);
+        Function f = new(EntryName, IrType.Void) { ProgramEntry = true };
         Builder e = new(f, f.NewBlock("entry"));
         _f = f;
         _e = e;

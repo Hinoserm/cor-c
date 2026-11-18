@@ -459,7 +459,7 @@ public sealed class Inline : IParallelModulePass
                     // trace Exception.Placed$ stores) must be seen stored
                     // where it is made, or it is left to a collector that a
                     // program with none then links (EscapeHeap.HeldByFields).
-                    // Not the program's entry (Lowering.EntryName), cold
+                    // Not the program's entry (Function.ProgramEntry), cold
                     // throughout as well, ending in the exit: it took the
                     // whole of Main into it, whose calls then lost what the
                     // passes after give a function of its own (test 2410's
@@ -472,7 +472,7 @@ public sealed class Inline : IParallelModulePass
                     bool coldPath = Escape.IsStaticInitialiser(callee.Name)
                         || (coldBlocks ??= ColdBlocks(caller, loopBlocks ??= LoopBlocks(caller))).Contains(b);
                     bool throwStep = coldPath && !Escape.IsStaticInitialiser(callee.Name) && coldBlocks!.Contains(caller.Blocks[0])
-                        && caller.Name != Corsac.Lang.Lower.Lowering.EntryName && !HasLoop(callee);
+                        && !caller.ProgramEntry && !HasLoop(callee);
                     if (calleeSize > TinyBody && coldPath && !throwStep)
                     {
                         TraceDecision?.Invoke(caller, callee,

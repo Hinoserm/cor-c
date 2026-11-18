@@ -1444,7 +1444,7 @@ public sealed partial class Lowering
         // NO SOURCE FILE: the entry stub is the one function nobody wrote, so
         // a stack trace names it and stops rather than pointing at a line of
         // whichever file happened to be first on the command line.
-        Function f = new(EntryName, IrType.Void);
+        Function f = new(EntryName, IrType.Void) { ProgramEntry = true };
         Block b0 = f.NewBlock("entry");
         Builder e = new(f, b0);
 

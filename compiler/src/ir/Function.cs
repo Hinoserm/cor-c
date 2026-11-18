@@ -126,6 +126,15 @@ public sealed class Function
     public bool KeepsCallerRegisters { get; set; }
 
     /// <summary>
+    /// THE PROGRAM'S ENTRY, the stub the loader jumps to (Lowering.EmitEntry):
+    /// cold from its first block, ending in the exit, yet no throw path whose
+    /// steps the inliner takes in (Inline). Said on the function, and carried
+    /// with its IR, so that the link's backend -- another process, which
+    /// never saw --asm-entry -- knows it by this and not by a name.
+    /// </summary>
+    public bool ProgramEntry { get; set; }
+
+    /// <summary>
     /// What an analysis keeps of this function between questions, with the
     /// instruction count it was made at (Escape.StampOf): asked again of a
     /// function that has grown since, it is made again.
