@@ -624,6 +624,12 @@ internal static class Peephole
             for (int k = b.Instrs.Count - 1; k >= 0; k--)
             {
                 MInstr i = b.Instrs[k];
+                // A way out of the block reads what is read where it goes: a
+                // store before it is not known dead by one after it. (Every
+                // block's jumps are its last instructions today, with no
+                // store after one; two values in one slot, Allocator
+                // .TakeSlot, make the case worth not leaning on that.)
+                if (i.Op is MOp.Jcc or MOp.Jmp or MOp.JmpTable or MOp.JmpInd) written.Clear();
                 if (StoreSlot(i) is int stored)
                 {
                     if (!written.Add(stored)) { b.Instrs.RemoveAt(k); continue; }
@@ -645,7 +651,7 @@ internal static class Peephole
     /// any path from it, across blocks: a backward walk of which allocator
     /// slots are read further on. DeadSpillStores sees a slot no instruction
     /// reads, or one stored twice inside a block; a slot shared by two values
-    /// (FrameCompact) whose first is read only where forwarding found it in a
+    /// (Allocator.TakeSlot) whose first is read only where forwarding found it in a
     /// register (ForwardSpillLoadsAcrossBlocks) kept its first store, a lap of
     /// fan's vertex loop writing x to a slot the array length took over a
     /// block later. A call reads what its stack map names; a jump reads what
@@ -1836,11 +1842,18 @@ internal static class Peephole
             // frame, and no register written. A spilled value tested and
             // branched on -- 6,600 times off EBP in the K8 kernel into EAX
             // alone -- and a field read only to ask whether it is null.
+            //
+            // Not on the Pentium where m has a displacement, as a frame
+            // slot's has: an instruction with a displacement and an immediate
+            // pairs with nothing there (Agner Fog, "Pentium", imperfect
+            // pairing), two clocks alone against a load and a test that each
+            // pair -- the test with the jump after it.
             if (k >= 1 && i.Op == MOp.Test && i.Width == 4 && !i.Lock && i.Operands.Count == 2
                 && i.Operands[0] is MReg { IsPhys: true } t0 && i.Operands[1] is MReg t1 && t0.Id == t1.Id && t0.Id < 8
                 && (dead & (1 << t0.Id)) != 0
                 && instrs[k - 1] is { Lock: false } reload && IsMov(reload) && reload.Operands.Count == 2
-                && reload.Operands[0] is MReg into && into.Id == t0.Id && reload.Operands[1] is MMem asked)
+                && reload.Operands[0] is MReg into && into.Id == t0.Id && reload.Operands[1] is MMem asked
+                && !(CpuModel.P5 && (asked.Disp != 0 || asked.Symbol is not null || asked.Label is not null)))
             {
                 MInstr compare = new(MOp.Cmp, asked, new MImm(0)) { Width = 4, Line = reload.Line, Probed = reload.Probed, OwnsState = reload.OwnsState, Native = reload.Native };
                 instrs.RemoveRange(k - 1, 2);
