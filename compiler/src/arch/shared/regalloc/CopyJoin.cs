@@ -44,10 +44,10 @@ namespace Corsac.Lang.RegAlloc;
 /// another class or with another limit (byte-capable), not one whose value
 /// is a constant or comes from its home in the frame (an argument's word:
 /// both are kept without a register, and a second definition would end
-/// that), not two that one instruction both writes, not in a function with
-/// a landing pad (entered by no edge: the liveness here does not see what a
-/// pad reads), and not past a bound of work: a search that runs long is
-/// answered "live".
+/// that), not two that one instruction both writes, not one live into a
+/// landing pad or a block a computed jump goes to (entered by no edge the
+/// liveness here sees), and not past a bound of work: a search that runs
+/// long is answered "live".
 /// </summary>
 public static class CopyJoin
 {
@@ -68,10 +68,8 @@ public static class CopyJoin
         bool any = false;
         foreach (ABlock b in f.Blocks)
         {
-            if (b.LandingPad || b.AddressTaken) return 0;
             foreach (AInstr i in b.Instrs)
             {
-                if (i.JumpsAnywhere) return 0;
                 foreach (Named r in i.Regs)
                 {
                     if (r.Reg < fv || (r.Role & Role.Def) == 0) continue;
@@ -150,6 +148,21 @@ public static class CopyJoin
             if (live.RowEquals(b, row)) continue;
             live.CopyRow(b, row);
             foreach (int p in pred[b]) if (!owed[p]) { owed[p] = true; work.Push(p); }
+        }
+
+        // ENTERED BY NO EDGE: a landing pad, a block a computed jump goes to.
+        // What is live into one is read there as the frame holds it, from
+        // anywhere in its try -- by a way the search below cannot follow --
+        // and is joined with nothing. (A handler's own values have homes in
+        // the frame and are read from them into registers written afresh,
+        // LandingPadHomes: live into no pad, and joined like any other. A
+        // function with a try, a lock or a using kept each such variable in
+        // two registers, the value and its copy, both in the frame.)
+        for (int b = 0; b < nb; b++)
+        {
+            if (!f.Blocks[b].LandingPad && !f.Blocks[b].AddressTaken) continue;
+            for (int v = fv; v < n; v++)
+                if (asked[v] && globalOf[v] >= 0 && live.Get(b, globalOf[v])) kept[v] = true;
         }
 
         // THE CLASSES: each register's name (the source's of the join that

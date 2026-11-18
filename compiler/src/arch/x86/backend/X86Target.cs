@@ -362,6 +362,10 @@ internal sealed class X86Target : ITarget
         List<(int From, int To)> touched = new();
         foreach (MBlock b in _m.Blocks)
             foreach (MInstr i in b.Instrs)
+            {
+                // An asm block that names the stack in its own text may read
+                // or write an argument's word with no operand to show it.
+                if (i.Op == MOp.InlineAsm && i.Asm!.Analysis.UsesStack) return homes;
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     if (i.Operands[k] is not MMem mem) continue;
@@ -398,6 +402,7 @@ internal sealed class X86Target : ITarget
                     }
                     else touched.Add((mem.Disp, mem.Disp + 16));
                 }
+            }
         foreach ((int disp, MInstr? i) in load)
             if (i is not null && !touched.Any(t => t.From < disp + i.Width && disp < t.To))
             {

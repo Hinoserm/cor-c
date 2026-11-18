@@ -19,10 +19,15 @@ internal static class Peephole
     public static void Run(MFunction m)
     {
         ParameterHomes(m);
+        foreach (MBlock block in m.Blocks) StoredAgainAtOnce(block.Instrs);
+        // Found on the code as the allocator left it, read once the spill
+        // slots' own rules are done with them (TwinSlots).
+        Dictionary<int, int>? twins = TwinSlots(m);
         ForwardSpillLoadsAcrossBlocks(m);
         foreach (MBlock block in m.Blocks) ForwardXmmSpillLoads(block.Instrs);
         DeadSpillStores(m);
         SpillStoresDeadAcrossBlocks(m);
+        if (twins is not null) ReadTwins(m, twins);
         int[] liveOut = LiveOut(m, out int[] liveIn);
         Dictionary<MBlock, int> at = new(ReferenceEqualityComparer.Instance);
         for (int b = 0; b < m.Blocks.Count; b++) at[m.Blocks[b]] = b;
@@ -284,6 +289,242 @@ internal static class Peephole
                 for (int k = 0; k < i.Operands.Count; k++)
                     if (i.Operands[k] is MMem mem && Ebp(mem) && home.TryGetValue(mem.Disp, out int to))
                         i.Operands[k] = new MMem(mem.Base, to) { Device = mem.Device };
+    }
+
+    // ---- a spill slot stored and stored again ---------------------------------------------
+
+    /// <summary>
+    /// `mov [S], r ; add r, x ; mov [S], r` -- A SPILLED VALUE WRITTEN IN TWO
+    /// STEPS, stored after each: a two-address sum is a move and an add, two
+    /// writes of one register, and the allocator stores a value it gave to
+    /// the frame after every write. The first store is read by nothing:
+    /// what stands between the two (a few instructions at most) is no call
+    /// (whose stack map may name the slot), no jump, and names the frame
+    /// only in whole words that are not S's -- no address taken off EBP, no
+    /// index, EBP nowhere as a value. DeadSpillStores finds as much within a
+    /// block, but stands down for a block with a call in it and a function
+    /// with a handler -- most of a kernel; this asks only about the
+    /// instructions between the two stores, and a handler reads no spill
+    /// slot a fault there could have left half written (what a handler reads
+    /// has a home of its own, LandingPadHomes; a slot it found as the frame
+    /// held it is better without the half).
+    /// </summary>
+    private static void StoredAgainAtOnce(List<MInstr> instrs)
+    {
+        const int Window = 4;
+        for (int k = 0; k + 1 < instrs.Count; k++)
+        {
+            MInstr first = instrs[k];
+            if (!IsMov(first) || first.Lock || first.Operands is not [MMem slot, MReg { IsPhys: true }] || !PrivateSpill(slot)) continue;
+            for (int j = k + 1; j < instrs.Count && j <= k + Window; j++)
+            {
+                MInstr i = instrs[j];
+                if (IsMov(i) && !i.Lock && i.Operands is [MMem again, MReg { IsPhys: true }] && PrivateSpill(again) && again.Disp == slot.Disp)
+                {
+                    instrs.RemoveAt(k);
+                    k--;
+                    break;
+                }
+                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                    or MOp.Jmp or MOp.Jcc or MOp.JmpTable or MOp.JmpInd or MOp.Ret or MOp.Epilogue or MOp.InlineAsm or MOp.Lea or MOp.Push or MOp.Pop) break;
+                bool reaches = false;
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MReg { IsPhys: true, Phys: Gpr.Ebp }) reaches = true;
+                    if (o is not MMem mem) continue;
+                    if (mem.Index is { IsPhys: true, Phys: Gpr.Ebp }) reaches = true;
+                    if (mem.Base is not { IsPhys: true, Phys: Gpr.Ebp }) continue;
+                    // Any reach of the frame but a plain word elsewhere.
+                    if (mem.Index is not null || mem.Symbol is not null || mem.Label is not null || i.Width != 4
+                        || mem.Disp > slot.Disp - 4 && mem.Disp < slot.Disp + 4) reaches = true;
+                }
+                if (reaches) break;
+            }
+        }
+    }
+
+    // ---- a value kept in two slots ------------------------------------------------------
+
+    /// <summary>
+    /// A VALUE A HANDLER READS IS STORED TWICE AT EVERY WRITE: in its home
+    /// in the frame, where an unwind finds it (LandingPadHomes: an IR slot of
+    /// its own, stored after each definition, read at the top of a landing
+    /// pad), and -- the allocator having no register for it -- in a spill
+    /// slot beside it:
+    ///
+    ///     mov [ebp-S], r          ; the allocator's
+    ///     mov [ebp-H], r          ; the home's
+    ///
+    /// 11,286 such pairs in a K8 kernel, in every function with a try, a
+    /// lock or a using that keeps more values than it has registers. Where
+    /// EVERY store of the spill slot S stands beside a store of the same
+    /// register to one home H (or just after a load of H into that
+    /// register, a landing pad's), every change of S in place (`add [S],
+    /// x`) is read back and stored to H at once, every store of H is of
+    /// what S holds, and
+    /// both are reached only as whole words by instructions this knows --
+    /// H a word of an IR slot of one or two whose address nothing takes --
+    /// the two hold
+    /// one value wherever S is read: S is read as H, and its stores go.
+    /// The map from S to H; null for none. Found before the rules for spill
+    /// slots run (they forward S's loads from registers and drop its dead
+    /// stores, which only H's twin can still be told by), applied after
+    /// them (ReadTwins): a read of S left then was a read of S before, and
+    /// nothing between touches H.
+    /// </summary>
+    private static Dictionary<int, int>? TwinSlots(MFunction m)
+    {
+        if (m.Blocks.Count == 0) return null;
+        // A home is eight bytes, a long's two words or a word and nothing:
+        // each word of one a place a spill slot may be the twin of.
+        HashSet<int> homes = new();
+        foreach ((int offset, int bytes) in m.Frame.SlotRanges())
+        {
+            if (offset >= 0 || bytes is not (4 or 8)) continue;
+            homes.Add(offset);
+            if (bytes == 8) homes.Add(offset + 4);
+        }
+        if (homes.Count == 0) return null;
+        static bool Ebp(MMem mem) => mem.Base is { IsPhys: true, Phys: Gpr.Ebp } && mem.Index is null && mem.Symbol is null && mem.Label is null;
+        // Every reach into the frame: a slot's plain whole stores of a
+        // register and its whole words changed in place (where), and
+        // anything else done to its bytes.
+        HashSet<int> other = new();
+        Dictionary<int, List<(MBlock Block, int At)>> stores = new(), changes = new();
+        foreach (MBlock block in m.Blocks)
+            for (int at = 0; at < block.Instrs.Count; at++)
+            {
+                MInstr i = block.Instrs[at];
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    // (EBP as a value -- a try's handler record keeps it for the
+                    // unwind to put back, Sys.FramePointer hands it to what
+                    // walks the frames -- is read through for the saved frame
+                    // pointers and return addresses alone, never to a local:
+                    // its contract (Prelude), which the allocator's homes rest
+                    // on as well, X86Target.Homes. The collector reads every
+                    // word of the stack as it stands, and the home still
+                    // holds what the pair held.)
+                    if (i.Operands[k] is not MMem mem) continue;
+                    if (mem.Index is { IsPhys: true, Phys: Gpr.Ebp }) return null;
+                    if (mem.Base is not { IsPhys: true, Phys: Gpr.Ebp }) continue;
+                    bool whole = i.Op != MOp.Lea && Ebp(mem) && i.Width == 4 && !i.Lock && Understood(i);
+                    if (!whole)
+                    {
+                        // Taken as sixteen bytes from where it starts, whatever its width says.
+                        for (int b = mem.Disp; b < mem.Disp + 16; b++) other.Add(b);
+                        continue;
+                    }
+                    if ((Roles.Of(i.Op, k) & Roles.Role.Def) == 0) continue;
+                    Dictionary<int, List<(MBlock, int)>>? kind = IsMov(i) && k == 0 && i.Operands[1] is MReg { IsPhys: true } ? stores
+                        : k == 0 && i.Op is MOp.Add or MOp.Sub or MOp.And or MOp.Or or MOp.Xor or MOp.Inc or MOp.Dec or MOp.Neg or MOp.Not ? changes : null;
+                    if (kind is null)
+                    {
+                        for (int b = mem.Disp; b < mem.Disp + 4; b++) other.Add(b);
+                        continue;
+                    }
+                    if (!kind.TryGetValue(mem.Disp, out var list)) kind[mem.Disp] = list = new();
+                    list.Add((block, at));
+                }
+            }
+        bool Clear(int slot)
+        {
+            for (int b = slot; b < slot + 4; b++) if (other.Contains(b)) return false;
+            // No other word's write overlapping it.
+            for (int b = slot - 3; b < slot + 4; b++) if (b != slot && (stores.ContainsKey(b) || changes.ContainsKey(b))) return false;
+            return true;
+        }
+        // `mov [ebp+d], r` at `at`, for the r it stores; -1 for anything else.
+        static int StoreOf(MBlock block, int at, int d)
+            => at >= 0 && at < block.Instrs.Count && block.Instrs[at] is { Lock: false } i && IsMov(i)
+               && i.Operands is [MMem mem, MReg { IsPhys: true } from] && Ebp(mem) && mem.Disp == d ? from.Id : -1;
+        // `mov r, [ebp+d]` at `at`, for the r it loads; -1 for anything else.
+        static int LoadOf(MBlock block, int at, int d)
+            => at >= 0 && at < block.Instrs.Count && block.Instrs[at] is { Lock: false } i && IsMov(i)
+               && i.Operands is [MReg { IsPhys: true } into, MMem mem] && Ebp(mem) && mem.Disp == d ? into.Id : -1;
+        Dictionary<int, int>? twins = null;
+        HashSet<int> taken = new();
+        foreach ((int s, var spills) in stores.OrderBy(pair => pair.Key))
+        {
+            (MBlock firstBlock, int firstAt) = spills[0];
+            if (firstBlock.Instrs[firstAt].Operands[0] is not MMem { IsSpill: true } || homes.Contains(s) || !Clear(s)) continue;
+            // THE HOME: the one slot every store of S stands beside a store
+            // of the same register to (either side), or was just loaded from.
+            int h = 0;
+            bool twin = true;
+            foreach ((MBlock block, int at) in spills)
+            {
+                int r = ((MReg)block.Instrs[at].Operands[1]).Id;
+                int beside = 0;
+                foreach (int near in new[] { at - 1, at + 1 })
+                    if (near >= 0 && near < block.Instrs.Count && block.Instrs[near] is { Lock: false } n && IsMov(n)
+                        && n.Operands is [MMem mem, MReg { IsPhys: true } from] && from.Id == r && Ebp(mem) && homes.Contains(mem.Disp)) beside = mem.Disp;
+                if (beside == 0 && at > 0 && block.Instrs[at - 1] is { Lock: false } load && IsMov(load)
+                    && load.Operands is [MReg { IsPhys: true } into, MMem home] && into.Id == r && Ebp(home) && homes.Contains(home.Disp)) beside = home.Disp;
+                if (beside == 0 || h != 0 && beside != h) { twin = false; break; }
+                h = beside;
+            }
+            if (!twin || h == 0 || taken.Contains(h) || !Clear(h) || changes.ContainsKey(h) || !stores.TryGetValue(h, out var homed)) continue;
+            // S changed in place is read back and stored to the home at once:
+            // `add [S], x ; mov r, [S] ; mov [H], r`.
+            if (changes.TryGetValue(s, out var changed))
+                foreach ((MBlock block, int at) in changed)
+                {
+                    int r = LoadOf(block, at + 1, s);
+                    if (r < 0 || StoreOf(block, at + 2, h) != r) { twin = false; break; }
+                }
+            // And every store of the home is of what S holds: beside a store
+            // of that register to S, or of the register S was just read into.
+            if (twin)
+                foreach ((MBlock block, int at) in homed)
+                {
+                    int r = ((MReg)block.Instrs[at].Operands[1]).Id;
+                    if (StoreOf(block, at - 1, s) == r || StoreOf(block, at + 1, s) == r || LoadOf(block, at - 1, s) == r) continue;
+                    twin = false;
+                    break;
+                }
+            if (!twin) continue;
+            taken.Add(h);
+            (twins ??= new())[s] = h;
+        }
+        return twins;
+    }
+
+    /// <summary>Each twinned spill slot read as its home, its stores gone and no safepoint naming it (TwinSlots).</summary>
+    private static void ReadTwins(MFunction m, Dictionary<int, int> twins)
+    {
+        foreach (MBlock block in m.Blocks)
+        {
+            List<MInstr> instrs = block.Instrs;
+            for (int k = 0; k < instrs.Count; k++)
+            {
+                MInstr i = instrs[k];
+                if (IsMov(i) && i.Operands is [MMem { IsSpill: true } store, MReg] && PrivateSpill(store) && twins.ContainsKey(store.Disp))
+                {
+                    instrs.RemoveAt(k);
+                    k--;
+                    continue;
+                }
+                for (int o = 0; o < i.Operands.Count; o++)
+                    if (i.Operands[o] is MMem { IsSpill: true } mem && PrivateSpill(mem) && twins.TryGetValue(mem.Disp, out int home))
+                        i.Operands[o] = new MMem(mem.Base, home) { Device = mem.Device };
+            }
+            // `mov r, [H] ; mov [H], r`, what S read back and stored to its
+            // home has become: the store puts back what was just read.
+            for (int k = 1; k < instrs.Count; k++)
+                if (IsMov(instrs[k]) && !instrs[k].Lock && instrs[k].Operands is [MMem to, MReg { IsPhys: true } from] && twins.ContainsValue(to.Disp)
+                    && to.Base is { IsPhys: true, Phys: Gpr.Ebp } && to.Index is null && to.Symbol is null && to.Label is null
+                    && IsMov(instrs[k - 1]) && !instrs[k - 1].Lock && instrs[k - 1].Operands is [MReg { IsPhys: true } into, MMem back] && into.Id == from.Id
+                    && back.Base is { IsPhys: true, Phys: Gpr.Ebp } && back.Index is null && back.Symbol is null && back.Label is null && back.Disp == to.Disp)
+                {
+                    instrs.RemoveAt(k);
+                    k--;
+                }
+        }
+        // The home is an IR slot, read by the collector as it stands: the
+        // spill slot, written no more, is no word of any map.
+        foreach (Safepoint safepoint in m.Safepoints.Values)
+            safepoint.SlotOffsets.RemoveAll(twins.ContainsKey);
     }
 
     // ---- what a trap makes dead ---------------------------------------------------------
