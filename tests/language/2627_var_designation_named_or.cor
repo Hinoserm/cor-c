@@ -5,7 +5,7 @@
 // and x
 // when 3
 // joined True
-// arm when 3 arm or x guarded 3 case and 3
+// arm or x case and 3
 // tuple 1 2
 //
 // `and`, `or` and `when` are words, not keywords: after `var` they name what
@@ -20,12 +20,12 @@ static class Program
     static void Arms(Holder h)
     {
         int count = h.Count;
-        string arm = count switch { var when => "arm when " + when };
-        string armOr = h.Reg switch { var or => " arm or " + or };
-        string guarded = count switch { var when when when > 2 => " guarded " + when, _ => " unguarded" };
+        // A switch arm's `when` is its guard always: `var when =>` is no
+        // designation there (CS1001), as it is in a property pattern.
+        string armOr = h.Reg switch { var or => "arm or " + or };
         string cased = "";
         switch (count) { case var and: cased = " case and " + and; break; }
-        System.Console.WriteLine(arm + armOr + guarded + cased);
+        System.Console.WriteLine(armOr + cased);
     }
 
     static void Tuple(int one, int two)
