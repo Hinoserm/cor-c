@@ -551,6 +551,10 @@ public sealed class X86Backend : IBackend
                 // copy of the body: dead bytes, in the rare function this is.)
                 string own = RegisterArgs.StackBodyName(f.Name);
                 obj.Symbols.Add(new Symbol { Name = own, Section = text, Offset = start, Size = size, IsFunction = true, Global = false });
+                // Defined here: left out, the references pass below named it
+                // again as undefined, two symbols of one name, which every
+                // object written for a unit's IR archive refuses (the kernel).
+                defined.Add(own);
                 text.Relocs.Add(new Relocation(reverseStart + at, own, -4, RelocKind.Rel32));
                 string entry = RegisterArgs.EntryName(f.Name);
                 obj.Symbols.Add(new Symbol
