@@ -84,6 +84,39 @@ internal sealed class Encoder
             // from the end, every target it had was taken for a loop's head.
             Dictionary<MBlock, int> at = new(ReferenceEqualityComparer.Instance);
             for (int k = 0; k < m.Blocks.Count; k++) at[m.Blocks[k]] = k;
+            // AND ONLY WHERE THE TARGET COMES ROUND TO THE JUMP AGAIN. A slow
+            // path laid after the code it rejoins jumps backwards to where
+            // the fast path goes on -- a lock's wait loop back to the lock's
+            // return -- and that is no loop: padded as a head, the block the
+            // fast path FALLS into had up to fifteen bytes of NOPs run ahead
+            // of it on every call (IrqSpinLock.Enter, three of them before
+            // its epilogue). What each target reaches, found once a target.
+            Dictionary<MBlock, bool[]>? reaches = null;
+            bool ComesRound(MBlock target, int jump)
+            {
+                if (!(reaches ??= new(ReferenceEqualityComparer.Instance)).TryGetValue(target, out bool[]? seen))
+                {
+                    reaches[target] = seen = new bool[m.Blocks.Count];
+                    Stack<int> work = new();
+                    int first = at[target];
+                    seen[first] = true;
+                    work.Push(first);
+                    while (work.Count > 0)
+                    {
+                        int b = work.Pop();
+                        MBlock block = m.Blocks[b];
+                        foreach (MInstr i in block.Instrs)
+                            foreach (MOperand o in i.Operands)
+                                if (o is MLabel { Target: var next } && at.TryGetValue(next, out int t) && !seen[t]) { seen[t] = true; work.Push(t); }
+                        foreach (MInstr i in block.Instrs)
+                            if (i.Table is { } table)
+                                foreach (MBlock next in table)
+                                    if (at.TryGetValue(next, out int t) && !seen[t]) { seen[t] = true; work.Push(t); }
+                        if (!block.EndsUnconditionally && b + 1 < m.Blocks.Count && !seen[b + 1]) { seen[b + 1] = true; work.Push(b + 1); }
+                    }
+                }
+                return seen[jump];
+            }
             for (int k = 0; k < m.Blocks.Count; k++)
             {
                 // Nor a cold block's jump back into the function (Layout put
@@ -92,7 +125,7 @@ internal sealed class Encoder
                 int from = m.Blocks[k].EdgeFrom is { } source && at.TryGetValue(source, out int left) ? left : k;
                 foreach (MInstr i in m.Blocks[k].Instrs)
                     if (i.Op is MOp.Jmp or MOp.Jcc && i.Operands.Count > 0 && i.Operands[0] is MLabel label
-                        && at.TryGetValue(label.Target, out int to) && to <= from && to > 0)
+                        && at.TryGetValue(label.Target, out int to) && to <= from && to > 0 && ComesRound(label.Target, k))
                         _loopHeads.Add(label.Target);
             }
         }

@@ -1557,6 +1557,14 @@ internal static class Peephole
                     continue;
                 }
                 if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Nop or MOp.Jmp || Isa.FlagNeutralScalar(after.Op)) continue;
+                // What changes none of the six flags and reads none: the
+                // interrupt flag's own two, a push or a pop of a register or
+                // of memory, a PAUSE. (`pushf ; pop r ; and r, 200h ; test
+                // r, r ; setne ; ... ; cli` -- IrqSpinLock.Enter's first
+                // lines -- kept its test for the CLI after it.)
+                if (after.Op is MOp.Cli or MOp.Sti or MOp.Push or MOp.Pop or MOp.Pause) continue;
+                // A call or a return reads no flag of its caller's.
+                if (after.Op is MOp.Call or MOp.CallInd or MOp.Ret or MOp.Epilogue) break;
                 if (WritesFlags(after) && !ReadsFlags(after)) break;
                 safe = false;
             }

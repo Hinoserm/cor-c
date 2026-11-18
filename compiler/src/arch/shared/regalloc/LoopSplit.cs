@@ -306,7 +306,11 @@ public sealed class LoopSplit
         bool Warm(int b) => forward[b] && backward[b];
         if (!Warm(0)) return found;
         bool[] taken = new bool[nb];
-        for (int h = 1; h < nb; h++)
+        // (So many blocks walked and no more: heads whose regions are refused
+        // walk the same cold tail each, and a function of thousands of
+        // blocks is not walked a thousand times for it.)
+        int walked = 0, most = 16 * nb + 256;
+        for (int h = 1; h < nb && walked < most; h++)
         {
             if (!reached[h] || Warm(h) || taken[h]) continue;
             bool fromWarm = false;
@@ -317,6 +321,7 @@ public sealed class LoopSplit
             for (int k = 0; k < body.Count; k++)
                 foreach (int t in succ[body[k]])
                     if (!Warm(t) && inside.Add(t)) body.Add(t);
+            walked += body.Count;
             // Entered through its head alone, a call in it, no pad and no
             // block another region took or an address names.
             bool whole = false;

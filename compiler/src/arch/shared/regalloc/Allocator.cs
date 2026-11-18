@@ -176,14 +176,16 @@ public sealed class Allocator
 
     /// <summary>
     /// The values the scan gave to the frame at a cost: not a constant, made
-    /// again where it is read, nor one at home in the word it came in.
+    /// again where it is read, nor one at home in the word it came in, nor
+    /// one whose value (`not`, by root) was split at a cold region already.
     /// Null where there is none.
     /// </summary>
-    private HashSet<int>? GaveWay()
+    private HashSet<int>? GaveWay(HashSet<int>? not)
     {
         HashSet<int>? gave = null;
         for (int v = _fv; v < _n; v++)
-            if (_spilledFrom[v] != int.MaxValue && _remat[v] is null && HomeOf(v) == 0) (gave ??= new()).Add(v);
+            if (_spilledFrom[v] != int.MaxValue && _remat[v] is null && HomeOf(v) == 0
+                && (not is null || !not.Contains(_split is null ? v : _split.RootOf(v)))) (gave ??= new()).Add(v);
         return gave;
     }
 
@@ -257,15 +259,24 @@ public sealed class Allocator
         a.FindHomes();
         a.ComputeLiveness();
         a.Scan();
-        // ONCE MORE WHERE A VALUE WENT TO THE FRAME THAT A COLD REGION'S
-        // CALLS SENT THERE (LoopSplit.SplitCold): those values split at the
-        // region, the function scanned again as it then stands.
-        if (a.GaveWay() is { } gaveWay && LoopSplit.SplitCold(m, ref split, gaveWay))
+        // AGAIN WHERE A VALUE WENT TO THE FRAME THAT A COLD REGION'S CALLS
+        // SENT THERE (LoopSplit.SplitCold): those values split at the region,
+        // the function scanned again as it then stands. Twice at most: the
+        // second scan has registers the first had not, and may give up a
+        // value the first kept -- that one split too, then no more. A value
+        // split once is not split again (its warm piece in the frame still
+        // is there for another reason).
+        HashSet<int>? splitCold = null;
+        for (int round = 0; round < 2; round++)
         {
+            if (a.GaveWay(splitCold) is not { } gaveWay || !LoopSplit.SplitCold(m, ref split, gaveWay)) break;
+            splitCold ??= new();
+            foreach (int v in gaveWay) splitCold.Add(split!.RootOf(v));
             a.Release();
-            // (The slots the first scan took are the second's to take first,
-            // free from the start: the frame is no deeper for the scan
-            // thrown away.)
+            // (The slots the scan before took are this one's to take first,
+            // free from the start, so the frame grows by no scan thrown
+            // away; a slot this one then has no use for stays a word of the
+            // frame nothing reads.)
             Allocator again = new(m) { _split = split };
             foreach ((int slot, int _, int klass) in a._freeSlots) again._freeSlots.Add((slot, -1, klass));
             a = again;
