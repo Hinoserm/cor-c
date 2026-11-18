@@ -219,7 +219,9 @@ public sealed partial class Lowering
     /// The name of the entry stub, and whether it has to clear .bss itself.
     /// Both change when an assembled object owns `_start`: the stub becomes
     /// something that object calls, and the .bss clear belongs to whatever
-    /// runs before the stack is in .bss -- which is that object.
+    /// runs before the stack is in .bss -- which is that object. A setting
+    /// of the compile's process alone (Driver, --asm-entry): the link's
+    /// backend never sees it, and knows the stub by Function.ProgramEntry.
     /// </summary>
     public static string EntryName { get; set; } = "_start";
     public static bool EntryClearsBss { get; set; } = true;

@@ -70,7 +70,7 @@ public static class IrCodecTests
         // Field mark, and an access's Family, which typed aliasing needs when
         // the link summarises a function again. The link rebuilds from the archive, and one lost read a
         // number as an address again.
-        Function marked = new("marked", IrType.Void);
+        Function marked = new("marked", IrType.Void) { ProgramEntry = true };
         VReg count = marked.NewReg(IrType.I32); count.Number = true; marked.Params.Add(count);
         VReg at = marked.NewReg(IrTypes.Word); marked.Params.Add(at);
         var head = marked.NewBlock(); var lap = marked.NewBlock();
@@ -93,6 +93,7 @@ public static class IrCodecTests
         Check(all[2].RegionSite && all[2].ReturnsFreshStruct && !all[3].RegionSite, "A region site or a fresh struct's mark lost in the archive");
         Check(all[3].DispatchType == "t_Node", "A virtual call's declaring type lost in the archive");
         Check(!back.Blocks[0].RegionLoop && back.Blocks[1] is { RegionLoop: true, RegionLoopBytes: 96 }, "A loop's region lost in the archive");
+        Check(back.ProgramEntry && !restored.ProgramEntry, "The program entry's mark lost in the archive, or set where it was not");
         Check(budget.Used == IrFunctionCodec.DecodeCost(marked, bytes.Length), "Marked decode cost differs from actual accounting");
         Check(bytes.SequenceEqual(IrFunctionCodec.Write(back)), "Marked IR reserialization differs");
         DataItem data = new("table", new byte[8]) { ReadOnly = true, Coalescible = true };

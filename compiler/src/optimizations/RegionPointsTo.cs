@@ -1059,6 +1059,8 @@ public sealed class RegionPointsTo : IModulePass
             // another image's, its name its own ($region$).
             GenericCode = f.GenericCode, Version = true, NoInlining = f.NoInlining, CalleePops = f.CalleePops, Dispatched = f.Dispatched, InsideState = f.InsideState, Unjudged = f.Unjudged, SourcePath = f.SourcePath,
             KeepsCallerRegisters = f.KeepsCallerRegisters,
+            // Not ProgramEntry: a version is another function, never the stub
+            // the loader jumps to (which has no loop, and is never versioned).
         };
         Dictionary<VReg, VReg> regs = new();
         Dictionary<FrameSlot, FrameSlot> slots = new();

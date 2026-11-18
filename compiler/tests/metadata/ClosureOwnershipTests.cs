@@ -21,7 +21,10 @@ public static class ClosureOwnershipTests
             using IndexedDeclarations declarations = new(index, "Closures", paths);
             var front = Frontend.Compile(paths.Concat(runtime).ToArray(), "closures", true, libraryPaths: runtime, elsewherePaths: runtime,
                 declarations: declarations) ?? throw new Exception("Closure ownership binding failed");
-            TypeSymbol[] closures = front.Bound.Types.Values.Where(type => type.Name.StartsWith("Lambda$", StringComparison.Ordinal)).Distinct().ToArray();
+            // THE PROGRAM'S OWN CLOSURES: the class library's (Task<T>'s
+            // continuations) are compiled in with it, the same in each read.
+            TypeSymbol[] closures = front.Bound.Types.Values.Where(type => type.Name.StartsWith("Lambda$", StringComparison.Ordinal)
+                && type.Key.StartsWith("Factory.", StringComparison.Ordinal)).Distinct().ToArray();
             if (closures.Any(type => type.Decl?.LocalOnly != true)) throw new Exception("Closure descriptor is not implementation-private");
             return closures.Select(type => type.Key).ToHashSet(StringComparer.Ordinal);
         }
