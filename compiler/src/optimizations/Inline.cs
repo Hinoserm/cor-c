@@ -459,22 +459,25 @@ public sealed class Inline : IParallelModulePass
                     // trace Exception.Placed$ stores) must be seen stored
                     // where it is made, or it is left to a collector that a
                     // program with none then links (EscapeHeap.HeldByFields).
-                    // Only a step of such a path: a callee within the small
-                    // limit with no loop in it (Placed$, and Thrown$ folded
-                    // into it). The entry (_start) is cold throughout too,
-                    // ending in the exit, and took the whole of Main into it
-                    // -- whose calls then lost what the passes after give a
-                    // function of its own (test 2410's gates their caller's
-                    // region). A step that loops, as Runtime.Frames does,
-                    // stays a call as it was before.
+                    // Not the program's entry (Lowering.EntryName), cold
+                    // throughout as well, ending in the exit: it took the
+                    // whole of Main into it, whose calls then lost what the
+                    // passes after give a function of its own (test 2410's
+                    // gates their caller's region). And only a step with no
+                    // loop in it (Placed$, Thrown$ folded into it): one that
+                    // loops, as Runtime.Frames does, stays a call, as every
+                    // callee past the tiny limit did here before 7f2a8eba.
+                    // The ordinary rules below then weigh the step as any
+                    // other (a single caller's exemption among them).
                     bool coldPath = Escape.IsStaticInitialiser(callee.Name)
                         || (coldBlocks ??= ColdBlocks(caller, loopBlocks ??= LoopBlocks(caller))).Contains(b);
                     bool throwStep = coldPath && !Escape.IsStaticInitialiser(callee.Name) && coldBlocks!.Contains(caller.Blocks[0])
-                        && calleeSize <= SmallLimit(callee) && !HasLoop(callee);
+                        && caller.Name != Corsac.Lang.Lower.Lowering.EntryName && !HasLoop(callee);
                     if (calleeSize > TinyBody && coldPath && !throwStep)
                     {
-                        TraceDecision?.Invoke(caller, callee, coldBlocks?.Contains(caller.Blocks[0]) == true
-                            ? $"keep: cold throughout, not a small loop-free step body={calleeSize} small-limit={SmallLimit(callee)}"
+                        TraceDecision?.Invoke(caller, callee,
+                            Escape.IsStaticInitialiser(callee.Name) ? $"keep: static initialiser body={calleeSize} tiny-limit={TinyBody}"
+                            : coldBlocks!.Contains(caller.Blocks[0]) ? $"keep: cold throughout, the entry or a step with a loop body={calleeSize}"
                             : $"keep: cold path body={calleeSize} tiny-limit={TinyBody}");
                         continue;
                     }
@@ -848,14 +851,14 @@ public sealed class Inline : IParallelModulePass
         return cold;
     }
 
+    /// <summary>Whether any of a function's blocks is in a loop (LoopBlocks).</summary>
+    private static bool HasLoop(Function f) => LoopBlocks(f).Count > 0;
+
     /// <summary>
     /// Every block that can reach itself, which is to say inside a loop: those in a
     /// strongly connected part of the graph of more than one block, or with
     /// an edge to themselves. Tarjan's, without recursion.
     /// </summary>
-    /// <summary>Whether any of a function's blocks is in a loop (LoopBlocks); asked of small bodies only.</summary>
-    private static bool HasLoop(Function f) => LoopBlocks(f).Count > 0;
-
     private static HashSet<Block> LoopBlocks(Function f)
     {
         HashSet<Block> inLoop = new(ReferenceEqualityComparer.Instance);
