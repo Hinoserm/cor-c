@@ -345,16 +345,21 @@ internal static class Program
             ("fa", "cli"),
             ("fb", "sti"),
             ("f4", "hlt"),
-            ("0f 01 10", "lgdt [eax]"),
-            ("0f 01 18", "lidt [eax]"),
-            ("0f 01 38", "invlpg [eax]"),
-            ("0f 22 d8", "mov cr3,eax"),
             ("8e d8", "mov ds,ax"),
         })
         {
             Check(portBytes.Contains("\t" + bytes + " "), $"encoding of {what} is {bytes}");
         }
         Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"\t0f 20 c[0-7] "), "encoding of a cr0 read is 0f 20 /r");
+        // The table's and the page's address, and CR3's value, in whichever
+        // register the allocator gives them -- the function's argument, which
+        // comes in a register (RegisterArgs) the port reads then want: the
+        // memory forms of 0F 01 /2, /3 and /7 through a plain base register
+        // (mod 00, neither ESP nor EBP), and 0F 22 /3 from any register.
+        Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"\t0f 01 1[0-367] "), "encoding of lgdt [r32] is 0f 01 /2");
+        Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"\t0f 01 1[89abef] "), "encoding of lidt [r32] is 0f 01 /3");
+        Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"\t0f 01 3[89abef] "), "encoding of invlpg [r32] is 0f 01 /7");
+        Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"\t0f 22 d[89a-f] "), "encoding of mov cr3,r32 is 0f 22 /3");
         // objdump has to agree about what the bytes mean, not just that they
         // are there: a wrong prefix would still be bytes.
         CheckDump(portBytes, "in     al,dx", "objdump reads the byte port read");
@@ -366,7 +371,7 @@ internal static class Program
         CheckDump(portBytes, "cli", "objdump reads cli");
         CheckDump(portBytes, "hlt", "objdump reads hlt");
         Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"mov\s+e\w\w,cr0"), "objdump reads a control-register read");
-        CheckDump(portBytes, "mov    cr3,eax", "objdump reads a control-register write");
+        Check(System.Text.RegularExpressions.Regex.IsMatch(portBytes, @"mov\s+cr3,e\w\w"), "objdump reads a control-register write");
 
         Flat();
 
