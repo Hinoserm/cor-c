@@ -56,8 +56,13 @@ public static partial class Program
             Verifier.Check(f, "before entry load reuse");
             new LoadReuse().Run(f);
             Verifier.Check(f, "after entry load reuse");
-            Assert(body.Instrs.Any(i => i.Op == Opcode.Load) == backEdge,
-                "entry results can cross blocks only under the non-reentry proof");
+            // The entry is a block like any other where a jump comes back to
+            // it: every path that runs its load again passes the load, and
+            // the body, entered from it alone, reads what it just read
+            // (Defs.CanForward; only a landing pad is entered by an edge the
+            // graph does not show).
+            Assert(!body.Instrs.Any(i => i.Op == Opcode.Load),
+                $"the entry's load is the body's, back edge {backEdge}");
         }
         foreach (string barrier in new[] { "none", "address", "value", "store", "call", "fence", "width", "signed" })
         {

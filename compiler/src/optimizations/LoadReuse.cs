@@ -44,9 +44,9 @@ public sealed class LoadReuse : IPass
         bool Stable(VReg register, Block from, int fromIndex, Block use, int useIndex)
         {
             if (defs.CanForward(register, from, fromIndex, use, useIndex)) return true;
-            // Defs deliberately treats every CFG root like an exception
-            // landing pad. Here multiple roots/async have been excluded;
-            // a sole entry with no incoming edges cannot be re-entered.
+            // (Defs answers for the entry as for any block now; this is
+            // what answered when it took every root for a landing pad, and
+            // still does for a sole entry nothing jumps back to.)
             return defs.IsSingle(register) && defs.Site(register) is { } site
                 && site.Block == function.Entry && cfg.Preds(function.Entry).Count == 0
                 && (from != function.Entry || site.Index < fromIndex)
