@@ -8354,8 +8354,11 @@ public sealed class Parser
         //
         // `var _` is the discard designation -- it matches and names nothing,
         // so it is the answer it always gives.
-        if (At(Tok.KwVar) && Ahead().Kind == Tok.Ident
-            && Ahead().Text is not ("or" or "and" or "when"))
+        // A designation spelt `or`, `and` or `when` names the match where no
+        // pattern or condition follows it (NamesBinding, WhenNames), as C#
+        // reads `{ Reg: var or }` -- a line of ArgumentCopies, which the
+        // compiler built by itself refused.
+        if (At(Tok.KwVar) && Ahead().Kind == Tok.Ident && (NamesBinding(_i + 1) || WhenNames(_i + 1)))
         {
             Token word = _t[_i++];
             Token named = _t[_i++];

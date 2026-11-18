@@ -1,0 +1,28 @@
+// test: a var pattern's designation named or, and or when
+// expect-exit: 0
+// expect-output:
+// or x
+// and x
+// when 3
+// joined True
+//
+// `and`, `or` and `when` are words, not keywords: after `var` they name what
+// the pattern matched wherever no pattern (or, for `when`, no condition)
+// follows them, as C# reads `{ Reg: var or }` -- a line of the compiler's
+// own ArgumentCopies, which the compiler built by itself refused.
+
+class Holder { public object? Reg; public int Count; }
+
+static class Program
+{
+    static int Main()
+    {
+        object o = new Holder { Reg = "x", Count = 3 };
+        if (o is Holder { Reg: var or } && or != null) System.Console.WriteLine("or " + or);
+        if (o is Holder { Reg: var and }) System.Console.WriteLine("and " + and);
+        if (o is Holder { Count: var when }) System.Console.WriteLine("when " + when);
+        bool joined = o is Holder { Count: 2 or 3 } and { Reg: not null };
+        System.Console.WriteLine("joined " + joined);
+        return 0;
+    }
+}
