@@ -104,9 +104,13 @@ public static class IrFunctionCodec
     /// The function's record. `kept`: the calls the inliner is to leave
     /// calls (Module.KeepCalls) -- an owned-elements candidate's, recorded
     /// with the IR the link runs the late passes over, so that run keeps them
-    /// as the compile did and judges the same candidate.
+    /// as the compile did and judges the same candidate. `placeless`: the
+    /// record without where its source was -- no file, no lines, no display
+    /// name -- which is the same for one body wherever its file is kept and
+    /// whatever was written above it (KernelAssumptions.Identity); never a
+    /// record to compile from.
     /// </summary>
-    public static byte[] Write(Function function, IReadOnlySet<Instr>? kept = null)
+    public static byte[] Write(Function function, IReadOnlySet<Instr>? kept = null, bool placeless = false)
     {
         // An async body is written before its lowering too -- a unit's IR for
         // the link is taken before the late passes and the async transform --
@@ -120,7 +124,8 @@ public static class IrFunctionCodec
         writer.Write(function.NoInlining);
         writer.Write(function.CalleePops);
         writer.Write(function.Dispatched); writer.Write(function.InsideState); writer.Write(function.KeepsCallerRegisters);
-        IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display);
+        if (placeless) { IrBinary.Text(writer, null); writer.Write(0); IrBinary.Text(writer, null); }
+        else { IrBinary.Text(writer, function.SourceFile); writer.Write(function.Line); IrBinary.Text(writer, function.Display); }
         // EACH REGISTER'S TYPE BY NUMBER, in an array, every instruction walked
         // without an enumerator: a table and a query a function were most of
         // what writing its record made.
@@ -200,7 +205,7 @@ public static class IrFunctionCodec
             {
                 writer.Write((int)instruction.Op); writer.Write(instruction.Dest?.Id ?? -1);
                 writer.Write(instruction.Size); writer.Write(instruction.Signed); writer.Write(instruction.Offset);
-                IrBinary.Text(writer, instruction.Callee); IrBinary.Text(writer, instruction.DispatchType); IrBinary.Text(writer, instruction.Field); writer.Write(instruction.Line);
+                IrBinary.Text(writer, instruction.Callee); IrBinary.Text(writer, instruction.DispatchType); IrBinary.Text(writer, instruction.Field); writer.Write(placeless ? 0 : instruction.Line);
                 writer.Write((byte)((instruction.Number ? NumberMark : 0) | (instruction.RegionSite ? RegionSiteMark : 0) | (instruction.Family is not null ? FamilyMark : 0)
                     | (instruction.Device ? DeviceMark : 0) | (instruction.PassedByValue != 0 ? PassedMark : 0)));
                 if (instruction.Family is not null) IrBinary.Text(writer, instruction.Family);

@@ -526,6 +526,7 @@ public sealed partial class Escape : IModulePass
                     Field = i.Field, RegionSite = i.RegionSite, DispatchType = i.DispatchType,
                 };
                 retargeted.Operands.AddRange(i.Operands);
+                retargeted.PassedByValue = i.PassedByValue;   // after the operands it counts
                 b.Instrs[k] = retargeted;
                 f.Edited();
                 changed = true;
@@ -3726,9 +3727,11 @@ continue;
                             // it, and is handed only to its own MoveNext,
                             // Current and Dispose. Its address is the object
                             // here -- each of those calls a use, judged by its
-                            // summary -- and the walk keeps it alive. Not the
-                            // slot's address, which a loop's invariant code
-                            // takes once before the object is made.
+                            // summary -- and the walk keeps it alive. The
+                            // slot's own address among them (Walker): where
+                            // a loop's invariant code takes that once before
+                            // the object is made, the object is live at its
+                            // own making and is not freed -- never freed early.
                             foreach (VReg w in walker) Derive(w, borrowing);
                             break;
 

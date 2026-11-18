@@ -178,7 +178,7 @@ public static class ObjectLinkCommand
                     made.Add(word);
                     return word;
                 }
-                int digits = KernelAssumptions.BodyPrefix.Length + 16 + 1;
+                int digits = KernelAssumptions.BodyPrefix.Length + KernelAssumptions.BodyDigits + 1;
                 if (!name.StartsWith(KernelAssumptions.BodyPrefix, StringComparison.Ordinal) || name.Length <= digits) return name;
                 taken.Add(name[digits..]);
                 return name[digits..];

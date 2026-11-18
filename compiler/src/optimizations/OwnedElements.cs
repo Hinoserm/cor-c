@@ -979,6 +979,13 @@ internal static class OwnedElements
                 else if (Corsac.Lang.Lower.Lowering.Bare(callee).EndsWith("_get_Current_0", StringComparison.Ordinal)) calls?.Add((b, i, new(true, Reads: reads)));
                 else return null;
             }
+        // THE STORAGE'S ADDRESS REGISTERS ARE THE WALK TOO: the loop's
+        // MoveNext and Current are called on them (above), and a caller that
+        // takes these registers for the collection's uses (Escape.Analyse)
+        // must see those calls -- left out, the list was dead once
+        // GetEnumerator had answered, and was given back under the loop
+        // that walked it: MoveNext read a freed list's version (951).
+        walker.UnionWith(address);
         return walker;
     }
 
@@ -1280,13 +1287,33 @@ public sealed class MarkOwnedElements : IModulePass
                     if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand v && elements.Contains(v.Reg)
                         && i.Operands[0] is RegOperand at && OwnedElements.FreshHere(defs, at.Reg))
                         holders.UnionWith(OwnedElements.Container(h, defs, at.Reg));
+            // Or frame memory one is stored into: a tuple is a value, built
+            // in the frame and handed to the Add by its address -- a stash
+            // not seen here had its calls inlined, and was then no stash
+            // where the proof looked for its reads (StashProved).
+            FrameSlot? Framed(Operand o)
+            {
+                for (int hops = 0; hops < 4; hops++)
+                {
+                    if (o is SlotOperand s) return s.Slot;
+                    if (o is not RegOperand at || !defs.IsSingle(at.Reg) || defs.Definition(at.Reg) is not { Op: Opcode.Copy } d) return null;
+                    o = d.Operands[0];
+                }
+                return null;
+            }
+            HashSet<FrameSlot> framed = new(ReferenceEqualityComparer.Instance);
+            foreach (Block b in h.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand v && elements.Contains(v.Reg) && Framed(i.Operands[0]) is { } into)
+                        framed.Add(into);
             foreach (Block b in h.Blocks)
                 foreach (Instr i in b.Instrs)
                 {
                     if (i.Op != Opcode.Call || i.Callee is not { } callee || i.Operands.Count < 2 || i.Operands[0] is not RegOperand list) continue;
                     OwnedElements.Role role = OwnedElements.RoleOf("List", callee);
                     if (role.Adds < 0 || role.Adds >= i.Operands.Count || i.Operands[role.Adds] is not RegOperand value
-                        || !elements.Contains(value.Reg) && !holders.Contains(value.Reg)) continue;
+                        || !elements.Contains(value.Reg) && !holders.Contains(value.Reg)
+                            && !(framed.Count > 0 && Framed(i.Operands[role.Adds]) is { } given && framed.Contains(given))) continue;
                     // The list a field holds, other than the field itself.
                     VReg r = list.Reg;
                     for (int hops = 0; hops < 4 && defs.IsSingle(r) && defs.Definition(r) is { Op: Opcode.Copy, Operands: [RegOperand back] }; hops++) r = back.Reg;
@@ -2717,7 +2744,11 @@ public sealed partial class Escape
                 HashSet<VReg> joins = new();
                 if (Origin(g, defs, at, call, given, new()) is { } single) origins.Add(single);
                 else if (VariableOrigins(g, defs, given, joins) is { } several) origins.AddRange(several);
-                else return Refuse(g, $"adds at {call.Line} what was not made for it");
+                else
+                {
+                    OwnedElements.Say(g, $"an add of what was not made for it: {call}, operand {value}; read out of a stash: {string.Join(" ", unparked.Keys.Select(r => "%" + r.Id))}");
+                    return Refuse(g, $"adds at {call.Line} what was not made for it");
+                }
                 foreach (Instr origin in origins)
                     if (!adderOf.TryAdd(origin, call)) return Refuse(g, $"adds at {call.Line} what another add takes");
                 HashSet<Block> renewing = new(ReferenceEqualityComparer.Instance);
@@ -2930,11 +2961,12 @@ public sealed partial class Escape
         int value = OwnedElements.RoleOf("List", add.Callee!).Adds;
         if (add.Operands[value] is RegOperand v && derived.Contains(v.Reg)) return true;
         (FrameSlot? slot, HashSet<VReg>? block) = HolderOf(g, defs, add.Operands[value]);
-        if (slot is null && block is null) return false;
+        if (slot is null && block is null) { OwnedElements.Say(g, $"a stash's add is handed no frame memory: {add}"); return false; }
         foreach (Block b in g.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand s && derived.Contains(s.Reg) && Addresses(defs, i.Operands[0], slot, block))
                     return true;
+        OwnedElements.Say(g, $"a stash's add is handed memory no element was stored into: {add}");
         return false;
     }
 
@@ -2989,6 +3021,7 @@ public sealed partial class Escape
             {
                 if (call.Op != Opcode.Call || call.Callee is not { } callee || !OwnedElements.RoleOf("List", callee).Reads || call.Operands.Count < 2) continue;
                 if (StashOf(defs, call.Operands[0], field) is not ({ } stash, var load)) continue;
+                OwnedElements.Say(g, $"a read out of stash {stash}: {call}");
                 ListPath? root = RootPath(g, defs, load.Operands[0])?.Then(stash);
                 if (call.Operands.Count == 2)
                 {
@@ -3013,7 +3046,7 @@ public sealed partial class Escape
         HashSet<VReg> addresses = new();
         if (call.Operands.Count != 3) return null;
         var first = HolderOf(g, defs, call.Operands[2]);
-        if (first.Slot is null && first.Block is null) return null;
+        if (first.Slot is null && first.Block is null) { OwnedElements.Say(g, $"a tuple read's out operand is no frame memory: {call}"); return null; }
         holders.Add(first);
         if (call.Dest is not null) addresses.Add(call.Dest);
         bool Held(Operand o) => o is RegOperand { Reg: var r } && addresses.Contains(r) || holders.Any(h => Addresses(defs, o, h.Slot, h.Block));
@@ -3027,7 +3060,7 @@ public sealed partial class Escape
                     if (i.Op == Opcode.MemCopy && i.Operands.Count == 3 && Held(i.Operands[1]) && !Held(i.Operands[0]))
                     {
                         var to = HolderOf(g, defs, i.Operands[0]);
-                        if (to.Slot is null && to.Block is null) return null;
+                        if (to.Slot is null && to.Block is null) { OwnedElements.Say(g, $"a tuple read out is copied to no frame memory: {i}"); return null; }
                         holders.Add(to);
                         grew = true;
                     }
@@ -3045,6 +3078,7 @@ public sealed partial class Escape
                     if (i.Op == Opcode.MemCopy && k <= 1) continue;
                     if (k == 0 && i.Op is Opcode.Store or Opcode.MemSet) continue;
                     if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || Escape.IsPlainUse(i.Callee))) continue;
+                    OwnedElements.Say(g, $"a tuple read out is used otherwise: {i}");
                     return null;
                 }
         return loads;

@@ -14,18 +14,19 @@ namespace Corsac.Lang.Lto;
 /// archive (IrArchive.Attach), whose bytes are the same either way.
 /// `Unpacked` is the body's length when `Payload` is packed (0: it is the
 /// body as it is), and `UnpackedHash` the body's SHA-256, which the archive's
-/// directory records.
+/// directory records. `Identity`: the body's hash with where its source was
+/// taken out (IrArchiveEntry.Identity), for a body a kernel may offer.
 /// </summary>
 public sealed record IrArchiveRecord(string Key, bool Importable, int Instructions,
     IReadOnlyList<string> Calls, byte[] Payload, IReadOnlyList<string>? References = null, long DecodeBytes = 0,
-    int Unpacked = 0, byte[]? UnpackedHash = null)
+    int Unpacked = 0, byte[]? UnpackedHash = null, BodyHash? Identity = null)
 {
     /// <summary>Bodies smaller than this are kept as they are: deflating them saves too little.</summary>
     private const int PackFrom = 512;
 
     /// <summary>A record whose body is held deflated where that makes it smaller.</summary>
     public static IrArchiveRecord Packed(string key, bool importable, int instructions, IReadOnlyList<string> calls, byte[] body,
-        IReadOnlyList<string>? references = null, long decodeBytes = 0)
+        IReadOnlyList<string>? references = null, long decodeBytes = 0, BodyHash? identity = null)
     {
         if (body.Length >= PackFrom)
         {
@@ -34,9 +35,9 @@ public sealed record IrArchiveRecord(string Key, bool Importable, int Instructio
             using MemoryStream packed = new(body.Length / 2);
             using (DeflateStream deflate = new(packed, CompressionLevel.Fastest, leaveOpen: true)) deflate.Write(body, 0, body.Length);
             if (packed.Length < body.Length)
-                return new(key, importable, instructions, calls, packed.ToArray(), references, decodeBytes, body.Length, FastHash.Of(body));
+                return new(key, importable, instructions, calls, packed.ToArray(), references, decodeBytes, body.Length, FastHash.Of(body), identity);
         }
-        return new(key, importable, instructions, calls, body, references, decodeBytes);
+        return new(key, importable, instructions, calls, body, references, decodeBytes, Identity: identity);
     }
 
     /// <summary>The body's length as the archive records it.</summary>

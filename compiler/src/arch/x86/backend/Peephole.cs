@@ -1517,6 +1517,9 @@ internal static class Peephole
     // compare and the cmov it feeds (IfConvert) is never an `xor`.
     private static bool ReadsFlags(MInstr i) => i.Op is MOp.Jcc or MOp.Setcc or MOp.Cmov or MOp.Adc or MOp.Sbb;
 
+    /// <summary>What may read the flags besides (a PUSHF, an asm block): to a rule that removes a flag setter, a reader.</summary>
+    private static bool MayReadFlags(MInstr i) => ReadsFlags(i) || i.Op is MOp.ReadFlags or MOp.InlineAsm or MOp.Pushfd;
+
     // ---- test after an instruction that set the flags --------------------------------
 
     /// <summary>
@@ -1591,7 +1594,7 @@ internal static class Peephole
             bool alone = true;
             for (int j = k + 2; j < instrs.Count && alone; j++)
             {
-                if (ReadsFlags(instrs[j])) alone = false;
+                if (MayReadFlags(instrs[j])) alone = false;
                 else if (WritesFlags(instrs[j]) || instrs[j].Op is MOp.Call or MOp.CallInd) break;
             }
             if (!alone) continue;
@@ -1619,7 +1622,9 @@ internal static class Peephole
                 || probe.Operands[0] is not MReg dead || probe.Operands[1] is not MMem { Device: false } probed
                 || !NullPage(probed) || probed.Base is not MReg b || b.Id == dead.Id) continue;
             MInstr next = instrs[k + 1];
-            if (next.Op is not (MOp.Mov or MOp.Movzx or MOp.Movsx) || next.Lock || next.Operands.Count != 2
+            // The load that follows writes the whole register (a narrow
+            // `mov` would leave the probe's upper bytes to be read).
+            if (next.Op is not (MOp.Mov or MOp.Movzx or MOp.Movsx) || next.Lock || next.Operands.Count != 2 || next.Op == MOp.Mov && next.Width != 4
                 || next.Operands[0] is not MReg written || written.Id != dead.Id
                 || next.Operands[1] is not MMem { Device: false } read || !NullPage(read) || read.Base is not MReg b2 || b2.Id != b.Id) continue;
             instrs.RemoveAt(k);
@@ -1651,7 +1656,7 @@ internal static class Peephole
         for (int k = instrs.Count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
-            if (ReadsFlags(i) || i.Op == MOp.ReadFlags)
+            if (MayReadFlags(i))
             {
                 // `jcc L ; jcc L` on one condition: the second never jumps.
                 if (i.Op == MOp.Jcc && k > 0 && instrs[k - 1] is { Op: MOp.Jcc } first && first.Cond == i.Cond

@@ -11,6 +11,8 @@
 #     (Inline carries Instr.PassedByValue) -- and its link leaves the names
 #     of what it relied on among its imports, so a kernel that does not say
 #     them refuses it.
+#   * The same sources moved down a few lines and into another directory
+#     say the same names (a body's name leaves out where it was written).
 #   * A kernel whose operator has another body says another name: the
 #     module built against the first imports a name the second has not,
 #     and the second's loader refuses it by that name; the first's binds it.
@@ -60,7 +62,7 @@ ready='s_Kernel$002eAddr_StaticReady$_t$V$NInt'
 grep -qxF "y_init\$$ready" "$work/imports.txt" || { cat "$work/imports.txt"; fail "the module does not say it relied on Addr made by the link"; }
 if grep -qxF "$ready" "$work/imports.txt"; then fail "the module still tests Addr's state word"; fi
 for member in get_Low32 get_High32 op_Addition; do
-    grep -q "^y_body\\\$[0-9a-f]\{16\}\\\$m_Kernel\\\$Addr_$member" "$work/imports.txt" || { cat "$work/imports.txt"; fail "the module does not name the body of Addr.$member it took"; }
+    grep -q "^y_body\\\$[0-9a-f]\{32\}\\\$m_Kernel\\\$Addr_$member" "$work/imports.txt" || { cat "$work/imports.txt"; fail "the module does not name the body of Addr.$member it took"; }
     if grep -q "^m_Kernel\\\$Addr_$member" "$work/imports.txt"; then fail "the module still calls Addr.$member"; fi
 done
 # Recycle: nothing called, nothing allocated -- Arm inlined, its struct in registers.
@@ -95,6 +97,23 @@ grep -qxF "$low" "$work/b.exports" || fail "kernel b, whose getter is the same, 
 "$corc" link "$work/card.o" --kernel "$b/kernel" -o "$work/card-b.ko" > "$work/card-b-link.log" 2>&1 || { cat "$work/card-b-link.log"; fail "the module's link against kernel b"; }
 imports "$work/card-b.ko" | grep '^y_body.*Addr_op_Addition' > "$work/plus-b.txt" || fail "linked against b, the module names no body of the operator"
 if grep -qxF "$plus" "$work/plus-b.txt"; then fail "linked against b, the module still names a's body"; fi
+# KERNEL C: a's sources with lines written above them, kept somewhere else.
+# No body changed, so no name does: a body's name is of what it does, not of
+# the file and lines it was written at, and the module built against a binds.
+mkdir -p "$work/moved"
+{ printf '// A line above.\n// And another.\n\n'; cat "$here/Addr.cor"; } > "$work/moved/Addr.cor"
+c=$work/c
+kernel "$c" "$work/moved/Addr.cor"
+says "$c/kernel" > "$work/c.exports"
+grep '^y_' "$work/a.exports" | sort > "$work/a.says"
+grep '^y_' "$work/c.exports" | sort > "$work/c.says"
+cmp -s "$work/a.says" "$work/c.says" || { diff "$work/a.says" "$work/c.says" || true; fail "kernel c, a's sources moved down two lines and to another directory, says other names"; }
+cp "$work/card.ko" "$c/module.ko"
+status=0
+(cd "$c" && ./kernel) > "$work/loaded-c.out" 2>&1 || status=$?
+test "$status" = 0 && grep -qx 'drivers 0' "$work/loaded-c.out" \
+    || { echo "status $status"; cat "$work/loaded-c.out"; fail "kernel c did not load the module built against a"; }
+
 # A KERNEL WHOSE BODIES ARE NOT BESIDE IT, though its table offers them:
 # the module's link refuses, rather than take none and say nothing.
 mkdir -p "$work/bare"

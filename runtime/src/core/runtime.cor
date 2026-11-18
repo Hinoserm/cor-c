@@ -1674,14 +1674,16 @@ public static partial class Runtime
     /// it gives up what it holds only when a switch is waiting and not on
     /// every few blocks. Called with (0, 0, 0); nonzero: wanted. It must
     /// only look -- no switch, no allocation, callable with the count
-    /// raised. 0: none, and such a stretch then assumes one is always wanted.
+    /// raised. 0: none, and such a stretch then runs to its end: a hosted
+    /// program's threads are the host's to preempt, and a kernel that gave
+    /// no way to ask is not told on every few blocks that it wants one.
     public static nuint PreemptWantedHook;
 
     /// Whether a switch is waiting for this thread (PreemptWantedHook).
     public static bool PreemptWanted()
     {
         nuint hook = PreemptWantedHook;
-        return hook == 0 || Sys.Call(hook, 0, 0, 0) != 0;
+        return hook != 0 && Sys.Call(hook, 0, 0, 0) != 0;
     }
 
     /// Whether this thread holds the heap lock (see GcLock.HeldByMe).

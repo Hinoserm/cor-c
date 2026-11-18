@@ -449,9 +449,18 @@ public sealed class Inline : IParallelModulePass
                     // caller grown past its own small limit stays a call at
                     // every site of its own (Processor.Has, its Ask a throw-
                     // and-once initialiser).
+                    //
+                    // Not where the caller is such a path from its first
+                    // block on -- Runtime.NullFault, a throw helper: nothing
+                    // warm is grown there, the function IS the path taken
+                    // out of line, and what it makes for its exception (the
+                    // trace Exception.Placed$ stores) must be seen stored
+                    // where it is made, or it is left to a collector that a
+                    // program with none then links (EscapeHeap.HeldByFields).
                     if (calleeSize > TinyBody
                         && (Escape.IsStaticInitialiser(callee.Name)
-                            || (coldBlocks ??= ColdBlocks(caller, loopBlocks ??= LoopBlocks(caller))).Contains(b)))
+                            || (coldBlocks ??= ColdBlocks(caller, loopBlocks ??= LoopBlocks(caller))).Contains(b)
+                                && !coldBlocks.Contains(caller.Blocks[0])))
                     {
                         TraceDecision?.Invoke(caller, callee, $"keep: cold path body={calleeSize} tiny-limit={TinyBody}");
                         continue;

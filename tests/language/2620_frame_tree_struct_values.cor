@@ -89,8 +89,8 @@ static class Program
                     first = s.In.K;
                     break;
                 case 1:
-                    Outer t = b;
-                    second = t.In.K;
+                    s = b;
+                    second = s.In.K;
                     break;
             }
         }

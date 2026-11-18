@@ -1121,6 +1121,7 @@ public sealed class RegionPointsTo : IModulePass
                 {
                     Instr call = new() { Op = Opcode.Call, Dest = i.Dest, Callee = to, DispatchType = i.DispatchType, Field = i.Field, Line = i.Line };
                     call.Operands.AddRange(i.Operands);
+                    call.PassedByValue = i.PassedByValue;   // after the operands it counts
                     if (_m.KeepCalls.Contains(i)) _m.KeepCalls.Add(call);
                     b.Instrs[k] = call;
                 }

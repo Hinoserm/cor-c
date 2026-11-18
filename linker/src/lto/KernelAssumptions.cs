@@ -24,8 +24,8 @@ namespace Corsac.Lang.Lto;
 ///
 /// So each is made a name. The kernel's export table says, for every type
 /// its link initialised, `y_init$` + the type's state word's symbol; and for
-/// every body it offers a module, `y_body$` + sixteen digits of the body's
-/// hash + `$` + the function's symbol (the bodies themselves beside the
+/// every body it offers a module, `y_body$` + 32 digits of the body's
+/// identity + `$` + the function's symbol (the bodies themselves beside the
 /// image, `.bodies`: an object holding an IR archive of them). A module that
 /// relied on either says so in a note (`.corsac.needs`), and its link turns
 /// the notes into references: a word a name in the module's data, bound at
@@ -53,7 +53,18 @@ public static class KernelAssumptions
 
     public static string InitName(string readySymbol) => InitPrefix + readySymbol;
 
-    public static string BodyName(string function, BodyHash hash) => BodyPrefix + hash.A.ToString("x16") + "$" + function;
+    /// <summary>
+    /// A body's name: 128 bits of its identity (IrArchiveEntry.Identity: the
+    /// hash of its record with where its source was taken out, so that a
+    /// line added above it, or the sources kept somewhere else, does not
+    /// rename it and refuse every module built before), so that two
+    /// different bodies of one function never share a name by chance -- one
+    /// that did would bind a module to a body it was not built against.
+    /// </summary>
+    public static string BodyName(string function, BodyHash hash) => BodyPrefix + hash.A.ToString("x16") + hash.B.ToString("x16") + "$" + function;
+
+    /// <summary>How many hex digits of its identity a body's name holds (BodyName), for what takes a name apart.</summary>
+    public const int BodyDigits = 32;
 
     /// <summary>A body the kernel's link may offer: taken from its unit before the link makes units again.</summary>
     public sealed record Offer(string Function, IrArchiveRecord Record, BodyHash Hash);
@@ -75,8 +86,12 @@ public static class KernelAssumptions
     {
         // ONE BODY A FUNCTION, or none: two units' copies of one symbol that
         // differ are two answers to what the kernel runs, and the link keeps
-        // one of them by rules of its own.
+        // one of them by rules of its own. Every copy is looked at, the ones
+        // that could not be offered too: a copy too large, or not importable,
+        // beside a small one is as much another answer as one of the same
+        // size with other contents, and the image may hold that one.
         Dictionary<string, Offer> offers = new(StringComparer.Ordinal);
+        Dictionary<string, BodyHash> copies = new(StringComparer.Ordinal);
         HashSet<string> differing = new(StringComparer.Ordinal);
         foreach (ObjectFile obj in inputs)
         {
@@ -85,16 +100,15 @@ public static class KernelAssumptions
             HashSet<string>? floats = null;
             foreach (IrArchiveEntry entry in archive.Entries.Values)
             {
-                if (entry.Key.Kind != IrKey.Function || !entry.Importable || entry.Instructions > MostInstructions) continue;
+                if (entry.Key.Kind != IrKey.Function) continue;
+                if (copies.TryGetValue(entry.Key.Name, out BodyHash seen)) { if (seen != entry.Hash) differing.Add(entry.Key.Name); }
+                else copies.Add(entry.Key.Name, entry.Hash);
+                if (!entry.Importable || entry.Instructions > MostInstructions || entry.Identity is not BodyHash identity) { differing.Add(entry.Key.Name); continue; }
                 floats ??= X87Notes.Read(obj)?.Where(fact => fact.Floats).Select(fact => fact.Name).ToHashSet(StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
                 if (floats.Contains(entry.Key.Name)) { differing.Add(entry.Key.Name); continue; }
-                if (offers.TryGetValue(entry.Key.Name, out Offer? first))
-                {
-                    if (first.Hash != entry.Hash) differing.Add(entry.Key.Name);
-                    continue;
-                }
+                if (offers.ContainsKey(entry.Key.Name)) continue;
                 offers.Add(entry.Key.Name, new Offer(entry.Key.Name, new IrArchiveRecord(entry.Key.ToString(), true, entry.Instructions, entry.Calls,
-                    archive.ReadBody(entry.Key), entry.References, entry.DecodeBytes), entry.Hash));
+                    archive.ReadBody(entry.Key), entry.References, entry.DecodeBytes, Identity: identity), identity));
             }
         }
         return Closed(offers.Values.Where(offer => !differing.Contains(offer.Function)).ToList(), null);

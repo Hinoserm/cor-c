@@ -27,7 +27,20 @@ public sealed class DeadArguments : IParallelModulePass
             foreach (int index in removed)
             {
                 function.Params.RemoveAt(index);
-                foreach (Instr call in graph.Calls[function.Name]) call.Operands.RemoveAt(index);
+                foreach (Instr call in graph.Calls[function.Name])
+                {
+                    // Which arguments go by value moves with them: the bits
+                    // above the one removed come down a place (the mark
+                    // counts the operands, and is dropped whole otherwise).
+                    ulong passed = call.PassedByValue;
+                    call.Operands.RemoveAt(index);
+                    if (passed != 0 && index < 64)
+                    {
+                        ulong below = index == 0 ? 0 : passed & (ulong.MaxValue >> (64 - index));
+                        // (A shift by 64 is a shift by 0: the last bit has nothing above it.)
+                        call.PassedByValue = below | (index == 63 ? 0 : passed >> (index + 1) << index);
+                    }
+                }
             }
         }
     }

@@ -8394,6 +8394,17 @@ public sealed partial class Binder
                 (HashSet<Sym>, HashSet<string>) switchEntry = NullState();
                 (HashSet<Sym>, HashSet<string>)? switchOut = null;
 
+                // A LOCAL A SECTION DECLARES IS THE WHOLE SWITCH BLOCK'S (C#:
+                // `case 0: S s = a; break; case 1: s = b; ...`), though each
+                // section here has a scope and slots of its own. No value goes
+                // from one section to another -- each is entered from the
+                // subject with what was assigned before the switch, so a later
+                // section must assign the local before it reads it -- and so
+                // the later section that names it is given a local of that
+                // name and type of its own: the same program, with every
+                // section's slots still given back as it ends.
+                Dictionary<string, Type>? sectionLocals = null;
+
                 foreach (SwitchCase c in sw.Cases)
                 {
                     RestoreNullState(switchEntry);
@@ -8435,9 +8446,41 @@ public sealed partial class Binder
                             caseProof.Add(subjectSym);
                     }
 
+                    if (sectionLocals is not null && c.Body.Count > 0)
+                    {
+                        HashSet<string> named = new(StringComparer.Ordinal);
+                        foreach (Stmt body in c.Body)
+                            foreach (Node n in SafetyNodes(body, intoLambdas: true))
+                                if (n is NameExpr { Name: var mentioned }) named.Add(mentioned);
+                        // Its own declaration of the name is that one (C#
+                        // refuses a second; here it is the section's own).
+                        foreach (Stmt body in c.Body)
+                        {
+                            if (body is not LocalDecl own) continue;
+                            named.Remove(own.Name);
+                            foreach (LocalDecl also in own.Also) named.Remove(also.Name);
+                        }
+                        foreach ((string name, Type type) in sectionLocals)
+                        {
+                            if (!named.Contains(name) || _scopes[^1].ContainsKey(name)) continue;
+                            Declare(c.Body[0], name, new LocalSym(NewSlot(), type, name));
+                        }
+                    }
+
                     foreach (Stmt body in c.Body)
                     {
                         CheckStmt(body);
+                    }
+
+                    // What this section declared, for the sections after it.
+                    foreach (Stmt body in c.Body)
+                    {
+                        if (body is not LocalDecl declared || declared.IsConst || declared.IsRef || _hoistedFunctions.ContainsKey(declared)) continue;
+                        foreach (LocalDecl one in new[] { declared }.Concat(declared.Also))
+                        {
+                            if (!_r.LocalSymbols.TryGetValue(one, out LocalSym? local) || local.Type.IsError) continue;
+                            (sectionLocals ??= new(StringComparer.Ordinal))[one.Name] = local.Type;
+                        }
                     }
 
                     // An empty section falls through to the following label;
@@ -19707,6 +19750,14 @@ public sealed partial class Binder
                 {
                     Error(ra, $"{fixedVariable}, so it can only be referred to by 'ref readonly' or 'in'");
                 }
+                // A READONLY FIELD BY `ref` OR `out` is a write of it wherever
+                // an assignment would be one (CS0192, a static's CS0199).
+                else if (!_readOnlyReference && ReadOnlyField(ra.Target) is string fixedField)
+                {
+                    Error(ra, fixedField.StartsWith("CS0198", StringComparison.Ordinal)
+                        ? "CS0199: A static readonly field cannot be used as a ref or out value (except in a static constructor)" + fixedField[fixedField.LastIndexOf(':')..]
+                        : "CS0192: A readonly field cannot be used as a ref or out value (except in a constructor)" + fixedField[fixedField.LastIndexOf(':')..]);
+                }
                 return target;
             }
 
@@ -20300,7 +20351,9 @@ public sealed partial class Binder
         {
             Error(target, $"{readOnly}, so it cannot {what} it");
         }
-        else if (ReadOnlyField(target) is string refused)
+        // (Its address may be taken anywhere, as C# lets unsafe code: what
+        // is written through the pointer is the pointer's business.)
+        else if (what != "take the address of" && ReadOnlyField(target) is string refused)
         {
             Error(target, refused);
         }

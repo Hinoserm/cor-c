@@ -64,7 +64,8 @@ public sealed class IrArchive
         {
             if (!IrKey.IsWritten(record.Key) || !seen.Add(record.Key) || record.Instructions < 0 || record.Calls.Count > 100000)
                 throw new ElfFormatException("Invalid IR record: " + record.Key);
-            WriteName(writer, record.Key); writer.Write(record.Importable); writer.Write(record.Instructions);
+            // The flags: importable (1), an identity follows the hash (2).
+            WriteName(writer, record.Key); writer.Write((byte)((record.Importable ? 1 : 0) | (record.Identity is null ? 0 : 2))); writer.Write(record.Instructions);
             writer.Write(record.Calls.Count);
             foreach (string call in record.Calls) WriteName(writer, call);
             IReadOnlyList<string> references = record.References ?? record.Calls;
@@ -73,6 +74,7 @@ public sealed class IrArchive
             if (record.DecodeBytes < 0) throw new ElfFormatException("Invalid IR decode estimate");
             writer.Write(record.DecodeBytes);
             writer.Write(bodyBytes); writer.Write(record.BodyLength); writer.Write(record.BodyHash());
+            if (record.Identity is BodyHash identity) writer.Write(identity.ToArray());
             bodyBytes = checked(bodyBytes + record.BodyLength);
             if (bodyBytes > MaximumBytes || directory.Length > MaximumBytes - bodyBytes - 84)
                 throw new ElfFormatException("IR archive exceeds unit budget");
@@ -201,7 +203,7 @@ public sealed class IrArchive
             {
                 IrKey key = ReadKey(reader);
                 byte flags = reader.ReadByte(); int instructions = reader.ReadInt32(), callCount = reader.ReadInt32();
-                if (flags > 1 || instructions < 0 || callCount < 0 || callCount > 100000 || callCount > (bodyStart - stream.Position) / 5)
+                if (flags > 3 || instructions < 0 || callCount < 0 || callCount > 100000 || callCount > (bodyStart - stream.Position) / 5)
                     throw new ElfFormatException("Invalid IR import summary");
                 // Arrays, the empty one shared, and the references the calls
                 // themselves when they are the same names: a link holds every
@@ -220,11 +222,18 @@ public sealed class IrArchive
                 int offset = reader.ReadInt32(), length = reader.ReadInt32(); byte[] hashBytes = reader.ReadBytes(32);
                 if (hashBytes.Length != 32) throw new ElfFormatException("Truncated IR body hash");
                 BodyHash hash = BodyHash.Of(hashBytes);
+                BodyHash? identity = null;
+                if ((flags & 2) != 0)
+                {
+                    byte[] identityBytes = reader.ReadBytes(32);
+                    if (identityBytes.Length != 32) throw new ElfFormatException("Truncated IR body identity");
+                    identity = BodyHash.Of(identityBytes);
+                }
                 if (offset != next - bodyStart || length < 0 || length > bytesCount - next || stream.Position > bodyStart || entries.ContainsKey(key))
                     throw new ElfFormatException("Invalid IR body directory");
                 // Checked first: what the directory refuses is not pooled.
                 if (pool is not null) { calls = pool.Share(calls); references = pool.Share(references); }
-                IrArchiveEntry entry = new(key, flags != 0, instructions, calls, length, hash, references, decodeBytes);
+                IrArchiveEntry entry = new(key, (flags & 1) != 0, instructions, calls, length, hash, references, decodeBytes, identity);
                 if (pool is not null) entry = pool.Share(entry);
                 entries.Add(key, (entry, next));
                 next += length;

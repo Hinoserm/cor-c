@@ -79,8 +79,12 @@ public static class IrUnitCodec
                 .Select(name => ComparedOnly(instructions, name) ? Lto.IrArchiveEntry.ComparedOnly + name : name)
                 .Order(StringComparer.Ordinal).ToArray();
             byte[] body = IrFunctionCodec.Write(function, module.KeepCalls);
+            // A body a kernel may offer its modules is named by its record
+            // with where its source was taken out (IrArchiveEntry.Identity).
+            BodyHash? identity = importable && instructions.Length <= Lto.KernelAssumptions.MostInstructions
+                ? BodyHash.Of(FastHash.Of(IrFunctionCodec.Write(function, module.KeepCalls, placeless: true))) : null;
             // Held packed until the object is written (IrArchiveRecord.Packed).
-            records.Add(IrArchiveRecord.Packed("F:" + function.Name, importable, instructions.Length, calls, body, references, IrFunctionCodec.DecodeCost(function, body.Length)));
+            records.Add(IrArchiveRecord.Packed("F:" + function.Name, importable, instructions.Length, calls, body, references, IrFunctionCodec.DecodeCost(function, body.Length), identity));
         }
         foreach (DataItem item in module.Data)
             records.Add(new("D:" + item.Name, false, 0, Array.Empty<string>(), IrDataCodec.Write(item),
