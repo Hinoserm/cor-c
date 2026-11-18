@@ -7449,18 +7449,49 @@ static class ThreadStatics
             index = (int)Sys.ReadAddress(indexAt);
         }
         nuint home = Home();
-        object?[]? cells = Sys.ObjectAt(Sys.ReadAddress(home)) as object?[];
-        if (cells is null || index >= cells.Length)
+        // ENTERED AGAIN ON ITS OWN THREAD, from wherever it allocates or
+        // stores: an allocation and a store's barrier may ask the platform
+        // (Gc.YieldHook, the preemption hooks), and a platform's hook that
+        // reads a [ThreadStatic] of its own is here again, underneath. What
+        // it does there -- makes this thread's table, grows it, fills a cell
+        // of another number -- is found by looking again: the table is read
+        // afresh after everything that may have run it, and a cell is this
+        // field's only once the table the thread names holds it.
+        object? made = null;
+        while (true)
         {
-            cells = Grow(home, cells, index);
+            object?[]? cells = Sys.ObjectAt(Sys.ReadAddress(home)) as object?[];
+            if (cells is null || index >= cells.Length)
+            {
+                Grow(home, index);
+                continue;
+            }
+            object? cell = cells[index];
+            if (cell is not null) return Sys.ObjectAddress(cell);
+            if (made is null)
+            {
+                // Allocated with the preemption count raised: an allocation
+                // that waits for no collection and asks no platform whether
+                // it may (Gc.Refused) -- the platform's answer may be read
+                // from the very cell this makes.
+                Runtime.PreemptOff();
+                made = Sys.ObjectAt(Runtime.Alloc(bytes));
+                Runtime.PreemptOn();
+                continue;
+            }
+            // Stored with the count raised as well: the store's barrier, with
+            // no room for its report, asks the platform before the store is
+            // made -- and the platform's hook, come here for this same cell
+            // and finding none yet, made one and stored it, and its barrier
+            // asked again (the second way down the stack, after the
+            // allocation's).
+            Runtime.PreemptOff();
+            cells[index] = made;
+            Runtime.PreemptOn();
+            // (Looked at again all the same: what ran at the count's fall
+            // may have grown the table, from a copy made before the store.)
+            if (Sys.ReadAddress(home) == Sys.ObjectAddress(cells)) return Sys.ObjectAddress(made);
         }
-        object? cell = cells[index];
-        if (cell is null)
-        {
-            cell = Sys.ObjectAt(Runtime.Alloc(bytes));
-            cells[index] = cell;
-        }
-        return Sys.ObjectAddress(cell);
     }
 
     /// The word that holds the running code's table: the thread block's, or
@@ -7477,26 +7508,31 @@ static class ThreadStatics
         return Sys.ThreadBlock() + Tls.ThreadStatics;
     }
 
-    /// This thread's table, long enough for `index`: its first, put on the
-    /// list, or a longer copy of the one it has, named in the word at `home`.
-    static object?[] Grow(nuint home, object?[]? old, int index)
+    /// This thread's table made long enough for `index`: its first, put on
+    /// the list, or a longer copy of the one it has, named in the word at
+    /// `home` -- or nothing done, where the table changed while this made
+    /// its own (Cell, which looks again either way). Everything that
+    /// allocates comes first; from the last look at the word to the write
+    /// of it nothing runs but this.
+    static void Grow(nuint home, int index)
     {
+        object?[]? old = Sys.ObjectAt(Sys.ReadAddress(home)) as object?[];
         int size = old is null ? 8 : old.Length * 2;
         while (size <= index)
         {
             size = size * 2;
         }
+        // The count raised from here to the end, over what it allocates and
+        // every store it makes, as Cell's are: no wait, no platform asked.
+        Runtime.PreemptOff();
         object?[] cells = new object?[size];
+        ThreadStaticTable? fresh = old is null ? new ThreadStaticTable() : null;
+        if (Sys.ReadAddress(home) != (old is null ? 0 : Sys.ObjectAddress(old))) { Runtime.PreemptOn(); return; }
         ThreadStaticTable node;
         if (old is null)
         {
-            node = new ThreadStaticTable();
+            node = fresh!;
             node.Home = home;
-            Enter();
-            node.Next = _tables;
-            if (_tables is not null) _tables.Previous = node;
-            _tables = node;
-            Leave();
         }
         else
         {
@@ -7504,10 +7540,25 @@ static class ThreadStatics
             for (int i = 1; i < old.Length; i++) cells[i] = old[i];
         }
         cells[0] = node;
-        // Kept by the list before the thread block names it.
-        node.Cells = cells;
+        // (Nothing should have come between with the count up; looked at
+        // once more, a copy short of what a hook put in the old table is
+        // dropped and not named.)
+        if (Sys.ReadAddress(home) != (old is null ? 0 : Sys.ObjectAddress(old))) { Runtime.PreemptOn(); return; }
+        // Named by the thread first, so that whatever comes here again
+        // finds a table and makes no second; kept by the list from the
+        // next line on, and by this frame until then.
         Sys.WriteAddress(home, Sys.ObjectAddress(cells));
-        return cells;
+        node.Cells = cells;
+        if (old is null)
+        {
+            Enter();
+            node.Next = _tables;
+            if (_tables is not null) _tables.Previous = node;
+            _tables = node;
+            Leave();
+        }
+        Sys.KeepAlive(cells);
+        Runtime.PreemptOn();
     }
 
     /// A thread's table off the list as the thread ends: its cells are the
@@ -7527,7 +7578,6 @@ static class ThreadStatics
         {
             return;
         }
-        Sys.WriteAddress(home, 0);
         ThreadStaticTable node = (ThreadStaticTable)cells[0]!;
         Enter();
         // Only the list's head is replaced by its next: a table off the list
@@ -7536,10 +7586,16 @@ static class ThreadStatics
         if (node.Previous is not null) node.Previous.Next = node.Next;
         else if (_tables == node) _tables = node.Next;
         if (node.Next is not null) node.Next.Previous = node.Previous;
-        Leave();
-        node.Cells = null;
         node.Next = null;
         node.Previous = null;
+        Leave();
+        node.Cells = null;
+        // The word cleared last, with nothing after it that may come here
+        // again (Cell): cleared first, a hook run by the stores above made
+        // the ending thread a table anew, on the list for ever. Until then
+        // the table is this frame's to keep.
+        Sys.WriteAddress(home, 0);
+        Sys.KeepAlive(cells);
     }
 
     /// THE TABLE A FLOW MADE OR GREW while it ran on a thread block
@@ -7599,8 +7655,21 @@ static class ThreadStatics
         Leave();
     }
 
+    /// THE LIST'S LOCK, a spin lock, HELD WITH THE PREEMPTION COUNT RAISED
+    /// as every spin lock of the runtime's is: the stores made under it are
+    /// of references, and a store's barrier that finds no room for its
+    /// report waits for the collector and asks the platform whether it may
+    /// (Gc.Report, Gc.YieldHook) -- unless the count is up (Gc.MayWait),
+    /// when it takes from the reserve and asks nobody. Held without it, the
+    /// hook was run under the lock: one that read a [ThreadStatic] of its
+    /// own came back into Grow for the same thread's first table and span
+    /// on the lock its own thread held, every other thread then waiting out
+    /// a cycle that could not end (test 2433, one run in twenty under load);
+    /// and a thread that waited for the collector under it kept from the
+    /// lock the threads the collector was waiting for.
     static void Enter()
     {
+        Runtime.PreemptOff();
         while (Sys.Cas32(Sys.AddressOf(ref _lock), 0, 1) != 0)
         {
             Sys.Pause();
@@ -7610,6 +7679,7 @@ static class ThreadStatics
     static void Leave()
     {
         Sys.AtomicSwap32(Sys.AddressOf(ref _lock), 0);
+        Runtime.PreemptOn();
     }
 }
 

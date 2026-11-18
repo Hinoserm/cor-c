@@ -7656,7 +7656,23 @@ public static class Gc
     /// the collector from ever running again.
     static bool MayWaitForCollector()
     {
-        return YieldHook == 0 || Sys.Call(YieldHook, 1, 0, 0) == 0;
+        return !Refused();
+    }
+
+    /// Whether this thread may not wait for another's collection: one with
+    /// its preemption count raised (Tls.PreemptCount: a spin lock held, an
+    /// interrupt, the making of a [ThreadStatic]'s cell) without the
+    /// platform asked, as the barrier's wait has it (MayWait) and as a
+    /// kernel answers for such a thread; else the platform's word
+    /// (YieldHook, asked with 1). Not asked then because the hook may read a
+    /// [ThreadStatic] of its own, and the cell being made may be that one's
+    /// (ThreadStatics.Cell): asked from inside the allocation of it, it
+    /// came back for the cell, allocated, was asked again -- down the stack
+    /// until it ended (test 2433 under load).
+    static bool Refused()
+    {
+        if (Sys.ReadAddress(Sys.ThreadBlock() + Tls.PreemptCount) != 0) return true;
+        return YieldHook != 0 && Sys.Call(YieldHook, 1, 0, 0) != 0;
     }
 
     /// Waits, blocked, until the mark opens or the cycle ends (PaceGate,
@@ -13189,7 +13205,7 @@ public static class Gc
         while (_collecting || _sweeping || Runtime.Marking != 0)
         {
             GcLock.Exit();
-            if (YieldHook != 0 && Sys.Call(YieldHook, 1, 0, 0) != 0)
+            if (Refused())
             {
                 GcLock.Enter();
                 return false;
@@ -13211,7 +13227,7 @@ public static class Gc
     /// count raised): the caller does without the cycle's end.
     static bool WaitForCollector(nuint cycling)
     {
-        if (YieldHook != 0 && Sys.Call(YieldHook, 1, 0, 0) != 0)
+        if (Refused())
         {
             RefusedWaits = RefusedWaits + 1;
             return false;
