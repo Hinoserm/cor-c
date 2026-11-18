@@ -17,6 +17,11 @@
 // request walks a single list of slightly-wrong sizes and carves it finer.
 // "From a hole" is being one of the blocks freed, wherever it lies.
 //
+// Each block is held by a reference too (Sys.ObjectAt), as long as it is
+// meant to live: an address kept only as a number keeps nothing, for the
+// collector as for the compiler's regions, and a lap's region took every
+// block the loop made and gave it back at the lap's end.
+//
 // The thread's buffer is retired first. A buffer with room answers before the
 // free index is asked (Gc.AllocKind), so the holes are for the requests made
 // when it has none -- and before any collection there is no chunk being
@@ -41,10 +46,13 @@ static class Program
     {
         nuint[] live = new nuint[256];
         nuint[] holes = new nuint[128];
+        object?[] kept = new object?[256];
 
         for (int i = 0; i < 256; i++)
         {
-            live[i] = Runtime.Alloc((nuint)SizeFor(i));
+            nuint made = Runtime.Alloc((nuint)SizeFor(i));
+            live[i] = made;
+            kept[i] = Sys.ObjectAt(made);
         }
 
         // The high-water mark of the bump pointer: everything allocated after
@@ -57,6 +65,7 @@ static class Program
         // memory rather than the top block handed back.
         for (int i = 1; i < 254; i = i + 2)
         {
+            kept[i] = null;
             Runtime.Free(live[i]);
             holes[holeCount] = live[i];
             holeCount = holeCount + 1;
@@ -93,6 +102,7 @@ static class Program
                 fresh = fresh + 1;
             }
             live[i] = at;
+            kept[i] = Sys.ObjectAt(at);
         }
 
         // Nothing handed out twice: every address is distinct from the ones
@@ -110,6 +120,8 @@ static class Program
             }
         }
 
+        // The blocks held to here, past the comparisons that read their addresses.
+        Sys.KeepAlive(kept);
         Say("holes ", holeCount + clash);
         Say("from holes ", fromHoles);
         Say("grew from bump ", fresh);
