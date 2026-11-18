@@ -282,10 +282,12 @@ internal static class Imports
 
     private static void Rewrite(MFunction m, MInstr i, Func<string, bool> isImported, List<MInstr> outList, List<string> errors)
     {
-        if (i.Op == MOp.Call && i.Operands.Count == 1 && i.Operands[0] is MImm { Symbol: { } callee, Label: null, Value: 0 } && isImported(callee))
+        if (i.Op == MOp.Call && i.Operands.Count >= 1 && i.Operands[0] is MImm { Symbol: { } callee, Label: null, Value: 0 } && isImported(callee))
         {
-            outList.Add(new MInstr(MOp.CallInd, new MMem(null, 0) { Symbol = callee, Reloc = RelocKind.GotAddr })
-                { Width = i.Width, Native = i.Native, Line = i.Line });
+            // (Its argument registers with it, where it passes them so: RegisterArgs.)
+            MInstr through = new(MOp.CallInd, new MMem(null, 0) { Symbol = callee, Reloc = RelocKind.GotAddr }) { Width = i.Width, Native = i.Native, Line = i.Line };
+            for (int k = 1; k < i.Operands.Count; k++) through.Operands.Add(i.Operands[k]);
+            outList.Add(through);
             return;
         }
         // Any other call is the PLT's business and a jump table is this object's own.

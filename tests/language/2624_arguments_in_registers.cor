@@ -1,0 +1,131 @@
+// test: arguments in registers
+// only-target: x86
+// expect-exit: 0
+// expect-output:
+// direct 7 30 -1 hello! True
+// delegate 7 30 -1 hello!
+// virtual 14 108 interface 15 23
+// asm 12 33 13 12 33
+// deep 5050 1 55
+// caught 6 boom at 3
+// mixed 10 11 12 13 14 15
+//
+// A function taking one to three words takes them in EAX, EDX and ECX when
+// called directly, and through a stub under its own name when reached by
+// its address -- a delegate, a virtual or an interface method -- and a
+// function whose asm block names the stack keeps them on the stack, its
+// register entry pushing them for it. Each way, with numbers, references
+// and a bool; recursion; an exception thrown through such calls, its trace
+// read back; and calls of four or more words, which stay on the stack,
+// beside them.
+
+using System;
+using System.Runtime.CompilerServices;
+
+abstract class Shape
+{
+    public abstract int Scaled(int by);
+}
+
+sealed class Square : Shape
+{
+    public int Side;
+    public Square(int side) { Side = side; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public override int Scaled(int by) => Side * by;
+}
+
+interface IMix
+{
+    int Mix(int a, int b);
+}
+
+sealed class Mixer : IMix
+{
+    public int Bias;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Mix(int a, int b) => a * 2 + b + Bias;
+}
+
+static class Program
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int One(int a) => a + 1;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Two(int a, int b) => a * b;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Three(int a, int b, int c) => a - b - c;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Shout(string s, bool loud) => loud ? s + "!" : s;
+
+    // An asm block that names the stack: the body keeps its arguments there.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Pushed(int a, int b)
+    {
+        int r;
+        asm
+        {
+            push ebx
+            mov eax, a
+            mov ebx, b
+            add eax, ebx
+            pop ebx
+            mov r, eax
+        }
+        return r;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Sum(int n) => n == 0 ? 0 : n + Sum(n - 1);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Fib(int n, int a, int b) => n == 0 ? a : Fib(n - 1, b, a + b);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Throws(int depth, string what)
+    {
+        if (depth == 0) throw new InvalidOperationException(what);
+        return Throws(depth - 1, what) + 1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Six(int a, int b, int c, int d, int e, int f) => a + " " + b + " " + c + " " + d + " " + e + " " + f;
+
+    static int Main()
+    {
+        Console.WriteLine("direct " + One(6) + " " + Two(5, 6) + " " + Three(4, 2, 3) + " " + Shout("hello", true) + " " + (Two(1, 1) == 1));
+
+        Func<int, int> one = One;
+        Func<int, int, int> two = Two;
+        Func<int, int, int, int> three = Three;
+        Func<string, bool, string> shout = Shout;
+        Console.WriteLine("delegate " + one(6) + " " + two(5, 6) + " " + three(4, 2, 3) + " " + shout("hello", true));
+
+        Shape shape = new Square(7);
+        IMix mix = new Mixer { Bias = 1 };
+        Console.WriteLine("virtual " + shape.Scaled(2) + " " + new Square(9).Scaled(12) + " interface " + mix.Mix(5, 4) + " " + mix.Mix(10, 2));
+
+        Func<int, int, int> pushed = Pushed;
+        Console.WriteLine("asm " + Pushed(5, 7) + " " + Pushed(11, 22) + " " + Pushed(6, 7) + " " + pushed(5, 7) + " " + pushed(11, 22));
+
+        Console.WriteLine("deep " + Sum(100) + " " + Fib(1, 0, 1) + " " + Fib(10, 0, 1));
+
+        try
+        {
+            Console.WriteLine(Throws(3, "boom"));
+        }
+        catch (InvalidOperationException e)
+        {
+            string trace = e.StackTrace ?? "";
+            int frames = 0;
+            foreach (string line in trace.Split('\n')) if (line.Contains("Throws")) frames++;
+            Console.WriteLine("caught " + (frames + 2) + " " + e.Message + " at " + (frames - 1));
+        }
+
+        Console.WriteLine("mixed " + Six(10, 11, 12, 13, 14, 15));
+        return 0;
+    }
+}

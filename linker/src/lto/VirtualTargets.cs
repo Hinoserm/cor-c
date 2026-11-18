@@ -518,7 +518,7 @@ public static class VirtualTargets
                     {
                         foreach (Symbol symbol in obj.Symbols)
                             if (symbol.IsDefined && symbol.IsFunction && symbol.Size > 0 && ReferenceEquals(symbol.Section, section)
-                                && its.Entries.ContainsKey(IrKey.OfFunction(symbol.Name)))
+                                && its.Entries.ContainsKey(IrKey.OfFunction(RuntimeAbi.FunctionOf(symbol.Name))))
                                 (dropped ??= new()).Add((symbol.Offset, symbol.Offset + symbol.Size));
                         dropped?.Sort((a, b) => a.Start.CompareTo(b.Start));
                     }

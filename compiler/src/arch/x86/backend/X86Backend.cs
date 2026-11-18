@@ -327,7 +327,7 @@ public sealed class X86Backend : IBackend
                 if (!f.Exported)
                 {
                     privateNames.Add(f.Name);
-                    if (RegisterArgs.Of(f) > 0) privateNames.Add(RegisterArgs.EntryName(f.Name));
+                    privateNames.Add(RegisterArgs.EntryName(f.Name));
                 }
             }
             foreach (DataItem d in module.Data)
@@ -352,8 +352,10 @@ public sealed class X86Backend : IBackend
             foreach (Function f in module.Functions)
             {
                 definedNames.Add(f.Name);
-                // And its register entry, where it has one (RegisterArgs).
-                if (RegisterArgs.Of(f) > 0) definedNames.Add(RegisterArgs.EntryName(f.Name));
+                // And its register entry, where it has one (RegisterArgs) --
+                // named whether or not: a header read without its body has
+                // no parameters to tell, and a name no call makes is no harm.
+                definedNames.Add(RegisterArgs.EntryName(f.Name));
             }
             foreach (DataItem d in module.Data)
             {
@@ -526,15 +528,16 @@ public sealed class X86Backend : IBackend
             });
             defined.Add(bodyName);
             // A FUNCTION THAT TAKES ITS ARGUMENTS IN REGISTERS BUT WHOSE BODY
-            // KEEPS THEM ON THE STACK (an asm block reads them there,
+            // KEEPS THEM ON THE STACK (an asm block that names the stack,
             // RegisterArgs.BodyInRegisters): its register entry a stub the
-            // other way, after the body -- laid down where nothing else is
-            // being encoded, so the body's tables are already done with.
+            // other way, after the body, with a frame and a frame-table entry
+            // of its own so a walk of the frames goes through it.
+            FrameTable.Entry? reverseFrame = null;
             if (!RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) is > 0 and var pushed)
             {
                 int pad = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
                 Encoder.Nops(text.Bytes, pad);
-                (byte[] reverse, int at) = RegisterArgs.ReverseStub(pushed);
+                (byte[] reverse, int at, int back) = RegisterArgs.ReverseStub(pushed);
                 int reverseStart = text.Bytes.Count;
                 text.Bytes.AddRange(reverse);
                 // CALLED BY A NAME OF THIS OBJECT'S OWN, local: copies of one
@@ -546,11 +549,13 @@ public sealed class X86Backend : IBackend
                 string own = RegisterArgs.StackBodyName(f.Name);
                 obj.Symbols.Add(new Symbol { Name = own, Section = text, Offset = start, Size = size, IsFunction = true, Global = false });
                 text.Relocs.Add(new Relocation(reverseStart + at, own, -4, RelocKind.Rel32));
+                string entry = RegisterArgs.EntryName(f.Name);
                 obj.Symbols.Add(new Symbol
                 {
-                    Name = RegisterArgs.EntryName(f.Name), Section = text, Offset = reverseStart, Size = reverse.Length, IsFunction = true, Global = f.Exported,
+                    Name = entry, Section = text, Offset = reverseStart, Size = reverse.Length, IsFunction = true, Global = f.Exported,
                 });
-                defined.Add(RegisterArgs.EntryName(f.Name));
+                defined.Add(entry);
+                reverseFrame = new FrameTable.Entry(entry, f.Display ?? f.Name, f.SourceFile ?? "", reverseStart, reverse.Length, new List<(int, int)>());
             }
             if (EmitLinkSummary && !PositionIndependent)
                 Corsac.Lang.Opt.LinkSummary.AddConstantReturns(f, obj, summary);
@@ -563,6 +568,8 @@ public sealed class X86Backend : IBackend
             frames.Add(new FrameTable.Entry(
                 bodyName, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
                 new List<(int, int)>(encoder.Lines)));
+            // The reverse stub's after the body's: the table is in the order of the code.
+            if (reverseFrame is { } stubFrame) frames.Add(stubFrame);
 
             if (StackMaps)
             {
