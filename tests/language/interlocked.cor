@@ -53,7 +53,7 @@ static class Program
         Console.WriteLine("long " + up + " " + down + " " + Interlocked.Read(ref _wide));
 
         Thread[] threads = new Thread[4];
-        for (int i = 0; i < threads.Length; i++) threads[i] = Thread.Start(new Adder());
+        for (int i = 0; i < threads.Length; i++) threads[i] = Threads.Go(new Adder());
         for (int i = 0; i < threads.Length; i++) threads[i].Join();
         Console.WriteLine("threads " + Shared);
 
@@ -64,5 +64,17 @@ static class Program
         Box? swappedBox = Interlocked.CompareExchange(ref _held, second, first);
         Console.WriteLine("refs " + (before == null) + " " + (notSwapped == first) + " " + (swappedBox == first && _held == second));
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

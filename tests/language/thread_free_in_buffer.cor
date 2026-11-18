@@ -31,14 +31,14 @@ class Node
 {
     public int Value;
     public string Name;
-    public Node Next;
+    public Node? Next;
 }
 
 class Builder : Action
 {
     public const int Count = 10000;
 
-    public Node Head;
+    public Node? Head;
     int _seed;
 
     public Builder(int seed)
@@ -48,11 +48,11 @@ class Builder : Action
 
     public void Invoke()
     {
-        Node head = null;
+        Node? head = null;
 
         for (int i = 0; i < Count; i++)
         {
-            Node n = new Node();
+            Node? n = new Node();
 
             n.Value = _seed * Count + i;
             n.Name = "n" + i;
@@ -93,7 +93,7 @@ static class Program
             for (int i = 0; i < workers; i++)
             {
                 bodies[i] = new Builder(i);
-                threads[i] = Thread.Start(bodies[i]);
+                threads[i] = Threads.Go(bodies[i]);
             }
 
             // The main thread makes and drops strings meanwhile, freeing them
@@ -118,7 +118,7 @@ static class Program
 
             for (int i = 0; i < workers; i++)
             {
-                Node n = bodies[i].Head;
+                Node? n = bodies[i].Head;
                 int expect = Builder.Count - 1;
 
                 while (n != null)
@@ -150,5 +150,17 @@ static class Program
         System.Console.WriteLine("collected " + (Gc.Collections - collectionsBefore >= rounds));
         if (!Gc.CheckFreeIndex()) return 2;
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

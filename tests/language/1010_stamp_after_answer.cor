@@ -163,8 +163,8 @@ static class Program
         Spinner spinner = new Spinner();
         Maker maker = new Maker();
         maker.Other = spinner;
-        Thread s = Thread.Start(spinner);
-        Thread m = Thread.Start(maker);
+        Thread s = Threads.Go(spinner);
+        Thread m = Threads.Go(maker);
 
         for (int round = 0; round < Maker.Rounds; round++)
         {
@@ -183,5 +183,17 @@ static class Program
         System.Console.WriteLine("strings " + maker.Checked);
         System.Console.WriteLine("bad " + maker.Bad);
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

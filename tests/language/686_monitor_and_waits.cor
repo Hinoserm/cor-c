@@ -61,7 +61,7 @@ static class Program
         }
 
         bool pulsed = false;
-        Thread waiter = Thread.Start(() =>
+        Thread waiter = Threads.Go(() =>
         {
             lock (Gate)
             {
@@ -82,7 +82,7 @@ static class Program
 
         bool taken = Monitor.TryEnter(Gate);
         bool other = false;
-        Thread.Start(() => { other = Monitor.TryEnter(Gate); }).Join();
+        Threads.Go(() => { other = Monitor.TryEnter(Gate); }).Join();
         Monitor.Exit(Gate);
         Console.WriteLine("trylock " + taken + " " + other);
 
@@ -117,5 +117,17 @@ static class Program
         TaskCompletionSource made = new TaskCompletionSource("state", TaskCreationOptions.RunContinuationsAsynchronously);
         Console.WriteLine("tcs " + made.Task.CreationOptions + " " + made.Task.AsyncState);
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

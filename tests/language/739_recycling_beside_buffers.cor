@@ -105,7 +105,7 @@ static class Program
             for (int i = 0; i < workers; i++)
             {
                 bodies[i] = new Worker(i + round * workers);
-                threads[i] = Thread.Start(bodies[i]);
+                threads[i] = Threads.Go(bodies[i]);
             }
             for (int i = 0; i < workers; i++)
             {
@@ -124,5 +124,17 @@ static class Program
         Sys.Print(Gc.Collections > before ? "True" : "False");
         Sys.PrintLine();
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

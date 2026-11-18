@@ -171,7 +171,7 @@ static class Program
         for (int i = 0; i < 3; i++)
         {
             bodies[i] = new Churn();
-            threads[i] = Thread.Start(bodies[i]);
+            threads[i] = Threads.Go(bodies[i]);
         }
 
         long markedBefore = Gc.RegisteredMidMark;
@@ -182,7 +182,7 @@ static class Program
             Parker parker = new Parker();
             parker.Slot = slot;
             parker.Round = round;
-            Thread.Start(parker).Join();
+            Threads.Go(parker).Join();
 
             // Past the end of the collection that was marking.
             long now = Gc.Collections;
@@ -205,5 +205,17 @@ static class Program
         System.Console.WriteLine("marked " + (Gc.RegisteredMidMark > markedBefore));
         if (!Gc.CheckFreeIndex()) return 2;
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

@@ -177,7 +177,7 @@ static class Program
             Shuffler body = new Shuffler(i);
 
             bodies[i] = body;
-            threads[i] = Thread.Start(body);
+            threads[i] = Threads.Go(body);
         }
 
         long mine = 0;
@@ -232,5 +232,17 @@ static class Program
         SayBool("swaps ", swaps);
         SayBool("concurrent ", Gc.ConcurrentCycles > 0);
         return mine > 0 ? 0 : 1;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

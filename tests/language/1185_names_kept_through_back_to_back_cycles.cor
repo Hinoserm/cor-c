@@ -127,11 +127,11 @@ static class Program
     {
         Gc.SetLimit(20971520);
         Collector collector = new Collector();
-        Thread ct = Thread.Start(collector);
+        Thread ct = Threads.Go(collector);
         int workers = 6;
         Worker[] w = new Worker[workers];
         Thread[] t = new Thread[workers];
-        for (int i = 0; i < workers; i++) { w[i] = new Worker(i + 1); t[i] = Thread.Start(w[i]); }
+        for (int i = 0; i < workers; i++) { w[i] = new Worker(i + 1); t[i] = Threads.Go(w[i]); }
         for (int i = 0; i < workers; i++) t[i].Join();
         Collector.Stop = true;
         ct.Join();
@@ -140,5 +140,17 @@ static class Program
         System.Console.WriteLine("checked " + checkedAll);
         System.Console.WriteLine("bad " + Worker.Bad);
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

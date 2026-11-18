@@ -81,8 +81,8 @@ static class Program
         {
             CycleReader a = new() { Pair = pair, First = true };
             CycleReader b = new() { Pair = pair };
-            Thread ta = Thread.Start(a);
-            Thread tb = Thread.Start(b);
+            Thread ta = Threads.Go(a);
+            Thread tb = Threads.Go(b);
             Control.Go[pair].Add(1);
             ta.Join(); tb.Join();
             if (a.Seen >= 1 && b.Seen >= 1 && a.Seen + b.Seen == 3) broken++;
@@ -90,5 +90,17 @@ static class Program
         }
         Sys.Print("cycles broken once: " + broken + " of 8\n");
         return broken == 8 ? 0 : 1;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

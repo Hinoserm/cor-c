@@ -134,7 +134,7 @@ static class Program
         Gc.YieldHook = Sys.AddressOf(Program.Refuse);
         Worker[] w = new Worker[workers];
         Thread[] t = new Thread[workers];
-        for (int i = 0; i < workers; i++) { w[i] = new Worker(i); w[i].Refused = i == 0; t[i] = Thread.Start(w[i]); }
+        for (int i = 0; i < workers; i++) { w[i] = new Worker(i); w[i].Refused = i == 0; t[i] = Threads.Go(w[i]); }
         Refusing = true;
         // Collections asked for while the workers' cycles run.
         for (int k = 0; k < 200; k++) Gc.Collect();
@@ -147,5 +147,17 @@ static class Program
         Console.WriteLine("bad " + bad);
         Console.WriteLine("refused " + (Interlocked.Read(ref _refused) > 0));
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

@@ -64,7 +64,7 @@ static class Program
 
         for (int i = 0; i < threads; i++)
         {
-            all[i] = Thread.Start(new Bump(counter, each));
+            all[i] = Threads.Go(new Bump(counter, each));
         }
 
         Sys.Print("started ");
@@ -82,5 +82,17 @@ static class Program
 
         Line("joined");
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

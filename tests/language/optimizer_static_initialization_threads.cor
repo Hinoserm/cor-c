@@ -65,9 +65,9 @@ static class Program
     static int Main()
     {
         Reader first = new(); Reader second = new();
-        Thread one = Thread.Start(first);
+        Thread one = Threads.Go(first);
         while (Control.Entered.Read() == 0) Thread.Sleep(1);
-        Thread two = Thread.Start(second);
+        Thread two = Threads.Go(second);
         while (Control.Readers.Read() < 2) Thread.Sleep(1);
         Thread.Sleep(20);
         Control.Release.Add(1);
@@ -87,10 +87,22 @@ static class Program
         if (Control.Failures != 1) return 5;
         if (RecursiveA.Value != 2 || RecursiveB.Value != 1 || EarlyReturn.Value != 7) return 6;
         CycleReader a = new() { First = true }; CycleReader b = new();
-        Thread ta = Thread.Start(a); Thread tb = Thread.Start(b);
+        Thread ta = Threads.Go(a); Thread tb = Threads.Go(b);
         ta.Join(); tb.Join();
         if (a.Seen < 1 || b.Seen < 1 || a.Seen + b.Seen != 3) return 7;
         Sys.Print("static initialization threads passed\n");
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }

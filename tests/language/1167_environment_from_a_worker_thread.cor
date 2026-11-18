@@ -27,12 +27,24 @@ static class P
     static int Main()
     {
         Reader r = new Reader();
-        Thread t = Thread.Start(r);
+        Thread t = Threads.Go(r);
         t.Join();
         string? mine = Environment.GetEnvironmentVariable("PATH");
         Console.WriteLine("worker found " + (r.Path != null && r.Path.Length > 0));
         Console.WriteLine("same " + (r.Path == mine));
         Console.WriteLine("args " + (r.Args >= 1 && r.Args == Environment.GetCommandLineArgs().Length));
         return 0;
+    }
+}
+
+// A thread started as a program starts one (the library's own
+// Thread.Start(Action) is not a program's to call).
+static class Threads
+{
+    public static System.Threading.Thread Go(Action body)
+    {
+        System.Threading.Thread made = new System.Threading.Thread(body.Invoke);
+        made.Start();
+        return made;
     }
 }
