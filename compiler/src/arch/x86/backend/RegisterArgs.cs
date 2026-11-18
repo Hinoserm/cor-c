@@ -62,38 +62,23 @@ internal static class RegisterArgs
     /// Whether the function's own body takes its arguments in registers (Of
     /// it more than none) -- or, holding an asm block whose text names the
     /// stack (EBP or ESP: it may read them there with no operand to show
-    /// it), keeps them on the stack: its register entry is then a stub the
-    /// other way (ReverseStub), which pushes them and calls the body. Asked
-    /// once a function: kept in a table of its own, by the function.
+    /// it, or a push or a pop), keeps them on the stack: its register entry
+    /// is then a stub the other way (ReverseStub), which pushes them and
+    /// calls the body. Asked once a function, the answer kept on it
+    /// (Function.RegisterBody).
     /// </summary>
     public static bool BodyInRegisters(Function f)
     {
         if (Of(f) == 0) return false;
-        lock (_bodies)
-            if (_bodies.TryGetValue(f, out bool known)) return known;
+        if (f.RegisterBody != 0) return f.RegisterBody == 1;
         bool inRegisters = true;
         foreach (Corsac.Lang.Ir.Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal) && NamesStack(c))
                     inRegisters = false;
-        lock (_bodies) _bodies.AddOrUpdate(f, inRegisters);
+        // (A word written whole: two workers asking at once write one answer.)
+        f.RegisterBody = inRegisters ? (byte)1 : (byte)2;
         return inRegisters;
-    }
-
-    private static readonly BodyTable _bodies = new();
-
-    /// <summary>The answers of BodyInRegisters, by function, let go with it.</summary>
-    private sealed class BodyTable
-    {
-        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Function, StrongBox> _table = new();
-        private sealed class StrongBox { public bool Value; }
-        public bool TryGetValue(Function f, out bool value)
-        {
-            if (_table.TryGetValue(f, out StrongBox? box)) { value = box.Value; return true; }
-            value = false;
-            return false;
-        }
-        public void AddOrUpdate(Function f, bool value) => _table.AddOrUpdate(f, new StrongBox { Value = value });
     }
 
     /// <summary>Whether an asm block's text names EBP or ESP (InlineAsm.Analysis.UsesStack); one it cannot read, taken as naming them.</summary>
@@ -116,20 +101,18 @@ internal static class RegisterArgs
     /// that a walk of the frames finds it (its frame-table entry the
     /// function's display name): `push ebp ; mov ebp, esp`, `push ecx ; push
     /// edx ; push eax` (as many as it takes, the last first), `call body`,
-    /// `leave`, `ret`; returned with the offset of the call's field and that
-    /// of the instruction after the call (its return address).
+    /// `leave`, `ret`; returned with the offset of the call's field.
     /// </summary>
-    public static (byte[] Code, int Field, int Return) ReverseStub(int arguments)
+    public static (byte[] Code, int Field) ReverseStub(int arguments)
     {
         List<byte> code = new() { 0x55, 0x89, 0xE5 };
         for (int k = arguments - 1; k >= 0; k--) code.Add((byte)(0x50 + (int)Order[k]));
         code.Add(0xE8);
         int field = code.Count;
         code.AddRange(new byte[4]);
-        int back = code.Count;
         code.Add(0xC9);
         code.Add(0xC3);
-        return (code.ToArray(), field, back);
+        return (code.ToArray(), field);
     }
 
     /// <summary>How many of its arguments a call passes in registers: all of them, or none (0).</summary>

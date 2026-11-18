@@ -96,6 +96,16 @@ public sealed class Function
     internal object? LapFrees { get; set; }
 
     /// <summary>
+    /// Whether the x86 backend's body of this function takes its arguments in
+    /// registers (RegisterArgs.BodyInRegisters): 0 not yet asked, 1 yes, 2 no.
+    /// Kept here, on the function, and let go with it -- a table beside it
+    /// held every function's IR to the end of a native compile, this
+    /// runtime's ConditionalWeakTable holding its keys. Never copied: a copy
+    /// may hold other code.
+    /// </summary>
+    internal byte RegisterBody { get; set; }
+
+    /// <summary>
     /// The bytes of arguments the function takes off the stack itself as it
     /// returns: stdcall's rule, which COM's interfaces are called by on
     /// i386 -- `[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]`,

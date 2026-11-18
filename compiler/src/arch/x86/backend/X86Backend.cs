@@ -537,7 +537,7 @@ public sealed class X86Backend : IBackend
             {
                 int pad = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
                 Encoder.Nops(text.Bytes, pad);
-                (byte[] reverse, int at, int back) = RegisterArgs.ReverseStub(pushed);
+                (byte[] reverse, int at) = RegisterArgs.ReverseStub(pushed);
                 int reverseStart = text.Bytes.Count;
                 text.Bytes.AddRange(reverse);
                 // CALLED BY A NAME OF THIS OBJECT'S OWN, local: copies of one
@@ -555,7 +555,11 @@ public sealed class X86Backend : IBackend
                     Name = entry, Section = text, Offset = reverseStart, Size = reverse.Length, IsFunction = true, Global = f.Exported,
                 });
                 defined.Add(entry);
-                reverseFrame = new FrameTable.Entry(entry, f.Display ?? f.Name, f.SourceFile ?? "", reverseStart, reverse.Length, new List<(int, int)>());
+                // Named by its own symbol, not the function's display, and
+                // with no file: a trace lists only frames a program would
+                // name (with a dot, Runtime.TraceOf), and the function is not
+                // listed twice -- its body's frame and this one's.
+                reverseFrame = new FrameTable.Entry(entry, entry, "", reverseStart, reverse.Length, new List<(int, int)>());
             }
             if (EmitLinkSummary && !PositionIndependent)
                 Corsac.Lang.Opt.LinkSummary.AddConstantReturns(f, obj, summary);

@@ -8,6 +8,7 @@
 // asm 12 33 13 12 33
 // deep 5050 1 55
 // caught 6 boom at 3
+// through asm 1 2 kept 4096
 // mixed 10 11 12 13 14 15
 //
 // A function taking one to three words takes them in EAX, EDX and ECX when
@@ -91,6 +92,41 @@ static class Program
         return Throws(depth - 1, what) + 1;
     }
 
+    // An asm function whose body calls on: a throw from below it and a
+    // collection while it holds a reference go through its reverse stub's
+    // frame (it is called directly, so by its register entry).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int PushedThrows(int depth, string what)
+    {
+        int r;
+        asm
+        {
+            push ebx
+            mov eax, depth
+            pop ebx
+            mov r, eax
+        }
+        return Throws(r, what) + 1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int PushedKeeps(int size, string label)
+    {
+        int r;
+        asm
+        {
+            push ebx
+            mov eax, size
+            pop ebx
+            mov r, eax
+        }
+        byte[] held = new byte[r];
+        for (int i = 0; i < 2000; i++) { byte[] churn = new byte[64 + i % 13]; churn[0] = 1; }
+        GC.Collect();
+        held[r - 1] = 7;
+        return held.Length + label.Length - label.Length;
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static string Six(int a, int b, int c, int d, int e, int f) => a + " " + b + " " + c + " " + d + " " + e + " " + f;
 
@@ -123,6 +159,21 @@ static class Program
             int frames = 0;
             foreach (string line in trace.Split('\n')) if (line.Contains("Throws")) frames++;
             Console.WriteLine("caught " + (frames + 2) + " " + e.Message + " at " + (frames - 1));
+        }
+
+        try
+        {
+            Console.WriteLine(PushedThrows(1, "deep"));
+        }
+        catch (InvalidOperationException e)
+        {
+            int named = 0, throws = 0;
+            foreach (string line in (e.StackTrace ?? "").Split('\n'))
+            {
+                if (line.Contains("PushedThrows")) named++;
+                else if (line.Contains("Throws")) throws++;
+            }
+            Console.WriteLine("through asm " + named + " " + throws + " kept " + PushedKeeps(4096, "x"));
         }
 
         Console.WriteLine("mixed " + Six(10, 11, 12, 13, 14, 15));
