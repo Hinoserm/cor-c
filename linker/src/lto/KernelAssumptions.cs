@@ -91,7 +91,10 @@ public static class KernelAssumptions
         // beside a small one is as much another answer as one of the same
         // size with other contents, and the image may hold that one.
         Dictionary<string, Offer> offers = new(StringComparer.Ordinal);
-        Dictionary<string, BodyHash> copies = new(StringComparer.Ordinal);
+        // (Compared by what they do where both say it -- one body in two
+        // units whose sources are kept apart is one answer -- and by the
+        // whole record otherwise.)
+        Dictionary<string, (BodyHash Hash, BodyHash? Identity)> copies = new(StringComparer.Ordinal);
         HashSet<string> differing = new(StringComparer.Ordinal);
         foreach (ObjectFile obj in inputs)
         {
@@ -101,8 +104,12 @@ public static class KernelAssumptions
             foreach (IrArchiveEntry entry in archive.Entries.Values)
             {
                 if (entry.Key.Kind != IrKey.Function) continue;
-                if (copies.TryGetValue(entry.Key.Name, out BodyHash seen)) { if (seen != entry.Hash) differing.Add(entry.Key.Name); }
-                else copies.Add(entry.Key.Name, entry.Hash);
+                if (copies.TryGetValue(entry.Key.Name, out var seen))
+                {
+                    bool same = seen.Identity is { } one && entry.Identity is { } other ? one == other : seen.Hash == entry.Hash;
+                    if (!same) differing.Add(entry.Key.Name);
+                }
+                else copies.Add(entry.Key.Name, (entry.Hash, entry.Identity));
                 if (!entry.Importable || entry.Instructions > MostInstructions || entry.Identity is not BodyHash identity) { differing.Add(entry.Key.Name); continue; }
                 floats ??= X87Notes.Read(obj)?.Where(fact => fact.Floats).Select(fact => fact.Name).ToHashSet(StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
                 if (floats.Contains(entry.Key.Name)) { differing.Add(entry.Key.Name); continue; }

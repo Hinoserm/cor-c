@@ -2,13 +2,13 @@
 // expect-exit: 0
 // expect-output:
 // missing file: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
-// file in a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'.
-// create in a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'.
-// missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'.
-// directory that is a file: DirectoryNotFoundException: Could not find a part of the path 'D/f.txt'.
-// file under a file: DirectoryNotFoundException: Could not find a part of the path 'D/f.txt/x'.
+// file in a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'. ---> IOException: No such file or directory
+// create in a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'. ---> IOException: No such file or directory
+// missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'. ---> IOException: No such file or directory
+// directory that is a file: DirectoryNotFoundException: Could not find a part of the path 'D/f.txt'. ---> IOException: Not a directory
+// file under a file: DirectoryNotFoundException: Could not find a part of the path 'D/f.txt/x'. ---> IOException: Not a directory
 // directory read as a file: UnauthorizedAccessException: Access to the path 'D' is denied. ---> IOException: Permission denied
-// DirectoryInfo of a missing one: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'.
+// DirectoryInfo of a missing one: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'. ---> IOException: No such file or directory
 // FileInfo.Length: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
 // move a missing file: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
 // move over a file: IOException: The file 'D/f.txt' already exists.
@@ -16,17 +16,17 @@
 // copy over itself: IOException: The process cannot access the file 'D/f.txt' because it is being used by another process.
 // copy onto a directory: IOException: The target file 'D' is a directory, not a file.
 // copied over a longer file: x x
-// move into a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'.
+// move into a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir/x'. ---> IOException: No such file or directory
 // create a new file that exists: IOException: The file 'D/f.txt' already exists.
-// remove a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'.
+// remove a missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'. ---> IOException: No such file or directory
 // name too long: PathTooLongException: The path 'D/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn' is too long, or a component of the specified path is too long.
 // no name: ArgumentException: The value cannot be an empty string. (Parameter 'path')
 // path before encoding: ArgumentNullException: Value cannot be null. (Parameter 'path')
 // encoding before lines: ArgumentNullException: Value cannot be null. (Parameter 'encoding')
 // no permission: as .NET
 // relative missing file: FileNotFoundException: Could not find file 'D/nope'. [D/nope]
-// relative missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'.
-// relative chdir: DirectoryNotFoundException: Could not find a part of the path 'nodir'.
+// relative missing directory: DirectoryNotFoundException: Could not find a part of the path 'D/nodir'. ---> IOException: No such file or directory
+// relative chdir: DirectoryNotFoundException: Could not find a part of the path 'nodir'. ---> IOException: No such file or directory
 // System.IO.FileNotFoundException: Unable to find the specified file.
 // System.IO.FileNotFoundException: msg
 // File name: 'name.txt'
@@ -43,6 +43,10 @@
 // missing async Faulted
 // awaited FileNotFoundException: Could not find file 'D/nope'. [D/nope]
 // canceled Canceled False True
+//
+// (A DirectoryNotFoundException here carries its errno in an IOException
+// inside it -- ENOENT or ENOTDIR, which the type alone does not tell apart --
+// where .NET's has none: the one difference from .NET in this list.)
 //
 // WHAT System.IO THROWS, AND WHAT IT SAYS, as .NET on Linux: the type the
 // errno maps to and .NET's own sentence, never strerror with the path after

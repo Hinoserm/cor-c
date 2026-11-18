@@ -1674,9 +1674,10 @@ public static partial class Runtime
     /// it gives up what it holds only when a switch is waiting and not on
     /// every few blocks. Called with (0, 0, 0); nonzero: wanted. It must
     /// only look -- no switch, no allocation, callable with the count
-    /// raised. 0: none, and such a stretch then runs to its end: a hosted
-    /// program's threads are the host's to preempt, and a kernel that gave
-    /// no way to ask is not told on every few blocks that it wants one.
+    /// raised. 0: none, and such a stretch then runs to its end -- only a
+    /// kernel that set PreemptHook runs one (Gc.DrainSome), and one that
+    /// gave no way to ask is not told on every few blocks that it wants a
+    /// switch: it sets both, or is not preempted inside the stretch.
     public static nuint PreemptWantedHook;
 
     /// Whether a switch is waiting for this thread (PreemptWantedHook).

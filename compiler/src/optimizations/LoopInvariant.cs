@@ -52,6 +52,16 @@ public sealed class LoopInvariant : IPass
                 {
                     if (budget == 0 || instruction.Dest is not { } dest || !dest.Type.IsInt()
                         || !defs.IsSingle(dest) || !Safe(instruction.Op)) continue;
+                    // NOT A CONSTANT'S OR AN ADDRESS'S COPY ALONE: `r = copy 5`,
+                    // `r = copy &slot` is one instruction with nothing to
+                    // wait for wherever it stands, and hoisted it holds a
+                    // register (or a spill slot, reloaded at the same cost)
+                    // round the whole loop. And a frame slot's address taken
+                    // once before a loop is live where each lap's object is
+                    // made: the lifetime pass, for which an enumerator's
+                    // storage address is the list it walks (OwnedElements
+                    // .Walker), then frees no lap's list (951).
+                    if (instruction.Op == Opcode.Copy && instruction.Operands is [ImmOperand or SymOperand or SlotOperand]) continue;
                     bool invariant = true;
                     foreach (Operand operand in instruction.Operands)
                     {

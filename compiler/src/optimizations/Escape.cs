@@ -3728,10 +3728,11 @@ continue;
                             // Current and Dispose. Its address is the object
                             // here -- each of those calls a use, judged by its
                             // summary -- and the walk keeps it alive. The
-                            // slot's own address among them (Walker): where
-                            // a loop's invariant code takes that once before
-                            // the object is made, the object is live at its
-                            // own making and is not freed -- never freed early.
+                            // slot's own address among them (Walker), taken
+                            // inside the lap that walks (LoopInvariant leaves
+                            // an address's copy where it is): one taken before
+                            // the object is made would be live at its making,
+                            // and the object then freed by nobody.
                             foreach (VReg w in walker) Derive(w, borrowing);
                             break;
 

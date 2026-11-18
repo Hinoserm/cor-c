@@ -41,13 +41,14 @@ public readonly record struct IrKey(char Kind, string Name) : IComparable<IrKey>
 /// A body's summary, not a deserialized compiler IR graph: where it lies is
 /// its archive's (IrArchive), so one body every unit imported is one entry
 /// for all of them.
-/// </summary>
+///
 /// `Identity`: the hash of the body with where its source was taken out --
 /// no file, no line numbers, no display name (IrFunctionCodec.Write,
 /// placeless) -- written by the compiler for a body small enough for a
 /// kernel to offer its modules (KernelAssumptions), and what such a body is
 /// named by: the same for one body wherever its file is kept and whatever
 /// was written above it. Null for every other record.
+/// </summary>
 public sealed record IrArchiveEntry(IrKey Key, bool Importable, int Instructions,
     IReadOnlyList<string> Calls, int Length, BodyHash Hash, IReadOnlyList<string> References, long DecodeBytes, BodyHash? Identity = null)
 {

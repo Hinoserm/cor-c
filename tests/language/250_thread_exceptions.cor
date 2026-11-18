@@ -113,7 +113,8 @@ static class Program
             Thrower body = new Thrower();
 
             bodies[i] = body;
-            threads[i] = Thread.Start(body);
+            threads[i] = new Thread(body.Invoke);
+            threads[i].Start();
         }
 
         // The main thread throws and catches while they do, on its own chain.

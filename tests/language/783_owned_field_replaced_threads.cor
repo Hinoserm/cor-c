@@ -44,8 +44,10 @@ static class Program
     {
         Shared.Status = "tick " + 0;
         Reader r = new Reader();
-        Thread a = Thread.Start(r);
-        Thread b = Thread.Start(new Writer());
+        Thread a = new Thread(r.Invoke);
+        Thread b = new Thread(new Writer().Invoke);
+        a.Start();
+        b.Start();
         a.Join();
         b.Join();
         Console.WriteLine(r.Seen);

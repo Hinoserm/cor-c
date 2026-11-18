@@ -453,7 +453,9 @@ public sealed class Inline : IParallelModulePass
                     // Not where the caller is such a path from its first
                     // block on -- Runtime.NullFault, a throw helper: nothing
                     // warm is grown there, the function IS the path taken
-                    // out of line, and what it makes for its exception (the
+                    // out of line (grown past the tiny limit it stays a call
+                    // at its callers' cold blocks, which is what it is for),
+                    // and what it makes for its exception (the
                     // trace Exception.Placed$ stores) must be seen stored
                     // where it is made, or it is left to a collector that a
                     // program with none then links (EscapeHeap.HeldByFields).

@@ -1698,7 +1698,7 @@ internal static class Peephole
         for (int k = instrs.Count - 1; k >= 0; k--)
         {
             MInstr i = instrs[k];
-            if (ReadsFlags(i))
+            if (MayReadFlags(i))
             {
                 flagsLive = true;
             }

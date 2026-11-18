@@ -2746,7 +2746,7 @@ public sealed partial class Escape
                 else if (VariableOrigins(g, defs, given, joins) is { } several) origins.AddRange(several);
                 else
                 {
-                    OwnedElements.Say(g, $"an add of what was not made for it: {call}, operand {value}; read out of a stash: {string.Join(" ", unparked.Keys.Select(r => "%" + r.Id))}");
+                    if (OwnedElements.Trace is not null) OwnedElements.Say(g, $"an add of what was not made for it: {call}, operand {value}; read out of a stash: {string.Join(" ", unparked.Keys.Select(r => "%" + r.Id))}");
                     return Refuse(g, $"adds at {call.Line} what was not made for it");
                 }
                 foreach (Instr origin in origins)
@@ -3021,7 +3021,7 @@ public sealed partial class Escape
             {
                 if (call.Op != Opcode.Call || call.Callee is not { } callee || !OwnedElements.RoleOf("List", callee).Reads || call.Operands.Count < 2) continue;
                 if (StashOf(defs, call.Operands[0], field) is not ({ } stash, var load)) continue;
-                OwnedElements.Say(g, $"a read out of stash {stash}: {call}");
+                if (OwnedElements.Trace is not null) OwnedElements.Say(g, $"a read out of stash {stash}: {call}");
                 ListPath? root = RootPath(g, defs, load.Operands[0])?.Then(stash);
                 if (call.Operands.Count == 2)
                 {

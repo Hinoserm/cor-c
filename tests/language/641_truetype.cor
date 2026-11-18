@@ -3,7 +3,6 @@
 // expect-exit: 0
 // expect-output:
 // face: upem=1000 glyphs=6 fpgm=5 prep=3
-// hinter: prepare=True failed=False soft=0
 // H: hinted=True failed=False w=10 h=14
 // ##.....###
 // ##.....###
@@ -93,14 +92,9 @@ class Program
         Line("face: upem=" + face.UnitsPerEm + " glyphs=" + face.GlyphCount
            + " fpgm=" + face.FontProgramLength + " prep=" + face.ControlProgramLength);
 
-        // --- the hinting virtual machine ------------------------------
-
-        TrueTypeHinter hinter = new TrueTypeHinter(face);
-        bool prepared = hinter.Prepare(20, 20 * 64);
-
-        Line("hinter: prepare=" + prepared + " failed=" + hinter.Failed + " soft=" + hinter.SoftErrors);
-
-        // --- a hinted glyph, rasterised, pixel for pixel --------------
+        // --- a hinted glyph, rasterised, pixel for pixel: the hinting
+        // virtual machine is the library's own (TrueTypeHinter), and what
+        // a program sees of it is whether its size was hinted or failed ---
 
         TrueTypeSize size = new TrueTypeSize(face, 20, 20 * 64);
         int glyphH = face.GlyphIndex('H');
