@@ -54,6 +54,7 @@ public static partial class Program
             return _failures == 0 ? 0 : 1;
         }
         Try("load reuse: captured addresses, values and memory barriers", LoadReuseBoundaries);
+        Try("loop invariant: a constant is hoisted, a frame slot's address is not", LoopInvariantCopies);
         if (args.Contains("--store-back-only"))
         {
             Try("store back: private widths and effect barriers", StoreBackBoundaries);

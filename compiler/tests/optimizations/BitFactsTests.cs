@@ -36,6 +36,38 @@ public static partial class Program
         }
     }
 
+    /// <summary>
+    /// A loop's constant is hoisted, a frame slot's address is not: taken
+    /// before the loop it is live where each lap's object is made, and the
+    /// lifetime pass, for which an enumerator's storage address is the list
+    /// it walks, then frees no lap's list.
+    /// </summary>
+    private static void LoopInvariantCopies()
+    {
+        Function f = new("loop-copies", IrType.I32);
+        VReg condition = f.NewReg(IrType.I32);
+        f.Params.Add(condition);
+        var slot = f.NewSlot(16, 4);
+        var entry = f.NewBlock("entry"); var head = f.NewBlock("head"); var body = f.NewBlock("body"); var exit = f.NewBlock("exit");
+        VReg address = f.NewReg(IrType.I32), five = f.NewReg(IrType.I32), sum = f.NewReg(IrType.I32);
+        entry.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { head } });
+        new Builder(f, head).Branch(condition, body, exit);
+        Instr taken = new() { Op = Opcode.Copy, Dest = address, Operands = { new SlotOperand(slot) } };
+        Instr constant = new() { Op = Opcode.Copy, Dest = five, Operands = { new ImmOperand(5, IrType.I32) } };
+        Instr added = new() { Op = Opcode.Add, Dest = sum, Operands = { RegOperand.Of(five), RegOperand.Of(condition) } };
+        body.Instrs.Add(taken); body.Instrs.Add(constant); body.Instrs.Add(added);
+        body.Instrs.Add(new Instr { Op = Opcode.Store, Size = 4, Operands = { RegOperand.Of(address), RegOperand.Of(sum) } });
+        body.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { head } });
+        new Builder(f, exit).Ret(RegOperand.Of(condition));
+        Verifier.Check(f, "before loop invariant");
+        new LoopInvariant().Run(f);
+        Verifier.Check(f, "after loop invariant");
+        Assert(body.Instrs.Contains(taken), "a frame slot's address is taken inside the loop that uses it");
+        Assert(entry.Instrs.Contains(constant), "a constant's copy is hoisted");
+        Assert(entry.Instrs.Contains(added), "and what is computed from it and what is written once outside");
+        Assert(entry.Instrs[^1].Op == Opcode.Jump, "ahead of the preheader's jump");
+    }
+
     private static void LoadReuseBoundaries()
     {
         foreach (bool backEdge in new[] { false, true })
