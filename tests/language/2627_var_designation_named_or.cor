@@ -5,6 +5,8 @@
 // and x
 // when 3
 // joined True
+// arm when 3 arm or x guarded 3 case and 3
+// tuple 1 2
 //
 // `and`, `or` and `when` are words, not keywords: after `var` they name what
 // the pattern matched wherever no pattern (or, for `when`, no condition)
@@ -15,6 +17,22 @@ class Holder { public object? Reg; public int Count; }
 
 static class Program
 {
+    static void Arms(Holder h)
+    {
+        int count = h.Count;
+        string arm = count switch { var when => "arm when " + when };
+        string armOr = h.Reg switch { var or => " arm or " + or };
+        string guarded = count switch { var when when when > 2 => " guarded " + when, _ => " unguarded" };
+        string cased = "";
+        switch (count) { case var and: cased = " case and " + and; break; }
+        System.Console.WriteLine(arm + armOr + guarded + cased);
+    }
+
+    static void Tuple(int one, int two)
+    {
+        if ((one, two) is var (or, and)) System.Console.WriteLine("tuple " + or + " " + and);
+    }
+
     static int Main()
     {
         object o = new Holder { Reg = "x", Count = 3 };
@@ -23,6 +41,8 @@ static class Program
         if (o is Holder { Count: var when }) System.Console.WriteLine("when " + when);
         bool joined = o is Holder { Count: 2 or 3 } and { Reg: not null };
         System.Console.WriteLine("joined " + joined);
+        Arms(new Holder { Reg = "x", Count = 3 });
+        Tuple(1, 2);
         return 0;
     }
 }

@@ -7750,8 +7750,10 @@ public sealed class Parser
     /// </summary>
     private bool WhenNames(int j)
         => j + 1 < _t.Count && _t[j].Kind == Tok.Ident && _t[j].Text == "when"
-        && _t[j + 1].Kind is Tok.RParen or Tok.Semi or Tok.Comma or Tok.AndAnd or Tok.OrOr
-            or Tok.Question or Tok.RBracket or Tok.RBrace or Tok.Colon;
+        && (_t[j + 1].Kind is Tok.RParen or Tok.Semi or Tok.Comma or Tok.AndAnd or Tok.OrOr
+                or Tok.Question or Tok.RBracket or Tok.RBrace or Tok.Colon or Tok.FatArrow
+            // `var when when x > 0`: the guard follows the name.
+            || _t[j + 1].Kind == Tok.Ident && _t[j + 1].Text == "when");
 
     private string? PeekBinding()
         => At(Tok.Ident)
@@ -8355,10 +8357,11 @@ public sealed class Parser
         // `var _` is the discard designation -- it matches and names nothing,
         // so it is the answer it always gives.
         // A designation spelt `or`, `and` or `when` names the match where no
-        // pattern or condition follows it (NamesBinding, WhenNames), as C#
+        // pattern or condition follows it (NamesBinding, WhenNames: one rule
+        // for the switch arm's `var` too), as C#
         // reads `{ Reg: var or }` -- a line of ArgumentCopies, which the
         // compiler built by itself refused.
-        if (At(Tok.KwVar) && Ahead().Kind == Tok.Ident && (NamesBinding(_i + 1) || WhenNames(_i + 1)))
+        if (At(Tok.KwVar) && Ahead().Kind == Tok.Ident && NamesBinding(_i + 1))
         {
             Token word = _t[_i++];
             Token named = _t[_i++];
@@ -8973,7 +8976,8 @@ public sealed class Parser
     private bool NamesBinding(int j)
         => j < _t.Count && _t[j].Kind == Tok.Ident
         && (_t[j].Text is not ("or" or "and" or "when")
-            || _t[j].Text is "or" or "and" && j + 1 < _t.Count && !StartsPattern(_t[j + 1].Kind));
+            || _t[j].Text is "or" or "and" && j + 1 < _t.Count && !StartsPattern(_t[j + 1].Kind)
+            || WhenNames(j));
 
     /// <summary>
     /// The `?` marks of an array type's ELEMENT -- the array with its outermost
