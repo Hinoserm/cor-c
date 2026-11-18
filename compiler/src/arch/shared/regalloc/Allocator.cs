@@ -166,6 +166,27 @@ public sealed class Allocator
     /// <summary>Each split value's shared slot, by its original (LoopSplit.Root).</summary>
     private readonly Dictionary<int, int> _rootSlot = new();
 
+    /// <summary>What the kept tables point at goes with the function (or with the scan made again: Run).</summary>
+    private void Release()
+    {
+        Array.Clear(_remat, 0, _n);
+        Array.Clear(_ranges, 0, _n);
+        _keptIndex?.Clear();
+    }
+
+    /// <summary>
+    /// The values the scan gave to the frame at a cost: not a constant, made
+    /// again where it is read, nor one at home in the word it came in.
+    /// Null where there is none.
+    /// </summary>
+    private HashSet<int>? GaveWay()
+    {
+        HashSet<int>? gave = null;
+        for (int v = _fv; v < _n; v++)
+            if (_spilledFrom[v] != int.MaxValue && _remat[v] is null && HomeOf(v) == 0) (gave ??= new()).Add(v);
+        return gave;
+    }
+
     private Allocator(AFunction m)
     {
         _f = m;
@@ -236,13 +257,27 @@ public sealed class Allocator
         a.FindHomes();
         a.ComputeLiveness();
         a.Scan();
+        // ONCE MORE WHERE A VALUE WENT TO THE FRAME THAT A COLD REGION'S
+        // CALLS SENT THERE (LoopSplit.SplitCold): those values split at the
+        // region, the function scanned again as it then stands.
+        if (a.GaveWay() is { } gaveWay && LoopSplit.SplitCold(m, ref split, gaveWay))
+        {
+            a.Release();
+            // (The slots the first scan took are the second's to take first,
+            // free from the start: the frame is no deeper for the scan
+            // thrown away.)
+            Allocator again = new(m) { _split = split };
+            foreach ((int slot, int _, int klass) in a._freeSlots) again._freeSlots.Add((slot, -1, klass));
+            a = again;
+            a.CollectOccurrences();
+            a.FindHomes();
+            a.ComputeLiveness();
+            a.Scan();
+        }
         a.HeldBeforeSpill();
         a.SinkStores();
         a.Rewrite();
-        // What the kept tables point at goes with the function.
-        Array.Clear(a._remat, 0, a._n);
-        Array.Clear(a._ranges, 0, a._n);
-        _keptIndex?.Clear();
+        a.Release();
     }
 
     [ThreadStatic] private static int[]? _keptOccFirst, _keptStart, _keptEnd, _keptAssigned, _keptSpilledFrom, _keptSlot, _keptRunS, _keptRunE;
@@ -1726,17 +1761,24 @@ public sealed class Allocator
                 end = Math.Max(end, _end[v]);
             }
         }
-        int taken = -1, klass = _t.ClassOf(vreg);
+        // (Found or not is a flag of its own: a slot is its frame offset,
+        // below zero on every machine there is. Told by `taken < 0`, each
+        // slot found was dropped from the list and a new one made in its
+        // place -- no two values of any function ever shared one, and the
+        // frame was as many words as it had values spilled.)
+        int taken = 0, klass = _t.ClassOf(vreg);
+        bool found = false;
         for (int k = 0; k < _freeSlots.Count; k++)
         {
             if (_freeSlots[k].FreeFrom < start && _freeSlots[k].Class == klass)
             {
                 taken = _freeSlots[k].Slot;
+                found = true;
                 _freeSlots.RemoveAt(k);
                 break;
             }
         }
-        if (taken < 0) taken = _t.NewSlot(vreg);
+        if (!found) taken = _t.NewSlot(vreg);
         _freeSlots.Add((taken, end, klass));
         if (root >= 0) _rootSlot[root] = taken;
         return taken;

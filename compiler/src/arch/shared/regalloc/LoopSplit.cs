@@ -85,6 +85,40 @@ public sealed class LoopSplit
         return s.Copies.Count == 0 ? null : s;
     }
 
+    /// <summary>
+    /// THE VALUES A FIRST SCAN GAVE TO THE FRAME, split at the function's
+    /// cold regions (FindColdRegions) for a second: `gaveWay` are those, and
+    /// each that is live into a region's head -- read there or only carried
+    /// across its calls -- gets a piece of its own inside it, as a loop's
+    /// values do. Only those: a value the scan kept in a register across
+    /// the region's calls has nothing to gain, and split it would be moved
+    /// from one register to another on a way in that is, as often as not,
+    /// the function's main one (a null check and a return are a call-free
+    /// way through as much as an uncontended lock is). True where anything
+    /// was split, `split` then holding the pieces.
+    /// </summary>
+    public static bool SplitCold(AFunction f, ref LoopSplit? split, HashSet<int> gaveWay)
+    {
+        foreach (ABlock b in f.Blocks)
+        {
+            if (b.AddressTaken) return false;
+            foreach (AInstr i in b.Instrs) if (i.JumpsAnywhere) return false;
+        }
+        LoopSplit s = split ?? new(f);
+        if (split is null) s._constant = s.Constants(s._constantWidth = f.NextVReg);
+        List<HashSet<ABlock>> cold = s.FindColdRegions();
+        if (cold.Count == 0) return false;
+        int before = s.Copies.Count;
+        Liveness live = s.LiveIn();
+        s.JumpsInto(live);
+        s.Link();
+        foreach (HashSet<ABlock> body in cold) s.Split(body, live, gaveWay);
+        s.Unlink();
+        if (s.Copies.Count == before) return false;
+        split = s;
+        return true;
+    }
+
     // ---- the layout during a round: linked, so each split's blocks go in at
     // once, and the list made again once the round is done -------------------
 
@@ -210,6 +244,91 @@ public sealed class LoopSplit
     }
 
     /// <summary>
+    /// THE REGIONS A FUNCTION'S CALL-FREE WAY THROUGH NEVER ENTERS. Where
+    /// some way from the entry to a return makes no call -- a lock taken
+    /// uncontended, a cache hit, a check that passes -- the blocks on such
+    /// ways are warm, and a block off them reached from them heads a region:
+    /// everything reached from it short of a warm block, entered through it
+    /// alone, a call somewhere in it. One interval a value, a value that
+    /// lives across the region's calls was the frame's from where it was
+    /// made: IrqSpinLock.Enter stored four words on its way to an uncontended
+    /// lock that only its wait loop read back, and reloaded one to return it.
+    /// Split at the region (as at a loop: Split), the warm piece meets no
+    /// call and is any free register's, and the region's piece is stored, if
+    /// at all, on the edge into it (SplitCold, for the values a scan gave up).
+    /// </summary>
+    private List<HashSet<ABlock>> FindColdRegions()
+    {
+        List<HashSet<ABlock>> found = new();
+        _heads.Clear();
+        int nb = _f.Blocks.Count;
+        if (nb < 3) return found;
+        bool[] calls = new bool[nb];
+        bool any = false;
+        for (int b = 0; b < nb; b++)
+            foreach (AInstr i in _f.Blocks[b].Instrs)
+                if (i.IsCall) { calls[b] = any = true; break; }
+        if (!any || calls[0]) return found;
+        Dictionary<ABlock, int> index = Index();
+        List<int>[] succ = new List<int>[nb], pred = new List<int>[nb];
+        for (int b = 0; b < nb; b++) { succ[b] = new(); pred[b] = new(); }
+        for (int b = 0; b < nb; b++)
+        {
+            _f.SuccessorsInto(b, _succ);
+            foreach (ABlock t in _succ) { succ[b].Add(index[t]); pred[index[t]].Add(b); }
+        }
+        // Reached at all; reached with no call made; a return reached from it with none.
+        bool[] reached = new bool[nb], forward = new bool[nb], backward = new bool[nb];
+        Stack<int> work = new();
+        work.Push(0); reached[0] = true;
+        while (work.Count > 0)
+            foreach (int t in succ[work.Pop()])
+                if (!reached[t]) { reached[t] = true; work.Push(t); }
+        work.Push(0); forward[0] = true;
+        while (work.Count > 0)
+            foreach (int t in succ[work.Pop()])
+                if (!forward[t] && !calls[t]) { forward[t] = true; work.Push(t); }
+        for (int b = 0; b < nb; b++)
+            if (reached[b] && !calls[b] && succ[b].Count == 0) { backward[b] = true; work.Push(b); }
+        while (work.Count > 0)
+            foreach (int p in pred[work.Pop()])
+                if (!backward[p] && !calls[p]) { backward[p] = true; work.Push(p); }
+        bool Warm(int b) => forward[b] && backward[b];
+        if (!Warm(0)) return found;
+        bool[] taken = new bool[nb];
+        for (int h = 1; h < nb; h++)
+        {
+            if (!reached[h] || Warm(h) || taken[h]) continue;
+            bool fromWarm = false;
+            foreach (int p in pred[h]) fromWarm |= Warm(p);
+            if (!fromWarm) continue;
+            List<int> body = new() { h };
+            HashSet<int> inside = new() { h };
+            for (int k = 0; k < body.Count; k++)
+                foreach (int t in succ[body[k]])
+                    if (!Warm(t) && inside.Add(t)) body.Add(t);
+            // Entered through its head alone, a call in it, no pad and no
+            // block another region took or an address names.
+            bool whole = false;
+            foreach (int b in body)
+            {
+                whole |= calls[b];
+                if (taken[b] || _f.Blocks[b].LandingPad || _f.Blocks[b].AddressTaken) { whole = false; break; }
+                if (b == h) continue;
+                bool entered = false;
+                foreach (int p in pred[b]) entered |= reached[p] && !inside.Contains(p);
+                if (entered) { whole = false; break; }
+            }
+            if (!whole) continue;
+            HashSet<ABlock> blocks = new(ReferenceEqualityComparer.Instance);
+            foreach (int b in body) { taken[b] = true; blocks.Add(_f.Blocks[b]); }
+            _heads[blocks] = _f.Blocks[h];
+            found.Add(blocks);
+        }
+        return found;
+    }
+
+    /// <summary>
     /// What is live into each block, over only the values some block reads
     /// before it writes them (Globals; a value every block writes before it
     /// reads is live into none), each block's row in one array (Rows).
@@ -319,7 +438,12 @@ public sealed class LoopSplit
         }
     }
 
-    private bool Split(HashSet<ABlock> body, Liveness live)
+    /// <summary>
+    /// A region's values made pieces of their own inside it: a loop's, those
+    /// it reads or writes; a cold region's, those of `only` live into its
+    /// head, read in it or not.
+    /// </summary>
+    private bool Split(HashSet<ABlock> body, Liveness live, HashSet<int>? only = null)
     {
         ABlock head = _heads[body];
         foreach (ABlock b in body) if (b.LandingPad) return false;
@@ -333,7 +457,7 @@ public sealed class LoopSplit
                     if (named.Reg >= fv) touched.Set(named.Reg);
         List<int> values = new();
         foreach (int v in live.Globals)
-            if (v < width && live.LiveInto(head, v) && touched.Get(v) && !live.PadLive.Contains(v) && !(v < _constantWidth && _constant.Get(v))) values.Add(v);
+            if (v < width && live.LiveInto(head, v) && (only is not null ? only.Contains(v) : touched.Get(v)) && !live.PadLive.Contains(v) && !(v < _constantWidth && _constant.Get(v))) values.Add(v);
         values.Sort();
         if (values.Count == 0) return false;
 
