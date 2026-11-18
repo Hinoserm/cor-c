@@ -3228,6 +3228,10 @@ public class TrueTypeSize : SizedFace
     /// when one of them failed and the outline is being drawn unfitted.
     public bool Hinted { get { return _hinted; } }
     public bool HintFailed { get { return _hintFailed; } }
+    /// What the face's programs did that the hinter passed over and went on
+    /// from (TrueTypeHinter.SoftErrors): none, for a face whose programs
+    /// are sound.
+    public int HintSoftErrors { get { return _hinter.SoftErrors; } }
     bool _hintFailed;
     public override FontFace Face { get { return _face; } }
     public TrueTypeFace TrueType { get { return _face; } }

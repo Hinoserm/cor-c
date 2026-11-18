@@ -3,7 +3,7 @@
 // expect-exit: 0
 // expect-output:
 // face: upem=1000 glyphs=6 fpgm=5 prep=3
-// H: hinted=True failed=False w=10 h=14
+// H: hinted=True failed=False soft=0 w=10 h=14
 // ##.....###
 // ##.....###
 // ##.....###
@@ -102,7 +102,7 @@ class Program
 
         if (bitmap == null) { Line("H: no bitmap"); return 1; }
 
-        Line("H: hinted=" + size.Hinted + " failed=" + size.HintFailed + " w=" + bitmap.Width + " h=" + bitmap.Height);
+        Line("H: hinted=" + size.Hinted + " failed=" + size.HintFailed + " soft=" + size.HintSoftErrors + " w=" + bitmap.Width + " h=" + bitmap.Height);
 
         for (int y = 0; y < bitmap.Height; y++)
         {
