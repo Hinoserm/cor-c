@@ -1829,6 +1829,25 @@ internal static class Peephole
                     i = rmw;
                 }
             }
+            // `mov r, [m] ; test r, r` with r dead after the test IS `cmp
+            // dword [m], 0`: the same read (and the same fault, where m is a
+            // null receiver's), ZF, SF and PF of the same word, CF and OF
+            // clear either way; one instruction for two, a byte less off the
+            // frame, and no register written. A spilled value tested and
+            // branched on -- 6,600 times off EBP in the K8 kernel into EAX
+            // alone -- and a field read only to ask whether it is null.
+            if (k >= 1 && i.Op == MOp.Test && i.Width == 4 && !i.Lock && i.Operands.Count == 2
+                && i.Operands[0] is MReg { IsPhys: true } t0 && i.Operands[1] is MReg t1 && t0.Id == t1.Id && t0.Id < 8
+                && (dead & (1 << t0.Id)) != 0
+                && instrs[k - 1] is { Lock: false } reload && IsMov(reload) && reload.Operands.Count == 2
+                && reload.Operands[0] is MReg into && into.Id == t0.Id && reload.Operands[1] is MMem asked)
+            {
+                MInstr compare = new(MOp.Cmp, asked, new MImm(0)) { Width = 4, Line = reload.Line, Probed = reload.Probed };
+                instrs.RemoveRange(k - 1, 2);
+                instrs.Insert(k - 1, compare);
+                k -= 1;
+                i = compare;
+            }
             if (!Understood(i))
             {
                 dead = 0;
