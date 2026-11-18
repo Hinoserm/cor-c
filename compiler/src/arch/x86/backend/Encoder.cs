@@ -56,6 +56,13 @@ internal sealed class Encoder
     /// </summary>
     public List<(int Offset, int Line)> Lines { get; } = new();
 
+    /// <summary>
+    /// The symbol the function's code begins at, which a label's address
+    /// counts from: its own name, or the body's entry where the name is the
+    /// stub of a function taking its arguments in registers (RegisterArgs).
+    /// </summary>
+    private string BodySymbol => RegisterArgs.Of(_m.Source) > 0 ? RegisterArgs.EntryName(_m.Source.Name) : _m.Source.Name;
+
     public Encoder(Section text, bool optimizeSize = false)
     {
         _text = text;
@@ -273,7 +280,7 @@ internal sealed class Encoder
         {
             // The label's offset is only right on the last pass; earlier
             // passes just need the size, which is four bytes regardless.
-            Abs32(_m.Source.Name, imm.Label.Offset);
+            Abs32(BodySymbol, imm.Label.Offset);
         }
         else if (imm.Symbol is not null)
         {
@@ -406,7 +413,7 @@ internal sealed class Encoder
         {
             // Only the last layout pass has the right offset; every pass
             // needs the same four bytes, which is all the earlier ones use.
-            SymRef(_m.Source.Name, m.Label.Offset + m.Disp, m.Reloc);
+            SymRef(BodySymbol, m.Label.Offset + m.Disp, m.Reloc);
         }
         else if (m.Symbol is not null)
         {

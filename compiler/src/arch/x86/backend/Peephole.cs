@@ -1617,6 +1617,9 @@ internal static class Peephole
         // A stub's registers are its calling convention: the slot in EAX,
         // the value in EDX (X86Backend.CardStub, BarrierStub).
         MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd => operand > 0,
+        // So are a call's that passes its arguments in registers (RegisterArgs):
+        // EAX, EDX and ECX, each the argument of its place.
+        MOp.Call or MOp.CallInd => operand > 0,
         _ => false,
     };
 

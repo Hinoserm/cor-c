@@ -1446,6 +1446,14 @@ internal sealed partial class Selector
     /// </summary>
     private void LoadParams()
     {
+        // TAKEN IN REGISTERS (RegisterArgs): each from its own, first thing
+        // -- the register is live from the entry to here, so nothing the
+        // allocator places before takes it.
+        if (RegisterArgs.Of(_f) is > 0 and var inRegisters)
+        {
+            for (int k = 0; k < inRegisters; k++) Mov(Lo(_f.Params[k]), MReg.Of(RegisterArgs.Order[k]));
+            return;
+        }
         int off = 8;
         foreach (VReg p in _f.Params)
         {
@@ -3508,17 +3516,36 @@ internal sealed partial class Selector
         }
 
         int bytes = 0;
-        for (int k = i.Operands.Count - 1; k >= first; k--)
+        // IN REGISTERS where the callee takes them so (RegisterArgs): each
+        // moved into its own, the call to the body's entry naming them as
+        // what it reads, and nothing to take off the stack after.
+        int inRegisters = native ? 0 : RegisterArgs.Of(i);
+        if (inRegisters > 0)
         {
-            bytes += PushArg(i.Operands[k]);
-        }
-        if (i.Op == Opcode.Call)
-        {
-            Emit(new MInstr(MOp.Call, SymbolAddress(NativeCall.Symbol(i.Callee!), 0)) { CallReloc = RelocKind.Rel32, Native = native });
+            MOperand[] call = new MOperand[1 + inRegisters];
+            call[0] = SymbolAddress(RegisterArgs.EntryName(i.Callee!), 0);
+            for (int k = 0; k < inRegisters; k++)
+            {
+                MReg into = MReg.Of(RegisterArgs.Order[k]);
+                Mov(into, RM(i.Operands[k]));
+                call[1 + k] = into;
+            }
+            Emit(new MInstr(MOp.Call, call) { CallReloc = RelocKind.Rel32 });
         }
         else
         {
-            Emit(new MInstr(MOp.CallInd, nativeTarget ?? R(i.Operands[0])) { Native = native });
+            for (int k = i.Operands.Count - 1; k >= first; k--)
+            {
+                bytes += PushArg(i.Operands[k]);
+            }
+            if (i.Op == Opcode.Call)
+            {
+                Emit(new MInstr(MOp.Call, SymbolAddress(NativeCall.Symbol(i.Callee!), 0)) { CallReloc = RelocKind.Rel32, Native = native });
+            }
+            else
+            {
+                Emit(new MInstr(MOp.CallInd, nativeTarget ?? R(i.Operands[0])) { Native = native });
+            }
         }
         if (savedEsp is not null)
         {

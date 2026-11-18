@@ -69,7 +69,8 @@ public static class PublicApi
             hidden.UnionWith(withheld);
         }
         hidden.ExceptWith(shown);
-        return hidden;
+        // A function's register entry withheld with it (RuntimeAbi.RegisterEntrySuffix).
+        return new HashSet<string>(Corsac.Lang.Lto.RuntimeAbi.WithRegisterEntries(hidden), StringComparer.Ordinal);
     }
 
     /// <summary>The symbols an object offers, those it offers where they are kept, those it withholds, those its copies of generic code reach, and the split library's kept where reached.</summary>

@@ -10,6 +10,28 @@ namespace Corsac.Lang.Lto;
 /// </summary>
 public static class RuntimeAbi
 {
+    /// <summary>
+    /// What the body of a function taking its arguments in registers is named
+    /// after (the x86 backend's RegisterArgs): its own name is the stub that
+    /// takes them from the stack. The two are one function to everything
+    /// that names functions -- kept, offered, withheld together.
+    /// </summary>
+    public const string RegisterEntrySuffix = "$r";
+
+    /// <summary>The function a symbol is: a register entry's own name, or the symbol itself.</summary>
+    public static string FunctionOf(string symbol)
+        => symbol.EndsWith(RegisterEntrySuffix, StringComparison.Ordinal) ? symbol[..^RegisterEntrySuffix.Length] : symbol;
+
+    /// <summary>Every name of `names` with its register entry beside it.</summary>
+    public static IEnumerable<string> WithRegisterEntries(IEnumerable<string> names)
+    {
+        foreach (string name in names)
+        {
+            yield return name;
+            yield return name + RegisterEntrySuffix;
+        }
+    }
+
     /// <summary>How a parameter of type nuint is mangled: the machine word compiled code passes.</summary>
     public const string Word = "V$NUInt";
 

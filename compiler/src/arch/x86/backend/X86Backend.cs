@@ -467,6 +467,27 @@ public sealed class X86Backend : IBackend
             // with real no-ops rather than zeros so a disassembly reads cleanly.
             int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
+            // A FUNCTION TAKING ITS ARGUMENTS IN REGISTERS (RegisterArgs): its
+            // own name a stub first, which loads them from the stack and
+            // jumps to the body, laid down as a function of its own (so a
+            // copy of it the link cuts out, DuplicateCutter, is cut whole),
+            // and the body under the entry's name after it.
+            string bodyName = f.Name;
+            if (RegisterArgs.Of(f) is > 0 and var inRegisters)
+            {
+                bodyName = RegisterArgs.EntryName(f.Name);
+                (byte[] stub, int field) = RegisterArgs.Stub(inRegisters);
+                int stubStart = text.Bytes.Count;
+                text.Bytes.AddRange(stub);
+                text.Relocs.Add(new Relocation(stubStart + field, bodyName, -4, RelocKind.Rel32));
+                obj.Symbols.Add(new Symbol
+                {
+                    Name = f.Name, Section = text, Offset = stubStart, Size = stub.Length, IsFunction = true, Global = f.Exported,
+                });
+                defined.Add(f.Name);
+                gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
+                Encoder.Nops(text.Bytes, gap);
+            }
             int start = text.Bytes.Count;
             int size;
             // A function the encoder refuses -- the emitted-code audit's
@@ -498,9 +519,9 @@ public sealed class X86Backend : IBackend
             FunctionSizes.Add((f.Name, size));
             obj.Symbols.Add(new Symbol
             {
-                Name = f.Name, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported,
+                Name = bodyName, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported,
             });
-            defined.Add(f.Name);
+            defined.Add(bodyName);
             if (EmitLinkSummary && !PositionIndependent)
                 Corsac.Lang.Opt.LinkSummary.AddConstantReturns(f, obj, summary);
 
@@ -545,7 +566,7 @@ public sealed class X86Backend : IBackend
                 defined.Add(sym);
                 foreach (MBlock t in targets)
                 {
-                    tables.Relocs.Add(new Relocation(tables.Bytes.Count, f.Name, t.Offset, RelocKind.Abs32));
+                    tables.Relocs.Add(new Relocation(tables.Bytes.Count, bodyName, t.Offset, RelocKind.Abs32));
                     for (int z = 0; z < 4; z++) tables.Bytes.Add(0);
                 }
             }

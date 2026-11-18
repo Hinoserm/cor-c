@@ -179,7 +179,8 @@ public static class ObjectLinkCommand
                     return word;
                 }
                 int digits = KernelAssumptions.BodyPrefix.Length + KernelAssumptions.BodyDigits + 1;
-                if (!name.StartsWith(KernelAssumptions.BodyPrefix, StringComparison.Ordinal) || name.Length <= digits) return name;
+                // A module's call to a kernel function's register entry keeps the function.
+                if (!name.StartsWith(KernelAssumptions.BodyPrefix, StringComparison.Ordinal) || name.Length <= digits) return RuntimeAbi.FunctionOf(name);
                 taken.Add(name[digits..]);
                 return name[digits..];
             }).Distinct(StringComparer.Ordinal).ToArray();
@@ -335,6 +336,9 @@ public static class ObjectLinkCommand
             // module's List<T> copy calls it whether the kernel's code does or not.
             reached.IntersectWith(exports ? withheld.Concat(kept) : withheld);
             optional.UnionWith(reached);
+            // Each function's register entry withheld as the function is
+            // (RuntimeAbi.RegisterEntrySuffix); shown where it is, below.
+            withheld.UnionWith(RuntimeAbi.WithRegisterEntries(withheld.ToList()));
             if (exports) keep = (keep ?? Array.Empty<string>()).Concat(offered).Concat(optional).Distinct(StringComparer.Ordinal).ToArray();
         }
         // The native names the units call, read before the link takes their notes.
@@ -499,7 +503,8 @@ public static class ObjectLinkCommand
                 // every public method of its own there (+), or the kernel is
                 // not what it says; a static or the library's surface (~)
                 // where the link kept it.
-                globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name) && !optional.Contains(export.Name));
+                globals.RemoveAll(export => withheld.Contains(export.Name)
+                    && !offered.Contains(RuntimeAbi.FunctionOf(export.Name)) && !optional.Contains(RuntimeAbi.FunctionOf(export.Name)));
                 HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
                 // WHAT A MODULE MAY ASSUME, SAID AS NAMES (KernelAssumptions):
                 // each type whose state word the image holds at "completed"

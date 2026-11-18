@@ -1070,7 +1070,11 @@ public sealed partial class Lowering
         int w = _t.WordSize;
         FrameSlot rec = _f.NewSlot(4 * w, w, "handler");
         VReg recAddr = _e.SlotAddress(rec);
-        VReg head = ChainRead(ThreadBlockNow(), TlsHandler / 4 * w);
+        // The thread's block read once: nothing between here and the head's
+        // write can move this thread to another block (no call, no change
+        // of GS) -- read twice, every try's entry loaded it twice.
+        VReg block = ThreadBlockNow();
+        VReg head = ChainRead(block, TlsHandler / 4 * w);
         ChainWrite(recAddr, R(head), HandlerPrev / 4 * w);
         ChainWrite(recAddr, R(_e.LabelAddress(landing)), HandlerAddr / 4 * w);
         VReg sp = _e.Reg(IrTypes.Word, "sp");
@@ -1079,7 +1083,7 @@ public sealed partial class Lowering
         VReg fp = _e.Reg(IrTypes.Word, "fp");
         _e.Emit(Opcode.FramePointer, fp);
         ChainWrite(recAddr, R(fp), HandlerFp / 4 * w);
-        ChainWrite(ThreadBlockNow(), R(recAddr), TlsHandler / 4 * w);
+        ChainWrite(block, R(recAddr), TlsHandler / 4 * w);
         return rec;
     }
 
