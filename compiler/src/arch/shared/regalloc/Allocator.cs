@@ -2507,6 +2507,13 @@ internal sealed class BitRows
         return table;
     }
 
+    /// <summary>Rows of their own, where the thread's kept ones are someone's still (LoopSplit.SplitCold).</summary>
+    public static BitRows Fresh(int rows, int size)
+    {
+        int words = (size + 63) / 64;
+        return new BitRows { Words = words, Bits = new ulong[Math.Max(1, rows * words)] };
+    }
+
     public bool Get(int row, int i) => (Bits[row * Words + (i >> 6)] & (1UL << (i & 63))) != 0;
     public void Set(int row, int i) => Bits[row * Words + (i >> 6)] |= 1UL << (i & 63);
 

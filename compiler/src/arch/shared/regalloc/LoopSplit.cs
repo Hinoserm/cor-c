@@ -33,6 +33,10 @@ namespace Corsac.Lang.RegAlloc;
 /// pad; nor a value live into any landing pad -- entered from anywhere in
 /// its try, it finds what the frame holds -- nor a constant, which the
 /// allocator remakes where it is read.
+///
+/// AND AT A COLD REGION, after a first scan, for the values that scan gave
+/// to the frame (SplitCold, FindColdRegions): the same split of a region
+/// that is no loop.
 /// </summary>
 public sealed class LoopSplit
 {
@@ -105,11 +109,11 @@ public sealed class LoopSplit
             foreach (AInstr i in b.Instrs) if (i.JumpsAnywhere) return false;
         }
         LoopSplit s = split ?? new(f);
-        if (split is null) s._constant = s.Constants(s._constantWidth = f.NextVReg);
         List<HashSet<ABlock>> cold = s.FindColdRegions();
         if (cold.Count == 0) return false;
+        if (split is null) s._constant = s.Constants(s._constantWidth = f.NextVReg);
         int before = s.Copies.Count;
-        Liveness live = s.LiveIn();
+        Liveness live = s.LiveIn(kept: false);
         s.JumpsInto(live);
         s.Link();
         foreach (HashSet<ABlock> body in cold) s.Split(body, live, gaveWay);
@@ -280,7 +284,13 @@ public sealed class LoopSplit
         // Reached at all; reached with no call made; a return reached from it with none.
         bool[] reached = new bool[nb], forward = new bool[nb], backward = new bool[nb];
         Stack<int> work = new();
+        // (From every landing pad too: a pad is entered by no edge, and
+        // what it flows into is entered from it -- a catch's way to the
+        // block after its try, which must not be a way into a region past
+        // its head.)
         work.Push(0); reached[0] = true;
+        for (int b = 1; b < nb; b++)
+            if (_f.Blocks[b].LandingPad) { reached[b] = true; work.Push(b); }
         while (work.Count > 0)
             foreach (int t in succ[work.Pop()])
                 if (!reached[t]) { reached[t] = true; work.Push(t); }
@@ -362,7 +372,7 @@ public sealed class LoopSplit
         }
     }
 
-    private Liveness LiveIn()
+    private Liveness LiveIn(bool kept = true)
     {
         int nb = _f.Blocks.Count, n = _f.NextVReg, fv = _f.Registers.FirstVirtual;
         Dictionary<ABlock, int> index = Index();
@@ -387,7 +397,11 @@ public sealed class LoopSplit
         // The thread's kept rows, the allocator's own (BitRows.Kept): its
         // liveness comes after the split and fills them afresh, so the split's
         // three tables a round cost no memory of their own.
-        BitRows use = BitRows.Kept(0, nb, g), def = BitRows.Kept(1, nb, g), live = BitRows.Kept(2, nb, g);
+        // (Not for a cold split: the scan before it holds them, and goes on
+        // with them where nothing is split after all -- overwritten, it sank
+        // stores and dropped reloads by another function's liveness.)
+        BitRows use = kept ? BitRows.Kept(0, nb, g) : BitRows.Fresh(nb, g), def = kept ? BitRows.Kept(1, nb, g) : BitRows.Fresh(nb, g),
+            live = kept ? BitRows.Kept(2, nb, g) : BitRows.Fresh(nb, g);
         int[][] succ = new int[nb][];
         List<int>[] pred = new List<int>[nb];
         for (int b = 0; b < nb; b++) pred[b] = new();
