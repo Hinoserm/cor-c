@@ -331,7 +331,9 @@ public sealed class LoopSplit
                 if (taken[b] || _f.Blocks[b].LandingPad || _f.Blocks[b].AddressTaken) { whole = false; break; }
                 if (b == h) continue;
                 bool entered = false;
-                foreach (int p in pred[b]) entered |= reached[p] && !inside.Contains(p);
+                // (A block nothing reaches counts as well: left jumping past
+                // the head, it would read the pieces where nothing made them.)
+                foreach (int p in pred[b]) entered |= !inside.Contains(p);
                 if (entered) { whole = false; break; }
             }
             if (!whole) continue;

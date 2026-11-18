@@ -37,6 +37,10 @@ namespace Corsac.Lang.RegAlloc;
 /// spilled keeps a register up to its first conflict in its first block;
 /// and a reload's register carries the value on to the following reads in
 /// the same straight run of blocks while it stays free.
+///
+/// And where a value was given up that a function's cold part may be why --
+/// the part its call-free way through never enters -- it is split there and
+/// the whole scan made again, twice at most (Run, LoopSplit.SplitCold).
 /// </summary>
 public sealed class Allocator
 {
