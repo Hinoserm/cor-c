@@ -327,6 +327,7 @@ public sealed class X86Backend : IBackend
                 if (!f.Exported)
                 {
                     privateNames.Add(f.Name);
+                    if (RegisterArgs.Of(f) > 0) privateNames.Add(RegisterArgs.EntryName(f.Name));
                 }
             }
             foreach (DataItem d in module.Data)
@@ -351,6 +352,8 @@ public sealed class X86Backend : IBackend
             foreach (Function f in module.Functions)
             {
                 definedNames.Add(f.Name);
+                // And its register entry, where it has one (RegisterArgs).
+                if (RegisterArgs.Of(f) > 0) definedNames.Add(RegisterArgs.EntryName(f.Name));
             }
             foreach (DataItem d in module.Data)
             {
@@ -473,7 +476,7 @@ public sealed class X86Backend : IBackend
             // copy of it the link cuts out, DuplicateCutter, is cut whole),
             // and the body under the entry's name after it.
             string bodyName = f.Name;
-            if (RegisterArgs.Of(f) is > 0 and var inRegisters)
+            if (RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) is var inRegisters)
             {
                 bodyName = RegisterArgs.EntryName(f.Name);
                 (byte[] stub, int field) = RegisterArgs.Stub(inRegisters);
@@ -522,14 +525,35 @@ public sealed class X86Backend : IBackend
                 Name = bodyName, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported,
             });
             defined.Add(bodyName);
+            // A FUNCTION THAT TAKES ITS ARGUMENTS IN REGISTERS BUT WHOSE BODY
+            // KEEPS THEM ON THE STACK (an asm block reads them there,
+            // RegisterArgs.BodyInRegisters): its register entry a stub the
+            // other way, after the body -- laid down where nothing else is
+            // being encoded, so the body's tables are already done with.
+            if (!RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) is > 0 and var pushed)
+            {
+                int pad = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
+                Encoder.Nops(text.Bytes, pad);
+                (byte[] reverse, int at) = RegisterArgs.ReverseStub(pushed);
+                int reverseStart = text.Bytes.Count;
+                text.Bytes.AddRange(reverse);
+                text.Relocs.Add(new Relocation(reverseStart + at, f.Name, -4, RelocKind.Rel32));
+                obj.Symbols.Add(new Symbol
+                {
+                    Name = RegisterArgs.EntryName(f.Name), Section = text, Offset = reverseStart, Size = reverse.Length, IsFunction = true, Global = f.Exported,
+                });
+                defined.Add(RegisterArgs.EntryName(f.Name));
+            }
             if (EmitLinkSummary && !PositionIndependent)
                 Corsac.Lang.Opt.LinkSummary.AddConstantReturns(f, obj, summary);
 
             // WHAT THIS FUNCTION IS, for a fault to read back. Recorded per
             // function as it is encoded, because this is the one moment the
             // name, the source and the final byte offsets are all in hand.
+            // (Its label the body's: the table's offsets count from the first
+            // entry's symbol, and the body is what the start is of.)
             frames.Add(new FrameTable.Entry(
-                f.Name, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
+                bodyName, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
                 new List<(int, int)>(encoder.Lines)));
 
             if (StackMaps)
@@ -543,7 +567,7 @@ public sealed class X86Backend : IBackend
                     if (record is null)
                     {
                         if (m.Frame.Size > 0xFFFFFF) throw new InvalidOperationException("a frame over 16 MB has no stack map");
-                        if (mapBase is null) { mapBase = f.Name; mapBaseAt = start; }
+                        if (mapBase is null) { mapBase = bodyName; mapBaseAt = start; }
                         record = new StackMapTable.Function
                         {
                             Start = start - mapBaseAt, FrameSize = m.Frame.Size, Saved = SavedMask(m), Objects = StackMapTable.Words(ObjectWords(m)),

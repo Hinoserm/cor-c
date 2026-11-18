@@ -153,11 +153,12 @@ public static class CopyJoin
         // ENTERED BY NO EDGE: a landing pad, a block a computed jump goes to.
         // What is live into one is read there as the frame holds it, from
         // anywhere in its try -- by a way the search below cannot follow --
-        // and is joined with nothing. (A handler's own values have homes in
-        // the frame and are read from them into registers written afresh,
-        // LandingPadHomes: live into no pad, and joined like any other. A
-        // function with a try, a lock or a using kept each such variable in
-        // two registers, the value and its copy, both in the frame.)
+        // and is joined with nothing. (What a handler reads it reads from its
+        // home in the frame, LandingPadHomes, into a register loaded afresh
+        // -- kept, as every register a home's load defines is -- so a
+        // function with a try, a lock or a using has the rest of its
+        // variables joined as anywhere: before, each kept its value and its
+        // copy in two registers, both in the frame.)
         for (int b = 0; b < nb; b++)
         {
             if (!f.Blocks[b].LandingPad && !f.Blocks[b].AddressTaken) continue;

@@ -129,7 +129,7 @@ static class Program
         // A section's local named in a later section is that section's own
         // each time it is entered: a closure made on one lap keeps that
         // lap's; a deconstruction assigns to it; and two sections may each
-        // declare one of a name.
+        // declare a local of a name of their own.
         List<Func<int>> made = new();
         int pairA = 0, pairB = 0, own = 0, other = 0;
         for (int n = 0; n < 4; n++)

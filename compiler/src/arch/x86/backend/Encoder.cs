@@ -61,7 +61,7 @@ internal sealed class Encoder
     /// counts from: its own name, or the body's entry where the name is the
     /// stub of a function taking its arguments in registers (RegisterArgs).
     /// </summary>
-    private string BodySymbol => RegisterArgs.Of(_m.Source) > 0 ? RegisterArgs.EntryName(_m.Source.Name) : _m.Source.Name;
+    private string BodySymbol => RegisterArgs.BodyInRegisters(_m.Source) ? RegisterArgs.EntryName(_m.Source.Name) : _m.Source.Name;
 
     public Encoder(Section text, bool optimizeSize = false)
     {

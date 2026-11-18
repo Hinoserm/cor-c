@@ -1449,7 +1449,7 @@ internal sealed partial class Selector
         // TAKEN IN REGISTERS (RegisterArgs): each from its own, first thing
         // -- the register is live from the entry to here, so nothing the
         // allocator places before takes it.
-        if (RegisterArgs.Of(_f) is > 0 and var inRegisters)
+        if (RegisterArgs.BodyInRegisters(_f) && RegisterArgs.Of(_f) is var inRegisters)
         {
             for (int k = 0; k < inRegisters; k++) Mov(Lo(_f.Params[k]), MReg.Of(RegisterArgs.Order[k]));
             return;

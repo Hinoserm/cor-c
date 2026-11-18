@@ -55,6 +55,42 @@ internal static class RegisterArgs
         return f.Params.Count;
     }
 
+    /// <summary>
+    /// Whether the function's own body takes its arguments in registers (Of
+    /// it more than none) -- or, holding an asm block, which may read them
+    /// off the stack by its own text, keeps them there: its register entry is
+    /// then a stub the other way (ReverseStub), which pushes them and calls
+    /// the body under the function's own name.
+    /// </summary>
+    public static bool BodyInRegisters(Function f)
+    {
+        if (Of(f) == 0) return false;
+        foreach (Corsac.Lang.Ir.Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.Call && i.Callee is { } c && c.StartsWith(MachineIntrinsics.Asm, StringComparison.Ordinal)) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// The register entry of a function whose body keeps its arguments on the
+    /// stack (BodyInRegisters false): `push ecx ; push edx ; push eax` (as
+    /// many as it takes, the last first), `call body`, `add esp, n`, `ret`;
+    /// returned with the offset of the call's field.
+    /// </summary>
+    public static (byte[] Code, int Field) ReverseStub(int arguments)
+    {
+        List<byte> code = new();
+        for (int k = arguments - 1; k >= 0; k--) code.Add((byte)(0x50 + (int)Order[k]));
+        code.Add(0xE8);
+        int field = code.Count;
+        code.AddRange(new byte[4]);
+        code.Add(0x83);
+        code.Add(0xC4);
+        code.Add((byte)(4 * arguments));
+        code.Add(0xC3);
+        return (code.ToArray(), field);
+    }
+
     /// <summary>How many of its arguments a call passes in registers: all of them, or none (0).</summary>
     public static int Of(Instr call)
     {

@@ -8460,8 +8460,8 @@ public sealed partial class Binder
                         foreach (Stmt body in c.Body)
                             foreach (Node n in SafetyNodes(body, intoLambdas: true))
                                 if (n is NameExpr { Name: var mentioned }) named.Add(mentioned);
-                        // Its own declaration of the name is that one (C#
-                        // refuses a second; here it is the section's own).
+                        // A name the section declares itself is reported above
+                        // (CS0128) and given no second local here.
                         foreach (Stmt body in c.Body)
                         {
                             if (body is not LocalDecl own) continue;

@@ -395,6 +395,9 @@ internal static class Peephole
             for (int at = 0; at < block.Instrs.Count; at++)
             {
                 MInstr i = block.Instrs[at];
+                // An asm block that names the stack in its own text may reach
+                // any slot with no operand to show it.
+                if (i.Op == MOp.InlineAsm && i.Asm!.Analysis.UsesStack) return null;
                 for (int k = 0; k < i.Operands.Count; k++)
                 {
                     // (EBP as a value -- a try's handler record keeps it for the
@@ -493,6 +496,7 @@ internal static class Peephole
     /// <summary>Each twinned spill slot read as its home, its stores gone and no safepoint naming it (TwinSlots).</summary>
     private static void ReadTwins(MFunction m, Dictionary<int, int> twins)
     {
+        HashSet<int> homes = new(twins.Values);
         foreach (MBlock block in m.Blocks)
         {
             List<MInstr> instrs = block.Instrs;
@@ -512,7 +516,7 @@ internal static class Peephole
             // `mov r, [H] ; mov [H], r`, what S read back and stored to its
             // home has become: the store puts back what was just read.
             for (int k = 1; k < instrs.Count; k++)
-                if (IsMov(instrs[k]) && !instrs[k].Lock && instrs[k].Operands is [MMem to, MReg { IsPhys: true } from] && twins.ContainsValue(to.Disp)
+                if (IsMov(instrs[k]) && !instrs[k].Lock && instrs[k].Operands is [MMem to, MReg { IsPhys: true } from] && homes.Contains(to.Disp)
                     && to.Base is { IsPhys: true, Phys: Gpr.Ebp } && to.Index is null && to.Symbol is null && to.Label is null
                     && IsMov(instrs[k - 1]) && !instrs[k - 1].Lock && instrs[k - 1].Operands is [MReg { IsPhys: true } into, MMem back] && into.Id == from.Id
                     && back.Base is { IsPhys: true, Phys: Gpr.Ebp } && back.Index is null && back.Symbol is null && back.Label is null && back.Disp == to.Disp)
