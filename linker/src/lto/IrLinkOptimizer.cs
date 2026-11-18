@@ -159,9 +159,10 @@ public static class IrLinkOptimizer
                     .Where(unit => unit.Item2 is not null).Select(unit => (unit.Object, unit.Item2!)).ToList()) : null,
                 Preinit.LastEdges) : null;
         LinkTimings.Phase("reachability");
-        // The data the walk reached, by name (Preinit.Folded's words are of these).
-        HashSet<string>? reachedData = reachability is null ? null
-            : reachability.Values.SelectMany(keys => keys).Where(key => key.Kind == IrKey.Data).Select(key => key.Name).ToHashSet(StringComparer.Ordinal);
+        // The data the walk reached, by name (Preinit.Folded's words are of
+        // these): made once, the first time a unit's words are asked.
+        Lazy<HashSet<string>?> reachedData = new(() => reachability is null ? null
+            : reachability.Values.SelectMany(keys => keys).Where(key => key.Kind == IrKey.Data).Select(key => key.Name).ToHashSet(StringComparer.Ordinal));
         // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
         // call's targets on a type nothing stamps an object with run on no
         // object, and drop out of every answer the link gives by dispatch --
@@ -505,11 +506,9 @@ public static class IrLinkOptimizer
             facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields;
             facts.Regions = regionFacts?.GetValueOrDefault(original);
             // Not in a module: its link lays down no kernel type made.
-            // ONLY THE WORDS THIS UNIT'S KEPT CODE AND ITS IMPORTS NAME: those
-            // the link's walk reached (a guard names its word), so laying
-            // their types down (Preinit.Folded) keeps nothing the walk
-            // pruned -- every completed word, named or not, kept every
-            // type's statics and what they reach.
+            // ONLY THE WORDS THIS UNIT'S KEPT CODE AND ITS IMPORTS NAME
+            // (every completed word, named or not, kept every type's statics
+            // and what they reach), and of those only the walk's (below).
             if (!moduleOfKernel && Preinit.LastCompleted is { Count: > 0 } completed)
             {
                 HashSet<string> named = new(StringComparer.Ordinal);
@@ -527,7 +526,7 @@ public static class IrLinkOptimizer
                 // descriptors its statics name, which the walk had pruned --
                 // undefined at the link (the compiler's own build). Unreached,
                 // its guard is read as it always was.
-                if (reachedData is not null) named.RemoveWhere(word => !reachedData.Contains(word));
+                if (named.Count > 0 && reachedData.Value is { } reached) named.RemoveWhere(word => !reached.Contains(word));
                 if (named.Count > 0)
                 {
                     facts.CompletedReady = named;
