@@ -342,9 +342,10 @@ internal sealed class X86Target : ITarget
     /// <summary>
     /// THE LOADS THAT ARE HOMES (AInstr.HomeSlot): `mov v, [ebp+d]` of an
     /// incoming argument's word, where it is the only thing in the function
-    /// that touches any byte of that word, and nothing takes an address off
-    /// EBP -- through one, any argument could be read or written: no LEA of
-    /// it, no indexed access above it. EBP as a value (Sys.FramePointer) is
+    /// that touches any byte of that word, and nothing takes an address at
+    /// or above EBP -- through one, any argument could be read or written:
+    /// no LEA there, no indexed access there (a local's address, below, is
+    /// a local's). EBP as a value (Sys.FramePointer) is
     /// read through, never written above the return address -- its contract
     /// (Prelude), held by every use in the runtime and the kernel, which walk
     /// the chain of saved frame pointers and return addresses -- and a home
@@ -366,7 +367,19 @@ internal sealed class X86Target : ITarget
                     if (i.Operands[k] is not MMem mem) continue;
                     if (mem.Index?.Id == (int)Gpr.Ebp) return homes;
                     if (mem.Base?.Id != (int)Gpr.Ebp) continue;
-                    if (i.Op == MOp.Lea || mem.Index is not null && mem.Disp >= 0) return homes;
+                    // An address taken AT OR ABOVE the frame pointer, or an
+                    // index from there: any argument may be reached through
+                    // it. One taken below is a local's -- a struct's value in
+                    // its frame slot, an out argument's word, a buffer --
+                    // and what is done through it stays in the local, as an
+                    // indexed access below does: taken for a reach of every
+                    // argument (as any LEA off EBP was), every function that
+                    // kept a struct in its frame loaded each argument it
+                    // could not keep in a register and stored it again in a
+                    // slot of its own -- thirteen loads and twelve stores at
+                    // the top of Tcp.ReceiveOwned, once a segment.
+                    if ((i.Op == MOp.Lea || mem.Index is not null) && mem.Disp >= 0) return homes;
+                    if (i.Op == MOp.Lea) continue;
                     // The saved frame pointer and the return address, between the locals
                     // and the arguments: an access there, sixteen bytes at most, may reach
                     // one. A local below the frame pointer reaches none without writing
