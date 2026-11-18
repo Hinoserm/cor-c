@@ -26,14 +26,16 @@ namespace Corsac.Lang.RegAlloc;
 /// Two registers may be one where neither is written while the other is
 /// live, the copies between them aside (Chaitin's interference, with the
 /// copy's exemption): then whenever both are live they hold one value. For
-/// `r = copy x`: after every other write of r, x is dead; after every write
-/// of x, r is dead. Liveness is the function's own (what is live into each
+/// `r = copy x`: after every write of r that is no copy of x, x is dead;
+/// after every write of x that is no copy of r, r is dead (above, both
+/// writes of r are copies of x, and r is dead where x is added to). Liveness is the function's own (what is live into each
 /// block, over the values some block reads before it writes them) and, in
 /// a block, the instructions after the write up to the first that names
 /// the register -- a read: live; a write: dead; the block's end: live out
 /// of it or not. Registers joined are a class with one name, their
-/// liveness the union of their members' (exact: no member is written while
-/// another is live, so a way to a read of one passes no write of another),
+/// liveness the union of their members' (never less than the truth, which
+/// is what a refusal needs: no member is written while another is live, so
+/// a way to a read of one passes no write of another),
 /// and every instruction is renamed once at the end; a copy of a register
 /// onto itself is dropped.
 ///
@@ -53,6 +55,8 @@ public static class CopyJoin
     private const int ScanMost = 192;
     /// <summary>The most writes of one class of joined registers looked at for a join.</summary>
     private const int WritesMost = 12;
+    /// <summary>The most words one of the liveness tables may be (blocks by registers asked of).</summary>
+    private const long TableMost = 1L << 20;
 
     public static int Run(AFunction f)
     {
@@ -76,13 +80,23 @@ public static class CopyJoin
                 }
             }
         }
+        // The registers a join may be asked of: a variable and what it is copied from.
+        bool[] asked = new bool[n];
         foreach (ABlock b in f.Blocks)
             foreach (AInstr i in b.Instrs)
-                if (i.WholeCopy && i.CopyDst >= fv && i.CopySrc >= fv && i.CopyDst != i.CopySrc && defs[i.CopyDst] > 1) { any = true; break; }
+                if (i.WholeCopy && i.CopyDst >= fv && i.CopySrc >= fv && i.CopyDst != i.CopySrc && defs[i.CopyDst] > 1 && !kept[i.CopyDst] && !kept[i.CopySrc])
+                {
+                    asked[i.CopyDst] = asked[i.CopySrc] = true;
+                    any = true;
+                }
         if (!any) return 0;
 
         // WHAT IS LIVE INTO EACH BLOCK, as LoopSplit and the allocator have
-        // it: over the registers some block reads before it writes them.
+        // it, over the registers asked of alone that some block reads before
+        // it writes them: liveness is a register's own, and no other is ever
+        // in a class. (Every register's, the tables were the allocator's
+        // own again -- 180 MB for one function of 14 thousand blocks.) Not
+        // past TableMost words of them: such a function is left as it is.
         int[] globalOf = new int[n];
         Array.Fill(globalOf, -1);
         int[] lastDef = new int[n];
@@ -92,10 +106,11 @@ public static class CopyJoin
             foreach (AInstr i in f.Blocks[b].Instrs)
             {
                 foreach (Named r in i.Regs)
-                    if (r.Reg >= fv && (r.Role & Role.Use) != 0 && lastDef[r.Reg] != b && globalOf[r.Reg] < 0) globalOf[r.Reg] = globals++;
+                    if (r.Reg >= fv && asked[r.Reg] && (r.Role & Role.Use) != 0 && lastDef[r.Reg] != b && globalOf[r.Reg] < 0) globalOf[r.Reg] = globals++;
                 foreach (Named r in i.Regs)
                     if (r.Reg >= fv && (r.Role & Role.Def) != 0) lastDef[r.Reg] = b;
             }
+        if ((long)nb * ((globals + 63) / 64) > TableMost) return 0;
         BitRows use = BitRows.Fresh(nb, globals), def = BitRows.Fresh(nb, globals), live = BitRows.Fresh(nb, globals);
         Dictionary<ABlock, int> index = new(ReferenceEqualityComparer.Instance);
         for (int b = 0; b < nb; b++) index[f.Blocks[b]] = b;
@@ -137,9 +152,9 @@ public static class CopyJoin
             foreach (int p in pred[b]) if (!owed[p]) { owed[p] = true; work.Push(p); }
         }
 
-        // THE CLASSES: each register's name (its class's first member to have
-        // a place in the liveness, or the source joined into), and where the
-        // members of the classes worth asking about are written.
+        // THE CLASSES: each register's name (the source's of the join that
+        // made the class, unless the variable alone had a place in the
+        // liveness), and where the registers asked of are written.
         int[] name = new int[n];
         for (int v = 0; v < n; v++) name[v] = v;
         int Name(int v)
@@ -148,14 +163,6 @@ public static class CopyJoin
             return v;
         }
         Dictionary<int, List<(int Block, int At, bool Copy, int From)>> writes = new();
-        HashSet<int> asked = new();
-        foreach (ABlock b in f.Blocks)
-            foreach (AInstr i in b.Instrs)
-                if (i.WholeCopy && i.CopyDst >= fv && i.CopySrc >= fv && i.CopyDst != i.CopySrc && defs[i.CopyDst] > 1)
-                {
-                    asked.Add(i.CopyDst);
-                    asked.Add(i.CopySrc);
-                }
         for (int b = 0; b < nb; b++)
         {
             List<AInstr> ins = f.Blocks[b].Instrs;
@@ -164,7 +171,7 @@ public static class CopyJoin
                 AInstr i = ins[k];
                 foreach (Named r in i.Regs)
                 {
-                    if (r.Reg < fv || (r.Role & Role.Def) == 0 || !asked.Contains(r.Reg)) continue;
+                    if (r.Reg < fv || (r.Role & Role.Def) == 0 || !asked[r.Reg]) continue;
                     if (!writes.TryGetValue(r.Reg, out var at)) writes[r.Reg] = at = new();
                     bool copy = i.WholeCopy && i.CopyDst == r.Reg && i.CopySrc >= fv;
                     if (at.Count == 0 || at[^1].Block != b || at[^1].At != k) at.Add((b, k, copy, copy ? i.CopySrc : -1));
@@ -180,6 +187,13 @@ public static class CopyJoin
             for (int j = k + 1; j < ins.Count; j++)
             {
                 if (++looked > ScanMost) return true;
+                // A way out of the block passed on the way: live where it goes.
+                if (j - 1 > k && ins[j - 1].Targets is { } left)
+                {
+                    int leaving = globalOf[c];
+                    if (leaving >= 0)
+                        foreach (ABlock t in left) if (live.Get(index[t], leaving)) return true;
+                }
                 bool written = false;
                 foreach (Named r in ins[j].Regs)
                 {
@@ -196,6 +210,8 @@ public static class CopyJoin
         }
 
         int joined = 0;
+        // The pairs found apart from being one, not asked again until a class has grown.
+        HashSet<(int, int)> refused = new();
         for (int b = 0; b < nb; b++)
         {
             List<AInstr> ins = f.Blocks[b].Instrs;
@@ -208,6 +224,7 @@ public static class CopyJoin
                 if (kept[a] || kept[s] || f.Target.ClassOf(a) != f.Target.ClassOf(s) || f.Target.ByteOnly(a) != f.Target.ByteOnly(s)) continue;
                 if (!writes.TryGetValue(a, out var aWrites) || !writes.TryGetValue(s, out var sWrites)) continue;
                 if (aWrites.Count + sWrites.Count > WritesMost) continue;
+                if (refused.Contains((a, s))) continue;
                 bool apart = true;
                 // After every write of the one that is no copy of the other, the other is dead.
                 foreach ((int wb, int wk, bool isCopy, int from) in aWrites)
@@ -225,7 +242,13 @@ public static class CopyJoin
                             if (r.Reg >= fv && (r.Role & Role.Def) != 0 && Name(r.Reg) == a) both = true;
                         if (both || LiveAfter(wb, wk, a)) { apart = false; break; }
                     }
-                if (!apart) continue;
+                if (!apart)
+                {
+                    refused.Add((a, s));
+                    continue;
+                }
+                // (What was refused is asked afresh: a class is another now.)
+                refused.Clear();
                 // Joined under the name that has a place in the liveness (the
                 // source's, where both or neither have), which takes the
                 // other's: live into a block where either was.
