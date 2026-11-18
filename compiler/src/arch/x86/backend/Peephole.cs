@@ -1536,6 +1536,49 @@ internal static class Peephole
     /// stops with the test gone); anything else not known to leave the
     /// flags alone keeps the test.
     /// </summary>
+    private static void RedundantTests(List<MInstr> instrs)
+    {
+        for (int k = 1; k < instrs.Count; k++)
+        {
+            MInstr test = instrs[k], before = instrs[k - 1];
+            if (test.Op != MOp.Test || test.Width != 4 || test.Operands.Count != 2
+                || test.Operands[0] is not MReg r || test.Operands[1] is not MReg r2 || r.Id != r2.Id
+                || before.Width != 4 || before.Lock || before.Operands.Count < 1 || before.Operands[0] is not MReg written || written.Id != r.Id)
+                continue;
+            bool logical = before.Op is MOp.And or MOp.Or or MOp.Xor && before.Operands.Count == 2;
+            bool arithmetic = before.Op is MOp.Add or MOp.Sub && before.Operands.Count == 2
+                || before.Op == MOp.Neg && before.Operands.Count == 1
+                || before.Op is MOp.Shl or MOp.Shr or MOp.Sar && before.Operands.Count == 2 && before.Operands[1] is MImm { Value: >= 1 and <= 31 };
+            if (!logical && !arithmetic) continue;
+            bool safe = true;
+            for (int j = k + 1; j < instrs.Count && safe; j++)
+            {
+                MInstr after = instrs[j];
+                if (after.Op is MOp.Jcc or MOp.Setcc or MOp.Cmov)
+                {
+                    if (!logical && after.Cond is not (Cond.E or Cond.Ne or Cond.S or Cond.Ns or Cond.P or Cond.Np)) safe = false;
+                    continue;
+                }
+                if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Nop or MOp.Jmp || Isa.FlagNeutralScalar(after.Op)) continue;
+                // What changes none of the six flags and reads none: the
+                // interrupt flag's own two, a push or a pop of a register or
+                // of memory, a PAUSE. (`pushf ; pop r ; and r, 200h ; test
+                // r, r ; setne ; ... ; cli` -- IrqSpinLock.Enter's first
+                // lines -- kept its test for the CLI after it.)
+                if (after.Op is MOp.Cli or MOp.Sti or MOp.Push or MOp.Pop or MOp.Pause) continue;
+                // A call or a return reads no flag of its caller's.
+                if (after.Op is MOp.Call or MOp.CallInd or MOp.Ret or MOp.Epilogue) break;
+                if (WritesFlags(after) && !ReadsFlags(after)) break;
+                safe = false;
+            }
+            if (safe)
+            {
+                instrs.RemoveAt(k);
+                k--;
+            }
+        }
+    }
+
     /// <summary>
     /// `mov eax, K ; lock cmpxchg [m], r ; test eax, eax ; jne` (K nought;
     /// `cmp eax, K` for another) ASKS WHAT THE CMPXCHG JUST SAID: it sets ZF
@@ -1585,49 +1628,6 @@ internal static class Peephole
                 safe = false;
             }
             if (safe) instrs.RemoveAt(at);
-        }
-    }
-
-    private static void RedundantTests(List<MInstr> instrs)
-    {
-        for (int k = 1; k < instrs.Count; k++)
-        {
-            MInstr test = instrs[k], before = instrs[k - 1];
-            if (test.Op != MOp.Test || test.Width != 4 || test.Operands.Count != 2
-                || test.Operands[0] is not MReg r || test.Operands[1] is not MReg r2 || r.Id != r2.Id
-                || before.Width != 4 || before.Lock || before.Operands.Count < 1 || before.Operands[0] is not MReg written || written.Id != r.Id)
-                continue;
-            bool logical = before.Op is MOp.And or MOp.Or or MOp.Xor && before.Operands.Count == 2;
-            bool arithmetic = before.Op is MOp.Add or MOp.Sub && before.Operands.Count == 2
-                || before.Op == MOp.Neg && before.Operands.Count == 1
-                || before.Op is MOp.Shl or MOp.Shr or MOp.Sar && before.Operands.Count == 2 && before.Operands[1] is MImm { Value: >= 1 and <= 31 };
-            if (!logical && !arithmetic) continue;
-            bool safe = true;
-            for (int j = k + 1; j < instrs.Count && safe; j++)
-            {
-                MInstr after = instrs[j];
-                if (after.Op is MOp.Jcc or MOp.Setcc or MOp.Cmov)
-                {
-                    if (!logical && after.Cond is not (Cond.E or Cond.Ne or Cond.S or Cond.Ns or Cond.P or Cond.Np)) safe = false;
-                    continue;
-                }
-                if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Nop or MOp.Jmp || Isa.FlagNeutralScalar(after.Op)) continue;
-                // What changes none of the six flags and reads none: the
-                // interrupt flag's own two, a push or a pop of a register or
-                // of memory, a PAUSE. (`pushf ; pop r ; and r, 200h ; test
-                // r, r ; setne ; ... ; cli` -- IrqSpinLock.Enter's first
-                // lines -- kept its test for the CLI after it.)
-                if (after.Op is MOp.Cli or MOp.Sti or MOp.Push or MOp.Pop or MOp.Pause) continue;
-                // A call or a return reads no flag of its caller's.
-                if (after.Op is MOp.Call or MOp.CallInd or MOp.Ret or MOp.Epilogue) break;
-                if (WritesFlags(after) && !ReadsFlags(after)) break;
-                safe = false;
-            }
-            if (safe)
-            {
-                instrs.RemoveAt(k);
-                k--;
-            }
         }
     }
 
@@ -1822,7 +1822,7 @@ internal static class Peephole
                     && IsMov(load) && load.Operands[0] is MReg l0 && l0.Id == r.Id
                     && load.Operands[1] is MMem lm && SameMem(lm, m))
                 {
-                    MInstr rmw = new(op.Op, m, op.Operands[1]) { Width = 4, Line = op.Line };
+                    MInstr rmw = new(op.Op, m, op.Operands[1]) { Width = 4, Line = op.Line, Probed = op.Probed, OwnsState = op.OwnsState, Native = op.Native };
                     instrs.RemoveRange(k - 2, 3);
                     instrs.Insert(k - 2, rmw);
                     k -= 2;
@@ -1842,7 +1842,7 @@ internal static class Peephole
                 && instrs[k - 1] is { Lock: false } reload && IsMov(reload) && reload.Operands.Count == 2
                 && reload.Operands[0] is MReg into && into.Id == t0.Id && reload.Operands[1] is MMem asked)
             {
-                MInstr compare = new(MOp.Cmp, asked, new MImm(0)) { Width = 4, Line = reload.Line, Probed = reload.Probed };
+                MInstr compare = new(MOp.Cmp, asked, new MImm(0)) { Width = 4, Line = reload.Line, Probed = reload.Probed, OwnsState = reload.OwnsState, Native = reload.Native };
                 instrs.RemoveRange(k - 1, 2);
                 instrs.Insert(k - 1, compare);
                 k -= 1;
@@ -1951,7 +1951,7 @@ internal static class Peephole
                 flagsLive = true;
                 return;
             }
-            if (ReadsFlags(i)) flagsLive = true;
+            if (MayReadFlags(i)) flagsLive = true;
             else if (WritesFlags(i) || i.Op is MOp.Call or MOp.CallInd) flagsLive = false;
             foreach ((MReg r, bool isDef) in Regs(i)) if (isDef && r.Id < 8) dead |= 1 << r.Id;
             foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
