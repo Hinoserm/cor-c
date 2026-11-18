@@ -459,10 +459,15 @@ public sealed class Inline : IParallelModulePass
                     // trace Exception.Placed$ stores) must be seen stored
                     // where it is made, or it is left to a collector that a
                     // program with none then links (EscapeHeap.HeldByFields).
+                    // A callee with a loop in it is no such step, and stays a
+                    // call: the entry (_start) is cold throughout too, ending
+                    // in the exit, and took the whole of Main into it -- whose
+                    // calls then lost what the passes after give a function
+                    // of its own (test 2410's gates their caller's region).
                     if (calleeSize > TinyBody
                         && (Escape.IsStaticInitialiser(callee.Name)
                             || (coldBlocks ??= ColdBlocks(caller, loopBlocks ??= LoopBlocks(caller))).Contains(b)
-                                && !coldBlocks.Contains(caller.Blocks[0])))
+                                && (!coldBlocks.Contains(caller.Blocks[0]) || LoopBlocks(callee).Count > 0)))
                     {
                         TraceDecision?.Invoke(caller, callee, $"keep: cold path body={calleeSize} tiny-limit={TinyBody}");
                         continue;
