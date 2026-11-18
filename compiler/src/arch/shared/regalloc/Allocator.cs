@@ -961,7 +961,7 @@ public sealed class Allocator
     }
 
     /// <summary>--trace-regalloc NAME: every choice of what gives up its register, in functions whose name holds NAME.</summary>
-    public static string? Trace;
+    public static string? Trace => Switches.TraceRegAlloc;
     private bool Tracing => Trace is { } t && _f.Name.Contains(t, StringComparison.Ordinal);
 
     /// <summary>Whether every occurrence of a value at an instruction is a read that may take its spill slot instead.</summary>

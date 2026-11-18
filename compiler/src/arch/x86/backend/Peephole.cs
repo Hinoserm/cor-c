@@ -53,6 +53,7 @@ internal static class Peephole
             ForwardStoreLoad(block.Instrs);
             MergePops(block.Instrs);
             RedundantTests(block.Instrs);
+            ExchangedTests(block.Instrs);
             if (BranchOnSetFlags(block.Instrs) | ProbeBeforeAccess(block.Instrs)) DeadDefs(block.Instrs, liveOut[b], Jumped);
             ZeroWithXor(block.Instrs);
             DeadTests(block.Instrs);
@@ -1530,9 +1531,63 @@ internal static class Peephole
     /// only where every reader before the next flag write asks equal, sign or
     /// parity. An allocation's `if ((x &amp; Mask) == 0)`, a countdown's
     /// `if (--n != 0)`: one instruction each. The readers must be in the
-    /// block, as the selector always leaves them; anything not known to leave
-    /// the flags alone keeps the test.
+    /// block, as the selector always leaves them (no flag is carried across
+    /// a block's end, nor into a call or out of a return, where the scan
+    /// stops with the test gone); anything else not known to leave the
+    /// flags alone keeps the test.
     /// </summary>
+    /// <summary>
+    /// `mov eax, K ; lock cmpxchg [m], r ; test eax, eax ; jne` (K nought;
+    /// `cmp eax, K` for another) ASKS WHAT THE CMPXCHG JUST SAID: it sets ZF
+    /// where the word was K and r went in, and leaves in EAX what the word
+    /// held -- K exactly then, something else exactly when ZF is clear. So
+    /// "was it K" after it is ZF as it stands, and the test goes where every
+    /// reader before the next flag write asks equal or not equal (the
+    /// compare's other flags are of another subtraction). The lock taken
+    /// uncontended -- `CompareExchange(ref word, me, 0) == 0`, every
+    /// IrqSpinLock.Enter -- ran the test on its way through. Through one
+    /// `mov t, eax` the answer was moved by, tested as t.
+    /// </summary>
+    private static void ExchangedTests(List<MInstr> instrs)
+    {
+        for (int k = 1; k < instrs.Count; k++)
+        {
+            MInstr exchange = instrs[k];
+            if (exchange.Op != MOp.Cmpxchg || exchange.Width != 4 || exchange.Operands.Count != 2 || exchange.Operands[0] is not MMem
+                || exchange.Operands[1] is not MReg { Id: not (int)Gpr.Eax }) continue;
+            // What EAX was set to, just before: nothing between that names it.
+            if (instrs[k - 1] is not { Op: MOp.Mov, Width: 4, Lock: false, Operands: [MReg { Id: (int)Gpr.Eax }, MImm { IsPlain: true } expected] }) continue;
+            int at = k + 1;
+            int answer = (int)Gpr.Eax;
+            if (at < instrs.Count && instrs[at] is { Op: MOp.Mov, Width: 4, Lock: false, Operands: [MReg moved, MReg { Id: (int)Gpr.Eax }] } && moved.Id != (int)Gpr.Eax)
+            {
+                answer = moved.Id;
+                at++;
+            }
+            if (at >= instrs.Count) continue;
+            MInstr test = instrs[at];
+            bool asks = test.Width == 4 && !test.Lock && test.Operands.Count == 2 && test.Operands[0] is MReg tested && (tested.Id == answer || tested.Id == (int)Gpr.Eax)
+                && (test.Op == MOp.Test && expected.Value == 0 && test.Operands[1] is MReg again && again.Id == tested.Id
+                    || test.Op == MOp.Cmp && test.Operands[1] is MImm { IsPlain: true } against && against.Value == expected.Value);
+            if (!asks) continue;
+            bool safe = true;
+            for (int j = at + 1; j < instrs.Count && safe; j++)
+            {
+                MInstr after = instrs[j];
+                if (after.Op is MOp.Jcc or MOp.Setcc or MOp.Cmov)
+                {
+                    if (after.Cond is not (Cond.E or Cond.Ne)) safe = false;
+                    continue;
+                }
+                if (after.Op is MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Nop or MOp.Jmp) continue;
+                if (after.Op is MOp.Call or MOp.CallInd or MOp.Ret or MOp.Epilogue) break;
+                if (WritesFlags(after) && !MayReadFlags(after)) break;
+                safe = false;
+            }
+            if (safe) instrs.RemoveAt(at);
+        }
+    }
+
     private static void RedundantTests(List<MInstr> instrs)
     {
         for (int k = 1; k < instrs.Count; k++)
@@ -1689,9 +1744,23 @@ internal static class Peephole
         }
     }
 
-    private static bool WritesFlags(MInstr i) => i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or
+    /// <summary>
+    /// Whether an instruction sets the flags whatever it is given: what a
+    /// rule may take for the end of the flags before it. NOT A SHIFT BY A
+    /// COUNT IN CL (nor a double shift by one): by nought it changes no
+    /// flag, and what read the flags after it read the ones from before --
+    /// taken for a writer, a test before such a shift went as dead, a
+    /// register before it was zeroed with XOR, under a reader that still
+    /// wanted them. Not a writer and not known to leave them alone, it ends
+    /// every rule's scan the careful way.
+    /// </summary>
+    private static bool WritesFlags(MInstr i) => i.Op is MOp.Shl or MOp.Shr or MOp.Sar or MOp.Shld or MOp.Shrd
+        ? i.Operands.Count >= 2 && i.Operands[^1] is MImm { IsPlain: true, Value: >= 1 and <= 31 }
+        : WritesFlagsAlways(i);
+
+    private static bool WritesFlagsAlways(MInstr i) => i.Op is MOp.Add or MOp.Adc or MOp.Sub or MOp.Sbb or MOp.And or MOp.Or
         or MOp.Xor or MOp.Cmp or MOp.Test or MOp.Imul or MOp.Imul3 or MOp.Mul or MOp.ImulWide or MOp.Div or MOp.Idiv or MOp.Neg
-        or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Shld or MOp.Shrd or MOp.Xadd or MOp.Cmpxchg or MOp.LockOrEsp or MOp.Sahf
+        or MOp.Xadd or MOp.Cmpxchg or MOp.LockOrEsp or MOp.Sahf
         or MOp.Fucomipp or MOp.UcomiF or MOp.Bsf or MOp.Bsr or MOp.WriteFlags or MOp.Cmpxchg8b or MOp.PackedSaveX87 or MOp.PackedRestoreX87 or MOp.PackedSaveFxsr;
 
     /// <summary>

@@ -81,6 +81,8 @@ public static class Switches
 
     /// <summary>--trace-elements NAME: owned-element analysis on names containing NAME.</summary>
     public static string? TraceElements;
+    /// <summary>--trace-regalloc NAME (Allocator.Trace): taken here so that it is handed on to a link's backends, where a kernel's functions get their registers.</summary>
+    public static string? TraceRegAlloc;
 
     /// <summary>--lto-jobs N: how many backends a link runs at once.</summary>
     public static int LtoJobs;
@@ -199,6 +201,7 @@ public static class Switches
         TraceDemand |= Switch(taken, "--trace-demand");
         TraceInline = Valued(taken, "--trace-inline") ?? TraceInline;
         TraceElements = Valued(taken, "--trace-elements") ?? TraceElements;
+        TraceRegAlloc = Valued(taken, "--trace-regalloc") ?? TraceRegAlloc;
         if (Number(taken, "--lto-jobs") is long jobs) LtoJobs = (int)jobs;
         TraceFieldSites |= Switch(taken, "--trace-field-sites");
         TraceWants |= Switch(taken, "--trace-wants");

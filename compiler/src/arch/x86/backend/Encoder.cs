@@ -24,8 +24,9 @@ internal sealed class Encoder
     private readonly HashSet<MInstr> _long = new();
 
     /// <summary>
-    /// The blocks a backward jump of the function goes to -- its loops' heads
-    /// -- which on the K7 and the K8 start at a sixteen-byte line (LoopAlign).
+    /// The blocks a backward jump of the function goes to and that come round
+    /// to that jump again -- its loops' heads -- which on the K7 and the K8
+    /// start at a sixteen-byte line (LoopAlign).
     /// Empty for every other processor, and under --opt-size.
     /// </summary>
     private readonly HashSet<MBlock> _loopHeads = new(ReferenceEqualityComparer.Instance);
@@ -90,33 +91,13 @@ internal sealed class Encoder
             // return -- and that is no loop: padded as a head, the block the
             // fast path FALLS into had up to fifteen bytes of NOPs run ahead
             // of it on every call (IrqSpinLock.Enter, three of them before
-            // its epilogue). What each target reaches, found once a target.
-            Dictionary<MBlock, bool[]>? reaches = null;
-            bool ComesRound(MBlock target, int jump)
-            {
-                if (!(reaches ??= new(ReferenceEqualityComparer.Instance)).TryGetValue(target, out bool[]? seen))
-                {
-                    reaches[target] = seen = new bool[m.Blocks.Count];
-                    Stack<int> work = new();
-                    int first = at[target];
-                    seen[first] = true;
-                    work.Push(first);
-                    while (work.Count > 0)
-                    {
-                        int b = work.Pop();
-                        MBlock block = m.Blocks[b];
-                        foreach (MInstr i in block.Instrs)
-                            foreach (MOperand o in i.Operands)
-                                if (o is MLabel { Target: var next } && at.TryGetValue(next, out int t) && !seen[t]) { seen[t] = true; work.Push(t); }
-                        foreach (MInstr i in block.Instrs)
-                            if (i.Table is { } table)
-                                foreach (MBlock next in table)
-                                    if (at.TryGetValue(next, out int t) && !seen[t]) { seen[t] = true; work.Push(t); }
-                        if (!block.EndsUnconditionally && b + 1 < m.Blocks.Count && !seen[b + 1]) { seen[b + 1] = true; work.Push(b + 1); }
-                    }
-                }
-                return seen[jump];
-            }
+            // its epilogue).
+            // (The jump goes to the target, so the target comes round to it
+            // exactly where the two are in one cycle of the graph: every
+            // block's strongly connected part found once, when the first
+            // backward jump asks -- Tarjan's, on a stack of its own.)
+            int[]? part = null;
+            bool ComesRound(MBlock target, int jump) => (part ??= CyclesOf(m, at))[at[target]] == part[jump];
             for (int k = 0; k < m.Blocks.Count; k++)
             {
                 // Nor a cold block's jump back into the function (Layout put
@@ -1538,6 +1519,76 @@ internal sealed class Encoder
             B((byte)(0x70 + (int)i.Cond), (byte)disp);
         }
         return widened;
+    }
+
+    /// <summary>
+    /// Each block's strongly connected part of the function's graph, by
+    /// number (a block in no cycle is a part of its own): the edges are the
+    /// jumps' labels, the tables' entries, a landing pad's address taken
+    /// (reached from where it is taken, near enough for a loop's sake) and
+    /// the fall into the next block.
+    /// </summary>
+    private static int[] CyclesOf(MFunction m, Dictionary<MBlock, int> at)
+    {
+        int n = m.Blocks.Count;
+        List<int>[] succ = new List<int>[n];
+        for (int b = 0; b < n; b++)
+        {
+            List<int> to = succ[b] = new();
+            MBlock block = m.Blocks[b];
+            foreach (MInstr i in block.Instrs)
+            {
+                foreach (MOperand o in i.Operands)
+                {
+                    MBlock? next = o switch { MLabel l => l.Target, MImm { Label: { } named } => named, MMem { Label: { } named } => named, _ => null };
+                    if (next is not null && at.TryGetValue(next, out int t)) to.Add(t);
+                }
+                if (i.Table is { } table)
+                    foreach (MBlock next in table)
+                        if (at.TryGetValue(next, out int t)) to.Add(t);
+            }
+            if (!block.EndsUnconditionally && b + 1 < n) to.Add(b + 1);
+        }
+        int[] part = new int[n], index = new int[n], low = new int[n], edge = new int[n];
+        bool[] stacked = new bool[n];
+        Array.Fill(index, -1);
+        Stack<int> open = new(), walk = new();
+        int counter = 0, parts = 0;
+        for (int root = 0; root < n; root++)
+        {
+            if (index[root] >= 0) continue;
+            walk.Push(root);
+            index[root] = low[root] = counter++;
+            open.Push(root); stacked[root] = true;
+            while (walk.Count > 0)
+            {
+                int b = walk.Peek();
+                if (edge[b] < succ[b].Count)
+                {
+                    int t = succ[b][edge[b]++];
+                    if (index[t] < 0)
+                    {
+                        index[t] = low[t] = counter++;
+                        open.Push(t); stacked[t] = true;
+                        walk.Push(t);
+                    }
+                    else if (stacked[t]) low[b] = Math.Min(low[b], index[t]);
+                    continue;
+                }
+                walk.Pop();
+                if (walk.Count > 0) low[walk.Peek()] = Math.Min(low[walk.Peek()], low[b]);
+                if (low[b] != index[b]) continue;
+                int member;
+                do
+                {
+                    member = open.Pop();
+                    stacked[member] = false;
+                    part[member] = parts;
+                } while (member != b);
+                parts++;
+            }
+        }
+        return part;
     }
 
     /// <summary>
