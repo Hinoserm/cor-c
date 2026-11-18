@@ -5940,9 +5940,13 @@ public static class Gc
     }
 
     /// The class slot a block of `page` freed by `tb` goes onto, the
-    /// thread's own list -- the page its own and the one its slot names --
-    /// or 0 where it goes onto the page's, off the thread's count as well
-    /// (ClassFree's two ways, and ReleaseQuarantined's count by the same).
+    /// thread's own list -- the page its own and the one a slot names, of
+    /// the cache in use or of one on its shelf -- or 0 where it goes onto
+    /// the page's, off the thread's count as well (ClassFree's two ways,
+    /// and ReleaseQuarantined's count by the same). A block on a shelved
+    /// list is the thread's until it enters that heap again, drops the
+    /// shelf, ends, or the heap is released -- as one on the list in use is
+    /// the thread's until it ends or a round takes it.
     static nuint OwnListSlot(nuint page, nuint tb)
     {
         nuint owner = HeapChunks.Owner(page);
