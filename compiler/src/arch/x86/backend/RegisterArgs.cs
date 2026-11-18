@@ -44,6 +44,9 @@ internal static class RegisterArgs
 
     public static string EntryName(string name) => name + EntrySuffix;
 
+    /// <summary>The local name a reverse stub calls its own body by (ReverseStub).</summary>
+    public static string StackBodyName(string name) => name + "$s";
+
     private static bool Managed(string name)
         => name.StartsWith("m_", StringComparison.Ordinal) || name.StartsWith("mx_", StringComparison.Ordinal);
 

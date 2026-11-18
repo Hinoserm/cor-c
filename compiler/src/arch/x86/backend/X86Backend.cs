@@ -537,7 +537,15 @@ public sealed class X86Backend : IBackend
                 (byte[] reverse, int at) = RegisterArgs.ReverseStub(pushed);
                 int reverseStart = text.Bytes.Count;
                 text.Bytes.AddRange(reverse);
-                text.Relocs.Add(new Relocation(reverseStart + at, f.Name, -4, RelocKind.Rel32));
+                // CALLED BY A NAME OF THIS OBJECT'S OWN, local: copies of one
+                // function in two units may have one this form and the other
+                // the forward stub (an asm block inlined into one of them),
+                // and the link keeps each name from whichever copy it keeps --
+                // through the function's own name, this stub could reach the
+                // other copy's forward stub, which jumps back here.
+                string own = RegisterArgs.StackBodyName(f.Name);
+                obj.Symbols.Add(new Symbol { Name = own, Section = text, Offset = start, Size = size, IsFunction = true, Global = false });
+                text.Relocs.Add(new Relocation(reverseStart + at, own, -4, RelocKind.Rel32));
                 obj.Symbols.Add(new Symbol
                 {
                     Name = RegisterArgs.EntryName(f.Name), Section = text, Offset = reverseStart, Size = reverse.Length, IsFunction = true, Global = f.Exported,
