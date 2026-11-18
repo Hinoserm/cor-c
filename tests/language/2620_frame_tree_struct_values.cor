@@ -13,6 +13,7 @@
 // nullable 5 none
 // step 10 30 60
 // slot 6 7
+// sections 0 10 2 30 pair 3 4 own 5 7
 //
 // A struct holding another by pointer -- one whose struct field is not
 // held in line (a nullable inside it) -- is a value: every copy of it has
@@ -23,6 +24,7 @@
 // written over.
 
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
 struct Inner { public int? N; public int K; }
@@ -123,6 +125,46 @@ static class Program
         twice.X = 3; twice.Y = 4;
         twice = Step(twice, 3);
         Console.WriteLine("slot " + (twice.X - 1) + " " + (twice.Y + 1));
+
+        // A section's local named in a later section is that section's own
+        // each time it is entered: a closure made on one lap keeps that
+        // lap's; a deconstruction assigns to it; and two sections may each
+        // declare one of a name.
+        List<Func<int>> made = new();
+        int pairA = 0, pairB = 0, own = 0, other = 0;
+        for (int n = 0; n < 4; n++)
+        {
+            switch (n % 2)
+            {
+                case 0:
+                    int held = n;
+                    int left = 0, right = 0;
+                    made.Add(() => held);
+                    pairA += left + right;
+                    break;
+                case 1:
+                    held = n * 10;
+                    made.Add(() => held);
+                    (left, right) = (n, n + 1);
+                    pairA = left;
+                    pairB = right;
+                    break;
+            }
+            switch (n)
+            {
+                case 0:
+                    int mine = 5;
+                    own = mine;
+                    break;
+                case 3:
+                    int yours = 7;
+                    other = yours;
+                    break;
+            }
+        }
+        string closures = "";
+        foreach (Func<int> f in made) closures += " " + f();
+        Console.WriteLine("sections" + closures + " pair " + pairA + " " + pairB + " own " + own + " " + other);
         return 0;
     }
 }

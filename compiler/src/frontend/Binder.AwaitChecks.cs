@@ -2015,6 +2015,13 @@ public sealed partial class Binder
                 break;
             case DeconstructStmt ds:
                 if (_r.Lowered.TryGetValue(ds, out Stmt? low2)) into.Add(low2);
+                else
+                {
+                    // Not bound yet (a walk for the names a body mentions,
+                    // Binder's sectionLocals): what it assigns to and from.
+                    foreach (Binding b in ds.Names) if (b.Target is not null) into.Add(b.Target);
+                    into.Add(ds.Value);
+                }
                 break;
             case ReturnStmt r: if (r.Value is not null) into.Add(r.Value); break;
             case YieldStmt y: if (y.Value is not null) into.Add(y.Value); break;

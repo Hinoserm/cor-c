@@ -108,7 +108,10 @@ public static class IrFunctionCodec
     /// record without where its source was -- no file, no lines, no display
     /// name -- which is the same for one body wherever its file is kept and
     /// whatever was written above it (KernelAssumptions.Identity); never a
-    /// record to compile from.
+    /// record to compile from. (What the body itself holds of its place is
+    /// still in it: a caller's line or file handed to a [CallerLineNumber]
+    /// parameter, a name its unit numbered -- such a body is another body
+    /// when those change.)
     /// </summary>
     public static byte[] Write(Function function, IReadOnlySet<Instr>? kept = null, bool placeless = false)
     {

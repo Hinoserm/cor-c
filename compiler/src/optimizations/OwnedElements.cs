@@ -2961,12 +2961,12 @@ public sealed partial class Escape
         int value = OwnedElements.RoleOf("List", add.Callee!).Adds;
         if (add.Operands[value] is RegOperand v && derived.Contains(v.Reg)) return true;
         (FrameSlot? slot, HashSet<VReg>? block) = HolderOf(g, defs, add.Operands[value]);
-        if (slot is null && block is null) { OwnedElements.Say(g, $"a stash's add is handed no frame memory: {add}"); return false; }
+        if (slot is null && block is null) { if (OwnedElements.Trace is not null) OwnedElements.Say(g, $"a stash's add is handed no frame memory: {add}"); return false; }
         foreach (Block b in g.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Store && i.Operands.Count >= 2 && i.Operands[1] is RegOperand s && derived.Contains(s.Reg) && Addresses(defs, i.Operands[0], slot, block))
                     return true;
-        OwnedElements.Say(g, $"a stash's add is handed memory no element was stored into: {add}");
+        if (OwnedElements.Trace is not null) OwnedElements.Say(g, $"a stash's add is handed memory no element was stored into: {add}");
         return false;
     }
 
@@ -3046,7 +3046,7 @@ public sealed partial class Escape
         HashSet<VReg> addresses = new();
         if (call.Operands.Count != 3) return null;
         var first = HolderOf(g, defs, call.Operands[2]);
-        if (first.Slot is null && first.Block is null) { OwnedElements.Say(g, $"a tuple read's out operand is no frame memory: {call}"); return null; }
+        if (first.Slot is null && first.Block is null) { if (OwnedElements.Trace is not null) OwnedElements.Say(g, $"a tuple read's out operand is no frame memory: {call}"); return null; }
         holders.Add(first);
         if (call.Dest is not null) addresses.Add(call.Dest);
         bool Held(Operand o) => o is RegOperand { Reg: var r } && addresses.Contains(r) || holders.Any(h => Addresses(defs, o, h.Slot, h.Block));
@@ -3060,7 +3060,7 @@ public sealed partial class Escape
                     if (i.Op == Opcode.MemCopy && i.Operands.Count == 3 && Held(i.Operands[1]) && !Held(i.Operands[0]))
                     {
                         var to = HolderOf(g, defs, i.Operands[0]);
-                        if (to.Slot is null && to.Block is null) { OwnedElements.Say(g, $"a tuple read out is copied to no frame memory: {i}"); return null; }
+                        if (to.Slot is null && to.Block is null) { if (OwnedElements.Trace is not null) OwnedElements.Say(g, $"a tuple read out is copied to no frame memory: {i}"); return null; }
                         holders.Add(to);
                         grew = true;
                     }
@@ -3078,7 +3078,7 @@ public sealed partial class Escape
                     if (i.Op == Opcode.MemCopy && k <= 1) continue;
                     if (k == 0 && i.Op is Opcode.Store or Opcode.MemSet) continue;
                     if (i.Op == Opcode.Call && (IsCollectorNote(i.Callee) || Escape.IsPlainUse(i.Callee))) continue;
-                    OwnedElements.Say(g, $"a tuple read out is used otherwise: {i}");
+                    if (OwnedElements.Trace is not null) OwnedElements.Say(g, $"a tuple read out is used otherwise: {i}");
                     return null;
                 }
         return loads;

@@ -8463,7 +8463,10 @@ public sealed partial class Binder
                         foreach ((string name, Type type) in sectionLocals)
                         {
                             if (!named.Contains(name) || _scopes[^1].ContainsKey(name)) continue;
-                            Declare(c.Body[0], name, new LocalSym(NewSlot(), type, name));
+                            LocalSym again = new(NewSlot(), type, name);
+                            Declare(c.Body[0], name, again);
+                            if (!_r.SectionLocals.TryGetValue(c, out List<LocalSym>? made)) _r.SectionLocals[c] = made = new();
+                            made.Add(again);
                         }
                     }
 

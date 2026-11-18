@@ -819,6 +819,12 @@ public sealed partial class Lowering
             _loops.Add(_loops.Count > 0
                 ? (end, _loops[^1].Continue, _openHandlers.Count, _loops[^1].Continues)
                 : (end, end, _openHandlers.Count, _openHandlers.Count));
+            // The section's locals of an earlier section's name that a closure
+            // holds: a cell of their own each time the section is entered,
+            // as a declared local's is at its declaration.
+            if (_b.SectionLocals.TryGetValue(sw.Cases[i], out List<LocalSym>? sectionLocals))
+                foreach (LocalSym local in sectionLocals)
+                    if (local.Boxed && _symCells.TryGetValue(local, out VReg? cell) && cell is not null) FreshCell(sw.Cases[i].Body[0], local, cell);
             foreach (Stmt body in sw.Cases[i].Body)
             {
                 EmitStmt(body);

@@ -335,6 +335,13 @@ public sealed partial class BindResult
     /// </summary>
     public Dictionary<Node, LocalSym> PatternSym { get; } = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>
+    /// A switch section's locals of an earlier section's name, which no
+    /// statement of its own declares (the binder's sectionLocals): made new
+    /// each time the section is entered, where a closure holds one.
+    /// </summary>
+    public Dictionary<SwitchCase, List<LocalSym>> SectionLocals { get; } = new(ReferenceEqualityComparer.Instance);
+
     /// Arms whose pattern needs a runtime type test. An arm matching a value
     /// type always matches -- it is there to give the subject a name for a
     /// guard to use -- and there is no header on a long to test.
