@@ -2138,7 +2138,19 @@ public sealed partial class Lowering
                 _e.SetBlock(make);
                 VReg zero = NewStruct(at, StructOf(f.Type));
                 VReg old = _e.Reg(IrTypes.Word);
+                // THE CARD OF THE WORD THE BLOCK GOES INTO, as every store of
+                // a reference takes it (CardMarkAt): a minor collection reads
+                // only the statics whose cards are set (Gc.ScanStatics), and
+                // a block put here with none was the static's alone and
+                // swept at the next one -- the value then written into the
+                // static, in place, went over whatever had the block since
+                // (VirtualTargets._last, a nullable tuple: the compiler's
+                // own link died in the collector, one run in two). No
+                // barrier: the word held null, and the block is new.
+                Operand into = cell is null ? new SymOperand(StaticSymbol(store)) : R(cell);
+                if (CardMarkBefore) CardMarkAt(into, 0);
                 EmitAtomic(Opcode.AtomicCas, old, R(at2), R(_e.Const(0, IrTypes.Word)), R(zero));
+                CardMarkAt(into, 0);
                 _e.Jump(made);
                 _e.SetBlock(made);
             }
