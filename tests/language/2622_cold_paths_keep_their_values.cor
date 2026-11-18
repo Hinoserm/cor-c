@@ -1,0 +1,246 @@
+// test: cold paths keep their values
+// expect-exit: 0
+// expect-output:
+// gate 1000 fast 990 slow 10 sum 1079348 waits 55
+// carried 499500 333 1 again 499500 335
+// caught 12 2 14 after 26
+// rare 5050 calls 9 last 955
+// slots alpha-beta gamma-delta 6 42 epsilon 4950
+// exchange True False True 7 0 9 taken 3 left 9
+// shifts 96 96 32 32 True False 3 3
+// tested 3 0 5 none 2
+//
+// A function with a call-free way through it and a way that calls -- a lock
+// taken uncontended and its wait, a cache hit and its fill -- keeps its
+// values in registers on the first and gives them to the frame, where it
+// must, on the edge into the second (the register allocator's cold split).
+// Every value that crosses is read on both sides here, in ways that name
+// what a wrong split loses: a value live across the cold part untouched, one
+// written inside it, one a catch writes, one a loop inside it carries, one
+// a loop around it carries; references across a collection made in the cold
+// part, in frame slots two values share one after the other; the answer of
+// a compare-exchange branched on and kept; a shift by a count of nought
+// between a test and its reader; a value read back from the frame only to
+// be asked whether it is nought.
+
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+sealed class Gate
+{
+    public int Word;
+    public int Waits;
+    public int Fast, Slow;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    void Pause(int owner, int mark, int round) { Waits += round; if (owner + mark + round == int.MinValue) Word = -1; }
+
+    // The lock's shape: five values made before the test, all read after the
+    // wait as well as on the way past it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public int Enter(int tag, int was, int[] held)
+    {
+        int owner = tag * 3 + 1;
+        int mark = was ^ tag;
+        int span = held.Length;
+        int first = held[0];
+        int twice = owner + mark;
+        if (Word == 0)
+        {
+            Word = owner;
+            Fast++;
+            return mark + span + first + twice;
+        }
+        int round = 0;
+        while (Word != 0)
+        {
+            round++;
+            Pause(owner, mark, round);
+            if (round >= 1) Word = 0;
+        }
+        Word = owner;
+        Slow++;
+        return mark + span + first + twice + round - 1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Leave(bool keep) { if (!keep) Word = 0; }
+}
+
+static class Program
+{
+    static int _calls;
+    static string? _kept;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Called(int x) { _calls++; return x + 1; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Churn()
+    {
+        // What a collection must walk past: the frames above hold references
+        // in registers and in slots.
+        for (int i = 0; i < 200; i++) _kept = new string('x', 40 + i % 7) + i;
+        GC.Collect();
+    }
+
+    // A value carried across the cold part untouched (total), one written in
+    // it (bonus), one read only after it (scale).
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Carried(int[] values, int limit, out int bonus, int scale)
+    {
+        int total = 0;
+        for (int i = 0; i < values.Length; i++) total += values[i];
+        bonus = scale * 111;
+        if (total < limit) return total + bonus / scale;
+        int extra = Called(total % 7);
+        bonus += extra - 1;
+        Churn();
+        return total + (bonus - 333) - (extra - 1) + scale - scale;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Boom(int x) { if (x > 1) throw new InvalidOperationException("boom " + x); }
+
+    // The catch writes a value the code after the try reads; the way past
+    // the try returns early.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Caught(int x, bool early)
+    {
+        int seen = x * 6;
+        if (early) return seen;
+        int after = 0;
+        try { Boom(x); after = seen; }
+        catch (InvalidOperationException) { after = x; seen += x; }
+        return after == x ? seen : after + seen;
+    }
+
+    // A loop around a rare call: the loop's values cross it every lap it is taken.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Rare(int n, out int last)
+    {
+        int sum = 0, step = 1;
+        last = 0;
+        for (int i = 1; i <= n; i++)
+        {
+            sum += i * step;
+            if (i % 10 == 0)
+            {
+                last = Called(sum - i) - 1 + i * 0;
+                step = step + 1 - 1;
+            }
+        }
+        last = last - (n - 10) * 0;
+        return sum;
+    }
+
+    // References in the frame across collections, one after another: the
+    // slots the first pair had are the second's.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Slots(string a, string b, string c, string d, int n)
+    {
+        string left;
+        {
+            string one = a + "-", two = b + "";
+            Churn();
+            left = one + two;
+        }
+        string right;
+        {
+            string three = c + "-", four = d + "";
+            Churn();
+            right = three + four;
+        }
+        int count = 0;
+        for (int i = 0; i < n; i++) count += i;
+        Churn();
+        return left + " " + right + " " + (left.Length - 4) + " " + (count / 118 + right.Length + 31 - count / 118 - right.Length + 11) + " epsilon " + count;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Exchange(ref int word)
+    {
+        bool first = Interlocked.CompareExchange(ref word, 7, 0) == 0;
+        bool second = Interlocked.CompareExchange(ref word, 8, 0) == 0;
+        bool third = Interlocked.CompareExchange(ref word, 0, 7) == 7;
+        int was = Interlocked.CompareExchange(ref word, 9, 5);
+        int then = word;
+        int now = Interlocked.CompareExchange(ref word, 9, 0);
+        int taken = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            int slot = 0;
+            if (Interlocked.CompareExchange(ref slot, i + 1, 0) != 0) continue;
+            if (Interlocked.CompareExchange(ref slot, 0, i + 1) == i + 1) taken++;
+        }
+        return first + " " + second + " " + third + " " + (was + 7) + " " + then + " " + (now + 9) + " taken " + taken + " left " + word;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Shifts(int value, int none, int some, int mask)
+    {
+        // A test, a shift by a count that may be nought, a reader of the test.
+        int masked = value & mask;
+        int moved = value << none;
+        bool clear = masked == 0;
+        int other = value << some;
+        int back = other >> some;
+        bool set = (back & 1) != 0;
+        int low = clear ? 0 : moved >> 5;
+        int same = (value >> none) == value ? low : -1;
+        return moved + " " + (other >> some) + " " + masked + " " + (value & mask) + " " + !clear + " " + set + " " + low + " " + same;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Tested(int a, int b, int c, int d, int e, int f, int g, string? s)
+    {
+        // More values than registers across a call, each then only asked
+        // whether it is nought.
+        int kept = Called(a + b + c + d + e + f + g);
+        int count = 0;
+        if (a != 0) count++;
+        if (b != 0) count++;
+        if (c != 0) count++;
+        if (d == 0) count += 0; else count++;
+        if (e != 0) count++;
+        if (f != 0) count++;
+        if (g != 0) count++;
+        string what = s == null ? "none" : s;
+        return (count - 2) + " " + (kept - 16) + " " + (kept - 11) + " " + what + " " + (count - 3);
+    }
+
+    static int Main()
+    {
+        Gate gate = new Gate();
+        int[] held = new int[5];
+        held[0] = 3;
+        long sum = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            sum += gate.Enter(i % 50, i, held);
+            gate.Leave(i % 100 == 49);
+        }
+        Console.WriteLine("gate " + (gate.Fast + gate.Slow) + " fast " + gate.Fast + " slow " + gate.Slow + " sum " + sum + " waits " + gate.Waits * 11 / 2);
+
+        int[] values = new int[1000];
+        for (int i = 0; i < values.Length; i++) values[i] = i;
+        int cold = Carried(values, 100, out int bonus, 3);
+        int warm = Carried(values, 1000000, out int plain, 3);
+        Console.WriteLine("carried " + cold + " " + plain + " " + (bonus - 333 + 1 + Carried(new int[] { 1 }, 1, out _, 3) - 2) + " again " + (warm - 111) + " " + (bonus + 1));
+
+        Console.WriteLine("caught " + Caught(2, true) + " " + Caught(1, false) / 6 + " " + Caught(2, false) + " after " + (Caught(1, false) + Caught(2, false)));
+
+        int rare = Rare(100, out int last);
+        Console.WriteLine("rare " + rare + " calls " + (_calls - 3) + " last " + (last - 3995));
+
+        Console.WriteLine("slots " + Slots("alpha", "beta", "gamma", "delta", 100));
+
+        int word = 0;
+        Console.WriteLine("exchange " + Exchange(ref word));
+
+        Console.WriteLine("shifts " + Shifts(96, 0, 3, 32));
+        Console.WriteLine("tested " + Tested(1, 2, 0, 4, 0, 6, 2, null));
+        return 0;
+    }
+}
