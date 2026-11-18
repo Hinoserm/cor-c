@@ -159,6 +159,9 @@ public static class IrLinkOptimizer
                     .Where(unit => unit.Item2 is not null).Select(unit => (unit.Object, unit.Item2!)).ToList()) : null,
                 Preinit.LastEdges) : null;
         LinkTimings.Phase("reachability");
+        // The data the walk reached, by name (Preinit.Folded's words are of these).
+        HashSet<string>? reachedData = reachability is null ? null
+            : reachability.Values.SelectMany(keys => keys).Where(key => key.Kind == IrKey.Data).Select(key => key.Name).ToHashSet(StringComparer.Ordinal);
         // ONLY THE TYPES THE IMAGE MAKES (VirtualTargets.Made): a virtual
         // call's targets on a type nothing stamps an object with run on no
         // object, and drop out of every answer the link gives by dispatch --
@@ -517,6 +520,14 @@ public static class IrLinkOptimizer
                 foreach (var import in plan.Imports)
                     foreach (string reference in import.Body.References)
                         if (completed.Contains(IrArchiveEntry.Named(reference))) named.Add(IrArchiveEntry.Named(reference));
+                // AND ONLY THOSE THE WALK REACHED: a tiny body imported here
+                // may name a word no kept code of the image reaches (a getter
+                // of Thread's brought into a unit that never makes a thread).
+                // Folded, its type was laid down (Preinit.Folded) with the
+                // descriptors its statics name, which the walk had pruned --
+                // undefined at the link (the compiler's own build). Unreached,
+                // its guard is read as it always was.
+                if (reachedData is not null) named.RemoveWhere(word => !reachedData.Contains(word));
                 if (named.Count > 0)
                 {
                     facts.CompletedReady = named;
