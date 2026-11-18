@@ -1,0 +1,47 @@
+// test: a static struct's first block takes its card
+// expect-exit: 0
+// expect-output:
+// empty True whole True bad 0
+//
+// A static of a struct type held by pointer -- a nullable tuple with
+// references in it -- has its first block made the first time anything
+// touches it and put in place with a compare-and-swap (Lowering.PlaceOfField).
+// The static's word is then an old root pointing at a young block: its card
+// is set there as at every store of a reference, or a minor collection,
+// which reads only the statics whose cards are set, sweeps the block from
+// under it -- and the value written into the static next, in place, goes
+// over whatever has the block since. Here: the first touch, minor
+// collections, the value written, blocks of the same size made and kept,
+// and every one of them read back whole. (2628_static_struct_block_card.sh
+// reads the code for the mark itself: in a program this small another
+// static's store may set the same card.)
+
+using System;
+using System.Collections.Generic;
+
+sealed class Pair { public object? A; public object? B; }
+
+static class Holder
+{
+    public static (List<string> Inputs, int Count, object Index)? Last;
+}
+
+static class Program
+{
+    static int Main()
+    {
+        List<string> inputs = new() { "a", "b", "c" };
+        object index = new object();
+        List<Pair> kept = new();
+        bool empty = Holder.Last is null;
+        for (int i = 0; i < 2000000; i++) { Pair p = new Pair(); if ((i & 4095) == 0) kept.Add(p); }
+        Holder.Last = (inputs, inputs.Count, index);
+        for (int i = 0; i < 2000000; i++) { Pair p = new Pair(); p.A = kept; if ((i & 255) == 0) kept.Add(p); }
+        int bad = 0;
+        foreach (Pair p in kept) if (p.GetType() != typeof(Pair) || (p.A != null && !ReferenceEquals(p.A, kept))) bad++;
+        var last = Holder.Last;
+        bool whole = last is { } l && ReferenceEquals(l.Inputs, inputs) && l.Count == 3 && ReferenceEquals(l.Index, index);
+        Console.WriteLine("empty " + empty + " whole " + whole + " bad " + bad);
+        return 0;
+    }
+}
