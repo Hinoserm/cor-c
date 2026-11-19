@@ -1507,16 +1507,11 @@ public static class Driver
                         Switches.ReportPhases ? Console.Error.WriteLine : null) is { } argumentFacts)
                 {
                     List<string> misfits = new();
+                    Corsac.Lang.Opt.ArgumentSummary.MakeVersions(module, argumentFacts);
                     bool given = Corsac.Lang.Opt.ArgumentSummary.Apply(module, argumentFacts, misfits);
                     if (misfits.Count > 0) throw new InvalidOperationException(string.Join("; ", misfits));
                     // What a number in a parameter's place folds, folded.
-                    if (given)
-                    {
-                        Corsac.Lang.Opt.Pipeline folding = new() { Rounds = 3, Workers = workers };
-                        folding.Passes.Add(new Corsac.Lang.Opt.ConstantFold { AcrossFunction = true }); folding.Passes.Add(new Corsac.Lang.Opt.ConstantAndCopyPropagation());
-                        folding.Passes.Add(new Corsac.Lang.Opt.DeadCodeElimination()); folding.Passes.Add(new Corsac.Lang.Opt.IdentitySelect()); folding.Passes.Add(new Corsac.Lang.Opt.BranchSimplify());
-                        folding.Run(module);
-                    }
+                    if (given) Corsac.Lang.Opt.ArgumentSummary.Folding(workers).Run(module);
                 }
                 Phase("arguments");
             }

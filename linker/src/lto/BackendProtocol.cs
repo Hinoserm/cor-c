@@ -126,6 +126,17 @@ public static class BackendProtocol
                 writer.Write(arguments.DroppedSlots.Count);
                 foreach ((string slot, int[] gone) in arguments.DroppedSlots)
                 { WriteText(writer, slot); writer.Write(gone.Length); foreach (int k in gone) writer.Write(k); }
+                // The versions: by function, each one's name and what it has inside it.
+                writer.Write(arguments.Versions.Count);
+                foreach ((string name, ArgumentVersion[] versions) in arguments.Versions)
+                {
+                    WriteText(writer, name); writer.Write(versions.Length);
+                    foreach (ArgumentVersion version in versions)
+                    {
+                        WriteText(writer, version.Name); writer.Write(version.Bound.Length);
+                        foreach (ArgumentDrop one in version.Bound) { writer.Write(one.Parameter); writer.Write(one.Value.Number); }
+                    }
+                }
                 // The ways in: by function, each parameter set and its number.
                 writer.Write(arguments.Entries.Count);
                 foreach ((string name, ArgumentDrop[] given) in arguments.Entries)
@@ -356,6 +367,28 @@ public static class BackendProtocol
                         if (gone[k] < 1 || k > 0 && gone[k] <= gone[k - 1]) throw new InvalidDataException("Invalid backend argument fact");
                     }
                     if (!arguments.DroppedSlots.TryAdd(slot, gone)) throw new InvalidDataException("Duplicate backend argument fact");
+                }
+                int versioned = reader.ReadInt32();
+                if (versioned < 0 || versioned > 4000000) throw new InvalidDataException("Invalid backend argument fact");
+                for (int i = 0; i < versioned; i++)
+                {
+                    string name = ReadText(reader); int entries = reader.ReadInt32();
+                    if (entries < 1 || entries > 16) throw new InvalidDataException("Invalid backend argument fact");
+                    ArgumentVersion[] versions = new ArgumentVersion[entries];
+                    for (int v = 0; v < entries; v++)
+                    {
+                        string version = ReadText(reader); int bound = reader.ReadInt32();
+                        if (bound < 1 || bound > 30) throw new InvalidDataException("Invalid backend argument fact");
+                        ArgumentDrop[] inside = new ArgumentDrop[bound];
+                        for (int k = 0; k < bound; k++)
+                        {
+                            int parameter = reader.ReadInt32(); long number = reader.ReadInt64();
+                            if (parameter < 0 || k > 0 && parameter <= inside[k - 1].Parameter) throw new InvalidDataException("Invalid backend argument fact");
+                            inside[k] = new(parameter, ArgumentValue.Of(number));
+                        }
+                        versions[v] = new(version, inside);
+                    }
+                    if (!arguments.Versions.TryAdd(name, versions)) throw new InvalidDataException("Duplicate backend argument fact");
                 }
                 int ways = reader.ReadInt32();
                 if (ways < 0 || ways > 4000000) throw new InvalidDataException("Invalid backend argument fact");

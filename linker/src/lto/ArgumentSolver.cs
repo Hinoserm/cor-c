@@ -34,7 +34,20 @@ public sealed class ArgumentFacts
     /// </summary>
     public SortedDictionary<string, ArgumentDrop[]> Entries { get; } = new(StringComparer.Ordinal);
 
-    public bool IsEmpty => Dropped.Count == 0 && DroppedSlots.Count == 0 && Entries.Count == 0;
+    /// <summary>
+    /// Per function, the versions of it the link asked for: each the
+    /// function with some parameters given their numbers and gone, under a
+    /// name of its own, made once by the unit that defines the function
+    /// (ArgumentSummary.MakeVersions) and called by every call by name that
+    /// passes exactly those numbers there. Places as Entries has them.
+    /// </summary>
+    public SortedDictionary<string, ArgumentVersion[]> Versions { get; } = new(StringComparer.Ordinal);
+
+    public bool IsEmpty => Dropped.Count == 0 && DroppedSlots.Count == 0 && Entries.Count == 0 && Versions.Count == 0;
+
+    /// <summary>The name of a version of `function`: its place among the function's versions.</summary>
+    public static string VersionName(string function, int ordinal)
+        => function + "$with$" + ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>What ends the name of a function's way in with arguments: then the parameters it sets, a bit each, in hex.</summary>
     public const string EntryMark = "$entry$";
@@ -59,6 +72,9 @@ public sealed class ArgumentFacts
 
 /// <summary>A parameter removed, and what it was at every call: a value to put in its place, or Unknown where the function never read it.</summary>
 public readonly record struct ArgumentDrop(int Parameter, ArgumentValue Value);
+
+/// <summary>A version of a function: its name, and the parameters it has no more with the number each is inside it, ascending.</summary>
+public readonly record struct ArgumentVersion(string Name, ArgumentDrop[] Bound);
 
 /// <summary>
 /// THE WHOLE PROGRAM'S ARGUMENTS, judged over every unit's hints together
@@ -377,6 +393,57 @@ public static class ArgumentSolver
             facts.Entries[name] = best.Select(pair => new ArgumentDrop(pair.Place, ArgumentValue.Of(pair.Value))).ToArray();
             entrySites += bestSites;
         }
+        // A VERSION FOR A NUMBER THAT DECIDES A BRANCH (ArgumentFacts.Versions;
+        // Cooper, Hall and Kennedy's cloning, as GCC's IPA-CP and LLVM's
+        // function specialiser do it): where calls by name pass a parameter
+        // the function branches on the same number, a copy of the function
+        // with that number inside it -- the branch decided, a way of it gone
+        // -- for those calls, which pass it no more. With no profile to say
+        // what is hot, and a processor whose cache is eight kilobytes among
+        // those this is for, a version is made only where it costs no bytes
+        // -- what its calls stop loading is at least what it is, counted as
+        // the function without what read the parameter -- or where one of
+        // those calls stands in a loop and the function is short. At most
+        // two a function, and all of them together no more than one part in
+        // two hundred of what the units hold.
+        const int ShortBody = 48, BytesAnInstruction = 3;
+        long allowed = Math.Max(64, functions.Values.Sum(f => (long)f.Size) / 200), grown = 0;
+        int versionSites = 0;
+        foreach (string name in functions.Keys)
+        {
+            ArgumentFunction f = functions[name];
+            if (f.Fixed || f.Copies || f.Recursive || disagreed.Contains(name) || misfit.Contains(name) || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
+            HashSet<int> gone = new(facts.Dropped.GetValueOrDefault(name)?.Select(drop => drop.Parameter) ?? Enumerable.Empty<int>());
+            List<(int Place, long Value, long Weight, int Sites, int Cost)> wanted = new();
+            int left = 0;
+            for (int k = 0; k < f.Kinds.Length; k++)
+            {
+                if (gone.Contains(k)) continue;
+                int place = left++;
+                if (f.Shapes[k] != ArgumentShape.Compared || f.Kinds[k] == ArgumentKind.Float) continue;
+                foreach (IGrouping<long, ArgumentCall> same in sites.Where(call => call.Arguments[k].Kind == ArgumentValueKind.Constant)
+                    .GroupBy(call => call.Arguments[k].Number).OrderBy(group => group.Key))
+                {
+                    int count = same.Sum(call => call.Count);
+                    bool looped = same.Any(call => call.Depth > 0);
+                    long weight = same.Sum(call => (long)call.Count * (1 + 3 * call.Depth));
+                    int cost = Math.Max(1, f.Size - f.Folds[k]);
+                    bool free = (long)count * Bytes(same.Key) >= (long)cost * BytesAnInstruction;
+                    if (free || looped && f.Size <= ShortBody) wanted.Add((place, same.Key, weight, count, free ? 0 : cost));
+                }
+            }
+            if (wanted.Count == 0) continue;
+            List<ArgumentVersion> made = new();
+            foreach (var want in wanted.OrderByDescending(w => w.Weight).ThenBy(w => w.Place).ThenBy(w => w.Value).Take(2))
+            {
+                if (grown + want.Cost > allowed) continue;
+                grown += want.Cost;
+                versionSites += want.Sites;
+                made.Add(new(ArgumentFacts.VersionName(name, made.Count), new[] { new ArgumentDrop(want.Place, ArgumentValue.Of(want.Value)) }));
+            }
+            if (made.Count > 0) facts.Versions[name] = made.ToArray();
+        }
+
         static bool Before(List<(int Place, long Value)> a, List<(int Place, long Value)> b)
         {
             if (a.Count != b.Count) return a.Count < b.Count;
@@ -390,7 +457,8 @@ public static class ArgumentSolver
 
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants
             + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? "" : ", slots not known whole")
-            + "); " + facts.Entries.Count + " functions given a way in with their commonest numbers, for " + entrySites + " calls");
+            + "); " + facts.Entries.Count + " functions given a way in with their commonest numbers, for " + entrySites + " calls; "
+            + facts.Versions.Values.Sum(versions => versions.Length) + " versions of " + facts.Versions.Count + " functions for " + versionSites + " calls");
         return facts.IsEmpty ? null : facts;
     }
 }

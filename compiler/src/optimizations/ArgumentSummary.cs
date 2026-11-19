@@ -18,6 +18,9 @@ public static class ArgumentSummary
     /// <summary>What begins the label of a method that takes its arguments on the stack whatever they are ([StackArguments]).</summary>
     private const string StackArguments = "mc_";
 
+    /// <summary>A function of more instructions than this is asked nothing of versions: none is made of one so long.</summary>
+    public const int VersionBody = 96;
+
     public static ArgumentHints Of(Module m)
     {
         ArgumentHints hints = new();
@@ -74,8 +77,50 @@ public static class ArgumentSummary
             said.Size = size;
             // A parameter the function writes again is not the value it came
             // with for long: what a caller passed says nothing of its reads.
+            // One a branch is taken on -- itself, or what is compared or
+            // copied from it (Inline.ConstantControlsBranch's reach, one
+            // parameter at a time) -- is one whose number, known, takes a
+            // way of the function out: said with how many instructions
+            // read it or what follows from it.
             for (int k = 0; k < f.Params.Count; k++)
-                if (definitions.ContainsKey(f.Params[k].Id)) said.Shapes[k] = ArgumentShape.Written;
+            {
+                if (definitions.ContainsKey(f.Params[k].Id)) { said.Shapes[k] = ArgumentShape.Written; continue; }
+                if (said.Reads[k] == 0 || size > VersionBody) continue;
+                HashSet<int> follows = new() { f.Params[k].Id };
+                int folds = 0;
+                bool decides = false, more = true;
+                while (more)
+                {
+                    more = false;
+                    folds = 0;
+                    foreach (Block b in f.Blocks)
+                        foreach (Instr i in b.Instrs)
+                        {
+                            bool reads = false;
+                            foreach (Operand o in i.Operands) if (o is RegOperand r && follows.Contains(r.Reg.Id)) { reads = true; break; }
+                            if (!reads) continue;
+                            folds++;
+                            if (i.Op is Opcode.Branch or Opcode.Switch) decides = true;
+                            else if (i.Dest is { } made && i.Op is Opcode.Copy or Opcode.SExt32 or Opcode.ZExt32 or Opcode.Trunc64 or Opcode.Eq or Opcode.Ne
+                                or Opcode.LtS or Opcode.LeS or Opcode.GtS or Opcode.GeS or Opcode.LtU or Opcode.LeU or Opcode.GtU or Opcode.GeU
+                                && definitions.TryGetValue(made.Id, out var once) && once.Count == 1)
+                                more |= follows.Add(made.Id);
+                        }
+                }
+                said.Folds[k] = folds;
+                if (decides) said.Shapes[k] = ArgumentShape.Compared;
+            }
+            // How deep in loops each block lies, by the jumps back: a jump
+            // from a block to one laid out at or before it closes a loop
+            // over every block between, as the IR lays them. Up to 3.
+            Dictionary<Block, int> blockAt = new(ReferenceEqualityComparer.Instance);
+            for (int b = 0; b < f.Blocks.Count; b++) blockAt[f.Blocks[b]] = b;
+            byte[] depth = new byte[f.Blocks.Count];
+            for (int b = 0; b < f.Blocks.Count; b++)
+                foreach (Instr i in f.Blocks[b].Instrs)
+                    foreach (Block target in i.Targets)
+                        if (blockAt.TryGetValue(target, out int to) && to <= b)
+                            for (int inside = to; inside <= b; inside++) if (depth[inside] < 3) depth[inside]++;
 
             Dictionary<Instr, string[]>? slots = null;
             ArgumentValue Value(Operand o)
@@ -98,8 +143,8 @@ public static class ArgumentSummary
                         return default;
                 }
             }
-            foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
+            for (int at = 0; at < f.Blocks.Count; at++)
+                foreach (Instr i in f.Blocks[at].Instrs)
                 {
                     if (i.Op == Opcode.Call && i.Callee is { } callee)
                     {
@@ -107,7 +152,7 @@ public static class ArgumentSummary
                         if (callee == f.Name) said.Recursive = true;
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count];
                         for (int a = 0; a < arguments.Length; a++) arguments[a] = Value(i.Operands[a]);
-                        said.Calls.Add(new ArgumentCall(callee, 0, 1, arguments));
+                        said.Calls.Add(new ArgumentCall(callee, depth[at], 1, arguments));
                     }
                     else if (i.Op == Opcode.CallIndirect && !NativeCall.Is(i))
                     {
@@ -115,7 +160,7 @@ public static class ArgumentSummary
                         if (!slots.TryGetValue(i, out string[]? names) || names.Length == 0) { hints.Unnamed = true; continue; }
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count - 1];
                         for (int a = 0; a < arguments.Length; a++) arguments[a] = Value(i.Operands[a + 1]);
-                        foreach (string name in names) said.Calls.Add(new ArgumentCall(name, 0, 1, arguments));
+                        foreach (string name in names) said.Calls.Add(new ArgumentCall(name, depth[at], 1, arguments));
                     }
                 }
             // The same call twice is said once, with how often; in an order
@@ -130,13 +175,79 @@ public static class ArgumentSummary
         return hints;
 
         static string Key(ArgumentCall call)
-            => call.Callee + "(" + string.Join(",", call.Arguments.Select(a => a.Kind switch
+            => call.Callee + "@" + call.Depth + "(" + string.Join(",", call.Arguments.Select(a => a.Kind switch
             {
                 ArgumentValueKind.Constant => "#" + a.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ArgumentValueKind.Address => "&" + a.Symbol + "+" + a.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ArgumentValueKind.Parameter => "p" + a.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 _ => "?",
             })) + ")";
+    }
+
+    /// <summary>
+    /// THE VERSIONS THE LINK ASKED FOR, made by the unit that defines each
+    /// function (ArgumentFacts.Versions), before Apply and from the function
+    /// as it still is: a function of the parameters left once the version's
+    /// numbers and what Dropped takes are gone, whose whole body is a call
+    /// of the function with those numbers written in -- then the function
+    /// put in its place (Inline.Expand, as ConstantSpecialize makes its
+    /// own) and what the numbers fold folded. Exported as the function is,
+    /// so the calls of every unit find it.
+    /// </summary>
+    public static void MakeVersions(Module m, ArgumentFacts facts)
+    {
+        if (facts.Versions.Count == 0) return;
+        Pipeline folding = Folding(1);
+        int functions = m.Functions.Count;
+        for (int at = 0; at < functions; at++)
+        {
+            Function target = m.Functions[at];
+            if (!facts.Versions.TryGetValue(target.Name, out ArgumentVersion[]? versions) || target.Blocks.Count == 0) continue;
+            ArgumentDrop[] dropped = facts.Dropped.GetValueOrDefault(target.Name) ?? Array.Empty<ArgumentDrop>();
+            foreach (ArgumentVersion asked in versions)
+            {
+                Function version = new(asked.Name, target.Returns)
+                {
+                    Exported = target.Exported, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
+                    FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, SourcePath = target.SourcePath, InsideState = target.InsideState,
+                };
+                // The function's parameters in order: one the link took is
+                // its number (or nothing, never read: a zero); one of those
+                // left is the version's number where the version sets it,
+                // and the version's own parameter where it does not.
+                Operand[] arguments = new Operand[target.Params.Count];
+                int place = 0;
+                for (int k = 0; k < target.Params.Count; k++)
+                {
+                    VReg parameter = target.Params[k];
+                    int taken = Array.FindIndex(dropped, drop => drop.Parameter == k);
+                    if (taken >= 0) { arguments[k] = new ImmOperand(dropped[taken].Value.Kind == ArgumentValueKind.Constant ? dropped[taken].Value.Number : 0, parameter.Type); continue; }
+                    int set = Array.FindIndex(asked.Bound, one => one.Parameter == place);
+                    place++;
+                    if (set >= 0) { arguments[k] = new ImmOperand(asked.Bound[set].Value.Number, parameter.Type); continue; }
+                    VReg copy = version.NewReg(parameter.Type, parameter.Name);
+                    copy.Number = parameter.Number;
+                    version.Params.Add(copy);
+                    arguments[k] = RegOperand.Of(copy);
+                }
+                Block entry = version.NewBlock("entry");
+                Builder builder = new(version, entry);
+                VReg? result = builder.Call(target.Name, target.Returns, arguments);
+                builder.Ret(result is null ? null : RegOperand.Of(result));
+                Inline.Expand(version, entry, 0, entry.Instrs[0], target);
+                folding.Run(version);
+                m.Functions.Add(version);
+            }
+        }
+    }
+
+    /// <summary>The passes that fold what a number in a parameter's place lets them: constants and copies carried, branches decided, the dead gone.</summary>
+    public static Pipeline Folding(int workers)
+    {
+        Pipeline folding = new() { Rounds = 3, Workers = workers };
+        folding.Passes.Add(new ConstantFold { AcrossFunction = true }); folding.Passes.Add(new ConstantAndCopyPropagation());
+        folding.Passes.Add(new DeadCodeElimination()); folding.Passes.Add(new IdentitySelect()); folding.Passes.Add(new BranchSimplify());
+        return folding;
     }
 
     /// <summary>
@@ -199,6 +310,26 @@ public static class ArgumentSummary
                     {
                         if (gone[^1].Parameter >= i.Operands.Count) { errors.Add(Misfit(f, i, callee)); continue; }
                         for (int k = gone.Length - 1; k >= 0; k--) i.Operands.RemoveAt(gone[k].Parameter);
+                    }
+                    // A VERSION OF THE FUNCTION, where the call passes exactly
+                    // the numbers one has inside it (ArgumentFacts.Versions):
+                    // called in the function's place, those operands gone.
+                    if (i.Op == Opcode.Call && i.Callee is { } whole && facts.Versions.TryGetValue(whole, out ArgumentVersion[]? versions))
+                    {
+                        foreach (ArgumentVersion version in versions)
+                        {
+                            if (!version.Bound.All(one => one.Parameter < i.Operands.Count && i.Operands[one.Parameter] is ImmOperand { Type: IrType.I32 or IrType.I64 } passed
+                                && passed.Value == one.Value.Number)) continue;
+                            Instr instead = new()
+                            {
+                                Op = Opcode.Call, Dest = i.Dest, Callee = version.Name, Line = i.Line,
+                                Field = i.Field, RegionSite = i.RegionSite, DispatchType = i.DispatchType, Number = i.Number, Family = i.Family,
+                            };
+                            instead.Operands.AddRange(i.Operands);
+                            for (int k = version.Bound.Length - 1; k >= 0; k--) instead.Operands.RemoveAt(version.Bound[k].Parameter);
+                            b.Instrs[at] = i = instead;
+                            break;
+                        }
                     }
                     // BY ITS WAY IN, where the call passes exactly the numbers
                     // that sets (ArgumentFacts.Entries): the operands stay,

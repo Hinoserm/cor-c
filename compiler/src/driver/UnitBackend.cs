@@ -152,6 +152,9 @@ public sealed class UnitBackend : IUnitBackend
             else if (positionIndependent || moduleUnit)
                 PruneAfterLate(module, archive, original.Symbols.Where(symbol => symbol.IsDefined)
                     .SelectMany(symbol => new[] { IrKey.OfFunction(symbol.Name), IrKey.OfData(symbol.Name) }).ToHashSet());
+            // The versions the link asked this unit for (ArgumentFacts.
+            // Versions), from the functions as the passes above left them.
+            if (facts?.Arguments is { Versions.Count: > 0 } asked) ArgumentSummary.MakeVersions(module, asked);
             lateDone = Environment.TickCount64;
         }
         Corsac.Lang.Lto.LinkTimings.Memory("backend late passes");
