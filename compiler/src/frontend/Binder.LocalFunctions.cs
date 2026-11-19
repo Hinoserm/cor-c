@@ -104,6 +104,17 @@ public sealed partial class Binder
         for (int n = 0; n < placed.Length; n++)
         {
             if (placed[n] is not null) continue;
+            // A `params` TAIL NOT GIVEN is the empty array, as a method's is:
+            // `Function("a", 0, boundary: false)` with `params Site[] sites`
+            // after `boundary` -- with a name among the arguments nothing
+            // was packed above.
+            if (n == placed.Length - 1 && lambda.Params[n] is { IsParams: true, Default: null }
+                && Resolve(lambda.Params[n].Type, _thisType) is Type tail && ParamsElement(tail) is Type one && RefOf(one) is TypeRef oneRef)
+            {
+                placed[n] = Gathered(Enumerable.Empty<Expr>(), tail, oneRef, call);
+                order.Add(n);
+                continue;
+            }
             if (lambda.Params[n].Default is null)
             {
                 Error(call, $"missing argument '{lambda.Params[n].Name}' for local function '{declaration.Name}'");

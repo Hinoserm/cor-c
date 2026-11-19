@@ -1,0 +1,35 @@
+// test: a local function returning a nullable array, and one whose params tail is not given
+// expect-exit: 0
+// expect-output:
+// 3 True True
+// 5 True 9 True
+// 7 8 205 306
+//
+// Two things real C# takes and this compiler did not. A local function's
+// return type may end in any run of `?` and array brackets -- `Facts?[]?`,
+// a tuple's array, a two-dimensional array -- and the statement is still a
+// local function, not an expression. And a call that names an argument and
+// gives none for the `params` parameter passes the empty array, as a
+// method's call does. Output as .NET 10 prints it.
+
+using System;
+sealed class Facts { public int N; }
+static class Program
+{
+    static int Main()
+    {
+        Facts?[]? Solve(long slot, bool known, string? report = null)
+        {
+            if (!known) return null;
+            return new Facts?[] { new Facts { N = (int)slot }, null };
+        }
+        (int A, int B)[]? Pairs(int n) => n == 0 ? null : new (int A, int B)[] { (n, n + 1) };
+        int[,]? Grid(int n) => n == 0 ? null : new int[n, n];
+        int Function(string name, int a, int b, bool boundary = true, params int[] sites) => name.Length + a + b + (boundary ? 1 : 0) + sites.Length * 100;
+        Facts?[]? r = Solve(3, true);
+        Console.WriteLine(r![0]!.N + " " + (r[1] is null) + " " + (Solve(1, false) is null));
+        Console.WriteLine(Pairs(4)![0].B + " " + (Pairs(0) is null) + " " + Grid(3)!.Length + " " + (Grid(0) is null));
+        Console.WriteLine(Function("_start", 0, 1, boundary: false) + " " + Function("_start", 0, 1) + " " + Function("ab", 1, 2, false, 7, 8) + " " + Function("ab", 1, 2, boundary: true, sites: new[] { 1, 2, 3 }));
+        return 0;
+    }
+}

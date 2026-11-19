@@ -7849,6 +7849,25 @@ public sealed class Parser
         return yes ? j - was : 0;
     }
 
+    /// <summary>
+    /// Steps over what may follow a type's name in any number and order: `?`,
+    /// and an array's brackets with nothing in them but its commas --
+    /// `Facts?[]? Solve(long slot)` returns a nullable array of nullable
+    /// Facts. (Brackets with anything else in them are an index, no type's.)
+    /// </summary>
+    private void TypeSuffixes(ref int j)
+    {
+        while (j < _t.Count)
+        {
+            if (_t[j].Kind == Tok.Question) { j++; continue; }
+            if (_t[j].Kind != Tok.LBracket) return;
+            int k = j + 1;
+            while (k < _t.Count && _t[k].Kind == Tok.Comma) k++;
+            if (k >= _t.Count || _t[k].Kind != Tok.RBracket) return;
+            j = k + 1;
+        }
+    }
+
     private bool StartsLocalFunction()
     {
         // `ref int At(int[] xs, int i) => ref xs[i];` RETURNS A VARIABLE. The
@@ -7898,10 +7917,7 @@ public sealed class Parser
                 return false;
             }
 
-            if (j < _t.Count && _t[j].Kind == Tok.Question)
-            {
-                j++;
-            }
+            TypeSuffixes(ref j);
         }
         else
         {
@@ -7935,10 +7951,7 @@ public sealed class Parser
 
             // Nullable is part of the return type too: `Node? Find(...)` is a
             // local function, not a declaration followed by a stray call.
-            if (j < _t.Count && _t[j].Kind == Tok.Question)
-            {
-                j++;
-            }
+            TypeSuffixes(ref j);
         }
 
         // Then the name, its type parameters if it is generic, and the
