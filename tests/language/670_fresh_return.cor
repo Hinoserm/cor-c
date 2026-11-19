@@ -21,7 +21,9 @@
 // thousands of frees would have reused their memory. And `x = Grow(x)`
 // reads the old object inside the call that makes the new one, so the old
 // one may only be given back after the call. Up to the check, nothing
-// needs the collector: every object is freed by the compiler. The grow loop
+// needs the collector: every object is freed by the compiler -- by a free
+// of its own (Gc.Frees), or, where its function has a region, from the
+// region's top (Gc.RegionTopFrees): the two are counted together. The grow loop
 // after it is checked for its values: its result goes into a variable the
 // loop also assigns, which the owned-variables rule (674) takes over.
 
@@ -329,7 +331,7 @@ static class Program
 
     static int Main()
     {
-        long before = Gc.Frees;
+        long before = (Gc.Frees + Gc.RegionTopFrees);
         long collected = Gc.Collections;
 
         long sum = 0;
@@ -378,7 +380,7 @@ static class Program
         Sys.Print("boxes "); Sys.PrintInt(boxes); Sys.PrintLine();
 
         Sys.Print("freed ");
-        if (Gc.Frees - before >= 5900) Sys.Print("True"); else Sys.Print("False");
+        if ((Gc.Frees + Gc.RegionTopFrees) - before >= 5900) Sys.Print("True"); else Sys.Print("False");
         Sys.PrintLine();
         Sys.Print("collections "); Sys.PrintInt(Gc.Collections - collected); Sys.PrintLine();
 
