@@ -425,7 +425,7 @@ public sealed partial class Lowering
         // function under another label (the state machine's, BodyLabel).
         if (StackArguments(m) && (!m.Static || m.IsCtor))
             Error(decl, "[StackArguments] is for a static method: '" + m.Name + "' is called through its object");
-        else if (StackArguments(m) && (m.Async || ContextStatic(m)))
+        else if (StackArguments(m) && (m.Async || TakesContext(m)))
             Error(decl, "[StackArguments] is for a plain static method: '" + m.Name + "' is async, or a generic type's, and its body is not the function its address names");
 
         if (_moveNext.TryGetValue(m, out AsyncMethod? running))

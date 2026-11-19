@@ -66,8 +66,8 @@ move written 8B EC, so a fault in it finds its frame from the prologue's
 shape (Runtime.FrameAt) and the chain of callers above it is whole: a leaf
 is never anyone's caller.
 
-**Calling convention: GCC's `regparm(3)` for one to three words, cdecl for
-the rest,** the same for every call of the language's own ("Calls and
+**Calling convention: as GCC's `regparm(3)` for a function of one to three
+words, cdecl for any other,** the same for every call of the language's own ("Calls and
 dispatch" has the whole of it).
 
 - A function whose arguments are one to three machine words -- `bool`,
@@ -84,10 +84,12 @@ dispatch" has the whole of it).
 - The stack is 4-byte aligned at every call; 16-byte alignment is not
   required and not maintained. Nothing on a 486 wants it.
 
-Both halves are GCC's own on i386 (`-mregparm=3`, as Linux's kernel is
-built, and plain cdecl), so C compiled to match calls and is called without
-thunks, and gdb understands every frame. C compiled the ordinary way is met
-in cdecl where the code says so: `Sys.CallNative` and `[LibraryImport]` out,
+A function of one to three word arguments is called exactly as GCC's
+`regparm(3)` calls one (`-mregparm=3`, as Linux's kernel is built), and any
+other exactly as plain cdecl does -- not as regparm would, which puts the
+first three words of a longer list in registers too, and where a `long` or
+a `double` among them changes which. gdb understands every frame. C
+compiled the ordinary way is met in cdecl where the code says so: `Sys.CallNative` and `[LibraryImport]` out,
 `[UnmanagedCallersOnly]` and `[StackArguments]` in.
 
 **Sizes.** A machine word is 4 bytes. `long` and `ulong` are 8 bytes and

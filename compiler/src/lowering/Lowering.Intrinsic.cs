@@ -1108,8 +1108,9 @@ public sealed partial class Lowering
                 // WHERE THE METHOD IS NAMED RIGHT HERE (Sys.AddressOf as the
                 // first argument), one that would not find them is refused:
                 // marked [StackArguments], or of more than three parameters,
-                // or with one no word holds (a float, a 64-bit one on i386). Through a word kept
-                // elsewhere nothing can tell, and the rule is the caller's.
+                // or with one no word holds (a float, a 64-bit one on i386).
+                // Through a word kept elsewhere nothing can tell, and the
+                // rule is the caller's.
                 if (call.Args.Count > 0 && call.Args[0] is CallExpr taken && _b.AddressOf.TryGetValue(taken, out MethodSymbol? called))
                 {
                     if (StackArguments(called))
