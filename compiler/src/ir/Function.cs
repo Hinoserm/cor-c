@@ -106,6 +106,17 @@ public sealed class Function
     internal byte RegisterBody { get; set; }
 
     /// <summary>
+    /// A WAY IN THAT BRINGS ARGUMENTS WITH IT (the link's ArgumentFacts.
+    /// Entries, taken last: ArgumentSummary.Apply): under `Name`, laid down
+    /// just before the function, each parameter of `Given` set to its number
+    /// in the register it comes in and the function run on into -- for the
+    /// calls that pass exactly those numbers there, which then load none of
+    /// them. Null: none. Made after the IR's last pass and read by the
+    /// backend alone, so no copy of the function and no archive carries it.
+    /// </summary>
+    public (string Name, (int Parameter, long Value)[] Given)? ConstantEntry { get; set; }
+
+    /// <summary>
     /// The bytes of arguments the function takes off the stack itself as it
     /// returns: stdcall's rule, which COM's interfaces are called by on
     /// i386 -- `[UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]`,

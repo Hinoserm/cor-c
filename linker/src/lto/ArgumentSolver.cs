@@ -25,7 +25,36 @@ public sealed class ArgumentFacts
     /// </summary>
     public SortedDictionary<string, int[]> DroppedSlots { get; } = new(StringComparer.Ordinal);
 
-    public bool IsEmpty => Dropped.Count == 0 && DroppedSlots.Count == 0;
+    /// <summary>
+    /// Per function, the way in the link gave it for its commonest call
+    /// (Function.ConstantEntry): the parameters it sets, ascending, each
+    /// with its number. Indexed as the function's parameters are AFTER
+    /// what Dropped took from it. A call by name that passes exactly those
+    /// numbers there goes in by it and loads none of them.
+    /// </summary>
+    public SortedDictionary<string, ArgumentDrop[]> Entries { get; } = new(StringComparer.Ordinal);
+
+    public bool IsEmpty => Dropped.Count == 0 && DroppedSlots.Count == 0 && Entries.Count == 0;
+
+    /// <summary>What ends the name of a function's way in with arguments: then the parameters it sets, a bit each, in hex.</summary>
+    public const string EntryMark = "$entry$";
+
+    /// <summary>The name of the way in to `function` that sets the parameters of `given`.</summary>
+    public static string EntryName(string function, IEnumerable<int> given)
+    {
+        int mask = 0;
+        foreach (int parameter in given) mask |= 1 << parameter;
+        return function + EntryMark + mask.ToString("x", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>The arguments a call by this name finds set already, a bit each by its place, or 0: the name of no such way in.</summary>
+    public static int EntryGiven(string callee)
+    {
+        int at = callee.LastIndexOf(EntryMark, StringComparison.Ordinal);
+        if (at < 0) return 0;
+        ReadOnlySpan<char> digits = callee.AsSpan(at + EntryMark.Length);
+        return digits.Length is > 0 and <= 2 && int.TryParse(digits, System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out int mask) ? mask : 0;
+    }
 }
 
 /// <summary>A parameter removed, and what it was at every call: a value to put in its place, or Unknown where the function never read it.</summary>
@@ -272,8 +301,96 @@ public static class ArgumentSolver
             if (bySlot) viaSlots += drops.Length;
         }
 
+        // A WAY IN FOR THE COMMONEST CALL (ArgumentFacts.Entries): of the
+        // parameters left that come in registers -- the first three words,
+        // as the backend has them -- the numbers the most calls by name
+        // agree on, set once in front of the function where each of those
+        // calls set them itself. Free where it runs on into the function
+        // (no jump, no instruction more than the calls had), and a load
+        // fewer at every call that uses it: five bytes a number, two a
+        // zero. One a function, where it saves more bytes than it is. Not
+        // beside a function other units define too (each would make one).
+        // The function itself is as it was, so anything may still call it:
+        // its address taken, a name kept for others, a slot.
+        int entrySites = 0;
+        Dictionary<string, List<ArgumentCall>> direct = new(StringComparer.Ordinal);
+        foreach ((string _, ArgumentCall call, string[] targets) in calls)
+        {
+            if (call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) continue;
+            if (!direct.TryGetValue(targets[0], out List<ArgumentCall>? of)) direct[targets[0]] = of = new();
+            of.Add(call);
+        }
+        static int Bytes(long value) => value == 0 ? 2 : 5;
+        foreach (string name in functions.Keys)
+        {
+            ArgumentFunction f = functions[name];
+            if (f.Fixed || f.Copies || disagreed.Contains(name) || misfit.Contains(name) || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
+            // Its parameters as they are once Dropped has taken its own, and
+            // which of those come in registers.
+            HashSet<int> gone = new(facts.Dropped.GetValueOrDefault(name)?.Select(drop => drop.Parameter) ?? Enumerable.Empty<int>());
+            int[] place = new int[f.Kinds.Length];
+            int left = 0, words = 0;
+            bool[] register = new bool[f.Kinds.Length];
+            for (int k = 0; k < f.Kinds.Length; k++)
+            {
+                if (gone.Contains(k)) { place[k] = -1; continue; }
+                place[k] = left++;
+                register[k] = f.Kinds[k] == ArgumentKind.Word && words++ < 3;
+            }
+            // Each call's numbers in those places, as (place, number) pairs.
+            List<(List<(int Place, long Value)> Set, int Count)> said = new();
+            foreach (ArgumentCall call in sites)
+            {
+                List<(int, long)> set = new();
+                for (int k = 0; k < f.Kinds.Length; k++)
+                    if (register[k] && call.Arguments[k].Kind == ArgumentValueKind.Constant) set.Add((place[k], call.Arguments[k].Number));
+                if (set.Count > 0) said.Add((set, call.Count));
+            }
+            if (said.Count == 0) continue;
+            // The candidates: every call's whole set, and every pair alone.
+            List<List<(int Place, long Value)>> candidates = new();
+            HashSet<string> seen = new(StringComparer.Ordinal);
+            void Offer(List<(int Place, long Value)> set)
+            {
+                if (seen.Add(string.Join(";", set.Select(pair => pair.Place + "=" + pair.Value)))) candidates.Add(set);
+            }
+            foreach ((List<(int Place, long Value)> set, int _) in said)
+            {
+                Offer(set);
+                foreach ((int Place, long Value) pair in set) Offer(new() { pair });
+            }
+            List<(int Place, long Value)>? best = null;
+            long bestScore = 0;
+            int bestSites = 0;
+            foreach (List<(int Place, long Value)> candidate in candidates)
+            {
+                int matching = 0;
+                foreach ((List<(int Place, long Value)> set, int count) in said)
+                    if (candidate.All(set.Contains)) matching += count;
+                long cost = candidate.Sum(pair => Bytes(pair.Value));
+                long score = matching * cost - cost;
+                // More bytes saved; then fewer numbers set; then the lower places, the lower numbers.
+                if (matching >= 2 && (score > bestScore || score == bestScore && best is not null && Before(candidate, best)))
+                { best = candidate; bestScore = score; bestSites = matching; }
+            }
+            if (best is null || bestScore <= 0) continue;
+            facts.Entries[name] = best.Select(pair => new ArgumentDrop(pair.Place, ArgumentValue.Of(pair.Value))).ToArray();
+            entrySites += bestSites;
+        }
+        static bool Before(List<(int Place, long Value)> a, List<(int Place, long Value)> b)
+        {
+            if (a.Count != b.Count) return a.Count < b.Count;
+            for (int k = 0; k < a.Count; k++)
+            {
+                if (a[k].Place != b[k].Place) return a[k].Place < b[k].Place;
+                if (a[k].Value != b[k].Value) return a[k].Value < b[k].Value;
+            }
+            return false;
+        }
+
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants
-            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? "" : ", slots not known whole") + ")");
+            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? "" : ", slots not known whole")
+            + "); " + facts.Entries.Count + " functions given a way in with their commonest numbers, for " + entrySites + " calls");
         return facts.IsEmpty ? null : facts;
     }
 }

@@ -48,6 +48,7 @@ public static class ArgumentSummary
                 // of another function, whose calls are that function's.
                 Fixed = f.CalleePops != 0 || f.KeepsCallerRegisters || f.Async is not null || f.InsideState || f.ProgramEntry || f.Version
                     || f.Name == m.Entry || f.Name == m.Main || f.Name.StartsWith(StackArguments, StringComparison.Ordinal) || helpers.Contains(f.Name),
+                Copies = f.Coalescible || f.GenericCode,
             };
             parameterOf.Clear();
             for (int k = 0; k < f.Params.Count; k++)
@@ -106,7 +107,7 @@ public static class ArgumentSummary
                         if (callee == f.Name) said.Recursive = true;
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count];
                         for (int a = 0; a < arguments.Length; a++) arguments[a] = Value(i.Operands[a]);
-                        said.Calls.Add(new ArgumentCall(callee, 0, arguments));
+                        said.Calls.Add(new ArgumentCall(callee, 0, 1, arguments));
                     }
                     else if (i.Op == Opcode.CallIndirect && !NativeCall.Is(i))
                     {
@@ -114,12 +115,13 @@ public static class ArgumentSummary
                         if (!slots.TryGetValue(i, out string[]? names) || names.Length == 0) { hints.Unnamed = true; continue; }
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count - 1];
                         for (int a = 0; a < arguments.Length; a++) arguments[a] = Value(i.Operands[a + 1]);
-                        foreach (string name in names) said.Calls.Add(new ArgumentCall(name, 0, arguments));
+                        foreach (string name in names) said.Calls.Add(new ArgumentCall(name, 0, 1, arguments));
                     }
                 }
-            // The same call twice says it once; in an order that is the
-            // calls' own, not the blocks'.
-            List<ArgumentCall> sorted = said.Calls.DistinctBy(Key, StringComparer.Ordinal).OrderBy(Key, StringComparer.Ordinal).ToList();
+            // The same call twice is said once, with how often; in an order
+            // that is the calls' own, not the blocks'.
+            List<ArgumentCall> sorted = said.Calls.GroupBy(Key, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal)
+                .Select(group => group.First() with { Count = group.Count() }).ToList();
             said.Calls.Clear();
             said.Calls.AddRange(sorted);
             // Two functions of one name in a unit: nothing is said of either.
@@ -170,15 +172,51 @@ public static class ArgumentSummary
     public static bool Apply(Function f, ArgumentFacts facts, List<string> errors)
     {
         if (facts.IsEmpty) return false;
+        // A way in is the i386 backend's to lay down (Function.ConstantEntry):
+        // nowhere else is one made, or called.
+        bool ways = Target.Current.WordSize == 4;
+        bool given = GivenWay(f, facts, ways);
+        return Taken(f, facts, errors, ways) | given;
+    }
+
+    /// <summary>The function's own way in, noted on it for the backend: after what Taken does to its parameters, which the places are of.</summary>
+    private static bool GivenWay(Function f, ArgumentFacts facts, bool ways)
+    {
+        if (ways && facts.Entries.TryGetValue(f.Name, out ArgumentDrop[]? set))
+            f.ConstantEntry = (ArgumentFacts.EntryName(f.Name, set.Select(one => one.Parameter)), set.Select(one => (one.Parameter, one.Value.Number)).ToArray());
+        return false;
+    }
+
+    private static bool Taken(Function f, ArgumentFacts facts, List<string> errors, bool ways)
+    {
         {
             Dictionary<Instr, string[]>? slots = null;
             foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
+                for (int at = 0; at < b.Instrs.Count; at++)
                 {
+                    Instr i = b.Instrs[at];
                     if (i.Op == Opcode.Call && i.Callee is { } callee && facts.Dropped.TryGetValue(callee, out ArgumentDrop[]? gone))
                     {
                         if (gone[^1].Parameter >= i.Operands.Count) { errors.Add(Misfit(f, i, callee)); continue; }
                         for (int k = gone.Length - 1; k >= 0; k--) i.Operands.RemoveAt(gone[k].Parameter);
+                    }
+                    // BY ITS WAY IN, where the call passes exactly the numbers
+                    // that sets (ArgumentFacts.Entries): the operands stay,
+                    // each in its place -- the backend loads none of those the
+                    // name says are set (RegisterArgs.Given). A call that
+                    // passes anything else there calls the function as ever.
+                    if (ways && i.Op == Opcode.Call && i.Callee is { } named && facts.Entries.TryGetValue(named, out ArgumentDrop[]? set)
+                        && set.All(one => one.Parameter < i.Operands.Count && i.Operands[one.Parameter] is ImmOperand { Type: IrType.I32 } passed && passed.Value == one.Value.Number))
+                    {
+                        // The same call to another name: what it was marked keeps (ConstantSpecialize makes its own so).
+                        Instr through = new()
+                        {
+                            Op = Opcode.Call, Dest = i.Dest, Callee = ArgumentFacts.EntryName(named, set.Select(one => one.Parameter)), Line = i.Line,
+                            Field = i.Field, RegionSite = i.RegionSite, DispatchType = i.DispatchType, Number = i.Number, Family = i.Family,
+                        };
+                        through.Operands.AddRange(i.Operands);
+                        through.PassedByValue = i.PassedByValue;
+                        b.Instrs[at] = through;
                     }
                     else if (i.Op == Opcode.CallIndirect && facts.DroppedSlots.Count > 0 && !NativeCall.Is(i))
                     {

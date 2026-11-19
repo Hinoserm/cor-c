@@ -126,6 +126,13 @@ public static class BackendProtocol
                 writer.Write(arguments.DroppedSlots.Count);
                 foreach ((string slot, int[] gone) in arguments.DroppedSlots)
                 { WriteText(writer, slot); writer.Write(gone.Length); foreach (int k in gone) writer.Write(k); }
+                // The ways in: by function, each parameter set and its number.
+                writer.Write(arguments.Entries.Count);
+                foreach ((string name, ArgumentDrop[] given) in arguments.Entries)
+                {
+                    WriteText(writer, name); writer.Write(given.Length);
+                    foreach (ArgumentDrop one in given) { writer.Write(one.Parameter); writer.Write(one.Value.Number); }
+                }
             }
         }
         writer.Flush();
@@ -349,6 +356,21 @@ public static class BackendProtocol
                         if (gone[k] < 1 || k > 0 && gone[k] <= gone[k - 1]) throw new InvalidDataException("Invalid backend argument fact");
                     }
                     if (!arguments.DroppedSlots.TryAdd(slot, gone)) throw new InvalidDataException("Duplicate backend argument fact");
+                }
+                int ways = reader.ReadInt32();
+                if (ways < 0 || ways > 4000000) throw new InvalidDataException("Invalid backend argument fact");
+                for (int i = 0; i < ways; i++)
+                {
+                    string name = ReadText(reader); int entries = reader.ReadInt32();
+                    if (entries < 1 || entries > 3) throw new InvalidDataException("Invalid backend argument fact");
+                    ArgumentDrop[] given = new ArgumentDrop[entries];
+                    for (int k = 0; k < entries; k++)
+                    {
+                        int parameter = reader.ReadInt32(); long number = reader.ReadInt64();
+                        if (parameter < 0 || parameter > 30 || k > 0 && parameter <= given[k - 1].Parameter) throw new InvalidDataException("Invalid backend argument fact");
+                        given[k] = new(parameter, ArgumentValue.Of(number));
+                    }
+                    if (!arguments.Entries.TryAdd(name, given)) throw new InvalidDataException("Duplicate backend argument fact");
                 }
                 facts.Arguments = arguments;
             }

@@ -110,7 +110,7 @@ public sealed class ArgumentHints
         foreach ((string name, ArgumentFunction f) in Functions)
         {
             Text(name);
-            writer.Write((byte)((f.Fixed ? 1 : 0) | (f.Recursive ? 2 : 0)));
+            writer.Write((byte)((f.Fixed ? 1 : 0) | (f.Recursive ? 2 : 0) | (f.Copies ? 4 : 0)));
             writer.Write(f.Size);
             writer.Write(f.Kinds.Length);
             for (int k = 0; k < f.Kinds.Length; k++)
@@ -125,6 +125,7 @@ public sealed class ArgumentHints
             {
                 Text(call.Callee);
                 writer.Write(call.Depth);
+                writer.Write(call.Count);
                 writer.Write(call.Arguments.Length);
                 foreach (ArgumentValue value in call.Arguments)
                 {
@@ -167,10 +168,10 @@ public sealed class ArgumentHints
         {
             string name = Text();
             byte flags = reader.ReadByte();
-            if (flags > 3) throw new ElfFormatException("Invalid argument hint flags");
+            if (flags > 7) throw new ElfFormatException("Invalid argument hint flags");
             int size = reader.ReadInt32();
             int parameters = Count(11);
-            ArgumentFunction f = new(parameters) { Fixed = (flags & 1) != 0, Recursive = (flags & 2) != 0, Size = size };
+            ArgumentFunction f = new(parameters) { Fixed = (flags & 1) != 0, Recursive = (flags & 2) != 0, Copies = (flags & 4) != 0, Size = size };
             for (int k = 0; k < parameters; k++)
             {
                 byte kind = reader.ReadByte();
@@ -182,10 +183,12 @@ public sealed class ArgumentHints
                 if (shape > (byte)ArgumentShape.Written) throw new ElfFormatException("Invalid argument hint shape");
                 f.Shapes[k] = (ArgumentShape)shape;
             }
-            for (int c = Count(9); c > 0; c--)
+            for (int c = Count(13); c > 0; c--)
             {
                 string callee = Text();
                 byte depth = reader.ReadByte();
+                int sites = reader.ReadInt32();
+                if (sites < 1) throw new ElfFormatException("Invalid argument hint call count");
                 ArgumentValue[] arguments = new ArgumentValue[Count(1)];
                 for (int a = 0; a < arguments.Length; a++)
                 {
@@ -201,7 +204,7 @@ public sealed class ArgumentHints
                     if (arguments[a].Kind == ArgumentValueKind.Parameter && (arguments[a].Number < 0 || arguments[a].Number >= parameters))
                         throw new ElfFormatException("Invalid argument hint parameter");
                 }
-                f.Calls.Add(new ArgumentCall(callee, depth, arguments));
+                f.Calls.Add(new ArgumentCall(callee, depth, sites, arguments));
             }
             if (!hints.Functions.TryAdd(name, f)) throw new ElfFormatException("Duplicate argument hint function");
         }
@@ -246,6 +249,13 @@ public sealed class ArgumentFunction
     public bool Fixed { get; set; }
     /// <summary>It calls itself, directly: a version of it would call the function, not the version.</summary>
     public bool Recursive { get; set; }
+    /// <summary>
+    /// Other units may define it too (a generic body compiled where it is
+    /// used, merged at the link): what is taken from it is taken from every
+    /// copy alike, but nothing new is made beside it under a name of its
+    /// own -- each copy's unit would make one.
+    /// </summary>
+    public bool Copies { get; set; }
     /// <summary>Its instructions, as the unit had it when it said this.</summary>
     public int Size { get; set; }
     public ArgumentKind[] Kinds { get; }
@@ -258,8 +268,8 @@ public sealed class ArgumentFunction
     public List<ArgumentCall> Calls { get; } = new();
 }
 
-/// <summary>A call: whom, how deep in loops, and what stands in each argument's place.</summary>
-public readonly record struct ArgumentCall(string Callee, byte Depth, ArgumentValue[] Arguments);
+/// <summary>A call: whom, how deep in loops, how many times the function makes it just so, and what stands in each argument's place.</summary>
+public readonly record struct ArgumentCall(string Callee, byte Depth, int Count, ArgumentValue[] Arguments);
 
 public enum ArgumentValueKind : byte { Unknown, Constant, Address, Parameter }
 

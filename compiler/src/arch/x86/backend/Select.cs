@@ -3534,16 +3534,18 @@ internal sealed partial class Selector
             {
                 if (RegisterArgs.Register(i, k) < 0) bytes += PushArg(i.Operands[k]);
             }
-            MOperand[] call = new MOperand[1 + inRegisters];
-            call[0] = i.Op == Opcode.Call ? SymbolAddress(i.Callee!, 0) : R(i.Operands[0]);
+            // (Not the ones the call's own name says are set where it goes
+            // in: RegisterArgs.Given, a function's way in with its numbers.)
+            int given = RegisterArgs.Given(i);
+            List<MOperand> call = new(1 + inRegisters) { i.Op == Opcode.Call ? SymbolAddress(i.Callee!, 0) : R(i.Operands[0]) };
             for (int k = first; k < i.Operands.Count; k++)
             {
-                if (RegisterArgs.Register(i, k) is not (>= 0 and var register)) continue;
+                if (RegisterArgs.Register(i, k) is not (>= 0 and var register) || (given >> k & 1) != 0) continue;
                 MReg into = MReg.Of(RegisterArgs.Order[register]);
                 Mov(into, RM(i.Operands[k]));
-                call[1 + register] = into;
+                call.Add(into);
             }
-            Emit(i.Op == Opcode.Call ? new MInstr(MOp.Call, call) { CallReloc = RelocKind.Rel32 } : new MInstr(MOp.CallInd, call));
+            Emit(i.Op == Opcode.Call ? new MInstr(MOp.Call, call.ToArray()) { CallReloc = RelocKind.Rel32 } : new MInstr(MOp.CallInd, call.ToArray()));
         }
         else
         {

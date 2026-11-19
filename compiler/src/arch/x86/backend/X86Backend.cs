@@ -480,8 +480,6 @@ public sealed class X86Backend : IBackend
                     }
             // The gap before a function is never executed, but it is filled
             // with real no-ops rather than zeros so a disassembly reads cleanly.
-            int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
-            Encoder.Nops(text.Bytes, gap);
             // UNDER ITS OWN NAME, where its arguments come as its parameters
             // say (RegisterArgs: in registers or on the stack, the one way
             // every caller of it has) -- but for the function whose body
@@ -491,6 +489,25 @@ public sealed class X86Backend : IBackend
             // on the few instructions after it that push them and call it.
             bool stackBody = !RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) > 0;
             string bodyName = stackBody ? RegisterArgs.StackBodyName(f.Name) : f.Name;
+            // ITS WAY IN WITH ITS COMMONEST NUMBERS (Function.ConstantEntry,
+            // the link's ArgumentFacts.Entries), in front of it under a name
+            // of its own: the numbers set, and the function run on into --
+            // it begins where the way in ends, the bytes of the gap its
+            // alignment leaves anyway where they are enough. (A jump instead
+            // to a function whose own name is on its stack entry, after it.)
+            byte[]? wayIn = null;
+            int wayInField = -1;
+            if (f.ConstantEntry is { } way) (wayIn, wayInField) = RegisterArgs.ConstantEntry(f, way.Given, stackBody);
+            int gap = (functionAlign - (text.Bytes.Count + (wayIn?.Length ?? 0)) % functionAlign) % functionAlign;
+            Encoder.Nops(text.Bytes, gap);
+            if (wayIn is not null)
+            {
+                string wayName = f.ConstantEntry!.Value.Name;
+                obj.Symbols.Add(new Symbol { Name = wayName, Section = text, Offset = text.Bytes.Count, Size = wayIn.Length, IsFunction = true, Global = f.Exported });
+                if (wayInField >= 0) text.Relocs.Add(new Relocation(text.Bytes.Count + wayInField, f.Name, -4, RelocKind.Rel32));
+                text.Bytes.AddRange(wayIn);
+                defined.Add(wayName);
+            }
             int start = text.Bytes.Count;
             int size;
             // A function the encoder refuses -- the emitted-code audit's
@@ -564,7 +581,7 @@ public sealed class X86Backend : IBackend
                 bodyName, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
                 new List<(int, int)>(encoder.Lines)));
             // The way in's after the body's: the table is in the order of the code.
-            if (entryFrame is { } wayIn) frames.Add(wayIn);
+            if (entryFrame is { } stackEntryFrame) frames.Add(stackEntryFrame);
 
             if (StackMaps)
             {

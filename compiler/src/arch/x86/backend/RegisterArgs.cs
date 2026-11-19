@@ -204,6 +204,41 @@ internal static class RegisterArgs
         return words;
     }
 
+    /// <summary>
+    /// The arguments a call finds set already, a bit each by its place among
+    /// the call's own: one by the name of a function's way in with its
+    /// commonest numbers (Function.ConstantEntry, the link's ArgumentFacts.
+    /// Entries), which loads them in front of the function. Each still has
+    /// its register and its place -- the call simply loads none of them.
+    /// </summary>
+    public static int Given(Instr call)
+        => call.Op == Opcode.Call && call.Callee is { } callee ? Corsac.Lang.Lto.ArgumentFacts.EntryGiven(callee) : 0;
+
+    /// <summary>
+    /// The way in itself (Function.ConstantEntry): each parameter it sets
+    /// given its number in its register -- `xor reg, reg` for a zero (the
+    /// flags are nobody's at a call), `mov reg, imm32` for any other -- and
+    /// nothing after, where the function begins where it ends; where the
+    /// function's own name is on other code (`jump`: a body that keeps its
+    /// arguments on the stack, StackEntry), a jump there, returned with the
+    /// offset of its field (or -1).
+    /// </summary>
+    public static (byte[] Code, int Field) ConstantEntry(Function f, (int Parameter, long Value)[] given, bool jump)
+    {
+        List<byte> code = new();
+        foreach ((int parameter, long value) in given)
+        {
+            int register = Register(f, parameter);
+            if (register < 0) throw new InvalidOperationException($"{f.Name}: a way in sets parameter {parameter}, which comes in no register");
+            int reg = (int)Order[register];
+            if (value == 0) { code.Add(0x31); code.Add((byte)(0xC0 | reg << 3 | reg)); }
+            else { code.Add((byte)(0xB8 + reg)); code.AddRange(BitConverter.GetBytes(unchecked((int)value))); }
+        }
+        int field = -1;
+        if (jump) { code.Add(0xE9); field = code.Count; code.AddRange(new byte[4]); }
+        return (code.ToArray(), field);
+    }
+
     /// <summary>Which register a call's operand goes in (the place in Order), or -1: pushed. As Register(Function, int) has its parameters.</summary>
     public static int Register(Instr call, int operand)
     {
