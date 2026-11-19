@@ -15,8 +15,9 @@ namespace Corsac.Lang.Lto;
 /// and the frame table's, both rebased on the start of the code.
 ///
 /// A copy is cut only where that is plainly safe: it ends where the next
-/// symbol begins, no other symbol sits inside it, and taking it keeps the
-/// section's alignment. Any other is left where it is, as before.
+/// symbol begins, no other symbol sits inside it, and what is taken is a
+/// whole number of the section's alignment, so that all after it stays as
+/// aligned as it was. Any other is left where it is, as before.
 ///
 /// IN CODE, COPIES THAT LIE END TO START ARE ONE RUN, cut together: a
 /// function taking its arguments in registers is two symbols, its stub and
@@ -24,8 +25,8 @@ namespace Corsac.Lang.Lto;
 /// stub begins wherever the body's alignment put it -- neither is a whole
 /// number of the alignment alone, nor always the two together. Of a run the
 /// most whole alignments are taken, from its end; the few bytes left at its
-/// start are dead (Dead: their symbols, relocations and table entries go
-/// with the rest) and are written over with no-ops, the gap before whatever
+/// start are dead (their symbols, relocations and table entries go with
+/// the rest) and are written over with no-ops, the gap before whatever
 /// follows.
 /// </summary>
 internal static class DuplicateCutter
@@ -202,7 +203,7 @@ internal static class DuplicateCutter
         foreach ((Section section, List<(long Start, long End)> list) in dead)
         {
             List<Relocation> stay = new(section.Relocs.Count);
-            foreach (Relocation r in section.Relocs) if (Map(list, r.Offset) >= 0) stay.Add(r);
+            foreach (Relocation r in section.Relocs) if (!Within(list, r.Offset)) stay.Add(r);
             section.Relocs.Clear();
             section.Relocs.AddRange(stay);
             foreach ((long start, long end) in list)
@@ -247,6 +248,21 @@ internal static class DuplicateCutter
             removed += end - start;
         }
         return offset - removed;
+    }
+
+    /// Whether an offset lies in one of the ranges, sorted and apart: by
+    /// halving, a section's every relocation being asked of what is left of
+    /// every run.
+    static bool Within(List<(long Start, long End)> ranges, long offset)
+    {
+        int low = 0, high = ranges.Count;
+        while (low < high)
+        {
+            int middle = low + (high - low) / 2;
+            if (ranges[middle].End <= offset) low = middle + 1;
+            else high = middle;
+        }
+        return low < ranges.Count && ranges[low].Start <= offset;
     }
 
     internal static void Splice(ObjectFile obj, Section section, List<(long Start, long End)> cuts, HashSet<Symbol> losers)
@@ -349,7 +365,7 @@ internal static class DuplicateCutter
             foreach (StackMapTable.Function f in _functions)
             {
                 long to = Map(cuts, _base + f.Start);
-                if (to < 0 || Map(dead, _base + f.Start) < 0) continue;
+                if (to < 0 || Within(dead, _base + f.Start)) continue;
                 f.Start = (int)to;
                 kept.Add(f);
             }
@@ -402,7 +418,7 @@ internal static class DuplicateCutter
             foreach (FrameTableFormat.Entry e in _entries)
             {
                 long to = Map(cuts, _base + e.Start);
-                if (to < 0 || Map(dead, _base + e.Start) < 0) continue;
+                if (to < 0 || Within(dead, _base + e.Start)) continue;
                 if (first < 0) first = to;
                 kept.Add(e with { Start = to - first });
             }

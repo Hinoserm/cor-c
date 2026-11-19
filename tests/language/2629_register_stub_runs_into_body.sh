@@ -7,12 +7,13 @@
 #
 # The half of test 2629 its output cannot show: the image itself. Of every
 # function with a register entry (NAME and NAME$r both in the image, the x86
-# backend's RegisterArgs), where the entry is the body (it lies after the
-# name): the body begins 4, 8 or 12 bytes after the name -- one load of four
-# bytes an argument and nothing else -- and at the function alignment, 16 for
-# the K8 this is compiled for; and the bytes under the name are those loads,
-# `mov eax, [esp+4]` first. (An entry that lies before its name is the stub
-# the other way, of a body that keeps its arguments on the stack: not this.)
+# backend's RegisterArgs), where the entry is the body: the body begins 4, 8
+# or 12 bytes after the name -- one load of four bytes an argument and
+# nothing else -- and at the function alignment, 16 for the K8 this is
+# compiled for; and the bytes under the name are those loads, `mov eax,
+# [esp+4]` first. (Not a function whose body keeps its arguments on the
+# stack, an asm block in it naming the stack: there the body has the name,
+# the entry is a stub after it that pushes them, and the image has NAME$s.)
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,7 +39,7 @@ awk '
         for (name in at) {
             if (name !~ /\$r$/) continue
             own = substr(name, 1, length(name) - 2)
-            if (!(own in at) || at[name] < at[own]) continue
+            if (!(own in at) || (own "$s") in at) continue
             gap = at[name] - at[own]
             total++
             if (gap != 4 && gap != 8 && gap != 12) { bad++; print "gap " gap ": " own > "/dev/stderr" }
