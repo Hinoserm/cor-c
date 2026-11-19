@@ -937,8 +937,13 @@ internal static class AddressFold
             for (int j = p + 1; j < q && quiet; j++)
             {
                 MInstr between = ins[j];
-                quiet = between.Op is MOp.Nop or MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
+                // (A push of a register or a constant among them -- an
+                // argument past the three in registers, pushed before those
+                // are set: it writes below the stack's top, where nothing a
+                // call's target is read from lies.)
+                quiet = (between.Op is MOp.Nop or MOp.Mov or MOp.Movzx or MOp.Movsx or MOp.Lea or MOp.Add or MOp.Sub or MOp.And or MOp.Or
                         or MOp.Xor or MOp.Shl or MOp.Shr or MOp.Sar or MOp.Imul or MOp.Imul3 or MOp.Neg or MOp.Cmp or MOp.Test or MOp.Setcc
+                        || between.Op == MOp.Push)
                     && !between.Lock && !between.Operands.Any(o => o is MMem)
                     && (mem.Base is null || !Writes(between, mem.Base.Id))
                     && (mem.Index is null || !Writes(between, mem.Index.Id));

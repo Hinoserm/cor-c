@@ -67,8 +67,11 @@ internal static class Peephole
             ReadModifyWrite(block.Instrs, liveOut[b], Jumped);
             ChooseForCpu(block.Instrs, liveOut[b], Usable(m), Jumped);
             IncDec(block.Instrs);
+            // Again: the rules since leave such pairs of their own behind.
+            SwapBack(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
         }
+        CopyBackAcrossJoin(m);
         Unreachable(m);
         // LAST: it leaves flags live into a block, which every rule above
         // takes as never so (ZeroWithXor, ChooseForCpu's xor).
@@ -571,6 +574,156 @@ internal static class Peephole
                 && second.Operands[0] is MReg b2 && second.Operands[1] is MReg a2 && a.Id == a2.Id && b.Id == b2.Id)
             {
                 instrs.RemoveAt(k);
+            }
+        }
+    }
+
+    // ---- a move straight back, across the place two ways meet ----------------------------
+
+    /// <summary>
+    /// `mov x, a` at the end of one way into a block that begins `mov a, x`:
+    /// the pair SwapBack takes within a block, standing either side of a
+    /// join, where the block's first move is the other ways' too and may not
+    /// simply go. A value two ways make -- a call's result one way (EAX), a
+    /// fast path's the other, in whichever register the allocator gave the
+    /// merged value -- returned or passed on in EAX: `call slow ; mov ecx,
+    /// eax` falling into `mov eax, ecx ; ... ret`, 1,850 of them in the
+    /// compiler's own image, each two moves on the way that had the value
+    /// where it was wanted all along.
+    ///
+    /// The block's first move is given to each way in instead -- put before
+    /// the jump of one that ends in a jump there, at the end of one that
+    /// falls in -- and where that way ends in the move the other way round,
+    /// the two are a value copied and copied back: both go where x is dead
+    /// once the block's move has read it, and the way's own stays where x
+    /// is read again (it is what gives x its value). Only where every way
+    /// in has the block as its one way on from its end (no conditional
+    /// jump to it, no table, its address not taken, no landing pad), and
+    /// no more bytes are added than taken away.
+    /// </summary>
+    private static void CopyBackAcrossJoin(MFunction m)
+    {
+        int n = m.Blocks.Count;
+        if (n < 2) return;
+        static bool Copy(MInstr i, out MReg to, out MReg from)
+        {
+            to = from = null!;
+            if (!IsMov(i) || i.Operands.Count != 2 || i.Lock || i.Operands[0] is not MReg { IsPhys: true } a || i.Operands[1] is not MReg { IsPhys: true } b || a.Id == b.Id) return false;
+            to = a; from = b;
+            return true;
+        }
+        // The cheap look first: a block beginning with a copy whose way in
+        // from above ends in the copy back, or any block ending `copy back ;
+        // jmp` to one. Most functions have none, and no liveness is asked.
+        bool any = false;
+        for (int j = 1; j < n && !any; j++)
+            any = m.Blocks[j].Instrs.Count > 0 && Copy(m.Blocks[j].Instrs[0], out _, out _);
+        if (!any) return;
+
+        Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+        for (int b = 0; b < n; b++) index[m.Blocks[b]] = b;
+        HashSet<MBlock> taken = new(ReferenceEqualityComparer.Instance);
+        foreach (MBlock block in m.Blocks)
+            foreach (MInstr i in block.Instrs)
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MImm { Label: { } label }) taken.Add(label);
+                    else if (o is MMem { Label: { } table }) taken.Add(table);
+                }
+        bool changed = true;
+        int rounds = 0;
+        while (changed && rounds++ < 64)
+        {
+            changed = false;
+            int[] liveOut = LiveOut(m, out int[] liveIn);
+            for (int j = 1; j < n; j++)
+            {
+                MBlock join = m.Blocks[j];
+                if (join.Instrs.Count == 0 || !Copy(join.Instrs[0], out MReg a, out MReg x)) continue;
+                if (join.Source is { IsLandingPad: true } || taken.Contains(join)) continue;
+                // x dead after the copy: read back from the block's end.
+                int live = !join.EndsUnconditionally && j + 1 < n ? liveIn[j + 1] : 0;
+                bool known = true;
+                for (int k = join.Instrs.Count - 1; k >= 1 && known; k--)
+                {
+                    MInstr i = join.Instrs[k];
+                    if (i.Op is MOp.Jcc or MOp.Jmp && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to })
+                    {
+                        if (index.TryGetValue(to, out int at)) live |= liveIn[at]; else known = false;
+                        continue;
+                    }
+                    if (i.Op == MOp.JmpTable && i.Table is { } table)
+                        foreach (MBlock t in table) { if (index.TryGetValue(t, out int ta)) live |= liveIn[ta]; else known = false; }
+                    if (!Understood(i)) { live = 0xFF; continue; }
+                    Masks(i, out long reads, out long writes);
+                    live = (live & ~(int)writes) | (int)reads;
+                }
+                if (!known) continue;
+                // Where x is read again after it, a way that ends in the
+                // copy back keeps that copy -- x has its value by it -- and
+                // only the block's own goes.
+                bool wanted = (live & (int)Bit(x.Id)) != 0;
+                // Every way in: the block above falling in, and each block
+                // whose last instruction is a jump here -- and whether any
+                // other jump comes here from anywhere (`sound` not).
+                List<MBlock> ways = new();
+                bool sound = true;
+                for (int b = 0; b < n; b++)
+                {
+                    MBlock from = m.Blocks[b];
+                    bool falls = b == j - 1 && !from.EndsUnconditionally;
+                    bool jumps = false, other = false;
+                    for (int k = 0; k < from.Instrs.Count; k++)
+                    {
+                        MInstr i = from.Instrs[k];
+                        if (i.Op == MOp.JmpTable && i.Table is { } table && table.Any(t => ReferenceEquals(t, join))) other = true;
+                        else if (i.Op is MOp.Jcc or MOp.Jmp && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to } && ReferenceEquals(to, join))
+                        {
+                            if (i.Op == MOp.Jmp && k == from.Instrs.Count - 1 && !jumps) jumps = true; else other = true;
+                        }
+                    }
+                    if (other || falls && jumps) sound = false;
+                    else if (falls || jumps) ways.Add(from);
+                }
+                if (ways.Count == 0 || ways.Any(w => ReferenceEquals(w, join))) continue;
+                // Which ways end in the copy back (before the jump of one that jumps).
+                int Last(MBlock way) => way.Instrs.Count - (way.EndsUnconditionally ? 2 : 1);
+                bool Back(MBlock way) => Last(way) >= 0 && Copy(way.Instrs[Last(way)], out MReg to, out MReg from) && to.Id == x.Id && from.Id == a.Id;
+                int backs = ways.Count(Back);
+                if (backs == 0) continue;
+                if (sound && ways.Count - backs <= (wanted ? 1 : backs + 1))
+                {
+                    foreach (MBlock way in ways)
+                    {
+                        if (Back(way)) { if (!wanted) way.Instrs.RemoveAt(Last(way)); }
+                        else way.Instrs.Insert(way.EndsUnconditionally ? way.Instrs.Count - 1 : way.Instrs.Count, new MInstr(MOp.Mov, a, x) { Width = 4, Line = join.Instrs[0].Line });
+                    }
+                    join.Instrs.RemoveAt(0);
+                    changed = true;
+                    break;      // the liveness is of the code as it was
+                }
+                // ELSE THE BLOCK'S FEW LAST INSTRUCTIONS AGAIN, where another
+                // way jumps here on a condition (its move cannot go before
+                // that jump: the other way on may want the register): a way
+                // ending in the copy back takes the rest of the block for its
+                // own -- a result's `pop ; leave ; ret`, a jump on -- and
+                // neither move is on it. A cached value's fast way jumping
+                // to the return, the slow way's call falling into it.
+                if (wanted || !join.EndsUnconditionally || join.Instrs.Count > 6) continue;
+                bool plain = true;
+                for (int k = 1; k < join.Instrs.Count && plain; k++)
+                    plain = join.Instrs[k].Op is MOp.Mov or MOp.Pop or MOp.Epilogue or MOp.Ret
+                        || join.Instrs[k].Op == MOp.Jmp && k == join.Instrs.Count - 1 && join.Instrs[k].Operands.Count > 0 && join.Instrs[k].Operands[0] is MLabel;
+                if (!plain) continue;
+                bool taking = false;
+                foreach (MBlock way in ways)
+                {
+                    if (!Back(way)) continue;
+                    way.Instrs.RemoveRange(Last(way), way.Instrs.Count - Last(way));
+                    for (int k = 1; k < join.Instrs.Count; k++) way.Instrs.Add(LoopRotate.Clone(join.Instrs[k]));
+                    taking = true;
+                }
+                if (taking) { changed = true; break; }
             }
         }
     }

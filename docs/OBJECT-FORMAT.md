@@ -48,7 +48,7 @@ ordinary object and independent-unit compatibility are not yet guaranteed.
 
 .corsac.abi is a 28-byte non-loadable section: four magic bytes CABI followed
 by six little-endian uint32 values: version 0, pointer size 4, baseline CPU 486,
-calling convention 3 (i386: one to three machine words in EAX, EDX and ECX, any other arguments pushed and taken off by the caller, x87 floating returns), and TLS/platform
+calling convention 4 (i386: a function's first three machine words in EAX, EDX and ECX, every other argument pushed and taken off by the caller, x87 floating returns), and TLS/platform
 model (0 hosted Linux GS, 1 bare-metal static block, 2 bare-metal GS), and required
 metadata flags. Flag 1 requires `.corsac.layout`; all other bits are rejected.
 Compiler-produced objects set flag 1. Images register an image-wide unit

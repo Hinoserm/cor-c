@@ -8,6 +8,8 @@
 // direct 7 30 600
 // word 123 12 1 0
 // pushed 506 506 77
+// longer 55 1099511627795 9.75 50 68719476740 5 6
+// through 55 1099511627795 55
 //
 // A function of one to three words takes them in EAX, EDX and ECX however
 // it is reached (the x86 backend's RegisterArgs): by its name, through a
@@ -18,10 +20,31 @@
 // and three arguments. And the method code not of this language calls by
 // its address, its arguments pushed as C pushes them ([StackArguments]):
 // called so (Sys.CallNative), and by its name, where the caller pushes
-// them too. 2629_calls_by_address_in_registers.sh reads the image.
+// them too. And the functions of more than three words, or with one among
+// them that is no word (a long, a double, a float): their first three words
+// in the registers still, wherever they stand, and the rest pushed -- by
+// name, through a descriptor, through a delegate, and into a body whose asm
+// block names the stack, which finds them all there.
+// 2629_calls_by_address_in_registers.sh reads the image.
 
 using System;
 using System.Runtime.CompilerServices;
+
+abstract class Long
+{
+    public abstract int Four(int a, int b, int c);
+    public abstract long Wide(long a, int b);
+}
+sealed class LongSum : Long
+{
+    public override int Four(int a, int b, int c) => a + b + c;
+    public override long Wide(long a, int b) => a + b;
+}
+sealed class LongProduct : Long
+{
+    public override int Four(int a, int b, int c) => a * b * c;
+    public override long Wide(long a, int b) => a * b;
+}
 
 abstract class Shape
 {
@@ -79,7 +102,39 @@ static class Program
         Console.WriteLine("word " + Sys.Call(Sys.AddressOf(Program.Digits), 1, 2, 3) + " " + Sys.Call(Sys.AddressOf(Program.Pair), 1, 2, 3)
             + " " + Sys.Call(Sys.AddressOf(Program.Single), 1, 2, 3) + " " + Sys.Call(Sys.AddressOf(Program.None), 1, 2, 3));
         Console.WriteLine("pushed " + Sys.CallNative(Sys.AddressOf(Program.Pushed), 5, 6) + " " + Pushed(5, 6) + " " + Sys.CallNative(Sys.AddressOf(Program.PushedOne), 77));
+
+        Long[] longs = { new LongSum(), new LongProduct() };
+        int four = 0; long wide = 0;
+        for (int i = 0; i < 4; i++) { four += longs[i & 1].Four(i + 1, 2, 3); wide += longs[i & 1].Wide(1L << 33, i + 1); }
+        int o, r = 5;
+        Out(1, out o, ref r, 4);
+        Console.WriteLine("longer " + Five(1, 2, 3, 4, 5) + " " + Mixed(1, 1L << 40, 3, 4.5, 5, 6) + " " + Floats(1.5, 2, 2.25f, 4) + " " + four + " " + wide + " " + o + " " + r);
+        Func<int, int, int, int, int, int> five = Five;
+        Func<int, long, int, double, int, int, long> mixed = Mixed;
+        Console.WriteLine("through " + five(1, 2, 3, 4, 5) + " " + mixed(1, 1L << 40, 3, 4.5, 5, 6) + " " + OnStack(1, 2L, 3, 4, 5));
         return 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Five(int a, int b, int c, int d, int e) => a + b * 2 + c * 3 + d * 4 + e * 5;
+    [MethodImpl(MethodImplOptions.NoInlining)] static long Mixed(int a, long b, int c, double d, int e, int f) => a + b + c + (long)d + e + f;
+    [MethodImpl(MethodImplOptions.NoInlining)] static double Floats(double a, int b, float c, int d) => a + b + c + d;
+    [MethodImpl(MethodImplOptions.NoInlining)] static void Out(int a, out int b, ref int c, int d) { b = a + d; c += a; }
+
+    // Its asm block names the stack, so its body keeps every argument
+    // there: three came in registers and two on the stack, a long among
+    // them, and what is under its name pushes them all again in order.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int OnStack(int a, long b, int c, int d, int e)
+    {
+        int r;
+        asm
+        {
+            push ebx
+            mov eax, a
+            pop ebx
+            mov r, eax
+        }
+        return r + (int)b * 2 + c * 3 + d * 4 + e * 5;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)] static nuint Digits(nuint a, nuint b, nuint c) => a * 100 + b * 10 + c;

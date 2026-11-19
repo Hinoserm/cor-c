@@ -66,29 +66,29 @@ move written 8B EC, so a fault in it finds its frame from the prologue's
 shape (Runtime.FrameAt) and the chain of callers above it is whole: a leaf
 is never anyone's caller.
 
-**Calling convention: as GCC's `regparm(3)` for a function of one to three
-words, cdecl for any other,** the same for every call of the language's own ("Calls and
+**Calling convention: the first three words in registers, the rest
+pushed,** the same for every call of the language's own ("Calls and
 dispatch" has the whole of it).
 
-- A function whose arguments are one to three machine words -- `bool`,
-  `byte`, `short`, `char`, `int`, `uint`, pointers and references -- takes
-  them in EAX, EDX and ECX, the first first. `this` is the first argument.
-- Any other has every argument pushed right to left, each a whole number of
-  4-byte stack slots: the above take one; `long`, `ulong` and `double` take
-  two; `float` takes one, stored as a 32-bit IEEE value. `this` is pushed
-  last and sits at `[EBP+8]`, and the caller removes the arguments after
-  the call.
+- A function's first three arguments that are machine words -- `bool`,
+  `byte`, `short`, `char`, `int`, `uint`, pointers and references -- come in
+  EAX, EDX and ECX, in the order of its parameters, whatever stands between
+  them. `this` is the first argument.
+- Every other argument -- a fourth word and those after it, and each `long`,
+  `ulong`, `double` and `float` wherever it stands -- is pushed right to
+  left, a whole number of 4-byte stack slots each (eight bytes for the
+  64-bit ones, a `float` four as a 32-bit IEEE value), the first of them at
+  `[EBP+8]`, and the caller removes them after the call.
 - Integers, pointers and references return in EAX. `long` and `ulong` return
   in EDX:EAX, high half in EDX. `float` and `double` return in ST(0).
 - EBX, ESI, EDI and EBP are preserved across a call. EAX, ECX and EDX are not.
 - The stack is 4-byte aligned at every call; 16-byte alignment is not
   required and not maintained. Nothing on a 486 wants it.
 
-A function of one to three word arguments is called exactly as GCC's
-`regparm(3)` calls one (`-mregparm=3`, as Linux's kernel is built), and any
-other exactly as plain cdecl does -- not as regparm would, which puts the
-first three words of a longer list in registers too, and where a `long` or
-a `double` among them changes which. gdb understands every frame. C
+A function of word arguments alone is called exactly as GCC's `regparm(3)`
+calls one (`-mregparm=3`, as Linux's kernel is built); where a `long` or a
+`double` stands among them the two differ (GCC gives a `long` a pair of
+registers where two are left). gdb understands every frame. C
 compiled the ordinary way is met in cdecl where the code says so: `Sys.CallNative` and `[LibraryImport]` out,
 `[UnmanagedCallersOnly]` and `[StackArguments]` in.
 
@@ -617,10 +617,11 @@ collector has no notion of an image going away.
 - **Indirect calls through a function pointer** (`Sys.AddressOf`) are
   `call` through a register.
 
-**Where the arguments go.** A function of one to three machine words takes
-them in EAX, EDX and ECX, the first first (GCC's `regparm(3)`); any other --
-four words or more, or a 64-bit or a floating one among them -- has them all
-pushed, the last first, the caller taking them off after. That is decided by
+**Where the arguments go.** A function's first three machine words come in
+EAX, EDX and ECX, in the order of its parameters (as GCC's `regparm(3)` has
+them); every other argument -- a fourth word and after, and any 64-bit or
+floating one wherever it stands -- is pushed, the last first, the caller
+taking them off after. That is decided by
 the signature alone and is the same for every kind of call above: by name,
 through a vtable or an interface slot, through a delegate, through a word
 (`Sys.Call`, which passes three: a function of fewer reads as many as it
@@ -642,7 +643,7 @@ Code not of this language is met in the machine's C convention, and says so:
 
 Assembly that calls an ordinary method by its address (`Sys.AddressOf`)
 passes its first three words in EAX, EDX and ECX, as the language's own
-calls do, and need push nothing.
+calls do, and pushes only what is past them.
 
 ## Exceptions
 
@@ -885,8 +886,9 @@ at 0x00100000 with `e_entry` physical: the loader copies by `p_paddr`
 and jumps before any mapping exists. `Sys.AddressOf(Type.Method)` is a
 method's address, and a method whose address is taken is neither
 inlined away nor dropped; assembly that calls it gives it its arguments
-as "Calls and dispatch" says -- in EAX, EDX and ECX for one to three
-words, or pushed where the method is marked `[StackArguments]`. `@file` response files and `--cpu` are
+as "Calls and dispatch" says -- its first three words in EAX, EDX and
+ECX, or all pushed where the method is marked `[StackArguments]`.
+`@file` response files and `--cpu` are
 accepted. This is what lets `os/kernel/arch/x86/entry.asm` be the
 kernel's real entry, with its own stack and its interrupt stubs, and
 `Arch.SwitchTo` an `iret` from a frame.

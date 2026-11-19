@@ -311,8 +311,8 @@ public sealed class X86Backend : IBackend
         bool cardStub = false, barrierStub = false;
         // Each function's arguments as it takes them, and the first call of
         // each name passing them in registers and the first on the stack.
-        Dictionary<string, (int InRegisters, int Parameters)> takes = new(StringComparer.Ordinal);
-        Dictionary<(string Callee, bool InRegisters), (int InRegisters, int Operands, string Caller, int Line)> passes = new();
+        Dictionary<string, string> takes = new(StringComparer.Ordinal);
+        Dictionary<(string Callee, string Shape), (string Caller, int Line)> passes = new();
 
         // GOTOFF is sound only for a name this object defines and does not
         // export: anything exported can be interposed at load time, and then
@@ -470,14 +470,13 @@ public sealed class X86Backend : IBackend
             // WHERE IT TAKES ITS ARGUMENTS, and where each call it makes by
             // name passes them (RegisterArgs.Agree), for the check below
             // once every function of the unit is in hand.
-            takes[f.Name] = (RegisterArgs.Of(f), f.Params.Count);
+            takes[f.Name] = RegisterArgs.Shape(f);
             foreach (Corsac.Lang.Ir.Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Call && i.Callee is { } named && !NativeCall.Is(i) && !named.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
                     {
-                        int inRegisters = RegisterArgs.Of(i);
-                        if (!passes.ContainsKey((named, inRegisters > 0)))
-                            passes.Add((named, inRegisters > 0), (inRegisters, i.Operands.Count, f.Display ?? f.Name, i.Line));
+                        (string, string) key = (named, RegisterArgs.Shape(i));
+                        if (!passes.ContainsKey(key)) passes.Add(key, (f.Display ?? f.Name, i.Line));
                     }
             // The gap before a function is never executed, but it is filled
             // with real no-ops rather than zeros so a disassembly reads cleanly.
@@ -538,7 +537,7 @@ public sealed class X86Backend : IBackend
             {
                 int pad = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
                 Encoder.Nops(text.Bytes, pad);
-                (byte[] entry, int at) = RegisterArgs.StackEntry(RegisterArgs.Of(f));
+                (byte[] entry, int at) = RegisterArgs.StackEntry(f);
                 int entryStart = text.Bytes.Count;
                 text.Bytes.AddRange(entry);
                 text.Relocs.Add(new Relocation(entryStart + at, bodyName, -4, RelocKind.Rel32));
@@ -720,10 +719,10 @@ public sealed class X86Backend : IBackend
         // A CALL AND ITS FUNCTION DISAGREEING ON WHERE THE ARGUMENTS ARE
         // (RegisterArgs.Agree) is an error of this compile: the function has
         // the one name, and nothing later would tell.
-        foreach (var ((callee, _), call) in passes.OrderBy(pair => pair.Key.Callee, StringComparer.Ordinal).ThenBy(pair => pair.Key.InRegisters))
-            if (takes.TryGetValue(callee, out var taken) && !RegisterArgs.Agree(call.InRegisters, call.Operands, taken.InRegisters, taken.Parameters))
-                errors.Add("'" + call.Caller + "' (line " + call.Line + ") calls '" + callee + "' with " + RegisterArgs.Where(call.InRegisters, call.Operands)
-                    + ", which takes " + RegisterArgs.Where(taken.InRegisters, taken.Parameters));
+        foreach (var ((callee, shape), call) in passes.OrderBy(pair => pair.Key.Callee, StringComparer.Ordinal).ThenBy(pair => pair.Key.Shape, StringComparer.Ordinal))
+            if (takes.TryGetValue(callee, out string? taken) && !RegisterArgs.Agree(shape, taken))
+                errors.Add("'" + call.Caller + "' (line " + call.Line + ") calls '" + callee + "' with " + RegisterArgs.Said(shape)
+                    + ", which takes " + RegisterArgs.Said(taken));
         if (cardStub)
         {
             // THE CARD STUB (MachineIntrinsics.CardMark): the slot in EAX, every

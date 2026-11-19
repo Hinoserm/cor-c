@@ -1446,17 +1446,21 @@ internal sealed partial class Selector
     /// </summary>
     private void LoadParams()
     {
-        // TAKEN IN REGISTERS (RegisterArgs): each from its own, first thing
-        // -- the register is live from the entry to here, so nothing the
-        // allocator places before takes it.
-        if (RegisterArgs.BodyInRegisters(_f) && RegisterArgs.Of(_f) is var inRegisters)
-        {
-            for (int k = 0; k < inRegisters; k++) Mov(Lo(_f.Params[k]), MReg.Of(RegisterArgs.Order[k]));
-            return;
-        }
+        // ITS FIRST THREE WORDS IN REGISTERS (RegisterArgs): each from its
+        // own, first thing -- the register is live from the entry to here,
+        // so nothing the allocator places before takes it -- and only then
+        // what came on the stack, below. A body that keeps them all on the
+        // stack (an asm block naming it) finds them all there, as its way
+        // in pushed them (RegisterArgs.StackEntry).
+        bool inRegisters = RegisterArgs.BodyInRegisters(_f);
+        if (inRegisters)
+            for (int k = 0; k < _f.Params.Count; k++)
+                if (RegisterArgs.Register(_f, k) is >= 0 and var register) Mov(Lo(_f.Params[k]), MReg.Of(RegisterArgs.Order[register]));
         int off = 8;
-        foreach (VReg p in _f.Params)
+        for (int at = 0; at < _f.Params.Count; at++)
         {
+            VReg p = _f.Params[at];
+            if (inRegisters && RegisterArgs.Register(_f, at) >= 0) continue;
             switch (p.Type)
             {
                 case IrType.I32:
@@ -3516,22 +3520,28 @@ internal sealed partial class Selector
         }
 
         int bytes = 0;
-        // IN REGISTERS where the callee takes them so (RegisterArgs): each
-        // moved into its own, the call naming them as what it reads, and
-        // nothing to take off the stack after. A call through an address as
-        // one by name: a virtual or an interface slot, a delegate's target,
-        // a word (Sys.Call) -- the address in a register of its own or read
+        // ITS FIRST THREE WORDS IN REGISTERS, where the callee takes them
+        // so (RegisterArgs): what is pushed first -- every other argument,
+        // the last first -- then each word moved into its own, the call
+        // naming them as what it reads. A call through an address as one
+        // by name: a virtual or an interface slot, a delegate's target, a
+        // word (Sys.Call) -- the address in a register of its own or read
         // from memory by the call itself (AddressFold), never one of these.
         int inRegisters = native ? 0 : RegisterArgs.Of(i);
         if (inRegisters > 0)
         {
+            for (int k = i.Operands.Count - 1; k >= first; k--)
+            {
+                if (RegisterArgs.Register(i, k) < 0) bytes += PushArg(i.Operands[k]);
+            }
             MOperand[] call = new MOperand[1 + inRegisters];
             call[0] = i.Op == Opcode.Call ? SymbolAddress(i.Callee!, 0) : R(i.Operands[0]);
-            for (int k = 0; k < inRegisters; k++)
+            for (int k = first; k < i.Operands.Count; k++)
             {
-                MReg into = MReg.Of(RegisterArgs.Order[k]);
-                Mov(into, RM(i.Operands[first + k]));
-                call[1 + k] = into;
+                if (RegisterArgs.Register(i, k) is not (>= 0 and var register)) continue;
+                MReg into = MReg.Of(RegisterArgs.Order[register]);
+                Mov(into, RM(i.Operands[k]));
+                call[1 + register] = into;
             }
             Emit(i.Op == Opcode.Call ? new MInstr(MOp.Call, call) { CallReloc = RelocKind.Rel32 } : new MInstr(MOp.CallInd, call));
         }

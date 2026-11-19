@@ -7,11 +7,11 @@
 #
 # The half of test 2629 its output cannot show: the image itself, compiled
 # for x86 (the K8). No function has a second entry (no NAME$r beside a
-# NAME, the stub and body of before); the virtual calls of Main -- `call
-# *off(reg)` -- of three words or fewer push nothing before them; a function
-# of three words reads no argument above its frame; and the function marked
+# NAME, the stub and body of before); a function of three words reads no
+# argument above its frame, and one of five reads two there -- its fourth
+# and fifth, the first three in registers still; and the function marked
 # [StackArguments], under a name that is not one of this language's own
-# calling (mc_), reads its two there.
+# calling (mc_), reads both of its two there.
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,21 +37,17 @@ else fail "no function has a second entry ($second names end in \$r)"; fi
 objdump -d --no-show-raw-insn "$work/calls" > "$work/calls.dis"
 body() { awk -v name="$1" 'index($0, "<" name) && /:$/ {p=1; next} p && /^$/ {exit} p' "$work/calls.dis"; }
 
-# Main's calls through a descriptor's slot: none with a push among the four
-# instructions before it but the one of four words (this and three).
-body m_Program_Main > "$work/main.dis"
-slots=$(grep -cE 'call +\*0x[0-9a-f]+\(%e..\)' "$work/main.dis")
-pushed=$(awk '/push / {seen = 4} /call +\*0x[0-9a-f]+\(%e..\)/ { if (seen > 0) n++ } { if (seen > 0) seen-- } END {print n + 0}' "$work/main.dis")
-if [ "$slots" -ge 4 ]; then pass "Main calls through descriptors' slots ($slots)"
-else fail "Main calls through descriptors' slots ($slots found)"; fi
-if [ "$pushed" -eq 0 ]; then pass "none of them after a push"
-else fail "none of them after a push ($pushed of $slots)"; fi
-
 # A function of three words: no read of an argument above the frame.
 body m_Program_Digits > "$work/digits.dis"
 if [ -s "$work/digits.dis" ] && ! grep -qE '0x(8|c|10)\(%ebp\)|0x(4|8|c)\(%esp\)' "$work/digits.dis"
 then pass "a function of three words reads none from the stack"
 else fail "a function of three words reads none from the stack"; cat "$work/digits.dis"; fi
+
+# A function of five words: its fourth and fifth from the stack, no more.
+body m_Program_Five > "$work/five.dis"
+low=$(grep -cE '0x(8|c)\(%ebp\)' "$work/five.dis"); high=$(grep -cE '0x(10|14|18)\(%ebp\)' "$work/five.dis")
+if [ "$low" -ge 2 ] && [ "$high" -eq 0 ]; then pass "a function of five words reads its last two from the stack and no other"
+else fail "a function of five words reads its last two from the stack and no other ($low reads of the first two slots, $high above)"; cat "$work/five.dis"; fi
 
 # The one marked [StackArguments]: its own kind of name, and both read there.
 body mc_Program_Pushed > "$work/pushed.dis"

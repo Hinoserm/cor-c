@@ -145,7 +145,7 @@ internal static class LoopRotate
 
     [ThreadStatic] private static HashSet<MBlock>? _strays;
 
-    private static MInstr Clone(MInstr i)
+    internal static MInstr Clone(MInstr i)
     {
         MInstr made = new(i.Op) { Width = i.Width, Cond = i.Cond, Native = i.Native, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
         foreach (MOperand o in i.Operands)

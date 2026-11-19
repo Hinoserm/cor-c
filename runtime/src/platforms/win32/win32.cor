@@ -242,6 +242,10 @@ public static class Win32
     /// EXCEPTION_RECORD: ExceptionCode at 0, ExceptionFlags 4,
     /// NumberParameters 16, the address 24. CONTEXT: Edx 0xA8, Eax 0xB0,
     /// Ebp 0xB4, Eip 0xB8, Esp 0xC4.
+    /// Windows calls it as C calls anything, its four words pushed
+    /// ([StackArguments]: this language's own calls give the first three
+    /// in registers).
+    [StackArguments]
     public static int Fault(nuint rec, nuint registration, nuint ctx, nuint dispatcher)
     {
         if ((Sys.Read32(rec + 4) & Unwinding) != 0) return ContinueSearch;

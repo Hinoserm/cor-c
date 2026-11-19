@@ -27,14 +27,15 @@ public sealed class TargetContract
     /// </summary>
     public bool StoreSequences { get; }
     /// <summary>
-    /// i386's convention as these objects have it: 3, a function of one to
-    /// three machine words taking them in EAX, EDX and ECX however it is
-    /// called and any other from the stack, the caller taking them off; x87
+    /// i386's convention as these objects have it: 4, a function's first
+    /// three machine words in EAX, EDX and ECX however it is called and
+    /// every other argument on the stack, the caller taking them off; x87
     /// floating results. (1 was every argument pushed, with a second entry
-    /// for the register form: an object of that making is refused, where it
+    /// for the register form; 3 the registers for a function of one to
+    /// three words alone. An object of another making is refused, where it
     /// would link and call wrongly.)
     /// </summary>
-    public const uint I386Machine = 486, I386Convention = 3;
+    public const uint I386Machine = 486, I386Convention = 4;
     /// <summary>The contract's bytes.</summary>
     public const int Size = 32;
 
