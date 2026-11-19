@@ -468,30 +468,36 @@ public sealed class X86Backend : IBackend
             cardStub |= m.UsesCardStub;
             barrierStub |= m.UsesBarrierStub;
             f = m.Source;
-            // The gap before a function is never executed, but it is filled
-            // with real no-ops rather than zeros so a disassembly reads cleanly.
-            int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
-            Encoder.Nops(text.Bytes, gap);
             // A FUNCTION TAKING ITS ARGUMENTS IN REGISTERS (RegisterArgs): its
-            // own name a stub first, which loads them from the stack and
-            // jumps to the body, laid down as a function of its own (so a
-            // copy of it the link cuts out, DuplicateCutter, is cut whole),
-            // and the body under the entry's name after it.
+            // own name a stub, which loads them from the stack, and the body
+            // under the entry's name where the stub ends -- the stub runs on
+            // into it, with no jump. The body is what is aligned: the stub
+            // lies in the bytes before it, the gap's where they are enough.
             string bodyName = f.Name;
+            byte[]? stub = null;
             if (RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) is var inRegisters)
             {
                 bodyName = RegisterArgs.EntryName(f.Name);
-                (byte[] stub, int field) = RegisterArgs.Stub(inRegisters);
-                int stubStart = text.Bytes.Count;
-                text.Bytes.AddRange(stub);
-                text.Relocs.Add(new Relocation(stubStart + field, bodyName, -4, RelocKind.Rel32));
+                stub = RegisterArgs.Stub(inRegisters);
+            }
+            // The gap before a function is never executed, but it is filled
+            // with real no-ops rather than zeros so a disassembly reads cleanly.
+            int lead = stub?.Length ?? 0;
+            int gap = (functionAlign - (text.Bytes.Count + lead) % functionAlign) % functionAlign;
+            Encoder.Nops(text.Bytes, gap);
+            if (stub is not null)
+            {
+                // A symbol of its own, its size the loads': a copy of the
+                // function the link cuts out goes with its stub, the two one
+                // run of the section (DuplicateCutter), and the link refuses
+                // to keep the one from a unit and the other from another
+                // (DefinitionCoalescer) -- a stub must run into its own body.
                 obj.Symbols.Add(new Symbol
                 {
-                    Name = f.Name, Section = text, Offset = stubStart, Size = stub.Length, IsFunction = true, Global = f.Exported,
+                    Name = f.Name, Section = text, Offset = text.Bytes.Count, Size = stub.Length, IsFunction = true, Global = f.Exported,
                 });
+                text.Bytes.AddRange(stub);
                 defined.Add(f.Name);
-                gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
-                Encoder.Nops(text.Bytes, gap);
             }
             int start = text.Bytes.Count;
             int size;

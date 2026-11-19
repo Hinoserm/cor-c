@@ -17,7 +17,8 @@ namespace Corsac.Lang.X86;
 /// entries. Its body is named EntryName(name) and finds its arguments in
 /// the registers; a direct call -- the most of all calls -- goes there,
 /// pushing nothing. Its own name is a stub that loads them from the stack
-/// into the registers and jumps to the body: what reaches a function by its
+/// into the registers and runs on into the body, which begins where the
+/// stub ends (no jump between them: Stub): what reaches a function by its
 /// address, not by a call this backend made -- a virtual or an interface
 /// call through a descriptor, a delegate, a hook the runtime or the kernel
 /// calls through a word (Sys.AddressOf), C, assembly, another image -- calls
@@ -125,23 +126,25 @@ internal static class RegisterArgs
 
     /// <summary>
     /// The stub under a function's own name: each argument loaded from the
-    /// stack into its register, and a jump to the body. Four bytes a load,
-    /// five the jump; returned with the offset of the jump's field.
+    /// stack into its register, four bytes a load, and nothing after them --
+    /// the body is laid down where the stub ends (X86Backend.Compile), so a
+    /// call by the function's address runs the loads and is in the body. A
+    /// jump there was five bytes more and, the stub a function of its own,
+    /// the alignment gap after it: 16 or 32 bytes a function at the K8's
+    /// alignment, where the loads alone lie in the gap the body's alignment
+    /// leaves before it as often as not.
     /// </summary>
-    public static (byte[] Code, int Field) Stub(int arguments)
+    public static byte[] Stub(int arguments)
     {
-        List<byte> code = new();
+        byte[] code = new byte[4 * arguments];
         for (int k = 0; k < arguments; k++)
         {
             // mov reg, [esp + 4 + 4k]: 8B /r, ModRM mod 01 r/m 100 (a SIB), SIB [esp], disp8.
-            code.Add(0x8B);
-            code.Add((byte)(0x44 | ((int)Order[k] << 3)));
-            code.Add(0x24);
-            code.Add((byte)(4 + 4 * k));
+            code[4 * k] = 0x8B;
+            code[4 * k + 1] = (byte)(0x44 | ((int)Order[k] << 3));
+            code[4 * k + 2] = 0x24;
+            code[4 * k + 3] = (byte)(4 + 4 * k);
         }
-        code.Add(0xE9);
-        int field = code.Count;
-        code.AddRange(new byte[4]);
-        return (code.ToArray(), field);
+        return code;
     }
 }

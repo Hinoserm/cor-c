@@ -70,5 +70,69 @@ public static class DuplicateCutterTests
         left = DuplicateCutter.Cut(obj, new List<Symbol> { middle });
         Check(left.Count == 1 && text.Bytes.Count == 48, "a stack-map table pointing past its end cut");
         Console.WriteLine("  duplicate cutter: 'CSM1' functions and sites follow the cut; any other table leaves the code");
+
+        // A RUN OF COPIES THAT IS NOT A WHOLE NUMBER OF THE ALIGNMENT: a small
+        // function at 16, then a function's stub at 20 running on into its
+        // body at 32, which ends where the next function's stub begins, at
+        // 76 (its body at 80). The three are one run of 60 bytes: 48 are
+        // taken from its end, the 12 at its start left as no-ops -- and what
+        // began in those 12 is gone with the rest, its symbols, its stack
+        // map and its relocation.
+        {
+            ObjectFile obj = new();
+            Section text = new(".text", SectionKind.Code) { Align = 16 };
+            text.Bytes.AddRange(new byte[96]);
+            for (int i = 0; i < 96; i++) text.Bytes[i] = (byte)i;
+            obj.Sections.Add(text);
+            Symbol Function(string name, int offset, int size)
+            {
+                Symbol symbol = new() { Name = name, IsFunction = true, Section = text, Offset = offset, Size = size };
+                obj.Symbols.Add(symbol);
+                return symbol;
+            }
+            Function("f0", 0, 12);
+            Symbol small = Function("g", 16, 4), stub = Function("f1", 20, 12), body = Function("f1$r", 32, 40);
+            Function("f2", 76, 4);
+            Function("f2$r", 80, 16);
+            text.Relocs.Add(new Relocation(4, "x", 0, RelocKind.Abs32));
+            text.Relocs.Add(new Relocation(26, "x", 0, RelocKind.Abs32));     // in what is left of the run, reaching into the cut
+            text.Relocs.Add(new Relocation(40, "x", 0, RelocKind.Abs32));
+            text.Relocs.Add(new Relocation(84, "x", 0, RelocKind.Abs32));
+            List<StackMapTable.Function> functions = new();
+            foreach (int at in new[] { 0, 16, 32, 80 })
+            {
+                StackMapTable.Function f = new() { Start = at, FrameSize = 8 };
+                f.Sites.Add(new StackMapTable.Site(5, false, 0, [at]));
+                functions.Add(f);
+            }
+            Section maps = new(".corsac.stackmaps", SectionKind.ReadOnlyData) { Align = 8 };
+            maps.Bytes.AddRange(StackMapTable.Encode(functions));
+            maps.Relocs.Add(new Relocation(StackMapTable.BaseOffset, "f0", 0, RelocKind.Abs32));
+            obj.Sections.Add(maps);
+
+            List<Symbol> left = DuplicateCutter.Cut(obj, new List<Symbol> { body, small, stub });
+            Check(left.Count == 0 && text.Bytes.Count == 48, "a run of copies short of a whole alignment: " + left.Count + " left, " + text.Bytes.Count + " bytes");
+            for (int i = 0; i < 16; i++) Check(text.Bytes[i] == i, "the code before the run, as it was");
+            for (int i = 16; i < 28; i++) Check(text.Bytes[i] == 0x90, "what is left of the run, no-ops");
+            for (int i = 28; i < 48; i++) Check(text.Bytes[i] == i + 48, "the code after the run, moved down by the cut");
+            Symbol Defined(string name) => obj.Symbols.Single(s => s.Name == name && s.IsDefined);
+            Check(Defined("f2").Offset == 28 && Defined("f2$r").Offset == 32, "the function after the run: its stub still ends where its body begins, the body aligned");
+            Check(!obj.Symbols.Any(s => s.IsDefined && s.Name is "g" or "f1" or "f1$r"), "the run's symbols, gone");
+            Check(text.Relocs.Select(r => r.Offset).SequenceEqual(new[] { 4, 36 }), "the relocations: the run's gone, the one after it moved");
+            List<StackMapTable.Function>? kept = StackMapTable.Decode(maps.Bytes.Slice(0, maps.Bytes.Count));
+            Check(kept is { Count: 2 } && kept[0].Start == 0 && kept[1].Start == 32, "the stack maps: the run's gone, the function after it where it now starts");
+
+            // A run shorter than the alignment is left whole.
+            obj = new();
+            text = new(".text", SectionKind.Code) { Align = 16 };
+            text.Bytes.AddRange(new byte[48]);
+            obj.Sections.Add(text);
+            Function("f0", 0, 12);
+            stub = Function("f1", 28, 4);
+            Function("f1$r", 32, 16);
+            left = DuplicateCutter.Cut(obj, new List<Symbol> { stub });
+            Check(left.Count == 1 && text.Bytes.Count == 48, "a run shorter than the alignment cut");
+            Console.WriteLine("  duplicate cutter: a run of adjoining copies is cut by whole alignments from its end, the rest of it no-ops");
+        }
     }
 }

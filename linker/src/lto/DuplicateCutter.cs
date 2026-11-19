@@ -17,6 +17,16 @@ namespace Corsac.Lang.Lto;
 /// A copy is cut only where that is plainly safe: it ends where the next
 /// symbol begins, no other symbol sits inside it, and taking it keeps the
 /// section's alignment. Any other is left where it is, as before.
+///
+/// IN CODE, COPIES THAT LIE END TO START ARE ONE RUN, cut together: a
+/// function taking its arguments in registers is two symbols, its stub and
+/// the body the stub runs on into (the x86 backend's RegisterArgs), and the
+/// stub begins wherever the body's alignment put it -- neither is a whole
+/// number of the alignment alone, nor always the two together. Of a run the
+/// most whole alignments are taken, from its end; the few bytes left at its
+/// start are dead (Dead: their symbols, relocations and table entries go
+/// with the rest) and are written over with no-ops, the gap before whatever
+/// follows.
 /// </summary>
 internal static class DuplicateCutter
 {
@@ -32,6 +42,9 @@ internal static class DuplicateCutter
     {
         List<Symbol> kept = new();
         Dictionary<Section, List<(long Start, long End)>> cuts = new();
+        // What of a run of code is not taken out (the bytes at its start
+        // short of a whole alignment), by section: dead as the cut is.
+        Dictionary<Section, List<(long Start, long End)>> dead = new();
         HashSet<Symbol> cutSymbols = new(ReferenceEqualityComparer.Instance);
         // EACH SECTION'S SYMBOLS BY OFFSET, sorted once: every loser walked
         // the object's whole symbol table for the one that follows it --
@@ -40,6 +53,7 @@ internal static class DuplicateCutter
         // What the walk found is the same: another symbol where the loser
         // starts makes it an alias, else the first one after it ends it.
         Dictionary<Section, (long[] Offsets, Symbol[] Symbols)> placed = new();
+        Dictionary<Section, List<(long Start, long End, Symbol Loser)>> runs = new();
         foreach (Symbol loser in losers)
         {
             Section? section = loser.Section;
@@ -54,10 +68,48 @@ internal static class DuplicateCutter
             for (; at < sorted.Offsets.Length && sorted.Offsets[at] == start; at++)
                 if (!ReferenceEquals(sorted.Symbols[at], loser)) { alias = true; break; }
             if (!alias && at < sorted.Offsets.Length && sorted.Offsets[at] < end) end = sorted.Offsets[at];
-            if (alias || end < start + loser.Size || (end - start) % section.Align != 0) { kept.Add(loser); continue; }
+            if (alias || end < start + loser.Size) { kept.Add(loser); continue; }
+            if (section.Kind == SectionKind.Code)
+            {
+                // Code: judged with its neighbours, below.
+                if (!runs.TryGetValue(section, out var run)) runs.Add(section, run = new());
+                run.Add((start, end, loser));
+                continue;
+            }
+            if ((end - start) % section.Align != 0) { kept.Add(loser); continue; }
             if (!cuts.TryGetValue(section, out var list)) cuts.Add(section, list = new());
             list.Add((start, end));
             cutSymbols.Add(loser);
+        }
+        // THE RUNS OF CODE: copies in the order they lie, each that begins
+        // where the one before it ends joined to it. (No two begin at one
+        // place: such a copy is an alias, kept above.)
+        foreach ((Section section, List<(long Start, long End, Symbol Loser)> run) in runs)
+        {
+            run.Sort((a, b) => a.Start.CompareTo(b.Start));
+            for (int first = 0; first < run.Count;)
+            {
+                int next = first + 1;
+                while (next < run.Count && run[next].Start == run[next - 1].End) next++;
+                long start = run[first].Start, end = run[next - 1].End;
+                long whole = (end - start) / section.Align * section.Align;
+                if (whole == 0)
+                {
+                    for (int i = first; i < next; i++) kept.Add(run[i].Loser);
+                }
+                else
+                {
+                    if (!cuts.TryGetValue(section, out var list)) cuts.Add(section, list = new());
+                    list.Add((end - whole, end));
+                    if (end - whole > start)
+                    {
+                        if (!dead.TryGetValue(section, out var left)) dead.Add(section, left = new());
+                        left.Add((start, end - whole));
+                    }
+                    for (int i = first; i < next; i++) cutSymbols.Add(run[i].Loser);
+                }
+                first = next;
+            }
         }
         if (cuts.Count == 0) return kept;
 
@@ -74,12 +126,15 @@ internal static class DuplicateCutter
                 // A table this does not know how to rewrite: leave the code.
                 foreach (Symbol s in cutSymbols.Where(s => s.Section == code).ToList()) { kept.Add(s); cutSymbols.Remove(s); }
                 cuts.Remove(code);
+                dead.Remove(code);
                 code = null;
                 maps = null;
                 frames = null;
             }
         }
         foreach (var list in cuts.Values) list.Sort();
+        foreach (var list in dead.Values) list.Sort();
+        List<(long Start, long End)> none = new();
 
         // THE FRAME TABLE REBUILT FIRST, before anything is written. With
         // fewer functions it is nearly always smaller, but its deltas and its
@@ -89,11 +144,12 @@ internal static class DuplicateCutter
         long framesBase = 0;
         if (code is not null && frames is not null)
         {
-            frameBytes = frames.Build(cuts[code], out framesBase);
+            frameBytes = frames.Build(cuts[code], dead.GetValueOrDefault(code, none), out framesBase);
             if (frameBytes.Length > frames.Symbol.Size)
             {
                 foreach (Symbol s in cutSymbols.Where(s => s.Section == code).ToList()) { kept.Add(s); cutSymbols.Remove(s); }
                 cuts.Remove(code);
+                dead.Remove(code);
                 code = null;
                 maps = null;
                 frames = null;
@@ -105,7 +161,7 @@ internal static class DuplicateCutter
             List<(long Start, long End)> codeCuts = cuts[code];
             if (maps is not null)
             {
-                maps.Write(codeCuts);
+                maps.Write(codeCuts, dead.GetValueOrDefault(code, none));
                 // The table's bounds follow it.
                 for (int i = 0; i < obj.Symbols.Count; i++)
                 {
@@ -141,6 +197,17 @@ internal static class DuplicateCutter
             if (maps is not null) ReplaceReloc(maps.Section, StackMapTable.BaseOffset, CodeBase);
         }
 
+        // What is left of each run first: its relocations go (one may reach
+        // from it into the bytes the cut takes), its bytes become no-ops.
+        foreach ((Section section, List<(long Start, long End)> list) in dead)
+        {
+            List<Relocation> stay = new(section.Relocs.Count);
+            foreach (Relocation r in section.Relocs) if (Map(list, r.Offset) >= 0) stay.Add(r);
+            section.Relocs.Clear();
+            section.Relocs.AddRange(stay);
+            foreach ((long start, long end) in list)
+                for (long i = start; i < end; i++) section.Bytes[(int)i] = 0x90;
+        }
         foreach ((Section section, List<(long Start, long End)> list) in cuts) Splice(obj, section, list, cutSymbols);
         // The tables' new bases, placed once the code has moved: the stack
         // maps count from the code's first byte, the frame table from its
@@ -276,13 +343,13 @@ internal static class DuplicateCutter
         /// Functions whose code was cut go with their sites; the rest are
         /// measured from the code's first byte (the new base), their sites
         /// unchanged, and the table is encoded again.
-        public void Write(List<(long Start, long End)> cuts)
+        public void Write(List<(long Start, long End)> cuts, List<(long Start, long End)> dead)
         {
             List<StackMapTable.Function> kept = new();
             foreach (StackMapTable.Function f in _functions)
             {
                 long to = Map(cuts, _base + f.Start);
-                if (to < 0) continue;
+                if (to < 0 || Map(dead, _base + f.Start) < 0) continue;
                 f.Start = (int)to;
                 kept.Add(f);
             }
@@ -324,9 +391,9 @@ internal static class DuplicateCutter
             return f;
         }
 
-        /// The table without the cut functions; `first` is where the first
+        /// The table without the cut functions (nor those in what is left of a run, dead); `first` is where the first
         /// kept function now starts, the new base.
-        public byte[] Build(List<(long Start, long End)> cuts, out long first)
+        public byte[] Build(List<(long Start, long End)> cuts, List<(long Start, long End)> dead, out long first)
         {
             ChunkedBytes b = Section.Bytes;
             int at = (int)Symbol.Offset;
@@ -335,7 +402,7 @@ internal static class DuplicateCutter
             foreach (FrameTableFormat.Entry e in _entries)
             {
                 long to = Map(cuts, _base + e.Start);
-                if (to < 0) continue;
+                if (to < 0 || Map(dead, _base + e.Start) < 0) continue;
                 if (first < 0) first = to;
                 kept.Add(e with { Start = to - first });
             }

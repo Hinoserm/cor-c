@@ -1,0 +1,74 @@
+// test: a function reached by its address takes its stack arguments into registers and is in its body
+// expect-exit: 0
+// expect-output:
+// virtual 800 2200 2800
+// interface 9 14 20
+// delegate 7 30 600
+// direct 7 30 600
+//
+// A function of one to three word arguments has two entries (the x86
+// backend's RegisterArgs): its body, which finds them in registers and is
+// what a direct call reaches, and under its own name a stub that loads them
+// from the stack -- what a virtual call, an interface call and a delegate
+// reach, each by the function's address. The stub has no jump: the body
+// begins where it ends. Here every such call, of one, two and three
+// arguments, with the direct calls beside them; 2629_register_stub_runs_into_body.sh
+// reads the image for the layout itself.
+
+using System;
+
+abstract class Shape
+{
+    public abstract int One(int a);
+    public abstract int Two(int a, int b);
+    public abstract int Three(int a, int b, int c);
+}
+
+sealed class Sum : Shape
+{
+    public override int One(int a) => a + 1;
+    public override int Two(int a, int b) => a + b;
+    public override int Three(int a, int b, int c) => a + b + c;
+}
+
+sealed class Product : Shape
+{
+    public override int One(int a) => a * 2;
+    public override int Two(int a, int b) => a * b;
+    public override int Three(int a, int b, int c) => a * b * c;
+}
+
+interface IWeigh { int Weigh(int a, int b); }
+sealed class Light : IWeigh { public int Weigh(int a, int b) => a - b; }
+sealed class Heavy : IWeigh { public int Weigh(int a, int b) => a * 10 + b; }
+
+static class Program
+{
+    static int Plus(int a) => a + 5;
+    static int Times(int a, int b) => a * b;
+    static int Volume(int a, int b, int c) => a * b * c;
+
+    static int Main()
+    {
+        Shape[] shapes = { new Sum(), new Product(), new Sum(), new Product() };
+        int one = 0, two = 0, three = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            Shape s = shapes[i & 3];
+            one += s.One(1);
+            two += s.Two(2, 3);
+            three += s.Three(1, 2, 3) + 1;
+        }
+        Console.WriteLine("virtual " + one + " " + two + " " + three);
+
+        IWeigh[] weights = { new Light(), new Heavy() };
+        Console.WriteLine("interface " + (weights[0].Weigh(12, 3)) + " " + (weights[1].Weigh(1, 4)) + " " + (weights[0].Weigh(9, 3) + weights[1].Weigh(1, 4)));
+
+        Func<int, int> plus = Plus;
+        Func<int, int, int> times = Times;
+        Func<int, int, int, int> volume = Volume;
+        Console.WriteLine("delegate " + plus(2) + " " + times(5, 6) + " " + volume(10, 20, 3));
+        Console.WriteLine("direct " + Plus(2) + " " + Times(5, 6) + " " + Volume(10, 20, 3));
+        return 0;
+    }
+}
