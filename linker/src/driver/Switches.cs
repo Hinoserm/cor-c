@@ -98,6 +98,8 @@ public static class Switches
 
     /// <summary>--report-phases: time and allocation per phase of one unit.</summary>
     public static bool ReportPhases;
+    /// <summary>--no-argument-facts: the link judges no function's arguments (ArgumentSolver), and a program in one module none of its own.</summary>
+    public static bool NoArgumentFacts;
     /// <summary>--preinit-report: what the link laid down made (Lto.Preinit), and what each type it ran read of other types' mutable statics.</summary>
     public static bool PreinitReport;
 
@@ -207,6 +209,7 @@ public static class Switches
         TraceWants |= Switch(taken, "--trace-wants");
         ReportUnit |= Switch(taken, "--report-unit");
         ReportPhases |= Switch(taken, "--report-phases");
+        NoArgumentFacts |= Switch(taken, "--no-argument-facts");
         PreinitReport |= Switch(taken, "--preinit-report");
         ReportAlloc |= Switch(taken, "--report-alloc");
         TraceSemantics = Valued(taken, "--trace-semantics") ?? TraceSemantics;

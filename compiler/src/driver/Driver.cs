@@ -1498,7 +1498,7 @@ public static class Driver
             // link (ArgumentSummary.Apply). Not a unit's compile nor a
             // library's, whose callers are elsewhere; and no slot's family,
             // which only the link's reading of every descriptor knows whole.
-            if (!module.LeavesLinkHints && !module.PreserveExports && module.Entry is not null && !args.Contains("--no-argument-facts"))
+            if (!module.LeavesLinkHints && !module.PreserveExports && module.Entry is not null && !Switches.NoArgumentFacts)
             {
                 Corsac.Lang.Lto.ArgumentHints said = Corsac.Lang.Opt.ArgumentSummary.Of(module);
                 string programEntry = module.Entry;

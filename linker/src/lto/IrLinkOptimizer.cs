@@ -204,13 +204,18 @@ public static class IrLinkOptimizer
         // open types, not a module of a kernel, foreign code naming what it
         // calls.
         ArgumentFacts? argumentFacts = null;
-        if (enabled && lifetimes is not null && closedImageEntry is not null && argumentHints.Count == archives.Count && argumentHints.Count > 0)
+        // An image with an entry and no names for others, or one that says
+        // which names are for others (`keep`: a kernel's for its modules --
+        // every other name of it is its own). Not one that offers whatever
+        // it has: there every function may have callers elsewhere.
+        if (enabled && lifetimes is not null && (closedImageEntry is not null || keep is not null) && argumentHints.Count == archives.Count && argumentHints.Count > 0
+            && !Switches.NoArgumentFacts)
         {
             HashSet<string> kept = new(keep ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
             bool anything = foreign.Contains("*");
             argumentFacts = ArgumentSolver.Solve(argumentHints, virtuals,
                 name => anything || foreign.Contains(name) || kept.Contains(name) || name == closedImageEntry || (kernelNames?.Contains(name) ?? false),
-                closed: !anything && keep is null && !moduleOfKernel && !openTypes,
+                closed: !anything && closedImageEntry is not null && keep is null && !moduleOfKernel && !openTypes,
                 Console.Error.WriteLine);
         }
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
