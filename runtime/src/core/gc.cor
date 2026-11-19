@@ -10448,12 +10448,20 @@ public static class Gc
             // statics are roots the conservative scan reads, and left set
             // they were three references into a module being removed --
             // CountReferencesInto, asked next, counted them, and the module
-            // was quarantined for good. Nothing reads them once the phase
-            // is 0 (PassedOver, CountHeldBlock, phase 2 inside Collect).
-            _heldLow = 0;
-            _heldHigh = 0;
-            _heldRootFrom = 0;
-            _heldRootTo = 0;
+            // was quarantined for good. Nothing reads them once the cycle
+            // that counted is over (PassedOver, CountHeldBlock, phase 2
+            // inside Collect) -- which phase 2 says. Where it is not 2, a
+            // cycle of another thread's may have taken the asking and be
+            // counting yet (Collect came back without waiting for it), and
+            // its phase 2 reads the statics' range: they stay for it, and
+            // are set again by the next try.
+            if (phase == 2)
+            {
+                _heldLow = 0;
+                _heldHigh = 0;
+                _heldRootFrom = 0;
+                _heldRootTo = 0;
+            }
             Sys.KeepAlive(exempt);
             if (phase == 2) return _heldFound;
         }

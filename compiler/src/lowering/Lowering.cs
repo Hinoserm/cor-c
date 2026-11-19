@@ -1645,10 +1645,13 @@ public sealed partial class Lowering
         if (!Freestanding && (Dynamic || AnyNativeImports()) && entrySp is not null && loaderFini is not null
             && RuntimeMethod("StartC", 3) is MethodSymbol startC)
         {
+            // WITHOUT PARAMETERS, though C calls it main(argc, argv, envp):
+            // it reads none of them (the arguments are found from the entry's
+            // stack, entrySp), C takes its three words off again itself, and
+            // a function declared with them would look for them where this
+            // language's calls put three words -- in registers on i386 (the
+            // x86 backend's RegisterArgs) -- which C does not.
             Function cMain = new(CMainName, IrType.I32);
-            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "argc"));
-            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "argv"));
-            cMain.Params.Add(cMain.NewReg(IrTypes.Word, "envp"));
             Builder ce = new(cMain, cMain.NewBlock("entry"));
             if (RuntimeMethod("ReturnFromC", 0) is MethodSymbol back)
             {

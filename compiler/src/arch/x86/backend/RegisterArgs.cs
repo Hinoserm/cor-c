@@ -37,10 +37,11 @@ namespace Corsac.Lang.X86;
 /// passes them, and so does the one marked [StackArguments], by its name
 /// (`mc_`). Not a call into C (Sys.CallNative, NativeCall), nor a machine
 /// intrinsic. Every other function this backend compiles is called so,
-/// the ones the compiler makes among them (Managed). Assembly that calls a function of this language by its
-/// address gives it its first three words in EAX, EDX and ECX; a function
-/// of four words or more, or with a 64-bit or a floating one among them,
-/// has them all on the stack, the caller taking them off, as ever.
+/// the ones the compiler makes among them (Managed). Assembly that calls
+/// a function of this language by its address gives it its first three
+/// words in EAX, EDX and ECX; a function of four words or more, or with a
+/// 64-bit or a floating one among them, has them all on the stack, the
+/// caller taking them off, as ever.
 ///
 /// A word too many is no harm (Sys.Call passes three to a function of one
 /// or two): the registers a function does not read it does not miss.
