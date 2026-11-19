@@ -366,10 +366,32 @@ public sealed partial class Lowering
     /// <summary>Where a label's return begins (Label).</summary>
     public const string ReturnMark = "_r$";
 
+    /// <summary>
+    /// What begins the label of a method that takes its arguments on the
+    /// stack whatever they are ([StackArguments]): not a name of this
+    /// language's own calling (`m_`), so the backend that passes those in
+    /// registers passes this one's as C does, at its calls and in its body
+    /// alike -- the name is all either side has (the x86 backend's
+    /// RegisterArgs).
+    /// </summary>
+    public const string StackArgumentsPrefix = "mc_";
+
+    /// <summary>
+    /// Whether the method is marked [StackArguments]: code not of this
+    /// language calls it by its address with its arguments pushed, the
+    /// caller taking them off (cdecl) -- a C library's start routine for a
+    /// thread, machine code the runtime wrote, a kernel's assembly. Nothing
+    /// else of the method differs: it is not the way in from C that
+    /// [UnmanagedCallersOnly] is, which also brings the thread back from C
+    /// and keeps C's registers.
+    /// </summary>
+    public static bool StackArguments(MethodSymbol m)
+        => m.Decl is MemberDecl d && d.Attributes.Any(a => a.Target.Length == 0 && a.Is("StackArguments"));
+
     private static string MakeLabel(MethodSymbol m)
         => (m.Params.Count == 0
          ? $"m_{Owner(m)}_{m.Name}_0"
-         : $"m_{Owner(m)}_{m.Name}_{m.Params.Count}_"
+         : $"{(StackArguments(m) ? StackArgumentsPrefix : "m_")}{Owner(m)}_{m.Name}_{m.Params.Count}_"
          + string.Join("_", m.Params.Select(p => (p.ByRef ? "R$" : "") + Mangle(p.Type))))
          // A RESULT BY REFERENCE is an address, as a ref parameter is: R$.
          + ReturnMark + (m.RefReturn || m.RefReturnReadOnly ? "R$" : "") + Mangle(m.Returns);

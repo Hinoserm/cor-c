@@ -589,9 +589,8 @@ public static class IrLinkOptimizer
                     TargetContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
                     ManagedLayoutContract.Validate(new[] { ("original", original), ("regenerated", replacement) });
                     IrArchive originalArchive = archives[original];
-                    // (A register entry is its function's: RuntimeAbi.FunctionOf.)
-                    bool Kept(Symbol symbol) => plan.Retained is null || plan.Retained.Contains(IrKey.OfFunction(RuntimeAbi.FunctionOf(symbol.Name))) || plan.Retained.Contains(IrKey.OfData(symbol.Name))
-                        || !originalArchive.Entries.ContainsKey(IrKey.OfFunction(RuntimeAbi.FunctionOf(symbol.Name))) && !originalArchive.Entries.ContainsKey(IrKey.OfData(symbol.Name));
+                    bool Kept(Symbol symbol) => plan.Retained is null || plan.Retained.Contains(IrKey.OfFunction(symbol.Name)) || plan.Retained.Contains(IrKey.OfData(symbol.Name))
+                        || !originalArchive.Entries.ContainsKey(IrKey.OfFunction(symbol.Name)) && !originalArchive.Entries.ContainsKey(IrKey.OfData(symbol.Name));
                     string[] before = original.Symbols.Where(symbol => symbol.Global && symbol.IsDefined && Kept(symbol)).Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
                     string[] after = replacement.Symbols.Where(symbol => symbol.Global && symbol.IsDefined).Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
                     if (!before.SequenceEqual(after))

@@ -609,9 +609,32 @@ collector has no notion of an image going away.
 - **Indirect calls through a function pointer** (`Sys.AddressOf`) are
   `call` through a register.
 
-Every call site evaluates arguments into virtual registers, pushes them, and
-adjusts ESP afterwards. The register allocator treats EAX, ECX and EDX as
+**Where the arguments go.** A function of one to three machine words takes
+them in EAX, EDX and ECX, the first first (GCC's `regparm(3)`); any other --
+four words or more, or a 64-bit or a floating one among them -- has them all
+pushed, the last first, the caller taking them off after. That is decided by
+the signature alone and is the same for every kind of call above: by name,
+through a vtable or an interface slot, through a delegate, through a word
+(`Sys.Call`, which passes three: a function of fewer reads as many as it
+has). A function has one entry, under its name, and nothing stands between
+a caller and its body. The register allocator treats EAX, ECX and EDX as
 clobbered at each call, so nothing live is left in them.
+
+Code not of this language is met in the machine's C convention, and says so:
+
+- **Calling out**: `Sys.CallNative` and `[LibraryImport]` push every
+  argument (cdecl, or stdcall where declared).
+- **Called from C**: `[UnmanagedCallersOnly]`, the way in that also brings
+  the thread back from C and keeps C's registers.
+- **Called by its address with its arguments pushed, and nothing more**:
+  `[StackArguments]` on a static method -- a C library's start routine for
+  a thread, machine code written at run time, a kernel's assembly. Its
+  label begins `mc_` rather than `m_`, which is how both its body and every
+  call of it by name know.
+
+Assembly that calls an ordinary method by its address (`Sys.AddressOf`)
+passes its first three words in EAX, EDX and ECX, as the language's own
+calls do, and need push nothing.
 
 ## Exceptions
 
@@ -853,7 +876,9 @@ is being called rather than calling. `--base` is the link address and
 at 0x00100000 with `e_entry` physical: the loader copies by `p_paddr`
 and jumps before any mapping exists. `Sys.AddressOf(Type.Method)` is a
 method's address, and a method whose address is taken is neither
-inlined away nor dropped. `@file` response files and `--cpu` are
+inlined away nor dropped; assembly that calls it gives it its arguments
+as "Calls and dispatch" says -- in EAX, EDX and ECX for one to three
+words, or pushed where the method is marked `[StackArguments]`. `@file` response files and `--cpu` are
 accepted. This is what lets `os/kernel/arch/x86/entry.asm` be the
 kernel's real entry, with its own stack and its interrupt stubs, and
 `Arch.SwitchTo` an `iret` from a frame.

@@ -213,8 +213,10 @@ public static class Win32
     /// build the call on the faulting stack, where Windows has just put the
     /// context it is handing over, so it sends the thread here with the
     /// faulting instruction in EAX and its frame in EDX, and this builds it:
-    /// NullFault(frame, pc), its return address the faulting instruction, as
-    /// if that instruction had called it; the stack aligned as a call leaves it.
+    /// NullFault(frame, pc) -- the frame to EAX and the instruction to EDX,
+    /// where it takes its two words -- its return address the faulting
+    /// instruction, as if that instruction had called it; the stack aligned
+    /// as a call leaves it.
     static nuint NullStub()
     {
         nuint stub = VirtualAlloc(0, 32, MemCommit | MemReserve, PageExecuteReadWrite);
@@ -222,10 +224,8 @@ public static class Win32
         nuint entry = Sys.AddressOf(Runtime.NullFault);
         nuint at = 0;
         Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xE4); Sys.Write8(stub + at++, 0xF0); // and esp, -16
-        Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xEC); Sys.Write8(stub + at++, 0x08); // sub esp, 8: after the three pushes, aligned as a call leaves it
-        Sys.Write8(stub + at++, 0x50);                                                                  // push eax   pc
-        Sys.Write8(stub + at++, 0x52);                                                                  // push edx   frame
-        Sys.Write8(stub + at++, 0x50);                                                                  // push eax   the return address
+        Sys.Write8(stub + at++, 0x50);                                                                  // push eax   the return address: aligned as a call leaves it
+        Sys.Write8(stub + at++, 0x92);                                                                  // xchg eax, edx   frame, pc
         Sys.Write8(stub + at++, 0xB9);                                                                  // mov ecx, NullFault
         for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (byte)(entry >> (8 * i)));
         Sys.Write8(stub + at++, 0xFF); Sys.Write8(stub + at++, 0xE1);                                 // jmp ecx

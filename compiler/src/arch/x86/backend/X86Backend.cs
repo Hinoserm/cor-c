@@ -309,6 +309,10 @@ public sealed class X86Backend : IBackend
         string? mapBase = null;
         int mapBaseAt = 0;
         bool cardStub = false, barrierStub = false;
+        // Each function's arguments as it takes them, and the first call of
+        // each name passing them in registers and the first on the stack.
+        Dictionary<string, (int InRegisters, int Parameters)> takes = new(StringComparer.Ordinal);
+        Dictionary<(string Callee, bool InRegisters), (int InRegisters, int Operands, string Caller, int Line)> passes = new();
 
         // GOTOFF is sound only for a name this object defines and does not
         // export: anything exported can be interposed at load time, and then
@@ -327,7 +331,6 @@ public sealed class X86Backend : IBackend
                 if (!f.Exported)
                 {
                     privateNames.Add(f.Name);
-                    privateNames.Add(RegisterArgs.EntryName(f.Name));
                 }
             }
             foreach (DataItem d in module.Data)
@@ -352,10 +355,6 @@ public sealed class X86Backend : IBackend
             foreach (Function f in module.Functions)
             {
                 definedNames.Add(f.Name);
-                // And its register entry, where it has one (RegisterArgs) --
-                // named whether or not: a header read without its body has
-                // no parameters to tell, and a name no call makes is no harm.
-                definedNames.Add(RegisterArgs.EntryName(f.Name));
             }
             foreach (DataItem d in module.Data)
             {
@@ -468,37 +467,27 @@ public sealed class X86Backend : IBackend
             cardStub |= m.UsesCardStub;
             barrierStub |= m.UsesBarrierStub;
             f = m.Source;
-            // A FUNCTION TAKING ITS ARGUMENTS IN REGISTERS (RegisterArgs): its
-            // own name a stub, which loads them from the stack, and the body
-            // under the entry's name where the stub ends -- the stub runs on
-            // into it, with no jump. The body is what is aligned: the stub
-            // lies in the bytes before it, the gap's where they are enough.
-            string bodyName = f.Name;
-            byte[]? stub = null;
-            if (RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) is var inRegisters)
-            {
-                bodyName = RegisterArgs.EntryName(f.Name);
-                stub = RegisterArgs.Stub(inRegisters);
-            }
+            // WHERE IT TAKES ITS ARGUMENTS, and where each call it makes by
+            // name passes them (RegisterArgs.Agree), for the check below
+            // once every function of the unit is in hand.
+            takes[f.Name] = (RegisterArgs.Of(f), f.Params.Count);
+            foreach (Corsac.Lang.Ir.Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is { } named && !NativeCall.Is(i) && !named.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
+                        passes.TryAdd((named, RegisterArgs.Of(i) > 0), (RegisterArgs.Of(i), i.Operands.Count, f.Display ?? f.Name, i.Line));
             // The gap before a function is never executed, but it is filled
             // with real no-ops rather than zeros so a disassembly reads cleanly.
-            int lead = stub?.Length ?? 0;
-            int gap = (functionAlign - (text.Bytes.Count + lead) % functionAlign) % functionAlign;
+            int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
-            if (stub is not null)
-            {
-                // A symbol of its own, its size the loads': a copy of the
-                // function the link cuts out goes with its stub, the two one
-                // run of the section (DuplicateCutter), and the link refuses
-                // to keep the one from a unit and the other from another
-                // (DefinitionCoalescer) -- a stub must run into its own body.
-                obj.Symbols.Add(new Symbol
-                {
-                    Name = f.Name, Section = text, Offset = text.Bytes.Count, Size = stub.Length, IsFunction = true, Global = f.Exported,
-                });
-                text.Bytes.AddRange(stub);
-                defined.Add(f.Name);
-            }
+            // UNDER ITS OWN NAME, where its arguments come as its parameters
+            // say (RegisterArgs: in registers or on the stack, the one way
+            // every caller of it has) -- but for the function whose body
+            // keeps on the stack what comes in registers (an asm block that
+            // names the stack, RegisterArgs.BodyInRegisters): its body is
+            // under a name of this object's own, and the function's name is
+            // on the few instructions after it that push them and call it.
+            bool stackBody = !RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) > 0;
+            string bodyName = stackBody ? RegisterArgs.StackBodyName(f.Name) : f.Name;
             int start = text.Bytes.Count;
             int size;
             // A function the encoder refuses -- the emitted-code audit's
@@ -528,51 +517,37 @@ public sealed class X86Backend : IBackend
                         summary.Calls.Add(new DirectCall(start + ret - 4, callee));
             }
             FunctionSizes.Add((f.Name, size));
+            // (A body under its own local name is this object's alone: copies
+            // of one function in two units may have one this form and the
+            // other the plain one, an asm block inlined into one of them.)
             obj.Symbols.Add(new Symbol
             {
-                Name = bodyName, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported,
+                Name = bodyName, Section = text, Offset = start, Size = size, IsFunction = true, Global = f.Exported && !stackBody,
             });
             defined.Add(bodyName);
-            // A FUNCTION THAT TAKES ITS ARGUMENTS IN REGISTERS BUT WHOSE BODY
-            // KEEPS THEM ON THE STACK (an asm block that names the stack,
-            // RegisterArgs.BodyInRegisters): its register entry a stub the
-            // other way, after the body, with a frame and a frame-table entry
-            // of its own so a walk of the frames goes through it.
-            FrameTable.Entry? reverseFrame = null;
-            if (!RegisterArgs.BodyInRegisters(f) && RegisterArgs.Of(f) is > 0 and var pushed)
+            // THE WAY IN TO A BODY THAT KEEPS ITS ARGUMENTS ON THE STACK
+            // (RegisterArgs.StackEntry), after the body, with a frame and a
+            // frame-table entry of its own so a walk of the frames goes
+            // through it.
+            FrameTable.Entry? entryFrame = null;
+            if (stackBody)
             {
                 int pad = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
                 Encoder.Nops(text.Bytes, pad);
-                (byte[] reverse, int at) = RegisterArgs.ReverseStub(pushed);
-                int reverseStart = text.Bytes.Count;
-                text.Bytes.AddRange(reverse);
-                // CALLED BY A NAME OF THIS OBJECT'S OWN, local: copies of one
-                // function in two units may have one this form and the other
-                // the forward stub (an asm block inlined into one of them).
-                // The link keeps both names from one copy today (the first
-                // in link order wins every name it defines), but the stub
-                // reaching its body by the function's global name would
-                // depend on that. (The local name sits at the body's start,
-                // which keeps the duplicate cutter from cutting a losing
-                // copy of the body: dead bytes, in the rare function this is.)
-                string own = RegisterArgs.StackBodyName(f.Name);
-                obj.Symbols.Add(new Symbol { Name = own, Section = text, Offset = start, Size = size, IsFunction = true, Global = false });
-                // Defined here: left out, the references pass below named it
-                // again as undefined, two symbols of one name, which every
-                // object written for a unit's IR archive refuses (the kernel).
-                defined.Add(own);
-                text.Relocs.Add(new Relocation(reverseStart + at, own, -4, RelocKind.Rel32));
-                string entry = RegisterArgs.EntryName(f.Name);
+                (byte[] entry, int at) = RegisterArgs.StackEntry(RegisterArgs.Of(f));
+                int entryStart = text.Bytes.Count;
+                text.Bytes.AddRange(entry);
+                text.Relocs.Add(new Relocation(entryStart + at, bodyName, -4, RelocKind.Rel32));
                 obj.Symbols.Add(new Symbol
                 {
-                    Name = entry, Section = text, Offset = reverseStart, Size = reverse.Length, IsFunction = true, Global = f.Exported,
+                    Name = f.Name, Section = text, Offset = entryStart, Size = entry.Length, IsFunction = true, Global = f.Exported,
                 });
-                defined.Add(entry);
-                // Named by its own symbol, not the function's display, and
-                // with no file: a trace lists only frames a program would
+                defined.Add(f.Name);
+                // Named by a symbol of its own, not the function's display,
+                // and with no file: a trace lists only frames a program would
                 // name (with a dot, Runtime.TraceOf), and the function is not
                 // listed twice -- its body's frame and this one's.
-                reverseFrame = new FrameTable.Entry(entry, entry, "", reverseStart, reverse.Length, new List<(int, int)>());
+                entryFrame = new FrameTable.Entry(f.Name, f.Name, "", entryStart, entry.Length, new List<(int, int)>());
             }
             if (EmitLinkSummary && !PositionIndependent)
                 Corsac.Lang.Opt.LinkSummary.AddConstantReturns(f, obj, summary);
@@ -585,8 +560,8 @@ public sealed class X86Backend : IBackend
             frames.Add(new FrameTable.Entry(
                 bodyName, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
                 new List<(int, int)>(encoder.Lines)));
-            // The reverse stub's after the body's: the table is in the order of the code.
-            if (reverseFrame is { } stubFrame) frames.Add(stubFrame);
+            // The way in's after the body's: the table is in the order of the code.
+            if (entryFrame is { } wayIn) frames.Add(wayIn);
 
             if (StackMaps)
             {
@@ -738,6 +713,13 @@ public sealed class X86Backend : IBackend
             defined.Add(name);
         }
 
+        // A CALL AND ITS FUNCTION DISAGREEING ON WHERE THE ARGUMENTS ARE
+        // (RegisterArgs.Agree) is an error of this compile: the function has
+        // the one name, and nothing later would tell.
+        foreach (var ((callee, _), call) in passes.OrderBy(pair => pair.Key.Callee, StringComparer.Ordinal).ThenBy(pair => pair.Key.InRegisters))
+            if (takes.TryGetValue(callee, out var taken) && !RegisterArgs.Agree(call.InRegisters, call.Operands, taken.InRegisters, taken.Parameters))
+                errors.Add("'" + call.Caller + "' (line " + call.Line + ") calls '" + callee + "' with " + RegisterArgs.Where(call.InRegisters, call.Operands)
+                    + ", which takes " + RegisterArgs.Where(taken.InRegisters, taken.Parameters));
         if (cardStub)
         {
             // THE CARD STUB (MachineIntrinsics.CardMark): the slot in EAX, every
@@ -768,23 +750,22 @@ public sealed class X86Backend : IBackend
         {
             // THE BARRIER STUB (MachineIntrinsics.Barrier): slot in EAX, value
             // in EDX, every register kept; Runtime.WriteBarrier takes both as
-            // machine words. A collection while it runs finds no map for the frames
-            // above it and reads them whole, which is correct and conservative.
+            // machine words, in those two registers (RegisterArgs), so they
+            // are saved and it is called. A collection while it runs finds no
+            // map for the frames above it and reads them whole, which is
+            // correct and conservative.
             int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
             int at = text.Bytes.Count;
             text.Bytes.AddRange(new byte[]
             {
                 0x51, 0x52, 0x50,           // push ecx; push edx; push eax
-                0x52,                       // push edx              (value)
-                0x50,                       // push eax              (slot)
-                0xE8,                       // call Runtime.WriteBarrier
+                0xE8,                       // call Runtime.WriteBarrier (slot EAX, value EDX)
             });
             text.Relocs.Add(new Relocation(text.Bytes.Count, BarrierRoutine, -4, RelocKind.Rel32));
             text.Bytes.AddRange(new byte[4]);
             text.Bytes.AddRange(new byte[]
             {
-                0x83, 0xC4, 0x08,           // add esp, 8
                 0x58, 0x5A, 0x59,           // pop eax; pop edx; pop ecx
                 0xC3,                       // ret
             });
@@ -827,17 +808,18 @@ public sealed class X86Backend : IBackend
                 text.Bytes.AddRange(new byte[4]);
             }
             // While a mark is under way, `routine` does the whole operation:
-            // `pushes` puts its arguments (first last), `cleanup` is how many
-            // bytes they took, and `restore` the registers popped after; it
-            // RETs with the routine's answer in EAX. Else on past it.
-            void Marked(byte[] saves, byte[] pushes, string routine, byte cleanup, byte[] restore)
+            // `places` puts its arguments where it takes them -- EAX, EDX and
+            // ECX, the first three words (RegisterArgs) -- `saves` and
+            // `restore` are the registers kept round it; it RETs with the
+            // routine's answer in EAX. Else on past it.
+            void Marked(byte[] saves, byte[] places, string routine, byte[] restore)
             {
                 Bytes(0x83, 0x3D); Address(MarkingFlag, RelocKind.Abs32, 0); Bytes(0x00);  // cmp dword [Marking], 0
-                int skip = saves.Length + pushes.Length + 5 + 3 + restore.Length + 1;
+                int skip = saves.Length + places.Length + 5 + restore.Length + 1;
                 Bytes(0x74, (byte)skip);                                                   // je past the call
-                Bytes(saves); Bytes(pushes); Bytes(0xE8);                                  // push ...; call routine
+                Bytes(saves); Bytes(places); Bytes(0xE8);                                  // push ...; call routine
                 Address(routine, RelocKind.Rel32, -4);
-                Bytes(0x83, 0xC4, cleanup); Bytes(restore); Bytes(0xC3);                   // add esp, n; pop ...; ret
+                Bytes(restore); Bytes(0xC3);                                               // pop ...; ret
             }
             // The card of the slot in EAX, every register kept, and RET.
             void CardOfEax()
@@ -848,9 +830,9 @@ public sealed class X86Backend : IBackend
                       0x59, 0xC3);                                                         // done: pop ecx; ret
             }
             // __corsac_refstore: slot EAX, value EDX; every register kept.
-            // Marking: WriteBarrierStore(slot, value) with EAX, ECX and EDX
-            // saved round it.
-            Marked([0x51, 0x52, 0x50], [0x52, 0x50], BarrierStoreRoutine, 0x08, [0x58, 0x5A, 0x59]);
+            // Marking: WriteBarrierStore(slot, value), which takes them where
+            // they are, with EAX, ECX and EDX saved round it.
+            Marked([0x51, 0x52, 0x50], [], BarrierStoreRoutine, [0x58, 0x5A, 0x59]);
             Bytes(0x89, 0x10);                                                             // mov [eax], edx
             CardOfEax();
             // __corsac_cardstore: the same from the store on, for a store
@@ -860,9 +842,10 @@ public sealed class X86Backend : IBackend
             CardOfEax();
             // __corsac_refxchg: slot EAX, value EDX; the old reference in EAX,
             // every other register kept. Marking: WriteBarrierExchange(slot,
-            // value), its answer the old reference, ECX and EDX saved round it.
+            // value), which takes them where they are, its answer the old
+            // reference, ECX and EDX saved round it.
             int exchange = text.Bytes.Count;
-            Marked([0x51, 0x52], [0x52, 0x50], BarrierExchangeRoutine, 0x08, [0x5A, 0x59]);
+            Marked([0x51, 0x52], [], BarrierExchangeRoutine, [0x5A, 0x59]);
             Bytes(0x51, 0x89, 0xC1, 0x89, 0xD0);                                           // push ecx; mov ecx, eax; mov eax, edx
             // ON A 386 THE EXCHANGE TAKES WHAT THE COMPARE-EXCHANGE TAKES:
             // __corsac_refcas below compares and stores under the 386 lock
@@ -897,7 +880,8 @@ public sealed class X86Backend : IBackend
                   0x5A, 0x59, 0xC3);                                                       // done: pop edx; pop ecx; ret
             // __corsac_refcas: slot ECX, value EDX, expected EAX; what the
             // slot held in EAX, every other register kept. Marking:
-            // WriteBarrierCompareExchange(slot, value, expected), ECX and EDX
+            // WriteBarrierCompareExchange(slot, value, expected) -- the slot
+            // to EAX and the expected to ECX, one exchange -- ECX and EDX
             // saved round it.
             int compareExchange = text.Bytes.Count;
             // These sequences are bytes, which the emitted-code audit never
@@ -907,7 +891,7 @@ public sealed class X86Backend : IBackend
             // (its ring, CS's low bits, at most EFLAGS.IOPL: a kernel's ring 0,
             // a ring-1 service with IOPL 1), and else under the runtime's 386
             // lock (Runtime.Atomics386), as Platform.AtomicsEnter does.
-            Marked([0x51, 0x52], [0x50, 0x52, 0x51], BarrierCompareExchangeRoutine, 0x0C, [0x5A, 0x59]);
+            Marked([0x51, 0x52], [0x91], BarrierCompareExchangeRoutine, [0x5A, 0x59]);     // xchg eax, ecx
             if (Target.X86Profile.Has(X86Feature.I486))
             {
                 Bytes(0xF0, 0x0F, 0xB1, 0x11);                                             // lock cmpxchg [ecx], edx

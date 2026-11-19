@@ -256,6 +256,8 @@ public static class Native
         at = Byte(at, 0x75); at = Byte(at, 0x28);                                             // jnz parent (+40)
 
         // The child, on its own stack: [esp] is the argument, [esp+4] the entry.
+        // THE ARGUMENT IN EAX, where an entry of this language takes its one
+        // word, and pushed too, where one C compiled looks: either is called.
         at = Byte(at, 0x31); at = Byte(at, 0xED);                                             // xor ebp,ebp
         at = Byte(at, 0x58);                                                                  // pop eax  (argument)
         at = Byte(at, 0x5A);                                                                  // pop edx  (entry)
@@ -497,8 +499,10 @@ public partial class Thread
         _id = 1;
     }
 
-    /// Where a thread pthread_create made begins: a C start routine, which
-    /// this compiler's convention already is.
+    /// Where a thread pthread_create made begins: a C start routine, its
+    /// argument on the stack as C passes it ([StackArguments]: this
+    /// language's own calls give a word in a register).
+    [StackArguments]
     static nuint NativeEntry(nuint slot)
     {
         Thread? t = _all[(int)slot];

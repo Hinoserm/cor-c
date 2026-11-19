@@ -160,6 +160,7 @@ public class PosixSignalRegistration : IDisposable
     /// that delivers woken (a futex wake, one system call), nothing more.
     /// _pending first: Os.Pause, seeing _unseen, finds the signal pending
     /// or taken by a delivery.
+    [StackArguments]
     public static void Dispatch(int signal)
     {
         if (signal > 0 && signal < MaxSignal)

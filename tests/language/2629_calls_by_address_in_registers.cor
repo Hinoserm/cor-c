@@ -1,21 +1,27 @@
-// test: a function reached by its address takes its stack arguments into registers and is in its body
+// test: a call by a function's address passes its words in registers, as a call by its name does
+// only-target: x86
 // expect-exit: 0
 // expect-output:
 // virtual 800 2200 2800
 // interface 9 14 20
 // delegate 7 30 600
 // direct 7 30 600
+// word 123 12 1 0
+// pushed 506 506 77
 //
-// A function of one to three word arguments has two entries (the x86
-// backend's RegisterArgs): its body, which finds them in registers and is
-// what a direct call reaches, and under its own name a stub that loads them
-// from the stack -- what a virtual call, an interface call and a delegate
-// reach, each by the function's address. The stub has no jump: the body
-// begins where it ends. Here every such call, of one, two and three
-// arguments, with the direct calls beside them; 2629_register_stub_runs_into_body.sh
-// reads the image for the layout itself.
+// A function of one to three words takes them in EAX, EDX and ECX however
+// it is reached (the x86 backend's RegisterArgs): by its name, through a
+// descriptor's slot -- a virtual or an interface method -- through a
+// delegate, or through a word (Sys.Call, which passes three: a function of
+// fewer reads as many as it has). It has the one entry, under its name, and
+// nothing between a caller and its body. Here every such call, of one, two
+// and three arguments. And the method code not of this language calls by
+// its address, its arguments pushed as C pushes them ([StackArguments]):
+// called so (Sys.CallNative), and by its name, where the caller pushes
+// them too. 2629_calls_by_address_in_registers.sh reads the image.
 
 using System;
+using System.Runtime.CompilerServices;
 
 abstract class Shape
 {
@@ -69,6 +75,21 @@ static class Program
         Func<int, int, int, int> volume = Volume;
         Console.WriteLine("delegate " + plus(2) + " " + times(5, 6) + " " + volume(10, 20, 3));
         Console.WriteLine("direct " + Plus(2) + " " + Times(5, 6) + " " + Volume(10, 20, 3));
+
+        Console.WriteLine("word " + Sys.Call(Sys.AddressOf(Program.Digits), 1, 2, 3) + " " + Sys.Call(Sys.AddressOf(Program.Pair), 1, 2, 3)
+            + " " + Sys.Call(Sys.AddressOf(Program.Single), 1, 2, 3) + " " + Sys.Call(Sys.AddressOf(Program.None), 1, 2, 3));
+        Console.WriteLine("pushed " + Sys.CallNative(Sys.AddressOf(Program.Pushed), 5, 6) + " " + Pushed(5, 6) + " " + Sys.CallNative(Sys.AddressOf(Program.PushedOne), 77));
         return 0;
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static nuint Digits(nuint a, nuint b, nuint c) => a * 100 + b * 10 + c;
+    [MethodImpl(MethodImplOptions.NoInlining)] static nuint Pair(nuint a, nuint b) => a * 10 + b;
+    [MethodImpl(MethodImplOptions.NoInlining)] static nuint Single(nuint a) => a;
+    [MethodImpl(MethodImplOptions.NoInlining)] static nuint None() => 0;
+
+    [StackArguments, MethodImpl(MethodImplOptions.NoInlining)]
+    static nuint Pushed(nuint a, nuint b) => a * 100 + b;
+
+    [StackArguments, MethodImpl(MethodImplOptions.NoInlining)]
+    static nuint PushedOne(nuint a) => a;
 }

@@ -377,7 +377,7 @@ public sealed class Module
         if (ProvidedElsewhere is not { } provided || CompilesLibrary) return found;
         foreach (Function f in Functions)
             if (f.SystemCode && !f.Coalescible && !f.GenericCode && !f.Version && f.Name != Entry && !provided.Contains(f.Name) && !OwnsLibraryCode(f.SourcePath)
-                && (f.Name.StartsWith("m_", StringComparison.Ordinal) || f.Name.StartsWith("mx_", StringComparison.Ordinal)))
+                && (f.Name.StartsWith("m_", StringComparison.Ordinal) || f.Name.StartsWith("mx_", StringComparison.Ordinal) || f.Name.StartsWith("mc_", StringComparison.Ordinal)))
                 found.Add(f.Name);
         foreach (DataItem d in Data)
             if (d.SystemCode && !d.Coalescible && !d.GenericCode && !provided.Contains(d.Name) && !OwnsLibraryCode(d.SourcePath)

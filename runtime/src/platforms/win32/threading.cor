@@ -93,7 +93,7 @@ public partial class Thread
         nuint entry = Sys.AddressOf(Thread.ThreadEntry);
         nuint at = 0;
         Sys.Write8(stub + at++, 0x8B); Sys.Write8(stub + at++, 0x44); Sys.Write8(stub + at++, 0x24); Sys.Write8(stub + at++, 0x04); // mov eax, [esp+4]
-        Sys.Write8(stub + at++, 0x50);                                                                                               // push eax   slot
+        Sys.Write8(stub + at++, 0x50);                                                                                               // push eax   slot (and in EAX, where ThreadEntry takes it)
         Sys.Write8(stub + at++, 0xB9);                                                                                               // mov ecx, ThreadEntry
         for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (byte)(entry >> (8 * i)));
         Sys.Write8(stub + at++, 0xFF); Sys.Write8(stub + at++, 0xD1);                                                              // call ecx

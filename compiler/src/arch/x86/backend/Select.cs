@@ -3228,8 +3228,8 @@ internal sealed partial class Selector
     /// <summary>
     /// A LONG BLOCK THE RUNTIME'S WAY: `inline`, the REP form, where the
     /// length is under StreamBytes, and a call of `routine` (the destination,
-    /// the source or the fill value, the length: cdecl, as Runtime.StreamCopy
-    /// and StreamFill take them) where it is not. Here, past every pass that
+    /// the source or the fill value, the length: three words, as
+    /// Runtime.StreamCopy and StreamFill take them) where it is not. Here, past every pass that
     /// reads the MemCopy or the MemSet as what it is (escape, regions, the
     /// fields' rules), and not in the IR, where it would be a call to them.
     /// </summary>
@@ -3244,11 +3244,11 @@ internal sealed partial class Selector
         inline();
         Jmp(done);
         _cur = big;
-        Emit(MOp.Push, n);
-        Emit(MOp.Push, RM(i.Operands[1]));
-        Emit(MOp.Push, RM(i.Operands[0]));
-        CallSymbol(routine);
-        Emit(MOp.Add, Esp, Imm(12));
+        // (Its three words in the registers it takes them in: RegisterArgs.)
+        Mov(Eax, RM(i.Operands[0]));
+        Mov(Edx, RM(i.Operands[1]));
+        Mov(Ecx, n);
+        Emit(new MInstr(MOp.Call, SymbolAddress(routine, 0), Eax, Edx, Ecx) { CallReloc = RelocKind.Rel32 });
         Jmp(done);
         _cur = done;
     }
@@ -3517,20 +3517,23 @@ internal sealed partial class Selector
 
         int bytes = 0;
         // IN REGISTERS where the callee takes them so (RegisterArgs): each
-        // moved into its own, the call to the body's entry naming them as
-        // what it reads, and nothing to take off the stack after.
+        // moved into its own, the call naming them as what it reads, and
+        // nothing to take off the stack after. A call through an address as
+        // one by name: a virtual or an interface slot, a delegate's target,
+        // a word (Sys.Call) -- the address in a register of its own or read
+        // from memory by the call itself (AddressFold), never one of these.
         int inRegisters = native ? 0 : RegisterArgs.Of(i);
         if (inRegisters > 0)
         {
             MOperand[] call = new MOperand[1 + inRegisters];
-            call[0] = SymbolAddress(RegisterArgs.EntryName(i.Callee!), 0);
+            call[0] = i.Op == Opcode.Call ? SymbolAddress(i.Callee!, 0) : R(i.Operands[0]);
             for (int k = 0; k < inRegisters; k++)
             {
                 MReg into = MReg.Of(RegisterArgs.Order[k]);
-                Mov(into, RM(i.Operands[k]));
+                Mov(into, RM(i.Operands[first + k]));
                 call[1 + k] = into;
             }
-            Emit(new MInstr(MOp.Call, call) { CallReloc = RelocKind.Rel32 });
+            Emit(i.Op == Opcode.Call ? new MInstr(MOp.Call, call) { CallReloc = RelocKind.Rel32 } : new MInstr(MOp.CallInd, call));
         }
         else
         {

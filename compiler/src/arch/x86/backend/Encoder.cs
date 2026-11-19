@@ -58,10 +58,10 @@ internal sealed class Encoder
 
     /// <summary>
     /// The symbol the function's code begins at, which a label's address
-    /// counts from: its own name, or the body's entry where the name is the
-    /// stub of a function taking its arguments in registers (RegisterArgs).
+    /// counts from: its own name, or the body's own where the name is the
+    /// way in to a body that keeps its arguments on the stack (RegisterArgs.StackEntry).
     /// </summary>
-    private string BodySymbol => RegisterArgs.BodyInRegisters(_m.Source) ? RegisterArgs.EntryName(_m.Source.Name) : _m.Source.Name;
+    private string BodySymbol => !RegisterArgs.BodyInRegisters(_m.Source) && RegisterArgs.Of(_m.Source) > 0 ? RegisterArgs.StackBodyName(_m.Source.Name) : _m.Source.Name;
 
     public Encoder(Section text, bool optimizeSize = false)
     {

@@ -11,14 +11,13 @@
 // through asm 1 2 kept 4096
 // mixed 10 11 12 13 14 15
 //
-// A function taking one to three words takes them in EAX, EDX and ECX when
-// called directly, and through a stub under its own name when reached by
-// its address -- a delegate, a virtual or an interface method -- and a
-// function whose asm block names the stack keeps them on the stack, its
-// register entry pushing them for it. Each way, with numbers, references
-// and a bool; recursion; an exception thrown through such calls, its trace
-// read back; and calls of four or more words, which stay on the stack,
-// beside them.
+// A function taking one to three words takes them in EAX, EDX and ECX,
+// called by its name or by its address -- a delegate, a virtual or an
+// interface method -- and a function whose asm block names the stack keeps
+// them on the stack, what is under its name pushing them for it. Each way,
+// with numbers, references and a bool; recursion; an exception thrown
+// through such calls, its trace read back; and calls of four or more words,
+// which stay on the stack, beside them.
 
 using System;
 using System.Runtime.CompilerServices;
@@ -93,8 +92,8 @@ static class Program
     }
 
     // An asm function whose body calls on: a throw from below it and a
-    // collection while it holds a reference go through its reverse stub's
-    // frame (it is called directly, so by its register entry).
+    // collection while it holds a reference go through the frame of the
+    // way in to it, which pushes its arguments (RegisterArgs.StackEntry).
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int PushedThrows(int depth, string what)
     {

@@ -48,21 +48,6 @@ public static class DefinitionCoalescer
             // byte-identical optimization choices. Pick a stable input owner.
             foreach (var loser in group.Skip(1)) remove.Add((loser.Object, loser.Symbol));
         }
-        // A FUNCTION AND ITS REGISTER ENTRY FROM ONE UNIT (the x86 backend's
-        // RegisterArgs): the stub under the function's name runs on into the
-        // body under the entry's, with no jump and so no relocation between
-        // them, and one kept where the other's unit lost it would run into
-        // whatever the cut left there. Every unit that defines one defines
-        // both, so the first in link order has both; this says so were that
-        // ever untrue, before a byte is changed.
-        foreach (var pair in groups)
-        {
-            if (!pair.Key.EndsWith(RuntimeAbi.RegisterEntrySuffix, StringComparison.Ordinal)) continue;
-            if (!groups.TryGetValue(RuntimeAbi.FunctionOf(pair.Key), out var function)) continue;
-            if (!ReferenceEquals(function[0].Object, pair.Value[0].Object))
-                errors.Add("'" + pair.Key + "' is kept from " + pair.Value[0].Name + " but its function from " + function[0].Name
-                    + " (a function and its register entry must come from one unit)");
-        }
         if (errors.Count > 0) throw new LinkException(errors);
         // Complete every check before changing any input.
         // EACH OBJECT'S NAMES GATHERED ONCE: asked of its symbol list for

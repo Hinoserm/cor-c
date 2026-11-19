@@ -418,6 +418,12 @@ public sealed partial class Lowering
         // The method's own file first: a partial class's methods are in several.
         (_in, _inPath) = FileOf(m, m.Decl, own: true);
 
+        // [StackArguments] IS A STATIC METHOD'S: one reached through a
+        // descriptor or a delegate's own Invoke is called as every method of
+        // its slot is, its arguments in registers, whatever its name says.
+        if (StackArguments(m) && (!m.Static || m.IsCtor))
+            Error(decl, "[StackArguments] is for a static method: '" + m.Name + "' is called through its object");
+
         if (_moveNext.TryGetValue(m, out AsyncMethod? running))
         {
             EmitMoveNext(running);

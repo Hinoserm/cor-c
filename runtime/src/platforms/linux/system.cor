@@ -818,7 +818,9 @@ public static class Platform
     }
 
     /// The kernel's call on a fault: the signal, its siginfo and the
-    /// interrupted context. Reports once, then dies of the signal.
+    /// interrupted context, on the stack as a signal's frame has them
+    /// ([StackArguments]). Reports once, then dies of the signal.
+    [StackArguments]
     public static void Fault(int signal, nuint si, nuint uc)
     {
 #if !SYSCALL64
@@ -868,10 +870,9 @@ public static class Platform
                 Sys.WriteAddress(uc + 160, sp);
                 Sys.WriteAddress(uc + 168, entry);
 #else
-                // gregs from 20: EBP 7th, ESP 8th, EIP 15th; the arguments
-                // on the stack above the return address, each a word. Aligned
-                // as a call leaves it: the return address at 12 past a
-                // multiple of 16.
+                // gregs from 20: EBP 7th, ESP 8th, EIP 15th. The stack
+                // aligned as a call leaves it: the return address at 12 past
+                // a multiple of 16.
                 // Each greg_t is 4 bytes here.
                 // A leaf that gave EBP a value has its frame found by its
                 // prologue (Runtime.FrameAt), and EBP made that frame again,
@@ -880,9 +881,12 @@ public static class Platform
                 nuint faultFrame = Runtime.FrameAt(faultPc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
                 Sys.WriteAddress(uc + 44, faultFrame);
                 nuint sp = ((Sys.ReadAddress(uc + 48) - 64) & ~(nuint)15) - 20;
+                // NullFault(frame, pc) takes its two words in EAX and EDX
+                // (the 12th and the 10th of the gregs), as every function of
+                // this language does; the return address is what the stack has.
                 Sys.WriteAddress(sp, faultPc);
-                Sys.WriteAddress(sp + 4, faultFrame);
-                Sys.WriteAddress(sp + 8, faultPc);
+                Sys.WriteAddress(uc + 64, faultFrame);
+                Sys.WriteAddress(uc + 56, faultPc);
                 Sys.WriteAddress(uc + 48, sp);
                 Sys.WriteAddress(uc + 76, entry);
 #endif

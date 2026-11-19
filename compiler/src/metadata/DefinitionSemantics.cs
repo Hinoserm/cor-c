@@ -119,17 +119,6 @@ public static class DefinitionSemantics
     public static void Attach(ObjectFile obj, IReadOnlyDictionary<string, byte[]> semantics)
     {
         HashSet<string> definitions = obj.Symbols.Where(symbol => symbol.IsDefined && symbol.Global).Select(symbol => symbol.Name).ToHashSet(StringComparer.Ordinal);
-        // A function's register entry is the function (the x86 backend's
-        // RegisterArgs: its body under the entry's name, its own name the
-        // stub): certified as it is, or every copy of a generic body's entry
-        // in another unit is an uncertified duplicate at the link.
-        Dictionary<string, byte[]> certified = new(StringComparer.Ordinal);
-        foreach ((string name, byte[] hash) in semantics)
-        {
-            if (definitions.Contains(name)) certified[name] = hash;
-            string entry = name + Corsac.Lang.Lto.RuntimeAbi.RegisterEntrySuffix;
-            if (definitions.Contains(entry)) certified[entry] = hash;
-        }
-        CoalescingContract.Attach(obj, certified);
+        CoalescingContract.Attach(obj, semantics.Where(pair => definitions.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal));
     }
 }
