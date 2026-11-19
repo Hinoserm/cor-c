@@ -1454,10 +1454,8 @@ internal sealed partial class Selector
         // in pushed them (RegisterArgs.StackEntry).
         bool inRegisters = RegisterArgs.BodyInRegisters(_f);
         if (inRegisters)
-        {
             for (int k = 0; k < _f.Params.Count; k++)
                 if (RegisterArgs.Register(_f, k) is >= 0 and var register) Mov(Lo(_f.Params[k]), MReg.Of(RegisterArgs.Order[register]));
-        }
         int off = 8;
         for (int at = 0; at < _f.Params.Count; at++)
         {

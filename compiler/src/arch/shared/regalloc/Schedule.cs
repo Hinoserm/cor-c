@@ -489,16 +489,32 @@ public static class Schedule
         // parameter read from the stack into EBX, then a byte of what it
         // points at stored, which had no register left that holds a byte
         // (Utf8Formatter.TryFormat in a library compiled whole, "no register
-        // for v40"). Such a value's instructions stay outside the hold, as
-        // every value's do where the whole machine is crowded.
+        // for v40"). COUNTED AGAINST WHAT THE INSTRUCTION ITSELF NAMES: the
+        // allocator gives any value the first register free, a byte's as
+        // soon as another, so every value an instruction reads may sit in
+        // one and none of those can be put aside while it is read. An
+        // instruction with a byte value stays outside a hold wherever the
+        // registers with a byte half left free in it are fewer than the
+        // values it names -- a byte stored through a base and an index
+        // wants three, and two held are enough to leave it short.
         int[] heldBefore = new int[n + 1];
         int[]? bytes = rf.Classes[0].ByteCapable;
         int[] byteHeldBefore = new int[n + 1];
-        bool[] byteValued = new bool[n];
+        // How many values of the first class each instruction with a byte
+        // value names (0 for one without): the registers it needs at once.
+        int[] byteNeeds = new int[n];
         if (bytes is not null)
+        {
+            HashSet<int> named = new();
             for (int z = 0; z < n; z++)
+            {
+                named.Clear();
+                bool byteValue = false;
                 foreach (Named r in instrs[from + z].Regs)
-                    if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0 && t.ByteOnly(r.Reg)) { byteValued[z] = true; break; }
+                    if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0) { named.Add(r.Reg); byteValue |= t.ByteOnly(r.Reg); }
+                if (byteValue) byteNeeds[z] = named.Count;
+            }
+        }
         foreach (var h in holds)
         {
             bool byteHalf = bytes is not null && Array.IndexOf(bytes, h.Reg) >= 0;
@@ -507,14 +523,16 @@ public static class Schedule
         foreach (var h in holds)
         {
             int d = h.Def, last = HoldEnd(h);
-            bool crowded = false, byteCrowded = false;
+            bool crowded = false;
             for (int p = d + 1; p <= last && !crowded; p++) crowded = heldBefore[p] >= k - 2;
+            // The registers with a byte half free at the hold's fullest.
+            int byteFree = int.MaxValue;
             if (!crowded && bytes is not null && Array.IndexOf(bytes, h.Reg) >= 0)
-                for (int p = d + 1; p <= last && !byteCrowded; p++) byteCrowded = byteHeldBefore[p] >= bytes.Length - 1;
-            if (!crowded && !byteCrowded) continue;
+                for (int p = d + 1; p <= last; p++) byteFree = Math.Min(byteFree, bytes.Length - byteHeldBefore[p]);
+            if (!crowded && byteFree == int.MaxValue) continue;
             for (int z = 0; z < n; z++)
             {
-                if (!(crowded ? valued[z] : byteValued[z])) continue;
+                if (!(crowded ? valued[z] : byteNeeds[z] > byteFree)) continue;
                 if (z < d) Edge(z, d);
                 else if (z > last && last < n) Edge(last, z);
             }
