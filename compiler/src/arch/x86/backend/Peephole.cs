@@ -67,7 +67,8 @@ internal static class Peephole
             ReadModifyWrite(block.Instrs, liveOut[b], Jumped);
             ChooseForCpu(block.Instrs, liveOut[b], Usable(m), Jumped);
             IncDec(block.Instrs);
-            // Again: the rules since leave such pairs of their own behind.
+            // Again: ReadModifyWrite, ChooseForCpu and IncDec above take
+            // instructions from between two moves and leave them a pair.
             SwapBack(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
         }
@@ -599,7 +600,12 @@ internal static class Peephole
     /// is read again (it is what gives x its value). Only where every way
     /// in has the block as its one way on from its end (no conditional
     /// jump to it, no table, its address not taken, no landing pad), and
-    /// no more bytes are added than taken away.
+    /// no more bytes are added than taken away. Where another way does
+    /// jump to it on a condition, a way ending in the copy back takes the
+    /// block's last few instructions for its own instead (below): at most
+    /// five, a few bytes more for two moves fewer on that way. One join a
+    /// round, the registers' liveness read again after each, and at most
+    /// 64 a function: what is left past that stays as it was.
     /// </summary>
     private static void CopyBackAcrossJoin(MFunction m)
     {
@@ -712,7 +718,12 @@ internal static class Peephole
                 if (wanted || !join.EndsUnconditionally || join.Instrs.Count > 6) continue;
                 bool plain = true;
                 for (int k = 1; k < join.Instrs.Count && plain; k++)
-                    plain = join.Instrs[k].Op is MOp.Mov or MOp.Pop or MOp.Epilogue or MOp.Ret
+                    // (A move between registers or of the frame's own
+                    // slots alone: nothing that could fault is taken to
+                    // another block, which may lie under another handler.)
+                    plain = join.Instrs[k].Op is MOp.Pop or MOp.Epilogue or MOp.Ret
+                        || IsMov(join.Instrs[k]) && join.Instrs[k].Operands.All(o => o is MReg or MImm { Symbol: null, Label: null }
+                            || o is MMem { Base: { IsPhys: true, Phys: Gpr.Ebp }, Index: null, Symbol: null, Label: null })
                         || join.Instrs[k].Op == MOp.Jmp && k == join.Instrs.Count - 1 && join.Instrs[k].Operands.Count > 0 && join.Instrs[k].Operands[0] is MLabel;
                 if (!plain) continue;
                 bool taking = false;

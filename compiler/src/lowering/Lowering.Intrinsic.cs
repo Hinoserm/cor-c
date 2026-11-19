@@ -1099,9 +1099,9 @@ public sealed partial class Lowering
             {
                 // AS ANY CALL OF THIS LANGUAGE'S, of a method declaring
                 // (nuint, nuint, nuint): a word an argument, as Sys.Call
-                // declares them -- in registers on i386, where a method of
-                // one to three words takes them (the x86 backend's
-                // RegisterArgs), so one of fewer reads as many as it has --
+                // declares them -- in registers on i386, where a method's
+                // first three words come (the x86 backend's RegisterArgs),
+                // so one of fewer reads as many as it has --
                 // answering a word, or a long (CallLong), two registers on
                 // i386. Code with the machine's own C convention is reached
                 // by Sys.CallNative.

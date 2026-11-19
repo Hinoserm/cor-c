@@ -246,9 +246,12 @@ internal static class RegisterArgs
     /// the same registers and the same bytes onto the stack -- and both
     /// take the registers, or neither. (More operands than parameters is no
     /// harm: a word a function does not read it does not miss, and Sys.Call
-    /// passes three to whatever it is given. Fewer is the two's to settle.
-    /// Who looks in a register and who on the stack is not, and nothing at
-    /// the link would say so: the function has one name whichever it is.)
+    /// passes three to whatever it is given. Fewer is the two's to settle
+    /// where what is missing would have come in a register -- and refused
+    /// where the function would read it from a stack nothing was pushed
+    /// on. Who looks in a register and who on the stack is not theirs to
+    /// settle, and nothing at the link would say so: the function has one
+    /// name whichever it is.)
     /// </summary>
     public static bool Agree(string passes, string takes)
     {
@@ -257,7 +260,16 @@ internal static class RegisterArgs
         if (parameters.Length == 0) return true;
         if (passesStack != takesStack && operands.Length > 0) return false;
         int both = Math.Min(operands.Length, parameters.Length);
-        return operands[..both].SequenceEqual(parameters[..both]);
+        if (!operands[..both].SequenceEqual(parameters[..both])) return false;
+        // The parameters past the call's operands: each a word among the
+        // function's first three, or it lies on the stack.
+        int words = 0;
+        for (int k = 0; k < parameters.Length; k++)
+        {
+            bool register = !takesStack && parameters[k] == 'w' && words++ < Most;
+            if (k >= both && !register) return false;
+        }
+        return true;
     }
 
     /// <summary>The words of a refusal: a Shape, read out.</summary>

@@ -37,6 +37,18 @@ else fail "no function has a second entry ($second names end in \$r)"; fi
 objdump -d --no-show-raw-insn "$work/calls" > "$work/calls.dis"
 body() { awk -v name="$1" 'index($0, "<" name) && /:$/ {p=1; next} p && /^$/ {exit} p' "$work/calls.dis"; }
 
+# Main's calls through a descriptor's slot: a push among the four
+# instructions before one only at the two that pass more than three words
+# or a long (Long.Four with its object, Long.Wide) -- no word that belongs
+# in a register is pushed.
+body m_Program_Main > "$work/main.dis"
+slots=$(grep -cE 'call +\*0x[0-9a-f]+\(%e..\)' "$work/main.dis")
+pushed=$(awk '/push / {seen = 4} /call +\*0x[0-9a-f]+\(%e..\)/ { if (seen > 0) n++ } { if (seen > 0) seen-- } END {print n + 0}' "$work/main.dis")
+if [ "$slots" -ge 6 ]; then pass "Main calls through descriptors' slots ($slots)"
+else fail "Main calls through descriptors' slots ($slots found)"; fi
+if [ "$pushed" -le 2 ]; then pass "only the two of more than three words or a long follow a push ($pushed)"
+else fail "only the two of more than three words or a long follow a push ($pushed of $slots do)"; fi
+
 # A function of three words: no read of an argument above the frame.
 body m_Program_Digits > "$work/digits.dis"
 if [ -s "$work/digits.dis" ] && ! grep -qE '0x(8|c|10)\(%ebp\)|0x(4|8|c)\(%esp\)' "$work/digits.dis"

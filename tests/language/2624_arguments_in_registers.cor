@@ -17,7 +17,8 @@
 // them on the stack, what is under its name pushing them for it. Each way,
 // with numbers, references and a bool; recursion; an exception thrown
 // through such calls, its trace read back; and calls of four or more words,
-// which stay on the stack, beside them.
+// whose first three are in the registers too and the rest pushed, beside
+// them.
 
 using System;
 using System.Runtime.CompilerServices;
