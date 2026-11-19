@@ -43,7 +43,18 @@ public sealed class ArgumentFacts
     /// </summary>
     public SortedDictionary<string, ArgumentVersion[]> Versions { get; } = new(StringComparer.Ordinal);
 
-    public bool IsEmpty => Dropped.Count == 0 && DroppedSlots.Count == 0 && Entries.Count == 0 && Versions.Count == 0;
+    /// <summary>
+    /// Per function, the parameters that were a struct's address and are
+    /// its words now (ArgumentSolver: a struct every caller passes by value
+    /// and the function only reads through): each by its place -- as
+    /// Entries has places -- with the offsets read, ascending. The function
+    /// takes a word for each offset where the address was, and a call of it
+    /// by name loads them from the address it would have passed. Such a
+    /// function has no way in and no versions.
+    /// </summary>
+    public SortedDictionary<string, ArgumentSplit[]> Splits { get; } = new(StringComparer.Ordinal);
+
+    public bool IsEmpty => Dropped.Count == 0 && DroppedSlots.Count == 0 && Entries.Count == 0 && Versions.Count == 0 && Splits.Count == 0;
 
     /// <summary>The name of a version of `function`: its place among the function's versions.</summary>
     public static string VersionName(string function, int ordinal)
@@ -72,6 +83,9 @@ public sealed class ArgumentFacts
 
 /// <summary>A parameter removed, and what it was at every call: a value to put in its place, or Unknown where the function never read it.</summary>
 public readonly record struct ArgumentDrop(int Parameter, ArgumentValue Value);
+
+/// <summary>A struct's address made its words: the parameter's place, and the offsets of the words, ascending.</summary>
+public readonly record struct ArgumentSplit(int Place, int[] Offsets);
 
 /// <summary>A version of a function: its name, and the parameters it has no more with the number each is inside it, ascending.</summary>
 public readonly record struct ArgumentVersion(string Name, ArgumentDrop[] Bound);
@@ -222,6 +236,16 @@ public static class ArgumentSolver
             }
         }
 
+        // Each function's calls by name, as the units said them.
+        Dictionary<string, List<ArgumentCall>> direct = new(StringComparer.Ordinal);
+        foreach ((string _, ArgumentCall call, string[] targets) in calls)
+        {
+            if (call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) continue;
+            if (!direct.TryGetValue(targets[0], out List<ArgumentCall>? of)) direct[targets[0]] = of = new();
+            of.Add(call);
+        }
+        bool directBefore(string name, out List<ArgumentCall>? sites) => direct.TryGetValue(name, out sites);
+
         // What may change at all.
         bool Free(string name) => functions.TryGetValue(name, out ArgumentFunction? f) && !f.Fixed && !disagreed.Contains(name)
             && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
@@ -317,6 +341,36 @@ public static class ArgumentSolver
             if (bySlot) viaSlots += drops.Length;
         }
 
+        // A STRUCT PASSED BY VALUE COMES AS ITS WORDS (ArgumentFacts.Splits;
+        // the scalar replacement of aggregates across calls, as GCC's
+        // IPA-SRA): where a function does nothing with a struct's address
+        // but read words through it (ArgumentFunction.Fields) and every
+        // call of it passes that struct by value, the words are passed --
+        // the first three in registers like any -- and the caller's struct
+        // need be in memory no longer for the call's sake. C# gives the
+        // function the struct as it was at the call; loaded at the call is
+        // exactly that. For a function nothing unseen calls, in no slot,
+        // called by name with its own number of arguments.
+        int splitWords = 0;
+        foreach (string name in functions.Keys)
+        {
+            if (slotted.Contains(name) || slotsOf.ContainsKey(name) || !Free(name) || !called.Contains(name) || !directBefore(name, out List<ArgumentCall>? sites)) continue;
+            ArgumentFunction f = functions[name];
+            HashSet<int> gone = new(facts.Dropped.GetValueOrDefault(name)?.Select(drop => drop.Parameter) ?? Enumerable.Empty<int>());
+            List<ArgumentSplit>? splits = null;
+            int left = 0;
+            for (int k = 0; k < f.Kinds.Length; k++)
+            {
+                if (gone.Contains(k)) continue;
+                int place = left++;
+                if (f.Fields[k] is not { } offsets || k >= 64) continue;
+                if (!sites.All(call => (call.ByValue >> k & 1) != 0)) continue;
+                (splits ??= new()).Add(new(place, offsets));
+                splitWords += offsets.Length;
+            }
+            if (splits is not null) facts.Splits[name] = splits.ToArray();
+        }
+
         // A WAY IN FOR THE COMMONEST CALL (ArgumentFacts.Entries): of the
         // parameters left that come in registers -- the first three words,
         // as the backend has them -- the numbers the most calls by name
@@ -329,18 +383,11 @@ public static class ArgumentSolver
         // The function itself is as it was, so anything may still call it:
         // its address taken, a name kept for others, a slot.
         int entrySites = 0;
-        Dictionary<string, List<ArgumentCall>> direct = new(StringComparer.Ordinal);
-        foreach ((string _, ArgumentCall call, string[] targets) in calls)
-        {
-            if (call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) continue;
-            if (!direct.TryGetValue(targets[0], out List<ArgumentCall>? of)) direct[targets[0]] = of = new();
-            of.Add(call);
-        }
         static int Bytes(long value) => value == 0 ? 2 : 5;
         foreach (string name in functions.Keys)
         {
             ArgumentFunction f = functions[name];
-            if (f.Fixed || f.Copies || disagreed.Contains(name) || misfit.Contains(name) || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
+            if (f.Fixed || f.Copies || disagreed.Contains(name) || misfit.Contains(name) || facts.Splits.ContainsKey(name) || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
             // Its parameters as they are once Dropped has taken its own, and
             // which of those come in registers.
             HashSet<int> gone = new(facts.Dropped.GetValueOrDefault(name)?.Select(drop => drop.Parameter) ?? Enumerable.Empty<int>());
@@ -412,7 +459,7 @@ public static class ArgumentSolver
         foreach (string name in functions.Keys)
         {
             ArgumentFunction f = functions[name];
-            if (f.Fixed || f.Copies || f.Recursive || disagreed.Contains(name) || misfit.Contains(name) || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
+            if (f.Fixed || f.Copies || f.Recursive || disagreed.Contains(name) || misfit.Contains(name) || facts.Splits.ContainsKey(name) || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
             HashSet<int> gone = new(facts.Dropped.GetValueOrDefault(name)?.Select(drop => drop.Parameter) ?? Enumerable.Empty<int>());
             List<(int Place, long Value, long Weight, int Sites, int Cost)> wanted = new();
             int left = 0;
@@ -458,7 +505,8 @@ public static class ArgumentSolver
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants
             + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? "" : ", slots not known whole")
             + "); " + facts.Entries.Count + " functions given a way in with their commonest numbers, for " + entrySites + " calls; "
-            + facts.Versions.Values.Sum(versions => versions.Length) + " versions of " + facts.Versions.Count + " functions for " + versionSites + " calls");
+            + facts.Versions.Values.Sum(versions => versions.Length) + " versions of " + facts.Versions.Count + " functions for " + versionSites + " calls; "
+            + facts.Splits.Count + " functions take " + splitWords + " words where they took a struct's address");
         return facts.IsEmpty ? null : facts;
     }
 }

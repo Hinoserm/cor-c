@@ -110,6 +110,35 @@ public static class ArgumentSummary
                 said.Folds[k] = folds;
                 if (decides) said.Shapes[k] = ArgumentShape.Compared;
             }
+            // A STRUCT'S ADDRESS ONLY READ THROUGH (ArgumentFunction.Fields):
+            // every use of the parameter the address of a load of one word,
+            // at no more than three offsets. Not `this`: a method's object
+            // is the caller's own, which what the method calls may change
+            // while it runs; a struct passed by value is the function's
+            // alone for the call.
+            for (int k = 0; k < f.Params.Count; k++)
+            {
+                VReg parameter = f.Params[k];
+                if (parameter.Type != IrTypes.Word || parameter.Name == "this" || said.Reads[k] == 0 || definitions.ContainsKey(parameter.Id)) continue;
+                SortedSet<int> offsets = new();
+                bool only = true;
+                foreach (Block b in f.Blocks)
+                {
+                    foreach (Instr i in b.Instrs)
+                    {
+                        for (int o = 0; o < i.Operands.Count && only; o++)
+                        {
+                            if (i.Operands[o] is not RegOperand read || read.Reg.Id != parameter.Id) continue;
+                            if (i.Op == Opcode.Load && o == 0 && i.Size == IrTypes.Word.Bytes() && i.Dest is { Type: var loaded } && loaded == IrTypes.Word
+                                && i.Offset is >= 0 and < 4096 && !i.Device) offsets.Add((int)i.Offset);
+                            else only = false;
+                        }
+                        if (!only) break;
+                    }
+                    if (!only) break;
+                }
+                if (only && offsets.Count is > 0 and <= ArgumentFunction.MostFields) said.Fields[k] = offsets.ToArray();
+            }
             // How deep in loops each block lies, by the jumps back: a jump
             // from a block to one laid out at or before it closes a loop
             // over every block between, as the IR lays them. Up to 3.
@@ -152,7 +181,7 @@ public static class ArgumentSummary
                         if (callee == f.Name) said.Recursive = true;
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count];
                         for (int a = 0; a < arguments.Length; a++) arguments[a] = Value(i.Operands[a]);
-                        said.Calls.Add(new ArgumentCall(callee, depth[at], 1, arguments));
+                        said.Calls.Add(new ArgumentCall(callee, depth[at], 1, arguments) { ByValue = i.PassedByValue });
                     }
                     else if (i.Op == Opcode.CallIndirect && !NativeCall.Is(i))
                     {
@@ -175,7 +204,7 @@ public static class ArgumentSummary
         return hints;
 
         static string Key(ArgumentCall call)
-            => call.Callee + "@" + call.Depth + "(" + string.Join(",", call.Arguments.Select(a => a.Kind switch
+            => call.Callee + "@" + call.Depth + "/" + call.ByValue.ToString("x", System.Globalization.CultureInfo.InvariantCulture) + "(" + string.Join(",", call.Arguments.Select(a => a.Kind switch
             {
                 ArgumentValueKind.Constant => "#" + a.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ArgumentValueKind.Address => "&" + a.Symbol + "+" + a.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -300,6 +329,9 @@ public static class ArgumentSummary
 
     private static bool Taken(Function f, ArgumentFacts facts, List<string> errors, bool ways)
     {
+        // Whether a call here now loads a struct's words itself: its
+        // struct may then be the frame's no longer (SlotScalars).
+        bool changed = false;
         {
             Dictionary<Instr, string[]>? slots = null;
             foreach (Block b in f.Blocks)
@@ -310,6 +342,28 @@ public static class ArgumentSummary
                     {
                         if (gone[^1].Parameter >= i.Operands.Count) { errors.Add(Misfit(f, i, callee)); continue; }
                         for (int k = gone.Length - 1; k >= 0; k--) i.Operands.RemoveAt(gone[k].Parameter);
+                    }
+                    // A STRUCT THE FUNCTION TAKES AS ITS WORDS (ArgumentFacts.
+                    // Splits): each loaded here, from the address the call
+                    // would have passed, and passed in the address's place.
+                    if (i.Op == Opcode.Call && i.Callee is { } taking && facts.Splits.TryGetValue(taking, out ArgumentSplit[]? words))
+                    {
+                        if (words[^1].Place >= i.Operands.Count) { errors.Add(Misfit(f, i, taking)); continue; }
+                        List<Instr> loads = new();
+                        for (int k = words.Length - 1; k >= 0; k--)
+                        {
+                            Operand address = i.Operands[words[k].Place];
+                            i.Operands.RemoveAt(words[k].Place);
+                            for (int o = words[k].Offsets.Length - 1; o >= 0; o--)
+                            {
+                                VReg word = f.NewReg(IrTypes.Word);
+                                loads.Insert(0, new Instr { Op = Opcode.Load, Dest = word, Operands = { address }, Offset = words[k].Offsets[o], Size = IrTypes.Word.Bytes(), Signed = true, Line = i.Line });
+                                i.Operands.Insert(words[k].Place, word);
+                            }
+                        }
+                        b.Instrs.InsertRange(at, loads);
+                        at += loads.Count;
+                        changed = true;
                     }
                     // A VERSION OF THE FUNCTION, where the call passes exactly
                     // the numbers one has inside it (ArgumentFacts.Versions):
@@ -366,39 +420,108 @@ public static class ArgumentSummary
                         for (int k = lost.Length - 1; k >= 0; k--) i.Operands.RemoveAt(1 + lost[k]);
                     }
                 }
-            if (!facts.Dropped.TryGetValue(f.Name, out ArgumentDrop[]? drops)) return false;
-            if (drops[^1].Parameter >= f.Params.Count)
+            // Its own parameters: the loads through a struct's address made
+            // copies of its words first (Split), then what the link took
+            // taken, then each such address's parameter made its words --
+            // found by the register itself, wherever the taking left it.
+            List<(VReg Address, VReg[] Words)>? asWords = Split(f, facts, errors);
+            bool numbers = Drop();
+            foreach ((VReg address, VReg[] made) in asWords ?? new())
             {
-                errors.Add("'" + (f.Display ?? f.Name) + "' has " + f.Params.Count + " parameters, and the link took its parameter " + drops[^1].Parameter + " (ArgumentFacts)");
-                return false;
+                int index = f.Params.IndexOf(address);
+                f.Params.RemoveAt(index);
+                f.Params.InsertRange(index, made);
             }
-            // Each given its value where the function begins: in a block of
-            // its own before the first where anything jumps back to that
-            // one, so the value is given once.
-            List<Instr> given = new();
-            for (int k = drops.Length - 1; k >= 0; k--)
+            return changed | numbers | asWords is not null;
+
+            bool Drop()
             {
-                VReg parameter = f.Params[drops[k].Parameter];
-                f.Params.RemoveAt(drops[k].Parameter);
-                if (drops[k].Value.Kind == ArgumentValueKind.Constant)
-                    given.Insert(0, new Instr { Op = Opcode.Copy, Dest = parameter, Operands = { new ImmOperand(drops[k].Value.Number, parameter.Type) } });
+                if (!facts.Dropped.TryGetValue(f.Name, out ArgumentDrop[]? drops)) return false;
+                if (drops[^1].Parameter >= f.Params.Count)
+                {
+                    errors.Add("'" + (f.Display ?? f.Name) + "' has " + f.Params.Count + " parameters, and the link took its parameter " + drops[^1].Parameter + " (ArgumentFacts)");
+                    return false;
+                }
+                // Each given its value where the function begins: in a block of
+                // its own before the first where anything jumps back to that
+                // one, so the value is given once.
+                List<Instr> given = new();
+                for (int k = drops.Length - 1; k >= 0; k--)
+                {
+                    VReg parameter = f.Params[drops[k].Parameter];
+                    f.Params.RemoveAt(drops[k].Parameter);
+                    if (drops[k].Value.Kind == ArgumentValueKind.Constant)
+                        given.Insert(0, new Instr { Op = Opcode.Copy, Dest = parameter, Operands = { new ImmOperand(drops[k].Value.Number, parameter.Type) } });
+                }
+                if (given.Count == 0 || f.Blocks.Count == 0) return false;
+                Block entry = f.Blocks[0];
+                bool reentered = false;
+                foreach (Block b in f.Blocks)
+                    foreach (Instr i in b.Instrs)
+                        foreach (Block target in i.Targets) reentered |= ReferenceEquals(target, entry);
+                if (reentered)
+                {
+                    Block first = f.NewBlock("given");
+                    f.Blocks.RemoveAt(f.Blocks.Count - 1);
+                    f.Blocks.Insert(0, first);
+                    first.Instrs.AddRange(given);
+                    first.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { entry } });
+                }
+                else entry.Instrs.InsertRange(0, given);
+                return true;
             }
-            if (given.Count == 0 || f.Blocks.Count == 0) return false;
-            Block entry = f.Blocks[0];
-            bool reentered = false;
+        }
+
+        // ITS OWN STRUCTS THAT COME AS THEIR WORDS (ArgumentFacts.Splits):
+        // a parameter for each word where the address was, and every load
+        // through the address a copy of its word. Places are of the
+        // parameters once Dropped has taken its own, but the two take from
+        // different parameters, so each finds its own by counting past the
+        // other's: this one first, by the places as they will be.
+        static List<(VReg Address, VReg[] Words)>? Split(Function f, ArgumentFacts facts, List<string> errors)
+        {
+            if (!facts.Splits.TryGetValue(f.Name, out ArgumentSplit[]? splits)) return null;
+            ArgumentDrop[] dropped = facts.Dropped.GetValueOrDefault(f.Name) ?? Array.Empty<ArgumentDrop>();
+            // Each place as an index among the parameters as they are now,
+            // before the link's taking: counted past what it takes.
+            List<(VReg Address, VReg[] Words)> plan = new();
+            Dictionary<int, (int Split, VReg[] Words)> taken = new();
+            for (int s = 0; s < splits.Length; s++)
+            {
+                int place = -1, index = 0;
+                for (; index < f.Params.Count; index++)
+                {
+                    if (Array.FindIndex(dropped, drop => drop.Parameter == index) >= 0) continue;
+                    if (++place == splits[s].Place) break;
+                }
+                if (index >= f.Params.Count)
+                {
+                    errors.Add("'" + (f.Display ?? f.Name) + "' has no parameter at place " + splits[s].Place + " for the link to take as words (ArgumentFacts)");
+                    return null;
+                }
+                VReg address = f.Params[index];
+                VReg[] made = splits[s].Offsets.Select(offset => f.NewReg(IrTypes.Word, address.Name is null ? null : address.Name + "$" + offset)).ToArray();
+                taken[address.Id] = (s, made);
+                plan.Add((address, made));
+            }
             foreach (Block b in f.Blocks)
-                foreach (Instr i in b.Instrs)
-                    foreach (Block target in i.Targets) reentered |= ReferenceEquals(target, entry);
-            if (reentered)
-            {
-                Block first = f.NewBlock("given");
-                f.Blocks.RemoveAt(f.Blocks.Count - 1);
-                f.Blocks.Insert(0, first);
-                first.Instrs.AddRange(given);
-                first.Instrs.Add(new Instr { Op = Opcode.Jump, InitialTargets = new[] { entry } });
-            }
-            else entry.Instrs.InsertRange(0, given);
-            return true;
+                for (int at = 0; at < b.Instrs.Count; at++)
+                {
+                    Instr i = b.Instrs[at];
+                    for (int o = 0; o < i.Operands.Count; o++)
+                    {
+                        if (i.Operands[o] is not RegOperand read || !taken.TryGetValue(read.Reg.Id, out var of)) continue;
+                        int which = i.Op == Opcode.Load && o == 0 && i.Size == IrTypes.Word.Bytes() ? Array.IndexOf(splits[of.Split].Offsets, (int)i.Offset) : -1;
+                        if (which < 0 || i.Dest is null)
+                        {
+                            errors.Add("'" + (f.Display ?? f.Name) + "' (line " + i.Line + ") uses a struct's address the link took as its words for more than reading them (ArgumentFacts)");
+                            return null;
+                        }
+                        b.Instrs[at] = new Instr { Op = Opcode.Copy, Dest = i.Dest, Operands = { of.Words[which] }, Line = i.Line };
+                        break;
+                    }
+                }
+            return plan;
         }
 
         static string Misfit(Function f, Instr i, string callee)

@@ -119,6 +119,8 @@ public sealed class ArgumentHints
                 writer.Write(f.Reads[k]);
                 writer.Write(f.Folds[k]);
                 writer.Write((byte)f.Shapes[k]);
+                writer.Write((byte)(f.Fields[k]?.Length ?? 0));
+                foreach (int offset in f.Fields[k] ?? Array.Empty<int>()) writer.Write(offset);
             }
             writer.Write(f.Calls.Count);
             foreach (ArgumentCall call in f.Calls)
@@ -126,6 +128,7 @@ public sealed class ArgumentHints
                 Text(call.Callee);
                 writer.Write(call.Depth);
                 writer.Write(call.Count);
+                writer.Write(call.ByValue);
                 writer.Write(call.Arguments.Length);
                 foreach (ArgumentValue value in call.Arguments)
                 {
@@ -182,6 +185,18 @@ public sealed class ArgumentHints
                 byte shape = reader.ReadByte();
                 if (shape > (byte)ArgumentShape.Written) throw new ElfFormatException("Invalid argument hint shape");
                 f.Shapes[k] = (ArgumentShape)shape;
+                byte fields = reader.ReadByte();
+                if (fields > ArgumentFunction.MostFields) throw new ElfFormatException("Invalid argument hint fields");
+                if (fields > 0)
+                {
+                    int[] offsets = new int[fields];
+                    for (int o = 0; o < fields; o++)
+                    {
+                        offsets[o] = reader.ReadInt32();
+                        if (offsets[o] < 0 || o > 0 && offsets[o] <= offsets[o - 1]) throw new ElfFormatException("Invalid argument hint fields");
+                    }
+                    f.Fields[k] = offsets;
+                }
             }
             for (int c = Count(13); c > 0; c--)
             {
@@ -189,6 +204,7 @@ public sealed class ArgumentHints
                 byte depth = reader.ReadByte();
                 int sites = reader.ReadInt32();
                 if (sites < 1) throw new ElfFormatException("Invalid argument hint call count");
+                ulong byValue = reader.ReadUInt64();
                 ArgumentValue[] arguments = new ArgumentValue[Count(1)];
                 for (int a = 0; a < arguments.Length; a++)
                 {
@@ -204,7 +220,7 @@ public sealed class ArgumentHints
                     if (arguments[a].Kind == ArgumentValueKind.Parameter && (arguments[a].Number < 0 || arguments[a].Number >= parameters))
                         throw new ElfFormatException("Invalid argument hint parameter");
                 }
-                f.Calls.Add(new ArgumentCall(callee, depth, sites, arguments));
+                f.Calls.Add(new ArgumentCall(callee, depth, sites, arguments) { ByValue = byValue });
             }
             if (!hints.Functions.TryAdd(name, f)) throw new ElfFormatException("Duplicate argument hint function");
         }
@@ -238,7 +254,11 @@ public sealed class ArgumentFunction
         Reads = new int[parameters];
         Folds = new int[parameters];
         Shapes = new ArgumentShape[parameters];
+        Fields = new int[]?[parameters];
     }
+
+    /// <summary>A struct of more words read than this is left an address.</summary>
+    public const int MostFields = 3;
 
     /// <summary>
     /// Its parameters may not be changed whoever calls it: foreign code
@@ -264,12 +284,25 @@ public sealed class ArgumentFunction
     /// <summary>How many instructions the unit judges a known value of each would fold away.</summary>
     public int[] Folds { get; }
     public ArgumentShape[] Shapes { get; }
+    /// <summary>
+    /// Per parameter that is a struct's address the function does nothing
+    /// with but read words through -- no store, no call given it, nothing
+    /// kept of it, and not the object a method is called on -- the offsets
+    /// it reads, ascending (at most MostFields); null for any other. Such a
+    /// struct, where every caller passes it by value, can come as those
+    /// words themselves.
+    /// </summary>
+    public int[]?[] Fields { get; }
     /// <summary>Every call it makes by name -- a function's label, or a virtual slot's name (VirtualTargets.Prefix).</summary>
     public List<ArgumentCall> Calls { get; } = new();
 }
 
 /// <summary>A call: whom, how deep in loops, how many times the function makes it just so, and what stands in each argument's place.</summary>
-public readonly record struct ArgumentCall(string Callee, byte Depth, int Count, ArgumentValue[] Arguments);
+public readonly record struct ArgumentCall(string Callee, byte Depth, int Count, ArgumentValue[] Arguments)
+{
+    /// <summary>The arguments that are structs passed by value, a bit each by its place (Instr.PassedByValue, the call's own first argument 0).</summary>
+    public ulong ByValue { get; init; }
+}
 
 public enum ArgumentValueKind : byte { Unknown, Constant, Address, Parameter }
 

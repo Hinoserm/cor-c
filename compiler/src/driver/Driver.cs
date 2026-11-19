@@ -1511,7 +1511,12 @@ public static class Driver
                     bool given = Corsac.Lang.Opt.ArgumentSummary.Apply(module, argumentFacts, misfits);
                     if (misfits.Count > 0) throw new InvalidOperationException(string.Join("; ", misfits));
                     // What a number in a parameter's place folds, folded.
-                    if (given) Corsac.Lang.Opt.ArgumentSummary.Folding(workers).Run(module);
+                    // And a struct no call passes the address of any more made registers (SlotScalars).
+                    if (given)
+                    {
+                        foreach (Function changedBody in module.Functions) Corsac.Lang.Opt.SlotScalars.ApplyAndClean(changedBody);
+                        Corsac.Lang.Opt.ArgumentSummary.Folding(workers).Run(module);
+                    }
                 }
                 Phase("arguments");
             }

@@ -126,6 +126,14 @@ public static class BackendProtocol
                 writer.Write(arguments.DroppedSlots.Count);
                 foreach ((string slot, int[] gone) in arguments.DroppedSlots)
                 { WriteText(writer, slot); writer.Write(gone.Length); foreach (int k in gone) writer.Write(k); }
+                // The structs that come as their words: by function, each place and its offsets.
+                writer.Write(arguments.Splits.Count);
+                foreach ((string name, ArgumentSplit[] splits) in arguments.Splits)
+                {
+                    WriteText(writer, name); writer.Write(splits.Length);
+                    foreach (ArgumentSplit split in splits)
+                    { writer.Write(split.Place); writer.Write(split.Offsets.Length); foreach (int offset in split.Offsets) writer.Write(offset); }
+                }
                 // The versions: by function, each one's name and what it has inside it.
                 writer.Write(arguments.Versions.Count);
                 foreach ((string name, ArgumentVersion[] versions) in arguments.Versions)
@@ -367,6 +375,27 @@ public static class BackendProtocol
                         if (gone[k] < 1 || k > 0 && gone[k] <= gone[k - 1]) throw new InvalidDataException("Invalid backend argument fact");
                     }
                     if (!arguments.DroppedSlots.TryAdd(slot, gone)) throw new InvalidDataException("Duplicate backend argument fact");
+                }
+                int split = reader.ReadInt32();
+                if (split < 0 || split > 4000000) throw new InvalidDataException("Invalid backend argument fact");
+                for (int i = 0; i < split; i++)
+                {
+                    string name = ReadText(reader); int entries = reader.ReadInt32();
+                    if (entries < 1 || entries > 64) throw new InvalidDataException("Invalid backend argument fact");
+                    ArgumentSplit[] splits = new ArgumentSplit[entries];
+                    for (int k = 0; k < entries; k++)
+                    {
+                        int place = reader.ReadInt32(), words = reader.ReadInt32();
+                        if (place < 0 || k > 0 && place <= splits[k - 1].Place || words < 1 || words > ArgumentFunction.MostFields) throw new InvalidDataException("Invalid backend argument fact");
+                        int[] offsets = new int[words];
+                        for (int o = 0; o < words; o++)
+                        {
+                            offsets[o] = reader.ReadInt32();
+                            if (offsets[o] < 0 || o > 0 && offsets[o] <= offsets[o - 1]) throw new InvalidDataException("Invalid backend argument fact");
+                        }
+                        splits[k] = new(place, offsets);
+                    }
+                    if (!arguments.Splits.TryAdd(name, splits)) throw new InvalidDataException("Duplicate backend argument fact");
                 }
                 int versioned = reader.ReadInt32();
                 if (versioned < 0 || versioned > 4000000) throw new InvalidDataException("Invalid backend argument fact");
