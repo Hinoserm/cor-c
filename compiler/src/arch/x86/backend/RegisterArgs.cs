@@ -34,9 +34,10 @@ namespace Corsac.Lang.X86;
 /// own arguments (stdcall: CalleePops) nor one that keeps its caller's
 /// registers (C enters it -- [UnmanagedCallersOnly]'s way in,
 /// Function.KeepsCallerRegisters): those take theirs from the stack, as C
-/// passes them, and so does a function without a managed name (`m_`,
-/// `mx_`). Not a call into C (Sys.CallNative, NativeCall), nor a machine
-/// intrinsic. Assembly that calls a function of this language by its
+/// passes them, and so does the one marked [StackArguments], by its name
+/// (`mc_`). Not a call into C (Sys.CallNative, NativeCall), nor a machine
+/// intrinsic. Every other function this backend compiles is called so,
+/// the ones the compiler makes among them (Managed). Assembly that calls a function of this language by its
 /// address gives it its first three words in EAX, EDX and ECX; a function
 /// of four words or more, or with a 64-bit or a floating one among them,
 /// has them all on the stack, the caller taking them off, as ever.
@@ -52,8 +53,22 @@ internal static class RegisterArgs
     /// <summary>The local name the entry of a function whose body keeps its arguments on the stack calls that body by (StackEntry).</summary>
     public static string StackBodyName(string name) => name + "$s";
 
+    /// <summary>
+    /// Whether a name is a function's that this convention is for: every
+    /// one this backend compiles -- a method's (`m_`, `mx_`) and those the
+    /// compiler makes beside them, which stand in descriptors' slots as
+    /// methods do and are called through them as methods are (a box's way
+    /// to its struct's member, `__box_call_`; an array's and a delegate's
+    /// own, `__array`, `__delegate`) -- but the one marked to take its
+    /// arguments from the stack ([StackArguments], `mc_`), a call into C
+    /// (NativeCall) and a machine intrinsic.
+    /// </summary>
     private static bool Managed(string name)
-        => name.StartsWith("m_", StringComparison.Ordinal) || name.StartsWith("mx_", StringComparison.Ordinal);
+        => !name.StartsWith(StackArgumentsPrefix, StringComparison.Ordinal) && !name.StartsWith(NativeCall.Prefix, StringComparison.Ordinal)
+            && !name.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal);
+
+    /// <summary>What begins the label of a method marked [StackArguments] (Lowering.StackArgumentsPrefix).</summary>
+    public const string StackArgumentsPrefix = "mc_";
 
     /// <summary>How many of its arguments a function takes in registers: all of them, or none (0).</summary>
     public static int Of(Function f)
