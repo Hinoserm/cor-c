@@ -4,6 +4,7 @@
 // found 2 True
 // counted True
 // quarantine adds none True
+// held leaves none True
 //
 // WHO KEEPS A MODULE (Gc.ReferencesIntoReport). A forced-out module's range
 // stays while anything refers into it, and a count says only how many do.
@@ -55,6 +56,13 @@ static class Program
         long quarantined = Gc.CountReferencesInto(at, at + 8);
         Gc.Unquarantine(at, at + 8);
         Say("quarantine adds none", quarantined <= counted);
+        // Asking what is held of the range's types (Gc.CountHeld, a plain
+        // rmmod's question) leaves nothing of its own pointing there: its
+        // bounds were statics of the collector's, set to the range's own
+        // addresses and left so, and the report after it found them.
+        long held = Gc.CountHeld(at, at + 8, at, at, new nuint[0]);
+        long after = Gc.ReferencesIntoReport(at, at + 8, 10);
+        Say("held leaves none", held >= 0 && after == found);
         return 0;
     }
 }

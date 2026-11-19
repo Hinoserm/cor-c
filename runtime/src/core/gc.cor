@@ -10443,6 +10443,17 @@ public static class Gc
             _heldCycle = 0;
             _heldExempts = 0;
             _heldExempt = 0;
+            // THE BOUNDS GO WITH THE ASKING: they are addresses in the
+            // module's own range (its base, its statics' range), these
+            // statics are roots the conservative scan reads, and left set
+            // they were three references into a module being removed --
+            // CountReferencesInto, asked next, counted them, and the module
+            // was quarantined for good. Nothing reads them once the phase
+            // is 0 (PassedOver, CountHeldBlock, phase 2 inside Collect).
+            _heldLow = 0;
+            _heldHigh = 0;
+            _heldRootFrom = 0;
+            _heldRootTo = 0;
             Sys.KeepAlive(exempt);
             if (phase == 2) return _heldFound;
         }
