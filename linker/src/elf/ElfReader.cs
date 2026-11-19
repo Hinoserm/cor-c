@@ -247,7 +247,7 @@ public static class ElfReader
     /// </summary>
     internal static bool LeftInFile(string name, SectionKind kind)
         => kind is SectionKind.Code or SectionKind.ReadOnlyData or SectionKind.Data || name is Corsac.Lang.Lto.IrArchive.SectionName or Corsac.Lang.Lto.LifetimeHints.SectionName or Corsac.Lang.Lto.HeapRecords.SectionName
-            or Corsac.Lang.Lto.RegionHints.SectionName or ManagedLayoutContract.SectionName
+            or Corsac.Lang.Lto.RegionHints.SectionName or Corsac.Lang.Lto.ArgumentHints.SectionName or ManagedLayoutContract.SectionName
             or Corsac.Lang.Lto.CoalescingContract.SectionName or Corsac.Lang.Lto.InterruptNotes.SectionName or Corsac.Lang.Lto.X87Notes.SectionName;
 
     /// <summary>

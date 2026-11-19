@@ -110,6 +110,23 @@ public static class BackendProtocol
             writer.Write(facts.Heap switch { null => (byte)2, true => (byte)1, false => (byte)0 });
             writer.Write(facts.CompletedReady?.Count ?? -1);
             foreach (string ready in facts.CompletedReady ?? Enumerable.Empty<string>()) WriteText(writer, ready);
+            // The arguments the whole program found no arguments (ArgumentFacts):
+            // by function, each parameter gone and the number in its place (or
+            // none: never read); then by slot, the arguments its calls pass no more.
+            ArgumentFacts? arguments = facts.Arguments;
+            writer.Write(arguments?.Dropped.Count ?? -1);
+            if (arguments is not null)
+            {
+                foreach ((string name, ArgumentDrop[] drops) in arguments.Dropped)
+                {
+                    WriteText(writer, name); writer.Write(drops.Length);
+                    foreach (ArgumentDrop drop in drops)
+                    { writer.Write(drop.Parameter); writer.Write(drop.Value.Kind == ArgumentValueKind.Constant); writer.Write(drop.Value.Number); }
+                }
+                writer.Write(arguments.DroppedSlots.Count);
+                foreach ((string slot, int[] gone) in arguments.DroppedSlots)
+                { WriteText(writer, slot); writer.Write(gone.Length); foreach (int k in gone) writer.Write(k); }
+            }
         }
         writer.Flush();
     }
@@ -300,6 +317,40 @@ public static class BackendProtocol
             {
                 facts.CompletedReady = new(StringComparer.Ordinal);
                 for (int k = 0; k < completed; k++) facts.CompletedReady.Add(ReadText(reader));
+            }
+            int dropped = reader.ReadInt32();
+            if (dropped < -1 || dropped > 4000000) throw new InvalidDataException("Invalid backend argument fact");
+            if (dropped >= 0)
+            {
+                ArgumentFacts arguments = new();
+                for (int i = 0; i < dropped; i++)
+                {
+                    string name = ReadText(reader); int entries = reader.ReadInt32();
+                    if (entries < 1 || entries > 4096) throw new InvalidDataException("Invalid backend argument fact");
+                    ArgumentDrop[] drops = new ArgumentDrop[entries];
+                    for (int k = 0; k < entries; k++)
+                    {
+                        int parameter = reader.ReadInt32(); bool constant = reader.ReadBoolean(); long number = reader.ReadInt64();
+                        if (parameter < 0 || k > 0 && parameter <= drops[k - 1].Parameter) throw new InvalidDataException("Invalid backend argument fact");
+                        drops[k] = new(parameter, constant ? ArgumentValue.Of(number) : default);
+                    }
+                    if (!arguments.Dropped.TryAdd(name, drops)) throw new InvalidDataException("Duplicate backend argument fact");
+                }
+                int slots = reader.ReadInt32();
+                if (slots < 0 || slots > 4000000) throw new InvalidDataException("Invalid backend argument fact");
+                for (int i = 0; i < slots; i++)
+                {
+                    string slot = ReadText(reader); int entries = reader.ReadInt32();
+                    if (entries < 1 || entries > 4096) throw new InvalidDataException("Invalid backend argument fact");
+                    int[] gone = new int[entries];
+                    for (int k = 0; k < entries; k++)
+                    {
+                        gone[k] = reader.ReadInt32();
+                        if (gone[k] < 1 || k > 0 && gone[k] <= gone[k - 1]) throw new InvalidDataException("Invalid backend argument fact");
+                    }
+                    if (!arguments.DroppedSlots.TryAdd(slot, gone)) throw new InvalidDataException("Duplicate backend argument fact");
+                }
+                facts.Arguments = arguments;
             }
         }
         return new(input, output, imports, retained, facts);

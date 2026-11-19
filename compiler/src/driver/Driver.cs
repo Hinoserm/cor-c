@@ -1337,7 +1337,7 @@ public static class Driver
         // late passes and all of code generation, the unit's largest phases.
         // The bytes are what the object gets either way; held as bytes, they
         // are a fraction of the objects.
-        byte[]? regionHintBytes = null, lifetimeHintBytes = null, heapRecordBytes = null;
+        byte[]? regionHintBytes = null, lifetimeHintBytes = null, heapRecordBytes = null, argumentHintBytes = null;
         Dictionary<string, string[]>? archivedGone = null;
         // --with: objects somebody else made. Assembly, in practice -- the
         // kernel's entry stub and its interrupt vectors, which no language
@@ -1470,6 +1470,10 @@ public static class Driver
                 // and a unit with no summary keeps the link from finding regions.
                 // Nor under --no-regions: the link would place the unit's sites in regions all the same.
                 regionHintBytes = !regions ? null : Corsac.Lang.Opt.RegionSummary.Of(m).Write();
+                // And what its functions' parameters are and its calls pass,
+                // from the same IR, for the link to judge over every unit
+                // (ArgumentSummary; Lto.ArgumentSolver).
+                argumentHintBytes = Corsac.Lang.Opt.ArgumentSummary.Of(m).Write();
                 // And the archive's edges a program without a collector lacks (HeapRecords.Gone).
                 archivedGone = Corsac.Lang.Opt.Escape.GoneOf(m);
                 // Escape writes the heap records with them as it makes them (Module.HeapRecordsAsBytes).
@@ -1487,6 +1491,35 @@ public static class Driver
                 beforeLate = m => preinitRecords = Corsac.Lang.Metadata.IrUnitCodec.Snapshot(m, false, null);
             Optimise(module, Value(args, "--trace-opt"), args.Contains("--experimental-ssa"), args.Contains("--opt-size"), args.Contains("--experimental-batch"), Value(args, "--batch-without"), workers, beforeLate, Value(args, "--region-report"), regions: regions);
             Phase("optimise");
+            // A WHOLE PROGRAM IN ONE MODULE judges its own arguments, as the
+            // link judges a program of units (Lto.ArgumentSolver): every
+            // function and every call is here, so what all a function's
+            // callers pass is known now. Last of the IR's passes, as at the
+            // link (ArgumentSummary.Apply). Not a unit's compile nor a
+            // library's, whose callers are elsewhere; and no slot's family,
+            // which only the link's reading of every descriptor knows whole.
+            if (!module.LeavesLinkHints && !module.PreserveExports && module.Entry is not null && !args.Contains("--no-argument-facts"))
+            {
+                Corsac.Lang.Lto.ArgumentHints said = Corsac.Lang.Opt.ArgumentSummary.Of(module);
+                string programEntry = module.Entry;
+                if (Corsac.Lang.Lto.ArgumentSolver.Solve(new[] { said }, new Dictionary<string, string[]>(StringComparer.Ordinal),
+                        name => name == programEntry || module.Imports.Contains(name), closed: false,
+                        Switches.ReportPhases ? Console.Error.WriteLine : null) is { } argumentFacts)
+                {
+                    List<string> misfits = new();
+                    bool given = Corsac.Lang.Opt.ArgumentSummary.Apply(module, argumentFacts, misfits);
+                    if (misfits.Count > 0) throw new InvalidOperationException(string.Join("; ", misfits));
+                    // What a number in a parameter's place folds, folded.
+                    if (given)
+                    {
+                        Corsac.Lang.Opt.Pipeline folding = new() { Rounds = 3, Workers = workers };
+                        folding.Passes.Add(new Corsac.Lang.Opt.ConstantFold { AcrossFunction = true }); folding.Passes.Add(new Corsac.Lang.Opt.ConstantAndCopyPropagation());
+                        folding.Passes.Add(new Corsac.Lang.Opt.DeadCodeElimination()); folding.Passes.Add(new Corsac.Lang.Opt.IdentitySelect()); folding.Passes.Add(new Corsac.Lang.Opt.BranchSimplify());
+                        folding.Run(module);
+                    }
+                }
+                Phase("arguments");
+            }
             // The lifetime hints are complete once the passes are (Escape and
             // its owned-unit pass wrote them): written now, as the region
             // hints were, and the hints themselves let go.
@@ -1870,6 +1903,7 @@ public static class Driver
                 if (lifetimeHintBytes is not null) Corsac.Lang.Lto.LifetimeHints.Attach(obj, lifetimeHintBytes);
                 if (heapRecordBytes is not null) Corsac.Lang.Lto.HeapRecords.Attach(obj, heapRecordBytes);
                 if (linkRecords is not null && regionHintBytes is not null) Corsac.Lang.Lto.RegionHints.Attach(obj, regionHintBytes);
+                if (linkRecords is not null && argumentHintBytes is not null) Corsac.Lang.Lto.ArgumentHints.Attach(obj, argumentHintBytes);
                 // Each body let go as it is copied: nothing reads the records after.
                 if (linkRecords is not null) Corsac.Lang.Lto.IrArchive.AttachConsuming(obj, linkRecords);
                 else IrUnitCodec.Attach(obj, module, x86Backend.StackMaps);

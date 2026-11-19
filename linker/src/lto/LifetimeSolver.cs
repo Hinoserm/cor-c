@@ -51,6 +51,13 @@ public sealed class LifetimeFacts
 
     /// <summary>The state words the image holds at "completed" (Preinit.LastCompleted): a guard of one is never taken.</summary>
     public HashSet<string>? CompletedReady { get; set; }
+
+    /// <summary>
+    /// For a unit of a closed image: the parameters the whole program found
+    /// no parameters (ArgumentSolver), gone from their functions and from
+    /// every call of them. Null: none. The same for every unit.
+    /// </summary>
+    public ArgumentFacts? Arguments { get; set; }
 }
 
 /// <summary>What the whole program does to one object's fields: the owned field rules' summary, solved.</summary>

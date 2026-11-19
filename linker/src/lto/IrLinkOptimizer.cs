@@ -49,6 +49,8 @@ public static class IrLinkOptimizer
         Dictionary<ObjectFile, LifetimeHints> hints = new();
         List<LifetimeHints> hintOrder = new();
         HashSet<ObjectFile> regionHints = new();
+        // What each unit said of its functions' arguments, in link order.
+        List<ArgumentHints> argumentHints = new();
         Dictionary<string, ObjectFile> owners = new(StringComparer.Ordinal);
         // IN LINK ORDER, not by name: an object's name is a digest of its
         // source's full path, and the same tree checked out elsewhere was
@@ -64,6 +66,7 @@ public static class IrLinkOptimizer
             if (archive is not null && LifetimeHints.Read(input.Object, pool) is LifetimeHints unit)
             { hints.Add(input.Object, unit); hintOrder.Add(unit); }
             if (archive is not null && input.Object.Sections.Any(section => section.Name == RegionHints.SectionName)) regionHints.Add(input.Object);
+            if (archive is not null && ArgumentHints.Read(input.Object) is ArgumentHints said) argumentHints.Add(said);
             foreach (Symbol symbol in input.Object.Symbols.Where(symbol => symbol.Global && symbol.IsDefined))
                 owners.TryAdd(symbol.Name, input.Object);
         }
@@ -191,6 +194,25 @@ public static class IrLinkOptimizer
             : new(StringComparer.Ordinal);
         if (regionReport is not null) Console.Error.WriteLine("lifetimes: rta " + (lifetimeMade is null ? "off" : lifetimeMade.Summary()));
         LifetimeSolver? lifetimes = enabled && hints.Count > 0 ? new LifetimeSolver(hintOrder, virtuals) : null;
+        // THE ARGUMENTS THE WHOLE PROGRAM FINDS NO ARGUMENTS (ArgumentSolver),
+        // where every unit with IR said its own and the image has an entry:
+        // a function keeps its parameters where anything the units' IR does
+        // not show may call it -- a name an object without IR refers to, one
+        // the image is asked to keep for others (a kernel's for its modules),
+        // the entry and what a link roots. A slot's family is known whole
+        // only in an image closed to the world: no names kept for others, no
+        // open types, not a module of a kernel, foreign code naming what it
+        // calls.
+        ArgumentFacts? argumentFacts = null;
+        if (enabled && lifetimes is not null && closedImageEntry is not null && argumentHints.Count == archives.Count && argumentHints.Count > 0)
+        {
+            HashSet<string> kept = new(keep ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
+            bool anything = foreign.Contains("*");
+            argumentFacts = ArgumentSolver.Solve(argumentHints, virtuals,
+                name => anything || foreign.Contains(name) || kept.Contains(name) || name == closedImageEntry || (kernelNames?.Contains(name) ?? false),
+                closed: !anything && keep is null && !moduleOfKernel && !openTypes,
+                Console.Error.WriteLine);
+        }
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
         LinkTimings.Phase("virtual targets and lifetime solve");
         // THE WHOLE PROGRAM'S ANSWERS, for a closed image only -- a library's
@@ -504,6 +526,7 @@ public static class IrLinkOptimizer
                     .Concat(plan.Imports.SelectMany(import => import.Body.Calls))
                     .Concat(own.Named().Select(named => named.Callee).Where(virtuals.ContainsKey)).Distinct(StringComparer.Ordinal));
             facts.ForeignCatchable = catchable; facts.OwnedFields = ownedFields;
+            facts.Arguments = argumentFacts;
             facts.Regions = regionFacts?.GetValueOrDefault(original);
             // Not in a module: its link lays down no kernel type made.
             // ONLY THE WORDS THIS UNIT'S KEPT CODE AND ITS IMPORTS NAME
@@ -735,7 +758,8 @@ public static class IrLinkOptimizer
         (int sites, int sitesFreed) = DefineFieldSites(inputs, siteOrder, lifetimes, moduleOfKernel);
         foreach (var input in inputs)
             input.Object.Sections.RemoveAll(section => section.Name == IrArchive.SectionName || section.Name == LifetimeHints.SectionName
-                || section.Name == RegionHints.SectionName || section.Name == HeapRecords.SectionName);
+                || section.Name == RegionHints.SectionName || section.Name == HeapRecords.SectionName
+                || section.Name == ArgumentHints.SectionName);
         LinkTimings.Phase("field sites");
         if (lifetimes is not null || sites > 0)
             Console.Error.WriteLine("LTO lifetimes: units with hints=" + hints.Count + ", units gaining=" + lifetimeUnits

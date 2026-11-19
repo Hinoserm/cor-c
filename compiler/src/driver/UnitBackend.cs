@@ -461,6 +461,20 @@ public sealed class UnitBackend : IUnitBackend
             // it was made; the copies it leaves propagated and the dead gone.
             SlotScalars.ApplyAndClean(function);
             local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
+            // THE ARGUMENTS THE WHOLE PROGRAM FOUND NO ARGUMENTS, gone last
+            // of all (ArgumentSummary.Apply): from this function's parameters
+            // and from every call it now makes, the ones it was given by the
+            // inliners above among them. A call that does not fit what the
+            // link took is the link's fault or this run's, and ends it. Where
+            // the function was given a number in a parameter's place, what
+            // that number folds is folded.
+            if (facts?.Arguments is { } arguments)
+            {
+                List<string> misfits = new();
+                bool given = ArgumentSummary.Apply(function, arguments, misfits);
+                if (misfits.Count > 0) throw new InvalidDataException(string.Join("; ", misfits));
+                if (given) cleanup.Run(local);
+            }
             LandingPadHomes.Run(local);
             if (dumping) { System.Text.StringBuilder regenerated = new(); function.Dump(regenerated); Console.Error.WriteLine("== regenerated\n" + regenerated); }
             return function;
