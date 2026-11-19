@@ -1457,15 +1457,6 @@ internal sealed partial class Selector
         {
             for (int k = 0; k < _f.Params.Count; k++)
                 if (RegisterArgs.Register(_f, k) is >= 0 and var register) Mov(Lo(_f.Params[k]), MReg.Of(RegisterArgs.Order[register]));
-            // AND NOTHING IS MOVED IN FRONT OF THEM: the scheduler takes an
-            // instruction that waits on nothing to where it suits it, and
-            // one put before these reads holds EAX, EDX and ECX past it --
-            // a parameter from the stack read first, then a byte of what it
-            // points at stored, which only those and EBX can hold, and the
-            // allocator had no register for it (Utf8Formatter.TryFormat,
-            // a library compiled whole). A fence: nothing encoded, and no
-            // instruction crosses it (Effect.Barrier).
-            if (RegisterArgs.Of(_f) > 0) Emit(MOp.CompilerFence);
         }
         int off = 8;
         for (int at = 0; at < _f.Params.Count; at++)

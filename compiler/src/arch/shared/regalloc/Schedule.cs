@@ -424,7 +424,7 @@ public static class Schedule
         // copy that set an array's keep (Lowering.Addressed) landed between
         // the loads and the trap with every register held, and the allocator
         // had none for it ("no register for v42").
-        List<(int Def, List<int> Reads, bool ToEnd)> holds = new();
+        List<(int Def, List<int> Reads, bool ToEnd, int Reg)> holds = new();
         bool[] valued = new bool[n];
         for (int z = 0; z < n; z++)
             foreach (Named r in instrs[from + z].Regs)
@@ -443,7 +443,7 @@ public static class Schedule
                 foreach (Named r in instrs[from + x].Regs)
                 {
                     if (r.Reg >= rf.FirstVirtual || !handed.Contains(r.Reg) || (r.Role & Role.Def) == 0) continue;
-                    if (open.TryGetValue(r.Reg, out var w) && w.Reads.Count > 0) holds.Add((w.Def, w.Reads, false));
+                    if (open.TryGetValue(r.Reg, out var w) && w.Reads.Count > 0) holds.Add((w.Def, w.Reads, false, r.Reg));
                     open[r.Reg] = (x, new List<int>());
                 }
             }
@@ -454,8 +454,8 @@ public static class Schedule
             // half is dropped, holds nothing.
             foreach ((int reg, (int Def, List<int> Reads) w) in open)
             {
-                if (held.ReadPast(from + n, reg)) holds.Add((w.Def, w.Reads, true));
-                else if (w.Reads.Count > 0) holds.Add((w.Def, w.Reads, false));
+                if (held.ReadPast(from + n, reg)) holds.Add((w.Def, w.Reads, true, reg));
+                else if (w.Reads.Count > 0) holds.Add((w.Def, w.Reads, false, reg));
             }
             // AND ONE HELD THROUGH THE STRETCH, named nowhere in it: written or
             // read before it in the block and read after it before anything
@@ -468,9 +468,9 @@ public static class Schedule
             // taken as read there, every register would hold everywhere.
             foreach (int reg in handed)
                 if (!open.ContainsKey(reg) && held.NamedBefore(from, reg) && held.ReadPast(from + n, reg, endReads: false))
-                    holds.Add((-1, new List<int>(), true));
+                    holds.Add((-1, new List<int>(), true, reg));
         }
-        int HoldEnd((int Def, List<int> Reads, bool ToEnd) h) => h.ToEnd ? n : h.Reads[^1];
+        int HoldEnd((int Def, List<int> Reads, bool ToEnd, int Reg) h) => h.ToEnd ? n : h.Reads[^1];
         // ONLY WHERE THEY CROWD THE MACHINE: a hold inside which, at some
         // point of the selector's order, all but two of the registers are
         // held. A multiply's eax and edx are two of six, and keeping values
@@ -478,18 +478,43 @@ public static class Schedule
         // The order made is checked again below, holds and all: none leaves
         // a value fewer than three free -- a store's base, index and value --
         // where the selector's order left it more.
+        //
+        // AND THE REGISTERS WITH A BYTE HALF COUNTED BY THEMSELVES, for an
+        // instruction naming a value that must be in one (ByteOnly): four of
+        // the six on i386, and a hold of all but one of them crowds such a
+        // value where it does not crowd the machine. A function's first
+        // three words come in EAX, EDX and ECX, held from its entry to the
+        // moves that read them -- three of the four -- and an instruction
+        // that waits on nothing was taken in front of those moves: a
+        // parameter read from the stack into EBX, then a byte of what it
+        // points at stored, which had no register left that holds a byte
+        // (Utf8Formatter.TryFormat in a library compiled whole, "no register
+        // for v40"). Such a value's instructions stay outside the hold, as
+        // every value's do where the whole machine is crowded.
         int[] heldBefore = new int[n + 1];
+        int[]? bytes = rf.Classes[0].ByteCapable;
+        int[] byteHeldBefore = new int[n + 1];
+        bool[] byteValued = new bool[n];
+        if (bytes is not null)
+            for (int z = 0; z < n; z++)
+                foreach (Named r in instrs[from + z].Regs)
+                    if (r.Reg >= rf.FirstVirtual && t.ClassOf(r.Reg) == 0 && t.ByteOnly(r.Reg)) { byteValued[z] = true; break; }
         foreach (var h in holds)
-            for (int p = h.Def + 1; p <= HoldEnd(h); p++) heldBefore[p]++;
+        {
+            bool byteHalf = bytes is not null && Array.IndexOf(bytes, h.Reg) >= 0;
+            for (int p = h.Def + 1; p <= HoldEnd(h); p++) { heldBefore[p]++; if (byteHalf) byteHeldBefore[p]++; }
+        }
         foreach (var h in holds)
         {
             int d = h.Def, last = HoldEnd(h);
-            bool crowded = false;
+            bool crowded = false, byteCrowded = false;
             for (int p = d + 1; p <= last && !crowded; p++) crowded = heldBefore[p] >= k - 2;
-            if (!crowded) continue;
+            if (!crowded && bytes is not null && Array.IndexOf(bytes, h.Reg) >= 0)
+                for (int p = d + 1; p <= last && !byteCrowded; p++) byteCrowded = byteHeldBefore[p] >= bytes.Length - 1;
+            if (!crowded && !byteCrowded) continue;
             for (int z = 0; z < n; z++)
             {
-                if (!valued[z]) continue;
+                if (!(crowded ? valued[z] : byteValued[z])) continue;
                 if (z < d) Edge(z, d);
                 else if (z > last && last < n) Edge(last, z);
             }
