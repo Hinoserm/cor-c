@@ -4823,6 +4823,11 @@ public sealed partial class Lowering
 
             case UnOp.AddressOf when _b.MethodAddresses.TryGetValue(u, out MethodSymbol? addressed):
                 // `&Method`: the function pointer is the method's address.
+                // Not a [StackArguments] method's: a call through the pointer
+                // is this language's own, its words in registers.
+                if (StackArguments(addressed))
+                    Error(u, "'" + addressed.Name + "' is [StackArguments]: a call through a function pointer would pass its arguments in registers. "
+                        + "Take its address with Sys.AddressOf, for code that pushes them (Sys.CallNative)");
                 Require(addressed);
                 return _e.Address(CallLabel(addressed));
 

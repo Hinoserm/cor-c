@@ -26,7 +26,15 @@ public sealed class TargetContract
     /// image agrees, and a module agrees with its kernel.
     /// </summary>
     public bool StoreSequences { get; }
-    public const uint I386Machine = 486, I386Convention = 1;
+    /// <summary>
+    /// i386's convention as these objects have it: 3, a function of one to
+    /// three machine words taking them in EAX, EDX and ECX however it is
+    /// called and any other from the stack, the caller taking them off; x87
+    /// floating results. (1 was every argument pushed, with a second entry
+    /// for the register form: an object of that making is refused, where it
+    /// would link and call wrongly.)
+    /// </summary>
+    public const uint I386Machine = 486, I386Convention = 3;
     /// <summary>The contract's bytes.</summary>
     public const int Size = 32;
 
@@ -61,7 +69,7 @@ public sealed class TargetContract
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), 0);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(8), LongMode ? 8u : 4u); // Pointer bytes.
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(12), LongMode ? Amd64Machine : I386Machine);
-        // i386 cdecl with x87 floating results, or System V AMD64 with SSE ones.
+        // i386's (I386Convention) with x87 floating results, or System V AMD64 with SSE ones.
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), LongMode ? Amd64Convention : I386Convention);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(20), TlsModel);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(24), (RequiresManagedLayouts ? 1u : 0u) | (RequiresCodeGenerationContract ? 2u : 0u));

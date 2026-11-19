@@ -421,8 +421,12 @@ public sealed partial class Lowering
         // [StackArguments] IS A STATIC METHOD'S: one reached through a
         // descriptor or a delegate's own Invoke is called as every method of
         // its slot is, its arguments in registers, whatever its name says.
+        // Nor an async one's or a generic type's static, whose body is another
+        // function under another label (the state machine's, BodyLabel).
         if (StackArguments(m) && (!m.Static || m.IsCtor))
             Error(decl, "[StackArguments] is for a static method: '" + m.Name + "' is called through its object");
+        else if (StackArguments(m) && (m.Async || ContextStatic(m)))
+            Error(decl, "[StackArguments] is for a plain static method: '" + m.Name + "' is async, or a generic type's, and its body is not the function its address names");
 
         if (_moveNext.TryGetValue(m, out AsyncMethod? running))
         {

@@ -1098,11 +1098,28 @@ public sealed partial class Lowering
             case "CallLong":
             {
                 // AS ANY CALL OF THIS LANGUAGE'S, of a method declaring
-                // (nuint, nuint, nuint): a word an argument, as Sys.Call declares
-                // them and as the kernel's entry code pushes them for
-                // Arch.TrapEntry, answering a word -- or a long (CallLong),
-                // two registers on i386. Code with the machine's own C
-                // convention is reached by Sys.CallNative.
+                // (nuint, nuint, nuint): a word an argument, as Sys.Call
+                // declares them -- in registers on i386, where a method of
+                // one to three words takes them (the x86 backend's
+                // RegisterArgs), so one of fewer reads as many as it has --
+                // answering a word, or a long (CallLong), two registers on
+                // i386. Code with the machine's own C convention is reached
+                // by Sys.CallNative.
+                // WHERE THE METHOD IS NAMED RIGHT HERE (Sys.AddressOf as the
+                // first argument), one that would not find them is refused:
+                // marked [StackArguments], or of more than three parameters,
+                // or with one no word holds (a float, a 64-bit one on i386). Through a word kept
+                // elsewhere nothing can tell, and the rule is the caller's.
+                if (call.Args.Count > 0 && call.Args[0] is CallExpr taken && _b.AddressOf.TryGetValue(taken, out MethodSymbol? called))
+                {
+                    if (StackArguments(called))
+                        Error(call, "'" + called.Name + "' is [StackArguments]: Sys." + name + " passes its arguments as this language's calls do. Call it with Sys.CallNative");
+                    else if (called.Params.Count > target.Params.Count - 1
+                        || called.Params.Any(p => !p.ByRef && IrTypes.Of(p.Type) is IrType wide
+                            && (wide is IrType.F32 or IrType.F64 || wide == IrType.I64 && IrTypes.Word != IrType.I64)))
+                        Error(call, "Sys." + name + " passes " + (target.Params.Count - 1) + " machine words: '" + called.Name + "' takes "
+                            + (called.Params.Count > target.Params.Count - 1 ? called.Params.Count + " parameters" : "a parameter that is not one"));
+                }
                 VReg fn = Address(call, target, 0);
                 List<Operand> args = new();
                 for (int i = 1; i < target.Params.Count; i++)

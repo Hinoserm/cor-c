@@ -66,23 +66,29 @@ move written 8B EC, so a fault in it finds its frame from the prologue's
 shape (Runtime.FrameAt) and the chain of callers above it is whole: a leaf
 is never anyone's caller.
 
-**Calling convention: cdecl,** exactly as GCC uses it on i386 System V.
+**Calling convention: GCC's `regparm(3)` for one to three words, cdecl for
+the rest,** the same for every call of the language's own ("Calls and
+dispatch" has the whole of it).
 
-- Arguments are pushed right to left. Each occupies a whole number of 4-byte
-  stack slots: `bool`, `byte`, `short`, `char`, `int`, `uint`, pointers and
-  references take one; `long`, `ulong` and `double` take two; `float` takes
-  one, stored as a 32-bit IEEE value.
-- `this` is the first argument, so it is pushed last and sits at `[EBP+8]`.
-- The caller removes the arguments after the call.
+- A function whose arguments are one to three machine words -- `bool`,
+  `byte`, `short`, `char`, `int`, `uint`, pointers and references -- takes
+  them in EAX, EDX and ECX, the first first. `this` is the first argument.
+- Any other has every argument pushed right to left, each a whole number of
+  4-byte stack slots: the above take one; `long`, `ulong` and `double` take
+  two; `float` takes one, stored as a 32-bit IEEE value. `this` is pushed
+  last and sits at `[EBP+8]`, and the caller removes the arguments after
+  the call.
 - Integers, pointers and references return in EAX. `long` and `ulong` return
   in EDX:EAX, high half in EDX. `float` and `double` return in ST(0).
 - EBX, ESI, EDI and EBP are preserved across a call. EAX, ECX and EDX are not.
 - The stack is 4-byte aligned at every call; 16-byte alignment is not
   required and not maintained. Nothing on a 486 wants it.
 
-Choosing cdecl rather than something of our own means COR-C# code and C code
-compiled by GCC can call each other without thunks, which is what porting a
-C library onto the kernel needs, and it means gdb understands every frame.
+Both halves are GCC's own on i386 (`-mregparm=3`, as Linux's kernel is
+built, and plain cdecl), so C compiled to match calls and is called without
+thunks, and gdb understands every frame. C compiled the ordinary way is met
+in cdecl where the code says so: `Sys.CallNative` and `[LibraryImport]` out,
+`[UnmanagedCallersOnly]` and `[StackArguments]` in.
 
 **Sizes.** A machine word is 4 bytes. `long` and `ulong` are 8 bytes and
 live in a register pair, low half in the lower-numbered operand. `double` is

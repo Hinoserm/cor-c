@@ -474,7 +474,11 @@ public sealed class X86Backend : IBackend
             foreach (Corsac.Lang.Ir.Block b in f.Blocks)
                 foreach (Instr i in b.Instrs)
                     if (i.Op == Opcode.Call && i.Callee is { } named && !NativeCall.Is(i) && !named.StartsWith(MachineIntrinsics.Prefix, StringComparison.Ordinal))
-                        passes.TryAdd((named, RegisterArgs.Of(i) > 0), (RegisterArgs.Of(i), i.Operands.Count, f.Display ?? f.Name, i.Line));
+                    {
+                        int inRegisters = RegisterArgs.Of(i);
+                        if (!passes.ContainsKey((named, inRegisters > 0)))
+                            passes.Add((named, inRegisters > 0), (inRegisters, i.Operands.Count, f.Display ?? f.Name, i.Line));
+                    }
             // The gap before a function is never executed, but it is filled
             // with real no-ops rather than zeros so a disassembly reads cleanly.
             int gap = (functionAlign - text.Bytes.Count % functionAlign) % functionAlign;
