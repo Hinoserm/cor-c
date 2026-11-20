@@ -147,7 +147,8 @@ public static class ArgumentSolver
         // Each function once: the first unit's in link order. A generic
         // body compiled into several units is the same function in each,
         // with the same parameters; where two units disagree on how many,
-        // nothing is known of it.
+        // nothing is known of it -- nor where one name is two units' own
+        // functions, not copies of one (a name local to each).
         Dictionary<string, ArgumentFunction> functions = new(StringComparer.Ordinal);
         HashSet<string> disagreed = new(StringComparer.Ordinal), addressed = new(StringComparer.Ordinal), slotted = new(StringComparer.Ordinal);
         // Functions some call passes other than their parameters' number of
@@ -157,7 +158,7 @@ public static class ArgumentSolver
         foreach (ArgumentHints unit in units)
         {
             foreach ((string name, ArgumentFunction f) in unit.Functions)
-                if (!functions.TryAdd(name, f) && !functions[name].Kinds.AsSpan().SequenceEqual(f.Kinds)) disagreed.Add(name);
+                if (!functions.TryAdd(name, f) && (!functions[name].Kinds.AsSpan().SequenceEqual(f.Kinds) || !f.Copies || !functions[name].Copies)) disagreed.Add(name);
             addressed.UnionWith(unit.Addressed);
             slotted.UnionWith(unit.Slotted);
             unnamed |= unit.Unnamed;
@@ -424,7 +425,9 @@ public static class ArgumentSolver
             {
                 if (gone.Contains(k)) { place[k] = -1; continue; }
                 place[k] = left++;
-                register[k] = f.Kinds[k] == ArgumentKind.Word && words++ < 3;
+                // (Its place one of the eight a way in's name can say, two hex
+                // digits of a bit each: ArgumentFacts.EntryGiven.)
+                register[k] = f.Kinds[k] == ArgumentKind.Word && words++ < 3 && place[k] < 8;
             }
             // Each call's numbers in those places, as (place, number) pairs.
             List<(List<(int Place, long Value)> Set, int Count)> said = new();

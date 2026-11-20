@@ -671,7 +671,10 @@ function specialisation). Then, in each unit, as the last pass over its IR:
   fetch; on a K8 the bytes in its instruction cache.
 
 A function whose address is taken, or that is named for others, or called
-from code the link does not see, keeps all of its arguments.
+from code the link does not see, keeps all of its arguments; it may still
+have versions and a way in, which its own name and parameters leave as they
+were. A slot's family is judged only at a link of a closed image -- one
+module compiled whole sees no descriptor's every reader.
 `--no-argument-facts` turns the judging off.
 
 ## Exceptions

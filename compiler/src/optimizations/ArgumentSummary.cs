@@ -216,58 +216,74 @@ public static class ArgumentSummary
     /// <summary>
     /// THE VERSIONS THE LINK ASKED FOR, made by the unit that defines each
     /// function (ArgumentFacts.Versions), before Apply and from the function
-    /// as it still is: a function of the parameters left once the version's
-    /// numbers and what Dropped takes are gone, whose whole body is a call
-    /// of the function with those numbers written in -- then the function
-    /// put in its place (Inline.Expand, as ConstantSpecialize makes its
-    /// own) and what the numbers fold folded. Exported as the function is,
+    /// as it still is (Version), each put after the functions; the made
+    /// versions and their functions returned. Exported as the function is,
     /// so the calls of every unit find it.
     /// </summary>
-    public static void MakeVersions(Module m, ArgumentFacts facts)
+    public static List<(Function Target, Function Version, ArgumentVersion Asked)> MakeVersions(Module m, ArgumentFacts facts)
     {
-        if (facts.Versions.Count == 0) return;
+        List<(Function, Function, ArgumentVersion)> made = new();
+        if (facts.Versions.Count == 0) return made;
         Pipeline folding = Folding(1);
         int functions = m.Functions.Count;
         for (int at = 0; at < functions; at++)
         {
             Function target = m.Functions[at];
             if (!facts.Versions.TryGetValue(target.Name, out ArgumentVersion[]? versions) || target.Blocks.Count == 0) continue;
-            ArgumentDrop[] dropped = facts.Dropped.GetValueOrDefault(target.Name) ?? Array.Empty<ArgumentDrop>();
             foreach (ArgumentVersion asked in versions)
             {
-                Function version = new(asked.Name, target.Returns)
-                {
-                    Exported = target.Exported, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
-                    FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, SourcePath = target.SourcePath, InsideState = target.InsideState,
-                };
-                // The function's parameters in order: one the link took is
-                // its number (or nothing, never read: a zero); one of those
-                // left is the version's number where the version sets it,
-                // and the version's own parameter where it does not.
-                Operand[] arguments = new Operand[target.Params.Count];
-                int place = 0;
-                for (int k = 0; k < target.Params.Count; k++)
-                {
-                    VReg parameter = target.Params[k];
-                    int taken = Array.FindIndex(dropped, drop => drop.Parameter == k);
-                    if (taken >= 0) { arguments[k] = new ImmOperand(dropped[taken].Value.Kind == ArgumentValueKind.Constant ? dropped[taken].Value.Number : 0, parameter.Type); continue; }
-                    int set = Array.FindIndex(asked.Bound, one => one.Parameter == place);
-                    place++;
-                    if (set >= 0) { arguments[k] = new ImmOperand(asked.Bound[set].Value.Number, parameter.Type); continue; }
-                    VReg copy = version.NewReg(parameter.Type, parameter.Name);
-                    copy.Number = parameter.Number;
-                    version.Params.Add(copy);
-                    arguments[k] = RegOperand.Of(copy);
-                }
-                Block entry = version.NewBlock("entry");
-                Builder builder = new(version, entry);
-                VReg? result = builder.Call(target.Name, target.Returns, arguments);
-                builder.Ret(result is null ? null : RegOperand.Of(result));
-                Inline.Expand(version, entry, 0, entry.Instrs[0], target);
-                folding.Run(version);
+                Function version = Version(target, asked, facts, folding);
                 m.Functions.Add(version);
+                made.Add((target, version, asked));
             }
         }
+        return made;
+    }
+
+    /// <summary>
+    /// One version of `target` (a function of the parameters left once the
+    /// version's numbers and what Dropped takes are gone), whose whole body
+    /// is a call of the function with those numbers written in -- then the
+    /// function put in its place (Inline.Expand, as ConstantSpecialize makes
+    /// its own) and what the numbers fold folded. `target` is read, not
+    /// changed. Called only by name: never through a slot, never a body any
+    /// pass after takes in, and kept a call where the function is.
+    /// </summary>
+    public static Function Version(Function target, ArgumentVersion asked, ArgumentFacts facts, Pipeline folding)
+    {
+        ArgumentDrop[] dropped = facts.Dropped.GetValueOrDefault(target.Name) ?? Array.Empty<ArgumentDrop>();
+        Function version = new(asked.Name, target.Returns)
+        {
+            Exported = target.Exported, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
+            FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, SourcePath = target.SourcePath, InsideState = target.InsideState,
+            Version = true, NoInlining = target.NoInlining, Unjudged = target.Unjudged,
+        };
+        // The function's parameters in order: one the link took is its
+        // number (or nothing, never read: a zero); one of those left is the
+        // version's number where the version sets it, and the version's own
+        // parameter where it does not.
+        Operand[] arguments = new Operand[target.Params.Count];
+        int place = 0;
+        for (int k = 0; k < target.Params.Count; k++)
+        {
+            VReg parameter = target.Params[k];
+            int taken = Array.FindIndex(dropped, drop => drop.Parameter == k);
+            if (taken >= 0) { arguments[k] = new ImmOperand(dropped[taken].Value.Kind == ArgumentValueKind.Constant ? dropped[taken].Value.Number : 0, parameter.Type); continue; }
+            int set = Array.FindIndex(asked.Bound, one => one.Parameter == place);
+            place++;
+            if (set >= 0) { arguments[k] = new ImmOperand(asked.Bound[set].Value.Number, parameter.Type); continue; }
+            VReg copy = version.NewReg(parameter.Type, parameter.Name);
+            copy.Number = parameter.Number;
+            version.Params.Add(copy);
+            arguments[k] = RegOperand.Of(copy);
+        }
+        Block entry = version.NewBlock("entry");
+        Builder builder = new(version, entry);
+        VReg? result = builder.Call(target.Name, target.Returns, arguments);
+        builder.Ret(result is null ? null : RegOperand.Of(result));
+        Inline.Expand(version, entry, 0, entry.Instrs[0], target);
+        folding.Run(version);
+        return version;
     }
 
     /// <summary>The passes that fold what a number in a parameter's place lets them: constants and copies carried, branches decided, the dead gone.</summary>
@@ -329,8 +345,10 @@ public static class ArgumentSummary
 
     private static bool Taken(Function f, ArgumentFacts facts, List<string> errors, bool ways)
     {
-        // Whether a call here now loads a struct's words itself: its
-        // struct may then be the frame's no longer (SlotScalars).
+        // Whether a call here passes less or other than it did: what it
+        // passed may be dead now -- arithmetic for a number never read, a
+        // struct's address now its words -- and its struct the frame's no
+        // longer (SlotScalars, and the cleanup after).
         bool changed = false;
         {
             Dictionary<Instr, string[]>? slots = null;
@@ -342,6 +360,7 @@ public static class ArgumentSummary
                     {
                         if (gone[^1].Parameter >= i.Operands.Count) { errors.Add(Misfit(f, i, callee)); continue; }
                         for (int k = gone.Length - 1; k >= 0; k--) i.Operands.RemoveAt(gone[k].Parameter);
+                        changed = true;
                     }
                     // A STRUCT THE FUNCTION TAKES AS ITS WORDS (ArgumentFacts.
                     // Splits): each loaded here, from the address the call
@@ -382,6 +401,7 @@ public static class ArgumentSummary
                             instead.Operands.AddRange(i.Operands);
                             for (int k = version.Bound.Length - 1; k >= 0; k--) instead.Operands.RemoveAt(version.Bound[k].Parameter);
                             b.Instrs[at] = i = instead;
+                            changed = true;
                             break;
                         }
                     }
@@ -418,6 +438,7 @@ public static class ArgumentSummary
                         if (lost is null) continue;
                         if (1 + lost[^1] >= i.Operands.Count) { errors.Add(Misfit(f, i, names[0])); continue; }
                         for (int k = lost.Length - 1; k >= 0; k--) i.Operands.RemoveAt(1 + lost[k]);
+                        changed = true;
                     }
                 }
             // Its own parameters: the loads through a struct's address made

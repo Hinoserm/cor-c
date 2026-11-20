@@ -478,8 +478,6 @@ public sealed class X86Backend : IBackend
                         (string, string) key = (named, RegisterArgs.Shape(i));
                         if (!passes.ContainsKey(key)) passes.Add(key, (f.Display ?? f.Name, i.Line));
                     }
-            // The gap before a function is never executed, but it is filled
-            // with real no-ops rather than zeros so a disassembly reads cleanly.
             // UNDER ITS OWN NAME, where its arguments come as its parameters
             // say (RegisterArgs: in registers or on the stack, the one way
             // every caller of it has) -- but for the function whose body
@@ -499,6 +497,9 @@ public sealed class X86Backend : IBackend
             int wayInField = -1;
             FrameTable.Entry? wayInFrame = null;
             if (f.ConstantEntry is { } way) (wayIn, wayInField) = RegisterArgs.ConstantEntry(f, way.Given, stackBody);
+            // The gap before a function (before its way in, where it has
+            // one) is never executed, but it is filled with real no-ops
+            // rather than zeros so a disassembly reads cleanly.
             int gap = (functionAlign - (text.Bytes.Count + (wayIn?.Length ?? 0)) % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
             if (wayIn is not null)

@@ -62,6 +62,8 @@ public sealed class UnitBackend : IUnitBackend
         // an archive taken after them holds, and the per-function steps below
         // go on from there.
         bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
+        // Each version the link asked for, by its name: its function's, that function as the late passes left it, and the version (below).
+        Dictionary<string, (string Target, byte[] Body, ArgumentVersion Asked)> versionOf = new(StringComparer.Ordinal);
         // A kernel module's unit is part of a shared object, and is made again as one.
         bool positionIndependent = IrUnitCodec.ReadSettings(archive).Settings is { PositionIndependent: true };
         // A kernel module's unit, by the mark its compile put in it
@@ -152,12 +154,23 @@ public sealed class UnitBackend : IUnitBackend
             else if (positionIndependent || moduleUnit)
                 PruneAfterLate(module, archive, original.Symbols.Where(symbol => symbol.IsDefined)
                     .SelectMany(symbol => new[] { IrKey.OfFunction(symbol.Name), IrKey.OfData(symbol.Name) }).ToHashSet());
-            // The versions the link asked this unit for (ArgumentFacts.
-            // Versions), from the functions as the passes above left them.
-            if (facts?.Arguments is { Versions.Count: > 0 } asked) ArgumentSummary.MakeVersions(module, asked);
+            // THE VERSIONS THE LINK ASKED THIS UNIT FOR (ArgumentFacts.
+            // Versions): each a function of the unit's from here, made now as
+            // the passes above left its function -- what the backend lays out
+            // and costs -- and made again when it is loaded (Load), from a
+            // copy of its function taken now, which goes through every pass
+            // below under the function's own name: the link's lifetime rules
+            // and region sites are the function's, and a version is the
+            // function, a number written in.
+            if (facts?.Arguments is { Versions.Count: > 0 } asked)
+                foreach ((Function target, Function version, ArgumentVersion made) in ArgumentSummary.MakeVersions(module, asked))
+                    versionOf.Add(version.Name, (target.Name, IrFunctionCodec.Write(target), made));
             lateDone = Environment.TickCount64;
         }
         Corsac.Lang.Lto.LinkTimings.Memory("backend late passes");
+        // The function each version is of, as a version is made: the name
+        // its rules and imports are found by.
+        string SourceOf(int index) => versionOf.TryGetValue(module.Functions[index].Name, out var source) ? source.Target : module.Functions[index].Name;
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
         Dictionary<string, byte[]> semantics = CoalescingContract.Read(original);
         foreach (IrImport import in imports)
@@ -195,7 +208,7 @@ public sealed class UnitBackend : IUnitBackend
         }
         IrImport[] Selected(int index)
         {
-            if (!archive.Entries.TryGetValue(IrKey.OfFunction(module.Functions[index].Name), out IrArchiveEntry? record)) return Array.Empty<IrImport>();
+            if (!archive.Entries.TryGetValue(IrKey.OfFunction(SourceOf(index)), out IrArchiveEntry? record)) return Array.Empty<IrImport>();
             List<IrImport> chosen = new();
             HashSet<string> seen = new(StringComparer.Ordinal);
             // ITS FORWARDERS AS IT STANDS, as well as its record's calls: the late passes
@@ -219,7 +232,7 @@ public sealed class UnitBackend : IUnitBackend
                         if (forwarding.Contains(callee) && seen.Add(callee)) chosen.Add(available[callee]);
             return chosen.ToArray();
         }
-        long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue(IrKey.OfFunction(module.Functions[index].Name), out IrArchiveEntry? record) ? record.DecodeBytes : 0)
+        long Cost(int index) => checked(3 * ((archive.Entries.TryGetValue(IrKey.OfFunction(SourceOf(index)), out IrArchiveEntry? record) ? record.DecodeBytes : 0)
             + Selected(index).Sum(import => import.DecodeBytes)) + 512 * 1024);
         // The unit's read-only items, made once before any worker asks for
         // them: made on first use inside Load, every backend worker could
@@ -252,17 +265,19 @@ public sealed class UnitBackend : IUnitBackend
             Devirtualize devirtualize = new();
             Function header = module.Functions[index];
             Function function;
-            if (preLate) function = header;
+            bool isVersion = versionOf.TryGetValue(header.Name, out var versionSource);
+            if (isVersion) function = IrFunctionCodec.Read(versionSource.Body, new IrReadBudget(64L * 1024 * 1024));
+            else if (preLate) function = header;
             else
             {
                 IrArchiveEntry entry = archive.Entries[IrKey.OfFunction(header.Name)];
                 function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), new IrReadBudget(entry.DecodeBytes));
             }
-            if (function.Name != header.Name || function.Exported != header.Exported)
+            if (function.Name != (isVersion ? versionSource.Target : header.Name) || function.Exported != header.Exported)
                 throw new InvalidDataException("Deferred IR identity disagrees with native symbol");
             // --dump-function SYMBOL: that function's IR as the link loads
             // it and as it goes to the backend, on standard error.
-            bool dumping = Switches.DumpFunction == function.Name;
+            bool dumping = Switches.DumpFunction == header.Name;
             if (dumping) { System.Text.StringBuilder loaded = new(); function.Dump(loaded); Console.Error.WriteLine("== loaded\n" + loaded); }
             // Unhomed for the rules below; homed again last (LandingPadHomes.Strip).
             LandingPadHomes.Strip(function);
@@ -464,6 +479,13 @@ public sealed class UnitBackend : IUnitBackend
             // it was made; the copies it leaves propagated and the dead gone.
             SlotScalars.ApplyAndClean(function);
             local.Functions.RemoveAll(body => !ReferenceEquals(body, function));
+            // A VERSION, made now of its function as every pass above left it.
+            if (isVersion)
+            {
+                function = ArgumentSummary.Version(function, versionSource.Asked, facts!.Arguments!, cleanup);
+                local.Functions[0] = function;
+                local.Entry = function.Name;
+            }
             // THE ARGUMENTS THE WHOLE PROGRAM FOUND NO ARGUMENTS, gone last
             // of all (ArgumentSummary.Apply): from this function's parameters
             // and from every call it now makes, the ones it was given by the

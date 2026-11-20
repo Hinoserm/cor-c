@@ -1498,12 +1498,15 @@ public static class Driver
             // link (ArgumentSummary.Apply). Not a unit's compile nor a
             // library's, whose callers are elsewhere; and no slot's family,
             // which only the link's reading of every descriptor knows whole.
+            // A function an object linked in names (`--with`: a kernel's
+            // vectors, its entry) is called by code this IR does not show,
+            // and keeps its arguments (Module.ObjectNames).
             if (!module.LeavesLinkHints && !module.PreserveExports && module.Entry is not null && !Switches.NoArgumentFacts)
             {
                 Corsac.Lang.Lto.ArgumentHints said = Corsac.Lang.Opt.ArgumentSummary.Of(module);
                 string programEntry = module.Entry;
                 if (Corsac.Lang.Lto.ArgumentSolver.Solve(new[] { said }, new Dictionary<string, string[]>(StringComparer.Ordinal),
-                        name => name == programEntry || module.Imports.Contains(name), closed: false,
+                        name => name == programEntry || module.Imports.Contains(name) || module.ObjectNames.Contains(name), closed: false,
                         Switches.ReportPhases ? Console.Error.WriteLine : null) is { } argumentFacts)
                 {
                     List<string> misfits = new();

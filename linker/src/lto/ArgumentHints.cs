@@ -155,7 +155,7 @@ public sealed class ArgumentHints
         string Text()
         {
             int length = reader.ReadInt32();
-            if (length < 1 || length > 16384 || length > total - stream.Position) throw new ElfFormatException("Invalid argument hint text");
+            if (length < 1 || length > total - stream.Position) throw new ElfFormatException("Invalid argument hint text");
             string text = Encoding.UTF8.GetString(reader.ReadBytes(length));
             if (text.Contains('\0')) throw new ElfFormatException("Invalid argument hint text");
             return text;
