@@ -255,13 +255,7 @@ public static class ArgumentSummary
         // What the function is, from `like` where given: the function as
         // compiled, where `target` is a copy the codec made, which keeps
         // only the body.
-        Function said = like ?? target;
-        Function version = new(asked.Name, target.Returns)
-        {
-            Exported = said.Exported, SourceFile = said.SourceFile, Line = said.Line, Display = said.Display,
-            FromLibrary = said.FromLibrary, SystemCode = said.SystemCode, SourcePath = said.SourcePath, InsideState = said.InsideState,
-            Version = true, NoInlining = said.NoInlining, Unjudged = said.Unjudged,
-        };
+        Function version = Described(like ?? target, asked.Name, version: true);
         // The function's parameters in order: one the link took is its
         // number (or nothing, never read: a zero); one of those left is the
         // version's number where the version sets it, and the version's own
@@ -289,6 +283,14 @@ public static class ArgumentSummary
         folding.Run(version);
         return version;
     }
+
+    /// <summary>A function of no body, named `name`, that says what `f` says of itself: where it was written, whether exported, inlined, the library's -- what a version of `f` says too.</summary>
+    public static Function Described(Function f, string name, bool version = false) => new(name, f.Returns)
+    {
+        Exported = f.Exported, SourceFile = f.SourceFile, Line = f.Line, Display = f.Display,
+        FromLibrary = f.FromLibrary, SystemCode = f.SystemCode, SourcePath = f.SourcePath, InsideState = f.InsideState,
+        Version = version, NoInlining = f.NoInlining, Unjudged = f.Unjudged,
+    };
 
     /// <summary>The passes that fold what a number in a parameter's place lets them: constants and copies carried, branches decided, the dead gone.</summary>
     public static Pipeline Folding(int workers)

@@ -180,13 +180,7 @@ public sealed class UnitBackend : IUnitBackend
                         LandingPadHomes.Strip(target);
                         copies.Add(target.Name, copy = IrFunctionCodec.Write(target));
                     }
-                    Function said = new(target.Name, target.Returns)
-                    {
-                        Exported = target.Exported, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
-                        FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, SourcePath = target.SourcePath,
-                        InsideState = target.InsideState, NoInlining = target.NoInlining, Unjudged = target.Unjudged,
-                    };
-                    versionOf.Add(version.Name, (said, copy, made));
+                    versionOf.Add(version.Name, (ArgumentSummary.Described(target, target.Name), copy, made));
                 }
             }
             lateDone = Environment.TickCount64;
