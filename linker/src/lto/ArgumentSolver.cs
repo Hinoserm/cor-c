@@ -175,6 +175,16 @@ public static class ArgumentSolver
 
         Dictionary<string, Cell[]> cells = new(StringComparer.Ordinal);
         foreach ((string name, ArgumentFunction f) in functions) cells[name] = new Cell[f.Kinds.Length];
+        // (Which functions some call does not fit: known before any cell is read.)
+        foreach (ArgumentHints unit in units)
+            foreach (ArgumentFunction f in unit.Functions.Values)
+                foreach (ArgumentCall call in f.Calls)
+                {
+                    IEnumerable<string> reached = call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)
+                        ? virtuals.GetValueOrDefault(call.Callee) ?? Array.Empty<string>() : new[] { call.Callee };
+                    foreach (string target in reached)
+                        if (functions.TryGetValue(target, out ArgumentFunction? callee) && callee.Kinds.Length != call.Arguments.Length) misfit.Add(target);
+                }
 
         // The calls, every copy of a function's (the units' copies of one
         // generic body make the same calls: met twice, they lower nothing
@@ -195,6 +205,28 @@ public static class ArgumentSolver
                     }
                     else if (functions.ContainsKey(call.Callee)) { calls.Add((caller, call, new[] { call.Callee })); called.Add(call.Callee); }
                 }
+
+        // What may change at all.
+        bool Free(string name) => functions.TryGetValue(name, out ArgumentFunction? f) && !f.Fixed && !disagreed.Contains(name)
+            && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
+        // A slot's family is known whole only in a closed image where every
+        // call through an address was named and every slot called resolved.
+        bool slotsKnown = closed && !unnamed && !unresolved;
+        // A FUNCTION SOMETHING UNSEEN MAY CALL HAS PARAMETERS NOBODY KNOWS:
+        // one that may not change (foreign, kept for others, its address
+        // taken), one in a slot whose callers are not all known, one no
+        // call here names at all. Unknown from the start -- not unseen: a
+        // delegate's own Invoke, called through its slot by whatever holds
+        // the delegate, hands its parameters on to the method it stands
+        // for, and left unseen it said nothing of them, so the method's
+        // direct calls alone decided what it "always" got.
+        foreach ((string name, ArgumentFunction f) in functions)
+        {
+            bool bySlot = slotted.Contains(name) || slotsOf.ContainsKey(name);
+            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown)) continue;
+            Cell[] of = cells[name];
+            for (int k = 0; k < of.Length; k++) of[k].State = Many;
+        }
 
         bool Lower(string target, int parameter, ArgumentValue met)
         {
@@ -246,12 +278,6 @@ public static class ArgumentSolver
         }
         bool directBefore(string name, out List<ArgumentCall>? sites) => direct.TryGetValue(name, out sites);
 
-        // What may change at all.
-        bool Free(string name) => functions.TryGetValue(name, out ArgumentFunction? f) && !f.Fixed && !disagreed.Contains(name)
-            && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
-        // A slot's family is known whole only in a closed image where every
-        // call through an address was named and every slot called resolved.
-        bool slotsKnown = closed && !unnamed && !unresolved;
 
         ArgumentFacts facts = new();
         int constants = 0, dead = 0, viaSlots = 0;

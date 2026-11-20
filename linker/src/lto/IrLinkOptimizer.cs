@@ -619,8 +619,22 @@ public static class IrLinkOptimizer
                     IrArchive originalArchive = archives[original];
                     bool Kept(Symbol symbol) => plan.Retained is null || plan.Retained.Contains(IrKey.OfFunction(symbol.Name)) || plan.Retained.Contains(IrKey.OfData(symbol.Name))
                         || !originalArchive.Entries.ContainsKey(IrKey.OfFunction(symbol.Name)) && !originalArchive.Entries.ContainsKey(IrKey.OfData(symbol.Name));
-                    string[] before = original.Symbols.Where(symbol => symbol.Global && symbol.IsDefined && Kept(symbol)).Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
-                    string[] after = replacement.Symbols.Where(symbol => symbol.Global && symbol.IsDefined).Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
+                    // The names the argument facts ask the unit that defines a
+                    // function to add, which other units' calls now name: its
+                    // versions, always, and its way in with arguments where
+                    // the target makes ways in (a 32-bit one; elsewhere the
+                    // calls keep the function's own name).
+                    IEnumerable<string> Versions(string name)
+                        => argumentFacts is not null && argumentFacts.Versions.TryGetValue(name, out ArgumentVersion[]? versions)
+                            ? versions.Select(version => version.Name) : Array.Empty<string>();
+                    string? Entry(string name)
+                        => argumentFacts is not null && argumentFacts.Entries.TryGetValue(name, out ArgumentDrop[]? given)
+                            ? ArgumentFacts.EntryName(name, given.Select(drop => drop.Parameter)) : null;
+                    string[] kept = original.Symbols.Where(symbol => symbol.Global && symbol.IsDefined && Kept(symbol)).Select(symbol => symbol.Name).ToArray();
+                    string[] before = kept.SelectMany(name => Versions(name).Prepend(name)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+                    HashSet<string> entries = kept.Select(Entry).OfType<string>().ToHashSet(StringComparer.Ordinal);
+                    string[] after = replacement.Symbols.Where(symbol => symbol.Global && symbol.IsDefined && !entries.Contains(symbol.Name))
+                        .Select(symbol => symbol.Name).Order(StringComparer.Ordinal).ToArray();
                     if (!before.SequenceEqual(after))
                         throw new ElfFormatException("IR backend changed the unit's exported definitions: lost "
                             + string.Join(", ", before.Except(after).Take(8)) + "; gained " + string.Join(", ", after.Except(before).Take(8)));

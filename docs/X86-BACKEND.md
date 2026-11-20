@@ -645,6 +645,35 @@ Assembly that calls an ordinary method by its address (`Sys.AddressOf`)
 passes its first three words in EAX, EDX and ECX, as the language's own
 calls do, and pushes only what is past them.
 
+**Arguments judged over the whole program.** Where every caller of a
+function is known -- a program compiled as one module, or a link of units
+whose image names which of its functions are for others (a kernel's for its
+modules) -- the link reads each unit's summary of its calls (section
+`.corsac.arguments`: what each call passes at each place, a constant, an
+address, a parameter of the caller passed on, or not known) and solves the
+whole call graph at once (as GCC's IPA-CP and IPA-SRA, LLVM's IPSCCP and
+function specialisation). Then, in each unit, as the last pass over its IR:
+
+- **A parameter one value at every call, or never read, goes**: the calls
+  stop passing it, and the function has the value written in. A virtual
+  slot does the same when every override of it is known and agrees.
+- **A struct passed by value whose address is only read through** -- at
+  most three words -- is passed as its words, in registers like any.
+- **A version** (`NAME$with$N`) of a function is made for a number that
+  decides a branch in it, where the calls passing that number save at least
+  the bytes the version costs, or one of them is in a loop and the function
+  short; at most two a function, and one part in two hundred of the program.
+- **A way in** (`NAME$entry$MASK`, 32-bit targets) is laid just before a
+  function's body for the constants most of its calls pass in registers:
+  `xor reg,reg` or `mov reg,imm32` for each, falling into the body. The
+  calls that pass exactly those call it and load nothing; the rest call the
+  function by its name. On a 486 each saves the caller's loads and their
+  fetch; on a K8 the bytes in its instruction cache.
+
+A function whose address is taken, or that is named for others, or called
+from code the link does not see, keeps all of its arguments.
+`--no-argument-facts` turns the judging off.
+
 ## Exceptions
 
 A per-thread handler chain, as before, in a frame-local record:

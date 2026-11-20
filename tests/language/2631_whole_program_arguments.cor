@@ -1,0 +1,123 @@
+// test: arguments judged over the whole program -- one value at every call, never read, versions, ways in, structs as words
+// expect-exit: 0
+// expect-output:
+// one number 435
+// by address 78
+// way in 16372
+// version 17859
+// words 500 53 40
+// slot 850
+// written 312
+//
+// Each line is one thing the program's arguments pass judges, and what it
+// prints is what .NET 10 prints. A parameter one value at every call
+// (Scale's factor, even through Through), and one never read (Scale's
+// third), go; a function whose address is taken keeps all of its (Taken,
+// called through a delegate too). Put is called with 7 for its kind from
+// three places and something else from one: the three call a way in that
+// sets it. Step decides a branch on reverse, passed as a constant in loops:
+// a version for each value. Mix and Last take a struct by value and read
+// only its words: the calls pass the words. Area is a virtual slot every
+// override of which is called with the same scale and unit. Rewritten's
+// count is 4 at every call and the function writes it: it goes, and the
+// function counts down from 4 in a local of its own.
+
+using System;
+using System.Runtime.CompilerServices;
+
+struct Pair { public int A; public int B; }
+struct Triple { public int A; public int B; public int C; }
+
+abstract class Shape
+{
+    public abstract int Area(int scale, int unit);
+}
+sealed class Square : Shape
+{
+    public int Side;
+    public override int Area(int scale, int unit) => Side * Side * scale + unit;
+}
+sealed class Strip : Shape
+{
+    public int Length;
+    public override int Area(int scale, int unit) => Length * scale - unit;
+}
+
+static class Program
+{
+    static int[] _table = new int[64];
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Scale(int value, int factor, int unused) => value * factor;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Through(int value, int factor) => Scale(value, factor, 9) + 1;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Varies(int value, int by) => value + by;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Taken(int value, int factor) => value * factor + 1;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Put(int at, int kind, int value)
+    {
+        for (int i = 0; i < 3; i++) _table[(at + i * kind) & 63] += value + kind;
+        return _table[at & 63];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Step(int at, bool reverse, int value)
+    {
+        if (reverse)
+        {
+            for (int i = 3; i >= 0; i--) _table[(at - i) & 63] -= value;
+            return _table[at & 63] - 1;
+        }
+        _table[at & 63] += value;
+        return _table[(at + 1) & 63] + value;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Mix(Pair p, int k) => p.A * k + p.B;
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Last(int k, Triple t) => t.C - k;
+    [MethodImpl(MethodImplOptions.NoInlining)] static void Change(ref Pair p) { p.A += 10; }
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Rewritten(int count, int start) { while (count-- > 0) start += count; return start; }
+
+    static int Main(string[] args)
+    {
+        int sum = 0;
+        for (int i = 0; i < 10; i++) sum += Scale(i, 3, i) + Through(i, 3) + Varies(i, i) + Varies(i, 2);
+        Console.WriteLine("one number " + sum);
+
+        Func<int, int, int> taken = Taken;
+        Console.WriteLine("by address " + (Taken(4, 7) + Taken(5, 7) + taken(6, 2)));
+
+        sum = 0;
+        for (int i = 0; i < 20; i++)
+        {
+            sum += Put(i, 7, i);
+            sum += Put(i + 1, 7, 100);
+            sum += Put(i + 2, 7, 0);
+            sum += Put(i + 3, i & 3, 5);
+        }
+        Console.WriteLine("way in " + sum);
+
+        sum = 0;
+        for (int i = 0; i < 50; i++) sum += Step(i, false, i);
+        for (int i = 0; i < 50; i++) sum += Step(i, true, i);
+        sum += Step(sum, args.Length > 5, 3);
+        Console.WriteLine("version " + sum);
+
+        sum = 0;
+        Pair pair; pair.A = 3; pair.B = 4;
+        Triple triple; triple.A = 1; triple.B = 2; triple.C = 30;
+        for (int i = 0; i < 5; i++)
+        {
+            sum += Mix(pair, i) + Last(i, triple);
+            Change(ref pair);
+            triple.C += i;
+        }
+        Console.WriteLine("words " + sum + " " + pair.A + " " + triple.C);
+
+        Shape[] shapes = { new Square { Side = 3 }, new Strip { Length = 8 }, new Square { Side = 5 } };
+        sum = 0;
+        for (int i = 0; i < 30; i++) sum += shapes[i % 3].Area(2, 1);
+        Console.WriteLine("slot " + sum);
+
+        Console.WriteLine("written " + (Rewritten(4, 100) + Rewritten(4, 200)));
+        return 0;
+    }
+}
