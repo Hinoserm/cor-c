@@ -163,10 +163,13 @@ public sealed class UnitBackend : IUnitBackend
             // and region sites are the function's, and a version is the
             // function, a number written in.
             // The copy is taken with its landing pads' homes gone, as Load
-            // takes every function (LandingPadHomes.Strip): the codec keeps
-            // no slot's name, and a home is known by its name -- kept, every
-            // value stored to it would look written to memory to the
-            // lifetime rules. Taken once a function, its versions sharing it.
+            // takes the function itself here (LandingPadHomes.Strip, on the
+            // function in memory): the codec keeps no slot's name, and a
+            // home is known by its name -- kept, every value stored to it
+            // would look written to memory to the lifetime rules. Taken once
+            // a function, its versions sharing it; and what the function is
+            // (ArgumentSummary.Version's `like`) taken then too, a function
+            // of no body, so no worker reads the one another loads.
             if (facts?.Arguments is { Versions.Count: > 0 } asked)
             {
                 Dictionary<string, byte[]> copies = new(StringComparer.Ordinal);
@@ -177,7 +180,13 @@ public sealed class UnitBackend : IUnitBackend
                         LandingPadHomes.Strip(target);
                         copies.Add(target.Name, copy = IrFunctionCodec.Write(target));
                     }
-                    versionOf.Add(version.Name, (target, copy, made));
+                    Function said = new(target.Name, target.Returns)
+                    {
+                        Exported = target.Exported, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
+                        FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, SourcePath = target.SourcePath,
+                        InsideState = target.InsideState, NoInlining = target.NoInlining, Unjudged = target.Unjudged,
+                    };
+                    versionOf.Add(version.Name, (said, copy, made));
                 }
             }
             lateDone = Environment.TickCount64;
@@ -295,6 +304,8 @@ public sealed class UnitBackend : IUnitBackend
             bool dumping = Switches.DumpFunction == header.Name;
             if (dumping) { System.Text.StringBuilder loaded = new(); function.Dump(loaded); Console.Error.WriteLine("== loaded\n" + loaded); }
             // Unhomed for the rules below; homed again last (LandingPadHomes.Strip).
+            // (Where the function is the one in memory: one read from the
+            // archive has slots of no name, and its homes stay homes.)
             LandingPadHomes.Strip(function);
             Module local = new(module.Name) { Entry = function.Name, PreserveExports = true, NeedsHeap = module.NeedsHeap };
             local.Functions.Add(function);
