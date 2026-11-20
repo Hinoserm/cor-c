@@ -62,8 +62,12 @@ else fail "Main passes Mix the pair's words ($mix calls, $taken after an address
 
 # Rewritten's count, 4 at every call and written by the function, is gone:
 # no way in sets it (which it would, were the count still passed).
-if ! grep -qE ' m_Program_Rewritten_[^ ]*\$entry\$' "$work/symbols"; then pass "Rewritten's count is gone"
-else fail "Rewritten's count is gone"; grep Rewritten "$work/symbols"; fi
+# And its body there, reading nothing above its frame.
+rewritten=$(grep -oE ' m_Program_Rewritten_[^ ]*$' "$work/symbols" | grep -vE '\$(entry|with)\$' | head -1 | tr -d ' ')
+body "$rewritten" > "$work/rewritten.dis"
+if [ -s "$work/rewritten.dis" ] && ! grep -qE ' m_Program_Rewritten_[^ ]*\$entry\$' "$work/symbols" \
+    && ! grep -qE '0x(8|c|10)\(%ebp\)' "$work/rewritten.dis"; then pass "Rewritten's count is gone"
+else fail "Rewritten's count is gone"; grep Rewritten "$work/symbols"; cat "$work/rewritten.dis"; fi
 
 if [ "$failures" -eq 0 ]; then echo "PASS 2631_whole_program_arguments"; exit 0; fi
 echo "FAIL 2631_whole_program_arguments ($failures)"; exit 1
