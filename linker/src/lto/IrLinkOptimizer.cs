@@ -36,7 +36,8 @@ public static class IrLinkOptimizer
         bool enabled = true, int importBytes = 1024 * 1024, int bodyLimit = 32, string? closedImageEntry = null, bool parallelBackends = false,
         string? regionReport = null, bool madeOnly = false, bool openTypes = false, string? reachableFrom = null,
         IEnumerable<string>? keep = null, bool moduleOfKernel = false, IReadOnlyList<HeapRecords?>? withoutCollector = null,
-        IrArchive? kernelBodies = null, ISet<string>? kernelBodiesTaken = null, IReadOnlySet<string>? kernelNames = null)
+        IrArchive? kernelBodies = null, ISet<string>? kernelBodiesTaken = null, IReadOnlySet<string>? kernelNames = null,
+        IReadOnlySet<string>? withheld = null)
     {
         // THE SECOND MAKING OF A PROGRAM THAT NEEDS NO COLLECTOR (below,
         // HeapDecision): `withoutCollector` holds each input's records as
@@ -204,17 +205,30 @@ public static class IrLinkOptimizer
         // open types, not a module of a kernel, foreign code naming what it
         // calls.
         ArgumentFacts? argumentFacts = null;
-        // An image with an entry and no names for others, or one that says
-        // which names are for others (`keep`: a kernel's for its modules --
-        // every other name of it is its own). Not one that offers whatever
-        // it has: there every function may have callers elsewhere.
+        // An image with an entry and no names for others, or a kernel, which
+        // says which names are for its modules: what it keeps for them
+        // (`keep`) and every global it does not withhold from its export
+        // table -- the rest is its own. Not one that offers whatever it has:
+        // there every function may have callers elsewhere.
         if (enabled && lifetimes is not null && (closedImageEntry is not null || keep is not null) && argumentHints.Count == archives.Count && argumentHints.Count > 0
             && !Switches.NoArgumentFacts)
         {
             HashSet<string> kept = new(keep ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
             bool anything = foreign.Contains("*");
+            // An image that exports its names (a kernel, `withheld` given):
+            // every global it defines is in its table for the modules but
+            // what it withholds, so only a withheld name is its own.
+            HashSet<string>? shown = null;
+            if (withheld is not null)
+            {
+                shown = new(StringComparer.Ordinal);
+                foreach ((string _, ObjectFile obj) in inputs)
+                    foreach (Symbol symbol in obj.Symbols)
+                        if (symbol.Global && symbol.IsDefined && !withheld.Contains(symbol.Name)) shown.Add(symbol.Name);
+            }
             argumentFacts = ArgumentSolver.Solve(argumentHints, virtuals,
-                name => anything || foreign.Contains(name) || kept.Contains(name) || name == closedImageEntry || (kernelNames?.Contains(name) ?? false),
+                name => anything || foreign.Contains(name) || kept.Contains(name) || name == closedImageEntry || (kernelNames?.Contains(name) ?? false)
+                    || (shown?.Contains(name) ?? false),
                 closed: !anything && closedImageEntry is not null && keep is null && !moduleOfKernel && !openTypes,
                 Console.Error.WriteLine);
         }

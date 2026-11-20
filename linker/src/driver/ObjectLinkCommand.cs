@@ -384,7 +384,10 @@ public static class ObjectLinkCommand
             // derives from (VirtualTargets.Made).
             madeOnly: !Switches.NoRta && !shared && sharedLibraries.Count == 0 && !exports && kernel is null,
             openTypes: exports || kernel is not null, reachableFrom: keep is not null ? entry : null, keep: keep,
-            moduleOfKernel: kernel is not null, kernelBodies: kernelBodies, kernelNames: kernel?.Names, kernelBodiesTaken: needs);
+            moduleOfKernel: kernel is not null, kernelBodies: kernelBodies, kernelNames: kernel?.Names, kernelBodiesTaken: needs,
+            // What the export table below leaves out: a kernel's own, whose
+            // calls are all its units'.
+            withheld: exports ? withheld.Where(name => !offered.Contains(name) && !optional.Contains(name)).ToHashSet(StringComparer.Ordinal) : null);
         // The units' notes and the link's own, bound (KernelAssumptions.Bind); a
         // link that is no module's only drops the notes.
         if (kernel is not null) { if (KernelAssumptions.Bind(inputs, kernel, needs) is string unsaid) return Fail(unsaid); }
