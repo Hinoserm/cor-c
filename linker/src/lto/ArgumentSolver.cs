@@ -298,14 +298,17 @@ public static class ArgumentSolver
             {
                 if (!allowed(k)) continue;
                 if (f.Reads[k] == 0) (drops ??= new()).Add(new(k, default));
-                else if (Constant(of[k]) && f.Shapes[k] != ArgumentShape.Written) (drops ??= new()).Add(new(k, of[k].Value));
+                // (One the function writes too: the value is its register's
+                // first, given where the function begins, and the writes
+                // after are the register's as they were the parameter's.)
+                else if (Constant(of[k])) (drops ??= new()).Add(new(k, of[k].Value));
             }
             return drops?.ToArray();
         }
         bool Droppable(string name, int k)
         {
             ArgumentFunction f = functions[name];
-            return k < f.Kinds.Length && (f.Reads[k] == 0 || Constant(cells[name][k]) && f.Shapes[k] != ArgumentShape.Written);
+            return k < f.Kinds.Length && (f.Reads[k] == 0 || Constant(cells[name][k]));
         }
         // A NUMBER ALONE is put in a parameter's place: an address is known
         // as well, but of a symbol that may be its own unit's and no other's

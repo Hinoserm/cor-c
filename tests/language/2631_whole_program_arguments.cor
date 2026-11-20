@@ -4,7 +4,7 @@
 // one number 435
 // by address 78
 // way in 16372
-// version 17859
+// version 17891
 // words 500 53 40
 // slot 850
 // written 312
@@ -15,8 +15,8 @@
 // third), go; a function whose address is taken keeps all of its (Taken,
 // called through a delegate too). Put is called with 7 for its kind from
 // three places and something else from one: the three call a way in that
-// sets it. Step decides a branch on reverse, passed as a constant in loops:
-// a version for each value. Mix and Last take a struct by value and read
+// sets it. Step, short, decides a branch on reverse, passed as a constant
+// in loops: a version for each value. Mix and Last take a struct by value and read
 // only its words: the calls pass the words. Area is a virtual slot every
 // override of which is called with the same scale and unit. Rewritten's
 // count is 4 at every call and the function writes it: it goes, and the
@@ -62,11 +62,7 @@ static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Step(int at, bool reverse, int value)
     {
-        if (reverse)
-        {
-            for (int i = 3; i >= 0; i--) _table[(at - i) & 63] -= value;
-            return _table[at & 63] - 1;
-        }
+        if (reverse) return _table[(at - 1) & 63] - value;
         _table[at & 63] += value;
         return _table[(at + 1) & 63] + value;
     }
