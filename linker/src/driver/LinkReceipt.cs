@@ -73,6 +73,16 @@ public static class LinkReceipt
         {
             Say("kernel " + Convert.ToHexString(kernel.Abi ?? Array.Empty<byte>()) + " " + Convert.ToHexString(kernel.Cpu ?? Array.Empty<byte>())
                 + " " + (kernel.LongMode ? "64" : "32"));
+            // WHAT THE KERNEL SAYS A MODULE MAY ASSUME (KernelAssumptions): the
+            // types its link initialised and every body it offers, each by
+            // its name, which holds the body's hash. They are no names the
+            // objects leave undefined -- the link itself takes a body and
+            // then imports its name -- so the names asked below do not hold
+            // them: a kernel whose offered body changed left the module's
+            // image "current", importing a name the kernel no longer has.
+            foreach (string name in kernel.Names.Where(name => name.StartsWith(Corsac.Lang.Lto.KernelAssumptions.BodyPrefix, StringComparison.Ordinal)
+                         || name.StartsWith(Corsac.Lang.Lto.KernelAssumptions.InitPrefix, StringComparison.Ordinal)).Order(StringComparer.Ordinal))
+                Say("assumes " + name);
         }
         if (kernel is not null || sharedLibraries.Count > 0)
         {
