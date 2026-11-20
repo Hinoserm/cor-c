@@ -63,7 +63,7 @@ public sealed class UnitBackend : IUnitBackend
         // go on from there.
         bool preLate = IrUnitCodec.ReadSettings(archive).Settings is { PreLate: true };
         // Each version the link asked for, by its name: its function's, that function as the late passes left it, and the version (below).
-        Dictionary<string, (string Target, byte[] Body, ArgumentVersion Asked)> versionOf = new(StringComparer.Ordinal);
+        Dictionary<string, (Function Target, byte[] Body, ArgumentVersion Asked)> versionOf = new(StringComparer.Ordinal);
         // A kernel module's unit is part of a shared object, and is made again as one.
         bool positionIndependent = IrUnitCodec.ReadSettings(archive).Settings is { PositionIndependent: true };
         // A kernel module's unit, by the mark its compile put in it
@@ -162,15 +162,30 @@ public sealed class UnitBackend : IUnitBackend
             // below under the function's own name: the link's lifetime rules
             // and region sites are the function's, and a version is the
             // function, a number written in.
+            // The copy is taken with its landing pads' homes gone, as Load
+            // takes every function (LandingPadHomes.Strip): the codec keeps
+            // no slot's name, and a home is known by its name -- kept, every
+            // value stored to it would look written to memory to the
+            // lifetime rules. Taken once a function, its versions sharing it.
             if (facts?.Arguments is { Versions.Count: > 0 } asked)
+            {
+                Dictionary<string, byte[]> copies = new(StringComparer.Ordinal);
                 foreach ((Function target, Function version, ArgumentVersion made) in ArgumentSummary.MakeVersions(module, asked))
-                    versionOf.Add(version.Name, (target.Name, IrFunctionCodec.Write(target), made));
+                {
+                    if (!copies.TryGetValue(target.Name, out byte[]? copy))
+                    {
+                        LandingPadHomes.Strip(target);
+                        copies.Add(target.Name, copy = IrFunctionCodec.Write(target));
+                    }
+                    versionOf.Add(version.Name, (target, copy, made));
+                }
+            }
             lateDone = Environment.TickCount64;
         }
         Corsac.Lang.Lto.LinkTimings.Memory("backend late passes");
         // The function each version is of, as a version is made: the name
         // its rules and imports are found by.
-        string SourceOf(int index) => versionOf.TryGetValue(module.Functions[index].Name, out var source) ? source.Target : module.Functions[index].Name;
+        string SourceOf(int index) => versionOf.TryGetValue(module.Functions[index].Name, out var source) ? source.Target.Name : module.Functions[index].Name;
         HashSet<string> originalNames = module.Functions.Select(function => function.Name).ToHashSet(StringComparer.Ordinal);
         Dictionary<string, byte[]> semantics = CoalescingContract.Read(original);
         foreach (IrImport import in imports)
@@ -273,7 +288,7 @@ public sealed class UnitBackend : IUnitBackend
                 IrArchiveEntry entry = archive.Entries[IrKey.OfFunction(header.Name)];
                 function = IrFunctionCodec.Read(archive.ReadBody(entry.Key), new IrReadBudget(entry.DecodeBytes));
             }
-            if (function.Name != (isVersion ? versionSource.Target : header.Name) || function.Exported != header.Exported)
+            if (function.Name != (isVersion ? versionSource.Target.Name : header.Name) || function.Exported != header.Exported)
                 throw new InvalidDataException("Deferred IR identity disagrees with native symbol");
             // --dump-function SYMBOL: that function's IR as the link loads
             // it and as it goes to the backend, on standard error.
@@ -397,7 +412,8 @@ public sealed class UnitBackend : IUnitBackend
                     local.Functions[0] = function;
                     taken = 0;
                 }
-                Interlocked.Add(ref _lifetimes, taken);
+                // (A version's copy counts nothing: its function's run did.)
+                if (!isVersion) Interlocked.Add(ref _lifetimes, taken);
                 // Its frees before the boundary's leave (RegionPointsTo.LeaveLast).
                 RegionPointsTo.LeaveLast(function);
                 new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = growers }.Run(local);
@@ -417,7 +433,7 @@ public sealed class UnitBackend : IUnitBackend
                 }
                 if (more > 0)
                 {
-                    Interlocked.Add(ref _lifetimes, more);
+                    if (!isVersion) Interlocked.Add(ref _lifetimes, more);
                     RegionPointsTo.LeaveLast(function);
                     new Inline { SmallBody = 40, GrowthLimit = 1024, ConstantBranchBody = 160, FreshOwnerBody = 0, Keep = growers }.Run(local);
                     cleanup.Run(local);
@@ -461,7 +477,7 @@ public sealed class UnitBackend : IUnitBackend
             // tables, which are the kernel's, by name.
             // --collector-report: what this function leaves to the collector,
             // before its allocations become fast paths of the allocator.
-            Escape.ReportFunction(function);
+            if (!isVersion) Escape.ReportFunction(function);
             if (!positionIndependent) AllocatorFastPaths.Run(function, local, Callee, cleanup);
             // Written out last here too: the link's lifetime pass saw them as
             // notes to the collector (CardMarks).
@@ -482,7 +498,7 @@ public sealed class UnitBackend : IUnitBackend
             // A VERSION, made now of its function as every pass above left it.
             if (isVersion)
             {
-                function = ArgumentSummary.Version(function, versionSource.Asked, facts!.Arguments!, cleanup);
+                function = ArgumentSummary.Version(function, versionSource.Asked, facts!.Arguments!, cleanup, like: versionSource.Target);
                 local.Functions[0] = function;
                 local.Entry = function.Name;
             }

@@ -249,14 +249,18 @@ public static class ArgumentSummary
     /// changed. Called only by name: never through a slot, never a body any
     /// pass after takes in, and kept a call where the function is.
     /// </summary>
-    public static Function Version(Function target, ArgumentVersion asked, ArgumentFacts facts, Pipeline folding)
+    public static Function Version(Function target, ArgumentVersion asked, ArgumentFacts facts, Pipeline folding, Function? like = null)
     {
         ArgumentDrop[] dropped = facts.Dropped.GetValueOrDefault(target.Name) ?? Array.Empty<ArgumentDrop>();
+        // What the function is, from `like` where given: the function as
+        // compiled, where `target` is a copy the codec made, which keeps
+        // only the body.
+        Function said = like ?? target;
         Function version = new(asked.Name, target.Returns)
         {
-            Exported = target.Exported, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,
-            FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, SourcePath = target.SourcePath, InsideState = target.InsideState,
-            Version = true, NoInlining = target.NoInlining, Unjudged = target.Unjudged,
+            Exported = said.Exported, SourceFile = said.SourceFile, Line = said.Line, Display = said.Display,
+            FromLibrary = said.FromLibrary, SystemCode = said.SystemCode, SourcePath = said.SourcePath, InsideState = said.InsideState,
+            Version = true, NoInlining = said.NoInlining, Unjudged = said.Unjudged,
         };
         // The function's parameters in order: one the link took is its
         // number (or nothing, never read: a zero); one of those left is the
