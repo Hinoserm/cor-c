@@ -509,8 +509,11 @@ public sealed class X86Backend : IBackend
                 if (wayInField >= 0) text.Relocs.Add(new Relocation(text.Bytes.Count + wayInField, f.Name, -4, RelocKind.Rel32));
                 // A frame-table record of its own, as the stack entry's below:
                 // a thread stopped in it is found in its own few bytes, not
-                // in the function before it.
-                wayInFrame = new FrameTable.Entry(wayName, wayName, "", text.Bytes.Count, wayIn.Length, new List<(int, int)>());
+                // in the function before it -- under the function's name and
+                // file, the function it is (no call returns into it, so only
+                // a thread stopped there meets it), which the link's pool of
+                // names holds once for both.
+                wayInFrame = new FrameTable.Entry(wayName, f.Display ?? f.Name, f.SourceFile ?? "", text.Bytes.Count, wayIn.Length, new List<(int, int)>());
                 text.Bytes.AddRange(wayIn);
                 defined.Add(wayName);
             }

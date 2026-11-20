@@ -503,6 +503,10 @@ public static class ObjectLinkCommand
                 // not what it says; a static or the library's surface (~)
                 // where the link kept it.
                 globals.RemoveAll(export => withheld.Contains(export.Name) && !offered.Contains(export.Name) && !optional.Contains(export.Name));
+                // And the versions and ways in its arguments' facts made
+                // (ArgumentFacts.Made): its own units call them by those names,
+                // a module's calls name the function.
+                globals.RemoveAll(export => ArgumentFacts.Made(export.Name));
                 HashSet<string> exported = new(globals.Select(export => export.Name), StringComparer.Ordinal);
                 // WHAT A MODULE MAY ASSUME, SAID AS NAMES (KernelAssumptions):
                 // each type whose state word the image holds at "completed"

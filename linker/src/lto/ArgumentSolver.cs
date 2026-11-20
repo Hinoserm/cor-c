@@ -58,7 +58,10 @@ public sealed class ArgumentFacts
 
     /// <summary>The name of a version of `function`: its place among the function's versions.</summary>
     public static string VersionName(string function, int ordinal)
-        => function + "$with$" + ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        => function + VersionMark + ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>What ends the name of a version of a function: then its place among the function's versions.</summary>
+    public const string VersionMark = "$with$";
 
     /// <summary>What ends the name of a function's way in with arguments: then the parameters it sets, a bit each, in hex.</summary>
     public const string EntryMark = "$entry$";
@@ -70,6 +73,10 @@ public sealed class ArgumentFacts
         foreach (int parameter in given) mask |= 1 << parameter;
         return function + EntryMark + mask.ToString("x", System.Globalization.CultureInfo.InvariantCulture);
     }
+
+    /// <summary>Whether a name is one the facts made -- a version or a way in: called only by the units of its image, by that name, never by another image's.</summary>
+    public static bool Made(string name)
+        => name.Contains(EntryMark, StringComparison.Ordinal) || name.Contains(VersionMark, StringComparison.Ordinal);
 
     /// <summary>The arguments a call by this name finds set already, a bit each by its place, or 0: the name of no such way in.</summary>
     public static int EntryGiven(string callee)
