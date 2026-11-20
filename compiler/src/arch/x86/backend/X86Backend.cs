@@ -497,6 +497,7 @@ public sealed class X86Backend : IBackend
             // to a function whose own name is on its stack entry, after it.)
             byte[]? wayIn = null;
             int wayInField = -1;
+            FrameTable.Entry? wayInFrame = null;
             if (f.ConstantEntry is { } way) (wayIn, wayInField) = RegisterArgs.ConstantEntry(f, way.Given, stackBody);
             int gap = (functionAlign - (text.Bytes.Count + (wayIn?.Length ?? 0)) % functionAlign) % functionAlign;
             Encoder.Nops(text.Bytes, gap);
@@ -505,6 +506,10 @@ public sealed class X86Backend : IBackend
                 string wayName = f.ConstantEntry!.Value.Name;
                 obj.Symbols.Add(new Symbol { Name = wayName, Section = text, Offset = text.Bytes.Count, Size = wayIn.Length, IsFunction = true, Global = f.Exported });
                 if (wayInField >= 0) text.Relocs.Add(new Relocation(text.Bytes.Count + wayInField, f.Name, -4, RelocKind.Rel32));
+                // A frame-table record of its own, as the stack entry's below:
+                // a thread stopped in it is found in its own few bytes, not
+                // in the function before it.
+                wayInFrame = new FrameTable.Entry(wayName, wayName, "", text.Bytes.Count, wayIn.Length, new List<(int, int)>());
                 text.Bytes.AddRange(wayIn);
                 defined.Add(wayName);
             }
@@ -576,7 +581,9 @@ public sealed class X86Backend : IBackend
             // function as it is encoded, because this is the one moment the
             // name, the source and the final byte offsets are all in hand.
             // (Its label the body's: the table's offsets count from the first
-            // entry's symbol, and the body is what the start is of.)
+            // entry's symbol, and the body is what the start is of.) The way
+            // in with numbers, before it in the code, before it here too.
+            if (wayInFrame is { } numbersFrame) frames.Add(numbersFrame);
             frames.Add(new FrameTable.Entry(
                 bodyName, f.Display ?? f.Name, f.SourceFile ?? "", start, size,
                 new List<(int, int)>(encoder.Lines)));

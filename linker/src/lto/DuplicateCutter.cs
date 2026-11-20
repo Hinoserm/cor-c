@@ -53,7 +53,17 @@ internal static class DuplicateCutter
             else while (at > 0 && sorted.Offsets[at - 1] == start) at--;
             for (; at < sorted.Offsets.Length && sorted.Offsets[at] == start; at++)
                 if (!ReferenceEquals(sorted.Symbols[at], loser)) { alias = true; break; }
-            if (!alias && at < sorted.Offsets.Length && sorted.Offsets[at] < end) end = sorted.Offsets[at];
+            if (!alias && at < sorted.Offsets.Length && sorted.Offsets[at] < end)
+            {
+                end = sorted.Offsets[at];
+                // A way in with arguments (ArgumentFacts.EntryMark) is laid
+                // just before its function's aligned body, the padding in
+                // front of it: the cut ends at the boundary before the way
+                // in, and the way in and its body stay where they were in
+                // the block.
+                if (end % section.Align != 0 && sorted.Symbols[at].Name.Contains(ArgumentFacts.EntryMark, StringComparison.Ordinal))
+                    end -= end % section.Align;
+            }
             if (alias || end < start + loser.Size || (end - start) % section.Align != 0) { kept.Add(loser); continue; }
             if (!cuts.TryGetValue(section, out var list)) cuts.Add(section, list = new());
             list.Add((start, end));
