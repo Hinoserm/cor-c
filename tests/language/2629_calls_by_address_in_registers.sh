@@ -58,13 +58,15 @@ else fail "exactly the five of more than three words or a long follow a push ($p
 first_arg() {
     if grep -qE 'mov +%esp,%ebp' "$1"; then echo ebp 8; return; fi
     p=$(awk '/push +%e/ { n++; next } { exit } END { print n + 0 }' "$1")
-    n=$(awk '/sub +\$0x[0-9a-f]+,%esp/ { sub(/.*\$0x/, ""); sub(/,.*/, ""); print; exit }' "$1")
+    # (Only a sub straight after the pushes: the frame, not a call's space.)
+    n=$(awk '/push +%e/ { next } /sub +\$0x[0-9a-f]+,%esp/ { sub(/.*\$0x/, ""); sub(/,.*/, ""); print } { exit }' "$1")
     echo esp $((4 * p + 0x${n:-0} + 4))
 }
 # Every read of a stack argument, as offsets from the first.
 stack_reads() {
     set -- "$1" $(first_arg "$1")
-    grep -oE "(0x[0-9a-f]+)?\(%$2\)" "$1" | sed -E 's/\(.*//; s/^$/0x0/' | while read -r d; do
+    # (A displacement with a minus is a local's, below the frame: never one.)
+    grep -oE "[-]?(0x[0-9a-f]+)?\(%$2\)" "$1" | grep -v '^-' | sed -E 's/\(.*//; s/^$/0x0/' | while read -r d; do
         o=$((d - $3)); [ $o -ge 0 ] && echo $o
     done
 }
