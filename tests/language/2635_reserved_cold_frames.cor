@@ -8,6 +8,10 @@
 // 3000 alpha0 beta0 5 6
 // 114080
 // caught with Wide
+// 4777 3750
+// caught with Small
+// caught with Three
+// two with Three
 //
 // Mix and Field save registers and their one call is a bounds check's,
 // which never returns: laid out as framed functions are, with EBP's word
@@ -17,7 +21,10 @@
 // stood for by its call. Three thousand throws through Mix, each
 // allocating, run collections that walk through that frame while Main
 // holds objects. Wide's frame is wider than a byte's displacement and
-// keeps a frame of its own. Output as .NET 10 says it.
+// keeps a frame of its own. Small saves a register and keeps no slot:
+// EBP's word alone is reserved, `push eax`, and dropped, `pop ecx`. Three
+// has three such calls (two throws and a bounds check), where the frames
+// they would make cost more than a prologue's: it keeps its frame. Output as .NET 10 says it.
 
 using System;
 using System.Runtime.CompilerServices;
@@ -45,6 +52,19 @@ static class Program
         int s = 0;
         for (int k = 0; k < buf.Length; k += 5) s += buf[k];
         return s + a[i];
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Small(int[] a, int i, int x, int y)
+    {
+        int s = x * 3 + y, t = y ^ x;
+        return a[i] + s + t;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Three(int[] a, int i, int k)
+    {
+        if (k == 1) throw new InvalidOperationException("one");
+        if (k == 2) throw new ArgumentException("two");
+        return a[i] + k * 3;
     }
     static int Main(string[] args)
     {
@@ -82,6 +102,16 @@ static class Program
         Console.WriteLine(w);
         try { Console.WriteLine(Wide(_t, 99 + args.Length, 2)); }
         catch (IndexOutOfRangeException e) { Console.WriteLine("caught " + (e.StackTrace!.Contains("Program.Wide") ? "with Wide" : "without Wide")); }
+
+        int small = 0, three = 0;
+        for (int i = 0; i < 30; i++) { small += Small(_t, i, i, i + 7); three += Three(_t, i, i + 3); }
+        Console.WriteLine(small + " " + three);
+        try { Console.WriteLine(Small(_t, -1 - args.Length, 1, 2)); }
+        catch (IndexOutOfRangeException e) { Console.WriteLine("caught " + (e.StackTrace!.Contains("Program.Small") ? "with Small" : "without Small")); }
+        try { Console.WriteLine(Three(_t, 40 + args.Length, 0)); }
+        catch (IndexOutOfRangeException e) { Console.WriteLine("caught " + (e.StackTrace!.Contains("Program.Three") ? "with Three" : "without Three")); }
+        try { Console.WriteLine(Three(_t, 0, 2 + args.Length)); }
+        catch (ArgumentException e) { Console.WriteLine(e.Message + " " + (e.StackTrace!.Contains("Program.Three") ? "with Three" : "without Three")); }
         return 0;
     }
 }

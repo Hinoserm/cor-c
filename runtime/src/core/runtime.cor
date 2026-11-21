@@ -4437,6 +4437,16 @@ public static partial class Runtime
     /// caller's again only once the fault's handler puts them back
     /// (LeafSaved).
     ///
+    /// A FUNCTION WHOSE ONLY CALLS NEVER RETURN (the compiler's ColdFrames)
+    /// is such a frameless one, but makes its frame just before each such
+    /// call: `push ebp ; mov ebp, esp`, or, where it saves registers or
+    /// keeps slots (ReservedFrame), `mov [esp + X], ebp ; lea ebp, [esp +
+    /// X]` into a word its way in reserved. Its way in is then the other way
+    /// round -- `sub esp, n` (or `push eax` for the word alone) first, its
+    /// pushes after -- and the return address is still `sp` plus what of
+    /// it has run (Prologue). Stopped on the call, its frame made: `bp`;
+    /// between the two instructions: the frame at `sp` (`sp + X`).
+    ///
     /// x86-64: a leaf that gives RBP a value begins `push rbp; mov rbp, rsp`
     /// written 48 8B EC, then `sub rsp, n`: its frame is at `sp` plus the
     /// frame's size and the saved registers' pushes; any other function's is
@@ -4504,11 +4514,6 @@ public static partial class Runtime
                 && Sys.Read8(pc - 1) == Sys.Read8(pc + 3) && CallAt(pc + 4)) {
                 return sp + Sys.Read8(pc + 3);
             }
-            if (pc >= body + 7 && Sys.Read8(pc - 7) == 0x89 && Sys.Read8(pc - 6) == 0xAC && Sys.Read8(pc - 5) == 0x24
-                && Sys.Read8(pc) == 0x8D && Sys.Read8(pc + 1) == 0xAC && Sys.Read8(pc + 2) == 0x24
-                && Sys.Read32(pc - 4) == Sys.Read32(pc + 3) && CallAt(pc + 7)) {
-                return sp + Sys.Read32(pc + 3);
-            }
         }
         pc = Sys.ReadAddress(ret);
         return bp;
@@ -4517,16 +4522,14 @@ public static partial class Runtime
 
     /// Whether the bytes just before `pc`, none before `body`, are a cold
     /// frame made (FrameAt) and a call follows: `push ebp ; mov ebp, esp`, or
-    /// `mov [esp + X], ebp ; lea ebp, [esp + X]` with one X in both.
+    /// `mov [esp + X], ebp ; lea ebp, [esp + X]` with one X in both, a byte
+    /// (the compiler writes no other: Encoder.ColdFrame).
     static bool ColdFrameMade(nuint body, nuint pc) {
         if (!CallAt(pc)) { return false; }
         if (pc >= body + 3 && Sys.Read8(pc - 3) == 0x55 && Sys.Read8(pc - 2) == 0x89 && Sys.Read8(pc - 1) == 0xE5) { return true; }
-        if (pc >= body + 8 && Sys.Read8(pc - 8) == 0x89 && Sys.Read8(pc - 7) == 0x6C && Sys.Read8(pc - 6) == 0x24
+        return pc >= body + 8 && Sys.Read8(pc - 8) == 0x89 && Sys.Read8(pc - 7) == 0x6C && Sys.Read8(pc - 6) == 0x24
             && Sys.Read8(pc - 4) == 0x8D && Sys.Read8(pc - 3) == 0x6C && Sys.Read8(pc - 2) == 0x24
-            && Sys.Read8(pc - 5) == Sys.Read8(pc - 1)) { return true; }
-        return pc >= body + 14 && Sys.Read8(pc - 14) == 0x89 && Sys.Read8(pc - 13) == 0xAC && Sys.Read8(pc - 12) == 0x24
-            && Sys.Read8(pc - 7) == 0x8D && Sys.Read8(pc - 6) == 0xAC && Sys.Read8(pc - 5) == 0x24
-            && Sys.Read32(pc - 11) == Sys.Read32(pc - 4);
+            && Sys.Read8(pc - 5) == Sys.Read8(pc - 1);
     }
 
     /// Whether a call begins at `at`: E8 rel32, or FF /2.
@@ -4535,7 +4538,8 @@ public static partial class Runtime
         return b == 0xE8 || (b == 0xFF && ((Sys.Read8(at + 1) >> 3) & 7) == 2);
     }
 
-    /// WHERE A FRAMELESS LEAF STOPPED AT `pc` SAVED REGISTER `reg` (0 EAX to
+    /// WHERE A FRAMELESS FUNCTION (a leaf, or a cold-framed one: FrameAt)
+    /// STOPPED AT `pc` SAVED REGISTER `reg` (0 EAX to
     /// 7 EDI, as push encodes it) on its way in, its stack pointer `sp`; 0
     /// where it did not, or not yet. A fault's handler that stands such a
     /// leaf for the call it was (FrameAt) puts each back into the context it

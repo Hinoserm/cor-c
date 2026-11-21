@@ -17,6 +17,12 @@ namespace Corsac.Lang.X86;
 /// is at ESP + N + 4S - 4 + D; the frame's own slots, below where EBP would
 /// have pointed by D (D negative), are below the saved registers: at ESP + N
 /// + D. Nothing moves ESP between the prologue and the epilogue.
+///
+/// A cold-framed function that saves registers or keeps slots
+/// (MFunction.ReservedFrame) is laid out the other way round, as a framed
+/// function is: from the return address down, EBP's word (reserved, not
+/// written), the frame, then the saves; EBP + D is ESP + N + 4S + D, slot or
+/// argument alike.
 /// </summary>
 internal static class FramePointerFree
 {
@@ -90,6 +96,9 @@ internal static class FramePointerFree
         }
     }
 
+    /// <summary>How many calls a function makes.</summary>
+    private static int ColdCalls(MFunction m) => m.Blocks.Sum(b => b.Instrs.Count(i => i.Op is MOp.Call or MOp.CallInd));
+
     /// <summary>
     /// Whether a function with a frame may have none but on the way to its
     /// calls (MFunction.ColdFrames): every call one that never returns (the
@@ -99,9 +108,6 @@ internal static class FramePointerFree
     /// its own word or the return address's), and
     /// nothing that pushes, pops or writes ESP.
     /// </summary>
-    /// <summary>How many calls a function makes.</summary>
-    private static int ColdCalls(MFunction m) => m.Blocks.Sum(b => b.Instrs.Count(i => i.Op is MOp.Call or MOp.CallInd));
-
     private static bool OnlyColdCalls(MFunction m)
     {
         if (m.AlignedArea != 0 || m.FramePointerFree

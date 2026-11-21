@@ -1427,17 +1427,18 @@ internal sealed class Encoder
     {
         if (!_m.ColdFrames) return;
         if (!_m.ReservedFrame) { B(0x55, 0x89, 0xE5); return; }
+        // (Within a byte's displacement, FramePointerFree.Run sees to it: the
+        // only form Runtime.FrameAt reads.)
         int x = _m.Frame.Size + 4 * _m.SavedRegs.Count;
-        if (x <= 127) { B(0x89, 0x6C, 0x24, (byte)x); B(0x8D, 0x6C, 0x24, (byte)x); }
-        else { B(0x89, 0xAC, 0x24); D32(x); B(0x8D, 0xAC, 0x24); D32(x); }
+        if (x > 127) throw new InvalidOperationException($"{_m.Source.Name}: a reserved frame of {x} bytes, more than a byte's displacement");
+        B(0x89, 0x6C, 0x24, (byte)x);
+        B(0x8D, 0x6C, 0x24, (byte)x);
     }
 
     private void EncodePrologue()
     {
-        // A FRAMELESS LEAF (MFunction.Frameless): its saved registers -- EBP
-        // first where it gives it a value -- then its frame. Never begins
-        // `push ebp; mov ebp, esp`, which is how a fault's walk tells it
-        // from a framed function (Runtime.FrameAt).
+        // A RESERVED FRAME (MFunction.ReservedFrame): EBP's word and the frame,
+        // then the saves.
         if (_m.ReservedFrame)
         {
             // The frame and the word for EBP, then the saves: a framed
@@ -1450,6 +1451,10 @@ internal sealed class Encoder
             foreach (Gpr g in _m.SavedRegs) _out.Add((byte)(0x50 + (int)g));
             return;
         }
+        // A FRAMELESS LEAF (MFunction.Frameless): its saved registers -- EBP
+        // first where it gives it a value -- then its frame. Never begins
+        // `push ebp; mov ebp, esp`, which is how a fault's walk tells it
+        // from a framed function (Runtime.FrameAt).
         if (_m.Frameless)
         {
             foreach (Gpr g in _m.SavedRegs) _out.Add((byte)(0x50 + (int)g));
