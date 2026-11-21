@@ -21921,8 +21921,10 @@ public class Exception
         _frames = frames;
     }
 
-    /// The same, the site as the image keeps it (Runtime.Capture).
-    public void ThrownAt$(byte[] site, nuint[] frames)
+    /// The same, the site as the image keeps it (Runtime.Capture). No site:
+    /// a throw moved out of its function (Opt.ThrowOutline), whose callers'
+    /// return addresses name its row -- the callers alone.
+    public void ThrownAt$(byte[]? site, nuint[] frames)
     {
         if (_placed)
         {
@@ -21931,7 +21933,7 @@ public class Exception
         }
         if (_reserved) return;
         _trace = "";
-        _site = null;
+        _site = site == null ? "" : null;
         _siteBytes = site;
         _frames = frames;
     }

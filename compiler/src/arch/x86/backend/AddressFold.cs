@@ -157,9 +157,27 @@ internal static class AddressFold
         }
         for (int b = 0; b < m.Blocks.Count; b++)
         {
-            if (FoldBlock(m.Blocks[b], occurrences, defs, writes, b, absolute, compareMemory, m.Frame))
+            // AGAIN WHILE A ROUND FOLDS SOMETHING: one fold makes another --
+            // `t1 = a + i ; t2 = t1 + 16 ; [t2]` is [t1+16] only after the
+            // second add's rule ran, which comes after the first's in the
+            // block; then `[a+i+16]`, one instruction where three were, and
+            // a register the loop over a span's bytes did not have. Each
+            // round only removes instructions; four at most.
+            for (int round = 0; round < 4; round++)
             {
-                m.Blocks[b].Instrs.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
+                if (!FoldBlock(m.Blocks[b], occurrences, defs, writes, b, absolute, compareMemory, m.Frame)) break;
+                List<MInstr> ins = m.Blocks[b].Instrs;
+                ins.RemoveAll(i => i.Op == MOp.Nop && i.Operands.Count == 1 && i.Operands[0] is MImm { Value: Removed });
+                // Where each register this block writes is written, as the
+                // block now stands (WriteSites.Fixed reads the place).
+                for (int k = 0; k < ins.Count; k++)
+                {
+                    MInstr i = ins[k];
+                    bool zeroing = i.Op == MOp.Xor && i.Operands.Count == 2 && i.Operands[0] is MReg x && i.Operands[1] is MReg y && x.Id == y.Id;
+                    for (int o = 0; o < i.Operands.Count; o++)
+                        if (i.Operands[o] is MReg { IsPhys: false } r && writes.Block[r.Id] == b && (zeroing || (Roles.Of(i.Op, o) & Role.Def) != 0))
+                            writes.At[r.Id] = k;
+                }
             }
             writes.Indexed(b);
         }

@@ -165,6 +165,10 @@ public sealed class Pipeline
         // Before any inlining: the collections whose every use is still a
         // call this rule knows, and those calls kept (OwnedElements).
         p.ModulePasses.Add(new MarkOwnedElements());
+        // A small function's throws moved out of it, so the inliner below
+        // can take it (ThrowOutline): after the calls kept are marked, before
+        // any version or copy of a body is made.
+        p.ModulePasses.Add(new ThrowOutline());
         p.ModulePasses.Add(new ConstantSpecialize());
         p.ModulePasses.Add(Inliner(keepFree: true));
         // After inlining, because a literal's length is only visible once
