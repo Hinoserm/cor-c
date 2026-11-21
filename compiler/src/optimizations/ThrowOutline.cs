@@ -46,7 +46,7 @@ public sealed class ThrowOutline : IModulePass
 {
     public string Name => "throw-outline";
 
-    /// <summary>The most instructions a function keeps, its throws moved out, to have them moved: what the inliner weighs a small body against, and its arguments' credit.</summary>
+    /// <summary>The most instructions a function keeps, its throws moved out, to have them moved: as many as the inliner may take in (Pipeline.Default sets it by --opt-size).</summary>
     public int OutlineBody { get; init; } = 64;
 
     /// <summary>What marks a function's throw as its own frame's (Inline.NotInlineable).</summary>
