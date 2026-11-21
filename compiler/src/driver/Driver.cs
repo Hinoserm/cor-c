@@ -1505,18 +1505,21 @@ public static class Driver
             {
                 Corsac.Lang.Lto.ArgumentHints said = Corsac.Lang.Opt.ArgumentSummary.Of(module);
                 string programEntry = module.Entry;
+                // THE LIBRARY'S CODE THIS IMAGE MAY NOT KEEP (Module.
+                // LibraryPrivate) OR ANOTHER IMAGE SUPPLIES (a shared
+                // library's, GoesElsewhere): the function the calls reach is
+                // that image's, as it was compiled. Nothing of it changes --
+                // its parameters are its own -- and nothing is made beside it,
+                // a version or a way in, which that image does not export.
+                HashSet<string> notOurs = module.LibraryPrivate();
+                foreach (Function f in module.Functions)
+                    if (module.GoesElsewhere(f)) notOurs.Add(f.Name);
                 if (Corsac.Lang.Lto.ArgumentSolver.Solve(new[] { said }, new Dictionary<string, string[]>(StringComparer.Ordinal),
-                        name => name == programEntry || module.Imports.Contains(name) || module.ObjectNames.Contains(name), closed: false,
+                        name => name == programEntry || module.Imports.Contains(name) || module.ObjectNames.Contains(name) || notOurs.Contains(name), closed: false,
                         Switches.ReportPhases ? Console.Error.WriteLine : null) is { } argumentFacts)
                 {
-                    // No version of the library's code this image may not keep
-                    // (Module.LibraryPrivate) or another image supplies: a copy
-                    // of it kept, which the compile refuses. Out of the facts
-                    // before anything makes one or calls one.
-                    HashSet<string> notOurs = module.LibraryPrivate();
-                    foreach (Function f in module.Functions)
-                        if (module.GoesElsewhere(f)) notOurs.Add(f.Name);
                     foreach (string versioned in argumentFacts.Versions.Keys.Where(notOurs.Contains).ToList()) argumentFacts.Versions.Remove(versioned);
+                    foreach (string entered in argumentFacts.Entries.Keys.Where(notOurs.Contains).ToList()) argumentFacts.Entries.Remove(entered);
                     List<string> misfits = new();
                     Corsac.Lang.Opt.ArgumentSummary.MakeVersions(module, argumentFacts);
                     bool given = Corsac.Lang.Opt.ArgumentSummary.Apply(module, argumentFacts, misfits);
