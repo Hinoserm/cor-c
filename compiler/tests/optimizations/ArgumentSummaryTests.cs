@@ -106,4 +106,30 @@ internal static class ArgumentSummaryTests
             "a call through a slot's word read raw is not said as a call through the slot");
         Assert(hints.Unnamed.SetEquals(new[] { 0, 3 }), "anything else is not said by its count: " + string.Join(",", hints.Unnamed));
     }
+
+    public static void ApplyRaw()
+    {
+        // A call through Op's slot at 52, read raw (its object not the one
+        // passed), and one dispatching on Op by a shape that is neither.
+        Module m = new("argument-apply");
+        (Function f, Block b) = Make(m, "Calls", 2);
+        VReg copied = f.NewReg(IrTypes.Word);
+        VReg method = Load(b, f, Load(b, f, f.Params[0], 0), 52);
+        b.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = copied, Operands = { method } });
+        Instr raw = CallThrough(b, copied, f.Params[1], new ImmOperand(7, IrTypes.Word));
+        raw.DispatchType = "Op";
+        new Builder(f, b).Ret();
+        ArgumentFacts facts = new();
+        facts.DroppedSlots[Escape.VirtualCallee("Op", 52)] = new[] { 1 };
+        List<string> errors = new();
+        ArgumentSummary.Apply(m, facts, errors);
+        Assert(errors.Count == 0 && raw.Operands.Count == 2, "a call through a slot read raw (through a copy) did not lose what its slot's calls lose: " + string.Join("; ", errors));
+
+        (Function g, Block c) = Make(m, "Odd", 2);
+        CallThrough(c, Load(c, g, g.Params[0], 8), g.Params[1], new ImmOperand(7, IrTypes.Word)).DispatchType = "Op";
+        new Builder(g, c).Ret();
+        errors.Clear();
+        ArgumentSummary.Apply(m, facts, errors);
+        Assert(errors.Any(e => e.Contains("Odd") && e.Contains("neither named nor read raw")), "a call on a type whose slots lost arguments, by a shape not recognised, was let through");
+    }
 }

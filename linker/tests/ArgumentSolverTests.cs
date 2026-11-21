@@ -7,8 +7,8 @@ namespace Corsac.Tests.Elf;
 /// names (ArgumentSolver): which families lose a parameter every call
 /// passes alike, and which are held -- by an unnamed call of as many
 /// arguments or more, a slot call the link has no answer for, a call
-/// a static cell written with what is not a
-/// named address -- and the hints' format for them.
+/// through a static cell written with what is not a named address -- and
+/// the hints' format for them.
 /// </summary>
 public static class ArgumentSolverTests
 {
@@ -140,7 +140,7 @@ public static class ArgumentSolverTests
         reader.ReadInt32();
         ArgumentHints read = ArgumentHints.Read(reader, bytes.Length);
         Check(stream.Position == bytes.Length && read.Write().AsSpan().SequenceEqual(bytes), "argument hints do not read back as written");
-        Check(read.CellCalls["s_Hook"].SequenceEqual(new[] { 5 }) && read.CellsWritten.Contains("s_Hook") 
+        Check(read.CellCalls["s_Hook"].SequenceEqual(new[] { 5 }) && read.CellsWritten.Contains("s_Hook")
             && read.Unnamed.SequenceEqual(new[] { 3 }), "unnamed calls do not read back as written");
     }
 }

@@ -201,7 +201,7 @@ public static class ArgumentSummary
                         // in (Fixed: CalleePops, [StackArguments]) -- none of
                         // a descriptor's slots.
                         slots ??= Escape.VirtualCallees(new[] { f });
-                        if (!slots.TryGetValue(i, out string[]? names) || names.Length == 0)
+                        if (!slots.TryGetValue(i, out string[]? names))
                         {
                             if (RawSlot(f, i, rawDefs ??= Definitions(f)) is not string raw) { Unnamed(f, i, hints); continue; }
                             names = new[] { raw };
@@ -242,11 +242,41 @@ public static class ArgumentSummary
     /// judged and rewritten as one (Of, Apply).
     /// </summary>
     internal static string? RawSlot(Function f, Instr call, Dictionary<int, List<Instr>> defs)
-        => call.Op == Opcode.CallIndirect && call.DispatchType is string declaring && call.Operands.Count >= 1 && call.Operands[0] is RegOperand { Reg: var target }
-            && defs.TryGetValue(target.Id, out List<Instr>? methods) && methods is [{ Op: Opcode.Load } method]
-            && method.Operands.Count == 1 && method.Operands[0] is RegOperand { Reg: var table }
-            && defs.TryGetValue(table.Id, out List<Instr>? tables) && tables is [{ Op: Opcode.Load, Offset: 0 }]
-            ? Escape.VirtualCallee(declaring, method.Offset) : null;
+    {
+        if (call.Op != Opcode.CallIndirect || call.DispatchType is not string declaring || declaring == Devirtualize.NoTarget
+            || call.Operands.Count < 1 || Through(call.Operands[0]) is not { Op: Opcode.Load } method
+            || method.Operands.Count != 1 || Through(method.Operands[0]) is not { Op: Opcode.Load, Offset: 0 }) return null;
+        return Escape.VirtualCallee(declaring, method.Offset);
+
+        // The one instruction that makes a register, through copies of one
+        // register (an out-of-SSA move, a coalescing copy); null for any other.
+        Instr? Through(Operand o)
+        {
+            for (int hops = 0; hops < 8; hops++)
+            {
+                if (o is not RegOperand { Reg: var r } || !defs.TryGetValue(r.Id, out List<Instr>? made) || made is not [var one]) return null;
+                if (one.Op != Opcode.Copy) return one;
+                if (one.Operands.Count != 1) return null;
+                o = one.Operands[0];
+            }
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether a call dispatching on `declaring` may go through a slot whose
+    /// calls lost arguments (ArgumentFacts.DroppedSlots, by any name of the
+    /// type's): such a call found neither named nor read raw cannot be
+    /// rewritten, and is refused rather than left passing what the callee
+    /// no longer takes.
+    /// </summary>
+    private static bool Dropping(ArgumentFacts facts, string declaring)
+    {
+        string named = VirtualTargets.Prefix + declaring;
+        foreach (string slot in facts.DroppedSlots.Keys)
+            if (slot.StartsWith(named, StringComparison.Ordinal) && slot.Length > named.Length && slot[named.Length] is '+' or '@') return true;
+        return false;
+    }
 
     /// <summary>A static field's cell (Lowering's `s_` labels).</summary>
     private static bool IsCell(string name) => name.StartsWith("s_", StringComparison.Ordinal);
@@ -593,7 +623,13 @@ public static class ArgumentSummary
                         // (Or through a slot read raw, by its plain name: as Of said it.)
                         if (!slots.TryGetValue(i, out string[]? names))
                         {
-                            if (RawSlot(f, i, rawDefs ??= Definitions(f)) is not string raw) continue;
+                            if (RawSlot(f, i, rawDefs ??= Definitions(f)) is not string raw)
+                            {
+                                if (i.DispatchType is string declaring && declaring != Devirtualize.NoTarget && Dropping(facts, declaring))
+                                    errors.Add("'" + (f.Display ?? f.Name) + "' (line " + i.Line + ") calls through a slot of '" + declaring
+                                        + "' by a shape neither named nor read raw, where the link took arguments from that type's slots (ArgumentFacts)");
+                                continue;
+                            }
                             names = new[] { raw };
                         }
                         // AN ARGUMENT NO FUNCTION THE SLOT REACHES READS, its

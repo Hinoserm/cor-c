@@ -164,6 +164,7 @@ public static partial class Program
         Try("marks: a call made direct keeps a fresh struct, not a delegate's invoke", MarksDevirtualize);
         Try("parameter classes: an interface the class lists answered, one it does not left; a depth its class answers", () => { ParamClassTests.InterfaceScan(); ParamClassTests.DepthTest(); });
         Try("argument hints: calls through words said by where their targets come from", ArgumentSummaryTests.UnnamedCalls);
+        Try("argument facts: a call through a slot read raw rewritten, one of no known shape refused", ArgumentSummaryTests.ApplyRaw);
         Try("marks: a body copied for a region keeps its sites and loops", MarksRegionClone);
         Try("marks: an inlined loop keeps its region", MarksInlineLoop);
         Try("marks: tails marked apart are not shared", MarksCommonTailMerge);
