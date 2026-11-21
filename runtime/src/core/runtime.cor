@@ -4412,48 +4412,54 @@ public static partial class Runtime
     /// What StepFrame answers for a frame not to read.
     public const nuint NoFrame = ~(nuint)0;
 
-    /// THE FRAME OF A FUNCTION STOPPED AT `pc`, its stack pointer `sp` and
-    /// frame pointer register `bp` as they were there: `bp` itself, but in a
-    /// function that gives the frame pointer a value (a leaf: the compiler's
-    /// FramePointerFree), where the frame is at `sp` plus the frame's size and
-    /// the saved registers' pushes. Such a function starts `push ebp` and
-    /// `mov ebp, esp` written 8B EC (x86-64: push rbp, 48 8B EC), then `sub
-    /// esp, n` (83 EC n or 81 EC n32, REX.W on x86-64) if it has a frame,
-    /// then its pushes. For a fault or an interrupt in one: the chain from
-    /// there runs on as from any frame. Not in its epilogue: on i386 from
-    /// its first pop to its `ret` (x86-64: from `add rsp, n`, its saves being
-    /// moves), the answer is high by what is already popped -- no fault is
-    /// there, and an interrupt's walk (the kernel's sampler) checks what it
-    /// reads. Allocates nothing.
-    public static nuint FrameAt(nuint pc, nuint sp, nuint bp) {
+    /// THE FRAME LINK OF A FUNCTION STOPPED AT `pc`, its stack pointer `sp`
+    /// and frame pointer register `bp` as they were there: a word holding its
+    /// caller's frame pointer with the return address into that caller just
+    /// above it, from which a walk of the chain goes on as from any frame.
+    ///
+    /// i386. A FRAMED FUNCTION begins `push ebp; mov ebp, esp` (55 89 E5):
+    /// past those, `bp` itself; stopped on them, `sp` (the push made) or, the
+    /// push not yet made, the caller as it called (`pc` its return address,
+    /// `bp` its frame). A LEAF HAS NO FRAME (the compiler's MFunction.
+    /// Frameless) and begins otherwise: the registers it saves pushed (50 to
+    /// 57), then its frame reserved (`sub esp, n`: 83 EC n or 81 EC n32), so
+    /// its return address is at `sp` plus what of those has run. One that
+    /// saves EBP saves it first: the caller's EBP just below the return
+    /// address is the link. One that does not leaves EBP as its caller had
+    /// it, and there is no link of its own: `pc` becomes the return address
+    /// -- the leaf stood for by the call it was, as an inlined function is --
+    /// and `bp` the frame. Code not this compiler's that begins otherwise is
+    /// read the same way, a run of pushes being what its first bytes say.
+    ///
+    /// x86-64: a leaf that gives RBP a value begins `push rbp; mov rbp, rsp`
+    /// written 48 8B EC, then `sub rsp, n`: its frame is at `sp` plus the
+    /// frame's size and the saved registers' pushes; any other function's is
+    /// `bp`.
+    ///
+    /// Not in an epilogue: there the answer is off by what is already
+    /// undone -- no fault is there, and an interrupt's walk (the kernel's
+    /// sampler) checks what it reads. Allocates nothing.
+    public static nuint FrameAt(ref nuint pc, nuint sp, nuint bp) {
         nuint name, file, pool, offset;
         long line;
         if (!Lookup(pc, out name, out file, out pool, out line, out offset, false)) { return bp; }
         nuint at = pc - offset;
+#if TARGET_64BIT
         if (Sys.Read8(at) != 0x55) { return bp; }
         at = at + 1;
-#if TARGET_64BIT
         if (Sys.Read8(at) != 0x48) { return bp; }
         at = at + 1;
-#endif
         if (Sys.Read8(at) != 0x8B || Sys.Read8(at + 1) != 0xEC) { return bp; }
         at = at + 2;
         nuint size = 0;
-#if TARGET_64BIT
         if (Sys.Read8(at) == 0x48) {
             if (Sys.Read8(at + 1) == 0x83 && Sys.Read8(at + 2) == 0xEC) { size = Sys.Read8(at + 3); at = at + 4; }
             else if (Sys.Read8(at + 1) == 0x81 && Sys.Read8(at + 2) == 0xEC) { size = Sys.Read32(at + 3); at = at + 7; }
         }
-#else
-        if (Sys.Read8(at) == 0x83 && Sys.Read8(at + 1) == 0xEC) { size = Sys.Read8(at + 2); at = at + 3; }
-        else if (Sys.Read8(at) == 0x81 && Sys.Read8(at + 1) == 0xEC) { size = Sys.Read32(at + 2); at = at + 6; }
-#endif
         nuint pushes = 0;
         while (true) {
             int b = Sys.Read8(at);
-#if TARGET_64BIT
             if (b == 0x41 && Sys.Read8(at + 1) >= 0x50 && Sys.Read8(at + 1) <= 0x57) { pushes = pushes + 1; at = at + 2; continue; }
-#endif
             if (b >= 0x50 && b <= 0x57) { pushes = pushes + 1; at = at + 1; continue; }
             break;
         }
@@ -4461,6 +4467,32 @@ public static partial class Runtime
         // is still the frame, and given no value yet.
         if (pc < at) { return bp; }
         return sp + size + pushes * WordSize.Bytes;
+#else
+        if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x89 && Sys.Read8(at + 2) == 0xE5) {
+            if (pc >= at + 3) { return bp; }
+            if (pc > at) { return sp; }
+            pc = Sys.ReadAddress(sp);
+            return bp;
+        }
+        // A leaf: what of its pushes and its frame's reserving has run.
+        bool linked = Sys.Read8(at) == 0x55;
+        nuint made = 0;
+        while (true) {
+            int b = Sys.Read8(at);
+            if (b < 0x50 || b > 0x57 || b == 0x54) { break; }
+            if (at < pc) { made = made + 4; }
+            at = at + 1;
+        }
+        if (Sys.Read8(at) == 0x83 && Sys.Read8(at + 1) == 0xEC) {
+            if (pc >= at + 3) { made = made + Sys.Read8(at + 2); }
+        } else if (Sys.Read8(at) == 0x81 && Sys.Read8(at + 1) == 0xEC) {
+            if (pc >= at + 6) { made = made + Sys.Read32(at + 2); }
+        }
+        nuint ret = sp + made;
+        if (linked && made >= 4) { return ret - 4; }
+        pc = Sys.ReadAddress(ret);
+        return bp;
+#endif
     }
 
     /// WHETHER `frame` LOOKS LIKE A FRAME, and `next` (0: not asked) like the
@@ -4571,7 +4603,9 @@ public static partial class Runtime
     /// stack from the faulting function outward. The platform's fault handler
     /// calls it (Platform.ArmFaultReport), with a scratch page of its own
     /// for the digits; nothing here allocates.
-    public static void ReportFault(nuint address, nuint pc, nuint frame, nuint digits, nuint registers, int count) {
+    /// `caller`: where a leaf with no frame link of its own was called from
+    /// (FrameAt), said after it; 0 for none.
+    public static void ReportFault(nuint address, nuint pc, nuint caller, nuint frame, nuint digits, nuint registers, int count) {
         SayLiteral(StdErr, "Fatal error. System.AccessViolationException: Attempted to read or write protected memory. This is often an indication that other memory is corrupt.\n");
         SayLiteral(StdErr, "   fault at 0x");
         SayHex(digits, address);
@@ -4596,6 +4630,11 @@ public static partial class Runtime
         nuint offset;
 
         if (Lookup(pc, out name, out file, out pool, out line, out offset, false)) {
+            SayLiteral(StdErr, "   at ");
+            SayName(StdErr, pool, name);
+            SayLiteral(StdErr, "\n");
+        }
+        if (caller != 0 && Lookup(caller, out name, out file, out pool, out line, out offset, false)) {
             SayLiteral(StdErr, "   at ");
             SayName(StdErr, pool, name);
             SayLiteral(StdErr, "\n");

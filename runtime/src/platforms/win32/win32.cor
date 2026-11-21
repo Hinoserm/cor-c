@@ -260,11 +260,12 @@ public static class Win32
         if (address == NoAddress) address = FaultAddress(ctx, pc);
         if (address == NoAddress || !Runtime.NullFaultCatchable(address)) return ContinueSearch;
 
-        // CONTEXT's registers are DWORDs: Eax, Edx (the frame), Eip. A leaf
-        // that gave EBP a value has its frame found by its prologue
-        // (Runtime.FrameAt), and EBP made that frame again, so NullFault's
-        // prologue links to it as a call from there would.
-        nuint frame = Runtime.FrameAt(pc, Sys.Read32(ctx + 0xC4), Sys.Read32(ctx + 0xB4));
+        // CONTEXT's registers are DWORDs: Eax, Edx (the frame), Eip. The
+        // faulting function's frame link (Runtime.FrameAt), made EBP, so
+        // NullFault's prologue links to it as a call from there would; a leaf
+        // with no link of its own stands as the call it was in its caller
+        // (`pc` its return address).
+        nuint frame = Runtime.FrameAt(ref pc, Sys.Read32(ctx + 0xC4), Sys.Read32(ctx + 0xB4));
         Sys.Write32(ctx + 0xB4, Sys.Low32(frame));
         Sys.Write32(ctx + 0xB0, Sys.Low32(pc));
         Sys.Write32(ctx + 0xA8, Sys.Low32(frame));

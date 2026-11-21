@@ -79,12 +79,25 @@ public sealed class MFunction
     public List<Gpr> SavedRegs { get; } = new();
 
     /// <summary>
-    /// EBP HOLDS A VALUE IN THIS FUNCTION (X86Target, for a leaf): its frame
-    /// is addressed off ESP, which nothing moves between its prologue and its
-    /// epilogue (FramePointerFree), and the prologue's `mov ebp, esp` is
-    /// written 8B EC, the mark a fault reads to find the frame (Encoder).
+    /// EBP HOLDS A VALUE IN THIS FUNCTION (X86Target, for a leaf, which is
+    /// Frameless): saved first of the registers it saves (SavedRegs[0]), so
+    /// the caller's EBP lies just below the return address -- a frame link as
+    /// a prologue's would be, which a fault's walk reads (Runtime.FrameAt).
     /// </summary>
     public bool FramePointerFree { get; set; }
+
+    /// <summary>
+    /// A LEAF WITH NO FRAME OF ITS OWN (X86Target): no `push ebp; mov ebp,
+    /// esp` and no `leave`. It pushes the registers it saves, then reserves
+    /// its frame (`sub esp, n`), and every slot and argument is addressed off
+    /// ESP, which nothing moves between that and the epilogue -- `add esp, n`,
+    /// the pops, `ret` (FramePointerFree.Run, Encoder). It calls nothing, so
+    /// no frame links to it; a thread stopped in it is found by its first
+    /// bytes, which are not a framed function's `push ebp; mov ebp, esp`
+    /// (Runtime.FrameAt). On a 486 the three instructions are seven clocks of
+    /// every call of a leaf, `leave` five of them; four bytes of each.
+    /// </summary>
+    public bool Frameless { get; set; }
 
     /// <summary>
     /// Bytes of Packed128 spill slots below the saved registers, at ESP after

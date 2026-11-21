@@ -31,13 +31,14 @@ namespace Corsac.Lang.X86;
 /// way; a fault the kernel answers itself (Arch.Recover, a page mapped)
 /// resumes the instruction with its own ESP. Refused before, as a precaution.
 /// Last but FrameCompact, which then packs the EBP frame without them, and
-/// FramePointerFree, whose functions are left alone.
+/// FramePointerFree; a frameless leaf (MFunction.Frameless) is left alone:
+/// its ESP must stay a fixed distance below its return address.
 /// </summary>
 internal static class AlignedSlots
 {
     public static void Run(MFunction m)
     {
-        if (m.XmmSpillWidth != 16 || m.FramePointerFree) return;
+        if (m.XmmSpillWidth != 16 || m.Frameless) return;
         static bool Spill(MOperand o, out MMem mem)
         {
             mem = null!;

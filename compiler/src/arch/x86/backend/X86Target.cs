@@ -60,15 +60,16 @@ internal sealed class X86Target : ITarget
     }
 
     /// <summary>
-    /// A LEAF'S REGISTERS: EBP besides, callee-saved (the prologue still
-    /// pushes it), where nothing needs the frame pointer -- no call, a store
+    /// A LEAF'S REGISTERS: EBP besides, callee-saved (pushed first of those
+    /// it saves, MFunction.FramePointerFree), in a function with no frame of
+    /// its own (MFunction.Frameless), where nothing needs one -- no call, a store
     /// sequence's stub's included (a callee's prologue pushes EBP as the link
     /// to this frame; the collector and every unwinder walk that chain), no
     /// landing pad, nothing that names
     /// EBP but as the frame's base (Sys.FramePointer, a six-argument system
     /// call) and nothing that moves ESP after the prologue, off which the frame
     /// is addressed instead (FramePointerFree). A fault in such a function
-    /// finds its frame by the prologue's mark (Encoder.EncodePrologue).
+    /// finds its caller by its first bytes (Runtime.FrameAt).
     /// </summary>
     private static readonly RegisterFile LeafFile = new()
     {
@@ -518,8 +519,13 @@ internal sealed class X86Target : ITarget
         bool catches = f.Blocks.Any(b => b.LandingPad);
         foreach (int g in File.Classes[0].CalleeSaved)
             if (catches || p.Touched.Contains(g)) _m.SavedRegs.Add((Gpr)g);
-        // EBP given a value: saved by the prologue's own push, not among these.
+        // A LEAF HAS NO FRAME (MFunction.Frameless). EBP given a value in one
+        // is saved as the others are, first, so the caller's EBP lies just
+        // below the return address: the frame link a fault's walk reads
+        // (Runtime.FrameAt).
+        _m.Frameless = _leaf;
         _m.FramePointerFree = _leaf && p.Touched.Contains((int)Gpr.Ebp);
+        if (_m.FramePointerFree) _m.SavedRegs.Insert(0, Gpr.Ebp);
         // A THUNK C ENTERS GIVES NONE OF THEM A VALUE (Function.KeepsCallerRegisters):
         // what it calls on its way out reads them for C's, and one it saved it
         // wrote -- an instruction's own register (CPUID's EBX, REP MOVS's ESI

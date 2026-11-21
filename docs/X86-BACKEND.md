@@ -58,13 +58,22 @@ arithmetic natively gets helper calls, as the 486 does.
 ## The machine model (x86)
 
 **Registers.** EAX, ECX, EDX, EBX, ESI and EDI are allocatable. ESP is the
-stack pointer. EBP is the frame pointer in every function that calls; a
-leaf (no call, a store sequence's stub included; no push, pop or landing
-pad) may allocate it as a seventh register, its frame then addressed off
-ESP (FramePointerFree). Its prologue is still `push ebp; mov ebp, esp`, the
-move written 8B EC, so a fault in it finds its frame from the prologue's
-shape (Runtime.FrameAt) and the chain of callers above it is whole: a leaf
-is never anyone's caller.
+stack pointer. EBP is the frame pointer in every function that calls.
+
+**A leaf has no frame** (no call, a store sequence's stub included; no push,
+pop or landing pad; MFunction.Frameless): no `push ebp; mov ebp, esp` and
+no `leave` -- seven clocks of every call of it on a 486, `leave` five, and
+four bytes. It pushes the registers it saves, then reserves its frame
+(`sub esp, n`), and addresses every slot and argument off ESP
+(FramePointerFree.Run); its epilogue is `add esp, n`, the pops, `ret`. It
+may allocate EBP as a seventh register, saved first, so the caller's EBP
+lies just below the return address. A leaf is never anyone's caller, so
+only a thread stopped in one meets it: Runtime.FrameAt tells it from a
+framed function by its first bytes (a framed one's are `55 89 E5`), finds
+its return address past what of its pushes and `sub` has run, and gives
+the saved EBP's word as its frame link -- or, saving none, stands it for
+the call it was in its caller, as an inlined function is. A fault there
+is caught by its caller's handlers exactly as from a call.
 
 **Calling convention: the first three words in registers, the rest
 pushed,** the same for every call of the language's own ("Calls and

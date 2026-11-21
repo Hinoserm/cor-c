@@ -78,8 +78,14 @@ internal static class AsmText
         switch (i.Op)
         {
             case MOp.Prologue:
+                if (m.Frameless)
+                {
+                    foreach (Gpr g in m.SavedRegs) yield return $"push {RegName((int)g, 4)}";
+                    if (m.Frame.Size > 0) yield return $"sub esp, {m.Frame.Size}";
+                    yield break;
+                }
                 yield return "push ebp";
-                yield return m.FramePointerFree ? "mov ebp, esp ; 8B EC: no frame pointer after" : "mov ebp, esp";
+                yield return "mov ebp, esp";
                 if (m.Frame.Size > 0)
                 {
                     yield return $"sub esp, {m.Frame.Size}";
@@ -95,17 +101,19 @@ internal static class AsmText
                 }
                 yield break;
             case MOp.Epilogue:
+                if (m.Frameless)
+                {
+                    if (m.Frame.Size > 0) yield return $"add esp, {m.Frame.Size}";
+                    for (int k = m.SavedRegs.Count - 1; k >= 0; k--) yield return $"pop {RegName((int)m.SavedRegs[k], 4)}";
+                    yield return m.Source.CalleePops > 0 ? "ret " + m.Source.CalleePops : "ret";
+                    yield break;
+                }
                 if (m.AlignedArea > 0 && m.SavedRegs.Count > 0) yield return $"lea esp, [ebp - {m.Frame.Size + 4 * m.SavedRegs.Count}]";
                 for (int k = m.SavedRegs.Count - 1; k >= 0; k--)
                 {
                     yield return $"pop {RegName((int)m.SavedRegs[k], 4)}";
                 }
-                if (m.FramePointerFree)
-                {
-                    if (m.Frame.Size > 0) yield return $"add esp, {m.Frame.Size}";
-                    yield return "pop ebp";
-                }
-                else yield return "leave";
+                yield return "leave";
                 yield return m.Source.CalleePops > 0 ? "ret " + m.Source.CalleePops : "ret";
                 yield break;
             case MOp.CompilerFence:

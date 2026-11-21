@@ -1409,12 +1409,20 @@ internal sealed class Encoder
 
     private void EncodePrologue()
     {
+        // A FRAMELESS LEAF (MFunction.Frameless): its saved registers -- EBP
+        // first where it gives it a value -- then its frame. Never begins
+        // `push ebp; mov ebp, esp`, which is how a fault's walk tells it
+        // from a framed function (Runtime.FrameAt).
+        if (_m.Frameless)
+        {
+            foreach (Gpr g in _m.SavedRegs) _out.Add((byte)(0x50 + (int)g));
+            int size = _m.Frame.Size;
+            if (size is > 0 and <= 127) B(0x83, 0xEC, (byte)size);
+            else if (size > 127) { B(0x81, 0xEC); D32(size); }
+            return;
+        }
         B(0x55);        // push ebp
-        // mov ebp, esp: 89 E5, or 8B EC in a function that gives EBP a value
-        // after (FramePointerFree) -- the mark a fault reads (Runtime.FrameAt)
-        // to find the frame at ESP plus the frame's size and the pushes below.
-        if (_m.FramePointerFree) B(0x8B, 0xEC);
-        else B(0x89, 0xE5);
+        B(0x89, 0xE5);  // mov ebp, esp: what a fault's walk reads as a framed function (Runtime.FrameAt)
         int n = _m.Frame.Size;
         if (n > 0)
         {
@@ -1444,6 +1452,15 @@ internal sealed class Encoder
 
     private void EncodeEpilogue()
     {
+        if (_m.Frameless)
+        {
+            int size = _m.Frame.Size;
+            if (size is > 0 and <= 127) B(0x83, 0xC4, (byte)size);  // add esp, n
+            else if (size > 127) { B(0x81, 0xC4); D32(size); }
+            for (int k = _m.SavedRegs.Count - 1; k >= 0; k--) _out.Add((byte)(0x58 + (int)_m.SavedRegs[k]));
+            EncodeReturn();
+            return;
+        }
         if (_m.AlignedArea > 0 && _m.SavedRegs.Count > 0)
         {
             // lea esp, [ebp - frame - saves]: back up to the saved registers over the aligned area.
@@ -1455,22 +1472,16 @@ internal sealed class Encoder
         {
             _out.Add((byte)(0x58 + (int)_m.SavedRegs[k]));
         }
-        if (_m.FramePointerFree)
-        {
-            // EBP holds a value, not the frame: ESP past the frame, then EBP back.
-            int n = _m.Frame.Size;
-            if (n is > 0 and <= 127) B(0x83, 0xC4, (byte)n);  // add esp, n
-            else if (n > 127) { B(0x81, 0xC4); D32(n); }
-            B(0x5D);  // pop ebp
-        }
-        else
-        {
-            // LEAVE EVEN ON A PENTIUM: `mov esp, ebp ; pop ebp` would pair with
-            // nothing either -- the pop uses ESP the move has just written, an
-            // address generation interlock (Agner Fog, example 4.8: `mov esp, ebp
-            // / ret`) -- three clocks for LEAVE's three and a byte more.
-            B(0xC9);
-        }
+        // LEAVE EVEN ON A PENTIUM: `mov esp, ebp ; pop ebp` would pair with
+        // nothing either -- the pop uses ESP the move has just written, an
+        // address generation interlock (Agner Fog, example 4.8: `mov esp, ebp
+        // / ret`) -- three clocks for LEAVE's three and a byte more.
+        B(0xC9);
+        EncodeReturn();
+    }
+
+    private void EncodeReturn()
+    {
         int pops = _m.Source.CalleePops;
         if (pops > 0)
         {

@@ -861,7 +861,7 @@ public static class Platform
                 // prologue (Runtime.FrameAt), and RBP made that frame again,
                 // so NullFault's prologue links to it as a call from there would.
                 nuint faultPc = Sys.ReadAddress(uc + 168);
-                nuint faultFrame = Runtime.FrameAt(faultPc, Sys.ReadAddress(uc + 160), Sys.ReadAddress(uc + 120));
+                nuint faultFrame = Runtime.FrameAt(ref faultPc, Sys.ReadAddress(uc + 160), Sys.ReadAddress(uc + 120));
                 Sys.WriteAddress(uc + 120, faultFrame);
                 nuint sp = ((Sys.ReadAddress(uc + 160) - 128) & ~(nuint)15) - 8;
                 Sys.WriteAddress(sp, faultPc);
@@ -874,11 +874,12 @@ public static class Platform
                 // aligned as a call leaves it: the return address at 12 past
                 // a multiple of 16.
                 // Each greg_t is 4 bytes here.
-                // A leaf that gave EBP a value has its frame found by its
-                // prologue (Runtime.FrameAt), and EBP made that frame again,
-                // so NullFault's prologue links to it as a call from there would.
+                // The faulting function's frame link (Runtime.FrameAt), made
+                // EBP, so NullFault's prologue links to it as a call from
+                // there would; a leaf with no link of its own stands as the
+                // call it was in its caller (`faultPc` its return address).
                 nuint faultPc = Sys.ReadAddress(uc + 76);
-                nuint faultFrame = Runtime.FrameAt(faultPc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
+                nuint faultFrame = Runtime.FrameAt(ref faultPc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
                 Sys.WriteAddress(uc + 44, faultFrame);
                 nuint sp = ((Sys.ReadAddress(uc + 48) - 64) & ~(nuint)15) - 20;
                 // NullFault(frame, pc) takes its two words in EAX and EDX
@@ -901,7 +902,8 @@ public static class Platform
             // 10th and RIP the 16th.
             nuint address = Sys.ReadAddress(si + 16);
             nuint pc = Sys.ReadAddress(uc + 168);
-            nuint frame = Runtime.FrameAt(pc, Sys.ReadAddress(uc + 160), Sys.ReadAddress(uc + 120));
+            nuint walk = pc;
+            nuint frame = Runtime.FrameAt(ref walk, Sys.ReadAddress(uc + 160), Sys.ReadAddress(uc + 120));
             nuint registers = uc + 40;
             int count = 16;
 #else
@@ -909,12 +911,14 @@ public static class Platform
             // seventh and EIP the fifteenth.
             nuint address = Sys.ReadAddress(si + 12);
             nuint pc = Sys.ReadAddress(uc + 76);
-            nuint frame = Runtime.FrameAt(pc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
+            // (A leaf with no frame link of its own: its caller is `walk`.)
+            nuint walk = pc;
+            nuint frame = Runtime.FrameAt(ref walk, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
             // EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX.
             nuint registers = uc + 36;
             int count = 8;
 #endif
-            Runtime.ReportFault(address, pc, frame, _faultPage + 256, registers, count);
+            Runtime.ReportFault(address, pc, walk != pc ? walk : 0, frame, _faultPage + 256, registers, count);
         }
         // SIG_DFL, the signal unblocked (SIG_UNBLOCK, a set of one), and sent.
         nuint page = _faultPage;
