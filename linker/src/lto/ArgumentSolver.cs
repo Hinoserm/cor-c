@@ -201,7 +201,9 @@ public static class ArgumentSolver
         List<(string Caller, ArgumentCall Call, string[] Targets)> calls = new();
         HashSet<string> called = new(StringComparer.Ordinal);
         HashSet<string> slotsCalled = new(StringComparer.Ordinal);
-        bool unresolved = false;
+        // Calls through a slot the link could not answer (some descriptor
+        // holds there what is not a function of the units': foreign code).
+        int unresolved = 0;
         foreach (ArgumentHints unit in units)
             foreach ((string caller, ArgumentFunction f) in unit.Functions)
                 foreach (ArgumentCall call in f.Calls)
@@ -210,7 +212,9 @@ public static class ArgumentSolver
                     {
                         slotsCalled.Add(call.Callee);
                         if (virtuals.TryGetValue(call.Callee, out string[]? targets)) { calls.Add((caller, call, targets)); called.UnionWith(targets); }
-                        else unresolved = true;
+                        // Of what it reaches nothing is known but that it is
+                        // passed as many arguments: as an unnamed call is.
+                        else { unresolved++; unnamed.Add(call.Arguments.Length); }
                     }
                     else if (functions.ContainsKey(call.Callee)) { calls.Add((caller, call, new[] { call.Callee })); called.Add(call.Callee); }
                 }
@@ -218,13 +222,14 @@ public static class ArgumentSolver
         // What may change at all.
         bool Free(string name) => functions.TryGetValue(name, out ArgumentFunction? f) && !f.Fixed && !disagreed.Contains(name)
             && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
-        // A slot's family is known whole only in a closed image where every
-        // slot called resolved, and only where no call through an address
-        // nothing names may reach it: a slot's word read raw (the runtime's
-        // own reading of a descriptor) would be called so, with at least as
-        // many arguments as the function has parameters (ArgumentHints.
-        // Unnamed) -- none such passes as many as a member has, or more.
-        bool slotsKnown = closed && !unresolved;
+        // A slot's family is known whole only in a closed image, and only
+        // where no call through an address nothing names may reach it: a
+        // slot's word read raw (the runtime's own reading of a descriptor)
+        // would be called so, with at least as many arguments as the
+        // function has parameters (ArgumentHints.Unnamed) -- nor a call
+        // through a slot the link could not answer, of what it passes, the
+        // same -- none such passes as many as a member has, or more.
+        bool slotsKnown = closed;
         int unnamedMost = unnamed.Count == 0 ? -1 : unnamed.Max();
         bool UnnamedReach(string name) => functions[name].Kinds.Length <= unnamedMost;
         int heldByUnnamed = 0;
@@ -551,7 +556,7 @@ public static class ArgumentSolver
         }
 
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants
-            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families of no more parameters than an unnamed call's arguments" : ", slots not known whole")
+            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families of no more parameters than the most arguments an unnamed call passes (" + unnamedMost + (unresolved == 0 ? "" : "; " + unresolved + " slot calls unanswered") + ")" : ", slots not known whole: the image is open")
             + "); " + facts.Entries.Count + " functions given a way in with their commonest numbers, for " + entrySites + " calls; "
             + facts.Versions.Values.Sum(versions => versions.Length) + " versions of " + facts.Versions.Count + " functions for " + versionSites + " calls; "
             + facts.Splits.Count + " functions take " + splitWords + " words where they took a struct's address");

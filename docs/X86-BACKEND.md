@@ -708,7 +708,10 @@ module compiled whole sees no descriptor's every reader -- and only where
 no call through an address nothing names (the runtime's hooks, Sys.Call)
 passes as many arguments as its members have parameters, or more: such a
 call may be of a slot's word read raw, and a callee of fewer parameters
-reads as many as it has. Those calls pass at most three words.
+reads as many as it has. A call through a slot the link cannot answer
+(a descriptor holding foreign code there) counts the same. The runtime's
+such calls (its hooks, Sys.Call) pass at most three words today; the link
+reads the most any unit passes.
 `--no-argument-facts` turns the judging off.
 
 ## Exceptions

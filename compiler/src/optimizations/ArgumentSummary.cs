@@ -177,6 +177,9 @@ public static class ArgumentSummary
                 {
                     if (i.Op == Opcode.Call && i.Callee is { } callee)
                     {
+                        // (An intrinsic, an asm block among them, calls no
+                        // function of this code: InlineAsm refuses a call, and
+                        // a jump but to the block's own labels.)
                         if (NativeCall.Is(i) || callee.StartsWith("__x86.i.", StringComparison.Ordinal) || callee.StartsWith("__x64.i.", StringComparison.Ordinal)) continue;
                         if (callee == f.Name) said.Recursive = true;
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count];
@@ -187,12 +190,11 @@ public static class ArgumentSummary
                     {
                         // A CALL THROUGH A WORD NOTHING NAMES: of a function
                         // of as many parameters as it passes arguments, or
-                        // fewer (the target the first operand). (An asm block
-                        // makes none: it may not call, nor jump but to its
-                        // own labels -- InlineAsm refuses it.) Not a native one's: C's convention, every
-                        // argument on the stack, which reaches no method of
-                        // this code but one of C's ways in (Fixed: CalleePops,
-                        // [StackArguments]) -- none of a descriptor's slots.
+                        // fewer (the target the first operand). Not a native
+                        // one's: C's convention, every argument on the stack,
+                        // reaches no method of this code but one of C's ways
+                        // in (Fixed: CalleePops, [StackArguments]) -- none of
+                        // a descriptor's slots.
                         slots ??= Escape.VirtualCallees(new[] { f });
                         if (!slots.TryGetValue(i, out string[]? names) || names.Length == 0) { hints.Unnamed.Add(i.Operands.Count - 1); continue; }
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count - 1];

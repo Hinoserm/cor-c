@@ -7,8 +7,8 @@
 //
 // Every virtual call of Five passes scale 3, and of Six scale 7, judged
 // over the whole program at the link. The runtime's library calls words
-// nothing names (its hooks, through static cells) with up to three
-// arguments, which could be a slot's word read raw: a family of more
+// nothing names (its hooks, through static cells) with, today, up to
+// three arguments, which could be a slot's word read raw: a family of more
 // parameters than that is reached by none of them, and Six's, every call
 // of it named, loses its constant parameters. Five is also made a delegate
 // of: the delegate's closure calls Five through its slot with what the
