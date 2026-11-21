@@ -172,9 +172,9 @@ public sealed class Pipeline
         // throw is a call, a function's alignment and a row of the frame
         // table for nothing where the body stays a call): its small limit
         // for that function -- 8 and the credit of its argument words under
-        // --opt-size, 40 otherwise -- or, but under --opt-size, 64: in a
-        // loop the inliner weighs only a body's hot path, which a throw
-        // moved out leaves. On the K8 kernel they cost 3.3% of its code: the
+        // --opt-size, 40 otherwise -- or 64 outside --opt-size: in a loop
+        // the inliner weighs only a body's hot path, which a throw moved out
+        // leaves (an allowance --opt-size, for size, does without). On the K8 kernel they cost 3.3% of its code: the
         // speed bought where a span or a list is indexed in a loop.
         p.ModulePasses.Add(new ThrowOutline
         {
