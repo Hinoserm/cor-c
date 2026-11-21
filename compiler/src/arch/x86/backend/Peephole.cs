@@ -2447,14 +2447,18 @@ internal static class Peephole
     // ---- a copy and an operation on it, one LEA -----------------------------------
 
     /// <summary>
-    /// `mov d, a ; add d, b` (b a register or a number), `sub d, n`, `inc d`,
-    /// `dec d` or `shl d, 1`, with the flags the second sets read by nothing
-    /// after it: `lea d, [a + b]` (`[a + n]`, `[a - n]`, `[a + 1]`, `[a - 1]`,
-    /// `[a + a]`). x86 has no three-operand add but the address unit's: one
-    /// instruction for two, a clock on the 486 (two with an index), paired
-    /// on the Pentium, one on the K8, two bytes less for a number added.
-    /// 27,000 such pairs in the K8 kernel. Not a shift by more than one:
-    /// [a*4] with no base takes a four-byte displacement, longer than the two.
+    /// `mov d, a ; add d, b` (b a register, d itself -- a doubled, which a
+    /// `shl d, 1` is by now, ChooseForCpu -- or a number), `sub d, n`, `inc
+    /// d` or `dec d`, with the flags the second sets read by nothing after
+    /// it: `lea d, [a + b]` (`[a + a]`, `[a + n]`, `[a - n]`, `[a + 1]`, `[a -
+    /// 1]`). x86 has no three-operand add but the address unit's: one
+    /// instruction for two -- a clock on the 486 for a number, two with an
+    /// index (as the pair's two, a byte less), paired on the Pentium, one on
+    /// the K8 -- two bytes less for a number added. 27,000 such pairs in the
+    /// K8 kernel. Not from EBP (a frame's address, which FrameCompact would
+    /// take for a slot), and on the Pentium not the register form where the
+    /// instruction before writes a register it adds: an address generation
+    /// interlock where the move and the add paired.
     /// </summary>
     private static void CopyThenOperate(List<MInstr> instrs)
     {
@@ -2464,9 +2468,16 @@ internal static class Peephole
             if (!IsMov(copy) || copy.Operands[0] is not MReg { IsPhys: true } d || copy.Operands[1] is not MReg { IsPhys: true } a
                 || d.Id >= 8 || a.Id >= 8 || d.Id == a.Id || d.Id == (int)Gpr.Esp || op.Width != 4 || op.Lock
                 || op.Operands.Count == 0 || op.Operands[0] is not MReg o0 || o0.Id != d.Id || !FlagsDeadAfter(instrs, k + 1)) continue;
+            if (a.Id == (int)Gpr.Ebp) continue;
             MMem? address = op.Op switch
             {
-                MOp.Add when op.Operands[1] is MReg { IsPhys: true } b && b.Id < 8 && b.Id != d.Id && b.Id != (int)Gpr.Esp
+                // d itself: a doubled.
+                MOp.Add when op.Operands[1] is MReg { IsPhys: true } same && same.Id == d.Id && a.Id != (int)Gpr.Esp
+                    => new MMem(MReg.Of((Gpr)a.Id), 0) { Index = MReg.Of((Gpr)a.Id), Scale = 1 },
+                // ESP added: the base (it may be no index).
+                MOp.Add when op.Operands[1] is MReg { IsPhys: true, Id: (int)Gpr.Esp } && a.Id != (int)Gpr.Esp
+                    => new MMem(MReg.Of(Gpr.Esp), 0) { Index = MReg.Of((Gpr)a.Id), Scale = 1 },
+                MOp.Add when op.Operands[1] is MReg { IsPhys: true } b && b.Id < 8 && b.Id != (int)Gpr.Esp
                     => new MMem(MReg.Of((Gpr)a.Id), 0) { Index = MReg.Of((Gpr)b.Id), Scale = 1 },
                 MOp.Add when op.Operands[1] is MImm { IsPlain: true } n && n.Value is >= int.MinValue and <= int.MaxValue
                     => new MMem(MReg.Of((Gpr)a.Id), (int)n.Value),
@@ -2474,11 +2485,14 @@ internal static class Peephole
                     => new MMem(MReg.Of((Gpr)a.Id), (int)-m.Value),
                 MOp.Inc when op.Operands.Count == 1 => new MMem(MReg.Of((Gpr)a.Id), 1),
                 MOp.Dec when op.Operands.Count == 1 => new MMem(MReg.Of((Gpr)a.Id), -1),
-                MOp.Shl when op.Operands.Count == 2 && op.Operands[1] is MImm { IsPlain: true, Value: 1 } && a.Id != (int)Gpr.Esp
-                    => new MMem(MReg.Of((Gpr)a.Id), 0) { Index = MReg.Of((Gpr)a.Id), Scale = 1 },
                 _ => null,
             };
             if (address is null) continue;
+            if (CpuModel.P5 && address.Index is not null && k > 0)
+            {
+                Masks(instrs[k - 1], out _, out long written);
+                if ((written & ((1L << address.Base!.Id) | (1L << address.Index.Id))) != 0) continue;
+            }
             instrs[k] = new MInstr(MOp.Lea, d, address) { Width = 4, Line = op.Line };
             instrs.RemoveAt(k + 1);
         }

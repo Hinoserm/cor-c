@@ -4484,8 +4484,9 @@ public static partial class Runtime
         // its frame made there, `push ebp ; mov ebp, esp` just before the
         // call. Stopped on the move, the push made: the frame is at `sp`;
         // on the call, both made: `bp`.
-        // (Such a function begins with no push, and the call's opcode, E8 or
-        // FF, follows the two: bytes of a constant are neither.)
+        // (Such a function saves no register, so begins with no push -- its
+        // first byte none of 50 to 57 -- and the call's opcode, E8 or FF,
+        // follows the two: bytes of a constant are neither.)
         int startsWith = Sys.Read8(at);
         if (startsWith < 0x50 || startsWith > 0x57) {
             if (pc >= at + 3 && Sys.Read8(pc - 3) == 0x55 && Sys.Read8(pc - 2) == 0x89 && Sys.Read8(pc - 1) == 0xE5
