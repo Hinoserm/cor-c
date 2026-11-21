@@ -2420,6 +2420,8 @@ internal static class Peephole
             // the same operation's, made into the other register.
             MOperand source = c;
             int line = op.Line;
+            bool probed = op.Probed, native = op.Native;
+            byte owns = op.OwnsState;
             int load = k - 1;
             while (load >= 0 && gone[load]) load--;
             // (Read before a is written, so an address through a is as good.)
@@ -2429,9 +2431,13 @@ internal static class Peephole
                 source = mem;
                 // A fault on the read is said at the read's line.
                 line = instrs[load].Line;
+                // And what the read was marked: it is this instruction's now.
+                probed |= instrs[load].Probed;
+                owns = Math.Max(owns, instrs[load].OwnsState);
+                native |= instrs[load].Native;
                 gone[load] = true;
             }
-            instrs[k] = new MInstr(op.Op, a, source) { Width = 4, Line = line, Probed = op.Probed, OwnsState = op.OwnsState, Native = op.Native };
+            instrs[k] = new MInstr(op.Op, a, source) { Width = 4, Line = line, Probed = probed, OwnsState = owns, Native = native };
             gone[k + 1] = true;
         }
         for (int k = count - 1; k >= 0; k--) if (gone[k]) instrs.RemoveAt(k);
