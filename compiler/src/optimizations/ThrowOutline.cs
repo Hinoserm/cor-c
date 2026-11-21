@@ -156,7 +156,7 @@ public sealed class ThrowOutline : IModulePass
                     if (i.Op == Opcode.Call && i.Callee is { } callee && callee.StartsWith(CaptureCall, StringComparison.Ordinal) && i.Operands.Count == 3)
                         i.Operands[2] = new ImmOperand(0, IrTypes.Word);
             }
-            Function stub = new(f.Name + "$throw$" + ordinal++, IrType.Void)
+            Function stub = new(f.Name + StubMark + ordinal++, IrType.Void)
             {
                 Exported = false, GenericCode = f.GenericCode, FromLibrary = f.FromLibrary,
                 SystemCode = f.SystemCode, SourceFile = f.SourceFile, Line = line > 0 ? line : f.Line, Display = f.Display,
@@ -192,6 +192,12 @@ public sealed class ThrowOutline : IModulePass
         f.Edited();
         return made;
     }
+
+    /// <summary>What ends the name of a throw moved out of its function: then its place among the function's.</summary>
+    public const string StubMark = "$throw$";
+
+    /// <summary>Whether a function is a throw moved out of another (its calls the cold path they were there: Inline).</summary>
+    public static bool IsStub(string name) => name.Contains(StubMark, StringComparison.Ordinal);
 
     /// <summary>Runtime.Capture's label, as lowering calls it (Lowering.EmitThrow).</summary>
     private const string CaptureCall = "m_Runtime_Capture_3_";

@@ -471,8 +471,13 @@ public sealed class Inline : IParallelModulePass
                     // other (a single caller's exemption among them).
                     bool coldPath = Escape.IsStaticInitialiser(callee.Name)
                         || (coldBlocks ??= ColdBlocks(caller, loopBlocks ??= LoopBlocks(caller))).Contains(b);
+                    // (Not a throw moved out of its function, ThrowOutline's
+                    // NAME$throw$K: its calls are the cold path they were in
+                    // the function, and only a tiny one goes in -- taken
+                    // whole as a step, Math.Clamp's message took its
+                    // formatting in, 1,377 bytes a throw.)
                     bool throwStep = coldPath && !Escape.IsStaticInitialiser(callee.Name) && coldBlocks!.Contains(caller.Blocks[0])
-                        && !caller.ProgramEntry && !HasLoop(callee);
+                        && !caller.ProgramEntry && !HasLoop(callee) && !ThrowOutline.IsStub(caller.Name);
                     if (calleeSize > TinyBody && coldPath && !throwStep)
                     {
                         TraceDecision?.Invoke(caller, callee,
