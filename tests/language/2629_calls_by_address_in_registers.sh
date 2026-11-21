@@ -51,25 +51,34 @@ else fail "Main calls through descriptors' slots ($slots found)"; fi
 if [ "$pushed" -eq 5 ]; then pass "exactly the five of more than three words or a long follow a push"
 else fail "exactly the five of more than three words or a long follow a push ($pushed of $slots do)"; fi
 
+# Where a function's stack arguments begin: framed, EBP+8; a leaf (no
+# `mov ebp, esp`) has no frame, and its arguments are off ESP, past the
+# registers it pushed (P) and the frame it reserved (sub esp, N): the
+# return address at ESP+4P+N, the first argument four above.
+first_arg() {
+    if grep -qE 'mov +%esp,%ebp' "$1"; then echo ebp 8; return; fi
+    p=$(awk '/push +%e/ { n++; next } { exit } END { print n + 0 }' "$1")
+    n=$(awk '/sub +\$0x[0-9a-f]+,%esp/ { sub(/.*\$0x/, ""); sub(/,.*/, ""); print; exit }' "$1")
+    echo esp $((4 * p + 0x${n:-0} + 4))
+}
+# Every read of a stack argument, as offsets from the first.
+stack_reads() {
+    set -- "$1" $(first_arg "$1")
+    grep -oE "(0x[0-9a-f]+)?\(%$2\)" "$1" | sed -E 's/\(.*//; s/^$/0x0/' | while read -r d; do
+        o=$((d - $3)); [ $o -ge 0 ] && echo $o
+    done
+}
+
 # A function of three words: no read of an argument above the frame.
 body m_Program_Digits > "$work/digits.dis"
-if [ -s "$work/digits.dis" ] && ! grep -qE '0x(8|c|10)\(%ebp\)|0x(4|8|c)\(%esp\)' "$work/digits.dis"
+if [ -s "$work/digits.dis" ] && [ -z "$(stack_reads "$work/digits.dis")" ]
 then pass "a function of three words reads none from the stack"
 else fail "a function of three words reads none from the stack"; cat "$work/digits.dis"; fi
 
 # A function of five words: its fourth and fifth from the stack, no more.
-# Framed, off EBP: the two words at EBP+8 and +12. A leaf has no frame
-# (no `mov ebp, esp`): off ESP, past the registers it pushed -- with P of
-# them, the return address at ESP+4P and the two words above it.
 body m_Program_Five > "$work/five.dis"
-if grep -qE 'mov +%esp,%ebp' "$work/five.dis"; then
-    low=$(grep -cE '0x(8|c)\(%ebp\)' "$work/five.dis"); high=$(grep -cE '0x(10|14|18)\(%ebp\)' "$work/five.dis")
-else
-    p=$(awk '/push +%e/ { n++; next } { exit } END { print n + 0 }' "$work/five.dis")
-    first=$(printf '0x%x' $((4 * p + 4))); second=$(printf '0x%x' $((4 * p + 8)))
-    low=$(grep -cE "($first|$second)\(%esp\)" "$work/five.dis")
-    high=$(grep -oE '0x[0-9a-f]+\(%esp\)' "$work/five.dis" | grep -vcE "^($first|$second)\(")
-fi
+reads=$(stack_reads "$work/five.dis")
+low=$(printf '%s\n' $reads | grep -cxE '0|4'); high=$(printf '%s\n' $reads | grep -cvxE '0|4|')
 if [ "$low" -ge 2 ] && [ "$high" -eq 0 ]; then pass "a function of five words reads its last two from the stack and no other"
 else fail "a function of five words reads its last two from the stack and no other ($low reads of the first two slots, $high elsewhere)"; cat "$work/five.dis"; fi
 

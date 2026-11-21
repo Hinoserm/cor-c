@@ -44,6 +44,9 @@ public sealed class ConstantSpecialize : IModulePass
         cleanup.Passes.Add(new BranchSimplify());
         cleanup.Passes.Add(new DeadCodeElimination());
 
+        // The library's code this image may not keep (Module.LibraryPrivate):
+        // a version of it would be a copy kept, which the compile refuses.
+        HashSet<string> hidden = module.LibraryPrivate();
         for (int fn = 0; fn < module.Functions.Count; fn++)
         foreach (Block block in module.Functions[fn].Blocks)
         for (int at = 0; at < block.Instrs.Count; at++)
@@ -55,7 +58,7 @@ public sealed class ConstantSpecialize : IModulePass
                 // NOR OF A BODY ANOTHER IMAGE SUPPLIES (Module.GoesElsewhere):
                 // a version of it is a definition of the library's code no
                 // image exports, this image's own copy of it.
-                || (module.LibraryCodeIsShared && target.FromLibrary) || module.GoesElsewhere(target)
+                || (module.LibraryCodeIsShared && target.FromLibrary) || module.GoesElsewhere(target) || hidden.Contains(target.Name)
                 || call.Operands.Count != target.Params.Count
                 || target.Blocks.Sum(b => b.Instrs.Count) > BodyLimit
                 || !Inline.ConstantControlsBranch(target, call)) continue;

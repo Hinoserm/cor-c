@@ -1509,6 +1509,14 @@ public static class Driver
                         name => name == programEntry || module.Imports.Contains(name) || module.ObjectNames.Contains(name), closed: false,
                         Switches.ReportPhases ? Console.Error.WriteLine : null) is { } argumentFacts)
                 {
+                    // No version of the library's code this image may not keep
+                    // (Module.LibraryPrivate) or another image supplies: a copy
+                    // of it kept, which the compile refuses. Out of the facts
+                    // before anything makes one or calls one.
+                    HashSet<string> notOurs = module.LibraryPrivate();
+                    foreach (Function f in module.Functions)
+                        if (module.GoesElsewhere(f)) notOurs.Add(f.Name);
+                    foreach (string versioned in argumentFacts.Versions.Keys.Where(notOurs.Contains).ToList()) argumentFacts.Versions.Remove(versioned);
                     List<string> misfits = new();
                     Corsac.Lang.Opt.ArgumentSummary.MakeVersions(module, argumentFacts);
                     bool given = Corsac.Lang.Opt.ArgumentSummary.Apply(module, argumentFacts, misfits);
