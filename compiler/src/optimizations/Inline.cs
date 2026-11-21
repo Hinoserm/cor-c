@@ -482,6 +482,7 @@ public sealed class Inline : IParallelModulePass
                     {
                         TraceDecision?.Invoke(caller, callee,
                             Escape.IsStaticInitialiser(callee.Name) ? $"keep: static initialiser body={calleeSize} tiny-limit={TinyBody}"
+                            : ThrowOutline.IsStub(caller.Name) ? $"keep: a throw moved out of its function, its calls the cold path they were there body={calleeSize}"
                             : coldBlocks!.Contains(caller.Blocks[0]) ? $"keep: cold throughout, the entry or a step with a loop body={calleeSize}"
                             : $"keep: cold path body={calleeSize} tiny-limit={TinyBody}");
                         continue;

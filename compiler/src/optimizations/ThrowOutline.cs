@@ -193,7 +193,7 @@ public sealed class ThrowOutline : IModulePass
         return made;
     }
 
-    /// <summary>What ends the name of a throw moved out of its function: then its place among the function's.</summary>
+    /// <summary>What a throw moved out of its function has in its name, after the function's: then its place among the function's (a copy of it keeps the mark wherever it is put).</summary>
     public const string StubMark = "$throw$";
 
     /// <summary>Whether a function is a throw moved out of another (its calls the cold path they were there: Inline).</summary>
