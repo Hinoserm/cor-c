@@ -14,9 +14,9 @@ using Block = Corsac.Lang.Ir.Block;
 /// is j copied. A span's element at `from + i`, read every lap, was `mov
 /// t, from ; add t, i`: now one `inc j` beside `inc i`.
 ///
-/// Only an int sum, a loop with a preheader of its own that ends in a jump
-/// (LoopInvariant's), no handler in the function, no async body; two such
-/// registers a loop at most, each held round it.
+/// Only an int sum, in a loop with one way in from outside (a block made on
+/// that edge where it is a guard's branch), no handler in the function, no
+/// async body; one such register a loop, held round it.
 /// </summary>
 public sealed class StrengthReduce : IPass
 {
@@ -66,8 +66,10 @@ public sealed class StrengthReduce : IPass
                 {
                     if (i.Dest is not { Type: IrType.I32 } v || writes[v] != 1) continue;
                     if (Step(i, v) is long by && by != 0) counters[v] = (i, b, by);
+                    // (t made just before the copy, in its block: i is t
+                    // as made this lap, and no way reaches the copy past it.)
                     else if (i.Op == Opcode.Copy && i.Operands is [RegOperand { Reg: var t }] && made1.TryGetValue(t, out Instr? sum)
-                        && Step(sum, v) is long by2 && by2 != 0)
+                        && Step(sum, v) is long by2 && by2 != 0 && b.Instrs.IndexOf(i) is int at && at > 0 && ReferenceEquals(b.Instrs[at - 1], sum))
                         counters[v] = (i, b, by2);
                 }
             if (counters.Count == 0) continue;
@@ -92,13 +94,17 @@ public sealed class StrengthReduce : IPass
             // in the address itself, and a register held round the loop for
             // one (`items + from + i`) is a register for nothing. A sum
             // something else reads too -- a bounds check's compare -- is one.
-            Dictionary<VReg, List<Instr>> uses = new();
-            foreach (Block b in function.Blocks)
-                foreach (Instr i in b.Instrs)
-                    foreach (Operand o in i.Operands)
-                        if (o is RegOperand { Reg: var r }) (uses.TryGetValue(r, out var l) ? l : uses[r] = new()).Add(i);
+            Dictionary<VReg, List<Instr>>? uses = null;
             bool AddressOnly(VReg r, int depth)
             {
+                if (uses is null)
+                {
+                    uses = new();
+                    foreach (Block b in function.Blocks)
+                        foreach (Instr i in b.Instrs)
+                            foreach (Operand o in i.Operands)
+                                if (o is RegOperand { Reg: var reg }) (uses.TryGetValue(reg, out var l) ? l : uses[reg] = new()).Add(i);
+                }
                 if (!uses.TryGetValue(r, out var readers)) return true;
                 foreach (Instr u in readers)
                 {
@@ -140,8 +146,9 @@ public sealed class StrengthReduce : IPass
                     if (pair is not { } p || ReferenceEquals(i, counters[p.Counter].Step) || AddressOnly(sum, 3)) continue;
                     if (!made.TryGetValue(p, out VReg? j))
                     {
-                        // Two a loop at most: each is a register held round it.
-                        if (made.Count == 2) continue;
+                        // One a loop: a register held round it, on a machine
+                        // of six.
+                        if (made.Count == 1) continue;
                         j = function.NewReg(IrType.I32);
                         made[p] = j;
                         // j = i + a where the loop is entered (a read there,

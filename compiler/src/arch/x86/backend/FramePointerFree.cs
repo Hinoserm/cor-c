@@ -6,8 +6,8 @@ namespace Corsac.Lang.X86;
 /// <summary>
 /// A FUNCTION WITHOUT A FRAME made so, last before it is written: a leaf
 /// (MFunction.Frameless), or one whose only calls never return, which makes
-/// its frame on the way to them alone (MFunction.ColdFrames, OnlyColdCalls). Every pass until here took an operand based on EBP
-/// for the frame, and the value EBP holds in a leaf that gives it one as
+/// its frame on the way to them alone (MFunction.ColdFrames, OnlyColdCalls).
+/// Every pass until here took an operand based on EBP for the frame, and the value EBP holds in a leaf that gives it one as
 /// MReg.EbpData; now the frame is addressed off ESP, and the value is in EBP.
 /// The leaf pushes the registers it saves -- EBP first where it gives it a
 /// value -- and then reserves its frame, so from the return address down:
@@ -75,8 +75,9 @@ internal static class FramePointerFree
 
     /// <summary>
     /// Whether a function with a frame may have none but on the way to its
-    /// calls (MFunction.ColdFrames): every call one that never returns (INT3
-    /// straight after it), nothing saved, no slot, no landing pad, no asm,
+    /// calls (MFunction.ColdFrames): every call one that never returns (the
+    /// selector's unreachable INT3 after it, straight or after a trap), none
+    /// through memory, nothing saved, no slot, no landing pad, no asm,
     /// nothing that names EBP but as the base of an argument above it, and
     /// nothing that pushes, pops or writes ESP.
     /// </summary>
