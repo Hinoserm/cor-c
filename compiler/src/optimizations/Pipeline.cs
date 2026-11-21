@@ -168,7 +168,13 @@ public sealed class Pipeline
         // A small function's throws moved out of it, so the inliner below
         // can take it (ThrowOutline): after the calls kept are marked, before
         // any version or copy of a body is made.
-        p.ModulePasses.Add(new ThrowOutline());
+        // The bodies it frees are those the inliner below then takes: under
+        // --opt-size, where its small body is 8 instructions, only the
+        // tiny (a moved throw is a call, a function's alignment and a row
+        // of the frame table for nothing where the body stays a call). On
+        // the K8 kernel the rest cost 3.3% of its code -- the speed bought
+        // where a span or a list is indexed in a loop.
+        p.ModulePasses.Add(new ThrowOutline { OutlineBody = optimizeSize ? 12 : 64 });
         p.ModulePasses.Add(new ConstantSpecialize());
         p.ModulePasses.Add(Inliner(keepFree: true));
         // After inlining, because a literal's length is only visible once
