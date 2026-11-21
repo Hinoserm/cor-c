@@ -2419,15 +2419,19 @@ internal static class Peephole
             // The flags: the move sets none, so what reads them after reads
             // the same operation's, made into the other register.
             MOperand source = c;
+            int line = op.Line;
             int load = k - 1;
             while (load >= 0 && gone[load]) load--;
+            // (Read before a is written, so an address through a is as good.)
             if (load >= 0 && IsMov(instrs[load]) && instrs[load].Operands[0] is MReg l0 && l0.Id == c.Id && instrs[load].Operands[1] is MMem mem
-                && mem.Base?.Id != a.Id && mem.Index?.Id != a.Id && !instrs[load].Lock)
+                && mem.Base?.Id != c.Id && mem.Index?.Id != c.Id && !instrs[load].Lock)
             {
                 source = mem;
+                // A fault on the read is said at the read's line.
+                line = instrs[load].Line;
                 gone[load] = true;
             }
-            instrs[k] = new MInstr(op.Op, a, source) { Width = 4, Line = op.Line, Probed = op.Probed, OwnsState = op.OwnsState, Native = op.Native };
+            instrs[k] = new MInstr(op.Op, a, source) { Width = 4, Line = line, Probed = op.Probed, OwnsState = op.OwnsState, Native = op.Native };
             gone[k + 1] = true;
         }
         for (int k = count - 1; k >= 0; k--) if (gone[k]) instrs.RemoveAt(k);
@@ -2482,6 +2486,7 @@ internal static class Peephole
             {
                 MBlock block = m.Blocks[b], after = m.Blocks[b + 1];
                 if (emptied.Contains(block) || emptied.Contains(after) || block.EndsUnconditionally || pinned[b + 1] || ways[b + 1] != 1
+                    || after.Cold != block.Cold
                     || after.Instrs.Count == 0 || block.Instrs.Any(i => i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to } && ReferenceEquals(to, after))) continue;
                 block.Instrs.AddRange(after.Instrs);
                 after.Instrs.Clear();
@@ -2495,7 +2500,10 @@ internal static class Peephole
                 List<MInstr> instrs = m.Blocks[b].Instrs;
                 if (instrs.Count == 0 || instrs[^1] is not { Op: MOp.Jmp } jump || jump.Operands.Count == 0
                     || jump.Operands[0] is not MLabel { Target: var target } || !index.TryGetValue(target, out int c)
-                    || c == b || pinned[c] || ways[c] != 1 || target.Instrs.Count == 0) continue;
+                    || c == b || pinned[c] || ways[c] != 1 || target.Instrs.Count == 0
+                    // (Not across the layout's line between the hot code
+                    // and the cold: a throw's block stays out of the way.)
+                    || target.Cold != m.Blocks[b].Cold) continue;
                 // C falls into the block after it: that way kept, by a jump
                 // there -- none where C is this block's own next (the jump
                 // to it was the encoder's to drop), and C's next is then
@@ -2514,7 +2522,7 @@ internal static class Peephole
                 if (onward is not null) instrs.Add(new MInstr(MOp.Jmp, new MLabel(onward)) { Line = jump.Line });
                 target.Instrs.Clear();
                 emptied.Add(target);
-                // C is empty now and reached by nothing: Unreachable takes it.
+                // C is empty now, and goes at the round's end.
                 ways[c] = 0;
                 pinned[c] = true;
             }
@@ -2555,8 +2563,11 @@ internal static class Peephole
         for (int j = 1; j < count; j++)
         {
             MInstr second = instrs[j];
+            // (Never ESP or EBP on either side: a push or a pop moves ESP
+            // with no operand that says so.)
             if (!IsMov(second) || second.Operands[0] is not MReg { IsPhys: true } r2 || second.Operands[1] is not MReg { IsPhys: true } r1
-                || r1.Id >= 8 || r2.Id >= 8 || r1.Id == r2.Id || (after[j] & (1 << r1.Id)) != 0) continue;
+                || r1.Id >= 8 || r2.Id >= 8 || r1.Id == r2.Id || (after[j] & (1 << r1.Id)) != 0
+                || r1.Id is (int)Gpr.Esp or (int)Gpr.Ebp || r2.Id is (int)Gpr.Esp or (int)Gpr.Ebp) continue;
             int k = j - 1;
             for (; k >= 0; k--)
             {
@@ -2573,7 +2584,7 @@ internal static class Peephole
             MOperand x = first.Operands[1];
             if (x is MReg { IsPhys: true } xr)
             {
-                if (xr.Id >= 8) continue;
+                if (xr.Id >= 8 || xr.Id is (int)Gpr.Esp or (int)Gpr.Ebp) continue;
                 bool written = false;
                 for (int b = k + 1; b < j && !written; b++)
                 {

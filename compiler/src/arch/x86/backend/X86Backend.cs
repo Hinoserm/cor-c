@@ -1052,7 +1052,8 @@ public sealed class X86Backend : IBackend
     /// them all), nor where an asm block or Sys.SaveRegisters names the
     /// saves; not EBP, which a leaf's frame logic owns. The saves lie below
     /// the frame's slots (above them in a frameless leaf, addressed off ESP
-    /// after this), so no slot moves.
+    /// after this), so no frame slot moves; the saves after one dropped are
+    /// a word nearer, as every reader of them reads from SavedRegs.
     /// </summary>
     private static void UnusedSaves(MFunction m)
     {

@@ -74,6 +74,18 @@ public sealed class LoadReuse : IPass
         foreach (Block b in function.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.ArrayLength && i.Operands.Count == 1 && i.Operands[0] is RegOperand { Reg: var array }) arrays.Add(array);
+        // An address made of a static's (a copy of its symbol, through adds):
+        // never an object's, whatever the access says of itself.
+        bool SymbolBased(VReg r, int depth)
+        {
+            if (depth == 0 || !defs.IsSingle(r) || defs.Site(r) is not { } site) return false;
+            Instr d = site.Block.Instrs[site.Index];
+            if (d.Op == Opcode.Copy && d.Operands is [SymOperand]) return true;
+            if (d.Op is not (Opcode.Add or Opcode.Copy)) return false;
+            foreach (Operand o in d.Operands)
+                if (o is RegOperand { Reg: var from } && SymbolBased(from, depth - 1)) return true;
+            return false;
+        }
         bool ArrayBased(VReg r, int depth)
         {
             if (arrays.Contains(r)) return true;
@@ -86,7 +98,8 @@ public sealed class LoadReuse : IPass
         }
         Scope scope = _scope ??= new Scope();
         scope.Stable = Stable;
-        scope.Managed = i => i.Field is not null || i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var r } && ArrayBased(r, 6);
+        scope.Managed = i => i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var r } && !SymbolBased(r, 6)
+            && (i.Field is not null || ArrayBased(r, 6));
         cfg.WalkSolePredecessors(scope, dominating: true);
         scope.Stable = null!;
         scope.Managed = null!;
