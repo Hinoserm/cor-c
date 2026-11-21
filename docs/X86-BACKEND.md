@@ -717,7 +717,7 @@ such call is said by where its target comes from:
   member;
 - a parameter of which the same holds: the same;
 - the method read out of an object's descriptor at a slot of the type the
-  call dispatches on: every function that slot holds keeps its parameters;
+  call dispatches on: a call through that slot, judged and rewritten as one;
 - anything else: it may reach any member of no more parameters than it
   passes arguments (a callee of fewer reads as many as it has).
 

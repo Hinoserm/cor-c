@@ -93,7 +93,8 @@ public sealed class ArgumentHints
     /// code's own convention (not a native call's), through an
     /// address it could name by no function and no slot (Sys.Call of a
     /// word, a table's word: what is neither a cell's nor a parameter's,
-    /// CellCalls and ParamCalls, nor a slot's, SlotCalls). Such a call may
+    /// CellCalls and ParamCalls, nor a slot's read raw, which is a call
+    /// through the slot: ArgumentSummary.RawSlot). Such a call may
     /// reach a function whose address is taken -- which is never judged
     /// (ArgumentSolver: addressed) -- or one held in a slot whose word was
     /// read raw, of as many parameters as the call passes arguments or
@@ -139,20 +140,8 @@ public sealed class ArgumentHints
     /// </summary>
     public SortedDictionary<string, SortedSet<int>> ParamCalls { get; } = new(StringComparer.Ordinal);
 
-    /// <summary>
-    /// THE UNNAMED CALLS SHAPED AS A SLOT'S: the method read out of an
-    /// object's descriptor, at a slot of the type the call dispatches on
-    /// (Instr.DispatchType), where the unit could not tie the object to the
-    /// one passed (Escape.VirtualCallees) -- by the slot's plain name
-    /// (VirtualTargets.Plain), with how many arguments each passes. Such a
-    /// call reaches what the slot holds in any descriptor, as the unit wrote
-    /// it, which no rewriting of the slot's calls touches (ArgumentSummary.
-    /// Apply): the families it reaches keep their parameters.
-    /// </summary>
-    public SortedDictionary<string, SortedSet<int>> SlotCalls { get; } = new(StringComparer.Ordinal);
-
     public bool IsEmpty => Functions.Count == 0 && Addressed.Count == 0 && Slotted.Count == 0 && Unnamed.Count == 0
-        && CellCalls.Count == 0 && CellsWritten.Count == 0 && SlotCalls.Count == 0 && CellParams.Count == 0 && ParamCalls.Count == 0;
+        && CellCalls.Count == 0 && CellsWritten.Count == 0 && CellParams.Count == 0 && ParamCalls.Count == 0;
 
     internal void Write(BinaryWriter writer)
     {
@@ -217,7 +206,6 @@ public sealed class ArgumentHints
         Counted(CellCalls);
         writer.Write(CellsWritten.Count);
         foreach (string name in CellsWritten) Text(name);
-        Counted(SlotCalls);
         writer.Write(CellParams.Count);
         foreach ((string cell, SortedSet<string> parameters) in CellParams)
         {
@@ -329,7 +317,6 @@ public sealed class ArgumentHints
         Counted(hints.CellCalls);
         for (int i = Count(5); i > 0; i--)
             if (!hints.CellsWritten.Add(Text())) throw new ElfFormatException("Duplicate argument hint cell");
-        Counted(hints.SlotCalls);
         for (int i = Count(9); i > 0; i--)
         {
             string cell = Text();

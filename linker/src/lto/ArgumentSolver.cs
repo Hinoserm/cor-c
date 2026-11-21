@@ -129,8 +129,9 @@ public readonly record struct ArgumentVersion(string Name, ArgumentDrop[] Bound)
 /// slots can reach, and only where every call through those slots is
 /// known: the image closed, and no call through a word that may have been
 /// read out of a descriptor reaching it -- each such call judged by where
-/// its target comes from (ArgumentHints: CellCalls, ParamCalls, SlotCalls,
-/// Unnamed). A family so reached keeps its parameters in place, one no
+/// its target comes from (ArgumentHints: CellCalls, ParamCalls, Unnamed;
+/// a slot's word read raw is a call through the slot, ArgumentSummary.
+/// RawSlot). A family so reached keeps its parameters in place, one no
 /// member reads passed as 0 through its slots (ArgumentFacts.UnsetSlots).
 /// </summary>
 public static class ArgumentSolver
@@ -307,18 +308,6 @@ public static class ArgumentSolver
                 else throughCells++;
             }
         }
-        // UNNAMED CALLS SHAPED AS A SLOT'S (ArgumentHints.SlotCalls): every
-        // function the slot holds keeps its parameters, the family with it
-        // -- such a call is not rewritten when a family loses some -- or,
-        // the slot unanswered, counted as any unnamed call.
-        HashSet<string> rawSlots = new(StringComparer.Ordinal);
-        foreach (ArgumentHints unit in units)
-            foreach ((string slot, SortedSet<int> counts) in unit.SlotCalls)
-            {
-                if (virtuals.TryGetValue(slot, out string[]? reached)) rawSlots.UnionWith(reached);
-                else { unresolved++; unnamed.UnionWith(counts); }
-            }
-
         // What may change at all.
         bool Free(string name) => functions.TryGetValue(name, out ArgumentFunction? f) && !f.Fixed && !disagreed.Contains(name)
             && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
@@ -344,7 +333,7 @@ public static class ArgumentSolver
         foreach ((string name, ArgumentFunction f) in functions)
         {
             bool bySlot = slotted.Contains(name) || slotsOf.ContainsKey(name);
-            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown && !UnnamedReach(name) && !rawSlots.Contains(name))) continue;
+            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown && !UnnamedReach(name))) continue;
             Cell[] of = cells[name];
             for (int k = 0; k < of.Length; k++) of[k].State = Many;
         }
@@ -478,7 +467,7 @@ public static class ArgumentSolver
                 // STAY WHERE THEY ARE, and one no member reads is passed as 0
                 // through the slots (UnsetSlots): whatever else calls a member
                 // finds the layout it had.
-                bool held = UnnamedReach(members[0]) || members.Any(rawSlots.Contains);
+                bool held = UnnamedReach(members[0]);
                 if (held) heldByUnnamed++;
                 if (held || !members.All(Free))
                 {
@@ -679,8 +668,7 @@ public static class ArgumentSolver
         string SlotsSaid()
         {
             if (!slotsKnown) return ", slots not known whole: the image is not closed";
-            string said = heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families held by calls nothing names (" + unnamedMost + " arguments at most, "
-                + rawSlots.Count + " functions in slots read raw)";
+            string said = heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families held by calls nothing names (" + unnamedMost + " arguments at most)";
             if (throughCells > 0) said += ", " + throughCells + " calls through cells or parameters holding only named addresses";
             if (unsetThroughSlots > 0) said += ", " + unsetThroughSlots + " parameters no family member reads passed as 0 through slots";
             return unresolved == 0 ? said : said + ", " + unresolved + " slot calls without an answer";

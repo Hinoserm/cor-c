@@ -102,8 +102,8 @@ internal static class ArgumentSummaryTests
             "a cell written away from its start, or wider than a word, is not said written");
         Assert(hints.CellCalls.TryGetValue("s_Named", out SortedSet<int>? cell) && cell.SetEquals(new[] { 2 }), "a call through a cell's word is not said by the cell");
         Assert(hints.ParamCalls.TryGetValue("0:CallParam", out SortedSet<int>? param) && param.SetEquals(new[] { 1 }), "a call through a parameter is not said by the parameter");
-        Assert(hints.SlotCalls.TryGetValue(Escape.VirtualCallee("Op", 52), out SortedSet<int>? slot) && slot.SetEquals(new[] { 1 }),
-            "a call through a slot's word read raw is not said by the slot");
+        Assert(hints.Functions["CallSlot"].Calls.Any(call => call.Callee == Escape.VirtualCallee("Op", 52) && call.Arguments.Length == 1),
+            "a call through a slot's word read raw is not said as a call through the slot");
         Assert(hints.Unnamed.SetEquals(new[] { 0, 3 }), "anything else is not said by its count: " + string.Join(",", hints.Unnamed));
     }
 }

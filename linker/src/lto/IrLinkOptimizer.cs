@@ -187,8 +187,9 @@ public static class IrLinkOptimizer
             ? VirtualTargets.Resolve(inputs, hintOrder.SelectMany(unit => unit.Named()).Select(named => named.Callee)
                 .Concat(hintOrder.SelectMany(unit => unit.Owned?.VirtualNames() ?? Enumerable.Empty<string>()))
                 // And every slot the units' argument hints call, named or
-                // read raw (ArgumentSolver: an unanswered one holds families).
-                .Concat(argumentHints.SelectMany(unit => unit.Functions.Values.SelectMany(f => f.Calls).Select(call => call.Callee).Concat(unit.SlotCalls.Keys)))
+                // read raw (ArgumentSolver: an unanswered one is counted as
+                // a call nothing names).
+                .Concat(argumentHints.SelectMany(unit => unit.Functions.Values.SelectMany(f => f.Calls).Select(call => call.Callee)))
                 .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
                 // AND EACH `@` NAME'S PLAIN ONE: a unit's call inlined into
                 // another function is named by that function's class, or by

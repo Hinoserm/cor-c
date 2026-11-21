@@ -7,7 +7,7 @@ namespace Corsac.Tests.Elf;
 /// names (ArgumentSolver): which families lose a parameter every call
 /// passes alike, and which are held -- by an unnamed call of as many
 /// arguments or more, a slot call the link has no answer for, a call
-/// through a slot's word read raw, a static cell written with what is not a
+/// a static cell written with what is not a
 /// named address -- and the hints' format for them.
 /// </summary>
 public static class ArgumentSolverTests
@@ -22,7 +22,7 @@ public static class ArgumentSolverTests
 
         // Big's family (five parameters) is always passed 7 last; Small's
         // (two) 3; Raw's (five) 1, 2, 3, 4. Gone's slot has no answer and
-        // is called with three arguments; Raw's is also called read raw; and
+        // is called with three arguments; Raw's also with unknown ones; and
         // the hook cell s_Hook is called with five. Dead's family (three)
         // never reads its last parameter.
         ArgumentHints Unit(bool cellWritten, bool installedUnknown = false, bool installCalled = true)
@@ -49,7 +49,9 @@ public static class ArgumentSolverTests
                 unit.Functions[name] = f;
                 unit.Slotted.Add(name);
             }
-            unit.SlotCalls[Raw] = new SortedSet<int> { 5 };
+            // (Raw's slot also called with what nothing names: read raw, a
+            // call through the slot like any, its arguments unknown.)
+            main.Calls.Add(new ArgumentCall(Raw, 0, 1, new[] { u, u, u, u, u }));
             unit.CellCalls["s_Hook"] = new SortedSet<int> { 5 };
             if (cellWritten) unit.CellsWritten.Add("s_Hook");
             // s_Set is written with Install's parameter, which main passes a
@@ -77,8 +79,8 @@ public static class ArgumentSolverTests
 
         // The cell holds only named addresses: Big's family loses its last
         // parameter, through its slot too; Small's is held by Gone's call
-        // (three arguments, more than Small's members have); Raw's by the
-        // call through its word read raw; Dead's too, by Gone's, whose
+        // (three arguments, more than Small's members have); Raw's keeps
+        // its numbers, a call through its slot passing others; Dead's too, by Gone's, whose
         // unread parameter stays in place and is passed as 0.
         List<string> said = new();
         ArgumentFacts? facts = ArgumentSolver.Solve(new[] { Unit(false) }, virtuals, _ => false, closed: true, said.Add);
@@ -86,7 +88,7 @@ public static class ArgumentSolverTests
         Check(facts!.DroppedSlots.TryGetValue(Big, out int[]? gone) && gone.SequenceEqual(new[] { 4 }), "the slot of a family that lost a parameter does not say so");
         Check(!Loses(facts, "SmallA", 1) && !Loses(facts, "SmallB", 1) && !facts.DroppedSlots.ContainsKey(Small),
             "a family an unanswered slot call of as many arguments reaches lost a parameter");
-        Check(!Loses(facts, "RawA", 1) && !facts.DroppedSlots.ContainsKey(Raw), "a family a call through its slot's word read raw reaches lost a parameter");
+        Check(!Loses(facts, "RawA", 1) && !facts.DroppedSlots.ContainsKey(Raw), "a family's parameter some call through its slot passes otherwise was lost");
         Check(!Loses(facts, "DeadA", 2) && !facts.DroppedSlots.ContainsKey(Dead) && facts.UnsetSlots.TryGetValue(Dead, out int[]? unset) && unset.SequenceEqual(new[] { 2 }),
             "a held family's unread parameter is not passed as 0 in place");
         Check(!facts.UnsetSlots.ContainsKey(Small) && !facts.UnsetSlots.ContainsKey(Big), "a parameter some member reads, or of a family that lost it, is passed as 0");
@@ -138,7 +140,7 @@ public static class ArgumentSolverTests
         reader.ReadInt32();
         ArgumentHints read = ArgumentHints.Read(reader, bytes.Length);
         Check(stream.Position == bytes.Length && read.Write().AsSpan().SequenceEqual(bytes), "argument hints do not read back as written");
-        Check(read.CellCalls["s_Hook"].SequenceEqual(new[] { 5 }) && read.CellsWritten.Contains("s_Hook") && read.SlotCalls[Raw].SequenceEqual(new[] { 5 })
+        Check(read.CellCalls["s_Hook"].SequenceEqual(new[] { 5 }) && read.CellsWritten.Contains("s_Hook") 
             && read.Unnamed.SequenceEqual(new[] { 3 }), "unnamed calls do not read back as written");
     }
 }

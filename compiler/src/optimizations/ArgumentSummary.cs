@@ -156,6 +156,7 @@ public static class ArgumentSummary
                             for (int inside = to; inside <= b; inside++) if (depth[inside] < 3) depth[inside]++;
 
             Dictionary<Instr, string[]>? slots = null;
+            Dictionary<int, List<Instr>>? rawDefs = null;
             ArgumentValue Value(Operand o)
             {
                 switch (o)
@@ -200,7 +201,11 @@ public static class ArgumentSummary
                         // in (Fixed: CalleePops, [StackArguments]) -- none of
                         // a descriptor's slots.
                         slots ??= Escape.VirtualCallees(new[] { f });
-                        if (!slots.TryGetValue(i, out string[]? names) || names.Length == 0) { Unnamed(f, i, hints); continue; }
+                        if (!slots.TryGetValue(i, out string[]? names) || names.Length == 0)
+                        {
+                            if (RawSlot(f, i, rawDefs ??= Definitions(f)) is not string raw) { Unnamed(f, i, hints); continue; }
+                            names = new[] { raw };
+                        }
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count - 1];
                         for (int a = 0; a < arguments.Length; a++) arguments[a] = Value(i.Operands[a + 1]);
                         foreach (string name in names) said.Calls.Add(new ArgumentCall(name, depth[at], 1, arguments));
@@ -227,13 +232,28 @@ public static class ArgumentSummary
             })) + ")";
     }
 
+    /// <summary>
+    /// A CALL THROUGH A SLOT THE UNIT COULD NOT TIE TO THE OBJECT IT PASSES
+    /// (Escape.VirtualCallees): the method read out of an object's
+    /// descriptor, at a slot of the type the call dispatches on (Instr.
+    /// DispatchType) -- the slot's plain name (VirtualTargets.Plain: every
+    /// function the slot holds), or null for any other call. Such a call
+    /// passes the slot's arguments as any call through it does, and is
+    /// judged and rewritten as one (Of, Apply).
+    /// </summary>
+    internal static string? RawSlot(Function f, Instr call, Dictionary<int, List<Instr>> defs)
+        => call.Op == Opcode.CallIndirect && call.DispatchType is string declaring && call.Operands.Count >= 1 && call.Operands[0] is RegOperand { Reg: var target }
+            && defs.TryGetValue(target.Id, out List<Instr>? methods) && methods is [{ Op: Opcode.Load } method]
+            && method.Operands.Count == 1 && method.Operands[0] is RegOperand { Reg: var table }
+            && defs.TryGetValue(table.Id, out List<Instr>? tables) && tables is [{ Op: Opcode.Load, Offset: 0 }]
+            ? Escape.VirtualCallee(declaring, method.Offset) : null;
+
     /// <summary>A static field's cell (Lowering's `s_` labels).</summary>
     private static bool IsCell(string name) => name.StartsWith("s_", StringComparison.Ordinal);
 
     /// <summary>
-    /// AN UNNAMED CALL, said by where its target comes from: a slot's method
-    /// read out of an object's descriptor, of the type the call dispatches
-    /// on (SlotCalls, by the slot's plain name); else, every value the
+    /// AN UNNAMED CALL, said by where its target comes from (a slot's
+    /// method read raw is no unnamed call: RawSlot): every value the
     /// target may hold a static cell's word or a named address or a number
     /// (CellCalls, by cell -- a named address is a function whose address
     /// is taken, never judged); else anything (Unnamed). Each with how many
@@ -243,14 +263,6 @@ public static class ArgumentSummary
     {
         int count = call.Operands.Count - 1;
         Dictionary<int, List<Instr>> defs = Definitions(f);
-        if (call.DispatchType is string declaring && call.Operands[0] is RegOperand { Reg: var target }
-            && defs.TryGetValue(target.Id, out List<Instr>? methods) && methods is [{ Op: Opcode.Load } method]
-            && method.Operands.Count == 1 && method.Operands[0] is RegOperand { Reg: var table }
-            && defs.TryGetValue(table.Id, out List<Instr>? tables) && tables is [{ Op: Opcode.Load, Offset: 0 }])
-        {
-            Add(hints.SlotCalls, Escape.VirtualCallee(declaring, method.Offset), count);
-            return;
-        }
         HashSet<string> cells = new(StringComparer.Ordinal);
         HashSet<int> parameters = new();
         if (!Sources(f, defs, call.Operands[0], cells, 8, new HashSet<int>(), parameters)) { hints.Unnamed.Add(count); return; }
@@ -503,6 +515,7 @@ public static class ArgumentSummary
         bool changed = false;
         {
             Dictionary<Instr, string[]>? slots = null;
+            Dictionary<int, List<Instr>>? rawDefs = null;
             foreach (Block b in f.Blocks)
                 for (int at = 0; at < b.Instrs.Count; at++)
                 {
@@ -577,7 +590,12 @@ public static class ArgumentSummary
                     else if (i.Op == Opcode.CallIndirect && (facts.DroppedSlots.Count > 0 || facts.UnsetSlots.Count > 0) && !NativeCall.Is(i))
                     {
                         slots ??= Escape.VirtualCallees(new[] { f });
-                        if (!slots.TryGetValue(i, out string[]? names)) continue;
+                        // (Or through a slot read raw, by its plain name: as Of said it.)
+                        if (!slots.TryGetValue(i, out string[]? names))
+                        {
+                            if (RawSlot(f, i, rawDefs ??= Definitions(f)) is not string raw) continue;
+                            names = new[] { raw };
+                        }
                         // AN ARGUMENT NO FUNCTION THE SLOT REACHES READS, its
                         // place kept (ArgumentFacts.UnsetSlots): passed as 0,
                         // what it was made of dead here. Not a struct passed
