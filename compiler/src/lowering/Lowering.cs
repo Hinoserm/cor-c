@@ -1615,12 +1615,14 @@ public sealed partial class Lowering
             // which is the case under a loader that cannot call into the
             // program, and not the case under ld-linux. StartImages decides;
             // it is handed this program's own _DYNAMIC because the runtime's
-            // copy of that symbol is the runtime's.
-            if (RuntimeMethod("StartImages", 1) is MethodSymbol images)
+            // copy of that symbol is the runtime's, and the entry's stack
+            // (argc, argv, envp for the initialisers, as ld.so gives them; 0
+            // where there is none).
+            if (RuntimeMethod("StartImages", 2) is MethodSymbol images)
             {
                 Require(images);
                 e.Call(CallLabel(images), IrType.Void,
-                    RegOperand.Of(WordAddress(e, "_DYNAMIC")));
+                    RegOperand.Of(WordAddress(e, "_DYNAMIC")), entrySp is not null ? RegOperand.Of(entrySp) : new ImmOperand(0, IrTypes.Word));
             }
             EmitBeginImage(e);
         }

@@ -14,7 +14,7 @@ public static class ArgumentSolverTests
 {
     const string Big = VirtualTargets.Prefix + "Big+48", Small = VirtualTargets.Prefix + "Small+52",
         Raw = VirtualTargets.Prefix + "Raw+56", Gone = VirtualTargets.Prefix + "Gone+60", Dead = VirtualTargets.Prefix + "Dead+64",
-        Fix = VirtualTargets.Prefix + "Fix+68";
+        Fix = VirtualTargets.Prefix + "Fix+68", Mis = VirtualTargets.Prefix + "Mis+72";
 
     public static void Run()
     {
@@ -36,13 +36,16 @@ public static class ArgumentSolverTests
             main.Calls.Add(new ArgumentCall(Gone, 0, 1, new[] { u, u, u }));
             main.Calls.Add(new ArgumentCall(Dead, 0, 1, new[] { u, u, u }));
             main.Calls.Add(new ArgumentCall(Fix, 0, 1, new[] { u, u, u }));
+            // (MisA called by name with two arguments, though it has three: a misfit.)
+            main.Calls.Add(new ArgumentCall(Mis, 0, 1, new[] { u, u, u }));
+            main.Calls.Add(new ArgumentCall("MisA", 0, 1, new[] { u, u }));
             unit.Functions["main"] = main;
-            foreach ((string name, int parameters) in new[] { ("BigA", 5), ("BigB", 5), ("SmallA", 2), ("SmallB", 2), ("RawA", 5), ("DeadA", 3), ("DeadB", 3), ("FixA", 3) })
+            foreach ((string name, int parameters) in new[] { ("BigA", 5), ("BigB", 5), ("SmallA", 2), ("SmallB", 2), ("RawA", 5), ("DeadA", 3), ("DeadB", 3), ("FixA", 3), ("MisA", 3) })
             {
                 // (FixA one register twice among its parameters: Fixed, its
                 // reads all said of the first.)
                 ArgumentFunction f = new(parameters) { Fixed = name == "FixA" };
-                for (int k = 0; k < parameters; k++) f.Reads[k] = (name.StartsWith("Dead") || name == "FixA") && k == 2 ? 0 : 1;
+                for (int k = 0; k < parameters; k++) f.Reads[k] = (name.StartsWith("Dead") || name is "FixA" or "MisA") && k == 2 ? 0 : 1;
                 unit.Functions[name] = f;
                 unit.Slotted.Add(name);
             }
@@ -67,6 +70,7 @@ public static class ArgumentSolverTests
             [Raw] = new[] { "RawA" },
             [Dead] = new[] { "DeadA", "DeadB" },
             [Fix] = new[] { "FixA" },
+            [Mis] = new[] { "MisA" },
         };
         bool Loses(ArgumentFacts? facts, string name, int parameter)
             => facts is not null && facts.Dropped.TryGetValue(name, out ArgumentDrop[]? drops) && drops.Any(drop => drop.Parameter == parameter);
@@ -87,6 +91,7 @@ public static class ArgumentSolverTests
             "a held family's unread parameter is not passed as 0 in place");
         Check(!facts.UnsetSlots.ContainsKey(Small) && !facts.UnsetSlots.ContainsKey(Big), "a parameter some member reads, or of a family that lost it, is passed as 0");
         Check(!facts.UnsetSlots.ContainsKey(Fix) && !facts.DroppedSlots.ContainsKey(Fix), "a Fixed member's parameter, its reads not its own, is passed as 0");
+        Check(!facts.UnsetSlots.ContainsKey(Mis) && !facts.DroppedSlots.ContainsKey(Mis), "a misfit member's parameter, its calls' places unknown, is passed as 0");
         Check(said.Any(line => line.Contains("1 slot calls without an answer") && line.Contains("2 calls through cells or parameters holding only named addresses")),
             "the report says neither the unanswered call nor the cell: " + string.Join(" | ", said));
 

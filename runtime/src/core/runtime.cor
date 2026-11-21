@@ -2946,8 +2946,10 @@ public static partial class Runtime
 
     /// Runs every image's initialiser, if nobody else has. `dynamic` is the
     /// address of the PROGRAM's own _DYNAMIC, which the entry stub knows and
-    /// this library could not name -- its own _DYNAMIC is its own.
-    public static void StartImages(nuint dynamic)
+    /// this library could not name -- its own _DYNAMIC is its own; `stack`
+    /// the entry's stack (argc, then argv's words and a 0, then envp's), 0
+    /// where there is none.
+    public static void StartImages(nuint dynamic, nuint stack)
     {
         // Kept whoever runs the initialisers: it is where NativeSymbol finds
         // the link map later.
@@ -2972,7 +2974,7 @@ public static partial class Runtime
         {
             // struct link_map { ElfN_Addr l_addr; char *l_name;
             //                   ElfN_Dyn *l_ld; link_map *l_next, *l_prev; }
-            RunInitialiser(Sys.ReadAddress(image + 2 * WordSize.Bytes), Sys.ReadAddress(image));
+            RunInitialiser(Sys.ReadAddress(image + 2 * WordSize.Bytes), Sys.ReadAddress(image), stack);
             image = Sys.ReadAddress(image + 3 * WordSize.Bytes);
         }
     }
@@ -3048,20 +3050,24 @@ public static partial class Runtime
     /// DT_INIT and then DT_INIT_ARRAY, as the ABI orders them. The addresses
     /// in a dynamic section are as the image was linked, so the load bias is
     /// added; for a program, which is linked where it runs, that is zero.
-    static void RunInitialiser(nuint dynamic, nuint bias)
+    static void RunInitialiser(nuint dynamic, nuint bias, nuint stack)
     {
         if (dynamic == 0)
         {
             return;
         }
 
+        // What ld.so passes each: argc, argv, envp, by C's rules.
+        nuint argc = stack != 0 ? Sys.ReadAddress(stack) : 0;
+        nuint argv = stack != 0 ? stack + WordSize.Bytes : 0;
+        nuint envp = stack != 0 ? argv + (argc + 1) * WordSize.Bytes : 0;
+
         nuint init = Tag(dynamic, DtInit);
 
         if (init != 0)
         {
-            // C's: what ld.so would have called, (argc, argv, envp) by C's
-            // rules, none of which this code keeps for it.
-            Sys.CallNative(init + bias, 0, 0, 0);
+            // C's: what ld.so would have called.
+            Sys.CallNative(init + bias, argc, argv, envp);
         }
 
         nuint array = Tag(dynamic, DtInitArray);
@@ -3073,7 +3079,7 @@ public static partial class Runtime
 
             if (one != 0)
             {
-                Sys.CallNative(one, 0, 0, 0);
+                Sys.CallNative(one, argc, argv, envp);
             }
         }
     }

@@ -279,7 +279,10 @@ public static class ArgumentSummary
 
     /// <summary>
     /// Whether every value `o` may hold is a number, a named address, a
-    /// word read whole from a static cell (each added to `cells`), or a
+    /// word read whole from a static cell (each added to `cells`: any word
+    /// of it, every store to the symbol a whole word at its start or the
+    /// cell said written -- the others hold their data's first value,
+    /// addresses that data's relocations take), or a
     /// parameter's value as it came in, never written in the function (each
     /// added to `parameters`, where it is asked for): through copies,
     /// nothing else.

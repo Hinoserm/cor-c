@@ -25,8 +25,8 @@ internal static class ArgumentSummaryTests
         return d;
     }
 
-    static void Store(Block at, Operand to, Operand value, int size = 0)
-        => at.Instrs.Add(new Instr { Op = Opcode.Store, Operands = { to, value }, Size = size == 0 ? Word : size });
+    static void Store(Block at, Operand to, Operand value, int size = 0, int offset = 0)
+        => at.Instrs.Add(new Instr { Op = Opcode.Store, Operands = { to, value }, Size = size == 0 ? Word : size, Offset = offset });
 
     static Instr CallThrough(Block at, Operand target, params Operand[] arguments)
     {
@@ -67,6 +67,10 @@ internal static class ArgumentSummaryTests
         // Narrow(): one byte stored into s_Narrow -- part of something: written.
         (_, b) = Make(m, "Narrow", 0);
         Store(b, new SymOperand("s_Narrow"), new ImmOperand(1, IrType.I32), size: 1);
+        // Away from the start, by the store's offset or the symbol's, or wider than a word: written.
+        Store(b, new SymOperand("s_Off"), new ImmOperand(1, IrTypes.Word), offset: Word);
+        Store(b, new SymOperand("s_SymOff", Word), new ImmOperand(1, IrTypes.Word));
+        Store(b, new SymOperand("s_Wide"), new ImmOperand(1, IrType.I64), size: 2 * Word);
 
         // CallCell(): s_Named's word called with two arguments.
         (Function callCell, b) = Make(m, "CallCell", 0);
@@ -94,6 +98,8 @@ internal static class ArgumentSummaryTests
         Assert(hints.CellsWritten.Contains("s_Loaded"), "a cell written with a loaded word is not said written");
         Assert(hints.CellsWritten.Contains("s_Taken"), "a cell whose address is used is not said written");
         Assert(hints.CellsWritten.Contains("s_Narrow"), "a cell written a byte of is not said written");
+        Assert(hints.CellsWritten.Contains("s_Off") && hints.CellsWritten.Contains("s_SymOff") && hints.CellsWritten.Contains("s_Wide"),
+            "a cell written away from its start, or wider than a word, is not said written");
         Assert(hints.CellCalls.TryGetValue("s_Named", out SortedSet<int>? cell) && cell.SetEquals(new[] { 2 }), "a call through a cell's word is not said by the cell");
         Assert(hints.ParamCalls.TryGetValue("0:CallParam", out SortedSet<int>? param) && param.SetEquals(new[] { 1 }), "a call through a parameter is not said by the parameter");
         Assert(hints.SlotCalls.TryGetValue(Escape.VirtualCallee("Op", 52), out SortedSet<int>? slot) && slot.SetEquals(new[] { 1 }),
