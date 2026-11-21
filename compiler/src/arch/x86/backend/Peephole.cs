@@ -68,6 +68,7 @@ internal static class Peephole
             ChooseForCpu(block.Instrs, liveOut[b], Usable(m), Jumped);
             IncDec(block.Instrs);
             PostStepTest(block.Instrs, liveOut[b], Jumped);
+            OperateInPlace(block.Instrs, liveOut[b], Jumped);
             // Again: ReadModifyWrite, ChooseForCpu and IncDec above take
             // instructions from between two moves and leave them a pair.
             SwapBack(block.Instrs);
@@ -2379,6 +2380,57 @@ internal static class Peephole
                 return (r, (i.Op == MOp.Sub) == (one.Value == 1));
             return null;
         }
+    }
+
+    // ---- an operation made where its result is wanted ------------------------------
+
+    /// <summary>
+    /// `op c, a ; mov a, c` with op commutative (add, and, or, xor, imul)
+    /// and c dead after the move: `op a, c` -- the result made where it is
+    /// wanted, a move fewer. And then `mov c, [m] ; op a, c` with c dead
+    /// after: `op a, [m]`, the memory read by the operation itself (one
+    /// instruction and a register; the same read, and its fault, if any, at
+    /// the same place). A return of `t[i] + v` was `mov ecx, [...] ; add ecx,
+    /// eax ; mov eax, ecx`, and is `add eax, [...]`.
+    /// </summary>
+    private static void OperateInPlace(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
+    {
+        int count = instrs.Count;
+        if (count < 2) return;
+        int[] after = new int[count];
+        int live = liveOut & 0xFF;
+        for (int k = count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            live |= jumped(i);
+            after[k] = live;
+            if (!Understood(i)) { live = 0xFF; continue; }
+            Masks(i, out long reads, out long writes);
+            live = (live & ~(int)writes | (int)reads) & 0xFF;
+        }
+        bool[] gone = new bool[count];
+        for (int k = 0; k + 1 < count; k++)
+        {
+            MInstr op = instrs[k], move = instrs[k + 1];
+            if (gone[k] || op.Op is not (MOp.Add or MOp.And or MOp.Or or MOp.Xor or MOp.Imul) || op.Width != 4 || op.Lock || op.Operands.Count != 2
+                || op.Operands[0] is not MReg { IsPhys: true } c || op.Operands[1] is not MReg { IsPhys: true } a || c.Id >= 8 || a.Id >= 8 || c.Id == a.Id
+                || !IsMov(move) || move.Operands[0] is not MReg m0 || m0.Id != a.Id || move.Operands[1] is not MReg m1 || m1.Id != c.Id
+                || (after[k + 1] & (1 << c.Id)) != 0) continue;
+            // The flags: the move sets none, so what reads them after reads
+            // the same operation's, made into the other register.
+            MOperand source = c;
+            int load = k - 1;
+            while (load >= 0 && gone[load]) load--;
+            if (load >= 0 && IsMov(instrs[load]) && instrs[load].Operands[0] is MReg l0 && l0.Id == c.Id && instrs[load].Operands[1] is MMem mem
+                && mem.Base?.Id != a.Id && mem.Index?.Id != a.Id && !instrs[load].Lock)
+            {
+                source = mem;
+                gone[load] = true;
+            }
+            instrs[k] = new MInstr(op.Op, a, source) { Width = 4, Line = op.Line, Probed = op.Probed, OwnsState = op.OwnsState, Native = op.Native };
+            gone[k + 1] = true;
+        }
+        for (int k = count - 1; k >= 0; k--) if (gone[k]) instrs.RemoveAt(k);
     }
 
     // ---- one block's only way in, the end of another ----------------------------
