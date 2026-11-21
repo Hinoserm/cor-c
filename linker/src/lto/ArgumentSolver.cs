@@ -220,13 +220,13 @@ public static class ArgumentSolver
             && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
         // A slot's family is known whole only in a closed image where every
         // slot called resolved, and only where no call through an address
-        // nothing names may reach it: a slot's word read raw (a delegate of
-        // a virtual method, the runtime's own reading of a descriptor) is
-        // called so, and passes its function's parameters, as many -- none
-        // that passes as many arguments as a member has parameters, and no
-        // call whose arguments are not known at all (ArgumentHints.AnyCount).
-        bool slotsKnown = closed && !unresolved && !unnamed.Contains(ArgumentHints.AnyCount);
-        bool UnnamedReach(string name) => unnamed.Contains(functions[name].Kinds.Length);
+        // nothing names may reach it: a slot's word read raw (the runtime's
+        // own reading of a descriptor) would be called so, with at least as
+        // many arguments as the function has parameters (ArgumentHints.
+        // Unnamed) -- none such passes as many as a member has, or more.
+        bool slotsKnown = closed && !unresolved;
+        int unnamedMost = unnamed.Count == 0 ? -1 : unnamed.Max();
+        bool UnnamedReach(string name) => functions[name].Kinds.Length <= unnamedMost;
         int heldByUnnamed = 0;
         // A FUNCTION SOMETHING UNSEEN MAY CALL HAS PARAMETERS NOBODY KNOWS:
         // one that may not change (foreign, kept for others, its address
@@ -551,7 +551,7 @@ public static class ArgumentSolver
         }
 
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants
-            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families as many parameters as an unnamed call's arguments" : ", slots not known whole")
+            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families of no more parameters than an unnamed call's arguments" : ", slots not known whole")
             + "); " + facts.Entries.Count + " functions given a way in with their commonest numbers, for " + entrySites + " calls; "
             + facts.Versions.Values.Sum(versions => versions.Length) + " versions of " + facts.Versions.Count + " functions for " + versionSites + " calls; "
             + facts.Splits.Count + " functions take " + splitWords + " words where they took a struct's address");

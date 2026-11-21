@@ -177,9 +177,6 @@ public static class ArgumentSummary
                 {
                     if (i.Op == Opcode.Call && i.Callee is { } callee)
                     {
-                        // (An asm block that calls through a register or a word
-                        // in memory: a call of anything, with anything.)
-                        if (AsmCallsThroughAddress(callee)) hints.Unnamed.Add(ArgumentHints.AnyCount);
                         if (NativeCall.Is(i) || callee.StartsWith("__x86.i.", StringComparison.Ordinal) || callee.StartsWith("__x64.i.", StringComparison.Ordinal)) continue;
                         if (callee == f.Name) said.Recursive = true;
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count];
@@ -189,8 +186,10 @@ public static class ArgumentSummary
                     else if (i.Op == Opcode.CallIndirect && !NativeCall.Is(i))
                     {
                         // A CALL THROUGH A WORD NOTHING NAMES: of a function
-                        // passed as many arguments (the target the first
-                        // operand). Not a native one's: C's convention, every
+                        // of as many parameters as it passes arguments, or
+                        // fewer (the target the first operand). (An asm block
+                        // makes none: it may not call, nor jump but to its
+                        // own labels -- InlineAsm refuses it.) Not a native one's: C's convention, every
                         // argument on the stack, which reaches no method of
                         // this code but one of C's ways in (Fixed: CalleePops,
                         // [StackArguments]) -- none of a descriptor's slots.
@@ -221,38 +220,6 @@ public static class ArgumentSummary
                 _ => "?",
             })) + ")";
     }
-
-    /// <summary>
-    /// Whether `callee` is an asm block (MachineIntrinsics.Asm, its text after
-    /// the first newline) with a `call` or `jmp` through a register or a word
-    /// in memory: what it reaches, and with what, nothing here can say. A
-    /// line read as statements split at `;`, a comment's words among them --
-    /// so said of a block once too often, never once too few.
-    /// </summary>
-    internal static bool AsmCallsThroughAddress(string callee)
-    {
-        if (!callee.StartsWith("__x86.i.asm:", StringComparison.Ordinal) && !callee.StartsWith("__x64.i.asm:", StringComparison.Ordinal)) return false;
-        int newline = callee.IndexOf('\n');
-        if (newline < 0) return false;
-        foreach (string line in callee[(newline + 1)..].Split('\n', ';'))
-        {
-            string statement = line.Trim();
-            // (A label before it.)
-            int colon = statement.IndexOf(':');
-            if (colon > 0 && !statement[..colon].Contains(' ') && !statement[..colon].Contains('[')) statement = statement[(colon + 1)..].TrimStart();
-            string[] words = statement.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
-            if (words.Length < 2 || !(words[0].Equals("call", StringComparison.OrdinalIgnoreCase) || words[0].Equals("jmp", StringComparison.OrdinalIgnoreCase))) continue;
-            string target = words[1].Trim().ToLowerInvariant();
-            if (target.Contains('[') || target.Contains("ptr") || AddressRegisters.Contains(target)) return true;
-        }
-        return false;
-    }
-
-    private static readonly HashSet<string> AddressRegisters = new(StringComparer.Ordinal)
-    {
-        "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
-        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-    };
 
     /// <summary>
     /// THE VERSIONS THE LINK ASKED FOR, made by the unit that defines each

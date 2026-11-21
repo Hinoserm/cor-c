@@ -5,14 +5,15 @@
 // 1060760 437400
 // 60 2401
 //
-// Every virtual call of Five passes scale 3, and of Six scale 7: judged
-// over the whole program at the link, a family of a slot whose every
-// call is named may lose such a parameter. Five is also made a delegate
-// of, its word read out of the object's descriptor and called through
-// the delegate with another scale -- a call nothing names, passing as
-// many arguments as Five has parameters -- so Five's family keeps its
-// scale, and the delegate's call gets what it passed. Output as .NET 10
-// says it.
+// Every virtual call of Five passes scale 3, and of Six scale 7, judged
+// over the whole program at the link. The runtime's library calls words
+// nothing names (its hooks, through static cells) with up to three
+// arguments, which could be a slot's word read raw: a family of more
+// parameters than that is reached by none of them, and Six's, every call
+// of it named, loses its constant parameters. Five is also made a delegate
+// of: the delegate's closure calls Five through its slot with what the
+// delegate was given, so Five's family keeps its scale and the delegate's
+// call gets what it passed. Output as .NET 10 says it.
 
 using System;
 using System.Runtime.CompilerServices;

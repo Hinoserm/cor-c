@@ -92,18 +92,16 @@ public sealed class ArgumentHints
     /// How many arguments each call passes that the unit makes, in this
     /// code's own convention (not a native call's), through an
     /// address it could name by no function and no slot (Sys.Call of a
-    /// word, a delegate's own target, a virtual method's word read for a
-    /// delegate); AnyCount for one whose arguments are not known (an asm
-    /// block's call through a register). Such a call reaches any function
-    /// whose address is taken -- and any held in a slot, its word read raw
-    /// -- of as many parameters: a call passes its callee's parameters, one
-    /// operand each (a call of other than that many makes the callee
-    /// ArgumentSolver's misfit, which changes not at all).
+    /// word, the runtime's hooks kept in static cells). Such a call may
+    /// reach a function whose address is taken -- which is never judged
+    /// (ArgumentSolver: addressed) -- or one held in a slot whose word was
+    /// read raw, of as many parameters as the call passes arguments or
+    /// fewer: an argument is one operand, and a callee of fewer reads as
+    /// many as it has (Sys.Call passes three words to a method of any of
+    /// up to three). A slot's family of more parameters than every such
+    /// call passes is reached by none of them.
     /// </summary>
     public SortedSet<int> Unnamed { get; } = new();
-
-    /// <summary>An unnamed call whose arguments are not known (Unnamed): it may reach any function.</summary>
-    public const int AnyCount = -1;
 
     public bool IsEmpty => Functions.Count == 0 && Addressed.Count == 0 && Slotted.Count == 0 && Unnamed.Count == 0;
 
@@ -241,7 +239,7 @@ public sealed class ArgumentHints
         for (int i = Count(4); i > 0; i--)
         {
             int count = reader.ReadInt32();
-            if (count < AnyCount || !hints.Unnamed.Add(count)) throw new ElfFormatException("Invalid argument hint unnamed call");
+            if (count < 0 || !hints.Unnamed.Add(count)) throw new ElfFormatException("Invalid argument hint unnamed call");
         }
         return hints;
     }
