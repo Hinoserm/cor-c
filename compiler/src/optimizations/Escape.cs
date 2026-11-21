@@ -3823,7 +3823,7 @@ continue;
                             break;
                         }
 
-                        case Opcode.CallIndirect when i.DispatchType == Devirtualize.NoTarget:
+                        case Opcode.CallIndirect when Devirtualize.IsNoTarget(i.DispatchType):
                             // No object made here has the method (Devirtualize.
                             // Guarded): what is derived from one never runs it.
                             break;
@@ -4249,7 +4249,7 @@ continue;
                 case Opcode.Call when IsCollectorNote(i.Callee) || IsPlainUse(i.Callee):
                     return;
                 // A call no object here has the method for (Devirtualize): never made.
-                case Opcode.CallIndirect when i.DispatchType == Devirtualize.NoTarget:
+                case Opcode.CallIndirect when Devirtualize.IsNoTarget(i.DispatchType):
                     return;
                 // An array's count, read where it might be one: a number.
                 case Opcode.ArrayLength:

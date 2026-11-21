@@ -599,7 +599,7 @@ public sealed partial class Escape
                         }
                         break;
                     }
-                    case Opcode.CallIndirect when i.DispatchType == Devirtualize.NoTarget:
+                    case Opcode.CallIndirect when Devirtualize.IsNoTarget(i.DispatchType):
                         // No object made here has the method: never runs.
                         break;
                     case Opcode.CallIndirect:

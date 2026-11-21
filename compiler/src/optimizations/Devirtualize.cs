@@ -226,7 +226,7 @@ public sealed class Devirtualize : IModulePass
                 if (i.Op != Opcode.CallIndirect || i.Operands.Count < 1) continue;
                 if (emptySlots is not null && i.Operands[0] is RegOperand { Reg: var empty } && emptySlots.Contains(empty) && defs.IsSingle(empty))
                 {
-                    i.DispatchType = NoTarget;
+                    i.DispatchType = Marked(i.DispatchType);
                     continue;
                 }
                 // A method, one of the routines an array answers its
@@ -419,7 +419,7 @@ public sealed class Devirtualize : IModulePass
                 {
                     // None of them has it: whatever runs this call, it is not
                     // one of these objects (Escape reads the mark).
-                    i.DispatchType = NoTarget;
+                    i.DispatchType = Marked(i.DispatchType);
                     continue;
                 }
                 Instr Direct(string target, VReg? into)
@@ -1259,8 +1259,21 @@ public sealed class Devirtualize : IModulePass
         return false;
     }
 
-    /// <summary>A call through a vtable no object this function made can be the receiver of (Guarded).</summary>
+    /// <summary>
+    /// A call through a vtable no object this function made can be the
+    /// receiver of (Guarded): the mark, then the type the call dispatched
+    /// on -- still a call through that type's slot, for whatever object
+    /// does run it (ArgumentSummary.RawSlot).
+    /// </summary>
     public const string NoTarget = "\u0001no-target";
+
+    /// <summary>Whether a call's dispatch type carries the mark (NoTarget).</summary>
+    public static bool IsNoTarget(string? dispatch) => dispatch is not null && dispatch.StartsWith(NoTarget, StringComparison.Ordinal);
+
+    /// <summary>The type a marked call dispatched on, or null where it said none; an unmarked one's own.</summary>
+    public static string? Dispatched(string? dispatch) => IsNoTarget(dispatch) ? (dispatch!.Length > NoTarget.Length + 1 ? dispatch[(NoTarget.Length + 1)..] : null) : dispatch;
+
+    private static string Marked(string? dispatch) => dispatch is null || IsNoTarget(dispatch) ? dispatch ?? NoTarget : NoTarget + ":" + dispatch;
 
     /// <summary>Lowering's DescFlags: the descriptor word a type's kind is in.</summary>
     private const int DescFlagsWord = 6;

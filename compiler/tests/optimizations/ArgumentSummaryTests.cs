@@ -82,6 +82,16 @@ internal static class ArgumentSummaryTests
         (Function callSlot, b) = Make(m, "CallSlot", 2);
         VReg method = Load(b, callSlot, Load(b, callSlot, callSlot.Params[0], 0), 52);
         CallThrough(b, method, callSlot.Params[1]).DispatchType = "Op";
+        // CallMarked(o, p): the same, Devirtualize's mark on it (no object
+        // made here runs it): still a call through Op's slot.
+        (Function callMarked, b) = Make(m, "CallMarked", 2);
+        VReg markedMethod = Load(b, callMarked, Load(b, callMarked, callMarked.Params[0], 0), 52);
+        CallThrough(b, markedMethod, callMarked.Params[1]).DispatchType = Devirtualize.NoTarget + ":Op";
+        // CallBoxed(p): Op's slot read out of a descriptor named, a boxed struct's.
+        (Function callBoxed, b) = Make(m, "CallBoxed", 1);
+        VReg boxed = callBoxed.NewReg(IrTypes.Word);
+        b.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = boxed, Operands = { new SymOperand("b_Box", 48) } });
+        CallThrough(b, Load(b, callBoxed, boxed, 56), callBoxed.Params[0]).DispatchType = "Op";
         // CallOther(o): a word of o's called -- anything.
         (Function callOther, b) = Make(m, "CallOther", 1);
         CallThrough(b, Load(b, callOther, callOther.Params[0], 8));
@@ -104,6 +114,10 @@ internal static class ArgumentSummaryTests
         Assert(hints.ParamCalls.TryGetValue("0:CallParam", out SortedSet<int>? param) && param.SetEquals(new[] { 1 }), "a call through a parameter is not said by the parameter");
         Assert(hints.Functions["CallSlot"].Calls.Any(call => call.Callee == Escape.VirtualCallee("Op", 52) && call.Arguments.Length == 1),
             "a call through a slot's word read raw is not said as a call through the slot");
+        Assert(hints.Functions["CallMarked"].Calls.Any(call => call.Callee == Escape.VirtualCallee("Op", 52)),
+            "a call Devirtualize marked is not said as a call through its slot");
+        Assert(hints.Functions["CallBoxed"].Calls.Any(call => call.Callee == Escape.VirtualCallee("Op", 56)),
+            "a call through a slot of a descriptor named is not said as a call through the slot");
         Assert(hints.Unnamed.SetEquals(new[] { 0, 3 }), "anything else is not said by its count: " + string.Join(",", hints.Unnamed));
     }
 

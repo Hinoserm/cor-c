@@ -201,7 +201,8 @@ public static class ArgumentSummary
                         // in (Fixed: CalleePops, [StackArguments]) -- none of
                         // a descriptor's slots.
                         slots ??= Escape.VirtualCallees(new[] { f });
-                        if (!slots.TryGetValue(i, out string[]? names))
+                        // (A call Devirtualize marked is named by its slot alone: RawSlot.)
+                        if (Devirtualize.IsNoTarget(i.DispatchType) || !slots.TryGetValue(i, out string[]? names))
                         {
                             if (RawSlot(f, i, rawDefs ??= Definitions(f)) is not string raw) { Unnamed(f, i, hints); continue; }
                             names = new[] { raw };
@@ -243,21 +244,30 @@ public static class ArgumentSummary
     /// </summary>
     internal static string? RawSlot(Function f, Instr call, Dictionary<int, List<Instr>> defs)
     {
-        if (call.Op != Opcode.CallIndirect || call.DispatchType is not string declaring || declaring == Devirtualize.NoTarget
+        if (call.Op != Opcode.CallIndirect || Devirtualize.Dispatched(call.DispatchType) is not string declaring
             || call.Operands.Count < 1 || Through(call.Operands[0]) is not { Op: Opcode.Load } method
-            || method.Operands.Count != 1 || Through(method.Operands[0]) is not { Op: Opcode.Load, Offset: 0 }) return null;
+            || method.Operands.Count != 1) return null;
+        // The object's descriptor, read from it; or a descriptor named (a
+        // boxed struct's, which only it holds).
+        Instr? table = Through(method.Operands[0]);
+        bool read = table is { Op: Opcode.Load, Offset: 0 };
+        // (Named where an object's first word points, its methods' start:
+        // the slot counted from there, as an object's call counts it.)
+        bool named = table is { Op: Opcode.Copy, Operands: [SymOperand { Name: var descriptor, Offset: var at }] } && Escape.IsDescriptor(descriptor)
+            && at == Target.Current.DescriptorBytes;
+        if (!read && !named) return null;
         return Escape.VirtualCallee(declaring, method.Offset);
 
         // The one instruction that makes a register, through copies of one
-        // register (an out-of-SSA move, a coalescing copy); null for any other.
+        // register (an out-of-SSA move, a coalescing copy) -- a copy of what
+        // is no register itself; null for any other.
         Instr? Through(Operand o)
         {
             for (int hops = 0; hops < 8; hops++)
             {
                 if (o is not RegOperand { Reg: var r } || !defs.TryGetValue(r.Id, out List<Instr>? made) || made is not [var one]) return null;
-                if (one.Op != Opcode.Copy) return one;
-                if (one.Operands.Count != 1) return null;
-                o = one.Operands[0];
+                if (one.Op != Opcode.Copy || one.Operands is not [RegOperand next]) return one;
+                o = next;
             }
             return null;
         }
@@ -621,11 +631,11 @@ public static class ArgumentSummary
                     {
                         slots ??= Escape.VirtualCallees(new[] { f });
                         // (Or through a slot read raw, by its plain name: as Of said it.)
-                        if (!slots.TryGetValue(i, out string[]? names))
+                        if (Devirtualize.IsNoTarget(i.DispatchType) || !slots.TryGetValue(i, out string[]? names))
                         {
                             if (RawSlot(f, i, rawDefs ??= Definitions(f)) is not string raw)
                             {
-                                if (i.DispatchType is string declaring && declaring != Devirtualize.NoTarget && Dropping(facts, declaring))
+                                if (Devirtualize.Dispatched(i.DispatchType) is string declaring && Dropping(facts, declaring))
                                     errors.Add("'" + (f.Display ?? f.Name) + "' (line " + i.Line + ") calls through a slot of '" + declaring
                                         + "' by a shape neither named nor read raw, where the link took arguments from that type's slots (ArgumentFacts)");
                                 continue;
