@@ -1,0 +1,81 @@
+// test: a null dereference in a leaf with no frame -- one that saves nothing, one that saves EBX, ESI and EDI but not EBP -- is caught by its caller, which then holds what it held
+// expect-exit: 0
+// expect-output:
+// 82100
+// -875
+// 329
+// 76
+//
+// A leaf has no frame (MFunction.Frameless): no push ebp, mov ebp, esp or
+// leave. Get saves no register; Spread keeps more live than EAX, ECX and
+// EDX hold, so saves some of EBX, ESI and EDI, not EBP -- neither has a frame link
+// of its own, and a fault in either stands for the call it was in its
+// caller (Runtime.FrameAt), the registers Spread saved put back as its
+// return would have (Runtime.LeafSaved). Caller then allocates enough for
+// a collection over the frames the fault left, and what it held is still
+// its own. Output as .NET 10 prints it.
+
+using System;
+using System.Runtime.CompilerServices;
+
+class Box
+{
+    public int A, B, C;
+}
+
+static class Program
+{
+    static object? _sink;
+
+    // No register of its caller's touched: a leaf that saves nothing.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Get(Box b) => b.A;
+
+    // More live than EAX, ECX and EDX hold, so EBX, ESI and EDI saved -- but
+    // not EBP: no frame link of its own.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Spread(Box b, int x, int y)
+    {
+        int s = x * y, t = y + x, u = x ^ y, v = s - t;
+        int w = s + u * 3;
+        return s + t + u + v + w + b.B;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Caller(Box? b, string keep, int k)
+    {
+        string held = keep + k;
+        int got;
+        try
+        {
+            got = Get(b!) + Spread(b!, k, k + 1);
+        }
+        catch (NullReferenceException)
+        {
+            got = -1;
+        }
+        // A collection's chance over the frames the fault left: what the
+        // caller holds is still its own.
+        for (int i = 0; i < 2000; i++) _sink = new int[16];
+        return got * 1000 + held.Length + held[0];
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Spreads(Box? b, int k)
+    {
+        try { return Spread(b!, k, k * 2); }
+        catch (NullReferenceException) { return -k; }
+    }
+
+    static int Main()
+    {
+        Box box = new Box { A = 7, B = 11, C = 3 };
+        Console.WriteLine(Caller(box, "ab", 3));
+        Console.WriteLine(Caller(null, "xyz", 12));
+        int sum = 0;
+        for (int k = 1; k <= 5; k++) sum += Spreads(k % 2 == 0 ? null : box, k);
+        Console.WriteLine(sum);
+        Console.WriteLine(Get(box) + Spread(box, 2, 5));
+        return 0;
+    }
+}

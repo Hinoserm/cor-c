@@ -63,7 +63,8 @@ stack pointer. EBP is the frame pointer in every function that calls.
 **A leaf has no frame** (no call, a store sequence's stub included; no push,
 pop or landing pad; MFunction.Frameless): no `push ebp; mov ebp, esp` and
 no `leave` -- seven clocks of every call of it on a 486, `leave` five, and
-four bytes. It pushes the registers it saves, then reserves its frame
+four bytes (less an `add esp, n` and an address generation stall or two
+where it has a frame of its own). It pushes the registers it saves, then reserves its frame
 (`sub esp, n`), and addresses every slot and argument off ESP
 (FramePointerFree.Run); its epilogue is `add esp, n`, the pops, `ret`. It
 may allocate EBP as a seventh register, saved first, so the caller's EBP
@@ -72,8 +73,10 @@ only a thread stopped in one meets it: Runtime.FrameAt tells it from a
 framed function by its first bytes (a framed one's are `55 89 E5`), finds
 its return address past what of its pushes and `sub` has run, and gives
 the saved EBP's word as its frame link -- or, saving none, stands it for
-the call it was in its caller, as an inlined function is. A fault there
-is caught by its caller's handlers exactly as from a call.
+the call it was in its caller, as an inlined function is (the fault's
+handler putting back the EBX, ESI and EDI it saved, Runtime.LeafSaved). A
+fault there is caught by its caller's handlers exactly as from a call. A
+leaf given 16-byte aligned XMM slots keeps a frame (AlignedSlots).
 
 **Calling convention: the first three words in registers, the rest
 pushed,** the same for every call of the language's own ("Calls and
@@ -1394,10 +1397,10 @@ This matters more here than on a machine with a debugger, because this
 one has no debugger: a kernel that faults can name the function it
 faulted in.
 
-Two things make it work. Every prologue is `push ebp; mov ebp, esp`, so
-the saved frame pointers are a linked list of callers with each return
-address beside them (a leaf that gives EBP a value after calls nothing, so
-it is never a link; Runtime.FrameAt finds its frame when it faults). And the code generator writes a table saying what
+Two things make it work. Every function that calls begins `push ebp; mov
+ebp, esp`, so the saved frame pointers are a linked list of callers with
+each return address beside them (a leaf has no frame but calls nothing, so
+it is never a link; Runtime.FrameAt finds its caller when it faults). And the code generator writes a table saying what
 each stretch of the image is, under the symbol `__corsac_frames` in
 `.rodata` -- mapped where the program can read it, needing no section a
 linker script has to learn about, and carried by a flat freestanding

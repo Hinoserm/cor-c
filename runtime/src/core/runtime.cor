@@ -4061,10 +4061,10 @@ public static partial class Runtime
     // and that is worth more on this machine than on one with a debugger,
     // because this one has no debugger.
     //
-    // Two things make it possible. Every function's prologue is `push ebp; mov
-    // ebp, esp`, so the saved frame pointers are a linked list of callers with
-    // each return address beside them (a leaf may give EBP a value after, but
-    // calls nothing, so no link is its: FrameAt finds a stopped one's frame); and the code generator writes a table
+    // Two things make it possible. Every function that calls begins `push
+    // ebp; mov ebp, esp`, so the saved frame pointers are a linked list of
+    // callers with each return address beside them (a leaf has no frame, but
+    // calls nothing, so no link is its: FrameAt finds a stopped one's caller); and the code generator writes a table
     // saying what each stretch of the image is -- see Lang/X86/FrameTable.cs
     // for its shape. Walking the one and looking each address up in the other
     // is the whole of it.
@@ -4430,6 +4430,10 @@ public static partial class Runtime
     /// -- the leaf stood for by the call it was, as an inlined function is --
     /// and `bp` the frame. Code not this compiler's that begins otherwise is
     /// read the same way, a run of pushes being what its first bytes say.
+    /// `pc` made so is the return address less one -- inside the call, as a
+    /// walk reads every return address (a line's, a handler's range) -- and
+    /// the registers the leaf saved are its caller's again only once the
+    /// fault's handler puts them back (LeafSaved).
     ///
     /// x86-64: a leaf that gives RBP a value begins `push rbp; mov rbp, rsp`
     /// written 48 8B EC, then `sub rsp, n`: its frame is at `sp` plus the
@@ -4471,7 +4475,7 @@ public static partial class Runtime
         if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x89 && Sys.Read8(at + 2) == 0xE5) {
             if (pc >= at + 3) { return bp; }
             if (pc > at) { return sp; }
-            pc = Sys.ReadAddress(sp);
+            pc = Sys.ReadAddress(sp) - 1;
             return bp;
         }
         // A leaf: what of its pushes and its frame's reserving has run.
@@ -4490,8 +4494,47 @@ public static partial class Runtime
         }
         nuint ret = sp + made;
         if (linked && made >= 4) { return ret - 4; }
-        pc = Sys.ReadAddress(ret);
+        pc = Sys.ReadAddress(ret) - 1;
         return bp;
+#endif
+    }
+
+    /// WHERE A FRAMELESS LEAF STOPPED AT `pc` SAVED REGISTER `reg` (0 EAX to
+    /// 7 EDI, as push encodes it) on its way in, its stack pointer `sp`; 0
+    /// where it did not, or not yet. A fault's handler that stands such a
+    /// leaf for the call it was (FrameAt) puts each back into the context it
+    /// resumes: the caller's value, which the leaf's own work overwrote --
+    /// read as the caller's by whatever walks the stack from there (the
+    /// collector's map of the caller's call). i386 only; 0 elsewhere.
+    public static nuint LeafSaved(nuint pc, nuint sp, int reg) {
+#if TARGET_64BIT
+        return 0;
+#else
+        nuint name, file, pool, offset;
+        long line;
+        if (!Lookup(pc, out name, out file, out pool, out line, out offset, false)) { return 0; }
+        nuint at = pc - offset;
+        if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x89 && Sys.Read8(at + 2) == 0xE5) { return 0; }
+        // The pushes that ran, and below them the frame if it was reserved:
+        // the k-th push (from 0) is at sp + frame + 4 * (made - 1 - k).
+        nuint start = at;
+        nuint made = 0;
+        while (true) {
+            int b = Sys.Read8(at);
+            if (b < 0x50 || b > 0x57 || b == 0x54) { break; }
+            if (at < pc) { made = made + 1; }
+            at = at + 1;
+        }
+        nuint frame = 0;
+        if (Sys.Read8(at) == 0x83 && Sys.Read8(at + 1) == 0xEC) {
+            if (pc >= at + 3) { frame = Sys.Read8(at + 2); }
+        } else if (Sys.Read8(at) == 0x81 && Sys.Read8(at + 1) == 0xEC) {
+            if (pc >= at + 6) { frame = Sys.Read32(at + 2); }
+        }
+        for (nuint k = 0; k < made; k++) {
+            if (Sys.Read8(start + k) == 0x50 + reg) { return sp + frame + (made - 1 - k) * WordSize.Bytes; }
+        }
+        return 0;
 #endif
     }
 

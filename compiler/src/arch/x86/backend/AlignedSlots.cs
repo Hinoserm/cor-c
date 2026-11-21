@@ -31,14 +31,16 @@ namespace Corsac.Lang.X86;
 /// way; a fault the kernel answers itself (Arch.Recover, a page mapped)
 /// resumes the instruction with its own ESP. Refused before, as a precaution.
 /// Last but FrameCompact, which then packs the EBP frame without them, and
-/// FramePointerFree; a frameless leaf (MFunction.Frameless) is left alone:
-/// its ESP must stay a fixed distance below its return address.
+/// FramePointerFree. A leaf that gives EBP a value is left alone; any other
+/// leaf given aligned slots has a frame again (MFunction.Frameless off): its
+/// `and esp, -16` leaves ESP no fixed distance below the return address,
+/// and EBP is the frame's base, as in a function that calls.
 /// </summary>
 internal static class AlignedSlots
 {
     public static void Run(MFunction m)
     {
-        if (m.XmmSpillWidth != 16 || m.Frameless) return;
+        if (m.XmmSpillWidth != 16 || m.FramePointerFree) return;
         static bool Spill(MOperand o, out MMem mem)
         {
             mem = null!;
@@ -84,6 +86,7 @@ internal static class AlignedSlots
                     if (Spill(i.Operands[k], out MMem mem) && at.TryGetValue(mem.Disp, out int to))
                         i.Operands[k] = new MMem(MReg.Of(Gpr.Esp), to) { IsSpill = true, Aligned = true };
         m.AlignedArea = 16 * at.Count;
+        m.Frameless = false;
         m.Frame.Release(slots);
         foreach (MBlock b in m.Blocks) FoldReloads(b.Instrs);
     }

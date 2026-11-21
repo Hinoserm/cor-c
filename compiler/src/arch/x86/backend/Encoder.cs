@@ -1022,8 +1022,8 @@ internal sealed class Encoder
             {
                 // After `push ebp; mov ebp, esp; sub esp, Size` the prologue
                 // pushes SavedRegs in order: the k-th at EBP - Size - 4(k+1).
-                // Never in a leaf without a frame pointer (X86Target.Leaf).
-                if (_m.FramePointerFree) throw new InvalidOperationException($"{_m.Source.Name}: Sys.CallerRegister in a function without a frame pointer");
+                // Never in a leaf, which has no frame (X86Target.Leaf).
+                if (_m.Frameless) throw new InvalidOperationException($"{_m.Source.Name}: Sys.CallerRegister in a function without a frame");
                 Gpr kept = ((MImm)i.Operands[1]).Value switch { 0 => Gpr.Ebx, 1 => Gpr.Esi, _ => Gpr.Edi };
                 int to = Reg(i.Operands[0]), saved = _m.SavedRegs.IndexOf(kept);
                 if (saved >= 0)
@@ -1395,6 +1395,12 @@ internal sealed class Encoder
                 B(Wide(0xC7, w));
                 ModRM(0, dst);
                 Imm(imm, w);
+                break;
+            // `mov ebp, esp` in a frameless leaf written 8B EC: its first bytes
+            // after its `push ebp` are then never a framed function's 55 89 E5
+            // (Runtime.FrameAt).
+            case MReg when _m.Frameless && w == 4 && dst is MReg { Id: (int)Gpr.Ebp } && Reg(src) == (int)Gpr.Esp:
+                B(0x8B, 0xEC);
                 break;
             case MReg:
                 B(Wide(0x89, w));

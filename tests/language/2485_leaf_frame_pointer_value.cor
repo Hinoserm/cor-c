@@ -8,9 +8,11 @@
 //
 // Mix makes no call and keeps more values live than i386's six registers
 // hold, so the allocator gives it EBP for one (X86Target's leaf file) and
-// addresses its frame off ESP. A null Box faults inside it: the fault
-// handler finds its frame from its prologue (Runtime.FrameAt), and the
-// exception unwinds to Catch through Middle as from any other function.
+// addresses its frame off ESP, EBP saved first of what it pushes. A null
+// Box faults inside it: the fault handler finds its frame link -- the
+// saved EBP below the return address -- from its first bytes
+// (Runtime.FrameAt), and the exception unwinds to Catch through Middle as
+// from any other function.
 
 using System;
 using System.Runtime.CompilerServices;

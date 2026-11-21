@@ -878,8 +878,22 @@ public static class Platform
                 // EBP, so NullFault's prologue links to it as a call from
                 // there would; a leaf with no link of its own stands as the
                 // call it was in its caller (`faultPc` its return address).
-                nuint faultPc = Sys.ReadAddress(uc + 76);
+                nuint stoppedPc = Sys.ReadAddress(uc + 76);
+                nuint faultPc = stoppedPc;
                 nuint faultFrame = Runtime.FrameAt(ref faultPc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
+                // A leaf stood for its call has its caller's EBX, ESI and EDI
+                // where it pushed them: put back, as its return would have
+                // (Runtime.LeafSaved), before anything walks the stack.
+                if (faultPc != stoppedPc)
+                {
+                    nuint stoppedSp = Sys.ReadAddress(uc + 48);
+                    nuint saved = Runtime.LeafSaved(stoppedPc, stoppedSp, 3);
+                    if (saved != 0) Sys.WriteAddress(uc + 52, Sys.ReadAddress(saved));
+                    saved = Runtime.LeafSaved(stoppedPc, stoppedSp, 6);
+                    if (saved != 0) Sys.WriteAddress(uc + 40, Sys.ReadAddress(saved));
+                    saved = Runtime.LeafSaved(stoppedPc, stoppedSp, 7);
+                    if (saved != 0) Sys.WriteAddress(uc + 36, Sys.ReadAddress(saved));
+                }
                 Sys.WriteAddress(uc + 44, faultFrame);
                 nuint sp = ((Sys.ReadAddress(uc + 48) - 64) & ~(nuint)15) - 20;
                 // NullFault(frame, pc) takes its two words in EAX and EDX

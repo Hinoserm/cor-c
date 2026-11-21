@@ -1099,7 +1099,9 @@ public sealed class X86Backend : IBackend
     /// pushed in the order EBX, ESI, EDI, so the k-th of them present is at
     /// EBP - FrameSize - 4(k+1). The collector reads them to find where a
     /// caller's register value was kept, and so which saved words are values
-    /// some frame still holds live and which are stale copies.
+    /// some frame still holds live and which are stale copies. Only a
+    /// function with calls has records the collector reads: a leaf, which
+    /// has no frame and may save EBP first (MFunction.Frameless), has none.
     /// </summary>
     private static uint SavedMask(MFunction m)
     {

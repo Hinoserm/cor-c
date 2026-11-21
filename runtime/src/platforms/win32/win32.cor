@@ -265,7 +265,20 @@ public static class Win32
         // NullFault's prologue links to it as a call from there would; a leaf
         // with no link of its own stands as the call it was in its caller
         // (`pc` its return address).
+        nuint stoppedPc = pc;
         nuint frame = Runtime.FrameAt(ref pc, Sys.Read32(ctx + 0xC4), Sys.Read32(ctx + 0xB4));
+        // A leaf stood for its call has its caller's EBX, ESI and EDI where
+        // it pushed them: put back, as its return would have (Runtime.LeafSaved).
+        if (pc != stoppedPc)
+        {
+            nuint stoppedSp = Sys.Read32(ctx + 0xC4);
+            nuint saved = Runtime.LeafSaved(stoppedPc, stoppedSp, 3);
+            if (saved != 0) Sys.Write32(ctx + 0xA4, Sys.Read32(saved));
+            saved = Runtime.LeafSaved(stoppedPc, stoppedSp, 6);
+            if (saved != 0) Sys.Write32(ctx + 0xA0, Sys.Read32(saved));
+            saved = Runtime.LeafSaved(stoppedPc, stoppedSp, 7);
+            if (saved != 0) Sys.Write32(ctx + 0x9C, Sys.Read32(saved));
+        }
         Sys.Write32(ctx + 0xB4, Sys.Low32(frame));
         Sys.Write32(ctx + 0xB0, Sys.Low32(pc));
         Sys.Write32(ctx + 0xA8, Sys.Low32(frame));

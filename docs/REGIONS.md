@@ -118,9 +118,9 @@ on this thread's stack in a frame that returns no later than the region ends
 (`OnStackWithin`). The second is for a collection the link's lifetime pass
 put in its function's frame: its storage grows in the region, not on the
 heap. The rule:
-- Every prologue is `push ebp; mov ebp, esp`, so the frame pointers form a
-  chain of callers (a leaf that gives EBP a value calls nothing, so it is
-  never on it), each higher on the stack than its callee. The walk up the
+- Every function that calls begins `push ebp; mov ebp, esp`, so the frame
+  pointers form a chain of callers (a leaf has no frame, but calls nothing,
+  so it is never on it), each higher on the stack than its callee. The walk up the
   chain from the allocating frame must meet the region's opener frame
   exactly (at most 64 frames). That proves the opener is a live call on this
   stack, and that the stack between is its and its callees'.

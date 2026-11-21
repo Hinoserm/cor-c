@@ -95,7 +95,9 @@ public sealed class MFunction
     /// no frame links to it; a thread stopped in it is found by its first
     /// bytes, which are not a framed function's `push ebp; mov ebp, esp`
     /// (Runtime.FrameAt). On a 486 the three instructions are seven clocks of
-    /// every call of a leaf, `leave` five of them; four bytes of each.
+    /// every call of a leaf, `leave` five of them, and four bytes; an `add
+    /// esp, n` and an address generation stall or two (ESP written, then
+    /// used as a base) are paid back from them where the leaf has a frame.
     /// </summary>
     public bool Frameless { get; set; }
 
