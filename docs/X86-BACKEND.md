@@ -724,8 +724,9 @@ such call is said by where its target comes from:
 A call through a slot the link cannot answer (a descriptor holding
 foreign code there) counts as the last. Sys.Call takes from none to three
 words, and each of the runtime's calls through words it reads out of
-tables (an image's initialisers, a struct's copier, a heap visitor)
-passes exactly its callee's. A family that is held keeps its parameters
+tables (a struct's copier, a heap visitor) passes exactly its callee's;
+an image's C initialisers are called by C's rules (Sys.CallNative), which
+reach no method of this code. A cell written otherwise still counts. A family that is held keeps its parameters
 where they are, and one no member reads is passed as 0 through its slots:
 whatever calls a member finds the layout it had.
 `--no-argument-facts` turns the judging off.

@@ -127,8 +127,11 @@ public readonly record struct ArgumentVersion(string Name, ArgumentDrop[] Bound)
 /// address taken in code, or in data that is no descriptor), the entry.
 /// A function in a descriptor's slot changes only with every function its
 /// slots can reach, and only where every call through those slots is
-/// known: the image closed, and no unit with a call through an address it
-/// could name by nothing.
+/// known: the image closed, and no call through a word that may have been
+/// read out of a descriptor reaching it -- each such call judged by where
+/// its target comes from (ArgumentHints: CellCalls, ParamCalls, SlotCalls,
+/// Unnamed). A family so reached keeps its parameters in place, one no
+/// member reads passed as 0 through its slots (ArgumentFacts.UnsetSlots).
 /// </summary>
 public static class ArgumentSolver
 {
@@ -471,6 +474,10 @@ public static class ArgumentSolver
                 if (held) heldByUnnamed++;
                 if (held || !members.All(Free))
                 {
+                    // (Only where every member's reads are its parameters'
+                    // own -- one register twice among them is Fixed -- and
+                    // every call's operands are its parameters, in place.)
+                    if (members.Any(member => functions[member].Fixed || misfit.Contains(member))) continue;
                     List<int> unread = new();
                     for (int k = 1; k < parameters; k++) if (members.All(member => functions[member].Reads[k] == 0)) unread.Add(k);
                     if (unread.Count == 0) continue;

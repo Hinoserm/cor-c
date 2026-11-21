@@ -326,7 +326,10 @@ public static class ArgumentSummary
                 {
                     if (i.Operands[k] is not SymOperand { Name: var cell } || !IsCell(cell)) continue;
                     if (k == 0 && i.Op == Opcode.Load && i.Operands.Count == 1) continue;
-                    if (k == 0 && i.Op == Opcode.Store && i.Operands.Count == 2)
+                    // (A whole word, the cell's own: a narrower or wider store
+                    // is a part of something, said written.)
+                    if (k == 0 && i.Op == Opcode.Store && i.Operands.Count == 2 && i.Offset == 0 && i.Size == IrTypes.Word.Bytes()
+                        && ((SymOperand)i.Operands[0]).Offset == 0)
                     {
                         HashSet<string> from = new(StringComparer.Ordinal);
                         HashSet<int> parameters = new();
@@ -576,13 +579,14 @@ public static class ArgumentSummary
                         // place kept (ArgumentFacts.UnsetSlots): passed as 0,
                         // what it was made of dead here. Not a struct passed
                         // by value, whose copy the call itself may make.
+                        // (Every name the call has must say the same.)
                         int[]? unset = null;
                         foreach (string name in names)
-                            if (facts.UnsetSlots.TryGetValue(name, out int[]? of) || facts.UnsetSlots.TryGetValue(VirtualTargets.Plain(name), out of))
-                            {
-                                if (unset is not null && !unset.AsSpan().SequenceEqual(of)) { unset = null; break; }
-                                unset = of;
-                            }
+                        {
+                            if (!facts.UnsetSlots.TryGetValue(name, out int[]? of) && !facts.UnsetSlots.TryGetValue(VirtualTargets.Plain(name), out of)) { unset = null; break; }
+                            if (unset is not null && !unset.AsSpan().SequenceEqual(of)) { unset = null; break; }
+                            unset = of;
+                        }
                         if (unset is not null)
                             foreach (int k in unset)
                             {

@@ -3059,7 +3059,9 @@ public static partial class Runtime
 
         if (init != 0)
         {
-            Sys.Call(init + bias);
+            // C's: what ld.so would have called, (argc, argv, envp) by C's
+            // rules, none of which this code keeps for it.
+            Sys.CallNative(init + bias, 0, 0, 0);
         }
 
         nuint array = Tag(dynamic, DtInitArray);
@@ -3071,7 +3073,7 @@ public static partial class Runtime
 
             if (one != 0)
             {
-                Sys.Call(one);
+                Sys.CallNative(one, 0, 0, 0);
             }
         }
     }

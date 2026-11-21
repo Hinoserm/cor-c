@@ -92,14 +92,15 @@ public sealed class ArgumentHints
     /// How many arguments each call passes that the unit makes, in this
     /// code's own convention (not a native call's), through an
     /// address it could name by no function and no slot (Sys.Call of a
-    /// word, the runtime's hooks kept in static cells). Such a call may
+    /// word, a table's word: what is neither a cell's nor a parameter's,
+    /// CellCalls and ParamCalls, nor a slot's, SlotCalls). Such a call may
     /// reach a function whose address is taken -- which is never judged
     /// (ArgumentSolver: addressed) -- or one held in a slot whose word was
     /// read raw, of as many parameters as the call passes arguments or
     /// fewer: an argument is one operand, and a callee of fewer reads as
-    /// many as it has (Sys.Call passes three words to a method of any of
-    /// up to three). A slot's family of more parameters than every such
-    /// call passes is reached by none of them.
+    /// many as it has (Sys.Call passes its overload's words to a method of
+    /// as many or fewer). A slot's family of more parameters than every
+    /// such call passes is reached by none of them.
     /// </summary>
     public SortedSet<int> Unnamed { get; } = new();
 

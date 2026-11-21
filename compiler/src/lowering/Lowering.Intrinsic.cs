@@ -1097,11 +1097,11 @@ public sealed partial class Lowering
             case "Call":
             case "CallLong":
             {
-                // AS ANY CALL OF THIS LANGUAGE'S, of a method declaring
-                // (nuint, nuint, nuint): a word an argument, as Sys.Call
-                // declares them -- in registers on i386, where a method's
-                // first three words come (the x86 backend's RegisterArgs),
-                // so one of fewer reads as many as it has --
+                // AS ANY CALL OF THIS LANGUAGE'S, of a method declaring as
+                // many words as the overload passes (none to three) or fewer:
+                // a word an argument -- in registers on i386, where a
+                // method's first three words come (the x86 backend's
+                // RegisterArgs), so one of fewer reads as many as it has --
                 // answering a word, or a long (CallLong), two registers on
                 // i386. Code with the machine's own C convention is reached
                 // by Sys.CallNative.
