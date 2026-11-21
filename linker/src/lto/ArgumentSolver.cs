@@ -201,8 +201,9 @@ public static class ArgumentSolver
         List<(string Caller, ArgumentCall Call, string[] Targets)> calls = new();
         HashSet<string> called = new(StringComparer.Ordinal);
         HashSet<string> slotsCalled = new(StringComparer.Ordinal);
-        // Calls through a slot the link could not answer (some descriptor
-        // holds there what is not a function of the units': foreign code).
+        // Calls through a slot the link has no answer for (some descriptor
+        // holds there what is not a function of the units' -- foreign code
+        // -- or the name was not among those the link resolved).
         int unresolved = 0;
         foreach (ArgumentHints unit in units)
             foreach ((string caller, ArgumentFunction f) in unit.Functions)
@@ -214,6 +215,11 @@ public static class ArgumentSolver
                         if (virtuals.TryGetValue(call.Callee, out string[]? targets)) { calls.Add((caller, call, targets)); called.UnionWith(targets); }
                         // Of what it reaches nothing is known but that it is
                         // passed as many arguments: as an unnamed call is.
+                        // (Every function in one slot has the slot's
+                        // parameters, the call's count; one that has not is
+                        // a misfit of the calls the link did answer, and a
+                        // function only such a call reaches is called by
+                        // nothing seen: Many either way.)
                         else { unresolved++; unnamed.Add(call.Arguments.Length); }
                     }
                     else if (functions.ContainsKey(call.Callee)) { calls.Add((caller, call, new[] { call.Callee })); called.Add(call.Callee); }
@@ -365,10 +371,10 @@ public static class ArgumentSolver
             }
             foreach (List<string> members in families.Values.OrderBy(m => m[0], StringComparer.Ordinal))
             {
-                // Every member free to change, every slot it stands in one
-                // of the resolved ones, and none held in a slot nothing
-                // named (a descriptor's the units' calls never reach is
-                // called by nobody the link sees: its callers are unknown).
+                // Every member free to change and of one count of
+                // parameters, and the family reached by no call nothing
+                // names nor any the link has no answer for (UnnamedReach):
+                // a member's callers are the resolved slots' calls alone.
                 if (!members.All(Free)) continue;
                 if (members.Any(member => !functions.ContainsKey(member))) continue;
                 int parameters = functions[members[0]].Kinds.Length;
@@ -555,8 +561,14 @@ public static class ArgumentSolver
             return false;
         }
 
+        string SlotsSaid()
+        {
+            if (!slotsKnown) return ", slots not known whole: the image is not closed";
+            string said = heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families held by calls nothing names (" + unnamedMost + " arguments at most)";
+            return unresolved == 0 ? said : said + ", " + unresolved + " slot calls without an answer";
+        }
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants
-            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families of no more parameters than the most arguments an unnamed call passes (" + unnamedMost + (unresolved == 0 ? "" : "; " + unresolved + " slot calls unanswered") + ")" : ", slots not known whole: the image is open")
+            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + SlotsSaid()
             + "); " + facts.Entries.Count + " functions given a way in with their commonest numbers, for " + entrySites + " calls; "
             + facts.Versions.Values.Sum(versions => versions.Length) + " versions of " + facts.Versions.Count + " functions for " + versionSites + " calls; "
             + facts.Splits.Count + " functions take " + splitWords + " words where they took a struct's address");
