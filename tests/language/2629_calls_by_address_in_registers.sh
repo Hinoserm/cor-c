@@ -58,10 +58,20 @@ then pass "a function of three words reads none from the stack"
 else fail "a function of three words reads none from the stack"; cat "$work/digits.dis"; fi
 
 # A function of five words: its fourth and fifth from the stack, no more.
+# Framed, off EBP: the two words at EBP+8 and +12. A leaf has no frame
+# (no `mov ebp, esp`): off ESP, past the registers it pushed -- with P of
+# them, the return address at ESP+4P and the two words above it.
 body m_Program_Five > "$work/five.dis"
-low=$(grep -cE '0x(8|c)\(%ebp\)' "$work/five.dis"); high=$(grep -cE '0x(10|14|18)\(%ebp\)' "$work/five.dis")
+if grep -qE 'mov +%esp,%ebp' "$work/five.dis"; then
+    low=$(grep -cE '0x(8|c)\(%ebp\)' "$work/five.dis"); high=$(grep -cE '0x(10|14|18)\(%ebp\)' "$work/five.dis")
+else
+    p=$(awk '/push +%e/ { n++; next } { exit } END { print n + 0 }' "$work/five.dis")
+    first=$(printf '0x%x' $((4 * p + 4))); second=$(printf '0x%x' $((4 * p + 8)))
+    low=$(grep -cE "($first|$second)\(%esp\)" "$work/five.dis")
+    high=$(grep -oE '0x[0-9a-f]+\(%esp\)' "$work/five.dis" | grep -vcE "^($first|$second)\(")
+fi
 if [ "$low" -ge 2 ] && [ "$high" -eq 0 ]; then pass "a function of five words reads its last two from the stack and no other"
-else fail "a function of five words reads its last two from the stack and no other ($low reads of the first two slots, $high above)"; cat "$work/five.dis"; fi
+else fail "a function of five words reads its last two from the stack and no other ($low reads of the first two slots, $high elsewhere)"; cat "$work/five.dis"; fi
 
 # The one marked [StackArguments]: its own kind of name, and both read there.
 body mc_Program_Pushed > "$work/pushed.dis"

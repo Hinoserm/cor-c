@@ -75,6 +75,11 @@ public sealed class ConstantSpecialize : IModulePass
                     // (Selector.X87Fact). And whether it runs inside its
                     // caller's (a $inside copy's, Function.InsideState).
                     FromLibrary = target.FromLibrary, SystemCode = target.SystemCode, SourcePath = target.SourcePath, InsideState = target.InsideState,
+                    // A version of a generic copy is one too: any image's own,
+                    // never its library's private code (Module.LibraryPrivate)
+                    // -- Array.Clear<byte>'s, made once its throws went out of
+                    // it (ThrowOutline) and it was small enough to version.
+                    GenericCode = target.GenericCode,
                 };
                 foreach (VReg parameter in target.Params)
                 {
