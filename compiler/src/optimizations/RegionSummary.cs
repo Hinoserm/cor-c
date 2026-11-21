@@ -986,7 +986,7 @@ public static class RegionSummary
             (long Start, long Step)? counter = Counter(cfg, body, latches, defs, v);
             if (counter is null && defs.TryGetValue(v, out var vd) && vd.Count == 1 && body.Contains(vd[0].At) && cfg.Dominates(vd[0].At, at)
                 && (vd[0].At != at || at.Instrs.IndexOf(vd[0].Def) < at.Instrs.IndexOf(test))
-                && Stepped(vd[0].Def) is (VReg from, long by))
+                && Stepped(vd[0].Def) is (VReg from, long by) && Within(by, MostStep))
             {
                 counter = Counter(cfg, body, latches, defs, from);
                 offset = by;

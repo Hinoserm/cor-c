@@ -36,7 +36,7 @@ using Block = Corsac.Lang.Ir.Block;
 /// was none before, reading its own frame.
 ///
 /// Only in a function small enough, without them, to be put in its callers
-/// (OutlineBody), that nothing else keeps out of them -- a handler of its
+/// (SmallBody, LoopBody), that nothing else keeps out of them -- a handler of its
 /// own, NoInlining, an async body -- and only blocks that name no frame slot
 /// (another frame's would be another slot) and hold no instruction kept as a
 /// call (Module.KeepCalls). Moved out anywhere else, a throw costs a call, a
@@ -46,8 +46,16 @@ public sealed class ThrowOutline : IModulePass
 {
     public string Name => "throw-outline";
 
-    /// <summary>The most instructions a function keeps, its throws moved out, to have them moved: as many as the inliner may take in (Pipeline.Default sets it by --opt-size).</summary>
-    public int OutlineBody { get; init; } = 64;
+    /// <summary>
+    /// The most instructions a function keeps, its throws moved out, to have
+    /// them moved: as many as the inliner may take in -- its small body and
+    /// the credit for the function's argument words (Inline.SmallLimit), or
+    /// LoopBody, where the inliner weighs a loop's call by the hot path
+    /// alone. Pipeline.Default sets them as it sets the inliner's.
+    /// </summary>
+    public int SmallBody { get; init; } = 40;
+    public int ArgumentWordCredit { get; init; }
+    public int LoopBody { get; init; } = 64;
 
     /// <summary>What marks a function's throw as its own frame's (Inline.NotInlineable).</summary>
     private static bool Blocks(Instr i) => i.Op is Opcode.FramePointer or Opcode.Unwind;
@@ -120,7 +128,8 @@ public sealed class ThrowOutline : IModulePass
         // What is left must be a body the inliner takes: nothing else of the
         // kind, and small.
         int left = f.Blocks.Where(b => !taken.Contains(b)).Sum(b => b.Instrs.Count) + 3 * throws.Count;
-        if (left > OutlineBody || f.Blocks.Where(b => !taken.Contains(b)).Any(b => b.Instrs.Any(Blocks))) return made;
+        int words = ArgumentWordCredit == 0 ? 0 : f.Params.Sum(p => (p.Type.Bytes() + IrTypes.Word.Bytes() - 1) / IrTypes.Word.Bytes());
+        if (left > Math.Max(LoopBody, SmallBody + Math.Min(24, words * ArgumentWordCredit)) || f.Blocks.Where(b => !taken.Contains(b)).Any(b => b.Instrs.Any(Blocks))) return made;
 
         // Registers made anywhere outside the throws: read inside one, each is
         // a parameter of its function.

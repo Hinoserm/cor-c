@@ -170,13 +170,16 @@ public sealed class Pipeline
         // any version or copy of a body is made.
         // As far as the inliner below may then take the function (a moved
         // throw is a call, a function's alignment and a row of the frame
-        // table for nothing where the body stays a call): under --opt-size
-        // its small limit, 8 and at most 24 of its arguments' credit, 32;
-        // otherwise 64, past its small limit of 40, because in a loop it
-        // weighs only a body's hot path, which a throw moved out leaves.
-        // On the K8 kernel they cost 3.3% of its code: the speed bought
-        // where a span or a list is indexed in a loop.
-        p.ModulePasses.Add(new ThrowOutline { OutlineBody = optimizeSize ? 32 : 64 });
+        // table for nothing where the body stays a call): its small limit
+        // for that function -- 8 and the credit of its argument words under
+        // --opt-size, 40 otherwise -- or, but under --opt-size, 64: in a
+        // loop the inliner weighs only a body's hot path, which a throw
+        // moved out leaves. On the K8 kernel they cost 3.3% of its code: the
+        // speed bought where a span or a list is indexed in a loop.
+        p.ModulePasses.Add(new ThrowOutline
+        {
+            SmallBody = optimizeSize ? 8 : 40, ArgumentWordCredit = optimizeSize ? 4 : 0, LoopBody = optimizeSize ? 0 : 64,
+        });
         p.ModulePasses.Add(new ConstantSpecialize());
         p.ModulePasses.Add(Inliner(keepFree: true));
         // After inlining, because a literal's length is only visible once
