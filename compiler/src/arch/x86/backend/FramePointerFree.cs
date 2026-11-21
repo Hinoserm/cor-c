@@ -5,7 +5,8 @@ namespace Corsac.Lang.X86;
 
 /// <summary>
 /// A FUNCTION WITHOUT A FRAME made so, last before it is written: a leaf
-/// (MFunction.Frameless). Every pass until here took an operand based on EBP
+/// (MFunction.Frameless), or one whose only calls never return, which makes
+/// its frame on the way to them alone (MFunction.ColdFrames, OnlyColdCalls). Every pass until here took an operand based on EBP
 /// for the frame, and the value EBP holds in a leaf that gives it one as
 /// MReg.EbpData; now the frame is addressed off ESP, and the value is in EBP.
 /// The leaf pushes the registers it saves -- EBP first where it gives it a
@@ -92,7 +93,16 @@ internal static class FramePointerFree
                 MInstr i = b.Instrs[k];
                 if (i.Op is MOp.Call or MOp.CallInd)
                 {
-                    if (k + 1 >= b.Instrs.Count || b.Instrs[k + 1].Op != MOp.Int3) return false;
+                    // (Not through memory: an argument's word above the frame
+                    // is ESP-based after this, and the frame's two pushes,
+                    // before the call reads it, would move it.)
+                    // Never returning: the selector's unreachable (INT3, no
+                    // operand) after it, straight or after a trap -- a trap
+                    // the program may run on from (INT3 1) alone is a call
+                    // that comes back, past a frame never undone.
+                    int after = k + 1;
+                    if (after < b.Instrs.Count && b.Instrs[after] is { Op: MOp.Int3, Operands.Count: > 0 }) after++;
+                    if (after >= b.Instrs.Count || b.Instrs[after] is not { Op: MOp.Int3, Operands.Count: 0 } || i.Operands.Count > 0 && i.Operands[0] is MMem) return false;
                     calls = true;
                 }
                 if (i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.Push or MOp.Pop
@@ -100,7 +110,8 @@ internal static class FramePointerFree
                 foreach (MOperand o in i.Operands)
                 {
                     if (o is MReg { Id: (int)Gpr.Ebp or MReg.EbpDataId }) return false;
-                    if (o is MMem mem && (mem.Index?.Id is (int)Gpr.Ebp or MReg.EbpDataId || mem.Base?.Id == (int)Gpr.Ebp && mem.Disp < 8)) return false;
+                    if (o is MMem mem && (mem.Index?.Id is (int)Gpr.Ebp or MReg.EbpDataId || mem.Base?.Id == MReg.EbpDataId
+                        || mem.Base?.Id == (int)Gpr.Ebp && mem.Disp < 8)) return false;
                 }
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;

@@ -4480,6 +4480,12 @@ public static partial class Runtime
             pc = Sys.ReadAddress(sp);
             return bp;
         }
+        // ON THE WAY TO A CALL THAT NEVER RETURNS (the compiler's ColdFrames):
+        // its frame made there, `push ebp ; mov ebp, esp` just before the
+        // call. Stopped on the move, the push made: the frame is at `sp`;
+        // on the call, both made: `bp`.
+        if (pc >= at + 3 && Sys.Read8(pc - 3) == 0x55 && Sys.Read8(pc - 2) == 0x89 && Sys.Read8(pc - 1) == 0xE5) { return bp; }
+        if (pc >= at + 1 && Sys.Read8(pc - 1) == 0x55 && Sys.Read8(pc) == 0x89 && Sys.Read8(pc + 1) == 0xE5) { return sp; }
         // A leaf: what of its pushes and its frame's reserving has run.
         bool linked = Sys.Read8(at) == 0x55;
         nuint made = 0;

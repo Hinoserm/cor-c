@@ -1,0 +1,40 @@
+// test: loops over spans with a counter's sum kept as it goes, and a function with a frame only on the way to a call that never returns, its arguments past three read and its trace whole
+// expect-exit: 0
+// expect-output:
+// 11266 4725 1760
+// 33
+// four with Get4
+// weighted out of range
+//
+// Sum and Weighted read `from + i` of a span every lap (its offset in its
+// array, and Weighted's own): kept as a register stepped beside i
+// (StrengthReduce), the span's `from` read once where the loop begins.
+// Weighted's index goes out of range from the first lap when `from` is
+// negative, as .NET's does. Get4 takes a fourth argument from the stack
+// and makes its frame only for the bounds check's call (ColdFrames); its
+// exception's trace still names it. Output as .NET 10 prints it.
+
+using System;
+using System.Runtime.CompilerServices;
+static class Program
+{
+    static int[] _table = new int[64];
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Sum(ReadOnlySpan<byte> s) { int t = 0; for (int i = 0; i < s.Length; i++) t += s[i]; return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Weighted(ReadOnlySpan<byte> s, int from) { int t = 0; for (int i = 0; i < s.Length - from; i++) t += s[from + i] * (i + 1); return t; }
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Get4(int[] a, int b, int c, int i) => a[i] + b - c;
+    static int Main(string[] args)
+    {
+        byte[] b = new byte[100];
+        for (int i = 0; i < b.Length; i++) b[i] = (byte)(i * 3 + args.Length);
+        Console.WriteLine(Sum(b) + " " + Sum(new ReadOnlySpan<byte>(b, 7, 50)) + " " + Weighted(b, 90));
+        for (int i = 0; i < 64; i++) _table[i] = i * 3;
+        Console.WriteLine(Get4(_table, 5, 2, 10));
+        try { Console.WriteLine(Get4(_table, 1, 2, 99 + args.Length)); }
+        catch (IndexOutOfRangeException e) { Console.WriteLine("four " + (e.StackTrace!.Contains("Program.Get4") ? "with Get4" : "without Get4")); }
+        try { Console.WriteLine(Weighted(b, -1 - args.Length)); }
+        catch (IndexOutOfRangeException) { Console.WriteLine("weighted out of range"); }
+        return 0;
+    }
+}

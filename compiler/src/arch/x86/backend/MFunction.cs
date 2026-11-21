@@ -87,12 +87,14 @@ public sealed class MFunction
     public bool FramePointerFree { get; set; }
 
     /// <summary>
-    /// A LEAF WITH NO FRAME OF ITS OWN (X86Target): no `push ebp; mov ebp,
+    /// A FUNCTION WITH NO FRAME OF ITS OWN -- a leaf (X86Target), or one
+    /// whose only calls never return (ColdFrames): no `push ebp; mov ebp,
     /// esp` and no `leave`. It pushes the registers it saves, then reserves
     /// its frame (`sub esp, n`), and every slot and argument is addressed off
     /// ESP, which nothing moves between that and the epilogue -- `add esp, n`,
-    /// the pops, `ret` (FramePointerFree.Run, Encoder). It calls nothing, so
-    /// no frame links to it; a thread stopped in it is found by its first
+    /// the pops, `ret` (FramePointerFree.Run, Encoder). It calls nothing that
+    /// returns, so no frame links to it but the one it makes for a call that
+    /// does not (ColdFrames); a thread stopped in it is found by its first
     /// bytes, which are not a framed function's `push ebp; mov ebp, esp`
     /// (Runtime.FrameAt). A leaf given 16-byte aligned XMM slots has its frame
     /// again (AlignedSlots turns this off). On a 486 the three instructions are seven clocks of

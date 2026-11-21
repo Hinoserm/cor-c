@@ -153,6 +153,9 @@ public sealed class Pipeline
         p.Passes.Add(new LoadReuse());
         p.Passes.Add(new DeadCodeElimination());
         p.Passes.Add(new LoopInvariant());
+        // A loop's counter plus what the loop never changes, kept as it goes
+        // (StrengthReduce): after the invariant is out of the loop.
+        p.Passes.Add(new StrengthReduce());
         // A type's initialiser guard behind another for the same type: the
         // inliner set String's twice in a row where a list was made and
         // string.Empty read.

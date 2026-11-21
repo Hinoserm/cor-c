@@ -85,7 +85,16 @@ call alone: `push ebp ; mov ebp, esp` before it (MFunction.ColdFrames).
 Nothing being pushed below its return address, that is a frame as any
 prologue's: the callee links to it, a trace names the function, and the
 collector's map of the call is empty. The way that returns -- an indexer's
-check and load -- pays nothing for it.
+check and load -- pays nothing for it. Only where the call is followed by
+the selector's unreachable (a trap the program may run on from is a call
+that comes back), and not through memory (an argument's word above the
+frame, which the frame's push would move).
+
+**A loop's counter plus what the loop never changes** (`from + i`, a span's
+element) is a register of its own, set where the loop is entered and
+stepped beside the counter (StrengthReduce): one `inc` where a move and an
+add were, in a loop whose compare reads the sum -- not one only an address
+is made of, which x86 adds in the address itself.
 
 **Calling convention: the first three words in registers, the rest
 pushed,** the same for every call of the language's own ("Calls and
