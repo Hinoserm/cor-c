@@ -89,14 +89,23 @@ public sealed class ArgumentHints
     public SortedSet<string> Slotted { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Whether the unit makes a call through an address it could name by no
-    /// function and no slot (Sys.Call of a word, a delegate's own target):
-    /// such a call reaches any function whose address is taken, with
-    /// whatever it passes.
+    /// How many arguments each call passes that the unit makes, in this
+    /// code's own convention (not a native call's), through an
+    /// address it could name by no function and no slot (Sys.Call of a
+    /// word, a delegate's own target, a virtual method's word read for a
+    /// delegate); AnyCount for one whose arguments are not known (an asm
+    /// block's call through a register). Such a call reaches any function
+    /// whose address is taken -- and any held in a slot, its word read raw
+    /// -- of as many parameters: a call passes its callee's parameters, one
+    /// operand each (a call of other than that many makes the callee
+    /// ArgumentSolver's misfit, which changes not at all).
     /// </summary>
-    public bool Unnamed { get; set; }
+    public SortedSet<int> Unnamed { get; } = new();
 
-    public bool IsEmpty => Functions.Count == 0 && Addressed.Count == 0 && Slotted.Count == 0 && !Unnamed;
+    /// <summary>An unnamed call whose arguments are not known (Unnamed): it may reach any function.</summary>
+    public const int AnyCount = -1;
+
+    public bool IsEmpty => Functions.Count == 0 && Addressed.Count == 0 && Slotted.Count == 0 && Unnamed.Count == 0;
 
     internal void Write(BinaryWriter writer)
     {
@@ -146,7 +155,8 @@ public sealed class ArgumentHints
         foreach (string name in Addressed) Text(name);
         writer.Write(Slotted.Count);
         foreach (string name in Slotted) Text(name);
-        writer.Write(Unnamed);
+        writer.Write(Unnamed.Count);
+        foreach (int count in Unnamed) writer.Write(count);
     }
 
     internal static ArgumentHints Read(BinaryReader reader, long total)
@@ -228,7 +238,11 @@ public sealed class ArgumentHints
         }
         for (int i = Count(5); i > 0; i--) hints.Addressed.Add(Text());
         for (int i = Count(5); i > 0; i--) hints.Slotted.Add(Text());
-        hints.Unnamed = reader.ReadBoolean();
+        for (int i = Count(4); i > 0; i--)
+        {
+            int count = reader.ReadInt32();
+            if (count < AnyCount || !hints.Unnamed.Add(count)) throw new ElfFormatException("Invalid argument hint unnamed call");
+        }
         return hints;
     }
 }

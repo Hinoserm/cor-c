@@ -1,0 +1,18 @@
+// The other unit of test 2636: two classes whose methods fill two slots of one
+// abstract class, Five of five parameters and Six of six.
+
+public abstract class Op
+{
+    public abstract int Five(int a, int b, int c, int scale);
+    public abstract int Six(int a, int b, int c, int d, int scale);
+}
+public sealed class Add : Op
+{
+    public override int Five(int a, int b, int c, int scale) => (a + b + c) * scale;
+    public override int Six(int a, int b, int c, int d, int scale) => (a + b + c + d) * scale;
+}
+public sealed class Mul : Op
+{
+    public override int Five(int a, int b, int c, int scale) => a * b * c * scale + 1;
+    public override int Six(int a, int b, int c, int d, int scale) => a * b * c * d * scale + 2;
+}

@@ -1,0 +1,40 @@
+// test: a virtual slot's family loses a parameter only where no call through a word nothing names may reach it
+// units: tests/language/support/2636_slot_family_units.cor
+// expect-exit: 0
+// expect-output:
+// 1060760 437400
+// 60 2401
+//
+// Every virtual call of Five passes scale 3, and of Six scale 7: judged
+// over the whole program at the link, a family of a slot whose every
+// call is named may lose such a parameter. Five is also made a delegate
+// of, its word read out of the object's descriptor and called through
+// the delegate with another scale -- a call nothing names, passing as
+// many arguments as Five has parameters -- so Five's family keeps its
+// scale, and the delegate's call gets what it passed. Output as .NET 10
+// says it.
+
+using System;
+using System.Runtime.CompilerServices;
+static class Program
+{
+    static Op[] _ops = { new Add(), new Mul() };
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Op Pick(int i) => _ops[i & 1];
+    static int Main(string[] args)
+    {
+        long five = 0, six = 0;
+        for (int i = 0; i < 40; i++)
+        {
+            five += Pick(i).Five(i, i + 1, i + 2, 3);
+            six += Pick(i + 1).Six(i, 2, i + 1, 3, 7);
+        }
+        Console.WriteLine(five + " " + six);
+        // The same slot's method through a delegate: a call through its
+        // word, which passes another scale.
+        Func<int, int, int, int, int> f = Pick(args.Length).Five;
+        Func<int, int, int, int, int> g = Pick(args.Length + 1).Five;
+        Console.WriteLine(f(1, 2, 3, 10) + " " + g(2, 3, 4, 100));
+        return 0;
+    }
+}

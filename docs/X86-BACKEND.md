@@ -704,7 +704,11 @@ A function whose address is taken, or that is named for others, or called
 from code the link does not see, keeps all of its arguments; it may still
 have versions and a way in, which its own name and parameters leave as they
 were. A slot's family is judged only at a link of a closed image -- one
-module compiled whole sees no descriptor's every reader.
+module compiled whole sees no descriptor's every reader -- and only where
+no call through an address nothing names passes as many arguments as its
+members have parameters: such a call may be of a slot's word read raw (a
+delegate of a virtual method, the runtime reading a descriptor). An asm
+block that calls through a register or memory leaves no family judged.
 `--no-argument-facts` turns the judging off.
 
 ## Exceptions

@@ -161,14 +161,15 @@ public static class ArgumentSolver
         // Functions some call passes other than their parameters' number of
         // arguments: which of a call's operands is which is not known.
         HashSet<string> misfit = new(StringComparer.Ordinal);
-        bool unnamed = false;
+        // How many arguments each unnamed call passes (ArgumentHints.Unnamed).
+        HashSet<int> unnamed = new();
         foreach (ArgumentHints unit in units)
         {
             foreach ((string name, ArgumentFunction f) in unit.Functions)
                 if (!functions.TryAdd(name, f) && (!functions[name].Kinds.AsSpan().SequenceEqual(f.Kinds) || !f.Copies || !functions[name].Copies)) disagreed.Add(name);
             addressed.UnionWith(unit.Addressed);
             slotted.UnionWith(unit.Slotted);
-            unnamed |= unit.Unnamed;
+            unnamed.UnionWith(unit.Unnamed);
         }
         if (functions.Count == 0) return null;
 
@@ -218,8 +219,15 @@ public static class ArgumentSolver
         bool Free(string name) => functions.TryGetValue(name, out ArgumentFunction? f) && !f.Fixed && !disagreed.Contains(name)
             && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
         // A slot's family is known whole only in a closed image where every
-        // call through an address was named and every slot called resolved.
-        bool slotsKnown = closed && !unnamed && !unresolved;
+        // slot called resolved, and only where no call through an address
+        // nothing names may reach it: a slot's word read raw (a delegate of
+        // a virtual method, the runtime's own reading of a descriptor) is
+        // called so, and passes its function's parameters, as many -- none
+        // that passes as many arguments as a member has parameters, and no
+        // call whose arguments are not known at all (ArgumentHints.AnyCount).
+        bool slotsKnown = closed && !unresolved && !unnamed.Contains(ArgumentHints.AnyCount);
+        bool UnnamedReach(string name) => unnamed.Contains(functions[name].Kinds.Length);
+        int heldByUnnamed = 0;
         // A FUNCTION SOMETHING UNSEEN MAY CALL HAS PARAMETERS NOBODY KNOWS:
         // one that may not change (foreign, kept for others, its address
         // taken), one in a slot whose callers are not all known, one no
@@ -231,7 +239,7 @@ public static class ArgumentSolver
         foreach ((string name, ArgumentFunction f) in functions)
         {
             bool bySlot = slotted.Contains(name) || slotsOf.ContainsKey(name);
-            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown)) continue;
+            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown && !UnnamedReach(name))) continue;
             Cell[] of = cells[name];
             for (int k = 0; k < of.Length; k++) of[k].State = Many;
         }
@@ -360,6 +368,7 @@ public static class ArgumentSolver
                 if (members.Any(member => !functions.ContainsKey(member))) continue;
                 int parameters = functions[members[0]].Kinds.Length;
                 if (members.Any(member => functions[member].Kinds.Length != parameters)) continue;
+                if (UnnamedReach(members[0])) { heldByUnnamed++; continue; }
                 List<int> shared = new();
                 // (The object, 0, stays: a call through a slot reads its descriptor.)
                 for (int k = 1; k < parameters; k++) if (members.All(member => Droppable(member, k))) shared.Add(k);
@@ -542,7 +551,7 @@ public static class ArgumentSolver
         }
 
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants
-            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? "" : ", slots not known whole")
+            + " one value at every call, " + dead + " never read; " + viaSlots + " through slots" + (slotsKnown ? heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families as many parameters as an unnamed call's arguments" : ", slots not known whole")
             + "); " + facts.Entries.Count + " functions given a way in with their commonest numbers, for " + entrySites + " calls; "
             + facts.Versions.Values.Sum(versions => versions.Length) + " versions of " + facts.Versions.Count + " functions for " + versionSites + " calls; "
             + facts.Splits.Count + " functions take " + splitWords + " words where they took a struct's address");
