@@ -521,7 +521,7 @@ public sealed class UnitBackend : IUnitBackend
                 if (misfits.Count > 0) throw new InvalidDataException(string.Join("; ", misfits));
                 // (And a struct a call here no longer passes the address of
                 // may be the frame's no longer: SlotScalars once more.)
-                if (given) { SlotScalars.ApplyAndClean(function); cleanup.Run(local); }
+                if (given) { SlotScalars.ApplyAndClean(function); ArgumentSummary.Folding(1).Run(local); }
             }
             LandingPadHomes.Run(local);
             if (dumping) { System.Text.StringBuilder regenerated = new(); function.Dump(regenerated); Console.Error.WriteLine("== regenerated\n" + regenerated); }

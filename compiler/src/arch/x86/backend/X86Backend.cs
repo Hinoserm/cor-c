@@ -1042,6 +1042,41 @@ public sealed class X86Backend : IBackend
         return sb.ToString();
     }
 
+    /// <summary>
+    /// A CALLEE-SAVED REGISTER NOTHING NAMES ANY MORE, no longer saved: the
+    /// allocator gave EBX, ESI or EDI a value and the prologue pushes it, and
+    /// the peepholes after made that value go -- a load, an operation and a
+    /// store back become one read-modify-write of the memory, the register
+    /// with them. A push and a pop of every call for nothing. Not in a
+    /// function that catches (a throw restores only ESP and EBP, so it saves
+    /// them all), nor where an asm block or Sys.SaveRegisters names the
+    /// saves; not EBP, which a leaf's frame logic owns. The saves lie below
+    /// the frame's slots (above them in a frameless leaf, addressed off ESP
+    /// after this), so no slot moves.
+    /// </summary>
+    private static void UnusedSaves(MFunction m)
+    {
+        if (m.SavedRegs.Count == 0 || m.Source.Blocks.Any(b => b.IsLandingPad)) return;
+        int named = 0;
+        foreach (MBlock b in m.Blocks)
+            foreach (MInstr i in b.Instrs)
+            {
+                if (i.Op is MOp.InlineAsm or MOp.SaveRegs or MOp.CallerReg) return;
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MReg { IsPhys: true } r && r.Id < 8) named |= 1 << r.Id;
+                    else if (o is MMem mem)
+                    {
+                        if (mem.Base is { IsPhys: true } mb && mb.Id < 8) named |= 1 << mb.Id;
+                        if (mem.Index is { IsPhys: true } mx && mx.Id < 8) named |= 1 << mx.Id;
+                    }
+                }
+                foreach (Gpr g in Roles.ImplicitUses(i)) named |= 1 << (int)g;
+                foreach (Gpr g in Roles.ImplicitDefs(i)) named |= 1 << (int)g;
+            }
+        m.SavedRegs.RemoveAll(g => g is Gpr.Ebx or Gpr.Esi or Gpr.Edi && (named & (1 << (int)g)) == 0);
+    }
+
     /// <summary>Select and allocate one function; null, with errors reported, if it cannot be compiled.</summary>
     private MFunction? Compile(Function f, List<string> errors, Func<string, bool>? isPrivate = null, Func<string, bool>? isDefined = null, Func<string, bool>? isImported = null)
     {
@@ -1081,6 +1116,7 @@ public sealed class X86Backend : IBackend
             Layout.Run(m);
             LoopRotate.Run(m);
             Peephole.Run(m);
+            UnusedSaves(m);
             AlignedSlots.Run(m);
             FrameCompact.Run(m);
             FramePointerFree.Run(m);

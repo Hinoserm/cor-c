@@ -67,12 +67,32 @@ internal static class Peephole
             ReadModifyWrite(block.Instrs, liveOut[b], Jumped);
             ChooseForCpu(block.Instrs, liveOut[b], Usable(m), Jumped);
             IncDec(block.Instrs);
+            PostStepTest(block.Instrs, liveOut[b], Jumped);
             // Again: ReadModifyWrite, ChooseForCpu and IncDec above take
             // instructions from between two moves and leave them a pair.
             SwapBack(block.Instrs);
             InvertJumpAroundJump(block.Instrs, next);
         }
         CopyBackAcrossJoin(m);
+        // A WAY THAT IS ANOTHER'S ONLY WAY IN, made one block; then a value
+        // copied twice copied once, in every block (ForwardCopies), with the
+        // registers' liveness read again for both.
+        MergeSoleJumps(m);
+        {
+            int[] outs = LiveOut(m, out int[] ins);
+            Dictionary<MBlock, int> where = new(ReferenceEqualityComparer.Instance);
+            for (int b = 0; b < m.Blocks.Count; b++) where[m.Blocks[b]] = b;
+            int Goes(MInstr i)
+            {
+                int live = 0;
+                if (i.Op is MOp.Jcc or MOp.Jmp && i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to })
+                    live = where.TryGetValue(to, out int t) ? ins[t] : 0xFF;
+                else if (i.Op == MOp.JmpTable && i.Table is { } table)
+                    foreach (MBlock each in table) live |= where.TryGetValue(each, out int e) ? ins[e] : 0xFF;
+                return live;
+            }
+            for (int b = 0; b < m.Blocks.Count; b++) ForwardCopies(m.Blocks[b].Instrs, outs[b], Goes);
+        }
         Unreachable(m);
         // LAST: it leaves flags live into a block, which every rule above
         // takes as never so (ZeroWithXor, ChooseForCpu's xor).
@@ -848,6 +868,20 @@ internal static class Peephole
                     if (i.Op == MOp.JmpTable && i.Table is { } table)
                     {
                         foreach (MBlock t in table) if (index.TryGetValue(t, out int ta)) live |= liveIn[ta];
+                    }
+                    // THE SELECTOR'S UNREACHABLE (INT3, no operand): nothing
+                    // runs after it, so nothing is live before it. A trap the
+                    // program may run on from (INT3 1) reads and writes
+                    // nothing: what is live after it is live before it. Taken
+                    // for everything read, every block a bounds check or a
+                    // throw ends in -- `call ...; int3; int3` -- kept EBX, ESI
+                    // and EDI live into it from wherever they were set, and a
+                    // read-modify-write or a dead store through one of them
+                    // on the way there stayed what it was.
+                    if (i.Op == MOp.Int3)
+                    {
+                        if (i.Operands.Count == 0) live = 0;
+                        continue;
                     }
                     if (!Understood(i))
                     {
@@ -2284,6 +2318,225 @@ internal static class Peephole
             foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
             dead &= ~Frame;
         }
+    }
+
+    // ---- a count tested as it was before a step ------------------------------------
+
+    /// <summary>
+    /// `while (n-- > 0)`: `mov t, n ; dec n ; test t, t ; jg L` -- the old
+    /// value kept to be tested, and a register for it -- with t dead after
+    /// the test, is `dec n ; jge L`: DEC sets SF, ZF and OF from n - 1, and
+    /// n > 0 is n - 1 >= 0 as JGE reads it (SF = OF), the one value it
+    /// wraps from (n the least int, n - 1 overflowing, OF set) included; n
+    /// <= 0 is JL. Stepping up, n < 0 is n + 1 <= 0 (JLE) and n >= 0 is JG.
+    /// Two instructions and a register of every lap of such a loop. Only
+    /// where nothing after the jump reads the flags the test set.
+    /// </summary>
+    private static void PostStepTest(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
+    {
+        int dead = ~liveOut & 0xFF;
+        for (int k = instrs.Count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            dead &= ~jumped(i);
+            // dead says what holds after instruction k.
+            if (k >= 2 && k + 1 < instrs.Count && i.Op == MOp.Test && i.Width == 4 && i.Operands.Count == 2
+                && i.Operands[0] is MReg { IsPhys: true } t && i.Operands[1] is MReg t2 && t2.Id == t.Id && t.Id < 8
+                && (dead & (1 << t.Id)) != 0
+                && instrs[k + 1] is { Op: MOp.Jcc } jump
+                && (k + 2 >= instrs.Count || !ReadsFlags(instrs[k + 2]) && Understood(instrs[k + 2]))
+                && instrs[k - 1] is var step && Step(step) is var (x, down) && x.Id != t.Id
+                && instrs[k - 2] is var copy && IsMov(copy) && copy.Operands[0] is MReg c0 && c0.Id == t.Id
+                && copy.Operands[1] is MReg c1 && c1.Id == x.Id
+                && (down ? jump.Cond is Cond.G or Cond.Le : jump.Cond is Cond.L or Cond.Ge))
+            {
+                Cond after = jump.Cond switch { Cond.G => Cond.Ge, Cond.Le => Cond.L, Cond.L => Cond.Le, _ => Cond.G };
+                instrs[k + 1] = new MInstr(MOp.Jcc, jump.Operands[0]) { Cond = after, Line = jump.Line };
+                instrs.RemoveAt(k);
+                instrs.RemoveAt(k - 2);
+                k -= 2;
+                dead = 0;
+                continue;
+            }
+            if (!Understood(i))
+            {
+                dead = 0;
+                continue;
+            }
+            foreach ((MReg rr, bool isDef) in Regs(i)) if (isDef && rr.Id < 8) dead |= 1 << rr.Id;
+            foreach (Gpr g in Roles.ImplicitDefs(i)) dead |= 1 << (int)g;
+            foreach ((MReg rr, bool isDef) in Regs(i)) if (!isDef && rr.Id < 8) dead &= ~(1 << rr.Id);
+            foreach (Gpr g in Roles.ImplicitUses(i)) dead &= ~(1 << (int)g);
+        }
+
+        // A step of one on a register: which, and whether down.
+        static (MReg Reg, bool Down)? Step(MInstr i)
+        {
+            if (i.Width != 4 || i.Lock || i.Operands.Count == 0 || i.Operands[0] is not MReg { IsPhys: true } r || r.Id >= 8) return null;
+            if (i.Op == MOp.Dec && i.Operands.Count == 1) return (r, true);
+            if (i.Op == MOp.Inc && i.Operands.Count == 1) return (r, false);
+            if (i.Op is MOp.Sub or MOp.Add && i.Operands.Count == 2 && i.Operands[1] is MImm { IsPlain: true } one && one.Value is 1 or -1)
+                return (r, (i.Op == MOp.Sub) == (one.Value == 1));
+            return null;
+        }
+    }
+
+    // ---- one block's only way in, the end of another ----------------------------
+
+    /// <summary>
+    /// A block ending `jmp C` where nothing else reaches C -- no other jump,
+    /// no fall-through, no table, its address not taken, no landing pad: C's
+    /// instructions are the block's, in the jump's place (and a jump to what
+    /// C fell into, where that is not now the block's own next), and C
+    /// goes. And a block nothing reaches but its own fall-through from the
+    /// one before is that one's tail. The layout
+    /// leaves such ones: a loop's way out jumping to the function's last
+    /// block, `mov ecx, esi ; jmp X` and X `mov eax, ecx ; ... ret`, two
+    /// moves and a jump where, made one block, ForwardCopies leaves one move.
+    /// </summary>
+    private static void MergeSoleJumps(MFunction m)
+    {
+        for (int round = 0; round < 8; round++)
+        {
+            int n = m.Blocks.Count;
+            Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
+            for (int b = 0; b < n; b++) index[m.Blocks[b]] = b;
+            int[] ways = new int[n];
+            bool[] pinned = new bool[n];
+            pinned[0] = true;
+            List<MBlock> next = new();
+            for (int b = 0; b < n; b++)
+            {
+                MBlock block = m.Blocks[b];
+                if (block.Source is { IsLandingPad: true }) pinned[b] = true;
+                foreach (MInstr i in block.Instrs)
+                    foreach (MOperand o in i.Operands)
+                    {
+                        if (o is MImm { Label: { } taken } && index.TryGetValue(taken, out int t)) pinned[t] = true;
+                        else if (o is MMem { Label: { } table } && index.TryGetValue(table, out int u)) pinned[u] = true;
+                    }
+                foreach (MInstr i in block.Instrs)
+                    if (i.Op == MOp.JmpTable && i.Table is { } targets)
+                        foreach (MBlock to in targets) if (index.TryGetValue(to, out int v)) pinned[v] = true;
+                m.SuccessorsInto(b, next);
+                foreach (MBlock to in next) if (index.TryGetValue(to, out int w)) ways[w]++;
+            }
+            HashSet<MBlock> emptied = new(ReferenceEqualityComparer.Instance);
+            // A FALL-THROUGH ONLY: the next block, which no jump names and
+            // nothing else reaches, is this one's tail -- where a value is
+            // handed on (a variable a loop writes, copied at its way in)
+            // after the block that made it.
+            for (int b = 0; b + 1 < n; b++)
+            {
+                MBlock block = m.Blocks[b], after = m.Blocks[b + 1];
+                if (emptied.Contains(block) || emptied.Contains(after) || block.EndsUnconditionally || pinned[b + 1] || ways[b + 1] != 1
+                    || after.Instrs.Count == 0 || block.Instrs.Any(i => i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to } && ReferenceEquals(to, after))) continue;
+                block.Instrs.AddRange(after.Instrs);
+                after.Instrs.Clear();
+                emptied.Add(after);
+                ways[b + 1] = 0;
+                pinned[b + 1] = true;
+            }
+            for (int b = 0; b < n; b++)
+            {
+                if (emptied.Contains(m.Blocks[b])) continue;
+                List<MInstr> instrs = m.Blocks[b].Instrs;
+                if (instrs.Count == 0 || instrs[^1] is not { Op: MOp.Jmp } jump || jump.Operands.Count == 0
+                    || jump.Operands[0] is not MLabel { Target: var target } || !index.TryGetValue(target, out int c)
+                    || c == b || pinned[c] || ways[c] != 1 || target.Instrs.Count == 0) continue;
+                // C falls into the block after it: that way kept, by a jump
+                // there -- none where C is this block's own next (the jump
+                // to it was the encoder's to drop), and C's next is then
+                // this block's. A C that falls off the end is no C to take.
+                MBlock? onward = null;
+                if (!target.EndsUnconditionally)
+                {
+                    if (c + 1 >= n || emptied.Contains(m.Blocks[c + 1])) continue;
+                    if (c != b + 1) onward = m.Blocks[c + 1];
+                }
+                // Not one the block's own instructions jump to on the way (a
+                // conditional jump to C before the jmp counts a way of its own).
+                if (instrs.Take(instrs.Count - 1).Any(i => i.Operands.Count > 0 && i.Operands[0] is MLabel { Target: var to } && ReferenceEquals(to, target))) continue;
+                instrs.RemoveAt(instrs.Count - 1);
+                instrs.AddRange(target.Instrs);
+                if (onward is not null) instrs.Add(new MInstr(MOp.Jmp, new MLabel(onward)) { Line = jump.Line });
+                target.Instrs.Clear();
+                emptied.Add(target);
+                // C is empty now and reached by nothing: Unreachable takes it.
+                ways[c] = 0;
+                pinned[c] = true;
+            }
+            if (emptied.Count == 0) return;
+            // The blocks emptied here out before the next round counts (an
+            // empty block of the layout's own falls through, and stays).
+            m.Blocks.RemoveAll(emptied.Contains);
+        }
+    }
+
+    // ---- a value copied twice, copied once --------------------------------------
+
+    /// <summary>
+    /// `mov r1, X ; ... ; mov r2, r1` with r1 read nowhere between and dead
+    /// after the second, and X -- a register or a number -- written nowhere
+    /// between: `mov r2, X`, the first gone. A number the arguments pass
+    /// wrote into a parameter (`mov ecx, 100 ; ... ; mov esi, ecx`), a value
+    /// handed through a register a join no longer stands between
+    /// (MergeSoleJumps: `mov ecx, esi ; mov eax, ecx`).
+    /// </summary>
+    private static void ForwardCopies(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
+    {
+        int count = instrs.Count;
+        if (count < 2) return;
+        // What is live after each instruction.
+        int[] after = new int[count];
+        int live = liveOut & 0xFF;
+        for (int k = count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            live |= jumped(i);
+            after[k] = live;
+            if (!Understood(i)) { live = 0xFF; continue; }
+            Masks(i, out long reads, out long writes);
+            live = (live & ~(int)writes | (int)reads) & 0xFF;
+        }
+        bool[] gone = new bool[count];
+        for (int j = 1; j < count; j++)
+        {
+            MInstr second = instrs[j];
+            if (!IsMov(second) || second.Operands[0] is not MReg { IsPhys: true } r2 || second.Operands[1] is not MReg { IsPhys: true } r1
+                || r1.Id >= 8 || r2.Id >= 8 || r1.Id == r2.Id || (after[j] & (1 << r1.Id)) != 0) continue;
+            int k = j - 1;
+            for (; k >= 0; k--)
+            {
+                MInstr i = instrs[k];
+                if (gone[k]) continue;
+                if (!Understood(i) || i.Op is MOp.Jcc or MOp.Jmp or MOp.JmpTable) { k = -1; break; }
+                Masks(i, out long reads, out long writes);
+                if ((writes & (1L << r1.Id)) != 0) break;
+                if ((reads & (1L << r1.Id)) != 0) { k = -1; break; }
+            }
+            if (k < 0) continue;
+            MInstr first = instrs[k];
+            if (!IsMov(first) || first.Operands[0] is not MReg f0 || f0.Id != r1.Id) continue;
+            MOperand x = first.Operands[1];
+            if (x is MReg { IsPhys: true } xr)
+            {
+                if (xr.Id >= 8) continue;
+                bool written = false;
+                for (int b = k + 1; b < j && !written; b++)
+                {
+                    if (gone[b]) continue;
+                    Masks(instrs[b], out _, out long w);
+                    written = (w & (1L << xr.Id)) != 0;
+                }
+                if (written) continue;
+                if (xr.Id == r2.Id) { gone[j] = true; gone[k] = true; continue; }
+            }
+            else if (x is not MImm) continue;
+            instrs[j] = new MInstr(MOp.Mov, r2, x) { Width = 4, Line = second.Line };
+            gone[k] = true;
+        }
+        for (int k = count - 1; k >= 0; k--) if (gone[k]) instrs.RemoveAt(k);
     }
 
     // ---- add or subtract one: inc, dec ------------------------------------------------

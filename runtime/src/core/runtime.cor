@@ -4430,10 +4430,12 @@ public static partial class Runtime
     /// -- the leaf stood for by the call it was, as an inlined function is --
     /// and `bp` the frame. Code not this compiler's that begins otherwise is
     /// read the same way, a run of pushes being what its first bytes say.
-    /// `pc` made so is the return address less one -- inside the call, as a
-    /// walk reads every return address (a line's, a handler's range) -- and
-    /// the registers the leaf saved are its caller's again only once the
-    /// fault's handler puts them back (LeafSaved).
+    /// `pc` made so is that return address exactly -- what the collector
+    /// finds the caller's call by (Gc.MapSite) when the handler makes it a
+    /// return address again; one less is inside the call, which a line is
+    /// read at (NullFault's own row). The registers the leaf saved are its
+    /// caller's again only once the fault's handler puts them back
+    /// (LeafSaved).
     ///
     /// x86-64: a leaf that gives RBP a value begins `push rbp; mov rbp, rsp`
     /// written 48 8B EC, then `sub rsp, n`: its frame is at `sp` plus the
@@ -4475,7 +4477,7 @@ public static partial class Runtime
         if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x89 && Sys.Read8(at + 2) == 0xE5) {
             if (pc >= at + 3) { return bp; }
             if (pc > at) { return sp; }
-            pc = Sys.ReadAddress(sp) - 1;
+            pc = Sys.ReadAddress(sp);
             return bp;
         }
         // A leaf: what of its pushes and its frame's reserving has run.
@@ -4494,7 +4496,7 @@ public static partial class Runtime
         }
         nuint ret = sp + made;
         if (linked && made >= 4) { return ret - 4; }
-        pc = Sys.ReadAddress(ret) - 1;
+        pc = Sys.ReadAddress(ret);
         return bp;
 #endif
     }
@@ -4505,7 +4507,10 @@ public static partial class Runtime
     /// leaf for the call it was (FrameAt) puts each back into the context it
     /// resumes: the caller's value, which the leaf's own work overwrote --
     /// read as the caller's by whatever walks the stack from there (the
-    /// collector's map of the caller's call). i386 only; 0 elsewhere.
+    /// collector's map of the caller's call). A leaf that saved EBP keeps
+    /// its own frame link and its pc, so stands for nothing: its frame, the
+    /// words it pushed among them, is read whole by the collector, as any
+    /// frame no map is had for. i386 only; 0 elsewhere.
     public static nuint LeafSaved(nuint pc, nuint sp, int reg) {
 #if TARGET_64BIT
         return 0;

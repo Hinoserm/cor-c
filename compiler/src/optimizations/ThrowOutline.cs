@@ -21,10 +21,19 @@ using Block = Corsac.Lang.Ir.Block;
 /// and the function made before; the block that led into them becomes a call
 /// of it. That function is a call wherever the function now goes, its own
 /// frame what the trace starts from: the return address into the function
-/// (or, the function inlined, into the caller it went into) with the line
-/// of the throw, which the call carries -- so the trace names the throw's
-/// line by that return address, as .NET names a throw helper's caller, and
-/// the throw's own row (Capture's site) is not said again: null.
+/// with the line of the throw, which the call carries -- so the trace names
+/// the throw's line by that return address, as .NET names a throw helper's
+/// caller, and the throw's own row (Capture's site) is not said again:
+/// null. Once the function is put in a caller, the row is the caller's, at
+/// the line of its call of the function -- the function's own row gone, as
+/// .NET's inlined methods are from its traces.
+///
+/// The new function is the unit's own (not exported, not one of a copy's
+/// coalesced definitions): another unit's copy of the function may have
+/// moved its throws otherwise, and numbered them otherwise, so no name of
+/// one may stand for another's. A body that calls it is then no body the
+/// link brings into another unit (IrUnitCodec: it names a local) -- as it
+/// was none before, reading its own frame.
 ///
 /// Only in a function small enough, without them, to be put in its callers
 /// (OutlineBody), that nothing else keeps out of them -- a handler of its
@@ -42,6 +51,9 @@ public sealed class ThrowOutline : IModulePass
 
     /// <summary>What marks a function's throw as its own frame's (Inline.NotInlineable).</summary>
     private static bool Blocks(Instr i) => i.Op is Opcode.FramePointer or Opcode.Unwind;
+
+    /// <summary>The throw's own: the frame read for its trace.</summary>
+    private static bool Throw(Instr i) => i.Op == Opcode.FramePointer;
 
     public void Run(Module module)
     {
@@ -96,7 +108,8 @@ public sealed class ThrowOutline : IModulePass
                     if (!warm.Contains(t) && inside.Add(t)) region.Add(t);
             }
             bool alone = region.Skip(1).All(b => into[b].All(inside.Contains)) && !region.Any(taken.Contains)
-                && region.Any(b => b.Instrs.Any(Blocks))
+                // ONE THROW: its line is the call's, and two would share one.
+                && region.Sum(b => b.Instrs.Count(Throw)) == 1
                 && !region.Any(b => b.Instrs.Any(i => module.KeepCalls.Contains(i) || i.Op is Opcode.StackPointer or Opcode.LabelAddr
                     || i.Operands.Any(o => o is SlotOperand)));
             if (!alone) continue;
@@ -126,7 +139,10 @@ public sealed class ThrowOutline : IModulePass
                 foreach (Instr i in b.Instrs)
                     foreach (Operand o in i.Operands)
                         if (o is RegOperand r && outside.Contains(r.Reg) && seen.Add(r.Reg)) reads.Add(r.Reg);
-            int line = region.SelectMany(b => b.Instrs).Select(i => i.Line).FirstOrDefault(l => l > 0);
+            // The throw's line: where its trace is read (Lowering.EmitThrow
+            // reads the frame there); else the region's first.
+            int line = region.SelectMany(b => b.Instrs).Where(Throw).Select(i => i.Line).FirstOrDefault(l => l > 0);
+            if (line <= 0) line = region.SelectMany(b => b.Instrs).Select(i => i.Line).FirstOrDefault(l => l > 0);
 
             // The throw's blocks as a body of their own (Inline.Expand puts
             // them in the new function, each register and block its own).
@@ -142,7 +158,7 @@ public sealed class ThrowOutline : IModulePass
             }
             Function stub = new(f.Name + "$throw$" + ordinal++, IrType.Void)
             {
-                Exported = f.Exported, Coalescible = f.Coalescible, GenericCode = f.GenericCode, FromLibrary = f.FromLibrary,
+                Exported = false, GenericCode = f.GenericCode, FromLibrary = f.FromLibrary,
                 SystemCode = f.SystemCode, SourceFile = f.SourceFile, Line = line > 0 ? line : f.Line, Display = f.Display,
                 SourcePath = f.SourcePath, Unjudged = f.Unjudged, NoInlining = true,
             };
@@ -157,6 +173,9 @@ public sealed class ThrowOutline : IModulePass
             Block entry = stub.NewBlock("entry");
             Builder builder = new(stub, entry);
             builder.Call(body.Name, IrType.Void, passed);
+            // (Its line every instruction's that Expand puts in its place: a
+            // fault in the throw's own work is said at the throw.)
+            entry.Instrs[0].Line = line;
             entry.Instrs.Add(new Instr { Op = Opcode.Unreachable, Line = line });
             Inline.Expand(stub, entry, 0, entry.Instrs[0], body);
             made.Add(stub);

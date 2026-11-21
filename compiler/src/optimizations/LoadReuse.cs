@@ -6,12 +6,15 @@ using Block = Corsac.Lang.Ir.Block;
 
 /// <summary>Reuse successful ordinary reads on a single-predecessor dominated
 /// path. Unlike SSA GVN, both the address and captured result must still name
-/// the same values at the consumer. Writes, calls and synchronization forget
-/// all memory; joins and loop headers do not inherit memory facts.</summary>
+/// the same values at the consumer. Calls and synchronization forget all
+/// memory, and so does a write, but where the write and a read are told
+/// apart (Managed below): a static's own cell and an object's field or an
+/// array's element are never the same word. Joins and loop headers do not
+/// inherit memory facts.</summary>
 public sealed class LoadReuse : IPass
 {
     public string Name => "load-reuse";
-    private readonly record struct Entry(Instr Load, Block Block, int Index);
+    private readonly record struct Entry(Instr Load, Block Block, int Index, bool Managed);
     private readonly record struct Key(object Base, long Offset, int Size, bool Signed, IrType Type);
 
     /// <summary>The Size of an array length's key: no load has it.</summary>
@@ -60,10 +63,33 @@ public sealed class LoadReuse : IPass
         // ONE SCOPE A THREAD, kept: its tables are empty again when a walk
         // ends (every change is undone), and keep their storage for the next
         // function -- made per run, they and their growth were the collector's.
+        // AN OBJECT'S MEMORY, AS AN ADDRESS SAYS IT: a field's (the load or
+        // store names one) or an array's element (its base, through adds and
+        // copies, a register this function asks the length of -- an array
+        // checked before it is indexed). Neither is ever a static's own cell
+        // (s_, ts_: data items of their own, which no object lies over), so
+        // a write to the one leaves a read of the other where it was. A
+        // pointer the program made of a static (Sys.AddressOf) is neither.
+        HashSet<VReg> arrays = new();
+        foreach (Block b in function.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Op == Opcode.ArrayLength && i.Operands.Count == 1 && i.Operands[0] is RegOperand { Reg: var array }) arrays.Add(array);
+        bool ArrayBased(VReg r, int depth)
+        {
+            if (arrays.Contains(r)) return true;
+            if (depth == 0 || !defs.IsSingle(r) || defs.Site(r) is not { } site) return false;
+            Instr d = site.Block.Instrs[site.Index];
+            if (d.Op is not (Opcode.Add or Opcode.Copy)) return false;
+            foreach (Operand o in d.Operands)
+                if (o is RegOperand { Reg: var from } && ArrayBased(from, depth - 1)) return true;
+            return false;
+        }
         Scope scope = _scope ??= new Scope();
         scope.Stable = Stable;
+        scope.Managed = i => i.Field is not null || i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var r } && ArrayBased(r, 6);
         cfg.WalkSolePredecessors(scope, dominating: true);
         scope.Stable = null!;
+        scope.Managed = null!;
     }
 
     [ThreadStatic] private static Scope? _scope;
@@ -71,6 +97,7 @@ public sealed class LoadReuse : IPass
     private sealed class Scope : Cfg.IScopedWalk
     {
         public Func<VReg, Block, int, Block, int, bool> Stable = null!;
+        public Func<Instr, bool> Managed = null!;
         private readonly Dictionary<Key, Entry> _memory = new();
         private readonly List<(Key Key, Entry Was, bool Had)> _undo = new();
         private readonly List<Key> _all = new();
@@ -93,6 +120,44 @@ public sealed class LoadReuse : IPass
             bool had = _memory.TryGetValue(key, out Entry was);
             _undo.Add((key, was, had));
             _memory[key] = entry;
+        }
+
+        /// <summary>A static's own cell: its symbol's name.</summary>
+        private static bool StaticCell(object identity)
+            => identity is string name && (name.StartsWith("s_", StringComparison.Ordinal) || name.StartsWith("ts_", StringComparison.Ordinal));
+
+        /// <summary>
+        /// A write: what it may have changed forgotten. Through an object's
+        /// field or an array's element, every read but a static cell's; to a
+        /// static's cell, that symbol's reads and every read through a
+        /// register but an object's field or element (a frame slot, another
+        /// symbol stay); anything else, all.
+        /// </summary>
+        private void Written(Instr store)
+        {
+            if (store.Operands.Count > 0 && store.Operands[0] is RegOperand && Managed(store))
+            {
+                Forget(pair => !StaticCell(pair.Key.Base));
+                return;
+            }
+            if (store.Operands.Count > 0 && store.Operands[0] is SymOperand { Name: var cell } && StaticCell(cell))
+            {
+                Forget(pair => pair.Key.Base is string name ? name == cell : pair.Key.Base is VReg && !pair.Value.Managed);
+                return;
+            }
+            ForgetAll();
+        }
+
+        private void Forget(Func<KeyValuePair<Key, Entry>, bool> gone)
+        {
+            if (_memory.Count == 0) return;
+            foreach (var pair in _memory) if (pair.Key.Size != Length && gone(pair)) _all.Add(pair.Key);
+            foreach (Key key in _all)
+            {
+                _undo.Add((key, _memory[key], true));
+                _memory.Remove(key);
+            }
+            _all.Clear();
         }
 
         private void ForgetAll()
@@ -132,7 +197,7 @@ public sealed class LoadReuse : IPass
                         block.Instrs[index] = IrInfo.CopyOf(i, RegOperand.Of(known.Load.Dest!));
                         continue;
                     }
-                    Set(lengthKey, new(i, block, index));
+                    Set(lengthKey, new(i, block, index, true));
                     continue;
                 }
                 if (i.Op == Opcode.InitArrayLength && i.Operands.Count > 0 && i.Operands[0] is RegOperand { Reg: var made })
@@ -153,8 +218,10 @@ public sealed class LoadReuse : IPass
                         continue;
                     }
                     if (_memory.Count >= 64) ForgetAll();
-                    Set(key, new(i, block, index));
+                    Set(key, new(i, block, index, Managed(i)));
                 }
+                else if (i.Op == Opcode.Store && !i.Device)
+                    Written(i);
                 else if (!IrInfo.IsPure(i) && i.Op is not (Opcode.Branch or Opcode.Jump))
                     ForgetAll();
             }

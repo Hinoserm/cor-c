@@ -292,10 +292,16 @@ public static class ArgumentSummary
         Version = version, NoInlining = f.NoInlining, Unjudged = f.Unjudged,
     };
 
-    /// <summary>The passes that fold what a number in a parameter's place lets them: constants and copies carried, branches decided, the dead gone.</summary>
+    /// <summary>
+    /// The passes that fold what a number in a parameter's place lets them:
+    /// constants and copies carried, branches decided, the dead gone. Six
+    /// rounds: each carries a number one step down a chain of what it
+    /// makes, and `at & 63` shifted into an element's offset is four steps
+    /// from the parameter (three left the shift a shift of two numbers).
+    /// </summary>
     public static Pipeline Folding(int workers)
     {
-        Pipeline folding = new() { Rounds = 3, Workers = workers };
+        Pipeline folding = new() { Rounds = 6, Workers = workers };
         folding.Passes.Add(new ConstantFold { AcrossFunction = true }); folding.Passes.Add(new ConstantAndCopyPropagation());
         folding.Passes.Add(new DeadCodeElimination()); folding.Passes.Add(new IdentitySelect()); folding.Passes.Add(new BranchSimplify());
         return folding;

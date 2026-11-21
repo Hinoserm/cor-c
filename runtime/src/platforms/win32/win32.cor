@@ -212,11 +212,12 @@ public static class Win32
     /// THE WAY INTO Runtime.NullFault from a fault, made once: Fault cannot
     /// build the call on the faulting stack, where Windows has just put the
     /// context it is handing over, so it sends the thread here with the
-    /// faulting instruction in EAX and its frame in EDX, and this builds it:
-    /// NullFault(frame, pc) -- the frame to EAX and the instruction to EDX,
-    /// where it takes its two words -- its return address the faulting
-    /// instruction, as if that instruction had called it; the stack aligned
-    /// as a call leaves it.
+    /// return address to give NullFault in EAX -- the faulting instruction,
+    /// as if it had called it, or for a leaf that stands for its call the
+    /// caller's return address (Runtime.FrameAt) -- the frame in EDX and the
+    /// instruction NullFault names in ECX, and this builds it: NullFault(frame,
+    /// pc), the frame to EAX and the instruction to EDX, where it takes its
+    /// two words; the stack aligned as a call leaves it.
     static nuint NullStub()
     {
         nuint stub = VirtualAlloc(0, 32, MemCommit | MemReserve, PageExecuteReadWrite);
@@ -225,7 +226,8 @@ public static class Win32
         nuint at = 0;
         Sys.Write8(stub + at++, 0x83); Sys.Write8(stub + at++, 0xE4); Sys.Write8(stub + at++, 0xF0); // and esp, -16
         Sys.Write8(stub + at++, 0x50);                                                                  // push eax   the return address: aligned as a call leaves it
-        Sys.Write8(stub + at++, 0x92);                                                                  // xchg eax, edx   frame, pc
+        Sys.Write8(stub + at++, 0x89); Sys.Write8(stub + at++, 0xD0);                                 // mov eax, edx   the frame
+        Sys.Write8(stub + at++, 0x89); Sys.Write8(stub + at++, 0xCA);                                 // mov edx, ecx   the instruction
         Sys.Write8(stub + at++, 0xB9);                                                                  // mov ecx, NullFault
         for (int i = 0; i < 4; i++) Sys.Write8(stub + at++, (byte)(entry >> (8 * i)));
         Sys.Write8(stub + at++, 0xFF); Sys.Write8(stub + at++, 0xE1);                                 // jmp ecx
@@ -260,11 +262,12 @@ public static class Win32
         if (address == NoAddress) address = FaultAddress(ctx, pc);
         if (address == NoAddress || !Runtime.NullFaultCatchable(address)) return ContinueSearch;
 
-        // CONTEXT's registers are DWORDs: Eax, Edx (the frame), Eip. The
-        // faulting function's frame link (Runtime.FrameAt), made EBP, so
-        // NullFault's prologue links to it as a call from there would; a leaf
-        // with no link of its own stands as the call it was in its caller
-        // (`pc` its return address).
+        // CONTEXT's registers are DWORDs: Eax (the return address), Edx (the
+        // frame), Ecx (the instruction), Eip. The faulting function's frame
+        // link (Runtime.FrameAt), made EBP, so NullFault's prologue links to
+        // it as a call from there would; a leaf with no link of its own
+        // stands as the call it was in its caller (`pc` its return address,
+        // the instruction named one less, inside the call).
         nuint stoppedPc = pc;
         nuint frame = Runtime.FrameAt(ref pc, Sys.Read32(ctx + 0xC4), Sys.Read32(ctx + 0xB4));
         // A leaf stood for its call has its caller's EBX, ESI and EDI where
@@ -282,6 +285,7 @@ public static class Win32
         Sys.Write32(ctx + 0xB4, Sys.Low32(frame));
         Sys.Write32(ctx + 0xB0, Sys.Low32(pc));
         Sys.Write32(ctx + 0xA8, Sys.Low32(frame));
+        Sys.Write32(ctx + 0xAC, Sys.Low32(pc != stoppedPc ? pc - 1 : pc));
         Sys.Write32(ctx + 0xB8, Sys.Low32(_nullStub));
         return ContinueExecution;
     }

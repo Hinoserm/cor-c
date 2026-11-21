@@ -877,7 +877,9 @@ public static class Platform
                 // The faulting function's frame link (Runtime.FrameAt), made
                 // EBP, so NullFault's prologue links to it as a call from
                 // there would; a leaf with no link of its own stands as the
-                // call it was in its caller (`faultPc` its return address).
+                // call it was in its caller (`faultPc` its return address,
+                // pushed as NullFault's, the caller's call found by it; the
+                // instruction NullFault names one less, inside the call).
                 nuint stoppedPc = Sys.ReadAddress(uc + 76);
                 nuint faultPc = stoppedPc;
                 nuint faultFrame = Runtime.FrameAt(ref faultPc, Sys.ReadAddress(uc + 48), Sys.ReadAddress(uc + 44));
@@ -901,7 +903,7 @@ public static class Platform
                 // this language does; the return address is what the stack has.
                 Sys.WriteAddress(sp, faultPc);
                 Sys.WriteAddress(uc + 64, faultFrame);
-                Sys.WriteAddress(uc + 56, faultPc);
+                Sys.WriteAddress(uc + 56, faultPc != stoppedPc ? faultPc - 1 : faultPc);
                 Sys.WriteAddress(uc + 48, sp);
                 Sys.WriteAddress(uc + 76, entry);
 #endif
