@@ -103,6 +103,19 @@ public sealed class MFunction
     public bool Frameless { get; set; }
 
     /// <summary>
+    /// A FRAMELESS FUNCTION THAT CALLS, BUT ONLY WHAT NEVER RETURNS (a bounds
+    /// check's IndexOutOfRange, a throw moved out of it -- each call followed
+    /// by INT3), saving no register and keeping no slot (FramePointerFree.Run
+    /// decides): its frame is made on the way to such a call alone, `push
+    /// ebp ; mov ebp, esp` before it (Encoder), and is then a frame as any
+    /// prologue's, the return address just above the saved EBP -- what the
+    /// callee's frame links to, what a trace and the collector walk, the
+    /// collector's map of the call an empty one. The way that returns pays
+    /// nothing for a frame it never needs.
+    /// </summary>
+    public bool ColdFrames { get; set; }
+
+    /// <summary>
     /// Bytes of Packed128 spill slots below the saved registers, at ESP after
     /// the prologue aligns it down to sixteen (AlignedSlots): read and
     /// written by MOVAPS. Zero in every other function.

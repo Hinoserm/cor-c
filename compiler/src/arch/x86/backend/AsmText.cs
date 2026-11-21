@@ -150,6 +150,11 @@ internal static class AsmText
             case MOp.CallKeepInd:
             case MOp.CallKeepEax:
             case MOp.CallKeepEaxInd:
+                if (m.ColdFrames && i.Op is MOp.Call or MOp.CallInd)
+                {
+                    yield return "push ebp";
+                    yield return "mov ebp, esp ; the frame, on the way to a call that never returns";
+                }
                 yield return $"call {Op(i.Operands[0], 4, true)}";
                 yield break;
             case MOp.Cdq:

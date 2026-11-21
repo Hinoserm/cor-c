@@ -688,6 +688,9 @@ internal sealed class Encoder
                 break;
             case MOp.Call:
             {
+                // The frame a function with none makes on its way to a call
+                // that never returns (MFunction.ColdFrames).
+                if (_m.ColdFrames) B(0x55, 0x89, 0xE5);
                 MImm target = (MImm)i.Operands[0];
                 B(0xE8);
                 // The displacement is from the end of the instruction, four bytes past the field.
@@ -696,6 +699,7 @@ internal sealed class Encoder
                 break;
             }
             case MOp.CallInd:
+                if (_m.ColdFrames) B(0x55, 0x89, 0xE5);
                 B(0xFF);
                 ModRM(2, i.Operands[0]);
                 break;

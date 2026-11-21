@@ -1,0 +1,30 @@
+// test: a function whose only call never returns has a frame only on the way to it; its exception's trace names it and its caller
+// expect-exit: 0
+// expect-output:
+// 6048
+// caught with Get and Main
+//
+// Get indexes an array: its one call is the bounds check's, which never
+// returns, and it saves no register and keeps no slot -- so it has no
+// frame on the way that returns (MFunction.ColdFrames), and makes one,
+// `push ebp ; mov ebp, esp`, on the way to the check's call alone. The
+// exception's trace walks through that frame: Get, then Main, as .NET 10
+// says them.
+
+using System;
+using System.Runtime.CompilerServices;
+static class Program
+{
+    static int[] _table = new int[64];
+    [MethodImpl(MethodImplOptions.NoInlining)] static int Get(int[] a, int i) => a[i];
+    static int Main(string[] args)
+    {
+        for (int i = 0; i < 64; i++) _table[i] = i * 3;
+        int s = 0;
+        for (int i = 0; i < 64; i++) s += Get(_table, i);
+        Console.WriteLine(s);
+        try { Console.WriteLine(Get(_table, 64 + args.Length)); }
+        catch (IndexOutOfRangeException e) { Console.WriteLine("caught " + (e.StackTrace!.Contains("Program.Get") ? "with Get" : "without Get") + " " + (e.StackTrace!.Contains("Program.Main") ? "and Main" : "no Main")); }
+        return 0;
+    }
+}

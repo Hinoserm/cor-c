@@ -21,6 +21,7 @@ internal static class FramePointerFree
 {
     public static void Run(MFunction m)
     {
+        if (!m.Frameless && OnlyColdCalls(m)) { m.Frameless = true; m.ColdFrames = true; }
         if (!m.Frameless) return;
         int frame = m.Frame.Size, saved = 4 * m.SavedRegs.Count;
         int Address(int disp) => disp switch
@@ -36,7 +37,7 @@ internal static class FramePointerFree
         {
             foreach (MInstr i in b.Instrs)
             {
-                if (i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                if ((i.Op is MOp.Call or MOp.CallInd && !m.ColdFrames) || i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
                     or MOp.Push or MOp.Pop or MOp.Pushfd or MOp.Popfd)
                     throw new InvalidOperationException($"{m.Source.Name}: {i.Op} in a function without a frame");
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
@@ -69,5 +70,42 @@ internal static class FramePointerFree
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Whether a function with a frame may have none but on the way to its
+    /// calls (MFunction.ColdFrames): every call one that never returns (INT3
+    /// straight after it), nothing saved, no slot, no landing pad, no asm,
+    /// nothing that names EBP but as the base of an argument above it, and
+    /// nothing that pushes, pops or writes ESP.
+    /// </summary>
+    private static bool OnlyColdCalls(MFunction m)
+    {
+        if (m.SavedRegs.Count > 0 || m.Frame.Size != 0 || m.AlignedArea != 0 || m.FramePointerFree
+            || m.Source.KeepsCallerRegisters || m.Source.Blocks.Any(b => b.IsLandingPad)) return false;
+        bool calls = false;
+        List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
+        foreach (MBlock b in m.Blocks)
+        {
+            for (int k = 0; k < b.Instrs.Count; k++)
+            {
+                MInstr i = b.Instrs[k];
+                if (i.Op is MOp.Call or MOp.CallInd)
+                {
+                    if (k + 1 >= b.Instrs.Count || b.Instrs[k + 1].Op != MOp.Int3) return false;
+                    calls = true;
+                }
+                if (i.Op is MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd or MOp.Push or MOp.Pop
+                    or MOp.Pushfd or MOp.Popfd or MOp.CallerReg or MOp.InlineAsm or MOp.SaveRegs) return false;
+                foreach (MOperand o in i.Operands)
+                {
+                    if (o is MReg { Id: (int)Gpr.Ebp or MReg.EbpDataId }) return false;
+                    if (o is MMem mem && (mem.Index?.Id is (int)Gpr.Ebp or MReg.EbpDataId || mem.Base?.Id == (int)Gpr.Ebp && mem.Disp < 8)) return false;
+                }
+                foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
+                    if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;
+            }
+        }
+        return calls;
     }
 }

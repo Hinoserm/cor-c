@@ -78,6 +78,15 @@ handler putting back the EBX, ESI and EDI it saved, Runtime.LeafSaved). A
 fault there is caught by its caller's handlers exactly as from a call. A
 leaf given 16-byte aligned XMM slots keeps a frame (AlignedSlots).
 
+**A function whose only calls never return** -- a bounds check's
+IndexOutOfRange, a throw moved out of it -- that saves no register and
+keeps no slot is frameless too, and makes its frame on the way to such a
+call alone: `push ebp ; mov ebp, esp` before it (MFunction.ColdFrames).
+Nothing being pushed below its return address, that is a frame as any
+prologue's: the callee links to it, a trace names the function, and the
+collector's map of the call is empty. The way that returns -- an indexer's
+check and load -- pays nothing for it.
+
 **Calling convention: the first three words in registers, the rest
 pushed,** the same for every call of the language's own ("Calls and
 dispatch" has the whole of it).
