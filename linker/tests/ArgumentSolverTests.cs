@@ -107,6 +107,23 @@ public static class ArgumentSolverTests
         // A setter nothing calls leaves its cell as it began.
         facts = ArgumentSolver.Solve(new[] { Unit(false, installCalled: false) }, virtuals, _ => false, closed: true);
         Check(Loses(facts, "BigA", 4), "a cell no call of its setter writes held a family");
+        // A function whose body is another image's: no parameter dropped,
+        // and no way in or version made beside it, though every call passes
+        // it the one number it branches on.
+        ArgumentHints program = new();
+        ArgumentFunction caller = new(0) { Fixed = true };
+        for (int c = 0; c < 4; c++) caller.Calls.Add(new ArgumentCall("Lib", 0, 1, new[] { ArgumentValue.Of(9), ArgumentValue.Of(c) }));
+        program.Functions["caller"] = caller;
+        ArgumentFunction lib = new(2) { Size = 20 };
+        lib.Reads[0] = 1; lib.Reads[1] = 1; lib.Folds[0] = 10; lib.Shapes[0] = ArgumentShape.Compared;
+        program.Functions["Lib"] = lib;
+        ArgumentFacts? ours = ArgumentSolver.Solve(new[] { program }, new Dictionary<string, string[]>(StringComparer.Ordinal), _ => false, closed: false);
+        ArgumentFacts? theirs = ArgumentSolver.Solve(new[] { program }, new Dictionary<string, string[]>(StringComparer.Ordinal), _ => false, closed: false,
+            elsewhere: name => name == "Lib");
+        Check(Loses(ours, "Lib", 0), "the image's own function does not lose the parameter every call passes alike");
+        Check(theirs is null || !theirs.Dropped.ContainsKey("Lib") && !theirs.Entries.ContainsKey("Lib") && !theirs.Versions.ContainsKey("Lib") && !theirs.Splits.ContainsKey("Lib"),
+            "another image's function changed, or was given a way in or a version");
+
         // An image not closed judges no family at all.
         facts = ArgumentSolver.Solve(new[] { Unit(false) }, virtuals, _ => false, closed: false);
         Check(!Loses(facts, "BigA", 4), "a family of an image not closed lost a parameter");

@@ -1515,11 +1515,9 @@ public static class Driver
                 foreach (Function f in module.Functions)
                     if (module.GoesElsewhere(f)) notOurs.Add(f.Name);
                 if (Corsac.Lang.Lto.ArgumentSolver.Solve(new[] { said }, new Dictionary<string, string[]>(StringComparer.Ordinal),
-                        name => name == programEntry || module.Imports.Contains(name) || module.ObjectNames.Contains(name) || notOurs.Contains(name), closed: false,
-                        Switches.ReportPhases ? Console.Error.WriteLine : null) is { } argumentFacts)
+                        name => name == programEntry || module.Imports.Contains(name) || module.ObjectNames.Contains(name), closed: false,
+                        Switches.ReportPhases ? Console.Error.WriteLine : null, elsewhere: notOurs.Contains) is { } argumentFacts)
                 {
-                    foreach (string versioned in argumentFacts.Versions.Keys.Where(notOurs.Contains).ToList()) argumentFacts.Versions.Remove(versioned);
-                    foreach (string entered in argumentFacts.Entries.Keys.Where(notOurs.Contains).ToList()) argumentFacts.Entries.Remove(entered);
                     List<string> misfits = new();
                     Corsac.Lang.Opt.ArgumentSummary.MakeVersions(module, argumentFacts);
                     bool given = Corsac.Lang.Opt.ArgumentSummary.Apply(module, argumentFacts, misfits);

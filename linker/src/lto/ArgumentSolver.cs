@@ -159,11 +159,19 @@ public static class ArgumentSolver
     /// name that something outside the units' IR may call it; `virtuals`
     /// has every function each virtual slot's name can reach (VirtualTargets.
     /// Resolve) and is empty where the types are open; `closed` is whether
-    /// the image is whole (no shared object, nothing exported unseen).
+    /// the image is whole (no shared object, nothing exported unseen);
+    /// `elsewhere` says of a name that its body is another image's, which
+    /// the calls reach as it was compiled -- unchangeable, and nothing made
+    /// beside it either, a way in or a version that image does not export.
     /// </summary>
     public static ArgumentFacts? Solve(IReadOnlyList<ArgumentHints> units, IReadOnlyDictionary<string, string[]> virtuals,
-        Func<string, bool> unchangeable, bool closed, Action<string>? report = null)
+        Func<string, bool> unchangeable, bool closed, Action<string>? report = null, Func<string, bool>? elsewhere = null)
     {
+        if (elsewhere is not null)
+        {
+            Func<string, bool> outside = unchangeable;
+            unchangeable = name => outside(name) || elsewhere(name);
+        }
         // Each function once: the first unit's in link order. A generic
         // body compiled into several units is the same function in each,
         // with the same parameters; where two units disagree on how many,
@@ -549,7 +557,8 @@ public static class ArgumentSolver
         foreach (string name in functions.Keys)
         {
             ArgumentFunction f = functions[name];
-            if (f.Fixed || f.Copies || disagreed.Contains(name) || misfit.Contains(name) || facts.Splits.ContainsKey(name) || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
+            if (f.Fixed || f.Copies || disagreed.Contains(name) || misfit.Contains(name) || facts.Splits.ContainsKey(name) || elsewhere?.Invoke(name) == true
+                || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
             // Its parameters as they are once Dropped has taken its own, and
             // which of those come in registers.
             HashSet<int> gone = new(facts.Dropped.GetValueOrDefault(name)?.Select(drop => drop.Parameter) ?? Enumerable.Empty<int>());
@@ -623,7 +632,8 @@ public static class ArgumentSolver
         foreach (string name in functions.Keys)
         {
             ArgumentFunction f = functions[name];
-            if (f.Fixed || f.Copies || f.Recursive || disagreed.Contains(name) || misfit.Contains(name) || facts.Splits.ContainsKey(name) || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
+            if (f.Fixed || f.Copies || f.Recursive || disagreed.Contains(name) || misfit.Contains(name) || facts.Splits.ContainsKey(name) || elsewhere?.Invoke(name) == true
+                || !direct.TryGetValue(name, out List<ArgumentCall>? sites)) continue;
             HashSet<int> gone = new(facts.Dropped.GetValueOrDefault(name)?.Select(drop => drop.Parameter) ?? Enumerable.Empty<int>());
             List<(int Place, long Value, long Weight, int Sites, int Cost)> wanted = new();
             int left = 0;
