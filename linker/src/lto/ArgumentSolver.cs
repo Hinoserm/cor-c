@@ -163,15 +163,21 @@ public static class ArgumentSolver
     /// the image is whole (no shared object, nothing exported unseen);
     /// `elsewhere` says of a name that its body is another image's, which
     /// the calls reach as it was compiled -- unchangeable, and nothing made
-    /// beside it either, a way in or a version that image does not export.
+    /// beside it either, a way in or a version that image does not export;
+    /// `outside` -- for an image not closed whose slots are its own but for
+    /// what it shows another image (a kernel to its modules) -- says of a
+    /// function that a slot call of that other image may reach it: its
+    /// family keeps every parameter where it is, and every other family is
+    /// judged as in a closed image (`virtuals` then this image's answers).
     /// </summary>
     public static ArgumentFacts? Solve(IReadOnlyList<ArgumentHints> units, IReadOnlyDictionary<string, string[]> virtuals,
-        Func<string, bool> unchangeable, bool closed, Action<string>? report = null, Func<string, bool>? elsewhere = null)
+        Func<string, bool> unchangeable, bool closed, Action<string>? report = null, Func<string, bool>? elsewhere = null,
+        Func<string, bool>? outside = null)
     {
         if (elsewhere is not null)
         {
-            Func<string, bool> outside = unchangeable;
-            unchangeable = name => outside(name) || elsewhere(name);
+            Func<string, bool> given = unchangeable;
+            unchangeable = name => given(name) || elsewhere(name);
         }
         // Each function once: the first unit's in link order. A generic
         // body compiled into several units is the same function in each,
@@ -318,7 +324,11 @@ public static class ArgumentSolver
         // function has parameters (ArgumentHints.Unnamed) -- nor a call
         // through a slot the link could not answer, of what it passes, the
         // same -- none such passes as many as a member has, or more.
-        bool slotsKnown = closed;
+        // (Or not closed, but every slot call another image may make said by
+        // `outside`: each function it may reach.)
+        bool slotsKnown = closed || outside is not null;
+        bool Outside(string name) => outside?.Invoke(name) == true;
+        int reachedOutside = 0;
         int unnamedMost = unnamed.Count == 0 ? -1 : unnamed.Max();
         bool UnnamedReach(string name) => functions[name].Kinds.Length <= unnamedMost;
         int heldByUnnamed = 0, unsetThroughSlots = 0;
@@ -333,7 +343,7 @@ public static class ArgumentSolver
         foreach ((string name, ArgumentFunction f) in functions)
         {
             bool bySlot = slotted.Contains(name) || slotsOf.ContainsKey(name);
-            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown && !UnnamedReach(name))) continue;
+            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown && !UnnamedReach(name) && !Outside(name))) continue;
             Cell[] of = cells[name];
             for (int k = 0; k < of.Length; k++) of[k].State = Many;
         }
@@ -457,6 +467,10 @@ public static class ArgumentSolver
                 // Every member known, one unit's copy as every other's, of
                 // one count of parameters.
                 if (members.Any(member => !functions.ContainsKey(member) || disagreed.Contains(member))) continue;
+                // ONE ANOTHER IMAGE MAY REACH THROUGH A SLOT: its calls pass
+                // what the slot always took, and its overrides may read any
+                // of it -- nothing changes, not even an unread argument.
+                if (members.Any(Outside)) { reachedOutside++; continue; }
                 int parameters = functions[members[0]].Kinds.Length;
                 if (members.Any(member => functions[member].Kinds.Length != parameters)) continue;
                 IEnumerable<string> familySlots = members.SelectMany(member => slotsOf[member]).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
@@ -668,9 +682,11 @@ public static class ArgumentSolver
         string SlotsSaid()
         {
             if (!slotsKnown) return ", slots not known whole: the image is not closed";
+            string open = outside is null ? "" : ", " + reachedOutside + " families another image may reach through a slot";
             string said = heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families held by calls nothing names (" + unnamedMost + " arguments at most)";
             if (throughCells > 0) said += ", " + throughCells + " calls through cells or parameters holding only named addresses";
             if (unsetThroughSlots > 0) said += ", " + unsetThroughSlots + " parameters no family member reads passed as 0 through slots";
+            said = open + said;
             return unresolved == 0 ? said : said + ", " + unresolved + " slot calls without an answer";
         }
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants

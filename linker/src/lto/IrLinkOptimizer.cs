@@ -230,11 +230,40 @@ public static class IrLinkOptimizer
                     foreach (Symbol symbol in obj.Symbols)
                         if (symbol.Global && symbol.IsDefined && !withheld.Contains(symbol.Name)) shown.Add(symbol.Name);
             }
-            argumentFacts = ArgumentSolver.Solve(argumentHints, virtuals,
+            // A KERNEL'S SLOTS ARE ITS OWN BUT FOR WHAT IT SHOWS ITS MODULES.
+            // A module holds objects of the types the kernel exports (and
+            // what derives from them) and calls through their slots, or
+            // derives from one and overrides them; and it runs the bodies
+            // it is offered, slot calls and all. Every method a descriptor
+            // that is or derives from a type shown holds at a slot, and
+            // every function a slot call of a kept body reaches, is reached
+            // from outside, its family left whole; every other family is
+            // the kernel's alone, judged on the kernel's own answers.
+            Dictionary<string, string[]> argumentVirtuals = virtuals;
+            HashSet<string>? outside = null;
+            if (openTypes && !moduleOfKernel && keep is not null && !anything)
+            {
+                argumentVirtuals = VirtualTargets.Resolve(inputs, argumentHints.SelectMany(unit => unit.Functions.Values.SelectMany(f => f.Calls)).Select(call => call.Callee)
+                    .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
+                    .SelectMany(name => name.Contains('@') ? new[] { name, VirtualTargets.Plain(name) } : new[] { name }));
+                HashSet<string> shownTypes = new(kept.Concat(shown ?? Enumerable.Empty<string>())
+                    .Where(name => VirtualTargets.IsDescriptorName(name) || name.StartsWith("i_", StringComparison.Ordinal)), StringComparer.Ordinal);
+                outside = VirtualTargets.MethodsHeldBy(inputs, shownTypes);
+                foreach (ArgumentHints unit in argumentHints)
+                    foreach ((string name, ArgumentFunction f) in unit.Functions)
+                        if (kept.Contains(name) || (shown?.Contains(name) ?? false))
+                            foreach (ArgumentCall call in f.Calls)
+                                if (call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
+                                {
+                                    if (argumentVirtuals.TryGetValue(call.Callee, out string[]? reached)) outside.UnionWith(reached);
+                                    if (argumentVirtuals.TryGetValue(VirtualTargets.Plain(call.Callee), out string[]? every)) outside.UnionWith(every);
+                                }
+            }
+            argumentFacts = ArgumentSolver.Solve(argumentHints, argumentVirtuals,
                 name => anything || foreign.Contains(name) || kept.Contains(name) || name == closedImageEntry || (kernelNames?.Contains(name) ?? false)
                     || (shown?.Contains(name) ?? false),
                 closed: !anything && closedImageEntry is not null && keep is null && !moduleOfKernel && !openTypes,
-                Console.Error.WriteLine);
+                Console.Error.WriteLine, outside: outside is null ? null : outside.Contains);
         }
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
         LinkTimings.Phase("virtual targets and lifetime solve");

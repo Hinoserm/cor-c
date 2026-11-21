@@ -126,6 +126,17 @@ public static class ArgumentSolverTests
         Check(theirs is null || !theirs.Dropped.ContainsKey("Lib") && !theirs.Entries.ContainsKey("Lib") && !theirs.Versions.ContainsKey("Lib") && !theirs.Splits.ContainsKey("Lib"),
             "another image's function changed, or was given a way in or a version");
 
+        // A kernel: not closed, but every slot call a module may make said
+        // (outside). Big's family a module may reach keeps everything, even
+        // its unread parameter; Dead's, the kernel's own, is judged as in a
+        // closed image -- held here by Gone's call, its unread one passed as 0.
+        facts = ArgumentSolver.Solve(new[] { Unit(false) }, virtuals, _ => false, closed: false, outside: name => name == "BigB");
+        Check(!Loses(facts, "BigA", 4) && !Loses(facts, "BigB", 4) && !facts!.DroppedSlots.ContainsKey(Big) && !facts.UnsetSlots.ContainsKey(Big),
+            "a family a module may reach through a slot changed");
+        Check(facts!.UnsetSlots.TryGetValue(Dead, out int[]? kernelOwn) && kernelOwn.SequenceEqual(new[] { 2 }), "a kernel's own family was not judged");
+        facts = ArgumentSolver.Solve(new[] { Unit(false) }, virtuals, _ => false, closed: false, outside: _ => false);
+        Check(Loses(facts, "BigA", 4), "a family no module may reach did not lose the parameter every call passes alike");
+
         // An image not closed judges no family at all.
         facts = ArgumentSolver.Solve(new[] { Unit(false) }, virtuals, _ => false, closed: false);
         Check(!Loses(facts, "BigA", 4), "a family of an image not closed lost a parameter");

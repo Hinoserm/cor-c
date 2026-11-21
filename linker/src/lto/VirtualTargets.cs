@@ -194,6 +194,21 @@ public static class VirtualTargets
     public static bool HoldsNoReference(List<(string Name, ObjectFile Object)> inputs, string descriptor, long at, long? offset)
         => IndexOf(inputs).HoldsNoReference(descriptor, at, offset);
 
+    /// <summary>
+    /// EVERY METHOD AN OBJECT OF ONE OF `types` OR DERIVED FROM ONE MAY RUN
+    /// THROUGH A SLOT: what any descriptor holds at a method slot where that
+    /// descriptor is, or derives from, one of them. Where another image (a
+    /// kernel's module) may hold such an object and call through its
+    /// slots, or derive from the type and override them, these are the
+    /// methods it may reach -- every other method a slot holds is called
+    /// through slots only by this image.
+    /// </summary>
+    public static HashSet<string> MethodsHeldBy(List<(string Name, ObjectFile Object)> inputs, IReadOnlySet<string> types)
+        => IndexOf(inputs).MethodsHeldBy(types);
+
+    /// <summary>Whether a name is a descriptor's (a class's, an interface's, a box's).</summary>
+    public static bool IsDescriptorName(string name) => IsDescriptor(name);
+
     /// <summary>Every type each of <paramref name="types"/> is, itself and all its ancestors, together.</summary>
     public static HashSet<string> Ancestry(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> types)
     {
@@ -562,6 +577,24 @@ public static class VirtualTargets
                 }
             }
             return _made = made;
+        }
+
+        /// <summary>Every method any descriptor holds at a slot whose ancestry -- itself among it -- meets `types`.</summary>
+        public HashSet<string> MethodsHeldBy(IReadOnlySet<string> types)
+        {
+            HashSet<string> held = new(StringComparer.Ordinal);
+            // (A shared face among them, or an object stamped with one: any
+            // instantiation is the type to a call, as Answers has it.)
+            string[] faces = types.Where(type => SharedFace(type) is not null || type.Contains("__canon", StringComparison.Ordinal)).ToArray();
+            for (int d = 0; d < _descriptors.Count; d++)
+            {
+                HashSet<string> ancestors = Ancestors(d);
+                if (!ancestors.Overlaps(types) && !faces.Any(face => Answers(ancestors, face))
+                    && !(ancestors.Any(up => up.Contains("__canon", StringComparison.Ordinal)) && types.Any(type => OfSharedFace(ancestors, type)))) continue;
+                foreach (var (offset, symbol, addend) in Relocs(d))
+                    if (addend == 0 && offset >= DescriptorWords * _word && _functions.Contains(symbol)) held.Add(symbol);
+            }
+            return held;
         }
 
         // Per descriptor name: the methods its slots hold, every descriptor of the name.
