@@ -859,6 +859,11 @@ public static class RegionSummary
 
         // Past these, a counter or a step is no bound: no wrap on the way.
         private const long MostCounted = 1L << 30, MostStep = 1L << 20;
+
+        // Whether a number lies within `most` of zero either way. Not
+        // Math.Abs, which throws for the least long: a loop tested against
+        // long.MinValue (Lowering's) stopped the compile.
+        private static bool Within(long x, long most) => x >= -most && x <= most;
         // The most laps a loop is said to make; more is not known.
         private const long MostLaps = 1L << 24;
 
@@ -974,7 +979,7 @@ public static class RegionSummary
             Operand a = test.Operands[0], b = test.Operands[1];
             if (a is ImmOperand && b is RegOperand) { (a, b) = (b, a); op = Mirror(op); }
             if (!stays) op = Negate(op);
-            if (op == Opcode.Copy || a is not RegOperand { Reg: var v } || b is not ImmOperand { Value: var n } || Math.Abs(n) > MostCounted) return 0;
+            if (op == Opcode.Copy || a is not RegOperand { Reg: var v } || b is not ImmOperand { Value: var n } || !Within(n, MostCounted)) return 0;
             bool unsigned = op is Opcode.LtU or Opcode.LeU or Opcode.GtU or Opcode.GeU;
             if (unsigned && n < 0) return 0;
             long offset = 0;
@@ -1019,7 +1024,7 @@ public static class RegionSummary
             {
                 if (!body.Contains(at))
                 {
-                    if (def.Op != Opcode.Copy || def.Operands[0] is not ImmOperand { Value: var s } || Math.Abs(s) > MostCounted) return null;
+                    if (def.Op != Opcode.Copy || def.Operands[0] is not ImmOperand { Value: var s } || !Within(s, MostCounted)) return null;
                     starts.Add(s);
                     continue;
                 }
@@ -1029,7 +1034,7 @@ public static class RegionSummary
                     && defs.TryGetValue(t, out var td) && td.Count == 1 && body.Contains(td[0].At) && cfg.Dominates(td[0].At, at)
                     && (td[0].At != at || at.Instrs.IndexOf(td[0].Def) < at.Instrs.IndexOf(def)))
                     stepped = Stepped(td[0].Def);
-                if (stepped is not (VReg from, long by) || from != i || by == 0 || Math.Abs(by) > MostStep) return null;
+                if (stepped is not (VReg from, long by) || from != i || by == 0 || !Within(by, MostStep)) return null;
                 step = by;
             }
             if (starts.Count == 0 || step is not long d) return null;
