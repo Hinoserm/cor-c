@@ -1,0 +1,87 @@
+// test: a function whose only calls never return, saving registers and keeping slots, makes its frame in a reserved word on the way to them; traces, faults and collections walk through it
+// expect-exit: 0
+// expect-output:
+// -1973760
+// caught with Mix and Main
+// 5392
+// null caught
+// 3000 alpha0 beta0 5 6
+// 114080
+// caught with Wide
+//
+// Mix and Field save registers and their one call is a bounds check's,
+// which never returns: laid out as framed functions are, with EBP's word
+// reserved and not written (MFunction.ReservedFrame), they make the frame
+// there, `mov [esp + X], ebp ; lea ebp, [esp + X]`, only on the way to the
+// check's call. Field's null read faults in the body itself, where it is
+// stood for by its call. Three thousand throws through Mix, each
+// allocating, run collections that walk through that frame while Main
+// holds objects. Wide's frame is wider than a byte's displacement and
+// keeps a frame of its own. Output as .NET 10 says it.
+
+using System;
+using System.Runtime.CompilerServices;
+sealed class Box { public int Value; public Box(int v) { Value = v; } }
+static class Program
+{
+    static int[] _t = new int[32];
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Mix(int[] a, int i, int x, int y)
+    {
+        int s = x * 3 + y, t = y ^ x, u = x - y, v = s * t + u, w = u * v - s;
+        return a[i] + s + t + u + v + w;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Field(Box? b, int[] a, int i, int x)
+    {
+        int s = x * 7 + i, t = s ^ x, u = s - t, v = u * t + s;
+        return b!.Value + a[i] + s + t + u + v;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Wide(int[] a, int i, int x)
+    {
+        Span<int> buf = stackalloc int[48];
+        for (int k = 0; k < buf.Length; k++) buf[k] = k * x;
+        int s = 0;
+        for (int k = 0; k < buf.Length; k += 5) s += buf[k];
+        return s + a[i];
+    }
+    static int Main(string[] args)
+    {
+        for (int i = 0; i < 32; i++) _t[i] = i * 5;
+        int sum = 0;
+        for (int i = 0; i < 32; i++) sum += Mix(_t, i, i + 1, i * 2);
+        Console.WriteLine(sum);
+        try { Console.WriteLine(Mix(_t, 40 + args.Length, 3, 4)); }
+        catch (IndexOutOfRangeException e) { Console.WriteLine("caught " + (e.StackTrace!.Contains("Program.Mix") ? "with Mix" : "without Mix") + " " + (e.StackTrace!.Contains("Program.Main") ? "and Main" : "no Main")); }
+
+        Box box = new(11);
+        int f = 0;
+        for (int i = 0; i < 32; i++) f += Field(box, _t, i, i + 3);
+        Console.WriteLine(f);
+        try { Console.WriteLine(Field(args.Length > 5 ? box : null, _t, 2, 9)); }
+        catch (NullReferenceException) { Console.WriteLine("null caught"); }
+
+        // Many exceptions, each allocating, while the caller holds objects:
+        // collections run inside the throws, walking through Mix's frame.
+        string one = "alpha" + args.Length, two = "beta" + args.Length;
+        Box keep = new(5);
+        int[] held = new int[] { 1, 2, 3 };
+        int caught = 0;
+        for (int r = 0; r < 3000; r++)
+        {
+            try { Mix(_t, 32 + (r & 7) + args.Length, r, r + 1); }
+            catch (IndexOutOfRangeException) { caught++; }
+            object junk = new int[64 + (r & 15)];
+            if (junk is null) caught--;
+        }
+        Console.WriteLine(caught + " " + one + " " + two + " " + keep.Value + " " + (held[0] + held[1] + held[2]));
+
+        int w = 0;
+        for (int i = 0; i < 32; i++) w += Wide(_t, i, i);
+        Console.WriteLine(w);
+        try { Console.WriteLine(Wide(_t, 99 + args.Length, 2)); }
+        catch (IndexOutOfRangeException e) { Console.WriteLine("caught " + (e.StackTrace!.Contains("Program.Wide") ? "with Wide" : "without Wide")); }
+        return 0;
+    }
+}

@@ -92,7 +92,8 @@ public sealed class MFunction
     /// esp` and no `leave`. It pushes the registers it saves, then reserves
     /// its frame (`sub esp, n`), and every slot and argument is addressed off
     /// ESP, which nothing moves between that and the epilogue -- `add esp, n`,
-    /// the pops, `ret` (FramePointerFree.Run, Encoder). It calls nothing that
+    /// the pops, `ret` (FramePointerFree.Run, Encoder) -- a reserved frame
+    /// (ReservedFrame) the other way round. It calls nothing that
     /// returns, so no frame links to it but the one it makes for a call that
     /// does not (ColdFrames); a thread stopped in it is found by its first
     /// bytes, which are not a framed function's `push ebp; mov ebp, esp`
@@ -107,13 +108,13 @@ public sealed class MFunction
     /// <summary>
     /// A FRAMELESS FUNCTION THAT CALLS, BUT ONLY WHAT NEVER RETURNS (a bounds
     /// check's IndexOutOfRange, a throw moved out of it -- each call followed
-    /// by INT3), saving no register and keeping no slot (FramePointerFree.Run
-    /// decides): its frame is made on the way to such a call alone, `push
-    /// ebp ; mov ebp, esp` before it (Encoder), and is then a frame as any
-    /// prologue's, the return address just above the saved EBP -- what the
-    /// callee's frame links to, what a trace and the collector walk, the
-    /// collector's map of the call an empty one. The way that returns pays
-    /// nothing for a frame it never needs.
+    /// by INT3; FramePointerFree.Run decides): its frame is made on the way to
+    /// such a call alone (Encoder.ColdFrame) -- `push ebp ; mov ebp, esp`
+    /// where it saves no register and keeps no slot, else (ReservedFrame)
+    /// `mov [esp + X], ebp ; lea ebp, [esp + X]` -- and is then a frame as any
+    /// prologue's, the return address just above the saved EBP: what the
+    /// callee's frame links to, what a trace and the collector walk. The way
+    /// that returns pays nothing for a frame it never needs.
     /// </summary>
     public bool ColdFrames { get; set; }
 
@@ -124,7 +125,10 @@ public sealed class MFunction
     /// the pops then `add esp, N + 4` on the way out -- so on the way to a
     /// call that never returns `mov [esp + X], ebp ; lea ebp, [esp + X]` (X
     /// the frame and the saves) makes the very frame a prologue would have:
-    /// every slot and save where the collector's map of the call says.
+    /// every slot and save where the collector's map of the call says. Only
+    /// with at most two such calls (eight bytes each, the plain form's three)
+    /// and X within a byte's displacement; else the function is framed.
+    /// EBP's word alone is reserved by `push eax` and dropped by `pop ecx`.
     /// </summary>
     public bool ReservedFrame { get; set; }
 

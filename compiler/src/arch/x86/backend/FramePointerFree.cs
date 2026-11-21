@@ -28,6 +28,16 @@ internal static class FramePointerFree
             m.ColdFrames = true;
             m.ReservedFrame = m.SavedRegs.Count > 0 || m.Frame.Size > 0;
         }
+        // A reserved frame costs eight bytes at each such call where the
+        // plain one costs three: at most two of them, and a frame and saves
+        // a byte's displacement covers (else the frame stays a prologue's).
+        if (m.ReservedFrame && (ColdCalls(m) > 2 || m.Frame.Size + 4 * m.SavedRegs.Count > 127))
+        {
+            m.Frameless = false;
+            m.ColdFrames = false;
+            m.ReservedFrame = false;
+            return;
+        }
         if (!m.Frameless) return;
         int frame = m.Frame.Size, saved = 4 * m.SavedRegs.Count;
         // (A reserved frame is a framed function's: where EBP would point is
@@ -89,6 +99,9 @@ internal static class FramePointerFree
     /// its own word or the return address's), and
     /// nothing that pushes, pops or writes ESP.
     /// </summary>
+    /// <summary>How many calls a function makes.</summary>
+    private static int ColdCalls(MFunction m) => m.Blocks.Sum(b => b.Instrs.Count(i => i.Op is MOp.Call or MOp.CallInd));
+
     private static bool OnlyColdCalls(MFunction m)
     {
         if (m.AlignedArea != 0 || m.FramePointerFree

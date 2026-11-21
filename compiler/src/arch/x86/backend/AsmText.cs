@@ -80,7 +80,7 @@ internal static class AsmText
             case MOp.Prologue:
                 if (m.ReservedFrame)
                 {
-                    yield return $"sub esp, {m.Frame.Size + 4} ; the frame and EBP's word, not written";
+                    yield return m.Frame.Size == 0 ? "push eax ; EBP's word, not written" : $"sub esp, {m.Frame.Size + 4} ; the frame and EBP's word, not written";
                     foreach (Gpr g in m.SavedRegs) yield return $"push {RegName((int)g, 4)}";
                     yield break;
                 }
@@ -110,7 +110,7 @@ internal static class AsmText
                 if (m.ReservedFrame)
                 {
                     for (int k = m.SavedRegs.Count - 1; k >= 0; k--) yield return $"pop {RegName((int)m.SavedRegs[k], 4)}";
-                    yield return $"add esp, {m.Frame.Size + 4}";
+                    yield return m.Frame.Size == 0 ? "pop ecx" : $"add esp, {m.Frame.Size + 4}";
                     yield return m.Source.CalleePops > 0 ? "ret " + m.Source.CalleePops : "ret";
                     yield break;
                 }

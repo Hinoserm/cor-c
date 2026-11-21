@@ -1442,8 +1442,10 @@ internal sealed class Encoder
         {
             // The frame and the word for EBP, then the saves: a framed
             // function's layout, EBP not written.
+            // (EBP's word alone: a one-byte push of anything, EAX.)
             int reserve = _m.Frame.Size + 4;
-            if (reserve <= 127) B(0x83, 0xEC, (byte)reserve);
+            if (reserve == 4) B(0x50);
+            else if (reserve <= 127) B(0x83, 0xEC, (byte)reserve);
             else { B(0x81, 0xEC); D32(reserve); }
             foreach (Gpr g in _m.SavedRegs) _out.Add((byte)(0x50 + (int)g));
             return;
@@ -1490,8 +1492,10 @@ internal sealed class Encoder
         if (_m.ReservedFrame)
         {
             for (int k = _m.SavedRegs.Count - 1; k >= 0; k--) _out.Add((byte)(0x58 + (int)_m.SavedRegs[k]));
+            // (EBP's word alone: popped into ECX, which no return value is in.)
             int reserve = _m.Frame.Size + 4;
-            if (reserve <= 127) B(0x83, 0xC4, (byte)reserve);
+            if (reserve == 4) B(0x59);
+            else if (reserve <= 127) B(0x83, 0xC4, (byte)reserve);
             else { B(0x81, 0xC4); D32(reserve); }
             EncodeReturn();
             return;

@@ -94,6 +94,7 @@ internal static class Peephole
                 return live;
             }
             for (int b = 0; b < m.Blocks.Count; b++) ForwardCopies(m.Blocks[b].Instrs, outs[b], Goes);
+            for (int b = 0; b < m.Blocks.Count; b++) RenameCopies(m.Blocks[b].Instrs, outs[b], Goes);
         }
         Unreachable(m);
         // LAST: it leaves flags live into a block, which every rule above
@@ -2442,6 +2443,108 @@ internal static class Peephole
             gone[k + 1] = true;
         }
         for (int k = count - 1; k >= 0; k--) if (gone[k]) instrs.RemoveAt(k);
+    }
+
+    // ---- a copy whose source dies, the copy's register renamed ----------------------
+
+    /// <summary>
+    /// `mov b, a` where a is dead after it: the value is the same in both, and
+    /// a is free. Where b's value then lives out its life in this block -- no
+    /// jump with it live, no call (the collector's map of a call says which
+    /// registers hold references), nothing that names a, nothing that names
+    /// b implicitly (MUL's EAX, REP MOVS's ESI), nothing not understood -- b
+    /// is a in all of it and the move goes: what a coalescing allocator does
+    /// for a copy whose ends do not interfere, done on the registers it
+    /// chose. A quarter of the K8 kernel's 216,000 register moves have a
+    /// source that dies there. Not where b is read as a byte and a has no
+    /// byte form (ESI, EDI); never ESP or EBP.
+    /// </summary>
+    private static void RenameCopies(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
+    {
+        // One a round, the liveness read again after each: 64 a block at most.
+        for (int round = 0; round < 64 && RenameCopy(instrs, liveOut, jumped); round++) { }
+    }
+
+    private static bool RenameCopy(List<MInstr> instrs, int liveOut, Func<MInstr, int> jumped)
+    {
+        int count = instrs.Count;
+        if (count < 2) return false;
+        int[] after = new int[count];
+        int live = liveOut & 0xFF;
+        for (int k = count - 1; k >= 0; k--)
+        {
+            MInstr i = instrs[k];
+            live |= jumped(i);
+            after[k] = live;
+            if (!Understood(i)) { live = 0xFF; continue; }
+            Masks(i, out long reads, out long writes);
+            live = (live & ~(int)writes | (int)reads) & 0xFF;
+        }
+        const int ByteForm = (1 << (int)Gpr.Eax) | (1 << (int)Gpr.Ecx) | (1 << (int)Gpr.Edx) | (1 << (int)Gpr.Ebx);
+        for (int k = 0; k + 1 < instrs.Count; k++)
+        {
+            MInstr copy = instrs[k];
+            if (!IsMov(copy) || copy.Lock || copy.Operands[0] is not MReg { IsPhys: true } b || copy.Operands[1] is not MReg { IsPhys: true } a
+                || a.Id >= 8 || b.Id >= 8 || a.Id == b.Id || a.Id is (int)Gpr.Esp or (int)Gpr.Ebp || b.Id is (int)Gpr.Esp or (int)Gpr.Ebp
+                || (after[k] & (1 << a.Id)) != 0) continue;
+            long bitA = 1L << a.Id, bitB = 1L << b.Id;
+            // b's value from here to where it dies, every instruction of it.
+            int end = -1;
+            bool ok = true;
+            for (int j = k + 1; j < instrs.Count && ok; j++)
+            {
+                MInstr i = instrs[j];
+                if (!Understood(i) || i.Op is MOp.Call or MOp.CallInd or MOp.CallKeep or MOp.CallKeepInd or MOp.CallKeepEax or MOp.CallKeepEaxInd
+                    or MOp.InlineAsm or MOp.Jmp or MOp.JmpTable or MOp.JmpInd or MOp.Epilogue) { ok = false; break; }
+                Masks(i, out long reads, out long writes);
+                if (((reads | writes) & bitA) != 0) { ok = false; break; }
+                foreach (Gpr g in Roles.ImplicitUses(i)) if ((int)g == b.Id) ok = false;
+                foreach (Gpr g in Roles.ImplicitDefs(i)) if ((int)g == b.Id) ok = false;
+                if (!ok) break;
+                bool readsB = (reads & bitB) != 0, writesB = (writes & bitB) != 0;
+                // A new value of b: the old one's life ended before it.
+                if (writesB && !readsB) { end = j - 1; break; }
+                if (i.Op == MOp.Jcc && (jumped(i) & (int)bitB) != 0) { ok = false; break; }
+                // A register an instruction's form fixes: a shift's count (CL),
+                // a port's DX or AL, an exchange's pair.
+                if ((readsB || writesB) && (i.Op is MOp.In or MOp.Out or MOp.Xchg or MOp.Cmpxchg or MOp.Xadd
+                    || i.Op is MOp.Shl or MOp.Shr or MOp.Sar or MOp.Ror or MOp.Shld or MOp.Shrd && i.Operands.Count > 0 && i.Operands[^1] is MReg)) { ok = false; break; }
+                // Where a has no byte form, b only as a whole word.
+                if ((readsB || writesB) && (ByteForm & (int)bitA) == 0 && (i.Width != 4 || i.Op is MOp.Movzx or MOp.Movsx or MOp.Setcc)) { ok = false; break; }
+                if ((after[j] & (int)bitB) == 0) { end = j; break; }
+            }
+            if (!ok || end < 0) continue;
+            for (int j = k + 1; j <= end; j++) instrs[j] = Renamed(instrs[j], b.Id, a);
+            instrs.RemoveAt(k);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>The same instruction with register `from` named `to` in every operand (a register, a memory operand's base or index).</summary>
+    private static MInstr Renamed(MInstr i, int from, MReg to)
+    {
+        bool any = false;
+        MOperand[] ops = new MOperand[i.Operands.Count];
+        for (int o = 0; o < ops.Length; o++)
+        {
+            MOperand op = i.Operands[o];
+            if (op is MReg { IsPhys: true } r && r.Id == from) { op = to; any = true; }
+            else if (op is MMem mem && (mem.Base?.Id == from || mem.Index?.Id == from))
+            {
+                op = new MMem(mem.Base?.Id == from ? to : mem.Base, mem.Disp)
+                {
+                    Index = mem.Index?.Id == from ? to : mem.Index, Scale = mem.Scale, Symbol = mem.Symbol, Reloc = mem.Reloc,
+                    Label = mem.Label, IsSpill = mem.IsSpill, Device = mem.Device, Aligned = mem.Aligned,
+                };
+                any = true;
+            }
+            ops[o] = op;
+        }
+        if (!any) return i;
+        MInstr made = new(i.Op) { Width = i.Width, Cond = i.Cond, Lock = i.Lock, Table = i.Table, CallReloc = i.CallReloc, Line = i.Line, Native = i.Native, Probed = i.Probed, OwnsState = i.OwnsState, Asm = i.Asm, ZeroFirst = i.ZeroFirst };
+        made.Operands.AddRange(ops);
+        return made;
     }
 
     // ---- a copy and an operation on it, one LEA -----------------------------------
