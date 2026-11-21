@@ -101,6 +101,21 @@ public sealed partial class Binder
             }
             placed[index] = call.Args[n]; order.Add(index); from[index] = n;
         }
+        // A `params` TAIL GIVEN BY NAME ONE ELEMENT, as C# takes it in the
+        // expanded form: `Function("Hook", 1, 3, sites: Made())` with
+        // `params Site[] sites` is `sites: new[] { Made() }` -- unless the
+        // value is the array already (or null, which converts to one).
+        int last = placed.Length - 1;
+        if (named && last >= 0 && placed[last] is Expr byName && from[last] < call.ArgNames.Count && call.ArgNames[from[last]] is not null
+            && lambda.Params[last].IsParams && Resolve(lambda.Params[last].Type, _thisType) is Type packedTail
+            && ParamsElement(packedTail) is Type element1 && RefOf(element1) is TypeRef elementRef)
+        {
+            _quiet++;
+            Type given = CheckExpr(byName);
+            _quiet--;
+            if (!given.IsError && given.Prim != Prim.NullLiteral && !Convertible(given, packedTail))
+                placed[last] = Gathered(new[] { byName }, packedTail, elementRef, call);
+        }
         for (int n = 0; n < placed.Length; n++)
         {
             if (placed[n] is not null) continue;

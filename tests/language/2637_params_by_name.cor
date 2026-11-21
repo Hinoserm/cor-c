@@ -1,0 +1,49 @@
+// test: a params parameter given one element by name, as C# takes it in the expanded form: a local function's and a method's
+// expect-exit: 0
+// expect-output:
+// 4103
+// 4214
+// 4313
+// 4400
+// 4105
+// 4216
+// 4325
+// null
+// 1
+//
+// `sites: Made(3)` with `params Site[] sites` is `sites: new[] { Made(3) }`;
+// an array given so is the array, and null is null. Output as .NET 10 says
+// it.
+
+using System;
+static class Program
+{
+    sealed class Site { public int Kind; public Site(int kind) { Kind = kind; } }
+    static int Count(string name, int first, bool flag = true, params Site[] sites)
+    {
+        int sum = 0;
+        foreach (Site s in sites) sum += s.Kind;
+        return name.Length * 1000 + first * 100 + (flag ? 10 : 0) + sum;
+    }
+    static string Nulls(params Site[] sites) => sites == null ? "null" : sites.Length.ToString();
+    static int Main()
+    {
+        Site Made(int kind) => new Site(kind);
+        int Local(string name, int first, bool flag = true, params Site[] sites)
+        {
+            int sum = 0;
+            foreach (Site s in sites) sum += s.Kind;
+            return name.Length * 1000 + first * 100 + (flag ? 10 : 0) + sum;
+        }
+        Console.WriteLine(Local("Hook", 1, flag: false, sites: Made(3)));
+        Console.WriteLine(Local("Hook", 2, sites: Made(4)));
+        Console.WriteLine(Local("Hook", 3, sites: new[] { Made(1), Made(2) }));
+        Console.WriteLine(Local("Hook", 4, flag: false));
+        Console.WriteLine(Count("Pass", 1, flag: false, sites: Made(5)));
+        Console.WriteLine(Count("Pass", 2, sites: Made(6)));
+        Console.WriteLine(Count("Pass", 3, sites: new[] { Made(7), Made(8) }));
+        Console.WriteLine(Nulls(sites: null!));
+        Console.WriteLine(Nulls(sites: Made(9)));
+        return 0;
+    }
+}
