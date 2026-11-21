@@ -157,7 +157,13 @@ public static class VirtualTargets
     /// With <paramref name="made"/>, only what the descriptors it names hold
     /// (Made, MadeIn): a closed image's types nothing makes run nothing.
     /// </summary>
-    public static Dictionary<string, string[]> Resolve(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> wanted, Made? made = null)
+    /// <remarks>
+    /// `elsewhere` names functions another image defines (a kernel's, to its
+    /// module): a slot holding one holds a function, which the answer lists
+    /// as it lists the image's own, rather than a word it cannot say.
+    /// </remarks>
+    public static Dictionary<string, string[]> Resolve(List<(string Name, ObjectFile Object)> inputs, IEnumerable<string> wanted, Made? made = null,
+        Func<string, bool>? elsewhere = null)
     {
         Dictionary<string, string[]> answers = new(StringComparer.Ordinal);
         Index? index = null;
@@ -165,7 +171,7 @@ public static class VirtualTargets
         {
             if (Parse(name) is not var (declaring, within, slot)) continue;
             index ??= IndexOf(inputs);
-            string[]? reached = index.Targets(declaring, slot, made, within);
+            string[]? reached = index.Targets(declaring, slot, made, within, elsewhere);
             if (reached is string[] targets) answers[name] = targets;
             if (Switches.TraceVirtuals)
                 Console.Error.WriteLine("virtual " + name + " slot " + slot + " -> " + (reached is null ? "unresolved" : "[" + string.Join(",", reached) + "]"));
@@ -901,7 +907,7 @@ public static class VirtualTargets
                     foreach (int d in under) yield return d;
         }
 
-        public string[]? Targets(string declaring, long slot, Made? made = null, string? within = null)
+        public string[]? Targets(string declaring, long slot, Made? made = null, string? within = null, Func<string, bool>? elsewhere = null)
         {
             if (_derived is null)
             {
@@ -965,7 +971,7 @@ public static class VirtualTargets
                 foreach (var (offset, symbol, addend) in Relocs(descriptor))
                     if (_bases.Contains(offset - slot))
                     {
-                        bool code = addend == 0 && _functions.Contains(symbol);
+                        bool code = addend == 0 && (_functions.Contains(symbol) || elsewhere?.Invoke(symbol) == true);
                         if (!exists)
                         {
                             unmade!.Add(symbol);

@@ -214,7 +214,7 @@ public static class IrLinkOptimizer
         // (`keep`) and every global it does not withhold from its export
         // table -- the rest is its own. Not one that offers whatever it has:
         // there every function may have callers elsewhere.
-        if (enabled && lifetimes is not null && (closedImageEntry is not null || keep is not null) && argumentHints.Count == archives.Count && argumentHints.Count > 0
+        if (enabled && lifetimes is not null && (closedImageEntry is not null || keep is not null || moduleOfKernel && withheld is not null) && argumentHints.Count == archives.Count && argumentHints.Count > 0
             && !Switches.NoArgumentFacts)
         {
             HashSet<string> kept = new(keep ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
@@ -241,12 +241,18 @@ public static class IrLinkOptimizer
             // the kernel's alone, judged on the kernel's own answers.
             Dictionary<string, string[]> argumentVirtuals = virtuals;
             HashSet<string>? outside = null;
-            if (openTypes && !moduleOfKernel && keep is not null && !anything)
+            // A KERNEL'S MODULE THE SAME WAY ROUND: the kernel and the other
+            // modules reach its methods through slots of the types the kernel
+            // shows (the module's classes derive from them) and of those the
+            // module shows; the rest are the module's own. A slot holding a
+            // kernel function holds a function, the kernel's (never changed).
+            if (openTypes && (keep is not null || moduleOfKernel && shown is not null) && !anything)
             {
+                Func<string, bool>? kernels = kernelNames is null ? null : kernelNames.Contains;
                 argumentVirtuals = VirtualTargets.Resolve(inputs, argumentHints.SelectMany(unit => unit.Functions.Values.SelectMany(f => f.Calls)).Select(call => call.Callee)
                     .Where(name => name.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
-                    .SelectMany(name => name.Contains('@') ? new[] { name, VirtualTargets.Plain(name) } : new[] { name }));
-                HashSet<string> shownTypes = new(kept.Concat(shown ?? Enumerable.Empty<string>())
+                    .SelectMany(name => name.Contains('@') ? new[] { name, VirtualTargets.Plain(name) } : new[] { name }), null, kernels);
+                HashSet<string> shownTypes = new(kept.Concat(shown ?? Enumerable.Empty<string>()).Concat(kernelNames ?? Enumerable.Empty<string>())
                     .Where(name => VirtualTargets.IsDescriptorName(name) || name.StartsWith("i_", StringComparison.Ordinal)), StringComparer.Ordinal);
                 outside = VirtualTargets.MethodsHeldBy(inputs, shownTypes);
                 foreach (ArgumentHints unit in argumentHints)

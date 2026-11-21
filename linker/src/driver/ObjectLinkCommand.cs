@@ -387,7 +387,9 @@ public static class ObjectLinkCommand
             moduleOfKernel: kernel is not null, kernelBodies: kernelBodies, kernelNames: kernel?.Names, kernelBodiesTaken: needs,
             // What the export table below leaves out: a kernel's own, whose
             // calls are all its units'.
-            withheld: exports ? withheld.Where(name => !offered.Contains(name) && !optional.Contains(name)).ToHashSet(StringComparer.Ordinal) : null);
+            // (A module's too: what it withholds is its own, every other global
+            // the kernel's and the other modules' to call.)
+            withheld: exports || kernel is not null ? withheld.Where(name => !offered.Contains(name) && !optional.Contains(name)).ToHashSet(StringComparer.Ordinal) : null);
         // The units' notes and the link's own, bound (KernelAssumptions.Bind); a
         // link that is no module's only drops the notes.
         if (kernel is not null) { if (KernelAssumptions.Bind(inputs, kernel, needs) is string unsaid) return Fail(unsaid); }
