@@ -1262,8 +1262,10 @@ public sealed class Devirtualize : IModulePass
     /// <summary>
     /// A call through a vtable no object this function made can be the
     /// receiver of (Guarded): the mark, then the type the call dispatched
-    /// on -- still a call through that type's slot, for whatever object
-    /// does run it (ArgumentSummary.RawSlot).
+    /// on. Its receiver is one of those objects or null, so it never
+    /// completes; the argument summary still names it by its slot
+    /// (ArgumentSummary.RawSlot), which only adds what that slot's calls
+    /// pass.
     /// </summary>
     public const string NoTarget = "\u0001no-target";
 

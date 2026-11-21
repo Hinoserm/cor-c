@@ -139,6 +139,22 @@ internal static class ArgumentSummaryTests
         ArgumentSummary.Apply(m, facts, errors);
         Assert(errors.Count == 0 && raw.Operands.Count == 2, "a call through a slot read raw (through a copy) did not lose what its slot's calls lose: " + string.Join("; ", errors));
 
+        // A marked call through the same slot loses it too.
+        (Function mk, Block mb) = Make(m, "Marked", 2);
+        Instr marked = CallThrough(mb, Load(mb, mk, Load(mb, mk, mk.Params[0], 0), 52), mk.Params[1], new ImmOperand(7, IrTypes.Word));
+        marked.DispatchType = Devirtualize.NoTarget + ":Op";
+        new Builder(mk, mb).Ret();
+        // A call on Op whose target Devirtualize made a named address: judged by that, not refused.
+        (Function nm, Block nb) = Make(m, "NamedTarget", 2);
+        VReg stub = nm.NewReg(IrTypes.Word);
+        nb.Instrs.Add(new Instr { Op = Opcode.Copy, Dest = stub, Operands = { new SymOperand("stub_hash") } });
+        CallThrough(nb, stub, nm.Params[1], new ImmOperand(7, IrTypes.Word)).DispatchType = "Op";
+        new Builder(nm, nb).Ret();
+        errors.Clear();
+        ArgumentSummary.Apply(mk, facts, errors);
+        ArgumentSummary.Apply(nm, facts, errors);
+        Assert(errors.Count == 0 && marked.Operands.Count == 2, "a marked call through a slot did not lose its argument, or a named target was refused: " + string.Join("; ", errors));
+
         (Function g, Block c) = Make(m, "Odd", 2);
         CallThrough(c, Load(c, g, g.Params[0], 8), g.Params[1], new ImmOperand(7, IrTypes.Word)).DispatchType = "Op";
         new Builder(g, c).Ret();

@@ -235,10 +235,12 @@ public static class ArgumentSummary
 
     /// <summary>
     /// A CALL THROUGH A SLOT THE UNIT COULD NOT TIE TO THE OBJECT IT PASSES
-    /// (Escape.VirtualCallees): the method read out of an object's
-    /// descriptor, at a slot of the type the call dispatches on (Instr.
-    /// DispatchType) -- the slot's plain name (VirtualTargets.Plain: every
-    /// function the slot holds), or null for any other call. Such a call
+    /// (Escape.VirtualCallees), or one Devirtualize marked (NoTarget): the
+    /// method read out of an object's descriptor -- or out of a descriptor
+    /// named, counted from where an object's first word points -- at a slot
+    /// of the type the call dispatches on (Instr.DispatchType) -- the slot's
+    /// plain name (VirtualTargets.Plain: every function the slot holds), or
+    /// null for any other call. Such a call
     /// passes the slot's arguments as any call through it does, and is
     /// judged and rewritten as one (Of, Apply).
     /// </summary>
@@ -635,7 +637,12 @@ public static class ArgumentSummary
                         {
                             if (RawSlot(f, i, rawDefs ??= Definitions(f)) is not string raw)
                             {
-                                if (Devirtualize.Dispatched(i.DispatchType) is string declaring && Dropping(facts, declaring))
+                                // (A target that is a named address, a number, a cell's or a
+                                // parameter's word is judged by where it comes from: Unnamed.
+                                // A word read from memory, of no shape known, is refused.)
+                                rawDefs ??= Definitions(f);
+                                if (Devirtualize.Dispatched(i.DispatchType) is string declaring && Dropping(facts, declaring)
+                                    && !Sources(f, rawDefs, i.Operands[0], new HashSet<string>(StringComparer.Ordinal), 8, new HashSet<int>(), new HashSet<int>()))
                                     errors.Add("'" + (f.Display ?? f.Name) + "' (line " + i.Line + ") calls through a slot of '" + declaring
                                         + "' by a shape neither named nor read raw, where the link took arguments from that type's slots (ArgumentFacts)");
                                 continue;
