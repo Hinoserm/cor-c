@@ -26,6 +26,16 @@ public sealed class ArgumentFacts
     public SortedDictionary<string, int[]> DroppedSlots { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Per virtual slot, the arguments a call through it passes as 0, in
+    /// place, ascending, the object being 0: no function the slot can reach
+    /// reads them, and every one keeps its parameters where they were -- a
+    /// family a call nothing names may reach (ArgumentSolver), whose layout
+    /// such a call relies on. What the argument was made of is then dead at
+    /// the call, and the callee never looks.
+    /// </summary>
+    public SortedDictionary<string, int[]> UnsetSlots { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Per function, the way in the link gave it for its commonest call
     /// (Function.ConstantEntry): the parameters it sets, ascending, each
     /// with its number. Indexed as the function's parameters are AFTER
@@ -54,7 +64,7 @@ public sealed class ArgumentFacts
     /// </summary>
     public SortedDictionary<string, ArgumentSplit[]> Splits { get; } = new(StringComparer.Ordinal);
 
-    public bool IsEmpty => Dropped.Count == 0 && DroppedSlots.Count == 0 && Entries.Count == 0 && Versions.Count == 0 && Splits.Count == 0;
+    public bool IsEmpty => Dropped.Count == 0 && DroppedSlots.Count == 0 && UnsetSlots.Count == 0 && Entries.Count == 0 && Versions.Count == 0 && Splits.Count == 0;
 
     /// <summary>The name of a version of `function`: its place among the function's versions.</summary>
     public static string VersionName(string function, int ordinal)
@@ -225,6 +235,79 @@ public static class ArgumentSolver
                     else if (functions.ContainsKey(call.Callee)) { calls.Add((caller, call, new[] { call.Callee })); called.Add(call.Callee); }
                 }
 
+        // UNNAMED CALLS THROUGH A STATIC CELL (ArgumentHints.CellCalls): of
+        // what a function's address taken was put there, where every unit
+        // wrote the cell only with numbers and named addresses and nothing
+        // took its address (CellsWritten), and nothing outside the units may
+        // write it -- else counted as any unnamed call.
+        HashSet<string> written = new(StringComparer.Ordinal);
+        foreach (ArgumentHints unit in units) written.UnionWith(unit.CellsWritten);
+        Dictionary<string, List<string>> cellParameters = new(StringComparer.Ordinal);
+        foreach (ArgumentHints unit in units)
+            foreach ((string cell, SortedSet<string> parameters) in unit.CellParams)
+                (cellParameters.TryGetValue(cell, out List<string>? those) ? those : cellParameters[cell] = new()).AddRange(parameters);
+        // A PARAMETER EVERY CALL GIVES A NUMBER OR A NAMED ADDRESS, or hands
+        // on one of its own of which the same holds: of a function every
+        // call of which the units show -- none foreign, none through an
+        // address or a slot, each passing its parameters -- judged without
+        // a cycle (one met again says no).
+        Dictionary<string, List<(string Caller, ArgumentCall Call)>> byName = new(StringComparer.Ordinal);
+        foreach ((string caller, ArgumentCall call, string[] targets) in calls)
+            if (!call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
+                (byName.TryGetValue(call.Callee, out var sites) ? sites : byName[call.Callee] = new()).Add((caller, call));
+        Dictionary<string, bool> namedOnly = new(StringComparer.Ordinal);
+        bool NamedOnly(string parameter, int depth)
+        {
+            if (namedOnly.TryGetValue(parameter, out bool known)) return known;
+            int colon = parameter.IndexOf(':');
+            if (colon <= 0 || !int.TryParse(parameter.AsSpan(0, colon), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int k)) return false;
+            string name = parameter[(colon + 1)..];
+            if (depth == 0 || !functions.TryGetValue(name, out ArgumentFunction? f) || k >= f.Kinds.Length || f.Fixed || disagreed.Contains(name)
+                || misfit.Contains(name) || addressed.Contains(name) || slotted.Contains(name) || slotsOf.ContainsKey(name) || unchangeable(name))
+                return namedOnly[parameter] = false;
+            // (Called by nothing at all: its parameter is never given anything.)
+            if (!byName.TryGetValue(name, out var sites)) return namedOnly[parameter] = true;
+            namedOnly[parameter] = false;
+            bool all = true;
+            foreach ((string caller, ArgumentCall call) in sites)
+            {
+                if (call.Arguments.Length != f.Kinds.Length) { all = false; break; }
+                ArgumentValue given = call.Arguments[k];
+                if (given.Kind is ArgumentValueKind.Constant or ArgumentValueKind.Address) continue;
+                if (given.Kind == ArgumentValueKind.Parameter && NamedOnly(given.Number.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + caller, depth - 1)) continue;
+                all = false;
+                break;
+            }
+            return namedOnly[parameter] = all;
+        }
+        bool CellNamed(string cell) => !written.Contains(cell) && !unchangeable(cell)
+            && (!cellParameters.TryGetValue(cell, out List<string>? from) || from.All(parameter => NamedOnly(parameter, 8)));
+        int throughCells = 0;
+        foreach (ArgumentHints unit in units)
+        {
+            foreach ((string cell, SortedSet<int> counts) in unit.CellCalls)
+            {
+                if (!CellNamed(cell)) unnamed.UnionWith(counts);
+                else throughCells++;
+            }
+            foreach ((string parameter, SortedSet<int> counts) in unit.ParamCalls)
+            {
+                if (!NamedOnly(parameter, 8)) unnamed.UnionWith(counts);
+                else throughCells++;
+            }
+        }
+        // UNNAMED CALLS SHAPED AS A SLOT'S (ArgumentHints.SlotCalls): every
+        // function the slot holds keeps its parameters, the family with it
+        // -- such a call is not rewritten when a family loses some -- or,
+        // the slot unanswered, counted as any unnamed call.
+        HashSet<string> rawSlots = new(StringComparer.Ordinal);
+        foreach (ArgumentHints unit in units)
+            foreach ((string slot, SortedSet<int> counts) in unit.SlotCalls)
+            {
+                if (virtuals.TryGetValue(slot, out string[]? reached)) rawSlots.UnionWith(reached);
+                else { unresolved++; unnamed.UnionWith(counts); }
+            }
+
         // What may change at all.
         bool Free(string name) => functions.TryGetValue(name, out ArgumentFunction? f) && !f.Fixed && !disagreed.Contains(name)
             && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
@@ -238,7 +321,7 @@ public static class ArgumentSolver
         bool slotsKnown = closed;
         int unnamedMost = unnamed.Count == 0 ? -1 : unnamed.Max();
         bool UnnamedReach(string name) => functions[name].Kinds.Length <= unnamedMost;
-        int heldByUnnamed = 0;
+        int heldByUnnamed = 0, unsetThroughSlots = 0;
         // A FUNCTION SOMETHING UNSEEN MAY CALL HAS PARAMETERS NOBODY KNOWS:
         // one that may not change (foreign, kept for others, its address
         // taken), one in a slot whose callers are not all known, one no
@@ -250,7 +333,7 @@ public static class ArgumentSolver
         foreach ((string name, ArgumentFunction f) in functions)
         {
             bool bySlot = slotted.Contains(name) || slotsOf.ContainsKey(name);
-            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown && !UnnamedReach(name))) continue;
+            if (Free(name) && called.Contains(name) && (!bySlot || slotsKnown && !UnnamedReach(name) && !rawSlots.Contains(name))) continue;
             Cell[] of = cells[name];
             for (int k = 0; k < of.Length; k++) of[k].State = Many;
         }
@@ -371,23 +454,38 @@ public static class ArgumentSolver
             }
             foreach (List<string> members in families.Values.OrderBy(m => m[0], StringComparer.Ordinal))
             {
-                // Every member free to change and of one count of
-                // parameters, and the family reached by no call nothing
-                // names nor any the link has no answer for (UnnamedReach):
-                // a member's callers are the resolved slots' calls alone.
-                if (!members.All(Free)) continue;
-                if (members.Any(member => !functions.ContainsKey(member))) continue;
+                // Every member known, one unit's copy as every other's, of
+                // one count of parameters.
+                if (members.Any(member => !functions.ContainsKey(member) || disagreed.Contains(member))) continue;
                 int parameters = functions[members[0]].Kinds.Length;
                 if (members.Any(member => functions[member].Kinds.Length != parameters)) continue;
-                if (UnnamedReach(members[0])) { heldByUnnamed++; continue; }
+                IEnumerable<string> familySlots = members.SelectMany(member => slotsOf[member]).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
+                // Every member free to change, and the family reached by no
+                // call nothing names nor any the link has no answer for
+                // (UnnamedReach, a slot's word read raw): a member's callers
+                // are the resolved slots' calls alone. ELSE THE PARAMETERS
+                // STAY WHERE THEY ARE, and one no member reads is passed as 0
+                // through the slots (UnsetSlots): whatever else calls a member
+                // finds the layout it had.
+                bool held = UnnamedReach(members[0]) || members.Any(rawSlots.Contains);
+                if (held) heldByUnnamed++;
+                if (held || !members.All(Free))
+                {
+                    List<int> unread = new();
+                    for (int k = 1; k < parameters; k++) if (members.All(member => functions[member].Reads[k] == 0)) unread.Add(k);
+                    if (unread.Count == 0) continue;
+                    int[] unset = unread.ToArray();
+                    foreach (string slot in familySlots) facts.UnsetSlots[slot] = unset;
+                    unsetThroughSlots += unset.Length;
+                    continue;
+                }
                 List<int> shared = new();
                 // (The object, 0, stays: a call through a slot reads its descriptor.)
                 for (int k = 1; k < parameters; k++) if (members.All(member => Droppable(member, k))) shared.Add(k);
                 if (shared.Count == 0) continue;
                 foreach (string member in members) if (DropsOf(member, shared.Contains) is { } drops) Take(member, drops, true);
                 int[] gone = shared.ToArray();
-                foreach (string slot in members.SelectMany(member => slotsOf[member]).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
-                    facts.DroppedSlots[slot] = gone;
+                foreach (string slot in familySlots) facts.DroppedSlots[slot] = gone;
             }
         }
 
@@ -564,7 +662,10 @@ public static class ArgumentSolver
         string SlotsSaid()
         {
             if (!slotsKnown) return ", slots not known whole: the image is not closed";
-            string said = heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families held by calls nothing names (" + unnamedMost + " arguments at most)";
+            string said = heldByUnnamed == 0 ? "" : ", " + heldByUnnamed + " families held by calls nothing names (" + unnamedMost + " arguments at most, "
+                + rawSlots.Count + " functions in slots read raw)";
+            if (throughCells > 0) said += ", " + throughCells + " calls through cells or parameters holding only named addresses";
+            if (unsetThroughSlots > 0) said += ", " + unsetThroughSlots + " parameters no family member reads passed as 0 through slots";
             return unresolved == 0 ? said : said + ", " + unresolved + " slot calls without an answer";
         }
         report?.Invoke("arguments: " + facts.Dropped.Count + " functions lose " + (constants + dead) + " parameters (" + constants

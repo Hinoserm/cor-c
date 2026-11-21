@@ -789,10 +789,16 @@ public static class Prelude
             // a chore, a callback), with this language's convention. Its
             // arguments are words, a nuint each -- one register or one push on
             // i386, where a long was two -- and so are the arguments of every
-            // method it reaches, which declares (nuint, nuint, nuint) and
+            // method it reaches, which declares as many nuints or fewer and
             // answers a nuint; the call is indirect, and nothing checks the callee.
+            // Pass the callee's own words and no more: what a call through a
+            // word passes says which functions it may reach (the link's
+            // ArgumentSolver holds every slot family of no more parameters).
             // CallLong reaches one that answers a long, a figure no word holds
             // on i386 (a clock's nanoseconds).
+            public static nuint Call(nuint fn) { return 0; }
+            public static nuint Call(nuint fn, nuint a) { return 0; }
+            public static nuint Call(nuint fn, nuint a, nuint b) { return 0; }
             public static nuint Call(nuint fn, nuint a, nuint b, nuint c) { return 0; }
             public static long CallLong(nuint fn, nuint a, nuint b, nuint c) { return 0; }
             // A C function by its address, with C's rules for the call -- a

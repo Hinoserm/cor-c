@@ -35,6 +35,9 @@ public static class ArgumentSummary
         foreach (DataItem d in m.Data)
             foreach (DataReloc r in d.Relocs)
             {
+                // (A static cell's address in data: what it holds, anything
+                // reading that word may write.)
+                if (IsCell(r.Symbol)) hints.CellsWritten.Add(r.Symbol);
                 if (own.Contains(r.Symbol)) continue;
                 if (Escape.IsDescriptor(d.Name)) hints.Slotted.Add(r.Symbol); else hints.Addressed.Add(r.Symbol);
             }
@@ -75,6 +78,7 @@ public static class ArgumentSummary
                     }
                 }
             said.Size = size;
+            Cells(f, hints);
             // A parameter the function writes again is not the value it came
             // with for long: what a caller passed says nothing of its reads.
             // One a branch is taken on -- itself, or what is compared or
@@ -196,7 +200,7 @@ public static class ArgumentSummary
                         // in (Fixed: CalleePops, [StackArguments]) -- none of
                         // a descriptor's slots.
                         slots ??= Escape.VirtualCallees(new[] { f });
-                        if (!slots.TryGetValue(i, out string[]? names) || names.Length == 0) { hints.Unnamed.Add(i.Operands.Count - 1); continue; }
+                        if (!slots.TryGetValue(i, out string[]? names) || names.Length == 0) { Unnamed(f, i, hints); continue; }
                         ArgumentValue[] arguments = new ArgumentValue[i.Operands.Count - 1];
                         for (int a = 0; a < arguments.Length; a++) arguments[a] = Value(i.Operands[a + 1]);
                         foreach (string name in names) said.Calls.Add(new ArgumentCall(name, depth[at], 1, arguments));
@@ -221,6 +225,125 @@ public static class ArgumentSummary
                 ArgumentValueKind.Parameter => "p" + a.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 _ => "?",
             })) + ")";
+    }
+
+    /// <summary>A static field's cell (Lowering's `s_` labels).</summary>
+    private static bool IsCell(string name) => name.StartsWith("s_", StringComparison.Ordinal);
+
+    /// <summary>
+    /// AN UNNAMED CALL, said by where its target comes from: a slot's method
+    /// read out of an object's descriptor, of the type the call dispatches
+    /// on (SlotCalls, by the slot's plain name); else, every value the
+    /// target may hold a static cell's word or a named address or a number
+    /// (CellCalls, by cell -- a named address is a function whose address
+    /// is taken, never judged); else anything (Unnamed). Each with how many
+    /// arguments it passes, the target the first operand.
+    /// </summary>
+    private static void Unnamed(Function f, Instr call, ArgumentHints hints)
+    {
+        int count = call.Operands.Count - 1;
+        Dictionary<int, List<Instr>> defs = Definitions(f);
+        if (call.DispatchType is string declaring && call.Operands[0] is RegOperand { Reg: var target }
+            && defs.TryGetValue(target.Id, out List<Instr>? methods) && methods is [{ Op: Opcode.Load } method]
+            && method.Operands.Count == 1 && method.Operands[0] is RegOperand { Reg: var table }
+            && defs.TryGetValue(table.Id, out List<Instr>? tables) && tables is [{ Op: Opcode.Load, Offset: 0 }])
+        {
+            Add(hints.SlotCalls, Escape.VirtualCallee(declaring, method.Offset), count);
+            return;
+        }
+        HashSet<string> cells = new(StringComparer.Ordinal);
+        HashSet<int> parameters = new();
+        if (!Sources(f, defs, call.Operands[0], cells, 8, new HashSet<int>(), parameters)) { hints.Unnamed.Add(count); return; }
+        foreach (string cell in cells) Add(hints.CellCalls, cell, count);
+        foreach (int k in parameters) Add(hints.ParamCalls, ParameterName(f, k), count);
+
+        static void Add(SortedDictionary<string, SortedSet<int>> calls, string name, int count)
+        {
+            if (!calls.TryGetValue(name, out SortedSet<int>? counts)) calls[name] = counts = new();
+            counts.Add(count);
+        }
+    }
+
+    /// <summary>A function's parameter as the hints name it: `k:function`.</summary>
+    internal static string ParameterName(Function f, int k) => k.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + f.Name;
+
+    /// <summary>Every instruction writing each register of a function, by its id.</summary>
+    private static Dictionary<int, List<Instr>> Definitions(Function f)
+    {
+        Dictionary<int, List<Instr>> defs = new();
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                if (i.Dest is { } d) (defs.TryGetValue(d.Id, out List<Instr>? l) ? l : defs[d.Id] = new()).Add(i);
+        return defs;
+    }
+
+    /// <summary>
+    /// Whether every value `o` may hold is a number, a named address, a
+    /// word read whole from a static cell (each added to `cells`), or a
+    /// parameter's value as it came in, never written in the function (each
+    /// added to `parameters`, where it is asked for): through copies,
+    /// nothing else.
+    /// </summary>
+    private static bool Sources(Function f, Dictionary<int, List<Instr>> defs, Operand o, HashSet<string> cells, int depth, HashSet<int> seen,
+        HashSet<int>? parameters = null)
+    {
+        if (o is ImmOperand or SymOperand) return true;
+        if (o is not RegOperand { Reg: var r } || depth == 0) return false;
+        int index = f.Params.IndexOf(r);
+        if (index >= 0)
+        {
+            if (parameters is null || defs.ContainsKey(r.Id)) return false;
+            parameters.Add(index);
+            return true;
+        }
+        if (!defs.TryGetValue(r.Id, out List<Instr>? made)) return false;
+        if (!seen.Add(r.Id)) return true;
+        foreach (Instr d in made)
+        {
+            if (d.Op == Opcode.Copy && d.Operands.Count == 1)
+            {
+                if (!Sources(f, defs, d.Operands[0], cells, depth - 1, seen, parameters)) return false;
+            }
+            else if (d.Op == Opcode.Load && !d.Device && d.Operands.Count == 1 && d.Operands[0] is SymOperand { Name: var cell } && IsCell(cell)
+                && d.Size == IrTypes.Word.Bytes())
+                cells.Add(cell);
+            else return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// What a function does with static cells (ArgumentHints.CellsWritten):
+    /// a cell it writes with what is not a number or a named address, or
+    /// whose address it uses but to read or write the cell.
+    /// </summary>
+    private static void Cells(Function f, ArgumentHints hints)
+    {
+        Dictionary<int, List<Instr>>? defs = null;
+        foreach (Block b in f.Blocks)
+            foreach (Instr i in b.Instrs)
+                for (int k = 0; k < i.Operands.Count; k++)
+                {
+                    if (i.Operands[k] is not SymOperand { Name: var cell } || !IsCell(cell)) continue;
+                    if (k == 0 && i.Op == Opcode.Load && i.Operands.Count == 1) continue;
+                    if (k == 0 && i.Op == Opcode.Store && i.Operands.Count == 2)
+                    {
+                        HashSet<string> from = new(StringComparer.Ordinal);
+                        HashSet<int> parameters = new();
+                        defs ??= Definitions(f);
+                        if (Sources(f, defs, i.Operands[1], from, 8, new HashSet<int>(), parameters) && from.Count == 0)
+                        {
+                            // (A parameter's value: the callers say what it is.)
+                            foreach (int p in parameters)
+                            {
+                                if (!hints.CellParams.TryGetValue(cell, out SortedSet<string>? those)) hints.CellParams[cell] = those = new(StringComparer.Ordinal);
+                                those.Add(ParameterName(f, p));
+                            }
+                            continue;
+                        }
+                    }
+                    hints.CellsWritten.Add(cell);
+                }
     }
 
     /// <summary>
@@ -445,10 +568,29 @@ public static class ArgumentSummary
                         through.PassedByValue = i.PassedByValue;
                         b.Instrs[at] = through;
                     }
-                    else if (i.Op == Opcode.CallIndirect && facts.DroppedSlots.Count > 0 && !NativeCall.Is(i))
+                    else if (i.Op == Opcode.CallIndirect && (facts.DroppedSlots.Count > 0 || facts.UnsetSlots.Count > 0) && !NativeCall.Is(i))
                     {
                         slots ??= Escape.VirtualCallees(new[] { f });
                         if (!slots.TryGetValue(i, out string[]? names)) continue;
+                        // AN ARGUMENT NO FUNCTION THE SLOT REACHES READS, its
+                        // place kept (ArgumentFacts.UnsetSlots): passed as 0,
+                        // what it was made of dead here. Not a struct passed
+                        // by value, whose copy the call itself may make.
+                        int[]? unset = null;
+                        foreach (string name in names)
+                            if (facts.UnsetSlots.TryGetValue(name, out int[]? of) || facts.UnsetSlots.TryGetValue(VirtualTargets.Plain(name), out of))
+                            {
+                                if (unset is not null && !unset.AsSpan().SequenceEqual(of)) { unset = null; break; }
+                                unset = of;
+                            }
+                        if (unset is not null)
+                            foreach (int k in unset)
+                            {
+                                if (1 + k >= i.Operands.Count || ((i.PassedByValue >> k) & 3) != 0 || i.Operands[1 + k] is ImmOperand
+                                    || i.Operands[1 + k].Type is not (IrType.I32 or IrType.I64)) continue;
+                                i.Operands[1 + k] = new ImmOperand(0, i.Operands[1 + k].Type);
+                                changed = true;
+                            }
                         // By its own name, or the one every form of it shares.
                         int[]? lost = null;
                         foreach (string name in names)

@@ -64,6 +64,7 @@ public static partial class Program
         Try("closed-image IR retention", () => { IrReachabilityTests.Run(); Check(true, "IR retention graph"); });
         Try("link-time lifetime hints", () => { LifetimeTests.Run(); Check(true, "lifetime hints"); });
         Try("link-time region hints", () => { RegionTests.Run(); Check(true, "region hints"); });
+        Try("slot families beside calls nothing names", () => { ArgumentSolverTests.Run(); Check(true, "argument solver families"); });
         EscapeEngine();
         Try("image-wide managed metadata", () => { ManagedDirectoryTests.Run(); Check(true, "unit metadata directory"); });
         Try("duplicate code cut under its stack maps", () => { DuplicateCutterTests.Run(); Check(true, "duplicate cutter"); });

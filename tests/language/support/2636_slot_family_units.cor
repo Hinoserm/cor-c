@@ -1,18 +1,21 @@
-// The other unit of test 2636: two classes whose methods fill two slots of one
-// abstract class, Five of five parameters and Six of six.
+// The other unit of test 2636: two classes whose methods fill three slots of
+// one abstract class: Five of five parameters, Six of six, Probe of two.
 
 public abstract class Op
 {
     public abstract int Five(int a, int b, int c, int scale);
     public abstract int Six(int a, int b, int c, int d, int scale);
+    public abstract int Probe(int ignored);
 }
 public sealed class Add : Op
 {
     public override int Five(int a, int b, int c, int scale) => (a + b + c) * scale;
     public override int Six(int a, int b, int c, int d, int scale) => (a + b + c + d) * scale;
+    public override int Probe(int ignored) => 11;
 }
 public sealed class Mul : Op
 {
     public override int Five(int a, int b, int c, int scale) => a * b * c * scale + 1;
     public override int Six(int a, int b, int c, int d, int scale) => a * b * c * d * scale + 2;
+    public override int Probe(int ignored) => 13;
 }

@@ -704,14 +704,30 @@ A function whose address is taken, or that is named for others, or called
 from code the link does not see, keeps all of its arguments; it may still
 have versions and a way in, which its own name and parameters leave as they
 were. A slot's family is judged only at a link of a closed image -- one
-module compiled whole sees no descriptor's every reader -- and only where
-no call through an address nothing names (the runtime's hooks, Sys.Call)
-passes as many arguments as its members have parameters, or more: such a
-call may be of a slot's word read raw, and a callee of fewer parameters
-reads as many as it has. A call through a slot the link cannot answer
-(a descriptor holding foreign code there) counts the same. The runtime's
-such calls (its hooks, Sys.Call) pass at most three words today; the link
-reads the most any unit passes.
+module compiled whole sees no descriptor's every reader -- and a member's
+address is never taken, or it keeps its parameters. A function's address
+is then only in descriptors, and a call through a word nothing names
+reaches a member only if the word was read out of a descriptor. So each
+such call is said by where its target comes from:
+
+- a static cell (`s_...`) written in every unit only with numbers and
+  named addresses, or with a setter's parameter that every call of the
+  setter gives one (through the callers' own parameters too; a setter
+  nothing calls gives nothing), its address never taken: it reaches no
+  member;
+- a parameter of which the same holds: the same;
+- the method read out of an object's descriptor at a slot of the type the
+  call dispatches on: every function that slot holds keeps its parameters;
+- anything else: it may reach any member of no more parameters than it
+  passes arguments (a callee of fewer reads as many as it has).
+
+A call through a slot the link cannot answer (a descriptor holding
+foreign code there) counts as the last. Sys.Call takes from none to three
+words, and each of the runtime's calls through words it reads out of
+tables (an image's initialisers, a struct's copier, a heap visitor)
+passes exactly its callee's. A family that is held keeps its parameters
+where they are, and one no member reads is passed as 0 through its slots:
+whatever calls a member finds the layout it had.
 `--no-argument-facts` turns the judging off.
 
 ## Exceptions

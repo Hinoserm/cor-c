@@ -4,6 +4,7 @@
 // expect-output:
 // 1060760 437400
 // 60 2401
+// 480 40
 //
 // Every virtual call of Five passes scale 3, and of Six scale 7, judged
 // over the whole program at the link. The runtime's library calls words
@@ -13,7 +14,10 @@
 // of it named, loses its constant parameters. Five is also made a delegate
 // of: the delegate's closure calls Five through its slot with what the
 // delegate was given, so Five's family keeps its scale and the delegate's
-// call gets what it passed. Output as .NET 10 says it.
+// call gets what it passed. Probe's family reads no argument and has two
+// parameters, which those calls may reach: its argument keeps its place,
+// passed as 0, and Costly -- a call, not pure -- is still made every
+// time. Output as .NET 10 says it.
 
 using System;
 using System.Runtime.CompilerServices;
@@ -22,6 +26,9 @@ static class Program
     static Op[] _ops = { new Add(), new Mul() };
     [MethodImpl(MethodImplOptions.NoInlining)]
     static Op Pick(int i) => _ops[i & 1];
+    static int _costly;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Costly(int i) { _costly++; return i * 7; }
     static int Main(string[] args)
     {
         long five = 0, six = 0;
@@ -36,6 +43,12 @@ static class Program
         Func<int, int, int, int, int> f = Pick(args.Length).Five;
         Func<int, int, int, int, int> g = Pick(args.Length + 1).Five;
         Console.WriteLine(f(1, 2, 3, 10) + " " + g(2, 3, 4, 100));
+        // Probe's family reads no argument, and has two parameters, as few
+        // as the runtime's calls through words pass: its argument stays in
+        // its place, passed as 0, and what made it is not made.
+        long probes = 0;
+        for (int i = 0; i < 40; i++) probes += Pick(i).Probe(Costly(i));
+        Console.WriteLine(probes + " " + _costly);
         return 0;
     }
 }

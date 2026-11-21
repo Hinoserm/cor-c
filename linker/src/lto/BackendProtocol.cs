@@ -126,6 +126,9 @@ public static class BackendProtocol
                 writer.Write(arguments.DroppedSlots.Count);
                 foreach ((string slot, int[] gone) in arguments.DroppedSlots)
                 { WriteText(writer, slot); writer.Write(gone.Length); foreach (int k in gone) writer.Write(k); }
+                writer.Write(arguments.UnsetSlots.Count);
+                foreach ((string slot, int[] unset) in arguments.UnsetSlots)
+                { WriteText(writer, slot); writer.Write(unset.Length); foreach (int k in unset) writer.Write(k); }
                 // The structs that come as their words: by function, each place and its offsets.
                 writer.Write(arguments.Splits.Count);
                 foreach ((string name, ArgumentSplit[] splits) in arguments.Splits)
@@ -375,6 +378,20 @@ public static class BackendProtocol
                         if (gone[k] < 1 || k > 0 && gone[k] <= gone[k - 1]) throw new InvalidDataException("Invalid backend argument fact");
                     }
                     if (!arguments.DroppedSlots.TryAdd(slot, gone)) throw new InvalidDataException("Duplicate backend argument fact");
+                }
+                int unsetSlots = reader.ReadInt32();
+                if (unsetSlots < 0 || unsetSlots > 4000000) throw new InvalidDataException("Invalid backend argument fact");
+                for (int i = 0; i < unsetSlots; i++)
+                {
+                    string slot = ReadText(reader); int entries = reader.ReadInt32();
+                    if (entries < 1 || entries > 4096) throw new InvalidDataException("Invalid backend argument fact");
+                    int[] unset = new int[entries];
+                    for (int k = 0; k < entries; k++)
+                    {
+                        unset[k] = reader.ReadInt32();
+                        if (unset[k] < 1 || k > 0 && unset[k] <= unset[k - 1]) throw new InvalidDataException("Invalid backend argument fact");
+                    }
+                    if (!arguments.UnsetSlots.TryAdd(slot, unset)) throw new InvalidDataException("Duplicate backend argument fact");
                 }
                 int split = reader.ReadInt32();
                 if (split < 0 || split > 4000000) throw new InvalidDataException("Invalid backend argument fact");

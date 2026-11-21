@@ -103,7 +103,55 @@ public sealed class ArgumentHints
     /// </summary>
     public SortedSet<int> Unnamed { get; } = new();
 
-    public bool IsEmpty => Functions.Count == 0 && Addressed.Count == 0 && Slotted.Count == 0 && Unnamed.Count == 0;
+    /// <summary>
+    /// THE UNNAMED CALLS WHOSE TARGET IS A STATIC CELL'S WORD (a static field,
+    /// `s_...`, read whole and called: the runtime's hooks), by the cell,
+    /// with how many arguments each passes. A cell written, in every unit,
+    /// with nothing but numbers and addresses the code names (CellsWritten
+    /// says where it is not), and whose address nothing takes, holds no word
+    /// read out of a descriptor: a call through it reaches only functions
+    /// whose address is taken, which keep their parameters (Addressed).
+    /// </summary>
+    public SortedDictionary<string, SortedSet<int>> CellCalls { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The static cells (`s_...`) the unit writes with a value it cannot say
+    /// is a number or a named address, or whose address it uses otherwise
+    /// than to read or write the cell itself (a copy of it, an argument, a
+    /// word of its data): what such a cell holds, nothing here knows.
+    /// </summary>
+    public SortedSet<string> CellsWritten { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The static cells the unit writes with a parameter's value handed in,
+    /// by cell, each with the parameters (`k:function`): such a cell holds a
+    /// named address where every call of the function passes one there, or
+    /// a number (ArgumentSolver, through the callers' own parameters too).
+    /// </summary>
+    public SortedDictionary<string, SortedSet<string>> CellParams { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The unnamed calls whose target is a parameter's value handed in, by
+    /// the parameter (`k:function`), with how many arguments each passes:
+    /// one where every call of the function passes a number or a named
+    /// address there reaches only functions whose address is taken.
+    /// </summary>
+    public SortedDictionary<string, SortedSet<int>> ParamCalls { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// THE UNNAMED CALLS SHAPED AS A SLOT'S: the method read out of an
+    /// object's descriptor, at a slot of the type the call dispatches on
+    /// (Instr.DispatchType), where the unit could not tie the object to the
+    /// one passed (Escape.VirtualCallees) -- by the slot's plain name
+    /// (VirtualTargets.Plain), with how many arguments each passes. Such a
+    /// call reaches what the slot holds in any descriptor, as the unit wrote
+    /// it, which no rewriting of the slot's calls touches (ArgumentSummary.
+    /// Apply): the families it reaches keep their parameters.
+    /// </summary>
+    public SortedDictionary<string, SortedSet<int>> SlotCalls { get; } = new(StringComparer.Ordinal);
+
+    public bool IsEmpty => Functions.Count == 0 && Addressed.Count == 0 && Slotted.Count == 0 && Unnamed.Count == 0
+        && CellCalls.Count == 0 && CellsWritten.Count == 0 && SlotCalls.Count == 0 && CellParams.Count == 0 && ParamCalls.Count == 0;
 
     internal void Write(BinaryWriter writer)
     {
@@ -155,6 +203,28 @@ public sealed class ArgumentHints
         foreach (string name in Slotted) Text(name);
         writer.Write(Unnamed.Count);
         foreach (int count in Unnamed) writer.Write(count);
+        void Counted(SortedDictionary<string, SortedSet<int>> calls)
+        {
+            writer.Write(calls.Count);
+            foreach ((string name, SortedSet<int> counts) in calls)
+            {
+                Text(name);
+                writer.Write(counts.Count);
+                foreach (int count in counts) writer.Write(count);
+            }
+        }
+        Counted(CellCalls);
+        writer.Write(CellsWritten.Count);
+        foreach (string name in CellsWritten) Text(name);
+        Counted(SlotCalls);
+        writer.Write(CellParams.Count);
+        foreach ((string cell, SortedSet<string> parameters) in CellParams)
+        {
+            Text(cell);
+            writer.Write(parameters.Count);
+            foreach (string parameter in parameters) Text(parameter);
+        }
+        Counted(ParamCalls);
     }
 
     internal static ArgumentHints Read(BinaryReader reader, long total)
@@ -241,6 +311,33 @@ public sealed class ArgumentHints
             int count = reader.ReadInt32();
             if (count < 0 || !hints.Unnamed.Add(count)) throw new ElfFormatException("Invalid argument hint unnamed call");
         }
+        void Counted(SortedDictionary<string, SortedSet<int>> calls)
+        {
+            for (int i = Count(9); i > 0; i--)
+            {
+                string name = Text();
+                SortedSet<int> counts = new();
+                for (int c = Count(4); c > 0; c--)
+                {
+                    int count = reader.ReadInt32();
+                    if (count < 0 || !counts.Add(count)) throw new ElfFormatException("Invalid argument hint unnamed call");
+                }
+                if (counts.Count == 0 || !calls.TryAdd(name, counts)) throw new ElfFormatException("Invalid argument hint unnamed call");
+            }
+        }
+        Counted(hints.CellCalls);
+        for (int i = Count(5); i > 0; i--)
+            if (!hints.CellsWritten.Add(Text())) throw new ElfFormatException("Duplicate argument hint cell");
+        Counted(hints.SlotCalls);
+        for (int i = Count(9); i > 0; i--)
+        {
+            string cell = Text();
+            SortedSet<string> parameters = new(StringComparer.Ordinal);
+            for (int p = Count(5); p > 0; p--)
+                if (!parameters.Add(Text())) throw new ElfFormatException("Duplicate argument hint cell parameter");
+            if (parameters.Count == 0 || !hints.CellParams.TryAdd(cell, parameters)) throw new ElfFormatException("Invalid argument hint cell parameters");
+        }
+        Counted(hints.ParamCalls);
         return hints;
     }
 }

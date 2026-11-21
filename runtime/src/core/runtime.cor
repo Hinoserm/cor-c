@@ -3059,7 +3059,7 @@ public static partial class Runtime
 
         if (init != 0)
         {
-            Sys.Call(init + bias, 0, 0, 0);
+            Sys.Call(init + bias);
         }
 
         nuint array = Tag(dynamic, DtInitArray);
@@ -3071,7 +3071,7 @@ public static partial class Runtime
 
             if (one != 0)
             {
-                Sys.Call(one, 0, 0, 0);
+                Sys.Call(one);
             }
         }
     }
@@ -3620,7 +3620,7 @@ public static partial class Runtime
         if (f != 0)
         {
             _atExit = 0;                // never twice, however exit is reached
-            Sys.Call(f, 0, 0, 0);
+            Sys.Call(f);
         }
     }
 
@@ -5719,7 +5719,7 @@ public static partial class Runtime
             nuint own;
             if (copier != 0)
             {
-                own = Sys.Call(copier, shared, 0, 0);
+                own = Sys.Call(copier, shared);
             }
             else
             {

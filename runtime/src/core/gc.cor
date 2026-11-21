@@ -10147,7 +10147,7 @@ public static class Gc
             if (_visitOne != 0 && vt == _visitOne)
             {
                 _visited = _visited + 1;
-                Sys.Call(_visitOneBy, block + HeaderBytes, 0, 0);
+                Sys.Call(_visitOneBy, block + HeaderBytes);
             }
             for (nuint i = 0; i < _visitCount; i++)
             {
@@ -10156,7 +10156,7 @@ public static class Gc
                 nuint by = Sys.ReadAddress(_visitPairs + (i * 2 + 1) * WordSize.Bytes);
                 if (vt == 0 || by == 0 || Sys.ReadAddress(_visitPairs + i * 2 * WordSize.Bytes) != vt) continue;
                 _visited = _visited + 1;
-                Sys.Call(by, block + HeaderBytes, 0, 0);
+                Sys.Call(by, block + HeaderBytes);
             }
             return;
         }
