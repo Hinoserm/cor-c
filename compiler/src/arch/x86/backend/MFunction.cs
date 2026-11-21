@@ -118,6 +118,17 @@ public sealed class MFunction
     public bool ColdFrames { get; set; }
 
     /// <summary>
+    /// A COLD-FRAMED FUNCTION THAT SAVES REGISTERS OR KEEPS SLOTS (ColdFrames):
+    /// laid out as a framed function is, the word its saved EBP would hold
+    /// kept and not written -- `sub esp, N + 4` then the saves on the way in,
+    /// the pops then `add esp, N + 4` on the way out -- so on the way to a
+    /// call that never returns `mov [esp + X], ebp ; lea ebp, [esp + X]` (X
+    /// the frame and the saves) makes the very frame a prologue would have:
+    /// every slot and save where the collector's map of the call says.
+    /// </summary>
+    public bool ReservedFrame { get; set; }
+
+    /// <summary>
     /// Bytes of Packed128 spill slots below the saved registers, at ESP after
     /// the prologue aligns it down to sixteen (AlignedSlots): read and
     /// written by MOVAPS. Zero in every other function.

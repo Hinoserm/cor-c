@@ -78,6 +78,12 @@ internal static class AsmText
         switch (i.Op)
         {
             case MOp.Prologue:
+                if (m.ReservedFrame)
+                {
+                    yield return $"sub esp, {m.Frame.Size + 4} ; the frame and EBP's word, not written";
+                    foreach (Gpr g in m.SavedRegs) yield return $"push {RegName((int)g, 4)}";
+                    yield break;
+                }
                 if (m.Frameless)
                 {
                     foreach (Gpr g in m.SavedRegs) yield return $"push {RegName((int)g, 4)}";
@@ -101,6 +107,13 @@ internal static class AsmText
                 }
                 yield break;
             case MOp.Epilogue:
+                if (m.ReservedFrame)
+                {
+                    for (int k = m.SavedRegs.Count - 1; k >= 0; k--) yield return $"pop {RegName((int)m.SavedRegs[k], 4)}";
+                    yield return $"add esp, {m.Frame.Size + 4}";
+                    yield return m.Source.CalleePops > 0 ? "ret " + m.Source.CalleePops : "ret";
+                    yield break;
+                }
                 if (m.Frameless)
                 {
                     if (m.Frame.Size > 0) yield return $"add esp, {m.Frame.Size}";
@@ -152,8 +165,17 @@ internal static class AsmText
             case MOp.CallKeepEaxInd:
                 if (m.ColdFrames && i.Op is MOp.Call or MOp.CallInd)
                 {
-                    yield return "push ebp";
-                    yield return "mov ebp, esp ; the frame, on the way to a call that never returns";
+                    if (m.ReservedFrame)
+                    {
+                        int x = m.Frame.Size + 4 * m.SavedRegs.Count;
+                        yield return $"mov [esp + {x}], ebp";
+                        yield return $"lea ebp, [esp + {x}] ; the frame, on the way to a call that never returns";
+                    }
+                    else
+                    {
+                        yield return "push ebp";
+                        yield return "mov ebp, esp ; the frame, on the way to a call that never returns";
+                    }
                 }
                 yield return $"call {Op(i.Operands[0], 4, true)}";
                 yield break;

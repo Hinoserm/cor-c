@@ -22,10 +22,17 @@ internal static class FramePointerFree
 {
     public static void Run(MFunction m)
     {
-        if (!m.Frameless && OnlyColdCalls(m)) { m.Frameless = true; m.ColdFrames = true; }
+        if (!m.Frameless && OnlyColdCalls(m))
+        {
+            m.Frameless = true;
+            m.ColdFrames = true;
+            m.ReservedFrame = m.SavedRegs.Count > 0 || m.Frame.Size > 0;
+        }
         if (!m.Frameless) return;
         int frame = m.Frame.Size, saved = 4 * m.SavedRegs.Count;
-        int Address(int disp) => disp switch
+        // (A reserved frame is a framed function's: where EBP would point is
+        // ESP + N + 4S, every slot and argument as far from it.)
+        int Address(int disp) => m.ReservedFrame ? frame + saved + disp : disp switch
         {
             >= 8 => frame + saved - 4 + disp,
             < 0 => frame + disp,
@@ -77,13 +84,14 @@ internal static class FramePointerFree
     /// Whether a function with a frame may have none but on the way to its
     /// calls (MFunction.ColdFrames): every call one that never returns (the
     /// selector's unreachable INT3 after it, straight or after a trap), none
-    /// through memory, nothing saved, no slot, no landing pad, no asm,
-    /// nothing that names EBP but as the base of an argument above it, and
+    /// through memory, no aligned slots, no landing pad, no asm,
+    /// nothing that names EBP but as the base of a slot or an argument (not
+    /// its own word or the return address's), and
     /// nothing that pushes, pops or writes ESP.
     /// </summary>
     private static bool OnlyColdCalls(MFunction m)
     {
-        if (m.SavedRegs.Count > 0 || m.Frame.Size != 0 || m.AlignedArea != 0 || m.FramePointerFree
+        if (m.AlignedArea != 0 || m.FramePointerFree
             || m.Source.KeepsCallerRegisters || m.Source.Blocks.Any(b => b.IsLandingPad)) return false;
         bool calls = false;
         List<(MReg Reg, Roles.Role Role, int Operand, bool InMem)> regs = new();
@@ -112,7 +120,7 @@ internal static class FramePointerFree
                 {
                     if (o is MReg { Id: (int)Gpr.Ebp or MReg.EbpDataId }) return false;
                     if (o is MMem mem && (mem.Index?.Id is (int)Gpr.Ebp or MReg.EbpDataId || mem.Base?.Id == MReg.EbpDataId
-                        || mem.Base?.Id == (int)Gpr.Ebp && mem.Disp < 8)) return false;
+                        || mem.Base?.Id == (int)Gpr.Ebp && mem.Disp is >= 0 and < 8)) return false;
                 }
                 foreach ((MReg r, Roles.Role role, int operand, bool inMem) in Allocator.RegsOf(i, regs))
                     if (r.Id == (int)Gpr.Esp && (role & Roles.Role.Def) != 0) return false;

@@ -4481,35 +4481,39 @@ public static partial class Runtime
             return bp;
         }
         // ON THE WAY TO A CALL THAT NEVER RETURNS (the compiler's ColdFrames):
-        // its frame made there, `push ebp ; mov ebp, esp` just before the
-        // call. Stopped on the move, the push made: the frame is at `sp`;
-        // on the call, both made: `bp`.
-        // (Such a function saves no register, so begins with no push -- its
-        // first byte none of 50 to 57 -- and the call's opcode, E8 or FF,
-        // follows the two: bytes of a constant are neither.)
+        // its frame made there, just before the call -- `push ebp ; mov ebp,
+        // esp`, or where the function saves registers or keeps slots (its
+        // ReservedFrame) `mov [esp + X], ebp ; lea ebp, [esp + X]`. Stopped
+        // on the call, both made: `bp`; on the second, the first made: the
+        // frame at `sp` (`sp + X`). Such a function begins with no push (its
+        // first byte none of 50 to 57), and the call's opcode, E8 or FF,
+        // follows: bytes of a constant are not all of these.
         int startsWith = Sys.Read8(at);
         if (startsWith < 0x50 || startsWith > 0x57) {
             if (pc >= at + 3 && Sys.Read8(pc - 3) == 0x55 && Sys.Read8(pc - 2) == 0x89 && Sys.Read8(pc - 1) == 0xE5
                 && (Sys.Read8(pc) == 0xE8 || Sys.Read8(pc) == 0xFF)) { return bp; }
             if (pc >= at + 1 && Sys.Read8(pc - 1) == 0x55 && Sys.Read8(pc) == 0x89 && Sys.Read8(pc + 1) == 0xE5
                 && (Sys.Read8(pc + 2) == 0xE8 || Sys.Read8(pc + 2) == 0xFF)) { return sp; }
+            if (pc >= at + 8 && Sys.Read8(pc - 4) == 0x8D && Sys.Read8(pc - 3) == 0x6C && Sys.Read8(pc - 2) == 0x24
+                && Sys.Read8(pc - 8) == 0x89 && Sys.Read8(pc - 7) == 0x6C && (Sys.Read8(pc) == 0xE8 || Sys.Read8(pc) == 0xFF)) { return bp; }
+            if (pc >= at + 14 && Sys.Read8(pc - 7) == 0x8D && Sys.Read8(pc - 6) == 0xAC && Sys.Read8(pc - 5) == 0x24
+                && Sys.Read8(pc - 14) == 0x89 && Sys.Read8(pc - 13) == 0xAC && (Sys.Read8(pc) == 0xE8 || Sys.Read8(pc) == 0xFF)) { return bp; }
+            if (pc >= at + 4 && Sys.Read8(pc) == 0x8D && Sys.Read8(pc + 1) == 0x6C && Sys.Read8(pc + 2) == 0x24
+                && Sys.Read8(pc - 4) == 0x89 && Sys.Read8(pc - 3) == 0x6C && (Sys.Read8(pc + 4) == 0xE8 || Sys.Read8(pc + 4) == 0xFF)) {
+                return sp + Sys.Read8(pc + 3);
+            }
+            if (pc >= at + 7 && Sys.Read8(pc) == 0x8D && Sys.Read8(pc + 1) == 0xAC && Sys.Read8(pc + 2) == 0x24
+                && Sys.Read8(pc - 7) == 0x89 && Sys.Read8(pc - 6) == 0xAC && (Sys.Read8(pc + 7) == 0xE8 || Sys.Read8(pc + 7) == 0xFF)) {
+                return sp + Sys.Read32(pc + 3);
+            }
         }
-        // A leaf: what of its pushes and its frame's reserving has run.
-        bool linked = Sys.Read8(at) == 0x55;
-        nuint made = 0;
-        while (true) {
-            int b = Sys.Read8(at);
-            if (b < 0x50 || b > 0x57 || b == 0x54) { break; }
-            if (at < pc) { made = made + 4; }
-            at = at + 1;
-        }
-        if (Sys.Read8(at) == 0x83 && Sys.Read8(at + 1) == 0xEC) {
-            if (pc >= at + 3) { made = made + Sys.Read8(at + 2); }
-        } else if (Sys.Read8(at) == 0x81 && Sys.Read8(at + 1) == 0xEC) {
-            if (pc >= at + 6) { made = made + Sys.Read32(at + 2); }
-        }
+        // No frame link of its own: what of its pushes and its frame's
+        // reserving has run (Prologue), its return address past them -- the
+        // caller's EBP just below it where EBP was pushed first, a link.
+        nuint ebpDepth;
+        nuint made = Prologue(at, pc, 5, out ebpDepth);
         nuint ret = sp + made;
-        if (linked && made >= 4) { return ret - 4; }
+        if (ebpDepth == 4) { return ret - 4; }
         pc = Sys.ReadAddress(ret);
         return bp;
 #endif
@@ -4534,27 +4538,45 @@ public static partial class Runtime
         if (!Lookup(pc, out name, out file, out pool, out line, out offset, false)) { return 0; }
         nuint at = pc - offset;
         if (Sys.Read8(at) == 0x55 && Sys.Read8(at + 1) == 0x89 && Sys.Read8(at + 2) == 0xE5) { return 0; }
-        // The pushes that ran, and below them the frame if it was reserved:
-        // the k-th push (from 0) is at sp + frame + 4 * (made - 1 - k).
-        nuint start = at;
+        nuint depth;
+        nuint made = Prologue(at, pc, reg, out depth);
+        // The word `depth` below the return address, which is `made` above sp.
+        return depth == 0 ? 0 : sp + made - depth;
+#endif
+    }
+
+    /// WHAT OF A FRAMELESS FUNCTION'S WAY IN HAS RUN AT `pc` (i386): its first
+    /// instructions from `at`, pushes (50 to 57, not 54) and `sub esp, n`
+    /// (83 EC n, 81 EC n32) in whatever order it has them -- a leaf its
+    /// pushes then its frame, a reserved frame (the compiler's ColdFrames)
+    /// its frame and EBP's word then its pushes -- the bytes of those that
+    /// ran, so its return address is `sp` plus that; and how far below the
+    /// return address register `reg` was pushed (0: it was not, or not yet).
+    static nuint Prologue(nuint at, nuint pc, int reg, out nuint depth) {
         nuint made = 0;
+        depth = 0;
         while (true) {
             int b = Sys.Read8(at);
-            if (b < 0x50 || b > 0x57 || b == 0x54) { break; }
-            if (at < pc) { made = made + 1; }
-            at = at + 1;
+            if (b >= 0x50 && b <= 0x57 && b != 0x54) {
+                if (at < pc) {
+                    made = made + WordSize.Bytes;
+                    if (b - 0x50 == reg) { depth = made; }
+                }
+                at = at + 1;
+                continue;
+            }
+            if (b == 0x83 && Sys.Read8(at + 1) == 0xEC) {
+                if (pc >= at + 3) { made = made + Sys.Read8(at + 2); }
+                at = at + 3;
+                continue;
+            }
+            if (b == 0x81 && Sys.Read8(at + 1) == 0xEC) {
+                if (pc >= at + 6) { made = made + Sys.Read32(at + 2); }
+                at = at + 6;
+                continue;
+            }
+            return made;
         }
-        nuint frame = 0;
-        if (Sys.Read8(at) == 0x83 && Sys.Read8(at + 1) == 0xEC) {
-            if (pc >= at + 3) { frame = Sys.Read8(at + 2); }
-        } else if (Sys.Read8(at) == 0x81 && Sys.Read8(at + 1) == 0xEC) {
-            if (pc >= at + 6) { frame = Sys.Read32(at + 2); }
-        }
-        for (nuint k = 0; k < made; k++) {
-            if (Sys.Read8(start + k) == 0x50 + reg) { return sp + frame + (made - 1 - k) * WordSize.Bytes; }
-        }
-        return 0;
-#endif
     }
 
     /// WHETHER `frame` LOOKS LIKE A FRAME, and `next` (0: not asked) like the

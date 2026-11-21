@@ -690,7 +690,7 @@ internal sealed class Encoder
             {
                 // The frame a function with none makes on its way to a call
                 // that never returns (MFunction.ColdFrames).
-                if (_m.ColdFrames) B(0x55, 0x89, 0xE5);
+                ColdFrame();
                 MImm target = (MImm)i.Operands[0];
                 B(0xE8);
                 // The displacement is from the end of the instruction, four bytes past the field.
@@ -699,7 +699,7 @@ internal sealed class Encoder
                 break;
             }
             case MOp.CallInd:
-                if (_m.ColdFrames) B(0x55, 0x89, 0xE5);
+                ColdFrame();
                 B(0xFF);
                 ModRM(2, i.Operands[0]);
                 break;
@@ -1417,12 +1417,37 @@ internal sealed class Encoder
         }
     }
 
+    /// <summary>
+    /// The frame a function with none makes on its way to a call that never
+    /// returns (MFunction.ColdFrames): `push ebp ; mov ebp, esp` where nothing
+    /// lies below its return address, else -- the word for its EBP kept
+    /// (ReservedFrame) -- `mov [esp + X], ebp ; lea ebp, [esp + X]`.
+    /// </summary>
+    private void ColdFrame()
+    {
+        if (!_m.ColdFrames) return;
+        if (!_m.ReservedFrame) { B(0x55, 0x89, 0xE5); return; }
+        int x = _m.Frame.Size + 4 * _m.SavedRegs.Count;
+        if (x <= 127) { B(0x89, 0x6C, 0x24, (byte)x); B(0x8D, 0x6C, 0x24, (byte)x); }
+        else { B(0x89, 0xAC, 0x24); D32(x); B(0x8D, 0xAC, 0x24); D32(x); }
+    }
+
     private void EncodePrologue()
     {
         // A FRAMELESS LEAF (MFunction.Frameless): its saved registers -- EBP
         // first where it gives it a value -- then its frame. Never begins
         // `push ebp; mov ebp, esp`, which is how a fault's walk tells it
         // from a framed function (Runtime.FrameAt).
+        if (_m.ReservedFrame)
+        {
+            // The frame and the word for EBP, then the saves: a framed
+            // function's layout, EBP not written.
+            int reserve = _m.Frame.Size + 4;
+            if (reserve <= 127) B(0x83, 0xEC, (byte)reserve);
+            else { B(0x81, 0xEC); D32(reserve); }
+            foreach (Gpr g in _m.SavedRegs) _out.Add((byte)(0x50 + (int)g));
+            return;
+        }
         if (_m.Frameless)
         {
             foreach (Gpr g in _m.SavedRegs) _out.Add((byte)(0x50 + (int)g));
@@ -1462,6 +1487,15 @@ internal sealed class Encoder
 
     private void EncodeEpilogue()
     {
+        if (_m.ReservedFrame)
+        {
+            for (int k = _m.SavedRegs.Count - 1; k >= 0; k--) _out.Add((byte)(0x58 + (int)_m.SavedRegs[k]));
+            int reserve = _m.Frame.Size + 4;
+            if (reserve <= 127) B(0x83, 0xC4, (byte)reserve);
+            else { B(0x81, 0xC4); D32(reserve); }
+            EncodeReturn();
+            return;
+        }
         if (_m.Frameless)
         {
             int size = _m.Frame.Size;
