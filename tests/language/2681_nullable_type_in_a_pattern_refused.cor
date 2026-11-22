@@ -1,0 +1,16 @@
+// test: nullable_type_in_a_pattern_refused
+// expect-compile-error: (15,43): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+// expect-compile-error: (15,67): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+//
+// `x is int? y` before a ')' or a ',' is a pattern naming a nullable type,
+// as Roslyn reads it, and refused (CS8116, at the type) -- not taken for
+// `? a : b` and refused as some other statement. From .NET 10 (probe
+// ~/tmp/dn/nullpat2).
+
+#nullable enable
+using System;
+static class Program
+{
+    static void F(bool a, bool b) { }
+    static int Main() { int x = 5; F(x is int? y, true); if (x is int? w) { } return 0; }
+}

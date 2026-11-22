@@ -1235,7 +1235,12 @@ public class HMAC : KeyedHashAlgorithm
         HashAlgorithm outer = HashAlgorithmName.Make(_algorithm);
         outer.Append(_outPad, 0, _outPad.Length);
         outer.Append(inside, 0, inside.Length);
-        return outer.HashAndReset();
+        byte[] made = outer.HashAndReset();
+        // What it held of the key's outer pad started again by the reset,
+        // its copy of the result wiped; the inner hash too.
+        outer.Dispose();
+        for (int i = 0; i < inside.Length; i++) inside[i] = 0;
+        return made;
     }
 }
 

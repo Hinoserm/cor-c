@@ -20193,6 +20193,22 @@ public sealed partial class Binder
                 // value boxed, at run time (Lowering.SharedSubject): never
                 // answered here as object would be.
                 bool runTime = OnlyRunTimeKnows(isx, tested);
+                // `o is string?`: a nullable reference type is no type an
+                // object has, and Roslyn refuses it in a type test (CS8650);
+                // `o is int?` asks for a boxed int, and is allowed.
+                // `x is int? y`, `o is string? s`: no pattern names a nullable
+                // type (CS8116), value or reference.
+                if (isx.Written && isx.Binding is not null && isx.Type.Nullable && !InGenericCopy())
+                {
+                    Type under = tested.IsNullableValue ? tested.Underlying : tested.AsNonNullable();
+                    Error(isx.Type.Line > 0 ? isx.Type : isx,
+                        $"CS8116: It is not legal to use nullable type '{under.Shown()}?' in a pattern; use the underlying type '{under.Shown()}' instead.");
+                }
+                if (isx.Written && isx.Binding is null && isx.Type.Nullable && tested.IsReference && !tested.IsNullableValue && !InGenericCopy())
+                {
+                    Error(isx.Type.Line > 0 ? isx.Type : isx,
+                        $"CS8650: It is not legal to use nullable reference type '{tested.AsNonNullable().Shown()}?' in an is-type expression; use the underlying type '{tested.AsNonNullable().Shown()}' instead.");
+                }
                 if (operand.IsNullableValue && !runTime)
                 {
                     if (tested.Equals(operand.Underlying))

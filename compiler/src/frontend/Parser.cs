@@ -4992,7 +4992,18 @@ public sealed class Parser
             // `[]` still is -- nothing else can follow a type there.
             bool elementMark = !allowNullable && rank == 0 && At(Tok.Question)
                                && Ahead().Kind == Tok.LBracket && Ahead(2).Kind == Tok.RBracket;
-            if ((allowNullable || elementMark) && At(Tok.Question))
+            // `(x is int?)`: nor can `? a : b` begin where nothing an
+            // expression starts with follows -- a closing bracket, a comma, a
+            // semicolon, `&&`, `||`, `==`, `!=`, the end -- so that '?' is the
+            // type's too, as Roslyn reads it.
+            // So is one with a name after it that ends there -- `x is int? y;`,
+            // `F(x is int? y, …)` -- a pattern Roslyn then refuses (CS8116,
+            // Binder); before `&&` it is still `? a : b`, as Roslyn reads it.
+            bool closingMark = !allowNullable && rank == 0 && stars == 0 && At(Tok.Question)
+                               && (Ahead().Kind is Tok.RParen or Tok.RBracket or Tok.RBrace or Tok.Comma or Tok.Semi
+                                      or Tok.AndAnd or Tok.OrOr or Tok.Eq or Tok.NotEq or Tok.End
+                                   || Ahead().Kind == Tok.Ident && Ahead(2).Kind is Tok.RParen or Tok.Comma or Tok.Semi);
+            if ((allowNullable || elementMark || closingMark) && At(Tok.Question))
             {
                 _i++;
 

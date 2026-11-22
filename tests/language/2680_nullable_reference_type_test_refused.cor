@@ -1,0 +1,13 @@
+// test: nullable_reference_type_test_refused
+// expect-compile-error: (12,76): error: CS8650: It is not legal to use nullable reference type 'string?' in an is-type expression; use the underlying type 'string' instead.
+//
+// `o is string?`: a nullable reference type is no type an object has, and
+// Roslyn refuses it in a type test (CS8650), at the type. From .NET 10
+// (probe ~/tmp/dn/nullpat).
+
+#nullable enable
+using System;
+static class Program
+{
+    static int Main() { object o = "s"; int x = 5; Console.WriteLine((o is string?) + " " + (x is int?) + " " + (o is int?)); return 0; }
+}

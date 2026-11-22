@@ -1,0 +1,16 @@
+// test: is_a_nullable_value_type
+// expect-exit: 0
+// expect-compile-warning: (15,71): warning CS0183
+// expect-output:
+// True False
+//
+// `x is int?` and `o is int?` read the '?' before a ')' as the type's, as
+// Roslyn does: over an int always true (CS0183), over an object whether it
+// holds a boxed int. From .NET 10 (probe ~/tmp/dn/nullpat).
+
+#nullable enable
+using System;
+static class Program
+{
+    static int Main() { object o = "s"; int x = 5; Console.WriteLine((x is int?) + " " + (o is int?)); return 0; }
+}
