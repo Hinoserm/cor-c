@@ -1202,6 +1202,18 @@ public class HMAC : KeyedHashAlgorithm
         return copy;
     }
 
+    /// The key's pads wiped and the inner hash let go, then the key (KeyedHashAlgorithm).
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            for (int i = 0; i < _inPad.Length; i++) _inPad[i] = 0;
+            for (int i = 0; i < _outPad.Length; i++) _outPad[i] = 0;
+            _inner.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
     protected override void HashCore(byte[] array, int ibStart, int cbSize) { _inner.Append(array, ibStart, cbSize); }
     protected override void HashCore(ReadOnlySpan<byte> source) { _inner.Append(source); }
 
