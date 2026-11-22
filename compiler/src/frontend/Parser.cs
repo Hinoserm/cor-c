@@ -399,14 +399,18 @@ public sealed class Parser
             literal.Clear();
         }
 
-        void Join(Expr piece)
+        // Joins `piece`, answering its index among the join's pieces. A HOLE
+        // IS NEVER THE FIRST: one that is a string itself (`{"a"}`, `{$"x"}`)
+        // goes behind an empty piece too, so a string with holes is always a
+        // join and each hole's place is the piece this call adds.
+        int Join(Expr piece, bool hole = false)
         {
             // A HOLE FIRST IS JOINED TO TEXT, not to the next hole: `$"{a}{b}"`
             // of two ints was `a + b`, a sum and no string at all, and `$"{n}"`
             // alone was the int. Behind an empty literal it is a join from the
             // start, and the empty piece is dropped where the join is made
             // (EmitConcat), so it costs nothing.
-            if (built is null && piece is not LiteralExpr { Kind: Lit.Str })
+            if (built is null && (hole || piece is not LiteralExpr { Kind: Lit.Str }))
             {
                 built = new LiteralExpr { Kind = Lit.Str, Text = "", Line = at.Line, Col = at.Col };
                 pieces++;
@@ -419,6 +423,7 @@ public sealed class Parser
                       Op = BinOp.Add, Left = built, Right = piece,
                       Line = at.Line, Col = at.Col,
                   };
+            return pieces - 1;
         }
 
         while (i < raw.Length)
@@ -581,10 +586,8 @@ public sealed class Parser
                 hole = Aligned(hole, alignment, at);
             }
 
-            // Its piece: the one this join adds, after the empty one a hole
-            // first is joined to.
-            holes.Add(InterpolatedParts.Hole(pieces + (built is null ? 1 : 0), format is not null, alignment is not null));
-            Join(hole);
+            int place = Join(hole, hole: true);
+            holes.Add(InterpolatedParts.Hole(place, format is not null, alignment is not null));
         }
 
         Flush();

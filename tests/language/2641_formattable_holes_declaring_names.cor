@@ -1,9 +1,11 @@
-// test: an interpolated string's holes that declare a pattern variable or an out variable, a lambda, an anonymous type -- converted to a FormattableString, each checked once; one with no holes converts too
+// test: an interpolated string's holes that declare a pattern variable or an out variable, a lambda, an anonymous type -- converted to a FormattableString, each checked once; one with no holes converts too, and holes that are strings themselves
 // expect-exit: 0
 // expect-output:
 // [5][7][8] [3]
 // 15
 // plain {{braces}}|0|plain {braces}
+// {0}{1}|a|5
+// abc|1
 //
 // Output as .NET 10 says it.
 
@@ -23,6 +25,10 @@ static class Program
         Console.WriteLine(FormattableString.Invariant($"{(o is int m ? m * 3 : -1)}"));
         FormattableString plain = $"plain {{braces}}";
         Console.WriteLine(plain.Format + "|" + plain.ArgumentCount + "|" + plain.ToString(CultureInfo.InvariantCulture));
+        FormattableString lit = $"{"a"}{o}";
+        Console.WriteLine(lit.Format + "|" + lit.GetArgument(0) + "|" + lit.GetArgument(1));
+        FormattableString sole = $"{"abc"}";
+        Console.WriteLine(sole.ToString(CultureInfo.InvariantCulture) + "|" + sole.ArgumentCount);
         return 0;
     }
 }

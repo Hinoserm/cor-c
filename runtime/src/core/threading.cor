@@ -124,6 +124,9 @@ public static class Atom
     {
         Sys.AtomicSwap32(at, 0);
         Runtime.PreemptOn();
+        // THE POOL OWED, started now the last spin lock is let go: work was
+        // posted under one before there was a pool (Scheduler.PoolOwed).
+        if (Scheduler.PoolOwed != 0) Scheduler.PayPool();
     }
 
     static bool _checked;
@@ -4163,6 +4166,7 @@ public static partial class Scheduler
         _quiet = null;
         _leaves = null;
         _deadlocks = null;
+        _settle = null;
         _sleeping = null;
         // Its one thread, as the collector's table is left (GcThreads.ForkedChild).
         _live = 1;
@@ -4224,7 +4228,9 @@ public static partial class Scheduler
     // of which throws, as the loop's one waiter does.
 
     /// The cells made with the pool (StartPool), before its first worker.
-    static AtomicCell? _quiet, _leaves, _deadlocks;
+    /// _settle is what RunUntilIdle sleeps on: moved, then woken, by every
+    /// change it waits for (Settled), where somebody watches.
+    static AtomicCell? _quiet, _leaves, _deadlocks, _settle;
 
     /// The threads asleep on a task with no deadline, linked under the gate.
     static Sleeper? _sleeping;
@@ -4234,8 +4240,7 @@ public static partial class Scheduler
     internal static void Quiet(int by)
     {
         if (_quiet is not { } quiet || _leaves is not { } leaves) return;
-        nuint at = Atom.At(quiet, Atom.FirstWord);
-        Sys.AtomicAdd32(at, by);
+        Sys.AtomicAdd32(Atom.At(quiet, Atom.FirstWord), by);
         // THE LEAVE COUNTED AFTER THE COUNT IS DOWN, never before: a look
         // (Deadlocked) that read the leaves, then the count still full, then
         // the queue this thread has since emptied, saw no leave across it
@@ -4243,7 +4248,20 @@ public static partial class Scheduler
         // After, a thread that leaves once the count was read full has its
         // leave counted before anything it goes on to do.
         if (by < 0) Sys.AtomicAdd32(Atom.At(leaves, Atom.FirstWord), 1);
-        if (Sys.Read32(Atom.At(quiet, Atom.SecondWord)) != 0) Native.Wake(at, int.MaxValue);
+        Settled();
+    }
+
+    /// Whoever waits for the pool to settle (RunUntilIdle) looks again: the
+    /// word it sleeps on moved first, so a wake that comes before it sleeps
+    /// still ends its sleep. Only where somebody watches (the quiet cell's
+    /// second word counts them).
+    static void Settled()
+    {
+        if (_quiet is not { } quiet || _settle is not { } settle) return;
+        if (Sys.Read32(Atom.At(quiet, Atom.SecondWord)) == 0) return;
+        nuint at = Atom.At(settle, Atom.FirstWord);
+        Sys.AtomicAdd32(at, 1);
+        Native.Wake(at, int.MaxValue);
     }
 
     /// Whether every thread is quiet with nothing to come (above). Asked by
@@ -4280,7 +4298,9 @@ public static partial class Scheduler
     /// ones left may all be quiet now, waiting on a task only it could have
     /// completed. Once it is not registered it may not wait on a lock as the
     /// gate waits (Atom.Turn), and the collector's own count drops only
-    /// then. A count missed would only keep a deadlock from being said.
+    /// then. EXACT OR NOTHING: a thread counted twice keeps a deadlock from
+    /// being said, but one never counted -- or counted out twice -- lets the
+    /// look call the others quiet while it runs (EndThread does it once).
     static int _live;
 
     internal static void ThreadCame()
@@ -4485,6 +4505,18 @@ public static partial class Scheduler
     static partial void PoolWorkerUnblocks();
     static partial void StackRoom(ref nuint room);
     static partial void PoolForked();
+
+    /// Set where work was posted with a spin lock held before there was a
+    /// pool (threads.cor's PoolPosted makes nothing under one): the pool
+    /// started by the lock's Exit (PayPool) once none is held.
+    internal static int PoolOwed;
+
+    internal static void PayPool()
+    {
+        nuint block = Sys.ThreadBlock();
+        if (block == 0 || Sys.ReadAddress(block + Tls.PreemptCount) != 0) return;
+        if (Sys.AtomicSwap32(Sys.AddressOf(ref PoolOwed), 0) != 0) PoolPosted();
+    }
 
     /// A completed task's continuation: run now, on this thread, when
     /// `inline` (Task.Finish asked MayRunInline) and it may be, else posted.
@@ -4968,9 +5000,10 @@ public static partial class Scheduler
     /// at all. For programs that post work without a task to wait on. WITH
     /// WORKERS, NOTHING LEFT INCLUDES THEIRS: not done until every worker is
     /// idle too, the item one took still running being work left. Asleep
-    /// meanwhile on the quiet count (Quiet), which every worker going idle
-    /// changes, or until the next timer -- a watcher counted on the count's
-    /// second word, so a worker wakes only where somebody watches.
+    /// meanwhile on the settle word (Settled), which every worker going idle
+    /// and every timer canceled moves, or until the next timer -- a watcher
+    /// counted on the quiet cell's second word, so nothing wakes anybody
+    /// where nobody watches.
     public static void RunUntilIdle()
     {
         Gate();
@@ -4999,14 +5032,14 @@ public static partial class Scheduler
             TimerEntry? next = _timerCount > 0 ? _timers[0] : null;
             long due = next != null && next.Deadline > now ? next.Deadline : NoDeadline;
 
-            if (_workers == 0 || _idle is not { } idle || _quiet is not { } quiet)
+            if (_workers == 0 || _idle is not { } idle || _quiet is not { } quiet || _settle is not { } settle)
             {
                 if (_timerCount == 0) return;
                 if (_count == 0 && due != NoDeadline) Clock.SleepUntil(due);
                 continue;
             }
 
-            nuint at = Atom.At(quiet, Atom.FirstWord);
+            nuint at = Atom.At(settle, Atom.FirstWord);
             nuint watchers = Atom.At(quiet, Atom.SecondWord);
             int seen = (int)Sys.Read32(at);
             Sys.AtomicAdd32(watchers, 1);
@@ -5160,7 +5193,7 @@ public static partial class Scheduler
         gate.Exit();
         // A RunUntilIdle asleep to this timer looks again: it may be all
         // that was left.
-        if (_quiet is { } quiet && Sys.Read32(Atom.At(quiet, Atom.SecondWord)) != 0) Native.Wake(Atom.At(quiet, Atom.FirstWord), int.MaxValue);
+        Settled();
     }
 
     /// Canceled entries still in the heap (TimerCanceled).

@@ -31,11 +31,13 @@ public static partial class Scheduler
     // callback runs on it, and a program is written expecting that one piece
     // of work waiting -- on a pipe, a lock, another task -- never stops the
     // rest. So here, as .NET injects its threads: the first work posted
-    // starts the pool's grower, and the grower -- never the thread that
-    // posts -- adds a worker each time work waits and none is idle, up to one
-    // a processor (Os.ProcessorCount); past that, one more only where every
-    // worker waits in its work (Runtime.BeginBlocking counts them): .NET's
-    // starvation injection, made by the event itself rather than by a clock.
+    // starts the pool with one worker and its grower, and the grower --
+    // never the thread that posts -- adds a worker each time work waits and
+    // none is idle, up to one a processor (Os.ProcessorCount); past that,
+    // one more only where every worker waits in its work
+    // (Runtime.BeginBlocking counts them): .NET's starvation injection, made
+    // by the event itself rather than by a clock. A worker above the pool's
+    // aim, idle with no timer to drive, goes after a while (WorkerLoop).
     // Nothing polls. Until the first worker runs, a thread waiting for a
     // task runs the queue itself, as the loop always did (RunUntil).
 
@@ -58,9 +60,13 @@ public static partial class Scheduler
         if (_grow is null)
         {
             // NOT WITH A SPIN LOCK HELD (Tls.PreemptCount): the start makes
-            // cells and threads, and nothing is made under one. The next post
-            // or wait made without one starts it (RunUntil asks too).
-            if (Sys.ReadAddress(Sys.ThreadBlock() + Tls.PreemptCount) != 0) return;
+            // cells and threads, and nothing is made under one. Owed instead,
+            // and started as the last one is let go (Atom.Exit, PayPool).
+            if (Sys.ReadAddress(Sys.ThreadBlock() + Tls.PreemptCount) != 0)
+            {
+                Sys.AtomicSwap32(Sys.AddressOf(ref PoolOwed), 1);
+                return;
+            }
             // (Once: two first posts race for the start, and one makes it.)
             if (Starting().CompareExchange(0, 1) == 0) StartPool(Math.Max(1, Os.ProcessorCount()));
             return;
@@ -95,7 +101,8 @@ public static partial class Scheduler
         Native.Wake(at, 1);
     }
 
-    /// The counts and the grower, made once; the grower adds the workers.
+    /// The counts, the grower and the first worker, made once; the grower
+    /// adds the rest as work waits for them.
     static void StartPool(int target)
     {
         Gate();
@@ -107,6 +114,7 @@ public static partial class Scheduler
         _blocked = new AtomicCell();
         _leaves = new AtomicCell();
         _deadlocks = new AtomicCell();
+        _settle = new AtomicCell();
         _quiet = new AtomicCell();
         _target = target;
         _keep = target;

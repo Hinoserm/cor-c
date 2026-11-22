@@ -871,7 +871,8 @@ is posted to the scheduler's run queue, as `ContinueWith` (without
 always are. Where there are threads the queue is run by a pool made with
 the first work posted: one worker at once, a grower thread adding more up
 to the processors and past them while every worker waits in its work,
-and workers above the pool's aim retiring after twenty idle seconds. A
+and workers above the pool's aim retiring after twenty idle seconds with
+no timer pending. A
 thread waiting for a task sleeps on the task's own word; a wait nothing
 can complete -- every thread idle or waiting on a task with no deadline,
 nothing queued, no timer -- is reported as a deadlock. Where there are no

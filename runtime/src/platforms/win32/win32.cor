@@ -203,8 +203,13 @@ public static class Win32
     {
         nuint block = Sys.ThreadBlock();
         if (block == 0) return;
-        Runtime.EndBlocking();
-        Runtime.EndThread();
+        // A thread the runtime started has ended already (Thread's body:
+        // Runtime.EndThread), its block Gone: only the block to give back.
+        if (Sys.ReadAddress(block + Tls.State) != GcThreads.Gone)
+        {
+            Runtime.EndBlocking();
+            Runtime.EndThread();
+        }
         Sys.SetThreadBlock(0);
         if (block != Sys.MainThreadBlock()) VirtualFree(block, 0, MemRelease);
     }

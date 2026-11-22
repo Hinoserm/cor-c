@@ -8907,6 +8907,9 @@ public sealed partial class Binder
         {
             _r.Rewrites[interpolated] = formattable;
             CheckExpr(formattable);
+            // Checked once, and so for this call alone: a later look at one
+            // of them is a look of its own.
+            for (int i = 1; i < formattable.Args.Count; i++) _checkedOnce.Remove(formattable.Args[i]);
             return;
         }
 
