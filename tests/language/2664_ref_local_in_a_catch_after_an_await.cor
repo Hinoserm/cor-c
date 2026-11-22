@@ -1,0 +1,23 @@
+// test: ref_local_in_a_catch_after_an_await
+// expect-compile-error: CS9217
+// What `return await F();` throws comes out after the resumption, so the
+// catch begins past the await: the ref local used there is refused (CS9217),
+// as Roslyn refuses it. Checked against .NET 10.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int[] cells = { 1, 2, 3 };
+    static async Task<int> Fail() { await Task.Yield(); throw new InvalidOperationException(); }
+
+    static async Task<int> Guarded()
+    {
+        ref int r = ref cells[0];
+        try { return await Fail(); }
+        catch (InvalidOperationException) { return r; }
+    }
+
+    static int Main() => Guarded().Result;
+}

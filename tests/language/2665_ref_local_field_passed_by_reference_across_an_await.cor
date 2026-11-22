@@ -1,0 +1,25 @@
+// test: ref_local_field_passed_by_reference_across_an_await
+// expect-compile-error: CS9217
+// A struct's field reached through a ref local, passed by reference before an
+// argument that awaits: the reference is held across the await, and Roslyn
+// refuses it (CS9217). Checked against .NET 10 (probe ~/tmp/dn/asyncref6).
+
+using System;
+using System.Threading.Tasks;
+
+struct S { public int X; }
+
+static class Program
+{
+    static S[] shapes = new S[2];
+    static Task<int> Seven() => Task.FromResult(7);
+    static int N(ref int a, int b) => a + b;
+
+    static async Task<int> Pass()
+    {
+        ref S s = ref shapes[0];
+        return N(ref s.X, await Seven());
+    }
+
+    static int Main() => Pass().Result;
+}

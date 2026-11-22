@@ -1,0 +1,30 @@
+// test: ref_local_reached_by_goto_case_after_an_await
+// expect-compile-error: CS9217
+// A case reached by `goto case` from a case that awaited: the ref local
+// bound before the switch is used past that await, and Roslyn refuses it
+// (CS9217). Checked against .NET 10.
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int[] cells = { 1, 2, 3 };
+
+    static async Task<int> Pick(int k)
+    {
+        ref int r = ref cells[0];
+        switch (k)
+        {
+            case 1:
+                await Task.Yield();
+                goto case 2;
+            case 2:
+                return r;
+            default:
+                return 0;
+        }
+    }
+
+    static int Main() => Pick(1).Result;
+}

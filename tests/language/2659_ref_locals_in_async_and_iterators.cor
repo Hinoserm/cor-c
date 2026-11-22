@@ -4,6 +4,7 @@
 // 46
 // 17
 // 51
+// 20
 // 21,10,5,7
 // 21,10,5,7
 //
@@ -11,7 +12,9 @@
 // where no use is reached across an await or a yield since it was bound --
 // bound again in each loop round, pointed elsewhere after an await, read on
 // paths an await never comes back to, its value read before an await in
-// its own expression. Output from .NET 10 (probe ~/tmp/dn/asyncref2).
+// its own expression, a field assigned or a class's method called through
+// it, an await only inside a lambda. Output from .NET 10 (probe
+// ~/tmp/dn/asyncref2).
 
 using System;
 using System.Collections.Generic;
@@ -69,6 +72,35 @@ static class Program
 
     static int Add(int a, int b) => a + b;
 
+    struct Shape { public int X; public int Y; }
+    sealed class Counter { public int N; public int Bump(int by) => N += by; }
+    static Shape[] shapes = new Shape[1];
+    static Counter[] counters = { new Counter() };
+    static int Later(Func<Task<int>> f) => f().Result;
+
+    // A field assigned through it, a class's method called through it, an
+    // await only inside a lambda the expression makes: nothing kept across.
+    // Compiled, as Roslyn compiles it, and never called: .NET 10's own
+    // code for it throws NullReferenceException.
+    static async Task FieldAssigned()
+    {
+        ref Shape s = ref shapes[0];
+        s.X = await Seven();
+    }
+
+    static async Task<int> Fields()
+    {
+        ref Shape s = ref shapes[0];
+        s.X = 7;
+        await Task.Yield();
+        ref Counter c = ref counters[0];
+        int bumped = c.Bump(await Seven());
+        ref Shape t = ref shapes[0];
+        ref int y = ref shapes[0].Y;
+        y = y.CompareTo(Later(async () => await Seven())) + t.X;
+        return bumped + shapes[0].X + shapes[0].Y;
+    }
+
     static async Task<int> Seven() { await Task.Yield(); return 7; }
 
     static IEnumerable<int> Walk()
@@ -86,6 +118,7 @@ static class Program
         Console.WriteLine(Sum().Result);
         Console.WriteLine(Skipped().Result);
         Console.WriteLine(ReadBefore().Result);
+        Console.WriteLine(Fields().Result);
         Console.WriteLine(string.Join(",", Walk()));
         Console.WriteLine(string.Join(",", cells));
         return 0;

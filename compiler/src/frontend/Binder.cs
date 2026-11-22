@@ -7202,7 +7202,7 @@ public sealed partial class Binder
             CheckBlock(md.Body);
             LeaveFunctionBody();
             // A ref local in an async method or an iterator: no use across a suspension (CS9217).
-            if (_sawRefLocal && (_method.Async || md.Body.Iterator)) CheckRefLocalsAcrossSuspensions(md.Body);
+            if (_sawRefLocal && _quiet == 0 && (_method.Async || md.Body.Iterator)) CheckRefLocalsAcrossSuspensions(md.Body);
             _sawRefLocal = false;
             // Its calls resolved: CS8763 where it is marked [DoesNotReturn]
             // and can return, as C# has it.
@@ -10995,7 +10995,8 @@ public sealed partial class Binder
         try { Look(lam, closureReturns, final: true); }
         finally { _lambdaDepth--; LeaveFunctionBody(); AssignedAfter(assignedBeforeBody); }
         // An async or iterator lambda or local function's own ref locals: no use across a suspension (CS9217).
-        if (_sawRefLocal && lam.BlockBody is { } lambdaBody && (lam.Async || lambdaBody.Iterator)) CheckRefLocalsAcrossSuspensions(lambdaBody);
+        // Not in a trial binding (quiet): the real one walks it again and is heard.
+        if (_sawRefLocal && _quiet == 0 && lam.BlockBody is { } lambdaBody && (lam.Async || lambdaBody.Iterator)) CheckRefLocalsAcrossSuspensions(lambdaBody);
         _sawRefLocal = outerSawRefLocal;
         _r.FrameSize[body] = _nextSlot;
         PopScope();

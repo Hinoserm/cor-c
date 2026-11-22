@@ -25474,8 +25474,10 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStora
     // any other or one longer; the nodes of the last, unfilled level red,
     // every other black.
     private void Treed() {
-        // Full, a small set's sixteen places always are when it turns.
-        Grow(keys!.Length * 2);
+        // Full, as a small set's sixteen places are when it turns (SmallLimit
+        // fifteen); asked all the same, so a limit changed does not double
+        // the arrays for nothing.
+        if (used == keys!.Length) { Grow(keys!.Length * 2); }
         int[] made = new int[3 * keys!.Length];
         links = made;
         int full = 0;

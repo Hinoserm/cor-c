@@ -22,13 +22,17 @@ namespace Corsac.Lang;
 /// await a path never reaches crosses nothing on it.
 ///
 /// AND AS A VARIABLE ACROSS AN AWAIT LATER IN ITS OWN EXPRESSION, as Roslyn
-/// refuses it: an `await` after a ref local in one expression keeps what was
-/// read before it, and where that is the variable itself -- the target of an
-/// assignment (`r = await F()`, `r += await F()`), the receiver a value
-/// type's method is called on (`r.CompareTo(await F())`), or an argument
-/// passed by reference (`N(ref r, await F())`) -- the reference is what
-/// crosses (SpanningUse). Its value read (`r + await F()`, `M(r, await F())`)
-/// is taken before, and crosses nothing.
+/// refuses it (probes ~/tmp/dn/asyncref4, asyncref6): an `await` after a ref
+/// local in one expression keeps what was taken before it, and where that is
+/// the variable -- the local, or a struct's field reached through it -- the
+/// reference is what crosses (SpanningUse): the local assigned
+/// (`r = await F()`), a compound assignment's target (`r += await F()`,
+/// `s.X += await F()`), the receiver a value type's method is called on
+/// (`r.CompareTo(await F())`, `s.Inner.Get(await F())`), an argument passed
+/// by reference to a method or a constructor (`N(ref s.X, await F())`). A
+/// value read (`r + await F()`, `M(r, await F())`), a field of it assigned
+/// (`s.X = await F()`), a class's method called through it, and an await
+/// inside a lambda the expression only makes, cross nothing.
 ///
 /// A lambda and a local function are bodies of their own, walked when they
 /// are bound (an async or iterator one); a ref local is never captured
@@ -56,8 +60,9 @@ public sealed partial class Binder
     {
         public readonly Dictionary<LocalSym, int> Index = new(ReferenceEqualityComparer.Instance);
         public int Words;
-        public Crossed Exit = DeadCrossed;
-        public Crossed Gotos = DeadCrossed;
+        // What reaches each label by a goto, gathered round after round
+        // until no label gains (a goto back over a suspension).
+        public readonly Dictionary<string, Crossed> Labels = new(StringComparer.Ordinal);
         public readonly List<CrossLoop> Loops = new();
         public readonly List<Block> Finallys = new();
         public readonly List<Crossed> Tries = new();
@@ -67,6 +72,8 @@ public sealed partial class Binder
     {
         public Crossed Break = DeadCrossed;
         public Crossed Continue = DeadCrossed;
+        // A switch's: what `goto case` and `goto default` bring to its cases.
+        public Crossed CaseGotos = DeadCrossed;
         public int Finallys;
         public bool Switch;
     }
@@ -94,13 +101,19 @@ public sealed partial class Binder
         return true;
     }
 
-    /// <summary>Every ref local crossed: a suspension.</summary>
+    /// <summary>
+    /// Every ref local crossed: a suspension. Seen by every try around it at
+    /// once: what the awaited task throws comes out after the resumption, in
+    /// the middle of a statement whose end may never come (`return await F();`).
+    /// </summary>
     private static Crossed Suspended(Crossed c, CrossWalk w)
     {
         if (c.Dead) return c;
         ulong[] all = new ulong[w.Words];
         for (int i = 0; i < w.Index.Count; i++) all[i >> 6] |= 1UL << (i & 63);
-        return new Crossed(false, all);
+        Crossed crossed = new(false, all);
+        for (int open = 0; open < w.Tries.Count; open++) w.Tries[open] = JoinCrossed(w.Tries[open], crossed);
+        return crossed;
     }
 
     /// <summary>One ref local bound afresh.</summary>
@@ -131,13 +144,31 @@ public sealed partial class Binder
         }
         if (w.Index.Count == 0) return;
         w.Words = (w.Index.Count + 63) >> 6;
-        Crossed start = new(false, new ulong[w.Words]);
-        if (body is Stmt s) WalkCrossStmt(s, start, w);
-        else if (body is Expr e) WalkCrossExpr(e, start, w);
+        // Round after round while a label gains from a goto later in the
+        // text; each round only adds, so the rounds end.
+        for (int round = 0; round <= w.Index.Count + 2; round++)
+        {
+            Dictionary<string, Crossed> before = new(w.Labels, StringComparer.Ordinal);
+            Crossed start = new(false, new ulong[w.Words]);
+            if (body is Stmt s) WalkCrossStmt(s, start, w);
+            else if (body is Expr e) WalkCrossExpr(e, start, w);
+            bool same = before.Count == w.Labels.Count;
+            foreach ((string label, Crossed now) in w.Labels)
+            {
+                if (!same) break;
+                same = before.TryGetValue(label, out Crossed was) && SameCrossed(was, now);
+            }
+            if (same) break;
+        }
     }
+
+    private static Crossed LabelIn(CrossWalk w, string label) => w.Labels.TryGetValue(label, out Crossed c) ? c : DeadCrossed;
 
     private void ReportCrossed(NameExpr use)
     {
+        // Not while quiet (a lambda's first, trial binding): said, and kept
+        // from being said again, only where it is heard.
+        if (_quiet > 0) return;
         if (_refAcrossReported.Add(use))
         {
             Error(use, $"CS9217: '{use.Name}' is a ref local, and an 'await' or 'yield' since it was bound would keep it across a suspension: "
@@ -149,7 +180,7 @@ public sealed partial class Binder
     {
         if (c.Dead)
         {
-            if (s is LabeledStmt label && !w.Gotos.Dead) return WalkCrossStmt(label.Body, w.Gotos, w);
+            if (s is LabeledStmt label && !LabelIn(w, label.Label).Dead) return WalkCrossStmt(label.Body, LabelIn(w, label.Label), w);
             if (s is Block dead)
             {
                 foreach (Stmt one in dead.Statements) c = WalkCrossStmt(one, c, w);
@@ -213,13 +244,13 @@ public sealed partial class Binder
 
             case ReturnStmt r:
                 if (r.Value is not null) c = WalkCrossExpr(r.Value, c, w);
-                w.Exit = JoinCrossed(w.Exit, CrossThroughFinallys(c, w, 0));
+                CrossThroughFinallys(c, w, 0);
                 return DeadCrossed;
 
             case YieldStmt y:
                 if (y.Value is null)
                 {
-                    w.Exit = JoinCrossed(w.Exit, CrossThroughFinallys(c, w, 0));
+                    CrossThroughFinallys(c, w, 0);
                     return DeadCrossed;
                 }
                 // The value is read before the iterator hands it out.
@@ -232,19 +263,31 @@ public sealed partial class Binder
             case SwitchStmt sw:
             {
                 c = WalkCrossExpr(sw.Subject, c, w);
-                CrossLoop frame = new() { Switch = true, Finallys = w.Finallys.Count };
-                w.Loops.Add(frame);
+                // Round again while a `goto case` brings a case more than it had.
+                Crossed caseGotos = DeadCrossed;
                 Crossed ends = DeadCrossed;
+                CrossLoop frame = new() { Switch = true, Finallys = w.Finallys.Count };
                 bool hasDefault = false;
-                foreach (SwitchCase one in sw.Cases)
+                for (int round = 0; round <= w.Index.Count + 1; round++)
                 {
-                    Crossed at = c;
-                    if (one.Pattern is null) hasDefault = true;
-                    else at = WalkCrossExpr(one.Pattern, at, w);
-                    foreach (Stmt inner in one.Body) at = WalkCrossStmt(inner, at, w);
-                    ends = JoinCrossed(ends, at);
+                    frame = new CrossLoop { Switch = true, Finallys = w.Finallys.Count };
+                    w.Loops.Add(frame);
+                    ends = DeadCrossed;
+                    hasDefault = false;
+                    foreach (SwitchCase one in sw.Cases)
+                    {
+                        Crossed at = c;
+                        if (one.Pattern is null) hasDefault = true;
+                        else at = WalkCrossExpr(one.Pattern, at, w);
+                        at = JoinCrossed(at, caseGotos);
+                        foreach (Stmt inner in one.Body) at = WalkCrossStmt(inner, at, w);
+                        ends = JoinCrossed(ends, at);
+                    }
+                    w.Loops.RemoveAt(w.Loops.Count - 1);
+                    Crossed again = JoinCrossed(caseGotos, frame.CaseGotos);
+                    if (SameCrossed(again, caseGotos)) break;
+                    caseGotos = again;
                 }
-                w.Loops.RemoveAt(w.Loops.Count - 1);
                 if (!hasDefault) ends = JoinCrossed(ends, c);
                 return JoinCrossed(ends, frame.Break);
             }
@@ -255,20 +298,25 @@ public sealed partial class Binder
                 if (ts.Finally is not null) w.Finallys.Add(ts.Finally);
                 int tryAt = w.Tries.Count - 1;
                 Crossed body = WalkCrossStmt(ts.Body, c, w);
-                Crossed observed = JoinCrossed(w.Tries[tryAt], body);
+                // What a catch may begin with: any point of the body, not
+                // another catch's (no catch takes what its sibling throws).
+                Crossed thrown = JoinCrossed(w.Tries[tryAt], body);
+                w.Tries[tryAt] = DeadCrossed;
                 Crossed ends = body;
                 foreach (CatchClause cc in ts.Catches)
                 {
-                    Crossed at = observed;
+                    Crossed at = thrown;
                     if (cc.When is not null) at = WalkCrossExpr(cc.When, at, w);
                     ends = JoinCrossed(ends, WalkCrossStmt(cc.Body, at, w));
-                    observed = JoinCrossed(observed, w.Tries[tryAt]);
                 }
+                // And what the finally may begin with on the way out of an
+                // exception: the body's, or a catch's (gathered in the slot).
+                Crossed failing = JoinCrossed(thrown, w.Tries[tryAt]);
                 w.Tries.RemoveAt(tryAt);
                 if (ts.Finally is null) return ends;
                 w.Finallys.RemoveAt(w.Finallys.Count - 1);
                 // On the way out of an exception (it goes on after), and on the normal way out.
-                WalkCrossStmt(ts.Finally, JoinCrossed(observed, ends), w);
+                WalkCrossStmt(ts.Finally, JoinCrossed(failing, ends), w);
                 return WalkCrossStmt(ts.Finally, ends, w);
             }
 
@@ -291,17 +339,27 @@ public sealed partial class Binder
                 }
                 return DeadCrossed;
 
+            // To a case of the switch it is in: its cases begin with it too.
             case GotoCaseStmt gc:
-                if (gc.Value is not null) WalkCrossExpr(gc.Value, c, w);
-                w.Gotos = JoinCrossed(w.Gotos, c);
+                if (gc.Value is not null) c = WalkCrossExpr(gc.Value, c, w);
+                for (int i = w.Loops.Count - 1; i >= 0; i--)
+                {
+                    if (w.Loops[i].Switch)
+                    {
+                        w.Loops[i].CaseGotos = JoinCrossed(w.Loops[i].CaseGotos, CrossThroughFinallys(c, w, w.Loops[i].Finallys));
+                        break;
+                    }
+                }
                 return DeadCrossed;
 
-            case GotoStmt:
-                w.Gotos = JoinCrossed(w.Gotos, c);
+            // Out through every finally open, as a jump out of them: sound
+            // wherever the label is.
+            case GotoStmt g:
+                w.Labels[g.Label] = JoinCrossed(LabelIn(w, g.Label), CrossThroughFinallys(c, w, 0));
                 return DeadCrossed;
 
             case LabeledStmt l:
-                return WalkCrossStmt(l.Body, JoinCrossed(c, w.Gotos), w);
+                return WalkCrossStmt(l.Body, JoinCrossed(c, LabelIn(w, l.Label)), w);
 
             default:
             {
@@ -439,6 +497,26 @@ public sealed partial class Binder
            && t.Symbol is not { Kind: TypeKind.Class or TypeKind.Interface };
 
     /// <summary>
+    /// The ref local a variable is, or holds as a struct's field (`s`,
+    /// `s.X`, `s.Inner.Y`): the name it is reached through, or null.
+    /// </summary>
+    private NameExpr? RefLocalRoot(Expr e, CrossWalk w)
+    {
+        while (e is MemberExpr { Target: { } inner } && _r.TypeOf(inner) is { } held && ValueTyped(held)) e = inner;
+        return e is NameExpr n && RefLocalOf(n, w) >= 0 ? n : null;
+    }
+
+    /// <summary>Whether an expression awaits in this body: an await inside a lambda it only makes is the lambda's.</summary>
+    private bool AwaitsHere(Expr e)
+    {
+        foreach (Node n in SafetyNodes(e))
+        {
+            if (n is AwaitExpr) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
     /// A ref local used as the variable it is, by an expression whose own
     /// later part awaits: the reference is held across the suspension.
     /// </summary>
@@ -446,32 +524,41 @@ public sealed partial class Binder
     {
         switch (e)
         {
-            case AssignExpr { Target: NameExpr target } assign
-                when assign.Value is not RefArgExpr && RefLocalOf(target, w) >= 0 && HoldsAwait(assign.Value):
+            // The local assigned, or any compound assignment's target through it.
+            case AssignExpr assign when assign.Value is not RefArgExpr && AwaitsHere(assign.Value)
+                && (assign.Op is null ? (assign.Target is NameExpr own && RefLocalOf(own, w) >= 0 ? own : null)
+                                      : RefLocalRoot(assign.Target, w)) is { } target:
                 ReportCrossed(target);
                 return;
             case CallExpr call:
             {
-                if (call.Target is MemberExpr { Target: NameExpr receiver } && RefLocalOf(receiver, w) >= 0
-                    && _r.Resolved.TryGetValue(receiver, out Sym? held) && held is LocalSym { Type: var heldType } && ValueTyped(heldType)
-                    && call.Args.Any(HoldsAwait))
+                // A value type's method, called on the variable itself.
+                if (call.Target is MemberExpr { Target: { } receiver } && _r.TypeOf(receiver) is { } receiverType && ValueTyped(receiverType)
+                    && RefLocalRoot(receiver, w) is { } root && call.Args.Any(AwaitsHere))
                 {
-                    ReportCrossed(receiver);
+                    ReportCrossed(root);
                 }
-                MethodSymbol? callee = _r.Calls.TryGetValue(call, out MethodSymbol? named) ? named : null;
-                for (int i = 0; i < call.Args.Count; i++)
-                {
-                    Expr arg = call.Args[i];
-                    // By reference: written `ref`, `out` or `in`, or an `in` parameter's.
-                    NameExpr? byReference = arg is RefArgExpr { Target: NameExpr written } ? written
-                        : arg is NameExpr plain && callee is not null && i < callee.Params.Count && callee.Params[i].ReadOnly ? plain : null;
-                    if (byReference is null || RefLocalOf(byReference, w) < 0) continue;
-                    for (int later = i + 1; later < call.Args.Count; later++)
-                    {
-                        if (HoldsAwait(call.Args[later])) { ReportCrossed(byReference); break; }
-                    }
-                }
+                ByReferenceAcross(call.Args, _r.Calls.TryGetValue(call, out MethodSymbol? named) ? named : null, w);
                 return;
+            }
+            case NewExpr made:
+                ByReferenceAcross(made.Args, _r.NewConstructors.TryGetValue(made, out MethodSymbol? ctor) ? ctor : null, w);
+                return;
+        }
+    }
+
+    /// <summary>An argument passed by reference -- `ref`, `out`, `in`, or to an `in` parameter -- before one that awaits.</summary>
+    private void ByReferenceAcross(IReadOnlyList<Expr> args, MethodSymbol? callee, CrossWalk w)
+    {
+        for (int i = 0; i < args.Count; i++)
+        {
+            Expr arg = args[i];
+            Expr? passed = arg is RefArgExpr { Target: { } written } ? written
+                : callee is not null && i < callee.Params.Count && callee.Params[i].ReadOnly ? arg : null;
+            if (passed is null || RefLocalRoot(passed, w) is not { } root) continue;
+            for (int later = i + 1; later < args.Count; later++)
+            {
+                if (AwaitsHere(args[later])) { ReportCrossed(root); break; }
             }
         }
     }
