@@ -246,15 +246,15 @@ public static partial class Scheduler
 
 /// Timer's overload over a wait handle, in the file that has WaitHandle
 /// (the core runtime, which a kernel compiles too, has none): disposed, and
-/// `notifyObject` signalled; false where it was already.
+/// `notifyObject` signalled once no callback runs; false where it was already.
 public sealed partial class Timer
 {
     public bool Dispose(System.Threading.WaitHandle notifyObject)
     {
         ArgumentNullException.ThrowIfNull(notifyObject);
-        if (Disposed) return false;
-        Dispose();
-        if (notifyObject is System.Threading.EventWaitHandle signal) signal.Set();
+        if (!DisposeOnce()) return false;
+        // Signalled once no callback runs, as .NET's is.
+        WhenIdle(() => { if (notifyObject is System.Threading.EventWaitHandle signal) signal.Set(); });
         return true;
     }
 }

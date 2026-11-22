@@ -2319,7 +2319,7 @@ public sealed partial class Lowering
                 Type chosenType = _b.TypeOf(refChosen);
                 VReg chosenAt = RefConditionalAddress(refChosen);
                 // A struct's address is its bytes' (RefConditionalAddress): in line there.
-                return new MemPlace(RegOperand.Of(chosenAt), 0, chosenType, Inline: IsStructValue(chosenType) || InlineElement(chosenType));
+                return new MemPlace(RegOperand.Of(chosenAt), 0, chosenType, Inline: IsStructValue(chosenType));
             }
 
             case UnaryExpr { Op: UnOp.Deref } deref:

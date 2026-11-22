@@ -63,7 +63,8 @@ static class TypeNameCache {
     internal static int Gate;       // the spin gate: 0 free, 1 held (the 32-bit atomics)
 }
 
-public static class String {
+// Partial: the hosted library adds what needs Unicode's tables (Text/normalization.cor).
+public static partial class String {
     // String.ToString: the string itself, as .NET answers it, whether or not
     // a format provider is given -- a string is already its own text.
     public static string ToString(string value) { return value; }

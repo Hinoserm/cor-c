@@ -9,15 +9,25 @@
 // own state True
 // range dueTime
 // null callback
+// active none 0
+// active unarmed 0
+// active armed 1
+// active after firing 0
+// culture flows fr-FR
+// dispose async waited 1
 // wait callback True 42
 //
 // .NET's System.Threading.Timer: a one-shot with its state, a periodic one stopped
 // from its own callback, one disposed before it was due, Change after Dispose, a
-// timer that is its own state, the argument checks; and ThreadPool's WaitCallback
-// by name. Expected output from real .NET 10.
+// timer that is its own state, the argument checks, ActiveCount counting armed
+// timers, the maker's culture flowing into the callback, DisposeAsync waiting for
+// a running callback; and ThreadPool's WaitCallback by name. Expected output
+// from real .NET 10.
 
 using System;
+using System.Globalization;
 using System.Threading;
+using System.Threading.Tasks;
 
 static class Program
 {
@@ -52,6 +62,31 @@ static class Program
 
         try { new Timer(_ => { }, null, -2, 0); } catch (ArgumentOutOfRangeException e) { Console.WriteLine("range " + e.ParamName); }
         try { new Timer(null!, null, 0, 0); } catch (ArgumentNullException e) { Console.WriteLine("null " + e.ParamName); }
+
+        Console.WriteLine("active none " + Timer.ActiveCount);
+        Timer idle = new Timer(_ => { });
+        Timer infinite = new Timer(_ => { }, null, Timeout.Infinite, Timeout.Infinite);
+        Console.WriteLine("active unarmed " + Timer.ActiveCount);
+        using ManualResetEventSlim fired = new ManualResetEventSlim();
+        Timer armed = new Timer(_ => fired.Set(), null, 20, Timeout.Infinite);
+        Console.WriteLine("active armed " + Timer.ActiveCount);
+        fired.Wait(5000); Thread.Sleep(50);
+        Console.WriteLine("active after firing " + Timer.ActiveCount);
+        idle.Dispose(); infinite.Dispose(); armed.Dispose();
+
+        CultureInfo.CurrentCulture = new CultureInfo(0x040C);
+        string? text = null;
+        using ManualResetEventSlim flowed = new ManualResetEventSlim();
+        using (new Timer(_ => { text = CultureInfo.CurrentCulture.Name; flowed.Set(); }, null, 10, Timeout.Infinite)) { flowed.Wait(5000); }
+        Console.WriteLine("culture flows " + text);
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+
+        using ManualResetEventSlim inside = new ManualResetEventSlim();
+        int finished = 0;
+        Timer slow = new Timer(_ => { inside.Set(); Thread.Sleep(200); Volatile.Write(ref finished, 1); }, null, 0, Timeout.Infinite);
+        inside.Wait(5000);
+        slow.DisposeAsync().AsTask().Wait();
+        Console.WriteLine("dispose async waited " + Volatile.Read(ref finished));
 
         using ManualResetEventSlim queued = new ManualResetEventSlim();
         WaitCallback work = s => { seen = s; queued.Set(); };

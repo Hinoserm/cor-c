@@ -20603,6 +20603,13 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// A ref conditional's arm's variable: what its check rewrote it to (a
+    /// ref-returning indexer's or member's call) or what it names.
+    /// </summary>
+    private Expr RefArmTarget(RefArgExpr arm)
+        => _r.Rewrites.TryGetValue(arm, out Expr? rewritten) && rewritten is RefArgExpr through ? through.Target : arm.Target;
+
+    /// <summary>
     /// A READONLY FIELD IS WRITTEN ONLY WHERE C# SAYS: in a variable
     /// initialiser or a constructor of its own type -- a static one's in the
     /// static constructor (CS0198), an instance one's in an instance
@@ -20613,13 +20620,6 @@ public sealed partial class Binder
     /// the initialisers moved into StaticInit$ and its kin, a closure's, a
     /// record's -- write what they were made to.
     /// </summary>
-    /// <summary>
-    /// A ref conditional's arm's variable: what its check rewrote it to (a
-    /// ref-returning indexer's or member's call) or what it names.
-    /// </summary>
-    private Expr RefArmTarget(RefArgExpr arm)
-        => _r.Rewrites.TryGetValue(arm, out Expr? rewritten) && rewritten is RefArgExpr through ? through.Target : arm.Target;
-
     private string? ReadOnlyField(Expr target)
     {
         // A REF CONDITIONAL: read-only where either arm is.

@@ -173,7 +173,8 @@ internal static class LibraryNamespaces
             "MatchCollection", "MatchEvaluator", "Regex", "RegexMatchTimeoutException", "RegexOptions",
             "RegexParseError", "RegexParseException");
         In("System.Threading", "CancellationToken", "CancellationTokenRegistration", "CancellationTokenSource",
-            "ManualResetEventSlim", "Monitor", "SynchronizationLockException", "ThreadPool", "Timeout");
+            "ITimer", "ManualResetEventSlim", "Monitor", "SynchronizationLockException", "ThreadPool", "Timeout", "Timer",
+            "TimerCallback", "WaitCallback");
         In("System.Threading.Tasks", "Parallel", "ParallelLoopResult", "Task", "TaskCanceledException", "TaskCompletionSource",
             "TaskCompletionSource`1", "TaskStatus", "Task`1");
         return table;

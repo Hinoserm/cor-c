@@ -5107,10 +5107,15 @@ public sealed partial class Lowering
         // as a struct passed by reference has it (StructReference).
         Type type = _b.TypeOf(chosen);
         bool structure = IsStructValue(type);
+        // UNDER `&` (pins): each arm as `&` takes that variable alone -- a
+        // struct local's bytes, anything else its place, its owner kept alive.
         VReg Arm(Expr arm)
         {
             Expr target = _b.Rewrites.TryGetValue(arm, out Expr? rewritten) && rewritten is RefArgExpr through ? through.Target : ((RefArgExpr)arm).Target;
-            return structure ? StructReference(target, type) : AddressOf(arm, target, pins);
+            if (!structure) return AddressOf(arm, target, pins);
+            if (!pins) return StructReference(target, type);
+            bool plainLocal = target is NameExpr named && _b.Resolved.TryGetValue(named, out Sym? held) && held is LocalSym { IsRef: false } or ParamSym { ByRef: false };
+            return plainLocal ? StructReference(target, type) : AddressOf(arm, target, pins: true);
         }
         VReg address = _f.NewReg(IrTypes.Word, "refcond");
         Block then = _f.NewBlock("refthen"), other = _f.NewBlock("refelse"), end = _f.NewBlock("refend");

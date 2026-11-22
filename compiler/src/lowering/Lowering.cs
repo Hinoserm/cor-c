@@ -2427,7 +2427,7 @@ public sealed partial class Lowering
         ("System.Threading.Tasks", "Parallel ParallelLoopResult Task TaskStatus TaskCompletionSource TaskCanceledException TaskFactory TaskCreationOptions "
             + "TaskContinuationOptions TaskScheduler ValueTask TaskAsyncEnumerableExtensions"),
         ("System.Threading", "CancellationTokenSource CancellationToken CancellationTokenRegistration Timeout Monitor ThreadPool "
-            + "SynchronizationLockException Interlocked Volatile Thread"),
+            + "SynchronizationLockException Interlocked Volatile Thread Timer ITimer TimerCallback WaitCallback"),
         ("System.Runtime.CompilerServices", "TaskAwaiter ConfiguredTaskAwaitable YieldAwaitable RuntimeHelpers "
             + "ConfiguredCancelableAsyncEnumerable ConfiguredAsyncDisposable"),
         ("System.IO", "Path File Directory FileInfo DirectoryInfo FileSystemInfo Stream FileStream MemoryStream TextWriter TextReader "

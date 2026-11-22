@@ -3991,6 +3991,9 @@ class TimerEntry
     public long Sequence;
     public Action Callback;
     public bool Canceled;
+    /// In the scheduler's heap (AddTimerAt to RemoveTop): only then does a
+    /// cancel count toward the heap's canceled share (TimerCanceled).
+    internal bool InHeap;
 
     public TimerEntry(long deadline, long sequence, Action callback)
     {
@@ -5108,6 +5111,7 @@ public static partial class Scheduler
 
         _timerSequence = _timerSequence + 1;
         entry.Sequence = _timerSequence;
+        entry.InHeap = true;
 
         int at = _timerCount;
 
@@ -5190,7 +5194,9 @@ public static partial class Scheduler
         AtomicCell gate = Gate();
         gate.Enter();
         entry.Callback = NoCallback.Instance;
-        _canceledTimers = _canceledTimers + 1;
+        // One already taken off the heap (posted, its callback on its way)
+        // is no part of the heap's share.
+        if (entry.InHeap) _canceledTimers = _canceledTimers + 1;
         if (_timerCount >= 32 && _canceledTimers * 2 > _timerCount)
         {
             int kept = 0;
@@ -5198,6 +5204,7 @@ public static partial class Scheduler
             {
                 TimerEntry? held = _timers[i];
                 if (held != null && !held.Canceled) _timers[kept++] = held;
+                else if (held != null) held.InHeap = false;
             }
             for (int i = kept; i < _timerCount; i++) _timers[i] = null;
             _timerCount = kept;
@@ -5224,7 +5231,11 @@ public static partial class Scheduler
     static void RemoveTop()
     {
         int last = _timerCount - 1;
-        if (_timers[0] is { Canceled: true }) _canceledTimers = _canceledTimers - 1;
+        if (_timers[0] is { } top)
+        {
+            top.InHeap = false;
+            if (top.Canceled) _canceledTimers = _canceledTimers - 1;
+        }
 
         _timers[0] = _timers[last];
         _timers[last] = null;
@@ -5999,7 +6010,9 @@ public static partial class ThreadPool
     }
 
     // .NET'S OWN SHAPES: a callback of its state, .NET's WaitCallback (a
-    // program may name the type, and a lambda converts to it), and an Action
+    // program may name the type, and a lambda converts to it; its descriptor
+    // is in an image only where something uses it, the link dropping it
+    // elsewhere), and an Action
     // of a state typed (preferLocal says which queue; there is one queue
     // here). Each flows as the Action does, the unsafe ones not at all.
     public static bool QueueUserWorkItem(WaitCallback callBack)
@@ -6050,26 +6063,35 @@ public interface ITimer : IDisposable, IAsyncDisposable
 
 /// .NET'S System.Threading.Timer: its callback run on the pool once
 /// `dueTime` has passed and then every `period` (Timeout.Infinite: once;
-/// a due time of Infinite: not at all until Change). Over the scheduler's
-/// timers (Scheduler.AddTimerAt), each arming a generation of its own, so a
-/// Change or a Dispose leaves an entry already due running nothing. The
-/// next firing is armed before the callback runs, as .NET's is, so a slow
-/// callback may overlap the next.
+/// a due time of Infinite: not at all until Change), in the context of
+/// whoever made it (AsyncContext: culture and the rest, as .NET flows its
+/// ExecutionContext). Over the scheduler's timers (Scheduler.AddTimerAt),
+/// each arming a generation of its own, so a Change or a Dispose leaves an
+/// entry already due running nothing. The next firing is armed before the
+/// callback runs, as .NET's is, so a slow callback may overlap the next.
+/// DisposeAsync and Dispose(WaitHandle) finish once no callback is running.
 public sealed partial class Timer : ITimer
 {
     const string Range = "Number must be either non-negative and less than or equal to Int32.MaxValue or -1.";
     const string TooLong = "Time-out interval must be less than 2^32-2.";
     const long Most = 0xfffffffe;
 
+    // Armed timers, as .NET's ActiveCount counts them: not one made with no
+    // due time, nor a one-shot that has fired.
     static long _active;
 
     readonly TimerCallback _callback;
     readonly object? _state;
+    readonly AsyncContext? _context;
     readonly object _gate = new object();
     TimerEntry? _entry;
     long _period = Timeout.Infinite;
     int _generation;
+    int _running;
     bool _disposed;
+    // What waits for the last running callback after Dispose (DisposeAsync's
+    // task, Dispose(WaitHandle)'s signal).
+    List<Action>? _whenIdle;
 
     /// A timer of no due time whose state is the timer itself, as .NET's.
     public Timer(TimerCallback callback)
@@ -6077,7 +6099,7 @@ public sealed partial class Timer : ITimer
         ArgumentNullException.ThrowIfNull(callback);
         _callback = callback;
         _state = this;
-        Interlocked.Increment(ref _active);
+        _context = AsyncContext.Capture();
     }
 
     public Timer(TimerCallback callback, object? state, int dueTime, int period) : this(callback, state, (long)dueTime, (long)period) { }
@@ -6092,11 +6114,11 @@ public sealed partial class Timer : ITimer
         Check(dueTime, period);
         _callback = callback;
         _state = state;
-        Interlocked.Increment(ref _active);
+        _context = AsyncContext.Capture();
         Change(dueTime, period);
     }
 
-    /// How many timers there are, made and not disposed.
+    /// How many timers are armed: due to fire, not disposed.
     public static long ActiveCount => Interlocked.Read(ref _active);
 
     public bool Change(int dueTime, int period) => Change((long)dueTime, (long)period);
@@ -6111,42 +6133,73 @@ public sealed partial class Timer : ITimer
         lock (_gate)
         {
             if (_disposed) return false;
-            _entry?.Cancel();
-            _entry = null;
+            Disarm();
             _generation++;
             _period = period;
-            if (dueTime != Timeout.Infinite) Arm(dueTime, _generation);
+            if (dueTime != Timeout.Infinite)
+            {
+                Arm(dueTime, _generation);
+                Interlocked.Increment(ref _active);
+            }
         }
         return true;
     }
 
-    public void Dispose()
+    public void Dispose() { DisposeOnce(); }
+
+    /// Disposed by this call (false where it was already): the check and the
+    /// flip one critical section, so of two at once only one is the first.
+    bool DisposeOnce()
     {
         lock (_gate)
         {
-            if (_disposed) return;
+            if (_disposed) return false;
             _disposed = true;
-            _entry?.Cancel();
-            _entry = null;
+            Disarm();
             _generation++;
         }
-        Interlocked.Decrement(ref _active);
+        return true;
     }
 
-    /// Whether Dispose has run (threads.cor's Dispose(WaitHandle) asks).
-    bool Disposed { get { lock (_gate) return _disposed; } }
-
+    /// Done once every callback running when it was disposed has returned.
     public ValueTask DisposeAsync()
     {
-        Dispose();
-        return default;
+        DisposeOnce();
+        TaskCompletionSource idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        WhenIdle(() => idle.TrySetResult());
+        return new ValueTask(idle.Task);
     }
 
-    // Under _gate.
+    // `then` now if no callback runs, else when the last one returns.
+    void WhenIdle(Action then)
+    {
+        lock (_gate)
+        {
+            if (_running > 0)
+            {
+                (_whenIdle ??= new List<Action>()).Add(then);
+                return;
+            }
+        }
+        then();
+    }
+
+    // Under _gate. ActiveCount is the caller's: Change counts an arming,
+    // Disarm and a one-shot's firing take it back, a periodic one's next
+    // firing changes nothing.
     void Arm(long milliseconds, int generation)
     {
         Scheduler.WantPool();
         _entry = Scheduler.AddTimerAt(Clock.Now() + milliseconds * 1000000, () => Fire(generation));
+    }
+
+    // Under _gate: what was armed stops counting and runs nothing.
+    void Disarm()
+    {
+        if (_entry is null) return;
+        _entry.Cancel();
+        _entry = null;
+        Interlocked.Decrement(ref _active);
     }
 
     void Fire(int generation)
@@ -6154,10 +6207,34 @@ public sealed partial class Timer : ITimer
         lock (_gate)
         {
             if (_disposed || generation != _generation) return;
+            // This firing's entry is gone from the scheduler: a one-shot is
+            // no longer armed; a periodic one is armed again at once.
+            _entry = null;
             if (_period > 0) Arm(_period, generation);
-            else _entry = null;
+            else Interlocked.Decrement(ref _active);
+            _running++;
         }
-        _callback(_state);
+        AsyncContextSaved saved = default(AsyncContextSaved);
+        if (_context != null) saved = AsyncContext.Enter(_context);
+        try
+        {
+            _callback(_state);
+        }
+        finally
+        {
+            if (_context != null) AsyncContext.Leave(_context, saved);
+            List<Action>? waiting = null;
+            lock (_gate)
+            {
+                _running--;
+                if (_running == 0 && _disposed)
+                {
+                    waiting = _whenIdle;
+                    _whenIdle = null;
+                }
+            }
+            if (waiting is not null) foreach (Action then in waiting) then();
+        }
     }
 
     static void Check(long dueTime, long period)

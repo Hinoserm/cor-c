@@ -1,0 +1,214 @@
+// ---- string.Normalize and IsNormalized ---------------------------------------
+//
+// .NET's, as its ICU gives them on Linux (Unicode 16.0): the four forms of
+// UAX #15. A string is taken apart into code points, each decomposed to the
+// end -- canonically, or with the compatibility mappings for KD and KC --
+// marks put in canonical order by their combining class, and for C and KC
+// composed again, a mark joining the last starter unless something of its
+// class or a starter stands between. Hangul syllables by the formula, in no
+// table. The tables (UnicodeNormalizationData, below) are generated:
+// tools/unicode/normalization.py writes this whole file.
+//
+// A string below U+00A0 throughout is every form already: nothing under it
+// decomposes or composes. A lone surrogate is .NET's ArgumentException.
+
+namespace System.Text
+{
+    /// .NET's NormalizationForm, by its numbers.
+    public enum NormalizationForm
+    {
+        FormC = 1,
+        FormD = 2,
+        FormKC = 5,
+        FormKD = 6,
+    }
+}
+
+public static partial class String
+{
+    public static string Normalize(string s) => UnicodeNormalization.Normalize(s, System.Text.NormalizationForm.FormC, "strInput");
+    public static string Normalize(string s, System.Text.NormalizationForm normalizationForm) => UnicodeNormalization.Normalize(s, normalizationForm, "strInput");
+    public static bool IsNormalized(string s) => IsNormalized(s, System.Text.NormalizationForm.FormC);
+    public static bool IsNormalized(string s, System.Text.NormalizationForm normalizationForm)
+        => string.Equals(UnicodeNormalization.Normalize(s, normalizationForm, "source"), s, StringComparison.Ordinal);
+}
+
+static class UnicodeNormalization
+{
+    const int SBase = 0xAC00, LBase = 0x1100, VBase = 0x1161, TBase = 0x11A7;
+    const int LCount = 19, VCount = 21, TCount = 28, NCount = VCount * TCount, SCount = LCount * NCount;
+
+    internal static string Normalize(string s, System.Text.NormalizationForm form, string parameter)
+    {
+        bool compose, compatible;
+        switch (form)
+        {
+            case System.Text.NormalizationForm.FormC: compose = true; compatible = false; break;
+            case System.Text.NormalizationForm.FormD: compose = false; compatible = false; break;
+            case System.Text.NormalizationForm.FormKC: compose = true; compatible = true; break;
+            case System.Text.NormalizationForm.FormKD: compose = false; compatible = true; break;
+            default: throw new ArgumentException("Invalid or unsupported normalization form.", "normalizationForm");
+        }
+        bool plain = true;
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c >= 0xA0) { plain = false; break; }
+        }
+        if (plain) return s;
+
+        List<int> points = new List<int>(s.Length + 8);
+        for (int i = 0; i < s.Length; i++)
+        {
+            int cp = s[i];
+            if (cp >= 0xD800 && cp <= 0xDFFF)
+            {
+                if (cp > 0xDBFF || i + 1 >= s.Length || s[i + 1] < 0xDC00 || s[i + 1] > 0xDFFF)
+                    throw new ArgumentException("String contains invalid Unicode code points.", parameter);
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (s[i + 1] - 0xDC00);
+                i++;
+            }
+            Decompose(cp, compatible, points);
+        }
+        Order(points);
+        if (compose) Compose(points);
+
+        StringBuilder made = new StringBuilder(points.Count);
+        foreach (int cp in points)
+        {
+            if (cp < 0x10000) made.Append((char)cp);
+            else
+            {
+                int above = cp - 0x10000;
+                made.Append((char)(0xD800 + (above >> 10)));
+                made.Append((char)(0xDC00 + (above & 0x3FF)));
+            }
+        }
+        string result = made.ToString();
+        // The same text is the same string, as .NET hands back.
+        return string.Equals(result, s, StringComparison.Ordinal) ? s : result;
+    }
+
+    static void Decompose(int cp, bool compatible, List<int> into)
+    {
+        if (cp >= SBase && cp < SBase + SCount)
+        {
+            int index = cp - SBase;
+            into.Add(LBase + index / NCount);
+            into.Add(VBase + index % NCount / TCount);
+            int t = index % TCount;
+            if (t != 0) into.Add(TBase + t);
+            return;
+        }
+        if (cp < 0xA0) { into.Add(cp); return; }
+        if (compatible && Mapped(UnicodeNormalizationData.CompatibleKeys, UnicodeNormalizationData.CompatibleOffsets, UnicodeNormalizationData.CompatibleData, cp, into)) return;
+        if (Mapped(UnicodeNormalizationData.CanonicalKeys, UnicodeNormalizationData.CanonicalOffsets, UnicodeNormalizationData.CanonicalData, cp, into)) return;
+        into.Add(cp);
+    }
+
+    // Its whole decomposition, where the table has one (decomposed to the end already).
+    static bool Mapped(int[] keys, int[] offsets, int[] data, int cp, List<int> into)
+    {
+        int lo = 0, hi = keys.Length - 1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >> 1;
+            int k = keys[mid];
+            if (k == cp)
+            {
+                for (int i = offsets[mid]; i < offsets[mid + 1]; i++) into.Add(data[i]);
+                return true;
+            }
+            if (k < cp) lo = mid + 1; else hi = mid - 1;
+        }
+        return false;
+    }
+
+    /// A code point's canonical combining class: 0 for a starter.
+    static int Class(int cp)
+    {
+        if (cp < 0x300) return 0;
+        int[] ranges = UnicodeNormalizationData.ClassRanges;
+        int lo = 0, hi = ranges.Length / 3 - 1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >> 1;
+            if (cp < ranges[mid * 3]) hi = mid - 1;
+            else if (cp > ranges[mid * 3 + 1]) lo = mid + 1;
+            else return ranges[mid * 3 + 2];
+        }
+        return 0;
+    }
+
+    // MARKS IN CANONICAL ORDER: a stable sort by class of each run of non-starters.
+    static void Order(List<int> points)
+    {
+        for (int i = 1; i < points.Count; i++)
+        {
+            int cc = Class(points[i]);
+            if (cc == 0) continue;
+            int j = i;
+            int moving = points[i];
+            while (j > 0 && Class(points[j - 1]) > cc)
+            {
+                points[j] = points[j - 1];
+                j--;
+            }
+            points[j] = moving;
+        }
+    }
+
+    // COMPOSED AGAIN (UAX #15's canonical composition): each mark joins the
+    // last starter where nothing of its class or higher, and no starter,
+    // stands between them.
+    static void Compose(List<int> points)
+    {
+        if (points.Count == 0) return;
+        int starterAt = 0;
+        int starter = points[0];
+        int lastClass = Class(starter);
+        if (lastClass != 0) lastClass = 256;
+        int written = 1;
+        for (int i = 1; i < points.Count; i++)
+        {
+            int ch = points[i];
+            int cc = Class(ch);
+            int composite = Composite(starter, ch);
+            if (composite >= 0 && (lastClass < cc || lastClass == 0))
+            {
+                points[starterAt] = composite;
+                starter = composite;
+                continue;
+            }
+            if (cc == 0)
+            {
+                starterAt = written;
+                starter = ch;
+            }
+            lastClass = cc;
+            points[written++] = ch;
+        }
+        points.RemoveRange(written, points.Count - written);
+    }
+
+    // The primary composite of a pair, or -1.
+    static int Composite(int first, int second)
+    {
+        if (first >= LBase && first < LBase + LCount && second >= VBase && second < VBase + VCount)
+            return SBase + ((first - LBase) * VCount + (second - VBase)) * TCount;
+        if (first >= SBase && first < SBase + SCount && (first - SBase) % TCount == 0 && second > TBase && second < TBase + TCount)
+            return first + (second - TBase);
+        long key = ((long)first << 21) | (long)second;
+        long[] pairs = UnicodeNormalizationData.CompositePairs;
+        int lo = 0, hi = pairs.Length - 1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >> 1;
+            long k = pairs[mid];
+            if (k == key) return UnicodeNormalizationData.CompositeValues[mid];
+            if (k < key) lo = mid + 1; else hi = mid - 1;
+        }
+        return -1;
+    }
+}
+

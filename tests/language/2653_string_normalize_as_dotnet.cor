@@ -1,0 +1,100 @@
+// test: string_normalize_as_dotnet
+// expect-exit: 0
+// expect-output:
+// 0065 0301 FormC 00E9 False
+// 0065 0301 FormD 0065 0301 True
+// 0065 0301 FormKC 00E9 False
+// 0065 0301 FormKD 0065 0301 True
+// 00E9 FormC 00E9 True
+// 00E9 FormD 0065 0301 False
+// 00E9 FormKC 00E9 True
+// 00E9 FormKD 0065 0301 False
+// FB01 FormC FB01 True
+// FB01 FormD FB01 True
+// FB01 FormKC 0066 0069 False
+// FB01 FormKD 0066 0069 False
+// 1E9B 0323 FormC 1E9B 0323 True
+// 1E9B 0323 FormD 017F 0323 0307 False
+// 1E9B 0323 FormKC 1E69 False
+// 1E9B 0323 FormKD 0073 0323 0307 False
+// AC00 FormC AC00 True
+// AC00 FormD 1100 1161 False
+// AC00 FormKC AC00 True
+// AC00 FormKD 1100 1161 False
+// 1100 1161 11A8 FormC AC01 False
+// 1100 1161 11A8 FormD 1100 1161 11A8 True
+// 1100 1161 11A8 FormKC AC01 False
+// 1100 1161 11A8 FormKD 1100 1161 11A8 True
+// 0041 030A 0327 FormC 00C5 0327 False
+// 0041 030A 0327 FormD 0041 0327 030A False
+// 0041 030A 0327 FormKC 00C5 0327 False
+// 0041 030A 0327 FormKD 0041 0327 030A False
+// 2126 FormC 03A9 False
+// 2126 FormD 03A9 False
+// 2126 FormKC 03A9 False
+// 2126 FormKD 03A9 False
+// 0078 0323 0302 FormC 0078 0323 0302 True
+// 0078 0323 0302 FormD 0078 0323 0302 True
+// 0078 0323 0302 FormKC 0078 0323 0302 True
+// 0078 0323 0302 FormKD 0078 0323 0302 True
+// D834 DD5E FormC D834 DD57 D834 DD65 False
+// D834 DD5E FormD D834 DD57 D834 DD65 False
+// D834 DD5E FormKC D834 DD57 D834 DD65 False
+// D834 DD5E FormKD D834 DD57 D834 DD65 False
+// 00A0 2460 00BD FormC 00A0 2460 00BD True
+// 00A0 2460 00BD FormD 00A0 2460 00BD True
+// 00A0 2460 00BD FormKC 0020 0031 0031 2044 0032 False
+// 00A0 2460 00BD FormKD 0020 0031 0031 2044 0032 False
+// 0071 0307 0323 FormC 0071 0323 0307 False
+// 0071 0307 0323 FormD 0071 0323 0307 False
+// 0071 0307 0323 FormKC 0071 0323 0307 False
+// 0071 0307 0323 FormKD 0071 0323 0307 False
+// 0344 FormC 0308 0301 False
+// 0344 FormD 0308 0301 False
+// 0344 FormKC 0308 0301 False
+// 0344 FormKD 0308 0301 False
+// 0F73 FormC 0F71 0F72 False
+// 0F73 FormD 0F71 0F72 False
+// 0F73 FormKC 0F71 0F72 False
+// 0F73 FormKD 0F71 0F72 False
+// 0043 0061 0066 00E9 0020 006E 0061 00EF 0076 0065 FormC 0043 0061 0066 00E9 0020 006E 0061 00EF 0076 0065 True
+// 0043 0061 0066 00E9 0020 006E 0061 00EF 0076 0065 FormD 0043 0061 0066 0065 0301 0020 006E 0061 0069 0308 0076 0065 False
+// 0043 0061 0066 00E9 0020 006E 0061 00EF 0076 0065 FormKC 0043 0061 0066 00E9 0020 006E 0061 00EF 0076 0065 True
+// 0043 0061 0066 00E9 0020 006E 0061 00EF 0076 0065 FormKD 0043 0061 0066 0065 0301 0020 006E 0061 0069 0308 0076 0065 False
+// 212B 1E0B 0323 FormC 00C5 1E0D 0307 False
+// 212B 1E0B 0323 FormD 0041 030A 0064 0323 0307 False
+// 212B 1E0B 0323 FormKC 00C5 1E0D 0307 False
+// 212B 1E0B 0323 FormKD 0041 030A 0064 0323 0307 False
+// default 00E9 False
+// same object True
+// lone String contains invalid Unicode code points. (Parameter 'strInput')
+// lone String contains invalid Unicode code points. (Parameter 'source')
+// form Invalid or unsupported normalization form. (Parameter 'normalizationForm')
+//
+// string.Normalize and IsNormalized, the four forms of UAX #15 as .NET 10's ICU
+// (Unicode 16.0) answers them: canonical and compatibility decompositions,
+// canonical order of marks, composition with its exclusions and blocking,
+// Hangul by the formula, a lone surrogate's ArgumentException. Expected output
+// from real .NET 10 with ICU.
+
+using System;
+using System.Text;
+
+static class Program
+{
+    static string Hex(string s) { var b = new StringBuilder(); foreach (char c in s) b.Append(((int)c).ToString("X4")).Append(' '); return b.ToString().Trim(); }
+    static void Main()
+    {
+        string[] samples = { "é", "é", "ﬁ", "ẛ̣", "가", "각", "Å̧", "Ω", "x̣̂",
+            "\U0001D15E", " ①½", "q̣̇", "̈́", "ཱི", "Café naïve", "Åḍ̇" };
+        foreach (string s in samples)
+            foreach (NormalizationForm f in new[] { NormalizationForm.FormC, NormalizationForm.FormD, NormalizationForm.FormKC, NormalizationForm.FormKD })
+                Console.WriteLine(Hex(s) + " " + f + " " + Hex(s.Normalize(f)) + " " + s.IsNormalized(f));
+        Console.WriteLine("default " + Hex("é".Normalize()) + " " + "é".IsNormalized());
+        string plain = "plain ascii";
+        Console.WriteLine("same object " + ReferenceEquals(plain, plain.Normalize()));
+        try { "a\uD800b".Normalize(); } catch (ArgumentException e) { Console.WriteLine("lone " + e.Message); }
+        try { "a\uDC00".IsNormalized(); } catch (ArgumentException e) { Console.WriteLine("lone " + e.Message); }
+        try { "a".Normalize((NormalizationForm)3); } catch (ArgumentException e) { Console.WriteLine("form " + e.Message); }
+    }
+}

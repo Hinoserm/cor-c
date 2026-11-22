@@ -18,13 +18,17 @@
 // nested 11 88 4
 // readonly arm 4 9 3
 // narrowed 12
+// struct elements 1,41 40,2
+// struct ref locals 1,60 42,8 9,9 5,5
+// nullable arms 1 7
 //
 // The ref conditional, `c ? ref a : ref b` (C# 7.2): a variable, one of the two,
 // that a ref local takes, a ref argument passes, a ref return hands back, an
 // assignment (compound too) writes and a read loads -- locals, array elements,
-// fields, structs (copied when read by value; a by-reference parameter beside a
-// plain local), ref locals as arms, a nested one, readonly arms read, and the
-// condition's null proof in each arm. Expected output from real .NET 10.
+// fields, structs (copied when read by value; a by-reference parameter, an `in`
+// one, a ref local, an array element and a ref-returning call as arms), nullable
+// arms, a nested one, readonly arms read, and the condition's null proof in each
+// arm. Expected output from real .NET 10.
 
 using System;
 
@@ -45,6 +49,9 @@ static class Program
         Console.WriteLine("mixed " + passed + " " + local);
     }
     static int ReadIn(in int fixedArg, bool c) { int other = 3; return c ? ref fixedArg : ref other; }
+    static Pt[] _points = { new Pt(1, 1), new Pt(2, 2) };
+    static ref Pt PointAt(int i) => ref _points[i];
+    static string InPoint(in Pt fixedPoint, bool c) { Pt other = new Pt(5, 5); Pt chosen = c ? ref fixedPoint : ref other; return chosen.ToString(); }
 
     static void Main()
     {
@@ -100,5 +107,18 @@ static class Program
         ref int narrowed = ref (h.Maybe != null ? ref h.Maybe.Field : ref d);
         narrowed = 12;
         Console.WriteLine("narrowed " + h.Maybe.Field);
+        ref Pt element = ref (c ? ref _points[0] : ref _points[1]);
+        element.X = 40;
+        ref Pt called = ref (!c ? ref PointAt(0) : ref PointAt(1));
+        called.Y = 41;
+        Console.WriteLine("struct elements " + _points[0] + " " + _points[1]);
+        ref Pt local1 = ref p1, local2 = ref p2;
+        ref Pt viaRefs = ref (c ? ref local1 : ref local2);
+        viaRefs.X = 42;
+        Console.WriteLine("struct ref locals " + p1 + " " + p2 + " " + InPoint(new Pt(9, 9), true) + " " + InPoint(new Pt(9, 9), false));
+        int? n1 = 1, n2 = null;
+        ref int? nr = ref (c ? ref n1 : ref n2);
+        nr = 7;
+        Console.WriteLine("nullable arms " + n1 + " " + (n2?.ToString() ?? "null"));
     }
 }

@@ -1,0 +1,9 @@
+// test: timer_needs_its_namespace
+// expect-compile-error: CS0246
+// System.Threading.Timer is in its namespace, as .NET's is: without the using
+// the name is unknown (CS0246), and Forms' Timer is never confused with it.
+
+static class Program
+{
+    static void Main() { using Timer t = new Timer(_ => { }, null, 0, 0); }
+}
