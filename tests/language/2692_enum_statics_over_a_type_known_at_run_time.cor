@@ -1,0 +1,98 @@
+// test: enum_statics_over_a_type_known_at_run_time
+// expect-exit: 0
+// expect-output:
+// Color Red|Green|Blue Red:0,Green:5,Blue:6 Int32 Color[] 3
+// Green Color True 
+// Bits None|A|B|C None:0,A:1,B:2,C:4 Byte Bits[] 4
+// A, C Bits False A
+// Big Small|Huge Small:1,Huge:17293822569102704640 UInt64 Big[] 2
+// 5 Big False Small
+// Green Blue Blue 00000005 Blue
+// False True True Red
+// AE Type provided must be an Enum. (Parameter 'enumType')
+// AE The value passed in must be an enum base or an underlying type for an enum, such as an Int32. (Parameter 'value')
+// enum Color=Red; value Double=3.5; ref String; value Int32=2000
+// True False
+// 2 2.5 2.5m 2.5m 2 Object True
+// True 7 Int32
+// flag 5 05 5
+// True Int32:True;Char:True;Color:True;Decimal:True;IntPtr:False
+// True True System.Object System.Array  True False True
+//
+// SYSTEM.ENUM'S STATICS OVER A TYPE ONLY RUN TIME KNOWS: GetNames,
+// GetValues (an array of the enum itself, Color[]), GetUnderlyingType,
+// GetName, IsDefined, ToObject, Format, Parse and TryParse with the Type in
+// a variable, read from the enum's box's record of its members (its names,
+// its values, [Flags], its array: Runtime.EnumRecord), an unsigned enum's
+// members in unsigned order. And a class of the program's that implements
+// IConvertible, which Convert's object overloads reach; a pattern switch
+// over Enum and ValueType; a nullable boxed to ValueType; nint, which is
+// no IConvertible. The answers are .NET 10's.
+using System;
+using System.Collections.Generic;
+
+enum Color { Red, Green = 5, Blue }
+[Flags] enum Bits : byte { None = 0, A = 1, B = 2, C = 4 }
+enum Big : ulong { Small = 1, Huge = 0xF000000000000000 }
+
+sealed class Meters : IConvertible
+{
+    readonly double _v; public Meters(double v) { _v = v; }
+    public TypeCode GetTypeCode() => TypeCode.Object;
+    public bool ToBoolean(IFormatProvider? p) => _v != 0;
+    public byte ToByte(IFormatProvider? p) => (byte)_v;
+    public char ToChar(IFormatProvider? p) => throw new InvalidCastException("no char");
+    public DateTime ToDateTime(IFormatProvider? p) => throw new InvalidCastException("no date");
+    public decimal ToDecimal(IFormatProvider? p) => (decimal)_v;
+    public double ToDouble(IFormatProvider? p) => _v;
+    public short ToInt16(IFormatProvider? p) => (short)_v;
+    public int ToInt32(IFormatProvider? p) => (int)Math.Round(_v);
+    public long ToInt64(IFormatProvider? p) => (long)_v;
+    public sbyte ToSByte(IFormatProvider? p) => (sbyte)_v;
+    public float ToSingle(IFormatProvider? p) => (float)_v;
+    public string ToString(IFormatProvider? p) => _v + "m";
+    public object ToType(Type t, IFormatProvider? p) => t == typeof(string) ? ToString(p) : Convert.ChangeType(_v, t, p)!;
+    public ushort ToUInt16(IFormatProvider? p) => (ushort)_v;
+    public uint ToUInt32(IFormatProvider? p) => (uint)_v;
+    public ulong ToUInt64(IFormatProvider? p) => (ulong)_v;
+    public override string ToString() => _v + " meters";
+}
+
+static class P
+{
+    static string Describe(object o) => o switch
+    {
+        Enum e => "enum " + e.GetType().Name + "=" + e,
+        ValueType v => "value " + v.GetType().Name + "=" + v,
+        _ => "ref " + o.GetType().Name,
+    };
+    static bool AllSet<T>(T v, params T[] fs) where T : struct, Enum { foreach (T f in fs) if (!v.HasFlag(f)) return false; return true; }
+    static string Joined(Type t) { var parts = new List<string>(); foreach (object o in Enum.GetValues(t)) parts.Add(o + ":" + Convert.ToUInt64(o)); return string.Join(",", parts); }
+
+    static void Main()
+    {
+        foreach (Type t in new[] { typeof(Color), typeof(Bits), typeof(Big) })
+        {
+            Console.WriteLine(t.Name + " " + string.Join("|", Enum.GetNames(t)) + " " + Joined(t) + " " + Enum.GetUnderlyingType(t).Name + " " + Enum.GetValues(t).GetType().Name + " " + Enum.GetValues(t).Length);
+            Console.WriteLine(Enum.ToObject(t, 5) + " " + Enum.ToObject(t, (byte)1).GetType().Name + " " + Enum.IsDefined(t, "Blue") + " " + Enum.GetName(t, Enum.ToObject(t, 1)));
+        }
+        Type ct = typeof(Color);
+        Console.WriteLine(Enum.Parse(ct, "Green") + " " + Enum.Parse(ct, "blue", true) + " " + Enum.Parse(ct, "6") + " " + Enum.Format(ct, 5, "x") + " " + Enum.Format(ct, Color.Blue, "G"));
+        Console.WriteLine(Enum.TryParse(ct, "Nope", out object? r1) + " " + (r1 == null) + " " + Enum.TryParse(ct, "Red", out object? r2) + " " + r2);
+        try { Enum.GetNames(typeof(int)); } catch (ArgumentException x) { Console.WriteLine("AE " + x.Message); }
+        try { Enum.GetName(ct, Bits.A); } catch (ArgumentException x) { Console.WriteLine("AE " + x.Message); }
+        try { Enum.ToObject(ct, "x"); } catch (ArgumentException x) { Console.WriteLine("AE " + x.Message); }
+        Console.WriteLine(Describe(Color.Red) + "; " + Describe(3.5) + "; " + Describe("s") + "; " + Describe(new DateTime(2000, 1, 1).Year));
+        Console.WriteLine(AllSet(Bits.A | Bits.B | Bits.C, Bits.A, Bits.C) + " " + AllSet(Bits.A, Bits.A, Bits.B));
+        Meters m = new Meters(2.5);
+        Console.WriteLine(Convert.ToInt32(m) + " " + Convert.ToDouble(m) + " " + Convert.ToString(m, null) + " " + Convert.ChangeType(m, typeof(string)) + " " + Convert.ChangeType(m, typeof(long)) + " " + Convert.GetTypeCode(m) + " " + (m is IConvertible));
+        int? none = null, some = 7;
+        ValueType? vn = none, vs = some;
+        Console.WriteLine((vn == null) + " " + vs + " " + vs!.GetType().Name);
+        object boxed = Bits.A | Bits.C;
+        if (boxed is Enum be && be.HasFlag(Bits.C)) Console.WriteLine("flag " + be.ToString("D") + " " + ((IFormattable)be).ToString("X", null) + " " + Convert.ToInt32(be));
+        Enum? ne = null; ValueType[] mixed = { 1, 'x', Color.Green, 2.5m, (nint)3 };
+        Console.WriteLine((ne == null) + " " + string.Join(";", Array.ConvertAll(mixed, x => x.GetType().Name + ":" + (x is IConvertible))));
+        Console.WriteLine(typeof(ValueType).IsSubclassOf(typeof(object)) + " " + typeof(Color).IsSubclassOf(typeof(ValueType)) + " " + typeof(Meters).BaseType + " " + typeof(int[]).BaseType + " " + typeof(IConvertible).BaseType + " " + (typeof(object).BaseType == null) + " " + typeof(Meters).IsAbstract + " " + typeof(IConvertible).IsAbstract);
+    }
+}

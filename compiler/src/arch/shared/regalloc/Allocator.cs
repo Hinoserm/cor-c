@@ -2134,10 +2134,12 @@ public sealed class Allocator
     /// Where a value spilled from `p` is loaded back into its register on
     /// each way into the window (from its definition `def` to `p`) from after
     /// it, into `loads` as the instructions the loads go before: at the
-    /// start of a block of the window entered only from outside it, else
-    /// before the branches of a block outside with one way out. False where
-    /// some way in has no place of its own, or comes from before the
-    /// definition, a landing pad or a computed jump. The register is free
+    /// start of a block of the window entered only from outside it (those
+    /// also into `entryLoads`), else before the branches of a block outside
+    /// with one way out, else on the edge in a block of its own (into
+    /// `edgeLoads`). The caller commits all three where it takes the value
+    /// (SinkOne). False where some way in has no place of its own, or comes
+    /// from before the definition, a landing pad or a computed jump. The register is free
     /// there: every other value live across the edge is live into the
     /// window's block, where the register is this one's.
     /// </summary>

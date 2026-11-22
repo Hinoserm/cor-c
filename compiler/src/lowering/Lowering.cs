@@ -2102,6 +2102,15 @@ public sealed partial class Lowering
     // a shared Box<object>'s `o is T` false of everything.
     private const int TypeFlagObject = 0x4000000;
 
+    // IConvertible'S DESCRIPTOR (BoxedFaces.Face.Convertible): a box of a
+    // number but a native one, a bool, a char or an enum, and a string, is
+    // one without its table naming it (Runtime.BoxedFace).
+    private const int TypeFlagFaceConvertible = 0x8000000;
+
+    // AN ABSTRACT OR STATIC CLASS'S DESCRIPTOR: what Type.IsAbstract answers
+    // (an interface's by its own flag).
+    private const int TypeFlagAbstract = 0x10000000;
+
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
     private const int DescVariance = 11;
@@ -3156,7 +3165,9 @@ public sealed partial class Lowering
     /// asked of DescriptorOf, a unit calling a method object declares (a
     /// delegate's Equals) defined a second t_object.
     /// </summary>
-    private string DispatchName(TypeSymbol t) => "t_" + TypeKey(t) == ObjectDispatch ? ObjectDispatch : DescriptorOf(t);
+    // ValueType AND Enum TOO: what answers through either is a box, which no
+    // class derives from them in the class hierarchy (BoxBases).
+    private string DispatchName(TypeSymbol t) => "t_" + TypeKey(t) == ObjectDispatch || t.IsBoxBase ? ObjectDispatch : DescriptorOf(t);
 
     private string DescriptorOf(TypeSymbol t)
         => t.Kind == TypeKind.Interface ? InterfaceDescriptor(t)
@@ -3315,6 +3326,8 @@ public sealed partial class Lowering
             case BoxedFaces.Face.Formattable:
                 faceOf = BoxDescriptor(Type.Bool);
                 return TypeFlagFaceFormattable;
+            case BoxedFaces.Face.Convertible:
+                return TypeFlagFaceConvertible;
             case BoxedFaces.Face.ComparableOf or BoxedFaces.Face.EquatableOf when argument is not null:
                 if (argument.Prim == Prim.String && !argument.IsArray && !argument.IsNullableValue && !argument.IsPointer)
                 {
@@ -3507,7 +3520,11 @@ public sealed partial class Lowering
         {
             chain.Insert(0, s);
         }
-        foreach (TypeSymbol s in chain)
+        // ValueType AND Enum ARE NEVER AN OBJECT'S OWN TYPE: a box is its own
+        // type, deriving from them (BoxBases), and a call through either goes
+        // through the box's table. Their slots stay empty, so a program that
+        // boxes an enum does not link Enum's members for nothing.
+        foreach (TypeSymbol s in t.IsBoxBase ? new List<TypeSymbol>() : chain)
         {
             foreach (var implementation in s.InterfaceImplementations)
                 table[implementation.Key] = implementation.Value.Abstract ? null : implementation.Value;
@@ -3525,7 +3542,8 @@ public sealed partial class Lowering
         if (t.Kind == TypeKind.Class && OwnsStorage(t)) WriteWord(block, DescGcFlags * w, GcOwnsStorage);
         int classFlags = (t.Kind == TypeKind.Class && EquatableSlot is not null && TypedEquals(t) is not null ? TypeFlagEquatable : 0)
             | (t.Kind == TypeKind.Class && DelegateObject(t) ? TypeFlagDelegateObject : 0)
-            | (t.Kind == TypeKind.Class && MulticastObject(t) ? TypeFlagMulticastObject : 0);
+            | (t.Kind == TypeKind.Class && MulticastObject(t) ? TypeFlagMulticastObject : 0)
+            | (t.Kind == TypeKind.Class && t.Decl is { } declared && (declared.Mods.HasFlag(Mods.Abstract) || declared.Mods.HasFlag(Mods.Static)) ? TypeFlagAbstract : 0);
         if (classFlags != 0) WriteWord(block, DescFlags * w, classFlags);
 
         // THE SHARED COPIES ITS CHAIN STANDS ON (DataItem.SharedCopies): a
@@ -3650,7 +3668,7 @@ public sealed partial class Lowering
             foreach (MethodSymbol m in s.Methods.Where(m => m.VtableSlot >= 0)) slots = Math.Max(slots, m.VtableSlot + 1);
         }
         MethodSymbol?[] table = new MethodSymbol?[slots];
-        foreach (TypeSymbol s in chain)
+        foreach (TypeSymbol s in t.IsBoxBase ? new List<TypeSymbol>() : chain)
         {
             foreach (var implementation in s.InterfaceImplementations)
                 table[implementation.Key] = implementation.Value.Abstract ? null : implementation.Value;

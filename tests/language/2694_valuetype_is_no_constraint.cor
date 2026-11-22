@@ -1,0 +1,10 @@
+// test: valuetype_is_no_constraint
+// expect-compile-error: CS0702: Constraint cannot be special class 'ValueType'
+// ValueType IS NO CONSTRAINT (CS0702, Roslyn's words): `where T : struct`
+// says it. Enum is one (C# 7.3), as test 2691's `where T : struct, Enum`.
+using System;
+static class P
+{
+    static void G<T>() where T : ValueType { }
+    static void Main() { }
+}

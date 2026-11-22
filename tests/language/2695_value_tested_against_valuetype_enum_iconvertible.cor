@@ -1,0 +1,40 @@
+// test: value_tested_against_valuetype_enum_iconvertible
+// expect-exit: 0
+// expect-compile-warning: (31,27): warning CS0183
+// expect-compile-warning: (32,27): warning CS0184
+// expect-compile-warning: (33,27): warning CS0183
+// expect-compile-warning: (34,27): warning CS0183
+// expect-compile-warning: (35,27): warning CS0183
+// expect-compile-warning: (36,27): warning CS0184
+// expect-output:
+// True
+// False
+// True
+// True
+// True
+// False
+// True
+//
+// A VALUE TESTED AGAINST ValueType, Enum OR IConvertible is answered when compiling,
+// as Roslyn answers it (CS0183, CS0184): an int is a ValueType and no Enum, an
+// enum both, a number but nint an IConvertible. A nullable's test asks whether
+// it holds a value, and Roslyn warns of nothing there. The answers are .NET's.
+
+using System;
+namespace N {
+enum Color { Red }
+static class P
+{
+    static void Main()
+    {
+        int i = 5; Color c = Color.Red; nint n = 1; object o = i;
+        Console.WriteLine(i is ValueType);
+        Console.WriteLine(i is Enum);
+        Console.WriteLine(c is Enum);
+        Console.WriteLine(c is ValueType);
+        Console.WriteLine(i is IConvertible);
+        Console.WriteLine(n is IConvertible);
+        int? m = 3; Console.WriteLine(m is ValueType);
+    }
+}
+}

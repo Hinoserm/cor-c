@@ -5243,6 +5243,85 @@ public static partial class Runtime
     const int FaceOfFlag = 256;
     // Object's own descriptor (Lowering.TypeFlagObject), which every object is.
     const int ObjectFlag = 0x4000000;
+    // IConvertible's descriptor (Lowering.TypeFlagFaceConvertible).
+    const int FaceConvertibleFlag = 0x8000000;
+
+    /// AN ENUM'S MEMBERS, BY ITS BOX'S DESCRIPTOR (Lowering.BoxTable, word
+    /// 10): its names and values tables, in value order, and whether it is
+    /// [Flags] -- false where the descriptor is no enum's box.
+    public static bool EnumRecord(nuint desc, out string[] names, out long[] values, out bool flags)
+    {
+        return EnumRecord(desc, out names, out values, out flags, out _);
+    }
+
+    /// The same and its array's descriptor: what Enum.GetValues(Type) makes.
+    public static bool EnumRecord(nuint desc, out string[] names, out long[] values, out bool flags, out nuint arrayDesc)
+    {
+        arrayDesc = 0;
+        const int w = WordSize.Bytes;
+        names = null!;
+        values = null!;
+        flags = false;
+        if (desc == 0 || (Sys.ReadAddress(desc + DescFlagsWordHere * w) & TypeEnumFlag) == 0) return false;
+        nuint record = Sys.ReadAddress(desc + DescElementWord * w);
+        if (record == 0) return false;
+        names = (string[])Sys.ObjectAt(Sys.ReadAddress(record))!;
+        values = (long[])Sys.ObjectAt(Sys.ReadAddress(record + w))!;
+        flags = Sys.ReadAddress(record + 2 * w) != 0;
+        arrayDesc = Sys.ReadAddress(record + 3 * w);
+        return true;
+    }
+
+    /// AN ARRAY OF A TYPE ONLY RUN TIME KNOWS, of integers or an enum's
+    /// values (Enum.GetValues(Type)): its descriptor's stride and header
+    /// (Lowering.SequenceDescriptor's size and payload words), each value as
+    /// its element's width keeps it.
+    public static object NewIntegerArray(nuint arrayDesc, long[] values)
+    {
+        const int w = WordSize.Bytes;
+        nuint stride = Sys.ReadAddress(arrayDesc + 1 * w);
+        nuint header = Sys.ReadAddress(arrayDesc + 7 * w);
+        nuint at = AllocObject(header + (nuint)values.Length * stride);
+        Sys.WriteAddress(at, arrayDesc + DescWordsHere * w);
+        Sys.Write32(at + Gc.ArrayCountAt, (uint)values.Length);
+        for (int i = 0; i < values.Length; i++)
+        {
+            nuint cell = at + header + (nuint)i * stride;
+            long bits = values[i];
+            if (stride == 1) Sys.Write8(cell, unchecked((byte)bits));
+            else if (stride == 2) Sys.Write16(cell, unchecked((ushort)bits));
+            else if (stride == 4) Sys.Write32(cell, unchecked((uint)bits));
+            else Sys.Write64(cell, unchecked((ulong)bits));
+        }
+        return Sys.ObjectAt(at)!;
+    }
+
+    /// A BOX OF A TYPE ONLY RUN TIME KNOWS -- an enum's, or an integer's --
+    /// holding `bits` as its kind keeps it (Enum.ToObject): the descriptor's
+    /// size of object, its table, the integer in its payload.
+    public static object NewIntegerBox(nuint desc, long bits)
+    {
+        const int w = WordSize.Bytes;
+        nuint size = Sys.ReadAddress(desc + 1 * w);
+        nuint payload = Sys.ReadAddress(desc + 7 * w);
+        nuint at = AllocObject(size);
+        Sys.WriteAddress(at, desc + DescWordsHere * w);
+        switch ((int)((Sys.ReadAddress(desc + DescFlagsWordHere * w) >> 12) & 0xFF))
+        {
+            case 1: case 2: Sys.Write8(at + payload, unchecked((byte)bits)); break;
+            case 3: case 4: Sys.Write16(at + payload, unchecked((ushort)bits)); break;
+            case 5: case 6: Sys.Write32(at + payload, unchecked((uint)bits)); break;
+            default: Sys.Write64(at + payload, unchecked((ulong)bits)); break;
+        }
+        return Sys.ObjectAt(at)!;
+    }
+
+    /// The integer kind of a box's descriptor (BoxKind of a box of it).
+    public static int DescriptorBoxKind(nuint desc)
+    {
+        const int w = WordSize.Bytes;
+        return (int)((Sys.ReadAddress(desc + DescFlagsWordHere * w) >> 12) & 0xFF);
+    }
 
     /// THE INTEGER KIND A BOX HOLDS, from its descriptor's flags
     /// (Lowering.BoxKind): an enum's underlying integer or the primitive
@@ -5428,7 +5507,7 @@ public static partial class Runtime
                 return elements == 0 || walked != 0 && DescribedAs(walked, elements);
             }
         }
-        if ((wantFlags & (FaceComparableFlag | FaceFormattableFlag | FaceOfFlag)) != 0 && BoxedFace(desc, want, wantFlags))
+        if ((wantFlags & (FaceComparableFlag | FaceFormattableFlag | FaceOfFlag | FaceConvertibleFlag)) != 0 && BoxedFace(desc, want, wantFlags))
         {
             return true;
         }
@@ -5485,6 +5564,13 @@ public static partial class Runtime
         if ((wantFlags & FaceFormattableFlag) != 0)
         {
             return (flags & TypeEnumFlag) != 0 || (flags & TypePrimitiveFlag) != 0 && desc != named;
+        }
+        if ((wantFlags & FaceConvertibleFlag) != 0)
+        {
+            // Not a native integer's box (kinds 9 and 10, Lowering.BoxKind).
+            nuint kind = (flags >> 12) & 0xFF;
+            return (flags & TypeEnumFlag) != 0 || (flags & TypePrimitiveFlag) != 0 && kind != 9 && kind != 10
+                || (flags & 3) == (1 | TypeStringFlag);
         }
         return false;
     }

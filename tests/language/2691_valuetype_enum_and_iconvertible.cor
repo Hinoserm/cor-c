@@ -1,0 +1,92 @@
+// test: valuetype_enum_and_iconvertible
+// expect-exit: 0
+// expect-output:
+// Int32:5
+// Pt:Pt3
+// Color:Blue
+// Color:Green:Int32
+// Bits:A, C:Byte
+// True True True True True
+// False False True False True True True False
+// Red 3.5 True
+// Green
+// 5
+// Blue
+// None,A,B,C
+// True False
+// -1 1 True False
+// 5 00000005 A True
+// System.ValueType System.Enum System.ValueType System.Object System.ValueType System.Object
+// False False True True False True True
+// Int32=42/42/42 Double=2/2.5/2.5 String=17/17/17 Int32=6/6/Blue Boolean=1/1/True
+// Int16 7 True 7 7
+// ICE Invalid cast from 'Char' to 'Boolean'.
+// OVF Value was either too large or too small for an unsigned byte.
+// DateTime 2020
+// Decimal 2 1.5
+// 1;2;Red;c;True;
+// System.Byte Blue 5
+// 6 5 True False
+// True Blue Blue A, C
+//
+// SYSTEM.VALUETYPE, SYSTEM.ENUM AND IConvertible, as .NET has them. Every
+// box derives from ValueType, and an enum's from Enum between (the box's
+// display names them: Lowering.BoxBases), so `ValueType v = 5`, `Enum e =
+// Color.Red`, `o is Enum` and `(Color)e` are a box, a class test and an
+// unboxing. Enum's own members (CompareTo, HasFlag, ToString(format),
+// GetTypeCode) read the box they are called on; `where T : struct, Enum`
+// is a constraint of its own. A number but nint and nuint, a bool, a char,
+// an enum and a string are IConvertible with nothing written (BoxedFaces;
+// the box's slots are the library's BoxedConvertible), and DateTime and
+// decimal declare it. Type.BaseType, IsSubclassOf and IsAbstract say the
+// hierarchy. The answers are .NET 10's.
+using System;
+using System.Collections.Generic;
+
+enum Color { Red, Green = 5, Blue }
+[Flags] enum Bits : byte { None = 0, A = 1, B = 2, C = 4 }
+struct Pt { public int X; public override string ToString() => "Pt" + X; }
+
+static class P
+{
+    static string Show(ValueType v) => v.GetType().Name + ":" + v;
+    static string ShowE(Enum e) => e.GetType().Name + ":" + e + ":" + e.GetTypeCode();
+    static T Max<T>(T a, T b) where T : struct, Enum => Comparer<T>.Default.Compare(a, b) >= 0 ? a : b;
+    static string Names<T>() where T : struct, Enum => string.Join(",", Enum.GetNames<T>());
+    static bool Has<T>(T v, T f) where T : Enum => v.HasFlag(f);
+    static string Conv(IConvertible c) => c.GetTypeCode() + "=" + c.ToInt32(null) + "/" + c.ToDouble(null) + "/" + c.ToString(null);
+
+    static void Main()
+    {
+        ValueType v = 5; Console.WriteLine(Show(v));
+        Console.WriteLine(Show(new Pt { X = 3 }));
+        Console.WriteLine(Show(Color.Blue));
+        Enum e = Color.Green; Console.WriteLine(ShowE(e));
+        Console.WriteLine(ShowE(Bits.A | Bits.C));
+        object o = Color.Red;
+        Console.WriteLine($"{o is Enum} {o is ValueType} {o is IConvertible} {o is IComparable} {o is IFormattable}");
+        object s = "x"; object n = 3.5; object p = new Pt();
+        Console.WriteLine($"{s is Enum} {s is ValueType} {s is IConvertible} {n is Enum} {n is ValueType} {n is IConvertible} {p is ValueType} {p is IConvertible}");
+        Console.WriteLine($"{(o as Enum)} {(n as ValueType)} {(s as ValueType) is null}");
+        Color back = (Color)e; Console.WriteLine(back);
+        int i = (int)v; Console.WriteLine(i);
+        Console.WriteLine(Max(Color.Red, Color.Blue));
+        Console.WriteLine(Names<Bits>());
+        Console.WriteLine(Has(Bits.A | Bits.B, Bits.B) + " " + Has(Bits.A, Bits.C));
+        Console.WriteLine(e.CompareTo(Color.Blue) + " " + e.CompareTo(Color.Red) + " " + e.Equals(Color.Green) + " " + e.Equals(Bits.A));
+        Console.WriteLine(e.ToString("D") + " " + e.ToString("X") + " " + ((Enum)Bits.A).ToString("G") + " " + e.HasFlag(Color.Green));
+        Console.WriteLine(typeof(int).BaseType + " " + typeof(Color).BaseType + " " + typeof(Enum).BaseType + " " + typeof(ValueType).BaseType + " " + typeof(Pt).BaseType + " " + typeof(string).BaseType);
+        Console.WriteLine(typeof(Enum).IsValueType + " " + typeof(ValueType).IsValueType + " " + typeof(ValueType).IsAbstract + " " + typeof(Enum).IsAbstract + " " + typeof(Enum).IsEnum + " " + typeof(Color).IsSubclassOf(typeof(Enum)) + " " + typeof(int).IsSubclassOf(typeof(ValueType)));
+        Console.WriteLine(Conv(42) + " " + Conv(2.5) + " " + Conv("17") + " " + Conv(Color.Blue) + " " + Conv(true));
+        IConvertible c = 7L; Console.WriteLine(c.ToType(typeof(short), null).GetType().Name + " " + c.ToByte(null) + " " + c.ToBoolean(null) + " " + c.ToDecimal(null) + " " + c.ToSingle(null));
+        try { ((IConvertible)'A').ToBoolean(null); } catch (InvalidCastException x) { Console.WriteLine("ICE " + x.Message); }
+        try { ((IConvertible)300).ToByte(null); } catch (OverflowException x) { Console.WriteLine("OVF " + x.Message); }
+        IConvertible dt = new DateTime(2020, 1, 2); Console.WriteLine(dt.GetTypeCode() + " " + dt.ToDateTime(null).Year);
+        IConvertible dm = 1.5m; Console.WriteLine(dm.GetTypeCode() + " " + dm.ToInt32(null) + " " + dm.ToDouble(null));
+        List<ValueType> list = new() { 1, 2.0, Color.Red, 'c', true };
+        foreach (ValueType x in list) Console.Write(x + ";"); Console.WriteLine();
+        Console.WriteLine(Enum.GetUnderlyingType(typeof(Bits)) + " " + Enum.ToObject(typeof(Color), 6) + " " + Enum.Format(typeof(Color), Color.Green, "d"));
+        Console.WriteLine(((Enum)Color.Blue).GetHashCode() + " " + v.GetHashCode() + " " + v.Equals(5) + " " + v.Equals(5L));
+        Console.WriteLine(Enum.IsDefined(typeof(Color), 5) + " " + Enum.GetName(typeof(Color), 6) + " " + Enum.Parse(typeof(Color), "Blue") + " " + Enum.Parse<Bits>("A, C"));
+    }
+}

@@ -1851,7 +1851,7 @@ public static partial class Activator
 /// late binding over IDispatch. (The compiler looks here for a member of
 /// Type it does not answer itself.)
 /// </summary>
-static class SystemType
+static partial class SystemType
 {
     public static readonly object Missing = new object();
 

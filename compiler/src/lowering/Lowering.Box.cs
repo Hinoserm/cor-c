@@ -397,7 +397,11 @@ public sealed partial class Lowering
         }
         byte[] block = new byte[_t.DescriptorBytes + slots * w];
         WriteWord(block, DescSize * w, _t.ObjectHeaderBytes + Math.Max(w, BoxPayload(of)));
-        WriteWord(block, DescDepth * w, 0);
+        // ITS BASES, root first (BoxBases): ValueType, and Enum for an enum's
+        // box, as .NET's boxes derive -- `o is ValueType` and `o is Enum` are
+        // the class test of any other class, read from the display.
+        List<string> bases = BoxBases(of);
+        WriteWord(block, DescDepth * w, bases.Count);
         WriteWord(block, DescPayload * w, _t.ObjectHeaderBytes);
         // What Type asks of it (IsValueType, IsEnum, IsPrimitive): a box is
         // always of a value type.
@@ -422,8 +426,9 @@ public sealed partial class Lowering
         // display holds only itself and the interface array is the terminator
         // alone. They exist because `is` and `as` read them without knowing
         // what they are looking at.
-        DataItem display = new("bd_" + Safe(key), new byte[w]) { ReadOnly = true, Exported = false };
-        display.Relocs.Add(new DataReloc(0, sym, 0));
+        DataItem display = new("bd_" + Safe(key), new byte[(bases.Count + 1) * w]) { ReadOnly = true, Exported = false };
+        for (int b = 0; b < bases.Count; b++) display.Relocs.Add(new DataReloc(b * w, bases[b], 0));
+        display.Relocs.Add(new DataReloc(bases.Count * w, sym, 0));
         _m.Data.Add(display);
         item.Relocs.Add(new DataReloc(DescDisplay * w, display.Name, 0));
 
@@ -443,6 +448,23 @@ public sealed partial class Lowering
         if (shape is not null && SharedStruct(shape) && TypeContext(shape, new List<TypeSymbol> { shape }) is string boxContext)
         {
             item.Relocs.Add(new DataReloc(DescTypeContext * w, boxContext, 0));
+        }
+
+        // AN ENUM'S BOX NAMES ITS MEMBERS (word 10, a box's that holds no
+        // type context): its names and values tables, whether it is [Flags],
+        // and its array's descriptor -- what System.Enum's statics read of a
+        // type only run time knows (Enum.GetNames(Type), GetValues, ToObject,
+        // Format, Parse; Runtime.EnumRecord, NewIntegerArray).
+        if (of.Symbol is { Kind: TypeKind.Enum } enumType)
+        {
+            byte[] words = new byte[4 * w];
+            WriteWord(words, 2 * w, enumType.IsFlags ? 1 : 0);
+            DataItem record = new("be_" + Safe(key), words) { ReadOnly = true, Exported = false };
+            record.Relocs.Add(new DataReloc(0, EnumNamesTable(enumType), 0));
+            record.Relocs.Add(new DataReloc(w, EnumValuesTable(enumType), 0));
+            record.Relocs.Add(new DataReloc(3 * w, SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
+            _m.Data.Add(record);
+            item.Relocs.Add(new DataReloc(DescElement * w, record.Name, 0));
         }
 
         DataItem faces = new("bf_" + Safe(key), new byte[(implemented.Count + 1) * w]) { ReadOnly = true, Exported = false };
@@ -502,6 +524,26 @@ public sealed partial class Lowering
 
     // ---- the system interfaces of a boxed number -----------------------------
 
+    /// <summary>
+    /// The class descriptors a box's display holds before its own: the
+    /// library's System.ValueType, and System.Enum after it for an enum's
+    /// box -- at their own depths, 0 and 1, so the ordinary class test finds
+    /// them (TypeTest). None where the library declares neither, as a
+    /// freestanding runtime without Core.cor does.
+    /// </summary>
+    private List<string> BoxBases(Type of)
+    {
+        List<string> bases = new();
+        if (!_b.Types.TryGetValue("ValueType", out TypeSymbol? valueType) || !valueType.IsValueTypeClass || valueType.Depth != 0) return bases;
+        bases.Add(ClassDescriptor(valueType));
+        if (of.Symbol is { Kind: TypeKind.Enum } && _b.Types.TryGetValue("Enum", out TypeSymbol? enumClass) && enumClass.IsEnumClass
+            && ReferenceEquals(enumClass.Base, valueType))
+        {
+            bases.Add(ClassDescriptor(enumClass));
+        }
+        return bases;
+    }
+
     /// <summary>The slots a box of a number, bool, char or enum fills for its system interfaces (BoxedFaces), and what fills each.</summary>
     private List<(int, string)> BoxFaceSlots(Type of, string key)
     {
@@ -510,6 +552,7 @@ public sealed partial class Lowering
         if (!isEnum && (of.Symbol is not null || !BoxedFaces.IsPrimitive(of.Prim))) return slots;
         if (FaceSlot("IComparable", 0) is int compare) slots.Add((compare, BoxCompare(of, key)));
         if (of.Prim != Prim.Bool && FaceSlot("IFormattable", 0) is int format) slots.Add((format, BoxFormat(of, key)));
+        if (of.Prim is not (Prim.NInt or Prim.NUInt) || isEnum) slots.AddRange(ConvertibleSlots());
         if (!isEnum)
         {
             if (FaceSlot("IComparable", 1) is int compareOf) slots.Add((compareOf, BoxCompareValue(of, key)));
@@ -822,6 +865,35 @@ public sealed partial class Lowering
         if (FaceSlot("IComparable", 0) is int compare) slots.Add((compare, StringCompareTo(checks: true)));
         if (FaceSlot("IComparable", 1) is int compareOf) slots.Add((compareOf, StringCompareTo(checks: false)));
         if (FaceSlot("IEquatable", 1) is int equatableOf) slots.Add((equatableOf, StringEqualsTo()));
+        slots.AddRange(ConvertibleSlots());
+        return slots;
+    }
+
+    /// <summary>
+    /// IConvertible's slots in a box's or a string's table (BoxedFaces), each
+    /// the library's BoxedConvertible routine of its member's name: a static
+    /// whose first parameter is the object, where the interface's `this` is.
+    /// Empty when the library declares no IConvertible.
+    /// </summary>
+    private List<(int, string)> ConvertibleSlots()
+    {
+        List<(int, string)> slots = new();
+        if (!_b.Types.TryGetValue("IConvertible", out TypeSymbol? face) || face.Kind != TypeKind.Interface
+            || !_b.Types.TryGetValue("BoxedConvertible", out TypeSymbol? routines))
+        {
+            return slots;
+        }
+        for (int member = 0; member < face.Methods.Count; member++)
+        {
+            MethodSymbol asked = face.Methods[member];
+            int? slot = null;
+            foreach (var ((template, a, m), numbered) in _b.InterfaceFamilySlots)
+                if (a == 0 && m == member && !template.Contains('.') && BoxedFaces.Plain(template) == "IConvertible") { slot = numbered; break; }
+            MethodSymbol? routine = routines.Methods.FirstOrDefault(r => r.Static && r.Name == asked.Name && r.Params.Count == asked.Params.Count + 1);
+            if (slot is not int at || routine is null) continue;
+            Require(routine);
+            slots.Add((at, CallLabel(routine)));
+        }
         return slots;
     }
 

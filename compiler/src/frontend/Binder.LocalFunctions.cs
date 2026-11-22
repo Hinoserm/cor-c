@@ -72,9 +72,7 @@ public sealed partial class Binder
             bool expanded = call.Args.Count != lambda.Params.Count;
             if (!expanded)
             {
-                _quiet++;
-                Type given = CheckExpr(call.Args[^1]);
-                _quiet--;
+                Type given = CheckQuietly(call.Args[^1]);
                 expanded = !given.IsError && given.Prim != Prim.NullLiteral && !Convertible(given, array);
             }
             if (expanded && ParamsElement(array) is Type element && RefOf(element) is TypeRef each)
@@ -110,9 +108,7 @@ public sealed partial class Binder
             && lambda.Params[last].IsParams && Resolve(lambda.Params[last].Type, _thisType) is Type packedTail
             && ParamsElement(packedTail) is Type element1 && RefOf(element1) is TypeRef elementRef)
         {
-            _quiet++;
-            Type given = CheckExpr(byName);
-            _quiet--;
+            Type given = CheckQuietly(byName);
             if (!given.IsError && given.Prim != Prim.NullLiteral && !Convertible(given, packedTail))
                 placed[last] = Gathered(new[] { byName }, packedTail, elementRef, call);
         }

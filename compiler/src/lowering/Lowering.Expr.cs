@@ -872,7 +872,7 @@ public sealed partial class Lowering
         // A NULLABLE VALUE BOXED is its value boxed, or null when it has
         // none (C# 10.2.9): the cell itself is no object, and handed over
         // as one it was printed as though it were.
-        if (from.IsNullableValue && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface })
+        if (from.IsNullableValue && (to.Prim == Prim.Any || to.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true })
             && Boxable(from.Underlying))
         {
             VReg boxed = _f.NewReg(IrTypes.Word, "nbox");
@@ -892,12 +892,14 @@ public sealed partial class Lowering
             return Unbox(at, v, to);
         }
         // A STRUCT OR ENUM TO AN INTERFACE IT IMPLEMENTS IS A BOX too, and an
-        // interface cast back to the struct an unboxing.
-        if (to.Symbol is { Kind: TypeKind.Interface } && Boxable(from))
+        // interface cast back to the struct an unboxing. So is any value to
+        // System.ValueType, and an enum to System.Enum, the classes every
+        // box derives from (BoxBases), and the cast back out of them.
+        if (to.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && Boxable(from))
         {
             return BoxValue(at, v, from);
         }
-        if (from.Symbol is { Kind: TypeKind.Interface } && Boxable(to))
+        if (from.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && Boxable(to))
         {
             return Unbox(at, v, to);
         }
@@ -911,7 +913,7 @@ public sealed partial class Lowering
         // AN OBJECT INTO A NULLABLE VALUE (C# 10.3.7): null is one with no
         // value, anything else unboxed as T -- a box of another type refused
         // as any unboxing is -- and the value wrapped.
-        if ((from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface }) && to.IsNullableValue && Boxable(to.Underlying))
+        if ((from.Prim == Prim.Any || from.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true }) && to.IsNullableValue && Boxable(to.Underlying))
         {
             VReg made = _f.NewReg(IrTypes.Word, "unbn");
             Block some = _f.NewBlock("unbnsome"), end = _f.NewBlock("unbnend");
@@ -934,7 +936,7 @@ public sealed partial class Lowering
         // A NULLABLE VALUE TO WHAT IT HOLDS is its Value (C# 10.3.4): what is
         // in the cell, and InvalidOperationException when there is none. Taken
         // as a word it handed over the cell's address as the value.
-        if (from.IsNullableValue && !to.IsNullableValue && to.Prim != Prim.Any && to.Symbol is not { Kind: TypeKind.Interface })
+        if (from.IsNullableValue && !to.IsNullableValue && to.Prim != Prim.Any && to.Symbol is not ({ Kind: TypeKind.Interface } or { IsBoxBase: true }))
         {
             return Convert(at, NullableValue(v, from.Underlying), from.Underlying, to);
         }
@@ -1812,7 +1814,8 @@ public sealed partial class Lowering
     private static bool IsIntrinsicMember(MemberExpr m, Type target)
         => (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
         || (m.Name == "LongLength" && target.IsArray)
-        || (m.Name is "Name" or "FullName" or "Namespace" or "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" or "NullableUnderlying$" && target.Prim == Prim.Type);
+        || (m.Name is "Name" or "FullName" or "Namespace" or "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" or "IsAbstract"
+            or "NullableUnderlying$" or "BaseDescriptor$" or "Descriptor$" && target.Prim == Prim.Type);
 
     /// <summary>
     /// Such a member of the value `obj` holds.
@@ -1826,18 +1829,47 @@ public sealed partial class Lowering
         // WHAT KIND OF TYPE, as System.Type answers it, from the flags its
         // descriptor carries: a sequence is an array (and a string, a class),
         // a box's descriptor a value type's, an interface's its own.
-        if (target.Prim == Prim.Type && m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass")
+        if (target.Prim == Prim.Type && m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" or "IsAbstract")
         {
             VReg flags = Numbered(_e, _e.Load(IrType.I32, obj, DescFlags * _t.WordSize, 4, false));
             int bits = m.Name switch
             {
                 "IsValueType" => TypeFlagValue, "IsEnum" => TypeFlagEnum, "IsInterface" => TypeFlagInterface,
-                "IsPrimitive" => TypeFlagPrimitive, "IsArray" => 1, _ => TypeFlagValue | TypeFlagInterface,
+                "IsPrimitive" => TypeFlagPrimitive, "IsArray" => 1, "IsAbstract" => TypeFlagAbstract | TypeFlagInterface,
+                _ => TypeFlagValue | TypeFlagInterface,
             };
             VReg masked = m.Name == "IsArray"
                 ? _e.Binary(Opcode.Eq, R(_e.Binary(Opcode.And, flags, 3)), Imm(1, IrType.I32), IrType.I32)
                 : _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.And, flags, bits)), Imm(0, IrType.I32), IrType.I32);
             return m.Name == "IsClass" ? _e.Binary(Opcode.Eq, R(masked), Imm(0, IrType.I32), IrType.I32) : masked;
+        }
+        // ITS DESCRIPTOR'S ADDRESS: the Type is that word.
+        if (target.Prim == Prim.Type && m.Name == "Descriptor$")
+        {
+            return obj;
+        }
+        // ITS BASE CLASS (SystemType.BaseTypeOf$): the display's entry below
+        // its own, for a descriptor at depth 1 or more -- a class's, a box's
+        // (BoxBases) -- and null at 0 or below (a root class, an interface,
+        // an array, a sequence).
+        if (target.Prim == Prim.Type && m.Name == "BaseDescriptor$")
+        {
+            int w = _t.WordSize;
+            VReg depth = Numbered(_e, _e.Load(IrType.I32, obj, DescDepth * w, 4, true));
+            VReg below = _f.NewReg(IrTypes.Word, "basedesc");
+            Block read = _f.NewBlock("basedescread");
+            Block done = _f.NewBlock("basedescend");
+            _e.CopyTo(below, Imm(0, IrTypes.Word));
+            _e.Branch(_e.Binary(Opcode.GtS, depth, 0), read, done);
+            _e.SetBlock(read);
+            VReg display = _e.Load(IrTypes.Word, obj, DescDisplay * w);
+            VReg index = _e.Binary(Opcode.Sub, depth, 1);
+            VReg wide = IrTypes.Word == IrType.I32 ? index : _e.Unary(Opcode.SExt32, index);
+            VReg at = _e.Binary(Opcode.Add, R(display), R(_e.Binary(Opcode.Mul, wide, w)), IrTypes.Word);
+            _e.CopyTo(below, R(_e.Load(IrTypes.Word, at, 0)));
+            _e.Jump(done);
+            _e.SetBlock(done);
+            return below;
         }
         // A NULLABLE'S T (NullableDescriptor): its element word where its
         // flags say Nullable`1, null for any other type -- a class's word
@@ -2888,6 +2920,15 @@ public sealed partial class Lowering
                 VReg number = _e.Binary(Opcode.And, Flagged(TypeFlagPrimitive),
                     _e.Binary(Opcode.Ne, R(desc), R(_e.Address(BoxDescriptor(Type.Bool))), IrType.I32));
                 return _e.Binary(Opcode.Or, Flagged(TypeFlagEnum), number);
+            }
+            case BoxedFaces.Face.Convertible:
+            {
+                // Every primitive box but nint's and nuint's, which .NET's
+                // IntPtr and UIntPtr are not, any enum's, and a string.
+                VReg native = _e.Binary(Opcode.Or, Is(BoxDescriptor(Type.NInt)), Is(BoxDescriptor(Type.NUInt)));
+                VReg number = _e.Binary(Opcode.And, Flagged(TypeFlagPrimitive),
+                    _e.Binary(Opcode.Eq, R(native), new ImmOperand(0, IrType.I32), IrType.I32));
+                return _e.Binary(Opcode.Or, _e.Binary(Opcode.Or, Flagged(TypeFlagEnum), number), Is(StringDescriptor()));
             }
             default:
                 if (argument is null) return null;

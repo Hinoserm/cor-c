@@ -131,6 +131,24 @@ public sealed class TypeSymbol
     /// </summary>
     public bool Used { get; set; }
     public TypeSymbol? Base { get; set; }
+
+    /// <summary>
+    /// The class library's System.ValueType: the class every boxed value
+    /// is (its box's descriptor names it in its display, Lowering.BoxTable).
+    /// No struct's symbol has it as Base -- a struct has no object header
+    /// to inherit -- so what converts to it is asked by these, not by
+    /// DerivesFrom (Binder.BoxesTo).
+    /// </summary>
+    public bool IsValueTypeClass => BoxBaseNamed("ValueType");
+
+    /// <summary>The class library's System.Enum, which every boxed enum is, between its own type and ValueType.</summary>
+    public bool IsEnumClass => BoxBaseNamed("Enum");
+
+    /// <summary>System.ValueType or System.Enum: a class only boxes are.</summary>
+    public bool IsBoxBase => Kind == TypeKind.Class && Name is "ValueType" or "Enum" && (BoxBaseNamed("ValueType") || BoxBaseNamed("Enum"));
+
+    private bool BoxBaseNamed(string name)
+        => Kind == TypeKind.Class && Name == name && Decl is { Outer: null, FromLibrary: true, Template: null } d && d.TypeParams.Count == 0;
     public List<TypeSymbol> Interfaces => _interfaces ?? NoInterfaces;
     public List<TypeSymbol> WritableInterfaces => _interfaces ??= new();
     private List<TypeSymbol>? _interfaces;

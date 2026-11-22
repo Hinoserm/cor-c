@@ -3226,7 +3226,6 @@ public sealed partial class Binder
         // what is wanted from them is the NAMES, not a resolution. A shape that
         // cannot be resolved has nothing to remember and says so to nobody.
         _quiet++;
-
         _namingTuples = true;
         try
         {
@@ -3236,9 +3235,7 @@ public sealed partial class Binder
                 catch (Metadata.DeclarationDemand demand) { _declarationBatch.Add(demand); }
             }
         }
-        finally { _namingTuples = false; }
-
-        _quiet--;
+        finally { _namingTuples = false; _quiet--; }
 
         foreach (TypeDecl d in unit.Types)
         {
@@ -5026,6 +5023,14 @@ public sealed partial class Binder
                 continue;
             }
 
+            // ValueType AND Enum ARE ONLY BOXES' BASES (C# 15.2.4.2, CS0644):
+            // nothing derives from them but Enum itself from ValueType.
+            if (based.IsBoxBase && !(sym.IsEnumClass && based.IsValueTypeClass))
+            {
+                Error(b, $"CS0644: '{sym.Name}' cannot derive from special class '{based.Name}'");
+                continue;
+            }
+
             if (based.Kind == TypeKind.Interface)
             {
                 sym.WritableInterfaces.Add(based);
@@ -5037,6 +5042,20 @@ public sealed partial class Binder
             else
             {
                 sym.Base = based;
+            }
+        }
+
+        // ValueType IS NO CONSTRAINT (CS0702): `where T : struct` says it.
+        // Enum is one (C# 7.3), as an ordinary class is.
+        foreach (TypeParam p in d.TypeParams.Concat(d.MembersQuietly.OfType<MethodDecl>().SelectMany(m => m.TypeParams)))
+        {
+            foreach (TypeRef c in p.Constraints)
+            {
+                if (c.Args.Count == 0 && c.ArrayRank == 0 && c.PointerDepth == 0 && c.Name is "ValueType" or "System.ValueType"
+                    && FindBase(c, out TypeSymbol? constraint) && constraint is { IsValueTypeClass: true })
+                {
+                    Error(c, "CS0702: Constraint cannot be special class 'ValueType'");
+                }
             }
         }
 
@@ -6835,15 +6854,14 @@ public sealed partial class Binder
         // naming what was actually written, is.
         if (bare != r.Name)
         {
-            _quiet++;
-
             // WRITTEN AS THE NAME WAS: made anew, the reference was the
             // compiler's own, and the compiler's code sees the class library's
             // internal types -- `System.Threading.HandleWait` reached one the
             // program cannot (HiddenFromProgram).
-            Type named = ResolveCore(new TypeRef { Name = bare, Line = r.Line, Col = r.Col, Written = r.Written }, context);
-
-            _quiet--;
+            Type named;
+            _quiet++;
+            try { named = ResolveCore(new TypeRef { Name = bare, Line = r.Line, Col = r.Col, Written = r.Written }, context); }
+            finally { _quiet--; }
 
             if (!named.IsError)
             {
@@ -8784,14 +8802,15 @@ public sealed partial class Binder
         Type wanted = to.IsNullableValue ? to.Underlying : to.AsNonNullable();
         if (held.IsError || wanted.IsError || held.Prim == Prim.Any || wanted.Prim == Prim.Any) return false;
         if (held.ParamName is not null || wanted.ParamName is not null) return false;
-        // An interface may hold any of its implementers, boxed ones too.
-        if (held.Symbol is { Kind: TypeKind.Interface }) return false;
+        // An interface may hold any of its implementers, boxed ones too, and
+        // ValueType and Enum any value or enum boxed.
+        if (held.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true }) return false;
         // A VALUE IS ITS OWN TYPE AND NO OTHER -- a double is never an int,
         // whatever converts -- and the interfaces it implements.
         static bool IsValue(Type t) => t.Symbol is { Kind: TypeKind.Struct or TypeKind.Enum }
             || t.Symbol is null && !t.IsArray && !t.IsPointer && (t.IsNumeric || t.Prim is Prim.Bool or Prim.Char);
         if (IsValue(held))
-            return !MethodSignatures.SameType(held, wanted) && !(wanted.Symbol is { Kind: TypeKind.Interface } && ValueHasInterface(held, wanted));
+            return !MethodSignatures.SameType(held, wanted) && !(wanted.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && ValueHasInterface(held, wanted));
         // A reference is never a value; for an interface a subclass may implement it.
         if (IsValue(wanted)) return true;
         if (wanted.Symbol is { Kind: TypeKind.Interface }) return false;
@@ -10015,8 +10034,10 @@ public sealed partial class Binder
         // A NATIVE INTEGER'S WIDTH IS THE TARGET'S, so the size rule below
         // cannot decide for it: on a 32-bit word it would let nint into int
         // and uint into nint, and C# allows neither. These are C#'s rules
-        // for nint and nuint, which do not depend on the word.
-        if (from.IsNative || to.IsNative)
+        // for nint and nuint, which do not depend on the word. Between
+        // numbers: an nint boxed to ValueType or an interface it has is the
+        // rules' below.
+        if ((from.IsNative || to.IsNative) && from.Symbol is null && to.Symbol is null)
         {
             return NativeConvertible(from.Prim, to.Prim);
         }
@@ -10081,6 +10102,14 @@ public sealed partial class Binder
             return true;
         }
 
+        // ANY VALUE BOXED IS A System.ValueType, AND AN ENUM'S BOX A
+        // System.Enum (C# 10.2.9): `ValueType v = 5;`, `Enum e = Color.Red;`
+        // -- the classes every box derives from (Lowering.BoxBases).
+        if (BoxesTo(from, to))
+        {
+            return true;
+        }
+
         // A NUMBER, A BOOL, A CHAR OR AN ENUM BOXED, AND A STRING AS IT IS,
         // IS EACH SYSTEM INTERFACE .NET DECLARES IT TO IMPLEMENT (BoxedFaces):
         // `IComparable x = 5;`, `IEquatable<int> e = 3;`, `IComparable s =
@@ -10108,6 +10137,39 @@ public sealed partial class Binder
             return from.Symbol.DerivesFrom(to.Symbol);
         }
         return false;
+    }
+
+    /// <summary>
+    /// Whether a value converts to System.ValueType or System.Enum by boxing
+    /// (C# 10.2.9): any value type -- a nullable one too, boxed as its
+    /// value -- to ValueType; an enum to Enum. A type parameter only by what
+    /// its constraints promise: `struct` or `unmanaged` to ValueType, a
+    /// constraint naming Enum (or an enum) to either.
+    /// </summary>
+    private bool BoxesTo(Type from, Type to)
+    {
+        if (to.IsArray || to.IsPointer || to.IsNullableValue || to.Symbol is not { IsBoxBase: true } face) return false;
+        Type v = from.AsNonNullable();
+        if (v.IsArray || v.IsPointer || v.IsError) return false;
+        if (v.ParamName is not null)
+        {
+            return ParamBoxesTo(v.ParamName, face);
+        }
+        if (v.Symbol is { Kind: TypeKind.Enum }) return true;
+        if (!face.IsValueTypeClass) return false;
+        return v.Symbol is { Kind: TypeKind.Struct }
+            || v.Symbol is null && v.Prim is Prim.Bool or Prim.Char or Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32
+                or Prim.I64 or Prim.U64 or Prim.NInt or Prim.NUInt or Prim.F32 or Prim.F64;
+    }
+
+    /// <summary>Whether a type parameter's constraints promise a value that boxes to ValueType or Enum (BoxesTo).</summary>
+    private bool ParamBoxesTo(string name, TypeSymbol face)
+    {
+        TypeParam? p = (_member as MethodDecl)?.TypeParams.FirstOrDefault(q => q.Name == name)
+            ?? _thisType?.Decl?.TypeParams.FirstOrDefault(q => q.Name == name);
+        if (p is null) return false;
+        if (face.IsValueTypeClass && (p.Struct || p.Unmanaged)) return true;
+        return p.Constraints.Any(c => c.Name is "Enum" or "System.Enum" && c.Args.Count == 0 && c.ArrayRank == 0 && !c.Nullable);
     }
 
     /// <summary>The type argument a one-argument specialisation of an interface was made with, or null.</summary>
@@ -10602,24 +10664,29 @@ public sealed partial class Binder
         // parameters/locals. Keep capture lookup independent of that boundary.
         PushScope(functionBoundary: true);
         _lambdaFloor = _scopes.Count - 1;
-
-        for (int i = 0; i < lam.Params.Count; i++)
+        try
         {
-            Declare(lam, lam.Params[i].Name,
-                    new ParamSym(i, ContextualParameterType(wanted, invoke, i), lam.Params[i].Name, false));
-        }
+            for (int i = 0; i < lam.Params.Count; i++)
+            {
+                Declare(lam, lam.Params[i].Name,
+                        new ParamSym(i, ContextualParameterType(wanted, invoke, i), lam.Params[i].Name, false));
+            }
 
-        _lambdaDepth++;
-        EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
-        HashSet<LocalSym>? assignedBefore = AssignedBefore(lam);
-        try { Look(lam, ContextualMemberResult(wanted, invoke)); }
-        finally { _lambdaDepth--; LeaveFunctionBody(); AssignedAfter(assignedBefore); }
-        PopScope();
-        _quiet--;
+            _lambdaDepth++;
+            EnterFunctionBody(lambda: !_localFunctionOf.ContainsKey(lam));
+            HashSet<LocalSym>? assignedBefore = AssignedBefore(lam);
+            try { Look(lam, ContextualMemberResult(wanted, invoke)); }
+            finally { _lambdaDepth--; LeaveFunctionBody(); AssignedAfter(assignedBefore); }
+        }
+        finally
+        {
+            PopScope();
+            _quiet--;
+            _captured = outerCaptured;
+            _capturedConstants = outerConstants;
+            _lambdaFloor = outerFloor;
+        }
         RefuseCapturedRefLocals(lam, captured.Keys);
-        _captured = outerCaptured;
-        _capturedConstants = outerConstants;
-        _lambdaFloor = outerFloor;
         // And a lambda inside a lambda reads its constants through the outer
         // one's declarations of them.
         if (outerConstants != null)
@@ -11096,9 +11163,7 @@ public sealed partial class Binder
         if (!lam.TypesWritten || i >= lam.Params.Count || i >= invoke.Params.Count) return null;
         Type delegated = ContextualParameterType(delegateType, invoke, i);
         if (delegated.IsError || Open(delegated) || Unmade(delegated)) return null;
-        _quiet++;
-        Type written = Resolve(lam.Params[i].Type, _thisType);
-        _quiet--;
+        Type written = ResolveQuietly(lam.Params[i].Type, _thisType);
         if (written.IsError) return null;
         return MethodSignatures.SameType(written.AsNonNullable(), delegated.AsNonNullable()) ? null : (written, delegated);
 
@@ -11819,9 +11884,7 @@ public sealed partial class Binder
                     owner = named;
                     break;
                 }
-                _quiet++;
-                Type held = CheckExpr(m.Target);
-                _quiet--;
+                Type held = CheckQuietly(m.Target);
                 owner = held.AsNonNullable().Symbol;
                 break;
             }
@@ -13523,7 +13586,12 @@ public sealed partial class Binder
             Line = at.Line, Col = at.Col,
         };
 
-        foreach ((string member, long value) in chosen.EnumValues.OrderBy(m => m.Value))
+        // In .NET's order: an unsigned enum's by the unsigned value (a `:
+        // ulong` enum's 0xF000000000000000 after its 1).
+        IEnumerable<KeyValuePair<string, long>> ordered = chosen.EnumUnderlying is Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
+            ? chosen.EnumValues.OrderBy(m => unchecked((ulong)m.Value))
+            : chosen.EnumValues.OrderBy(m => m.Value);
+        foreach ((string member, long value) in ordered)
         {
             listed.Elements.Add(values
                 ? new CastExpr
@@ -13602,10 +13670,18 @@ public sealed partial class Binder
     }
 
     /// <summary>An expression's type, its diagnostics held back.</summary>
-    private Type? CheckQuietly(Expr e)
+    private Type CheckQuietly(Expr e)
     {
         _quiet++;
         try { return CheckExpr(e); }
+        finally { _quiet--; }
+    }
+
+    /// <summary>A type reference resolved with its diagnostics held back.</summary>
+    private Type ResolveQuietly(TypeRef r, TypeSymbol? context)
+    {
+        _quiet++;
+        try { return Resolve(r, context); }
         finally { _quiet--; }
     }
 
@@ -13646,9 +13722,7 @@ public sealed partial class Binder
         // are IsDefined<IrType> and GetName<Kind>.
         else if (named.Name is "IsDefined" or "GetName" && call.Args.Count == 1)
         {
-            _quiet++;
-            Type given = CheckExpr(call.Args[0]);
-            _quiet--;
+            Type given = CheckQuietly(call.Args[0]);
             if (given.AsNonNullable().Symbol is { Kind: TypeKind.Enum } byValue)
                 chosen = byValue;
         }
@@ -14888,45 +14962,49 @@ public sealed partial class Binder
         if (lam.Async) _producingAsync++;
         PushScope(functionBoundary: true);
         HashSet<LocalSym>? assignedBefore = AssignedBefore(lam);
-
-        for (int i = 0; i < lam.Params.Count; i++)
-        {
-            Declare(lam, lam.Params[i].Name, new ParamSym(i, taken[i], lam.Params[i].Name, false));
-        }
-
         Type? produced;
-        if (lam.Body is not null)
+        try
         {
-            produced = CheckExpr(lam.Body);
-            valueless = produced.IsVoid;
-        }
-        else
-        {
-            // A BLOCK BODY RESULTS IN WHAT IT RETURNS (C# 12.6.3.13, the
-            // inferred return type): the best common type of its return
-            // expressions. `Select(line => { ...; return (Version: v, Path:
-            // p); })` is a sequence of that tuple, not of an unbound R.
-            InferredReturns? wasInferred = _inferredReturns;
-            int wasSlot = _nextSlot;
-            _inferredReturns = new InferredReturns();
-            try
+            for (int i = 0; i < lam.Params.Count; i++)
             {
-                CheckBlock(lam.BlockBody!);
-                valueless = _inferredReturns.All(t => t.IsVoid);
-                produced = valueless ? Type.Void : BestCommonType(_inferredReturns);
-                if (!valueless && _inferredReturns.Count > 0 && _inferredReturns.AllInterpolated) _interpolatedValue.Add(asked);
+                Declare(lam, lam.Params[i].Name, new ParamSym(i, taken[i], lam.Params[i].Name, false));
             }
-            finally
-            {
-                _inferredReturns = wasInferred;
-                _nextSlot = wasSlot;
-            }
-        }
 
-        AssignedAfter(assignedBefore);
-        PopScope();
-        if (lam.Async) _producingAsync--;
-        _quiet--;
+            if (lam.Body is not null)
+            {
+                produced = CheckExpr(lam.Body);
+                valueless = produced.IsVoid;
+            }
+            else
+            {
+                // A BLOCK BODY RESULTS IN WHAT IT RETURNS (C# 12.6.3.13, the
+                // inferred return type): the best common type of its return
+                // expressions. `Select(line => { ...; return (Version: v, Path:
+                // p); })` is a sequence of that tuple, not of an unbound R.
+                InferredReturns? wasInferred = _inferredReturns;
+                int wasSlot = _nextSlot;
+                _inferredReturns = new InferredReturns();
+                try
+                {
+                    CheckBlock(lam.BlockBody!);
+                    valueless = _inferredReturns.All(t => t.IsVoid);
+                    produced = valueless ? Type.Void : BestCommonType(_inferredReturns);
+                    if (!valueless && _inferredReturns.Count > 0 && _inferredReturns.AllInterpolated) _interpolatedValue.Add(asked);
+                }
+                finally
+                {
+                    _inferredReturns = wasInferred;
+                    _nextSlot = wasSlot;
+                }
+            }
+        }
+        finally
+        {
+            AssignedAfter(assignedBefore);
+            PopScope();
+            if (lam.Async) _producingAsync--;
+            _quiet--;
+        }
         return produced is null || produced.IsError ? null : produced;
     }
 
@@ -17204,11 +17282,13 @@ public sealed partial class Binder
 
             // SYSTEM.ENUM'S STATICS, which only the compiler can answer, for
             // the same reason an enum's ToString is: the members exist at
-            // compile time and nowhere else. Guarded on nothing having
-            // declared a type of that name, so a program with an `Enum` of its
-            // own keeps it.
+            // compile time and nowhere else. Guarded on nothing but the
+            // library's System.Enum class (which declares only its instance
+            // members) being found by that name, so a program with an `Enum`
+            // of its own keeps it.
             case CallExpr { Target: MemberExpr { Target: NameExpr { Name: "Enum" } } asked } wanted
-                when !FindType("Enum", out _) && (!BindingProgramCode() || NamespaceInScope("System")) && EnumStatic(asked, wanted) is Type answered:
+                when (!FindType("Enum", out TypeSymbol? namedEnum) || namedEnum is { IsEnumClass: true })
+                     && (!BindingProgramCode() || NamespaceInScope("System")) && EnumStatic(asked, wanted) is Type answered:
                 return answered;
 
             // Nullable.GetUnderlyingType OF A WRITTEN `typeof(T?)`, answered
@@ -17629,9 +17709,7 @@ public sealed partial class Binder
                 // The arms have to agree, and one is null: a value-typed
                 // element needs its cell said out loud. Asked quietly first,
                 // because asking is how its type is learnt.
-                _quiet++;
-                Type element = CheckExpr(once);
-                _quiet--;
+                Type element = CheckQuietly(once);
                 if (!element.IsError && !element.IsReference && !element.IsNullableValue
                     && RefOf(element) is TypeRef cell)
                 {
@@ -19606,7 +19684,7 @@ public sealed partial class Binder
                         bool boxing = !subject.IsReference && subject.Prim != Prim.Any && !subject.IsError && !subject.IsVoid
                                       && subject.ParamName is null && !subject.IsPointer
                                       && (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray
-                                          || tested.Symbol is { Kind: TypeKind.Interface } && ValueHasInterface(subject.IsNullableValue ? subject.Underlying : subject, tested));
+                                          || tested.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && ValueHasInterface(subject.IsNullableValue ? subject.Underlying : subject, tested));
                         if (subject.IsNullableValue && (tested.Equals(subject.Underlying) || boxing))
                         {
                             _r.NullableArms.Add(arm);
@@ -20208,9 +20286,7 @@ public sealed partial class Binder
                     Line = isx.Type.Line,
                     Col = isx.Type.Col,
                 };
-                _quiet++;
-                CheckExpr(possibleConstant);
-                _quiet--;
+                CheckQuietly(possibleConstant);
                 bool isConstant = _r.Resolved.TryGetValue(possibleConstant, out Sym? possibleSym)
                                   && possibleSym is ConstSym
                                || _r.Rewrites.TryGetValue(possibleConstant, out Expr? possibleRewrite)
@@ -20309,7 +20385,7 @@ public sealed partial class Binder
                     }
                     // `x is object o` over an int?: the value held, boxed.
                     else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray
-                             || tested.Symbol is { Kind: TypeKind.Interface } && ValueHasInterface(operand.Underlying, tested))
+                             || tested.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && ValueHasInterface(operand.Underlying, tested))
                     {
                         _r.NullablePatterns.Add(isx);
                         _r.BoxedBindings.Add(isx);
@@ -20355,7 +20431,7 @@ public sealed partial class Binder
                     _r.BoxPatterns.Add(isx);
                     if (PlainValue(operand)) AlwaysOfType(isx, tested);
                 }
-                else if (PlainValue(operand) && tested.Symbol is { Kind: TypeKind.Interface } && !tested.IsArray && !runTime && ValueHasInterface(operand, tested))
+                else if (PlainValue(operand) && tested.Symbol is { Kind: TypeKind.Interface } or { IsBoxBase: true } && !tested.IsArray && !runTime && ValueHasInterface(operand, tested))
                 {
                     // A VALUE IS EVERY INTERFACE ITS TYPE HAS, AND NO OTHER: its
                     // type is exact, so `5 is IComparable c` is true and c the
@@ -22598,9 +22674,10 @@ public sealed partial class Binder
             return CheckMemberCore(m, null);
         }
 
+        Type asValue;
         _quiet++;
-        Type asValue = CheckMemberCore(m, null);
-        _quiet--;
+        try { asValue = CheckMemberCore(m, null); }
+        finally { _quiet--; }
 
         if (!asValue.IsError)
         {
@@ -23033,11 +23110,7 @@ public sealed partial class Binder
                 // Nullable<T> and the first HasValue reads whatever the number
                 // points at. Asked quietly first, because asking is the only
                 // way to learn what the member's type is.
-                _quiet++;
-
-                Type member = CheckExpr(once);
-
-                _quiet--;
+                Type member = CheckQuietly(once);
 
                 if (!member.IsError && !member.IsReference
                     && RefOf(member.AsNonNullable()) is TypeRef cell)
@@ -23163,9 +23236,38 @@ public sealed partial class Binder
 
             // WHAT KIND OF TYPE IT IS, read from the flags of the same
             // descriptor (Lowering.IntrinsicMember).
-            if (m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" && target.Prim == Prim.Type)
+            if (m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" or "IsAbstract" && target.Prim == Prim.Type)
             {
                 return Type.Bool;
+            }
+
+            // ITS BASE CLASS'S DESCRIPTOR, the library's own (SystemType.
+            // BaseTypeOf$): its display's entry below its own, null for a
+            // type at depth 0 or none (Lowering.IntrinsicMember).
+            // ITS DESCRIPTOR'S ADDRESS, the library's own (Enum's statics over
+            // a Type, Runtime.EnumRecord): the word a Type is.
+            if (m.Name == "Descriptor$" && target.Prim == Prim.Type && !BindingProgramCode()
+                && (_scope ?? _thisType)?.Decl is { } descriptorAsker && (descriptorAsker.File == "<prelude>" || ClassLibrarySide(descriptorAsker)))
+            {
+                return Type.NUInt;
+            }
+            if (m.Name == "BaseDescriptor$" && target.Prim == Prim.Type && !BindingProgramCode()
+                && (_scope ?? _thisType)?.Decl is { } baseAsker && (baseAsker.File == "<prelude>" || ClassLibrarySide(baseAsker)))
+            {
+                return Type.TypeHandle.AsNullable();
+            }
+
+            // .NET's Type.BaseType: the library's answer (SystemType.BaseTypeOf$),
+            // called with the type first as Type's other members are.
+            if (m.Name == "BaseType" && target.Prim == Prim.Type)
+            {
+                CallExpr asked = new()
+                {
+                    Target = new MemberExpr { Target = m.Target, Name = "BaseTypeOf$", Line = m.Line, Col = m.Col },
+                    Line = m.Line, Col = m.Col,
+                };
+                _r.Rewrites[m] = asked;
+                return CheckExpr(asked);
             }
 
             // A NULLABLE'S T, the library's own (Nullable.GetUnderlyingType):
@@ -24230,9 +24332,7 @@ public sealed partial class Binder
 
         if (c.FormatHole && c.Target is MemberExpr { Name: "ToString" } hole && c.Args.Count == 1)
         {
-            _quiet++;
-            Type formatted = CheckExpr(hole.Target);
-            _quiet--;
+            Type formatted = CheckQuietly(hole.Target);
             if (FormatHole(c, hole, formatted) is Expr formatting)
             {
                 _r.Rewrites[c] = formatting;
@@ -27967,9 +28067,7 @@ public sealed partial class Binder
         Type? beforeDefault = _wanted;
         if (b.Left is DefaultExpr { Type.Name.Length: 0 } && b.Right is not DefaultExpr { Type.Name.Length: 0 } && b.Op != BinOp.Coalesce)
         {
-            _quiet++;
-            Type other = CheckExpr(b.Right);
-            _quiet--;
+            Type other = CheckQuietly(b.Right);
             _wanted = other.IsError ? null : other;
         }
         Type l = CheckExpr(b.Left);

@@ -1,0 +1,12 @@
+// test: valuetype_and_enum_are_no_bases
+// expect-compile-error: CS0644: 'B' cannot derive from special class 'Enum'
+// NOTHING DERIVES FROM ValueType OR Enum but a box (CS0644, Roslyn's words):
+// they are the library's classes every box derives from, Enum from
+// ValueType. A class of the program's naming either as its base is refused
+// -- both here, A as B.
+using System;
+namespace N {
+class A : ValueType { }
+class B : Enum { }
+static class P { static void Main() { } }
+}

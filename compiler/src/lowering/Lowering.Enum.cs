@@ -40,8 +40,13 @@ public sealed partial class Lowering
     /// allows it -- stay in the order they were written and the name the
     /// table answers with does not depend on how the sort happened to run.
     /// </summary>
+    /// AN UNSIGNED ENUM'S ORDER IS ITS NUMBERS' (.NET sorts by the unsigned
+    /// value): a `: ulong` enum's 0xF000000000000000, a negative long, came
+    /// before its 1.
     private static List<KeyValuePair<string, long>> EnumMembers(TypeSymbol e)
-        => e.EnumValues.OrderBy(m => m.Value).ToList();
+        => e.EnumUnderlying is Prim.U8 or Prim.U16 or Prim.U32 or Prim.U64
+            ? e.EnumValues.OrderBy(m => unchecked((ulong)m.Value)).ToList()
+            : e.EnumValues.OrderBy(m => m.Value).ToList();
 
     /// <summary>The `string[]` of an enum's member names, in value order.</summary>
     private string EnumNamesTable(TypeSymbol e)

@@ -7,8 +7,9 @@ namespace Corsac.Lang;
 /// double are IComparable, IComparable&lt;T&gt;, IEquatable&lt;T&gt; and
 /// IFormattable; bool all but IFormattable; an enum IComparable and
 /// IFormattable; a string IComparable, IComparable&lt;string&gt; and
-/// IEquatable&lt;string&gt;. (IConvertible, ISpanFormattable and ICloneable are
-/// .NET's too, and the library declares none of them.)
+/// IEquatable&lt;string&gt;; and every one of them but nint and nuint is
+/// IConvertible. (ISpanFormattable and ICloneable are .NET's too, and the
+/// library declares neither.)
 ///
 /// One answer for the checker, which lets `IComparable x = 5;` convert, and
 /// the lowering, which fills the box's slots for these interfaces and lets
@@ -17,7 +18,7 @@ namespace Corsac.Lang;
 public static class BoxedFaces
 {
     /// <summary>The ones a value of type <paramref name="value"/> implements, of the shapes: none for any other type.</summary>
-    public enum Face { None, Comparable, ComparableOf, EquatableOf, Formattable }
+    public enum Face { None, Comparable, ComparableOf, EquatableOf, Formattable, Convertible }
 
     /// <summary>Which of them an interface is: by its plain name, arity and the argument a generic one is of; None for any other.</summary>
     public static Face Of(TypeSymbol face, Type? argument)
@@ -33,6 +34,7 @@ public static class BoxedFaces
         {
             ("IComparable", 0) => Face.Comparable,
             ("IFormattable", 0) => Face.Formattable,
+            ("IConvertible", 0) => Face.Convertible,
             ("IComparable", 1) when argument is not null => Face.ComparableOf,
             ("IEquatable", 1) when argument is not null => Face.EquatableOf,
             _ => Face.None,
@@ -47,6 +49,12 @@ public static class BoxedFaces
         Type v = value.AsNonNullable();
         if (v.IsArray || v.IsPointer || v.ParamName is not null) return false;
         bool generic = which is Face.ComparableOf or Face.EquatableOf;
+        if (which == Face.Convertible)
+        {
+            // Not the native integers: .NET's IntPtr and UIntPtr are none.
+            return v.Prim == Prim.String || v.Symbol is { Kind: TypeKind.Enum }
+                || v.Symbol is null && IsPrimitive(v.Prim) && v.Prim is not (Prim.NInt or Prim.NUInt);
+        }
         if (v.Prim == Prim.String)
         {
             return which != Face.Formattable && (!generic || argument!.Prim == Prim.String && !argument.IsArray);

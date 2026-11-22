@@ -2813,9 +2813,44 @@ public static class Convert {
     // Whether .NET's value is an IConvertible: the primitives, string, a date
     // and an enum.
     private static bool IsConvertible(object value) {
+        return BuiltIn(value) || value is IConvertible;
+    }
+
+    // The library's own IConvertibles, which the routines below convert
+    // themselves: the primitives, string, a decimal, a date and an enum.
+    private static bool BuiltIn(object value) {
         return value is string || value is bool || value is char || value is sbyte || value is byte || value is short
             || value is ushort || value is int || value is uint || value is long || value is ulong || value is float
-            || value is double || value is DateTime || value.GetType().IsEnum;
+            || value is double || value is decimal || value is DateTime || value.GetType().IsEnum;
+    }
+
+    /// .NET's Convert.GetTypeCode: Empty for null, the value's own code for
+    /// an IConvertible (an enum's is its underlying integer's), Object for
+    /// anything else.
+    public static TypeCode GetTypeCode(object? value) {
+        if (value == null) { return TypeCode.Empty; }
+        if (value is string) { return TypeCode.String; }
+        if (value is bool) { return TypeCode.Boolean; }
+        if (value is char) { return TypeCode.Char; }
+        if (value is float) { return TypeCode.Single; }
+        if (value is double) { return TypeCode.Double; }
+        if (value is decimal) { return TypeCode.Decimal; }
+        if (value is DateTime) { return TypeCode.DateTime; }
+        if (value is sbyte || value is byte || value is short || value is ushort || value is int || value is uint
+            || value is long || value is ulong || value.GetType().IsEnum) {
+            switch (Runtime.BoxKind(value)) {
+                case 1: return TypeCode.SByte;
+                case 2: return TypeCode.Byte;
+                case 3: return TypeCode.Int16;
+                case 4: return TypeCode.UInt16;
+                case 5: return TypeCode.Int32;
+                case 6: return TypeCode.UInt32;
+                case 7: return TypeCode.Int64;
+                default: return TypeCode.UInt64;
+            }
+        }
+        if (value is IConvertible convertible) { return convertible.GetTypeCode(); }
+        return TypeCode.Object;
     }
 
     // ---- ChangeType -----------------------------------------------------------
@@ -2850,10 +2885,13 @@ public static class Convert {
         if (conversionType == typeof(ulong)) { return ToUInt64(value, provider); }
         if (conversionType == typeof(float)) { return ToSingle(value, provider); }
         if (conversionType == typeof(double)) { return ToDouble(value, provider); }
+        if (conversionType == typeof(decimal)) { return ToDecimal(value, provider); }
         if (conversionType == typeof(DateTime)) { return ToDateTime(value, provider); }
         if (conversionType == typeof(string)) { return ToString(value, provider); }
         if (conversionType == typeof(object)) { return value; }
         if (value.GetType() == conversionType) { return value; }
+        // A type of the program's makes itself any other type (ToType).
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToType(conversionType, provider); }
         throw new InvalidCastException("Invalid cast from '" + String.TypeText(value.GetType().FullName) + "' to '" + String.TypeText(conversionType.FullName) + "'.");
     }
 
@@ -2877,6 +2915,7 @@ public static class Convert {
             case TypeCode.UInt64: return ToUInt64(value, provider);
             case TypeCode.Single: return ToSingle(value, provider);
             case TypeCode.Double: return ToDouble(value, provider);
+            case TypeCode.Decimal: return ToDecimal(value, provider);
             case TypeCode.DateTime: return ToDateTime(value, provider);
             case TypeCode.String: return ToString(value, provider);
             case TypeCode.Object: return value;
@@ -2955,9 +2994,10 @@ public static class Convert {
     public static bool ToBoolean(DateTime value) { throw Cast("DateTime", "Boolean"); }
     public static bool ToBoolean(string? value) { return value != null && bool.Parse(value); }
     public static bool ToBoolean(string? value, IFormatProvider? provider) { return ToBoolean(value); }
-    public static bool ToBoolean(object? value) {
+    public static bool ToBoolean(object? value) { return ToBoolean(value, null); }
+    public static bool ToBoolean(object? value, IFormatProvider? provider) {
         if (value == null) { return false; }
-        if (value is string text) { return ToBoolean(text); }
+        if (value is string text) { return ToBoolean(text, provider); }
         if (value is bool vbool) { return ToBoolean(vbool); }
         if (value is char vchar) { return ToBoolean(vchar); }
         if (value is sbyte vsbyte) { return ToBoolean(vsbyte); }
@@ -2973,9 +3013,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToBoolean(vdecimal); }
         if (value is DateTime vdatetime) { return ToBoolean(vdatetime); }
         if (value.GetType().IsEnum) { return ToBoolean(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToBoolean(provider); }
         throw NotConvertible(value);
     }
-    public static bool ToBoolean(object? value, IFormatProvider? provider) { return ToBoolean(value); }
 
     // ---- to Char ----------------------------------------------------------------
 
@@ -2999,7 +3039,8 @@ public static class Convert {
         return value[0];
     }
     public static char ToChar(string value, IFormatProvider? provider) { return ToChar(value); }
-    public static char ToChar(object? value) {
+    public static char ToChar(object? value) { return ToChar(value, null); }
+    public static char ToChar(object? value, IFormatProvider? provider) {
         if (value == null) { return (char)0; }
         if (value is string text) { return ToChar(text); }
         if (value is bool vbool) { return ToChar(vbool); }
@@ -3017,9 +3058,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToChar(vdecimal); }
         if (value is DateTime vdatetime) { return ToChar(vdatetime); }
         if (value.GetType().IsEnum) { return ToChar(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToChar(provider); }
         throw NotConvertible(value);
     }
-    public static char ToChar(object? value, IFormatProvider? provider) { return ToChar(value); }
 
     // ---- to SByte ---------------------------------------------------------------
 
@@ -3039,9 +3080,10 @@ public static class Convert {
     public static sbyte ToSByte(DateTime value) { throw Cast("DateTime", "SByte"); }
     public static sbyte ToSByte(string? value) { return value == null ? (sbyte)0 : SByte.Parse(value); }
     public static sbyte ToSByte(string? value, IFormatProvider? provider) { return value == null ? (sbyte)0 : SByte.Parse(value, provider); }
-    public static sbyte ToSByte(object? value) {
+    public static sbyte ToSByte(object? value) { return ToSByte(value, null); }
+    public static sbyte ToSByte(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToSByte(text); }
+        if (value is string text) { return ToSByte(text, provider); }
         if (value is bool vbool) { return ToSByte(vbool); }
         if (value is char vchar) { return ToSByte(vchar); }
         if (value is sbyte vsbyte) { return ToSByte(vsbyte); }
@@ -3057,9 +3099,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToSByte(vdecimal); }
         if (value is DateTime vdatetime) { return ToSByte(vdatetime); }
         if (value.GetType().IsEnum) { return ToSByte(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToSByte(provider); }
         throw NotConvertible(value);
     }
-    public static sbyte ToSByte(object? value, IFormatProvider? provider) { return ToSByte(value); }
 
     // ---- to Byte ----------------------------------------------------------------
 
@@ -3079,9 +3121,10 @@ public static class Convert {
     public static byte ToByte(DateTime value) { throw Cast("DateTime", "Byte"); }
     public static byte ToByte(string? value) { return value == null ? (byte)0 : Byte.Parse(value); }
     public static byte ToByte(string? value, IFormatProvider? provider) { return value == null ? (byte)0 : Byte.Parse(value, provider); }
-    public static byte ToByte(object? value) {
+    public static byte ToByte(object? value) { return ToByte(value, null); }
+    public static byte ToByte(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToByte(text); }
+        if (value is string text) { return ToByte(text, provider); }
         if (value is bool vbool) { return ToByte(vbool); }
         if (value is char vchar) { return ToByte(vchar); }
         if (value is sbyte vsbyte) { return ToByte(vsbyte); }
@@ -3097,9 +3140,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToByte(vdecimal); }
         if (value is DateTime vdatetime) { return ToByte(vdatetime); }
         if (value.GetType().IsEnum) { return ToByte(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToByte(provider); }
         throw NotConvertible(value);
     }
-    public static byte ToByte(object? value, IFormatProvider? provider) { return ToByte(value); }
 
     // ---- to Int16 ---------------------------------------------------------------
 
@@ -3119,9 +3162,10 @@ public static class Convert {
     public static short ToInt16(DateTime value) { throw Cast("DateTime", "Int16"); }
     public static short ToInt16(string? value) { return value == null ? (short)0 : Int16.Parse(value); }
     public static short ToInt16(string? value, IFormatProvider? provider) { return value == null ? (short)0 : Int16.Parse(value, provider); }
-    public static short ToInt16(object? value) {
+    public static short ToInt16(object? value) { return ToInt16(value, null); }
+    public static short ToInt16(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToInt16(text); }
+        if (value is string text) { return ToInt16(text, provider); }
         if (value is bool vbool) { return ToInt16(vbool); }
         if (value is char vchar) { return ToInt16(vchar); }
         if (value is sbyte vsbyte) { return ToInt16(vsbyte); }
@@ -3137,9 +3181,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToInt16(vdecimal); }
         if (value is DateTime vdatetime) { return ToInt16(vdatetime); }
         if (value.GetType().IsEnum) { return ToInt16(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToInt16(provider); }
         throw NotConvertible(value);
     }
-    public static short ToInt16(object? value, IFormatProvider? provider) { return ToInt16(value); }
 
     // ---- to UInt16 --------------------------------------------------------------
 
@@ -3159,9 +3203,10 @@ public static class Convert {
     public static ushort ToUInt16(DateTime value) { throw Cast("DateTime", "UInt16"); }
     public static ushort ToUInt16(string? value) { return value == null ? (ushort)0 : UInt16.Parse(value); }
     public static ushort ToUInt16(string? value, IFormatProvider? provider) { return value == null ? (ushort)0 : UInt16.Parse(value, provider); }
-    public static ushort ToUInt16(object? value) {
+    public static ushort ToUInt16(object? value) { return ToUInt16(value, null); }
+    public static ushort ToUInt16(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToUInt16(text); }
+        if (value is string text) { return ToUInt16(text, provider); }
         if (value is bool vbool) { return ToUInt16(vbool); }
         if (value is char vchar) { return ToUInt16(vchar); }
         if (value is sbyte vsbyte) { return ToUInt16(vsbyte); }
@@ -3177,9 +3222,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToUInt16(vdecimal); }
         if (value is DateTime vdatetime) { return ToUInt16(vdatetime); }
         if (value.GetType().IsEnum) { return ToUInt16(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToUInt16(provider); }
         throw NotConvertible(value);
     }
-    public static ushort ToUInt16(object? value, IFormatProvider? provider) { return ToUInt16(value); }
 
     // ---- to Int32 ---------------------------------------------------------------
 
@@ -3199,9 +3244,10 @@ public static class Convert {
     public static int ToInt32(DateTime value) { throw Cast("DateTime", "Int32"); }
     public static int ToInt32(string? value) { return value == null ? (int)0 : Int32.Parse(value); }
     public static int ToInt32(string? value, IFormatProvider? provider) { return value == null ? (int)0 : Int32.Parse(value, provider); }
-    public static int ToInt32(object? value) {
+    public static int ToInt32(object? value) { return ToInt32(value, null); }
+    public static int ToInt32(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToInt32(text); }
+        if (value is string text) { return ToInt32(text, provider); }
         if (value is bool vbool) { return ToInt32(vbool); }
         if (value is char vchar) { return ToInt32(vchar); }
         if (value is sbyte vsbyte) { return ToInt32(vsbyte); }
@@ -3217,9 +3263,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToInt32(vdecimal); }
         if (value is DateTime vdatetime) { return ToInt32(vdatetime); }
         if (value.GetType().IsEnum) { return ToInt32(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToInt32(provider); }
         throw NotConvertible(value);
     }
-    public static int ToInt32(object? value, IFormatProvider? provider) { return ToInt32(value); }
 
     // ---- to UInt32 --------------------------------------------------------------
 
@@ -3239,9 +3285,10 @@ public static class Convert {
     public static uint ToUInt32(DateTime value) { throw Cast("DateTime", "UInt32"); }
     public static uint ToUInt32(string? value) { return value == null ? (uint)0 : UInt32.Parse(value); }
     public static uint ToUInt32(string? value, IFormatProvider? provider) { return value == null ? (uint)0 : UInt32.Parse(value, provider); }
-    public static uint ToUInt32(object? value) {
+    public static uint ToUInt32(object? value) { return ToUInt32(value, null); }
+    public static uint ToUInt32(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToUInt32(text); }
+        if (value is string text) { return ToUInt32(text, provider); }
         if (value is bool vbool) { return ToUInt32(vbool); }
         if (value is char vchar) { return ToUInt32(vchar); }
         if (value is sbyte vsbyte) { return ToUInt32(vsbyte); }
@@ -3257,9 +3304,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToUInt32(vdecimal); }
         if (value is DateTime vdatetime) { return ToUInt32(vdatetime); }
         if (value.GetType().IsEnum) { return ToUInt32(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToUInt32(provider); }
         throw NotConvertible(value);
     }
-    public static uint ToUInt32(object? value, IFormatProvider? provider) { return ToUInt32(value); }
 
     // ---- to Int64 ---------------------------------------------------------------
 
@@ -3279,9 +3326,10 @@ public static class Convert {
     public static long ToInt64(DateTime value) { throw Cast("DateTime", "Int64"); }
     public static long ToInt64(string? value) { return value == null ? (long)0 : Int64.Parse(value); }
     public static long ToInt64(string? value, IFormatProvider? provider) { return value == null ? (long)0 : Int64.Parse(value, provider); }
-    public static long ToInt64(object? value) {
+    public static long ToInt64(object? value) { return ToInt64(value, null); }
+    public static long ToInt64(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToInt64(text); }
+        if (value is string text) { return ToInt64(text, provider); }
         if (value is bool vbool) { return ToInt64(vbool); }
         if (value is char vchar) { return ToInt64(vchar); }
         if (value is sbyte vsbyte) { return ToInt64(vsbyte); }
@@ -3297,9 +3345,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToInt64(vdecimal); }
         if (value is DateTime vdatetime) { return ToInt64(vdatetime); }
         if (value.GetType().IsEnum) { return ToInt64(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToInt64(provider); }
         throw NotConvertible(value);
     }
-    public static long ToInt64(object? value, IFormatProvider? provider) { return ToInt64(value); }
 
     // ---- to UInt64 --------------------------------------------------------------
 
@@ -3319,9 +3367,10 @@ public static class Convert {
     public static ulong ToUInt64(DateTime value) { throw Cast("DateTime", "UInt64"); }
     public static ulong ToUInt64(string? value) { return value == null ? (ulong)0 : UInt64.Parse(value); }
     public static ulong ToUInt64(string? value, IFormatProvider? provider) { return value == null ? (ulong)0 : UInt64.Parse(value, provider); }
-    public static ulong ToUInt64(object? value) {
+    public static ulong ToUInt64(object? value) { return ToUInt64(value, null); }
+    public static ulong ToUInt64(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToUInt64(text); }
+        if (value is string text) { return ToUInt64(text, provider); }
         if (value is bool vbool) { return ToUInt64(vbool); }
         if (value is char vchar) { return ToUInt64(vchar); }
         if (value is sbyte vsbyte) { return ToUInt64(vsbyte); }
@@ -3337,9 +3386,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToUInt64(vdecimal); }
         if (value is DateTime vdatetime) { return ToUInt64(vdatetime); }
         if (value.GetType().IsEnum) { return ToUInt64(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToUInt64(provider); }
         throw NotConvertible(value);
     }
-    public static ulong ToUInt64(object? value, IFormatProvider? provider) { return ToUInt64(value); }
 
     // ---- to Single --------------------------------------------------------------
 
@@ -3359,9 +3408,10 @@ public static class Convert {
     public static float ToSingle(DateTime value) { throw Cast("DateTime", "Single"); }
     public static float ToSingle(string? value) { return value == null ? (float)0 : Single.Parse(value); }
     public static float ToSingle(string? value, IFormatProvider? provider) { return value == null ? (float)0 : Single.Parse(value, provider); }
-    public static float ToSingle(object? value) {
+    public static float ToSingle(object? value) { return ToSingle(value, null); }
+    public static float ToSingle(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToSingle(text); }
+        if (value is string text) { return ToSingle(text, provider); }
         if (value is bool vbool) { return ToSingle(vbool); }
         if (value is char vchar) { return ToSingle(vchar); }
         if (value is sbyte vsbyte) { return ToSingle(vsbyte); }
@@ -3377,9 +3427,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToSingle(vdecimal); }
         if (value is DateTime vdatetime) { return ToSingle(vdatetime); }
         if (value.GetType().IsEnum) { return ToSingle(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToSingle(provider); }
         throw NotConvertible(value);
     }
-    public static float ToSingle(object? value, IFormatProvider? provider) { return ToSingle(value); }
 
     // ---- to Double --------------------------------------------------------------
 
@@ -3399,9 +3449,10 @@ public static class Convert {
     public static double ToDouble(DateTime value) { throw Cast("DateTime", "Double"); }
     public static double ToDouble(string? value) { return value == null ? 0.0 : Double.Parse(value); }
     public static double ToDouble(string? value, IFormatProvider? provider) { return value == null ? 0.0 : Double.Parse(value, provider); }
-    public static double ToDouble(object? value) {
+    public static double ToDouble(object? value) { return ToDouble(value, null); }
+    public static double ToDouble(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToDouble(text); }
+        if (value is string text) { return ToDouble(text, provider); }
         if (value is bool vbool) { return ToDouble(vbool); }
         if (value is char vchar) { return ToDouble(vchar); }
         if (value is sbyte vsbyte) { return ToDouble(vsbyte); }
@@ -3417,9 +3468,9 @@ public static class Convert {
         if (value is decimal vdecimal) { return ToDouble(vdecimal); }
         if (value is DateTime vdatetime) { return ToDouble(vdatetime); }
         if (value.GetType().IsEnum) { return ToDouble(EnumUnderlying(value)); }
+        if (value is IConvertible convertible) { return convertible.ToDouble(provider); }
         throw NotConvertible(value);
     }
-    public static double ToDouble(object? value, IFormatProvider? provider) { return ToDouble(value); }
 
     // ---- to Decimal -------------------------------------------------------------
     //
@@ -3442,9 +3493,10 @@ public static class Convert {
     public static decimal ToDecimal(DateTime value) { throw Cast("DateTime", "Decimal"); }
     public static decimal ToDecimal(string? value) { return value == null ? 0 : decimal.Parse(value); }
     public static decimal ToDecimal(string? value, IFormatProvider? provider) { return value == null ? 0 : decimal.Parse(value, provider); }
-    public static decimal ToDecimal(object? value) {
+    public static decimal ToDecimal(object? value) { return ToDecimal(value, null); }
+    public static decimal ToDecimal(object? value, IFormatProvider? provider) {
         if (value == null) { return 0; }
-        if (value is string text) { return ToDecimal(text); }
+        if (value is string text) { return ToDecimal(text, provider); }
         if (value is bool vbool) { return ToDecimal(vbool); }
         if (value is char vchar) { return ToDecimal(vchar); }
         if (value is sbyte vsbyte) { return ToDecimal(vsbyte); }
@@ -3459,9 +3511,9 @@ public static class Convert {
         if (value is double vdouble) { return ToDecimal(vdouble); }
         if (value is decimal vdecimal) { return vdecimal; }
         if (value is DateTime vdatetime) { return ToDecimal(vdatetime); }
+        if (value is IConvertible convertible) { return convertible.ToDecimal(provider); }
         throw NotConvertible(value);
     }
-    public static decimal ToDecimal(object? value, IFormatProvider? provider) { return ToDecimal(value); }
 
     // ---- to String --------------------------------------------------------------
     //
@@ -3506,6 +3558,9 @@ public static class Convert {
     public static string? ToString(string? value, IFormatProvider? provider) { return value; }
     public static string ToString(object? value, IFormatProvider? provider) {
         if (value == null) { return ""; }
+        // A type of the program's that is an IConvertible says it itself;
+        // the library's own (a box's slot is this routine) go on below.
+        if (!BuiltIn(value) && value is IConvertible convertible) { return convertible.ToString(provider); }
         if (provider != null && value is IFormattable formattable) { return formattable.ToString(null, provider); }
         return ToString(value);
     }
@@ -3530,10 +3585,11 @@ public static class Convert {
     public static DateTime ToDateTime(float value) { throw Cast("Single", "DateTime"); }
     public static DateTime ToDateTime(double value) { throw Cast("Double", "DateTime"); }
     public static DateTime ToDateTime(decimal value) { throw Cast("Decimal", "DateTime"); }
-    public static DateTime ToDateTime(object? value) {
+    public static DateTime ToDateTime(object? value) { return ToDateTime(value, null); }
+    public static DateTime ToDateTime(object? value, IFormatProvider? provider) {
         if (value == null) { return DateTime.MinValue; }
         if (value is DateTime date) { return date; }
-        if (value is string text) { return ToDateTime(text); }
+        if (value is string text) { return ToDateTime(text, provider); }
         if (value is bool) { throw Cast("Boolean", "DateTime"); }
         if (value is char) { throw Cast("Char", "DateTime"); }
         if (value is sbyte) { throw Cast("SByte", "DateTime"); }
@@ -3547,9 +3603,9 @@ public static class Convert {
         if (value is float) { throw Cast("Single", "DateTime"); }
         if (value is double) { throw Cast("Double", "DateTime"); }
         if (value is decimal) { throw Cast("Decimal", "DateTime"); }
+        if (value is IConvertible convertible) { return convertible.ToDateTime(provider); }
         throw NotConvertible(value);
     }
-    public static DateTime ToDateTime(object? value, IFormatProvider? provider) { return ToDateTime(value); }
 
     // ---- integers in base 2, 8, 10 or 16 ---------------------------------------
     //
@@ -17669,7 +17725,26 @@ static class HalfBits {
 /// construction from its words, and a constant expression of them is folded
 /// by the compiler with .NET's own arithmetic (Binder.Decimal). Arithmetic
 /// that does not fit is an OverflowException, checked or not, as in .NET.
-public readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>, IFormattable {
+public readonly struct Decimal : IComparable, IComparable<decimal>, IEquatable<decimal>, IFormattable, IConvertible {
+    // ---- IConvertible, as .NET's decimal: Convert's own conversions --------
+    public TypeCode GetTypeCode() { return TypeCode.Decimal; }
+    bool IConvertible.ToBoolean(IFormatProvider? provider) { return Convert.ToBoolean(this); }
+    byte IConvertible.ToByte(IFormatProvider? provider) { return Convert.ToByte(this); }
+    char IConvertible.ToChar(IFormatProvider? provider) { return Convert.ToChar(this); }
+    DateTime IConvertible.ToDateTime(IFormatProvider? provider) { return Convert.ToDateTime(this); }
+    decimal IConvertible.ToDecimal(IFormatProvider? provider) { return Convert.ToDecimal(this); }
+    double IConvertible.ToDouble(IFormatProvider? provider) { return Convert.ToDouble(this); }
+    short IConvertible.ToInt16(IFormatProvider? provider) { return Convert.ToInt16(this); }
+    int IConvertible.ToInt32(IFormatProvider? provider) { return Convert.ToInt32(this); }
+    long IConvertible.ToInt64(IFormatProvider? provider) { return Convert.ToInt64(this); }
+    sbyte IConvertible.ToSByte(IFormatProvider? provider) { return Convert.ToSByte(this); }
+    float IConvertible.ToSingle(IFormatProvider? provider) { return Convert.ToSingle(this); }
+    ushort IConvertible.ToUInt16(IFormatProvider? provider) { return Convert.ToUInt16(this); }
+    uint IConvertible.ToUInt32(IFormatProvider? provider) { return Convert.ToUInt32(this); }
+    ulong IConvertible.ToUInt64(IFormatProvider? provider) { return Convert.ToUInt64(this); }
+    string IConvertible.ToString(IFormatProvider? provider) { return ToString(provider); }
+    object IConvertible.ToType(Type conversionType, IFormatProvider? provider) { return Convert.ChangeType(this, conversionType, provider)!; }
+
     // GENERIC MATH (.NET 7): what `T.Zero`, `T.Max` and the rest are in a
     // generic method's copy for this type. Explicit implementations, as
     // .NET's, are reached only through a type parameter.
@@ -22266,6 +22341,326 @@ public class TypeInitializationException : SystemException
 public interface IFormattable
 {
     string ToString(string? format, IFormatProvider? formatProvider);
+}
+
+/// .NET's IConvertible: a value that says which of Convert's types it is
+/// and makes itself each of the others. A number, a bool, a char, an enum
+/// and a string are one with nothing written (the compiler's BoxedFaces:
+/// the box's slots are BoxedConvertible's members below); DateTime and
+/// decimal declare it.
+public interface IConvertible
+{
+    TypeCode GetTypeCode();
+    bool ToBoolean(IFormatProvider? provider);
+    byte ToByte(IFormatProvider? provider);
+    char ToChar(IFormatProvider? provider);
+    DateTime ToDateTime(IFormatProvider? provider);
+    decimal ToDecimal(IFormatProvider? provider);
+    double ToDouble(IFormatProvider? provider);
+    short ToInt16(IFormatProvider? provider);
+    int ToInt32(IFormatProvider? provider);
+    long ToInt64(IFormatProvider? provider);
+    sbyte ToSByte(IFormatProvider? provider);
+    float ToSingle(IFormatProvider? provider);
+    string ToString(IFormatProvider? provider);
+    object ToType(Type conversionType, IFormatProvider? provider);
+    ushort ToUInt16(IFormatProvider? provider);
+    uint ToUInt32(IFormatProvider? provider);
+    ulong ToUInt64(IFormatProvider? provider);
+}
+
+/// WHAT A BOXED NUMBER, BOOL, CHAR OR ENUM, AND A STRING, ANSWER
+/// IConvertible WITH: one routine a member for all of them, the object
+/// itself its first argument as `this` is a method's (the compiler puts
+/// these in the box's IConvertible slots, Lowering.BoxFaceSlots, in the
+/// interface's own order). Each is Convert's own conversion of the object,
+/// which is what .NET's IConvertible members of these types are.
+internal static class BoxedConvertible
+{
+    internal static TypeCode GetTypeCode(object self) { return Convert.GetTypeCode(self); }
+    internal static bool ToBoolean(object self, IFormatProvider? provider) { return Convert.ToBoolean(self, provider); }
+    internal static byte ToByte(object self, IFormatProvider? provider) { return Convert.ToByte(self, provider); }
+    internal static char ToChar(object self, IFormatProvider? provider) { return Convert.ToChar(self, provider); }
+    internal static DateTime ToDateTime(object self, IFormatProvider? provider) { return Convert.ToDateTime(self, provider); }
+    internal static decimal ToDecimal(object self, IFormatProvider? provider) { return Convert.ToDecimal(self, provider); }
+    internal static double ToDouble(object self, IFormatProvider? provider) { return Convert.ToDouble(self, provider); }
+    internal static short ToInt16(object self, IFormatProvider? provider) { return Convert.ToInt16(self, provider); }
+    internal static int ToInt32(object self, IFormatProvider? provider) { return Convert.ToInt32(self, provider); }
+    internal static long ToInt64(object self, IFormatProvider? provider) { return Convert.ToInt64(self, provider); }
+    internal static sbyte ToSByte(object self, IFormatProvider? provider) { return Convert.ToSByte(self, provider); }
+    internal static float ToSingle(object self, IFormatProvider? provider) { return Convert.ToSingle(self, provider); }
+    internal static string ToString(object self, IFormatProvider? provider) { return Convert.ToString(self, provider); }
+    internal static object ToType(object self, Type conversionType, IFormatProvider? provider) { return Convert.ChangeType(self, conversionType, provider)!; }
+    internal static ushort ToUInt16(object self, IFormatProvider? provider) { return Convert.ToUInt16(self, provider); }
+    internal static uint ToUInt32(object self, IFormatProvider? provider) { return Convert.ToUInt32(self, provider); }
+    internal static ulong ToUInt64(object self, IFormatProvider? provider) { return Convert.ToUInt64(self, provider); }
+}
+
+/// System.Type's members the compiler hands to the library, the type first
+/// (Binder: a Type's members are SystemType's, as a string's are String's).
+static partial class SystemType
+{
+    /// .NET's Type.BaseType: null for object and an interface; Array for an
+    /// array; for a class or a box the entry below its own in its display
+    /// (BaseDescriptor$), and object for a root class or a string; for a
+    /// value type no box of which names its bases (a Nullable`1, or a box
+    /// made where the library declares no ValueType), ValueType or Enum.
+    public static Type? BaseTypeOf$(Type self)
+    {
+        if (self == typeof(object) || self.IsInterface) return null;
+        if (self.IsArray) return typeof(Array);
+        Type? below = self.BaseDescriptor$;
+        if (below != null) return below;
+        if (self.IsValueType) return self.IsEnum ? typeof(Enum) : typeof(ValueType);
+        return typeof(object);
+    }
+
+    /// .NET's Type.IsSubclassOf: a class below `c` in this one's chain; never
+    /// the type itself.
+    public static bool IsSubclassOf(Type self, Type c)
+    {
+        if (c == null) throw new ArgumentNullException("c");
+        if (self == c) return false;
+        for (Type? at = BaseTypeOf$(self); at != null; at = BaseTypeOf$(at))
+        {
+            if (at == c) return true;
+        }
+        return false;
+    }
+}
+
+/// .NET's System.ValueType: what every boxed value is. No object is made
+/// of it -- a box is its own type, which derives from this one (the
+/// compiler's box descriptors name it in their display, Lowering.BoxTable)
+/// -- so `o is ValueType` is true of a box and of nothing else, and
+/// Equals, GetHashCode and ToString called through it are the box's own.
+public abstract class ValueType
+{
+    protected ValueType() { }
+}
+
+/// .NET's System.Enum: what every boxed enum is, between its own type and
+/// ValueType. Its instance members read the box they are called on -- the
+/// integer in it by the box's kind (Runtime.BoxKind) -- and its name
+/// through the box's own ToString. The statics that list an enum's members
+/// are the compiler's (Binder.EnumStatic): the members exist where the
+/// enum is compiled.
+public abstract class Enum : ValueType, IComparable, IFormattable, IConvertible
+{
+    protected Enum() { }
+
+    // The integer in a boxed enum, sign-extended or zero-extended to a long
+    // as its underlying type has it.
+    internal static long Number(object boxed) {
+        switch (Runtime.BoxKind(boxed)) {
+            case 1: return (sbyte)boxed;
+            case 2: return (byte)boxed;
+            case 3: return (short)boxed;
+            case 4: return (ushort)boxed;
+            case 5: return (int)boxed;
+            case 6: return (uint)boxed;
+            case 7: return (long)boxed;
+            default: return unchecked((long)(ulong)boxed);
+        }
+    }
+
+    // How many bytes its underlying type is.
+    internal static int Bytes(object boxed) {
+        switch (Runtime.BoxKind(boxed)) {
+            case 1: case 2: return 1;
+            case 3: case 4: return 2;
+            case 5: case 6: return 4;
+            default: return 8;
+        }
+    }
+
+    /// .NET's order: the two numbers compared as the underlying type
+    /// compares them (byte, sbyte, short and ushort by their difference,
+    /// the rest -1, 0 or 1); after null; another type refused.
+    public int CompareTo(object? target) {
+        if (target == null) { return 1; }
+        if (target.GetType() != GetType()) {
+            throw new ArgumentException("Object must be the same type as the enum. The type passed in was '" + String.TypeText(target.GetType().FullName) + "'; the enum type was '" + String.TypeText(GetType().FullName) + "'.");
+        }
+        long mine = Number(this);
+        long theirs = Number(target);
+        switch (Runtime.BoxKind(this)) {
+            case 1: case 2: case 3: case 4: return (int)(mine - theirs);
+            case 8: return (ulong)mine < (ulong)theirs ? -1 : (ulong)mine > (ulong)theirs ? 1 : 0;
+            default: return mine < theirs ? -1 : mine > theirs ? 1 : 0;
+        }
+    }
+
+    /// Whether every bit of `flag` is set in this value; a flag of another
+    /// enum is refused, as .NET refuses it.
+    public bool HasFlag(Enum flag) {
+        if (flag == null) { throw new ArgumentNullException("flag"); }
+        if (flag.GetType() != GetType()) {
+            throw new ArgumentException("The argument type, '" + String.TypeText(flag.GetType().FullName) + "', is not the same as the enum type '" + String.TypeText(GetType().FullName) + "'.");
+        }
+        long wanted = Number(flag);
+        return (Number(this) & wanted) == wanted;
+    }
+
+    // ---- the statics over a Type only run time knows -------------------------
+    //
+    // The compiler answers these where the enum is written -- `typeof(E)` or
+    // `<E>` (Binder.EnumStatic) -- from the members it has; for a Type in a
+    // variable they read the enum's box's record of its members (Lowering:
+    // its names, values, [Flags] and array; Runtime.EnumRecord).
+
+    // The enum a Type is, refused as .NET refuses anything else.
+    private static nuint EnumDescriptor(Type enumType) {
+        if (enumType == null) { throw new ArgumentNullException("enumType"); }
+        if (!enumType.IsEnum) { throw new ArgumentException("Type provided must be an Enum.", "enumType"); }
+        return enumType.Descriptor$;
+    }
+
+    private static void Members(Type enumType, out nuint desc, out string[] names, out long[] values, out bool flags, out nuint arrayDesc) {
+        desc = EnumDescriptor(enumType);
+        if (!Runtime.EnumRecord(desc, out names, out values, out flags, out arrayDesc)) {
+            throw new ArgumentException("Type provided must be an Enum.", "enumType");
+        }
+    }
+
+    // A value given for an enum: one of that enum, or an integer (a char and
+    // a bool as .NET takes them), as its bits. Another enum's value only where
+    // .NET takes its number too (GetName, ToObject, Format), not IsDefined.
+    private static long Bits(Type enumType, object value, string what, bool sameEnum = false) {
+        if (value == null) { throw new ArgumentNullException(what); }
+        if (value.GetType().IsEnum) {
+            if (sameEnum && value.GetType() != enumType) {
+                throw new ArgumentException("Object must be the same type as the enum. The type passed in was '" + String.TypeText(value.GetType().FullName) + "'; the enum type was '" + String.TypeText(enumType.FullName) + "'.");
+            }
+            return Number(value);
+        }
+        if (value is char ch) { return ch; }
+        if (value is bool flag) { return flag ? 1 : 0; }
+        if (value is sbyte || value is byte || value is short || value is ushort || value is int || value is uint || value is long || value is ulong) {
+            return Number(value);
+        }
+        throw new ArgumentException("The value passed in must be an enum base or an underlying type for an enum, such as an Int32.", what);
+    }
+
+    /// The enum's names, in the order of their values.
+    public static string[] GetNames(Type enumType) {
+        Members(enumType, out _, out string[] names, out _, out _, out _);
+        string[] copy = new string[names.Length];
+        for (int i = 0; i < names.Length; i++) { copy[i] = names[i]; }
+        return copy;
+    }
+
+    /// Its values, as an array of the enum: Color[] for Color.
+    public static Array GetValues(Type enumType) {
+        Members(enumType, out _, out _, out long[] values, out _, out nuint arrayDesc);
+        return (Array)Runtime.NewIntegerArray(arrayDesc, values);
+    }
+
+    /// Its integer type: typeof(byte) for an enum declared `: byte`.
+    public static Type GetUnderlyingType(Type enumType) {
+        switch (Runtime.DescriptorBoxKind(EnumDescriptor(enumType))) {
+            case 1: return typeof(sbyte);
+            case 2: return typeof(byte);
+            case 3: return typeof(short);
+            case 4: return typeof(ushort);
+            case 5: return typeof(int);
+            case 6: return typeof(uint);
+            case 7: return typeof(long);
+            default: return typeof(ulong);
+        }
+    }
+
+    /// The member named by a value, or null for none.
+    public static string? GetName(Type enumType, object value) {
+        Members(enumType, out _, out string[] names, out long[] values, out _, out _);
+        return Runtime.EnumLabel(names, values, Bits(enumType, value, "value"));
+    }
+
+    /// Whether a name, or a value, is one of the enum's members.
+    public static bool IsDefined(Type enumType, object value) {
+        Members(enumType, out _, out string[] names, out long[] values, out _, out _);
+        if (value is string name) {
+            for (int i = 0; i < names.Length; i++) { if (names[i] == name) { return true; } }
+            return false;
+        }
+        return Runtime.EnumLabel(names, values, Bits(enumType, value, "value", sameEnum: true)) != null;
+    }
+
+    /// A value of the enum, boxed, from a number.
+    public static object ToObject(Type enumType, object value) { return ToObject(enumType, Bits(enumType, value, "value")); }
+    public static object ToObject(Type enumType, sbyte value) { return ToObject(enumType, (long)value); }
+    public static object ToObject(Type enumType, byte value) { return ToObject(enumType, (long)value); }
+    public static object ToObject(Type enumType, short value) { return ToObject(enumType, (long)value); }
+    public static object ToObject(Type enumType, ushort value) { return ToObject(enumType, (long)value); }
+    public static object ToObject(Type enumType, int value) { return ToObject(enumType, (long)value); }
+    public static object ToObject(Type enumType, uint value) { return ToObject(enumType, (long)value); }
+    public static object ToObject(Type enumType, ulong value) { return ToObject(enumType, unchecked((long)value)); }
+    public static object ToObject(Type enumType, long value) { return Runtime.NewIntegerBox(EnumDescriptor(enumType), value); }
+
+    /// A value as Enum.ToString(format) writes it: G and F its name, D its
+    /// number, X the number in hexadecimal.
+    public static string Format(Type enumType, object value, string format) {
+        if (format == null) { throw new ArgumentNullException("format"); }
+        return ((Enum)ToObject(enumType, Bits(enumType, value, "value"))).ToString(format);
+    }
+
+    /// The value a name, names joined by commas, or a number is.
+    public static object Parse(Type enumType, string value) { return Parse(enumType, value, false); }
+    public static object Parse(Type enumType, string value, bool ignoreCase) {
+        Members(enumType, out nuint desc, out string[] names, out long[] values, out _, out _);
+        if (value == null) { throw new ArgumentNullException("value"); }
+        return Runtime.NewIntegerBox(desc, Runtime.EnumParse(names, values, value, ignoreCase));
+    }
+
+    public static bool TryParse(Type enumType, string? value, out object? result) { return TryParse(enumType, value, false, out result); }
+    public static bool TryParse(Type enumType, string? value, bool ignoreCase, out object? result) {
+        Members(enumType, out nuint desc, out string[] names, out long[] values, out _, out _);
+        result = null;
+        if (value == null || !Runtime.EnumTryParse(names, values, value, ignoreCase, out long bits)) { return false; }
+        result = Runtime.NewIntegerBox(desc, bits);
+        return true;
+    }
+
+    /// Its underlying type's code: TypeCode.Int32 for an enum over int.
+    public TypeCode GetTypeCode() {
+        switch (Runtime.BoxKind(this)) {
+            case 1: return TypeCode.SByte;
+            case 2: return TypeCode.Byte;
+            case 3: return TypeCode.Int16;
+            case 4: return TypeCode.UInt16;
+            case 5: return TypeCode.Int32;
+            case 6: return TypeCode.UInt32;
+            case 7: return TypeCode.Int64;
+            default: return TypeCode.UInt64;
+        }
+    }
+
+    /// Its name, as the box's own ToString says it: called through the box's
+    /// table, never this body, which no table names (Lowering.ClassDescriptor
+    /// leaves Enum's slots empty); declared so that ToString() is found
+    /// beside ToString(string), as .NET's Enum declares both.
+    public override string ToString() { return ((object)this).ToString()!; }
+
+    /// G and F its name, D its number, X the number in hexadecimal.
+    public string ToString(string? format) { return String.FormatEnum(ToString()!, Number(this), Bytes(this), format); }
+    public string ToString(IFormatProvider? provider) { return ToString()!; }
+    public string ToString(string? format, IFormatProvider? provider) { return ToString(format); }
+
+    bool IConvertible.ToBoolean(IFormatProvider? provider) { return Convert.ToBoolean(Convert.EnumUnderlying(this), provider); }
+    byte IConvertible.ToByte(IFormatProvider? provider) { return Convert.ToByte(Convert.EnumUnderlying(this), provider); }
+    char IConvertible.ToChar(IFormatProvider? provider) { return Convert.ToChar(Convert.EnumUnderlying(this), provider); }
+    DateTime IConvertible.ToDateTime(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'Enum' to 'DateTime'."); }
+    decimal IConvertible.ToDecimal(IFormatProvider? provider) { return Convert.ToDecimal(Convert.EnumUnderlying(this), provider); }
+    double IConvertible.ToDouble(IFormatProvider? provider) { return Convert.ToDouble(Convert.EnumUnderlying(this), provider); }
+    short IConvertible.ToInt16(IFormatProvider? provider) { return Convert.ToInt16(Convert.EnumUnderlying(this), provider); }
+    int IConvertible.ToInt32(IFormatProvider? provider) { return Convert.ToInt32(Convert.EnumUnderlying(this), provider); }
+    long IConvertible.ToInt64(IFormatProvider? provider) { return Convert.ToInt64(Convert.EnumUnderlying(this), provider); }
+    sbyte IConvertible.ToSByte(IFormatProvider? provider) { return Convert.ToSByte(Convert.EnumUnderlying(this), provider); }
+    float IConvertible.ToSingle(IFormatProvider? provider) { return Convert.ToSingle(Convert.EnumUnderlying(this), provider); }
+    object IConvertible.ToType(Type conversionType, IFormatProvider? provider) { return Convert.ChangeType(this, conversionType, provider)!; }
+    ushort IConvertible.ToUInt16(IFormatProvider? provider) { return Convert.ToUInt16(Convert.EnumUnderlying(this), provider); }
+    uint IConvertible.ToUInt32(IFormatProvider? provider) { return Convert.ToUInt32(Convert.EnumUnderlying(this), provider); }
+    ulong IConvertible.ToUInt64(IFormatProvider? provider) { return Convert.ToUInt64(Convert.EnumUnderlying(this), provider); }
 }
 
 /// .NET's: a composite format and the arguments its holes take, which an
@@ -27804,7 +28199,26 @@ public enum DateTimeKind {
 /// the rule about centuries is applied to years long before anybody agreed to
 /// it, because a calendar that changes its rules partway is a calendar no
 /// arithmetic can be done on.
-public partial struct DateTime : IComparable, IComparable<DateTime>, IEquatable<DateTime>, IFormattable {
+public partial struct DateTime : IComparable, IComparable<DateTime>, IEquatable<DateTime>, IFormattable, IConvertible {
+    // ---- IConvertible, as .NET's DateTime: a date and text, nothing else ---
+    public TypeCode GetTypeCode() { return TypeCode.DateTime; }
+    bool IConvertible.ToBoolean(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Boolean'."); }
+    byte IConvertible.ToByte(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Byte'."); }
+    char IConvertible.ToChar(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Char'."); }
+    DateTime IConvertible.ToDateTime(IFormatProvider? provider) { return this; }
+    decimal IConvertible.ToDecimal(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Decimal'."); }
+    double IConvertible.ToDouble(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Double'."); }
+    short IConvertible.ToInt16(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Int16'."); }
+    int IConvertible.ToInt32(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Int32'."); }
+    long IConvertible.ToInt64(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Int64'."); }
+    sbyte IConvertible.ToSByte(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'SByte'."); }
+    float IConvertible.ToSingle(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'Single'."); }
+    ushort IConvertible.ToUInt16(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'UInt16'."); }
+    uint IConvertible.ToUInt32(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'UInt32'."); }
+    ulong IConvertible.ToUInt64(IFormatProvider? provider) { throw new InvalidCastException("Invalid cast from 'DateTime' to 'UInt64'."); }
+    string IConvertible.ToString(IFormatProvider? provider) { return ToString(provider); }
+    object IConvertible.ToType(Type conversionType, IFormatProvider? provider) { return Convert.ChangeType(this, conversionType, provider)!; }
+
     private long ticks;
     private DateTimeKind kind;
 
