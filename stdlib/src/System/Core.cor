@@ -25310,23 +25310,39 @@ public class HashSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage
     internal void LendStorage() { lent = true; }
 }
 
-// The ordered set surface used by the compiler's metadata writer. This small
-// implementation favours a compact, deterministic iteration order over a tree:
-// descriptor interface lists are short, and insertion-sort behaviour is both
-// simpler and cheaper at their actual sizes.
 /// A set kept in order, .NET's SortedSet<T>: by the comparer it was given, or
 /// the element type's own order (text by its characters, a number by value).
-/// A sorted array searched by halving, rather than .NET's red-black tree: the
-/// same answers and the same order of enumeration.
-public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
+/// A RED-BLACK TREE, as .NET's: an Add, a Remove and a lookup walk its depth,
+/// at most twice the logarithm of the count. Its nodes are places in two
+/// arrays rather than objects -- `keys` holds each node's member, `links`
+/// its three links, left, right and up, the up link with the colour in its
+/// low bit -- so a set is two allocations however many members it has,
+/// grown by doubling. Place 0 is the sentinel every leaf and the root's up
+/// link name (black, holding nothing); a removed node's place is the next
+/// one added (a free list through the left links).
+///
+/// SMALL SETS ARE NO TREE: up to SmallLimit members a set is its sorted
+/// members alone, at places 1 to Count of `keys`, searched by halving, with
+/// no links at all (`links` null) -- most sets a compiler makes stay that
+/// small, and the links would be three words a member on top of one. The
+/// set past that is made a balanced red-black tree of those places once
+/// (Treed), and stays one. AN EMPTY SET HOLDS NO ARRAYS until its first
+/// Add: a link's lifetime hints make sets by the million, most of them
+/// never added to.
+public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStorage {
     // The non-generic IEnumerable's, as .NET's collections have it.
     IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
-    private List<T> items;
-    // AN EMPTY SET HOLDS NO LIST OF ITS OWN: every one shares this until its
-    // first Add. A link's lifetime hints made sets by the million, most of
-    // them never added to, and each was a list too.
-    static readonly List<T> NoItems = new List<T>();
+    // The tree, in a set; a view (GetViewBetween) has none of its own.
+    private T[]? keys;
+    private int[]? links;
+    private int root;
+    private int count;
+    // The places taken, the sentinel's among them (0 before the first Add;
+    // Count + 1 in a small set), and the most recently freed one (0 for
+    // none, always in a small set).
+    private int used;
+    private int free;
     private IComparer<T> by;
     // WHAT CHANGED IT LAST, counted on the set a view is of: Add moves it on
     // always -- .NET's insertion turns the tree over on its way down before
@@ -25350,22 +25366,436 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     }
 
     // A VIEW (GetViewBetween) is a set over a range of another: it holds no
-    // members of its own, reads the parent's that fall between its bounds as
-    // they are now, and writes go to the parent -- .NET's live view.
+    // members of its own, walks the tree of the set at the top of its chain
+    // between its bounds as it is now, and writes go to the set it is of --
+    // .NET's live view. A view's bounds lie within its parent's, so its own
+    // are the only ones it asks.
     private SortedSet<T>? parent;
     private T lowerBound;
     private T upperBound;
+    // A view's count, walked once per change of the set, as .NET's view
+    // counts again only when the version has moved.
+    private int viewCount;
+    private int viewCountedAt;
+    private bool viewCounted;
 
     private bool InRange(T value) => by.Compare(value, lowerBound) >= 0 && by.Compare(value, upperBound) <= 0;
 
-    /// A view's members, read again from its parent; a set's own, as they are.
-    private void Sync() {
-        if (parent == null) { return; }
-        parent.Sync();
-        List<T> now = new List<T>();
-        foreach (T value in parent.items) { if (InRange(value)) { now.Add(value); } }
-        items = now;
+    // The set whose tree holds this one's members: itself, or the set at the
+    // top of a view's chain.
+    private SortedSet<T> Top {
+        get {
+            SortedSet<T> set = this;
+            while (set.parent != null) { set = set.parent; }
+            return set;
+        }
     }
+
+    // ---- the tree's links, asked of the set that holds it ----
+
+    private int Left(int n) => links![3 * n];
+    private int Right(int n) => links![3 * n + 1];
+    private int Up(int n) => links![3 * n + 2] >> 1;
+    private bool Red(int n) => (links![3 * n + 2] & 1) != 0;
+    private void SetLeft(int n, int to) { links![3 * n] = to; }
+    private void SetRight(int n, int to) { links![3 * n + 1] = to; }
+    private void SetUp(int n, int to) {
+        int[] l = links!;
+        l[3 * n + 2] = (to << 1) | (l[3 * n + 2] & 1);
+    }
+    // Never the sentinel red: it is painted black alone.
+    private void Paint(int n, bool red) {
+        int[] l = links!;
+        l[3 * n + 2] = (l[3 * n + 2] & ~1) | (red ? 1 : 0);
+    }
+
+    // The most members a set holds as a sorted array alone, before it is
+    // made a tree: its keys sixteen places, the sentinel's among them.
+    private const int SmallLimit = 15;
+
+    // Both arrays grown to `size` places, the links when there are any.
+    private void Grow(int size) {
+        // STORED FIRST, THEN FILLED, as List.Grow: between the read of a
+        // field and the store that replaces it nothing calls out but an
+        // allocation, so the free of what was read is a self-replacing one
+        // (Escape's SelfFrees). Grown where it is, at its region's top, when
+        // it was never lent (Runtime.GrowInPlace).
+        if (keys == null || lent || !Runtime.GrowInPlace(Sys.ObjectAddress(keys), size)) {
+            T[] biggerKeys = new T[size];
+            T[]? oldKeys = keys;
+            keys = biggerKeys;
+            if (oldKeys != null) {
+                Span<T>.Move(oldKeys, 0, biggerKeys, 0, used);
+                Outgrown(oldKeys);
+            }
+        }
+        if (links != null && (lent || !Runtime.GrowInPlace(Sys.ObjectAddress(links), 3 * size))) {
+            int[] biggerLinks = new int[3 * size];
+            int[]? oldLinks = links;
+            links = biggerLinks;
+            Span<int>.Move(oldLinks!, 0, biggerLinks, 0, 3 * used);
+            Outgrown(oldLinks);
+        }
+        // Its own now, both: what it lent is the copy's.
+        lent = false;
+        // The sentinel, black and linked to nothing.
+        if (used == 0) { used = 1; }
+    }
+
+    // A place for a new node of a tree: the last one freed, else the next
+    // never used, the arrays doubled when they are full.
+    private int Place() {
+        if (free != 0) {
+            int reused = free;
+            free = Left(reused);
+            return reused;
+        }
+        int room = keys == null ? 0 : keys.Length;
+        if (used == room) { Grow(room == 0 ? 4 : room * 2); }
+        int made = used;
+        used = used + 1;
+        return made;
+    }
+
+    // A small set made a tree, its places as they are: each the root of the
+    // places on either side of it, halved, so every way down is as long as
+    // any other or one longer; the nodes of the last, unfilled level red,
+    // every other black.
+    private void Treed() {
+        int room = keys!.Length;
+        if (used == room) { Grow(room * 2); }
+        int[] made = new int[3 * keys!.Length];
+        links = made;
+        int full = 0;
+        while ((1 << (full + 1)) - 1 <= count) { full = full + 1; }
+        root = Built(1, count, 0, full);
+        free = 0;
+    }
+
+    private int Built(int low, int high, int depth, int full) {
+        if (low > high) { return 0; }
+        int middle = low + ((high - low) >> 1);
+        int left = Built(low, middle - 1, depth + 1, full);
+        int right = Built(middle + 1, high, depth + 1, full);
+        int[] l = links!;
+        l[3 * middle] = left;
+        l[3 * middle + 1] = right;
+        l[3 * middle + 2] = depth >= full ? 1 : 0;
+        if (left != 0) { SetUp(left, middle); }
+        if (right != 0) { SetUp(right, middle); }
+        return middle;
+    }
+
+    // Where `value` is among a small set's places, or the complement of the
+    // place it would go.
+    private int Search(T value) {
+        T[]? held = keys;
+        int low = 1;
+        int high = count;
+        while (low <= high) {
+            int middle = low + ((high - low) >> 1);
+            int order = by.Compare(value, held![middle]);
+            if (order == 0) { return middle; }
+            if (order < 0) { high = middle - 1; } else { low = middle + 1; }
+        }
+        return ~low;
+    }
+
+    private void RotateLeft(int x) {
+        int y = Right(x);
+        int middle = Left(y);
+        SetRight(x, middle);
+        if (middle != 0) { SetUp(middle, x); }
+        int above = Up(x);
+        SetUp(y, above);
+        if (above == 0) { root = y; } else if (x == Left(above)) { SetLeft(above, y); } else { SetRight(above, y); }
+        SetLeft(y, x);
+        SetUp(x, y);
+    }
+
+    private void RotateRight(int x) {
+        int y = Left(x);
+        int middle = Right(y);
+        SetLeft(x, middle);
+        if (middle != 0) { SetUp(middle, x); }
+        int above = Up(x);
+        SetUp(y, above);
+        if (above == 0) { root = y; } else if (x == Right(above)) { SetRight(above, y); } else { SetLeft(above, y); }
+        SetRight(y, x);
+        SetUp(x, y);
+    }
+
+    // A red node just linked in, the tree made red-black again from it up.
+    private void Balanced(int z) {
+        while (Red(Up(z))) {
+            int p = Up(z);
+            int g = Up(p);
+            if (p == Left(g)) {
+                int uncle = Right(g);
+                if (Red(uncle)) {
+                    Paint(p, false);
+                    Paint(uncle, false);
+                    Paint(g, true);
+                    z = g;
+                    continue;
+                }
+                if (z == Right(p)) {
+                    z = p;
+                    RotateLeft(z);
+                    p = Up(z);
+                }
+                Paint(p, false);
+                Paint(g, true);
+                RotateRight(g);
+            } else {
+                int uncle = Left(g);
+                if (Red(uncle)) {
+                    Paint(p, false);
+                    Paint(uncle, false);
+                    Paint(g, true);
+                    z = g;
+                    continue;
+                }
+                if (z == Left(p)) {
+                    z = p;
+                    RotateRight(z);
+                    p = Up(z);
+                }
+                Paint(p, false);
+                Paint(g, true);
+                RotateLeft(g);
+            }
+        }
+        Paint(root, false);
+    }
+
+    // `v` linked where `u` was (u's subtree's place under u's parent). The
+    // sentinel's up link is set too when v is it: the removal's repair
+    // climbs from there.
+    private void Transplant(int u, int v) {
+        int above = Up(u);
+        if (above == 0) { root = v; } else if (u == Left(above)) { SetLeft(above, v); } else { SetRight(above, v); }
+        SetUp(v, above);
+    }
+
+    private int Leftmost(int n) {
+        if (n == 0) { return 0; }
+        while (Left(n) != 0) { n = Left(n); }
+        return n;
+    }
+
+    private int Rightmost(int n) {
+        if (n == 0) { return 0; }
+        while (Right(n) != 0) { n = Right(n); }
+        return n;
+    }
+
+    // A node taken out of the tree, the tree made red-black again, and its
+    // place freed: the member let go of and the place first on the free list.
+    private void Unlink(int z) {
+        if (links == null) {
+            T[] held = keys!;
+            for (int i = z; i < count; i++) { held[i] = held[i + 1]; }
+            held[count] = default(T)!;
+            count = count - 1;
+            used = count + 1;
+            return;
+        }
+        int y = z;
+        bool wasRed = Red(y);
+        int x;
+        if (Left(z) == 0) {
+            x = Right(z);
+            Transplant(z, x);
+        } else if (Right(z) == 0) {
+            x = Left(z);
+            Transplant(z, x);
+        } else {
+            y = Leftmost(Right(z));
+            wasRed = Red(y);
+            x = Right(y);
+            if (Up(y) == z) {
+                SetUp(x, y);
+            } else {
+                Transplant(y, x);
+                SetRight(y, Right(z));
+                SetUp(Right(y), y);
+            }
+            Transplant(z, y);
+            SetLeft(y, Left(z));
+            SetUp(Left(y), y);
+            Paint(y, Red(z));
+        }
+        if (!wasRed) { Rebalanced(x); }
+        keys![z] = default(T)!;
+        SetLeft(z, free);
+        free = z;
+        count = count - 1;
+    }
+
+    // The black taken out with a removed node put back, from `x` up.
+    private void Rebalanced(int x) {
+        while (x != root && !Red(x)) {
+            int p = Up(x);
+            if (x == Left(p)) {
+                int w = Right(p);
+                if (Red(w)) {
+                    Paint(w, false);
+                    Paint(p, true);
+                    RotateLeft(p);
+                    w = Right(p);
+                }
+                if (!Red(Left(w)) && !Red(Right(w))) {
+                    Paint(w, true);
+                    x = p;
+                    continue;
+                }
+                if (!Red(Right(w))) {
+                    Paint(Left(w), false);
+                    Paint(w, true);
+                    RotateRight(w);
+                    w = Right(p);
+                }
+                Paint(w, Red(p));
+                Paint(p, false);
+                Paint(Right(w), false);
+                RotateLeft(p);
+                x = root;
+            } else {
+                int w = Left(p);
+                if (Red(w)) {
+                    Paint(w, false);
+                    Paint(p, true);
+                    RotateRight(p);
+                    w = Left(p);
+                }
+                if (!Red(Right(w)) && !Red(Left(w))) {
+                    Paint(w, true);
+                    x = p;
+                    continue;
+                }
+                if (!Red(Left(w))) {
+                    Paint(Right(w), false);
+                    Paint(w, true);
+                    RotateLeft(w);
+                    w = Left(p);
+                }
+                Paint(w, Red(p));
+                Paint(p, false);
+                Paint(Left(w), false);
+                RotateRight(p);
+                x = root;
+            }
+        }
+        Paint(x, false);
+    }
+
+    private int Successor(int n) {
+        if (links == null) { return n < count ? n + 1 : 0; }
+        if (Right(n) != 0) { return Leftmost(Right(n)); }
+        int above = Up(n);
+        while (above != 0 && n == Right(above)) {
+            n = above;
+            above = Up(above);
+        }
+        return above;
+    }
+
+    private int Predecessor(int n) {
+        if (links == null) { return n > 1 ? n - 1 : 0; }
+        if (Left(n) != 0) { return Rightmost(Left(n)); }
+        int above = Up(n);
+        while (above != 0 && n == Left(above)) {
+            n = above;
+            above = Up(above);
+        }
+        return above;
+    }
+
+    // The least node not below `value`, and the greatest not above it; 0 for none.
+    private int Ceiling(T value) {
+        if (links == null) {
+            int at = Search(value);
+            if (at > 0) { return at; }
+            return ~at <= count ? ~at : 0;
+        }
+        int n = root;
+        int best = 0;
+        while (n != 0) {
+            if (by.Compare(value, keys![n]) <= 0) { best = n; n = Left(n); } else { n = Right(n); }
+        }
+        return best;
+    }
+
+    private int Floor(T value) {
+        if (links == null) {
+            int at = Search(value);
+            if (at > 0) { return at; }
+            return ~at - 1;
+        }
+        int n = root;
+        int best = 0;
+        while (n != 0) {
+            if (by.Compare(value, keys![n]) >= 0) { best = n; n = Right(n); } else { n = Left(n); }
+        }
+        return best;
+    }
+
+    // The least and the greatest node, 0 for none.
+    private int Lowest() { return links == null ? (count == 0 ? 0 : 1) : Leftmost(root); }
+    private int Highest() { return links == null ? count : Rightmost(root); }
+
+    // ---- this set's members, or a view's, in the top set's tree ----
+
+    private int First(SortedSet<T> top) {
+        if (parent == null) { return top.Lowest(); }
+        int n = top.Ceiling(lowerBound);
+        return n != 0 && by.Compare(top.keys![n], upperBound) <= 0 ? n : 0;
+    }
+
+    private int Last(SortedSet<T> top) {
+        if (parent == null) { return top.Highest(); }
+        int n = top.Floor(upperBound);
+        return n != 0 && by.Compare(top.keys![n], lowerBound) >= 0 ? n : 0;
+    }
+
+    private int After(SortedSet<T> top, int n) {
+        int next = top.Successor(n);
+        return next != 0 && parent != null && by.Compare(top.keys![next], upperBound) > 0 ? 0 : next;
+    }
+
+    private int Before(SortedSet<T> top, int n) {
+        int next = top.Predecessor(n);
+        return next != 0 && parent != null && by.Compare(top.keys![next], lowerBound) < 0 ? 0 : next;
+    }
+
+    // The node holding `value` in this set or view, 0 for none.
+    private int NodeOf(SortedSet<T> top, T value) {
+        if (parent != null && !InRange(value)) { return 0; }
+        if (top.links == null) {
+            int at = top.Search(value);
+            return at > 0 ? at : 0;
+        }
+        int n = top.root;
+        while (n != 0) {
+            int order = by.Compare(value, top.keys![n]);
+            if (order == 0) { return n; }
+            n = order < 0 ? top.Left(n) : top.Right(n);
+        }
+        return 0;
+    }
+
+    // ---- for SortedDictionary, a set of its pairs ordered by key, as .NET's
+    // is a tree set of them: the node of a pair, its pair, a pair replaced
+    // where it is (the key it was found by kept), and a walk.
+
+    internal int FindNode(T value) { return NodeOf(this, value); }
+    internal T ItemAt(int n) { return keys![n]; }
+    internal void SetItem(int n, T value) { keys![n] = value; }
+    internal int FirstNode() { return First(this); }
+    internal int NextNode(int n) { return After(this, n); }
+    internal int Stamp => Version;
+    internal void Touch() { Changed(); }
 
     /// The members between two values, both included, as a set that stays
     /// this one's: what is added to it or removed from it is added to or
@@ -25381,10 +25811,9 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         return view;
     }
 
-    public SortedSet() { items = NoItems; by = Comparer<T>.Default; }
+    public SortedSet() { by = Comparer<T>.Default; }
 
     public SortedSet(IComparer<T>? comparer) {
-        items = NoItems;
         by = comparer ?? Comparer<T>.Default;
     }
 
@@ -25397,28 +25826,35 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     public IComparer<T> Comparer => by;
 
-    public int Count { get { Sync(); return items.Count; } }
+    public int Count {
+        get {
+            if (parent == null) { return count; }
+            int now = Version;
+            if (viewCounted && viewCountedAt == now) { return viewCount; }
+            SortedSet<T> top = Top;
+            int seen = 0;
+            for (int n = First(top); n != 0; n = After(top, n)) { seen = seen + 1; }
+            viewCount = seen;
+            viewCountedAt = now;
+            viewCounted = true;
+            return seen;
+        }
+    }
 
     public T Min {
-        get { Sync(); return items.Count == 0 ? default(T)! : items[0]; }
+        get {
+            SortedSet<T> top = Top;
+            int n = First(top);
+            return n == 0 ? default(T)! : top.keys![n];
+        }
     }
 
     public T Max {
-        get { Sync(); return items.Count == 0 ? default(T)! : items[items.Count - 1]; }
-    }
-
-    /// Where value is, or the complement of where it would go.
-    private int Find(T value) {
-        Sync();
-        int low = 0;
-        int high = items.Count - 1;
-        while (low <= high) {
-            int middle = low + ((high - low) >> 1);
-            int order = by.Compare(items[middle], value);
-            if (order == 0) { return middle; }
-            if (order < 0) { low = middle + 1; } else { high = middle - 1; }
+        get {
+            SortedSet<T> top = Top;
+            int n = Last(top);
+            return n == 0 ? default(T)! : top.keys![n];
         }
-        return ~low;
     }
 
     public bool Add(T value) {
@@ -25429,10 +25865,41 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         // A CHANGE WHETHER IT ADDS OR NOT, as .NET's: a walk of the set is
         // refused after any Add.
         version = version + 1;
-        int at = Find(value);
-        if (at >= 0) { return false; }
-        if (ReferenceEquals(items, NoItems)) { items = new List<T>(); }
-        items.Insert(~at, value);
+        if (links == null) {
+            int found = Search(value);
+            if (found > 0) { return false; }
+            if (count < SmallLimit) {
+                int room = keys == null ? 0 : keys.Length;
+                if (room < count + 2) { Grow(room == 0 ? 4 : room * 2); }
+                T[] held = keys!;
+                int into = ~found;
+                for (int i = count; i >= into; i--) { held[i + 1] = held[i]; }
+                held[into] = value;
+                count = count + 1;
+                used = count + 1;
+                return true;
+            }
+            Treed();
+        }
+        int at = root;
+        int above = 0;
+        int order = 0;
+        while (at != 0) {
+            order = by.Compare(value, keys![at]);
+            if (order == 0) { return false; }
+            above = at;
+            at = order < 0 ? Left(at) : Right(at);
+        }
+        int made = Place();
+        keys![made] = value;
+        int[] l = links!;
+        l[3 * made] = 0;
+        l[3 * made + 1] = 0;
+        // Red, under the node it was found to go below.
+        l[3 * made + 2] = (above << 1) | 1;
+        if (above == 0) { root = made; } else if (order < 0) { SetLeft(above, made); } else { SetRight(above, made); }
+        count = count + 1;
+        Balanced(made);
         return true;
     }
 
@@ -25440,25 +25907,61 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         if (parent != null) { return InRange(value) && parent.Remove(value); }
         // A CHANGE WHENEVER THERE IS ANYTHING TO REMOVE FROM, found or not,
         // as .NET's: its removal turns the tree over on the way down.
-        if (items.Count == 0) { return false; }
+        if (count == 0) { return false; }
         version = version + 1;
-        int at = Find(value);
-        if (at < 0) { return false; }
-        items.RemoveAt(at);
+        int n = NodeOf(this, value);
+        if (n == 0) { return false; }
+        Unlink(n);
         return true;
     }
 
-    public bool Contains(T value) { return Find(value) >= 0; }
+    public bool Contains(T value) { return NodeOf(Top, value) != 0; }
 
     public void Clear() {
         if (parent != null) {
-            Sync();
-            foreach (T value in items) { parent.Remove(value); }
+            // Each member in range taken out of the set it is of, least first.
+            SortedSet<T> top = Top;
+            for (int n = First(top); n != 0; n = First(top)) {
+                if (!parent.Remove(top.keys![n])) { break; }
+            }
             return;
         }
-        if (!ReferenceEquals(items, NoItems)) { items.Clear(); }
+        Emptied();
         version = version + 1;
     }
+
+    // No members, the arrays kept for the next: each member let go of.
+    private void Emptied() {
+        T[]? held = keys;
+        if (held != null && used > 1) { Array.Clear(held, 0, used); }
+        root = 0;
+        count = 0;
+        free = 0;
+        used = held == null ? 0 : 1;
+    }
+
+    // THE STORAGE GIVEN BACK with a set proved dead (Runtime.Free): neither
+    // array ever leaves the set. A view has none.
+    public void FreeStorage() {
+        Outgrown(keys);
+        Outgrown(links);
+        keys = null;
+        links = null;
+        root = 0;
+        count = 0;
+        used = 0;
+        free = 0;
+    }
+
+    // A COPY'S STORAGE IS NOT ITS OWN (LendStorage), as HashSet's.
+    private bool lent;
+
+    private void Outgrown<E>(E[]? old) {
+        if (!lent) { OutgrownStorage.Release(old); }
+    }
+
+    // ITS ARRAYS SHARED WITH A MEMBERWISE COPY (object.MemberwiseClone).
+    internal void LendStorage() { lent = true; }
 
     /// What the other holds added. Into an empty set from another sorted set,
     /// or from one by the same order holding more than half as many as this,
@@ -25468,16 +25971,16 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     public void UnionWith(IEnumerable<T> other) {
         if (other == null) { throw new ArgumentNullException("other"); }
         SortedSet<T>? sorted = other as SortedSet<T>;
-        if (parent == null && sorted != null && (Count == 0 || (SameOrder(sorted) && sorted.Count > Count / 2))) {
+        if (parent == null && sorted != null && (count == 0 || (SameOrder(sorted) && sorted.Count > count / 2))) {
             // Read out first: .NET merges from the two as they are, so the
             // other may be a view of this one. A MERGE KEEPS THEIRS of two
             // that compare alike, as .NET's takes the other's at a tie; an
             // empty set is the other's copy.
             List<T> theirs = new List<T>(sorted);
-            bool merging = Count != 0;
+            bool merging = count != 0;
             foreach (T item in theirs) {
-                int at = Find(item);
-                if (at < 0) { Add(item); } else if (merging) { items[at] = item; }
+                int at = NodeOf(this, item);
+                if (at == 0) { Add(item); } else if (merging) { keys![at] = item; }
             }
             version = version + 1;
             return;
@@ -25514,7 +26017,8 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     }
 
     /// Only what the other holds kept. Nothing done for an empty set or for
-    /// this one itself; anything else rebuilds the set, a change whatever it
+    /// this one itself; anything else rebuilds the set from what is kept --
+    /// the other's own of each, the first it gives -- a change whatever it
     /// keeps, as .NET's.
     public void IntersectWith(IEnumerable<T> other) {
         if (other == null) { throw new ArgumentNullException("other"); }
@@ -25524,30 +26028,37 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
             if (Contains(item)) { keep.Add(item); }
         }
         if (parent != null) {
-            Sync();
-            foreach (T value in items) { if (!keep.Contains(value)) { parent.Remove(value); } }
+            List<T>? dropped = null;
+            foreach (T value in this) {
+                if (!keep.Contains(value)) { (dropped ??= new List<T>()).Add(value); }
+            }
+            if (dropped != null) {
+                foreach (T value in dropped) { parent.Remove(value); }
+            }
             Changed();
             return;
         }
-        items = keep.items;
+        Emptied();
+        foreach (T item in keep) { Add(item); }
         version = version + 1;
     }
 
     public bool SetEquals(IEnumerable<T> other) {
         SortedSet<T> them = new SortedSet<T>(other, by);
         if (them.Count != Count) { return false; }
-        Sync();
-        for (int i = 0; i < items.Count; i++) {
-            if (by.Compare(items[i], them.items[i]) != 0) { return false; }
+        SortedSet<T> top = Top;
+        int theirs = them.First(them);
+        for (int n = First(top); n != 0; n = After(top, n)) {
+            if (by.Compare(top.keys![n], them.keys![theirs]) != 0) { return false; }
+            theirs = them.After(them, theirs);
         }
         return true;
     }
 
     public bool IsSubsetOf(IEnumerable<T> other) {
         SortedSet<T> them = new SortedSet<T>(other, by);
-        Sync();
-        for (int i = 0; i < items.Count; i++) {
-            if (!them.Contains(items[i])) { return false; }
+        foreach (T value in this) {
+            if (!them.Contains(value)) { return false; }
         }
         return true;
     }
@@ -25574,7 +26085,7 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         if (other == null) { throw new ArgumentNullException("other"); }
         if (Count == 0) { UnionWith(other); return; }
         if ((object)other == (object)this) { Clear(); return; }
-        // A sorted set by the same order is walked as it is, as .NET's walks
+        // A sorted set by the same order is walked as it is, as .NET walks
         // it; anything else is sorted first, each value of it taken once.
         IEnumerable<T> theirs = other is SortedSet<T> sorted && SameOrder(sorted) ? sorted : new SortedSet<T>(other, by);
         foreach (T value in theirs) {
@@ -25596,14 +26107,14 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
 
     /// The member equal to `equalValue` by the set's comparer.
     public bool TryGetValue(T equalValue, out T actualValue) {
-        foreach (T value in this) {
-            if (by.Compare(value, equalValue) == 0) {
-                actualValue = value;
-                return true;
-            }
+        SortedSet<T> top = Top;
+        int n = NodeOf(top, equalValue);
+        if (n == 0) {
+            actualValue = default!;
+            return false;
         }
-        actualValue = default!;
-        return false;
+        actualValue = top.keys![n];
+        return true;
     }
 
     public void CopyTo(T[] array, int index, int count) {
@@ -25619,37 +26130,38 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         }
     }
 
+    /// Each member `match` takes removed, as .NET's: all asked first, in
+    /// order, then each removed.
     public int RemoveWhere(Predicate<T> match) {
         if (match == null) { throw new ArgumentNullException("match"); }
-        if (parent != null) {
-            Sync();
-            int removed = 0;
-            foreach (T value in items) { if (match(value) && parent.Remove(value)) { removed = removed + 1; } }
-            return removed;
+        List<T>? matched = null;
+        foreach (T value in this) {
+            if (match(value)) { (matched ??= new List<T>()).Add(value); }
         }
-        if (ReferenceEquals(items, NoItems)) { return 0; }
-        int taken = items.RemoveAll(item => match(item));
-        // A removal is a change, as each of .NET's is.
-        if (taken > 0) { version = version + 1; }
-        return taken;
+        if (matched == null) { return 0; }
+        int removed = 0;
+        foreach (T value in matched) {
+            if (Remove(value)) { removed = removed + 1; }
+        }
+        return removed;
     }
 
     public void CopyTo(T[] array) { CopyTo(array, 0, Count); }
 
     public void CopyTo(T[] array, int index) { CopyTo(array, index, Count); }
 
-    /// The members last to first, as .NET's: walked as they are when the walk
-    /// begins, and refused, as a walk forwards is, once the set has changed.
+    /// The members last to first, as .NET's: refused, as a walk forwards is,
+    /// once the set has changed.
     public IEnumerable<T> Reverse() {
-        Sync();
-        List<T> walked = items;
+        SortedSet<T> top = Top;
         int was = Version;
-        int at = walked.Count;
+        int n = Last(top);
         while (true) {
             if (was != Version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
-            if (at == 0) { yield break; }
-            at = at - 1;
-            yield return walked[at];
+            if (n == 0) { yield break; }
+            T value = top.keys![n];
+            n = Before(top, n);
+            yield return value;
         }
     }
 
@@ -25661,12 +26173,20 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
     /// an InvalidOperationException at the next MoveNext or Reset.
     public struct Enumerator : IEnumerator<T>, IDisposable {
         private readonly SortedSet<T> owner;
-        private readonly List<T> over;
+        private readonly SortedSet<T> top;
         private readonly int version;
-        private int at;
+        // The node the next MoveNext takes, 0 past the last.
+        private int next;
         private bool taken;
         private T current;
-        internal Enumerator(SortedSet<T> set, List<T> walked) { owner = set; over = walked; version = set.Version; at = 0; taken = false; current = default(T)!; }
+        internal Enumerator(SortedSet<T> set) {
+            owner = set;
+            top = set.Top;
+            version = set.Version;
+            next = set.First(top);
+            taken = false;
+            current = default(T)!;
+        }
         public T Current => current;
         object? IEnumerator.Current {
             get {
@@ -25676,9 +26196,9 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         }
         public bool MoveNext() {
             if (version != owner.Version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
-            if (at < over.Count) {
-                current = over[at];
-                at = at + 1;
+            if (next != 0) {
+                current = top.keys![next];
+                next = owner.After(top, next);
                 taken = true;
                 return true;
             }
@@ -25688,14 +26208,14 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T> {
         }
         public void Reset() {
             if (version != owner.Version) { ThrowHelper.CollectionModifiedAfterEnumerator(); }
-            at = 0;
+            next = owner.First(top);
             taken = false;
             current = default(T)!;
         }
         public void Dispose() { }
     }
 
-    public Enumerator GetEnumerator() { Sync(); return new Enumerator(this, items); }
+    public Enumerator GetEnumerator() { return new Enumerator(this); }
     IEnumerator<T> IEnumerable<T>.GetEnumerator() { return GetEnumerator(); }
 }
 

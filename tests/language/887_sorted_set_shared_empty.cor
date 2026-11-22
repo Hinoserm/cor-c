@@ -7,7 +7,7 @@
 // 3,5 | 9 | a
 // 6 0 3,2,1
 //
-// An empty SortedSet shares one empty list until its first Add, and every
+// An empty SortedSet holds no arrays until its first Add, and every
 // set and sort asks Comparer<T>.Default rather than making a comparer of
 // its own; neither shows: an empty set answers, clears, filters and is
 // enumerated as before, and Comparer<T>.Create orders as .NET's does.
