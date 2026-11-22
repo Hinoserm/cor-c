@@ -536,8 +536,10 @@ public sealed partial class Lowering
     /// (SettleEnumArrays), whatever path the program called it by.
     /// </summary>
     private bool EnumArraysAsked()
-        => !ClosedWorld || _library || PartOfALibrary || SharedObject || Dynamic
-           || _required.Any(m => m.Name == "GetValues" && m.Static && m.Params.Count == 1 && m.Owner.IsEnumClass);
+        => !ClosedWorld || _library || PartOfALibrary || SharedObject || Dynamic || _enumValuesRequired;
+
+    /// <summary>Whether Enum.GetValues(Type) is required: noted by Require as it is, never searched for.</summary>
+    private bool _enumValuesRequired;
 
     /// <summary>Enum boxes' records made before Enum.GetValues(Type) was required, and the enum each is of.</summary>
     private readonly List<(DataItem Record, Type Of)> _enumRecordsWaiting = new();

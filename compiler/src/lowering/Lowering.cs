@@ -1259,6 +1259,7 @@ public sealed partial class Lowering
         MethodSymbol m = Canonical(call);
         if (Emits(m) && _required.Add(m))
         {
+            if (m is { Name: "GetValues", Static: true, Params.Count: 1 } && m.Owner.IsEnumClass) _enumValuesRequired = true;
             if (Why is not null) _requiredBy[m] = _method;
             _work.Enqueue(m);
         }

@@ -564,7 +564,6 @@ public sealed partial class BindResult
     public Dictionary<MethodDecl, LocalEnvironment> Environments { get; } = new(ReferenceEqualityComparer.Instance);
     public HashSet<CallExpr> EnumHasFlags { get; } = new(ReferenceEqualityComparer.Instance);
 
-
     /// <summary>
     /// The calls to System.Enum's statics that read an enum's name table:
     /// which enum, and which of them. The code generator emits each over the

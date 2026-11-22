@@ -13724,7 +13724,7 @@ public sealed partial class Binder
         // declares, or one it is handed.
         else if (named.Name == "TryParse" && call.Args.Count is 2 or 3 && call.Args[^1] is RefArgExpr { IsOut: true } filled
                  && (filled.Declare is { } declared && declared.Name != "var" && FindType(declared.Name, out TypeSymbol? byOut) ? byOut
-                     : filled.Declare is null && filled.Target is { } handed && CheckQuietly(handed) is { } held ? held.AsNonNullable().Symbol : null)
+                     : filled.Declare is null && filled.Target is { } handed && Peek(handed) is { } held ? held.AsNonNullable().Symbol : null)
                     is { Kind: TypeKind.Enum } byFilled)
         {
             chosen = byFilled;
@@ -13734,7 +13734,7 @@ public sealed partial class Binder
         // are IsDefined<IrType> and GetName<Kind>.
         else if (named.Name is "IsDefined" or "GetName" && call.Args.Count == 1)
         {
-            Type given = CheckQuietly(call.Args[0]);
+            Type given = Peek(call.Args[0]);
             if (given.AsNonNullable().Symbol is { Kind: TypeKind.Enum } byValue)
                 chosen = byValue;
         }
@@ -13786,13 +13786,10 @@ public sealed partial class Binder
                 // (Enum.GetName(Type, object)), which refuses as .NET refuses.
                 if (skip == 1)
                 {
-                    // In a scope of its own: a pattern's or an `out var`'s
-                    // name the trial declares is not there when the call is
-                    // bound again, by the library's method.
-                    Type given;
-                    PushScope();
-                    try { given = CheckQuietly(rest[0]); }
-                    finally { PopScope(); }
+                    // A look (Peek): a pattern's or an `out var`'s name the
+                    // trial declares is taken back, nested names and all, for
+                    // the call bound again by the library's method.
+                    Type given = Peek(rest[0]);
                     bool own = ReferenceEquals(given.AsNonNullable().Symbol, chosen) && !given.IsNullableValue;
                     bool number = given.IsInteger && given.Symbol is null && !given.IsNullableValue && !given.IsPointer
                                   && (named.Name == "GetName" || given.Prim == chosen.EnumUnderlying);
