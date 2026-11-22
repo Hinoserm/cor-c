@@ -4,7 +4,10 @@
 # Geode LX (the 486-class kernel's CPU). The route cache's 64-bit generation
 # and the two counters of Twice are added to in registers -- no ADD or ADC
 # of a frame slot -- and no constant with a zero low word is added to the
-# low word at all.
+# low word at all, on either side of an addition or taken away (Halves).
+# And the same source compiled for long mode, whose edges carry the
+# allocator's loads as i386's do (X64Target, IPlacement.EdgeMoves), runs
+# to .NET's answers.
 #
 #     tests/language/2689_wide_counters_kept_in_registers.sh
 set -u
@@ -32,6 +35,15 @@ for f in RouteOf Twice; do
         fail "$f adds to no frame slot"; body "$f" | grep -E '^\s+(add|adc|sub|sbb) dword \['
     else pass "$f adds to no frame slot"; fi
 done
-if body Twice | grep -qE '^\s+add e[a-z]{2}, 0$'; then fail "Twice adds no zero low word"; else pass "Twice adds no zero low word"; fi
+for f in Twice Halves; do
+    if body "$f" | grep -qE '^\s+(add|sub) e[a-z]{2}, 0$'; then fail "$f adds no zero low word"; else pass "$f adds no zero low word"; fi
+done
+
+expected="$(sed -n '/^\/\/ expect-output:/,/^\/\/$/p' "$here/2689_wide_counters_kept_in_registers.cor" | sed '1d;$d' | sed 's|^// ||')"
+if $corc compile "$here/2689_wide_counters_kept_in_registers.cor" -o "$work/wide64" --target=x86-64 > "$work/wide64.log" 2>&1
+then pass "the program compiles for long mode"
+    if [ "$("$work/wide64")" = "$expected" ]; then pass "long mode answers as .NET"; else fail "long mode answers as .NET"; fi
+else fail "the program compiles for long mode"; cat "$work/wide64.log"
+fi
 
 [ "$failures" -eq 0 ]

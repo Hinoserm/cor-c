@@ -1105,10 +1105,12 @@ public sealed class Inline : IParallelModulePass
         // order, and the code after the call after them. Made at the end,
         // what follows a call inlined with a branch in it -- a static
         // constructor's check in a getter -- came after the rest of the
-        // function in the order the register allocator scans, its values
-        // read there before they were made: Tcp.RouteOf's `long generation
-        // = Routes.Generation + 1` lived in two frame slots, added to in
-        // memory, on every segment sent.
+        // function in the order the register allocator scans (its blocks'
+        // order), its values read there before they were made. In test
+        // 2689's RouteOf, as in the kernel's Tcp.RouteOf, that left `long
+        // generation = Routes.Generation + 1` given up at its definition:
+        // two frame slots, `mov [hi], 0 ; adc [hi], 0`. Block.Order is stale
+        // after this for the blocks moved past; Cfg makes it again.
         int at = caller.Blocks.IndexOf(site);
         if (at >= 0)
         {

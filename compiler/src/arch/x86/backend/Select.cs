@@ -1968,24 +1968,22 @@ internal sealed partial class Selector
             }
             else
             {
-                // A LOW WORD OF ZERO CARRIES NOTHING (or borrows nothing): `x +
-                // 0x1_0000_0000L` is the low word as it was and the high one
-                // added, where ADD of 0 then ADC wrote the low word for no
-                // reason and tied the high half to its flags.
+                // An addition's constant on the left goes right, where the
+                // rule below looks for it.
                 if (op == MOp.Add && alo is MImm { IsPlain: true, Value: 0 } && blo is not MImm)
                 {
                     (alo, blo) = (blo, alo);
                     (ahi, bhi) = (bhi, ahi);
                 }
+                // A LOW WORD OF ZERO CARRIES NOTHING (or borrows nothing): `x +
+                // 0x1_0000_0000L` is the low word as it was and the high one
+                // added, where ADD of 0 then ADC wrote the low word for no
+                // reason and tied the high half to its flags.
                 if (op is MOp.Add or MOp.Sub && blo is MImm { IsPlain: true, Value: 0 })
                 {
                     Mov(dest.Lo, alo);
-                    if (bhi is MImm { IsPlain: true, Value: 0 }) Mov(dest.Hi, ahi);
-                    else
-                    {
-                        Mov(dest.Hi, ahi);
-                        Emit(op, dest.Hi, bhi);
-                    }
+                    Mov(dest.Hi, ahi);
+                    if (bhi is not MImm { IsPlain: true, Value: 0 }) Emit(op, dest.Hi, bhi);
                     Commit(i, dest);
                     return;
                 }

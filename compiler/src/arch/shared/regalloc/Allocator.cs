@@ -181,7 +181,7 @@ public sealed class Allocator
     /// <summary>
     /// The values the scan gave to the frame at a cost: not a constant, made
     /// again where it is read, nor one at home in the word it came in, nor
-    /// one stored only where it leaves its register (SinkStores, run
+    /// one whose writes are stored only where it leaves its register (SinkStores, run
     /// before), nor one whose value (`not`, by root) was offered to a cold
     /// split already. Null where there is none.
     /// </summary>
@@ -270,7 +270,7 @@ public sealed class Allocator
         a.Scan();
         // AGAIN WHERE A VALUE WENT TO THE FRAME AND A COLD REGION MAY BE WHY
         // (LoopSplit.SplitCold): every value the scan gave up, but for those
-        // whose one store SinkStores then moved off their definition (stored
+        // whose stores SinkStores then moved off their writes (stored
         // where they leave their register already, and a split value is
         // stored at every write again), is split at each cold region it is
         // live into, and the function scanned again as it then stands. Twice
@@ -1236,8 +1236,11 @@ public sealed class Allocator
     /// be spilled: give it one for as long as some register stays free --
     /// up to a call, a string move's fixed ESI/EDI/ECX, a divide's EDX --
     /// and spill it only from there. Its reads before the split keep the
-    /// register; every write still stores (a split value's store is never
-    /// sunk), so the slot is current wherever the frame takes over. Returns
+    /// register; every write stores, so the slot is current wherever the
+    /// frame takes over -- or, the prefix kept in its register (Spill's
+    /// _keepBefore, or SinkStores' second chance), where it leaves the
+    /// prefix (SinkStores: a value LoopSplit split, a different thing, is
+    /// stored at every write). Returns
     /// the register, or -1 if no register covers even the interval's first
     /// instruction that touches it.
     /// </summary>
@@ -1938,9 +1941,10 @@ public sealed class Allocator
     /// <summary>
     /// A SPILLED VALUE STORED WHERE IT LEAVES ITS REGISTER, not where it is
     /// made (Wimmer and Mossenbock's resolution on the edges, Go's spill
-    /// placement). A value of one definition kept in its register up to its
-    /// spill point P (_keepBefore) is in that register wherever it is live
-    /// in the code laid out from the definition to P -- the window -- and in
+    /// placement). A value kept in its register from its first write to its
+    /// spill point P (_keepBefore) -- written there once or more, `mov lo, x
+    /// ; add lo, 1` -- is in that register wherever it is live in the code
+    /// laid out from that write to P -- the window -- and in
     /// its slot after. So it is stored on the way out of the window alone:
     /// just before P, where it is live there, and on each edge from a block
     /// of the window to one outside it that it is live into. Nothing outside
@@ -2393,15 +2397,26 @@ public sealed class Allocator
             _movesBefore.Clear();
             // The stores first: a register another value leaves at the point
             // may be the one a value coming back is loaded into.
+            // NOT A VALUE'S OWN STORE WHERE IT IS LOADED AT THE SAME POINT: a
+            // block of its window entered only from outside it (its load,
+            // ReentryLoads) that leaves it by its jump alone (its store,
+            // ExitStores) -- nothing between the two -- stored the register
+            // before the load had put the value in it: whatever another value
+            // had left there went to the slot. The slot it is loaded from is
+            // current already.
+            a._reloadAt.TryGetValue(index, out List<int>? loaded);
             if (a._sunkAt.TryGetValue(index, out List<int>? stored))
-                foreach (int v in stored) _movesBefore.Add((a._assigned[v], a._slot[v], false));
-            if (a._reloadAt.TryGetValue(index, out List<int>? loaded))
+                foreach (int v in stored)
+                    if (loaded is null || !loaded.Contains(v)) _movesBefore.Add((a._assigned[v], a._slot[v], false));
+            if (loaded is not null)
                 foreach (int v in loaded) _movesBefore.Add((a._assigned[v], a._slot[v], true));
             return _movesBefore;
         }
         private readonly List<(int Reg, int Slot, bool Load)> _movesBefore = new();
+        // Made once: both targets read it twice (its Count, then each edge).
+        private List<(int From, int To)>? _storedEdges;
         public IReadOnlyCollection<(int From, int To)> StoredEdges
-            => _a._reloadOnEdge.Count == 0 ? _a._sunkOnEdge.Keys : _a._sunkOnEdge.Keys.Union(_a._reloadOnEdge.Keys).ToList();
+            => _a._reloadOnEdge.Count == 0 ? _a._sunkOnEdge.Keys : _storedEdges ??= _a._sunkOnEdge.Keys.Union(_a._reloadOnEdge.Keys).ToList();
         public IReadOnlyList<(int Reg, int Slot, bool Load)> EdgeMoves(int from, int to)
         {
             // The stores first, as before an instruction (MovesBefore): a

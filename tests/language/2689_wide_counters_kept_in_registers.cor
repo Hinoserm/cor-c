@@ -3,20 +3,22 @@
 // expect-output:
 // 77309412572 57
 // 511101110201
+// 12884901928 12884901868
 //
 // A 64-BIT COUNTER IS ADDED TO IN REGISTERS, not in the frame. The kernel's
 // Tcp.RouteOf made `long generation = Routes.Generation + 1` -- a uint
 // widened, plus one -- in two frame slots, `mov [hi], 0 ; adc [hi], 0`,
-// for every segment sent. Three causes, each fixed: the inliner put an
-// inlined getter's blocks and the code after the call at the end of the
-// function, so the allocator met the counter's reads before it was made
-// (Inline.Expand now puts them where the call was); a value written twice
-// before its spill point (`mov lo, x ; add lo, 1`) or whose way back into
-// its register was a critical edge kept no register there (SinkStores now
-// takes both, loading on a block of the edge's own); and a prefix split
-// stopped at the value's first block (SplitPrefix now keeps that block's
-// part). And a constant whose low word is zero (`+ 0x1_0000_0000L`) is no
-// carry chain. The answers are .NET's; the image is checked by
+// for every segment sent. What kept it there in this test's RouteOf and
+// Twice: the inliner put an inlined getter's blocks and the code after the
+// call at the end of the function, so the allocator met the counter's
+// reads before it was made (Inline.Expand puts them where the call was); a
+// value written twice before its spill point (`mov lo, x ; add lo, 1`), or
+// whose way back into its register was a critical edge, kept no register
+// there (SinkStores takes both, loading on a block of the edge's own); and
+// a prefix split stopped at the value's first block (SplitPrefix keeps that
+// block's part). And a constant whose low word is zero, on either side of
+// an addition or taken away (`+ 0x1_0000_0000L`), is no carry chain. The
+// answers are .NET's; the image is checked by
 // 2689_wide_counters_kept_in_registers.sh.
 using System;
 using System.Runtime.CompilerServices;
@@ -93,6 +95,11 @@ static class Tcp
         return sum;
     }
 
+    // A constant of zero low word on either side of an addition, and taken
+    // away: no carry chain in any of them.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Halves(long x) { long up = 0x2_0000_0000L + x; long down = x - 0x3_0000_0000L; return up * 3 + down; }
+
     static void Main()
     {
         for (int i = 0; i < 8; i++) { _remoteIp[i] = (uint)(i * 7); _localIp[i] = 5; _device[i] = i == 5 ? 1 : 0; }
@@ -106,5 +113,6 @@ static class Tcp
         }
         Console.WriteLine(sum + " " + _walks);
         Console.WriteLine(Twice(new long[8], 50));
+        Console.WriteLine(Halves(Routes.Generation) + " " + Halves(-5));
     }
 }
