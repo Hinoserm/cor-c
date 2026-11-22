@@ -3720,7 +3720,6 @@ public sealed partial class Lowering
     /// <summary>Whether an object, null being none, is of the type a descriptor read at run time names (Runtime.DescribedAs).</summary>
     private VReg DescribedTest(VReg obj, VReg want)
     {
-        MethodSymbol described = RuntimeMethod("DescribedAs", 2) ?? throw new InvalidOperationException("the runtime has no DescribedAs");
         VReg result = _f.NewReg(IrType.I32, "isdesc");
         Block some = _f.NewBlock("isdsome");
         Block end = _f.NewBlock("isdend");
@@ -3728,10 +3727,60 @@ public sealed partial class Lowering
         _e.Branch(obj, some, end);
         _e.SetBlock(some);
         VReg desc = _e.Binary(Opcode.Sub, _e.Load(IrTypes.Word, obj, 0), _t.DescriptorBytes);
+        _e.CopyTo(result, R(DescriptorTest(desc, want)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>Whether a descriptor's type is the one another names, derives from it or implements it (Runtime.DescribedAs).</summary>
+    private VReg DescriptorTest(VReg desc, VReg want)
+    {
+        MethodSymbol described = RuntimeMethod("DescribedAs", 2) ?? throw new InvalidOperationException("the runtime has no DescribedAs");
         Require(described);
         VReg answer = _e.Call(CallLabel(described), IrTypes.Of(described.Returns),
             R(AsParam(desc, described.Params[0].Type)), R(AsParam(want, described.Params[1].Type)))!;
-        _e.CopyTo(result, R(answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32)));
+        return answer.Type == IrType.I32 ? answer : _e.Unary(Opcode.Trunc64, R(answer), IrType.I32);
+    }
+
+    /// <summary>
+    /// A SHARED COPY'S TEST OF A VALUE WITH NOTHING BOUND: of the descriptor
+    /// its box would have (StructBoxVtable, else its own box descriptor), no
+    /// box made -- a test, where a kernel's interrupt may be, allocates
+    /// nothing. A nullable holding none is no match. Null where the value is
+    /// an object's address, or a binding takes the box (SharedSubject).
+    /// </summary>
+    private VReg? BoxFreeTest(IsExpr isx, Type t, Func<VReg, VReg> test)
+    {
+        if (HeldByReference(t) || _b.PatternSlot.ContainsKey(isx)) return null;
+        VReg value = Eval(isx.Operand);
+        Type of = t.IsNullableValue ? t.Underlying : t;
+        VReg Described() => StructBoxVtable(of) is VReg vtable
+            ? _e.Binary(Opcode.Sub, vtable, _t.DescriptorBytes)
+            : _e.Address(BoxDescriptor(of));
+        if (!t.IsNullableValue) return test(Described());
+        VReg result = _f.NewReg(IrType.I32, "isvalue");
+        Block some = _f.NewBlock("isvaluesome");
+        Block end = _f.NewBlock("isvalueend");
+        _e.CopyTo(result, Imm(0, IrType.I32));
+        _e.Branch(HasValue(value), some, end);
+        _e.SetBlock(some);
+        _e.CopyTo(result, R(test(Described())));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return result;
+    }
+
+    /// <summary>Whether a descriptor is what a hidden type argument describes; any where the call handed none (0).</summary>
+    private VReg HiddenDescribed(VReg desc, VReg want)
+    {
+        VReg result = _f.NewReg(IrType.I32, "ishidden");
+        Block known = _f.NewBlock("ishknown");
+        Block end = _f.NewBlock("ishend");
+        _e.CopyTo(result, Imm(1, IrType.I32));
+        _e.Branch(want, known, end);
+        _e.SetBlock(known);
+        _e.CopyTo(result, R(DescriptorTest(desc, want)));
         _e.Jump(end);
         _e.SetBlock(end);
         return result;
@@ -3803,6 +3852,7 @@ public sealed partial class Lowering
         Type asked = _b.TypeOf(isx.Operand);
         if (HiddenParam(isx.Type) is { } isTo && SharedSubjectFits(asked))
         {
+            if (BoxFreeTest(isx, asked, desc => HiddenDescribed(desc, isTo)) is { } valueFound) return valueFound;
             VReg subject = SharedSubject(isx, asked);
             VReg hiddenFound = HiddenTest(subject, isTo);
             if (_b.PatternSlot.TryGetValue(isx, out int hiddenBound))
@@ -3842,6 +3892,7 @@ public sealed partial class Lowering
         // `x is T` IN A SHARED COPY: of what T is for the object at hand.
         if (isx.CanonSlot >= 0 && SharedSubjectFits(asked))
         {
+            if (BoxFreeTest(isx, asked, desc => DescriptorTest(desc, CanonEntry(isx))) is { } valueFound) return valueFound;
             VReg tested = SharedSubject(isx, asked);
             VReg answer = DescribedTest(tested, CanonEntry(isx));
             if (_b.PatternSlot.TryGetValue(isx, out int canonNamed))

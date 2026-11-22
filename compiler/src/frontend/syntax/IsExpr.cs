@@ -22,4 +22,10 @@ public sealed class IsExpr : Expr, ICanonSlot, ICanonShape
     public required TypeRef Type { get; init; }
     /// <summary>Set for <c>x is Foo f</c>.</summary>
     public string? Binding { get; init; }
+
+    /// <summary>
+    /// An `is` the program wrote (Parser), not one a case, an arm or the
+    /// compiler made: the one Roslyn's always/never diagnostics speak of.
+    /// </summary>
+    public bool Written { get; set; }
 }

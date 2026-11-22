@@ -1,0 +1,11 @@
+// test: value_pattern_that_cannot_match_refused
+// expect-compile-error: (10,59): error: CS8121: An expression of type 'int' cannot be handled by a pattern of type 'string'.
+//
+// `5 is string s` names what can never be: Roslyn refuses it (CS8121),
+// at the pattern's type. From .NET 10 (probe ~/tmp/dn/valuewarn2).
+
+using System;
+static class Program
+{
+    static int Main() { int x = 5; Console.WriteLine(x is string s ? s : "no"); return 0; }
+}

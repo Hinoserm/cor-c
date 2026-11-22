@@ -1,0 +1,51 @@
+// test: values_are_their_own_interfaces
+// expect-exit: 0
+// expect-compile-warning: (45,28): warning CS0184
+// expect-compile-warning: (45,48): warning CS0184
+// expect-compile-warning: (48,110): warning CS0184
+// expect-compile-warning: (48,143): warning CS0183
+// expect-compile-warning: (48,180): warning CS0184
+// expect-compile-warning: (48,28): warning CS0183
+// expect-compile-warning: (48,69): warning CS0184
+// expect-output:
+// True True True False
+// True False True True
+// True
+// False False
+// seq a
+// True False False True False
+//
+// A value tested against an interface is answered by its type, which is
+// exact: a struct's own interfaces, a generic struct's over its arguments,
+// one by variance (a struct's IEnumerable<string> is an IEnumerable<object>,
+// the binding the box), an enum's IComparable and IFormattable, a double's
+// IComparable<double> -- and never one a user's implicit operator reaches,
+// which `is` does not run. Warned of as Roslyn does (CS0183, CS0184), where
+// it does. Output and diagnostics from .NET 10 (probe ~/tmp/dn/valueis).
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+interface IFoo { int F(); }
+struct Conv { public static implicit operator Box(Conv c) => new Box(); }
+sealed class Box : IFoo { public int F() => 1; }
+struct Seq : IEnumerable<string> { public IEnumerator<string> GetEnumerator() { yield return "a"; } IEnumerator IEnumerable.GetEnumerator() => GetEnumerator(); }
+struct Pair<T> : IEquatable<Pair<T>> { public T A; public bool Equals(Pair<T> o) => true; }
+enum Color { Red, Green }
+static class Program
+{
+    static int Main()
+    {
+        Conv c = default; Seq s = default; Pair<int> p = default; Color k = Color.Green;
+#pragma warning disable CS0183, CS0184
+        Console.WriteLine((s is IEnumerable<object>) + " " + (s is IEnumerable<string>) + " " + (s is IEnumerable) + " " + (s is IEnumerable<int>));
+        Console.WriteLine((p is IEquatable<Pair<int>>) + " " + (p is IEquatable<Pair<long>>) + " " + (k is IComparable) + " " + (k is IFormattable));
+        Console.WriteLine(c is object);
+#pragma warning restore CS0183, CS0184
+        Console.WriteLine((c is IFoo) + " " + (c is Box));
+        Console.WriteLine(s is IEnumerable<object> e ? "seq " + string.Join(",", e) : "no seq");
+        Pair<string> ps = default;
+        Console.WriteLine((ps is IEquatable<Pair<string>>) + " " + (ps is IEquatable<Pair<object>>) + " " + (k is IEquatable<Color>) + " " + (3.5 is IComparable<double>) + " " + ('c' is IComparable<int>));
+        return 0;
+    }
+}

@@ -4409,6 +4409,7 @@ public sealed class Monomorphiser
             {
                 IsExpr made = new() { Operand = Rewrite(isx.Operand, map), Type = Sub(isx.Type, map), Binding = isx.Binding, Line = isx.Line, Col = isx.Col };
                 made.NeedSlot = isx.NeedSlot;
+                made.Written = isx.Written;
                 Shaped(made, isx, isx.Type, map);
                 return Canon(made, isx, isx.Type, arrayToo: false);
             }

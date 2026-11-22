@@ -9742,6 +9742,10 @@ public sealed class Parser
                 // ParsePrimaryPattern reads it, where each operand is read.
                 Expr tested = left;
                 left = ParseIsPattern(left, at);
+                // `x is T` and `x is T t` as written: what Roslyn's CS0183,
+                // CS0184 and CS8121 speak of (Binder), not a test made for
+                // a case, an arm or another construct.
+                if (left is IsExpr written) written.Written = true;
                 // Its root says what it tests, for whether it can match at all
                 // (Binder.PatternVerdict: CS8518, CS8794).
                 if (left is BinaryExpr or UnaryExpr or PatternExpr)

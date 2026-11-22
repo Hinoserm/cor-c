@@ -8712,12 +8712,20 @@ public sealed partial class Binder
            && UserConversion(had, Type.Bool, explicitToo: false) is MethodSymbol toBool
             ? ConvertByOperator(operand, toBool) : had;
 
+    /// <summary>Whether this is a generic's copy, which C# judged once, over its parameters: no diagnostic of its own.</summary>
+    private bool InGenericCopy() => _member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true;
+
     /// <summary>
-    /// Whether no value of static type <paramref name="from"/> can be a
-    /// <paramref name="to"/> at run time: neither converts to the other, and
-    /// neither is object, an interface or a type parameter, which may hold
-    /// anything.
+    /// `5 is object`, `5 is IComparable`, `5 is int`, as the program wrote
+    /// them: always true, which Roslyn warns of (CS0183) -- a test, not a
+    /// pattern naming what it holds.
     /// </summary>
+    private void AlwaysOfType(IsExpr isx, Type tested)
+    {
+        if (isx.Written && isx.Binding is null && !InGenericCopy())
+            Warning(isx.Operand, "CS0183", $"The given expression is always of the provided ('{tested.Shown()}') type");
+    }
+
     /// <summary>
     /// A value of an exact type: a struct, an enum, a number, a bool or a
     /// char held in place -- not a nullable's cell, a type parameter, a
@@ -8727,6 +8735,21 @@ public sealed partial class Binder
         => !t.IsReference && t.Prim != Prim.Any && !t.IsError && !t.IsVoid && !t.IsNullableValue
            && t.ParamName is null && !t.IsPointer && !t.IsArray && t.CanonParam == -1;
 
+    /// <summary>
+    /// WHETHER A VALUE'S TYPE IS AN INTERFACE, as `is` asks it at run time: it
+    /// implements it (a boxing conversion), or one that converts to it by
+    /// variance (Variant: a struct's IEnumerable<string> is an
+    /// IEnumerable<object>). Never by a user's `implicit operator`, which
+    /// `is` does not run: a struct converting to an IFoo is no IFoo.
+    /// </summary>
+    private bool ValueHasInterface(Type value, Type face) => StandardConvertible(value, face) || Variant(value, face);
+
+    /// <summary>
+    /// Whether no value of static type <paramref name="from"/> can be a
+    /// <paramref name="to"/> at run time: neither converts to the other, and
+    /// neither is object, an interface or a type parameter, which may hold
+    /// anything.
+    /// </summary>
     private bool NeverOfType(Type from, Type to)
     {
         Type held = from.IsNullableValue ? from.Underlying : from.AsNonNullable();
@@ -8740,7 +8763,7 @@ public sealed partial class Binder
         static bool IsValue(Type t) => t.Symbol is { Kind: TypeKind.Struct or TypeKind.Enum }
             || t.Symbol is null && !t.IsArray && !t.IsPointer && (t.IsNumeric || t.Prim is Prim.Bool or Prim.Char);
         if (IsValue(held))
-            return !MethodSignatures.SameType(held, wanted) && !(wanted.Symbol is { Kind: TypeKind.Interface } && Convertible(held, wanted));
+            return !MethodSignatures.SameType(held, wanted) && !(wanted.Symbol is { Kind: TypeKind.Interface } && ValueHasInterface(held, wanted));
         // A reference is never a value; for an interface a subclass may implement it.
         if (IsValue(wanted)) return true;
         if (wanted.Symbol is { Kind: TypeKind.Interface }) return false;
@@ -19490,7 +19513,7 @@ public sealed partial class Binder
                         bool boxing = !subject.IsReference && subject.Prim != Prim.Any && !subject.IsError && !subject.IsVoid
                                       && subject.ParamName is null && !subject.IsPointer
                                       && (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray
-                                          || tested.Symbol is { Kind: TypeKind.Interface } && Convertible(subject.IsNullableValue ? subject.Underlying : subject, tested));
+                                          || tested.Symbol is { Kind: TypeKind.Interface } && ValueHasInterface(subject.IsNullableValue ? subject.Underlying : subject, tested));
                         if (subject.IsNullableValue && (tested.Equals(subject.Underlying) || boxing))
                         {
                             _r.NullableArms.Add(arm);
@@ -20172,7 +20195,7 @@ public sealed partial class Binder
                     }
                     // `x is object o` over an int?: the value held, boxed.
                     else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray
-                             || tested.Symbol is { Kind: TypeKind.Interface } && Convertible(operand.Underlying, tested))
+                             || tested.Symbol is { Kind: TypeKind.Interface } && ValueHasInterface(operand.Underlying, tested))
                     {
                         _r.NullablePatterns.Add(isx);
                         _r.BoxedBindings.Add(isx);
@@ -20210,8 +20233,9 @@ public sealed partial class Binder
                     // A VALUE IS ALWAYS AN OBJECT: `5 is object` is true, and
                     // `o` in `5 is object o` the value boxed.
                     _r.BoxPatterns.Add(isx);
+                    if (PlainValue(operand)) AlwaysOfType(isx, tested);
                 }
-                else if (PlainValue(operand) && tested.Symbol is { Kind: TypeKind.Interface } && !tested.IsArray && !runTime && Convertible(operand, tested))
+                else if (PlainValue(operand) && tested.Symbol is { Kind: TypeKind.Interface } && !tested.IsArray && !runTime && ValueHasInterface(operand, tested))
                 {
                     // A VALUE IS EVERY INTERFACE ITS TYPE HAS, AND NO OTHER: its
                     // type is exact, so `5 is IComparable c` is true and c the
@@ -20220,18 +20244,29 @@ public sealed partial class Binder
                     // value itself was read as an object's address: `x is T` in
                     // the copy for IComparable faulted on the int 5.
                     _r.BoxPatterns.Add(isx);
+                    AlwaysOfType(isx, tested);
                 }
                 else if (PlainValue(operand) && !tested.IsError && !runTime && NeverOfType(operand, tested))
                 {
-                    // `5 is IDisposable`, `5 is string`: never (CS0184), and no
-                    // test of a value read as an address.
+                    // `5 is IDisposable`, `5 is string`: never, and no test of
+                    // a value read as an address. Said as Roslyn says it: a
+                    // warning for the test (CS0184), an error for a pattern
+                    // naming what it can never hold (CS8121).
                     _r.NeverMatches.Add(isx);
+                    if (isx.Written && !InGenericCopy())
+                    {
+                        // Where Roslyn puts them: the test at its operand, the
+                        // pattern at its type.
+                        if (isx.Binding is null) Warning(isx.Operand, "CS0184", $"The given expression is never of the provided ('{tested.Shown()}') type");
+                        else Error(isx.Type.Line > 0 ? isx.Type : isx, $"CS8121: An expression of type '{operand.Shown()}' cannot be handled by a pattern of type '{tested.Shown()}'.");
+                    }
                 }
                 else if (!operand.IsReference && operand.Prim != Prim.Any && tested.Equals(operand))
                 {
                     // A value already known to be T always matches `is T x`;
                     // the declaration still has to receive the value.
                     _r.ValuePatterns.Add(isx);
+                    if (PlainValue(operand)) AlwaysOfType(isx, tested);
                 }
 
                 // A DECLARATION PATTERN: `x is T t` tests and NAMES the result,

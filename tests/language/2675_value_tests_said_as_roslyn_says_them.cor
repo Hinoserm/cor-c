@@ -1,0 +1,33 @@
+// test: value_tests_said_as_roslyn_says_them
+// expect-exit: 0
+// expect-compile-warning: (24,18): warning CS0183
+// expect-compile-warning: (25,18): warning CS0184
+// expect-compile-warning: (26,18): warning CS0184
+// expect-compile-warning: (28,18): warning CS0183
+// expect-compile-warning: (29,18): warning CS0183
+// expect-output:
+// True False False True True True
+//
+// `5 is IComparable`, `5 is object` and `5 is int` are always true, and
+// `5 is IFoo` and `5 is string` never: Roslyn's CS0183 and CS0184, at the
+// operand, and the answers themselves; `5 is IComparable q`, a pattern that
+// names what it holds, warned of by neither. From .NET 10 (probe
+// ~/tmp/dn/valuewarn).
+
+using System;
+interface IFoo { }
+static class Program
+{
+    static int Main()
+    {
+        int x = 5;
+        bool a = x is IComparable;
+        bool b = x is IFoo;
+        bool c = x is string;
+        bool d = x is IComparable q;
+        bool e = x is object;
+        bool f = x is int;
+        Console.WriteLine(a + " " + b + " " + c + " " + d + " " + e + " " + f);
+        return 0;
+    }
+}
