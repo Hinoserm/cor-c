@@ -66,16 +66,14 @@ internal static class Peephole
     /// one `jmp` laid out after the function's `ret`, which a loop whose test
     /// was copied to its bottom no longer reaches (freestanding test 24).
     /// The entry and every landing pad are roots, and every block whose
-    /// address an instruction takes; a function with an indirect jump keeps
-    /// all its blocks, any of which it may reach.
+    /// address an instruction takes: an unwind's indirect jump (JmpInd,
+    /// SelectUnwind) goes to a handler whose address a `lea` of its label
+    /// took, and a handler is a landing pad besides.
     /// </summary>
     private static void Unreachable(MFunction m)
     {
         int n = m.Blocks.Count;
         if (n < 2) return;
-        foreach (MBlock block in m.Blocks)
-            foreach (MInstr i in block.Instrs)
-                if (i.Op == MOp.JmpInd) return;
         Dictionary<MBlock, int> index = new(ReferenceEqualityComparer.Instance);
         for (int b = 0; b < n; b++) index[m.Blocks[b]] = b;
         bool[] reached = new bool[n];

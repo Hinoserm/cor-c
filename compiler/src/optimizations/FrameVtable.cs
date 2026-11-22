@@ -129,7 +129,8 @@ internal static class FrameVtable
                         continue;
                     case Opcode.Store when i.Offset == 0 && i.Size >= word && i.Operands[1] is ImmOperand { Value: 0 }:
                         continue;
-                    case Opcode.MemSet when i.Operands[1] is ImmOperand { Value: 0 }:
+                    // Zero over the whole of word 0, as the slot starts.
+                    case Opcode.MemSet when i.Operands[1] is ImmOperand { Value: 0 } && i.Operands.Count > 2 && i.Operands[2] is ImmOperand { Value: var count } && count >= word:
                         continue;
                     default:
                         return null;

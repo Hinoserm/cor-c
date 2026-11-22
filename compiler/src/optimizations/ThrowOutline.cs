@@ -17,7 +17,7 @@ using Block = Corsac.Lang.Ir.Block;
 ///
 /// The throw's blocks -- every block from which no return is reached, from
 /// one block every other way into them goes through -- become a function of
-/// their own, `NAME$throw$K`, whose parameters are the values the blocks read
+/// their own, `NAME$throw$DIGEST`, whose parameters are the values the blocks read
 /// and the function made before; the block that led into them becomes a call
 /// of it. That function is a call wherever the function now goes, its own
 /// frame what the trace starts from: the return address into the function
@@ -29,8 +29,8 @@ using Block = Corsac.Lang.Ir.Block;
 /// .NET's inlined methods are from its traces.
 ///
 /// NAMED BY WHAT IT IS: `NAME$throw$` and the SHA-256 of its own body,
-/// placeless (IrFunctionCodec), with the unit's own data and functions it
-/// names (Digest), so one name is one body in every unit -- another
+/// placeless (IrFunctionCodec), with every one of the unit's own data items
+/// and functions it reaches (Digest), so one name is one body in every unit -- another
 /// unit's copy of the function, which may have moved its throws otherwise,
 /// names its own otherwise -- and it is exported and coalescible, copies
 /// of one body one definition at the link. Local, a function that took a
@@ -76,6 +76,7 @@ public sealed class ThrowOutline : IModulePass
         _localContent = new(StringComparer.Ordinal);
         _localData = null;
         _localFunctions = null;
+        _namedOf = new(StringComparer.Ordinal);
         foreach (Function g in module.Functions)
             if (IsStub(g.Name)) _stubs.TryAdd(g.Name, (g, null));
         List<Function> made = new();
@@ -86,6 +87,7 @@ public sealed class ThrowOutline : IModulePass
         _localContent = new(StringComparer.Ordinal);
         _localData = null;
         _localFunctions = null;
+        _namedOf = new(StringComparer.Ordinal);
     }
 
     // This run's stubs by name, with the digest each was named by (null for
@@ -98,6 +100,7 @@ public sealed class ThrowOutline : IModulePass
     private Dictionary<string, byte[]> _localContent = new(StringComparer.Ordinal);
     private Dictionary<string, DataItem>? _localData;
     private Dictionary<string, Function>? _localFunctions;
+    private Dictionary<string, SortedSet<string>> _namedOf = new(StringComparer.Ordinal);
 
     /// <summary>
     /// A STUB IN THE IMAGE'S EXPORT LISTS AS THE FUNCTION IT CAME OUT OF
@@ -128,11 +131,11 @@ public sealed class ThrowOutline : IModulePass
     /// <summary>
     /// WHAT A STUB IS, hashed: its body as written placeless (IrFunctionCodec:
     /// no lines, no file), and the content of every one of the unit's own
-    /// data items and functions it names, and of every one of the unit's own
-    /// those name in turn -- a string literal another unit numbers alike and
-    /// fills otherwise, or a local function calling one, is another stub.
-    /// SHA-256, all of it: a name that is the same in two units is one body.
-    /// The unit's own items read once each, only where a stub names them.
+    /// data items and functions it names -- and of the unit's own that those
+    /// name, and so on -- each with its name, both length-prefixed. A string
+    /// literal another unit numbers alike and fills otherwise, or a local
+    /// function calling one, is another stub. SHA-256, all of it: a name the
+    /// same in two units is one body. Each item read and walked once a run.
     /// </summary>
     private byte[] Digest(Module module, Function probe)
     {
@@ -155,7 +158,10 @@ public sealed class ThrowOutline : IModulePass
             foreach (string n in level)
             {
                 if (!seen.Add(n) || Content(n, next) is not { } content) continue;
-                hash.AppendData(System.Text.Encoding.UTF8.GetBytes(n));
+                byte[] name = System.Text.Encoding.UTF8.GetBytes(n);
+                hash.AppendData(BitConverter.GetBytes(name.Length));
+                hash.AppendData(name);
+                hash.AppendData(BitConverter.GetBytes(content.Length));
                 hash.AppendData(content);
             }
             level = next;
@@ -193,7 +199,8 @@ public sealed class ThrowOutline : IModulePass
         }
         if (_localFunctions!.TryGetValue(name, out Function? g))
         {
-            more.UnionWith(Named(g));
+            if (!_namedOf.TryGetValue(name, out SortedSet<string>? named)) _namedOf[name] = named = Named(g);
+            more.UnionWith(named);
             return _localContent.TryGetValue(name, out byte[]? known) ? known
                 : _localContent[name] = Corsac.Lang.Metadata.IrFunctionCodec.Write(g, placeless: true);
         }
@@ -326,7 +333,8 @@ public sealed class ThrowOutline : IModulePass
             byte[] digest = Digest(module, Made(f.Name + StubMark));
             string named = f.Name + StubMark + Convert.ToHexString(digest, 0, 16);
             if (_stubs.TryGetValue(named, out var holder) && holder.Digest is { } other && !other.AsSpan().SequenceEqual(digest))
-                throw new InvalidOperationException($"{f.Name}: two moved throws of different bodies hash to one name, {named}");
+                throw new CompileError(f.SourceFile ?? "", line > 0 ? line : f.Line, 0,
+                    $"internal error: two throws moved out of {f.Display ?? f.Name} differ but hash to one name, {named}");
             // TWO THROWS OF ONE BODY -- a span's two range checks, each the
             // same refusal -- are one function, as any two copies of it are.
             // (Its own work's line is the first's: the call's own line is each
