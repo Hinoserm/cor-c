@@ -257,9 +257,9 @@ public sealed class TypeSymbol
     /// answered from a deferred type's names without declaring it (MayHave):
     /// printed with the declaration statistics.
     /// </summary>
-    public static long DeferredDeclared => Corsac.UnitScope.Current.DeferredDeclared;
-    public static long DeferredMembersDeclared => Corsac.UnitScope.Current.DeferredMembersDeclared;
-    public static long ProbesAnswered => Corsac.UnitScope.Current.ProbesAnswered;
+    public static long DeferredDeclared => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.DeferredDeclared);
+    public static long DeferredMembersDeclared => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.DeferredMembersDeclared);
+    public static long ProbesAnswered => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.ProbesAnswered);
 
     /// <summary>
     /// WHETHER A MEMBER OF ITS OWN CAN BE CALLED THIS, asked before looking

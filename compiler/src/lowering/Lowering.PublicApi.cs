@@ -17,8 +17,8 @@ public sealed partial class Lowering
     /// (RecordPublicApi). A program is another assembly, and names none of
     /// them (Binder: CS0122). Not a kernel's: the class library is a part of
     /// the kernel's one image there, and its internals the kernel's own.
+    /// Each unit of a project its own (UnitScope).
     /// </summary>
-    /// (Each unit of a project its own: UnitScope.)
     public static bool SplitLibrary { get => Corsac.UnitScope.Current.SplitLibrary; set => Corsac.UnitScope.Current.SplitLibrary = value; }
 
     /// <summary>
@@ -46,8 +46,8 @@ public sealed partial class Lowering
     /// program's whole default library, read to give away where images
     /// provide it. What a program or a module keeps of them as its own is
     /// narrower (Module.FixOwnLibrary).
+    /// Each unit of a project its own (UnitScope).
     /// </summary>
-    /// (Each unit of a project its own: UnitScope.)
     public static IReadOnlySet<string> OwnLibrarySources { get => Corsac.UnitScope.Current.OwnLibrarySources; set => Corsac.UnitScope.Current.OwnLibrarySources = value; }
 
     /// <summary>
@@ -55,8 +55,8 @@ public sealed partial class Lowering
     /// library (--link-shared, --dynamic, --kernel), owning none of its
     /// sources: the library's code is read here to be given away, and none
     /// of its state is laid down here (NotePreinitCandidate).
+    /// Each unit of a project its own (UnitScope).
     /// </summary>
-    /// (Each unit of a project its own: UnitScope.)
     public static bool LibraryProvided { get => Corsac.UnitScope.Current.LibraryProvided; set => Corsac.UnitScope.Current.LibraryProvided = value; }
 
     /// <summary>

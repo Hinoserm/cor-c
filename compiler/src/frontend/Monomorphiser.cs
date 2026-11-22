@@ -65,8 +65,8 @@ public sealed class Monomorphiser
     /// they carried: what a unit's imported generics cost, printed with the
     /// declaration statistics.
     /// </summary>
-    public static long Specialisations => Corsac.UnitScope.Current.Specialisations;
-    public static long SpecialisedMembers => Corsac.UnitScope.Current.SpecialisedMembers;
+    public static long Specialisations => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.Specialisations);
+    public static long SpecialisedMembers => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.SpecialisedMembers);
 
     /// <summary>
     /// How many of those specialised types had their members deferred
@@ -74,11 +74,11 @@ public sealed class Monomorphiser
     /// because something asked: SpecialisedMembers counts only the members
     /// made with their type.
     /// </summary>
-    public static long DeferredSpecialisations => Corsac.UnitScope.Current.DeferredSpecialisations;
-    public static long MembersMadeLater => Corsac.UnitScope.Current.MembersMadeLater;
+    public static long DeferredSpecialisations => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.DeferredSpecialisations);
+    public static long MembersMadeLater => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.MembersMadeLater);
 
     /// <summary>How many of the deferred ones were copies per argument, whose bodies were deferred with them (BodiesLater).</summary>
-    public static long DeferredWithBodies => Corsac.UnitScope.Current.DeferredWithBodies;
+    public static long DeferredWithBodies => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.DeferredWithBodies);
 
     /// <summary>Names that are NOT a machine word: narrower, or in the other bank.</summary>
     private static readonly HashSet<string> Narrow = new(StringComparer.Ordinal)
@@ -3098,8 +3098,8 @@ public sealed class Monomorphiser
     /// for them again because something asked: printed with the declaration
     /// statistics.
     /// </summary>
-    public static long DeferredImports => Corsac.UnitScope.Current.DeferredImports;
-    public static long ImportedMembersMadeLater => Corsac.UnitScope.Current.ImportedMembersMadeLater;
+    public static long DeferredImports => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.DeferredImports);
+    public static long ImportedMembersMadeLater => System.Threading.Interlocked.Read(ref Corsac.UnitScope.Current.ImportedMembersMadeLater);
 
     /// <summary>
     /// AN IMPORTED DECLARATION'S MEMBERS, DROPPED NOW AND MADE ON FIRST USE.
