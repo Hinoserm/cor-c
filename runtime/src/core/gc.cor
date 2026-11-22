@@ -10610,13 +10610,14 @@ public static class Gc
     public static long ReferencesIntoReport(nuint low, nuint high, long max)
     {
         long marked, cut;
-        return ReferencesInto(low, high, max, false, out marked, out cut);
+        return ReferencesInto(low, high, max, false, true, out marked, out cut);
     }
 
     // TODO(local to this checkout, NOT PUSHED -- re-apply after the COR-C#
     // agent's pending runtime work lands; CORSAC86's modules.cor uses it):
-    // CutReferencesInto, ReferencesInto's `cutting`, BlockWordInto's
-    // `described`, and _cutting / _cut.
+    // CutReferencesInto and its rounds, ReferencesInto's `cutting` and
+    // `first`, BlockWordInto's `described`, _cutting / _cut, and the move
+    // lists (_moveSlots, _moveHolders, _moveLiterals).
     /// THE REFERENCES INTO [low, high) CUT: ReferencesIntoReport's walk, and
     /// every word of a heap block that its descriptor says is a reference --
     /// an object's field, a reference array's element -- cleared as it is
@@ -10652,9 +10653,12 @@ public static class Gc
             _moveLiterals = last ? null : new nuint[MoveMost];
             _moveCount = 0;
             long roundMarked, roundCut;
-            long roundFound = ReferencesInto(low, high, round == 0 ? max : 0, true, out roundMarked, out roundCut);
+            long roundFound = ReferencesInto(low, high, round == 0 ? max : 0, true, round == 0, out roundMarked, out roundCut);
             if (round == 0) { found = roundFound; marked = roundMarked; }
-            if (roundFound < 0) { _moveSlots = null; _moveHolders = null; _moveLiterals = null; return round == 0 ? -1 : found; }
+            // REFUSED IN ANY ROUND: what the rounds before left -- strings not
+            // yet copied -- still points in, so "could not tell", never the
+            // first round's count as if it were done.
+            if (roundFound < 0) { _moveSlots = null; _moveHolders = null; _moveLiterals = null; return -1; }
             cut = cut + roundCut;
             nuint count = _moveCount;
             nuint[]? slots = _moveSlots, holders = _moveHolders, literals = _moveLiterals;
@@ -10703,13 +10707,18 @@ public static class Gc
     static nuint _moveCount;
     static nuint _stringVt;
 
-    static long ReferencesInto(nuint low, nuint high, long max, bool cutting, out long marked, out long cut)
+    /// `first`: the marking count asked (`marked`) and the summary said;
+    /// a cut's later rounds ask neither.
+    static long ReferencesInto(nuint low, nuint high, long max, bool cutting, bool first, out long marked, out long cut)
     {
         marked = 0;
         cut = 0;
         if (high <= low || !_ready) return 0;
-        marked = CountReferencesInto(low, high);
-        if (marked < 0) return -1;
+        if (first)
+        {
+            marked = CountReferencesInto(low, high);
+            if (marked < 0) return -1;
+        }
         GcLock.Enter();
         if (!WaitOutAnyCycle())
         {
@@ -10758,6 +10767,7 @@ public static class Gc
         cut = _cut;
         _cut = 0;
         GcLock.Exit();
+        if (!first) return found;
         SayNumber("gc refs: words found in statics, roots and the heap ", found);
         SayNumber("gc refs: references the marking counted ", marked);
         return found;
@@ -10825,7 +10835,11 @@ public static class Gc
         if (_cutting && described)
         {
             nuint[]? moving = _moveSlots;
-            if (moving != null && _moveCount < (nuint)moving.Length && Sys.ReadAddress(word) == _stringVt)
+            bool literal = moving != null && Sys.ReadAddress(word) == _stringVt;
+            // A STRING PAST THE LIST'S END is left for the next round, never
+            // cleared: only the last round, which lists none, clears strings.
+            if (literal && _moveCount >= (nuint)moving!.Length) { }
+            else if (literal)
             {
                 moving[_moveCount] = q;
                 _moveHolders![_moveCount] = payload - HeaderBytes;
