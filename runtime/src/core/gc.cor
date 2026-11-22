@@ -18479,6 +18479,21 @@ public static class GcThreads
     /// A thread added while a collection is asking its rounds owes none of
     /// them: its stack began after every snapshot the collection took, and
     /// what it was handed came from a thread that does owe them.
+    /// Whether `block` is a registered thread's: the one written down
+    /// before there is a table, or one in it. What says a thread has not yet
+    /// ended (Runtime.EndThread acts once) -- by the registry itself, as its
+    /// State word is swapped by every wait.
+    public static bool Holds(nuint block)
+    {
+        if (block == 0) return false;
+        if (_blocks == 0) return _first == block;
+        GcLock.Enter();
+        bool held = false;
+        for (nuint i = 0; i < _count && !held; i++) held = At(i) == block;
+        GcLock.Exit();
+        return held;
+    }
+
     public static void Register(nuint block)
     {
         if (block == 0)
@@ -18634,9 +18649,6 @@ public static class GcThreads
             {
                 _first = 0;
             }
-            // Gone here too, as the table's way marks it below: what says a
-            // thread has ended (Runtime.EndThread's once).
-            Sys.WriteAddress(block + Tls.State, Gone);
             return;
         }
 

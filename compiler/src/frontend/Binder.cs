@@ -14710,7 +14710,10 @@ public sealed partial class Binder
     /// </summary>
     private Type? LambdaGives(MethodSymbol m, Type want, LambdaExpr lam, Dictionary<string, Type> bound, out bool statement, out bool valueless)
     {
+        // What its block's returns are is this look's to say: nothing said
+        // until it says it (a look that stops short leaves none behind).
         LambdaExpr asked = lam;
+        _interpolatedValue.Remove(asked);
         statement = lam.Body is not null && StatementExpression(lam.Body);
         valueless = false;
         // `delegate { ... }` asked as the lambda it is for this delegate.
@@ -14776,7 +14779,6 @@ public sealed partial class Binder
                 valueless = _inferredReturns.All(t => t.IsVoid);
                 produced = valueless ? Type.Void : BestCommonType(_inferredReturns);
                 if (!valueless && _inferredReturns.Count > 0 && _inferredReturns.AllInterpolated) _interpolatedValue.Add(asked);
-                else _interpolatedValue.Remove(asked);
             }
             finally
             {
@@ -14866,7 +14868,7 @@ public sealed partial class Binder
             Type result = AwaitedResult(returns);
             if (result.IsError || result.ParamName != null) return true;
             if (result.IsVoid) return nothing;
-            return !valueless && gives is not null && Fits(gives, result, lam.Body);
+            return !valueless && gives is not null && (Fits(gives, result, lam.Body) || (Formattable(result) && InterpolatedValue(lam)));
         }
 
         if (returns.IsVoid) return lam.Body is null ? valueless : statement || valueless;

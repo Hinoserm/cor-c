@@ -1,4 +1,4 @@
-// test: an interpolated string's holes that declare a pattern variable or an out variable, a lambda, an anonymous type -- converted to a FormattableString, each checked once; one with no holes converts too, and holes that are strings themselves
+// test: an interpolated string's holes that declare a pattern variable or an out variable, a lambda, an anonymous type -- converted to a FormattableString, each checked once; one with no holes converts too, holes that are strings themselves, lambdas returning one, and the better overload where a string or an IFormattable one is beside
 // expect-exit: 0
 // expect-output:
 // [5][7][8] [3]
@@ -10,16 +10,27 @@
 // <5>
 // [5|7]
 // plain a5x
+// string p5
+// formattable f{0}
+// later l{0}
+// q5
 //
 // Output as .NET 10 says it.
 
 using System;
 using System.Globalization;
+using System.Threading.Tasks;
 static class Program
 {
     static bool Try(out int v) { v = 7; return true; }
     static string Take(Func<FormattableString> made) => made().ToString(CultureInfo.InvariantCulture);
     static string Take(Func<int, FormattableString> made) => made(0).ToString(CultureInfo.InvariantCulture);
+    static string Pick(Func<string> made) => "string " + made();
+    static string Pick(Func<FormattableString> made) => "formattable " + made().Format;
+    static string Face(Func<FormattableString> made) => "formattable " + made().Format;
+    static string Face(Func<IFormattable> made) => "iformattable";
+    static async Task<string> Later(Func<Task<FormattableString>> made) => "later " + (await made()).Format;
+    static async Task<string> Later(Func<Task<int>> made) => "later int " + await made();
     static int Main()
     {
         object o = 5;
@@ -41,6 +52,10 @@ static class Program
         Console.WriteLine(Take(() => { if (o is int r) return $"[{r}|{(Try(out var s) ? s : 0)}]"; return $"none"; }));
         string joined = $"plain {"a"}{o}{$"x"}";
         Console.WriteLine(joined);
+        Console.WriteLine(Pick(() => $"p{o}"));
+        Console.WriteLine(Face(() => $"f{o}"));
+        Console.WriteLine(Later(async () => { await Task.Yield(); return $"l{o}"; }).Result);
+        Console.WriteLine(FormattableString.Invariant(($"q{o}")));
         return 0;
     }
 }

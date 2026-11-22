@@ -1585,9 +1585,9 @@ public static partial class Runtime
     public static void EndThread()
     {
         // ONCE: a thread the runtime started ends here from its body, and a
-        // DLL image hears of it again (DLL_THREAD_DETACH); deregistered, its
-        // block says Gone.
-        if (Sys.ReadAddress(Sys.ThreadBlock() + Tls.State) == GcThreads.Gone) return;
+        // DLL image hears of it again (DLL_THREAD_DETACH); deregistered, the
+        // registry no longer holds its block.
+        if (!GcThreads.Holds(Sys.ThreadBlock())) return;
         // Counted out while still registered, and the threads left looked
         // at (Scheduler.ThreadEnding).
         Scheduler.ThreadEnding();
