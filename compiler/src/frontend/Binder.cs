@@ -14400,16 +14400,6 @@ public sealed partial class Binder
     }
 
     /// <summary>
-    /// What a template's base list makes it, as the named interface, with a
-    /// set of arguments already put in for its own parameters.
-    ///
-    /// `List&lt;T&gt;` says IEnumerable&lt;T&gt; outright; IReadOnlyList reaches
-    /// it through IReadOnlyCollection, so the walk follows the bases of the
-    /// bases. Everything is done on the WRITTEN types rather than resolved
-    /// ones, because the parameter in `IReadOnlyList&lt;T&gt;` is the
-    /// template's own T and means nothing anywhere the call was written.
-    /// </summary>
-    /// <summary>
     /// A written type argument of a template's base, with the template's own
     /// parameters put in: `IGrouping&lt;K, E&gt;` in `ILookup&lt;K, E&gt; :
     /// IEnumerable&lt;IGrouping&lt;K, E&gt;&gt;` is an IGrouping&lt;char, string&gt;
@@ -14435,8 +14425,14 @@ public sealed partial class Binder
             // quietly: a name that means nothing here is no match, not an error
             // in the code that asked.
             _quiet++;
-            made = Resolve(new TypeRef { Name = a.Name, Line = a.Line, Col = a.Col }, _thisType);
-            _quiet--;
+            try
+            {
+                made = Resolve(new TypeRef { Name = a.Name, Line = a.Line, Col = a.Col }, _thisType);
+            }
+            finally
+            {
+                _quiet--;
+            }
         }
         else
         {
@@ -14461,6 +14457,16 @@ public sealed partial class Binder
     }
 
 
+    /// <summary>
+    /// What a template's base list makes it, as the named interface, with a
+    /// set of arguments already put in for its own parameters.
+    ///
+    /// `List&lt;T&gt;` says IEnumerable&lt;T&gt; outright; IReadOnlyList reaches
+    /// it through IReadOnlyCollection, so the walk follows the bases of the
+    /// bases. Everything is done on the WRITTEN types rather than resolved
+    /// ones, because the parameter in `IReadOnlyList&lt;T&gt;` is the
+    /// template's own T and means nothing anywhere the call was written.
+    /// </summary>
     private List<Type>? OpenAs(TypeDecl template, string face, int arity,
                                Dictionary<string, Type> mine, int depth)
         => InTemplateScope(template, () => OpenAsHere(template, face, arity, mine, depth));
