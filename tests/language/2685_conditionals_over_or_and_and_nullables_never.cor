@@ -1,0 +1,30 @@
+// test: conditionals_over_or_and_and_nullables_never
+// expect-exit: 0
+// expect-compile-warning: (25,18): warning CS0184
+// expect-compile-warning: (26,18): warning CS0184
+// expect-output:
+// 7 3 4
+// False False
+//
+// Variables named `and` and `or` after `is T ?` are a conditional's,
+// as Roslyn reads them (`? and.Foo : 0`, `? or + 1 : 0`, `? or : 4`):
+// only a name, a literal or null after the combinator makes `int? or …` a
+// pattern. An int? tested against a type it can never be is never, and
+// warned of (CS0184), not refused. Output and diagnostics from .NET 10
+// (probe ~/tmp/dn/orand).
+
+using System;
+sealed class H { public int Foo = 7; }
+static class Program
+{
+    static int Main()
+    {
+        object x = 3; H and = new H(); int or = 2;
+        Console.WriteLine((x is int ? and.Foo : 0) + " " + (x is int ? or + 1 : 0) + " " + (x is string ? or : 4));
+        int? n = 5;
+        bool q = n is long?;
+        bool r = n is string;
+        Console.WriteLine(q + " " + r);
+        return 0;
+    }
+}

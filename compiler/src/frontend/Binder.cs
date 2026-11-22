@@ -19487,7 +19487,7 @@ public sealed partial class Binder
                     if (arm.Type is not null)
                     {
                         Type tested = Resolve(arm.Type, _thisType);
-                        if (arm.Type.NullableInPattern && !InGenericCopy()) NullableTypeInPattern(arm.Type, tested);
+                        if (arm.Type.NullableInPattern) NullableTypeInPattern(arm.Type, tested);
 
                         if (tested.Symbol is { } armSymbol)
                         {
@@ -20208,7 +20208,9 @@ public sealed partial class Binder
                 // `x is int? y`, `{ P: int? }`, `case int?:`: no pattern names a
                 // nullable type (CS8116), value or reference -- only a bare
                 // `x is int?` type test may.
-                bool refusedNullable = isx.Type.NullableInPattern && !(isx.Written && isx.Binding is null) && !InGenericCopy();
+                // Said in a generic's copy too: it is the text's, whatever T is,
+                // and the generic itself is bound only as its copies.
+                bool refusedNullable = isx.Type.NullableInPattern && !(isx.Written && isx.Binding is null);
                 if (refusedNullable)
                 {
                     NullableTypeInPattern(isx.Type, tested);
@@ -20233,6 +20235,17 @@ public sealed partial class Binder
                     {
                         _r.NullablePatterns.Add(isx);
                         _r.BoxedBindings.Add(isx);
+                    }
+                    else if (!tested.IsError && !refusedNullable && NeverOfType(operand, tested))
+                    {
+                        // `n is long?`, `n is string` over an int?: never, as a
+                        // value's own test is (CS0184, CS8121 for a pattern).
+                        _r.NeverMatches.Add(isx);
+                        if (isx.Written && !InGenericCopy())
+                        {
+                            if (isx.Binding is null) Warning(isx.Operand, "CS0184", $"The given expression is never of the provided ('{tested.Shown()}') type");
+                            else Error(isx.Type.Line > 0 ? isx.Type : isx, $"CS8121: An expression of type '{operand.Shown()}' cannot be handled by a pattern of type '{tested.Shown()}'.");
+                        }
                     }
                     else if (!tested.IsError && !refusedNullable)
                     {

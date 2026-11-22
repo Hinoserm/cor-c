@@ -5008,8 +5008,13 @@ public sealed class Parser
                                    || Ahead().Kind == Tok.Ident && (Ahead(2).Kind is Tok.RParen or Tok.Comma or Tok.Semi
                                                                     || Ahead(2).Kind == Tok.Ident && Ahead(2).Text == "when")
                                    // `is int? or string`, `is int? and …`: the
-                                   // combinators, unless `or :` makes `? or : b`.
-                                   || Ahead().Kind == Tok.Ident && Ahead().Text is "or" or "and" && Ahead(2).Kind != Tok.Colon);
+                                   // combinators, where what follows can begin
+                                   // a pattern -- a name, a literal, null -- and
+                                   // not `? and.Foo : y`, `? or + 1 : y`, `? or : y`
+                                   // over variables named so.
+                                   || Ahead().Kind == Tok.Ident && Ahead().Text is "or" or "and"
+                                      && Ahead(2).Kind is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.Char
+                                                         or Tok.KwNull or Tok.KwTrue or Tok.KwFalse);
             if ((allowNullable || elementMark || closingMark) && At(Tok.Question))
             {
                 patternMark |= closingMark;
