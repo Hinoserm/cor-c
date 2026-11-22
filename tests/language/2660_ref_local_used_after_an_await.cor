@@ -1,0 +1,23 @@
+// test: ref_local_used_after_an_await
+// expect-compile-error: CS9217
+// A ref local read after an await one path takes since it was bound:
+// Roslyn refuses it (CS9217) at the use; the await may suspend, and the
+// reference would have to be kept across it. Checked against .NET 10
+// (probe ~/tmp/dn/asyncref3).
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int[] cells = { 1, 2, 3 };
+
+    static async Task<int> Late()
+    {
+        ref int r = ref cells[1];
+        if (cells.Length > 2) await Task.Yield();
+        return r;
+    }
+
+    static int Main() => Late().Result;
+}

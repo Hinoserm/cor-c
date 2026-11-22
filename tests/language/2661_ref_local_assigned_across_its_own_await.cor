@@ -1,0 +1,23 @@
+// test: ref_local_assigned_across_its_own_await
+// expect-compile-error: CS9217
+// `r = await F()`: the variable r names is what is stored to after the
+// await, so the reference crosses it, and Roslyn refuses it (CS9217) --
+// where `r + await F()` reads r's value first and is allowed (test 2659).
+// Checked against .NET 10 (probe ~/tmp/dn/asyncref4).
+
+using System;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int[] cells = { 1, 2, 3 };
+    static Task<int> Seven() => Task.FromResult(7);
+
+    static async Task Store()
+    {
+        ref int r = ref cells[0];
+        r = await Seven();
+    }
+
+    static int Main() { Store().Wait(); return cells[0]; }
+}

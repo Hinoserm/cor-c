@@ -33,14 +33,10 @@ public sealed partial class Binder
 
     private void CheckRefLocal(LocalDecl d)
     {
-        // C# 12's rule, and the frame's: an async method or an iterator keeps
-        // its locals in an object on the heap between resumptions, and an
-        // address into this method's frame is not something that object may
-        // hold.
-        if (_method is { Async: true } || _method?.Decl is MethodDecl { Body.Iterator: true })
-        {
-            Error(d, $"'{d.Name}' is a ref local, and an async method or an iterator cannot have one");
-        }
+        // IN AN ASYNC METHOD OR AN ITERATOR TOO, as C# 13 has it: refused
+        // only where a use is reached across an await or a yield since it
+        // was bound (CheckRefLocalsAcrossSuspensions, once the body is bound).
+        _sawRefLocal = true;
 
         Type type = Type.Error;
         bool escapes = false;

@@ -1,0 +1,93 @@
+// test: ref_locals_in_async_and_iterators
+// expect-exit: 0
+// expect-output:
+// 46
+// 17
+// 51
+// 21,10,5,7
+// 21,10,5,7
+//
+// C# 13: a ref local in an async method, an async lambda or an iterator,
+// where no use is reached across an await or a yield since it was bound --
+// bound again in each loop round, pointed elsewhere after an await, read on
+// paths an await never comes back to, its value read before an await in
+// its own expression. Output from .NET 10 (probe ~/tmp/dn/asyncref2).
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int[] cells = { 1, 2, 3, 4 };
+    static int[]? none = null;
+
+    static async Task<int> Sum()
+    {
+        ref int first = ref cells[0];
+        first += 10;
+        await Task.Yield();
+        int s = 0;
+        for (int i = 0; i < cells.Length; i++)
+        {
+            ref int c = ref cells[i];
+            c *= 2;
+            s += c;
+            await Task.Yield();
+        }
+        // Bound again after the await: its own binding crosses nothing.
+        ref int last = ref cells[3];
+        last = ref cells[2];
+        s += last;
+        return s;
+    }
+
+    static async Task<int> Skipped()
+    {
+        ref int r = ref cells[1];
+        // Each await on a path that never comes back to a use of r.
+        if (none != null) { await Task.Yield(); return 0; }
+        r += 7 + (none?.Length ?? 0);
+        int k = none is null ? r : await Seven();
+        Func<Task<int>> later = async () =>
+        {
+            int[] mine = { 5 };
+            ref int m = ref mine[0];
+            m++;
+            await Task.Yield();
+            return mine[0];
+        };
+        return k + await later();
+    }
+
+    // Its value read before the await, not the variable kept across it.
+    static async Task<int> ReadBefore()
+    {
+        ref int r = ref cells[0];
+        return r + Add(r, await Seven());
+    }
+
+    static int Add(int a, int b) => a + b;
+
+    static async Task<int> Seven() { await Task.Yield(); return 7; }
+
+    static IEnumerable<int> Walk()
+    {
+        for (int i = 0; i < cells.Length; i++)
+        {
+            ref int c = ref cells[i];
+            c -= 1;
+            yield return c;
+        }
+    }
+
+    static int Main()
+    {
+        Console.WriteLine(Sum().Result);
+        Console.WriteLine(Skipped().Result);
+        Console.WriteLine(ReadBefore().Result);
+        Console.WriteLine(string.Join(",", Walk()));
+        Console.WriteLine(string.Join(",", cells));
+        return 0;
+    }
+}

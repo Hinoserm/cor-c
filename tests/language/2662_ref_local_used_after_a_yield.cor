@@ -1,0 +1,22 @@
+// test: ref_local_used_after_a_yield
+// expect-compile-error: CS9217
+// An iterator's ref local written through after a yield return since it was
+// bound: refused (CS9217), as Roslyn refuses it. Checked against .NET 10
+// (probe ~/tmp/dn/asyncref).
+
+using System;
+using System.Collections.Generic;
+
+static class Program
+{
+    static int[] cells = { 1, 2, 3 };
+
+    static IEnumerable<int> Walk()
+    {
+        ref int r = ref cells[0];
+        yield return 1;
+        r = 5;
+    }
+
+    static int Main() { foreach (int n in Walk()) Console.WriteLine(n); return cells[0]; }
+}
