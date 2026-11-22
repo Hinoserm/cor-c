@@ -28,15 +28,16 @@ namespace Corsac.Lang;
 /// slots and the static-slot count travel with the tree.
 ///
 /// The format is little-endian and self-describing, and it begins with its
-/// version, 1. A reader refuses any other rather than guessing.
+/// version, 0. A reader refuses any other rather than guessing.
 /// </summary>
 public static class Gir
 {
     /// <summary>
-    /// The one layout there is. A reader refuses any other. 1: a property's
-    /// accessors' own access after its interface (`private set`).
+    /// The one layout there is, changed in place and always 0 until a
+    /// release. A reader refuses any other; a file in an older layout is
+    /// unreadable and its unit is rebuilt.
     /// </summary>
-    public const int Version = 1;
+    public const int Version = 0;
 
     private static ReadOnlySpan<byte> Magic => "GIR0"u8;
 

@@ -24,7 +24,7 @@ namespace Corsac.Lang.Lto;
 public static class X87Notes
 {
     public const string SectionName = ".corsac.x87";
-    const int Version = 2;
+    const int Version = 0;
 
     /// <summary>
     /// The routine whose address `field` holds, as a call through a load of
