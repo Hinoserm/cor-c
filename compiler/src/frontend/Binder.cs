@@ -8143,6 +8143,7 @@ public sealed partial class Binder
                     Type? wasWanted = _wanted;
                     _wanted = null;
                     _inferredReturns.Add(r.Value is null ? Type.Void : CheckExpr(r.Value));
+                    if (r.Value is null || !Interpolated(r.Value)) _inferredReturns.AllInterpolated = false;
                     _wanted = wasWanted;
                     break;
                 }
@@ -8903,13 +8904,16 @@ public sealed partial class Binder
         // WANTED is FormattableStringFactory.Create of its composite format and
         // its holes (C# 10.2.5's interpolated string conversion), not the
         // string it otherwise joins to.
-        if (at is Expr interpolated && Interpolated(interpolated) && Formattable(to) && FormattableCall(interpolated) is { } formattable)
+        if (at is Expr interpolated && Interpolated(interpolated) && Formattable(to) && FormattableCall(interpolated, out List<Expr> holes) is { } formattable)
         {
             _r.Rewrites[interpolated] = formattable;
             CheckExpr(formattable);
-            // Checked once, and so for this call alone: a later look at one
-            // of them is a look of its own.
-            for (int i = 1; i < formattable.Args.Count; i++) _checkedOnce.Remove(formattable.Args[i]);
+            // Checked once, and so for this call alone: a later look at one of
+            // them is a look of its own -- the same join checked again in a
+            // closure's Invoke binds its names there. By the holes handed in,
+            // not by the call's arguments, which its check packs into the
+            // params array.
+            foreach (Expr hole in holes) _checkedOnce.Remove(hole);
             return;
         }
 
@@ -9308,10 +9312,10 @@ public sealed partial class Binder
     /// as checked (_checkedOnce): checked again, a hole that declares a name
     /// -- `{(o is int n ? n : 0)}`, an `out var` -- declared it twice.
     /// </summary>
-    private CallExpr? FormattableCall(Expr written)
+    private CallExpr? FormattableCall(Expr written, out List<Expr> holes)
     {
         string format;
-        List<Expr> holes;
+        holes = new List<Expr>();
         if (written is BinaryExpr { Interpolation: { } parts } joined)
         {
             if (InterpolatedHoles(joined, parts) is not { } found) return null;
@@ -9321,7 +9325,6 @@ public sealed partial class Binder
         else if (written is LiteralExpr { InterpolatedFormat: { } plain })
         {
             format = plain;
-            holes = new List<Expr>();
         }
         else
         {
@@ -10923,7 +10926,7 @@ public sealed partial class Binder
         _nextSlot = 0;
         // A LAMBDA'S RETURNS ARE ITS OWN: one inside a body whose result is
         // being inferred says nothing about that body's result.
-        List<Type>? wasInferred = _inferredReturns;
+        InferredReturns? wasInferred = _inferredReturns;
         _inferredReturns = null;
         // THE ENCLOSING METHOD'S CONSTANTS THE BODY READS, declared again
         // here, outside the parameters so a parameter may shadow one as C#
@@ -11036,7 +11039,7 @@ public sealed partial class Binder
             // which then gave an int and fitted no Action -- `Start(1, s =>
             // { int n = Run(() => { return 5; }); })` found no overload of
             // Start, where the same inner call at the top of Main bound.
-            List<Type>? wasInferred = _inferredReturns;
+            InferredReturns? wasInferred = _inferredReturns;
             _inferredReturns = null;
             try
             {
@@ -11337,6 +11340,7 @@ public sealed partial class Binder
     /// <summary>Whether a lambda's value converts to what its delegate returns: implicitly, as a constant, or by an operator.</summary>
     private bool LambdaValueConverts(Type made, Type to, LambdaExpr lam)
         => Convertible(made, to) || Variant(made, to)
+        || (Formattable(to) && InterpolatedValue(lam))
         || (lam.Body is not null ? IntegerConstantFits(lam.Body, made, to) : made.IsNumeric && to.IsNumeric)
         || (to.Symbol is not null && UserConversion(made, to, false, lam.Body is null ? null : IntegerConstant(lam.Body, made)) is not null)
         || (made.Symbol is not null && UserConversion(made, to, false) is not null);
@@ -14706,6 +14710,7 @@ public sealed partial class Binder
     /// </summary>
     private Type? LambdaGives(MethodSymbol m, Type want, LambdaExpr lam, Dictionary<string, Type> bound, out bool statement, out bool valueless)
     {
+        LambdaExpr asked = lam;
         statement = lam.Body is not null && StatementExpression(lam.Body);
         valueless = false;
         // `delegate { ... }` asked as the lambda it is for this delegate.
@@ -14762,14 +14767,16 @@ public sealed partial class Binder
             // inferred return type): the best common type of its return
             // expressions. `Select(line => { ...; return (Version: v, Path:
             // p); })` is a sequence of that tuple, not of an unbound R.
-            List<Type>? wasInferred = _inferredReturns;
+            InferredReturns? wasInferred = _inferredReturns;
             int wasSlot = _nextSlot;
-            _inferredReturns = new List<Type>();
+            _inferredReturns = new InferredReturns();
             try
             {
                 CheckBlock(lam.BlockBody!);
                 valueless = _inferredReturns.All(t => t.IsVoid);
                 produced = valueless ? Type.Void : BestCommonType(_inferredReturns);
+                if (!valueless && _inferredReturns.Count > 0 && _inferredReturns.AllInterpolated) _interpolatedValue.Add(asked);
+                else _interpolatedValue.Remove(asked);
             }
             finally
             {
@@ -14869,7 +14876,7 @@ public sealed partial class Binder
             // to any delegate: `() => { throw ...; }`.
             return lam.BlockBody is { Statements.Count: > 0 } block && block.Statements[^1] is ThrowStmt;
         }
-        return gives is not null && Fits(gives, returns, lam.Body);
+        return gives is not null && (Fits(gives, returns, lam.Body) || (Formattable(returns) && InterpolatedValue(lam)));
     }
 
     /// <summary>What awaiting a task-like type answers: GetAwaiter().GetResult()'s type.</summary>
@@ -14909,7 +14916,27 @@ public sealed partial class Binder
     private static readonly Dictionary<string, Type> NoBindings = new(StringComparer.Ordinal);
 
     /// <summary>What a block lambda's returns are being gathered into, while one is inferred.</summary>
-    private List<Type>? _inferredReturns;
+    private InferredReturns? _inferredReturns;
+
+    /// <summary>
+    /// A block lambda's returned values' types as its result is inferred, and
+    /// whether every value it returns is an interpolated string -- which a
+    /// FormattableString result takes, as C# converts each (LambdaGives).
+    /// </summary>
+    private sealed class InferredReturns : List<Type>
+    {
+        public bool AllInterpolated = true;
+    }
+
+    /// <summary>
+    /// The lambdas whose every value is an interpolated string, as LambdaGives
+    /// found them: an expression body that is one, or a block's every return.
+    /// </summary>
+    private readonly HashSet<LambdaExpr> _interpolatedValue = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Whether a lambda's value is an interpolated string, every one of them (_interpolatedValue).</summary>
+    private bool InterpolatedValue(LambdaExpr lam)
+        => lam.Body is not null ? Interpolated(lam.Body) : _interpolatedValue.Contains(lam);
 
     /// <summary>
     /// How deep inside async lambdas Produces is asking: an await there is

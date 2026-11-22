@@ -286,7 +286,7 @@ public sealed partial class Binder
     {
         _quiet++;
         PushScope(functionBoundary: true);
-        List<Type>? wasInferred = _inferredReturns;
+        InferredReturns? wasInferred = _inferredReturns;
         Type? wasWanted = _wanted;
         int wasSlot = _nextSlot;
         HashSet<LocalSym>? assignedBefore = AssignedBefore(lam);
@@ -308,7 +308,7 @@ public sealed partial class Binder
                 return produced;
             }
 
-            _inferredReturns = new List<Type>();
+            _inferredReturns = new InferredReturns();
             CheckBlock(lam.BlockBody!);
             if (_inferredReturns.All(t => t.IsVoid)) return Type.Void;
             Type? common = BestCommonType(_inferredReturns);

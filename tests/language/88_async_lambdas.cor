@@ -33,15 +33,20 @@ static class Program
 
     static async Task Main()
     {
+        // SUSPENDED ON TASKS THE CALLER COMPLETES, where it means them to
+        // resume: a yield resumed on a pool thread at once, and the caller's
+        // next line raced it (under .NET too).
         int counter = 0;
+        TaskCompletionSource bumped = new TaskCompletionSource();
         Func<Task> bump = async () =>
         {
             counter = counter + 1;
-            await Task.Yield();
+            await bumped.Task;
             counter = counter + 10;
         };
         Task b1 = bump();
         Line("after call " + counter);
+        bumped.SetResult();
         await b1;
         Line("after await " + counter);
 
@@ -59,14 +64,16 @@ static class Program
         Line("compute " + r + " factor " + factor);
 
         int shared = 0;
+        TaskCompletionSource changed = new TaskCompletionSource();
         Func<Task<int>> reader = async () =>
         {
             int before = shared;
-            await Task.Yield();
+            await changed.Task;
             return shared - before;
         };
         Task<int> rt = reader();
         shared = 100;
+        changed.SetResult();
         int delta = await rt;
         Line("delta " + delta);
 

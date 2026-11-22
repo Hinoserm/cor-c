@@ -18634,6 +18634,9 @@ public static class GcThreads
             {
                 _first = 0;
             }
+            // Gone here too, as the table's way marks it below: what says a
+            // thread has ended (Runtime.EndThread's once).
+            Sys.WriteAddress(block + Tls.State, Gone);
             return;
         }
 

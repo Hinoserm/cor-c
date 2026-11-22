@@ -5039,10 +5039,20 @@ public static partial class Scheduler
                 continue;
             }
 
+            // THE WATCH UP FIRST, the word read next, and only then what is
+            // waited for looked at -- the timers too: a timer canceled
+            // before the watch was up is dropped here, and one canceled
+            // after it moves the word (Settled), so neither leaves this
+            // asleep to a dead timer's deadline.
             nuint at = Atom.At(settle, Atom.FirstWord);
             nuint watchers = Atom.At(quiet, Atom.SecondWord);
-            int seen = (int)Sys.Read32(at);
             Sys.AtomicAdd32(watchers, 1);
+            int seen = (int)Sys.Read32(at);
+            DropCanceledTimers();
+            now = Clock.Now();
+            if (_timerCount > 0) PostDueTimers(now);
+            next = _timerCount > 0 ? _timers[0] : null;
+            due = next != null && next.Deadline > now ? next.Deadline : NoDeadline;
             bool settled = _count == 0 && _timerCount == 0 && idle.Value >= _workers;
             if (!settled && _count == 0)
             {

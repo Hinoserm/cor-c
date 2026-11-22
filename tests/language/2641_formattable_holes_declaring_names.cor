@@ -6,6 +6,10 @@
 // plain {{braces}}|0|plain {braces}
 // {0}{1}|a|5
 // abc|1
+// {0}-{1}-{2,3}|x|b|a|x-b-  a
+// <5>
+// [5|7]
+// plain a5x
 //
 // Output as .NET 10 says it.
 
@@ -14,6 +18,8 @@ using System.Globalization;
 static class Program
 {
     static bool Try(out int v) { v = 7; return true; }
+    static string Take(Func<FormattableString> made) => made().ToString(CultureInfo.InvariantCulture);
+    static string Take(Func<int, FormattableString> made) => made(0).ToString(CultureInfo.InvariantCulture);
     static int Main()
     {
         object o = 5;
@@ -29,6 +35,12 @@ static class Program
         Console.WriteLine(lit.Format + "|" + lit.GetArgument(0) + "|" + lit.GetArgument(1));
         FormattableString sole = $"{"abc"}";
         Console.WriteLine(sole.ToString(CultureInfo.InvariantCulture) + "|" + sole.ArgumentCount);
+        FormattableString shapes = $"{$"x"}-{"b"}-{"a",3}";
+        Console.WriteLine(shapes.Format + "|" + shapes.GetArgument(0) + "|" + shapes.GetArgument(1) + "|" + shapes.GetArgument(2) + "|" + shapes.ToString(CultureInfo.InvariantCulture));
+        Console.WriteLine(Take(() => $"<{(o is int q ? q : 0)}>"));
+        Console.WriteLine(Take(() => { if (o is int r) return $"[{r}|{(Try(out var s) ? s : 0)}]"; return $"none"; }));
+        string joined = $"plain {"a"}{o}{$"x"}";
+        Console.WriteLine(joined);
         return 0;
     }
 }

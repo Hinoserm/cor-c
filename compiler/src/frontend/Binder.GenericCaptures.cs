@@ -221,7 +221,7 @@ public sealed partial class Binder
         HashSet<MethodDecl>? wasCalls = _probeCalls;
         MethodSymbol? wasMethod = _method;
         int wasSlot = _nextSlot, wasMax = _maxSlot;
-        List<Type>? wasInferred = _inferredReturns;
+        InferredReturns? wasInferred = _inferredReturns;
         Type? wasWanted = _wanted;
         HashSet<Sym> notNull = new(_notNull);
         HashSet<string> paths = new(_notNullPaths, StringComparer.Ordinal);

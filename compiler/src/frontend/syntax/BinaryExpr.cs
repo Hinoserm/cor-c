@@ -42,7 +42,8 @@ public sealed class BinaryExpr : Expr
 /// An interpolated string's composite format (`{0,5:x8}` for each hole,
 /// braces doubled) and its holes, by WHERE they are in the join and never
 /// as nodes of their own: the join's pieces, left to right, are its
-/// literal runs and its holes, each hole as written or wrapped -- its format
+/// literal runs and its holes -- an empty literal first where a hole is
+/// first, so no hole is ever piece 0 -- each hole as written or wrapped -- its format
 /// a ToString call on it (Parser.Formatted), its alignment a pad of that
 /// (Parser.Aligned). The binder takes the holes out of the join it has
 /// checked, so each is checked once (Binder.InterpolatedHoles), and a copy of
