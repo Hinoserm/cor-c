@@ -3304,10 +3304,10 @@ public sealed partial class Binder
         // in its display and no IConvertible in its slots -- another unit's
         // was the other, and the link refused the two (Lowering.BoxBases,
         // ConvertibleSlots).
-        FindMadeType("ValueType", out _);
-        FindMadeType("Enum", out _);
-        FindMadeType("IConvertible", out _);
-        FindMadeType("BoxedConvertible", out _);
+        // The library's, by the compiler's own spelling: a program's own
+        // global Enum is moved aside, and is no box's base.
+        foreach (string boxed in new[] { "ValueType", "Enum", "IConvertible", "BoxedConvertible" })
+            LibraryGlobal(LibrarySpelling + "." + boxed, out _);
 
         // Interface methods get slot numbers FIRST, from one program-wide
         // counter. A call through an interface has no idea which class it will
@@ -13786,7 +13786,13 @@ public sealed partial class Binder
                 // (Enum.GetName(Type, object)), which refuses as .NET refuses.
                 if (skip == 1)
                 {
-                    Type given = CheckQuietly(rest[0]);
+                    // In a scope of its own: a pattern's or an `out var`'s
+                    // name the trial declares is not there when the call is
+                    // bound again, by the library's method.
+                    Type given;
+                    PushScope();
+                    try { given = CheckQuietly(rest[0]); }
+                    finally { PopScope(); }
                     bool own = ReferenceEquals(given.AsNonNullable().Symbol, chosen) && !given.IsNullableValue;
                     bool number = given.IsInteger && given.Symbol is null && !given.IsNullableValue && !given.IsPointer
                                   && (named.Name == "GetName" || given.Prim == chosen.EnumUnderlying);
@@ -23508,7 +23514,6 @@ public sealed partial class Binder
         }
 
         List<MethodSymbol> group = MethodsOn(owner, m.Name);
-        if (m.Name == "GetValues" && owner.IsEnumClass) _r.EnumValuesOverType = true;
 
         // OBJECT'S OWN STAY IN THE GROUP beside a type's overloads of the
         // name, as C#'s member lookup has them (12.5): a record that writes

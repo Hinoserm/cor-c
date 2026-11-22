@@ -5303,18 +5303,20 @@ public static partial class Runtime
     public static object NewIntegerBox(nuint desc, long bits)
     {
         const int w = WordSize.Bytes;
+        int kind = (int)((Sys.ReadAddress(desc + DescFlagsWordHere * w) >> 12) & 0xFF);
+        // Only an enum's or an integer's of a fixed width (BoxKind 1-8),
+        // refused before anything is made.
+        if (kind < 1 || kind > 8) throw new ArgumentException("A box of an integer or an enum is wanted.");
         nuint size = Sys.ReadAddress(desc + 1 * w);
         nuint payload = Sys.ReadAddress(desc + 7 * w);
         nuint at = AllocObject(size);
         Sys.WriteAddress(at, desc + DescWordsHere * w);
-        switch ((int)((Sys.ReadAddress(desc + DescFlagsWordHere * w) >> 12) & 0xFF))
+        switch (kind)
         {
             case 1: case 2: Sys.Write8(at + payload, unchecked((byte)bits)); break;
             case 3: case 4: Sys.Write16(at + payload, unchecked((ushort)bits)); break;
             case 5: case 6: Sys.Write32(at + payload, unchecked((uint)bits)); break;
-            case 7: case 8: Sys.Write64(at + payload, unchecked((ulong)bits)); break;
-            // Only an enum's or an integer's of a fixed width (BoxKind 1-8).
-            default: throw new ArgumentException("A box of an integer or an enum is wanted.");
+            default: Sys.Write64(at + payload, unchecked((ulong)bits)); break;
         }
         return Sys.ObjectAt(at)!;
     }

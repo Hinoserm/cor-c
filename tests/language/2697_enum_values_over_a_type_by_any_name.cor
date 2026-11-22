@@ -1,0 +1,29 @@
+// test: enum_values_over_a_type_by_any_name
+// expect-exit: 0
+// expect-output:
+// Red;Green;Blue;
+// Size[] 3 L Blue L
+//
+// Enum.GetValues OVER A TYPE IN A VARIABLE, BY WHATEVER NAME THE PROGRAM
+// CALLS IT: `using static System.Enum` and a bare GetValues, a method group
+// held in a Func. The enum's box names its array's descriptor wherever that
+// method is compiled (Lowering.SettleEnumArrays, at the end of lowering),
+// not where its name was looked up, which `using static` went round. The
+// answers are .NET 10's.
+using System;
+using static System.Enum;
+enum Color { Red, Green = 5, Blue }
+enum Size : byte { S = 1, M, L }
+static class P
+{
+    static Type Pick(int i) => i == 0 ? typeof(Color) : typeof(Size);
+    static void Main()
+    {
+        object boxed = Color.Blue; object other = Size.L;
+        foreach (object v in GetValues(Pick(0))) Console.Write(v + ";");
+        Console.WriteLine();
+        Func<Type, Array> f = GetValues;
+        Array a = f(Pick(1));
+        Console.WriteLine(a.GetType().Name + " " + a.Length + " " + a.GetValue(2) + " " + boxed + " " + other);
+    }
+}

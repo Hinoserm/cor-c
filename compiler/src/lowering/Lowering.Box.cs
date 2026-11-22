@@ -463,7 +463,8 @@ public sealed partial class Lowering
             DataItem record = new("be_" + Safe(key), words) { ReadOnly = true, Exported = false };
             record.Relocs.Add(new DataReloc(0, EnumNamesTable(enumType), 0));
             record.Relocs.Add(new DataReloc(w, EnumValuesTable(enumType), 0));
-            if (EnumArraysAsked) record.Relocs.Add(new DataReloc(3 * w, SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
+            if (EnumArraysAsked()) record.Relocs.Add(new DataReloc(3 * w, SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
+            else _enumRecordsWaiting.Add((record, of));
             _m.Data.Add(record);
             item.Relocs.Add(new DataReloc(DescElement * w, record.Name, 0));
         }
@@ -528,13 +529,33 @@ public sealed partial class Lowering
     /// <summary>
     /// WHETHER AN ENUM'S BOX NAMES ITS ARRAY'S DESCRIPTOR (the record's word
     /// 3): what Enum.GetValues(Type) makes, and what every boxed enum dragged
-    /// in with its array's interface stubs otherwise. In a closed world only
-    /// where some code names that method (BindResult.EnumValuesOverType), and
-    /// always in an open one, where another unit's copy of the descriptor must
-    /// be these bytes too.
+    /// in with its array's interface stubs otherwise. Always in an open
+    /// world, where another unit's copy of the descriptor must be these bytes
+    /// too; in a closed one once that method is required -- a box made
+    /// before waits (_enumRecordsWaiting) and is given its array when it is
+    /// (SettleEnumArrays), whatever path the program called it by.
     /// </summary>
-    private bool EnumArraysAsked
-        => !ClosedWorld || _library || PartOfALibrary || SharedObject || Dynamic || _b.EnumValuesOverType;
+    private bool EnumArraysAsked()
+        => !ClosedWorld || _library || PartOfALibrary || SharedObject || Dynamic
+           || _required.Any(m => m.Name == "GetValues" && m.Static && m.Params.Count == 1 && m.Owner.IsEnumClass);
+
+    /// <summary>Enum boxes' records made before Enum.GetValues(Type) was required, and the enum each is of.</summary>
+    private readonly List<(DataItem Record, Type Of)> _enumRecordsWaiting = new();
+
+    /// <summary>
+    /// The waiting records given their arrays' descriptors, once
+    /// Enum.GetValues(Type) is required: true when it did, and the round of
+    /// lowering goes on for what the descriptors require (Run).
+    /// </summary>
+    private bool SettleEnumArrays()
+    {
+        if (_enumRecordsWaiting.Count == 0 || !EnumArraysAsked()) return false;
+        int w = _t.WordSize;
+        foreach ((DataItem record, Type of) in _enumRecordsWaiting)
+            record.Relocs.Add(new DataReloc(3 * w, SequenceDescriptor(ElementKey(of), ElementStride(of), isString: false, elementType: of), 0));
+        _enumRecordsWaiting.Clear();
+        return true;
+    }
 
     /// <summary>
     /// The class descriptors a box's display holds before its own: the

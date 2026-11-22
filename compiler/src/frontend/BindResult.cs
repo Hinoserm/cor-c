@@ -564,12 +564,6 @@ public sealed partial class BindResult
     public Dictionary<MethodDecl, LocalEnvironment> Environments { get; } = new(ReferenceEqualityComparer.Instance);
     public HashSet<CallExpr> EnumHasFlags { get; } = new(ReferenceEqualityComparer.Instance);
 
-    /// <summary>
-    /// Whether code named System.Enum's GetValues over a Type in a variable
-    /// (a call or a method group): an enum's box then names its array's
-    /// descriptor for it (Lowering.EnumArraysAsked).
-    /// </summary>
-    public bool EnumValuesOverType { get; set; }
 
     /// <summary>
     /// The calls to System.Enum's statics that read an enum's name table:

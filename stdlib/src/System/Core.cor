@@ -22550,7 +22550,8 @@ public abstract class Enum : ValueType, IComparable, IFormattable, IConvertible
             }
             return Number(value);
         }
-        if (!(value is char || value is sbyte || value is byte || value is short || value is ushort || value is int || value is uint || value is long || value is ulong)) {
+        // IsDefined knows no other kind of value; Format says what it was.
+        if (orString && !(value is char || value is sbyte || value is byte || value is short || value is ushort || value is int || value is uint || value is long || value is ulong)) {
             throw new InvalidOperationException("Unknown enum type.");
         }
         Type underlying = GetUnderlyingType(enumType);
@@ -22569,8 +22570,8 @@ public abstract class Enum : ValueType, IComparable, IFormattable, IConvertible
     }
 
     /// Its values, as an array of the enum: Color[] for Color. (Its array's
-    /// descriptor is in the record wherever this is called: Lowering's
-    /// EnumArraysAsked.)
+    /// descriptor is in the record wherever this method is compiled:
+    /// Lowering's SettleEnumArrays.)
     public static Array GetValues(Type enumType) {
         Members(enumType, out _, out _, out long[] values, out _, out nuint arrayDesc);
         if (arrayDesc == 0) { throw new InvalidOperationException("Enum.GetValues: this image has no array of '" + String.TypeText(enumType.FullName) + "'."); }

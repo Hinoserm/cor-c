@@ -897,7 +897,9 @@ public sealed partial class Lowering
         // statics is followed by lowering what it required, and what that
         // adds to the statics is the next round's.
         HashSet<FieldSymbol> laid = new();
-        for (List<FieldSymbol> next = _statics.ToList(); next.Count > 0 || _work.Count > 0; next = _statics.Where(f => !laid.Contains(f)).ToList())
+        // And an enum box's array, once Enum.GetValues(Type) is required
+        // (SettleEnumArrays): a round more for what that descriptor requires.
+        for (List<FieldSymbol> next = _statics.ToList(); next.Count > 0 || _work.Count > 0 || SettleEnumArrays(); next = _statics.Where(f => !laid.Contains(f)).ToList())
         {
         if (next.Count == 0)
         {
@@ -3502,7 +3504,8 @@ public sealed partial class Lowering
         }
 
         int slots = t.Kind == TypeKind.Class ? Math.Max(Math.Max(_b.ToStringSlot, _b.CompareSlot), Math.Max(_b.EqualsSlot, _b.HashSlot)) + 1 : 0;
-        for (TypeSymbol? s = t; s is not null; s = s.Base)
+        // ValueType's and Enum's fill no slot (below): object's four words.
+        for (TypeSymbol? s = t.IsBoxBase ? null : t; s is not null; s = s.Base)
         {
             foreach (int interfaceSlot in s.InterfaceImplementations.Keys) slots = Math.Max(slots, interfaceSlot + 1);
             foreach (MethodSymbol m in s.Methods.Where(m => m.VtableSlot >= 0))

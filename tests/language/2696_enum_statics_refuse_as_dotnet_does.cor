@@ -15,6 +15,11 @@
 // 66
 // ArgumentException: Enum underlying type and the object must be same type or object. Type passed in was 'System.Int64'; the enum underlying type was 'System.Int32'.
 // ArgumentException: Object must be the same type as the enum. The type passed in was 'Other'; the enum type was 'Color'.
+// ArgumentException: Enum underlying type and the object must be same type or object. Type passed in was 'System.Double'; the enum underlying type was 'System.Int32'.
+// ArgumentException: Enum underlying type and the object must be same type or object. Type passed in was 'System.Boolean'; the enum underlying type was 'System.Int32'.
+// ArgumentException: Enum underlying type and the object must be same type or object. Type passed in was 'System.Char'; the enum underlying type was 'System.Int32'.
+// ArgumentException: Enum underlying type and the object must be same type or object. Type passed in was 'System.String'; the enum underlying type was 'System.Int32'.
+// False
 // 5
 // InvalidCastException: Invalid cast from 'Enum' to 'DateTime'.
 // InvalidCastException: Invalid cast from 'Enum' to 'DateTime'.
@@ -23,7 +28,7 @@
 // WHAT System.Enum's STATICS TAKE AND REFUSE OVER typeof(E), AS .NET 10:
 // GetName and ToObject any integer, a char, a bool, another enum's value;
 // IsDefined and Format only E's own value or its underlying integer exactly
-// (ArgumentException in .NET's words), a bool or a double "Unknown enum
+// (ArgumentException in .NET's words), IsDefined a bool or a double "Unknown enum
 // type". The compiler answers only the cases the table answers as .NET
 // does (Binder.EnumStatic); the rest are the library's (Enum.Exact, Bits).
 // And an enum through Convert: ToDecimal its number, ToDateTime refused
@@ -50,6 +55,11 @@ static class P
         T(() => Enum.ToObject(typeof(Color), 'B'));
         T(() => Enum.Format(typeof(Color), 5L, "G"));
         T(() => Enum.Format(typeof(Color), Other.X, "G"));
+        T(() => Enum.Format(typeof(Color), 2.5, "G"));
+        T(() => Enum.Format(typeof(Color), true, "G"));
+        T(() => Enum.Format(typeof(Color), 'a', "G"));
+        T(() => Enum.Format(typeof(Color), "Green", "G"));
+        T(() => Enum.IsDefined(typeof(Color), "Nope"));
         T(() => Convert.ToDecimal(Color.Green));
         T(() => Convert.ToDateTime(Color.Green));
         T(() => ((IConvertible)Color.Green).ToDateTime(null));
