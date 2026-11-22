@@ -397,8 +397,8 @@ internal sealed class X64Target : ITarget
         }
         // THE EDGES THAT CARRY STORES (IPlacement.StoredEdges), each made a
         // block of its own: a critical edge a value leaves its register by,
-        // from a block with other ways out into one with other ways in. The
-        // stores, then on into the edge's target -- by falling through, laid
+        // or comes back into it by, from a block with other ways out into one
+        // with other ways in. The stores and loads, then on into the edge's target -- by falling through, laid
         // right after the block it leaves where that block falls into the
         // target, else by a jump, laid there too where nothing falls through
         // from that block, or at the end -- and the block's branches to the
@@ -412,8 +412,10 @@ internal sealed class X64Target : ITarget
                 MBlock source = blocks[f.Blocks[from]], target = blocks[f.Blocks[to]];
                 MBlock edge = new(source.Name + "_to_" + target.Name);
                 int line = source.Instrs.Count > 0 ? source.Instrs[^1].Line : 0;
-                foreach ((int reg, int slot) in p.EdgeStores(from, to))
-                    edge.Instrs.Add(new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, Slot(slot), Out(reg)) { Width = 8, Line = line });
+                foreach ((int reg, int slot, bool load) in p.EdgeMoves(from, to))
+                    edge.Instrs.Add(load
+                        ? new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, Out(reg), Slot(slot)) { Width = 8, Line = line }
+                        : new MInstr(ClassOf(reg) == Xmms ? MOp.MovF : MOp.Mov, Slot(slot), Out(reg)) { Width = 8, Line = line });
                 foreach (MInstr branch in source.Instrs)
                     for (int k = 0; k < branch.Operands.Count; k++)
                         if (branch.Operands[k] is MLabel label && ReferenceEquals(label.Target, target)) branch.Operands[k] = new MLabel(edge);

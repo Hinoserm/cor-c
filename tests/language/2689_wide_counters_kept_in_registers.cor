@@ -1,0 +1,110 @@
+// test: wide_counters_kept_in_registers
+// expect-exit: 0
+// expect-output:
+// 77309412572 57
+// 511101110201
+//
+// A 64-BIT COUNTER IS ADDED TO IN REGISTERS, not in the frame. The kernel's
+// Tcp.RouteOf made `long generation = Routes.Generation + 1` -- a uint
+// widened, plus one -- in two frame slots, `mov [hi], 0 ; adc [hi], 0`,
+// for every segment sent. Three causes, each fixed: the inliner put an
+// inlined getter's blocks and the code after the call at the end of the
+// function, so the allocator met the counter's reads before it was made
+// (Inline.Expand now puts them where the call was); a value written twice
+// before its spill point (`mov lo, x ; add lo, 1`) or whose way back into
+// its register was a critical edge kept no register there (SinkStores now
+// takes both, loading on a block of the edge's own); and a prefix split
+// stopped at the value's first block (SplitPrefix now keeps that block's
+// part). And a constant whose low word is zero (`+ 0x1_0000_0000L`) is no
+// carry chain. The answers are .NET's; the image is checked by
+// 2689_wide_counters_kept_in_registers.sh.
+using System;
+using System.Runtime.CompilerServices;
+
+class NetworkInterface { public int Index; }
+
+static class Routes
+{
+    static int _generation = -3;
+    internal static long Generation { get { return (uint)_generation; } }
+    internal static uint Hop(uint remote, int index) { return remote + (uint)index; }
+    internal static void Bump() { _generation++; }
+}
+
+static class Net
+{
+    static NetworkInterface _one = new NetworkInterface { Index = 3 };
+    internal static NetworkInterface? Egress(uint remote, uint local, int device) { return remote == 0 ? null : _one; }
+    internal static int IndexOf(NetworkInterface i) { return i.Index; }
+}
+
+static class Loop { internal static bool Owns(uint ip) { return ip == 0x7f000001; } }
+
+static class Tcp
+{
+    static uint[] _remoteIp = new uint[8], _localIp = new uint[8];
+    static int[] _device = new int[8];
+    static NetworkInterface?[] _route = new NetworkInterface?[8];
+    static uint[] _routeHop = new uint[8], _routeRemote = new uint[8], _routeLocal = new uint[8];
+    static long[] _routeGeneration = new long[8];
+    static int[] _routeDevice = new int[8];
+    static int _walks;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static NetworkInterface? RouteOf(int c, out uint hop)
+    {
+        uint remote = _remoteIp[c], local = _localIp[c];
+        int device = _device[c];
+        long generation = Routes.Generation + 1;
+        if (_routeGeneration[c] != generation || _routeRemote[c] != remote
+            || _routeLocal[c] != local || _routeDevice[c] != device)
+        {
+            _walks++;
+            NetworkInterface? iface = null;
+            uint next = 0;
+            if (device != 1 && !Loop.Owns(remote))
+            {
+                iface = Net.Egress(remote, local, device);
+                if (iface != null)
+                {
+                    next = Routes.Hop(remote, Net.IndexOf(iface));
+                }
+            }
+            _route[c] = iface; _routeHop[c] = next;
+            _routeGeneration[c] = generation;
+            _routeRemote[c] = remote; _routeLocal[c] = local; _routeDevice[c] = device;
+        }
+        hop = _routeHop[c];
+        return _route[c];
+    }
+
+    // Two counters of two writes each, one carried around a loop.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Twice(long[] seen, int n)
+    {
+        long a = Routes.Generation + 1, b = Routes.Generation + 0x1_0000_0000L;
+        long sum = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (seen[i & 7] != a) { seen[i & 7] = a; sum += Net.IndexOf(new NetworkInterface { Index = i }); }
+            else if (i % 3 == 0) { a += b; Routes.Bump(); }
+            sum += a ^ b;
+        }
+        return sum;
+    }
+
+    static void Main()
+    {
+        for (int i = 0; i < 8; i++) { _remoteIp[i] = (uint)(i * 7); _localIp[i] = 5; _device[i] = i == 5 ? 1 : 0; }
+        _remoteIp[6] = 0x7f000001;
+        long sum = 0;
+        for (int i = 0; i < 64; i++)
+        {
+            if (i % 9 == 0) Routes.Bump();
+            NetworkInterface? n = RouteOf(i & 7, out uint hop);
+            sum += hop + (n == null ? 0 : 1) + _routeGeneration[i & 7];
+        }
+        Console.WriteLine(sum + " " + _walks);
+        Console.WriteLine(Twice(new long[8], 50));
+    }
+}

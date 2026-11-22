@@ -1009,6 +1009,7 @@ public sealed class Inline : IParallelModulePass
         };
 
         // The continuation: everything after the call, in a block of its own.
+        int firstNew = caller.Blocks.Count;
         Block cont = caller.NewBlock("inl");
         cont.Instrs.AddRange(site.Instrs.Skip(index + 1));
         site.Instrs.RemoveRange(index, site.Instrs.Count - index);
@@ -1097,6 +1098,24 @@ public sealed class Inline : IParallelModulePass
                 if (keep is not null && keep.Contains(i)) keep.Add(made);
                 into.Instrs.Add(made);
             }
+        }
+
+        // THE BODY AND THE CONTINUATION WHERE THE CALL WAS, not at the end of
+        // the caller: the callee's blocks right after the call's, in their
+        // order, and the code after the call after them. Made at the end,
+        // what follows a call inlined with a branch in it -- a static
+        // constructor's check in a getter -- came after the rest of the
+        // function in the order the register allocator scans, its values
+        // read there before they were made: Tcp.RouteOf's `long generation
+        // = Routes.Generation + 1` lived in two frame slots, added to in
+        // memory, on every segment sent.
+        int at = caller.Blocks.IndexOf(site);
+        if (at >= 0)
+        {
+            List<Block> spliced = caller.Blocks.GetRange(firstNew + 1, caller.Blocks.Count - firstNew - 1);
+            spliced.Add(cont);
+            caller.Blocks.RemoveRange(firstNew, caller.Blocks.Count - firstNew);
+            caller.Blocks.InsertRange(at + 1, spliced);
         }
     }
 

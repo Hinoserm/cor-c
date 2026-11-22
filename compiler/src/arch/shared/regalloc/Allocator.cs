@@ -1260,7 +1260,16 @@ public sealed class Allocator
         }
         // The register is needed only up to the last read or write before
         // the conflict: the slot serves from there.
-        int from = -1;
+        // Only within the block it starts in: a prefix carried across
+        // blocks holds its register over stretches with no use at all,
+        // and the intervals that come after pay for it. Where the reads and
+        // writes before the conflict go on into later blocks, the prefix is
+        // the first block's of them -- where there are two at least: a
+        // widened counter's high half, `mov hi, 0 ; adc hi, 0`, made in a
+        // register and stored once, not stored and then read and written
+        // again in its slot (two writes and a read of the frame).
+        int from = -1, inFirst = 0;
+        bool crosses = false;
         for (int occ = _occFirst[cur.VReg], occEnd = _occFirst[cur.VReg + 1]; occ < occEnd; occ++)
         {
             Occurrence o = _occAll[occ];
@@ -1268,12 +1277,15 @@ public sealed class Allocator
             {
                 break;
             }
+            if (_blockOfInstr[o.Instr] != _blockOfInstr[first])
+            {
+                crosses = true;
+                break;
+            }
+            if (o.Instr + 1 != from) inFirst++;
             from = o.Instr + 1;
         }
-        // Only within the block it starts in: a prefix carried across
-        // blocks holds its register over stretches with no use at all,
-        // and the intervals that come after pay for it.
-        if (from <= first || _blockOfInstr[from - 1] != _blockOfInstr[first])
+        if (from <= first || crosses && inFirst < 2)
         {
             return -1;
         }
@@ -1915,9 +1927,11 @@ public sealed class Allocator
     /// a way out of a value's window from a block with other ways out into a
     /// block with other ways in -- a critical edge -- where neither block's
     /// end nor start is the value's alone. The target makes the edge a block
-    /// of its own as it rebuilds the function (IPlacement.EdgeStores).
+    /// of its own as it rebuilds the function (IPlacement.EdgeMoves).
     /// </summary>
     private readonly Dictionary<(int From, int To), List<int>> _sunkOnEdge = new();
+    /// <summary>The values loaded back into their registers on a critical edge into their window (SinkStores' second chance), by edge.</summary>
+    private readonly Dictionary<(int From, int To), List<int>> _reloadOnEdge = new();
     /// <summary>The loads, by instruction, of values that control comes back to before their spill point (SinkStores).</summary>
     private readonly Dictionary<int, List<int>> _reloadAt = new();
 
@@ -1951,7 +1965,7 @@ public sealed class Allocator
     /// way in is from the window (once for all of them), else before the
     /// branches ending the block it leaves where that is its only way out; on
     /// an edge that is neither -- a critical edge -- in a block of its own the
-    /// target makes on it (EdgeTakesStore, IPlacement.EdgeStores). A value
+    /// target makes on it (EdgeTakesStore, IPlacement.EdgeMoves). A value
     /// live into a landing pad (entered by no edge), or leaving the window by
     /// a computed jump or a switch's table, is stored after its definition. Not a split
     /// value's (a copy between its pieces trusts every write to have stored),
@@ -1960,7 +1974,7 @@ public sealed class Allocator
     private void SinkStores()
     {
         List<int> places = new(), loads = new();
-        List<(int From, int To)> edges = new();
+        List<(int From, int To)> edges = new(), edgeLoads = new();
         bool tabled = false;
         double[]? weight = null;
         for (int v = _fv; v < _n; v++)
@@ -1976,7 +1990,7 @@ public sealed class Allocator
                 Table();
                 tabled = true;
             }
-            SinkOne(v, p, places, edges, loads, ref weight);
+            SinkOne(v, p, places, edges, loads, edgeLoads, ref weight);
         }
     }
 
@@ -2012,32 +2026,53 @@ public sealed class Allocator
     }
 
     /// <summary>One spilled value's stores (and, given a second chance, loads) placed, if they can be.</summary>
-    private void SinkOne(int v, int p, List<int> places, List<(int From, int To)> edges, List<int> loads, ref double[]? weight)
+    private void SinkOne(int v, int p, List<int> places, List<(int From, int To)> edges, List<int> loads, List<(int From, int To)> edgeLoads, ref double[]? weight)
     {
-        int def = -1, defs = 0, defOperand = -1;
+        // THE WINDOW STARTS AT THE FIRST WRITE, which may be followed by more
+        // before P: a value made in two-address form -- `mov lo, x ; add lo,
+        // 1`, the halves of a widened counter -- is written twice, and its
+        // register holds the latest write wherever it is live in the window
+        // as surely as it holds a single one. Each write in the window lost
+        // its store; one after P stores as any spilled write does (PlaceReg).
+        int def = -1;
         for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
-            if ((_occAll[occ].Role & Role.Def) != 0) { defs++; def = _occAll[occ].Instr; defOperand = _occAll[occ].Operand; }
-        if (defs != 1 || def >= p) return;
+            if ((_occAll[occ].Role & Role.Def) != 0) { def = _occAll[occ].Instr; break; }
+        if (def < 0 || def >= p) return;
         bool kept = _keepBefore.Contains(v);
         loads.Clear();
         if (!kept)
         {
-            // The definition first in the layout and into the register,
-            // every way back with a place for its load, and the moves
-            // cheaper than the reloads and the store.
-            if (_occAll[_occFirst[v]].Instr != def || _folded.Contains((def, defOperand))
-                || !ReentryLoads(v, def, p, loads) || !ExitStores(v, def, p, places, edges))
+            // The definition first in the layout, every way back with a place
+            // for its load, and the moves cheaper than the reloads and the
+            // stores. A definition folded into the slot (`mov [slot], 0`, the
+            // high half of a widened unsigned) is unfolded with the window's
+            // other occurrences below: the register is the value's from it to P.
+            if (_occAll[_occFirst[v]].Instr != def
+                || !ReentryLoads(v, def, p, loads, edgeLoads) || !ExitStores(v, def, p, places, edges))
             {
                 return;
             }
             weight ??= BlockWeights();
-            double moves = 0, reloads = weight[_blockOfInstr[def]];
+            double moves = 0, reloads = 0;
+            // Every write in the window stored after it, folded or not: a
+            // folded read-modify-write is a load and a store of the slot.
+            int lastWrite = -1;
+            for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
+            {
+                Occurrence o = _occAll[occ];
+                if (o.Instr >= p) break;
+                if ((o.Role & Role.Def) == 0 || o.Instr == lastWrite) continue;
+                lastWrite = o.Instr;
+                reloads += weight[_blockOfInstr[o.Instr]];
+            }
             foreach (int at in places) moves += weight[_blockOfInstr[at]];
             // An edge's store runs as often as the edge, at most as often as
             // the block it leaves: counted at that block's weight (its jump,
             // where it has one, is not counted apart).
             foreach ((int From, int To) edge in edges) moves += weight[edge.From];
             foreach (int at in loads) moves += weight[_blockOfInstr[at]];
+            // An edge's load as often as the block it leaves, as its store.
+            foreach ((int From, int To) edge in edgeLoads) moves += weight[edge.From];
             int lastRead = -1;
             for (int occ = _occFirst[v], occEnd = _occFirst[v + 1]; occ < occEnd; occ++)
             {
@@ -2055,6 +2090,11 @@ public sealed class Allocator
             foreach (int at in loads)
             {
                 if (!_reloadAt.TryGetValue(at, out List<int>? list)) _reloadAt[at] = list = new();
+                list.Add(v);
+            }
+            foreach ((int From, int To) edge in edgeLoads)
+            {
+                if (!_reloadOnEdge.TryGetValue(edge, out List<int>? list)) _reloadOnEdge[edge] = list = new();
                 list.Add(v);
             }
         }
@@ -2086,9 +2126,10 @@ public sealed class Allocator
     /// there: every other value live across the edge is live into the
     /// window's block, where the register is this one's.
     /// </summary>
-    private bool ReentryLoads(int v, int def, int p, List<int> loads)
+    private bool ReentryLoads(int v, int def, int p, List<int> loads, List<(int From, int To)> edgeLoads)
     {
         loads.Clear();
+        edgeLoads.Clear();
         int defb = _blockOfInstr[def], pb = _blockOfInstr[p];
         bool pInside = p > _blockFirst[pb];
         // The window's blocks the value is live into, and their ways in from
@@ -2110,6 +2151,16 @@ public sealed class Allocator
                 if (OneWayOut(q) && _loadsAt[q] >= 0)
                 {
                     if (!loads.Contains(_loadsAt[q])) loads.Add(_loadsAt[q]);
+                    continue;
+                }
+                // ON THE EDGE ITSELF, where neither end is the way back's
+                // alone -- a branch out of a block with other ways out into a
+                // block of the window with other ways in -- as an exit's store
+                // is placed (EdgeTakesStore): a block of its own the target
+                // makes on it (IPlacement.EdgeMoves).
+                if (EdgeTakesStore(q, s))
+                {
+                    if (!edgeLoads.Contains((q, s))) edgeLoads.Add((q, s));
                     continue;
                 }
                 return false;
@@ -2197,7 +2248,7 @@ public sealed class Allocator
     /// `places` as the instructions the stores go before, and `edges` as the
     /// ways out that are places of their own -- a critical edge, from a block
     /// with other ways out into one with other ways in, made a block by the
-    /// target (IPlacement.EdgeStores); false where some way out has none of
+    /// target (IPlacement.EdgeMoves); false where some way out has none of
     /// these, a switch's table jump or a computed one.
     /// </summary>
     private bool ExitStores(int v, int def, int p, List<int> places, List<(int From, int To)> edges)
@@ -2349,13 +2400,19 @@ public sealed class Allocator
             return _movesBefore;
         }
         private readonly List<(int Reg, int Slot, bool Load)> _movesBefore = new();
-        public IReadOnlyCollection<(int From, int To)> StoredEdges => _a._sunkOnEdge.Keys;
-        public IReadOnlyList<(int Reg, int Slot)> EdgeStores(int from, int to)
+        public IReadOnlyCollection<(int From, int To)> StoredEdges
+            => _a._reloadOnEdge.Count == 0 ? _a._sunkOnEdge.Keys : _a._sunkOnEdge.Keys.Union(_a._reloadOnEdge.Keys).ToList();
+        public IReadOnlyList<(int Reg, int Slot, bool Load)> EdgeMoves(int from, int to)
         {
-            List<(int Reg, int Slot)> stores = new();
+            // The stores first, as before an instruction (MovesBefore): a
+            // register a value leaves on the edge may be the one a value
+            // coming back is loaded into.
+            List<(int Reg, int Slot, bool Load)> moves = new();
             if (_a._sunkOnEdge.TryGetValue((from, to), out List<int>? values))
-                foreach (int v in values) stores.Add((_a._assigned[v], _a._slot[v]));
-            return stores;
+                foreach (int v in values) moves.Add((_a._assigned[v], _a._slot[v], false));
+            if (_a._reloadOnEdge.TryGetValue((from, to), out List<int>? loaded))
+                foreach (int v in loaded) moves.Add((_a._assigned[v], _a._slot[v], true));
+            return moves;
         }
         public IReadOnlyList<(int Reg, int Slot)> After(int index) { Decide(index); return _after; }
         public bool Dropped(int index) { Decide(index); return _dropped; }
@@ -2506,7 +2563,10 @@ public sealed class Allocator
                 {
                     if ((role & Role.Use) != 0 && !held) _before.Add((reg, a._slot[v], null));
                     // A home's one load writes nothing back: the slot holds it.
-                    if ((role & Role.Def) != 0 && v != _noStore && !(i.HomeSlot is not null && a.HomeOf(v) != 0) && !a._sunk.Contains(v))
+                    // A sunk value's writes before its spill point store where it
+                    // leaves the window (SinkStores); one after it, here.
+                    if ((role & Role.Def) != 0 && v != _noStore && !(i.HomeSlot is not null && a.HomeOf(v) != 0)
+                        && !(a._sunk.Contains(v) && index < a._spilledFrom[v]))
                         _after.Add((reg, a._slot[v]));
                 }
             }
