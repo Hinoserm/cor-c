@@ -3833,7 +3833,8 @@ public sealed partial class Lowering
             VReg present = Eval(isx.Operand);
             if (_b.PatternSlot.TryGetValue(isx, out int named))
             {
-                BindPattern(isx, named, Type.Any, present);
+                // As the binding was declared: object, or the operand's own type.
+                BindPattern(isx, named, _b.PatternSym.TryGetValue(isx, out LocalSym? declared) ? declared.Type : Type.Any, present);
             }
             return _e.Binary(Opcode.Ne, R(present), Imm(0, present.Type), IrType.I32);
         }

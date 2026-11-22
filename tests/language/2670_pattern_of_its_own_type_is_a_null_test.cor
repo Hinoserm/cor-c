@@ -1,0 +1,36 @@
+// test: pattern_of_its_own_type_is_a_null_test
+// expect-exit: 0
+// expect-output:
+// nullable of Int32
+// not nullable
+// node 3 none
+// no type
+//
+// `x is T y` over what is a T already -- a Type? asked whether it is a
+// Type, a Node? whether it is a Node -- asks only whether there is one, as
+// C# reads it: no run-time type test, which a Type has no object to answer
+// in a kernel (the library's dynamic binder, compiled there). Output from
+// .NET 10 (probe ~/tmp/dn/sametype).
+
+using System;
+
+sealed class Node { public int Value; public Node(int v) { Value = v; } }
+
+static class Program
+{
+    static Type? Under(Type t) => Nullable.GetUnderlyingType(t);
+    static Node? Find(int k) => k > 0 ? new Node(k) : null;
+
+    static string Say(Type t) => Under(t) is Type under ? "nullable of " + under.Name : "not nullable";
+    static string Say(int k) => Find(k) is Node n ? "node " + n.Value : "none";
+
+    static int Main()
+    {
+        Console.WriteLine(Say(typeof(int?)));
+        Console.WriteLine(Say(typeof(string)));
+        Console.WriteLine(Say(3) + " " + Say(0));
+        Type? maybe = null;
+        Console.WriteLine(maybe is Type ? "a type" : "no type");
+        return 0;
+    }
+}
