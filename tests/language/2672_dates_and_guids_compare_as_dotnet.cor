@@ -1,0 +1,41 @@
+// test: dates_and_guids_compare_as_dotnet
+// expect-exit: 0
+// expect-output:
+// DateTime True True 1979380442 1 AE:Object must be of type DateTime. 0 True False False
+// DateTimeOffset True True -1321090359 1 AE:Object must be of type DateTimeOffset. 0 True False False
+// Guid True True 572662306 1 AE:Object must be of type GUID. (Parameter 'value') 0 True False False
+// DateOnly True True 738949 1 AE:Object must be of type DateOnly. 0 True False False
+// TimeOnly True True 1236667955 1 AE:Object must be of type TimeOnly. 0 True False False
+// True True True
+// True True True True True True
+// 00112233445566778899aabbccddeeff 2024-03-05 06:07
+//
+// DateTime, DateTimeOffset, Guid, DateOnly and TimeOnly are IComparable,
+// IComparable<T>, IEquatable<T> and IFormattable, as in .NET: CompareTo(object)
+// with null less than any and anything else refused in .NET's words, Equals
+// and GetHashCode as an object by the instant alone (a DateTime's kind no
+// part of it, two offsets' same moment equal). Output from .NET 10 (probe
+// ~/tmp/dn/datecmp).
+
+using System;
+static class Program
+{
+    static string Try(Func<int> f) { try { return f().ToString(); } catch (ArgumentException e) { return "AE:" + e.Message; } }
+    static int Main()
+    {
+        DateTime d = new DateTime(2024, 3, 5, 6, 7, 8, DateTimeKind.Utc), dl = new DateTime(2024, 3, 5, 6, 7, 8, DateTimeKind.Local);
+        DateTimeOffset o = new DateTimeOffset(2024, 3, 5, 6, 7, 8, TimeSpan.FromHours(2));
+        Guid g = new Guid("00112233-4455-6677-8899-aabbccddeeff");
+        DateOnly day = new DateOnly(2024, 3, 5); TimeOnly t = new TimeOnly(6, 7, 8);
+        object[] all = { d, o, g, day, t };
+        foreach (object x in all)
+        {
+            Console.WriteLine(x.GetType().Name + " " + (x is IComparable) + " " + (x is IFormattable) + " " + x.GetHashCode()
+                + " " + Try(() => ((IComparable)x).CompareTo(null)) + " " + Try(() => ((IComparable)x).CompareTo(5)) + " " + Try(() => ((IComparable)x).CompareTo(x)) + " " + x.Equals(x) + " " + x.Equals(5) + " " + x.Equals(null));
+        }
+        Console.WriteLine(((object)d).Equals(dl) + " " + (d.GetHashCode() == dl.GetHashCode()) + " " + ((object)o).Equals(new DateTimeOffset(2024, 3, 5, 4, 7, 8, TimeSpan.Zero)));
+        Console.WriteLine((d is IComparable<DateTime>) + " " + (d is IEquatable<DateTime>) + " " + (g is IComparable<Guid>) + " " + (day is IEquatable<DateOnly>) + " " + (t is IComparable<TimeOnly>) + " " + (o is IEquatable<DateTimeOffset>));
+        Console.WriteLine(g.ToString("N", null) + " " + day.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) + " " + t.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture));
+        return 0;
+    }
+}

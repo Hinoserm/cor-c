@@ -27804,7 +27804,7 @@ public enum DateTimeKind {
 /// the rule about centuries is applied to years long before anybody agreed to
 /// it, because a calendar that changes its rules partway is a calendar no
 /// arithmetic can be done on.
-public partial struct DateTime : IFormattable {
+public partial struct DateTime : IComparable, IComparable<DateTime>, IEquatable<DateTime>, IFormattable {
     private long ticks;
     private DateTimeKind kind;
 
@@ -28123,7 +28123,17 @@ public partial struct DateTime : IFormattable {
         return 0;
     }
 
+    /// AS AN OBJECT, .NET's way: null is less than any date, anything not a
+    /// date is refused; the instant alone, as Equals -- the kind is no part.
+    public int CompareTo(object? value) {
+        if (value == null) { return 1; }
+        if (value is DateTime other) { return CompareTo(other); }
+        throw new ArgumentException("Object must be of type DateTime.");
+    }
+
     public bool Equals(DateTime other) { return ticks == other.Ticks; }
+    public override bool Equals(object? value) { return value is DateTime other && ticks == other.Ticks; }
+    public override int GetHashCode() { return (int)ticks ^ (int)(ticks >> 32); }
 
     // ---- the operators C# writes ----------------------------------------
     //
@@ -28383,7 +28393,7 @@ static unsafe class LocalZone {
 /// Ticks is the LOCAL reading and UtcTicks is the moment: subtracting the
 /// offset is what turns one into the other, and .NET's members are named so
 /// that a caller has to say which they meant.
-public partial struct DateTimeOffset : IFormattable {
+public partial struct DateTimeOffset : IComparable, IComparable<DateTimeOffset>, IEquatable<DateTimeOffset>, IFormattable {
     private long ticks;    // the local reading
     private long offset;   // ticks east of UTC
 
@@ -28543,7 +28553,16 @@ public partial struct DateTimeOffset : IFormattable {
         return 0;
     }
 
+    public int CompareTo(object? value) {
+        if (value == null) { return 1; }
+        if (value is DateTimeOffset other) { return CompareTo(other); }
+        throw new ArgumentException("Object must be of type DateTimeOffset.");
+    }
+
     public bool Equals(DateTimeOffset other) { return UtcTicks == other.UtcTicks; }
+    public override bool Equals(object? value) { return value is DateTimeOffset other && UtcTicks == other.UtcTicks; }
+    /// The instant's, as .NET's (its UtcDateTime's): equal offsets' moments hash alike.
+    public override int GetHashCode() { long at = UtcTicks; return (int)at ^ (int)(at >> 32); }
 
     public static TimeSpan operator -(DateTimeOffset a, DateTimeOffset b) {
         return new TimeSpan(a.UtcTicks - b.UtcTicks);

@@ -13,7 +13,7 @@
 
 /// A DAY, counted from 0001-01-01 -- .NET's DayNumber, and the same epoch as
 /// DateTime's ticks, so the two convert by multiplication.
-public struct DateOnly {
+public struct DateOnly : IComparable, IComparable<DateOnly>, IEquatable<DateOnly>, IFormattable {
     private int day;
 
     public DateOnly(int year, int month, int day1) {
@@ -65,7 +65,15 @@ public struct DateOnly {
         return 0;
     }
 
+    public int CompareTo(object? value) {
+        if (value == null) { return 1; }
+        if (value is DateOnly other) { return CompareTo(other); }
+        throw new ArgumentException("Object must be of type DateOnly.");
+    }
+
     public bool Equals(DateOnly other) { return day == other.DayNumber; }
+    public override bool Equals(object? value) { return value is DateOnly other && day == other.DayNumber; }
+    public override int GetHashCode() { return day; }
 
     /// THE INVARIANT SHORT DATE, "MM/dd/yyyy", which is what .NET prints for a
     /// DateOnly nobody gave a format to.
@@ -74,12 +82,17 @@ public struct DateOnly {
     /// DateTime's picture, over midnight of this day -- so yyyy, MM, dd and the
     /// rest mean exactly what they mean there.
     public string ToString(string format) { return ToDateTime().ToString(format); }
+
+    /// IFormattable's: DateTime's picture in the provider's culture; none is the short date.
+    public string ToString(string? format, IFormatProvider? provider) {
+        return string.IsNullOrEmpty(format) ? ToString() : ToDateTime().ToString(format, provider);
+    }
 }
 
 /// A TIME OF DAY, in ticks from midnight, and never as much as a whole day:
 /// adding hours WRAPS rather than overflowing, which is .NET's rule and the
 /// only one that makes sense for a clock face.
-public struct TimeOnly {
+public struct TimeOnly : IComparable, IComparable<TimeOnly>, IEquatable<TimeOnly>, IFormattable {
     private long ticks;
 
     public TimeOnly(int hour, int minute) {
@@ -138,7 +151,15 @@ public struct TimeOnly {
         return 0;
     }
 
+    public int CompareTo(object? value) {
+        if (value == null) { return 1; }
+        if (value is TimeOnly other) { return CompareTo(other); }
+        throw new ArgumentException("Object must be of type TimeOnly.");
+    }
+
     public bool Equals(TimeOnly other) { return ticks == other.Ticks; }
+    public override bool Equals(object? value) { return value is TimeOnly other && ticks == other.Ticks; }
+    public override int GetHashCode() { return (int)ticks ^ (int)(ticks >> 32); }
 
     /// "HH:mm", which is the invariant short time and what .NET prints for a
     /// TimeOnly with no format -- the seconds are left out on purpose.
@@ -146,6 +167,11 @@ public struct TimeOnly {
 
     public string ToString(string format) {
         return new DateTime(ticks).ToString(format);
+    }
+
+    /// IFormattable's: DateTime's picture in the provider's culture; none is the short time.
+    public string ToString(string? format, IFormatProvider? provider) {
+        return string.IsNullOrEmpty(format) ? ToString() : new DateTime(ticks).ToString(format, provider);
     }
 
     private static long Wrap(long value) {

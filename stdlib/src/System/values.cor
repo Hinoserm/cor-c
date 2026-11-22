@@ -15,7 +15,7 @@ using System.IO;
 // 00 11 22 33 44 55 66 77 88 99 aa bb cc dd ee ff. Microsoft's layout, kept
 // because a Guid that does not round-trip through a file or a wire is not one.
 
-public struct Guid {
+public struct Guid : IComparable, IComparable<Guid>, IEquatable<Guid>, IFormattable {
     // Bytes 0-7 and 8-15, each byte i of the half at bit 8*i. Two words rather
     // than an array because a Guid is a VALUE: copying one must copy it.
     private long low;
@@ -101,7 +101,16 @@ public struct Guid {
         return 0;
     }
 
-    public int GetHashCode() { return (int)(low ^ (low >> 32) ^ high ^ (high >> 32)); }
+    public int CompareTo(object? value) {
+        if (value == null) { return 1; }
+        if (value is Guid other) { return CompareTo(other); }
+        throw new ArgumentException("Object must be of type GUID.", "value");
+    }
+
+    public override int GetHashCode() { return (int)(low ^ (low >> 32) ^ high ^ (high >> 32)); }
+
+    /// IFormattable's: a Guid's picture has no culture in it.
+    public string ToString(string? format, IFormatProvider? provider) { return ToString(string.IsNullOrEmpty(format) ? "D" : format); }
 
     /// Not .NET members: the two halves, so that Equals can read another Guid's
     /// state. C# would say `other.low` because privacy is per type there, and
