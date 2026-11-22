@@ -18472,18 +18472,12 @@ public static class GcThreads
         return i < _count ? At(i) : 0;
     }
 
-    /// Adds a thread. The first one is only written down, because a program
-    /// with one thread needs no table and must not ask for memory it will
-    /// never read (a bare-metal program has no heap at all until it says so).
-    ///
-    /// A thread added while a collection is asking its rounds owes none of
-    /// them: its stack began after every snapshot the collection took, and
-    /// what it was handed came from a thread that does owe them.
     /// Whether `block` is a registered thread's: the one written down
     /// before there is a table, or one in it. What says a thread has not yet
-    /// ended (Runtime.EndThread acts once) -- by the registry itself, as its
-    /// State word is swapped by every wait.
-    public static bool Holds(nuint block)
+    /// ended, so Runtime.EndThread acts once: asked of the registry itself,
+    /// not of the block's State, which any wait made after the end would
+    /// swap from Gone again.
+    public static bool IsRegistered(nuint block)
     {
         if (block == 0) return false;
         if (_blocks == 0) return _first == block;
@@ -18494,6 +18488,13 @@ public static class GcThreads
         return held;
     }
 
+    /// Adds a thread. The first one is only written down, because a program
+    /// with one thread needs no table and must not ask for memory it will
+    /// never read (a bare-metal program has no heap at all until it says so).
+    ///
+    /// A thread added while a collection is asking its rounds owes none of
+    /// them: its stack began after every snapshot the collection took, and
+    /// what it was handed came from a thread that does owe them.
     public static void Register(nuint block)
     {
         if (block == 0)

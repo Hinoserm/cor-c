@@ -14,6 +14,7 @@
 // formattable f{0}
 // later l{0}
 // q5
+// soon s{0}
 //
 // Output as .NET 10 says it.
 
@@ -31,6 +32,8 @@ static class Program
     static string Face(Func<IFormattable> made) => "iformattable";
     static async Task<string> Later(Func<Task<FormattableString>> made) => "later " + (await made()).Format;
     static async Task<string> Later(Func<Task<int>> made) => "later int " + await made();
+    static async Task<string> Soon(Func<Task<int>> made) => "soon int " + await made();
+    static async Task<string> Soon(Func<Task<FormattableString>> made) => "soon " + (await made()).Format;
     static int Main()
     {
         object o = 5;
@@ -56,6 +59,7 @@ static class Program
         Console.WriteLine(Face(() => $"f{o}"));
         Console.WriteLine(Later(async () => { await Task.Yield(); return $"l{o}"; }).Result);
         Console.WriteLine(FormattableString.Invariant(($"q{o}")));
+        Console.WriteLine(Soon(async () => $"s{o}").Result);
         return 0;
     }
 }

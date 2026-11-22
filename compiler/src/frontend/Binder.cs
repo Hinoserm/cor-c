@@ -14821,7 +14821,7 @@ public sealed partial class Binder
     /// check with these parameters -- fits, as it did.
     /// </summary>
     private bool LambdaFits(MethodSymbol m, int i, LambdaExpr lam, Dictionary<string, Type> bound,
-                            Dictionary<(LambdaExpr, string), (Type?, bool, bool)>? asked = null)
+                            Dictionary<(LambdaExpr, string), (Type?, bool, bool, bool)>? asked = null)
     {
         Type want = m.Params[i].Type;
         if (lam.NoSignature || Invoked(want) is not { } invoke) return true;
@@ -14842,21 +14842,26 @@ public sealed partial class Binder
         // overload of Sum takes a Func<T, ...> of the same T, and the body
         // checked again for each was most of a LINQ call's binding.
         Type? gives;
-        bool statement, valueless;
+        bool statement, valueless, interpolated;
         string key = "";
         if (asked is not null)
         {
             Dictionary<string, Type> applied = Applied(want);
             foreach (ParamSymbol p in invoke.Params) key += Close(Substitute(p.Type, applied), bound) + ";";
         }
+        // WHETHER ITS VALUE IS AN INTERPOLATED STRING goes with the look that
+        // found it, kept beside what it gives: read later from the set
+        // (_interpolatedValue), it was whatever the last look at this lambda
+        // left, for other parameter types, or nothing where it stopped short.
         if (asked is not null && asked.TryGetValue((lam, key), out var known))
         {
-            (gives, statement, valueless) = known;
+            (gives, statement, valueless, interpolated) = known;
         }
         else
         {
             gives = LambdaGives(m, want, lam, bound, out statement, out valueless);
-            if (asked is not null) asked[(lam, key)] = (gives, statement, valueless);
+            interpolated = InterpolatedValue(lam);
+            if (asked is not null) asked[(lam, key)] = (gives, statement, valueless, interpolated);
         }
         if (gives is null && !valueless) return true;
 
@@ -14868,7 +14873,7 @@ public sealed partial class Binder
             Type result = AwaitedResult(returns);
             if (result.IsError || result.ParamName != null) return true;
             if (result.IsVoid) return nothing;
-            return !valueless && gives is not null && (Fits(gives, result, lam.Body) || (Formattable(result) && InterpolatedValue(lam)));
+            return !valueless && gives is not null && (Fits(gives, result, lam.Body) || (Formattable(result) && interpolated));
         }
 
         if (returns.IsVoid) return lam.Body is null ? valueless : statement || valueless;
@@ -14878,7 +14883,7 @@ public sealed partial class Binder
             // to any delegate: `() => { throw ...; }`.
             return lam.BlockBody is { Statements.Count: > 0 } block && block.Statements[^1] is ThrowStmt;
         }
-        return gives is not null && (Fits(gives, returns, lam.Body) || (Formattable(returns) && InterpolatedValue(lam)));
+        return gives is not null && (Fits(gives, returns, lam.Body) || (Formattable(returns) && interpolated));
     }
 
     /// <summary>What awaiting a task-like type answers: GetAwaiter().GetResult()'s type.</summary>
@@ -25361,7 +25366,7 @@ public sealed partial class Binder
 
         // What each lambda argument's body gives, asked once per set of
         // parameter types for this call (LambdaFits).
-        Dictionary<(LambdaExpr, string), (Type?, bool, bool)>? lambdaAsked = null;
+        Dictionary<(LambdaExpr, string), (Type?, bool, bool, bool)>? lambdaAsked = null;
 
         bool Accepts(MethodSymbol m, bool variant)
         {
