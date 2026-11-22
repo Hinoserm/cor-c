@@ -1,0 +1,30 @@
+// test: lambdas_in_generic_copies_are_not_warned_of
+// expect-exit: 0
+// expect-compile-warning: (26,28): warning CS0183
+// expect-no-compile-warning: always of the provided ('object') type
+// expect-no-compile-warning: of the provided ('IComparable') type
+// expect-output:
+// True True False True
+//
+// A lambda in a generic class, `v => v is object` over T, is judged once
+// over T by Roslyn and warned of not at all: in the copy for int, its
+// closure is generic code (Binder.InGenericCopy), and says nothing. `5 is
+// int?` is always true and warned of (CS0183). Output and diagnostics from
+// .NET 10 (probe ~/tmp/dn/lam2).
+
+using System;
+sealed class Foo<T>
+{
+    public Func<T, bool> F = v => v is object;
+    public bool G(T v) { Func<T, bool> h = w => w is IComparable; return h(v) || F(v); }
+}
+static class Program
+{
+    static int Main()
+    {
+        int x = 5;
+        Console.WriteLine((x is int?) + " " + new Foo<int>().G(3) + " " + new Foo<string>().F(null!) + " " + new Foo<Program2>().G(new Program2()));
+        return 0;
+    }
+}
+sealed class Program2 { }

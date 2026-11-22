@@ -33,6 +33,8 @@
 // T[HH/mm] FormatException
 // T[hh:mm tt] 06:07 AM
 // T[HH\] FormatException
+// T[HH K] 06 
+// T[HH g] 06 A.D.
 // 03/05/2024 06:07 2024-03-05 06:07:08.0090000 03/05/2024 06:07
 // Tue, 05 Mar 2024 | 06:07:08 | 2024.03.05 06.07
 //
@@ -40,8 +42,9 @@
 // formats (o and r fixed, d D m y for a day, t T for a time, any other a
 // FormatException), a picture refused where it asks for the other half (a
 // day's hour, a time's day) outside its quotes, or leaves a quote or a
-// backslash open; no format the short one; IFormattable and interpolation
-// the same. Invariant culture. From .NET 10 (probe ~/tmp/dn/dofmt).
+// backslash open -- a time's K and g allowed; no format the short one;
+// IFormattable and interpolation the same. Invariant culture. From .NET 10
+// (probe ~/tmp/dn/dofmt).
 
 using System;
 using System.Globalization;
@@ -54,7 +57,7 @@ static class Program
         DateOnly d = new DateOnly(2024, 3, 5); TimeOnly t = new TimeOnly(6, 7, 8, 9);
         foreach (string f in new[] { "", "d", "D", "m", "M", "o", "O", "r", "R", "y", "Y", "t", "s", "yyyy/MM/dd", "yyyy 'mm' \\h", "dd HH", "yyyy 'mm", "MM\\" })
             Console.WriteLine("D[" + f + "] " + Try(() => d.ToString(f, inv)));
-        foreach (string f in new[] { "", "t", "T", "o", "O", "r", "R", "d", "s", "HH-mm-ss.fff", "HH 'dd' \\y", "HH/mm", "hh:mm tt", "HH\\" })
+        foreach (string f in new[] { "", "t", "T", "o", "O", "r", "R", "d", "s", "HH-mm-ss.fff", "HH 'dd' \\y", "HH/mm", "hh:mm tt", "HH\\", "HH K", "HH g" })
             Console.WriteLine("T[" + f + "] " + Try(() => t.ToString(f, inv)));
         Console.WriteLine(d.ToString((string?)null, inv) + " " + t.ToString((string?)null, inv) + " " + d.ToString("o") + " " + t.ToString("o") + " " + d.ToString(inv) + " " + t.ToString(inv));
         IFormattable fd = d, ft = t;

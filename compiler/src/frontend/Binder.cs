@@ -8712,8 +8712,14 @@ public sealed partial class Binder
            && UserConversion(had, Type.Bool, explicitToo: false) is MethodSymbol toBool
             ? ConvertByOperator(operand, toBool) : had;
 
-    /// <summary>Whether this is a generic's copy, which C# judged once, over its parameters: no diagnostic of its own.</summary>
-    private bool InGenericCopy() => _member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true;
+    /// <summary>
+    /// Whether this is a generic's copy, which C# judged once, over its
+    /// parameters: no diagnostic of its own, and a test it can never pass
+    /// false. A lambda's closure in one is too (TypeDecl.InGenericCode): its body is
+    /// bound with the closure as `this`, and `v => v is object` in the copy
+    /// for int was warned of where Roslyn, judging it over T, says nothing.
+    /// </summary>
+    private bool InGenericCopy() => _member is MethodDecl { LocalCopy: true } || _thisType?.Decl is { Specialised: true } or { InGenericCode: true };
 
     /// <summary>
     /// `5 is object`, `5 is IComparable`, `5 is int`, as the program wrote
@@ -8738,8 +8744,8 @@ public sealed partial class Binder
     /// <summary>
     /// WHETHER A VALUE'S TYPE IS AN INTERFACE, as `is` asks it at run time: it
     /// implements it (a boxing conversion), or one that converts to it by
-    /// variance (Variant: a struct's IEnumerable<string> is an
-    /// IEnumerable<object>). Never by a user's `implicit operator`, which
+    /// variance (Variant: a struct's IEnumerable&lt;string&gt; is an
+    /// IEnumerable&lt;object&gt;). Never by a user's `implicit operator`, which
     /// `is` does not run: a struct converting to an IFoo is no IFoo.
     /// </summary>
     private bool ValueHasInterface(Type value, Type face) => StandardConvertible(value, face) || Variant(value, face);
@@ -9167,7 +9173,7 @@ public sealed partial class Binder
         // IEnumerable<string?> is IEnumerable$string) -- Repeat<string?>'s
         // `yield return element` and SelectAny<int[]?[], …>'s `foreach (T
         // item …)` were warned of in the class library, which C# never does.
-        if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true)
+        if (InGenericCopy())
         {
         }
         else if (from.Nullable && !to.Nullable && to.IsReference)
@@ -12258,7 +12264,7 @@ public sealed partial class Binder
     /// </summary>
     private void ReportSubsumed(SwitchExpr sx, Type subject, HashSet<SwitchArm> nullOnly, Dictionary<SwitchArm, Type> armTypes)
     {
-        if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true || subject.ParamName is not null || subject.IsError) return;
+        if (InGenericCopy() || subject.ParamName is not null || subject.IsError) return;
         bool canBeNull = subject.IsReference || subject.Prim == Prim.Any || subject.IsNullableValue;
         (long Lo, long Hi, bool Unsigned64)? domain = IntegerDomain(subject, enums: true);
         bool all = false, none = false, sawTrue = false, sawFalse = false;
@@ -12352,7 +12358,7 @@ public sealed partial class Binder
     /// </summary>
     private void ReportUnreachableCases(SwitchStmt sw, Type subject)
     {
-        if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true || subject.ParamName is not null || subject.IsError) return;
+        if (InGenericCopy() || subject.ParamName is not null || subject.IsError) return;
         bool canBeNull = subject.IsReference || subject.Prim == Prim.Any || subject.IsNullableValue;
         (long Lo, long Hi, bool Unsigned64)? domain = IntegerDomain(subject, enums: true);
         bool all = false, none = false, sawTrue = false, sawFalse = false;
@@ -12457,7 +12463,7 @@ public sealed partial class Binder
     /// </summary>
     private void PatternVerdict(Expr root, Expr subject)
     {
-        if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true) return;
+        if (InGenericCopy()) return;
         // The subject as checked: a hoisted one the PatternExpr's own, a plain
         // one the first test's operand of its path (the body checked is a
         // copy, whose nodes are not the parser's).
@@ -19526,7 +19532,7 @@ public sealed partial class Binder
                         else if (subject.IsNullableValue && !subject.IsError && !tested.IsError)
                         {
                             // In a generic's copy, an arm that never matches (below).
-                            if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true)
+                            if (InGenericCopy())
                             {
                                 LiteralExpr never = new() { Kind = Lit.Bool, Text = "false", IntValue = 0, Line = arm.Line, Col = arm.Col };
                                 arm.When = arm.When is null ? never
@@ -19569,7 +19575,7 @@ public sealed partial class Binder
                             // IN A GENERIC'S COPY THE ARM IS ONE THAT NEVER MATCHES: C# judges
                             // `value switch { int i => …, string s => … }` once, over T, and
                             // each instantiation simply takes the arm its value fits.
-                            if (_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true)
+                            if (InGenericCopy())
                             {
                                 LiteralExpr never = new() { Kind = Lit.Bool, Text = "false", IntValue = 0, Line = arm.Line, Col = arm.Col };
                                 arm.When = arm.When is null ? never
@@ -20147,7 +20153,7 @@ public sealed partial class Binder
                 // IN A GENERIC'S COPY A TEST THAT CAN NEVER PASS IS FALSE: `v is
                 // int i` in the copy for string. C# judges the generic once, over
                 // T; an ordinary program saying it is refused (CS8121) as before.
-                if ((_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true)
+                if (InGenericCopy()
                     && isx.Type.Name != TypeRef.Same && NeverOfType(operand, tested))
                 {
                     _r.NeverMatches.Add(isx);
@@ -20244,6 +20250,13 @@ public sealed partial class Binder
                     // value itself was read as an object's address: `x is T` in
                     // the copy for IComparable faulted on the int 5.
                     _r.BoxPatterns.Add(isx);
+                    AlwaysOfType(isx, tested);
+                }
+                else if (PlainValue(operand) && isx.Binding is null && tested.IsNullableValue && tested.Underlying.Equals(operand))
+                {
+                    // `5 is int?` asks the type test of the value, which is an
+                    // int: always (CS0183), as Roslyn reads it.
+                    _r.ValuePatterns.Add(isx);
                     AlwaysOfType(isx, tested);
                 }
                 else if (PlainValue(operand) && !tested.IsError && !runTime && NeverOfType(operand, tested))
@@ -28194,7 +28207,7 @@ public sealed partial class Binder
                     // AND IN A GENERIC COPY: `default(T) == null` is C# over an
                     // unconstrained T, false for a value type, and the copy made
                     // for an int or a KeyValuePair is where that T became one.
-                    bool inCopy = _member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true;
+                    bool inCopy = InGenericCopy();
                     if ((b.PatternNullTest || inCopy) && !other.IsReference && !other.IsNullableValue
                         && other.Prim != Prim.Any && other.ParamName is null && !other.IsError)
                     {
@@ -28271,7 +28284,7 @@ public sealed partial class Binder
                 // blocks' addresses -- Guid had no operator, and two equal
                 // Guids answered False.
                 else if (StructWithoutEquality(l) && StructWithoutEquality(r)
-                         && !(_member is MethodDecl { LocalCopy: true } || _thisType?.Decl?.Specialised == true))
+                         && !(InGenericCopy()))
                 {
                     Error(b, $"Operator '{(b.Op == BinOp.Eq ? "==" : "!=")}' cannot be applied to operands of type '{l}' and '{r}'");
                 }

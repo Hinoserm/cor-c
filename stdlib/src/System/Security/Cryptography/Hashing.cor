@@ -1176,7 +1176,18 @@ public class HMAC : KeyedHashAlgorithm
             base.Key = value;
             int block = HashAlgorithmName.BlockBytes(_algorithm);
             byte[] key = KeyValue;
-            if (key.Length > block) key = HashAlgorithmName.Make(_algorithm).ComputeHash(key);
+            bool hashed = key.Length > block;
+            if (hashed)
+            {
+                // Its own HashValue holds the same hash: wiped by Dispose.
+                HashAlgorithm shortening = HashAlgorithmName.Make(_algorithm);
+                key = shortening.ComputeHash(key);
+                shortening.Dispose();
+            }
+            // The old key's pads wiped before they are let go, as Dispose
+            // wipes the last ones; a long key's hash too, once read.
+            for (int i = 0; i < _inPad.Length; i++) _inPad[i] = 0;
+            for (int i = 0; i < _outPad.Length; i++) _outPad[i] = 0;
             _inPad = new byte[block];
             _outPad = new byte[block];
             for (int i = 0; i < block; i++)
@@ -1185,6 +1196,7 @@ public class HMAC : KeyedHashAlgorithm
                 _inPad[i] = (byte)(k ^ 0x36);
                 _outPad[i] = (byte)(k ^ 0x5c);
             }
+            if (hashed) for (int i = 0; i < key.Length; i++) key[i] = 0;
             Initialize();
         }
     }

@@ -3744,11 +3744,14 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// A SHARED COPY'S TEST OF A VALUE WITH NOTHING BOUND: of the descriptor
-    /// its box would have (StructBoxVtable, else its own box descriptor), no
-    /// box made -- a test, where a kernel's interrupt may be, allocates
-    /// nothing. A nullable holding none is no match. Null where the value is
-    /// an object's address, or a binding takes the box (SharedSubject).
+    /// A SHARED COPY'S TEST OF A VALUE WITH NOTHING BOUND, of its own bare
+    /// type parameter (`x is U`, `x is T`): of the descriptor its box would
+    /// have (StructBoxVtable, else its own box descriptor), no box made -- a
+    /// test, where a kernel's interrupt may be, allocates nothing. A nullable
+    /// holding none is no match. Null where the value is an object's
+    /// address, or a binding takes the box (SharedSubject). A test of a type
+    /// made of the parameter (`x is IList<U>`: ShapeTest, CanonTest) still
+    /// asks a box, as it reads the object.
     /// </summary>
     private VReg? BoxFreeTest(IsExpr isx, Type t, Func<VReg, VReg> test)
     {
