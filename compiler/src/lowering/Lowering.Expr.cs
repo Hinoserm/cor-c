@@ -3605,8 +3605,9 @@ public sealed partial class Lowering
                 if (i < shape.Args.Count) given.Add(word);
             }
             // WHICH ARGUMENTS ARE OBJECT, for variance (Runtime.ShapeVariantFits):
-            // object's descriptor is a class at depth 0 as every root is, and
-            // only its address says it is object.
+            // object's descriptor is a class at depth 0 as every root is; its
+            // address says it is object here, in the shape word the runtime
+            // reads (its TypeFlagObject says so to Runtime.DescribedAs).
             if (!cls)
             {
                 VReg objectDesc = _e.Address(ObjectDescriptor());
@@ -3685,6 +3686,36 @@ public sealed partial class Lowering
 
     /// <summary>Whether a value is an object's address: a reference type, or object -- which a shared copy's T is.</summary>
     private static bool HeldByReference(Type t) => t.IsReference || t.Prim == Prim.Any && t.Symbol is null && !t.IsNullableValue;
+
+    /// <summary>
+    /// Whether a shared copy's type test can ask about a value of this type:
+    /// an object's address, or a value it boxes (SharedSubject).
+    /// </summary>
+    private static bool SharedSubjectFits(Type t) => HeldByReference(t) || Boxable(t) || t.IsNullableValue && Boxable(t.Underlying);
+
+    /// <summary>
+    /// THE OBJECT A SHARED COPY'S TYPE TEST ASKS ABOUT: a reference as it
+    /// is; a value boxed, as .NET's shared code asks it -- `5 is T` in the
+    /// copy for IComparable true, in string's false, never answered as
+    /// object's -- and a nullable's value boxed, or null where it holds none.
+    /// A binding takes the box.
+    /// </summary>
+    private VReg SharedSubject(IsExpr isx, Type t)
+    {
+        VReg value = Eval(isx.Operand);
+        if (HeldByReference(t)) return value;
+        if (!t.IsNullableValue) return BoxValue(isx, value, t);
+        VReg boxed = _f.NewReg(IrTypes.Word, "isbox");
+        Block some = _f.NewBlock("isboxsome");
+        Block end = _f.NewBlock("isboxend");
+        _e.CopyTo(boxed, Imm(0, IrTypes.Word));
+        _e.Branch(HasValue(value), some, end);
+        _e.SetBlock(some);
+        _e.CopyTo(boxed, R(BoxValue(isx, NullableRead(value, t), t.Underlying)));
+        _e.Jump(end);
+        _e.SetBlock(end);
+        return boxed;
+    }
 
     /// <summary>Whether an object, null being none, is of the type a descriptor read at run time names (Runtime.DescribedAs).</summary>
     private VReg DescribedTest(VReg obj, VReg want)
@@ -3769,9 +3800,10 @@ public sealed partial class Lowering
         }
 
         // `x is U` IN A SHARED METHOD COPY, U its own type parameter (HiddenParam).
-        if (HiddenParam(isx.Type) is { } isTo && HeldByReference(_b.TypeOf(isx.Operand)))
+        Type asked = _b.TypeOf(isx.Operand);
+        if (HiddenParam(isx.Type) is { } isTo && SharedSubjectFits(asked))
         {
-            VReg subject = Eval(isx.Operand);
+            VReg subject = SharedSubject(isx, asked);
             VReg hiddenFound = HiddenTest(subject, isTo);
             if (_b.PatternSlot.TryGetValue(isx, out int hiddenBound))
             {
@@ -3781,10 +3813,10 @@ public sealed partial class Lowering
         }
         // `x is IList<U>` IN A SHARED METHOD COPY: of what U is at this call
         // (ShapeTest), bound as the type it is written.
-        if (ShapeOf(isx) is { } isShape && HeldByReference(_b.TypeOf(isx.Operand)))
+        if (ShapeOf(isx) is { } isShape && SharedSubjectFits(asked))
         {
             Type written = Type.Plain(isShape.Interface, Prim.Void);
-            VReg subject = Eval(isx.Operand);
+            VReg subject = SharedSubject(isx, asked);
             VReg shapeFound = ShapeTest(isShape, subject, NamedTest(subject, written));
             if (_b.PatternSlot.TryGetValue(isx, out int shapeBound))
             {
@@ -3794,12 +3826,12 @@ public sealed partial class Lowering
         }
         // `x is ICollection<T>` IN A SHARED COPY: of what that type is for
         // the object at hand (CanonTest), bound as the type it is written.
-        if (isx.CanonSlot >= 0 && isx.Type.Args.Count > 0 && HeldByReference(_b.TypeOf(isx.Operand)) && !_b.TestedStructs.ContainsKey(isx))
+        if (isx.CanonSlot >= 0 && isx.Type.Args.Count > 0 && SharedSubjectFits(asked) && !_b.TestedStructs.ContainsKey(isx))
         {
             Type? written = _b.TestedArrays.TryGetValue(isx, out Type? array0) ? array0
                           : _b.TestedTypes.TryGetValue(isx, out TypeSymbol? tested0) ? Type.Plain(tested0, Prim.Void)
                           : _b.Types.TryGetValue(isx.Type.Name, out TypeSymbol? named0) ? Type.Plain(named0, Prim.Void) : null;
-            VReg subject = Eval(isx.Operand);
+            VReg subject = SharedSubject(isx, asked);
             VReg canonFound = CanonTest(isx, subject, NamedTest(subject, written));
             if (_b.PatternSlot.TryGetValue(isx, out int boundTo))
             {
@@ -3808,9 +3840,9 @@ public sealed partial class Lowering
             return canonFound;
         }
         // `x is T` IN A SHARED COPY: of what T is for the object at hand.
-        if (isx.CanonSlot >= 0 && HeldByReference(_b.TypeOf(isx.Operand)))
+        if (isx.CanonSlot >= 0 && SharedSubjectFits(asked))
         {
-            VReg tested = Eval(isx.Operand);
+            VReg tested = SharedSubject(isx, asked);
             VReg answer = DescribedTest(tested, CanonEntry(isx));
             if (_b.PatternSlot.TryGetValue(isx, out int canonNamed))
             {

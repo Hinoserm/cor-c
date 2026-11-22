@@ -8718,6 +8718,15 @@ public sealed partial class Binder
     /// neither is object, an interface or a type parameter, which may hold
     /// anything.
     /// </summary>
+    /// <summary>
+    /// A value of an exact type: a struct, an enum, a number, a bool or a
+    /// char held in place -- not a nullable's cell, a type parameter, a
+    /// pointer, nor object, which may hold anything.
+    /// </summary>
+    private static bool PlainValue(Type t)
+        => !t.IsReference && t.Prim != Prim.Any && !t.IsError && !t.IsVoid && !t.IsNullableValue
+           && t.ParamName is null && !t.IsPointer && !t.IsArray && t.CanonParam == -1;
+
     private bool NeverOfType(Type from, Type to)
     {
         Type held = from.IsNullableValue ? from.Underlying : from.AsNonNullable();
@@ -15025,8 +15034,10 @@ public sealed partial class Binder
     /// word (__canon, a hidden method argument), or a type made of one. It is
     /// object to the binder, and equal to object and to every other such word
     /// (equality leaves CanonParam out), but `o is T` in the copy for string
-    /// is false of a boxed 5: never a plain null test (NonNullPatterns), but
-    /// the descriptor's (Lowering.EmitIs's shared-copy tests).
+    /// is false of a boxed 5, and `5 is T` false of the 5: never a null test
+    /// (NonNullPatterns), an always-true one (BoxPatterns) or a nullable's
+    /// (NullablePatterns), but the descriptor's (Lowering.EmitIs's
+    /// shared-copy tests, a value asked boxed).
     /// </summary>
     private static bool OnlyRunTimeKnows(IsExpr isx, Type tested)
         => isx.Type.Name != TypeRef.Same && (Monomorphiser.MentionsCanon(isx.Type) || MarksCanon(tested));
@@ -20149,7 +20160,11 @@ public sealed partial class Binder
                     _r.TestedArrays[isx] = tested;
                 }
 
-                if (operand.IsNullableValue)
+                // A shared copy's own type (OnlyRunTimeKnows) is asked of the
+                // value boxed, at run time (Lowering.SharedSubject): never
+                // answered here as object would be.
+                bool runTime = OnlyRunTimeKnows(isx, tested);
+                if (operand.IsNullableValue && !runTime)
                 {
                     if (tested.Equals(operand.Underlying))
                     {
@@ -20168,7 +20183,7 @@ public sealed partial class Binder
                     }
                 }
                 else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && (operand.IsReference || operand.Prim == Prim.Any)
-                         && !OnlyRunTimeKnows(isx, tested))
+                         && !runTime)
                 {
                     // `x is object y` OVER A REFERENCE asks only whether there is
                     // one. Taken for a value pattern -- `object` is no class
@@ -20179,7 +20194,7 @@ public sealed partial class Binder
                 }
                 else if (!operand.IsError && !tested.IsError && !tested.IsArray && tested.Prim != Prim.String
                          && (operand.IsReference || operand.Prim == Prim.Type)
-                         && operand.AsNonNullable().Equals(tested.AsNonNullable()) && !OnlyRunTimeKnows(isx, tested))
+                         && operand.AsNonNullable().Equals(tested.AsNonNullable()) && !runTime)
                 {
                     // `x is T y` OVER WHAT IS A T ALREADY -- a `Type?` asked
                     // whether it is a Type -- asks only whether there is one,
@@ -20190,11 +20205,27 @@ public sealed partial class Binder
                     // objects (a kernel).
                     _r.NonNullPatterns.Add(isx);
                 }
-                else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && !operand.IsError && !operand.IsVoid)
+                else if (tested.Prim == Prim.Any && tested.Symbol is null && !tested.IsArray && !operand.IsError && !operand.IsVoid && !runTime)
                 {
                     // A VALUE IS ALWAYS AN OBJECT: `5 is object` is true, and
                     // `o` in `5 is object o` the value boxed.
                     _r.BoxPatterns.Add(isx);
+                }
+                else if (PlainValue(operand) && tested.Symbol is { Kind: TypeKind.Interface } && !tested.IsArray && !runTime && Convertible(operand, tested))
+                {
+                    // A VALUE IS EVERY INTERFACE ITS TYPE HAS, AND NO OTHER: its
+                    // type is exact, so `5 is IComparable c` is true and c the
+                    // value boxed, as a switch arm's is (BoxedBindings) -- C#
+                    // answers it when compiling (CS0183). Tested at run time, the
+                    // value itself was read as an object's address: `x is T` in
+                    // the copy for IComparable faulted on the int 5.
+                    _r.BoxPatterns.Add(isx);
+                }
+                else if (PlainValue(operand) && !tested.IsError && !runTime && NeverOfType(operand, tested))
+                {
+                    // `5 is IDisposable`, `5 is string`: never (CS0184), and no
+                    // test of a value read as an address.
+                    _r.NeverMatches.Add(isx);
                 }
                 else if (!operand.IsReference && operand.Prim != Prim.Any && tested.Equals(operand))
                 {

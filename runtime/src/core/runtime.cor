@@ -5375,9 +5375,10 @@ public static partial class Runtime
         const int w = WordSize.Bytes;
         // EVERY OBJECT IS AN OBJECT: a box, a string, an array, any class.
         // Object's depth is 0, every root class's own place in its display,
-        // so the display answered only a bare `new object()` -- a shared
-        // copy's `o is T` and `(T)o` with T object (its context's entry
-        // object's descriptor, as typeof(T) must read it) false of all else.
+        // so the display alone answered only a bare `new object()`. A shared
+        // copy's T is object's own descriptor where T is object (typeof(T)
+        // must read it so), and `o is T` and `(T)o` there were false of
+        // everything else.
         nuint wantFlags = Sys.ReadAddress(want + DescFlagsWordHere * w);
         if ((wantFlags & ObjectFlag) != 0)
         {

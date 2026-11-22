@@ -1,0 +1,44 @@
+// test: shared_copies_ask_a_value_boxed
+// expect-exit: 0
+// expect-output:
+// False True True False True
+// False True True False
+// False True True False
+// cast 5, cast s, cast System.Int32[], cast null, refused
+// True True True False
+// False True False True
+// other, arm 4, arm 5
+// False False unbound bound 7
+// True True True True
+//
+// `x is T` over a value in a generic -- a method's copy and a shared class
+// copy, T string, object, int, a class or an interface the value has, a
+// nullable, a switch arm, `IEquatable<T>`, a binding -- asks the value boxed,
+// as .NET does: never the value read as an object's address (a fault for
+// IComparable), never answered as object would be. A cast to T with T object
+// takes anything. And a value's own interfaces (DateTime's, Guid's, a
+// TimeSpan's IComparable). Output from .NET 10 (probe ~/tmp/dn/fiveis).
+
+using System;
+sealed class Node { }
+sealed class Box<T> { public bool FiveIs() { int x = 5; return x is T; } public bool MaybeIs(int? n) => n is T; public string Arm(int x) => x switch { T t => "arm " + t, _ => "other" }; public bool EqIs(int x) => x is IEquatable<T>; public string Bound(int x) => x is T t ? "bound " + t : "unbound"; public bool Cast(object? o) { try { T t = (T)o!; return true; } catch (InvalidCastException) { return false; } } }
+static class Program
+{
+    static bool FiveIsT<T>() { int x = 5; return x is T; }
+    static bool NodeIsT<T>(Node n) => n is T;
+    static string Cast<T>(object? o) { try { T t = (T)o!; return "cast " + (t is null ? "null" : t.ToString()); } catch (InvalidCastException) { return "refused"; } }
+    static int Main()
+    {
+        Console.WriteLine(FiveIsT<string>() + " " + FiveIsT<object>() + " " + FiveIsT<int>() + " " + FiveIsT<Node>() + " " + FiveIsT<IComparable>());
+        Console.WriteLine(new Box<string>().FiveIs() + " " + new Box<object>().FiveIs() + " " + new Box<int>().FiveIs() + " " + new Box<Node>().FiveIs());
+        Console.WriteLine(NodeIsT<string>(new Node()) + " " + NodeIsT<object>(new Node()) + " " + NodeIsT<Node>(new Node()) + " " + NodeIsT<string>(null!));
+        Console.WriteLine(Cast<object>(5) + ", " + Cast<object>("s") + ", " + Cast<object>(new int[1]) + ", " + Cast<object>(null) + ", " + Cast<string>(5));
+        Console.WriteLine(new Box<object>().Cast(5) + " " + new Box<object>().Cast(new int[1]) + " " + new Box<object>().Cast("s") + " " + new Box<string>().Cast(5));
+        Console.WriteLine(new Box<string>().MaybeIs(3) + " " + new Box<object>().MaybeIs(3) + " " + new Box<object>().MaybeIs(null) + " " + new Box<IComparable>().MaybeIs(3));
+        Console.WriteLine(new Box<string>().Arm(3) + ", " + new Box<object>().Arm(4) + ", " + new Box<IFormattable>().Arm(5));
+        Console.WriteLine(new Box<string>().EqIs(3) + " " + new Box<object>().EqIs(3) + " " + new Box<string>().Bound(6) + " " + new Box<IComparable>().Bound(7));
+        DateTime d = default; Guid g = default; TimeSpan ts = default;
+        Console.WriteLine((d is IComparable) + " " + (g is IComparable) + " " + (ts is IComparable) + " " + ((object)d is IFormattable));
+        return 0;
+    }
+}
