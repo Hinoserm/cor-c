@@ -29,7 +29,7 @@ fi
 
 body() { awk "/^m_Tcp_$1.*:\$/,/^global/" "$work/wide.asm"; }
 
-for f in RouteOf Twice; do
+for f in RouteOf Twice Halves; do
     if [ -n "$(body "$f")" ]; then pass "$f is in the image"; else fail "$f is in the image"; continue; fi
     if body "$f" | grep -qE '^\s+(add|adc|sub|sbb) dword \['; then
         fail "$f adds to no frame slot"; body "$f" | grep -E '^\s+(add|adc|sub|sbb) dword \['

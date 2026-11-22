@@ -244,7 +244,9 @@ public interface IPlacement
     /// What goes before the instruction ahead of those: a register stored to
     /// a slot as its value leaves the register for good (a store sunk to
     /// where the value is spilled), then one loaded from its slot as control
-    /// comes back to where the register holds the value (Load).
+    /// comes back to where the register holds the value (Load). Not a store
+    /// of a value whose own load is there at the start of a block entered
+    /// from outside its window: nothing runs between, and the slot is current.
     /// </summary>
     IReadOnlyList<(int Reg, int Slot, bool Load)> MovesBefore(int index);
     /// <summary>

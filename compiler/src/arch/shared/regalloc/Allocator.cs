@@ -1236,11 +1236,11 @@ public sealed class Allocator
     /// be spilled: give it one for as long as some register stays free --
     /// up to a call, a string move's fixed ESI/EDI/ECX, a divide's EDX --
     /// and spill it only from there. Its reads before the split keep the
-    /// register; every write stores, so the slot is current wherever the
-    /// frame takes over -- or, the prefix kept in its register (Spill's
-    /// _keepBefore, or SinkStores' second chance), where it leaves the
-    /// prefix (SinkStores: a value LoopSplit split, a different thing, is
-    /// stored at every write). Returns
+    /// register. Its writes there store, so the slot is current wherever the
+    /// frame takes over -- unless SinkStores moves those stores to where the
+    /// value leaves its register, which it may for a prefix as for any
+    /// spilled value (only a value LoopSplit split stores at every write).
+    /// Returns
     /// the register, or -1 if no register covers even the interval's first
     /// instruction that touches it.
     /// </summary>
@@ -1937,6 +1937,13 @@ public sealed class Allocator
     private readonly Dictionary<(int From, int To), List<int>> _reloadOnEdge = new();
     /// <summary>The loads, by instruction, of values that control comes back to before their spill point (SinkStores).</summary>
     private readonly Dictionary<int, List<int>> _reloadAt = new();
+    /// <summary>
+    /// The loads, by value and instruction, at the start of a block of the
+    /// window entered from outside it alone (ReentryLoads): where a store of
+    /// the same value at the same instruction is the exit of a block that is
+    /// nothing but its branches, with the slot current (MovesBefore).
+    /// </summary>
+    private readonly HashSet<(int V, int At)> _entryLoads = new();
 
     /// <summary>
     /// A SPILLED VALUE STORED WHERE IT LEAVES ITS REGISTER, not where it is
@@ -1950,10 +1957,10 @@ public sealed class Allocator
     /// of the window to one outside it that it is live into. Nothing outside
     /// the window flows back into it where the value is live (_keepBefore's
     /// NothingFlowsBack), so a path leaves at most once for each time it
-    /// passes the definition: never more stores than one after the
-    /// definition.
-    /// List<T>.Add stored its array on every call for the type check of an
-    /// element its array does not take, on a path rarely taken.
+    /// passes the first write: never more stores than one after it. (Stored
+    /// after each write instead, List<T>.Add stored its array on every call
+    /// for the type check of an element its array does not take, on a path
+    /// rarely taken.)
     ///
     /// A SECOND CHANCE where control comes back into the window from after
     /// P (Wimmer and Mossenbock's split child, resolved on the edges): such a
@@ -2150,6 +2157,7 @@ public sealed class Allocator
                 if (_f.Blocks[s].Instrs.Count > 0 && EnteredFromOutsideOnly(s, pb))
                 {
                     if (!loads.Contains(_blockFirst[s])) loads.Add(_blockFirst[s]);
+                    _entryLoads.Add((v, _blockFirst[s]));
                     continue;
                 }
                 if (OneWayOut(q) && _loadsAt[q] >= 0)
@@ -2404,10 +2412,13 @@ public sealed class Allocator
             // before the load had put the value in it: whatever another value
             // had left there went to the slot. The slot it is loaded from is
             // current already.
+            // Only such a load: a store at P meeting a load before the branches
+            // of P's block would be the window's value, its slot not yet
+            // written (none is made so, but the rule says only what it knows).
             a._reloadAt.TryGetValue(index, out List<int>? loaded);
             if (a._sunkAt.TryGetValue(index, out List<int>? stored))
                 foreach (int v in stored)
-                    if (loaded is null || !loaded.Contains(v)) _movesBefore.Add((a._assigned[v], a._slot[v], false));
+                    if (loaded is null || !loaded.Contains(v) || !a._entryLoads.Contains((v, index))) _movesBefore.Add((a._assigned[v], a._slot[v], false));
             if (loaded is not null)
                 foreach (int v in loaded) _movesBefore.Add((a._assigned[v], a._slot[v], true));
             return _movesBefore;
