@@ -814,9 +814,12 @@ public sealed class Devirtualize : IModulePass
     ///
     /// AND THE SAME CHECK INLINED: a test of the parameter whose null side
     /// never comes back -- it ends in Unreachable, as a throw moved out of
-    /// its function (ThrowOutline) leaves its call, or as a throw does --
-    /// proves the parameter not null in every block its other side leads to
-    /// alone. Once NotNull's throw went out of it, NotNull was small enough
+    /// its function (ThrowOutline) leaves its call, or in Unwind, a throw to
+    /// a handler (a landing pad is a root of the Cfg, dominated by nothing)
+    /// -- and whose not-null side is entered from the test's block alone
+    /// (its only predecessor, and no root): every block that side dominates
+    /// is reached only past the test, with the parameter not null. Once
+    /// NotNull's throw went out of it, NotNull was small enough
     /// to inline into Where, and its call -- the only guard this looked for --
     /// was gone: Where's general walk came back on the null side of `source
     /// is List<T>`, and every LINQ walk of a caller's List kept it (1311).
@@ -839,12 +842,15 @@ public sealed class Devirtualize : IModulePass
         List<(Block Block, VReg Param)>? checks = null;
         // The guard calls, where the callees' bodies are at hand to judge.
         if (callees is not null && guards is not null)
-        foreach (Block b in f.Blocks)
-            foreach (Instr i in b.Instrs)
-                if (i.Op == Opcode.Call && i.Callee is { } name)
-                    for (int k = 0; k < i.Operands.Count; k++)
-                        if (ParamOf(i.Operands[k]) is { } p && ReturnsOnlyIfNotNull(name, k, callees, guards, guardsFixed))
-                            (checks ??= new()).Add((b, p));
+        {
+            foreach (Block b in f.Blocks)
+                foreach (Instr i in b.Instrs)
+                    if (i.Op == Opcode.Call && i.Callee is { } name)
+                        for (int k = 0; k < i.Operands.Count; k++)
+                            if (ParamOf(i.Operands[k]) is { } p && ReturnsOnlyIfNotNull(name, k, callees, guards, guardsFixed))
+                                (checks ??= new()).Add((b, p));
+        }
+        Cfg cfg = new(f);
         // The inlined check: a branch on the parameter (or its compare with
         // null) whose null side ends without coming back.
         foreach (Block b in f.Blocks)
@@ -857,10 +863,14 @@ public sealed class Devirtualize : IModulePass
             if (p is null) continue;
             Block nullSide = ReferenceEquals(guard.Targets[0], notNullSide) ? guard.Targets[1] : guard.Targets[0];
             if (nullSide.Terminator?.Op is not (Opcode.Unreachable or Opcode.Unwind)) continue;
+            // Entered past the test alone, or a way round it (a loop's
+            // header, a join a handler reaches) could bring the parameter in
+            // null: as ReturnsOnlyIfNotNull asks of a guard's own side.
+            if (ReferenceEquals(notNullSide, b) || cfg.IsRoot(notNullSide)
+                || cfg.Preds(notNullSide) is not { Count: 1 } preds || !ReferenceEquals(preds[0], b)) continue;
             (checks ??= new()).Add((notNullSide, p));
         }
         if (checks is null) return false;
-        Cfg cfg = new(f);
         bool folded = false;
         foreach (Block b in f.Blocks)
         {
