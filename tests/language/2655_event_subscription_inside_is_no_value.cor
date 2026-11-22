@@ -1,0 +1,16 @@
+// test: event_subscription_inside_is_no_value
+// expect-compile-error: CS0815
+// An event subscribed to inside its own type is void, so it can give an
+// implicitly-typed local nothing: Roslyn refuses `var copy = (Clicked += null)`
+// with CS0815 (test 2644 is the object form, CS0029).
+
+using System;
+class Button
+{
+    public event Action<int>? Clicked;
+    public int Fire() { var copy = (Clicked += null); return copy is null ? 0 : 1; }
+}
+static class Program
+{
+    static int Main() => new Button().Fire();
+}

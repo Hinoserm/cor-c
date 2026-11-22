@@ -2,9 +2,8 @@
 // expect-exit: 234
 // Inside Button, `Clicked += handler` subscribes through the field-like
 // event's field -- the handler runs at the next firing (Seen) -- and a plain
-// read of `Clicked` there is the field (its delegate); the subscription
-// itself is void inside as outside (Roslyn: CS0815 on `var copy = (Clicked
-// += null)`, CS0029 on test 2644's object form). Outside, += and -=
+// read of `Clicked` there is the field (its delegate). The subscription is
+// void inside as outside, which tests 2644 and 2655 check. Outside, += and -=
 // subscribe and unsubscribe: a lambda whose body is one is an Action, and
 // `?.` over a null button does nothing.
 using System;
