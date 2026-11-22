@@ -35,18 +35,47 @@ public static class BackendReplyTests
         Check(Said("x\uD800y") == "x\\uD800y", "a lone surrogate is not spelled out");
         Check(Said("pair 😀 kept") == "pair 😀 kept", "a surrogate pair is not kept");
 
-        string huge = new string('e', 70000) + "😀";
-        string cut = Said(huge);
-        Check(Encoding.UTF8.GetByteCount(cut) <= BackendProtocol.MaxText, "a cut error is still over the protocol's length");
-        Check(cut.StartsWith(new string('e', 60000), StringComparison.Ordinal), "a cut error lost its start");
-        Check(cut.Contains("more characters cut", StringComparison.Ordinal), "a cut error does not say it was cut");
+        // Whole whatever fits, to the last byte: no room kept for words it
+        // never needs, a spelled-out NUL included.
+        string exact = new string('n', BackendProtocol.MaxText);
+        Check(Said(exact) == exact, "an error of exactly the length was cut");
+        string spelled = new string('n', BackendProtocol.MaxText - 2) + "\0";
+        Check(Said(spelled) == new string('n', BackendProtocol.MaxText - 2) + "\\0", "a spelled-out error that fits was cut");
 
-        // Cut exactly where a pair starts: never half of it.
-        string atPair = new string('e', BackendProtocol.MaxText - 100) + string.Concat(Enumerable.Repeat("😀", 100));
-        string pairCut = Said(atPair);
-        Check(!pairCut.Any(char.IsSurrogate) || pairCut.Count(char.IsHighSurrogate) == pairCut.Count(char.IsLowSurrogate), "a cut split a surrogate pair");
+        // Cut: within the length, its start kept, its words saying how much
+        // went -- and that count right.
+        string Cut(string error, out int kept, out int gone)
+        {
+            string text = Said(error);
+            int words = text.LastIndexOf("\n... (", StringComparison.Ordinal);
+            Check(words > 0, "a cut error does not say it was cut");
+            string count = text[(words + "\n... (".Length)..];
+            gone = int.Parse(count[..count.IndexOf(' ')], System.Globalization.CultureInfo.InvariantCulture);
+            kept = words;
+            Check(Encoding.UTF8.GetByteCount(text) <= BackendProtocol.MaxText, "a cut error is over the protocol's length");
+            Check(text.EndsWith(" more characters cut: a backend reply holds 65536 bytes)", StringComparison.Ordinal), "a cut error's words are not the protocol's");
+            return text[..words];
+        }
 
-        Check(BackendProtocol.Fitted(new string('n', BackendProtocol.MaxText)) is { } full
-              && Encoding.UTF8.GetByteCount(full) <= BackendProtocol.MaxText, "an error of exactly the length was not fitted");
+        string huge = new string('e', 70000);
+        string start = Cut(huge, out int keptHuge, out int goneHuge);
+        Check(start == huge[..keptHuge] && keptHuge + goneHuge == huge.Length, "a cut error's count is not what went");
+        Check(keptHuge > BackendProtocol.MaxText - 100, "a cut error kept less than the room it had");
+
+        // Two- and three-byte characters and pairs up to the cut: never part
+        // of one, and the count in characters.
+        foreach (string unit in new[] { "\u00e9", "\u20ac", "\uD83D\uDE00" })
+        {
+            string many = string.Concat(Enumerable.Repeat(unit, 70000 / unit.Length));
+            string kept = Cut(many, out int keptMany, out int goneMany);
+            Check(kept == many[..keptMany] && keptMany % unit.Length == 0, "a cut split a character: " + (int)unit[0]);
+            Check(keptMany + goneMany == many.Length, "a cut's count is wrong over " + (int)unit[0]);
+        }
+
+        // Something to spell out in the part that is cut away: counted as
+        // the characters it was.
+        string tail = new string('t', 70000) + "\0\uD800";
+        Cut(tail, out int keptTail, out int goneTail);
+        Check(keptTail + goneTail == tail.Length, "a cut's count over spelled-out characters is wrong");
     }
 }

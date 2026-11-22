@@ -495,24 +495,29 @@ public static class BackendProtocol
     {
         System.Globalization.CultureInfo plain = System.Globalization.CultureInfo.InvariantCulture;
         const string cut = "\n... ({0} more characters cut: a backend reply holds {1} bytes)";
+        // Room for the text where it is cut, its words after it (the count
+        // at its widest); the whole length where it is not.
         int room = MaxText - Utf8.GetByteCount(string.Format(plain, cut, int.MaxValue, MaxText));
-        StringBuilder said = new(Math.Min(error.Length, room));
-        int bytes = 0, at = 0;
+        StringBuilder said = new(Math.Min(error.Length, MaxText));
+        int bytes = 0, at = 0, keptChars = 0, keptAt = 0;
         while (at < error.Length)
         {
             char c = error[at];
             bool pair = char.IsHighSurrogate(c) && at + 1 < error.Length && char.IsLowSurrogate(error[at + 1]);
             string piece = c == '\0' ? "\\0"
                          : pair ? error.Substring(at, 2)
-                         : char.IsSurrogate(c) ? "\\u" + ((int)c).ToString("X4", plain)
+                         : char.IsSurrogate(c) ? string.Format(plain, "\\u{0:X4}", (int)c)
                          : c.ToString();
             int size = Utf8.GetByteCount(piece);
-            if (bytes + size > room) break;
+            if (bytes + size > MaxText) break;
             said.Append(piece);
             bytes += size;
             at += pair ? 2 : 1;
+            if (bytes <= room) { keptChars = said.Length; keptAt = at; }
         }
-        return at == error.Length ? said.ToString() : said.Append(string.Format(plain, cut, error.Length - at, MaxText)).ToString();
+        if (at == error.Length) return said.ToString();
+        said.Length = keptChars;
+        return said.Append(string.Format(plain, cut, error.Length - keptAt, MaxText)).ToString();
     }
 
     public static void ReadResponse(BinaryReader reader)
