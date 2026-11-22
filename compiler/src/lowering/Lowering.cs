@@ -3376,6 +3376,16 @@ public sealed partial class Lowering
     /// </summary>
     private void RecordSlots(TypeSymbol t, string sym)
     {
+        // ONLY WHAT IS DECLARED ALREADY: a type whose members wait to be
+        // declared (TypeSymbol.MembersPending) -- in its own right or along
+        // its chain -- is left unrecorded, never declared here to be counted.
+        // Declaring every type a unit names a descriptor of made it lower the
+        // bodies they held: the GUI module's unit of the font engine took five
+        // times its memory and kept the library's code it may not keep. The
+        // link takes an unrecorded type's slots by its holders, as it must for
+        // one no unit names; the units that lower a type record it.
+        for (TypeSymbol? pending = t; pending is not null; pending = pending.Base)
+            if (pending.MembersPending) return;
         SortedSet<long> slots = new();
         int w = _t.WordSize;
         if (t.Kind == TypeKind.Interface)
