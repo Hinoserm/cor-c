@@ -191,6 +191,10 @@ static class UnicodeNormalization
     static void Order(List<int> points)
     {
         int n = points.Count;
+        // No mark at all (nothing at U+0300 or above): nothing to order.
+        bool marks = false;
+        for (int i = 0; i < n && !marks; i++) marks = points[i] >= 0x300;
+        if (!marks) return;
         int[] classes = new int[n];
         for (int i = 0; i < n; i++) classes[i] = Class(points[i]);
         int at = 0;

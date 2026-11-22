@@ -6255,7 +6255,7 @@ public sealed partial class Timer : ITimer
             try { then(); }
             catch (Exception e) { first ??= e; }
         }
-        if (first is not null) throw first;
+        if (first is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(first).Throw();
     }
 
     static void Check(long dueTime, long period)
