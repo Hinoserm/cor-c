@@ -1,0 +1,17 @@
+// test: nullable_type_tests_roslyn_allows
+// expect-exit: 0
+// expect-output:
+// True False
+//
+// What Roslyn allows of a nullable type after `is`: the bare type test
+// `x is int?` over an int?, whether it holds a value (true, then false for
+// null); `o is string?[] s`, an array whose elements may be null. From .NET
+// 10 (probe ~/tmp/dn/patnull).
+
+using System;
+static class Program
+{
+    static bool D(object o) => o is string?[] s;
+    static bool E(int? x) => x is int?;
+    static int Main() { int? n = 5, m = null; Console.WriteLine(E(n) + " " + E(m)); return 0; }
+}

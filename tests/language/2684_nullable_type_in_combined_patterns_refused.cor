@@ -1,0 +1,17 @@
+// test: nullable_type_in_combined_patterns_refused
+// expect-compile-error: (13,41): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+// expect-compile-error: (14,37): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+// expect-compile-error: (15,45): error: CS8116: It is not legal to use nullable type 'int?' in a pattern; use the underlying type 'int' instead.
+//
+// A nullable type under `not`, beside `or`, and among an arm's alternatives
+// is a pattern's, and refused (CS8116, at the type), as Roslyn refuses it.
+// From .NET 10 (probe ~/tmp/dn/patnull).
+
+using System;
+static class Program
+{
+    static bool A(object o) => o is not int?;
+    static bool B(object o) => o is int? or string;
+    static string C(object o) => o switch { int? or string => "c", _ => "x" };
+    static int Main() { return 0; }
+}

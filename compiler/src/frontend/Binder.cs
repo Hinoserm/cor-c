@@ -20208,7 +20208,8 @@ public sealed partial class Binder
                 // `x is int? y`, `{ P: int? }`, `case int?:`: no pattern names a
                 // nullable type (CS8116), value or reference -- only a bare
                 // `x is int?` type test may.
-                if (isx.Type.NullableInPattern && !(isx.Written && isx.Binding is null) && !InGenericCopy())
+                bool refusedNullable = isx.Type.NullableInPattern && !(isx.Written && isx.Binding is null) && !InGenericCopy();
+                if (refusedNullable)
                 {
                     NullableTypeInPattern(isx.Type, tested);
                 }
@@ -20219,7 +20220,10 @@ public sealed partial class Binder
                 }
                 if (operand.IsNullableValue && !runTime)
                 {
-                    if (tested.Equals(operand.Underlying))
+                    // `x is int` over an int?, and the bare type test `x is
+                    // int?` over one: whether it holds a value (Roslyn reads
+                    // the second so, a HasValue test, and warns of neither).
+                    if (tested.Equals(operand.Underlying) || isx.Binding is null && tested.IsNullableValue && tested.Equals(operand))
                     {
                         _r.NullablePatterns.Add(isx);
                     }
@@ -20230,7 +20234,7 @@ public sealed partial class Binder
                         _r.NullablePatterns.Add(isx);
                         _r.BoxedBindings.Add(isx);
                     }
-                    else if (!tested.IsError && !isx.Type.NullableInPattern)
+                    else if (!tested.IsError && !refusedNullable)
                     {
                         Error(isx, $"a '{operand}' can only match its held '{operand.Underlying}' value");
                     }
