@@ -237,15 +237,20 @@ public static class OwnedFieldSolver
         Dictionary<string, int>? asked = null;
         int[]? partOf = null;
         ulong[]?[]? storesBelow = null;
-        bool MayWrite(string field, HashSet<string> danger)
+        // Answers the first of `danger` (in name order, so a report reads the
+        // same every link) that may store into `field`, or null: the report
+        // names the call, as every other refusal names what refused.
+        string? MayWrite(string field, HashSet<string> danger)
         {
-            if (danger.Count == 0 || !writersOf.ContainsKey(field)) return false;
+            if (danger.Count == 0 || !writersOf.ContainsKey(field)) return null;
             if (asked is null) (asked, partOf, storesBelow) = StoresBelow(offsets.Keys, writersOf, number, callersOf);
-            if (!asked.TryGetValue(field, out int bit)) return false;
+            if (!asked.TryGetValue(field, out int bit)) return null;
+            string? first = null;
             foreach (string d in danger)
-                if (number.TryGetValue(d, out int n) && storesBelow![partOf![n]] is { } bits && (bits[bit >> 6] & 1UL << (bit & 63)) != 0)
-                    return true;
-            return false;
+                if ((first is null || string.CompareOrdinal(d, first) < 0)
+                    && number.TryGetValue(d, out int n) && storesBelow![partOf![n]] is { } bits && (bits[bit >> 6] & 1UL << (bit & 63)) != 0)
+                    first = d;
+            return first;
         }
 
         // THE FIELDS, each as every unit found it.
@@ -335,7 +340,7 @@ public static class OwnedFieldSolver
             // anything, as an unresolved indirect call is to a flat compile.
             if (danger[field].FirstOrDefault(d => IsVirtual(d) && !virtuals.ContainsKey(d)) is string unknown)
             { report?.Invoke(field + " refused: a read is live across " + unknown + ", which the link could not resolve"); continue; }
-            if (MayWrite(field, danger[field])) { report?.Invoke(field + " refused: a read is live across a call that may store into it"); continue; }
+            if (MayWrite(field, danger[field]) is string writes) { report?.Invoke(field + " refused: a read is live across " + writes + ", which may store into it"); continue; }
             facts.Fields[field] = offset;
             if (stored.Contains(field)) facts.Mapped.Add(field);
             if (selfFreed.Contains(field)) facts.SelfFreed.Add(field);
@@ -362,7 +367,7 @@ public static class OwnedFieldSolver
             HashSet<string> elementDanger = new(records.SelectMany(r => r.ElementDanger), StringComparer.Ordinal);
             if (elementDanger.FirstOrDefault(d => IsVirtual(d) && !virtuals.ContainsKey(d)) is string unknown)
             { report?.Invoke(field + " elements refused: one is live across " + unknown + ", which the link could not resolve"); continue; }
-            if (MayWrite(field, elementDanger)) { report?.Invoke(field + " elements refused: one is live across a call that may store into it"); continue; }
+            if (MayWrite(field, elementDanger) is string writesElements) { report?.Invoke(field + " elements refused: one is live across " + writesElements + ", which may store into it"); continue; }
             if (records.SelectMany(r => r.ElementDangerFields).FirstOrDefault(facts.Fields.ContainsKey) is string into)
             { report?.Invoke(field + " elements refused: one is live across a store into " + into + ", which is owned"); continue; }
             facts.ArrayElements.Add(field);

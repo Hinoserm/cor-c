@@ -35,8 +35,10 @@ public static class Header
     /// every binary library on the disc would stop being instantiable, with
     /// nothing to say so until somebody tried.
     ///
-    /// They travel as a TREE now, in the image's GIR section, behind a version
-    /// number that is refused rather than guessed at. See Lang/Gir.cs.
+    /// A template is written as a TREE by Gir.cs (metadata/Gir.cs), behind a
+    /// version that is refused rather than guessed at; nothing puts that tree
+    /// in an image yet (its one user is compiler/tests/metadata). A consumer
+    /// compiles a library's templates from the declaration index today.
     /// <param name="all">
     /// Every type the compilation produced, INCLUDING the specialisations that
     /// are deliberately kept out of the header. They are not written, but they

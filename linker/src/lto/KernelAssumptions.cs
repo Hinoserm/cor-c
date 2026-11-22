@@ -111,7 +111,13 @@ public static class KernelAssumptions
                 }
                 else copies.Add(entry.Key.Name, (entry.Hash, entry.Identity));
                 if (!entry.Importable || entry.Instructions > MostInstructions || entry.Identity is not BodyHash identity) { differing.Add(entry.Key.Name); continue; }
-                floats ??= X87Notes.Read(obj)?.Where(fact => fact.Floats).Select(fact => fact.Name).ToHashSet(StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
+                if (floats is null)
+                {
+                    // A NOTE IN ANOTHER LAYOUT names the object it is in, as
+                    // every other section read of the link's inputs does.
+                    try { floats = X87Notes.Read(obj)?.Where(fact => fact.Floats).Select(fact => fact.Name).ToHashSet(StringComparer.Ordinal) ?? new(StringComparer.Ordinal); }
+                    catch (ElfFormatException error) { throw new ElfFormatException((obj.SourcePath ?? "an object made in memory") + ": " + error.Message); }
+                }
                 if (floats.Contains(entry.Key.Name)) { differing.Add(entry.Key.Name); continue; }
                 if (offers.ContainsKey(entry.Key.Name)) continue;
                 offers.Add(entry.Key.Name, new Offer(entry.Key.Name, new IrArchiveRecord(entry.Key.ToString(), true, entry.Instructions, entry.Calls,
