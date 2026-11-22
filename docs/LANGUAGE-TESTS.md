@@ -206,4 +206,4 @@ marker instead.
 | 54_base_call | `base.Method()` from overrides, through two levels |
 | 55_dict_deconstruct | deconstructing foreach over a Dictionary, KeyValuePair deconstruction |
 | 56_out_var | `out var` / `out int x` declared at the call site |
-| 70_tasks_manual | lib/threading.cor without async: TaskCompletionSource, posted continuations, Wait, faults and cancellation, Delay ordering, WhenAll/WhenAny, Yield, Task.Run unwrapping, cancellation tokens, deadlock report |
+| 70_tasks_manual | the task library without async: TaskCompletionSource, continuations run inline by the completing call, a Yield's posted, Wait, faults and cancellation, Delay ordering, WhenAll/WhenAny, Yield, Task.Run unwrapping, cancellation tokens, the deadlock report with pool workers |

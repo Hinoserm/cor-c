@@ -8903,11 +8903,10 @@ public sealed partial class Binder
         // WANTED is FormattableStringFactory.Create of its composite format and
         // its holes (C# 10.2.5's interpolated string conversion), not the
         // string it otherwise joins to.
-        if (at is BinaryExpr { Interpolation: { } parts } interpolated && Formattable(to))
+        if (at is Expr interpolated && Interpolated(interpolated) && Formattable(to) && FormattableCall(interpolated) is { } formattable)
         {
-            CallExpr made = FormattableCall(parts, interpolated);
-            _r.Rewrites[interpolated] = made;
-            CheckExpr(made);
+            _r.Rewrites[interpolated] = formattable;
+            CheckExpr(formattable);
             return;
         }
 
@@ -9285,6 +9284,100 @@ public sealed partial class Binder
     }
 
     /// <summary>
+    /// Whether a type is what an interpolated string converts to as well as
+    /// string: the library's System.FormattableString or System.IFormattable,
+    /// and never a type of a program's that happens to share a name.
+    /// </summary>
+    private static bool Formattable(Type to)
+        => !to.IsArray && to.AsNonNullable().Symbol is { } s && IsLibraryType(s)
+           && s.Decl is { Outer: null } d && (d.Namespace.Length == 0 || d.Namespace == LibraryHome)
+           && s is { Name: "FormattableString", Kind: TypeKind.Class } or { Name: "IFormattable", Kind: TypeKind.Interface };
+
+    /// <summary>Whether what was written is an interpolated string: a join with holes, or a literal without.</summary>
+    private static bool Interpolated(Node? written)
+        => written is BinaryExpr { Interpolation: not null } or LiteralExpr { InterpolatedFormat: not null };
+
+    /// <summary>
+    /// `global::System.Runtime.CompilerServices.FormattableStringFactory.Create(format, holes...)`
+    /// for an interpolated string, or null where its join is not the shape
+    /// its parts say. ITS HOLES ARE THE JOIN'S OWN NODES, already checked with
+    /// it (CheckAssignable's caller checked what it assigns), and answered
+    /// as checked (_checkedOnce): checked again, a hole that declares a name
+    /// -- `{(o is int n ? n : 0)}`, an `out var` -- declared it twice.
+    /// </summary>
+    private CallExpr? FormattableCall(Expr written)
+    {
+        string format;
+        List<Expr> holes;
+        if (written is BinaryExpr { Interpolation: { } parts } joined)
+        {
+            if (InterpolatedHoles(joined, parts) is not { } found) return null;
+            format = parts.Format;
+            holes = found;
+        }
+        else if (written is LiteralExpr { InterpolatedFormat: { } plain })
+        {
+            format = plain;
+            holes = new List<Expr>();
+        }
+        else
+        {
+            return null;
+        }
+        Expr owner = new NameExpr { Name = "System", Global = true, Line = written.Line, Col = written.Col };
+        foreach (string name in new[] { "Runtime", "CompilerServices", "FormattableStringFactory" })
+            owner = new MemberExpr { Target = owner, Name = name, Line = written.Line, Col = written.Col };
+        CallExpr made = new() { Target = new MemberExpr { Target = owner, Name = "Create", Line = written.Line, Col = written.Col }, Line = written.Line, Col = written.Col };
+        made.Args.Add(new LiteralExpr { Kind = Lit.Str, Text = format, Line = written.Line, Col = written.Col });
+        foreach (Expr hole in holes)
+        {
+            if (_r.ExprType.TryGetValue(hole, out Type? _)) _checkedOnce.Add(hole);
+            made.Args.Add(hole);
+        }
+        return made;
+    }
+
+    /// <summary>
+    /// The holes of an interpolated string's join, out of the join itself
+    /// (InterpolatedParts): its pieces down its left spine, each hole's
+    /// piece unwrapped of its alignment (a pad of `"" + value`) and its
+    /// format (`value.ToString(format)`). Null where the join is not that shape.
+    /// </summary>
+    private static List<Expr>? InterpolatedHoles(BinaryExpr joined, InterpolatedParts parts)
+    {
+        Expr[] piece = new Expr[parts.Pieces];
+        Expr at = joined;
+        for (int k = parts.Pieces - 1; k > 0; k--)
+        {
+            if (at is not BinaryExpr { Op: BinOp.Add } join) return null;
+            piece[k] = join.Right;
+            at = join.Left;
+        }
+        piece[0] = at;
+        List<Expr> holes = new(parts.Holes.Length);
+        foreach (int place in parts.Holes)
+        {
+            if (place / 4 >= piece.Length) return null;
+            Expr hole = piece[place / 4];
+            if ((place & 2) != 0)
+            {
+                if (hole is not CallExpr { Args: [BinaryExpr { Right: { } padded }, ..] }) return null;
+                hole = padded;
+            }
+            if ((place & 1) != 0)
+            {
+                if (hole is not CallExpr { Target: MemberExpr { Target: { } formatted } }) return null;
+                hole = formatted;
+            }
+            holes.Add(hole);
+        }
+        return holes;
+    }
+
+    /// <summary>The holes handed to a FormattableString's Create already checked in their join (FormattableCall).</summary>
+    private readonly HashSet<Expr> _checkedOnce = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// Whether an argument fits a parameter, the way C# asks it at a call
     /// site: the types convert, OR what was written is a CONSTANT EXPRESSION
     /// whose value the parameter's type can hold.
@@ -9295,25 +9388,9 @@ public sealed partial class Binder
     /// refuses a variable; the rule is about the VALUE, which is why it needs
     /// the expression and not only its type.
     /// </summary>
-    /// <summary>Whether a type is what an interpolated string converts to as well as string: FormattableString, IFormattable.</summary>
-    private static bool Formattable(Type to)
-        => !to.IsArray && to.AsNonNullable().Symbol is { Name: "FormattableString", Kind: TypeKind.Class } or { Name: "IFormattable", Kind: TypeKind.Interface };
-
-    /// <summary>`global::System.Runtime.CompilerServices.FormattableStringFactory.Create(format, holes...)`.</summary>
-    private static CallExpr FormattableCall(InterpolatedParts parts, Node at)
-    {
-        Expr owner = new NameExpr { Name = "System", Global = true, Line = at.Line, Col = at.Col };
-        foreach (string name in new[] { "Runtime", "CompilerServices", "FormattableStringFactory" })
-            owner = new MemberExpr { Target = owner, Name = name, Line = at.Line, Col = at.Col };
-        CallExpr made = new() { Target = new MemberExpr { Target = owner, Name = "Create", Line = at.Line, Col = at.Col }, Line = at.Line, Col = at.Col };
-        made.Args.Add(new LiteralExpr { Kind = Lit.Str, Text = parts.Format, Line = at.Line, Col = at.Col });
-        made.Args.AddRange(parts.Holes);
-        return made;
-    }
-
     private bool Fits(Type had, Type want, Expr? written)
         // AN INTERPOLATED STRING fits a FormattableString or an IFormattable too.
-        => written is BinaryExpr { Interpolation: not null } && Formattable(want) ? true
+        => Interpolated(written) && Formattable(want) ? true
         // A CONDITIONAL LEFT TO ITS PARAMETER (Argument) fits what each of
         // its arms fits, an arm that is one of them the same way again.
         : written is ConditionalExpr deferred && _deferredArms.TryGetValue(deferred, out (Type Then, Type Else) arms)
@@ -16303,7 +16380,7 @@ public sealed partial class Binder
         {
             Op = b.Op, Left = Spell(b.Left), Right = Spell(b.Right),
             PatternNullTest = b.PatternNullTest, PatternConstant = b.PatternConstant,
-            Interpolation = b.Interpolation?.Copied(Spell),
+            Interpolation = b.Interpolation,
             Line = b.Line, Col = b.Col, File = b.File,
         },
 
@@ -16495,6 +16572,10 @@ public sealed partial class Binder
 
     private Type CheckExpr(Expr e)
     {
+        // A HOLE CHECKED ALREADY, in the join handed on to a FormattableString
+        // (FormattableCall): what it was found to be, not a second look.
+        if (_checkedOnce.Count > 0 && _checkedOnce.Contains(e) && _r.ExprType.TryGetValue(e, out Type? checkedOnce)) return checkedOnce;
+
         // ONLY WRITTEN, by `=` or `out` -- a deconstruction's places are each
         // a plain assignment of their own (Deconstruct): its reader's access
         // is not asked (CheckAccess), its writer's is (CheckWriteAccess) --
@@ -24563,7 +24644,7 @@ public sealed partial class Binder
             if (had.Dynamic && !want.IsPointer) return true;
             if (written is NewExpr { Type.Name.Length: 0, Elements: null } && (want.Symbol is not null || (written is NewExpr { Collection: true } && want.IsArray))) return true;
             if (CollectionIntoNothing(written, want)) return false;
-            if (written is BinaryExpr { Interpolation: not null } && Formattable(want)) return true;
+            if (Interpolated(written) && Formattable(want)) return true;
             // `null!` IS STILL THE NULL LITERAL to what it can be passed as:
             // the `!` silences the warning, not the conversion, so
             // `"abc".IndexOf(null!, 0, 0)` is IndexOf(string, int, int) and
@@ -25298,7 +25379,7 @@ public sealed partial class Binder
                 // AN INTERPOLATED STRING into a FormattableString or an
                 // IFormattable (C# 10.2.5), as WrittenFits has it: a string
                 // overload beside it is still the better one (BetterConversion).
-                if (i < c.Args.Count && c.Args[i] is BinaryExpr { Interpolation: not null } && Formattable(want)) continue;
+                if (i < c.Args.Count && Interpolated(c.Args[i]) && Formattable(want)) continue;
                 if (NullableIntoValue(args[i], want)) return false;
                 // `null!` is still the null literal, here as in WrittenFits.
                 if (i < c.Args.Count && c.Args[i] is SuppressExpr { Operand: LiteralExpr { Kind: Lit.Null } }

@@ -9,13 +9,12 @@ public sealed class BinaryExpr : Expr
 
     /// <summary>
     /// AN INTERPOLATED STRING'S, where this is the join its pieces were made
-    /// (Parser.Interpolate): its composite format and its holes as written,
+    /// (Parser.Interpolate): its composite format and where its holes are,
     /// for a FormattableString or an IFormattable wanted in its place (C#'s
     /// interpolated string conversion: FormattableStringFactory.Create).
+    /// Plain data, carried as it is by every copy of the tree.
     /// </summary>
     public InterpolatedParts? Interpolation { get; set; }
-
-    /// <summary>Every copy of a join carries this; see InterpolatedParts.Copied.</summary>
 
     /// <summary>
     /// This test for null was written by a PATTERN, not by the author.
@@ -39,14 +38,18 @@ public sealed class BinaryExpr : Expr
     public bool PatternConstant { get; init; }
 }
 
-/// <summary>An interpolated string's composite format (`{0,5:x8}` for each hole, braces doubled) and its holes.</summary>
-public sealed record InterpolatedParts(string Format, List<Expr> Holes)
+/// <summary>
+/// An interpolated string's composite format (`{0,5:x8}` for each hole,
+/// braces doubled) and its holes, by WHERE they are in the join and never
+/// as nodes of their own: the join's pieces, left to right, are its
+/// literal runs and its holes, each hole as written or wrapped -- its format
+/// a ToString call on it (Parser.Formatted), its alignment a pad of that
+/// (Parser.Aligned). The binder takes the holes out of the join it has
+/// checked, so each is checked once (Binder.InterpolatedHoles), and a copy of
+/// the tree has its own holes in its own join.
+/// </summary>
+public sealed record InterpolatedParts(string Format, int Pieces, int[] Holes)
 {
-    /// <summary>
-    /// THE SAME PARTS OVER COPIED HOLES, for whatever copies the join it hangs
-    /// on (Monomorphiser.Rewrite, Binder.Spell, the templates' Gir): a copy
-    /// made without them is an ordinary string where a FormattableString was
-    /// asked for, refused as one.
-    /// </summary>
-    public InterpolatedParts Copied(System.Func<Expr, Expr> copy) => new(Format, Holes.ConvertAll(h => copy(h)));
+    /// <summary>A hole's entry in Holes: its piece, and the wrappings on it.</summary>
+    public static int Hole(int piece, bool formatted, bool aligned) => piece * 4 + (formatted ? 1 : 0) + (aligned ? 2 : 0);
 }

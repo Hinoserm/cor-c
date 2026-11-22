@@ -4368,7 +4368,7 @@ public sealed class Monomorphiser
                 {
                     Op = b.Op, Left = Rewrite(b.Left, map), Right = Rewrite(b.Right, map),
                     PatternNullTest = b.PatternNullTest, PatternConstant = b.PatternConstant,
-                    Interpolation = b.Interpolation?.Copied(h => Rewrite(h, map)),
+                    Interpolation = b.Interpolation,
                     Line = b.Line, Col = b.Col,
                 };
 
@@ -4424,7 +4424,7 @@ public sealed class Monomorphiser
                 return new LiteralExpr
                 {
                     Kind = l.Kind, Text = l.Text, IntValue = l.IntValue, RealValue = l.RealValue,
-                    Line = l.Line, Col = l.Col,
+                    InterpolatedFormat = l.InterpolatedFormat, Line = l.Line, Col = l.Col,
                 };
 
             case ThisExpr written:

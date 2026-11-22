@@ -1,0 +1,62 @@
+// test: SemaphoreSlim waiters granted by a Release on another thread, a timed wait that ends first, and a canceled one -- each wait answered once, the count right after
+// expect-exit: 0
+// expect-output:
+// waiting 3 current 0
+// granted 3 current 0
+// timed out False current 0
+// canceled True
+// released 1 current 0
+// options RunContinuationsAsynchronously
+//
+// Release claims its waiters under the semaphore's lock and completes them
+// after letting it go; a waiter whose timeout or token got there first is
+// no longer queued, and is not granted. Output as .NET 10 says it.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int granted;
+
+    static async Task Waiter(SemaphoreSlim sem)
+    {
+        await sem.WaitAsync();
+        Interlocked.Increment(ref granted);
+    }
+
+    static async Task<int> Main()
+    {
+        SemaphoreSlim sem = new SemaphoreSlim(0);
+        Task[] waits = new Task[3];
+        for (int i = 0; i < 3; i++) waits[i] = Waiter(sem);
+        Console.WriteLine("waiting " + waits.Length + " current " + sem.CurrentCount);
+        Thread releaser = new Thread(() => sem.Release(3));
+        releaser.Start();
+        releaser.Join();
+        await Task.WhenAll(waits);
+        Console.WriteLine("granted " + Volatile.Read(ref granted) + " current " + sem.CurrentCount);
+
+        bool timed = await sem.WaitAsync(20);
+        Console.WriteLine("timed out " + timed + " current " + sem.CurrentCount);
+
+        CancellationTokenSource cts = new CancellationTokenSource();
+        Task canceled = sem.WaitAsync(cts.Token);
+        cts.Cancel();
+        try
+        {
+            await canceled;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        Console.WriteLine("canceled " + canceled.IsCanceled);
+
+        Task pending = sem.WaitAsync();
+        Console.WriteLine("released " + (sem.Release() + 1) + " current " + sem.CurrentCount);
+        await pending;
+        Console.WriteLine("options " + pending.CreationOptions);
+        return 0;
+    }
+}

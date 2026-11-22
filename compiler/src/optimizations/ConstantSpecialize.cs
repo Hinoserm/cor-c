@@ -29,6 +29,9 @@ public sealed class ConstantSpecialize : IModulePass
         Dictionary<string, int> counts = new(StringComparer.Ordinal);
         Dictionary<string, int> growth = new(StringComparer.Ordinal);
         HashSet<string> rejected = new(StringComparer.Ordinal);
+        // The versions' names made in this pass, which `originals` (the
+        // module's functions as the pass began) does not hold.
+        HashSet<string> named = new(StringComparer.Ordinal);
         // A FUNCTION WITH CALLS KEPT (OwnedElements) STAYS ITSELF: a version
         // of it would hold them unkept and the candidate be refused; kept in
         // the version, its calls left it small enough that the late inliner
@@ -68,20 +71,22 @@ public sealed class ConstantSpecialize : IModulePass
             if (!versions.TryGetValue(key, out Function? version))
             {
                 if (versions.Count >= ModuleLimit || counts.GetValueOrDefault(target.Name) >= PerFunctionLimit) continue;
-                // NAMED BY WHAT IT BAKES IN, each constant argument's place and
-                // value: a version of generic code is generic code, the same
-                // name in every unit that makes it, and the link takes copies
-                // of one name for one function (coalescing; the argument solve
-                // reads one unit's hints for all). A count of this unit's
+                // NAMED BY WHAT IT BAKES IN, each constant argument's place,
+                // type and value -- all of the key above -- so a name is one
+                // body wherever it is made, and nothing that goes by name
+                // takes one version for another. A count of this unit's
                 // versions named another unit's other version alike: unit A's
                 // first, GetSubArray with its start known, and unit B's first,
-                // another, were one function to the link, whose argument facts
-                // took from B's the parameter A's never read.
+                // another, and the argument solve, reading hints by name, took
+                // from B's the parameter A's never read. (Never a copy of
+                // another unit's of the name either way: a version is not
+                // exported, and ArgumentSummary counts only exported code.)
                 string name = target.Name + "$constant$" + string.Join("_", call.Operands.Select((o, index) => o is ImmOperand imm
-                    ? index.ToString(System.Globalization.CultureInfo.InvariantCulture) + (imm.Value < 0 ? "m" + ((ulong)(-(imm.Value + 1)) + 1).ToString("x", System.Globalization.CultureInfo.InvariantCulture)
-                        : "x" + imm.Value.ToString("x", System.Globalization.CultureInfo.InvariantCulture))
+                    ? index.ToString(System.Globalization.CultureInfo.InvariantCulture) + imm.Type.ToString().ToLowerInvariant()
+                        + (imm.Value < 0 ? "m" + ((ulong)(-(imm.Value + 1)) + 1).ToString("x", System.Globalization.CultureInfo.InvariantCulture)
+                            : "x" + imm.Value.ToString("x", System.Globalization.CultureInfo.InvariantCulture))
                     : null).Where(part => part is not null));
-                if (originals.ContainsKey(name)) continue;
+                if (originals.ContainsKey(name) || !named.Add(name)) continue;
                 version = new Function(name, target.Returns)
                 {
                     Exported = false, SourceFile = target.SourceFile, Line = target.Line, Display = target.Display,

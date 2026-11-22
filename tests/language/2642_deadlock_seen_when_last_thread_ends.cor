@@ -1,0 +1,49 @@
+// test: a wait nothing can complete is a deadlock when the last thread that might have completed it ends -- said then, by the thread ending, and not while it runs
+// expect-exit: 0
+// expect-output:
+// pool 1
+// deadlock: nothing can complete this task
+// sleeper ended True
+// result deadlock: nothing can complete this task
+//
+// The pool is made first (Task.Run), so the wait is one with workers.
+// While the other thread sleeps, it might yet complete the task, and the
+// wait is no deadlock; once it ends with nothing done, every thread left
+// is idle or waiting, and the one ending says so (Scheduler.ThreadEnding):
+// a thread that ends never goes quiet, so nobody else would look. Then a
+// second wait, with every thread already quiet, is said at once.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static int Main()
+    {
+        Console.WriteLine("pool " + Task.Run(() => 1).Result);
+        TaskCompletionSource<int> never = new TaskCompletionSource<int>();
+        Thread sleeper = new Thread(() => Thread.Sleep(200));
+        sleeper.Start();
+        try
+        {
+            never.Task.Wait();
+            Console.WriteLine("not reached");
+        }
+        catch (InvalidOperationException e)
+        {
+            Console.WriteLine(e.Message);
+        }
+        sleeper.Join();
+        Console.WriteLine("sleeper ended " + !sleeper.IsAlive);
+        try
+        {
+            Console.WriteLine("got " + never.Task.Result);
+        }
+        catch (InvalidOperationException e)
+        {
+            Console.WriteLine("result " + e.Message);
+        }
+        return 0;
+    }
+}

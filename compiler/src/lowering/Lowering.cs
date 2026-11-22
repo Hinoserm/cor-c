@@ -3371,15 +3371,6 @@ public sealed partial class Lowering
     private readonly HashSet<string> _varianceRecords = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// The descriptor and vtable of a class, built once and on demand.
-    ///
-    /// Interface slots come first and are numbered program-wide by the
-    /// binder, so a caller holding only the interface reaches the method by
-    /// slot number and nothing else. Class virtuals follow. ToString and
-    /// Equals have slots every class shares, filled with shared stubs when
-    /// the class declares neither.
-    /// </summary>
-    /// <summary>
     /// A type's slots (Module.TypeSlots): a class's every virtual of its
     /// chain and the slots every class shares; an interface's own methods'.
     /// </summary>
@@ -3402,6 +3393,15 @@ public sealed partial class Lowering
         else had.UnionWith(slots);
     }
 
+    /// <summary>
+    /// The descriptor and vtable of a class, built once and on demand.
+    ///
+    /// Interface slots come first and are numbered program-wide by the
+    /// binder, so a caller holding only the interface reaches the method by
+    /// slot number and nothing else. Class virtuals follow. ToString and
+    /// Equals have slots every class shares, filled with shared stubs when
+    /// the class declares neither.
+    /// </summary>
     private string ClassDescriptor(TypeSymbol t)
     {
         // A STRUCT'S OR AN ENUM'S TYPE IS ITS BOX'S, which is what an object

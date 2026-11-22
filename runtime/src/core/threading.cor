@@ -4135,7 +4135,9 @@ public static partial class Scheduler
         return s;
     }
 
-    /// How many pool threads are running; 0 is the single-threaded loop.
+    /// How many pool workers there are: 0 before the pool's first, where a
+    /// waiting thread runs the queue itself (RunUntil), and in a fork's child
+    /// until it posts again.
     public static int WorkerCount => _workers;
 
     /// IN A FORK'S CHILD (Thread.ForkedChild): none of the pool's workers
@@ -4152,6 +4154,19 @@ public static partial class Scheduler
     internal static void ForkedChild()
     {
         _workers = 0;
+        // THE POOL MADE AFRESH WHEN IT IS NEXT WANTED: its grower and workers
+        // were not copied, and its counts and its sleepers are theirs. Its
+        // cells let go here (PoolForked: the grower's, the platform's), so
+        // the child's first post starts a pool of its own.
+        _idle = null;
+        _blocked = null;
+        _quiet = null;
+        _leaves = null;
+        _deadlocks = null;
+        _sleeping = null;
+        // Its one thread, as the collector's table is left (GcThreads.ForkedChild).
+        _live = 1;
+        PoolForked();
         // A GATE PUBLISHED AND ITS RING NOT YET MADE at the fork (Gate) is
         // dropped: the child made none, and waited for ever for a ring only
         // the thread not copied would have made. Nothing was queued without it.
@@ -4208,7 +4223,7 @@ public static partial class Scheduler
     // go quiet sees it (Deadlocked), and wakes every waiter (Declare), each
     // of which throws, as the loop's one waiter does.
 
-    /// The cells made with the pool (UseThreads), before its first worker.
+    /// The cells made with the pool (StartPool), before its first worker.
     static AtomicCell? _quiet, _leaves, _deadlocks;
 
     /// The threads asleep on a task with no deadline, linked under the gate.
@@ -4238,7 +4253,7 @@ public static partial class Scheduler
         if (_quiet is not { } quiet || _leaves is not { } leaves || _sleeping == null) return false;
         nuint leavesAt = Atom.At(leaves, Atom.FirstWord);
         int left = (int)Sys.Read32(leavesAt);
-        if ((nuint)(int)Sys.Read32(Atom.At(quiet, Atom.FirstWord)) != GcThreads.Count()) return false;
+        if ((int)Sys.Read32(Atom.At(quiet, Atom.FirstWord)) != (int)Sys.Read32(Sys.AddressOf(ref _live))) return false;
         if (_count != 0 || InterruptCompletions.Armed > 0) return false;
         DropCanceledTimers();
         if (_timerCount != 0 || _count != 0) return false;
@@ -4256,6 +4271,32 @@ public static partial class Scheduler
         }
         gate.Exit();
         return !waking && (int)Sys.Read32(leavesAt) == left;
+    }
+
+    /// THE PROGRAM'S THREADS AS THE LOOK COUNTS THEM (Deadlocked): one more
+    /// for each registered (Runtime.RegisterThread, StartThread), one fewer
+    /// for each that ends -- WHILE IT IS STILL REGISTERED (Runtime.EndThread),
+    /// so it can look itself: a thread that ends never goes quiet, and the
+    /// ones left may all be quiet now, waiting on a task only it could have
+    /// completed. Once it is not registered it may not wait on a lock as the
+    /// gate waits (Atom.Turn), and the collector's own count drops only
+    /// then. A count missed would only keep a deadlock from being said.
+    static int _live;
+
+    internal static void ThreadCame()
+    {
+        Sys.AtomicAdd32(Sys.AddressOf(ref _live), 1);
+    }
+
+    internal static void ThreadGone()
+    {
+        Sys.AtomicAdd32(Sys.AddressOf(ref _live), -1);
+    }
+
+    internal static void ThreadEnding()
+    {
+        ThreadGone();
+        if (Deadlocked()) Declare();
     }
 
     /// A deadlock seen: every sleeping waiter woken to throw it.
@@ -4298,8 +4339,11 @@ public static partial class Scheduler
     }
 
     /// A worker: run whatever is queued, and sleep on the signal word when
-    /// there is nothing. It never returns; the process ends through
-    /// exit_group(2), which takes every thread with it.
+    /// there is nothing. The process ends through exit_group(2), which takes
+    /// every worker with it -- but a worker more than the pool keeps (_keep),
+    /// idle for RetireNanos, returns, and its thread ends, as .NET's pool
+    /// lets an idle thread go: a burst of blocked work grew the pool to its
+    /// most, and kept it there.
     public static void WorkerLoop()
     {
         AtomicCell signal = SignalCell();
@@ -4352,9 +4396,32 @@ public static partial class Scheduler
             }
             Idle(1);
             if (Deadlocked()) Declare();
+            if (_workers > _keep)
+            {
+                Native.WaitFor(at, seen, RetireNanos);
+                Idle(-1);
+                if ((int)Sys.Read32(at) == seen && _count == 0 && Retire()) return;
+                continue;
+            }
             Native.Wait(at, seen);
             Idle(-1);
         }
+    }
+
+    /// The workers the pool keeps however long they idle: its aim (StartPool,
+    /// AtLeast). Above it, a worker idle this long goes (WorkerLoop).
+    static int _keep;
+    const long RetireNanos = 20000000000;
+
+    /// One worker fewer, if the pool still has more than it keeps.
+    static bool Retire()
+    {
+        AtomicCell gate = Gate();
+        gate.Enter();
+        bool going = _workers > _keep;
+        if (going) _workers = _workers - 1;
+        gate.Exit();
+        return going;
     }
 
     /// Queues `work` to run on the scheduler, after everything already queued,
@@ -4417,6 +4484,7 @@ public static partial class Scheduler
     static partial void PoolWorkerBlocks();
     static partial void PoolWorkerUnblocks();
     static partial void StackRoom(ref nuint room);
+    static partial void PoolForked();
 
     /// A completed task's continuation: run now, on this thread, when
     /// `inline` (Task.Finish asked MayRunInline) and it may be, else posted.
@@ -4485,7 +4553,7 @@ public static partial class Scheduler
     internal static void WorkerUnblocks() => PoolWorkerUnblocks();
 
     /// How many pool workers sleep for want of work, and how many wait in
-    /// their work (a call, a lock, a sleep): made with the pool (UseThreads).
+    /// their work (a call, a lock, a sleep): made with the pool (StartPool).
     static AtomicCell? _idle, _blocked;
 
     /// How many items are waiting to run.
@@ -4867,16 +4935,22 @@ public static partial class Scheduler
                 long until = deadline;
                 TimerEntry? next = _timerCount > 0 ? _timers[0] : null;
                 if (next != null && next.Deadline > now && next.Deadline < until) until = next.Deadline;
-                if (until != NoDeadline)
+                // A DEADLINE OF ITS OWN: a wait that ends by itself, never quiet.
+                if (deadline != NoDeadline)
                 {
                     Native.WaitFor(at, seen, until > now ? until - now : 1);
                     continue;
                 }
+                // NONE: quiet, as a worker asleep to a timer is (the timer
+                // keeps Deadlocked from saying so while it is there); a timer
+                // canceled is dropped by the next look, made by whichever
+                // thread canceled it as it goes quiet or ends.
                 sleeper ??= new Sleeper(waiting, task, cancellationToken);
                 int declared = (int)Sys.Read32(Atom.At(_deadlocks!, Atom.FirstWord));
                 Sleeping(sleeper, true);
                 if (Deadlocked()) Declare();
-                Native.Wait(at, seen);
+                if (until == NoDeadline) Native.Wait(at, seen);
+                else Native.WaitFor(at, seen, until > now ? until - now : 1);
                 Sleeping(sleeper, false);
                 if (!task.IsCompleted && (int)Sys.Read32(Atom.At(_deadlocks!, Atom.FirstWord)) != declared)
                 {
@@ -5084,6 +5158,9 @@ public static partial class Scheduler
             for (int i = kept / 2 - 1; i >= 0; i--) SiftDown(i);
         }
         gate.Exit();
+        // A RunUntilIdle asleep to this timer looks again: it may be all
+        // that was left.
+        if (_quiet is { } quiet && Sys.Read32(Atom.At(quiet, Atom.SecondWord)) != 0) Native.Wake(Atom.At(quiet, Atom.FirstWord), int.MaxValue);
     }
 
     /// Canceled entries still in the heap (TimerCanceled).
@@ -7548,18 +7625,36 @@ namespace System.Threading
                 Atom.Exit(gate);
                 throw new SemaphoreFullException();
             }
+            // THE WAITERS CLAIMED UNDER THE LOCK, COMPLETED AFTER IT: a wait's
+            // task finished, its timer canceled and its token's registration
+            // let go with no spin lock held -- a completion posts, which may
+            // make the pool, and a registration's disposal may wait for its
+            // callback. Linked through the waiters themselves, so nothing is
+            // made under the lock.
             int left = releaseCount;
+            SemaphoreWaiter? granted = null;
+            SemaphoreWaiter? last = null;
             while (left > 0 && _waiters.Count > 0)
             {
                 SemaphoreWaiter next = _waiters[0];
                 _waiters.RemoveAt(0);
-                if (next.Grant())
+                if (next.Claim())
                 {
                     left = left - 1;
+                    if (last == null) granted = next;
+                    else last.NextGranted = next;
+                    last = next;
                 }
             }
             _count = previous + left;
             Atom.Exit(gate);
+            while (granted != null)
+            {
+                SemaphoreWaiter after = granted.NextGranted!;
+                granted.NextGranted = null;
+                granted.Granted();
+                granted = after;
+            }
             return previous;
         }
 
@@ -7614,9 +7709,9 @@ namespace System.Threading
         CancellationTokenRegistration _registration;
         CancellationToken _token;
 
-        // GRANTED UNDER THE SEMAPHORE'S SPIN LOCK (Release), so its awaits
-        // are posted, never run inline there, as .NET's waiter task is made
-        // RunContinuationsAsynchronously for the same reason.
+        // ITS AWAITS POSTED, as .NET makes its waiter task
+        // RunContinuationsAsynchronously (and reports it so): Release runs
+        // no waiter's code, whatever thread calls it.
         public SemaphoreWaiter(SemaphoreSlim owner)
         {
             _owner = owner;
@@ -7638,15 +7733,23 @@ namespace System.Threading
             }
         }
 
-        /// A permit: the wait succeeds, if nothing ended it first.
-        public bool Grant()
+        /// The next waiter granted by the same Release (its list, made under
+        /// the semaphore's lock without making anything).
+        internal SemaphoreWaiter? NextGranted;
+
+        /// A permit, claimed under the semaphore's lock: the wait's task is
+        /// this Release's to finish, unless its timeout or token got there
+        /// first.
+        public bool Claim()
         {
-            if (!_task.TrySetResult(true))
-            {
-                return false;
-            }
+            return _task.TryClaim();
+        }
+
+        /// The claimed permit given, with the lock let go: the wait succeeds.
+        public void Granted()
+        {
+            _task.FinishClaimed(true);
             Disarm();
-            return true;
         }
 
         /// The timeout: false, if it was still waiting.

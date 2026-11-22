@@ -291,9 +291,12 @@ public static class Console
         }
     }
 
+    /// Synchronized, as .NET's SetOut makes what it is given: one call at a
+    /// time, whatever threads write.
     public static void SetOut(TextWriter writer)
     {
-        _out = writer;
+        if (writer == null) throw new ArgumentNullException("newOut");
+        _out = TextWriter.Synchronized(writer);
     }
 
     public static void SetIn(TextReader reader)
@@ -304,7 +307,7 @@ public static class Console
     public static void SetError(TextWriter writer)
     {
         if (writer == null) throw new ArgumentNullException("newError");
-        _error = writer;
+        _error = TextWriter.Synchronized(writer);
     }
 
     public static Stream OpenStandardInput()

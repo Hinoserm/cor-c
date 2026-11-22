@@ -1,0 +1,28 @@
+// test: an interpolated string's holes that declare a pattern variable or an out variable, a lambda, an anonymous type -- converted to a FormattableString, each checked once; one with no holes converts too
+// expect-exit: 0
+// expect-output:
+// [5][7][8] [3]
+// 15
+// plain {{braces}}|0|plain {braces}
+//
+// Output as .NET 10 says it.
+
+using System;
+using System.Globalization;
+static class Program
+{
+    static bool Try(out int v) { v = 7; return true; }
+    static int Main()
+    {
+        object o = 5;
+        FormattableString a = $"[{(o is int n ? n : 0)}]";
+        FormattableString b = $"[{(Try(out var w) ? w : 0)}]";
+        Func<int, int> twice = x => x * 2;
+        FormattableString c = $"[{new Func<int>(() => twice(4))()}] [{new { K = 3 }.K}]";
+        Console.WriteLine(a.ToString(CultureInfo.InvariantCulture) + b.ToString(CultureInfo.InvariantCulture) + c.ToString(CultureInfo.InvariantCulture));
+        Console.WriteLine(FormattableString.Invariant($"{(o is int m ? m * 3 : -1)}"));
+        FormattableString plain = $"plain {{braces}}";
+        Console.WriteLine(plain.Format + "|" + plain.ArgumentCount + "|" + plain.ToString(CultureInfo.InvariantCulture));
+        return 0;
+    }
+}

@@ -1534,6 +1534,7 @@ public static partial class Runtime
     public static void StartThread()
     {
         GcThreads.Register(Sys.ThreadBlock());
+        Scheduler.ThreadCame();
     }
 
     /// Tells the collector about a thread STARTED BY ANOTHER, BEFORE it
@@ -1553,6 +1554,7 @@ public static partial class Runtime
         Sys.Write64(block + Tls.Allocated, 0);
         Sys.WriteAddress(block + Tls.State, 1);
         GcThreads.Register(block);
+        Scheduler.ThreadCame();
     }
 
     /// This thread is leaving managed code for a while and takes nothing
@@ -1573,6 +1575,7 @@ public static partial class Runtime
     /// Takes a thread out again: its parent could not start it after all.
     public static void ForgetThread(nuint block)
     {
+        Scheduler.ThreadGone();
         ThreadStatics.Release(block);
         GcThreads.Deregister(block);
         Gc.ReleaseRegion(block);
@@ -1581,6 +1584,9 @@ public static partial class Runtime
     /// This thread's stack is about to stop being one.
     public static void EndThread()
     {
+        // Counted out while still registered, and the threads left looked
+        // at (Scheduler.ThreadEnding).
+        Scheduler.ThreadEnding();
         ThreadStatics.Release(Sys.ThreadBlock());
         GcThreads.Deregister(Sys.ThreadBlock());
         Gc.ReleaseRegion(Sys.ThreadBlock());

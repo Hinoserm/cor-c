@@ -780,6 +780,7 @@ public static class Gir
                     Str(l.Text);
                     I64(l.IntValue);
                     F64(l.RealValue);
+                    Str(l.InterpolatedFormat);
                     break;
 
                 case NameExpr n:
@@ -913,12 +914,14 @@ public static class Gir
                     Expr(b.Left);
                     Expr(b.Right);
                     // AN INTERPOLATED STRING'S PARTS: a count of holes, zero for
-                    // none, then the composite format and each hole.
-                    I32(b.Interpolation?.Holes.Count ?? 0);
+                    // none, then the composite format, the pieces and each
+                    // hole's place among them (the holes are in the join).
+                    I32(b.Interpolation?.Holes.Length ?? 0);
                     if (b.Interpolation is { } parts)
                     {
                         Str(parts.Format);
-                        foreach (Expr hole in parts.Holes) Expr(hole);
+                        I32(parts.Pieces);
+                        foreach (int hole in parts.Holes) I32(hole);
                     }
                     break;
 
@@ -1755,8 +1758,9 @@ public static class Gir
                     Lit lit = (Lit)U8();
                     string text = Str();
                     long i = I64();
+                    double real = F64();
 
-                    return new LiteralExpr { Kind = lit, Text = text, IntValue = i, RealValue = F64() };
+                    return new LiteralExpr { Kind = lit, Text = text, IntValue = i, RealValue = real, InterpolatedFormat = StrOrNull() };
                 }
 
                 case E.Name:
@@ -1895,10 +1899,11 @@ public static class Gir
                     if (holes > 0)
                     {
                         string format = Str();
-                        List<Expr> written = new(holes);
+                        int pieces = I32();
+                        int[] places = new int[holes];
 
-                        for (int i = 0; i < holes; i++) written.Add(Need());
-                        parts = new InterpolatedParts(format, written);
+                        for (int i = 0; i < holes; i++) places[i] = I32();
+                        parts = new InterpolatedParts(format, pieces, places);
                     }
                     return new BinaryExpr
                     {

@@ -39,7 +39,8 @@ public static partial class Scheduler
     // Nothing polls. Until the first worker runs, a thread waiting for a
     // task runs the queue itself, as the loop always did (RunUntil).
 
-    /// The fewest workers the pool may grow to, whatever the processors.
+    /// The most workers the pool grows to while every one waits in its work,
+    /// at the least: eight to a processor where that is more (StartPool).
     const int MostWorkers = 64;
     static int _target, _most;
     static AtomicCell? _grow;
@@ -56,6 +57,10 @@ public static partial class Scheduler
     {
         if (_grow is null)
         {
+            // NOT WITH A SPIN LOCK HELD (Tls.PreemptCount): the start makes
+            // cells and threads, and nothing is made under one. The next post
+            // or wait made without one starts it (RunUntil asks too).
+            if (Sys.ReadAddress(Sys.ThreadBlock() + Tls.PreemptCount) != 0) return;
             // (Once: two first posts race for the start, and one makes it.)
             if (Starting().CompareExchange(0, 1) == 0) StartPool(Math.Max(1, Os.ProcessorCount()));
             return;
@@ -104,10 +109,27 @@ public static partial class Scheduler
         _deadlocks = new AtomicCell();
         _quiet = new AtomicCell();
         _target = target;
+        _keep = target;
         _most = Math.Max(MostWorkers, 8 * target);
         // (Last: the grower and Starved read the counts once this is set.)
         _grow = new AtomicCell();
         System.Threading.Thread.Start(new PoolGrower());
+        // ONE WORKER AT ONCE, the rest as work waits for them (Grow): a pool
+        // with none until the grower found the queue waiting left a thread
+        // that ran the queue itself waiting in the loop without workers, for
+        // ever, when it had already drained what was posted.
+        AddWorkers(1);
+    }
+
+    /// IN A FORK'S CHILD (Scheduler.ForkedChild): the grower's state let go
+    /// with the pool's, so the child's first post makes its own.
+    static partial void PoolForked()
+    {
+        _grow = null;
+        _starting = null;
+        _target = 0;
+        _most = 0;
+        _keep = 0;
     }
 
     /// The start's flag, made once (under the queue's lock: the first of
@@ -151,6 +173,12 @@ public static partial class Scheduler
         gate.Enter();
         _workers = _workers + more;
         gate.Exit();
+        StartWorkers(more);
+    }
+
+    /// Threads for workers already counted (AddWorkers, AtLeast).
+    static void StartWorkers(int more)
+    {
         for (int i = 0; i < more; i++) System.Threading.Thread.Start(new PoolWorker());
     }
 
@@ -164,13 +192,17 @@ public static partial class Scheduler
         // (Another thread making the pool: until it has, nothing to add to.)
         long turns = 0;
         while (_grow is null) Atom.Turn(ref turns);
+        // COUNTED UNDER THE GATE, started after: two asking at once, or one
+        // beside the grower, each added the whole difference.
         AtomicCell gate = Gate();
         gate.Enter();
         if (count > _target) _target = count;
+        if (count > _keep) _keep = count;
         if (8 * count > _most) _most = 8 * count;
         int more = count - _workers;
+        if (more > 0) _workers = _workers + more;
         gate.Exit();
-        if (more > 0) AddWorkers(more);
+        if (more > 0) StartWorkers(more);
     }
 }
 

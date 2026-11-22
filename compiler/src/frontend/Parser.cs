@@ -377,9 +377,11 @@ public sealed class Parser
         string raw = at.Text;
         Expr? built = null;
         StringBuilder literal = new();
-        // The same string as a composite format and its holes (InterpolatedParts).
+        // The same string as a composite format and where its holes are
+        // (InterpolatedParts): each one's piece of the join, and how wrapped.
         StringBuilder composite = new();
-        List<Expr> holes = new();
+        List<int> holes = new();
+        int pieces = 0;
         int i = 0;
 
         void Flush()
@@ -407,7 +409,9 @@ public sealed class Parser
             if (built is null && piece is not LiteralExpr { Kind: Lit.Str })
             {
                 built = new LiteralExpr { Kind = Lit.Str, Text = "", Line = at.Line, Col = at.Col };
+                pieces++;
             }
+            pieces++;
             built = built is null
                 ? piece
                 : new BinaryExpr
@@ -566,7 +570,6 @@ public sealed class Parser
             if (alignment is not null) composite.Append(',').Append(alignment);
             if (format is not null) composite.Append(':').Append(format);
             composite.Append('}');
-            holes.Add(hole);
 
             if (format is not null)
             {
@@ -578,15 +581,29 @@ public sealed class Parser
                 hole = Aligned(hole, alignment, at);
             }
 
+            // Its piece: the one this join adds, after the empty one a hole
+            // first is joined to.
+            holes.Add(InterpolatedParts.Hole(pieces + (built is null ? 1 : 0), format is not null, alignment is not null));
             Join(hole);
         }
 
         Flush();
 
-        if (built is BinaryExpr joined && holes.Count > 0) joined.Interpolation = new InterpolatedParts(composite.ToString(), holes);
+        if (built is BinaryExpr joined && holes.Count > 0)
+        {
+            joined.Interpolation = new InterpolatedParts(composite.ToString(), pieces, holes.ToArray());
+            return joined;
+        }
 
-        // `$""` is the empty string rather than nothing at all.
-        return built ?? new LiteralExpr { Kind = Lit.Str, Text = "", Line = at.Line, Col = at.Col };
+        // NO HOLES: one literal, which a FormattableString takes too
+        // (LiteralExpr.InterpolatedFormat). `$""` is the empty string rather
+        // than nothing at all.
+        LiteralExpr text = built as LiteralExpr ?? new LiteralExpr { Kind = Lit.Str, Text = "", Line = at.Line, Col = at.Col };
+        return new LiteralExpr
+        {
+            Kind = text.Kind, Text = text.Text, IntValue = text.IntValue, RealValue = text.RealValue,
+            InterpolatedFormat = composite.ToString(), Line = text.Line, Col = text.Col,
+        };
     }
 
     /// <summary>
@@ -606,6 +623,12 @@ public sealed class Parser
         if (written.Length > 0 && char.IsWhiteSpace(written[^1]))
         {
             throw Error("a format specifier may not contain trailing whitespace");
+        }
+        // NO BRACE IN A FORMAT, as C# has none (CS1056): `{x:#{0}}` was read
+        // as a hole whose format held a brace pair, where C# refuses it.
+        if (written.Contains('{'))
+        {
+            throw Error("CS1056: Unexpected character '{' (a format specifier may not contain a brace)");
         }
 
         StringBuilder made = new();

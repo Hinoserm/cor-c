@@ -862,14 +862,22 @@ is synchronous, sets the heap, and only then runs the async body on the
 scheduler; and the scheduler's own tables are made on first use, not by
 a static initialiser, for the same reason.
 
-**The scheduler.** Continuations are not run inline by the completing
-code; they are posted to the current scheduler, which keeps a run queue.
-On Linux the first scheduler is a single-threaded event loop that also
-owns timers (`Task.Delay`) and, later, readiness for file descriptors. A
-thread pool replaces it by providing the same `Post` over several
-threads; the task and awaiter types are written with atomic state
-transitions from the start so that nothing changes when it does. On
-CORSAC the scheduler is the kernel's, and the multiprocessor is the pool.
+**The scheduler.** An await's continuation runs on the thread that
+completes its task, as .NET runs it, unless the task was made
+`RunContinuationsAsynchronously`, the thread holds a spin lock, too little
+stack is left, or a kernel runs continuations from its own queue; then it
+is posted to the scheduler's run queue, as `ContinueWith` (without
+`ExecuteSynchronously`), `Task.Yield` and `Task.Delay`'s continuations
+always are. Where there are threads the queue is run by a pool made with
+the first work posted: one worker at once, a grower thread adding more up
+to the processors and past them while every worker waits in its work,
+and workers above the pool's aim retiring after twenty idle seconds. A
+thread waiting for a task sleeps on the task's own word; a wait nothing
+can complete -- every thread idle or waiting on a task with no deadline,
+nothing queued, no timer -- is reported as a deadlock. Where there are no
+threads (the bootloader) the waiting thread runs the queue and the timers
+itself, the event loop. On CORSAC the scheduler is the kernel's, and the
+multiprocessor is the pool.
 
 **ValueTask.** An `async ValueTask` or `async ValueTask<T>` method
 allocates nothing until it really suspends, as .NET's
@@ -1412,12 +1420,12 @@ at another tree and `--no-default-libs` turns the set off.
   unmapped and their frames freed), so a program's memory follows its live
   set down as well as up. Its own failure path allocates nothing and says
   what it asked for, how big the heap was, and why the platform refused.
-- `lib/threading.cor`: `Task`, `Task<T>`, the awaiters, the scheduler and
-  its timers, cancellation, `Thread` and the pool. The single-threaded
-  scheduler is the default so ordering is deterministic;
-  `Scheduler.UseThreads(n)` turns on worker threads made with `clone(2)`
-  and futex-based locks. Per-thread runtime state (the handler chain,
-  the entry stack) is what the pool needs from the runtime next.
+- `runtime/src/core/threading.cor`: `Task`, `Task<T>`, the awaiters, the
+  scheduler and its timers, cancellation, and the run queue the pool
+  drains; `runtime/src/platforms/threads.cor`: `Thread` and the pool
+  itself, started on demand by the first post (`ThreadPool.SetMinThreads`
+  and `Scheduler.UseThreads(n)` ask for workers ahead), its threads made
+  with `clone(2)` and its locks futex-based.
 - `runtime/src/arch/x86/baremetal.cor`: the freestanding platform. A bump region the
   image's own start-up names (`SetHeap`) until an operating system in
   the image installs `MapHook`/`UnmapHook` -- the kernel points them at
