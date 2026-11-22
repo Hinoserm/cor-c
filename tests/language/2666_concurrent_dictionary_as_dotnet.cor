@@ -1,0 +1,95 @@
+// test: concurrent_dictionary_as_dotnet
+// expect-exit: 0
+// expect-output:
+// 1,3,40,5,17,99,64,65,34
+// 2,6,80,10,34,198,128,130,68
+// 1=2,3=6,40=80,5=10,17=34,99=198,64=128,65=130,34=68
+// 89,0,1,2,91,92,4,5,95,96,7,8,9,98,99,11,12,14,15,18,19,21,22,25,26,28,29,32,33,35,36,39,40,42,43,46,47,49,50,53,54,56,57,60,61,63,64,67,68,70,71,74,75,77,78,81,82,84,85,88
+// v2 60 zero 89,0,1,2,91,92,4,5
+// beta,zeta,kappa,theta,,alpha,epsilon,delta,Ab,ab,iota,eta,x,gamma
+// XY:2,Alpha:1,Ärger:2,x:1,Straße:1,gamma:1,BETA:1
+// five,three,six,one,two,four
+// -1,1099511627776,8589934592,5,-7,12,99,100
+// o1,y1,r2,c3,u1,e1,n2
+// 1,40,64 False 3
+// 1000 4000 True 499500
+// The key already existed in the dictionary.
+// The concurrencyLevel argument must be positive, or -1 to indicate a default level. (Parameter 'concurrencyLevel')
+// The source argument contains duplicate keys.
+// The given key '5000' was not present in the dictionary.
+//
+// ConcurrentDictionary made as .NET 10 makes it, so it answers in .NET's
+// order: prime-sized buckets, the newest at a chain's head, locks and their
+// budget, growth to the prime past twice the size reading each chain head
+// first, .NET's non-randomised string hash (ordinal and ignoring case),
+// Clear back to the first size; and its messages. The concurrency level is
+// given wherever the order is printed, so no machine changes it. Output
+// from .NET 10 (probe ~/tmp/dn/cdorder).
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+static class Program
+{
+    static string Keys<K, V>(ConcurrentDictionary<K, V> d) where K : notnull => string.Join(",", d.Keys);
+
+    static int Main()
+    {
+        // The table as .NET sizes it: the concurrency level given, so the
+        // order is the same on every machine.
+        var small = new ConcurrentDictionary<int, int>(4, 31);
+        foreach (int k in new[] { 40, 3, 17, 99, 5, 64, 1, 34, 65 }) small[k] = k * 2;
+        Console.WriteLine(Keys(small));
+        Console.WriteLine(string.Join(",", small.Values));
+        Console.WriteLine(string.Join(",", small.Select(p => p.Key + "=" + p.Value)));
+
+        // Growth: the table doubled to the next prime, chains read head first.
+        var grown = new ConcurrentDictionary<int, string>(2, 7);
+        for (int i = 0; i < 60; i++) grown.TryAdd(i * 7 % 101, "v" + i);
+        Console.WriteLine(Keys(grown));
+        grown.TryRemove(14, out string? gone);
+        grown[700] = "late";
+        grown.TryUpdate(0, "zero", "v0");
+        Console.WriteLine(gone + " " + grown.Count + " " + grown[0] + " " + string.Join(",", grown.ToArray().Take(8).Select(p => p.Key)));
+
+        // Strings: .NET's non-randomised hash, ordinal and ignoring case.
+        var words = new ConcurrentDictionary<string, int>(3, 11, StringComparer.Ordinal);
+        foreach (string w in new[] { "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "Ab", "ab", "x", "" })
+            words[w] = w.Length;
+        Console.WriteLine(Keys(words));
+        var folded = new ConcurrentDictionary<string, int>(3, 11, StringComparer.OrdinalIgnoreCase);
+        foreach (string w in new[] { "Alpha", "BETA", "gamma", "Ärger", "ärger", "Straße", "x", "XY", "xy" })
+            folded.AddOrUpdate(w, 1, (_, n) => n + 1);
+        Console.WriteLine(string.Join(",", folded.Select(p => p.Key + ":" + p.Value)));
+        var plain = new ConcurrentDictionary<string, int>(1, 5);
+        foreach (string w in new[] { "one", "two", "three", "four", "five", "six" }) plain.TryAdd(w, 1);
+        Console.WriteLine(Keys(plain));
+
+        // Longs, chars, and a growth of the locks too (default form, concurrency 1).
+        var longs = new ConcurrentDictionary<long, int>(1, 3);
+        foreach (long k in new[] { -1L, 1L << 33, 5L, 1L << 40, -7L, 12L, 99L, 100L }) longs[k] = 0;
+        Console.WriteLine(Keys(longs));
+        var chars = new ConcurrentDictionary<char, int>(2, 5);
+        foreach (char c in "concurrency") chars.AddOrUpdate(c, 1, (_, n) => n + 1);
+        Console.WriteLine(string.Join(",", chars.Select(p => p.Key + "" + p.Value)));
+
+        // Clear: back to the size it was made at.
+        small.Clear();
+        foreach (int k in new[] { 64, 1, 40 }) small.GetOrAdd(k, x => -x);
+        Console.WriteLine(Keys(small) + " " + small.IsEmpty + " " + small.Count);
+
+        // Default concurrency: answers that do not depend on the machine.
+        var many = new ConcurrentDictionary<int, int>();
+        Parallel.For(0, 4000, i => many.AddOrUpdate(i % 1000, 1, (_, n) => n + 1));
+        Console.WriteLine(many.Count + " " + many.Values.Sum() + " " + many.Values.All(n => n == 4) + " " + many.Keys.Sum());
+
+        try { ((IDictionary<int, int>)many).Add(3, 3); } catch (ArgumentException e) { Console.WriteLine(e.Message); }
+        try { new ConcurrentDictionary<int, int>(0, 3); } catch (ArgumentOutOfRangeException e) { Console.WriteLine(e.Message); }
+        try { new ConcurrentDictionary<int, int>(new[] { new KeyValuePair<int, int>(1, 1), new KeyValuePair<int, int>(1, 2) }); } catch (ArgumentException e) { Console.WriteLine(e.Message); }
+        try { Console.WriteLine(many[5000]); } catch (KeyNotFoundException e) { Console.WriteLine(e.Message); }
+        return 0;
+    }
+}

@@ -2695,50 +2695,309 @@ namespace System.Collections.Concurrent
         }
     }
 
-    /// A dictionary for many threads: every operation is one step, and the
-    /// Get-or-Add and Add-or-Update forms are what make read-then-write safe.
-    /// A value factory runs outside the lock, as .NET's does -- so it may run
-    /// more than once for a key when threads race, and only one result is kept.
+    /// A dictionary for many threads, as .NET's own is made, so that it
+    /// answers as .NET's does -- its order of enumeration among them:
+    ///
+    /// A TABLE OF BUCKETS, each a chain of nodes, the newest at its head, and
+    /// a set of locks over them, bucket b guarded by lock b mod the lock
+    /// count. A write takes its bucket's lock; a read takes none, following
+    /// a chain published whole (a node is complete before the store that
+    /// links it in). The table is sized as .NET sizes it: at least the
+    /// concurrency level (the processor count by default) and 31, made a
+    /// prime (GetPrime); each lock may hold its share of buckets' worth of
+    /// members (the budget) before the table grows -- to the prime past twice
+    /// its size, every chain read head first into the new one, so a chain
+    /// comes out reversed -- or, where the table is three quarters empty,
+    /// only the budget doubles. A table made by the default constructors
+    /// doubles its locks as it grows, up to 1024. A key's bucket is its hash
+    /// modulo the bucket count.
+    ///
+    /// A STRING KEY IS HASHED AS .NET's is here: by the comparer given --
+    /// unless that is the default, Ordinal or OrdinalIgnoreCase, for which
+    /// .NET's own non-randomised hash is used (NonRandomizedHash), the same
+    /// on every run. (.NET changes over to a randomised one after a hundred
+    /// collisions in a chain, whose order no run can repeat; here the hash
+    /// stays as it is.)
+    ///
+    /// A value factory runs outside the locks, as .NET's does -- so it may
+    /// run more than once for a key when threads race, and one result is kept.
     public class ConcurrentDictionary<K, V> : IDictionary<K, V>, IReadOnlyDictionary<K, V>, IEnumerable<KeyValuePair<K, V>>
     {
-    // The non-generic IEnumerable's, as .NET's collections have it.
-    IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        // The non-generic IEnumerable's, as .NET's collections have it.
+        IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
 
-        readonly Dictionary<K, V> _items;
-        readonly object _gate = new object();
+        private const int DefaultCapacity = 31;
+        private const int MaxLockNumber = 1024;
 
-        public ConcurrentDictionary()
+        private sealed class Node
         {
-            _items = new Dictionary<K, V>();
+            internal readonly K Key;
+            internal V Value;
+            internal readonly int Hash;
+            internal Node? Next;
+            internal Node(K key, V value, int hash, Node? next) { Key = key; Value = value; Hash = hash; Next = next; }
         }
 
-        public ConcurrentDictionary(IEqualityComparer<K>? comparer)
+        // ONE TABLE, replaced whole when it grows or is cleared: a reader
+        // takes it once and walks what it holds.
+        private sealed class Tables
         {
-            _items = comparer == null ? new Dictionary<K, V>() : new Dictionary<K, V>(comparer);
+            internal readonly Node?[] Buckets;
+            internal readonly object[] Locks;
+            internal readonly int[] CountPerLock;
+            internal Tables(Node?[] buckets, object[] locks, int[] countPerLock) { Buckets = buckets; Locks = locks; CountPerLock = countPerLock; }
         }
 
-        public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection) : this(collection, null)
+        private Tables _tables;
+        private readonly IEqualityComparer<K> _comparer;
+        // How a key is hashed: by the comparer (0), or .NET's non-randomised
+        // hash of a string, ordinal (1) or ignoring case (2).
+        private readonly int _hashing;
+        private readonly bool _growLockArray;
+        private readonly int _initialCapacity;
+        private int _budget;
+        // Whether a V is stored in one write, so another thread never reads
+        // half of one: a reference, or a number of at most four bytes. Any
+        // other is replaced by a new node instead, as .NET's IsWriteAtomic.
+        private static readonly bool WriteAtomic = WritesWhole();
+
+        private static bool WritesWhole()
         {
+            if (!typeof(V).IsValueType) { return true; }
+            return typeof(V) == typeof(bool) || typeof(V) == typeof(char) || typeof(V) == typeof(byte) || typeof(V) == typeof(sbyte)
+                || typeof(V) == typeof(short) || typeof(V) == typeof(ushort) || typeof(V) == typeof(int) || typeof(V) == typeof(uint)
+                || typeof(V) == typeof(float);
         }
 
-        public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection, IEqualityComparer<K>? comparer) : this(comparer)
+        public ConcurrentDictionary() : this(-1, DefaultCapacity, true, null) { }
+
+        public ConcurrentDictionary(IEqualityComparer<K>? comparer) : this(-1, DefaultCapacity, true, comparer) { }
+
+        public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection) : this(collection, null) { }
+
+        public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection, IEqualityComparer<K>? comparer)
+            : this(-1, CapacityFor(collection), true, comparer)
+        {
+            Fill(collection);
+        }
+
+        public ConcurrentDictionary(int concurrencyLevel, int capacity) : this(concurrencyLevel, capacity, false, null) { }
+
+        public ConcurrentDictionary(int concurrencyLevel, int capacity, IEqualityComparer<K>? comparer)
+            : this(concurrencyLevel, capacity, false, comparer) { }
+
+        public ConcurrentDictionary(int concurrencyLevel, IEnumerable<KeyValuePair<K, V>> collection, IEqualityComparer<K>? comparer)
+            : this(concurrencyLevel, CapacityFor(collection), false, comparer)
+        {
+            Fill(collection);
+        }
+
+        private ConcurrentDictionary(int concurrencyLevel, int capacity, bool growLockArray, IEqualityComparer<K>? comparer)
+        {
+            if (concurrencyLevel <= 0)
+            {
+                if (concurrencyLevel != -1) { throw new ArgumentOutOfRangeException("concurrencyLevel", "The concurrencyLevel argument must be positive, or -1 to indicate a default level."); }
+                concurrencyLevel = Math.Max(1, Environment.ProcessorCount);
+            }
+            if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity"); }
+            // At least a bucket for every lock, and a prime.
+            if (capacity < concurrencyLevel) { capacity = concurrencyLevel; }
+            capacity = GetPrime(capacity);
+
+            object[] locks = new object[concurrencyLevel];
+            for (int i = 0; i < locks.Length; i++) { locks[i] = new object(); }
+            _tables = new Tables(new Node?[capacity], locks, new int[locks.Length]);
+            _comparer = comparer ?? EqualityComparer<K>.Default;
+            _hashing = typeof(K) == typeof(string)
+                ? ((object)_comparer == (object)EqualityComparer<K>.Default || StringComparer.IsOrdinal(_comparer) ? 1
+                   : (object)_comparer == (object)StringComparer.OrdinalIgnoreCase ? 2 : 0)
+                : 0;
+            _growLockArray = growLockArray;
+            _initialCapacity = capacity;
+            _budget = capacity / locks.Length;
+        }
+
+        private static int CapacityFor(IEnumerable<KeyValuePair<K, V>> collection)
         {
             if (collection == null) { throw new ArgumentNullException("collection"); }
+            if (collection is ICollection<KeyValuePair<K, V>> sized) { return Math.Max(DefaultCapacity, sized.Count); }
+            if (collection is IReadOnlyCollection<KeyValuePair<K, V>> read) { return Math.Max(DefaultCapacity, read.Count); }
+            return DefaultCapacity;
+        }
+
+        // A collection's pairs, in its order, before any other thread can see the table.
+        private void Fill(IEnumerable<KeyValuePair<K, V>> collection)
+        {
             foreach (KeyValuePair<K, V> pair in collection)
             {
-                if (!_items.TryAdd(pair.Key, pair.Value)) { throw new ArgumentException("The source argument contains duplicate keys."); }
+                if (pair.Key == null) { throw new ArgumentNullException("key"); }
+                if (!TryAddInternal(pair.Key, pair.Value, false, out V _)) { throw new ArgumentException("The source argument contains duplicate keys."); }
+            }
+            if (_budget == 0) { _budget = _tables.Buckets.Length / _tables.Locks.Length; }
+        }
+
+        // ---- .NET's HashHelpers ----
+
+        private static readonly int[] Primes = {
+            3, 7, 11, 17, 23, 29, 37, 47, 59, 71, 89, 107, 131, 163, 197, 239, 293, 353, 431, 521, 631, 761, 919,
+            1103, 1327, 1597, 1931, 2333, 2801, 3371, 4049, 4861, 5839, 7013, 8419, 10103, 12143, 14591,
+            17519, 21023, 25229, 30293, 36353, 43627, 52361, 62851, 75431, 90523, 108631, 130363, 156437,
+            187751, 225307, 270371, 324449, 389357, 467237, 560689, 672827, 807403, 968897, 1162687, 1395263,
+            1674319, 2009191, 2411033, 2893249, 3471899, 4166287, 4999559, 5999471, 7199369,
+        };
+
+        private static bool IsPrime(int candidate)
+        {
+            if ((candidate & 1) == 0) { return candidate == 2; }
+            for (int divisor = 3; (long)divisor * divisor <= candidate; divisor += 2)
+            {
+                if (candidate % divisor == 0) { return false; }
+            }
+            return true;
+        }
+
+        private static int GetPrime(int min)
+        {
+            foreach (int prime in Primes)
+            {
+                if (prime >= min) { return prime; }
+            }
+            for (int i = min | 1; i < int.MaxValue; i += 2)
+            {
+                if (IsPrime(i) && (i - 1) % 101 != 0) { return i; }
+            }
+            return min;
+        }
+
+        // ---- hashing ----
+
+        private int HashOf(K key)
+        {
+            if (_hashing != 0) { return NonRandomizedHash((string)(object)key!, _hashing == 2); }
+            return _comparer.GetHashCode(key);
+        }
+
+        /// .NET's String.GetNonRandomizedHashCode (and its OrdinalIgnoreCase
+        /// form): two djb2 lanes over the units read two at a time as little-
+        /// endian words, the terminator read after an odd last one. Ignoring
+        /// case, each unit is first made upper case (as .NET's
+        /// ToUpperOrdinal) and every word ORed with 0x00200020, which makes
+        /// an ASCII letter its lower case.
+        private static int NonRandomizedHash(string s, bool ignoreCase)
+        {
+            string units = s;
+            if (ignoreCase)
+            {
+                bool ascii = true;
+                for (int i = 0; i < s.Length; i++) { if (s[i] > 0x7F) { ascii = false; break; } }
+                if (!ascii)
+                {
+                    StringBuilder upper = new StringBuilder(s.Length);
+                    int at = 0;
+                    while (at < s.Length)
+                    {
+                        int c = String.OrdinalFolded(s, ref at);
+                        if (c > 0xFFFF)
+                        {
+                            c -= 0x10000;
+                            upper.Append((char)(0xD800 + (c >> 10)));
+                            upper.Append((char)(0xDC00 + (c & 0x3FF)));
+                        }
+                        else
+                        {
+                            upper.Append((char)c);
+                        }
+                    }
+                    units = upper.ToString();
+                }
+            }
+            uint fold = ignoreCase ? 0x00200020u : 0u;
+            uint hash1 = (5381u << 16) + 5381u;
+            uint hash2 = hash1;
+            int length = units.Length;
+            int p = 0;
+            while (length > 2)
+            {
+                length -= 4;
+                hash1 = (RotateLeft5(hash1) + hash1) ^ (Word(units, p) | fold);
+                hash2 = (RotateLeft5(hash2) + hash2) ^ (Word(units, p + 2) | fold);
+                p += 4;
+            }
+            if (length > 0) { hash2 = (RotateLeft5(hash2) + hash2) ^ (Word(units, p) | fold); }
+            return unchecked((int)(hash1 + hash2 * 1566083941u));
+        }
+
+        private static uint RotateLeft5(uint x) { return (x << 5) | (x >> 27); }
+
+        // Two units as one little-endian word, the terminator (0) past the end.
+        private static uint Word(string s, int at)
+        {
+            uint low = at < s.Length ? s[at] : 0u;
+            uint high = at + 1 < s.Length ? s[at + 1] : 0u;
+            return low | (high << 16);
+        }
+
+        private static int BucketOf(Tables tables, int hash) { return (int)((uint)hash % (uint)tables.Buckets.Length); }
+
+        // ---- the locks ----
+
+        private void AcquireAllLocks(ref int acquired)
+        {
+            // The first, then the table as it is under it (a growth takes the first first).
+            Monitor.Enter(_tables.Locks[0]);
+            acquired = 1;
+            object[] locks = _tables.Locks;
+            for (int i = 1; i < locks.Length; i++)
+            {
+                Monitor.Enter(locks[i]);
+                acquired = acquired + 1;
             }
         }
 
-        public ConcurrentDictionary(int concurrencyLevel, int capacity) : this()
+        private void ReleaseLocks(int acquired)
         {
-            if (concurrencyLevel < 1 && concurrencyLevel != -1) { throw new ArgumentOutOfRangeException("concurrencyLevel"); }
-            if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity"); }
+            object[] locks = _tables.Locks;
+            for (int i = 0; i < acquired; i++) { Monitor.Exit(locks[i]); }
         }
 
-        public int Count { get { lock (_gate) { return _items.Count; } } }
+        private int CountNoLocks()
+        {
+            int count = 0;
+            foreach (int one in _tables.CountPerLock) { count += one; }
+            return count;
+        }
 
-        public bool IsEmpty { get { lock (_gate) { return _items.Count == 0; } } }
+        // ---- the operations ----
+
+        public IEqualityComparer<K> Comparer => _comparer;
+
+        public int Count
+        {
+            get
+            {
+                int acquired = 0;
+                try { AcquireAllLocks(ref acquired); return CountNoLocks(); }
+                finally { ReleaseLocks(acquired); }
+            }
+        }
+
+        public bool IsEmpty
+        {
+            get
+            {
+                // Nothing in any bucket: answered without the locks where it is not so.
+                if (!AllBucketsEmpty()) { return false; }
+                int acquired = 0;
+                try { AcquireAllLocks(ref acquired); return AllBucketsEmpty(); }
+                finally { ReleaseLocks(acquired); }
+            }
+        }
+
+        private bool AllBucketsEmpty()
+        {
+            foreach (int one in _tables.CountPerLock) { if (one != 0) { return false; } }
+            return true;
+        }
 
         public V this[K key]
         {
@@ -2749,46 +3008,200 @@ namespace System.Collections.Concurrent
             }
             set
             {
-                lock (_gate) { _items[key] = value; }
+                if (key == null) { throw new ArgumentNullException("key"); }
+                TryAddInternal(key, value, true, out V _);
             }
         }
 
-        public ICollection<K> Keys { get { lock (_gate) { return new ReadOnlyCollection<K>(new List<K>(_items.Keys)); } } }
+        public bool ContainsKey(K key) { return TryGetValue(key, out V _); }
 
-        public ICollection<V> Values { get { lock (_gate) { return new ReadOnlyCollection<V>(new List<V>(_items.Values)); } } }
-
-        IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
-        IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
-
-        public bool ContainsKey(K key)
-        {
-            lock (_gate) { return _items.ContainsKey(key); }
-        }
-
+        /// WITH NO LOCK: the table as it is now, a chain followed as it was
+        /// published.
         public bool TryGetValue(K key, out V value)
         {
-            lock (_gate) { return _items.TryGetValue(key, out value); }
+            if (key == null) { throw new ArgumentNullException("key"); }
+            Tables tables = System.Threading.Volatile.Read(ref _tables);
+            int hash = HashOf(key);
+            for (Node? n = System.Threading.Volatile.Read(ref tables.Buckets[BucketOf(tables, hash)]); n != null; n = System.Threading.Volatile.Read(ref n.Next))
+            {
+                if (hash == n.Hash && _comparer.Equals(n.Key, key))
+                {
+                    value = n.Value;
+                    return true;
+                }
+            }
+            value = default(V)!;
+            return false;
         }
 
         public bool TryAdd(K key, V value)
         {
-            lock (_gate) { return _items.TryAdd(key, value); }
+            if (key == null) { throw new ArgumentNullException("key"); }
+            return TryAddInternal(key, value, false, out V _);
+        }
+
+        /// A key added at its bucket's head, or found there and, where
+        /// `update` says, given the value: false when it was there. What the
+        /// key holds after is `resulting`.
+        private bool TryAddInternal(K key, V value, bool update, out V resulting)
+        {
+            int hash = HashOf(key);
+            while (true)
+            {
+                Tables tables = _tables;
+                int bucket = BucketOf(tables, hash);
+                int lockNo = bucket % tables.Locks.Length;
+                bool resize = false;
+                lock (tables.Locks[lockNo])
+                {
+                    // Grown while this waited: the right bucket and lock are the new table's.
+                    if (tables != _tables) { continue; }
+                    Node? prev = null;
+                    for (Node? n = tables.Buckets[bucket]; n != null; n = n.Next)
+                    {
+                        if (hash == n.Hash && _comparer.Equals(n.Key, key))
+                        {
+                            if (update)
+                            {
+                                if (WriteAtomic) { n.Value = value; }
+                                else
+                                {
+                                    Node replaced = new Node(n.Key, value, hash, n.Next);
+                                    if (prev == null) { System.Threading.Interlocked.Exchange(ref tables.Buckets[bucket], replaced); }
+                                    else { System.Threading.Interlocked.Exchange(ref prev.Next, replaced); }
+                                }
+                                resulting = value;
+                            }
+                            else
+                            {
+                                resulting = n.Value;
+                            }
+                            return false;
+                        }
+                        prev = n;
+                    }
+                    Node made = new Node(key, value, hash, tables.Buckets[bucket]);
+                    System.Threading.Interlocked.Exchange(ref tables.Buckets[bucket], made);
+                    tables.CountPerLock[lockNo] = checked(tables.CountPerLock[lockNo] + 1);
+                    // Past this lock's share: the table grows, or the share does.
+                    if (tables.CountPerLock[lockNo] > _budget) { resize = true; }
+                }
+                if (resize) { GrowTable(tables); }
+                resulting = value;
+                return true;
+            }
+        }
+
+        private void GrowTable(Tables tables)
+        {
+            int acquired = 0;
+            try
+            {
+                // The first lock alone, then whether another thread grew it meanwhile.
+                Monitor.Enter(tables.Locks[0]);
+                acquired = 1;
+                if (tables != _tables) { return; }
+
+                // A table three quarters empty has a poor hash, not too few
+                // buckets: its share doubles instead.
+                if (CountNoLocks() < tables.Buckets.Length / 4)
+                {
+                    _budget = 2 * _budget;
+                    if (_budget < 0) { _budget = int.MaxValue; }
+                    return;
+                }
+
+                int newLength = tables.Buckets.Length * 2;
+                if (newLength < 0 || (newLength = GetPrime(newLength)) > 0x7FFFFFC7)
+                {
+                    newLength = 0x7FFFFFC7;
+                    _budget = int.MaxValue;
+                }
+
+                object[] newLocks = tables.Locks;
+                if (_growLockArray && tables.Locks.Length < MaxLockNumber)
+                {
+                    newLocks = new object[tables.Locks.Length * 2];
+                    for (int i = 0; i < tables.Locks.Length; i++) { newLocks[i] = tables.Locks[i]; }
+                    for (int i = tables.Locks.Length; i < newLocks.Length; i++) { newLocks[i] = new object(); }
+                }
+
+                Node?[] newBuckets = new Node?[newLength];
+                int[] newCountPerLock = new int[newLocks.Length];
+                Tables newTables = new Tables(newBuckets, newLocks, newCountPerLock);
+
+                // The rest of the old table's locks, in order.
+                for (int i = 1; i < tables.Locks.Length; i++)
+                {
+                    Monitor.Enter(tables.Locks[i]);
+                    acquired = acquired + 1;
+                }
+
+                // Every chain read head first, each node made again at the head of its new bucket.
+                foreach (Node? head in tables.Buckets)
+                {
+                    for (Node? current = head; current != null; current = current.Next)
+                    {
+                        int bucket = BucketOf(newTables, current.Hash);
+                        newBuckets[bucket] = new Node(current.Key, current.Value, current.Hash, newBuckets[bucket]);
+                        int lockNo = bucket % newLocks.Length;
+                        newCountPerLock[lockNo] = checked(newCountPerLock[lockNo] + 1);
+                    }
+                }
+
+                _budget = Math.Max(1, newBuckets.Length / newLocks.Length);
+                System.Threading.Interlocked.Exchange(ref _tables, newTables);
+            }
+            finally
+            {
+                for (int i = 0; i < acquired; i++) { Monitor.Exit(tables.Locks[i]); }
+            }
         }
 
         public bool TryRemove(K key, out V value)
         {
-            lock (_gate) { return _items.Remove(key, out value); }
+            if (key == null) { throw new ArgumentNullException("key"); }
+            return TryRemoveInternal(key, out value, false, default(V)!);
         }
 
         /// Removes the pair only when the key still holds that value.
         public bool TryRemove(KeyValuePair<K, V> item)
         {
-            lock (_gate)
+            if (item.Key == null) { throw new ArgumentNullException("item", "TKey is a reference type and item.Key is null."); }
+            return TryRemoveInternal(item.Key, out V _, true, item.Value);
+        }
+
+        private bool TryRemoveInternal(K key, out V value, bool matchValue, V oldValue)
+        {
+            int hash = HashOf(key);
+            while (true)
             {
-                if (_items.TryGetValue(item.Key, out V held) && EqualityComparer<V>.Default.Equals(held, item.Value))
+                Tables tables = _tables;
+                int bucket = BucketOf(tables, hash);
+                int lockNo = bucket % tables.Locks.Length;
+                lock (tables.Locks[lockNo])
                 {
-                    return _items.Remove(item.Key);
+                    if (tables != _tables) { continue; }
+                    Node? prev = null;
+                    for (Node? n = tables.Buckets[bucket]; n != null; n = n.Next)
+                    {
+                        if (hash == n.Hash && _comparer.Equals(n.Key, key))
+                        {
+                            if (matchValue && !EqualityComparer<V>.Default.Equals(oldValue, n.Value))
+                            {
+                                value = default(V)!;
+                                return false;
+                            }
+                            if (prev == null) { System.Threading.Interlocked.Exchange(ref tables.Buckets[bucket], n.Next); }
+                            else { prev.Next = n.Next; }
+                            value = n.Value;
+                            tables.CountPerLock[lockNo] = tables.CountPerLock[lockNo] - 1;
+                            return true;
+                        }
+                        prev = n;
+                    }
                 }
+                value = default(V)!;
                 return false;
             }
         }
@@ -2796,45 +3209,68 @@ namespace System.Collections.Concurrent
         /// Replaces the value only when it is still `comparisonValue`.
         public bool TryUpdate(K key, V newValue, V comparisonValue)
         {
-            lock (_gate)
+            if (key == null) { throw new ArgumentNullException("key"); }
+            int hash = HashOf(key);
+            IEqualityComparer<V> same = EqualityComparer<V>.Default;
+            while (true)
             {
-                if (_items.TryGetValue(key, out V held) && EqualityComparer<V>.Default.Equals(held, comparisonValue))
+                Tables tables = _tables;
+                int bucket = BucketOf(tables, hash);
+                int lockNo = bucket % tables.Locks.Length;
+                lock (tables.Locks[lockNo])
                 {
-                    _items[key] = newValue;
-                    return true;
+                    if (tables != _tables) { continue; }
+                    Node? prev = null;
+                    for (Node? n = tables.Buckets[bucket]; n != null; n = n.Next)
+                    {
+                        if (hash == n.Hash && _comparer.Equals(n.Key, key))
+                        {
+                            if (!same.Equals(n.Value, comparisonValue)) { return false; }
+                            if (WriteAtomic) { n.Value = newValue; }
+                            else
+                            {
+                                Node replaced = new Node(n.Key, newValue, hash, n.Next);
+                                if (prev == null) { System.Threading.Interlocked.Exchange(ref tables.Buckets[bucket], replaced); }
+                                else { System.Threading.Interlocked.Exchange(ref prev.Next, replaced); }
+                            }
+                            return true;
+                        }
+                        prev = n;
+                    }
+                    return false;
                 }
-                return false;
             }
         }
 
         public V GetOrAdd(K key, V value)
         {
-            lock (_gate)
-            {
-                if (_items.TryGetValue(key, out V held)) { return held; }
-                _items.Add(key, value);
-                return value;
-            }
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (TryGetValue(key, out V held)) { return held; }
+            TryAddInternal(key, value, false, out V resulting);
+            return resulting;
         }
 
         public V GetOrAdd(K key, Func<K, V> valueFactory)
         {
+            if (key == null) { throw new ArgumentNullException("key"); }
             if (valueFactory == null) { throw new ArgumentNullException("valueFactory"); }
             if (TryGetValue(key, out V held)) { return held; }
-            V made = valueFactory(key);
-            return GetOrAdd(key, made);
+            TryAddInternal(key, valueFactory(key), false, out V resulting);
+            return resulting;
         }
 
         public V GetOrAdd<TArg>(K key, Func<K, TArg, V> valueFactory, TArg factoryArgument)
         {
+            if (key == null) { throw new ArgumentNullException("key"); }
             if (valueFactory == null) { throw new ArgumentNullException("valueFactory"); }
             if (TryGetValue(key, out V held)) { return held; }
-            V made = valueFactory(key, factoryArgument);
-            return GetOrAdd(key, made);
+            TryAddInternal(key, valueFactory(key, factoryArgument), false, out V resulting);
+            return resulting;
         }
 
         public V AddOrUpdate(K key, V addValue, Func<K, V, V> updateValueFactory)
         {
+            if (key == null) { throw new ArgumentNullException("key"); }
             if (updateValueFactory == null) { throw new ArgumentNullException("updateValueFactory"); }
             while (true)
             {
@@ -2843,15 +3279,16 @@ namespace System.Collections.Concurrent
                     V updated = updateValueFactory(key, held);
                     if (TryUpdate(key, updated, held)) { return updated; }
                 }
-                else if (TryAdd(key, addValue))
+                else if (TryAddInternal(key, addValue, false, out V resulting))
                 {
-                    return addValue;
+                    return resulting;
                 }
             }
         }
 
         public V AddOrUpdate(K key, Func<K, V> addValueFactory, Func<K, V, V> updateValueFactory)
         {
+            if (key == null) { throw new ArgumentNullException("key"); }
             if (addValueFactory == null) { throw new ArgumentNullException("addValueFactory"); }
             if (updateValueFactory == null) { throw new ArgumentNullException("updateValueFactory"); }
             while (true)
@@ -2861,42 +3298,134 @@ namespace System.Collections.Concurrent
                     V updated = updateValueFactory(key, held);
                     if (TryUpdate(key, updated, held)) { return updated; }
                 }
-                else
+                else if (TryAddInternal(key, addValueFactory(key), false, out V resulting))
                 {
-                    V added = addValueFactory(key);
-                    if (TryAdd(key, added)) { return added; }
+                    return resulting;
                 }
             }
         }
 
+        public V AddOrUpdate<TArg>(K key, Func<K, TArg, V> addValueFactory, Func<K, V, TArg, V> updateValueFactory, TArg factoryArgument)
+        {
+            if (key == null) { throw new ArgumentNullException("key"); }
+            if (addValueFactory == null) { throw new ArgumentNullException("addValueFactory"); }
+            if (updateValueFactory == null) { throw new ArgumentNullException("updateValueFactory"); }
+            while (true)
+            {
+                if (TryGetValue(key, out V held))
+                {
+                    V updated = updateValueFactory(key, held, factoryArgument);
+                    if (TryUpdate(key, updated, held)) { return updated; }
+                }
+                else if (TryAddInternal(key, addValueFactory(key, factoryArgument), false, out V resulting))
+                {
+                    return resulting;
+                }
+            }
+        }
+
+        /// Everything removed, the table back to the size it was made at.
         public void Clear()
         {
-            lock (_gate) { _items.Clear(); }
+            int acquired = 0;
+            try
+            {
+                AcquireAllLocks(ref acquired);
+                if (AllBucketsEmpty()) { return; }
+                Tables tables = _tables;
+                Tables cleared = new Tables(new Node?[GetPrime(_initialCapacity)], tables.Locks, new int[tables.CountPerLock.Length]);
+                _budget = Math.Max(1, cleared.Buckets.Length / cleared.Locks.Length);
+                System.Threading.Interlocked.Exchange(ref _tables, cleared);
+            }
+            finally { ReleaseLocks(acquired); }
         }
 
+        /// Bucket by bucket, each chain head first, under every lock.
         public KeyValuePair<K, V>[] ToArray()
         {
-            lock (_gate)
+            int acquired = 0;
+            try
             {
-                KeyValuePair<K, V>[] copy = new KeyValuePair<K, V>[_items.Count];
-                int i = 0;
-                foreach (KeyValuePair<K, V> pair in _items)
+                AcquireAllLocks(ref acquired);
+                KeyValuePair<K, V>[] array = new KeyValuePair<K, V>[CountNoLocks()];
+                CopyToPairs(array, 0);
+                return array;
+            }
+            finally { ReleaseLocks(acquired); }
+        }
+
+        private void CopyToPairs(KeyValuePair<K, V>[] array, int index)
+        {
+            foreach (Node? head in _tables.Buckets)
+            {
+                for (Node? n = head; n != null; n = n.Next)
                 {
-                    copy[i] = pair;
-                    i = i + 1;
+                    array[index] = new KeyValuePair<K, V>(n.Key, n.Value);
+                    index = index + 1;
                 }
-                return copy;
             }
         }
 
+        public ICollection<K> Keys
+        {
+            get
+            {
+                int acquired = 0;
+                try
+                {
+                    AcquireAllLocks(ref acquired);
+                    List<K> keys = new List<K>(CountNoLocks());
+                    foreach (Node? head in _tables.Buckets)
+                    {
+                        for (Node? n = head; n != null; n = n.Next) { keys.Add(n.Key); }
+                    }
+                    return new ReadOnlyCollection<K>(keys);
+                }
+                finally { ReleaseLocks(acquired); }
+            }
+        }
+
+        public ICollection<V> Values
+        {
+            get
+            {
+                int acquired = 0;
+                try
+                {
+                    AcquireAllLocks(ref acquired);
+                    List<V> values = new List<V>(CountNoLocks());
+                    foreach (Node? head in _tables.Buckets)
+                    {
+                        for (Node? n = head; n != null; n = n.Next) { values.Add(n.Value); }
+                    }
+                    return new ReadOnlyCollection<V>(values);
+                }
+                finally { ReleaseLocks(acquired); }
+            }
+        }
+
+        IEnumerable<K> IReadOnlyDictionary<K, V>.Keys => Keys;
+        IEnumerable<V> IReadOnlyDictionary<K, V>.Values => Values;
+
+        /// WITH NO LOCK, as .NET's: the table as it was when the walk began,
+        /// bucket by bucket, each chain as it is when it is reached -- a walk
+        /// may see what other threads add or remove meanwhile, and is never
+        /// refused for it.
         public IEnumerator<KeyValuePair<K, V>> GetEnumerator()
         {
-            return ((IEnumerable<KeyValuePair<K, V>>)ToArray()).GetEnumerator();
+            Node?[] buckets = System.Threading.Volatile.Read(ref _tables).Buckets;
+            for (int i = 0; i < buckets.Length; i++)
+            {
+                for (Node? n = System.Threading.Volatile.Read(ref buckets[i]); n != null; n = System.Threading.Volatile.Read(ref n.Next))
+                {
+                    yield return new KeyValuePair<K, V>(n.Key, n.Value);
+                }
+            }
         }
 
         void IDictionary<K, V>.Add(K key, V value)
         {
-            if (!TryAdd(key, value)) { throw new ArgumentException("An item with the same key has already been added. Key: " + key); }
+            if (!TryAdd(key, value)) { throw new ArgumentException("The key already existed in the dictionary."); }
         }
 
         bool IDictionary<K, V>.Remove(K key)
@@ -2913,16 +3442,25 @@ namespace System.Collections.Concurrent
 
         bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item)
         {
+            if (item.Key == null) { throw new ArgumentNullException("item", "TKey is a reference type and item.Key is null."); }
             return TryGetValue(item.Key, out V held) && EqualityComparer<V>.Default.Equals(held, item.Value);
         }
 
         void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex)
         {
             if (array == null) { throw new ArgumentNullException("array"); }
-            KeyValuePair<K, V>[] snapshot = ToArray();
-            if (arrayIndex < 0 || arrayIndex > array.Length) { throw new ArgumentOutOfRangeException("arrayIndex"); }
-            if (array.Length - arrayIndex < snapshot.Length) { throw new ArgumentException("Destination array is not long enough to copy all the items in the collection. Check array index and length."); }
-            for (int i = 0; i < snapshot.Length; i++) { array[arrayIndex + i] = snapshot[i]; }
+            if (arrayIndex < 0) { throw new ArgumentOutOfRangeException("index"); }
+            int acquired = 0;
+            try
+            {
+                AcquireAllLocks(ref acquired);
+                if (array.Length - CountNoLocks() < arrayIndex)
+                {
+                    throw new ArgumentException("The index is equal to or greater than the length of the array, or the number of elements in the dictionary is greater than the available space from index to the end of the destination array.");
+                }
+                CopyToPairs(array, arrayIndex);
+            }
+            finally { ReleaseLocks(acquired); }
         }
 
         bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item)
