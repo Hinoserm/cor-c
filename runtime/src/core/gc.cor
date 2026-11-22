@@ -10637,54 +10637,69 @@ public static class Gc
     public static long CutReferencesInto(nuint low, nuint high, long max, out long marked, out long cut, out long moved)
     {
         moved = 0;
-        _moveSlots = new nuint[MoveMost];
-        _moveCount = 0;
+        cut = 0;
+        marked = 0;
+        long found = -1;
         _stringVt = Sys.ReadAddress(Sys.ObjectAddress("x"));
-        long found = ReferencesInto(low, high, max, true, out marked, out cut);
-        nuint count = _moveCount;
-        nuint[] slots = _moveSlots;
-        _moveSlots = null;
-        _moveCount = 0;
-        if (count == 0) return found;
-        // The copies, made with no lock held: each slot's literal as it was
-        // found (another thread may have changed a slot since; checked below).
-        nuint[] from = new nuint[count];
-        object?[] copies = new object?[count];
-        for (nuint i = 0; i < count; i++)
+        // AGAIN WHILE STRINGS ARE LEFT: more than a list holds (MoveMost), or
+        // copies that could not be put in (a collection under way, a slot
+        // changed); a few rounds, then cleared as any other reference.
+        for (int round = 0; round < 8; round++)
         {
-            nuint literal = Sys.ReadAddress(slots[i]);
-            if (literal < low || literal >= high || Sys.ReadAddress(literal) != _stringVt) continue;
-            string? text = Sys.ObjectAt(literal) as string;
-            if (text == null) continue;
-            from[i] = literal;
-            copies[i] = new string(text.ToCharArray());
-        }
-        GcLock.Enter();
-        bool quiet = WaitOutAnyCycle();
-        for (nuint i = 0; i < count; i++)
-        {
-            nuint slot = slots[i];
-            object? copy = copies[i];
-            nuint now = Sys.ReadAddress(slot);
-            if (now < low || now >= high) continue;                 // changed meanwhile, to elsewhere
-            if (quiet && copy != null && now == from[i] && Sys.Cas(slot, now, Sys.ObjectAddress(copy)) == now)
+            bool last = round == 7;
+            _moveSlots = last ? null : new nuint[MoveMost];
+            _moveHolders = last ? null : new nuint[MoveMost];
+            _moveLiterals = last ? null : new nuint[MoveMost];
+            _moveCount = 0;
+            long roundMarked, roundCut;
+            long roundFound = ReferencesInto(low, high, round == 0 ? max : 0, true, out roundMarked, out roundCut);
+            if (round == 0) { found = roundFound; marked = roundMarked; }
+            if (roundFound < 0) { _moveSlots = null; _moveHolders = null; _moveLiterals = null; return round == 0 ? -1 : found; }
+            cut = cut + roundCut;
+            nuint count = _moveCount;
+            nuint[]? slots = _moveSlots, holders = _moveHolders, literals = _moveLiterals;
+            _moveSlots = null;
+            _moveHolders = null;
+            _moveLiterals = null;
+            _moveCount = 0;
+            if (count == 0 || slots == null || holders == null || literals == null) break;
+            // The copies, made with no lock held, from the literals -- in the
+            // range, still mapped -- never from the slots, whose holders may
+            // be swept and their chunk given back meanwhile.
+            object?[] copies = new object?[count];
+            for (nuint i = 0; i < count; i++)
             {
-                Card(slot);
-                moved = moved + 1;
-                continue;
+                string? text = Sys.ObjectAt(literals[i]) as string;
+                if (text != null) copies[i] = new string(text.ToCharArray());
             }
-            // NO COPY PUT IN (no quiet moment, or the slot holds another of
-            // the range's words now): cleared as any other reference.
-            if (Sys.Cas(slot, now, 0) == now) cut = cut + 1;
+            long left = 0;
+            GcLock.Enter();
+            bool quiet = WaitOutAnyCycle();
+            for (nuint i = 0; i < count; i++)
+            {
+                object? copy = copies[i];
+                // THE HOLDER STILL THERE: its chunk the heap's, its block
+                // allocated -- else the slot is nobody's now.
+                nuint holder = holders[i];
+                if (HeapChunks.Of(holder) == 0 || (Sys.ReadAddress(holder) & FlagFree) != 0) continue;
+                if (!quiet || copy == null) { left = left + 1; continue; }
+                if (Sys.Cas(slots[i], literals[i], Sys.ObjectAddress(copy)) == literals[i])
+                {
+                    Card(slots[i]);
+                    moved = moved + 1;
+                }
+                else left = left + 1;       // changed meanwhile: the next round sees what it holds now
+            }
+            GcLock.Exit();
+            if (left == 0 && count < (nuint)MoveMost) break;
         }
-        GcLock.Exit();
         return found;
     }
 
     static bool _cutting;
     static long _cut;
     const int MoveMost = 1024;
-    static nuint[]? _moveSlots;
+    static nuint[]? _moveSlots, _moveHolders, _moveLiterals;
     static nuint _moveCount;
     static nuint _stringVt;
 
@@ -10813,12 +10828,15 @@ public static class Gc
             if (moving != null && _moveCount < (nuint)moving.Length && Sys.ReadAddress(word) == _stringVt)
             {
                 moving[_moveCount] = q;
+                _moveHolders![_moveCount] = payload - HeaderBytes;
+                _moveLiterals![_moveCount] = word;
                 _moveCount = _moveCount + 1;
                 if (found < max) Runtime.WriteLiteral(2, "gc refs:   a string of the range: to be copied\n");
             }
-            else
+            // ONLY WHERE IT STILL HOLDS THAT WORD: mutators run on, and a
+            // reference stored since is theirs.
+            else if (Sys.Cas(q, word, 0) == word)
             {
-                Sys.WriteAddress(q, 0);
                 _cut = _cut + 1;
                 if (found < max) Runtime.WriteLiteral(2, "gc refs:   cleared\n");
             }
