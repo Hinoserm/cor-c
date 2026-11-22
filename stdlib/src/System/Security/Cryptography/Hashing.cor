@@ -35,7 +35,7 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
     public virtual bool CanTransformMultipleBlocks => true;
     public virtual bool CanReuseTransform => true;
 
-    // THE LIBRARY'S OWN, this and the three below: .NET's HashAlgorithm has
+    // THE LIBRARY'S OWN, this and the members below it: .NET's HashAlgorithm has
     // none of them, so they are internal. Snapshot is virtual, not abstract,
     // so a program's own subclass (HashCore, HashFinal, Initialize, as .NET
     // asks) compiles; nothing reaches the default, since IncrementalHash and

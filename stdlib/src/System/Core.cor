@@ -25371,14 +25371,25 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStora
     // between its bounds as it is now, and writes go to the set it is of --
     // .NET's live view. A view's bounds lie within its parent's, so its own
     // are the only ones it asks.
-    private SortedSet<T>? parent;
-    private T lowerBound;
-    private T upperBound;
-    // A view's count, walked once per change of the set, as .NET's view
-    // counts again only when the version has moved.
-    private int viewCount;
-    private int viewCountedAt;
-    private bool viewCounted;
+    // A VIEW'S OWN, in an object of its own: a set has none of these, and a
+    // compiler makes sets by the million.
+    private ViewOf? view;
+
+    private sealed class ViewOf {
+        internal readonly SortedSet<T> Parent;
+        internal readonly T Lower;
+        internal readonly T Upper;
+        // Its count, walked once per change of the set, as .NET's view counts
+        // again only when the version has moved.
+        internal int Count;
+        internal int CountedAt;
+        internal bool Counted;
+        internal ViewOf(SortedSet<T> parent, T lower, T upper) { Parent = parent; Lower = lower; Upper = upper; }
+    }
+
+    private SortedSet<T>? parent => view == null ? null : view.Parent;
+    private T lowerBound => view!.Lower;
+    private T upperBound => view!.Upper;
 
     private bool InRange(T value) => by.Compare(value, lowerBound) >= 0 && by.Compare(value, upperBound) <= 0;
 
@@ -25463,8 +25474,8 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStora
     // any other or one longer; the nodes of the last, unfilled level red,
     // every other black.
     private void Treed() {
-        int room = keys!.Length;
-        if (used == room) { Grow(room * 2); }
+        // Full, a small set's sixteen places always are when it turns.
+        Grow(keys!.Length * 2);
         int[] made = new int[3 * keys!.Length];
         links = made;
         int full = 0;
@@ -25805,11 +25816,9 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStora
         if (by.Compare(lowerValue, upperValue) > 0) { throw new ArgumentException("Must be less than or equal to upperValue.", "lowerValue"); }
         if (parent != null && !InRange(lowerValue)) { throw new ArgumentOutOfRangeException("lowerValue"); }
         if (parent != null && !InRange(upperValue)) { throw new ArgumentOutOfRangeException("upperValue"); }
-        SortedSet<T> view = new SortedSet<T>(by);
-        view.parent = this;
-        view.lowerBound = lowerValue;
-        view.upperBound = upperValue;
-        return view;
+        SortedSet<T> made = new SortedSet<T>(by);
+        made.view = new ViewOf(this, lowerValue, upperValue);
+        return made;
     }
 
     public SortedSet() { by = Comparer<T>.Default; }
@@ -25829,15 +25838,16 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStora
 
     public int Count {
         get {
-            if (parent == null) { return count; }
+            ViewOf? range = view;
+            if (range == null) { return count; }
             int now = Version;
-            if (viewCounted && viewCountedAt == now) { return viewCount; }
+            if (range.Counted && range.CountedAt == now) { return range.Count; }
             SortedSet<T> top = Top;
             int seen = 0;
             for (int n = First(top); n != 0; n = After(top, n)) { seen = seen + 1; }
-            viewCount = seen;
-            viewCountedAt = now;
-            viewCounted = true;
+            range.Count = seen;
+            range.CountedAt = now;
+            range.Counted = true;
             return seen;
         }
     }
@@ -25954,7 +25964,10 @@ public class SortedSet<T> : ISet<T>, IReadOnlySet<T>, IEnumerable<T>, IOwnsStora
         free = 0;
     }
 
-    // A COPY'S STORAGE IS NOT ITS OWN (LendStorage), as HashSet's.
+    // A COPY'S STORAGE IS NOT ITS OWN (LendStorage), as HashSet's: neither
+    // gives back what the two share. Shared, not copied on write -- as a
+    // memberwise copy of .NET's set shares its nodes -- until a growth gives
+    // this one arrays of its own.
     private bool lent;
 
     private void Outgrown<E>(E[]? old) {

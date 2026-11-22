@@ -1,15 +1,14 @@
 // System.Collections.Generic -- the containers std.cor does not carry.
 //
-// std.cor has List, Dictionary, HashSet, Queue and a small SortedSet, which
+// std.cor has List, Dictionary, HashSet, Queue and SortedSet, which
 // are the ones its own compiler needed. These are the rest of the ones a
 // program written for .NET reaches for: a stack, a doubly linked list, and the
 // two ordered maps.
 //
 // SortedList<K,V> and SortedDictionary<K,V> differ in .NET by their storage --
 // parallel arrays against a red-black tree -- and so in which operation is
-// cheap, not in what they answer. Both are parallel arrays here; the cost is
-// that an insert into the middle of a large SortedDictionary shifts rather
-// than rotates, and every answer, ordering and exception is .NET's.
+// cheap, not in what they answer. So here: SortedList is parallel arrays, and
+// SortedDictionary a red-black tree of its pairs (std.cor's SortedSet, by key).
 
 using System.Collections.ObjectModel;
 
