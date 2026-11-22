@@ -2802,16 +2802,21 @@ public sealed partial class Lowering
             _e.CopyTo(cursor, R(_e.Binary(Opcode.Add, cursor, w)));
             _e.Jump(loop);
         }
-        else if (SystemArrayClass(want))
-        {
-            // System.Array IS EVERY ARRAY (C# 10.2.8), which no array's
-            // descriptor names among its bases: asked of the descriptor's
-            // kind, an array's 1 in its low bits (Runtime.DescribedAs).
-            VReg kind = _e.Binary(Opcode.And, _e.Load(IrTypes.Word, desc, DescFlags * w), 3);
-            _e.Branch(_e.Binary(Opcode.Eq, kind, 1), yes, no);
-        }
         else
         {
+            if (SystemArrayClass(want))
+            {
+                // System.Array IS EVERY ARRAY (C# 10.2.8), which no array's
+                // descriptor names among its bases: asked of the descriptor's
+                // kind, an array's 1 in its low bits (Runtime.DescribedAs).
+                // Not an array, it is a class like any other -- a rectangular
+                // array's (__RectangularArray) derives from Array -- and the
+                // test below asks its bases.
+                VReg kind = _e.Binary(Opcode.And, _e.Load(IrTypes.Word, desc, DescFlags * w), 3);
+                Block asClass = _f.NewBlock("tarrayclass");
+                _e.Branch(_e.Binary(Opcode.Eq, kind, 1), yes, asClass);
+                _e.SetBlock(asClass);
+            }
             VReg depth = Numbered(_e, _e.Load(IrType.I32, desc, DescDepth * w));
             Block deep = _f.NewBlock("tdeep");
             _e.Branch(_e.Binary(Opcode.GeS, depth, want.Depth), deep, no);

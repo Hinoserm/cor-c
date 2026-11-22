@@ -821,6 +821,10 @@ sealed class IteratorStopSignal : Exception
 /// it is proved dead (Runtime.Free): they never leave the collection (a List
 /// that lent its array out keeps it), so nothing else can hold them. Marked
 /// in the type's descriptor (DescGcFlags, OwnsStorage) by lowering.
+/// CONTRACT: FreeStorage stores only into `this` and what it alone owns --
+/// never into a lent peer, a shared array or a static. The link's owned-field
+/// solve relies on it and follows no call out of the frees (OwnedFieldSolver
+/// FreesTheDead): a store anywhere else here would go unseen.
 interface IOwnsStorage
 {
     void FreeStorage();
@@ -5045,7 +5049,7 @@ public static partial class Runtime
         // recorded one is what an exception that was caught and rethrown
         // remembers, and it is the same text either way.
         string trace = "";
-        if (exception is Exception) { trace = ((Exception)exception).StackTrace; }
+        if (exception is Exception) { trace = ((Exception)exception).StackTrace ?? ""; }
         if (trace.Length == 0) { trace = Trace(Sys.FramePointer()); }
         WriteText(StdErr, trace);
         // Ended as a line, as .NET's report is (its trace has no newline of

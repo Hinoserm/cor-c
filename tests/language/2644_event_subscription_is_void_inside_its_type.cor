@@ -1,0 +1,17 @@
+// test: event_subscription_is_void_inside_its_type
+// expect-compile-error: 'void'
+// An event subscribed to is its add accessor called, typed void, inside the
+// type that declares it as well as outside (C# 12.21.5): Roslyn refuses this
+// with CS0029, cannot convert 'void' to 'object'. Only a plain read of `E`
+// inside its type is the delegate field.
+
+using System;
+class C
+{
+    public event Action? E;
+    public void M() { object o = (E += () => { }); Console.WriteLine(o); }
+}
+static class Program
+{
+    static void Main() { new C().M(); }
+}

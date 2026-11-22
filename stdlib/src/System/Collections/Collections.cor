@@ -2213,9 +2213,19 @@ namespace System.Threading.Tasks
 static class __Rectangular {
     public static __Rectangular2<T> Of2<T>(int rows, int columns, T[] values) => new __Rectangular2<T>(rows, columns, values);
     public static __Rectangular3<T> Of3<T>(int planes, int rows, int columns, T[] values) => new __Rectangular3<T>(planes, rows, columns, values);
+
+    /// An element written through Array (SetValue, Copy, Clear) as a one-
+    /// dimensional array of T takes it: null a value type's default, a
+    /// primitive widened, anything else refused with SetValue's exception.
+    public static T Element<T>(object? value) {
+        if (value is T same) return same;
+        T[] one = new T[1];
+        ((Array)one).SetValue(value, 0);
+        return one[0];
+    }
 }
 
-sealed class __Rectangular2<T> : IEnumerable<T> {
+sealed class __Rectangular2<T> : __RectangularArray, IEnumerable<T> {
     private readonly T[] items;
     private readonly int rows;
     private readonly int columns;
@@ -2245,22 +2255,21 @@ sealed class __Rectangular2<T> : IEnumerable<T> {
         }
     }
 
-    public int Length => items.Length;
-    public long LongLength => items.Length;
-    public int Rank => 2;
-
-    public int GetLength(int dimension) {
+    // ITS RANK, LENGTHS AND ELEMENTS AS System.Array asks for them
+    // (__RectangularArray): Length, Rank, GetLength and the rest are Array's.
+    internal override int Dimensions => 2;
+    internal override int FlatCount => items.Length;
+    internal override int LengthOf(int dimension) {
         if (dimension == 0) { return rows; }
         if (dimension == 1) { return columns; }
         throw new IndexOutOfRangeException();
     }
-    public long GetLongLength(int dimension) => GetLength(dimension);
-    public int GetLowerBound(int dimension) { GetLength(dimension); return 0; }
-    public int GetUpperBound(int dimension) => GetLength(dimension) - 1;
+    internal override object? FlatGet(int at) => items[at];
+    internal override void FlatSet(int at, object? value) { items[at] = __Rectangular.Element<T>(value); }
 
     public object Clone() => new __Rectangular2<T>(rows, columns, (T[])items.Clone());
 
-    public IEnumerator<T> GetEnumerator() {
+    public new IEnumerator<T> GetEnumerator() {
         for (int k = 0; k < items.Length; k++) { yield return items[k]; }
     }
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
@@ -2268,7 +2277,7 @@ sealed class __Rectangular2<T> : IEnumerable<T> {
     public override string ToString() => typeof(T).FullName + "[,]";
 }
 
-sealed class __Rectangular3<T> : IEnumerable<T> {
+sealed class __Rectangular3<T> : __RectangularArray, IEnumerable<T> {
     private readonly T[] items;
     private readonly int planes;
     private readonly int rows;
@@ -2300,23 +2309,20 @@ sealed class __Rectangular3<T> : IEnumerable<T> {
         }
     }
 
-    public int Length => items.Length;
-    public long LongLength => items.Length;
-    public int Rank => 3;
-
-    public int GetLength(int dimension) {
+    internal override int Dimensions => 3;
+    internal override int FlatCount => items.Length;
+    internal override int LengthOf(int dimension) {
         if (dimension == 0) { return planes; }
         if (dimension == 1) { return rows; }
         if (dimension == 2) { return columns; }
         throw new IndexOutOfRangeException();
     }
-    public long GetLongLength(int dimension) => GetLength(dimension);
-    public int GetLowerBound(int dimension) { GetLength(dimension); return 0; }
-    public int GetUpperBound(int dimension) => GetLength(dimension) - 1;
+    internal override object? FlatGet(int at) => items[at];
+    internal override void FlatSet(int at, object? value) { items[at] = __Rectangular.Element<T>(value); }
 
     public object Clone() => new __Rectangular3<T>(planes, rows, columns, (T[])items.Clone());
 
-    public IEnumerator<T> GetEnumerator() {
+    public new IEnumerator<T> GetEnumerator() {
         for (int k = 0; k < items.Length; k++) { yield return items[k]; }
     }
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();

@@ -12,7 +12,7 @@ public static class LinkTimeOptimizer
         TargetContract.Validate(inputs);
         ManagedLayoutContract.Validate(inputs);
         DefinitionCoalescer.Run(inputs, validateOnly: true);
-        foreach (var input in inputs) _ = IrArchive.Read(input.Object);
+        foreach (var input in inputs) _ = ElfFormatException.Of(input.Name, () => IrArchive.Read(input.Object));
         Dictionary<string, (ObjectFile Object, Symbol Symbol)> globals = new(StringComparer.Ordinal);
         Dictionary<ObjectFile, OptimizationSummary> summaries = new();
         Dictionary<ObjectFile, Dictionary<string, int>> constants = new();

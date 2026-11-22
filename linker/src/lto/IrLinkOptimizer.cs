@@ -61,7 +61,7 @@ public static class IrLinkOptimizer
         LifetimeHintPool pool = new();
         foreach (var input in inputs)
         {
-            IrArchive? archive = IrArchive.Read(input.Object);
+            IrArchive? archive = ElfFormatException.Of(input.Name, () => IrArchive.Read(input.Object));
             if (archive is not null) archives.Add(input.Object, archive);
             // Hints without the IR they would recompile are nothing to act on.
             if (archive is not null && LifetimeHints.Read(input.Object, pool) is LifetimeHints unit)

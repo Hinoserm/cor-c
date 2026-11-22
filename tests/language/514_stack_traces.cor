@@ -125,9 +125,9 @@ static class Program
 
         Where(1);
 
-        // An exception that was made and never thrown has no trace, which is
-        // what .NET answers as well.
+        // An exception that was made and never thrown has no trace: null,
+        // as .NET answers (StackTrace is string?).
         Exception fresh = new Exception("unthrown");
-        Line(fresh.StackTrace.Length == 0 ? "none" : "some");
+        Line(fresh.StackTrace == null ? "none" : "some");
     }
 }

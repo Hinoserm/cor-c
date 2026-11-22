@@ -8,7 +8,7 @@ namespace System.Runtime.ExceptionServices
         ExceptionDispatchInfo(Exception source)
         {
             _source = source;
-            _trace = source.StackTrace;
+            _trace = source.StackTrace ?? "";
         }
 
         public Exception SourceException => _source;

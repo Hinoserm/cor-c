@@ -8872,6 +8872,19 @@ public sealed partial class Binder
             return;
         }
 
+        // NOTHING CONVERTS FROM VOID (CS0029): a call of a void method, or an
+        // event subscribed to, where a value is wanted -- `object o = (E += h);`
+        // went through as whatever the register held (Convertible answers
+        // yes to object). Not a method group, a lambda or something already
+        // rewritten: those have no value type here and convert below.
+        if (from.IsVoid && !to.IsVoid && at is Expr voidSource && voidSource is not LambdaExpr
+            && !_r.Rewrites.ContainsKey(voidSource)
+            && !(_r.Resolved.TryGetValue(voidSource, out Sym? voidSym) && voidSym is MethodGroupSym or CapturedMethodGroupSym))
+        {
+            Error(at, $"CS0029: Cannot implicitly convert type 'void' to '{to}'");
+            return;
+        }
+
         // DYNAMIC, EITHER WAY. From it to anything but object, the binder's
         // implicit conversion at run time (Binder.Dynamic); to it, or from it
         // to object, the identity conversion C# has between dynamic and
@@ -16654,14 +16667,14 @@ public sealed partial class Binder
         {
             ConstantOverflow(e, t);
         }
-        // A FIELD-LIKE EVENT SUBSCRIBED TO FROM OUTSIDE ITS TYPE is its add or
-        // remove accessor called, as C# compiles it: `b.Clicked += h` is
-        // void there, not the delegate the field holds afterwards, which
-        // only the declaring type may read (EventFromOutside).
+        // A FIELD-LIKE EVENT SUBSCRIBED TO is its add or remove accessor
+        // called, as C# compiles it: `b.Clicked += h` is void, not the
+        // delegate the field holds afterwards -- inside the declaring type
+        // too (C# 12.21.5, Roslyn's CS0029 on `object o = (E += h)` there),
+        // where only a plain read of `E` is the field.
         if (e is AssignExpr { Op: BinOp.Add or BinOp.Sub } subscribed && !t.IsError
             && _r.Resolved.TryGetValue(subscribed.Target, out Sym? subscribedTo)
-            && (subscribedTo switch { FieldSym f => f.Field, CapturedFieldSym f => f.Field, _ => null }) is { IsEvent: true } eventField
-            && !WithinEventOwner(eventField))
+            && (subscribedTo switch { FieldSym f => f.Field, CapturedFieldSym f => f.Field, _ => null }) is { IsEvent: true })
         {
             t = Type.Void;
         }

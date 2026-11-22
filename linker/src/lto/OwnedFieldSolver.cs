@@ -217,8 +217,10 @@ public static class OwnedFieldSolver
         // Followed, any free reached every IOwnsStorage.FreeStorage, so every
         // allocation (its slow path's heap check ending the process, which
         // frees a C symbol's name) stored into every List's items (1327, 1311).
-        // FreeField, FreeReplaced and FreeOwnedReplaced act on a LIVE owner's
-        // field and are followed.
+        // FreeField, FreeReplaced and FreeOwnedReplaced need no place here:
+        // every call out of them is to one of these (Free, FreeHeld,
+        // FreeReferenceElements), so following them reaches no store.
+        // FreeManual pushes onto a free list and calls nothing.
         static bool FreesTheDead(string function)
             => function.StartsWith("m_Runtime_Free_1_", StringComparison.Ordinal)
             || function.StartsWith("m_Runtime_FreeHeld_1_", StringComparison.Ordinal)
@@ -252,7 +254,8 @@ public static class OwnedFieldSolver
         // stores into what any of its members does), for the fields that can
         // be asked about, and each question is then a lookup. The edges are
         // the walk's: a call, a virtual call's symbol to each override, and
-        // nothing out of a function that never returns (NeverReturns).
+        // nothing out of a function that never returns (NeverReturns) nor out
+        // of a free of the dead (FreesTheDead).
         // The fields judged below (THE FIELDS), declared here for MayWrite.
         SortedDictionary<string, long> offsets = new(StringComparer.Ordinal);
         Dictionary<string, int>? asked = null;
@@ -260,7 +263,8 @@ public static class OwnedFieldSolver
         ulong[]?[]? storesBelow = null;
         // FROM A CALL DOWN TO A STORE, for a report: the shortest chain of
         // calls (a virtual call's symbol standing for its overrides, nothing
-        // out of a function that never returns -- the graph MayWrite walks)
+        // out of a function that never returns nor out of a free of the dead
+        // -- the graph MayWrite walks)
         // from `from` to a function that stores into `field`. Asked only when
         // a report is, so a link without one pays nothing.
         Dictionary<string, List<string>>? calleesOf = null;

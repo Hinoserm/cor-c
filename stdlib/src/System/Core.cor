@@ -19882,29 +19882,55 @@ public abstract class Array : IList, ICollection {
 
     public int Length => ((ICollection)(object)this).Count;
     public long LongLength => Length;
-    public int Rank => 1;
+    // A RECTANGULAR ARRAY (T[,], T[,,]) is an Array too, as .NET's are:
+    // its rank, lengths and indices are its own (__RectangularArray), and
+    // what only a one-dimensional array answers refuses it as .NET does.
+    public int Rank => this is __RectangularArray rectangular ? rectangular.Dimensions : 1;
     public bool IsFixedSize => true;
     public bool IsReadOnly => false;
     public bool IsSynchronized => false;
     public object SyncRoot => this;
 
     public int GetLength(int dimension) {
+        if (this is __RectangularArray rectangular) return rectangular.LengthOf(dimension);
         if (dimension != 0) throw new IndexOutOfRangeException();
         return Length;
     }
     public long GetLongLength(int dimension) { return GetLength(dimension); }
     public int GetLowerBound(int dimension) {
+        if (this is __RectangularArray rectangular) { rectangular.LengthOf(dimension); return 0; }
         if (dimension != 0) throw new IndexOutOfRangeException();
         return 0;
     }
     public int GetUpperBound(int dimension) { return GetLength(dimension) - 1; }
 
-    public object? GetValue(int index) { return ((IList)(object)this)[index]; }
+    public object? GetValue(int index) { OneDimension(); return ((IList)(object)this)[index]; }
     public object? GetValue(long index) { return GetValue(Index(index)); }
-    public object? GetValue(params int[] indices) { return GetValue(Index(indices)); }
-    public void SetValue(object? value, int index) { ((IList)(object)this)[index] = value; }
+    public object? GetValue(params int[] indices) {
+        if (this is __RectangularArray rectangular) return rectangular.FlatGet(rectangular.FlatIndex(indices));
+        return GetValue(Index(indices));
+    }
+    public void SetValue(object? value, int index) { OneDimension(); ((IList)(object)this)[index] = value; }
     public void SetValue(object? value, long index) { SetValue(value, Index(index)); }
-    public void SetValue(object? value, params int[] indices) { SetValue(value, Index(indices)); }
+    public void SetValue(object? value, params int[] indices) {
+        if (this is __RectangularArray rectangular) { rectangular.FlatSet(rectangular.FlatIndex(indices), value); return; }
+        SetValue(value, Index(indices));
+    }
+
+    // One index for a rectangular array is .NET's ArgumentException.
+    private void OneDimension() {
+        if (this is __RectangularArray) throw new ArgumentException("Array was not a one-dimensional array.");
+    }
+    // AN ELEMENT BY ITS PLACE IN ROW-MAJOR ORDER, whatever the rank: what
+    // Copy and Clear walk, as .NET's do over a rectangular array.
+    private static object? FlatGet(Array array, int at) => array is __RectangularArray rectangular ? rectangular.FlatGet(at) : array.GetValue(at);
+    private static void FlatSet(Array array, int at, object? value) {
+        if (array is __RectangularArray rectangular) rectangular.FlatSet(at, value);
+        else array.SetValue(value, at);
+    }
+    private static void SingleRank(Array array) {
+        if (array is __RectangularArray) throw new RankException("Only single dimension arrays are supported here.");
+    }
 
     public void CopyTo(Array array, int index) { ((ICollection)(object)this).CopyTo(array, index); }
     public void CopyTo(Array array, long index) { CopyTo(array, Index(index)); }
@@ -19938,15 +19964,16 @@ public abstract class Array : IList, ICollection {
         if (destinationIndex < 0) throw new ArgumentOutOfRangeException("destinationIndex", "Number was less than the array's lower bound in the first dimension.");
         if (sourceArray.Length - sourceIndex < length) throw new ArgumentException("Source array was not long enough. Check the source index, length, and the array's lower bounds.", "sourceArray");
         if (destinationArray.Length - destinationIndex < length) throw new ArgumentException("Destination array was not long enough. Check the destination index, length, and the array's lower bounds.", "destinationArray");
+        if (sourceArray.Rank != destinationArray.Rank) throw new RankException("Source and destination arrays must have the same number of dimensions.");
         // A PRIMITIVE THAT DOES NOT WIDEN to the destination's is refused at
         // the first element, before anything is copied, and is .NET's
         // ArrayTypeMismatchException rather than SetValue's ArgumentException.
         try {
             if (ReferenceEquals(sourceArray, destinationArray) && sourceIndex < destinationIndex) {
-                for (int i = length - 1; i >= 0; i--) destinationArray.SetValue(sourceArray.GetValue(sourceIndex + i), destinationIndex + i);
+                for (int i = length - 1; i >= 0; i--) FlatSet(destinationArray, destinationIndex + i, FlatGet(sourceArray, sourceIndex + i));
                 return;
             }
-            for (int i = 0; i < length; i++) destinationArray.SetValue(sourceArray.GetValue(sourceIndex + i), destinationIndex + i);
+            for (int i = 0; i < length; i++) FlatSet(destinationArray, destinationIndex + i, FlatGet(sourceArray, sourceIndex + i));
         } catch (ArgumentException) {
             throw new ArrayTypeMismatchException("Source array type cannot be assigned to destination array type.");
         }
@@ -19961,14 +19988,16 @@ public abstract class Array : IList, ICollection {
     public static void Clear(Array array, int index, int length) {
         if (array == null) throw new ArgumentNullException("array");
         if (index < 0 || length < 0 || index > array.Length - length) throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
-        for (int i = 0; i < length; i++) array.SetValue(null, index + i);
+        for (int i = 0; i < length; i++) FlatSet(array, index + i, null);
     }
     public static int IndexOf(Array array, object? value) {
         if (array == null) throw new ArgumentNullException("array");
+        SingleRank(array);
         return Runtime.ArrayFaceIndexOf(array, value);
     }
     public static void Reverse(Array array) {
         if (array == null) throw new ArgumentNullException("array");
+        SingleRank(array);
         for (int i = 0, j = array.Length - 1; i < j; i++, j--) {
             object? held = array.GetValue(i);
             array.SetValue(array.GetValue(j), i);
@@ -21865,9 +21894,9 @@ public class Exception
 
     /// THE CALLS THAT LED TO THE THROW, recorded by the runtime as the throw
     /// happens -- Runtime.Capture, which the compiler calls at every `throw`.
-    /// Empty until then, and empty for an exception that was made but never
-    /// thrown, which is what .NET answers too.
-    string _trace = "";
+    /// Null until then, and null for an exception that was made but never
+    /// thrown, which is what .NET answers (StackTrace is string?).
+    string? _trace;
 
     public Exception()
     {
@@ -21900,14 +21929,14 @@ public class Exception
 
     /// WHERE IT WAS THROWN: one line a frame, newest first, in .NET's own
     /// wording -- `   at Type.Method in file.cor:line N`.
-    public string StackTrace => Named();
+    public string? StackTrace => Named();
 
     /// Written by the runtime at the throw and by nothing else. Named with the
     /// trailing '$' the compiler reserves, so no program can call it by
     /// accident and none can be written that does.
     public string Trace$
     {
-        get { return Named(); }
+        get { return Named() ?? ""; }
         set
         {
             _trace = value;
@@ -22052,7 +22081,7 @@ public class Exception
     // StackTrace: cached here, the one store of the site's string into
     // _trace -- a value read from another field -- refused _trace its owner,
     // and every exception thrown and caught was the collector's.
-    string Named()
+    string? Named()
     {
         if ((_site != null || _siteBytes != null) && _frames != null)
         {
@@ -22138,8 +22167,8 @@ public class Exception
             text = String.Concat(text, String.Concat("\n", String.Concat(" ---> ", inner.ToString())));
             text = String.Concat(text, String.Concat("\n", "   --- End of inner exception stack trace ---"));
         }
-        string trace = Named();
-        if (trace.Length > 0) text = String.Concat(text, String.Concat("\n", trace));
+        string? trace = Named();
+        if (!string.IsNullOrEmpty(trace)) text = String.Concat(text, String.Concat("\n", trace));
         return text;
     }
 }
@@ -22416,6 +22445,62 @@ public class DuplicateWaitObjectException : ArgumentException
 /// A value stored into an array whose elements cannot hold it: a Cat into a
 /// Dog[] held as an Animal[], as C#'s array covariance allows at compile time
 /// and refuses at run time (Runtime.ArrayStoreCheck).
+/// WHAT T[,] AND T[,,] ARE UNDER System.Array (Collections.cor's
+/// __Rectangular2 and __Rectangular3): their rank, lengths and elements in
+/// row-major order, which Array's members ask for, and the non-generic
+/// IList and ICollection a rectangular array is in .NET -- each member that
+/// only a one-dimensional array answers refusing as .NET's does.
+abstract class __RectangularArray : Array, IList, ICollection {
+    internal abstract int Dimensions { get; }
+    internal abstract int FlatCount { get; }
+    internal abstract int LengthOf(int dimension);
+    internal abstract object? FlatGet(int at);
+    internal abstract void FlatSet(int at, object? value);
+
+    /// The element's place in row-major order: as many indices as
+    /// dimensions, each inside its own length.
+    internal int FlatIndex(int[] indices) {
+        if (indices == null) throw new ArgumentNullException("indices");
+        if (indices.Length != Dimensions) throw new ArgumentException("Indices length does not match the array rank.", "indices");
+        int at = 0;
+        for (int d = 0; d < indices.Length; d++) {
+            int length = LengthOf(d);
+            if ((uint)indices[d] >= (uint)length) throw new IndexOutOfRangeException("Index was outside the bounds of the array.");
+            at = at * length + indices[d];
+        }
+        return at;
+    }
+
+    int ICollection.Count => FlatCount;
+    bool ICollection.IsSynchronized => false;
+    object ICollection.SyncRoot => this;
+    void ICollection.CopyTo(Array array, int index) { throw new RankException("Only single dimension arrays are supported here."); }
+    object? IList.this[int index] {
+        get { throw new ArgumentException("Array was not a one-dimensional array."); }
+        set { throw new ArgumentException("Array was not a one-dimensional array."); }
+    }
+    bool IList.IsFixedSize => true;
+    bool IList.IsReadOnly => false;
+    int IList.Add(object? value) { throw new NotSupportedException("Collection was of a fixed size."); }
+    void IList.Clear() { Array.Clear(this, 0, FlatCount); }
+    bool IList.Contains(object? value) { throw new RankException("Only single dimension arrays are supported here."); }
+    int IList.IndexOf(object? value) { throw new RankException("Only single dimension arrays are supported here."); }
+    void IList.Insert(int index, object? value) { throw new NotSupportedException("Collection was of a fixed size."); }
+    void IList.Remove(object? value) { throw new NotSupportedException("Collection was of a fixed size."); }
+    void IList.RemoveAt(int index) { throw new NotSupportedException("Collection was of a fixed size."); }
+}
+
+/// .NET's System.RankException: an array of the wrong number of dimensions
+/// for what was asked of it -- Array.Copy between ranks, Reverse, IndexOf or
+/// ICollection.CopyTo of a rectangular array.
+public class RankException : SystemException
+{
+    internal override int Code => unchecked((int)0x80131517);
+    public RankException() : base("Attempted to operate on an array with the incorrect number of dimensions.") { }
+    public RankException(string? message) : base(message ?? "Attempted to operate on an array with the incorrect number of dimensions.") { }
+    public RankException(string? message, Exception? innerException) : base(message ?? "Attempted to operate on an array with the incorrect number of dimensions.", innerException) { }
+}
+
 public class ArrayTypeMismatchException : SystemException
 {
     internal override int Code => unchecked((int)0x80131503);
@@ -22531,8 +22616,8 @@ public class FileNotFoundException : IOException
         if (!string.IsNullOrEmpty(_fileName)) text = text + "\nFile name: '" + _fileName + "'";
         Exception? inner = InnerException;
         if (inner != null) text = text + "\n ---> " + inner.ToString();
-        string trace = StackTrace;
-        if (trace.Length > 0) text = text + "\n" + trace;
+        string? trace = StackTrace;
+        if (!string.IsNullOrEmpty(trace)) text = text + "\n" + trace;
         return text;
     }
 }
@@ -22707,8 +22792,8 @@ public class FileLoadException : IOException
         if (!string.IsNullOrEmpty(_fileName)) text = text + "\nFile name: '" + _fileName + "'";
         Exception? inner = InnerException;
         if (inner != null) text = text + "\n ---> " + inner.ToString();
-        string trace = StackTrace;
-        if (trace.Length > 0) text = text + "\n" + trace;
+        string? trace = StackTrace;
+        if (!string.IsNullOrEmpty(trace)) text = text + "\n" + trace;
         return text;
     }
 }

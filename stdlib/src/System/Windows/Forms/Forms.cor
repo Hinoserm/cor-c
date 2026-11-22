@@ -7108,7 +7108,7 @@ public static class Application
     {
         if (_crashing) { Environment.Exit(134); return; }
         _crashing = true;
-        string trace = failure.StackTrace;
+        string trace = failure.StackTrace ?? "";
         // The first dozen frames say where; the rest is the loop.
         int lines = 0, cut = trace.Length;
         for (int i = 0; i < trace.Length; i++) if (trace[i] == '\n') { lines++; if (lines == 12) { cut = i; break; } }

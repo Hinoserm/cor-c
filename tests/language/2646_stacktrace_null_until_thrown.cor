@@ -1,0 +1,24 @@
+// test: stacktrace_null_until_thrown
+// expect-exit: 0
+// expect-output:
+// before True
+// after True True
+// text System.ArgumentException: plain
+//
+// An exception made and never thrown has no stack trace: StackTrace is null,
+// as .NET's string? is, and ToString has no trace line; thrown, it has one.
+// Expected output from real .NET 10.
+
+using System;
+
+static class Program
+{
+    static void Main()
+    {
+        Exception made = new InvalidOperationException("never thrown");
+        Console.WriteLine("before " + (made.StackTrace == null));
+        try { throw made; }
+        catch (Exception e) { Console.WriteLine("after " + (e.StackTrace != null) + " " + (e.StackTrace!.Length > 0)); }
+        Console.WriteLine("text " + new ArgumentException("plain").ToString());
+    }
+}
