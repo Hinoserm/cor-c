@@ -10767,7 +10767,9 @@ public static class Gc
         cut = _cut;
         _cut = 0;
         GcLock.Exit();
-        if (!first) return found;
+        // A NEGATIVE `max` IS QUIET: no word named, no summary (a kernel
+        // asking again whether a range it is waiting on is still held).
+        if (!first || max < 0) return found;
         SayNumber("gc refs: words found in statics, roots and the heap ", found);
         SayNumber("gc refs: references the marking counted ", marked);
         return found;
@@ -10836,11 +10838,12 @@ public static class Gc
         {
             nuint[]? moving = _moveSlots;
             bool literal = moving != null && Sys.ReadAddress(word) == _stringVt;
-            // A STRING PAST THE LIST'S END is left for the next round, never
-            // cleared: only the last round, which lists none, clears strings.
-            if (literal && _moveCount >= (nuint)moving!.Length) { }
-            else if (literal)
+            if (literal)
             {
+                // A STRING PAST THE LIST'S END is left for the next round,
+                // never cleared: only the last round, which lists none,
+                // clears strings.
+                if (_moveCount >= (nuint)moving!.Length) return found + 1;
                 moving[_moveCount] = q;
                 _moveHolders![_moveCount] = payload - HeaderBytes;
                 _moveLiterals![_moveCount] = word;
