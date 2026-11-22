@@ -2775,8 +2775,10 @@ namespace System.Collections.Concurrent
 
         public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection) : this(collection, null) { }
 
+        // FROM A COLLECTION, the locks fixed, as .NET's: only the two forms
+        // above grow their lock array.
         public ConcurrentDictionary(IEnumerable<KeyValuePair<K, V>> collection, IEqualityComparer<K>? comparer)
-            : this(-1, CapacityFor(collection), true, comparer)
+            : this(-1, CapacityFor(collection), false, comparer)
         {
             Fill(collection);
         }
@@ -2799,10 +2801,10 @@ namespace System.Collections.Concurrent
                 if (concurrencyLevel != -1) { throw new ArgumentOutOfRangeException("concurrencyLevel", "The concurrencyLevel argument must be positive, or -1 to indicate a default level."); }
                 concurrencyLevel = Math.Max(1, Environment.ProcessorCount);
             }
-            if (capacity < 0) { throw new ArgumentOutOfRangeException("capacity"); }
+            ArgumentOutOfRangeException.ThrowIfNegative(capacity, "capacity");
             // At least a bucket for every lock, and a prime.
             if (capacity < concurrencyLevel) { capacity = concurrencyLevel; }
-            capacity = GetPrime(capacity);
+            capacity = ConcurrentHashing.GetPrime(capacity);
 
             object[] locks = new object[concurrencyLevel];
             for (int i = 0; i < locks.Length; i++) { locks[i] = new object(); }
@@ -2836,105 +2838,10 @@ namespace System.Collections.Concurrent
             if (_budget == 0) { _budget = _tables.Buckets.Length / _tables.Locks.Length; }
         }
 
-        // ---- .NET's HashHelpers ----
-
-        private static readonly int[] Primes = {
-            3, 7, 11, 17, 23, 29, 37, 47, 59, 71, 89, 107, 131, 163, 197, 239, 293, 353, 431, 521, 631, 761, 919,
-            1103, 1327, 1597, 1931, 2333, 2801, 3371, 4049, 4861, 5839, 7013, 8419, 10103, 12143, 14591,
-            17519, 21023, 25229, 30293, 36353, 43627, 52361, 62851, 75431, 90523, 108631, 130363, 156437,
-            187751, 225307, 270371, 324449, 389357, 467237, 560689, 672827, 807403, 968897, 1162687, 1395263,
-            1674319, 2009191, 2411033, 2893249, 3471899, 4166287, 4999559, 5999471, 7199369,
-        };
-
-        private static bool IsPrime(int candidate)
-        {
-            if ((candidate & 1) == 0) { return candidate == 2; }
-            for (int divisor = 3; (long)divisor * divisor <= candidate; divisor += 2)
-            {
-                if (candidate % divisor == 0) { return false; }
-            }
-            return true;
-        }
-
-        private static int GetPrime(int min)
-        {
-            foreach (int prime in Primes)
-            {
-                if (prime >= min) { return prime; }
-            }
-            for (int i = min | 1; i < int.MaxValue; i += 2)
-            {
-                if (IsPrime(i) && (i - 1) % 101 != 0) { return i; }
-            }
-            return min;
-        }
-
-        // ---- hashing ----
-
         private int HashOf(K key)
         {
-            if (_hashing != 0) { return NonRandomizedHash((string)(object)key!, _hashing == 2); }
+            if (_hashing != 0) { return ConcurrentHashing.NonRandomizedHash((string)(object)key!, _hashing == 2); }
             return _comparer.GetHashCode(key);
-        }
-
-        /// .NET's String.GetNonRandomizedHashCode (and its OrdinalIgnoreCase
-        /// form): two djb2 lanes over the units read two at a time as little-
-        /// endian words, the terminator read after an odd last one. Ignoring
-        /// case, each unit is first made upper case (as .NET's
-        /// ToUpperOrdinal) and every word ORed with 0x00200020, which makes
-        /// an ASCII letter its lower case.
-        private static int NonRandomizedHash(string s, bool ignoreCase)
-        {
-            string units = s;
-            if (ignoreCase)
-            {
-                bool ascii = true;
-                for (int i = 0; i < s.Length; i++) { if (s[i] > 0x7F) { ascii = false; break; } }
-                if (!ascii)
-                {
-                    StringBuilder upper = new StringBuilder(s.Length);
-                    int at = 0;
-                    while (at < s.Length)
-                    {
-                        int c = String.OrdinalFolded(s, ref at);
-                        if (c > 0xFFFF)
-                        {
-                            c -= 0x10000;
-                            upper.Append((char)(0xD800 + (c >> 10)));
-                            upper.Append((char)(0xDC00 + (c & 0x3FF)));
-                        }
-                        else
-                        {
-                            upper.Append((char)c);
-                        }
-                    }
-                    units = upper.ToString();
-                }
-            }
-            uint fold = ignoreCase ? 0x00200020u : 0u;
-            uint hash1 = (5381u << 16) + 5381u;
-            uint hash2 = hash1;
-            int length = units.Length;
-            int p = 0;
-            while (length > 2)
-            {
-                length -= 4;
-                hash1 = (RotateLeft5(hash1) + hash1) ^ (Word(units, p) | fold);
-                hash2 = (RotateLeft5(hash2) + hash2) ^ (Word(units, p + 2) | fold);
-                p += 4;
-            }
-            if (length > 0) { hash2 = (RotateLeft5(hash2) + hash2) ^ (Word(units, p) | fold); }
-            return unchecked((int)(hash1 + hash2 * 1566083941u));
-        }
-
-        private static uint RotateLeft5(uint x) { return (x << 5) | (x >> 27); }
-
-        // Two units as one little-endian word, the terminator (0) past the end.
-        private static uint Word(string s, int at)
-        {
-            uint low = at < s.Length ? s[at] : 0u;
-            uint high = at + 1 < s.Length ? s[at + 1] : 0u;
-            return low | (high << 16);
         }
 
         private static int BucketOf(Tables tables, int hash) { return (int)((uint)hash % (uint)tables.Buckets.Length); }
@@ -3112,7 +3019,7 @@ namespace System.Collections.Concurrent
                 }
 
                 int newLength = tables.Buckets.Length * 2;
-                if (newLength < 0 || (newLength = GetPrime(newLength)) > 0x7FFFFFC7)
+                if (newLength < 0 || (newLength = ConcurrentHashing.GetPrime(newLength)) > 0x7FFFFFC7)
                 {
                     newLength = 0x7FFFFFC7;
                     _budget = int.MaxValue;
@@ -3333,7 +3240,7 @@ namespace System.Collections.Concurrent
                 AcquireAllLocks(ref acquired);
                 if (AllBucketsEmpty()) { return; }
                 Tables tables = _tables;
-                Tables cleared = new Tables(new Node?[GetPrime(_initialCapacity)], tables.Locks, new int[tables.CountPerLock.Length]);
+                Tables cleared = new Tables(new Node?[ConcurrentHashing.GetPrime(_initialCapacity)], tables.Locks, new int[tables.CountPerLock.Length]);
                 _budget = Math.Max(1, cleared.Buckets.Length / cleared.Locks.Length);
                 System.Threading.Interlocked.Exchange(ref _tables, cleared);
             }
@@ -3442,14 +3349,13 @@ namespace System.Collections.Concurrent
 
         bool ICollection<KeyValuePair<K, V>>.Contains(KeyValuePair<K, V> item)
         {
-            if (item.Key == null) { throw new ArgumentNullException("item", "TKey is a reference type and item.Key is null."); }
             return TryGetValue(item.Key, out V held) && EqualityComparer<V>.Default.Equals(held, item.Value);
         }
 
         void ICollection<KeyValuePair<K, V>>.CopyTo(KeyValuePair<K, V>[] array, int arrayIndex)
         {
             if (array == null) { throw new ArgumentNullException("array"); }
-            if (arrayIndex < 0) { throw new ArgumentOutOfRangeException("index"); }
+            ArgumentOutOfRangeException.ThrowIfNegative(arrayIndex, "index");
             int acquired = 0;
             try
             {
@@ -3466,6 +3372,105 @@ namespace System.Collections.Concurrent
         bool ICollection<KeyValuePair<K, V>>.Remove(KeyValuePair<K, V> item)
         {
             return TryRemove(item);
+        }
+    }
+
+    /// .NET'S HashHelpers and its non-randomised string hash, once for every
+    /// ConcurrentDictionary rather than in each instantiation's copy.
+    static class ConcurrentHashing
+    {
+        internal static readonly int[] Primes = {
+            3, 7, 11, 17, 23, 29, 37, 47, 59, 71, 89, 107, 131, 163, 197, 239, 293, 353, 431, 521, 631, 761, 919,
+            1103, 1327, 1597, 1931, 2333, 2801, 3371, 4049, 4861, 5839, 7013, 8419, 10103, 12143, 14591,
+            17519, 21023, 25229, 30293, 36353, 43627, 52361, 62851, 75431, 90523, 108631, 130363, 156437,
+            187751, 225307, 270371, 324449, 389357, 467237, 560689, 672827, 807403, 968897, 1162687, 1395263,
+            1674319, 2009191, 2411033, 2893249, 3471899, 4166287, 4999559, 5999471, 7199369,
+        };
+
+        private static bool IsPrime(int candidate)
+        {
+            if ((candidate & 1) == 0) { return candidate == 2; }
+            for (int divisor = 3; (long)divisor * divisor <= candidate; divisor += 2)
+            {
+                if (candidate % divisor == 0) { return false; }
+            }
+            return true;
+        }
+
+        internal static int GetPrime(int min)
+        {
+            foreach (int prime in Primes)
+            {
+                if (prime >= min) { return prime; }
+            }
+            for (int i = min | 1; i < int.MaxValue; i += 2)
+            {
+                if (IsPrime(i) && (i - 1) % 101 != 0) { return i; }
+            }
+            return min;
+        }
+
+        /// .NET's String.GetNonRandomizedHashCode (and its OrdinalIgnoreCase
+        /// form): two djb2 lanes over the units read two at a time as little-
+        /// endian words, the terminator read after an odd last one. Ignoring
+        /// case, each unit is first made upper case (as .NET's
+        /// ToUpperOrdinal) and every word ORed with 0x00200020, which makes
+        /// an ASCII letter its lower case.
+        internal static int NonRandomizedHash(string s, bool ignoreCase)
+        {
+            int length = s.Length;
+            char[]? folded = null;
+            if (ignoreCase)
+            {
+                bool ascii = true;
+                for (int i = 0; i < length; i++) { if (s[i] > 0x7F) { ascii = false; break; } }
+                if (!ascii)
+                {
+                    // Upper case, unit for unit: a folded pair is a pair again.
+                    folded = new char[length];
+                    int at = 0, put = 0;
+                    while (at < length)
+                    {
+                        int c = String.OrdinalFolded(s, ref at);
+                        if (c > 0xFFFF)
+                        {
+                            c -= 0x10000;
+                            folded[put++] = (char)(0xD800 + (c >> 10));
+                            folded[put++] = (char)(0xDC00 + (c & 0x3FF));
+                        }
+                        else
+                        {
+                            folded[put++] = (char)c;
+                        }
+                    }
+                }
+            }
+            uint fold = ignoreCase ? 0x00200020u : 0u;
+            uint hash1 = (5381u << 16) + 5381u;
+            uint hash2 = hash1;
+            int left = length;
+            int p = 0;
+            while (left > 2)
+            {
+                left -= 4;
+                hash1 = (RotateLeft5(hash1) + hash1) ^ (Word(s, folded, p) | fold);
+                hash2 = (RotateLeft5(hash2) + hash2) ^ (Word(s, folded, p + 2) | fold);
+                p += 4;
+            }
+            if (left > 0) { hash2 = (RotateLeft5(hash2) + hash2) ^ (Word(s, folded, p) | fold); }
+            return unchecked((int)(hash1 + hash2 * 1566083941u));
+        }
+
+        private static uint RotateLeft5(uint x) { return (x << 5) | (x >> 27); }
+
+        // Two units as one little-endian word, the terminator (0) past the end:
+        // the string's own, or its upper-cased copy.
+        private static uint Word(string s, char[]? folded, int at)
+        {
+            int length = s.Length;
+            uint low = at < length ? (folded != null ? folded[at] : s[at]) : 0u;
+            uint high = at + 1 < length ? (folded != null ? folded[at + 1] : s[at + 1]) : 0u;
+            return low | (high << 16);
         }
     }
 }

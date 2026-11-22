@@ -13,8 +13,8 @@
 // bound again in each loop round, pointed elsewhere after an await, read on
 // paths an await never comes back to, its value read before an await in
 // its own expression, a field assigned or a class's method called through
-// it, an await only inside a lambda. Output from .NET 10 (probe
-// ~/tmp/dn/asyncref2).
+// it, an await only inside a lambda. Output from .NET 10 (probes
+// ~/tmp/dn/asyncref2; the rules checked in asyncref4 and asyncref6).
 
 using System;
 using System.Collections.Generic;

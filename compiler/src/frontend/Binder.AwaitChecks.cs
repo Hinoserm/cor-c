@@ -41,8 +41,8 @@ namespace Corsac.Lang;
 /// What the analysis does not see: a lock taken through a delegate or a
 /// virtual call to an override other than the one the call names, a lock
 /// handed from method to method in a field. A `goto` brings what is held to
-/// its label, and a `goto case` to its switch's cases, round after round
-/// until nothing more arrives (WalkLockBody). A lock that is never left
+/// its label, and a `goto case` to its case, round after round until
+/// nothing more arrives (WalkLockBody). A lock that is never left
 /// counts as held for the rest of the method.
 ///
 /// INTERRUPT HANDLERS. A method marked [InterruptHandler], or one that
@@ -138,9 +138,12 @@ public sealed partial class Binder
     {
         public bool Report;
         public HeldLocks Exit = DeadLocks;
-        // What reaches each label by a goto, gathered round after round
-        // until no label gains (WalkLockBody): a goto back over an Enter.
-        public readonly Dictionary<string, HeldLocks> Labels = new(StringComparer.Ordinal);
+        // What reaches each label by a goto, and each case by a goto case,
+        // gathered round after round until none gains (WalkLockBody): a goto
+        // back over an Enter; and each label's depth in finally blocks.
+        public readonly Dictionary<LabeledStmt, HeldLocks> Labels = new(ReferenceEqualityComparer.Instance);
+        public readonly Dictionary<SwitchCase, HeldLocks> Cases = new(ReferenceEqualityComparer.Instance);
+        public readonly Dictionary<LabeledStmt, int> LabelDepth = new(ReferenceEqualityComparer.Instance);
         public readonly List<LockLoop> Loops = new();
         public readonly List<Block> Finallys = new();
         public readonly List<HeldLocks> Tries = new();
@@ -152,8 +155,6 @@ public sealed partial class Binder
     {
         public HeldLocks Break = DeadLocks;
         public HeldLocks Continue = DeadLocks;
-        // A switch's: what `goto case` and `goto default` bring to its cases.
-        public HeldLocks CaseGotos = DeadLocks;
         public int Finallys;
         public bool Switch;
     }
@@ -479,30 +480,39 @@ public sealed partial class Binder
         Error(a, $"cannot await while {what} is held{taken} and not left on every path to here: a lock held across a suspension deadlocks, or names a holder that is no longer the one running; leave it first, or hold an awaitable lock (AsyncLock, SemaphoreSlim.WaitAsync) for a long hold");
     }
 
-    private static HeldLocks LabelIn(LockWalk w, string label) => w.Labels.TryGetValue(label, out HeldLocks h) ? h : DeadLocks;
+    private static HeldLocks LabelIn(LockWalk w, LabeledStmt label) => w.Labels.TryGetValue(label, out HeldLocks h) ? h : DeadLocks;
 
     /// <summary>
-    /// A body walked round after round while a label gains from a goto
-    /// later in the text (a goto back): what reaches its end, and in the
-    /// walk its exits. Counts only rise, to LockMost, so the rounds end.
+    /// A body walked round after round while a label or a case gains from a
+    /// goto later in the text (a goto back): what reaches its end, and in
+    /// the walk its exits. A count only rises (JoinLocks keeps the larger),
+    /// from LockLeast to LockMost, so each target gains at most that many
+    /// times, and the rounds are bounded by it.
     /// </summary>
     private HeldLocks WalkLockBody(Stmt body, LockWalk w)
     {
+        FinallyDepths(body, 0, w.LabelDepth);
+        int cases = 0;
+        foreach (Node n in SafetyNodes(body)) if (n is SwitchStmt sw) cases += sw.Cases.Count;
+        int most = (w.LabelDepth.Count + cases + 1) * (LockMost - LockLeast + 2);
         HeldLocks end = DeadLocks;
-        for (int round = 0; round < 12; round++)
+        for (int round = 0; round <= most; round++)
         {
-            Dictionary<string, HeldLocks> before = new(w.Labels, StringComparer.Ordinal);
+            long gained = LocksGained(w);
             w.Exit = DeadLocks;
             end = WalkLockStmt(body, new HeldLocks(), w);
-            bool same = before.Count == w.Labels.Count;
-            foreach ((string label, HeldLocks now) in w.Labels)
-            {
-                if (!same) break;
-                same = before.TryGetValue(label, out HeldLocks was) && was.Dead == now.Dead && SameLocks(was, now);
-            }
-            if (same) break;
+            if (LocksGained(w) == gained) break;
         }
         return end;
+    }
+
+    /// <summary>How far the labels and cases have risen, all told: what a round that goes on raises.</summary>
+    private static long LocksGained(LockWalk w)
+    {
+        long risen = 0;
+        foreach (HeldLocks h in w.Labels.Values) if (!h.Dead) risen += h.Count - LockLeast + 1;
+        foreach (HeldLocks h in w.Cases.Values) if (!h.Dead) risen += h.Count - LockLeast + 1;
+        return risen;
     }
 
     private HeldLocks WalkLockStmt(Stmt s, HeldLocks h, LockWalk w)
@@ -510,9 +520,9 @@ public sealed partial class Binder
         if (h.Dead)
         {
             // Unreachable from the top -- but a label may still be reached.
-            if (s is LabeledStmt label && !LabelIn(w, label.Label).Dead)
+            if (s is LabeledStmt label && !LabelIn(w, label).Dead)
             {
-                return WalkLockStmt(label.Body, LabelIn(w, label.Label), w);
+                return WalkLockStmt(label.Body, LabelIn(w, label), w);
             }
             if (s is Block dead)
             {
@@ -644,40 +654,33 @@ public sealed partial class Binder
             case SwitchStmt sw:
             {
                 h = WalkLockExpr(sw.Subject, h, w);
-                // Round again while a `goto case` brings a case more than it had.
-                HeldLocks caseGotos = DeadLocks;
-                HeldLocks ends = DeadLocks;
                 LockLoop frame = new() { Switch = true, Finallys = w.Finallys.Count };
+                w.Loops.Add(frame);
+                HeldLocks ends = DeadLocks;
                 bool hasDefault = false;
-                for (int round = 0; round < 12; round++)
+                foreach (SwitchCase c in sw.Cases)
                 {
-                    frame = new LockLoop { Switch = true, Finallys = w.Finallys.Count };
-                    w.Loops.Add(frame);
-                    ends = DeadLocks;
-                    hasDefault = false;
-                    foreach (SwitchCase c in sw.Cases)
+                    HeldLocks at = h;
+                    if (c.Pattern is null)
                     {
-                        HeldLocks at = h;
-                        if (c.Pattern is null)
-                        {
-                            hasDefault = true;
-                        }
-                        else
-                        {
-                            at = WalkLockExpr(c.Pattern, at, w);
-                        }
-                        at = JoinLocks(at, caseGotos);
-                        foreach (Stmt one in c.Body)
-                        {
-                            at = WalkLockStmt(one, at, w);
-                        }
-                        ends = JoinLocks(ends, at);
+                        hasDefault = true;
                     }
-                    w.Loops.RemoveAt(w.Loops.Count - 1);
-                    HeldLocks again = JoinLocks(caseGotos, frame.CaseGotos);
-                    if (again.Dead == caseGotos.Dead && SameLocks(again, caseGotos)) break;
-                    caseGotos = again;
+                    else
+                    {
+                        at = WalkLockExpr(c.Pattern, at, w);
+                    }
+                    // And what a `goto case` to it brought (the rounds, WalkLockBody).
+                    if (w.Cases.TryGetValue(c, out HeldLocks brought))
+                    {
+                        at = JoinLocks(at, brought);
+                    }
+                    foreach (Stmt one in c.Body)
+                    {
+                        at = WalkLockStmt(one, at, w);
+                    }
+                    ends = JoinLocks(ends, at);
                 }
+                w.Loops.RemoveAt(w.Loops.Count - 1);
                 if (!hasDefault)
                 {
                     ends = JoinLocks(ends, h);
@@ -741,29 +744,36 @@ public sealed partial class Binder
                 return DeadLocks;
             }
 
-            // To a case of the switch it is in: its cases begin with it too.
+            // To the case the binder found for it (BindResult.GotoCases), out
+            // through the finally blocks opened inside its switch.
             case GotoCaseStmt gc:
                 if (gc.Value is not null)
                 {
                     h = WalkLockExpr(gc.Value, h, w);
                 }
-                for (int i = w.Loops.Count - 1; i >= 0; i--)
+                if (_r.GotoCases.TryGetValue(gc, out SwitchCase? toCase))
                 {
-                    if (w.Loops[i].Switch)
+                    int depth = w.Finallys.Count;
+                    for (int i = w.Loops.Count - 1; i >= 0; i--)
                     {
-                        w.Loops[i].CaseGotos = JoinLocks(w.Loops[i].CaseGotos, ThroughFinallys(h, w, w.Loops[i].Finallys));
-                        break;
+                        if (w.Loops[i].Switch) { depth = w.Loops[i].Finallys; break; }
                     }
+                    w.Cases[toCase] = JoinLocks(w.Cases.TryGetValue(toCase, out HeldLocks had) ? had : DeadLocks, ThroughFinallys(h, w, depth));
                 }
                 return DeadLocks;
 
-            // To its label, out through every finally open: the label's state is its own.
+            // To its label (BindResult.Gotos), out through the finally blocks
+            // deeper than the label's (FinallyDepths).
             case GotoStmt g:
-                w.Labels[g.Label] = JoinLocks(LabelIn(w, g.Label), ThroughFinallys(h, w, 0));
+                if (_r.Gotos.TryGetValue(g, out LabeledStmt? toLabel))
+                {
+                    int depth = w.LabelDepth.TryGetValue(toLabel, out int labelDepth) ? labelDepth : 0;
+                    w.Labels[toLabel] = JoinLocks(LabelIn(w, toLabel), ThroughFinallys(h, w, depth));
+                }
                 return DeadLocks;
 
             case LabeledStmt l:
-                return WalkLockStmt(l.Body, JoinLocks(h, LabelIn(w, l.Label)), w);
+                return WalkLockStmt(l.Body, JoinLocks(h, LabelIn(w, l)), w);
 
             default:
                 {

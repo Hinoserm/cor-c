@@ -1,0 +1,35 @@
+// test: ref_local_field_assigned_across_an_await
+// expect-exit: 0
+// expect-output:
+// A 7
+// B 8
+//
+// A struct's field assigned through a ref local with an awaited value, which
+// Roslyn compiles: the field's address is taken first, as C# evaluates an
+// assignment's target before its value, and kept across the suspension (the
+// machine is read word by word by the collector, so the array stays). C#'s
+// answer, 7 and 8 -- NOT .NET 10's: its own code for B, where the await
+// really suspends, throws NullReferenceException (probe ~/tmp/dn/asyncref8).
+
+using System;
+using System.Threading.Tasks;
+
+struct Shape { public int X; }
+
+static class Program
+{
+    static Shape[] shapes = new Shape[1];
+    static Task<int> Seven() => Task.FromResult(7);
+
+    static async Task A() { ref Shape s = ref shapes[0]; s.X = await Seven(); }
+    static async Task B() { ref Shape s = ref shapes[0]; s.X = await Task.Run(() => 8); }
+
+    static int Main()
+    {
+        A().Wait();
+        Console.WriteLine("A " + shapes[0].X);
+        B().Wait();
+        Console.WriteLine("B " + shapes[0].X);
+        return 0;
+    }
+}

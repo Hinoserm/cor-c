@@ -4,11 +4,18 @@ namespace Corsac.Lang;
 /// <summary>
 /// A REF LOCAL IN AN ASYNC METHOD OR AN ITERATOR, as C# 13 allows one: used
 /// anywhere its binding has not crossed an `await` or a `yield return`, and
-/// refused (CS9217) at each use a suspension since its binding reaches. Its
-/// address names a variable in this frame or in a heap object the frame
-/// alone may hold, and a suspension keeps neither: the frame is gone, and the
-/// machine saves no address into the code's own data (AsyncTransform saves
-/// only what is live, and a ref local after this check never is).
+/// refused (CS9217) at each use a suspension since its binding reaches --
+/// C#'s rule, kept as Roslyn keeps it, no more and no less.
+///
+/// What Roslyn lets through keeps an address across a suspension here and is
+/// safe all the same (`s.X = await F()` through a ref local: the field's
+/// address taken first). AsyncTransform saves what is live into the machine,
+/// which is allocated undescribed (AllocateDynamic, plain Alloc) and read by
+/// the collector word by word, so an address inside a block keeps the block;
+/// an address into the machine itself is kept as an offset where the machine
+/// may move (an `async ValueTask`'s), or the machine is made on the heap.
+/// (.NET 10's own code for `s.X = await F()` throws NullReferenceException
+/// where the await suspends: test 2667 holds this compiler to C#'s answer.)
 ///
 /// A walk of the body's paths, as the lock walk's (Binder.AwaitChecks): what
 /// is crossed is a set of the body's ref locals, every one of them added at a
@@ -60,9 +67,12 @@ public sealed partial class Binder
     {
         public readonly Dictionary<LocalSym, int> Index = new(ReferenceEqualityComparer.Instance);
         public int Words;
-        // What reaches each label by a goto, gathered round after round
-        // until no label gains (a goto back over a suspension).
-        public readonly Dictionary<string, Crossed> Labels = new(StringComparer.Ordinal);
+        // What reaches each label by a goto, and each case by a goto case,
+        // gathered round after round until none gains (a goto back over a
+        // suspension); and each label's depth in finally blocks.
+        public readonly Dictionary<LabeledStmt, Crossed> Labels = new(ReferenceEqualityComparer.Instance);
+        public readonly Dictionary<SwitchCase, Crossed> Cases = new(ReferenceEqualityComparer.Instance);
+        public readonly Dictionary<LabeledStmt, int> LabelDepth = new(ReferenceEqualityComparer.Instance);
         public readonly List<CrossLoop> Loops = new();
         public readonly List<Block> Finallys = new();
         public readonly List<Crossed> Tries = new();
@@ -72,8 +82,6 @@ public sealed partial class Binder
     {
         public Crossed Break = DeadCrossed;
         public Crossed Continue = DeadCrossed;
-        // A switch's: what `goto case` and `goto default` bring to its cases.
-        public Crossed CaseGotos = DeadCrossed;
         public int Finallys;
         public bool Switch;
     }
@@ -144,25 +152,76 @@ public sealed partial class Binder
         }
         if (w.Index.Count == 0) return;
         w.Words = (w.Index.Count + 63) >> 6;
-        // Round after round while a label gains from a goto later in the
-        // text; each round only adds, so the rounds end.
-        for (int round = 0; round <= w.Index.Count + 2; round++)
+        if (body is Stmt top) FinallyDepths(top, 0, w.LabelDepth);
+        // Round after round while a label or a case gains from a goto later
+        // in the text. Each round that goes on adds a bit to one of them, so
+        // there are at most as many as their bits, and one more to see it.
+        int targets = w.LabelDepth.Count + CountCases(body);
+        for (int round = 0; round <= (targets + 1) * (w.Index.Count + 1); round++)
         {
-            Dictionary<string, Crossed> before = new(w.Labels, StringComparer.Ordinal);
+            int gained = Gained(w);
             Crossed start = new(false, new ulong[w.Words]);
             if (body is Stmt s) WalkCrossStmt(s, start, w);
             else if (body is Expr e) WalkCrossExpr(e, start, w);
-            bool same = before.Count == w.Labels.Count;
-            foreach ((string label, Crossed now) in w.Labels)
-            {
-                if (!same) break;
-                same = before.TryGetValue(label, out Crossed was) && SameCrossed(was, now);
-            }
-            if (same) break;
+            if (Gained(w) == gained) break;
         }
     }
 
-    private static Crossed LabelIn(CrossWalk w, string label) => w.Labels.TryGetValue(label, out Crossed c) ? c : DeadCrossed;
+    /// <summary>How many bits the labels and cases hold, all told: what a round that goes on raises.</summary>
+    private static int Gained(CrossWalk w)
+    {
+        int bits = 0;
+        foreach (Crossed c in w.Labels.Values) bits += Bits(c);
+        foreach (Crossed c in w.Cases.Values) bits += Bits(c);
+        return bits;
+        static int Bits(Crossed c)
+        {
+            if (c.Dead) return 0;
+            int n = 1;
+            if (c.Bits is { } words) foreach (ulong word in words) n += System.Numerics.BitOperations.PopCount(word);
+            return n;
+        }
+    }
+
+    private int CountCases(Node body)
+    {
+        int cases = 0;
+        foreach (Node n in SafetyNodes(body)) if (n is SwitchStmt sw) cases += sw.Cases.Count;
+        return cases;
+    }
+
+    /// <summary>
+    /// Each label's depth in finally blocks: the try blocks with a finally
+    /// whose body or catch it is in. A goto out leaves by the ones deeper
+    /// than its label's -- C# reaches only a label in a block around it.
+    /// </summary>
+    private void FinallyDepths(Stmt s, int depth, Dictionary<LabeledStmt, int> into)
+    {
+        switch (s)
+        {
+            case LabeledStmt l: into[l] = depth; FinallyDepths(l.Body, depth, into); return;
+            case Block b: foreach (Stmt one in b.Statements) FinallyDepths(one, depth, into); return;
+            case IfStmt i: FinallyDepths(i.Then, depth, into); if (i.Else is not null) FinallyDepths(i.Else, depth, into); return;
+            case WhileStmt loop: FinallyDepths(loop.Body, depth, into); return;
+            case DoStmt loop: FinallyDepths(loop.Body, depth, into); return;
+            case ForStmt loop: FinallyDepths(loop.Body, depth, into); return;
+            case ForeachStmt fe:
+                if (_r.Lowered.TryGetValue(fe, out Stmt? lowered)) FinallyDepths(lowered, depth, into);
+                else FinallyDepths(fe.Body, depth, into);
+                return;
+            case SwitchStmt sw: foreach (SwitchCase c in sw.Cases) foreach (Stmt one in c.Body) FinallyDepths(one, depth, into); return;
+            case TryStmt ts:
+            {
+                int inside = ts.Finally is null ? depth : depth + 1;
+                FinallyDepths(ts.Body, inside, into);
+                foreach (CatchClause cc in ts.Catches) FinallyDepths(cc.Body, inside, into);
+                if (ts.Finally is not null) FinallyDepths(ts.Finally, depth, into);
+                return;
+            }
+        }
+    }
+
+    private static Crossed LabelIn(CrossWalk w, LabeledStmt label) => w.Labels.TryGetValue(label, out Crossed c) ? c : DeadCrossed;
 
     private void ReportCrossed(NameExpr use)
     {
@@ -180,7 +239,7 @@ public sealed partial class Binder
     {
         if (c.Dead)
         {
-            if (s is LabeledStmt label && !LabelIn(w, label.Label).Dead) return WalkCrossStmt(label.Body, LabelIn(w, label.Label), w);
+            if (s is LabeledStmt label && !LabelIn(w, label).Dead) return WalkCrossStmt(label.Body, LabelIn(w, label), w);
             if (s is Block dead)
             {
                 foreach (Stmt one in dead.Statements) c = WalkCrossStmt(one, c, w);
@@ -263,31 +322,21 @@ public sealed partial class Binder
             case SwitchStmt sw:
             {
                 c = WalkCrossExpr(sw.Subject, c, w);
-                // Round again while a `goto case` brings a case more than it had.
-                Crossed caseGotos = DeadCrossed;
-                Crossed ends = DeadCrossed;
                 CrossLoop frame = new() { Switch = true, Finallys = w.Finallys.Count };
+                w.Loops.Add(frame);
+                Crossed ends = DeadCrossed;
                 bool hasDefault = false;
-                for (int round = 0; round <= w.Index.Count + 1; round++)
+                foreach (SwitchCase one in sw.Cases)
                 {
-                    frame = new CrossLoop { Switch = true, Finallys = w.Finallys.Count };
-                    w.Loops.Add(frame);
-                    ends = DeadCrossed;
-                    hasDefault = false;
-                    foreach (SwitchCase one in sw.Cases)
-                    {
-                        Crossed at = c;
-                        if (one.Pattern is null) hasDefault = true;
-                        else at = WalkCrossExpr(one.Pattern, at, w);
-                        at = JoinCrossed(at, caseGotos);
-                        foreach (Stmt inner in one.Body) at = WalkCrossStmt(inner, at, w);
-                        ends = JoinCrossed(ends, at);
-                    }
-                    w.Loops.RemoveAt(w.Loops.Count - 1);
-                    Crossed again = JoinCrossed(caseGotos, frame.CaseGotos);
-                    if (SameCrossed(again, caseGotos)) break;
-                    caseGotos = again;
+                    Crossed at = c;
+                    if (one.Pattern is null) hasDefault = true;
+                    else at = WalkCrossExpr(one.Pattern, at, w);
+                    // And what a `goto case` to it brought (the rounds, CheckRefLocalsAcrossSuspensions).
+                    if (w.Cases.TryGetValue(one, out Crossed brought)) at = JoinCrossed(at, brought);
+                    foreach (Stmt inner in one.Body) at = WalkCrossStmt(inner, at, w);
+                    ends = JoinCrossed(ends, at);
                 }
+                w.Loops.RemoveAt(w.Loops.Count - 1);
                 if (!hasDefault) ends = JoinCrossed(ends, c);
                 return JoinCrossed(ends, frame.Break);
             }
@@ -339,27 +388,33 @@ public sealed partial class Binder
                 }
                 return DeadCrossed;
 
-            // To a case of the switch it is in: its cases begin with it too.
+            // To the case the binder found for it (BindResult.GotoCases),
+            // out through the finally blocks opened inside its switch.
             case GotoCaseStmt gc:
                 if (gc.Value is not null) c = WalkCrossExpr(gc.Value, c, w);
-                for (int i = w.Loops.Count - 1; i >= 0; i--)
+                if (_r.GotoCases.TryGetValue(gc, out SwitchCase? toCase))
                 {
-                    if (w.Loops[i].Switch)
+                    int depth = w.Finallys.Count;
+                    for (int i = w.Loops.Count - 1; i >= 0; i--)
                     {
-                        w.Loops[i].CaseGotos = JoinCrossed(w.Loops[i].CaseGotos, CrossThroughFinallys(c, w, w.Loops[i].Finallys));
-                        break;
+                        if (w.Loops[i].Switch) { depth = w.Loops[i].Finallys; break; }
                     }
+                    w.Cases[toCase] = JoinCrossed(w.Cases.TryGetValue(toCase, out Crossed had) ? had : DeadCrossed, CrossThroughFinallys(c, w, depth));
                 }
                 return DeadCrossed;
 
-            // Out through every finally open, as a jump out of them: sound
-            // wherever the label is.
+            // To its label (BindResult.Gotos), out through the finally blocks
+            // deeper than the label's.
             case GotoStmt g:
-                w.Labels[g.Label] = JoinCrossed(LabelIn(w, g.Label), CrossThroughFinallys(c, w, 0));
+                if (_r.Gotos.TryGetValue(g, out LabeledStmt? toLabel))
+                {
+                    int depth = w.LabelDepth.TryGetValue(toLabel, out int labelDepth) ? labelDepth : 0;
+                    w.Labels[toLabel] = JoinCrossed(LabelIn(w, toLabel), CrossThroughFinallys(c, w, depth));
+                }
                 return DeadCrossed;
 
             case LabeledStmt l:
-                return WalkCrossStmt(l.Body, JoinCrossed(c, LabelIn(w, l.Label)), w);
+                return WalkCrossStmt(l.Body, JoinCrossed(c, LabelIn(w, l)), w);
 
             default:
             {
@@ -493,7 +548,7 @@ public sealed partial class Binder
 
     /// <summary>Whether a value of this type is no reference: a call on one is made on the variable itself.</summary>
     private static bool ValueTyped(Type t)
-        => !t.IsArray && !t.IsPointer && !t.IsReference && t.Prim is not (Prim.Any or Prim.String or Prim.Type)
+        => !t.IsError && !t.IsArray && !t.IsPointer && !t.IsReference && t.Prim is not (Prim.Any or Prim.String or Prim.Type)
            && t.Symbol is not { Kind: TypeKind.Class or TypeKind.Interface };
 
     /// <summary>
@@ -502,7 +557,10 @@ public sealed partial class Binder
     /// </summary>
     private NameExpr? RefLocalRoot(Expr e, CrossWalk w)
     {
-        while (e is MemberExpr { Target: { } inner } && _r.TypeOf(inner) is { } held && ValueTyped(held)) e = inner;
+        // Through a struct's own instance fields only: a property's value is
+        // a copy, no variable.
+        while (e is MemberExpr { Target: { } inner } member && _r.TypeOf(inner) is { } held && ValueTyped(held)
+               && held.Symbol is { } owner && owner.Fields.Any(f => !f.Static && f.Name == member.Name)) e = inner;
         return e is NameExpr n && RefLocalOf(n, w) >= 0 ? n : null;
     }
 
@@ -525,9 +583,10 @@ public sealed partial class Binder
         switch (e)
         {
             // The local assigned, or any compound assignment's target through it.
-            case AssignExpr assign when assign.Value is not RefArgExpr && AwaitsHere(assign.Value)
+            case AssignExpr assign when assign.Value is not RefArgExpr
                 && (assign.Op is null ? (assign.Target is NameExpr own && RefLocalOf(own, w) >= 0 ? own : null)
-                                      : RefLocalRoot(assign.Target, w)) is { } target:
+                                      : RefLocalRoot(assign.Target, w)) is { } target
+                && AwaitsHere(assign.Value):
                 ReportCrossed(target);
                 return;
             case CallExpr call:
