@@ -20,9 +20,11 @@
 #                start, end, bits (1 NFD No, 2 NFKD No, 4 NFC No, 8 NFC Maybe,
 #                16 NFKC No, 32 NFKC Maybe). A string whose code points are
 #                all Yes, in canonical order, is that form already. Maybe is
-#                whatever can compose with a preceding character: a second of
+#                whatever may compose with a preceding character: a second of
 #                a composite, or (to a fixed point) a code point decomposing to
-#                start with one; checked against NFC before anything is written.
+#                start with one -- a little more than can, which only sends
+#                those strings the full way; checked against NFC and NFKC
+#                before anything is written.
 # Hangul syllables are worked out by the algorithm and are in no table.
 import sys
 import unicodedata as ud
@@ -103,16 +105,17 @@ while True:
 # decomposition, and every second, put after each composite's first -- a
 # change NFC makes there is one only a Maybe may let through.
 firsts = sorted({key >> 21 for key in composites} | set(range(0x1100, 0x1100 + 19)) | {0xAC00})
-for cp in chars():
-    s1 = chr(cp)
-    if cp in seconds or ud.normalize("NFC", s1) != s1:
-        continue
-    if ud.normalize("NFD", s1) == s1:
-        continue
-    for f in firsts:
-        pair = chr(f) + s1
-        if ud.normalize("NFC", pair) != ud.normalize("NFC", chr(f)) + s1:
-            sys.exit("U+%04X composes after U+%04X but is not Maybe" % (cp, f))
+for form in ("NFC", "NFKC"):
+    for cp in chars():
+        s1 = chr(cp)
+        if cp in seconds or ud.normalize(form, s1) != s1:
+            continue
+        if ud.normalize("NFD", s1) == s1:
+            continue
+        for f in firsts:
+            pair = chr(f) + s1
+            if ud.normalize(form, pair) != ud.normalize(form, chr(f)) + s1:
+                sys.exit("U+%04X composes under %s after U+%04X but is not Maybe" % (cp, form, f))
 
 
 def check_bits(cp):
