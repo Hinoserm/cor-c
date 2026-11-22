@@ -15,7 +15,7 @@ static class Program
     static int or(int v) => v + 10;
     static int Main()
     {
-        object x = 3; int and = 4; bool @true = true;
+        object x = 3; int and = 4;
         Console.WriteLine((x is int ? or(1) : 0) + " " + (x is int ? -and : 0) + " " + (x is int ? (and) : 0));
         object y = null!;
         Console.WriteLine((x is string ? and : 5) + " " + (y is int ? or(2) : 6));

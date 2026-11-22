@@ -5009,13 +5009,13 @@ public sealed class Parser
                                                                     || Ahead(2).Kind == Tok.Ident && Ahead(2).Text == "when")
                                    // `is int? or string`, `is int? or 1`: the
                                    // combinators, before a name or a number,
-                                   // string or char literal, as Roslyn reads
-                                   // them. Before anything else -- `null`,
+                                   // string (u8 too) or char literal, as Roslyn
+                                   // reads them. Before anything else -- `null`,
                                    // `true`, `-1`, `(`, `<`, `[`, `.`, `+`, `:`
                                    // -- Roslyn reads `? or … : …` over a
                                    // variable named so, and so does this.
                                    || Ahead().Kind == Tok.Ident && Ahead().Text is "or" or "and"
-                                      && Ahead(2).Kind is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.Char);
+                                      && Ahead(2).Kind is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.Utf8Str or Tok.Char);
             if ((allowNullable || elementMark || closingMark) && At(Tok.Question))
             {
                 patternMark |= closingMark;
@@ -7841,7 +7841,7 @@ public sealed class Parser
     /// Nothing but the token after the word tells them apart.
     /// </summary>
     private static bool StartsPattern(Tok k)
-        => k is Tok.Ident or Tok.Int or Tok.Real or Tok.Char or Tok.Str or Tok.Minus
+        => k is Tok.Ident or Tok.Int or Tok.Real or Tok.Char or Tok.Str or Tok.Utf8Str or Tok.Minus
              or Tok.LParen or Tok.LBrace or Tok.LBracket or Tok.KwVar or Tok.KwNull or Tok.KwTrue or Tok.KwFalse
              or Tok.Lt or Tok.Gt or Tok.LtEq or Tok.GtEq;
 
@@ -8318,7 +8318,7 @@ public sealed class Parser
         => At(Tok.LBrace)
            || At(Tok.LParen) || Cur.Kind is Tok.Lt or Tok.Gt or Tok.LtEq or Tok.GtEq
            or Tok.Int or Tok.Minus or Tok.Tilde or Tok.Char or Tok.Real
-           or Tok.KwTrue or Tok.KwFalse or Tok.Str
+           or Tok.KwTrue or Tok.KwFalse or Tok.Str or Tok.Utf8Str
            || (At(Tok.Ident) && Ahead().Kind == Tok.Dot && !QualifiedTypePattern())
            // `case unchecked((int)0x80000000):` is a constant, not a type
            // named `unchecked` -- nor is `checked(...)` or `nameof(...)`.
