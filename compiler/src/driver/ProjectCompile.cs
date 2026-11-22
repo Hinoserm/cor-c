@@ -296,7 +296,10 @@ public static class ProjectCompile
             }
             try { File.Delete(unit.Receipt + ".inside"); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
-            long before = GC.GetTotalAllocatedBytes();
+            // ITS OWN ALLOCATION (AllocationMeter): this thread's and its
+            // helpers', never the units compiled beside it.
+            System.Runtime.CompilerServices.StrongBox<long> meter = new();
+            long before = AllocationMeter.Begin(meter);
             // A UNIT BEGUN IS SAID AT ONCE: only its end was, and a unit that
             // never ended -- the compile caught in a loop -- looked like one
             // still working, minutes on, with nothing to say which it was.
@@ -335,7 +338,7 @@ public static class ProjectCompile
                 }
                 return 1;
             }
-            long after = GC.GetTotalAllocatedBytes();
+            long allocated = AllocationMeter.End(meter, before);
             string live = census ? " live-after=" + GC.GetTotalMemory(true) : "";
             if (code == 0)
             {
@@ -364,7 +367,7 @@ public static class ProjectCompile
                 // The reason last: it is a sentence, and whatever reads the
                 // line for its fields finds them before it.
                 Console.Error.WriteLine("unit " + done + "/" + units.Count + " " + Path.GetFileName(unit.Source)
-                    + " unit-allocated=" + (after - before) + live + (code == 0 ? "" : " FAILED") + " rebuilt: " + reason);
+                    + " unit-allocated=" + allocated + live + (code == 0 ? "" : " FAILED") + " rebuilt: " + reason);
             }
             return code;
         }

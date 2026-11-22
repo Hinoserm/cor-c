@@ -436,7 +436,7 @@ public sealed class X86Backend : IBackend
                     for (int worker = 0; worker < active; worker++)
                     {
                         int lane = worker;
-                        tasks[worker] = Task.Run(() =>
+                        tasks[worker] = Corsac.AllocationMeter.Run(() =>
                         {
                             for (int item = lane; item < count; item += active)
                             {
