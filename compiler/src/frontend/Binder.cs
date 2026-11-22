@@ -19857,6 +19857,25 @@ public sealed partial class Binder
                     return Type.TypeHandle;
                 }
 
+                // NULLABLE<T> IS A TYPE OF ITS OWN, as .NET's Nullable`1:
+                // `typeof(int?)` is not `typeof(int)`, and is named
+                // System.Nullable`1[[System.Int32, ...]] -- though a boxed
+                // int? is an int's box, and its GetType typeof(int), as in
+                // .NET. A struct shared over this code's parameters has a box
+                // only its context names (StructTypeOfs), and no Nullable of
+                // it can be made ahead: refused, rather than answered as T's.
+                if (named.IsNullableValue && named.ArrayRank == 0 && named.PointerDepth == 0)
+                {
+                    Type under = named.Underlying;
+                    if (under.Symbol is { Kind: TypeKind.Struct } && under.UseArgs is { Count: > 0 })
+                    {
+                        Error(to, $"typeof of '{named}', a Nullable of a struct over this shared code's type parameters, is not supported yet");
+                        return Type.Error;
+                    }
+                    _r.NullableTypeOfs[to] = under;
+                    return Type.TypeHandle;
+                }
+
                 // A PRIMITIVE HAS A DESCRIPTOR TOO. It has no vtable to put
                 // one in front of, but a descriptor is what a type's IDENTITY
                 // is here -- two of them compare by address -- and `typeof(int)`
@@ -22925,6 +22944,15 @@ public sealed partial class Binder
             if (m.Name is "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" && target.Prim == Prim.Type)
             {
                 return Type.Bool;
+            }
+
+            // A NULLABLE'S T, the library's own (Nullable.GetUnderlyingType):
+            // T's descriptor where the Type is Nullable`1 of it, null for any
+            // other (Lowering.IntrinsicMember). No program's: .NET's Type
+            // has no such member.
+            if (m.Name == "NullableUnderlying$" && target.Prim == Prim.Type && !BindingProgramCode())
+            {
+                return Type.TypeHandle.AsNullable();
             }
 
             // ITS ASSEMBLY, which is the program's: one image holds every

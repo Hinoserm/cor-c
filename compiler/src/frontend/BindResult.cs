@@ -468,6 +468,8 @@ public sealed partial class BindResult
     public Dictionary<TypeOfExpr, Type> RunTimeTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
     /// <summary>typeof a shared struct written over shared code's parameters: its box found through the code's context (Lowering.StructBoxVtable).</summary>
     public Dictionary<TypeOfExpr, Type> StructTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
+    /// <summary>`typeof(T?)` of a value type T: Nullable`1 of T's own descriptor, not T's (Lowering.NullableDescriptor).</summary>
+    public Dictionary<TypeOfExpr, Type> NullableTypeOfs { get; } = new(ReferenceEqualityComparer.Instance);
     /// <summary>`x is S` of a struct S, as written: its box, tested (Lowering.EmitIs).</summary>
     public Dictionary<IsExpr, Type> TestedStructs { get; } = new(ReferenceEqualityComparer.Instance);
 
@@ -793,6 +795,8 @@ public sealed partial class BindResult
                     PrimitiveTypeOfs.Remove(to);
                     ArrayTypeOfs.Remove(to);
                     RunTimeTypeOfs.Remove(to);
+                    StructTypeOfs.Remove(to);
+                    NullableTypeOfs.Remove(to);
                     break;
                 case CallExpr c:
                     GetTypes.Remove(c);
@@ -875,6 +879,8 @@ public sealed partial class BindResult
         PrimitiveTypeOfs.Clear();
         ArrayTypeOfs.Clear();
         RunTimeTypeOfs.Clear();
+        StructTypeOfs.Clear();
+        NullableTypeOfs.Clear();
         GetTypes.Clear();
         MemberwiseClones.Clear();
         GenericDispatches.Clear();

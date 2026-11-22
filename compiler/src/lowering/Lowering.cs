@@ -2090,6 +2090,10 @@ public sealed partial class Lowering
     // canonical class.
     private const int TypeFlagMulticastObject = 0x1000000;
 
+    // A NULLABLE'S DESCRIPTOR (NullableDescriptor): its element word is T's
+    // own, which Nullable.GetUnderlyingType reads (Runtime.NullableUnderlying).
+    internal const int TypeFlagNullable = 0x2000000;
+
     // AN INTERFACE'S WORD 11: its declared variance (VarianceRecord). Word 4,
     // as a class's, the interfaces it extends.
     private const int DescVariance = 11;
@@ -2706,6 +2710,42 @@ public sealed partial class Lowering
     }
 
     private readonly Dictionary<Prim, string> _primitiveDescriptors = new();
+
+    /// <summary>
+    /// The descriptor `typeof(T?)` is: .NET's Nullable`1 of T, a type of its
+    /// own -- not T's, though a boxed T? is T's box -- named as .NET names
+    /// it (System.Nullable`1[[System.Int32, System.Private.CoreLib, ...]]),
+    /// a value type by its flags, and with T's own descriptor in its element
+    /// word, which Nullable.GetUnderlyingType reads at run time (flagged
+    /// TypeFlagNullable, since a class's word there is its type context).
+    /// Coalescible and the library's, as a primitive's: every unit's
+    /// typeof(int?) is one address.
+    /// </summary>
+    private string NullableDescriptor(Type underlying)
+    {
+        underlying = underlying.AsNonNullable();
+        string key = BoxKey(underlying);
+        if (_nullableDescriptors.TryGetValue(key, out string? sym)) return sym;
+        sym = "vn_" + Safe(key);
+        _nullableDescriptors[key] = sym;
+
+        int w = _t.WordSize;
+        byte[] d = new byte[_t.DescriptorBytes];
+        WriteWord(d, DescSize * w, w);
+        WriteWord(d, DescDepth * w, -1);
+        WriteWord(d, DescFlags * w, TypeFlagValue | TypeFlagNullable);
+        DataItem item = new(sym, d) { ReadOnly = true, Align = _t.Align64, FromLibrary = true, Coalescible = true };
+        _m.Data.Add(item);
+        item.Relocs.Add(new DataReloc(DescName * w, InternNameBytes(DescriptorName(DotNetTypeName(underlying.AsNullable()))), 0));
+        item.Relocs.Add(new DataReloc(DescSelf * w, sym, 0));
+        // T's own: what typeof(T) is.
+        string underlyingDescriptor = underlying.Symbol is { Kind: TypeKind.Enum or TypeKind.Struct } valueType
+            ? BoxDescriptor(Type.Plain(valueType, Prim.Void)) : PrimitiveDescriptor(underlying.Prim);
+        item.Relocs.Add(new DataReloc(DescElement * w, underlyingDescriptor, 0));
+        return sym;
+    }
+
+    private readonly Dictionary<string, string> _nullableDescriptors = new(StringComparer.Ordinal);
 
     private static string PrimitiveName(Prim prim) => prim switch
     {

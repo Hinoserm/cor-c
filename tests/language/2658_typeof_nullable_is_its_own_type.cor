@@ -1,0 +1,71 @@
+// test: typeof_nullable_is_its_own_type
+// expect-exit: 0
+// expect-output:
+// False
+// True
+// Nullable`1 System
+// System.Nullable`1[[System.Int3
+// System.Nullable`1[System.Int32]
+// System.Nullable`1[Shade] System.Nullable`1[Point]
+// True False False False
+// True
+// False
+// box is int
+// True
+// True
+// True
+// True
+// System.Double
+// True False
+// 5 7 5 False
+//
+// typeof(T?) is Nullable`1 of T, a type of its own as in .NET: not equal to
+// typeof(T), named System.Nullable`1[...], a value type; the same through a
+// generic method's T, while a boxed int? is still an int's box.
+// Nullable.GetUnderlyingType answers at run time from the descriptor, and
+// the dynamic binder converts to a T? as to its T.
+// Output from .NET 10 (probe ~/tmp/dn/nullabletype).
+
+using System;
+
+enum Shade : byte { Dark, Light }
+struct Point { public int X; public Point(int x) { X = x; } }
+
+static class Program
+{
+    static Type Of<T>() => typeof(T);
+    static Type? Under(Type t) => Nullable.GetUnderlyingType(t);
+
+    static int Main()
+    {
+        Console.WriteLine(typeof(int?) == typeof(int));
+        Console.WriteLine(typeof(int?) == typeof(Nullable<int>));
+        Console.WriteLine(typeof(int?).Name + " " + typeof(int?).Namespace);
+        Console.WriteLine(typeof(int?).FullName!.Substring(0, 30));
+        Console.WriteLine(typeof(int?));
+        Console.WriteLine(typeof(Shade?) + " " + typeof(Point?));
+        Console.WriteLine(typeof(int?).IsValueType + " " + typeof(int?).IsPrimitive + " " + typeof(int?).IsClass + " " + typeof(int?).IsEnum);
+        Console.WriteLine(Of<int?>() == typeof(int?));
+        Console.WriteLine(Of<long?>() == typeof(int?));
+        int? boxedFrom = 5;
+        object boxed = boxedFrom;
+        Console.WriteLine(boxed.GetType() == typeof(int) ? "box is int" : "box is not int");
+        Type runtime = Of<Shade?>();
+        Console.WriteLine(Under(runtime) == typeof(Shade));
+        Console.WriteLine(Under(Of<Point?>()) == typeof(Point));
+        Console.WriteLine(Under(typeof(int)) == null);
+        Console.WriteLine(Under(typeof(string)) == null);
+        Console.WriteLine(Nullable.GetUnderlyingType(typeof(double?)));
+        object asObject = typeof(int?);
+        Console.WriteLine(asObject.Equals(typeof(int?)) + " " + asObject.Equals(typeof(int)));
+        dynamic five = 5;
+        int? n = five;
+        dynamic big = 7L;
+        int? m = (int?)big;
+        long? widened = five;
+        dynamic none = null!;
+        int? empty = none;
+        Console.WriteLine(n + " " + m + " " + widened + " " + empty.HasValue);
+        return 0;
+    }
+}

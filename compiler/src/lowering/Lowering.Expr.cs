@@ -1520,6 +1520,10 @@ public sealed partial class Lowering
                 return runTimeResult;
             }
 
+            // typeof(T?): Nullable`1 of T, its own descriptor.
+            case TypeOfExpr to when _b.NullableTypeOfs.TryGetValue(to, out Type? nullableOf):
+                return _e.Address(NullableDescriptor(nullableOf));
+
             // A SHARED STRUCT OVER THIS CODE'S PARAMETERS: its box, by its context.
             case TypeOfExpr to when _b.StructTypeOfs.TryGetValue(to, out Type? structOf) && StructBoxVtable(structOf) is VReg structVt:
                 return _e.Binary(Opcode.Sub, structVt, _t.DescriptorBytes);
@@ -1808,7 +1812,7 @@ public sealed partial class Lowering
     private static bool IsIntrinsicMember(MemberExpr m, Type target)
         => (m.Name == "Length" && (target.IsArray || target.Prim == Prim.String))
         || (m.Name == "LongLength" && target.IsArray)
-        || (m.Name is "Name" or "FullName" or "Namespace" or "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" && target.Prim == Prim.Type);
+        || (m.Name is "Name" or "FullName" or "Namespace" or "IsValueType" or "IsEnum" or "IsInterface" or "IsPrimitive" or "IsArray" or "IsClass" or "NullableUnderlying$" && target.Prim == Prim.Type);
 
     /// <summary>
     /// Such a member of the value `obj` holds.
@@ -1834,6 +1838,23 @@ public sealed partial class Lowering
                 ? _e.Binary(Opcode.Eq, R(_e.Binary(Opcode.And, flags, 3)), Imm(1, IrType.I32), IrType.I32)
                 : _e.Binary(Opcode.Ne, R(_e.Binary(Opcode.And, flags, bits)), Imm(0, IrType.I32), IrType.I32);
             return m.Name == "IsClass" ? _e.Binary(Opcode.Eq, R(masked), Imm(0, IrType.I32), IrType.I32) : masked;
+        }
+        // A NULLABLE'S T (NullableDescriptor): its element word where its
+        // flags say Nullable`1, null for any other type -- a class's word
+        // there is its type context.
+        if (target.Prim == Prim.Type && m.Name == "NullableUnderlying$")
+        {
+            VReg nullableFlags = Numbered(_e, _e.Load(IrType.I32, obj, DescFlags * _t.WordSize, 4, false));
+            VReg underlying = _f.NewReg(IrTypes.Word, "underlying");
+            Block readUnderlying = _f.NewBlock("nullableof");
+            Block underlyingEnd = _f.NewBlock("nullableofend");
+            _e.CopyTo(underlying, Imm(0, IrTypes.Word));
+            _e.Branch(_e.Binary(Opcode.And, nullableFlags, TypeFlagNullable), readUnderlying, underlyingEnd);
+            _e.SetBlock(readUnderlying);
+            _e.CopyTo(underlying, R(_e.Load(IrTypes.Word, obj, DescElement * _t.WordSize)));
+            _e.Jump(underlyingEnd);
+            _e.SetBlock(underlyingEnd);
+            return underlying;
         }
         // A readonly static table's is the constant it was made with
         // (TableLength), so a loop to its Length and the checks inside it

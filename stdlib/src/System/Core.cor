@@ -6684,9 +6684,10 @@ static class NumberRead {
 // and because the range check belongs to the TYPE rather than to the caller.
 
 /// .NET's System.Nullable: two nullable values ordered and compared, a value
-/// before none and none equal to none. GetUnderlyingType of `typeof(T?)` is
-/// answered where it is compiled (Binder); a nullable's Type here is its
-/// underlying type's, so asked of a Type at run time it has no answer.
+/// before none and none equal to none. GetUnderlyingType of a written
+/// `typeof(T?)` is answered where it is compiled (Binder); of any other Type
+/// at run time, by the Nullable`1 descriptor's own link to T's
+/// (Lowering.NullableDescriptor), null for a type that is no Nullable.
 public static class Nullable {
     public static int Compare<T>(T? n1, T? n2) where T : struct {
         if (n1.HasValue) { return n2.HasValue ? Comparer<T>.Default.Compare(n1.Value, n2.Value) : 1; }
@@ -6698,7 +6699,7 @@ public static class Nullable {
     }
     public static Type? GetUnderlyingType(Type nullableType) {
         if (nullableType == null) { throw new ArgumentNullException("nullableType"); }
-        return null;
+        return nullableType.NullableUnderlying$;
     }
 }
 
@@ -36917,6 +36918,8 @@ namespace System
             if (type == typeof(object)) return true;
             if (value == null) return !type.IsValueType || IsNullable(type);
             if (value == Missing) return false;
+            // A VALUE TO A NULLABLE, as to its T: a boxed int? is an int.
+            if (Nullable.GetUnderlyingType(type) is Type under) { type = under; }
             Type held = value.GetType();
             if (held == type) return true;
             int target = NumberKind(type);
@@ -36927,11 +36930,12 @@ namespace System
         /// Whether a value is exactly of a type (C# 12.6.4.5's "exactly matches").
         public static bool Exact(object? value, Type type) { return value != null && value != Missing && value.GetType() == type; }
 
-        static bool IsNullable(Type t) { return t.Name.StartsWith("Nullable", StringComparison.Ordinal); }
+        static bool IsNullable(Type t) { return Nullable.GetUnderlyingType(t) != null; }
 
         /// A type as C# writes it in a message: its keyword for a number, a bool, a char, a string or object.
         public static string TypeText(Type t)
         {
+            if (Nullable.GetUnderlyingType(t) is Type under) return TypeText(under) + "?";
             if (t == typeof(int)) return "int";
             if (t == typeof(long)) return "long";
             if (t == typeof(double)) return "double";
@@ -37021,6 +37025,9 @@ namespace System
                 throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException("Cannot convert null to '" + TypeText(type) + "' because it is a non-nullable value type");
             }
             if (value.GetType() == type) return value;
+            // A VALUE MADE A NULLABLE is made its T: the box of a T is what
+            // the compiler's cast to T? unboxes.
+            if (Nullable.GetUnderlyingType(type) is Type under) return Convert(value, under, explicitly);
             if (value is System.Dynamic.IDynamicMembers m && m.__DynConvert(type, explicitly, out result) == Done) return result!;
             int target = NumberKind(type);
             if (target != 0 && ValueKind(value) != 0)
@@ -37029,7 +37036,6 @@ namespace System
                     throw new Microsoft.CSharp.RuntimeBinder.RuntimeBinderException("Cannot implicitly convert type '" + TypeName(value) + "' to '" + TypeText(type) + "'. An explicit conversion exists (are you missing a cast?)");
                 return Number(value, target);
             }
-            if (IsNullable(type) && ValueKind(value) != 0) return value;
             // A REFERENCE: the cast the compiler writes after this checks it,
             // with InvalidCastException; asked here only to say it C#'s way.
             if (type.IsValueType && !type.IsEnum)
