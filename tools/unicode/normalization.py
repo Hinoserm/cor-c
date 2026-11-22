@@ -16,6 +16,10 @@
 #                it differs from the canonical one.
 #   Composites   the primary composites: (first << 21 | second) -> composite,
 #                sorted, every pair whose composition NFC keeps.
+#   Checks       UAX #15's quick-check properties, as ranges of one value:
+#                start, end, bits (1 NFD No, 2 NFKD No, 4 NFC No, 8 NFC Maybe,
+#                16 NFKC No, 32 NFKC Maybe). A string whose code points are
+#                all Yes, in canonical order, is that form already.
 # Hangul syllables are worked out by the algorithm and are in no table.
 import sys
 import unicodedata as ud
@@ -66,6 +70,47 @@ for cp in chars():
     # leaves out the composition exclusions and non-starter decompositions).
     if ud.normalize("NFC", chr(parts[0]) + chr(parts[1])) == chr(cp):
         composites[(parts[0] << 21) | parts[1]] = cp
+
+
+seconds = set()
+for key in composites:
+    seconds.add(key & 0x1FFFFF)
+# Hangul: a V after an L, a T after an LV, compose.
+seconds.update(range(0x1161, 0x1161 + 21))
+seconds.update(range(0x11A8, 0x11A7 + 28))
+
+
+def check_bits(cp):
+    s = chr(cp)
+    bits = 0
+    if HANGUL_FIRST <= cp <= HANGUL_LAST:
+        return 1 | 2
+    if ud.normalize("NFD", s) != s:
+        bits |= 1
+    if ud.normalize("NFKD", s) != s:
+        bits |= 2
+    if ud.normalize("NFC", s) != s:
+        bits |= 4
+    elif cp in seconds:
+        bits |= 8
+    if ud.normalize("NFKC", s) != s:
+        bits |= 16
+    elif cp in seconds:
+        bits |= 32
+    return bits
+
+
+checks = []
+for cp in range(0x110000):
+    if cp in SURROGATES:
+        continue
+    b = check_bits(cp)
+    if b == 0:
+        continue
+    if checks and checks[-1][1] == cp - 1 and checks[-1][2] == b:
+        checks[-1][1] = cp
+    else:
+        checks.append([cp, cp, b])
 
 
 def ints(name, values, per=12):
@@ -125,5 +170,6 @@ lines += mapping("Compatible", compatible)
 keys = sorted(composites)
 lines += longs("CompositePairs", keys)
 lines += ints("CompositeValues", [composites[k] for k in keys])
+lines += ints("CheckRanges", [v for r in checks for v in r])
 lines.append("}")
 sys.stdout.write("\n".join(lines) + "\n")

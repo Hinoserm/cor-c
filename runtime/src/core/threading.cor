@@ -3994,6 +3994,10 @@ class TimerEntry
     /// In the scheduler's heap (AddTimerAt to RemoveTop): only then does a
     /// cancel count toward the heap's canceled share (TimerCanceled).
     internal bool InHeap;
+    /// Counted in that share (TimerCanceled, under the gate): what leaving
+    /// the heap takes back. Canceled alone is set outside the gate, so it
+    /// cannot say whether the count was made.
+    internal bool Counted;
 
     public TimerEntry(long deadline, long sequence, Action callback)
     {
@@ -5196,7 +5200,11 @@ public static partial class Scheduler
         entry.Callback = NoCallback.Instance;
         // One already taken off the heap (posted, its callback on its way)
         // is no part of the heap's share.
-        if (entry.InHeap) _canceledTimers = _canceledTimers + 1;
+        if (entry.InHeap && !entry.Counted)
+        {
+            entry.Counted = true;
+            _canceledTimers = _canceledTimers + 1;
+        }
         if (_timerCount >= 32 && _canceledTimers * 2 > _timerCount)
         {
             int kept = 0;
@@ -5234,7 +5242,7 @@ public static partial class Scheduler
         if (_timers[0] is { } top)
         {
             top.InHeap = false;
-            if (top.Canceled) _canceledTimers = _canceledTimers - 1;
+            if (top.Counted) _canceledTimers = _canceledTimers - 1;
         }
 
         _timers[0] = _timers[last];
@@ -6233,8 +6241,21 @@ public sealed partial class Timer : ITimer
                     _whenIdle = null;
                 }
             }
-            if (waiting is not null) foreach (Action then in waiting) then();
+            if (waiting is not null) RunWaiters(waiting);
         }
+    }
+
+    // Every one run, whatever one throws (a disposed event's Set); the first
+    // thrown goes on after the rest have run.
+    static void RunWaiters(List<Action> waiting)
+    {
+        Exception? first = null;
+        foreach (Action then in waiting)
+        {
+            try { then(); }
+            catch (Exception e) { first ??= e; }
+        }
+        if (first is not null) throw first;
     }
 
     static void Check(long dueTime, long period)

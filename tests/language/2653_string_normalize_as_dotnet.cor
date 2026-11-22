@@ -67,15 +67,20 @@
 // 212B 1E0B 0323 FormKD 0041 030A 0064 0323 0307 False
 // default 00E9 False
 // same object True
+// same object composed True True
+// empty True True
+// pile 204 1EA1 0323 0323 0323 0323 False
+// out of order False 0061 0323 0301
 // lone String contains invalid Unicode code points. (Parameter 'strInput')
 // lone String contains invalid Unicode code points. (Parameter 'source')
 // form Invalid or unsupported normalization form. (Parameter 'normalizationForm')
 //
 // string.Normalize and IsNormalized, the four forms of UAX #15 as .NET 10's ICU
 // (Unicode 16.0) answers them: canonical and compatibility decompositions,
-// canonical order of marks, composition with its exclusions and blocking,
-// Hangul by the formula, a lone surrogate's ArgumentException. Expected output
-// from real .NET 10 with ICU.
+// canonical order of marks (a pile of forty too), composition with its
+// exclusions and blocking, Hangul by the formula, the same string handed back
+// when it is the form already, a lone surrogate's ArgumentException. Expected
+// output from real .NET 10 with ICU.
 
 using System;
 using System.Text;
@@ -93,6 +98,14 @@ static class Program
         Console.WriteLine("default " + Hex("é".Normalize()) + " " + "é".IsNormalized());
         string plain = "plain ascii";
         Console.WriteLine("same object " + ReferenceEquals(plain, plain.Normalize()));
+        string composed = "caf\u00E9";
+        Console.WriteLine("same object composed " + ReferenceEquals(composed, composed.Normalize()) + " " + ReferenceEquals(composed, composed.Normalize(NormalizationForm.FormKC)));
+        Console.WriteLine("empty " + ReferenceEquals("", "".Normalize()) + " " + "".IsNormalized(NormalizationForm.FormD));
+        StringBuilder pile = new StringBuilder("a");
+        for (int i = 0; i < 40; i++) pile.Append(i % 3 == 0 ? '\u0301' : i % 3 == 1 ? '\u0323' : '\u0308');
+        string marks = pile.ToString();
+        Console.WriteLine("pile " + Hex(marks.Normalize(NormalizationForm.FormD)).Length + " " + Hex(marks.Normalize(NormalizationForm.FormC)).Substring(0, 24) + " " + marks.IsNormalized(NormalizationForm.FormD));
+        Console.WriteLine("out of order " + "a\u0301\u0323".IsNormalized(NormalizationForm.FormD) + " " + Hex("a\u0301\u0323".Normalize(NormalizationForm.FormD)));
         try { "a\uD800b".Normalize(); } catch (ArgumentException e) { Console.WriteLine("lone " + e.Message); }
         try { "a\uDC00".IsNormalized(); } catch (ArgumentException e) { Console.WriteLine("lone " + e.Message); }
         try { "a".Normalize((NormalizationForm)3); } catch (ArgumentException e) { Console.WriteLine("form " + e.Message); }

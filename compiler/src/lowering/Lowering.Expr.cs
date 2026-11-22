@@ -5084,14 +5084,6 @@ public sealed partial class Lowering
         return _e.Unary(Opcode.Bits, R(bits64), IrType.F64);
     }
 
-    /// <summary>
-    /// The address of a local, parameter, field or element: what `&x` and a
-    /// by-reference argument both ask. A pointer taken (`pins`, `&x`) to an
-    /// element of an array or a string, or to a field of an object, keeps
-    /// what holds it alive to the end of the block, as an address taken with
-    /// Sys.ArrayData does (Addressed) and as C#'s `fixed` keeps it: the
-    /// pointer is a number, which the collector does not follow.
-    /// </summary>
     /// <summary>The ref-returning getter call the binder made of `x[i]` or `x.P` (Binder.RefIndexerCall), or null.</summary>
     private CallExpr? RefGetterCall(Expr e)
         => e is IndexExpr or MemberExpr && _b.Rewrites.TryGetValue(e, out Expr? made) && made is CallExpr call && RefCallee(call) is not null ? call : null;
@@ -5130,6 +5122,14 @@ public sealed partial class Lowering
         return address;
     }
 
+    /// <summary>
+    /// The address of a local, parameter, field or element: what `&x` and a
+    /// by-reference argument both ask. A pointer taken (`pins`, `&x`) to an
+    /// element of an array or a string, or to a field of an object, keeps
+    /// what holds it alive to the end of the block, as an address taken with
+    /// Sys.ArrayData does (Addressed) and as C#'s `fixed` keeps it: the
+    /// pointer is a number, which the collector does not follow.
+    /// </summary>
     private VReg AddressOf(Node at, Expr target, bool pins = false)
     {
         if (target is ConditionalExpr { RefArms: true } chosen)
@@ -5200,13 +5200,6 @@ public sealed partial class Lowering
     }
 
     /// <summary>
-    /// A struct variable passed by reference: the address of its bytes. A
-    /// by-reference parameter passed on is one already. One held in line is
-    /// where it is; any other holds a pointer to its block, which is the
-    /// address -- made first, zero, for a variable that has none yet (an
-    /// `out` local not assigned).
-    /// </summary>
-    /// <summary>
     /// The value to store into `place`: for a struct held in line, the
     /// struct as it is -- StorePlace copies its bytes in, so the copy EvalAs
     /// makes of a struct it did not just make would be made for nothing;
@@ -5230,6 +5223,12 @@ public sealed partial class Lowering
     }
 
     /// <summary>
+    /// A struct variable passed by reference: the address of its bytes. A
+    /// by-reference parameter passed on is one already. One held in line is
+    /// where it is; any other holds a pointer to its block, which is the
+    /// address -- made first, zero, for a variable that has none yet (an
+    /// `out` local not assigned).
+    ///
     /// <paramref name="fresh"/> for a variable the argument DECLARES -- `out
     /// var d`, `out Pair d`, `out _` -- which C# makes new each time the
     /// declaration runs: it gets a zeroed block of its own rather than
