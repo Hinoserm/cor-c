@@ -9905,7 +9905,7 @@ public sealed partial class Binder
                                     : new List<Type>();
 
             if (wantedArgs.Count > 0
-                && OpenAs(openFrom, asFace.Decl?.Template ?? Bare(asFace.Name),
+                && OpenAs(openFrom, TemplateName(asFace),
                           wantedArgs.Count, mine, 0) is { } through
                 && through.Count == wantedArgs.Count)
             {
@@ -14543,7 +14543,7 @@ public sealed partial class Binder
     private bool Variant(Type from, Type to)
     {
         if (to.Symbol is not { Kind: TypeKind.Interface } variantFace
-            || (variantFace.Decl?.Template ?? Bare(variantFace.Name)) is not { Length: > 0 } faceName
+            || TemplateName(variantFace) is not { Length: > 0 } faceName
             || Arguments(to) is not { Count: > 0 } wantedArguments
             || Variances(faceName, wantedArguments.Count) is not { } varies
             || !varies.Any(v => v != Variance.None))
@@ -14560,7 +14560,7 @@ public sealed partial class Binder
         // is the generic one only if that is known.
         if (Unmade(from.AsNonNullable()) && from.Symbol?.Decl is { } openFrom)
         {
-            if ((openFrom.Template ?? Bare(from.Symbol.Name)) == faceName && from.Args.Count == wantedArguments.Count)
+            if (TemplateName(from.Symbol) == faceName && from.Args.Count == wantedArguments.Count)
             {
                 given = from.Args.ToList();
             }
@@ -15153,7 +15153,7 @@ public sealed partial class Binder
         // a.StartsWith("@"))` over a string[] found no Any at all.
         if (got.IsArray && got.Element is { } item && want.Args.Count == 1
             && want.Symbol is { } sequence
-            && (sequence.Decl?.Template ?? Bare(sequence.Name))
+            && TemplateName(sequence)
                 is "IEnumerable" or "IReadOnlyCollection" or "IReadOnlyList")
         {
             return Unify(m, want.Args[0], item, bound);
@@ -15167,7 +15167,7 @@ public sealed partial class Binder
         // line in this compiler's own lexer that wanted it.
         if (got.Prim == Prim.String && !got.IsArray && want.Args.Count == 1
             && want.Symbol is { } letters
-            && (letters.Decl?.Template ?? Bare(letters.Name))
+            && TemplateName(letters)
                 is "IEnumerable" or "IReadOnlyCollection" or "IReadOnlyList")
         {
             return Unify(m, want.Args[0], Type.Char, bound);
@@ -15214,7 +15214,7 @@ public sealed partial class Binder
                 mine[openTemplate.TypeParams[i].Name] = got.Args[i];
             }
 
-            string wanted = face.Decl?.Template ?? Bare(face.Name);
+            string wanted = TemplateName(face);
 
             if (OpenAs(openTemplate, wanted, want.Args.Count, mine, 0) is { } through)
             {
@@ -15247,7 +15247,7 @@ public sealed partial class Binder
             Dictionary<string, Type> mine = new(StringComparer.Ordinal);
             for (int i = 0; i < useArguments.Count; i++)
                 mine[useDeclaration.TypeParams[i].Name] = useArguments[i];
-            string targetName = Bare(useTarget.Name);
+            string targetName = TemplateName(useTarget);
             IReadOnlyList<Type>? through = targetName == useTemplateName
                 ? useArguments
                 : OpenAs(useDeclaration, targetName, want.Args.Count, mine, 0);
@@ -15269,9 +15269,9 @@ public sealed partial class Binder
         // infers nothing for Count<T>(this IEnumerable<T>), and the call is
         // no call of it -- the first construction found was taken.
         if (want.Symbol is { } template && want.Args.Count > 0
-            && Instance(got.Symbol, template.Name, want.Args.Count) is { } made)
+            && Instance(got.Symbol, TemplateName(template), want.Args.Count) is { } made)
         {
-            if (!UniqueInstance(made, Instances(got.Symbol, template.Name, want.Args.Count))) return false;
+            if (!UniqueInstance(made, Instances(got.Symbol, TemplateName(template), want.Args.Count))) return false;
             for (int i = 0; i < want.Args.Count; i++)
             {
                 if (!UnifyArgument(m, want.Args[i], Resolve(made.TemplateArgs[i], _thisType), bound))
@@ -15284,6 +15284,17 @@ public sealed partial class Binder
 
         return got.IsError || Convertible(got, want);
     }
+
+    /// <summary>
+    /// THE NAME A TEMPLATE'S INSTANCES RECORD AS THEIRS (TypeDecl.Template,
+    /// Monomorphiser.TemplatePath): its enclosing namespace or type, then its
+    /// name. An open application's symbol is named bare -- `ConcurrentDictionary`
+    /// -- and its instances record `System.Collections.Concurrent.ConcurrentDictionary`;
+    /// matched by the bare name, a generic method over any template declared
+    /// in a namespace or a type inferred nothing from it.
+    /// </summary>
+    private static string TemplateName(TypeSymbol t)
+        => t.Decl?.Template ?? (t.Decl is { } declared ? Monomorphiser.TemplatePath(declared) : Bare(t.Name));
 
     /// <summary>
     /// A template's name without the arity it is keyed by: `IEnumerable`1` is

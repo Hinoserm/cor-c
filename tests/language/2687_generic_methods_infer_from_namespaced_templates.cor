@@ -1,0 +1,38 @@
+// test: generic_methods_infer_from_namespaced_templates
+// expect-exit: 0
+// expect-output:
+// 1,3 String1 Int64 String t Object u Int32 4
+//
+// A generic method infers its type arguments from a template declared in a
+// namespace or inside a type -- ConcurrentDictionary<K, V>,
+// ConcurrentQueue<T>, a program's Shop.Bag<T> and variant Shop.IShelf<out T>,
+// a nested Outer.Inner<T> -- as from one declared at the top: the binder
+// names a template as its instances record it (Binder.TemplateName), where
+// it took the bare name and inferred nothing. From .NET 10 (probe
+// ~/tmp/dn/tmplname).
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+namespace Shop
+{
+    public sealed class Bag<T> { public T Item = default!; }
+    public interface IShelf<out T> { T Top { get; } }
+    public sealed class Shelf<T> : IShelf<T> { public T Top { get; set; } = default!; }
+}
+sealed class Outer { public sealed class Inner<T> { public T V = default!; } }
+static class Program
+{
+    static string Keys<K, V>(ConcurrentDictionary<K, V> d) where K : notnull => string.Join(",", d.Keys);
+    static string Q<T>(ConcurrentQueue<T> q) => typeof(T).Name + q.Count;
+    static string B<T>(Shop.Bag<T> b) => typeof(T).Name;
+    static string S<T>(Shop.IShelf<T> s) => typeof(T).Name + " " + s.Top;
+    static string I<T>(Outer.Inner<T> i) => typeof(T).Name + " " + i.V;
+    static int Main()
+    {
+        var d = new ConcurrentDictionary<int, int>(1, 7); d[3] = 1; d[1] = 2;
+        var q = new ConcurrentQueue<string>(); q.Enqueue("a");
+        Console.WriteLine(Keys(d) + " " + Q(q) + " " + B(new Shop.Bag<long>()) + " " + S(new Shop.Shelf<string> { Top = "t" }) + " " + S<object>(new Shop.Shelf<string> { Top = "u" }) + " " + I(new Outer.Inner<int> { V = 4 }));
+        return 0;
+    }
+}

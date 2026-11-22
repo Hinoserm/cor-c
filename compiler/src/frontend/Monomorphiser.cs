@@ -2108,7 +2108,7 @@ public sealed class Monomorphiser
     /// <summary>How a generic template is keyed: its name and how many type parameters it takes.</summary>
     private static string Arity(string name, int count) => Interned.WithArity(name, count);
 
-    private static string TemplatePath(TypeDecl type)
+    internal static string TemplatePath(TypeDecl type)
         => type.Outer is null ? type.Name : type.Outer + "." + type.Name;
 
     /// <summary>Type arguments already spelt where they were written, and their copies (Qualify).</summary>
