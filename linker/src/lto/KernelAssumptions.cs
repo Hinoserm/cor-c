@@ -98,7 +98,7 @@ public static class KernelAssumptions
         HashSet<string> differing = new(StringComparer.Ordinal);
         foreach (ObjectFile obj in inputs)
         {
-            IrArchive? archive = IrArchive.Read(obj);
+            IrArchive? archive = ElfFormatException.Of(obj.SourcePath, () => IrArchive.Read(obj));
             if (archive is null) continue;
             HashSet<string>? floats = null;
             foreach (IrArchiveEntry entry in archive.Entries.Values)
@@ -111,13 +111,8 @@ public static class KernelAssumptions
                 }
                 else copies.Add(entry.Key.Name, (entry.Hash, entry.Identity));
                 if (!entry.Importable || entry.Instructions > MostInstructions || entry.Identity is not BodyHash identity) { differing.Add(entry.Key.Name); continue; }
-                if (floats is null)
-                {
-                    // A NOTE IN ANOTHER LAYOUT names the object it is in, as
-                    // every other section read of the link's inputs does.
-                    try { floats = X87Notes.Read(obj)?.Where(fact => fact.Floats).Select(fact => fact.Name).ToHashSet(StringComparer.Ordinal) ?? new(StringComparer.Ordinal); }
-                    catch (ElfFormatException error) { throw new ElfFormatException((obj.SourcePath ?? "an object made in memory") + ": " + error.Message); }
-                }
+                // A NOTE IN ANOTHER LAYOUT names the object it is in (ElfFormatException.Of).
+                floats ??= ElfFormatException.Of(obj.SourcePath, () => X87Notes.Read(obj))?.Where(fact => fact.Floats).Select(fact => fact.Name).ToHashSet(StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
                 if (floats.Contains(entry.Key.Name)) { differing.Add(entry.Key.Name); continue; }
                 if (offers.ContainsKey(entry.Key.Name)) continue;
                 offers.Add(entry.Key.Name, new Offer(entry.Key.Name, new IrArchiveRecord(entry.Key.ToString(), true, entry.Instructions, entry.Calls,

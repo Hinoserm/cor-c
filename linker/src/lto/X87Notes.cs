@@ -157,7 +157,7 @@ public static class X87Notes
     {
         List<ObjectFile> units = objects.ToList();
         if (!Judges(units)) { if (File.Exists(path + ".x87")) File.Delete(path + ".x87"); return new List<Fact>(); }
-        Dictionary<string, Fact> all = Joined(units.Select(Read).Where(read => read is not null).SelectMany(read => read!));
+        Dictionary<string, Fact> all = Joined(units.Select(unit => ElfFormatException.Of(unit.SourcePath, () => Read(unit))).Where(read => read is not null).SelectMany(read => read!));
         Dictionary<string, List<string>> outsideCallers = new(StringComparer.Ordinal);
         foreach (Fact f in all.Values)
             foreach (Call c in f.Calls)

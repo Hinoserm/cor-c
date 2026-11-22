@@ -200,13 +200,34 @@ public static class OwnedFieldSolver
                 // of every field -- and the collector's grid test, a division
                 // the barrier makes (Gc.Whole), put that under every store a
                 // collection does: no Dictionary, List or Queue field owned.
-                if (NeverReturns(name)) continue;
+                if (NeverReturns(name) || FreesTheDead(name)) continue;
                 foreach (string call in function.Calls) callersOf[Node(call)].Add(caller);
             }
         foreach ((string symbol, string[] targets) in virtuals.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             if (number.ContainsKey(symbol)) foreach (string target in targets) callersOf[Node(target)].Add(Node(symbol));
         Dictionary<string, List<string>> writersOf = new(StringComparer.Ordinal);
         static bool NeverReturns(string function) => function.StartsWith("m_Runtime_Unhandled_", StringComparison.Ordinal);
+        // WHAT A FREE OF THE DEAD STORES IS NOBODY'S STORE EITHER: Runtime.Free
+        // and FreeHeld, and the frees of an object's storage, owned fields and
+        // owned elements under them, take an object the compiler proved dead
+        // (Escape.FreeAtLastUse, OwnedFields, OwnedElements). Every store
+        // beneath them -- List.FreeStorage's `items = null` among them -- is
+        // into that object or what it alone owns, which no live read can
+        // hold: a read live across the call is of another object's field.
+        // Followed, any free reached every IOwnsStorage.FreeStorage, so every
+        // allocation (its slow path's heap check ending the process, which
+        // frees a C symbol's name) stored into every List's items (1327, 1311).
+        // FreeField, FreeReplaced and FreeOwnedReplaced act on a LIVE owner's
+        // field and are followed.
+        static bool FreesTheDead(string function)
+            => function.StartsWith("m_Runtime_Free_1_", StringComparison.Ordinal)
+            || function.StartsWith("m_Runtime_FreeHeld_1_", StringComparison.Ordinal)
+            || function.StartsWith("m_Runtime_FreeStorageOf_1_", StringComparison.Ordinal)
+            || function.StartsWith("m_Runtime_FreeOwnedFields_1_", StringComparison.Ordinal)
+            || function.StartsWith("m_Runtime_FreeStorageInFrame_1_", StringComparison.Ordinal)
+            || function.StartsWith("m_Runtime_FreeArrayElements_1_", StringComparison.Ordinal)
+            || function.StartsWith("m_Runtime_FreeOwnedElements_1_", StringComparison.Ordinal)
+            || function.StartsWith("m_Runtime_FreeReferenceElements_1_", StringComparison.Ordinal);
         void Writer(string field, string function)
         {
             if (!writersOf.TryGetValue(field, out List<string>? list)) writersOf[field] = list = new();
@@ -237,6 +258,50 @@ public static class OwnedFieldSolver
         Dictionary<string, int>? asked = null;
         int[]? partOf = null;
         ulong[]?[]? storesBelow = null;
+        // FROM A CALL DOWN TO A STORE, for a report: the shortest chain of
+        // calls (a virtual call's symbol standing for its overrides, nothing
+        // out of a function that never returns -- the graph MayWrite walks)
+        // from `from` to a function that stores into `field`. Asked only when
+        // a report is, so a link without one pays nothing.
+        Dictionary<string, List<string>>? calleesOf = null;
+        string Chain(string from, string field)
+        {
+            if (calleesOf is null)
+            {
+                calleesOf = new(StringComparer.Ordinal);
+                foreach (OwnedFieldHints unit in all)
+                    foreach ((string name, OwnedFunctionRecord function) in unit.Functions)
+                    {
+                        if (NeverReturns(name) || FreesTheDead(name)) continue;
+                        if (!calleesOf.TryGetValue(name, out List<string>? list)) calleesOf[name] = list = new();
+                        list.AddRange(function.Calls);
+                    }
+                foreach ((string symbol, string[] targets) in virtuals)
+                {
+                    if (!calleesOf.TryGetValue(symbol, out List<string>? list)) calleesOf[symbol] = list = new();
+                    list.AddRange(targets);
+                }
+            }
+            HashSet<string> stores = new(writersOf.GetValueOrDefault(field) ?? new List<string>(), StringComparer.Ordinal);
+            Dictionary<string, string?> cameFrom = new(StringComparer.Ordinal) { [from] = null };
+            Queue<string> next = new();
+            next.Enqueue(from);
+            while (next.Count > 0)
+            {
+                string at = next.Dequeue();
+                if (stores.Contains(at))
+                {
+                    List<string> path = new();
+                    for (string? step = at; step is not null; step = cameFrom[step]) path.Add(step);
+                    path.Reverse();
+                    return string.Join(" -> ", path);
+                }
+                foreach (string callee in (calleesOf.GetValueOrDefault(at) ?? new List<string>()).Order(StringComparer.Ordinal))
+                    if (cameFrom.TryAdd(callee, at)) next.Enqueue(callee);
+            }
+            return from + " -> (no chain found)";
+        }
+
         // Answers the first of `danger` (in name order, so a report reads the
         // same every link) that may store into `field`, or null: the report
         // names the call, as every other refusal names what refused.
@@ -340,7 +405,7 @@ public static class OwnedFieldSolver
             // anything, as an unresolved indirect call is to a flat compile.
             if (danger[field].FirstOrDefault(d => IsVirtual(d) && !virtuals.ContainsKey(d)) is string unknown)
             { report?.Invoke(field + " refused: a read is live across " + unknown + ", which the link could not resolve"); continue; }
-            if (MayWrite(field, danger[field]) is string writes) { report?.Invoke(field + " refused: a read is live across " + writes + ", which may store into it"); continue; }
+            if (MayWrite(field, danger[field]) is string writes) { report?.Invoke(field + " refused: a read is live across " + writes + ", which may store into it: " + Chain(writes, field)); continue; }
             facts.Fields[field] = offset;
             if (stored.Contains(field)) facts.Mapped.Add(field);
             if (selfFreed.Contains(field)) facts.SelfFreed.Add(field);
@@ -367,7 +432,7 @@ public static class OwnedFieldSolver
             HashSet<string> elementDanger = new(records.SelectMany(r => r.ElementDanger), StringComparer.Ordinal);
             if (elementDanger.FirstOrDefault(d => IsVirtual(d) && !virtuals.ContainsKey(d)) is string unknown)
             { report?.Invoke(field + " elements refused: one is live across " + unknown + ", which the link could not resolve"); continue; }
-            if (MayWrite(field, elementDanger) is string writesElements) { report?.Invoke(field + " elements refused: one is live across " + writesElements + ", which may store into it"); continue; }
+            if (MayWrite(field, elementDanger) is string writesElements) { report?.Invoke(field + " elements refused: one is live across " + writesElements + ", which may store into it: " + Chain(writesElements, field)); continue; }
             if (records.SelectMany(r => r.ElementDangerFields).FirstOrDefault(facts.Fields.ContainsKey) is string into)
             { report?.Invoke(field + " elements refused: one is live across a store into " + into + ", which is owned"); continue; }
             facts.ArrayElements.Add(field);
