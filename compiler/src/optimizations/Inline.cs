@@ -347,7 +347,7 @@ public sealed class Inline : IParallelModulePass
         for (int worker = 0; worker < active; worker++)
         {
             int lane = worker;
-            tasks[worker] = Corsac.AllocationMeter.Run(() =>
+            tasks[worker] = Corsac.UnitScope.Run(() =>
             {
                 for (int analysis = lane; analysis < 4; analysis += active)
                 {

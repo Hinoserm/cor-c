@@ -296,10 +296,11 @@ public static class ProjectCompile
             }
             try { File.Delete(unit.Receipt + ".inside"); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
-            // ITS OWN ALLOCATION (AllocationMeter): this thread's and its
+            // THE UNIT'S OWN (UnitScope): the settings its compile decides from
+            // its own files, and its allocation -- this thread's and its
             // helpers', never the units compiled beside it.
-            System.Runtime.CompilerServices.StrongBox<long> meter = new();
-            long before = AllocationMeter.Begin(meter);
+            UnitState scope = new();
+            long before = UnitScope.Begin(scope);
             // A UNIT BEGUN IS SAID AT ONCE: only its end was, and a unit that
             // never ended -- the compile caught in a loop -- looked like one
             // still working, minutes on, with nothing to say which it was.
@@ -323,6 +324,7 @@ public static class ProjectCompile
                     done++;
                     Console.Error.WriteLine("corc: compiling " + unit.Source + ": " + failure.Message);
                 }
+                UnitScope.Leave();
                 return 1;
             }
             // OUT OF MEMORY, SAID WITH ITS UNIT AND WHERE: unhandled on a
@@ -336,9 +338,10 @@ public static class ProjectCompile
                     done++;
                     Console.Error.WriteLine("corc: out of memory compiling " + unit.Source + "\n" + failure.StackTrace);
                 }
+                UnitScope.Leave();
                 return 1;
             }
-            long allocated = AllocationMeter.End(meter, before);
+            long allocated = UnitScope.End(scope, before);
             string live = census ? " live-after=" + GC.GetTotalMemory(true) : "";
             if (code == 0)
             {

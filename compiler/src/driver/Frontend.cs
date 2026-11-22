@@ -607,7 +607,7 @@ public static class Frontend
         for (int worker = 0; worker < active; worker++)
         {
             int lane = worker;
-            tasks[worker] = Corsac.AllocationMeter.Run(() =>
+            tasks[worker] = Corsac.UnitScope.Run(() =>
             {
                 for (int i = lane; i < sources.Count; i += active)
                 {

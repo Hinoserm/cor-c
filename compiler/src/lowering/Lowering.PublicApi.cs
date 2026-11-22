@@ -18,7 +18,7 @@ public sealed partial class Lowering
     /// them (Binder: CS0122). Not a kernel's: the class library is a part of
     /// the kernel's one image there, and its internals the kernel's own.
     /// </summary>
-    public static bool SplitLibrary { get; set; }
+    public static bool SplitLibrary { get => Corsac.UnitScope.Current.SplitLibrary; set => Corsac.UnitScope.Current.SplitLibrary = value; }
 
     /// <summary>
     /// A KERNEL WHOSE CLASS LIBRARY IS SPLIT WITH ITS MODULES
@@ -46,7 +46,7 @@ public sealed partial class Lowering
     /// provide it. What a program or a module keeps of them as its own is
     /// narrower (Module.FixOwnLibrary).
     /// </summary>
-    public static IReadOnlySet<string> OwnLibrarySources { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+    public static IReadOnlySet<string> OwnLibrarySources { get => Corsac.UnitScope.Current.OwnLibrarySources; set => Corsac.UnitScope.Current.OwnLibrarySources = value; }
 
     /// <summary>
     /// A program's or a module's compile over images that provide the class
@@ -54,7 +54,7 @@ public sealed partial class Lowering
     /// sources: the library's code is read here to be given away, and none
     /// of its state is laid down here (NotePreinitCandidate).
     /// </summary>
-    public static bool LibraryProvided { get; set; }
+    public static bool LibraryProvided { get => Corsac.UnitScope.Current.LibraryProvided; set => Corsac.UnitScope.Current.LibraryProvided = value; }
 
     /// <summary>
     /// WHAT THIS UNIT OFFERS OTHER IMAGES (PublicApi, `.corsac.public`): of

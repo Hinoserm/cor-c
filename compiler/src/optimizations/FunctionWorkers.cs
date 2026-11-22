@@ -19,7 +19,7 @@ internal static class FunctionWorkers
         for (int worker = 0; worker < active; worker++)
         {
             int lane = worker;
-            tasks[worker] = Corsac.AllocationMeter.Run(() =>
+            tasks[worker] = Corsac.UnitScope.Run(() =>
             {
                 for (int i = lane; i < module.Functions.Count; i += active)
                 {
