@@ -35,12 +35,15 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
     public virtual bool CanTransformMultipleBlocks => true;
     public virtual bool CanReuseTransform => true;
 
+    // THE LIBRARY'S OWN, this and the three below: .NET's HashAlgorithm has
+    // none of them, so they are internal. Snapshot is virtual, not abstract,
+    // so a program's own subclass (HashCore, HashFinal, Initialize, as .NET
+    // asks) compiles; nothing reaches the default, since IncrementalHash and
+    // HMAC are made over the library's own algorithms only.
+
     /// A copy in the same state, taking in the same data from here on:
     /// what lets a hash be read part way (IncrementalHash.GetCurrentHash)
-    /// without ending the one being made. THE LIBRARY'S OWN, as the other
-    /// three below: .NET's HashAlgorithm has none of them, so they are
-    /// internal -- and virtual, not abstract, so a program's own subclass
-    /// (HashCore, HashFinal, Initialize, as .NET asks) still compiles.
+    /// without ending the one being made.
     internal virtual HashAlgorithm Snapshot()
     {
         throw new NotSupportedException("This hash algorithm cannot be copied part way.");

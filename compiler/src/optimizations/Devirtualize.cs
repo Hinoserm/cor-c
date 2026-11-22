@@ -817,8 +817,10 @@ public sealed class Devirtualize : IModulePass
     /// its function (ThrowOutline) leaves its call, or in Unwind, a throw to
     /// a handler (a landing pad is a root of the Cfg, dominated by nothing)
     /// -- and whose not-null side is entered from the test's block alone
-    /// (its only predecessor, and no root): every block that side dominates
-    /// is reached only past the test, with the parameter not null. Once
+    /// (its only predecessor, and no root). THAT RULE IS THE PROOF: every
+    /// block the not-null side dominates is reached only past the test, with
+    /// the parameter (written nowhere) not null, whatever the other side
+    /// does; the null side's ending only picks out the throw's shape. Once
     /// NotNull's throw went out of it, NotNull was small enough
     /// to inline into Where, and its call -- the only guard this looked for --
     /// was gone: Where's general walk came back on the null side of `source
@@ -850,7 +852,9 @@ public sealed class Devirtualize : IModulePass
                             if (ParamOf(i.Operands[k]) is { } p && ReturnsOnlyIfNotNull(name, k, callees, guards, guardsFixed))
                                 (checks ??= new()).Add((b, p));
         }
-        Cfg cfg = new(f);
+        // The graph made only for a function that has a check: most have none,
+        // and a kernel builds a hundred thousand of them (Cfg).
+        Cfg? cfg = null;
         // The inlined check: a branch on the parameter (or its compare with
         // null) whose null side ends without coming back.
         foreach (Block b in f.Blocks)
@@ -866,11 +870,13 @@ public sealed class Devirtualize : IModulePass
             // Entered past the test alone, or a way round it (a loop's
             // header, a join a handler reaches) could bring the parameter in
             // null: as ReturnsOnlyIfNotNull asks of a guard's own side.
+            cfg ??= new Cfg(f);
             if (ReferenceEquals(notNullSide, b) || cfg.IsRoot(notNullSide)
                 || cfg.Preds(notNullSide) is not { Count: 1 } preds || !ReferenceEquals(preds[0], b)) continue;
             (checks ??= new()).Add((notNullSide, p));
         }
         if (checks is null) return false;
+        cfg ??= new Cfg(f);
         bool folded = false;
         foreach (Block b in f.Blocks)
         {

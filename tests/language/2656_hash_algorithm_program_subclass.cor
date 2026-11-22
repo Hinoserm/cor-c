@@ -1,0 +1,46 @@
+// test: hash_algorithm_program_subclass
+// expect-exit: 0
+// expect-output:
+// C8F0
+// 522A
+// C8F0
+// 16 True 1
+//
+// A program's own HashAlgorithm overrides only what .NET asks of one
+// (HashCore, HashFinal, Initialize): the library's Snapshot and its other
+// members are internal, not abstract, so nothing more is owed (probe
+// ~/tmp/dn/hashsub on .NET 10).
+
+using System;
+using System.Security.Cryptography;
+using System.Text;
+
+// A program's own hash: Fletcher-16 over the bytes, as .NET asks a subclass
+// for it -- HashCore, HashFinal, Initialize -- and nothing more.
+sealed class Fletcher16 : HashAlgorithm
+{
+    private int _a, _b;
+    public Fletcher16() { HashSizeValue = 16; }
+    public override void Initialize() { _a = 0; _b = 0; }
+    protected override void HashCore(byte[] array, int ibStart, int cbSize)
+    {
+        for (int i = ibStart; i < ibStart + cbSize; i++) { _a = (_a + array[i]) % 255; _b = (_b + _a) % 255; }
+    }
+    protected override byte[] HashFinal() => new byte[] { (byte)_b, (byte)_a };
+}
+
+static class Program
+{
+    static int Main()
+    {
+        using Fletcher16 f = new Fletcher16();
+        byte[] text = Encoding.ASCII.GetBytes("abcde");
+        Console.WriteLine(Convert.ToHexString(f.ComputeHash(text)));
+        Console.WriteLine(Convert.ToHexString(f.ComputeHash(text, 1, 3)));
+        f.TransformBlock(text, 0, 2, null, 0);
+        f.TransformFinalBlock(text, 2, 3);
+        Console.WriteLine(Convert.ToHexString(f.Hash!));
+        Console.WriteLine(f.HashSize + " " + f.CanReuseTransform + " " + f.InputBlockSize);
+        return 0;
+    }
+}
