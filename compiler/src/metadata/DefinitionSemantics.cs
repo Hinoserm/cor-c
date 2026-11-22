@@ -121,9 +121,10 @@ public static class DefinitionSemantics
         HashSet<string> definitions = obj.Symbols.Where(symbol => symbol.IsDefined && symbol.Global).Select(symbol => symbol.Name).ToHashSet(StringComparer.Ordinal);
         Dictionary<string, byte[]> certified = semantics.Where(pair => definitions.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         // A THROW MOVED OUT OF ITS FUNCTION (ThrowOutline), made after the
-        // capture above: named by the hash of its own body, so its name is
-        // its proof, as a layout name is (LayoutNames) -- two units' copies
-        // of one name are one body.
+        // capture above: named by the SHA-256 of its own body and of the
+        // unit's own data and functions it names (ThrowOutline.Digest), so its
+        // name is its proof, as a layout name is (LayoutNames) -- two units'
+        // copies of one name are one body.
         foreach (string name in definitions)
             if (Corsac.Lang.Opt.ThrowOutline.IsStub(name) && !certified.ContainsKey(name))
                 certified[name] = SHA256.HashData(Encoding.UTF8.GetBytes("moved throw " + name));

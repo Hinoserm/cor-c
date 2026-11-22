@@ -1,0 +1,44 @@
+// test: moved_throws_stay_apart
+// expect-exit: 0
+// expect-output:
+// ok 0
+// arg a
+// arg b
+// range c 3
+// range c 5
+//
+// A small function's throws are moved out of it (ThrowOutline), each a
+// function named by the digest of what it is. Two that differ only in what
+// they carry -- a parameter name, a value -- are two functions, and each
+// throws its own. Output from .NET 10 (probe ~/tmp/dn/twothrows).
+
+using System;
+using System.Runtime.CompilerServices;
+
+static class Program
+{
+    // Small enough for its throws to be moved out of it; the throws differ
+    // only in what they carry, so each must stay its own.
+    static int Pick(int k)
+    {
+        if (k == 1) throw new ArgumentException("one", "a");
+        if (k == 2) throw new ArgumentException("one", "b");
+        if (k == 3) throw new ArgumentOutOfRangeException("c", k, "three");
+        if (k == 4) throw new ArgumentOutOfRangeException("c", k + 1, "three");
+        return k * 10;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static string Try(int k)
+    {
+        try { return "ok " + Pick(k); }
+        catch (ArgumentOutOfRangeException e) { return "range " + e.ParamName + " " + e.ActualValue; }
+        catch (ArgumentException e) { return "arg " + e.ParamName; }
+    }
+
+    static int Main()
+    {
+        for (int k = 0; k <= 4; k++) Console.WriteLine(Try(k));
+        return 0;
+    }
+}

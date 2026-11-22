@@ -54,7 +54,7 @@ internal static class FrameVtable
         {
             if (from is not RegOperand { Reg: var r } || single(r) is not { } d) return false;
             if (d.Op == Opcode.Copy && d.Operands is [var copied]) { from = copied; continue; }
-            return d is { Op: Opcode.Load, Operands: [ImmOperand { Value: 0 }] };
+            return d is { Op: Opcode.Load, Offset: 0, Operands: [ImmOperand { Value: 0 }] };
         }
         return false;
     }
@@ -71,7 +71,15 @@ internal static class FrameVtable
         return null;
     }
 
-    /// <summary>The one vtable every write of the slot's word 0 stores (zeroing memsets aside); null where any write could be anything else.</summary>
+    /// <summary>
+    /// The one vtable every write of the slot's word 0 stores (zeroing stores
+    /// and memsets aside); null where any write could be anything else. The
+    /// slot's address is followed through copies; where it is carried any
+    /// other way -- a join, an address moved by less than a word or by an
+    /// amount not known -- a write through it could not be seen, and nothing
+    /// is said. A call handed it writes no object's vtable word: no managed
+    /// code does after the making.
+    /// </summary>
     private static (string Name, long At)? Stored(Function f, FrameSlot slot, Func<VReg, Instr?> single)
     {
         (string Name, long At)? found = null;
@@ -79,16 +87,29 @@ internal static class FrameVtable
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
             {
-                if (i.Op is not (Opcode.Store or Opcode.MemSet or Opcode.MemCopy) || i.Operands.Count < 2
-                    || SlotOf(i.Operands[0], single) is not { } into || !ReferenceEquals(into, slot)) continue;
+                bool names = false;
+                for (int k = 0; k < i.Operands.Count && !names; k++) names = SlotOf(i.Operands[k], single) is { } at && ReferenceEquals(at, slot);
+                if (!names) continue;
                 switch (i.Op)
                 {
+                    case Opcode.Copy or Opcode.Load or Opcode.Call or Opcode.CallIndirect:
+                        continue;
+                    // Moved a word or more on: a field's address, past word 0.
+                    case Opcode.Add when i.Operands is [_, ImmOperand { Value: var by }] && by >= word:
+                        continue;
+                    case Opcode.Store or Opcode.MemSet or Opcode.MemCopy when SlotOf(i.Operands[0], single) is not { } into || !ReferenceEquals(into, slot):
+                        // The slot's address stored as a value, or read from.
+                        if (i.Op == Opcode.MemCopy) continue;
+                        if (i.Op == Opcode.Store) continue;
+                        return null;
                     case Opcode.Store when i.Offset >= word || i.Offset + i.Size <= 0:
                         continue;
                     case Opcode.Store when i.Offset == 0 && i.Operands[1] is SymOperand { Name: var name, Offset: var at }
                                            && name.StartsWith("t_", StringComparison.Ordinal):
                         if (found is { } had && (had.Name != name || had.At != at)) return null;
                         found = (name, at);
+                        continue;
+                    case Opcode.Store when i.Offset == 0 && i.Operands[1] is ImmOperand { Value: 0 }:
                         continue;
                     case Opcode.MemSet when i.Operands[1] is ImmOperand { Value: 0 }:
                         continue;

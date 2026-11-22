@@ -472,7 +472,7 @@ public sealed class Inline : IParallelModulePass
                     bool coldPath = Escape.IsStaticInitialiser(callee.Name)
                         || (coldBlocks ??= ColdBlocks(caller, loopBlocks ??= LoopBlocks(caller))).Contains(b);
                     // (Not a throw moved out of its function, ThrowOutline's
-                    // NAME$throw$K: its calls are the cold path they were in
+                    // NAME$throw$ and its body's digest: its calls are the cold path they were in
                     // the function, and only a tiny one goes in -- taken
                     // whole as a step, Math.Clamp's message took its
                     // formatting in, 1,377 bytes a throw.)
