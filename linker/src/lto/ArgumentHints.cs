@@ -140,86 +140,132 @@ public sealed class ArgumentHints
     /// </summary>
     public SortedDictionary<string, SortedSet<int>> ParamCalls { get; } = new(StringComparer.Ordinal);
 
-    public bool IsEmpty => Functions.Count == 0 && Addressed.Count == 0 && Slotted.Count == 0 && Unnamed.Count == 0
+    /// <summary>
+    /// The slots of every type whose descriptor the unit names (Module.
+    /// TypeSlots), by descriptor name, in bytes from a method table's start.
+    /// </summary>
+    public SortedDictionary<string, SortedSet<long>> TypeSlots { get; } = new(StringComparer.Ordinal);
+
+    public bool IsEmpty => TypeSlots.Count == 0 && Functions.Count == 0 && Addressed.Count == 0 && Slotted.Count == 0 && Unnamed.Count == 0
         && CellCalls.Count == 0 && CellsWritten.Count == 0 && CellParams.Count == 0 && ParamCalls.Count == 0;
 
-    internal void Write(BinaryWriter writer)
+    /// <remarks>
+    /// EVERY NAME ONCE: a table of the names first, then everything else
+    /// naming them by their place in it. A callee's name is said at every
+    /// call of it, a hundred characters of mangling each time; the link,
+    /// reading every unit's hints at once, holds each name once for all of
+    /// them (interned as it reads the table).
+    /// </remarks>
+    internal void Write(BinaryWriter output)
     {
+        using MemoryStream body = new();
+        using BinaryWriter writer = new(body, Encoding.UTF8, leaveOpen: true);
+        Dictionary<string, int> places = new(StringComparer.Ordinal);
+        List<string> table = new();
         void Text(string text)
         {
-            byte[] bytes = Encoding.UTF8.GetBytes(text);
-            writer.Write(bytes.Length);
-            writer.Write(bytes);
+            if (!places.TryGetValue(text, out int place)) { places[text] = place = table.Count; table.Add(text); }
+            writer.Write(place);
         }
-        writer.Write(Functions.Count);
-        foreach ((string name, ArgumentFunction f) in Functions)
+        WriteBody();
+        writer.Flush();
+        output.Write(table.Count);
+        foreach (string name in table)
         {
-            Text(name);
-            writer.Write((byte)((f.Fixed ? 1 : 0) | (f.Recursive ? 2 : 0) | (f.Copies ? 4 : 0)));
-            writer.Write(f.Size);
-            writer.Write(f.Kinds.Length);
-            for (int k = 0; k < f.Kinds.Length; k++)
+            byte[] bytes = Encoding.UTF8.GetBytes(name);
+            output.Write(bytes.Length);
+            output.Write(bytes);
+        }
+        output.Write(body.GetBuffer(), 0, (int)body.Length);
+        return;
+
+        void WriteBody()
+        {
+            writer.Write(Functions.Count);
+            foreach ((string name, ArgumentFunction f) in Functions)
             {
-                writer.Write((byte)f.Kinds[k]);
-                writer.Write(f.Reads[k]);
-                writer.Write(f.Folds[k]);
-                writer.Write((byte)f.Shapes[k]);
-                writer.Write((byte)(f.Fields[k]?.Length ?? 0));
-                foreach (int offset in f.Fields[k] ?? Array.Empty<int>()) writer.Write(offset);
-            }
-            writer.Write(f.Calls.Count);
-            foreach (ArgumentCall call in f.Calls)
-            {
-                Text(call.Callee);
-                writer.Write(call.Depth);
-                writer.Write(call.Count);
-                writer.Write(call.ByValue);
-                writer.Write(call.Arguments.Length);
-                foreach (ArgumentValue value in call.Arguments)
+                Text(name);
+                writer.Write((byte)((f.Fixed ? 1 : 0) | (f.Recursive ? 2 : 0) | (f.Copies ? 4 : 0)));
+                writer.Write(f.Size);
+                writer.Write(f.Kinds.Length);
+                for (int k = 0; k < f.Kinds.Length; k++)
                 {
-                    writer.Write((byte)value.Kind);
-                    switch (value.Kind)
+                    writer.Write((byte)f.Kinds[k]);
+                    writer.Write(f.Reads[k]);
+                    writer.Write(f.Folds[k]);
+                    writer.Write((byte)f.Shapes[k]);
+                    writer.Write((byte)(f.Fields[k]?.Length ?? 0));
+                    foreach (int offset in f.Fields[k] ?? Array.Empty<int>()) writer.Write(offset);
+                }
+                writer.Write(f.Calls.Count);
+                foreach (ArgumentCall call in f.Calls)
+                {
+                    Text(call.Callee);
+                    writer.Write(call.Depth);
+                    writer.Write(call.Count);
+                    writer.Write(call.ByValue);
+                    writer.Write(call.Arguments.Length);
+                    foreach (ArgumentValue value in call.Arguments)
                     {
-                        case ArgumentValueKind.Constant: writer.Write(value.Number); break;
-                        case ArgumentValueKind.Address: Text(value.Symbol!); writer.Write(value.Number); break;
-                        case ArgumentValueKind.Parameter: writer.Write((int)value.Number); break;
+                        writer.Write((byte)value.Kind);
+                        switch (value.Kind)
+                        {
+                            case ArgumentValueKind.Constant: writer.Write(value.Number); break;
+                            case ArgumentValueKind.Address: Text(value.Symbol!); writer.Write(value.Number); break;
+                            case ArgumentValueKind.Parameter: writer.Write((int)value.Number); break;
+                        }
                     }
                 }
             }
-        }
-        writer.Write(Addressed.Count);
-        foreach (string name in Addressed) Text(name);
-        writer.Write(Slotted.Count);
-        foreach (string name in Slotted) Text(name);
-        writer.Write(Unnamed.Count);
-        foreach (int count in Unnamed) writer.Write(count);
-        void Counted(SortedDictionary<string, SortedSet<int>> calls)
-        {
-            writer.Write(calls.Count);
-            foreach ((string name, SortedSet<int> counts) in calls)
+            writer.Write(Addressed.Count);
+            foreach (string name in Addressed) Text(name);
+            writer.Write(Slotted.Count);
+            foreach (string name in Slotted) Text(name);
+            writer.Write(Unnamed.Count);
+            foreach (int count in Unnamed) writer.Write(count);
+            void Counted(SortedDictionary<string, SortedSet<int>> calls)
             {
-                Text(name);
-                writer.Write(counts.Count);
-                foreach (int count in counts) writer.Write(count);
+                writer.Write(calls.Count);
+                foreach ((string name, SortedSet<int> counts) in calls)
+                {
+                    Text(name);
+                    writer.Write(counts.Count);
+                    foreach (int count in counts) writer.Write(count);
+                }
+            }
+            Counted(CellCalls);
+            writer.Write(CellsWritten.Count);
+            foreach (string name in CellsWritten) Text(name);
+            writer.Write(CellParams.Count);
+            foreach ((string cell, SortedSet<string> parameters) in CellParams)
+            {
+                Text(cell);
+                writer.Write(parameters.Count);
+                foreach (string parameter in parameters) Text(parameter);
+            }
+            Counted(ParamCalls);
+            writer.Write(TypeSlots.Count);
+            foreach ((string type, SortedSet<long> slots) in TypeSlots)
+            {
+                Text(type);
+                writer.Write(slots.Count);
+                foreach (long slot in slots) writer.Write(slot);
             }
         }
-        Counted(CellCalls);
-        writer.Write(CellsWritten.Count);
-        foreach (string name in CellsWritten) Text(name);
-        writer.Write(CellParams.Count);
-        foreach ((string cell, SortedSet<string> parameters) in CellParams)
-        {
-            Text(cell);
-            writer.Write(parameters.Count);
-            foreach (string parameter in parameters) Text(parameter);
-        }
-        Counted(ParamCalls);
     }
 
     internal static ArgumentHints Read(BinaryReader reader, long total)
     {
         Stream stream = reader.BaseStream;
-        string Text()
+        int Count(int each)
+        {
+            int count = reader.ReadInt32();
+            if (count < 0 || count > (total - stream.Position) / each) throw new ElfFormatException("Invalid argument hint count");
+            return count;
+        }
+        // The names, each interned: every unit's hints share one of each.
+        string[] names = new string[Count(5)];
+        for (int i = 0; i < names.Length; i++)
         {
             int length = reader.ReadInt32();
             // (No bound but the section's: a generic copy's name, or a
@@ -227,13 +273,13 @@ public sealed class ArgumentHints
             if (length < 1 || length > total - stream.Position) throw new ElfFormatException("Invalid argument hint text");
             string text = Encoding.UTF8.GetString(reader.ReadBytes(length));
             if (text.Contains('\0')) throw new ElfFormatException("Invalid argument hint text");
-            return text;
+            names[i] = string.IsInterned(text) ?? string.Intern(text);
         }
-        int Count(int each)
+        string Text()
         {
-            int count = reader.ReadInt32();
-            if (count < 0 || count > (total - stream.Position) / each) throw new ElfFormatException("Invalid argument hint count");
-            return count;
+            int place = reader.ReadInt32();
+            if (place < 0 || place >= names.Length) throw new ElfFormatException("Invalid argument hint name");
+            return names[place];
         }
         ArgumentHints hints = new();
         for (int i = Count(14); i > 0; i--)
@@ -293,8 +339,8 @@ public sealed class ArgumentHints
             }
             if (!hints.Functions.TryAdd(name, f)) throw new ElfFormatException("Duplicate argument hint function");
         }
-        for (int i = Count(5); i > 0; i--) hints.Addressed.Add(Text());
-        for (int i = Count(5); i > 0; i--) hints.Slotted.Add(Text());
+        for (int i = Count(4); i > 0; i--) hints.Addressed.Add(Text());
+        for (int i = Count(4); i > 0; i--) hints.Slotted.Add(Text());
         for (int i = Count(4); i > 0; i--)
         {
             int count = reader.ReadInt32();
@@ -302,7 +348,7 @@ public sealed class ArgumentHints
         }
         void Counted(SortedDictionary<string, SortedSet<int>> calls)
         {
-            for (int i = Count(9); i > 0; i--)
+            for (int i = Count(8); i > 0; i--)
             {
                 string name = Text();
                 SortedSet<int> counts = new();
@@ -315,17 +361,28 @@ public sealed class ArgumentHints
             }
         }
         Counted(hints.CellCalls);
-        for (int i = Count(5); i > 0; i--)
+        for (int i = Count(4); i > 0; i--)
             if (!hints.CellsWritten.Add(Text())) throw new ElfFormatException("Duplicate argument hint cell");
-        for (int i = Count(9); i > 0; i--)
+        for (int i = Count(8); i > 0; i--)
         {
             string cell = Text();
             SortedSet<string> parameters = new(StringComparer.Ordinal);
-            for (int p = Count(5); p > 0; p--)
+            for (int p = Count(4); p > 0; p--)
                 if (!parameters.Add(Text())) throw new ElfFormatException("Duplicate argument hint cell parameter");
             if (parameters.Count == 0 || !hints.CellParams.TryAdd(cell, parameters)) throw new ElfFormatException("Invalid argument hint cell parameters");
         }
         Counted(hints.ParamCalls);
+        for (int i = Count(8); i > 0; i--)
+        {
+            string type = Text();
+            SortedSet<long> slots = new();
+            for (int s = Count(8); s > 0; s--)
+            {
+                long slot = reader.ReadInt64();
+                if (slot < 0 || !slots.Add(slot)) throw new ElfFormatException("Invalid argument hint type slot");
+            }
+            if (!hints.TypeSlots.TryAdd(type, slots)) throw new ElfFormatException("Duplicate argument hint type");
+        }
         return hints;
     }
 }

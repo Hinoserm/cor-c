@@ -1,3 +1,4 @@
+using Corsac.Lang.Ir;
 using Corsac.Lang.Lto;
 
 namespace Corsac.Tests.Elf;
@@ -144,6 +145,7 @@ public static class ArgumentSolverTests
         // The format: what is said of unnamed calls comes back as written.
         ArgumentHints written = Unit(true);
         written.Unnamed.Add(3);
+        written.TypeSlots["t_Kern"] = new SortedSet<long> { 0, 4 };
         byte[] bytes = written.Write();
         using MemoryStream stream = new(bytes, writable: false);
         using BinaryReader reader = new(stream);
@@ -152,6 +154,57 @@ public static class ArgumentSolverTests
         ArgumentHints read = ArgumentHints.Read(reader, bytes.Length);
         Check(stream.Position == bytes.Length && read.Write().AsSpan().SequenceEqual(bytes), "argument hints do not read back as written");
         Check(read.CellCalls["s_Hook"].SequenceEqual(new[] { 5 }) && read.CellsWritten.Contains("s_Hook")
-            && read.Unnamed.SequenceEqual(new[] { 3 }), "unnamed calls do not read back as written");
+            && read.Unnamed.SequenceEqual(new[] { 3 }) && read.TypeSlots["t_Kern"].SequenceEqual(new long[] { 0, 4 }), "unnamed calls do not read back as written");
+
+        Holders();
+    }
+
+    /// <summary>
+    /// What a module's descriptors say of other images (VirtualTargets): a
+    /// driver class deriving from a kernel class names that class only in
+    /// its display (another image's type, ForeignAncestors) and holds the
+    /// kernel's method it inherits only as a symbol (answered as a function
+    /// where the link is told it is the kernel's, Resolve: elsewhere); every
+    /// method a descriptor deriving from the kernel class holds may be the
+    /// kernel's calls' (MethodsHeldBy), and none of a class of the module's
+    /// own.
+    /// </summary>
+    private static void Holders()
+    {
+        void Check(bool value, string message) { if (!value) throw new Exception(message); }
+        const int w = 4, table = 48;
+        ObjectFile o = new();
+        Section text = new(".text", SectionKind.Code);
+        Section data = new(".data.rel.ro", SectionKind.ReadOnlyData);
+        o.Sections.Add(text); o.Sections.Add(data);
+        foreach (string function in new[] { "m_Drv_Own", "m_Own_Run" })
+        {
+            text.Bytes.Add(0xc3);
+            o.Symbols.Add(new Symbol { Name = function, Section = text, Offset = text.Bytes.Count - 1, Size = 1, IsFunction = true });
+        }
+        void Descriptor(string type, string[] chain, string[] slots)
+        {
+            int displayAt = data.Bytes.Count;
+            for (int i = 0; i < chain.Length; i++) { data.Relocs.Add(new Relocation(displayAt + i * w, chain[i], 0, RelocKind.Abs32)); data.Bytes.AddRange(new byte[w]); }
+            o.Symbols.Add(new Symbol { Name = "d_" + type, Section = data, Offset = displayAt, Size = chain.Length * w, Global = false });
+            int at = data.Bytes.Count;
+            data.Bytes.AddRange(new byte[table + slots.Length * w]);
+            data.Relocs.Add(new Relocation(at + 3 * w, "d_" + type, 0, RelocKind.Abs32));
+            data.Relocs.Add(new Relocation(at + 5 * w, "t_" + type, 0, RelocKind.Abs32));
+            for (int k = 0; k < slots.Length; k++) data.Relocs.Add(new Relocation(at + table + k * w, slots[k], 0, RelocKind.Abs32));
+            o.Symbols.Add(new Symbol { Name = "t_" + type, Section = data, Offset = at, Size = table + slots.Length * w });
+        }
+        // Drv : Kern (the kernel's), inheriting Kern's Run at slot 0 and adding Own at 4; Own, the module's alone.
+        Descriptor("Drv", new[] { "t_Kern", "t_Drv" }, new[] { "m_Kern_Run", "m_Drv_Own" });
+        Descriptor("Own", new[] { "t_Own" }, new[] { "m_Own_Run" });
+        List<(string Name, ObjectFile Object)> inputs = new() { ("module", o) };
+
+        Check(VirtualTargets.ForeignAncestors(inputs).SetEquals(new[] { "t_Kern" }), "a type only a display names is not another image's");
+        string run = VirtualTargets.Prefix + "t_Drv+0";
+        Check(!VirtualTargets.Resolve(inputs, new[] { run }).ContainsKey(run), "a slot holding another image's symbol was answered without being told whose it is");
+        Check(VirtualTargets.Resolve(inputs, new[] { run }, null, name => name == "m_Kern_Run").TryGetValue(run, out string[]? kern)
+            && kern.SequenceEqual(new[] { "m_Kern_Run" }), "a slot holding the kernel's function, told so, is not answered with it");
+        HashSet<string> held = VirtualTargets.MethodsHeldBy(inputs, new HashSet<string>(StringComparer.Ordinal) { "t_Kern" });
+        Check(held.SetEquals(new[] { "m_Drv_Own" }), "what a class deriving from the kernel's holds, and nothing of the module's own class: " + string.Join(",", held));
     }
 }

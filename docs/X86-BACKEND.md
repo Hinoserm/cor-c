@@ -703,8 +703,16 @@ function specialisation). Then, in each unit, as the last pass over its IR:
 A function whose address is taken, or that is named for others, or called
 from code the link does not see, keeps all of its arguments; it may still
 have versions and a way in, which its own name and parameters leave as they
-were. A slot's family is judged only at a link of a closed image -- one
-module compiled whole sees no descriptor's every reader -- and a member's
+were. A slot's family is judged only at a link that sees every slot call
+that may reach it -- one module compiled whole sees no descriptor's every
+reader. A closed image does. So do a kernel and each of its modules, for
+every family no other image may reach: another image calls through the
+slots of the types it is shown (and those its classes derive from, the
+kernel's to a module), and overrides them; each type's slots are recorded
+by the units that name it (abstract ones too), and every function those
+slots reach keeps its parameters, as does every function a slot call of a
+body the kernel offers its modules reaches. The rest of the families are
+the image's own. And a member's
 address is never taken, or it keeps its parameters. A function's address
 is then only in descriptors, and a call through a word nothing names
 reaches a member only if the word was read out of a descriptor. So each

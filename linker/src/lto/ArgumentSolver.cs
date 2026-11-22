@@ -223,10 +223,26 @@ public static class ArgumentSolver
                         if (functions.TryGetValue(target, out ArgumentFunction? callee) && callee.Kinds.Length != call.Arguments.Length) misfit.Add(target);
                 }
 
-        // The calls, every copy of a function's (the units' copies of one
-        // generic body make the same calls: met twice, they lower nothing
-        // further), each resolved to the functions it reaches.
-        List<(string Caller, ArgumentCall Call, string[] Targets)> calls = new();
+        // The calls, every copy of a function's -- the units' copies of one
+        // generic body, each its unit's compile of it, any of which the link
+        // may keep -- each resolved to the functions it reaches: a slot's by
+        // the link's answer, a call by name to its callee alone (Targets
+        // null). Read where the units' hints hold them, every time they are
+        // walked: never copied into a list of their own, which for a large
+        // program is as big as the hints themselves.
+        IEnumerable<(string Caller, ArgumentCall Call, string[]? Targets)> Calls()
+        {
+            foreach (ArgumentHints unit in units)
+                foreach ((string caller, ArgumentFunction f) in unit.Functions)
+                    foreach (ArgumentCall call in f.Calls)
+                    {
+                        if (call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
+                        {
+                            if (virtuals.TryGetValue(call.Callee, out string[]? targets)) yield return (caller, call, targets);
+                        }
+                        else if (functions.ContainsKey(call.Callee)) yield return (caller, call, null);
+                    }
+        }
         HashSet<string> called = new(StringComparer.Ordinal);
         HashSet<string> slotsCalled = new(StringComparer.Ordinal);
         // Calls through a slot the link has no answer for (some descriptor
@@ -240,7 +256,7 @@ public static class ArgumentSolver
                     if (call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
                     {
                         slotsCalled.Add(call.Callee);
-                        if (virtuals.TryGetValue(call.Callee, out string[]? targets)) { calls.Add((caller, call, targets)); called.UnionWith(targets); }
+                        if (virtuals.TryGetValue(call.Callee, out string[]? targets)) called.UnionWith(targets);
                         // Of what it reaches nothing is known but that it is
                         // passed as many arguments: as an unnamed call is.
                         // (Every function in one slot has the slot's
@@ -250,7 +266,7 @@ public static class ArgumentSolver
                         // nothing seen: Many either way.)
                         else { unresolved++; unnamed.Add(call.Arguments.Length); }
                     }
-                    else if (functions.ContainsKey(call.Callee)) { calls.Add((caller, call, new[] { call.Callee })); called.Add(call.Callee); }
+                    else if (functions.ContainsKey(call.Callee)) called.Add(call.Callee);
                 }
 
         // UNNAMED CALLS THROUGH A STATIC CELL (ArgumentHints.CellCalls): of
@@ -269,10 +285,16 @@ public static class ArgumentSolver
         // call of which the units show -- none foreign, none through an
         // address or a slot, each passing its parameters -- judged without
         // a cycle (one met again says no).
-        Dictionary<string, List<(string Caller, ArgumentCall Call)>> byName = new(StringComparer.Ordinal);
-        foreach ((string caller, ArgumentCall call, string[] targets) in calls)
-            if (!call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal))
-                (byName.TryGetValue(call.Callee, out var sites) ? sites : byName[call.Callee] = new()).Add((caller, call));
+        // (Each function's callers by name, made when a cell first asks.)
+        Dictionary<string, List<(string Caller, ArgumentCall Call)>>? byName = null;
+        Dictionary<string, List<(string Caller, ArgumentCall Call)>> ByName()
+        {
+            if (byName is not null) return byName;
+            byName = new(StringComparer.Ordinal);
+            foreach ((string caller, ArgumentCall call, string[]? targets) in Calls())
+                if (targets is null) (byName.TryGetValue(call.Callee, out var sites) ? sites : byName[call.Callee] = new()).Add((caller, call));
+            return byName;
+        }
         Dictionary<string, bool> namedOnly = new(StringComparer.Ordinal);
         bool NamedOnly(string parameter, int depth)
         {
@@ -284,7 +306,7 @@ public static class ArgumentSolver
                 || misfit.Contains(name) || addressed.Contains(name) || slotted.Contains(name) || slotsOf.ContainsKey(name) || unchangeable(name))
                 return namedOnly[parameter] = false;
             // (Called by nothing at all: its parameter is never given anything.)
-            if (!byName.TryGetValue(name, out var sites)) return namedOnly[parameter] = true;
+            if (!ByName().TryGetValue(name, out var sites)) return namedOnly[parameter] = true;
             namedOnly[parameter] = false;
             bool all = true;
             foreach ((string caller, ArgumentCall call) in sites)
@@ -317,15 +339,14 @@ public static class ArgumentSolver
         // What may change at all.
         bool Free(string name) => functions.TryGetValue(name, out ArgumentFunction? f) && !f.Fixed && !disagreed.Contains(name)
             && !misfit.Contains(name) && !addressed.Contains(name) && !unchangeable(name);
-        // A slot's family is known whole only in a closed image, and only
+        // A slot's family is known whole in a closed image -- or one whose
+        // slot calls from other images are said (`outside`) -- and only
         // where no call through an address nothing names may reach it: a
         // slot's word read raw (the runtime's own reading of a descriptor)
         // would be called so, with at least as many arguments as the
         // function has parameters (ArgumentHints.Unnamed) -- nor a call
         // through a slot the link could not answer, of what it passes, the
         // same -- none such passes as many as a member has, or more.
-        // (Or not closed, but every slot call another image may make said by
-        // `outside`: each function it may reach.)
         bool slotsKnown = closed || outside is not null;
         bool Outside(string name) => outside?.Invoke(name) == true;
         int reachedOutside = 0;
@@ -359,11 +380,12 @@ public static class ArgumentSolver
         while (moved)
         {
             moved = false;
-            foreach ((string caller, ArgumentCall call, string[] targets) in calls)
+            foreach ((string caller, ArgumentCall call, string[]? targets) in Calls())
             {
                 Cell[]? own = cells.GetValueOrDefault(caller);
-                foreach (string target in targets)
+                for (int t = 0, reached = targets?.Length ?? 1; t < reached; t++)
                 {
+                    string target = targets?[t] ?? call.Callee;
                     if (!functions.TryGetValue(target, out ArgumentFunction? callee)) continue;
                     // A call of other than its parameters says nothing of any of them.
                     bool fits = call.Arguments.Length == callee.Kinds.Length;
@@ -390,10 +412,10 @@ public static class ArgumentSolver
 
         // Each function's calls by name, as the units said them.
         Dictionary<string, List<ArgumentCall>> direct = new(StringComparer.Ordinal);
-        foreach ((string _, ArgumentCall call, string[] targets) in calls)
+        foreach ((string _, ArgumentCall call, string[]? targets) in Calls())
         {
-            if (call.Callee.StartsWith(VirtualTargets.Prefix, StringComparison.Ordinal)) continue;
-            if (!direct.TryGetValue(targets[0], out List<ArgumentCall>? of)) direct[targets[0]] = of = new();
+            if (targets is not null) continue;
+            if (!direct.TryGetValue(call.Callee, out List<ArgumentCall>? of)) direct[call.Callee] = of = new();
             of.Add(call);
         }
         bool directBefore(string name, out List<ArgumentCall>? sites) => direct.TryGetValue(name, out sites);

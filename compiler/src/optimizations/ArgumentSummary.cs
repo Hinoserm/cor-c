@@ -24,6 +24,7 @@ public static class ArgumentSummary
     public static ArgumentHints Of(Module m)
     {
         ArgumentHints hints = new();
+        foreach ((string type, SortedSet<long> slots) in m.TypeSlots) hints.TypeSlots[type] = new SortedSet<long>(slots);
         HashSet<string> own = new(m.Data.Select(d => d.Name), StringComparer.Ordinal);
         // The helpers the late passes and the backend add calls to by name
         // (RuntimeAbi.Helpers), which no IR made before them shows.

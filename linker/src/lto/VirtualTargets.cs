@@ -212,6 +212,9 @@ public static class VirtualTargets
     public static HashSet<string> MethodsHeldBy(List<(string Name, ObjectFile Object)> inputs, IReadOnlySet<string> types)
         => IndexOf(inputs).MethodsHeldBy(types);
 
+    /// <summary>Every type some descriptor here is, or derives from, that no input defines: another image's.</summary>
+    public static HashSet<string> ForeignAncestors(List<(string Name, ObjectFile Object)> inputs) => IndexOf(inputs).ForeignAncestors();
+
     /// <summary>Whether a name is a descriptor's (a class's, an interface's, a box's).</summary>
     public static bool IsDescriptorName(string name) => IsDescriptor(name);
 
@@ -583,6 +586,15 @@ public static class VirtualTargets
                 }
             }
             return _made = made;
+        }
+
+        public HashSet<string> ForeignAncestors()
+        {
+            HashSet<string> foreign = new(StringComparer.Ordinal);
+            for (int d = 0; d < _descriptors.Count; d++)
+                foreach (string up in Ancestors(d))
+                    if (!ByName.ContainsKey(up)) foreign.Add(up);
+            return foreign;
         }
 
         /// <summary>Every method any descriptor holds at a slot whose ancestry -- itself among it -- meets `types`.</summary>

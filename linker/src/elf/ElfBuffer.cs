@@ -10,9 +10,9 @@ namespace Corsac.Lang.Elf;
 ///
 /// IN CHUNKS OF 64 KiB, not one list: a List&lt;byte&gt; doubles, copying
 /// everything each time, and padding added a zeroed array of its own, so a
-/// whole-kernel object briefly needed three times its size. Under the
-/// compiler's heap limit (corc.csproj's GCHeapHardLimit) that aborted the
-/// kernel-binds compile in the ELF writer now and then. Zeros cost nothing
+/// whole-kernel object briefly needed three times its size (which, under
+/// the heap limit the compiler had then, aborted the kernel-binds compile in
+/// the ELF writer now and then). Zeros cost nothing
 /// here: a chunk is zero when made, and the length just moves on.
 /// </summary>
 internal sealed class ElfBuffer

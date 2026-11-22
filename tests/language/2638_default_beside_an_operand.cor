@@ -1,0 +1,39 @@
+// test: a bare default an operand of an operator takes the other operand's type, as C# does: a struct with ==, a nullable, a reference, a long, a type parameter
+// expect-exit: 0
+// expect-output:
+// True False True
+// True True
+// True False
+// True True True False
+//
+// `facts == default` is `facts == default(Facts)`: the default literal is
+// the type of the operand it stands beside, on either side. The compiler's
+// own unit tests compare a struct with it. Output as .NET 10 says it.
+
+using System;
+readonly struct Facts : IEquatable<Facts>
+{
+    public readonly int Known, Ones;
+    public Facts(int known, int ones) { Known = known; Ones = ones; }
+    public bool Equals(Facts other) => Known == other.Known && Ones == other.Ones;
+    public override bool Equals(object? o) => o is Facts f && Equals(f);
+    public override int GetHashCode() => Known * 31 + Ones;
+    public static bool operator ==(Facts a, Facts b) => a.Equals(b);
+    public static bool operator !=(Facts a, Facts b) => !a.Equals(b);
+}
+static class Program
+{
+    static Facts Get(int i) => i == 0 ? default : new Facts(i, i * 2);
+    static bool IsZero<T>(T value) where T : struct, IEquatable<T> => value.Equals(default);
+    static int Main(string[] args)
+    {
+        Console.WriteLine((Get(0) == default) + " " + (Get(3) == default) + " " + (default != Get(2)));
+        int? maybe = args.Length > 5 ? 4 : null;
+        Console.WriteLine((maybe == default) + " " + (default == maybe));
+        string? name = args.Length > 5 ? "x" : null;
+        Console.WriteLine((name == default) + " " + (name != default));
+        long big = args.Length;
+        Console.WriteLine((big == default) + " " + (big + 7 != default) + " " + IsZero(0L) + " " + IsZero(new Facts(1, 1)));
+        return 0;
+    }
+}

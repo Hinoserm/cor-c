@@ -20,6 +20,18 @@ public sealed class Module
     public List<DataItem> Data { get; } = new();
 
     /// <summary>
+    /// THE SLOTS OF EVERY TYPE WHOSE DESCRIPTOR THIS UNIT NAMES, its own or
+    /// another image's: by descriptor name, each slot a call that dispatches
+    /// on the type may read, in bytes from where an object's first word
+    /// points -- a class's every virtual of its chain, abstract ones too
+    /// (whose words are empty), and the slots every class shares; an
+    /// interface's own methods'. The link reads them where another image may
+    /// hold objects of a type and call through its slots (ArgumentHints.
+    /// TypeSlots): what those calls may reach, no descriptor's words say.
+    /// </summary>
+    public SortedDictionary<string, SortedSet<long>> TypeSlots { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// What another unit's descriptors hold, as far as this one can know it
     /// from their declarations: a non-generic class's virtual slots. Never
     /// emitted; read by Devirtualize, so a call on an object made in sight

@@ -27461,7 +27461,19 @@ public sealed partial class Binder
             return Type.Bool;
         }
 
+        // A BARE `default` AN OPERAND IS THE OTHER OPERAND'S TYPE, as C# takes
+        // `facts == default`: the left one, the right looked at first
+        // (quietly: it is checked in its turn below).
+        Type? beforeDefault = _wanted;
+        if (b.Left is DefaultExpr { Type.Name.Length: 0 } && b.Right is not DefaultExpr { Type.Name.Length: 0 } && b.Op != BinOp.Coalesce)
+        {
+            _quiet++;
+            Type other = CheckExpr(b.Right);
+            _quiet--;
+            _wanted = other.IsError ? null : other;
+        }
         Type l = CheckExpr(b.Left);
+        _wanted = beforeDefault;
 
         // A LAMBDA ADDED TO OR TAKEN FROM A DELEGATE is that delegate's type,
         // as C# target-types it by the left operand: `d + (x => x * 2)`. It
@@ -27488,6 +27500,11 @@ public sealed partial class Binder
         if (b.Op == BinOp.Coalesce && !l.IsError)
         {
             _wanted = l.IsNullableValue ? l.Underlying : l.AsNonNullable();
+        }
+        // (And a bare `default` on the right, the left's type.)
+        else if (b.Right is DefaultExpr { Type.Name.Length: 0 } && !l.IsError)
+        {
+            _wanted = l;
         }
 
         Type r = CheckExpr(b.Right);

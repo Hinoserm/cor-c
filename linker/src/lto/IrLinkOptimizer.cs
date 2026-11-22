@@ -204,10 +204,11 @@ public static class IrLinkOptimizer
         // a function keeps its parameters where anything the units' IR does
         // not show may call it -- a name an object without IR refers to, one
         // the image is asked to keep for others (a kernel's for its modules),
-        // the entry and what a link roots. A slot's family is known whole
-        // only in an image closed to the world: no names kept for others, no
-        // open types, not a module of a kernel, foreign code naming what it
-        // calls.
+        // the entry and what a link roots. A slot's family is judged where
+        // every slot call that reaches it is known: an image closed to the
+        // world, or a kernel or its module, where what the other images may
+        // reach through slots is said (outside, below) and every other family
+        // is the image's own; not where foreign code may call anything.
         ArgumentFacts? argumentFacts = null;
         // An image with an entry and no names for others, or a kernel, which
         // says which names are for its modules: what it keeps for them
@@ -254,7 +255,38 @@ public static class IrLinkOptimizer
                     .SelectMany(name => name.Contains('@') ? new[] { name, VirtualTargets.Plain(name) } : new[] { name }), null, kernels);
                 HashSet<string> shownTypes = new(kept.Concat(shown ?? Enumerable.Empty<string>()).Concat(kernelNames ?? Enumerable.Empty<string>())
                     .Where(name => VirtualTargets.IsDescriptorName(name) || name.StartsWith("i_", StringComparison.Ordinal)), StringComparer.Ordinal);
-                outside = VirtualTargets.MethodsHeldBy(inputs, shownTypes);
+                // (And every type a descriptor here derives from that no input
+                // defines: another image's -- the kernel's, another module's --
+                // whose code calls through its slots.)
+                shownTypes.UnionWith(VirtualTargets.ForeignAncestors(inputs));
+                // BY SLOT: another image holding an object of a shown type --
+                // or of one it derives from it, whose ancestors and interfaces
+                // it is too -- calls through that type's slots, and nothing
+                // else of the object's; and an override it makes of one of
+                // them is what this image's calls through that slot reach.
+                // So every function a slot of the shown types and their
+                // ancestry reaches (each type's slots as its units recorded
+                // them, ArgumentHints.TypeSlots -- abstract ones too, whose
+                // words are empty); a type no unit recorded, every method a
+                // descriptor that is or derives from it holds.
+                Dictionary<string, HashSet<long>> typeSlots = new(StringComparer.Ordinal);
+                foreach (ArgumentHints unit in argumentHints)
+                    foreach ((string type, SortedSet<long> slots) in unit.TypeSlots)
+                        (typeSlots.TryGetValue(type, out HashSet<long>? had) ? had : typeSlots[type] = new()).UnionWith(slots);
+                HashSet<string> unrecorded = new(StringComparer.Ordinal);
+                List<string> shownSlots = new();
+                foreach (string type in VirtualTargets.Ancestry(inputs, shownTypes).Order(StringComparer.Ordinal))
+                {
+                    if (!typeSlots.TryGetValue(type, out HashSet<long>? slots)) { unrecorded.Add(type); continue; }
+                    foreach (long slot in slots) shownSlots.Add(VirtualTargets.Prefix + type + "+" + slot);
+                }
+                Dictionary<string, string[]> reachedBySlot = VirtualTargets.Resolve(inputs, shownSlots, null, kernels);
+                // (A slot no answer lists -- a word some descriptor holds there
+                // that is no function known -- its type's holders whole.)
+                foreach (string slot in shownSlots)
+                    if (!reachedBySlot.ContainsKey(slot) && VirtualTargets.Parse(slot) is var (declaring, _, _)) unrecorded.Add(declaring);
+                outside = unrecorded.Count == 0 ? new(StringComparer.Ordinal) : VirtualTargets.MethodsHeldBy(inputs, unrecorded);
+                foreach (string[] reached in reachedBySlot.Values) outside.UnionWith(reached);
                 foreach (ArgumentHints unit in argumentHints)
                     foreach ((string name, ArgumentFunction f) in unit.Functions)
                         if (kept.Contains(name) || (shown?.Contains(name) ?? false))
@@ -271,6 +303,10 @@ public static class IrLinkOptimizer
                 closed: !anything && closedImageEntry is not null && keep is null && !moduleOfKernel && !openTypes,
                 Console.Error.WriteLine, outside: outside is null ? null : outside.Contains);
         }
+        // (Said once and answered: the units' argument hints, as large as
+        // every call's arguments, are let go before the regions are solved.)
+        argumentHints.Clear();
+        argumentHints.TrimExcess();
         if (virtuals.Count > 0) Console.Error.WriteLine("LTO virtual calls resolved: " + virtuals.Count);
         LinkTimings.Phase("virtual targets and lifetime solve");
         // THE WHOLE PROGRAM'S ANSWERS, for a closed image only -- a library's

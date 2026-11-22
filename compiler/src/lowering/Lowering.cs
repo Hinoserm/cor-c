@@ -3129,6 +3129,7 @@ public sealed partial class Lowering
 
         sym = "i_" + TypeKey(t);
         _interfaceDescriptors[t] = sym;
+        RecordSlots(t, sym);
 
         if (t.Decl?.Elsewhere == true)
         {
@@ -3378,6 +3379,29 @@ public sealed partial class Lowering
     /// Equals have slots every class shares, filled with shared stubs when
     /// the class declares neither.
     /// </summary>
+    /// <summary>
+    /// A type's slots (Module.TypeSlots): a class's every virtual of its
+    /// chain and the slots every class shares; an interface's own methods'.
+    /// </summary>
+    private void RecordSlots(TypeSymbol t, string sym)
+    {
+        SortedSet<long> slots = new();
+        int w = _t.WordSize;
+        if (t.Kind == TypeKind.Interface)
+        {
+            foreach (MethodSymbol m in t.Methods.Where(m => m.VtableSlot >= 0)) slots.Add((long)m.VtableSlot * w);
+        }
+        else
+        {
+            foreach (int shared in new[] { _b.ToStringSlot, _b.EqualsSlot, _b.HashSlot, _b.CompareSlot })
+                if (shared >= 0) slots.Add((long)shared * w);
+            for (TypeSymbol? s = t; s is not null; s = s.Base)
+                foreach (MethodSymbol m in s.Methods.Where(m => m.VtableSlot >= 0 && !m.Static)) slots.Add((long)m.VtableSlot * w);
+        }
+        if (!_m.TypeSlots.TryGetValue(sym, out SortedSet<long>? had)) _m.TypeSlots[sym] = slots;
+        else had.UnionWith(slots);
+    }
+
     private string ClassDescriptor(TypeSymbol t)
     {
         // A STRUCT'S OR AN ENUM'S TYPE IS ITS BOX'S, which is what an object
@@ -3394,6 +3418,7 @@ public sealed partial class Lowering
 
         sym = "t_" + TypeKey(t);
         _descriptors[t] = sym;
+        RecordSlots(t, sym);
 
         if (t.Decl?.Elsewhere == true)
         {

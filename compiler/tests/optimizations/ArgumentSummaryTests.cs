@@ -100,8 +100,11 @@ internal static class ArgumentSummaryTests
         b.Instrs.Add(new Instr { Op = Opcode.Add, Dest = callWritten.Params[0], Operands = { callWritten.Params[0], One } });
         CallThrough(b, callWritten.Params[0], One, One, One);
         foreach (Function f in m.Functions) new Builder(f, f.Blocks[0]).Ret();
+        // The slots of a type the unit named (Lowering records them): said as recorded.
+        m.TypeSlots["t_Kern"] = new SortedSet<long> { 0, 8 };
 
         ArgumentHints hints = ArgumentSummary.Of(m);
+        Assert(hints.TypeSlots.TryGetValue("t_Kern", out SortedSet<long>? kern) && kern.SetEquals(new long[] { 0, 8 }), "a type's slots are not said in the hints");
         Assert(hints.CellParams.TryGetValue("s_Set", out SortedSet<string>? set) && set.SetEquals(new[] { "0:Setter" }), "a cell a parameter is stored in is not said by the parameter");
         Assert(!hints.CellsWritten.Contains("s_Set") && !hints.CellsWritten.Contains("s_Named") && !hints.CellsWritten.Contains("s_Number"),
             "a cell written with a parameter, a named address or a number is said written");
