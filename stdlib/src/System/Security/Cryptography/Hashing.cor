@@ -16,15 +16,32 @@ public class CryptographicException : SystemException
     public CryptographicException(string format, string? insert) : base(string.Format(format, insert)) { }
 }
 
+/// A cryptographic operation asked out of its order: a hash read between
+/// TransformBlock and TransformFinalBlock.
+public class CryptographicUnexpectedOperationException : CryptographicException
+{
+    public CryptographicUnexpectedOperationException() : base() { }
+    public CryptographicUnexpectedOperationException(string? message) : base(message) { }
+    public CryptographicUnexpectedOperationException(string? message, Exception? inner) : base(message, inner) { }
+    public CryptographicUnexpectedOperationException(string format, string? insert) : base(format, insert) { }
+}
+
 /// A hash algorithm: data in, in as many pieces as it comes in, and a hash
 /// out at the end.
 public abstract class HashAlgorithm : ICryptoTransform, IDisposable
 {
-    byte[]? _hash;
     bool _disposed;
 
+    // .NET'S OWN FIELDS FOR A SUBCLASS, as a program's subclass writes them:
+    // the size HashSize answers (`HashSizeValue = 16` in its constructor),
+    // the hash last made (Hash answers a copy), and 1 between TransformBlock
+    // and TransformFinalBlock, where there is no hash to read.
+    protected int HashSizeValue;
+    protected internal byte[]? HashValue;
+    protected int State;
+
     /// The size of the hash, in bits.
-    public abstract int HashSize { get; }
+    public virtual int HashSize => HashSizeValue;
 
     // AS A TRANSFORM (ICryptoTransform): a byte at a time in and out, as
     // many blocks at once as are given -- the data passes through unchanged
@@ -52,14 +69,14 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
     /// The hash of everything given so far, the algorithm left as it was.
     internal byte[] CurrentHash()
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        ThrowIfDisposed();
         return Snapshot().HashFinal();
     }
 
     /// The hash of everything given so far, the algorithm then started again.
     internal byte[] HashAndReset()
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        ThrowIfDisposed();
         return Finish();
     }
 
@@ -73,19 +90,20 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
     /// More data from a span.
     internal void Append(ReadOnlySpan<byte> data)
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        ThrowIfDisposed();
         HashCore(data);
     }
 
     /// The hash of everything given so far, once TransformFinalBlock has
     /// given the last of it.
-    public byte[]? Hash
+    public virtual byte[]? Hash
     {
         get
         {
-            if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
-            byte[]? made = _hash;
-            if (made == null) throw new CryptographicException("Hash must be finalized before the hash value is retrieved.");
+            ThrowIfDisposed();
+            if (State != 0) throw new CryptographicUnexpectedOperationException("Hash must be finalized before the hash value is retrieved.");
+            byte[]? made = HashValue;
+            if (made == null) return null;
             byte[] copy = new byte[made.Length];
             for (int i = 0; i < made.Length; i++) copy[i] = made[i];
             return copy;
@@ -129,7 +147,7 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
     /// again; false, and nothing hashed, when the span is too short.
     public bool TryComputeHash(ReadOnlySpan<byte> source, Span<byte> destination, out int bytesWritten)
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        ThrowIfDisposed();
         if (destination.Length < HashSize / 8)
         {
             bytesWritten = 0;
@@ -137,7 +155,7 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
         }
         HashCore(source);
         if (!TryHashFinal(destination, out bytesWritten)) throw new InvalidOperationException("The algorithm's implementation is incorrect.");
-        _hash = null;
+        HashValue = null;
         Initialize();
         return true;
     }
@@ -158,7 +176,7 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
     public byte[] ComputeHash(Stream inputStream)
     {
         if (inputStream == null) throw new ArgumentNullException(nameof(inputStream));
-        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        ThrowIfDisposed();
         byte[] buffer = new byte[4096];
         while (true)
         {
@@ -174,6 +192,7 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
     public int TransformBlock(byte[] inputBuffer, int inputOffset, int inputCount, byte[]? outputBuffer, int outputOffset)
     {
         Check(inputBuffer, inputOffset, inputCount);
+        State = 1;
         HashCore(inputBuffer, inputOffset, inputCount);
         if (outputBuffer != null && (outputBuffer != inputBuffer || outputOffset != inputOffset))
         {
@@ -190,6 +209,7 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
         Check(inputBuffer, inputOffset, inputCount);
         HashCore(inputBuffer, inputOffset, inputCount);
         Finish();
+        State = 0;
         byte[] piece = new byte[inputCount];
         for (int i = 0; i < inputCount; i++) piece[i] = inputBuffer[inputOffset + i];
         return piece;
@@ -198,7 +218,7 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
     byte[] Finish()
     {
         byte[] made = HashFinal();
-        _hash = made;
+        HashValue = made;
         Initialize();
         byte[] copy = new byte[made.Length];
         for (int i = 0; i < made.Length; i++) copy[i] = made[i];
@@ -207,7 +227,7 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
 
     void Check(byte[] buffer, int offset, int count)
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(HashAlgorithm));
+        ThrowIfDisposed();
         if (buffer == null) throw new ArgumentNullException(nameof(buffer));
         if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
         if (count < 0 || count > buffer.Length - offset) throw new ArgumentException("Offset and length were out of bounds for the array.");
@@ -217,8 +237,21 @@ public abstract class HashAlgorithm : ICryptoTransform, IDisposable
 
     public void Dispose()
     {
+        Dispose(true);
+        System.GC.SuppressFinalize(this);
+    }
+
+    /// The hash last made wiped, as .NET's: zeros, the array kept.
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!disposing) return;
+        if (HashValue is { } made) for (int i = 0; i < made.Length; i++) made[i] = 0;
         _disposed = true;
-        _hash = null;
+    }
+
+    void ThrowIfDisposed()
+    {
+        if (_disposed) throw new ObjectDisposedException(GetType().FullName);
     }
 }
 
@@ -1085,6 +1118,17 @@ sealed class Sha384Implementation : SHA384
 public abstract class KeyedHashAlgorithm : HashAlgorithm
 {
     protected byte[] KeyValue = new byte[0];
+
+    /// The key wiped and let go, then the hash, as .NET's.
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            if (KeyValue != null) for (int i = 0; i < KeyValue.Length; i++) KeyValue[i] = 0;
+            KeyValue = null!;
+        }
+        base.Dispose(disposing);
+    }
 
     public virtual byte[] Key
     {

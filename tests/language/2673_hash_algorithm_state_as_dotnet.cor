@@ -1,0 +1,50 @@
+// test: hash_algorithm_state_as_dotnet
+// expect-exit: 0
+// expect-output:
+// 8 null 0 True
+// 1 CryptographicUnexpectedOperationException:Hash must be finalized before the hash value is retrieved.
+// 0 6 6
+// 18 18 0
+// dispose True
+// ObjectDisposedException:Cannot access a disposed object.
+// Object name: 'Sum8'. False
+// 256 null
+//
+// A program's own HashAlgorithm as .NET has it: HashSizeValue set in its
+// constructor answers HashSize; Hash null before any hash, refused between
+// TransformBlock and TransformFinalBlock (State, CryptographicUnexpected-
+// OperationException), the copy of HashValue after; Clear through a
+// Dispose(bool) the subclass overrides, the hash wiped and the object then
+// refused by its own name. Output from .NET 10 (probe ~/tmp/dn/hashstate).
+
+using System;
+using System.Security.Cryptography;
+sealed class Sum8 : HashAlgorithm
+{
+    int _s;
+    public Sum8() { HashSizeValue = 8; }
+    public override void Initialize() { _s = 0; }
+    protected override void HashCore(byte[] a, int at, int n) { for (int i = at; i < at + n; i++) _s += a[i]; }
+    protected override byte[] HashFinal() => new byte[] { (byte)_s };
+    public int Seen => State;
+    public byte[]? Held => HashValue;
+    protected override void Dispose(bool disposing) { Console.WriteLine("dispose " + disposing); base.Dispose(disposing); }
+}
+static class Program
+{
+    static string Try(Func<string> f) { try { return f(); } catch (Exception e) { return e.GetType().Name + ":" + e.Message; } }
+    static int Main()
+    {
+        Sum8 h = new Sum8();
+        Console.WriteLine(h.HashSize + " " + Try(() => h.Hash is null ? "null" : "some") + " " + h.Seen + " " + (h.Held is null));
+        h.TransformBlock(new byte[] { 1, 2 }, 0, 2, null, 0);
+        Console.WriteLine(h.Seen + " " + Try(() => h.Hash is null ? "null" : "some"));
+        h.TransformFinalBlock(new byte[] { 3 }, 0, 1);
+        Console.WriteLine(h.Seen + " " + Try(() => h.Hash![0].ToString()) + " " + h.Held![0]);
+        Console.WriteLine(h.ComputeHash(new byte[] { 9, 9 })[0] + " " + h.Hash![0] + " " + h.Seen);
+        h.Clear();
+        Console.WriteLine(Try(() => h.Hash is null ? "null" : "some") + " " + (h.Held is null));
+        using (SHA256 s = SHA256.Create()) Console.WriteLine(s.HashSize + " " + Try(() => s.Hash is null ? "null" : "some"));
+        return 0;
+    }
+}
