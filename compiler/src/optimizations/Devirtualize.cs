@@ -664,7 +664,7 @@ public sealed class Devirtualize : IModulePass
         foreach (VReg p in f.Params)
             if (classes.TryGetValue(p, out string[]? chain) && !single.ContainsKey(p)) held[p] = chain;
         if (held.Count == 0) return false;
-        bool folded = callees is not null && guards is not null && FoldCheckedNulls(f, held, single, callees, guards, guardsFixed);
+        bool folded = FoldCheckedNulls(f, held, single, callees, guards, guardsFixed);
 
         // What a register is, read from a parameter: the object itself, an
         // address `At` bytes into its descriptor, its display, its depth, or
@@ -811,9 +811,18 @@ public sealed class Devirtualize : IModulePass
     /// source -- a path no call can take, which kept every caller's List
     /// alive for all the analysis knew. A test in the call's block after it,
     /// or in a block only the call's block leads into (dominated by it).
+    ///
+    /// AND THE SAME CHECK INLINED: a test of the parameter whose null side
+    /// never comes back -- it ends in Unreachable, as a throw moved out of
+    /// its function (ThrowOutline) leaves its call, or as a throw does --
+    /// proves the parameter not null in every block its other side leads to
+    /// alone. Once NotNull's throw went out of it, NotNull was small enough
+    /// to inline into Where, and its call -- the only guard this looked for --
+    /// was gone: Where's general walk came back on the null side of `source
+    /// is List<T>`, and every LINQ walk of a caller's List kept it (1311).
     /// </summary>
     private static bool FoldCheckedNulls(Function f, Dictionary<VReg, string[]> held, Dictionary<VReg, Instr?> single,
-        Func<string, Function?> callees, Dictionary<(string, int), bool> guards, bool guardsFixed)
+        Func<string, Function?>? callees, Dictionary<(string, int), bool>? guards, bool guardsFixed)
     {
         // The parameter a register is, through copies.
         VReg? ParamOf(Operand o)
@@ -828,12 +837,28 @@ public sealed class Devirtualize : IModulePass
             return null;
         }
         List<(Block Block, VReg Param)>? checks = null;
+        // The guard calls, where the callees' bodies are at hand to judge.
+        if (callees is not null && guards is not null)
         foreach (Block b in f.Blocks)
             foreach (Instr i in b.Instrs)
                 if (i.Op == Opcode.Call && i.Callee is { } name)
                     for (int k = 0; k < i.Operands.Count; k++)
                         if (ParamOf(i.Operands[k]) is { } p && ReturnsOnlyIfNotNull(name, k, callees, guards, guardsFixed))
                             (checks ??= new()).Add((b, p));
+        // The inlined check: a branch on the parameter (or its compare with
+        // null) whose null side ends without coming back.
+        foreach (Block b in f.Blocks)
+        {
+            if (b.Terminator is not { Op: Opcode.Branch, Targets.Count: 2, Operands: [RegOperand { Reg: var tested }] } guard
+                || guard.Targets[0] == guard.Targets[1]) continue;
+            (VReg? p, Block? notNullSide) = (ParamOf(RegOperand.Of(tested)), guard.Targets[0]);
+            if (p is null && single.TryGetValue(tested, out Instr? compare) && compare is { Op: Opcode.Eq or Opcode.Ne, Operands: [var operand, ImmOperand { Value: 0 }] })
+                (p, notNullSide) = (ParamOf(operand), compare.Op == Opcode.Eq ? guard.Targets[1] : guard.Targets[0]);
+            if (p is null) continue;
+            Block nullSide = ReferenceEquals(guard.Targets[0], notNullSide) ? guard.Targets[1] : guard.Targets[0];
+            if (nullSide.Terminator?.Op is not (Opcode.Unreachable or Opcode.Unwind)) continue;
+            (checks ??= new()).Add((notNullSide, p));
+        }
         if (checks is null) return false;
         Cfg cfg = new(f);
         bool folded = false;
