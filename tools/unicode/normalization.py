@@ -101,16 +101,17 @@ while True:
     if not grew:
         break
 
-# CHECKED AGAINST NFC ITSELF: every NFC-stable code point with a
-# decomposition, and every second, put after each composite's first -- a
-# change NFC makes there is one only a Maybe may let through.
+# CHECKED AGAINST NFC AND NFKC THEMSELVES: every code point stable under the
+# form with a decomposition (canonical for NFC, compatibility for NFKC) put
+# after each composite's first -- a change the form makes there is one only a
+# Maybe may let through.
 firsts = sorted({key >> 21 for key in composites} | set(range(0x1100, 0x1100 + 19)) | {0xAC00})
 for form in ("NFC", "NFKC"):
     for cp in chars():
         s1 = chr(cp)
         if cp in seconds or ud.normalize(form, s1) != s1:
             continue
-        if ud.normalize("NFD", s1) == s1:
+        if ud.normalize("NFD" if form == "NFC" else "NFKD", s1) == s1:
             continue
         for f in firsts:
             pair = chr(f) + s1
