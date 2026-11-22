@@ -8712,6 +8712,20 @@ public sealed partial class Binder
            && UserConversion(had, Type.Bool, explicitToo: false) is MethodSymbol toBool
             ? ConvertByOperator(operand, toBool) : had;
 
+    /// <summary>
+    /// A TEST THAT CAN NEVER PASS, of a value or a nullable's value: false
+    /// (NeverMatches), and said as Roslyn says it where the program wrote it
+    /// -- a warning for the test, at its operand (CS0184), an error for a
+    /// pattern naming what it can never hold, at its type (CS8121).
+    /// </summary>
+    private void NeverOfTypeTest(IsExpr isx, Type operand, Type tested)
+    {
+        _r.NeverMatches.Add(isx);
+        if (!isx.Written || InGenericCopy()) return;
+        if (isx.Binding is null) Warning(isx.Operand, "CS0184", $"The given expression is never of the provided ('{tested.Shown()}') type");
+        else Error(isx.Type.Line > 0 ? isx.Type : isx, $"CS8121: An expression of type '{operand.Shown()}' cannot be handled by a pattern of type '{tested.Shown()}'.");
+    }
+
     /// <summary>Roslyn's CS8116, at the type: a pattern naming a nullable type, value or reference.</summary>
     private void NullableTypeInPattern(TypeRef written, Type tested)
     {
@@ -20239,13 +20253,8 @@ public sealed partial class Binder
                     else if (!tested.IsError && !refusedNullable && NeverOfType(operand, tested))
                     {
                         // `n is long?`, `n is string` over an int?: never, as a
-                        // value's own test is (CS0184, CS8121 for a pattern).
-                        _r.NeverMatches.Add(isx);
-                        if (isx.Written && !InGenericCopy())
-                        {
-                            if (isx.Binding is null) Warning(isx.Operand, "CS0184", $"The given expression is never of the provided ('{tested.Shown()}') type");
-                            else Error(isx.Type.Line > 0 ? isx.Type : isx, $"CS8121: An expression of type '{operand.Shown()}' cannot be handled by a pattern of type '{tested.Shown()}'.");
-                        }
+                        // value's own test is.
+                        NeverOfTypeTest(isx, operand, tested);
                     }
                     else if (!tested.IsError && !refusedNullable)
                     {
@@ -20303,17 +20312,8 @@ public sealed partial class Binder
                 else if (PlainValue(operand) && !tested.IsError && !runTime && NeverOfType(operand, tested))
                 {
                     // `5 is IDisposable`, `5 is string`: never, and no test of
-                    // a value read as an address. Said as Roslyn says it: a
-                    // warning for the test (CS0184), an error for a pattern
-                    // naming what it can never hold (CS8121).
-                    _r.NeverMatches.Add(isx);
-                    if (isx.Written && !InGenericCopy())
-                    {
-                        // Where Roslyn puts them: the test at its operand, the
-                        // pattern at its type.
-                        if (isx.Binding is null) Warning(isx.Operand, "CS0184", $"The given expression is never of the provided ('{tested.Shown()}') type");
-                        else Error(isx.Type.Line > 0 ? isx.Type : isx, $"CS8121: An expression of type '{operand.Shown()}' cannot be handled by a pattern of type '{tested.Shown()}'.");
-                    }
+                    // a value read as an address.
+                    NeverOfTypeTest(isx, operand, tested);
                 }
                 else if (!operand.IsReference && operand.Prim != Prim.Any && tested.Equals(operand))
                 {

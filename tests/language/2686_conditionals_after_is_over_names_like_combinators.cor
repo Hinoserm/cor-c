@@ -1,0 +1,24 @@
+// test: conditionals_after_is_over_names_like_combinators
+// expect-exit: 0
+// expect-output:
+// 11 -4 4
+// 5 6
+//
+// After `is T ?`, a variable or method named `or` or `and` followed by
+// anything but a name or a literal -- `or(1)`, `-and`, `(and)` -- is a
+// conditional's branch, as Roslyn reads it. Output from .NET 10 (probe
+// ~/tmp/dn/orand2).
+
+using System;
+static class Program
+{
+    static int or(int v) => v + 10;
+    static int Main()
+    {
+        object x = 3; int and = 4; bool @true = true;
+        Console.WriteLine((x is int ? or(1) : 0) + " " + (x is int ? -and : 0) + " " + (x is int ? (and) : 0));
+        object y = null!;
+        Console.WriteLine((x is string ? and : 5) + " " + (y is int ? or(2) : 6));
+        return 0;
+    }
+}

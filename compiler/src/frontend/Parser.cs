@@ -5007,14 +5007,15 @@ public sealed class Parser
                                       or Tok.AndAnd or Tok.OrOr or Tok.Eq or Tok.NotEq or Tok.Colon or Tok.End
                                    || Ahead().Kind == Tok.Ident && (Ahead(2).Kind is Tok.RParen or Tok.Comma or Tok.Semi
                                                                     || Ahead(2).Kind == Tok.Ident && Ahead(2).Text == "when")
-                                   // `is int? or string`, `is int? and …`: the
-                                   // combinators, where what follows can begin
-                                   // a pattern -- a name, a literal, null -- and
-                                   // not `? and.Foo : y`, `? or + 1 : y`, `? or : y`
-                                   // over variables named so.
+                                   // `is int? or string`, `is int? or 1`: the
+                                   // combinators, before a name or a number,
+                                   // string or char literal, as Roslyn reads
+                                   // them. Before anything else -- `null`,
+                                   // `true`, `-1`, `(`, `<`, `[`, `.`, `+`, `:`
+                                   // -- Roslyn reads `? or … : …` over a
+                                   // variable named so, and so does this.
                                    || Ahead().Kind == Tok.Ident && Ahead().Text is "or" or "and"
-                                      && Ahead(2).Kind is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.Char
-                                                         or Tok.KwNull or Tok.KwTrue or Tok.KwFalse);
+                                      && Ahead(2).Kind is Tok.Ident or Tok.Int or Tok.Real or Tok.Str or Tok.Char);
             if ((allowNullable || elementMark || closingMark) && At(Tok.Question))
             {
                 patternMark |= closingMark;
